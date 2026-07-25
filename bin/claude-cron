@@ -530,7 +530,16 @@ ${prompt}"
       seen=0
       while kill -0 "$child" 2>/dev/null; do
         sleep 2
-        n="$(grep -c '"type":"result"' "$streamfile" 2>/dev/null || echo 0)"
+        # `grep -c` prints 0 AND exits 1 when there is no match, so `|| echo 0`
+        # appended a second line and the comparison below blew up with
+        # "integer expression expected". The test then fell through and this
+        # loop killed healthy agents after 20s of quiet thinking. Assign, then
+        # sanity-check the value.
+        n="$(grep -c '"type":"result"' "$streamfile" 2>/dev/null)" || n=0
+        case "$n" in ''|*[!0-9]*) n=0 ;; esac
+        # Never end a run that has not produced a single result yet: it is still
+        # working on its first answer.
+        [ "$n" -eq 0 ] && continue
         [ "$n" -le "$seen" ] && continue
         seen="$n"
         size="$(wc -c < "$streamfile" 2>/dev/null | tr -d ' ')"
