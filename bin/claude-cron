@@ -36,6 +36,7 @@ STATE_FILE="$DATA_DIR/state.json"
 RUNS_FILE="$DATA_DIR/runs.ndjson"
 LOG_DIR="$DATA_DIR/logs"
 LOCK_DIR="$DATA_DIR/locks"
+WORKTREES_DIR="$DATA_DIR/worktrees"   # one isolated git worktree per run lives here
 TICK_LOG="$DATA_DIR/tick.log"
 
 PLIST_LABEL="com.claude-cron.tick"
@@ -49,10 +50,15 @@ CLAUDE_BIN="${CLAUDE_CRON_CLAUDE_BIN:-$HOME/.local/bin/claude}"
 PYTHON="${CLAUDE_CRON_PYTHON:-$(command -v python3 2>/dev/null || echo /usr/bin/python3)}"
 JQ=/usr/bin/jq
 
-mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" "$LOCK_DIR"
+mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" "$LOCK_DIR" "$WORKTREES_DIR"
 [ -f "$STATE_FILE" ] || echo '{}' > "$STATE_FILE"
 [ -f "$RUNS_FILE" ] || : > "$RUNS_FILE"
 [ -f "$PROJECTS_FILE" ] || echo '{"projects":[]}' > "$PROJECTS_FILE"
+
+# Per-run git-worktree isolation. Generic and language-agnostic: every
+# project-specific detail (whether to isolate, which venv/env) is declared in
+# projects.json under `.worktree`, never hard-coded here. See the library header.
+. "$BIN_DIR/worktree-lib.sh"
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
 # Every number that comes from a command goes through this. The interactive
@@ -225,6 +231,22 @@ acquire_lock() { # 0 = acquired
 }
 
 release_lock() { rm -rf "$LOCK_DIR/$1"; }
+
+# End-of-run cleanup, shared by the normal exit path and the EXIT trap (so a
+# crashed or killed run cleans up too). Tears down the run's worktree if it is
+# safe (see wt_teardown), THEN releases the lock. Reads the worktree path from a
+# breadcrumb keyed by id, so the trap needs only the id baked in — never a live
+# local. Idempotent: safe to call from both paths.
+run_cleanup() { # <id>
+  local id="$1" wt project cwd
+  wt="$(cat "$LOCK_DIR/$id/worktree" 2>/dev/null || true)"
+  if [ -n "$wt" ]; then
+    project="$(job_get "$id" '.project' '')"
+    cwd="$(resolve "$id" cwd "$HOME")"
+    wt_teardown "$id" "$project" "$cwd" "$wt"
+  fi
+  release_lock "$id"
+}
 
 lock_active() { # 0 = a run is currently holding the lock for <id>
   local lock="$LOCK_DIR/$1" pid
@@ -450,6 +472,7 @@ cmd_resolve_models() { # refresh the family→id cache (all four families)
 run_job() { # run_job <id> [--force]
   local id="$1" force="${2:-}"
   local cwd prompt model effort budget timeout stall permission allowed precheck project proj_desc interactive fifo
+  local run_cwd worktree wt_env _envln
   project="$(job_get "$id" '.project' '')"
   # cwd, model, permission, budget and timeout inherit from the project when the
   # job doesn't set them (see resolve()).
@@ -502,7 +525,7 @@ ${prompt}"
     log_tick "$id: previous run still active, skipped"
     return 0
   fi
-  trap 'release_lock "'"$id"'"' EXIT
+  trap 'run_cleanup "'"$id"'"' EXIT
 
   local forced="false"
   [ "$force" = "--force" ] && forced="true"
@@ -548,6 +571,32 @@ ${prompt}"
   streamfile="$LOG_DIR/$id/$stamp.stream.ndjson"
   precheckfile="$LOG_DIR/$id/$stamp.precheck.txt"
 
+  # Isolate this run in its own git worktree, so a peer run (a review while a dev
+  # works, say) can never clobber this one's branch in the shared checkout. The
+  # agent's cwd becomes the worktree; its env carries the project's declared
+  # venv/vars. Generic and gated by projects.json — a non-isolated project just
+  # runs in $cwd as before. If isolation is on but setup fails, ABORT rather than
+  # silently run in the shared tree (falling back would reintroduce the race).
+  run_cwd="$cwd"
+  worktree=""
+  wt_env=()
+  if wt_isolation_enabled "$project" "$cwd"; then
+    if ! worktree="$(wt_setup "$id" "$project" "$cwd" "$stamp")"; then
+      state_set "$id" last_start "$start"
+      state_set "$id" last_status '"error"'
+      log_tick "$id: worktree isolation failed — run aborted (no shared-checkout fallback)"
+      release_lock "$id"; trap - EXIT
+      return 1
+    fi
+    run_cwd="$worktree"
+    echo "$worktree" > "$LOCK_DIR/$id/worktree"     # breadcrumb for run_cleanup
+    state_set "$id" cur_worktree "$("$JQ" -nc --arg p "$worktree" '$p')"
+    while IFS= read -r _envln; do
+      [ -n "$_envln" ] && wt_env+=("$_envln")
+    done < <(wt_env_line "$project" "$cwd" "$worktree")
+    log_tick "$id: isolated in worktree $worktree"
+  fi
+
   # Persist what the precheck saw, next to the run log.
   {
     if [ "$forced" = "true" ]; then echo "RUN FORCED (Run now) — precheck not gating this run."; fi
@@ -584,13 +633,13 @@ ${prompt}"
     rm -f "$fifo"; mkfifo "$fifo" 2>/dev/null
     args="$args --input-format stream-json --replay-user-messages"
     (
-      cd "$cwd" || exit 1
-      "$CLAUDE_BIN" $args < "$fifo" > "$streamfile" 2> "$logfile.err"
+      cd "$run_cwd" || exit 1
+      env ${wt_env[@]+"${wt_env[@]}"} "$CLAUDE_BIN" $args < "$fifo" > "$streamfile" 2> "$logfile.err"
     ) &
   else
     (
-      cd "$cwd" || exit 1
-      "$CLAUDE_BIN" $args "$prompt" > "$streamfile" 2> "$logfile.err"
+      cd "$run_cwd" || exit 1
+      env ${wt_env[@]+"${wt_env[@]}"} "$CLAUDE_BIN" $args "$prompt" > "$streamfile" 2> "$logfile.err"
     ) &
   fi
   local child=$!
@@ -761,7 +810,7 @@ ${prompt}"
   record_run "$id" "$status" "$start" "$end" "${cost:-0}" "${turns:-0}" "$session" "$logfile" "$wdreason" "$forced" "$pc_out" "$project" "${model_family:-$model}" "$model_id"
   log_tick "$id: finished status=$status rc=$rc denials=${denials:-0} cost=\$$cost turns=$turns model=$model${model_id:+ ($model_id)} forced=$forced${wdreason:+ — $wdreason}"
 
-  release_lock "$id"; trap - EXIT
+  run_cleanup "$id"; trap - EXIT
   [ "$status" != "error" ]
 }
 
@@ -773,6 +822,9 @@ ${prompt}"
 # holding its lock is not relaunched.
 cmd_tick() {
   local id
+  # Reap worktrees left by runs that died without cleaning up (safe teardown:
+  # anything with unpushed/uncommitted work is kept, not deleted).
+  wt_prune_orphans
   # Keep the family→model resolutions fresh (about once a day). It rides on the
   # tick this package already installs — deliberately NOT a second launchd job or
   # a crontab entry, so nothing lives outside the project folder and the whole
