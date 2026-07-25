@@ -1395,7 +1395,14 @@ textarea:focus,.dlg-b input:focus,.dlg-b select:focus{outline:none;border-color:
 .cwd-browse{flex:none;white-space:nowrap}
 .checkline{display:flex!important;align-items:center;gap:9px;text-transform:none;letter-spacing:0;font-size:12.5px;color:var(--ink);cursor:pointer;margin-bottom:6px}
 .checkline input{width:auto!important;margin:0}
-.dlg-b .hint{font-size:11.5px;color:var(--muted);margin:-4px 0 11px;line-height:1.5}
+/* Field notes: set apart from the control they explain (the negative top margin
+   used to glue them to it), italic, and a step softer than --muted — mixed
+   towards the panel so it dims in dark mode instead of getting brighter. */
+.dlg-b .hint{font-size:11.5px;font-style:italic;line-height:1.55;
+  /* 72% measured 2.91:1 against white — under the 3:1 floor for auxiliary text.
+     82% keeps it clearly a step softer than --muted while staying readable. */
+  color:color-mix(in srgb,var(--muted) 82%,var(--panel));
+  margin:9px 0 18px}
 /* effort slider — Faster ↔ Smarter, mirroring Claude Code's control */
 .efflabel{margin-left:8px;color:var(--accent);font-weight:700;text-transform:none;letter-spacing:0}
 .effslider{-webkit-appearance:none;appearance:none;width:100%;height:26px;background:transparent;
@@ -1409,7 +1416,11 @@ textarea:focus,.dlg-b input:focus,.dlg-b select:focus{outline:none;border-color:
 .effslider:focus::-webkit-slider-thumb{box-shadow:0 0 0 4px var(--accent-soft)}
 .effends{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:-2px}
 .cwd-ro{cursor:pointer}
-.cwd-ro:hover{border-color:var(--muted)}
+.cwd-ro:hover:not(:disabled){border-color:var(--muted)}
+/* inherited from a project: shown, but plainly not yours to edit here */
+.cwdrow input:disabled{cursor:default;color:var(--muted);background:var(--panel);
+  border-style:dashed;opacity:1}
+.cwdrow .btn:disabled{opacity:.4;cursor:default}
 #fsmodal{max-width:min(560px,94vw);width:560px}
 #fsmodal[open]{display:flex;flex-direction:column;height:min(78vh,600px)}
 #fsmodal .dlg-h,#fsmodal .fs-cur,#fsmodal .dlg-f{flex:none}
@@ -1576,6 +1587,7 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
     <input id="ed-cwd" type="text" placeholder="/Users/…/some-repo" readonly data-cwd-target="ed-cwd" class="cwd-ro">
     <button type="button" class="btn cwd-browse" data-cwd-target="ed-cwd">Browse…</button>
   </div>
+  <div class="hint" id="ed-cwd-note" hidden></div>
   <label>Prompt sent to the agent</label>
   <div class="mdedit" id="ed-prompt-wrap">
     <pre class="mdedit-hl" id="ed-prompt-hl" aria-hidden="true"></pre>
@@ -2322,6 +2334,30 @@ function paintPromptHighlight(){
   hl.scrollTop=ta.scrollTop; hl.scrollLeft=ta.scrollLeft;
 }
 
+/* A job in a project INHERITS that project's working directory — it must not be
+   editable there, or the two would silently disagree. With no project the job
+   owns its own cwd and the picker is available. */
+function syncCwdField(projectName){
+  const inp=$("ed-cwd"), btn=document.querySelector('.cwd-browse'), note=$("ed-cwd-note");
+  if(!inp||!note) return;
+  const p = projectName ? projById(projectName) : null;
+  const inherited = p && p.cwd ? p.cwd : "";
+  if(inherited){
+    inp.value = inherited;
+    inp.disabled = true;
+    inp.removeAttribute("data-cwd-target");     // clicking must not open the picker
+    if(btn) btn.disabled = true;
+    note.textContent = "Inherited from the project “" + projectName + "”. Change it there, "
+      + "or clear the project above to give this job its own directory.";
+    note.hidden = false;
+  }else{
+    inp.disabled = false;
+    inp.setAttribute("data-cwd-target","ed-cwd");
+    if(btn) btn.disabled = false;
+    note.hidden = true; note.textContent = "";
+  }
+}
+
 function initPromptEditor(){
   const ta=$("ed-prompt"), hl=$("ed-prompt-hl");
   if(!ta||!hl) return;                        // never let this take the page down
@@ -2457,7 +2493,7 @@ const PERMS=[
 let projectCombo=null, modelCombo=null, permCombo=null;
 function initCombos(){
   projectCombo=createCombo({id:"ed-project", allowNone:true, noneLabel:"— None —", withIcon:true,
-    onPick:(v)=>{ const p=v?projById(v):null; $("ed-cwd").placeholder=(p&&p.cwd)?("inherits from "+v+": "+p.cwd):"/Users/…/some-repo"; }});
+    onPick:(v)=>syncCwdField(v)});
   modelCombo=createCombo({id:"ed-model", allowNone:false, def:"opus"});
   modelCombo.set("opus", MODELS);
   loadModels();
@@ -2500,9 +2536,7 @@ function fill(j){
   projectCombo.set(j.project||"", projs);
   $("ed-desc").value=j.description||"";
   $("ed-cwd").value=j.cwd||"";
-  // when the job has a project with a cwd and no own cwd, show the inherited value
-  const _p=j.project?projById(j.project):null;
-  $("ed-cwd").placeholder=(_p&&_p.cwd)?("inherits from "+j.project+": "+_p.cwd):"/Users/…/some-repo";
+  syncCwdField(j.project||"");
   $("ed-prompt").value=j.prompt||"";
   paintPromptHighlight();
   $("ed-precheck").value=j._precheck||"";
@@ -2584,7 +2618,9 @@ async function saveEditor(){
       if(f.stallSecs!=null) job.stall_timeout_seconds=f.stallSecs;
       if(f.daily!=null) job.daily_budget_usd=f.daily;
       const proj=$("ed-project").value.trim(); if(proj) job.project=proj;
-      const cwd=$("ed-cwd").value.trim(); if(cwd) job.cwd=cwd;
+      // an inherited directory belongs to the project, never to the job
+      const cwd=$("ed-cwd").disabled ? "" : $("ed-cwd").value.trim();
+      if(cwd) job.cwd=cwd;
       if(!await api("create",{id, job, precheck:$("ed-precheck").value})) return;
       $("editor").close(); toast("Created "+id); refresh(); return;
     }
@@ -2609,7 +2645,8 @@ async function saveEditor(){
     if(f.stallSecs!==curStall){ if(!await api("set_field",{id,field:"stall_timeout_seconds",value:(f.stallSecs==null?"":String(f.stallSecs))})) return; }
     if(!await setF("project",$("ed-project").value.trim(),j.project||"")) return;
     if(!await setF("description",$("ed-desc").value.trim(),j.description||"")) return;
-    if(!await setF("cwd",$("ed-cwd").value.trim(),j.cwd||"")) return;
+    const cwdVal = $("ed-cwd").disabled ? "" : $("ed-cwd").value.trim();
+    if(!await setF("cwd",cwdVal,j.cwd||"")) return;
     if(!await setF("permission_mode",$("ed-perm").value,j.permission_mode||"dontAsk")) return;
     $("editor").close(); toast("Saved "+id); refresh();
   } finally { btn.disabled=false; }
