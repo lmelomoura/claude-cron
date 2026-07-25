@@ -1138,9 +1138,11 @@ td .projtag .ic{width:12px;height:12px;color:var(--accent)}
 .checklist .ck-v{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
 .actions{display:flex;gap:6px;flex-wrap:nowrap;border-top:1px solid var(--line2);padding-top:12px;
   margin-top:auto}
-/* keep the four card actions on one line: compact them (smaller than the app's
-   default .btn) and let them shrink rather than wrap */
-.actions .btn{padding:6px 8px;font-size:12px;gap:5px;flex:0 1 auto;min-width:0;white-space:nowrap}
+/* The four card actions share the row in equal parts — `flex:1` with a zero
+   basis, so the widths come out identical regardless of label length, and
+   `min-width:0` lets them shrink instead of wrapping on a narrow card. */
+.actions .btn{padding:6px 8px;font-size:12px;gap:5px;flex:1 1 0;min-width:0;
+  white-space:nowrap;justify-content:center}
 .actions .btn .ic{width:13px;height:13px}
 .btn{display:inline-flex;align-items:center;gap:7px;font:inherit;font-size:12.5px;font-weight:560;
   padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);
