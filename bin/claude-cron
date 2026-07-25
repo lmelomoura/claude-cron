@@ -1,0 +1,985 @@
+#!/bin/bash
+# claude-cron — durable local scheduler for headless Claude Code runs.
+#
+# Self-contained: config/ and data/ sit next to this script's bin/ directory.
+# A single launchd agent calls `claude-cron tick` once a minute; the tick
+# decides which jobs are due, runs an optional cheap precheck, and only then
+# spends a Claude session.
+#
+# Targets bash 3.2 (macOS system bash): no associative arrays, no mapfile.
+
+set -uo pipefail
+
+# Resolve this script's real path (following symlinks) so the install is
+# self-contained: config/ and data/ and the sibling server live next to bin/,
+# wherever the folder lives. A symlink in ~/.local/bin keeps it on PATH.
+_src="$0"
+while [ -h "$_src" ]; do
+  _dir="$(cd -P "$(dirname "$_src")" && pwd)"
+  _src="$(readlink "$_src")"
+  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
+done
+SELF="$(cd -P "$(dirname "$_src")" && pwd)/$(basename "$_src")"
+BIN_DIR="$(dirname "$SELF")"
+BASE_DIR="$(cd "$BIN_DIR/.." && pwd)"
+
+CONFIG_DIR="${CLAUDE_CRON_CONFIG:-$BASE_DIR/config}"
+DATA_DIR="${CLAUDE_CRON_DATA:-$BASE_DIR/data}"
+JOBS_FILE="$CONFIG_DIR/jobs.json"
+PROJECTS_FILE="$CONFIG_DIR/projects.json"
+MODELS_FILE="$CONFIG_DIR/models.json"
+MODELS_TTL=86400            # 24h — how long a family→id resolution is trusted,
+                            # and how often the tick refreshes it on its own
+STATE_FILE="$DATA_DIR/state.json"
+RUNS_FILE="$DATA_DIR/runs.ndjson"
+LOG_DIR="$DATA_DIR/logs"
+LOCK_DIR="$DATA_DIR/locks"
+TICK_LOG="$DATA_DIR/tick.log"
+
+PLIST_LABEL="com.claude-cron.tick"
+PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
+SERVER_LABEL="com.claude-cron.server"
+SERVER_PLIST="$HOME/Library/LaunchAgents/$SERVER_LABEL.plist"
+SERVER_BIN="$BIN_DIR/claude-cron-server"
+PORT="${CLAUDE_CRON_PORT:-8787}"
+
+CLAUDE_BIN="${CLAUDE_CRON_CLAUDE_BIN:-$HOME/.local/bin/claude}"
+PYTHON="${CLAUDE_CRON_PYTHON:-$(command -v python3 2>/dev/null || echo /usr/bin/python3)}"
+JQ=/usr/bin/jq
+
+mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" "$LOCK_DIR"
+[ -f "$STATE_FILE" ] || echo '{}' > "$STATE_FILE"
+[ -f "$RUNS_FILE" ] || : > "$RUNS_FILE"
+[ -f "$PROJECTS_FILE" ] || echo '{"projects":[]}' > "$PROJECTS_FILE"
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+now_epoch() { date +%s; }
+iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+log_tick() { printf '%s %s\n' "$(iso_now)" "$*" >> "$TICK_LOG"; }
+
+# ---------------------------------------------------------------- job helpers
+
+jobs_json() {
+  [ -f "$JOBS_FILE" ] || die "No jobs file at $JOBS_FILE — run ./install.sh (it seeds one from config/jobs.example.json)"
+  "$JQ" -e . "$JOBS_FILE" >/dev/null 2>&1 || die "Malformed JSON in $JOBS_FILE"
+  cat "$JOBS_FILE"
+}
+
+job_ids() { jobs_json | "$JQ" -r '.jobs[].id'; }
+
+job_get() { # job_get <id> <jq-path> [default]
+  local id="$1" path="$2" def="${3:-}"
+  jobs_json | "$JQ" -r --arg id "$id" --arg def "$def" \
+    '(.jobs[] | select(.id == $id) | '"$path"') // $def | if type == "array" then join(",") else tostring end'
+}
+
+# ---------------------------------------------------------------- projects
+
+projects_json() {
+  [ -f "$PROJECTS_FILE" ] && "$JQ" -e . "$PROJECTS_FILE" >/dev/null 2>&1 || echo '{"projects":[]}' > "$PROJECTS_FILE"
+  cat "$PROJECTS_FILE"
+}
+
+project_get() { # project_get <name> <jq-path> [default]
+  local name="$1" path="$2" def="${3:-}"
+  projects_json | "$JQ" -r --arg n "$name" --arg def "$def" \
+    '(.projects[] | select(.name == $n) | '"$path"') // $def | if type == "array" then join(",") else tostring end'
+}
+
+write_projects() { # write_projects <jq-filter> [jq-args...]
+  local tmp; tmp="$(mktemp "$CONFIG_DIR/.projects.XXXXXX")"
+  "$JQ" "$@" "$PROJECTS_FILE" > "$tmp" && mv "$tmp" "$PROJECTS_FILE"
+}
+
+# Resolve a possibly-inherited field: the job's own value wins; else the job's
+# project's value; else the default. Empty/absent counts as "not set".
+resolve() { # resolve <id> <field> <default>
+  local id="$1" field="$2" def="$3" v proj pv
+  v="$(job_get "$id" ".$field" '')"
+  if [ -n "$v" ] && [ "$v" != "null" ]; then echo "$v"; return; fi
+  proj="$(job_get "$id" '.project' '')"
+  if [ -n "$proj" ] && [ "$proj" != "null" ]; then
+    pv="$(project_get "$proj" ".$field" '')"
+    if [ -n "$pv" ] && [ "$pv" != "null" ]; then echo "$pv"; return; fi
+  fi
+  echo "$def"
+}
+
+state_get() { # state_get <id> <field> [default]
+  "$JQ" -r --arg id "$1" --arg f "$2" --arg def "${3:-}" \
+    '(.[$id][$f] // $def) | tostring' "$STATE_FILE" 2>/dev/null
+}
+
+# Serialize state writes: detached runs execute in parallel, and state_set is a
+# read-modify-write on one shared file, so two of them racing would drop a
+# field. A short mkdir spin-lock keeps writes atomic across processes.
+_state_lock() {
+  local lock="$LOCK_DIR/.state.lock" i=0
+  while ! mkdir "$lock" 2>/dev/null; do
+    i=$(( i + 1 ))
+    [ "$i" -ge 400 ] && { rm -rf "$lock"; i=0; }   # break a stale lock (~4s)
+    sleep 0.01
+  done
+}
+_state_unlock() { rmdir "$LOCK_DIR/.state.lock" 2>/dev/null; }
+
+state_set() { # state_set <id> <field> <value-as-json>
+  local id="$1" field="$2" value="$3" tmp
+  _state_lock
+  tmp="$(mktemp "$DATA_DIR/.state.XXXXXX")"
+  "$JQ" --arg id "$id" --arg f "$field" --argjson v "$value" \
+    '.[$id] = ((.[$id] // {}) | .[$f] = $v)' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+  _state_unlock
+}
+
+# ------------------------------------------------------------- schedule gates
+
+# Is now inside the job's active window? 0 = yes, 1 = no (reason on stdout).
+in_window() {
+  local id="$1" days hours start end nowmin dow
+  days="$(job_get "$id" '.active_days' '')"
+  hours="$(job_get "$id" '.active_hours' '')"
+
+  if [ -n "$days" ] && [ "$days" != "null" ]; then
+    dow="$(date +%u)"   # 1=Mon .. 7=Sun
+    case ",$days," in
+      *",$dow,"*) : ;;
+      *) echo "outside active_days ($days)"; return 1 ;;
+    esac
+  fi
+
+  if [ -n "$hours" ] && [ "$hours" != "null" ]; then
+    start="${hours%%-*}"; end="${hours##*-}"
+    nowmin=$(( 10#$(date +%H) * 60 + 10#$(date +%M) ))
+    local s=$(( 10#${start%%:*} * 60 + 10#${start##*:} ))
+    local e=$(( 10#${end%%:*} * 60 + 10#${end##*:} ))
+    if [ "$s" -le "$e" ]; then
+      [ "$nowmin" -ge "$s" ] && [ "$nowmin" -lt "$e" ] || { echo "outside active_hours ($hours)"; return 1; }
+    else  # window crosses midnight
+      [ "$nowmin" -ge "$s" ] || [ "$nowmin" -lt "$e" ] || { echo "outside active_hours ($hours)"; return 1; }
+    fi
+  fi
+  return 0
+}
+
+is_due() { # is_due <id> ; 0 = due
+  local id="$1" interval last now
+  interval="$(job_get "$id" '.interval_seconds' '300')"
+  last="$(state_get "$id" last_start 0)"
+  now="$(now_epoch)"
+  [ "$(( now - last ))" -ge "$interval" ]
+}
+
+# ------------------------------------------------------------------- locking
+
+acquire_lock() { # 0 = acquired
+  # Two statements on purpose: `local a="$1" b="…$a"` expands every word BEFORE
+  # assigning any of them, so under `set -u` the second one sees $a unset. It
+  # only ever worked because callers happened to have their own `id` in scope.
+  local id="$1" pid
+  local lock="$LOCK_DIR/$id"
+  if mkdir "$lock" 2>/dev/null; then
+    echo $$ > "$lock/pid"; return 0
+  fi
+  pid="$(cat "$lock/pid" 2>/dev/null)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    return 1                      # a previous run is still going
+  fi
+  rm -rf "$lock"                  # stale lock from a killed run
+  mkdir "$lock" 2>/dev/null && { echo $$ > "$lock/pid"; return 0; }
+  return 1
+}
+
+release_lock() { rm -rf "$LOCK_DIR/$1"; }
+
+lock_active() { # 0 = a run is currently holding the lock for <id>
+  local lock="$LOCK_DIR/$1" pid
+  [ -d "$lock" ] || return 1
+  pid="$(cat "$lock/pid" 2>/dev/null)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+# ------------------------------------------------------------------ run a job
+
+record_run() { # <id> <status> <start> <end> <cost> <turns> <session> <logfile> <note> <forced> <precheck> <project> <model> <model_id>
+  "$JQ" -nc \
+    --arg id "$1" --arg status "$2" --argjson start "$3" --argjson end "$4" \
+    --arg cost "$5" --arg turns "$6" --arg session "$7" --arg logfile "$8" --arg note "$9" \
+    --arg forced "${10:-false}" --arg precheck "${11:-}" --arg project "${12:-}" \
+    --arg model "${13:-}" --arg model_id "${14:-}" \
+    '{id:$id, status:$status, start:$start, end:$end, duration:($end-$start),
+      cost:($cost|tonumber? // 0), turns:($turns|tonumber? // 0),
+      session:$session, log:$logfile, note:$note,
+      forced:($forced=="true"), precheck:$precheck, project:$project,
+      model:$model, model_id:$model_id}' >> "$RUNS_FILE"
+}
+
+# Total cost of a job's runs since local midnight — powers the daily cap.
+spent_today() { # spent_today <id> -> dollars (float)
+  local id="$1" midnight
+  midnight="$(date -v0H -v0M -v0S +%s 2>/dev/null || echo 0)"
+  [ -f "$RUNS_FILE" ] || { echo 0; return; }
+  "$JQ" -rR --arg id "$id" --argjson mid "$midnight" \
+    'fromjson? | select(.id==$id and ((.start//0)>=$mid)) | (.cost//0)' "$RUNS_FILE" 2>/dev/null \
+    | awk '{s+=$1} END{printf "%.6f", s+0}'
+}
+
+# --- family → newest concrete model id -------------------------------------
+# Picking a family must always mean "the newest one". The CLI alias does NOT do
+# that: it resolves to the newest model the INSTALLED CLI knows, which lags the
+# API after a release (2026-07-24: `opus` still meant claude-opus-4-8 while
+# claude-opus-5 was live and absent from the CLI binary). So we discover it:
+# the alias gives a free baseline (the init event needs no API call), then we
+# probe the next versions up. An unknown id is rejected by the API with
+# "issue with the selected model", which is how a probe fails. Results are
+# cached in config/models.json for MODELS_TTL so this costs almost nothing.
+
+model_probe_ok() { # model_probe_ok <id> -> 0 when the API accepts it
+  local out
+  out="$("$CLAUDE_BIN" -p --output-format json --model "$1" "ok" 2>&1)" || return 1
+  printf '%s' "$out" | "$JQ" -e '
+    (.is_error != true) and (((.result // "") | test("issue with the selected model"; "i")) | not)
+  ' >/dev/null 2>&1
+}
+
+model_alias_baseline() { # what the CLI's own alias points at (no API call)
+  "$CLAUDE_BIN" -p --output-format stream-json --verbose --model "$1" "hi" 2>/dev/null \
+    | head -1 | "$JQ" -r '.model // empty' 2>/dev/null
+}
+
+resolve_family() { # resolve_family <family> -> newest id (prints, and caches)
+  local fam="$1" base major minor cand best=""
+  base="$(model_alias_baseline "$fam")"
+  [ -n "$base" ] || { echo "$fam"; return; }
+  major="$(printf '%s' "$base" | sed -E "s/^claude-${fam}-([0-9]+).*/\1/")"
+  case "$major" in ''|*[!0-9]*) echo "$base"; return ;; esac
+
+  # newer bare majors first (e.g. claude-opus-6, claude-opus-5)
+  local m
+  for m in $(( major + 2 )) $(( major + 1 )); do
+    cand="claude-${fam}-${m}"
+    if model_probe_ok "$cand"; then best="$cand"; major="$m"; break; fi
+  done
+  [ -n "$best" ] || best="$base"
+
+  # then the newest minor of that major (claude-opus-5-2, -1 …)
+  for minor in 3 2 1; do
+    cand="claude-${fam}-${major}-${minor}"
+    if model_probe_ok "$cand"; then best="$cand"; break; fi
+  done
+  echo "$best"
+}
+
+models_cache_get() { # models_cache_get <family> -> cached id if still fresh
+  [ -f "$MODELS_FILE" ] || return 1
+  "$JQ" -er --arg f "$1" --argjson now "$(now_epoch)" --argjson ttl "$MODELS_TTL" \
+    '.resolved[$f] | select(.id != null and (($now - (.at // 0)) < $ttl)) | .id' \
+    "$MODELS_FILE" 2>/dev/null
+}
+
+models_cache_set() { # models_cache_set <family> <id>
+  local tmp; tmp="$(mktemp "$CONFIG_DIR/.models.XXXXXX")"
+  [ -f "$MODELS_FILE" ] || echo '{"resolved":{}}' > "$MODELS_FILE"
+  "$JQ" --arg f "$1" --arg id "$2" --argjson at "$(now_epoch)" \
+    '.resolved[$f] = {id:$id, at:$at}' "$MODELS_FILE" > "$tmp" && mv "$tmp" "$MODELS_FILE"
+}
+
+effective_model() { # effective_model <model> -> concrete id (families resolved)
+  local m="$1" hit
+  case "$m" in
+    opus|sonnet|haiku|fable) ;;
+    *) echo "$m"; return ;;          # already an explicit id — use it verbatim
+  esac
+  if hit="$(models_cache_get "$m")"; then echo "$hit"; return; fi
+  hit="$(resolve_family "$m")"
+  [ -n "$hit" ] || hit="$m"
+  models_cache_set "$m" "$hit"
+  echo "$hit"
+}
+
+models_stale() { # 0 = the cache is missing or older than MODELS_TTL
+  local oldest
+  [ -f "$MODELS_FILE" ] || return 0
+  oldest="$("$JQ" -r '[.resolved[]?.at // 0] | min // 0' "$MODELS_FILE" 2>/dev/null)"
+  case "$oldest" in ''|null|*[!0-9]*) oldest=0 ;; esac
+  [ "$(( $(now_epoch) - oldest ))" -ge "$MODELS_TTL" ]
+}
+
+cmd_resolve_models() { # refresh the family→id cache (all four families)
+  local fam id
+  for fam in opus sonnet haiku fable; do
+    id="$(resolve_family "$fam")"
+    [ -n "$id" ] || id="$fam"
+    models_cache_set "$fam" "$id"
+    echo "$fam -> $id"
+  done
+}
+
+run_job() { # run_job <id> [--force]
+  local id="$1" force="${2:-}"
+  local cwd prompt model effort budget timeout stall permission allowed precheck project proj_desc
+  project="$(job_get "$id" '.project' '')"
+  # cwd, model, permission, budget and timeout inherit from the project when the
+  # job doesn't set them (see resolve()).
+  cwd="$(resolve "$id" cwd "$HOME")"
+  prompt="$(jobs_json | "$JQ" -r --arg id "$id" '.jobs[] | select(.id==$id) | .prompt')"
+  model="$(resolve "$id" model 'opus')"
+  # A family (opus/sonnet/…) becomes the newest concrete id of that family.
+  local model_family=""
+  case "$model" in opus|sonnet|haiku|fable) model_family="$model" ;; esac
+  model="$(effective_model "$model")"
+  # How hard the model thinks: low|medium|high|xhigh|max (empty = the CLI default)
+  effort="$(resolve "$id" effort '')"
+  case "$effort" in null) effort="" ;; esac
+  budget="$(resolve "$id" max_budget_usd '2')"
+  # A long run is NOT a hung run. `stall_timeout_seconds` is the real guard: kill
+  # only after the agent has produced NO output for that long. `timeout_seconds`
+  # is now an OPTIONAL absolute cap — empty or 0 means "no wall-clock limit", so
+  # a legitimately long task (hours) is never killed just for taking its time.
+  timeout="$(resolve "$id" timeout_seconds '')"
+  stall="$(resolve "$id" stall_timeout_seconds '1200')"
+  case "$timeout" in ''|null) timeout=0 ;; esac
+  case "$stall" in ''|null) stall=0 ;; esac
+  permission="$(resolve "$id" permission_mode 'dontAsk')"
+  allowed="$(job_get "$id" '.allowed_tools' '')"
+  precheck="$(jobs_json | "$JQ" -r --arg id "$id" '.jobs[] | select(.id==$id) | .precheck // ""')"
+
+  [ -n "$prompt" ] && [ "$prompt" != "null" ] || { log_tick "$id: no prompt, skipped"; return 1; }
+  [ -d "$cwd" ] || { log_tick "$id: cwd missing ($cwd), skipped"; return 1; }
+
+  # Prepend the project's description as context, so a run carries the project's
+  # purpose without repeating it in every job prompt.
+  if [ -n "$project" ] && [ "$project" != "null" ]; then
+    proj_desc="$(project_get "$project" '.description' '')"
+    if [ -n "$proj_desc" ] && [ "$proj_desc" != "null" ]; then
+      prompt="Project: ${project}
+${proj_desc}
+
+---
+
+${prompt}"
+    fi
+  fi
+
+  if ! acquire_lock "$id"; then
+    log_tick "$id: previous run still active, skipped"
+    return 0
+  fi
+  trap 'release_lock "'"$id"'"' EXIT
+
+  local forced="false"
+  [ "$force" = "--force" ] && forced="true"
+
+  # Daily budget gate: a per-job ceiling on today's spend. Empty = no cap.
+  # Scheduled runs only — Run now is a deliberate override, like the precheck.
+  if [ "$forced" != "true" ]; then
+    local cap spent
+    cap="$(job_get "$id" '.daily_budget_usd' '')"
+    if [ -n "$cap" ] && [ "$cap" != "null" ]; then
+      spent="$(spent_today "$id")"
+      if awk -v s="$spent" -v c="$cap" 'BEGIN{exit !((s+0)>=(c+0))}'; then
+        state_set "$id" last_status '"capped"'
+        state_set "$id" last_capped "$("$JQ" -nc --arg s "$spent" --arg c "$cap" '{spent:($s|tonumber),cap:($c|tonumber)}')"
+        log_tick "$id: daily cap reached (\$$spent / \$$cap) — skipping"
+        release_lock "$id"; trap - EXIT
+        return 0
+      fi
+    fi
+  fi
+
+  # Cheap gate: run the precheck, capture what it saw, and only spend a Claude
+  # session when it passes (exit 0) — unless this run was forced (Run now).
+  local pc_out="" pc_rc=0
+  if [ -n "$precheck" ]; then
+    pc_out="$( cd "$cwd" && eval "$precheck" 2>&1 )"; pc_rc=$?
+    state_set "$id" last_precheck "$("$JQ" -nc --arg o "${pc_out:-(no output)}" --argjson rc "$pc_rc" '{output:$o, exit:$rc}')"
+    if [ "$forced" != "true" ] && [ "$pc_rc" -ne 0 ]; then
+      state_set "$id" last_start "$(now_epoch)"
+      state_set "$id" last_status '"idle"'
+      log_tick "$id: precheck found nothing to do (exit $pc_rc)"
+      release_lock "$id"; trap - EXIT
+      return 0
+    fi
+  fi
+
+  local start end stamp logfile streamfile precheckfile rc out cost turns session status
+  start="$(now_epoch)"
+  # PID suffix keeps two same-second runs from clobbering each other's logs.
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  mkdir -p "$LOG_DIR/$id"
+  logfile="$LOG_DIR/$id/$stamp.json"
+  streamfile="$LOG_DIR/$id/$stamp.stream.ndjson"
+  precheckfile="$LOG_DIR/$id/$stamp.precheck.txt"
+
+  # Persist what the precheck saw, next to the run log.
+  {
+    if [ "$forced" = "true" ]; then echo "RUN FORCED (Run now) — precheck not gating this run."; fi
+    if [ -n "$precheck" ]; then
+      printf 'precheck: %s\nexit: %s%s\n\n--- output ---\n%s\n' \
+        "$precheck" "$pc_rc" "$([ "$pc_rc" -eq 0 ] && echo '  (pass → work found)' || echo '  (fail → would be idle)')" "$pc_out"
+    else
+      echo "(no precheck configured — every due tick runs the agent)"
+    fi
+  } > "$precheckfile"
+
+  state_set "$id" last_start "$start"
+  state_set "$id" last_status '"running"'
+  # Publish the log path up front so the dashboard can tail a run while it is
+  # still going (the journal record only lands when the run finishes).
+  state_set "$id" last_log "$("$JQ" -nc --arg p "$logfile" '$p')"
+  log_tick "$id: starting run ($stamp)"
+
+  # stream-json gives one NDJSON event per message — the per-turn trace the
+  # dashboard renders. The final "result" event carries the same summary object
+  # the plain json format used to emit; it is extracted into $logfile below so
+  # every existing reader keeps working.
+  local args
+  args="-p --output-format stream-json --verbose --model $model --permission-mode $permission --max-budget-usd $budget"
+  [ -n "$effort" ] && args="$args --effort $effort"
+  [ -n "$allowed" ] && [ "$allowed" != "null" ] && args="$args --allowedTools $allowed"
+
+  (
+    cd "$cwd" || exit 1
+    "$CLAUDE_BIN" $args "$prompt" > "$streamfile" 2> "$logfile.err"
+  ) &
+  local child=$!
+
+  # Liveness watchdog. It asks "is this run still doing anything?", not "has it
+  # taken too long" — the stream file grows with every agent event, so while it
+  # grows the agent is alive and we leave it alone however many hours it needs.
+  # We kill only when it has been silent for $stall seconds (a genuine hang), or
+  # when an explicit absolute cap $timeout is set and exceeded. The reason is
+  # written to the watchdog file so the run can explain itself afterwards.
+  local wdfile="$logfile.watchdog"
+  : > "$wdfile"
+  (
+    local last_size=-1 last_change now size began poll=30
+    began="$(now_epoch)"; last_change="$began"
+    while kill -0 "$child" 2>/dev/null; do
+      sleep "$poll"
+      kill -0 "$child" 2>/dev/null || break
+      now="$(now_epoch)"
+      size="$(wc -c < "$streamfile" 2>/dev/null | tr -d ' ')"; size="${size:-0}"
+      if [ "$size" != "$last_size" ]; then last_size="$size"; last_change="$now"; fi
+      if [ "$stall" -gt 0 ] && [ "$((now - last_change))" -ge "$stall" ]; then
+        printf 'stalled: no output for %ss (killed by watchdog)\n' "$stall" > "$wdfile"
+        kill -TERM "$child" 2>/dev/null; break
+      fi
+      if [ "$timeout" -gt 0 ] && [ "$((now - began))" -ge "$timeout" ]; then
+        printf 'absolute timeout: reached the %ss cap (killed by watchdog)\n' "$timeout" > "$wdfile"
+        kill -TERM "$child" 2>/dev/null; break
+      fi
+    done
+  ) & local watchdog=$!
+  wait "$child"; rc=$?
+  kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
+  local wdreason=""
+  [ -s "$wdfile" ] && wdreason="$(cat "$wdfile")"
+  rm -f "$wdfile"
+
+  # Extract the final result event; synthesize an error object if the stream
+  # ended without one (crash, timeout kill) so classification still works.
+  # Tolerant of a truncated/garbled line anywhere in the stream (see below).
+  "$JQ" -n -R '[inputs | fromjson? | select(.type == "result")] | last // empty' "$streamfile" > "$logfile" 2>/dev/null
+  if ! "$JQ" -e 'type == "object"' "$logfile" >/dev/null 2>&1; then
+    # No result event: the run was killed or crashed. Never leave a blank record —
+    # rebuild what we can from the stream (session, turn count, and the agent's
+    # last words) so the log always says what happened and how far it got.
+    # `-n -R` + `fromjson?` parses line by line and SKIPS malformed ones. This
+    # matters: a killed run is usually cut off mid-write, and a plain `jq -s`
+    # rejects the whole file over that one truncated last line — which is how a
+    # run with 349 turns of real work ended up reported as "no information".
+    "$JQ" -n -R --arg reason "${wdreason:-the run ended without a final result event (killed or crashed)}" '
+      [inputs | fromjson?] as $ev
+      | { is_error: true,
+          subtype: "no_result_event",
+          session_id: ([$ev[] | select(.type=="system" and .subtype=="init") | .session_id] | first // ""),
+          num_turns: ([$ev[] | select(.type=="assistant")] | length),
+          stop_reason: $reason,
+          result: (
+            [ $ev[] | select(.type=="assistant") | .message.content[]? | select(.type=="text") | .text ]
+            | map(select(length > 0)) | last // ""
+            | if . == "" then "" else "**Run did not finish — " + $reason + ".**\n\nThe agent'"'"'s last message before it stopped:\n\n" + . end
+          ) }' "$streamfile" > "$logfile" 2>/dev/null
+    "$JQ" -e 'type == "object"' "$logfile" >/dev/null 2>&1 \
+      || printf '{"is_error":true,"subtype":"no_result_event","result":"","stop_reason":"%s"}\n' "${wdreason:-killed or crashed}" > "$logfile"
+  fi
+
+  end="$(now_epoch)"
+  cost="$("$JQ" -r '.total_cost_usd // 0' "$logfile" 2>/dev/null || echo 0)"
+  turns="$("$JQ" -r '.num_turns // 0' "$logfile" 2>/dev/null || echo 0)"
+  session="$("$JQ" -r '.session_id // ""' "$logfile" 2>/dev/null || echo "")"
+
+  # Which model actually ran. `$model` is what the job asked for and is usually an
+  # ALIAS ("opus") that resolves to whatever is newest, so record the resolved id
+  # too — the stream's system/init event reports it (e.g. claude-opus-4-8).
+  # Without this the history cannot answer "which Opus was this run?" later.
+  local model_id
+  model_id="$("$JQ" -r 'select(.type=="system" and .subtype=="init") | .model' "$streamfile" 2>/dev/null | head -1)"
+  [ -n "$model_id" ] && [ "$model_id" != "null" ] || model_id=""
+
+  # Classify the run: error / warning / success.
+  #   error   — the process failed, the CLI reported an error, or the agent had
+  #             tools denied (a blocked agent silently doing nothing is a failure,
+  #             not a success — it must surface loudly);
+  #   warning — the run completed but something smells: stderr output, or an
+  #             empty agent result;
+  #   success — clean run, agent produced a result, nothing denied.
+  local denials subtype result_len errbytes
+  denials="$("$JQ" -r '.permission_denials // [] | length' "$logfile" 2>/dev/null || echo 0)"
+  subtype="$("$JQ" -r '.subtype // "success"' "$logfile" 2>/dev/null || echo success)"
+  result_len="$("$JQ" -r '.result // "" | length' "$logfile" 2>/dev/null || echo 0)"
+  errbytes="$(wc -c < "$logfile.err" 2>/dev/null | tr -d ' ')"
+  if [ "$rc" -ne 0 ] || [ "$subtype" != "success" ] \
+     || ! "$JQ" -e '.is_error != true' "$logfile" >/dev/null 2>&1; then
+    status="error"
+  elif [ "${denials:-0}" -gt 0 ]; then
+    status="error"
+  elif [ "${errbytes:-0}" -gt 0 ] || [ "${result_len:-0}" -eq 0 ]; then
+    status="warning"
+  else
+    status="success"
+  fi
+
+  state_set "$id" last_end "$end"
+  state_set "$id" last_status "\"$status\""
+  state_set "$id" last_run_start "$start"
+  state_set "$id" last_run_status "\"$status\""
+  state_set "$id" last_cost "${cost:-0}"
+  state_set "$id" last_session "\"$session\""
+  # Record what was CHOSEN (the family, when one was) plus what actually ran.
+  record_run "$id" "$status" "$start" "$end" "${cost:-0}" "${turns:-0}" "$session" "$logfile" "$wdreason" "$forced" "$pc_out" "$project" "${model_family:-$model}" "$model_id"
+  log_tick "$id: finished status=$status rc=$rc denials=${denials:-0} cost=\$$cost turns=$turns model=$model${model_id:+ ($model_id)} forced=$forced${wdreason:+ — $wdreason}"
+
+  release_lock "$id"; trap - EXIT
+  [ "$status" != "error" ]
+}
+
+# ---------------------------------------------------------------------- tick
+
+# The tick only DECIDES and LAUNCHES — it never waits for a run. Each due job is
+# handed to a detached `_exec` process that carries out the precheck + Claude run
+# on its own, so a 90-minute run never blocks the other jobs' ticks. A run still
+# holding its lock is not relaunched.
+cmd_tick() {
+  local id
+  # Keep the family→model resolutions fresh (about once a day). It rides on the
+  # tick this package already installs — deliberately NOT a second launchd job or
+  # a crontab entry, so nothing lives outside the project folder and the whole
+  # thing still works when the package is handed to someone else. Detached, so a
+  # ~1min probing pass never delays the jobs.
+  if models_stale && ! lock_active "_models"; then
+    nohup /bin/bash "$SELF" _resolve_models </dev/null >> "$DATA_DIR/exec.log" 2>&1 &
+    log_tick "models: refreshing family→id resolutions (cache older than ${MODELS_TTL}s)"
+  fi
+  for id in $(job_ids); do
+    [ "$(job_get "$id" '.enabled' 'true')" = "true" ] || continue
+    in_window "$id" >/dev/null || continue
+    is_due "$id" || continue
+    if lock_active "$id"; then
+      log_tick "$id: previous run still active, not relaunching"
+      continue
+    fi
+    nohup /bin/bash "$SELF" _exec "$id" </dev/null >> "$DATA_DIR/exec.log" 2>&1 &
+    log_tick "$id: launched detached run"
+  done
+}
+
+# ------------------------------------------------------------------ commands
+
+PLIST_PATH_ENV="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+cmd_install() {
+  # 1) the tick agent — fires the scheduler once a minute
+  cat > "$PLIST_PATH" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$PLIST_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$SELF</string>
+    <string>tick</string>
+  </array>
+  <key>StartInterval</key><integer>60</integer>
+  <key>RunAtLoad</key><true/>
+  <!-- The tick detaches per-job runners and exits; without this, launchd would
+       reap the whole process group and kill the runs when the tick returns. -->
+  <key>AbandonProcessGroup</key><true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>$PLIST_PATH_ENV</string>
+    <key>HOME</key><string>$HOME</string>
+  </dict>
+  <key>StandardOutPath</key><string>$DATA_DIR/launchd.out.log</string>
+  <key>StandardErrorPath</key><string>$DATA_DIR/launchd.err.log</string>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>
+PLIST
+  # 2) the control server — keeps the interactive dashboard alive on 127.0.0.1
+  cat > "$SERVER_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$SERVER_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$PYTHON</string>
+    <string>$SERVER_BIN</string>
+  </array>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>$PLIST_PATH_ENV</string>
+    <key>HOME</key><string>$HOME</string>
+    <key>CLAUDE_CRON_PORT</key><string>$PORT</string>
+  </dict>
+  <key>StandardOutPath</key><string>$DATA_DIR/server.log</string>
+  <key>StandardErrorPath</key><string>$DATA_DIR/server.log</string>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>
+PLIST
+  launchctl unload "$PLIST_PATH" 2>/dev/null
+  launchctl load "$PLIST_PATH" 2>/dev/null || die "launchctl load failed for $PLIST_PATH"
+  launchctl unload "$SERVER_PLIST" 2>/dev/null
+  launchctl load "$SERVER_PLIST" 2>/dev/null || die "launchctl load failed for $SERVER_PLIST"
+  echo "Installed and loaded:"
+  echo "  $PLIST_LABEL   — ticks every 60s (survives logout and reboot)"
+  echo "  $SERVER_LABEL  — control dashboard on http://127.0.0.1:$PORT/"
+  echo "Open it with: claude-cron dashboard"
+}
+
+cmd_uninstall() {
+  launchctl unload "$PLIST_PATH" 2>/dev/null
+  launchctl unload "$SERVER_PLIST" 2>/dev/null
+  rm -f "$PLIST_PATH" "$SERVER_PLIST"
+  echo "Unloaded and removed both agents. Jobs, state and logs were kept."
+}
+
+cmd_status() {
+  local loaded="not loaded"
+  launchctl list 2>/dev/null | grep -q "$PLIST_LABEL" && loaded="loaded"
+  echo "launchd   : $PLIST_LABEL — $loaded"
+  echo "plist     : $PLIST_PATH"
+  echo "jobs file : $JOBS_FILE"
+  echo "data      : $DATA_DIR"
+  echo
+  printf '%-20s %-8s %-9s %-11s %-9s %s\n' JOB ENABLED EVERY LAST STATUS COST
+  local id
+  for id in $(job_ids); do
+    local en iv ls st lc ago
+    en="$(job_get "$id" '.enabled' 'true')"
+    iv="$(job_get "$id" '.interval_seconds' '300')"
+    ls="$(state_get "$id" last_start 0)"
+    st="$(state_get "$id" last_status '—')"
+    lc="$(state_get "$id" last_cost 0)"
+    if [ "$ls" -gt 0 ] 2>/dev/null; then
+      ago="$(( ( $(now_epoch) - ls ) / 60 ))m ago"
+    else ago="never"; fi
+    printf '%-20s %-8s %-9s %-11s %-9s $%s\n' "$id" "$en" "$(( iv / 60 ))m" "$ago" "$st" "$lc"
+  done
+  echo
+  echo "Dashboard : http://127.0.0.1:$PORT/   (claude-cron dashboard)"
+}
+
+cmd_dashboard() {
+  ensure_server || die "Control server did not answer on port $PORT — check $DATA_DIR/server.log"
+  echo "http://127.0.0.1:$PORT/"
+  open "http://127.0.0.1:$PORT/" 2>/dev/null
+}
+
+cmd_logs() {
+  local id="${1:-}" n="${2:-1}"
+  [ -n "$id" ] || die "usage: claude-cron logs <job-id> [n]"
+  local f
+  f="$(ls -t "$LOG_DIR/$id"/*.json 2>/dev/null | head -"$n" | tail -1)"
+  if [ -z "$f" ]; then
+    die "no log files on disk for $id — finished runs are absorbed into data/index.db; open the dashboard (claude-cron dashboard) and use the log button on the run row"
+  fi
+  echo "── $f"
+  "$JQ" -r '.result // .' "$f" 2>/dev/null || cat "$f"
+}
+
+job_exists() { jobs_json | "$JQ" -e --arg id "$1" 'any(.jobs[]; .id == $id)' >/dev/null 2>&1; }
+
+write_jobs() { # write_jobs <jq-filter> [jq-args...]
+  local tmp; tmp="$(mktemp "$CONFIG_DIR/.jobs.XXXXXX")"
+  "$JQ" "$@" "$JOBS_FILE" > "$tmp" && mv "$tmp" "$JOBS_FILE"
+}
+
+cmd_toggle() {
+  local id="$1" val="$2"
+  job_exists "$id" || die "no such job: $id"
+  write_jobs --arg id "$id" --argjson v "$val" \
+    '.jobs = [.jobs[] | if .id == $id then .enabled = $v else . end]'
+  echo "$id enabled=$val"
+}
+
+cmd_delete() {
+  local id="$1" tmp
+  job_exists "$id" || die "no such job: $id"
+  write_jobs --arg id "$id" '.jobs = [.jobs[] | select(.id != $id)]'
+  tmp="$(mktemp "$DATA_DIR/.state.XXXXXX")"
+  "$JQ" --arg id "$id" 'del(.[$id])' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+  rm -rf "$LOCK_DIR/$id"
+  echo "deleted $id"
+}
+
+cmd_set_prompt() { # reads the new prompt from stdin
+  local id="$1" prompt
+  job_exists "$id" || die "no such job: $id"
+  prompt="$(cat)"
+  [ -n "$prompt" ] || die "empty prompt"
+  write_jobs --arg id "$id" --arg p "$prompt" \
+    '.jobs = [.jobs[] | if .id == $id then .prompt = $p else . end]'
+  echo "prompt updated for $id"
+}
+
+cmd_set_field() { # cmd_set_field <id> <field> ; value on stdin
+  local id="$1" field="$2" value
+  job_exists "$id" || die "no such job: $id"
+  value="$(cat)"
+  case "$field" in
+    interval_seconds)
+      case "$value" in ''|*[!0-9]*) die "$field must be a positive integer" ;; esac
+      [ "$value" -lt 60 ] && value=60
+      write_jobs --arg id "$id" --argjson v "$value" \
+        '.jobs = [.jobs[] | if .id == $id then .interval_seconds = $v else . end]' ;;
+    effort)
+      # empty clears it (the CLI then uses its own default)
+      case "$value" in
+        "") write_jobs --arg id "$id" '.jobs = [.jobs[] | if .id == $id then del(.effort) else . end]' ;;
+        low|medium|high|xhigh|max)
+          write_jobs --arg id "$id" --arg v "$value" \
+            '.jobs = [.jobs[] | if .id == $id then .effort = $v else . end]' ;;
+        *) die "effort must be one of: low, medium, high, xhigh, max (or empty)" ;;
+      esac ;;
+    timeout_seconds|stall_timeout_seconds)
+      # Both are optional: empty clears them (no absolute cap / no stall guard).
+      if [ -z "$value" ]; then
+        write_jobs --arg id "$id" --arg f "$field" \
+          '.jobs = [.jobs[] | if .id == $id then del(.[$f]) else . end]'
+      else
+        case "$value" in *[!0-9]*) die "$field must be a positive integer or empty" ;; esac
+        write_jobs --arg id "$id" --arg f "$field" --argjson v "$value" \
+          '.jobs = [.jobs[] | if .id == $id then .[$f] = $v else . end]'
+      fi ;;
+    max_budget_usd)
+      "$JQ" -n --arg v "$value" '$v|tonumber' >/dev/null 2>&1 || die "$field must be a number"
+      write_jobs --arg id "$id" --argjson v "$value" \
+        '.jobs = [.jobs[] | if .id == $id then .max_budget_usd = $v else . end]' ;;
+    daily_budget_usd)
+      if [ -z "$value" ]; then   # empty clears the cap (no daily ceiling)
+        write_jobs --arg id "$id" \
+          '.jobs = [.jobs[] | if .id == $id then del(.daily_budget_usd) else . end]'
+      else
+        "$JQ" -n --arg v "$value" '$v|tonumber' >/dev/null 2>&1 || die "$field must be a number or empty"
+        write_jobs --arg id "$id" --argjson v "$value" \
+          '.jobs = [.jobs[] | if .id == $id then .daily_budget_usd = $v else . end]'
+      fi ;;
+    model|active_hours|description|cwd)
+      write_jobs --arg id "$id" --arg f "$field" --arg v "$value" \
+        '.jobs = [.jobs[] | if .id == $id then .[$f] = $v else . end]' ;;
+    project)
+      if [ -z "$value" ]; then   # empty clears the project (job becomes ungrouped)
+        write_jobs --arg id "$id" '.jobs = [.jobs[] | if .id == $id then del(.project) else . end]'
+      else
+        write_jobs --arg id "$id" --arg v "$value" \
+          '.jobs = [.jobs[] | if .id == $id then .project = $v else . end]'
+      fi ;;
+    permission_mode)
+      case "$value" in
+        acceptEdits|auto|bypassPermissions|manual|dontAsk|plan) : ;;
+        *) die "invalid permission_mode: $value" ;;
+      esac
+      write_jobs --arg id "$id" --arg v "$value" \
+        '.jobs = [.jobs[] | if .id == $id then .permission_mode = $v else . end]' ;;
+    active_days)
+      local arr
+      arr="$("$JQ" -cn --arg v "$value" '$v|split(",")|map(select(length>0)|tonumber)' 2>/dev/null)" \
+        || die "active_days must be comma-separated numbers 1..7"
+      write_jobs --arg id "$id" --argjson v "$arr" \
+        '.jobs = [.jobs[] | if .id == $id then .active_days = $v else . end]' ;;
+    *) die "unknown field: $field" ;;
+  esac
+  echo "$field updated for $id"
+}
+
+precheck_path() { echo "$CONFIG_DIR/prechecks/$1.sh"; }
+
+PRECHECK_SKELETON='#!/bin/bash
+# Precheck for job "%s".
+# Exit 0 to wake a Claude run; exit 1 to stay idle (a skipped tick costs nothing).
+# Put a cheap check here — curl an API, grep a log, test a file — and end with a
+# test whose exit status is the decision. Example:
+#
+#   count=$(curl -sf https://api.example.com/queue | /usr/bin/jq -r ".pending")
+#   [ "${count:-0}" -gt 0 ]
+exit 0
+'
+
+cmd_set_precheck() { # reads the precheck script from stdin
+  local id="$1" script path
+  job_exists "$id" || die "no such job: $id"
+  script="$(cat)"
+  [ -n "$script" ] || die "empty precheck script"
+  mkdir -p "$CONFIG_DIR/prechecks"
+  path="$(precheck_path "$id")"
+  printf '%s\n' "$script" > "$path"
+  chmod +x "$path"
+  write_jobs --arg id "$id" --arg cmd "bash $path" \
+    '.jobs = [.jobs[] | if .id == $id then .precheck = $cmd else . end]'
+  echo "precheck updated for $id ($path)"
+}
+
+cmd_get_precheck() {
+  local path; path="$(precheck_path "$1")"
+  [ -f "$path" ] && cat "$path" || true
+}
+
+cmd_create() { # reads a partial job object (JSON) from stdin
+  local partial id path defaults merged
+  partial="$(cat)"
+  echo "$partial" | "$JQ" -e 'type == "object"' >/dev/null 2>&1 || die "create: stdin must be a JSON object"
+  id="$(echo "$partial" | "$JQ" -r '.id // ""')"
+  [ -n "$id" ] || die "create: missing .id"
+  case "$id" in *[!a-zA-Z0-9_-]*|'') die "create: id must contain only letters, digits, - and _" ;; esac
+  job_exists "$id" && die "create: a job named '$id' already exists"
+  path="$(precheck_path "$id")"
+  # cwd is intentionally NOT defaulted here: an unset cwd inherits from the
+  # job's project (resolve()); it only falls back to $HOME at run time when the
+  # job has no project either.
+  defaults="$("$JQ" -n --arg id "$id" --arg pc "bash $path" '{
+    id: $id, description: "", enabled: true,
+    interval_seconds: 300, active_days: [1,2,3,4,5], active_hours: "08:00-20:00",
+    precheck: $pc, model: "opus", max_budget_usd: 2, stall_timeout_seconds: 1200,
+    permission_mode: "dontAsk", prompt: ""
+  }')"
+  merged="$(printf '%s\n%s\n' "$defaults" "$partial" | "$JQ" -s '.[0] * .[1]')"
+  write_jobs --argjson j "$merged" '.jobs += [$j]'
+  if [ ! -f "$path" ]; then
+    mkdir -p "$CONFIG_DIR/prechecks"
+    # shellcheck disable=SC2059
+    printf "$PRECHECK_SKELETON" "$id" > "$path"
+    chmod +x "$path"
+  fi
+  echo "created $id (precheck: $path)"
+}
+
+cmd_project_set() { # reads a partial project object (JSON) from stdin; merges by name
+  local partial name
+  partial="$(cat)"
+  echo "$partial" | "$JQ" -e 'type == "object"' >/dev/null 2>&1 || die "project-set: stdin must be a JSON object"
+  name="$(echo "$partial" | "$JQ" -r '.name // ""')"
+  [ -n "$name" ] || die "project-set: missing .name"
+  if projects_json | "$JQ" -e --arg n "$name" 'any(.projects[]; .name==$n)' >/dev/null 2>&1; then
+    write_projects --arg n "$name" --argjson p "$partial" \
+      '.projects = [.projects[] | if .name==$n then (. * $p) else . end]'
+  else
+    write_projects --argjson p "$partial" '.projects += [$p]'
+  fi
+  echo "project '$name' saved"
+}
+
+cmd_project_delete() { # <name> — the project is removed; jobs keep .project (just stop inheriting)
+  local name="$1"
+  write_projects --arg n "$name" '.projects = [.projects[] | select(.name != $n)]'
+  echo "project '$name' deleted"
+}
+
+cmd_project_list() {
+  projects_json | "$JQ" -r '.projects[] | "  \(.name)  ·  cwd=\(.cwd // "—")  ·  \(.description // "" | .[0:60])"'
+}
+
+# Ensure the control server is up; start it detached if nothing answers /health.
+ensure_server() {
+  curl -s -o /dev/null "http://127.0.0.1:$PORT/health" 2>/dev/null && return 0
+  CLAUDE_CRON_PORT="$PORT" nohup "$PYTHON" "$SERVER_BIN" >> "$DATA_DIR/server.log" 2>&1 &
+  local i=0
+  while [ "$i" -lt 20 ]; do
+    curl -s -o /dev/null "http://127.0.0.1:$PORT/health" 2>/dev/null && return 0
+    i=$(( i + 1 )); sleep 0.25
+  done
+  return 1
+}
+
+cmd_serve() { CLAUDE_CRON_PORT="$PORT" exec "$PYTHON" "$SERVER_BIN"; }
+
+usage() {
+  cat <<USAGE
+claude-cron — durable local scheduler for headless Claude Code runs
+
+  claude-cron install         install + load both agents (tick + control server)
+  claude-cron uninstall       unload + remove both agents (keeps jobs and logs)
+  claude-cron status          launchd state, every job, last run and cost
+  claude-cron list            same as status
+  claude-cron dashboard       open the interactive control dashboard in a browser
+  claude-cron serve           run the control server in the foreground (launchd uses this)
+  claude-cron run <id>        run one job now, ignoring schedule and precheck
+  claude-cron check <id>      run only the precheck and report what it found
+  claude-cron logs <id> [n]   print the result of the n-th most recent run
+  claude-cron enable <id>     re-enable a job
+  claude-cron disable <id>    stop a job without deleting it
+  claude-cron delete <id>     remove a job from jobs.json (keeps its logs)
+  claude-cron create <id>     create a job from a partial JSON object on stdin
+  claude-cron set-prompt <id> replace a job's prompt, read from stdin
+  claude-cron set-field <id> <field>   set interval_seconds|active_hours|active_days|
+                              model|max_budget_usd|timeout_seconds|
+                              stall_timeout_seconds, value from stdin
+  claude-cron set-precheck <id>   replace a job's precheck script, read from stdin
+  claude-cron get-precheck <id>   print a job's precheck script
+  claude-cron tick            internal — what launchd calls every minute
+
+Jobs are defined in $JOBS_FILE
+USAGE
+}
+
+cmd_check() {
+  local id="$1" precheck cwd
+  precheck="$(jobs_json | "$JQ" -r --arg id "$id" '.jobs[] | select(.id==$id) | .precheck // ""')"
+  cwd="$(resolve "$id" cwd "$HOME")"   # inherit the project's cwd, like run_job
+  [ -n "$precheck" ] || { echo "$id has no precheck — every due tick spends a session."; return 0; }
+  if ( cd "$cwd" && eval "$precheck" ); then
+    echo "precheck: WORK FOUND — a due tick would start a Claude run"
+  else
+    echo "precheck: nothing to do — a due tick would cost nothing"
+  fi
+}
+
+case "${1:-}" in
+  install)   cmd_install ;;
+  uninstall) cmd_uninstall ;;
+  status|list) cmd_status ;;
+  dashboard) cmd_dashboard ;;
+  tick)      cmd_tick ;;
+  _exec)     [ $# -ge 2 ] || die "usage: claude-cron _exec <job-id>"; run_job "$2" ;;  # internal: detached runner
+  _resolve_models)   # internal: detached daily refresh, guarded by its own lock
+    acquire_lock "_models" || exit 0
+    trap 'release_lock "_models"' EXIT
+    cmd_resolve_models
+    ;;
+  run)       [ $# -ge 2 ] || die "usage: claude-cron run <job-id>"; run_job "$2" --force ;;
+  check)     [ $# -ge 2 ] || die "usage: claude-cron check <job-id>"; cmd_check "$2" ;;
+  logs)      shift; cmd_logs "$@" ;;
+  enable)    [ $# -ge 2 ] || die "usage: claude-cron enable <job-id>"; cmd_toggle "$2" true ;;
+  disable)   [ $# -ge 2 ] || die "usage: claude-cron disable <job-id>"; cmd_toggle "$2" false ;;
+  delete)    [ $# -ge 2 ] || die "usage: claude-cron delete <job-id>"; cmd_delete "$2" ;;
+  create)    cmd_create ;;
+  project-set)    cmd_project_set ;;
+  project-delete) [ $# -ge 2 ] || die "usage: claude-cron project-delete <name>"; cmd_project_delete "$2" ;;
+  project-list)   cmd_project_list ;;
+  resolve-models) cmd_resolve_models ;;
+  set-prompt) [ $# -ge 2 ] || die "usage: claude-cron set-prompt <job-id> (prompt on stdin)"; cmd_set_prompt "$2" ;;
+  set-field) [ $# -ge 3 ] || die "usage: claude-cron set-field <job-id> <field> (value on stdin)"; cmd_set_field "$2" "$3" ;;
+  set-precheck) [ $# -ge 2 ] || die "usage: claude-cron set-precheck <job-id> (script on stdin)"; cmd_set_precheck "$2" ;;
+  get-precheck) [ $# -ge 2 ] || die "usage: claude-cron get-precheck <job-id>"; cmd_get_precheck "$2" ;;
+  serve)     cmd_serve ;;
+  ""|-h|--help|help) usage ;;
+  *) die "unknown command: $1 (try: claude-cron help)" ;;
+esac

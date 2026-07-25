@@ -1,0 +1,2726 @@
+#!/usr/bin/env python3
+"""claude-cron control server — authenticated, localhost-only UI in front of
+the `claude-cron` CLI. It never reimplements job logic: every mutation shells
+out to `claude-cron` so the bash engine stays the single source of truth.
+
+Storage model:
+  * files are the source of truth — the bash engine appends runs.ndjson and
+    writes per-run logs under data/logs/<id>/;
+  * data/index.db (SQLite, WAL) is a DERIVED search index the server keeps in
+    sync incrementally; full-text search (FTS5, LIKE fallback) covers run
+    results, per-turn streams and precheck output. Deleting the .db is safe —
+    it rebuilds on the next search.
+
+Security model (single-user machine):
+  * binds 127.0.0.1 only — never reachable from the network;
+  * every /api/* call requires the shared token in the X-CC-Token header;
+  * cross-origin requests are rejected (Origin allowlist) and the custom
+    header forces a CORS preflight we deliberately do not satisfy — so a
+    malicious page in the browser cannot drive the agent (anti-CSRF);
+  * the token lives in config/control.token (chmod 600) and is embedded only
+    in the same-origin HTML the server itself serves.
+"""
+
+import base64
+import calendar
+import hashlib
+import json
+import os
+import re
+import secrets
+import sqlite3
+import subprocess
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse, parse_qs
+
+HOME = Path.home()
+# Self-contained: config/ and data/ sit next to this file's bin/ directory
+# (resolve() follows the ~/.local/bin symlink to the real project folder).
+BASE_DIR = Path(__file__).resolve().parent.parent
+BIN_DIR = Path(__file__).resolve().parent
+CONFIG_DIR = Path(os.environ.get("CLAUDE_CRON_CONFIG", BASE_DIR / "config"))
+DATA_DIR = Path(os.environ.get("CLAUDE_CRON_DATA", BASE_DIR / "data"))
+JOBS_FILE = CONFIG_DIR / "jobs.json"
+PROJECTS_FILE = CONFIG_DIR / "projects.json"
+STATE_FILE = DATA_DIR / "state.json"
+RUNS_FILE = DATA_DIR / "runs.ndjson"
+TOKEN_FILE = CONFIG_DIR / "control.token"
+DB_FILE = DATA_DIR / "index.db"
+CLAUDE_CRON = str(BIN_DIR / "claude-cron")
+
+PORT = int(os.environ.get("CLAUDE_CRON_PORT", "8787"))
+PLIST_LABEL = "com.claude-cron.tick"
+
+CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def get_token() -> str:
+    if TOKEN_FILE.exists():
+        return TOKEN_FILE.read_text().strip()
+    tok = secrets.token_urlsafe(32)
+    TOKEN_FILE.write_text(tok)
+    TOKEN_FILE.chmod(0o600)
+    return tok
+
+
+TOKEN = get_token()
+ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
+# Changes on every server (re)start; pages compare it against /api/data and
+# reload themselves once when stale — no manual refresh after upgrades.
+BUILD = str(int(time.time()))
+
+# Inline favicon: an indigo rounded tile with a white robot — matches the
+# in-app brand mark. Base64 data URI so the page stays fully self-contained.
+_FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect width="32" height="32" rx="7" fill="#4f46e5"/>'
+    '<g fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    '<rect x="7.5" y="13" width="17" height="12" rx="3"/>'
+    '<circle cx="16" cy="7.5" r="1.7"/><path d="M16 9.2v3.8"/>'
+    '<path d="M12 19h.01"/><path d="M20 19h.01"/></g></svg>'
+)
+FAVICON = "data:image/svg+xml;base64," + base64.b64encode(_FAVICON_SVG.encode()).decode()
+
+
+def read_json(path, default):
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return default
+
+
+# ---------------------------------------------------------------- search index
+
+def db_conn():
+    conn = sqlite3.connect(str(DB_FILE), timeout=5)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+SCHEMA_VERSION = "5"   # bumped to backfill model_id from stored streams
+STREAM_CAP = 2_000_000
+
+
+def db_init(conn):
+    conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS runs (
+        key TEXT PRIMARY KEY, job TEXT, start INTEGER, status TEXT,
+        duration INTEGER, cost REAL, session TEXT, log TEXT, forced INTEGER,
+        precheck_note TEXT, result_json TEXT, stream TEXT, precheck_txt TEXT,
+        stderr TEXT, doc TEXT, project TEXT, model TEXT, model_id TEXT,
+        pruned INTEGER DEFAULT 0)""")
+    try:
+        conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS runs_fts USING fts5(key UNINDEXED, content)")
+        return True
+    except sqlite3.OperationalError:
+        return False
+
+
+def _meta_get(conn, key, default=""):
+    row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def _meta_set(conn, key, value):
+    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, str(value)))
+
+
+def _ndjson_sig():
+    """Cheap fingerprint of the file head — detects rewrites (history edits)."""
+    try:
+        with open(RUNS_FILE, "rb") as f:
+            return hashlib.md5(f.read(256)).hexdigest()
+    except Exception:
+        return ""
+
+
+def _logs_root():
+    return (DATA_DIR / "logs").resolve()
+
+
+def _artifact_paths(rec):
+    """The four on-disk artifacts of one run — confined to data/logs/."""
+    try:
+        logp = Path(rec.get("log", "")).resolve()
+    except Exception:
+        return None
+    if not str(logp).startswith(str(_logs_root())):
+        return None
+    return {"json": logp,
+            "stream": logp.with_name(logp.stem + ".stream.ndjson"),
+            "precheck": logp.with_name(logp.stem + ".precheck.txt"),
+            "err": Path(str(logp) + ".err")}
+
+
+def _read_artifacts(rec):
+    art = {"result_json": "", "stream": "", "precheck_txt": "", "stderr": ""}
+    ap = _artifact_paths(rec)
+    if not ap:
+        return art
+    try:
+        if ap["json"].exists():
+            art["result_json"] = ap["json"].read_text()[:200_000]
+        if ap["stream"].exists():
+            art["stream"] = ap["stream"].read_text()[:STREAM_CAP]
+        if ap["precheck"].exists():
+            art["precheck_txt"] = ap["precheck"].read_text()[:20_000]
+        if ap["err"].exists():
+            art["stderr"] = ap["err"].read_text()[:20_000]
+    except Exception:
+        pass
+    return art
+
+
+def _prune_artifacts(rec):
+    """Delete a run's on-disk files once their content lives in the DB."""
+    ap = _artifact_paths(rec)
+    if not ap:
+        return
+    for p in ap.values():
+        try:
+            if p.exists():
+                p.unlink()
+        except Exception:
+            pass
+
+
+def _build_doc(rec, art):
+    """Searchable text for one run."""
+    parts = [rec.get("id", ""), rec.get("status", ""), rec.get("session", ""),
+             rec.get("precheck", "") or "", art.get("precheck_txt", "")]
+    try:
+        data = json.loads(art.get("result_json") or "{}")
+        parts.append(str(data.get("result", "")))
+    except Exception:
+        pass
+    parts.append(art.get("stream", "")[:400_000])
+    parts.append(art.get("stderr", ""))
+    return "\n".join(p for p in parts if p)
+
+
+def _rec_key(rec):
+    return f"{rec.get('id','')}|{rec.get('start',0)}|{rec.get('log','')}"
+
+
+def _model_id_from_stream(stream):
+    """The resolved model id (e.g. claude-opus-4-8) from the stream's system/init
+    event. The engine records it for new runs; deriving it here as a fallback
+    also backfills every older run whose stream we still hold."""
+    if not stream:
+        return ""
+    for line in stream.splitlines()[:40]:      # init is the first event
+        line = line.strip()
+        if not line or '"init"' not in line:
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        if ev.get("type") == "system" and ev.get("subtype") == "init":
+            return ev.get("model") or ""
+    return ""
+
+
+def _salvage_from_stream(stream):
+    """(last agent text, assistant turn count, session id) recovered from a run's
+    stream. Used when a run was killed and left no final result event, so the log
+    still shows what it did and how far it got. Malformed lines are skipped — a
+    killed run is usually cut off mid-write."""
+    last_text, turns, sess = "", 0, ""
+    if not stream:
+        return last_text, turns, sess
+    for line in stream.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue        # truncated/garbled line — skip it, don't abandon the rest
+        t = ev.get("type")
+        if t == "system" and ev.get("subtype") == "init" and not sess:
+            sess = ev.get("session_id") or ""
+        elif t == "assistant":
+            turns += 1
+            for blk in (ev.get("message") or {}).get("content") or []:
+                if blk.get("type") == "text" and (blk.get("text") or "").strip():
+                    last_text = blk["text"]
+    return last_text, turns, sess
+
+
+def _upsert(conn, fts, rec, preserve=None):
+    """Insert or refresh one journal record. `preserve` carries the existing
+    row for already-pruned runs — their files are gone, so their stored
+    content must survive a resync."""
+    key = _rec_key(rec)
+    if preserve is not None and preserve["pruned"]:
+        art = {"result_json": preserve["result_json"], "stream": preserve["stream"],
+               "precheck_txt": preserve["precheck_txt"], "stderr": preserve["stderr"]}
+        doc, pruned = preserve["doc"], 1
+    else:
+        art = _read_artifacts(rec)
+        doc = _build_doc(rec, art)
+        pruned = 0
+    conn.execute(
+        "INSERT OR REPLACE INTO runs (key, job, start, status, duration, cost, session,"
+        " log, forced, precheck_note, result_json, stream, precheck_txt, stderr, doc, project,"
+        " model, model_id, pruned)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (key, rec.get("id", ""), rec.get("start", 0), rec.get("status", ""),
+         rec.get("duration", 0), rec.get("cost", 0), rec.get("session", ""),
+         rec.get("log", ""), 1 if rec.get("forced") else 0,
+         (rec.get("precheck") or "")[:500],
+         art["result_json"], art["stream"], art["precheck_txt"], art["stderr"], doc,
+         rec.get("project") or "", rec.get("model") or "",
+         (rec.get("model_id") or _model_id_from_stream(art["stream"])), pruned))
+    if fts:
+        conn.execute("DELETE FROM runs_fts WHERE key=?", (key,))
+        conn.execute("INSERT INTO runs_fts (key, content) VALUES (?,?)", (key, doc))
+    return key, pruned
+
+
+def _finish_prune(conn, pending):
+    """After content is safely stored, delete the bulky files and mark rows."""
+    for key, rec in pending:
+        _prune_artifacts(rec)
+        conn.execute("UPDATE runs SET pruned=1 WHERE key=?", (key,))
+
+
+def ingest():
+    """Absorb runs.ndjson into the DB. Incremental via byte offset; a rewritten
+    journal (shrunk file, changed head, schema bump) triggers a full resync
+    that preserves the stored content of already-pruned rows."""
+    conn = db_conn()
+    try:
+        # Schema migration: ADDITIVE ONLY — never DROP the runs table. It stores
+        # the content of already-pruned runs whose source files are deleted, so a
+        # DROP destroys history that cannot be rebuilt (it once silently emptied
+        # every run). Add any missing columns in place; the schema-bump resync
+        # below then refreshes every row from the journal while _upsert preserves
+        # each pruned row's stored content. A future NON-additive change (a
+        # dropped or renamed column) must copy data into a new table first — never
+        # a blind DROP.
+        try:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(runs)").fetchall()]
+        except sqlite3.OperationalError:
+            cols = []
+        if cols:
+            canon = [
+                ("job", "TEXT"), ("start", "INTEGER"), ("status", "TEXT"),
+                ("duration", "INTEGER"), ("cost", "REAL"), ("session", "TEXT"),
+                ("log", "TEXT"), ("forced", "INTEGER"), ("precheck_note", "TEXT"),
+                ("result_json", "TEXT"), ("stream", "TEXT"), ("precheck_txt", "TEXT"),
+                ("stderr", "TEXT"), ("doc", "TEXT"), ("project", "TEXT"),
+                ("model", "TEXT"), ("model_id", "TEXT"),
+                ("pruned", "INTEGER DEFAULT 0"),
+            ]
+            for name, decl in canon:
+                if name not in cols:
+                    conn.execute("ALTER TABLE runs ADD COLUMN " + name + " " + decl)
+            conn.commit()
+        fts = db_init(conn)
+        size = RUNS_FILE.stat().st_size if RUNS_FILE.exists() else 0
+        offset = int(_meta_get(conn, "offset", "0") or 0)
+        sig = _ndjson_sig()
+        resync = (size < offset or sig != _meta_get(conn, "sig", "")
+                  or _meta_get(conn, "schema", "") != SCHEMA_VERSION)
+        if resync:
+            existing = {row["key"]: row for row in conn.execute("SELECT * FROM runs")}
+            seen, pending = set(), []
+            if RUNS_FILE.exists():
+                for ln in RUNS_FILE.read_text().splitlines():
+                    ln = ln.strip()
+                    if not ln:
+                        continue
+                    try:
+                        rec = json.loads(ln)
+                    except Exception:
+                        continue
+                    key = _rec_key(rec)
+                    seen.add(key)
+                    k, pruned = _upsert(conn, fts, rec, preserve=existing.get(key))
+                    if not pruned:
+                        pending.append((k, rec))
+            for key in set(existing) - seen:
+                conn.execute("DELETE FROM runs WHERE key=?", (key,))
+                if fts:
+                    conn.execute("DELETE FROM runs_fts WHERE key=?", (key,))
+            _finish_prune(conn, pending)
+            offset = size
+        elif size > offset:
+            with open(RUNS_FILE, "r") as f:
+                f.seek(offset)
+                chunk = f.read()
+            consumed = len(chunk) if chunk.endswith("\n") else chunk.rfind("\n") + 1
+            pending = []
+            for ln in chunk[:consumed].splitlines():
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    rec = json.loads(ln)
+                except Exception:
+                    continue
+                k, pruned = _upsert(conn, fts, rec)
+                if not pruned:
+                    pending.append((k, rec))
+            _finish_prune(conn, pending)
+            offset += consumed
+        _meta_set(conn, "offset", offset)
+        _meta_set(conn, "sig", sig)
+        _meta_set(conn, "schema", SCHEMA_VERSION)
+        _meta_set(conn, "fts", "1" if fts else "0")
+        conn.commit()
+        return fts
+    finally:
+        conn.close()
+
+
+def search_runs(q):
+    fts = ingest()
+    tokens = [t for t in q.split() if t][:8]
+    if not tokens:
+        return {"results": [], "mode": "fts" if fts else "like"}
+    conn = db_conn()
+    try:
+        results = []
+        if fts:
+            match = " ".join('"' + t.replace('"', '""') + '"' for t in tokens)
+            rows = conn.execute(
+                "SELECT r.job, r.start, r.key, snippet(runs_fts, 1, '', '', '…', 14) AS snip"
+                " FROM runs_fts JOIN runs r ON r.key = runs_fts.key"
+                " WHERE runs_fts MATCH ? ORDER BY r.start DESC LIMIT 300", (match,)).fetchall()
+            for row in rows:
+                results.append({"id": row["job"], "start": row["start"],
+                                "snippet": (row["snip"] or "").replace("\n", " ")[:200]})
+        else:
+            cond = " AND ".join("doc LIKE ?" for _ in tokens)
+            args = [f"%{t}%" for t in tokens]
+            rows = conn.execute(
+                f"SELECT job, start, doc FROM runs WHERE {cond}"
+                f" ORDER BY start DESC LIMIT 300", args).fetchall()
+            for row in rows:
+                content = row["doc"] or ""
+                pos = content.lower().find(tokens[0].lower())
+                snip = content[max(0, pos - 60):pos + 80].replace("\n", " ") if pos >= 0 else ""
+                results.append({"id": row["job"], "start": row["start"], "snippet": snip[:200]})
+        return {"results": results, "mode": "fts" if fts else "like"}
+    finally:
+        conn.close()
+
+
+# ------------------------------------------------------------------- app data
+
+def checks_24h():
+    """Per-job counts of the last 24h of scheduler activity, straight from
+    tick.log — makes the autonomy visible even when every check stays idle."""
+    counts = {}
+    try:
+        lines = (DATA_DIR / "tick.log").read_text().splitlines()[-6000:]
+        cutoff = time.time() - 86400
+        for ln in lines:
+            try:
+                t = calendar.timegm(time.strptime(ln[:20], "%Y-%m-%dT%H:%M:%SZ"))
+            except Exception:
+                continue
+            if t < cutoff:
+                continue
+            job, _, msg = ln[21:].partition(": ")
+            d = counts.setdefault(job, {"checks": 0, "runs": 0})
+            if "precheck found nothing" in msg:
+                d["checks"] += 1
+            elif msg.startswith("starting run"):
+                d["checks"] += 1
+                d["runs"] += 1
+    except Exception:
+        pass
+    return counts
+
+
+def load_data():
+    jobs = read_json(JOBS_FILE, {}).get("jobs", [])
+    projects = read_json(PROJECTS_FILE, {}).get("projects", [])
+    for j in jobs:
+        p = CONFIG_DIR / "prechecks" / (str(j.get("id", "")) + ".sh")
+        try:
+            j["_precheck"] = p.read_text() if p.exists() else ""
+        except Exception:
+            j["_precheck"] = ""
+    state = read_json(STATE_FILE, {})
+    runs = []
+    try:
+        ingest()  # cheap when the journal has not grown
+        conn = db_conn()
+        db_init(conn)
+        for row in conn.execute(
+                "SELECT job, start, status, duration, cost, session, log, forced, precheck_note, project"
+                " FROM runs ORDER BY start DESC, rowid DESC LIMIT 1000"):
+            runs.append({"id": row["job"], "start": row["start"], "status": row["status"],
+                         "duration": row["duration"], "cost": row["cost"],
+                         "session": row["session"], "log": row["log"],
+                         "forced": bool(row["forced"]), "precheck": row["precheck_note"],
+                         "project": row["project"] or ""})
+        conn.close()
+    except Exception:
+        runs = []
+    db_bytes = 0
+    for p in (DB_FILE, Path(str(DB_FILE) + "-wal"), Path(str(DB_FILE) + "-shm")):
+        try:
+            if p.exists():
+                db_bytes += p.stat().st_size
+        except Exception:
+            pass
+    launchd = False
+    try:
+        out = subprocess.run(["launchctl", "list"], capture_output=True, text=True, timeout=5)
+        launchd = PLIST_LABEL in out.stdout
+    except Exception:
+        pass
+    now = subprocess.run(["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"], capture_output=True, text=True).stdout.strip()
+    return {"generated": now, "launchd_loaded": launchd, "build": BUILD,
+            "jobs": jobs, "projects": projects, "state": state, "runs": runs,
+            "db_bytes": db_bytes, "checks": checks_24h()}
+
+
+def load_live_detail(jid, start_i):
+    """Detail for a run that is STILL GOING. It has no journal record yet, so read
+    the stream file the engine is writing (state.last_log) and build the same
+    shape from it — this is what lets the dashboard tail a long run live."""
+    try:
+        state = json.loads(STATE_FILE.read_text())
+    except Exception:  # noqa: BLE001
+        return None
+    st = (state or {}).get(jid) or {}
+    if st.get("last_status") != "running" or int(st.get("last_start") or 0) != start_i:
+        return None
+    logp = st.get("last_log") or ""
+    sp = None
+    if logp.endswith(".json"):
+        sp = Path(logp[:-5] + ".stream.ndjson")
+    else:
+        # Runs started before the engine published last_log: the file is stamped
+        # with the run's UTC start, so derive it from that.
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(start_i))
+        hits = sorted((DATA_DIR / "logs" / jid).glob(stamp + "*.stream.ndjson"))
+        sp = hits[0] if hits else None
+    stream = ""
+    try:
+        if sp and sp.resolve().is_relative_to(_logs_root()) and sp.exists():
+            stream = sp.read_text(errors="replace")[-STREAM_CAP:]
+            logp = logp or str(sp)
+    except Exception:  # noqa: BLE001
+        stream = ""
+    last_text, turns, sess = _salvage_from_stream(stream)
+    pc = st.get("last_precheck") or {}
+    rec = {"id": jid, "start": start_i, "status": "running",
+           "duration": max(0, int(time.time()) - start_i), "cost": None, "session": sess,
+           "log": logp, "forced": False, "precheck": (pc.get("output") if isinstance(pc, dict) else "") or "",
+           "project": "", "model": "", "model_id": _model_id_from_stream(stream), "live": True}
+    return {"record": rec, "live": True,
+            "agent": {"result": last_text, "num_turns": turns, "session": sess,
+                      "stop_reason": "still running"},
+            "precheck": (pc.get("output") if isinstance(pc, dict) else "") or "",
+            "stderr": "", "turns": parse_turns_text(stream)}
+
+
+def load_run_detail(jid, start):
+    """Full detail for one run, keyed by (id, start) — served from the DB,
+    which canonically holds result, stream, precheck and stderr."""
+    try:
+        start_i = int(str(start))
+    except Exception:
+        return None
+    live = load_live_detail(jid, start_i)
+    if live is not None:
+        return live
+    try:
+        ingest()
+    except Exception:
+        pass
+    conn = db_conn()
+    try:
+        db_init(conn)
+        row = conn.execute(
+            "SELECT * FROM runs WHERE job=? AND start=? ORDER BY rowid DESC LIMIT 1",
+            (jid, start_i)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    rec = {"id": row["job"], "start": row["start"], "status": row["status"],
+           "duration": row["duration"], "cost": row["cost"], "session": row["session"],
+           "log": row["log"], "forced": bool(row["forced"]), "precheck": row["precheck_note"],
+           "project": row["project"] or "",
+           "model": row["model"] or "", "model_id": row["model_id"] or ""}
+    detail = {"record": rec, "agent": {}, "precheck": row["precheck_txt"] or "",
+              "stderr": (row["stderr"] or "")[:8000], "turns": []}
+    try:
+        data = json.loads(row["result_json"] or "{}")
+        if isinstance(data, dict) and data:
+            detail["agent"] = {
+                "result": data.get("result", ""),
+                "is_error": data.get("is_error"),
+                "subtype": data.get("subtype"),
+                "num_turns": data.get("num_turns"),
+                "cost": data.get("total_cost_usd"),
+                "session": data.get("session_id"),
+                "permission_denials": data.get("permission_denials"),
+                "stop_reason": data.get("stop_reason") or data.get("terminal_reason"),
+                "usage": data.get("usage"),
+            }
+    except Exception as e:  # noqa: BLE001
+        detail["error"] = str(e)
+    stream = row["stream"] or ""
+    # A killed/crashed run has no final result event, so its stored record can be
+    # blank — but the stream still holds everything it did. Rebuild the missing
+    # pieces from it rather than showing an empty log (this also repairs runs
+    # recorded before the engine learned to do it).
+    a = detail["agent"]
+    if not a.get("result"):
+        last_text, turns, sess = _salvage_from_stream(stream)
+        if last_text or turns:
+            reason = a.get("stop_reason") or "the run ended without a final result — it was killed or crashed"
+            detail["agent"] = {
+                **a,
+                "result": ("**Run did not finish — " + reason + ".**\n\n"
+                           "The agent's last message before it stopped:\n\n" + last_text) if last_text else a.get("result", ""),
+                "num_turns": a.get("num_turns") or turns,
+                "session": a.get("session") or sess,
+                "stop_reason": reason,
+                "salvaged": True,
+            }
+    detail["turns"] = parse_turns_text(stream)
+    return detail
+
+
+def _tool_line(block):
+    """Compact one-line description of a tool_use block."""
+    name = block.get("name", "tool")
+    inp = block.get("input") or {}
+    hint = ""
+    for key in ("command", "prompt", "jql", "file_path", "url", "query", "description"):
+        v = inp.get(key)
+        if isinstance(v, str) and v.strip():
+            hint = v.strip().replace("\n", " ")
+            break
+    if not hint and inp:
+        try:
+            hint = json.dumps(inp, ensure_ascii=False)
+        except Exception:
+            hint = ""
+    if len(hint) > 160:
+        hint = hint[:157] + "…"
+    return {"tool": name, "hint": hint}
+
+
+def parse_turns_text(text):
+    """One entry per assistant turn from a stream-json transcript: what the
+    agent said and which tools it called. Empty text → [] (older runs)."""
+    if not text:
+        return []
+    turns = []
+    try:
+        for ln in text.splitlines():
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                ev = json.loads(ln)
+            except Exception:
+                continue
+            if ev.get("type") != "assistant":
+                continue
+            msg = ev.get("message") or {}
+            texts, tools = [], []
+            for block in msg.get("content") or []:
+                btype = block.get("type")
+                if btype == "text" and (block.get("text") or "").strip():
+                    texts.append(block["text"].strip())
+                elif btype == "tool_use":
+                    tools.append(_tool_line(block))
+            if not texts and not tools:
+                continue  # pure-thinking event, nothing observable
+            text = " ".join(texts)
+            if len(text) > 300:
+                text = text[:297] + "…"
+            turns.append({"n": len(turns) + 1, "text": text, "tools": tools})
+            if len(turns) >= 300:
+                break
+    except Exception:
+        pass
+    return turns
+
+
+def cc(args, stdin=None, background=False):
+    """Invoke the claude-cron CLI. Returns (ok, output)."""
+    cmd = ["/bin/bash", CLAUDE_CRON] + args
+    if background:
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return True, "started"
+    try:
+        p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=30)
+        return p.returncode == 0, (p.stdout + p.stderr).strip()
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)
+
+
+MODEL_FAMILIES = [
+    ("opus",   "the most capable"),
+    ("sonnet", "balanced capability and speed"),
+    ("haiku",  "the fastest and cheapest"),
+    ("fable",  "the newest generation"),
+]
+
+
+def list_models():
+    """Every concrete model id a job can be pinned to.
+
+    Only exact ids are offered: the user removed the family entries
+    (opus/sonnet/…) from the picker on 2026-07-24, wanting each job to say
+    precisely which model it runs. Families are still resolved behind the scenes
+    and their resolutions are folded in here, which is how an id the installed
+    CLI has never heard of (claude-opus-5) still appears. The engine keeps
+    honouring a family value if some job still carries one.
+    """
+    resolved = {}
+    try:
+        data = json.loads((CONFIG_DIR / "models.json").read_text())
+        resolved = data.get("resolved") or {}
+    except Exception:  # noqa: BLE001
+        resolved = {}
+    families = []
+    for fam, desc in MODEL_FAMILIES:
+        r = resolved.get(fam) or {}
+        families.append({"v": fam, "desc": desc, "id": r.get("id") or "", "at": r.get("at") or 0})
+
+    ids = set()
+    # Scan the CLI binary ourselves rather than shelling out to `strings`:
+    # /usr/bin/strings belongs to the Xcode Command Line Tools, so on a machine
+    # that never installed them it fails and the picker would come up empty.
+    # python3 is already a hard dependency of this tool, so this always works.
+    claude = os.environ.get("CLAUDE_CRON_CLAUDE_BIN") or str(Path.home() / ".local/bin/claude")
+    try:
+        with open(os.path.realpath(claude), "rb") as fh:
+            blob = fh.read()
+        ids.update(m.decode() for m in
+                   re.findall(rb"claude-(?:opus|sonnet|haiku|fable)-\d+(?:-\d+)*", blob))
+    except Exception:  # noqa: BLE001
+        pass
+    for f in families:                      # whatever the families resolve to
+        if f["id"]:
+            ids.add(f["id"])
+    try:
+        for j in json.loads(JOBS_FILE.read_text()).get("jobs", []):
+            if j.get("model"):
+                ids.add(j["model"])
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        conn = db_conn()
+        try:
+            for row in conn.execute("SELECT DISTINCT model_id FROM runs WHERE coalesce(model_id,'')<>''"):
+                ids.add(row["model_id"])
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+    ids -= {f[0] for f in MODEL_FAMILIES}
+
+    fam_order = [f[0] for f in MODEL_FAMILIES]
+
+    def sort_key(v):
+        f = next((i for i, x in enumerate(fam_order) if x in v), 9)
+        return (f, [-int(n) for n in re.findall(r"\d+", v)])   # newest first
+    return {"models": sorted(ids, key=sort_key),
+            "efforts": ["low", "medium", "high", "xhigh", "max"]}
+
+
+def list_dirs(path):
+    """List the sub-directories of `path` (default: $HOME) for the folder picker.
+    Local, single-user tool: the server already runs as the user, so browsing
+    their own filesystem is the intended use. Returns absolute paths; hides
+    dot-directories; degrades gracefully on a bad path or a permission error."""
+    home = os.path.expanduser("~")
+    base = os.path.expanduser(path) if path else home
+    try:
+        base = os.path.realpath(base)
+    except Exception:  # noqa: BLE001
+        base = home
+    if not os.path.isdir(base):
+        base = os.path.dirname(base)
+        if not os.path.isdir(base):
+            base = home
+    dirs = []
+    try:
+        for name in sorted(os.listdir(base), key=lambda s: s.lower()):
+            if name.startswith("."):
+                continue
+            full = os.path.join(base, name)
+            if os.path.isdir(full):
+                dirs.append({"name": name, "path": full})
+    except (PermissionError, OSError):
+        pass
+    parent = os.path.dirname(base)
+    return {"path": base, "parent": (None if parent == base else parent), "dirs": dirs}
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "claude-cron/3"
+
+    def log_message(self, *a):  # silence stderr access log
+        pass
+
+    # ---- helpers -------------------------------------------------------
+    def _send(self, code, body, ctype="application/json; charset=utf-8"):
+        if isinstance(body, (dict, list)):
+            body = json.dumps(body)
+        data = body.encode("utf-8") if isinstance(body, str) else body
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except BrokenPipeError:
+            pass
+
+    def _authed(self) -> bool:
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in ALLOWED_ORIGINS:
+            return False
+        return secrets.compare_digest(self.headers.get("X-CC-Token", ""), TOKEN)
+
+    def _body_json(self):
+        try:
+            n = int(self.headers.get("Content-Length", "0"))
+            return json.loads(self.rfile.read(n) or b"{}")
+        except Exception:
+            return {}
+
+    # ---- routes --------------------------------------------------------
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path == "/health":
+            return self._send(200, {"ok": True})
+        if path == "/api/data":
+            if not self._authed():
+                return self._send(403, {"error": "forbidden"})
+            return self._send(200, load_data())
+        if path == "/api/search":
+            if not self._authed():
+                return self._send(403, {"error": "forbidden"})
+            q = (parse_qs(urlparse(self.path).query).get("q") or [""])[0].strip()
+            if not q:
+                return self._send(400, {"error": "q required"})
+            try:
+                return self._send(200, search_runs(q))
+            except Exception as e:  # noqa: BLE001
+                return self._send(500, {"error": str(e)})
+        if path == "/api/log":
+            if not self._authed():
+                return self._send(403, {"error": "forbidden"})
+            q = parse_qs(urlparse(self.path).query)
+            jid = (q.get("id") or [""])[0]
+            start = (q.get("start") or [""])[0]
+            if not jid or not start:
+                return self._send(400, {"error": "id and start required"})
+            d = load_run_detail(jid, start)
+            if d is None:
+                return self._send(404, {"error": "run not found"})
+            return self._send(200, d)
+        if path == "/api/models":
+            if not self._authed():
+                return self._send(403, {"error": "forbidden"})
+            try:
+                return self._send(200, list_models())
+            except Exception as e:  # noqa: BLE001
+                return self._send(500, {"error": str(e)})
+        if path == "/api/fs":
+            if not self._authed():
+                return self._send(403, {"error": "forbidden"})
+            p = (parse_qs(urlparse(self.path).query).get("path") or [""])[0]
+            try:
+                return self._send(200, list_dirs(p))
+            except Exception as e:  # noqa: BLE001
+                return self._send(500, {"error": str(e)})
+        if path == "/":
+            return self._send(200, render_page(), "text/html; charset=utf-8")
+        return self._send(404, {"error": "not found"})
+
+    def do_OPTIONS(self):
+        # Deliberately no Access-Control-Allow-* → browser blocks cross-origin
+        # preflight for our custom-header requests. This is the anti-CSRF gate.
+        self._send(403, {"error": "no cors"})
+
+    def do_POST(self):
+        if self.path != "/api/action":
+            return self._send(404, {"error": "not found"})
+        if not self._authed():
+            return self._send(403, {"error": "forbidden"})
+        body = self._body_json()
+        op = body.get("op", "")
+
+        # Project ops are keyed by name, not by a job id — handle before the id check.
+        if op == "project_set":
+            proj = body.get("project")
+            if not isinstance(proj, dict) or not str(proj.get("name", "")).strip():
+                return self._send(400, {"error": "missing project name"})
+            ok, out = cc(["project-set"], stdin=json.dumps(proj))
+            return self._send(200 if ok else 500, {"ok": ok, "output": out})
+        if op == "project_delete":
+            name = str(body.get("name", "")).strip()
+            if not name:
+                return self._send(400, {"error": "missing project name"})
+            ok, out = cc(["project-delete", name])
+            return self._send(200 if ok else 500, {"ok": ok, "output": out})
+
+        jid = str(body.get("id", ""))
+        if not jid or not all(c.isalnum() or c in "-_" for c in jid):
+            return self._send(400, {"error": "bad id"})
+
+        if op == "create":
+            job = body.get("job")
+            if not isinstance(job, dict) or not job.get("id"):
+                return self._send(400, {"error": "missing job object"})
+            ok, out = cc(["create"], stdin=json.dumps(job))
+            if ok:
+                pc = body.get("precheck")
+                if isinstance(pc, str) and pc.strip():
+                    cc(["set-precheck", str(job["id"])], stdin=pc)
+            return self._send(200 if ok else 500, {"ok": ok, "output": out})
+        if op == "set_precheck":
+            script = body.get("script", "")
+            if not isinstance(script, str) or not script.strip():
+                return self._send(400, {"error": "empty script"})
+            ok, out = cc(["set-precheck", jid], stdin=script)
+            return self._send(200 if ok else 500, {"ok": ok, "output": out})
+        if op == "precheck":
+            # Dry probe for the Run now guard: does the precheck see work?
+            ok, out = cc(["check", jid])
+            work = "nothing to do" not in out
+            return self._send(200 if ok else 500, {"ok": ok, "work": work, "output": out})
+
+        if op == "run":
+            ok, out = cc(["run", jid], background=True)
+        elif op == "enable":
+            ok, out = cc(["enable", jid])
+        elif op == "disable":
+            ok, out = cc(["disable", jid])
+        elif op == "delete":
+            ok, out = cc(["delete", jid])
+        elif op == "set_prompt":
+            prompt = body.get("prompt", "")
+            if not isinstance(prompt, str) or not prompt.strip():
+                return self._send(400, {"error": "empty prompt"})
+            ok, out = cc(["set-prompt", jid], stdin=prompt)
+        elif op == "set_field":
+            field = str(body.get("field", ""))
+            value = str(body.get("value", ""))
+            if field not in ("interval_seconds", "active_hours", "active_days",
+                             "max_budget_usd", "daily_budget_usd", "model", "timeout_seconds",
+                             "stall_timeout_seconds", "effort",
+                             "description", "cwd", "permission_mode", "project"):
+                return self._send(400, {"error": "bad field"})
+            ok, out = cc(["set-field", jid, field], stdin=value)
+        else:
+            return self._send(400, {"error": "unknown op"})
+        return self._send(200 if ok else 500, {"ok": ok, "output": out})
+
+
+PAGE = r"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>claude-cron · Agent Loop Manager</title>
+<link rel="icon" type="image/svg+xml" href="__FAVICON__">
+<meta name="theme-color" content="#4f46e5">
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#ffffff; --panel2:#fbfbfc; --ink:#16181d; --muted:#697077;
+  --line:#e4e7ec; --line2:#eef0f4; --accent:#4f46e5; --accent-soft:#eef0ff;
+  --accent-ink:#ffffff; --ok:#0f9d63; --ok-soft:#e6f7ef; --warn:#c77700;
+  --warn-soft:#fdf3e2; --err:#d92d20; --err-soft:#feecea; --idle:#8b919a;
+  --shadow:0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.08);
+  --shadow-lg:0 12px 32px rgba(16,24,40,.16);
+}
+:root[data-theme="dark"]{
+  --bg:#0d1017; --panel:#151a23; --panel2:#11151d; --ink:#e8eaee; --muted:#98a0ab;
+  --line:#242b37; --line2:#1c222d; --accent:#818cf8; --accent-soft:#232848;
+  --accent-ink:#0d1017; --ok:#34d399; --ok-soft:#0e2b22; --warn:#fbbf24;
+  --warn-soft:#33270e; --err:#f87171; --err-soft:#391716; --idle:#6b7280;
+  --shadow:0 1px 2px rgba(0,0,0,.35);
+  --shadow-lg:0 16px 44px rgba(0,0,0,.55);
+}
+*{box-sizing:border-box}
+html{color-scheme:light} :root[data-theme="dark"]{color-scheme:dark}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:13.5px/1.55 ui-sans-serif,-apple-system,"SF Pro Text",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased}
+.ic{width:16px;height:16px;flex:none;vertical-align:-3px}
+.topbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;
+  padding:12px 22px;background:color-mix(in srgb,var(--panel) 82%,transparent);
+  backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:11px}
+.brand .mark{width:34px;height:34px;border-radius:9px;background:var(--accent);color:var(--accent-ink);
+  display:flex;align-items:center;justify-content:center}
+.brand .mark .ic{width:19px;height:19px}
+.brand h1{font-size:15px;margin:0;letter-spacing:-.01em}
+.brand .tag{font-size:11px;color:var(--muted);letter-spacing:.02em}
+.topright{display:flex;align-items:center;gap:12px}
+.updated{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:20px;
+  font-size:11px;font-weight:600;letter-spacing:.02em}
+.pill .ic{width:12px;height:12px}
+.pill.on{background:var(--ok-soft);color:var(--ok)}
+.pill.off{background:var(--err-soft);color:var(--err)}
+.pill.idle{background:var(--warn-soft);color:var(--warn)}
+.wrap{max-width:1560px;margin:0 auto;padding:24px 22px 70px}
+h3{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
+  margin:0;display:flex;align-items:center;gap:7px}
+h3 .ic{width:14px;height:14px}
+.secthead{display:flex;align-items:center;justify-content:space-between;margin:26px 0 12px}
+.projchips{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
+.projchip{display:inline-flex;align-items:center;gap:6px;padding:6px 11px;border-radius:20px;
+  border:1px solid var(--line);background:var(--panel);color:var(--muted);cursor:pointer;
+  font:inherit;font-size:12.5px;font-weight:550;transition:.13s}
+.projchip .ic{width:13px;height:13px}
+.projchip:hover{border-color:var(--accent);color:var(--accent)}
+.projchip.active{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.projchip .chipn{font-size:11px;opacity:.75;font-variant-numeric:tabular-nums}
+.projgroup{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  box-shadow:var(--shadow);margin:0 0 14px;overflow:hidden}
+.projgroup-h{display:flex;align-items:center;gap:10px;padding:13px 18px;cursor:pointer;
+  user-select:none;transition:background .12s}
+.projgroup-h:hover{background:var(--panel2)}
+.projgroup-h .pgh-ic{width:18px;height:18px;color:var(--accent);flex:none}
+.projgroup-h .pgh-name{font-size:14px;font-weight:640;letter-spacing:-.01em}
+.projgroup-h .pgh-name.standalone{color:var(--muted);font-weight:600}
+.projgroup-h .pgh-count{font-size:11px;font-weight:600;color:var(--muted);background:var(--accent-soft);
+  border-radius:20px;padding:2px 9px}
+.projgroup-h .pgh-desc{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;max-width:340px}
+.projgroup-h .spacer{flex:1}
+.projgroup-h .pgh-edit{display:flex;border:0;background:transparent;color:var(--muted);cursor:pointer;
+  padding:5px;border-radius:7px}
+.projgroup-h .pgh-edit:hover{color:var(--accent);background:var(--accent-soft)}
+.projgroup-h .pgh-edit .ic{width:15px;height:15px}
+.projgroup-h .pgh-chevron{color:var(--muted);display:flex;transition:transform .28s ease}
+.projgroup-h .pgh-chevron .ic{width:18px;height:18px}
+.projgroup.collapsed .pgh-chevron{transform:rotate(-90deg)}
+/* animate open/close via grid-template-rows 1fr<->0fr (no fixed height needed) */
+.projgroup-body{display:grid;grid-template-rows:1fr;transition:grid-template-rows .28s ease}
+.projgroup.collapsed .projgroup-body{grid-template-rows:0fr}
+.projgroup-body > .pgb-inner{overflow:hidden;min-height:0}
+.projgroup-body .grid{padding:2px 16px 16px}
+td .projtag{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--muted)}
+td .projtag .ic{width:12px;height:12px;color:var(--accent)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
+/* Row 1: icon + number side by side. Row 2: the label spans the whole tile,
+   so it never wraps against the icon. */
+.stat{display:flex;flex-direction:column;gap:9px;background:var(--panel);
+  border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow)}
+.stat-top{display:flex;align-items:center;gap:12px}
+.stat .bubble{width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex:none}
+.stat .bubble .ic{width:17px;height:17px}
+.stat .n{font-size:19px;font-weight:650;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.2}
+.stat .l{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
+.b-accent{background:var(--accent-soft);color:var(--accent)}
+.b-ok{background:var(--ok-soft);color:var(--ok)}
+.b-warn{background:var(--warn-soft);color:var(--warn)}
+.b-err{background:var(--err-soft);color:var(--err)}
+/* wider cards, two per row; standalone jobs reuse the same grid outside a group */
+.grid{display:grid;gap:14px;grid-template-columns:repeat(3,minmax(0,1fr))}
+@media (max-width:1080px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:720px){.grid{grid-template-columns:1fr}}
+#jobs > .grid{margin-bottom:14px}   /* standalone grid rendered bare */
+.card{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:16px 18px;
+  box-shadow:var(--shadow);display:flex;flex-direction:column}
+.projgroup .card{box-shadow:none}
+.card h2{font-size:14px;margin:0 0 2px;display:flex;align-items:center;gap:9px;justify-content:space-between}
+.card h2 .jobname{display:flex;align-items:center;gap:8px}
+.card h2 .jobname .ic{width:15px;height:15px;color:var(--accent)}
+.card .desc{color:var(--muted);font-size:12px;margin:0 0 12px}
+/* card body in two internal columns; each column its own kv list */
+.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:12.5px;margin:2px 0 13px;align-content:start}
+.kv dt{color:var(--muted);display:flex;align-items:center;gap:6px;white-space:nowrap}
+.kv dt .ic{width:13px;height:13px}
+.kv dd{margin:0;font-variant-numeric:tabular-nums;min-width:0}
+.checklist{margin:6px 0 2px;padding:0 0 0 17px;display:flex;flex-direction:column;gap:2px;
+  font-variant-numeric:normal}
+.checklist li{font-size:11.5px;color:var(--muted)}
+.checklist li::marker{color:var(--accent)}
+.checklist .ck-v{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+.actions{display:flex;gap:6px;flex-wrap:nowrap;border-top:1px solid var(--line2);padding-top:12px;
+  margin-top:auto}
+/* keep the four card actions on one line: compact them (smaller than the app's
+   default .btn) and let them shrink rather than wrap */
+.actions .btn{padding:6px 8px;font-size:12px;gap:5px;flex:0 1 auto;min-width:0;white-space:nowrap}
+.actions .btn .ic{width:13px;height:13px}
+.btn{display:inline-flex;align-items:center;gap:7px;font:inherit;font-size:12.5px;font-weight:560;
+  padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);
+  color:var(--ink);cursor:pointer;transition:.13s;text-decoration:none}
+.btn .ic{width:14px;height:14px}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn:active{transform:translateY(1px)}
+.btn:disabled{opacity:.45;cursor:progress}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.primary:hover{filter:brightness(1.08);color:var(--accent-ink)}
+.btn.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 35%,var(--line))}
+.btn.danger:hover{background:var(--err-soft);border-color:var(--err)}
+.btn.ghost{background:transparent}
+.iconbtn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;
+  border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--muted);
+  cursor:pointer;transition:.13s}
+.iconbtn:hover{color:var(--accent);border-color:var(--accent)}
+.rowacts{display:flex;gap:6px;justify-content:flex-end}
+.iconbtn.live{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
+/* hover tooltip — the bubble is fixed-position and lives on <body>, because the
+   table wrapper's overflow would otherwise clip it. */
+.tipbadge{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;
+  margin-left:7px;border-radius:50%;border:1px solid color-mix(in srgb,var(--warn) 45%,var(--line));
+  color:var(--warn);background:var(--warn-soft);font-size:9.5px;font-weight:800;cursor:help;
+  line-height:1;vertical-align:middle;flex:none;transition:transform .12s ease}
+.tipbadge:hover{transform:scale(1.14)}
+#tipbubble{position:fixed;z-index:90;max-width:330px;padding:11px 13px;border-radius:11px;
+  background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow-lg);
+  font-size:12px;line-height:1.5;color:var(--ink);pointer-events:none;
+  opacity:0;transform:translateY(-4px);transition:opacity .15s ease,transform .15s ease}
+#tipbubble.show{opacity:1;transform:translateY(0)}
+#tipbubble .tt-h{display:flex;align-items:center;gap:7px;font-weight:650;font-size:12.5px;
+  margin:0 0 7px;padding-bottom:7px;border-bottom:1px solid var(--line2)}
+#tipbubble .tt-h .ic{width:14px;height:14px;color:var(--accent)}
+#tipbubble .tt-row{display:flex;gap:14px;justify-content:space-between;align-items:baseline;margin-top:4px}
+#tipbubble .tt-k{color:var(--muted);white-space:nowrap}
+#tipbubble .tt-v{font-variant-numeric:tabular-nums;text-align:right}
+#tipbubble code{font:11px ui-monospace,"SF Mono",Menlo,monospace;background:var(--panel2);
+  border:1px solid var(--line2);border-radius:5px;padding:1px 5px}
+#tipbubble .tt-foot{margin-top:8px;padding-top:7px;border-top:1px solid var(--line2);
+  color:var(--muted);font-size:11px}
+.iconbtn.retry{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 35%,var(--line))}
+.iconbtn.retry:hover:not(:disabled){color:var(--warn);border-color:var(--warn);background:var(--warn-soft)}
+.iconbtn:disabled{opacity:.28;cursor:default;color:var(--muted);border-color:var(--line);background:transparent}
+.iconbtn .ic{width:15px;height:15px}
+.toolbar{display:flex;align-items:center;gap:10px;margin:0 0 10px;flex-wrap:wrap}
+.searchbox{display:flex;align-items:center;gap:8px;flex:1;min-width:230px;background:var(--panel);
+  border:1px solid var(--line);border-radius:9px;padding:7px 12px;box-shadow:var(--shadow)}
+.searchbox:focus-within{border-color:var(--accent)}
+.searchbox .ic{color:var(--muted)}
+.searchbox input{flex:1;border:0;outline:0;background:transparent;color:var(--ink);font:inherit}
+.searchbox .clear{display:flex;border:0;background:transparent;color:var(--muted);cursor:pointer;padding:0}
+.searchbox .clear:hover{color:var(--err)}
+.fbadge{display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:17px;
+  border-radius:9px;background:var(--accent);color:var(--accent-ink);font-size:10.5px;font-weight:700;
+  padding:0 5px}
+.perpage{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}
+.perpage select{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);
+  border-radius:7px;padding:5px 8px}
+.fpanel{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px 16px;
+  margin:0 0 12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;
+  box-shadow:var(--shadow)}
+.fpanel[hidden]{display:none}
+.fpanel label{display:flex;flex-direction:column;gap:5px;font-size:10.5px;text-transform:uppercase;
+  letter-spacing:.05em;color:var(--muted)}
+.fpanel select,.fpanel input{font:inherit;font-size:12.5px;color:var(--ink);background:var(--panel2);
+  border:1px solid var(--line);border-radius:8px;padding:7px 9px}
+.fpanel .fclear{align-self:end}
+.tablewrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  box-shadow:var(--shadow)}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th{text-align:left;font-weight:600;color:var(--muted);font-size:10.5px;text-transform:uppercase;
+  letter-spacing:.05em;padding:11px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:10px 14px;border-bottom:1px solid var(--line2);vertical-align:top}
+tr:last-child td{border-bottom:none}
+tbody tr{transition:.1s}
+tbody tr:hover{background:var(--panel2)}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.stat-cell{display:inline-flex;align-items:center;gap:6px;font-weight:560}
+.stat-cell .ic{width:14px;height:14px}
+.s-success{color:var(--ok)} .s-warning{color:var(--warn)} .s-error{color:var(--err)}
+.s-idle{color:var(--idle)} .s-running{color:var(--warn)}
+code{font:11.5px ui-monospace,"SF Mono",Menlo,monospace;
+  background:color-mix(in srgb,var(--ink) 6%,transparent);padding:1px 6px;border-radius:5px}
+.snip{font-size:11px;color:var(--muted);margin-top:3px;max-width:420px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.trigger-badge{font-size:10px;color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 40%,var(--line));
+  border-radius:5px;padding:1px 6px;margin-left:7px;vertical-align:1px}
+.runningbadge{display:inline-flex;align-items:center;gap:7px;color:var(--warn);font-weight:600}
+.runningbadge .pulse{width:8px;height:8px;border-radius:50%;background:var(--warn);
+  animation:ccpulse 1.2s ease-in-out infinite}
+@keyframes ccpulse{0%,100%{opacity:.35;transform:scale(.85)}50%{opacity:1;transform:scale(1.2)}}
+/* live-tail indicator in the log modal */
+#lg-live{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px;font-weight:400}
+#lg-live:empty{display:none}
+.livedot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none;
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 22%,transparent);
+  animation:ccpulse 1.4s ease-in-out infinite}
+.livetxt{color:var(--ok);font-weight:650;letter-spacing:.02em}
+#lg-live .muted{font-size:11.5px}
+.pager{display:flex;gap:12px;align-items:center;justify-content:flex-end;margin-top:12px;
+  font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.empty{padding:34px;text-align:center;color:var(--muted);font-size:13px}
+.empty .ic{width:22px;height:22px;display:block;margin:0 auto 8px;opacity:.6}
+footer{margin-top:30px;color:var(--muted);font-size:11px;text-align:center}
+dialog{border:1px solid var(--line);border-radius:14px;background:var(--panel);color:var(--ink);
+  padding:0;box-shadow:var(--shadow-lg)}
+dialog::backdrop{background:rgba(9,11,16,.55);backdrop-filter:blur(3px)}
+/* Tall modals: fixed header + footer, scrollable middle. The [open] guard is
+   essential — a bare `display:flex` would override the UA's
+   `dialog:not([open]){display:none}` and the modal would never hide (Close
+   would appear to do nothing). The log modal takes a fixed default size and
+   scrolls its content; the editor grows with its form up to the viewport. */
+#editor[open],#logmodal[open]{display:flex;flex-direction:column}
+#logmodal[open]{height:min(90vh,860px)}
+#editor[open]{max-height:92vh}
+#editor{max-width:min(880px,94vw);width:880px}
+/* the <form> is the dialog's only flex child — it must itself be the scroll
+   column, or the body never scrolls and the footer overflows below the modal */
+#editor>form{display:flex;flex-direction:column;min-height:0;flex:1 1 auto;overflow:hidden}
+#logmodal{max-width:min(1000px,95vw);width:1000px}
+#confirm{max-width:min(460px,92vw);width:460px}
+#editor .dlg-h,#editor .dlg-f,#logmodal .dlg-h,#logmodal .dlg-f{flex:none}
+#editor .dlg-b{flex:1 1 auto;min-height:0;overflow-y:auto}
+/* log modal: fixed metadata + tab bar, only the active pane scrolls */
+#lg-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+#lg-body .loginfo{flex:none}
+/* overflow-y must be stated: with only overflow-x:auto, the `visible` y-axis
+   computes to `auto` too and the tab strip grows a stray vertical scrollbar. */
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:14px 0 0;flex:none;
+  overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{padding:8px 12px;font:inherit;font-size:12.5px;font-weight:550;color:var(--muted);cursor:pointer;
+  border:0;background:transparent;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap;
+  display:inline-flex;align-items:center;gap:6px}
+.tab .ic{width:14px;height:14px}
+.tab:hover{color:var(--ink)}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tabpanes{flex:1 1 auto;min-height:0;overflow-y:auto;padding-top:14px}
+.tabpane{display:none} .tabpane.active{display:block}
+.dlg-h{display:flex;align-items:center;gap:11px;padding:17px 20px 0;font-size:14.5px;font-weight:640}
+.dlg-h .halo{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex:none}
+.dlg-h .halo .ic{width:18px;height:18px}
+.dlg-b{padding:13px 20px}
+.dlg-b label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--muted);margin:12px 0 5px}
+textarea,.dlg-b input,.dlg-b select{width:100%;font:inherit;font-size:13px;padding:9px 11px;
+  border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--ink);resize:vertical}
+textarea{min-height:170px;font-family:ui-monospace,"SF Mono",Menlo,monospace;line-height:1.5}
+textarea:focus,.dlg-b input:focus,.dlg-b select:focus{outline:none;border-color:var(--accent)}
+/* searchable project select (combobox) */
+.combo{position:relative}
+.combo-trigger{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;
+  font:inherit;font-size:13px;padding:9px 11px;border:1px solid var(--line);border-radius:8px;
+  background:var(--panel2);color:var(--ink);cursor:pointer;text-align:left}
+.combo-trigger:hover{border-color:var(--muted)}
+.combo.open .combo-trigger{border-color:var(--accent)}
+.combo-val{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.combo-val.none{color:var(--muted)}
+.combo-caret{color:var(--muted);flex:none;display:flex;transition:transform .18s ease}
+.combo-caret .ic{width:16px;height:16px}
+.combo.open .combo-caret{transform:rotate(180deg)}
+.combo-pop{position:absolute;z-index:30;top:calc(100% + 4px);left:0;right:0;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow-lg);padding:7px}
+.combo-search{width:100%;font:inherit;font-size:12.5px;padding:7px 9px;margin:0 0 6px;
+  border:1px solid var(--line);border-radius:7px;background:var(--panel2);color:var(--ink)}
+.combo-search:focus{outline:none;border-color:var(--accent)}
+.combo-list{list-style:none;margin:0;padding:0;max-height:200px;overflow-y:auto}
+.combo-list li{padding:8px 10px;border-radius:6px;font-size:12.5px;cursor:pointer;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:8px}
+.combo-list li .ic{width:13px;height:13px;color:var(--muted);flex:none}
+.combo-list li.active,.combo-list li:hover{background:var(--accent-soft);color:var(--accent)}
+.combo-list li.sel{font-weight:650}
+.combo-list li.none{color:var(--muted)}
+.combo-empty{padding:9px 10px;font-size:12px;color:var(--muted)}
+/* cwd input + Browse button, and the system folder picker */
+.cwdrow{display:flex;gap:8px;align-items:stretch}
+.cwdrow input{flex:1 1 auto;min-width:0}
+.cwd-browse{flex:none;white-space:nowrap}
+.dlg-b .hint{font-size:11.5px;color:var(--muted);margin:-4px 0 11px;line-height:1.5}
+/* effort slider — Faster ↔ Smarter, mirroring Claude Code's control */
+.efflabel{margin-left:8px;color:var(--accent);font-weight:700;text-transform:none;letter-spacing:0}
+.effslider{-webkit-appearance:none;appearance:none;width:100%;height:26px;background:transparent;
+  cursor:pointer;padding:0;border:0;margin:1px 0 0}
+.effslider::-webkit-slider-runnable-track{height:4px;border-radius:3px;background:var(--line);
+  border:0}
+.effslider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:16px;
+  border-radius:50%;background:var(--accent);border:2px solid var(--panel);margin-top:-6px;
+  box-shadow:0 1px 4px rgba(0,0,0,.28)}
+.effslider:focus{outline:none}
+.effslider:focus::-webkit-slider-thumb{box-shadow:0 0 0 4px var(--accent-soft)}
+.effends{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:-2px}
+.cwd-ro{cursor:pointer}
+.cwd-ro:hover{border-color:var(--muted)}
+#fsmodal{max-width:min(560px,94vw);width:560px}
+#fsmodal[open]{display:flex;flex-direction:column;height:min(78vh,600px)}
+#fsmodal .dlg-h,#fsmodal .fs-cur,#fsmodal .dlg-f{flex:none}
+#fsmodal .dlg-b{flex:1 1 auto;min-height:0;overflow-y:auto;padding:8px 0}
+.fs-cur{margin:9px 20px 2px;padding:8px 11px;font:12px ui-monospace,"SF Mono",Menlo,monospace;
+  background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--muted);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fs-list{list-style:none;margin:0;padding:0}
+.fs-list li{display:flex;align-items:center;gap:10px;padding:9px 20px;cursor:pointer;font-size:13px}
+.fs-list li:hover{background:var(--panel2)}
+.fs-list li .ic{width:15px;height:15px;color:var(--accent);flex:none}
+.fs-list li.fs-up{color:var(--muted)}
+.fs-list li.fs-up .ic{color:var(--muted)}
+.fs-list li.fs-empty{color:var(--muted);font-size:12.5px;cursor:default}
+.fs-list li.fs-empty:hover{background:transparent}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.stepper{display:flex;align-items:stretch;border:1px solid var(--line);border-radius:8px;
+  background:var(--panel2);overflow:hidden}
+.stepper input{flex:1;border:0;background:transparent;text-align:center;font:inherit;font-size:13px;
+  color:var(--ink);padding:9px 4px;appearance:textfield;-moz-appearance:textfield;min-width:0}
+.stepper input::-webkit-outer-spin-button,.stepper input::-webkit-inner-spin-button{
+  -webkit-appearance:none;margin:0}
+.stepper input:focus{outline:none}
+.stepper:focus-within{border-color:var(--accent)}
+.step-btn{width:36px;border:0;background:transparent;color:var(--muted);cursor:pointer;
+  font-size:16px;font-weight:600;transition:.12s;display:flex;align-items:center;justify-content:center}
+.step-btn:hover{background:var(--accent-soft);color:var(--accent)}
+.step-btn:first-child{border-right:1px solid var(--line)}
+.step-btn:last-child{border-left:1px solid var(--line)}
+.daypick{display:flex;gap:6px;flex-wrap:wrap}
+.day-btn{font:inherit;font-size:12px;font-weight:600;padding:7px 0;width:46px;text-align:center;
+  border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--muted);
+  cursor:pointer;transition:.12s}
+.day-btn:hover{border-color:var(--accent);color:var(--accent)}
+.day-btn.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.moneyin{display:flex;align-items:center;border:1px solid var(--line);border-radius:8px;
+  background:var(--panel2);overflow:hidden}
+.moneyin .cur{padding:0 0 0 11px;color:var(--muted);font-size:13px}
+.moneyin input{flex:1;border:0;background:transparent;font:inherit;font-size:13px;color:var(--ink);
+  padding:9px 11px 9px 6px;min-width:0}
+.moneyin input:focus{outline:none}
+.moneyin:focus-within{border-color:var(--accent)}
+.timerow{display:flex;align-items:center;gap:9px}
+.timerow input[type=time]{flex:1}
+.timerow .sep{color:var(--muted);font-size:12px}
+.dlg-f{display:flex;justify-content:flex-end;gap:9px;padding:13px 20px 19px}
+.confirm-msg{font-size:13px;color:var(--muted);margin:4px 0 0}
+.confirm-mono{font:11.5px/1.6 ui-monospace,"SF Mono",Menlo,monospace;background:var(--panel2);
+  border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin:12px 0 0;
+  white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto}
+.loginfo{grid-template-columns:auto 1fr;gap:5px 16px;margin:0 0 4px}
+.logsec{margin-top:16px}
+.logsec h4{margin:0 0 7px;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--muted);display:flex;align-items:center;gap:6px}
+.logsec h4 .ic{width:13px;height:13px}
+pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:11px 13px;margin:0;
+  font:11.5px/1.6 ui-monospace,"SF Mono",Menlo,monospace;white-space:pre-wrap;word-break:break-word;
+  max-height:300px;overflow:auto}
+.muted{color:var(--muted);font-size:12px}
+.md{font-size:12.5px;line-height:1.6}
+.md p{margin:0 0 8px} .md p:last-child{margin-bottom:0}
+.md ul,.md ol{margin:0 0 8px;padding-left:20px} .md li{margin:2px 0}
+.md code{font:11.5px ui-monospace,"SF Mono",Menlo,monospace;
+  background:color-mix(in srgb,var(--ink) 8%,transparent);padding:1px 5px;border-radius:4px;word-break:break-word}
+.md pre.log{margin:8px 0}
+.md a{color:var(--accent);text-decoration:none} .md a:hover{text-decoration:underline}
+.md strong{font-weight:650} .md em{font-style:italic}
+.md .md-h{margin:11px 0 5px;font-weight:650;font-size:13px;color:var(--ink);
+  text-transform:none;letter-spacing:0}
+.denials{margin:0;padding-left:18px} .denials li{margin:2px 0}
+.timeline{margin:0;padding:0;list-style:none;border:1px solid var(--line);border-radius:9px;
+  background:var(--panel2)}  /* scroll handled by the tab pane */
+.timeline li{padding:8px 13px;border-bottom:1px solid var(--line2);font-size:12px;line-height:1.55}
+.timeline li:last-child{border-bottom:none}
+.timeline .tn{color:var(--muted);font-variant-numeric:tabular-nums;margin-right:8px;font-weight:600}
+.timeline .tool{font:11px ui-monospace,"SF Mono",Menlo,monospace;background:var(--accent-soft);
+  color:var(--accent);border-radius:5px;padding:1px 7px;margin-right:6px;white-space:nowrap}
+.timeline .thint{font:11px ui-monospace,"SF Mono",Menlo,monospace;color:var(--muted);word-break:break-all}
+.timeline .ttext{display:block;margin-top:3px}
+#toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(6px);
+  display:flex;align-items:center;gap:9px;background:var(--ink);color:var(--bg);
+  padding:10px 17px;border-radius:10px;font-size:13px;opacity:0;pointer-events:none;
+  transition:.22s;z-index:9;box-shadow:var(--shadow-lg)}
+#toast .ic{width:15px;height:15px}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+#toast.err{background:var(--err);color:#fff}
+.spacer{flex:1}
+@media (max-width:640px){.topbar{padding:10px 14px}.wrap{padding:18px 14px 60px}}
+</style></head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="mark" id="brandmark"></div>
+    <div><h1>claude-cron</h1><div class="tag">Agent Loop Manager</div></div>
+  </div>
+  <div class="topright">
+    <span id="pill-launchd"></span>
+    <span class="updated" id="updated"></span>
+    <button class="iconbtn" id="themebtn" title="Toggle light/dark"></button>
+  </div>
+</header>
+<main class="wrap">
+  <section class="stats" id="stats"></section>
+  <div class="secthead"><h3 id="h-jobs"></h3>
+    <div style="display:flex;gap:8px">
+      <button class="btn ghost" id="new-project"></button>
+      <button class="btn primary" id="new-job"></button>
+    </div></div>
+  <div class="projchips" id="projchips"></div>
+  <div id="jobs"></div>
+  <div class="secthead"><h3 id="h-runs"></h3></div>
+  <div class="toolbar">
+    <div class="searchbox" id="searchbox">
+      <input id="q" placeholder="Search runs & log content…" autocomplete="off">
+      <button class="clear" id="q-clear" hidden></button>
+    </div>
+    <button class="btn ghost" id="f-toggle"></button>
+    <div class="spacer"></div>
+    <label class="perpage">Per page
+      <select id="f-size"><option>10</option><option>25</option><option>50</option><option>100</option></select>
+    </label>
+  </div>
+  <div class="fpanel" id="fpanel" hidden>
+    <label>Project <select id="f-project"><option value="">All projects</option></select></label>
+    <label>Job <select id="f-job"><option value="">All jobs</option></select></label>
+    <label>Status <select id="f-status"><option value="">All</option>
+      <option value="success">success</option><option value="warning">warning</option>
+      <option value="error">error</option></select></label>
+    <label>From <input type="datetime-local" id="f-from"></label>
+    <label>To <input type="datetime-local" id="f-to"></label>
+    <button class="btn ghost fclear" id="f-clear"></button>
+  </div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>When</th><th>Job</th><th>Project</th><th>Status</th><th>Duration</th><th>Cost</th><th>Session</th><th></th></tr></thead>
+    <tbody id="runs"></tbody></table></div>
+  <div class="pager">
+    <button class="btn ghost" id="pg-prev"></button>
+    <span id="pg-info"></span>
+    <button class="btn ghost" id="pg-next"></button>
+  </div>
+  <footer id="foot"></footer>
+</main>
+
+<dialog id="editor"><form method="dialog">
+<div class="dlg-h"><div class="halo b-accent" id="ed-halo"></div><span id="ed-title">Edit job</span></div>
+<div class="dlg-b">
+  <div id="ed-id-row" style="display:none"><label>Job id (letters, digits, - and _)</label>
+    <input id="ed-id" type="text" placeholder="my-job" autocomplete="off"></div>
+  <label>Project (optional — groups jobs; leave empty for none)</label>
+  <div class="combo" id="ed-project-combo">
+    <button type="button" class="combo-trigger" id="ed-project-trigger" aria-haspopup="listbox" aria-expanded="false">
+      <span class="combo-val none" id="ed-project-val">— None —</span>
+      <span class="combo-caret"></span>
+    </button>
+    <div class="combo-pop" id="ed-project-pop" hidden>
+      <input type="text" class="combo-search" id="ed-project-search" placeholder="Search projects…" autocomplete="off">
+      <ul class="combo-list" id="ed-project-opts" role="listbox"></ul>
+    </div>
+    <input type="hidden" id="ed-project">
+  </div>
+  <label>Description</label><input id="ed-desc" type="text" placeholder="what this job does">
+  <label>Working directory (cwd the agent runs in)</label>
+  <div class="cwdrow">
+    <input id="ed-cwd" type="text" placeholder="/Users/…/some-repo" readonly data-cwd-target="ed-cwd" class="cwd-ro">
+    <button type="button" class="btn cwd-browse" data-cwd-target="ed-cwd">Browse…</button>
+  </div>
+  <label>Prompt sent to the agent</label>
+  <textarea id="ed-prompt"></textarea>
+  <label>Precheck script — exit 0 wakes a run, exit 1 stays idle (a skipped tick costs nothing)</label>
+  <textarea id="ed-precheck" spellcheck="false" style="min-height:120px"></textarea>
+  <div class="row2">
+    <div><label>Interval (minutes)</label>
+      <div class="stepper">
+        <button type="button" class="step-btn" data-step="-1" data-for="ed-interval">−</button>
+        <input id="ed-interval" type="number" min="1" step="1" inputmode="numeric">
+        <button type="button" class="step-btn" data-step="1" data-for="ed-interval">+</button>
+      </div></div>
+    <div><label>Model</label>
+      <div class="combo" id="ed-model-combo">
+        <button type="button" class="combo-trigger" id="ed-model-trigger" aria-haspopup="listbox" aria-expanded="false">
+          <span class="combo-val" id="ed-model-val">Opus — most capable</span>
+          <span class="combo-caret"></span>
+        </button>
+        <div class="combo-pop" id="ed-model-pop" hidden>
+          <input type="text" class="combo-search" id="ed-model-search" placeholder="Search models…" autocomplete="off">
+          <ul class="combo-list" id="ed-model-opts" role="listbox"></ul>
+        </div>
+        <input type="hidden" id="ed-model">
+      </div></div>
+  </div>
+  <div class="row2">
+    <div><label>Effort <span class="efflabel" id="ed-effort-label">—</span></label>
+      <input type="range" id="ed-effort" class="effslider" min="0" max="5" step="1" value="0">
+      <div class="effends"><span>Faster</span><span>Smarter</span></div>
+    </div>
+    <div><label>Max budget per run</label>
+      <div class="moneyin"><span class="cur">$</span>
+        <input id="ed-budget" inputmode="decimal" autocomplete="off" placeholder="2.00"></div></div>
+  </div>
+  <label>Active hours (leave both empty for 24h)</label>
+  <div class="timerow">
+    <input type="time" id="ed-hours-start"><span class="sep">until</span><input type="time" id="ed-hours-end">
+  </div>
+  <label>Active days</label>
+  <div class="daypick" id="ed-days-pick">
+    <button type="button" class="day-btn" data-day="1">Mon</button>
+    <button type="button" class="day-btn" data-day="2">Tue</button>
+    <button type="button" class="day-btn" data-day="3">Wed</button>
+    <button type="button" class="day-btn" data-day="4">Thu</button>
+    <button type="button" class="day-btn" data-day="5">Fri</button>
+    <button type="button" class="day-btn" data-day="6">Sat</button>
+    <button type="button" class="day-btn" data-day="7">Sun</button>
+  </div>
+  <div class="row2">
+    <div><label>Daily budget cap — empty = no cap</label>
+      <div class="moneyin"><span class="cur">$</span>
+        <input id="ed-daily" inputmode="decimal" autocomplete="off" placeholder="no cap — unlimited"></div></div>
+    <div><label>Stall guard (minutes with no output)</label>
+      <div class="stepper">
+        <button type="button" class="step-btn" data-step="-1" data-for="ed-stall">−</button>
+        <input id="ed-stall" type="number" min="1" step="1" inputmode="numeric" placeholder="20">
+        <button type="button" class="step-btn" data-step="1" data-for="ed-stall">+</button>
+      </div></div>
+  </div>
+  <div class="hint">A run is killed only when it goes silent for this long — a task that
+    legitimately takes hours keeps running while it produces output. Leave empty for no stall guard.</div>
+  <label>Hard time limit (minutes) — optional, empty = no limit</label>
+  <div class="stepper">
+    <button type="button" class="step-btn" data-step="-1" data-for="ed-timeout">−</button>
+    <input id="ed-timeout" type="number" min="1" step="1" inputmode="numeric" placeholder="no limit">
+    <button type="button" class="step-btn" data-step="1" data-for="ed-timeout">+</button>
+  </div>
+  <label>Permission mode</label>
+  <div class="combo" id="ed-perm-combo">
+    <button type="button" class="combo-trigger" id="ed-perm-trigger" aria-haspopup="listbox" aria-expanded="false">
+      <span class="combo-val" id="ed-perm-val">dontAsk — run tools without prompting</span>
+      <span class="combo-caret"></span>
+    </button>
+    <div class="combo-pop" id="ed-perm-pop" hidden>
+      <input type="text" class="combo-search" id="ed-perm-search" placeholder="Search modes…" autocomplete="off">
+      <ul class="combo-list" id="ed-perm-opts" role="listbox"></ul>
+    </div>
+    <input type="hidden" id="ed-perm">
+  </div>
+</div>
+<div class="dlg-f">
+  <button type="button" class="btn ghost" id="ed-cancel">Cancel</button>
+  <button type="button" class="btn primary" id="ed-save">Save changes</button>
+</div>
+</form></dialog>
+
+<dialog id="logmodal">
+  <div class="dlg-h"><div class="halo b-accent" id="lg-halo"></div><span id="lg-title">Run detail</span>
+    <span id="lg-live"></span></div>
+  <div class="dlg-b" id="lg-body"></div>
+  <div class="dlg-f"><button type="button" class="btn ghost" id="lg-close">Close</button></div>
+</dialog>
+
+<dialog id="projmodal"><form method="dialog">
+<div class="dlg-h"><div class="halo b-accent" id="pj-halo"></div><span id="pj-title">New project</span></div>
+<div class="dlg-b">
+  <div id="pj-name-row"><label>Project name</label>
+    <input id="pj-name" type="text" placeholder="e.g. quality-gate" autocomplete="off"></div>
+  <label>Description — passed to the agent as context on every run</label>
+  <textarea id="pj-desc" style="min-height:110px"></textarea>
+  <label>Working directory (cwd) — jobs in this project inherit it unless they set their own</label>
+  <div class="cwdrow">
+    <input id="pj-cwd" type="text" placeholder="click Browse to choose a folder" readonly data-cwd-target="pj-cwd" class="cwd-ro">
+    <button type="button" class="btn cwd-browse" data-cwd-target="pj-cwd">Browse…</button>
+  </div>
+</div>
+<div class="dlg-f">
+  <button type="button" class="btn danger" id="pj-delete" style="margin-right:auto">Delete</button>
+  <button type="button" class="btn ghost" id="pj-cancel">Cancel</button>
+  <button type="button" class="btn primary" id="pj-save">Save project</button>
+</div>
+</form></dialog>
+
+<dialog id="fsmodal">
+  <div class="dlg-h"><div class="halo b-accent" id="fs-halo"></div><span>Choose a folder</span></div>
+  <div class="fs-cur" id="fs-path">/</div>
+  <div class="dlg-b"><ul class="fs-list" id="fs-list"></ul></div>
+  <div class="dlg-f">
+    <button type="button" class="btn ghost" id="fs-cancel">Cancel</button>
+    <button type="button" class="btn primary" id="fs-use">Use this folder</button>
+  </div>
+</dialog>
+
+<dialog id="confirm">
+  <div class="dlg-h"><div class="halo" id="cf-halo"></div><span id="cf-title"></span></div>
+  <div class="dlg-b"><div class="confirm-msg" id="cf-msg"></div><div class="confirm-mono" id="cf-mono" hidden></div></div>
+  <div class="dlg-f">
+    <button type="button" class="btn ghost" id="cf-cancel">Cancel</button>
+    <button type="button" class="btn primary" id="cf-ok">Confirm</button>
+  </div>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+const TOKEN = "__TOKEN__";
+const BUILD = "__BUILD__";
+const $ = (id) => document.getElementById(id);
+
+/* ---------------------------------------------------------------- icons */
+const ic=(p)=>'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+p+'</svg>';
+const I={
+  bot:ic('<rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><path d="M8 16h.01"/><path d="M16 16h.01"/>'),
+  zap:ic('<polygon points="13 2 3 14 12 14 11 22 21 10 12 10"/>'),
+  activity:ic('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'),
+  dollar:ic('<path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>'),
+  calendar:ic('<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/>'),
+  clock:ic('<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>'),
+  alert:ic('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>'),
+  xcircle:ic('<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>'),
+  check:ic('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'),
+  play:ic('<polygon points="6 3 20 12 6 21"/>'),
+  power:ic('<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>'),
+  pencil:ic('<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/>'),
+  trash:ic('<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>'),
+  search:ic('<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>'),
+  filter:ic('<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46"/>'),
+  x:ic('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
+  sun:ic('<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>'),
+  moon:ic('<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>'),
+  cleft:ic('<path d="m15 18-6-6 6-6"/>'),
+  cright:ic('<path d="m9 18 6-6-6-6"/>'),
+  cdown:ic('<path d="m6 9 6 6 6-6"/>'),
+  plus:ic('<path d="M5 12h14"/><path d="M12 5v14"/>'),
+  eye:ic('<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>'),
+  file:ic('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/>'),
+  terminal:ic('<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>'),
+  shield:ic('<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1 1 0 0 1 1.52 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"/>'),
+  cpu:ic('<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v2"/><path d="M15 2v2"/><path d="M9 20v2"/><path d="M15 20v2"/><path d="M2 9h2"/><path d="M2 15h2"/><path d="M20 9h2"/><path d="M20 15h2"/>'),
+  timer:ic('<path d="M10 2h4"/><path d="M12 14v-4"/><circle cx="12" cy="14" r="8"/>'),
+  inbox:ic('<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>'),
+  radar:ic('<path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/><path d="M4 6h.01"/><path d="M2.29 9.62a10 10 0 1 0 19.02-1.27"/><path d="M16.24 7.76a6 6 0 1 0-8.01 8.91"/><path d="M12 18h.01"/><path d="M17.99 11.66a6 6 0 0 1-2.22 4.58"/><circle cx="12" cy="12" r="2"/><path d="m13.41 10.59 5.66-5.66"/>'),
+  folder:ic('<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'),
+};
+const STATUS_ICON={success:I.check, warning:I.alert, error:I.xcircle, idle:I.clock, running:I.timer};
+
+/* ---------------------------------------------------------------- theme */
+function themePref(){ return localStorage.ccTheme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); }
+function applyTheme(t){ document.documentElement.dataset.theme=t; $("themebtn").innerHTML = t==="dark" ? I.sun : I.moon; }
+applyTheme(themePref());
+
+/* ---------------------------------------------------------------- utils */
+let DATA={jobs:[],state:{},runs:[],launchd_loaded:false};
+let editingId=null, creating=false;
+const esc=(s)=>String(s ?? "").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmtAgo=(s)=>{ if(!s) return "never"; const d=Math.floor(Date.now()/1000)-s;
+  if(d<60)return d+"s ago"; if(d<3600)return Math.floor(d/60)+"m ago";
+  if(d<86400)return Math.floor(d/3600)+"h ago"; return Math.floor(d/86400)+"d ago"; };
+const fmtDur=(s)=>s<60 ? s+"s" : Math.floor(s/60)+"m "+(s%60)+"s";
+// Explicit parts rather than dateStyle:"short" — that renders a 2-digit year.
+const fmtWhen=(s)=>new Date(s*1000).toLocaleString(undefined,{year:"numeric",month:"numeric",
+  day:"numeric",hour:"numeric",minute:"2-digit",second:"2-digit"});
+// Canonical USD mask: $150.00, $1,234.56 — 2 decimals + thousands separator;
+// tiny agent costs keep up to 4 decimals so a $0.004 run isn't shown as $0.00.
+const money=(n)=>new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",
+  minimumFractionDigits:2, maximumFractionDigits:(Math.abs(n||0)<0.1?4:2)}).format(n||0);
+const normStatus=(s)=>s==="ok"?"success":(s||"—");
+// effort level → human label (empty = the flag is omitted and the CLI decides)
+const EFFORT_LABELS={"":"default","low":"Low","medium":"Medium","high":"High","xhigh":"Extra high","max":"Max"};
+const effortLabel=(v)=>EFFORT_LABELS[v||""]||v;
+const fmtBytes=(b)=>{ if(!b) return "0 B"; const u=["B","KB","MB","GB"]; let i=0;
+  while(b>=1024 && i<u.length-1){ b/=1024; i++; } return (i?b.toFixed(1):b)+" "+u[i]; };
+const DOW=["","Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+function fmtDays(arr){
+  const a=[...new Set((arr||[]).map(Number))].filter(n=>n>=1&&n<=7).sort((x,y)=>x-y);
+  if(!a.length) return "—";
+  const s=a.join(",");
+  if(s==="1,2,3,4,5,6,7") return "Every day";
+  if(s==="1,2,3,4,5") return "Mon–Fri";
+  if(s==="6,7") return "Sat–Sun";
+  return a.map(n=>DOW[n]).join(", ");
+}
+// The precheck's first output line as a bulleted key:value list on its own row,
+// so it never wraps against the "nothing to do" text.
+function checkList(output){
+  const raw=String(output||"").split("\n")[0];
+  if(!raw) return "";
+  const pairs=[...raw.matchAll(/([A-Za-z_]+)=(\S+)/g)];
+  const rest=raw.replace(/[A-Za-z_]+=\S+/g,"").replace(/->/g,"→").replace(/\s+/g," ").trim();
+  const items=pairs.map(m=>'<li>'+esc(m[1].replace(/_/g," "))+': <span class="ck-v">'+esc(m[2])+'</span></li>');
+  if(rest) items.push('<li>'+esc(rest)+'</li>');
+  return items.length ? '<ul class="checklist">'+items.join("")+'</ul>' : '';
+}
+
+function toast(msg,isErr,iconName){
+  const t=$("toast");
+  t.innerHTML=(I[iconName||((isErr)?"xcircle":"check")]||"")+"<span>"+esc(msg)+"</span>";
+  t.className=isErr?"show err":"show";
+  clearTimeout(t._h); t._h=setTimeout(()=>t.className="",2600);
+}
+
+async function api(op, extra){
+  const r = await fetch("/api/action", {method:"POST",
+    headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+    body: JSON.stringify(Object.assign({op}, extra))});
+  const j = await r.json().catch(()=>({}));
+  if(!r.ok || j.ok===false){ toast((j.output||j.error||("HTTP "+r.status)), true); return false; }
+  return true;
+}
+
+/* ------------------------------------------------------------ confirm modal */
+let _cfResolve=null;
+function showConfirm(o){
+  $("cf-halo").className="halo "+(o.tone==="danger"?"b-err":"b-warn");
+  $("cf-halo").innerHTML=I[o.icon||"alert"]||I.alert;
+  $("cf-title").textContent=o.title||"Are you sure?";
+  $("cf-msg").textContent=o.message||"";
+  const mono=$("cf-mono");
+  if(o.mono){ mono.textContent=o.mono; mono.hidden=false; } else { mono.hidden=true; }
+  const ok=$("cf-ok");
+  ok.textContent=o.confirmLabel||"Confirm";
+  ok.className="btn "+(o.tone==="danger"?"danger":"primary");
+  $("confirm").showModal();
+  return new Promise(res=>{ _cfResolve=res; });
+}
+$("cf-ok").addEventListener("click",()=>{ $("confirm").close(); if(_cfResolve){_cfResolve(true);_cfResolve=null;} });
+$("cf-cancel").addEventListener("click",()=>{ $("confirm").close(); if(_cfResolve){_cfResolve(false);_cfResolve=null;} });
+$("confirm").addEventListener("cancel",()=>{ if(_cfResolve){_cfResolve(false);_cfResolve=null;} });
+
+/* ---------------------------------------------------------------- refresh */
+async function refresh(){
+  try{
+    const r = await fetch("/api/data", {headers:{"X-CC-Token":TOKEN}});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    DATA = await r.json();
+    // Server upgraded since this page loaded → reload once to pick up new UI.
+    if(DATA.build && DATA.build!==BUILD && sessionStorage.ccReloadedFor!==DATA.build){
+      sessionStorage.ccReloadedFor=DATA.build; location.reload(); return;
+    }
+    render();
+  }catch(e){ $("updated").textContent = "server unreachable — "+e.message; }
+}
+
+let jobProjectFilter="";  // "" = all, "__none__" = standalone, else a project name
+let collapsedGroups=new Set(JSON.parse(localStorage.ccCollapsed||"[]"));
+
+function projById(name){ return (DATA.projects||[]).find(p=>p.name===name)||null; }
+// effective value with project inheritance: job's own, else project's, else default
+function eff(j, field, def){
+  if(j[field]!=null && j[field]!=="") return j[field];
+  const p=j.project?projById(j.project):null;
+  if(p && p[field]!=null && p[field]!=="") return p[field];
+  return def;
+}
+
+// Mirrors in_window() in the bash engine: is NOW inside the job's active window?
+// Same rules — active_days is 1=Mon..7=Sun, active_hours is "HH:MM-HH:MM" and
+// may cross midnight; an empty/absent value means "no restriction".
+function inWindow(j, when){
+  const now=when||new Date();
+  const days=j.active_days;
+  if(Array.isArray(days) && days.length){
+    const dow=now.getDay()===0?7:now.getDay();   // JS 0=Sun → 7
+    if(!days.map(Number).includes(dow)) return false;
+  }
+  const hours=j.active_hours;
+  if(hours && /^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(hours)){
+    const [a,b]=hours.split("-");
+    const toMin=(s)=>{ const [h,m]=s.split(":").map(Number); return h*60+m; };
+    const s=toMin(a), e=toMin(b), nowMin=now.getHours()*60+now.getMinutes();
+    if(s<=e){ if(!(nowMin>=s && nowMin<e)) return false; }
+    else { if(!(nowMin>=s || nowMin<e)) return false; }   // window crosses midnight
+  }
+  return true;
+}
+
+// When the next precheck will actually happen. The tick skips any job outside
+// its window (in_window is checked BEFORE the precheck), so "last + interval" is
+// wrong once that lands outside the schedule — the real answer is when the
+// window next opens. Returns epoch seconds, or null if nothing fits in 8 days.
+function nextCheckAt(j, fromEpoch){
+  const from=new Date(fromEpoch*1000);
+  if(inWindow(j, from)) return fromEpoch;
+  const days=(Array.isArray(j.active_days)&&j.active_days.length)?j.active_days.map(Number):null;
+  const hours=(j.active_hours && /^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(j.active_hours))?j.active_hours:null;
+  const [oh,om]=(hours?hours.split("-")[0]:"00:00").split(":").map(Number);
+  for(let i=0;i<=8;i++){
+    const c=new Date(from); c.setDate(c.getDate()+i); c.setHours(oh,om,0,0);
+    if(c.getTime()<from.getTime()) continue;      // that day's opening already passed
+    const dow=c.getDay()===0?7:c.getDay();
+    if(days && !days.includes(dow)) continue;
+    return Math.floor(c.getTime()/1000);
+  }
+  return null;
+}
+
+function jobCard(j){
+  const t0=Math.floor(new Date().setHours(0,0,0,0)/1000);
+  const st=DATA.state[j.id]||{}, disabled=j.enabled===false;
+  const chk=(DATA.checks||{})[j.id]||{checks:0,runs:0};
+  const spentToday=DATA.runs.filter(r=>r.id===j.id && r.start>=t0).reduce((a,r)=>a+(r.cost||0),0);
+  const cap=(j.daily_budget_usd!=null?+j.daily_budget_usd:null);
+  const capped=(cap!=null && spentToday>=cap);
+  // Due time by interval, then pushed to the next window opening if that falls
+  // outside the schedule — so the card never promises a check that cannot run.
+  const dueAt=st.last_start?(st.last_start+(j.interval_seconds||300)):Math.floor(Date.now()/1000);
+  const nextAt=nextCheckAt(j, dueAt);
+  const next = j.enabled===false ? '<span class="muted">disabled</span>'
+    : (nextAt==null ? '<span class="muted">no matching window</span>'
+    : esc(fmtWhen(nextAt))+(nextAt>dueAt+30?' <span class="muted">· when the window reopens</span>':''));
+  const pc=st.last_precheck||null;
+  let checkStr=fmtAgo(st.last_start);
+  if(pc && typeof pc==="object"){ checkStr+=" — "+(pc.exit===0?"work found":"nothing to do")+checkList(pc.output); }
+  const rs=normStatus(st.last_run_status||"");
+  const runStr = st.last_status==="running"
+    ? '<span class="runningbadge"><span class="pulse"></span>running now…</span>'
+    : (st.last_run_start ? fmtAgo(st.last_run_start)+' <span class="stat-cell s-'+esc(rs)+'">'+(STATUS_ICON[rs]||"")+esc(rs)+'</span>' : "never");
+  const model=eff(j,"model","opus"), perm=eff(j,"permission_mode","dontAsk"), budg=eff(j,"max_budget_usd",2);
+  const kv='<dl class="kv">'
+    +'<dt>'+I.clock+'Every</dt><dd>'+fmtDur(j.interval_seconds||300)+'</dd>'
+    +'<dt>'+I.calendar+'Window</dt><dd>'+esc(j.active_hours||"24h")+' · '+esc(fmtDays(j.active_days||[1,2,3,4,5,6,7]))+'</dd>'
+    +'<dt>'+I.play+'Last run</dt><dd>'+runStr+'</dd>'
+    +'<dt>'+I.radar+'Last check</dt><dd>'+checkStr+'</dd>'
+    +'<dt>'+I.cright+'Next check</dt><dd>'+next+'</dd>'   /* already escaped above */
+    +'<dt>'+I.dollar+'Today</dt><dd>'+money(spentToday)
+      +(cap!=null ? ' / '+money(cap)+(capped?' <span class="s-error">· capped</span>':'') : ' <span class="muted">· no cap</span>')+'</dd>'
+    +'<dt>'+I.cpu+'Model</dt><dd>'+esc(model)+' · cap '+money(budg)+'/run · '+esc(perm)+'</dd>'
+    +'<dt>'+I.activity+'Effort</dt><dd>'+esc(effortLabel(eff(j,"effort","")))+'</dd>'
+    +'<dt>'+I.activity+'Checks (24h)</dt><dd>'+chk.checks+' automatic check'+(chk.checks===1?"":"s")+' · '+chk.runs+' run'+(chk.runs===1?"":"s")+' woken</dd>'
+    +'</dl>';
+  // Badge has three states: disabled (red), idle (amber — enabled but outside
+  // its active window and not currently running), enabled (green).
+  const running=st.last_status==="running";
+  const idle=!disabled && !running && !inWindow(j);
+  const pillCls=disabled?"off":(idle?"idle":"on");
+  const pillTxt=disabled?"disabled":(idle?"idle":"enabled");
+  const pillTip=idle?' title="Outside its active window — no runs until the window reopens"':"";
+  return '<div class="card"><h2><span class="jobname">'+I.bot+esc(j.id)+'</span>'
+    +'<span class="pill '+pillCls+'"'+pillTip+'>'+pillTxt+'</span></h2>'
+    +'<div class="desc">'+esc(j.description||"")+'</div>'
+    +kv
+    +'<div class="actions">'
+    +'<button class="btn primary" data-op="run" data-id="'+esc(j.id)+'">'+I.play+'Run now</button>'
+    +'<button class="btn" data-op="'+(disabled?"enable":"disable")+'" data-id="'+esc(j.id)+'">'+I.power+(disabled?"Enable":"Disable")+'</button>'
+    +'<button class="btn" data-op="edit" data-id="'+esc(j.id)+'">'+I.pencil+'Edit</button>'
+    +'<button class="btn danger" data-op="delete" data-id="'+esc(j.id)+'">'+I.trash+'Delete</button>'
+    +'</div></div>';
+}
+
+function collapsibleGroup(key, headerInner, cards){
+  const collapsed=collapsedGroups.has(key);
+  return '<div class="projgroup'+(collapsed?" collapsed":"")+'" data-group="'+esc(key)+'">'
+    +'<div class="projgroup-h" data-toggle="'+esc(key)+'">'+headerInner
+      +'<span class="pgh-chevron">'+I.cdown+'</span></div>'
+    +'<div class="projgroup-body"><div class="pgb-inner"><div class="grid">'+cards+'</div></div></div>'
+  +'</div>';
+}
+
+function renderJobs(){
+  const jobs=DATA.jobs||[];
+  const projects=[...new Set(jobs.map(j=>j.project||"").filter(Boolean))].sort();
+  const nStandalone=jobs.filter(j=>!j.project).length;
+  if(jobProjectFilter && jobProjectFilter!=="__none__" && !projects.includes(jobProjectFilter)) jobProjectFilter="";
+
+  // chips (shown only when at least one project exists)
+  if(projects.length){
+    const chips=[["","All"]].concat(projects.map(p=>[p,p]));
+    if(nStandalone) chips.push(["__none__","Standalone"]);
+    $("projchips").innerHTML=chips.map(([v,l])=>{
+      const cnt = v===""?jobs.length : v==="__none__"?nStandalone : jobs.filter(j=>j.project===v).length;
+      return '<button class="projchip'+(jobProjectFilter===v?" active":"")+'" data-proj="'+esc(v)+'">'
+        +(v&&v!=="__none__"?I.folder:"")+esc(l)+' <span class="chipn">'+cnt+'</span></button>';
+    }).join("");
+  } else { $("projchips").innerHTML=""; }
+
+  // no projects at all → flat grid, no group chrome
+  if(!projects.length){
+    $("jobs").innerHTML = jobs.length ? '<div class="grid">'+jobs.map(jobCard).join("")+'</div>'
+      : '<div class="card empty">'+I.inbox+'No jobs yet — create one.</div>';
+    return;
+  }
+
+  const names = jobProjectFilter==="" ? projects : (jobProjectFilter==="__none__" ? [] : [jobProjectFilter]);
+  const showStandalone = (jobProjectFilter===""||jobProjectFilter==="__none__") && nStandalone>0;
+  let html="";
+  for(const name of names){
+    const js=jobs.filter(j=>j.project===name); if(!js.length) continue;
+    const p=projById(name);
+    const head='<span class="pgh-ic">'+I.folder+'</span><span class="pgh-name">'+esc(name)+'</span>'
+      +'<span class="pgh-count">'+js.length+' job'+(js.length===1?"":"s")+'</span>'
+      +(p&&p.description?'<span class="pgh-desc">'+esc(p.description)+'</span>':'')
+      +'<span class="spacer"></span>'
+      +'<button class="pgh-edit" data-editproj="'+esc(name)+'" title="Edit project">'+I.pencil+'</button>';
+    html+=collapsibleGroup(name, head, js.map(jobCard).join(""));
+  }
+  if(showStandalone){
+    const js=jobs.filter(j=>!j.project);
+    const head='<span class="pgh-ic">'+I.folder+'</span><span class="pgh-name standalone">Standalone jobs</span>'
+      +'<span class="pgh-count">'+js.length+' job'+(js.length===1?"":"s")+'</span>'
+      +'<span class="spacer"></span>';
+    html+=collapsibleGroup("__standalone__", head, js.map(jobCard).join(""));
+  }
+  $("jobs").innerHTML = html || '<div class="card empty">'+I.inbox+'No jobs in this view.</div>';
+}
+
+/* ---- projects modal ---- */
+let editingProject=null;
+function openProjectEditor(name){
+  editingProject=name||null;
+  const p=name?projById(name):null;
+  $("pj-halo").innerHTML=name?I.pencil:I.plus;
+  $("pj-title").textContent=name?("Edit project — "+name):"New project";
+  $("pj-name").value=p?p.name:""; $("pj-name").disabled=!!name;
+  $("pj-desc").value=(p&&p.description)||"";
+  $("pj-cwd").value=(p&&p.cwd)||"";
+  $("pj-delete").style.display=name?"":"none";
+  $("projmodal").showModal();
+}
+async function projApi(op, extra){
+  const r=await fetch("/api/action",{method:"POST",headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+    body:JSON.stringify(Object.assign({op}, extra))});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok||j.ok===false){ toast(j.output||j.error||("HTTP "+r.status),true); return false; }
+  return true;
+}
+async function saveProject(){
+  const btn=$("pj-save"); btn.disabled=true;
+  try{
+    const name=$("pj-name").value.trim();
+    if(!name){ toast("Project name is required",true); return; }
+    const proj={name};
+    const d=$("pj-desc").value.trim(); if(d) proj.description=d;
+    const c=$("pj-cwd").value.trim(); if(c) proj.cwd=c;
+    if(!await projApi("project_set",{project:proj})) return;
+    $("projmodal").close(); toast("Saved project "+name); refresh();
+  } finally { btn.disabled=false; }
+}
+async function deleteProjectFromModal(){
+  if(!editingProject) return;
+  const yes=await showConfirm({tone:"danger",icon:"trash",title:"Delete project "+editingProject+"?",
+    message:"The project is removed. Its jobs keep their project label but stop inheriting its cwd/description; their runs are untouched.",
+    confirmLabel:"Delete project"});
+  if(!yes) return;
+  if(!await projApi("project_delete",{name:editingProject})) return;
+  $("projmodal").close(); toast("Deleted project "+editingProject); refresh();
+}
+
+function render(){
+  const _g=DATA.generated?new Date(DATA.generated):null;
+  $("updated").textContent=(_g&&!isNaN(_g))?_g.toLocaleString(undefined,{dateStyle:"medium",timeStyle:"medium"}):"";
+  $("pill-launchd").innerHTML='<span class="pill '+(DATA.launchd_loaded?"on":"off")+'">'
+    +(DATA.launchd_loaded?I.check+"launchd":I.xcircle+"launchd off")+'</span>';
+
+  const today=new Date(); today.setHours(0,0,0,0);
+  const t0=Math.floor(today.getTime()/1000), wk=Math.floor(Date.now()/1000)-7*86400;
+  const sum=(rs,f)=>rs.reduce((a,r)=>a+(f(r)||0),0);
+  const rt=DATA.runs.filter(r=>r.start>=t0), rw=DATA.runs.filter(r=>r.start>=wk);
+  const tiles=[
+    [I.activity,"b-accent",rt.length,"Runs today"],
+    [I.dollar,"b-accent",money(sum(rt,r=>r.cost)),"Spent today"],
+    [I.calendar,"b-accent",rw.length,"Runs (7d)"],
+    [I.dollar,"b-accent",money(sum(rw,r=>r.cost)),"Spent (7d)"],
+    [I.alert,"b-warn",rw.filter(r=>normStatus(r.status)==="warning").length,"Warnings (7d)"],
+    [I.xcircle,"b-err",rw.filter(r=>normStatus(r.status)==="error").length,"Errors (7d)"],
+  ];
+  $("stats").innerHTML=tiles.map(([icn,tone,n,l])=>
+    '<div class="stat"><div class="stat-top"><div class="bubble '+tone+'">'+icn+'</div><div class="n">'+esc(n)+'</div></div><div class="l">'+esc(l)+'</div></div>').join("");
+
+  renderJobs();
+  renderRuns();
+  $("foot").textContent="claude-cron · control server on 127.0.0.1 · SQLite index.db ("
+    +fmtBytes(DATA.db_bytes)+") holds run history & search · runs.ndjson is the append journal";
+}
+
+/* ------------------------------------------- runs: search + filters + pages */
+const RF={project:"",job:"",status:"",from:"",to:""};
+let pageSize=parseInt(localStorage.ccPageSize||"25",10)||25, page=1;
+let searchKeys=null, snippets={}, searchSeq=0;
+
+function activeFilterCount(){ return ["project","job","status","from","to"].filter(k=>RF[k]).length; }
+
+// Runs happening right now. They are not in the journal yet (a record is only
+// written when a run ends), so synthesize rows from the live state — that is what
+// puts an in-flight run in the table, where its log can be followed live.
+function liveRuns(){
+  const now=Math.floor(Date.now()/1000), out=[];
+  for(const [id,st] of Object.entries(DATA.state||{})){
+    if(st && st.last_status==="running" && st.last_start){
+      const j=(DATA.jobs||[]).find(x=>x.id===id)||{};
+      out.push({id, start:st.last_start, status:"running", duration:Math.max(0,now-st.last_start),
+                cost:null, session:"", project:j.project||"", live:true});
+    }
+  }
+  return out.sort((a,b)=>b.start-a.start);
+}
+
+function filteredRuns(){
+  const fromT=RF.from?Date.parse(RF.from):null, toT=RF.to?Date.parse(RF.to):null;
+  // live rows first — a search narrows to indexed runs, so they drop out there
+  const live=searchKeys?[]:liveRuns();
+  return live.concat(DATA.runs).filter(r=>{
+    if(r.live){
+      if(RF.project){ const rp=r.project||""; if(RF.project==="__none__" ? rp!=="" : rp!==RF.project) return false; }
+      if(RF.job && r.id!==RF.job) return false;
+      if(RF.status && RF.status!=="running") return false;
+      return true;
+    }
+    if(searchKeys && !searchKeys.has(r.id+"|"+r.start)) return false;
+    if(RF.project){ const rp=r.project||""; if(RF.project==="__none__" ? rp!=="" : rp!==RF.project) return false; }
+    if(RF.job && r.id!==RF.job) return false;
+    if(RF.status && normStatus(r.status)!==RF.status) return false;
+    const t=r.start*1000;
+    if(fromT && t<fromT) return false;
+    if(toT && t>toT) return false;
+    return true;
+  });
+}
+
+/* ---- hover tooltip (fixed bubble on <body>, so no container can clip it) ---- */
+let _tipEl=null;
+function tipShow(anchor, html){
+  if(!_tipEl){ _tipEl=document.createElement("div"); _tipEl.id="tipbubble"; document.body.appendChild(_tipEl); }
+  _tipEl.innerHTML=html; _tipEl.style.visibility="hidden"; _tipEl.classList.remove("show");
+  // measure, then place above the anchor (flipping below when there's no room)
+  const a=anchor.getBoundingClientRect(), b=_tipEl.getBoundingClientRect();
+  let left=Math.min(Math.max(8, a.left+a.width/2-b.width/2), window.innerWidth-b.width-8);
+  const above=a.top-b.height-9;
+  _tipEl.style.left=left+"px";
+  _tipEl.style.top=(above>8 ? above : a.bottom+9)+"px";
+  _tipEl.style.visibility="visible";
+  requestAnimationFrame(()=>_tipEl&&_tipEl.classList.add("show"));
+}
+function tipHide(){ if(_tipEl){ _tipEl.classList.remove("show"); _tipEl.style.visibility="hidden"; } }
+function initTooltips(){
+  document.addEventListener("mouseover",(e)=>{ const t=e.target.closest("[data-tip]"); if(t) tipShow(t, decodeURIComponent(t.dataset.tip)); });
+  document.addEventListener("mouseout",(e)=>{ if(e.target.closest("[data-tip]")) tipHide(); });
+  document.addEventListener("scroll",tipHide,true);
+}
+
+/* ---- resume bookkeeping: which failed run was already resumed, and into what ---- */
+let resumedRuns={};
+try{ resumedRuns=JSON.parse(localStorage.ccResumed||"{}"); }catch(e){ resumedRuns={}; }
+const runKey=(id,start)=>id+"|"+start;
+function markResumed(id,start){
+  resumedRuns[runKey(id,start)]=Math.floor(Date.now()/1000);
+  localStorage.ccResumed=JSON.stringify(resumedRuns);
+}
+// The run that followed a failed one — the job's next run after it, or its live
+// run if one is going. Derived from the data, NOT from the click: localStorage is
+// per-browser, so a resume clicked elsewhere (or before this existed) would
+// otherwise still look un-resumed. If a later run exists, the failure has been
+// followed up and must not be resumed again.
+function resumeTarget(id, after){
+  const later=(DATA.runs||[]).filter(r=>r.id===id && r.start>after+1).sort((a,b)=>a.start-b.start);
+  const st=(DATA.state||{})[id]||{};
+  const live=(st.last_status==="running" && st.last_start>after+1) ? {run:{id, start:st.last_start}, running:true} : null;
+  if(later.length && live) return (later[0].start<=live.run.start) ? {run:later[0], running:false} : live;
+  if(later.length) return {run:later[0], running:false};
+  return live;
+}
+function resumeTip(id, start){
+  const t=resumeTarget(id, start);
+  if(!t) return "";
+  const clickedAt=resumedRuns[runKey(id,start)];   // set only if resumed from this browser
+  const head=clickedAt ? "Resumed into a new run" : "Followed by a new run";
+  let rows=clickedAt ? '<div class="tt-row"><span class="tt-k">Resumed at</span><span class="tt-v">'+esc(fmtWhen(clickedAt))+'</span></div>' : "";
+  rows+='<div class="tt-row"><span class="tt-k">New run</span><span class="tt-v">'+esc(fmtWhen(t.run.start))+'</span></div>';
+  if(t.running){
+    rows+='<div class="tt-row"><span class="tt-k">Session</span><span class="tt-v"><span class="runningbadge"><span class="pulse"></span>running now…</span></span></div>'
+      +'<div class="tt-foot">Its session id is recorded when the run finishes.</div>';
+  } else {
+    const s=normStatus(t.run.status||"");
+    rows+='<div class="tt-row"><span class="tt-k">Session</span><span class="tt-v"><code>'+esc((t.run.session||"—").slice(0,8))+'</code></span></div>'
+      +'<div class="tt-row"><span class="tt-k">Outcome</span><span class="tt-v stat-cell s-'+esc(s)+'">'+(STATUS_ICON[s]||"")+esc(s)+'</span></div>'
+      +'<div class="tt-foot">Open that row&rsquo;s log to see what it did.</div>';
+  }
+  return '<div class="tt-h">'+I.play+esc(head)+'</div>'+rows;
+}
+
+function renderRuns(){
+  const all=filteredRuns();
+  const pages=Math.max(1,Math.ceil(all.length/pageSize));
+  if(page>pages) page=pages;
+  const slice=all.slice((page-1)*pageSize, page*pageSize);
+  $("runs").innerHTML = slice.map(r=>{
+    const s=normStatus(r.status);
+    const snip=searchKeys?(snippets[r.id+"|"+r.start]||""):"";
+    // For a failed run: has the job run again since? (drives the disabled Resume
+    // button and the "?" badge, and is true regardless of which browser resumed it)
+    const followUp = s==="error" ? resumeTarget(r.id, r.start) : null;
+    return "<tr><td class=num>"+esc(fmtWhen(r.start))
+      +(r.forced?'<span class="trigger-badge">forced</span>':'')
+      +(snip?'<div class="snip" title="'+esc(snip)+'">'+esc(snip)+'</div>':'')+"</td>"
+      +"<td><code>"+esc(r.id)+"</code></td>"
+      +'<td>'+(r.project?'<span class="projtag">'+I.folder+esc(r.project)+'</span>':'<span class="muted">—</span>')+'</td>'
+      +'<td>'+(r.live
+          ? '<span class="runningbadge"><span class="pulse"></span>running…</span>'
+          : '<span class="stat-cell s-'+esc(s)+'">'+(STATUS_ICON[s]||"")+esc(s)+"</span>"
+            +((s==="error" && followUp)
+               ? '<span class="tipbadge" data-tip="'+encodeURIComponent(resumeTip(r.id,r.start)).replace(/"/g,"%22")+'">?</span>' : ""))
+      +"</td>"
+      +"<td class=num>"+esc(fmtDur(r.duration))+(r.live?' <span class="muted">so far</span>':"")+"</td>"
+      +"<td class=num>"+(r.live?'<span class="muted">—</span>':esc(money(r.cost)))+"</td>"
+      +"<td><code>"+esc((r.session||"").slice(0,8)||"—")+"</code></td>"
+      +'<td class="rowacts">'
+        +'<button class="iconbtn'+(r.live?' live':'')+'" title="'+(r.live?"Follow this run live":"View log")+'"'
+          +' data-log-id="'+esc(r.id)+'" data-log-start="'+esc(r.start)+'">'+I.eye+'</button>'
+        // A failed run is worth retrying — offer it right where the failure shows.
+        // Reuses the Run-now op, so it inherits the precheck guard and toasts.
+        // Always rendered (disabled when not applicable) so every row's icons
+        // line up in the same columns.
+        // Disabled once the job has run again (resumed here or anywhere) — a
+        // second resume would just duplicate work. The "?" says where it went.
+        +(r.live ? '<button class="iconbtn retry" disabled title="This run is still going">'+I.play+'</button>'
+         : s==="error"
+           ? (followUp
+              ? '<button class="iconbtn retry" disabled title="'
+                +(followUp.running?"A newer run is in progress":"Already followed by a newer run")
+                +' — see the ? beside the status">'+I.play+'</button>'
+              : '<button class="iconbtn retry" title="Resume — run '+esc(r.id)+' again now"'
+                +' data-op="run" data-id="'+esc(r.id)+'" data-resume-key="'+esc(runKey(r.id,r.start))+'">'+I.play+'</button>')
+           : '<button class="iconbtn retry" disabled title="Only failed runs can be resumed">'+I.play+'</button>')
+      +'</td></tr>';
+  }).join("") || '<tr><td colspan=8 class="empty">'+I.inbox
+      +(DATA.runs.length?(searchKeys?"No runs match this search.":"No runs match the filters."):"No runs recorded yet.")+'</td></tr>';
+  $("pg-info").textContent="Page "+page+" / "+pages+" · "+all.length+" run"+(all.length===1?"":"s")
+    +(searchKeys?" · searching logs":"");
+  $("pg-prev").disabled = page<=1;
+  $("pg-next").disabled = page>=pages;
+  const n=activeFilterCount();
+  $("f-toggle").innerHTML=I.filter+"Filters "+(n?'<span class="fbadge">'+n+"</span>":"")+I.cdown;
+  const ids=[...new Set(DATA.runs.map(r=>r.id))].sort(), sig=ids.join("|"), sel=$("f-job");
+  if(sel.dataset.sig!==sig){
+    const cur=sel.value;
+    sel.innerHTML='<option value="">All jobs</option>'+ids.map(i=>'<option>'+esc(i)+'</option>').join("");
+    sel.value=cur; sel.dataset.sig=sig;
+  }
+  const projs=[...new Set(DATA.runs.map(r=>r.project||"").filter(Boolean))].sort();
+  const psig=projs.join("|"), psel=$("f-project");
+  if(psel.dataset.sig!==psig){
+    const cur=psel.value;
+    psel.innerHTML='<option value="">All projects</option>'+projs.map(p=>'<option>'+esc(p)+'</option>').join("")
+      +(DATA.runs.some(r=>!r.project)?'<option value="__none__">No project</option>':"");
+    psel.value=cur; psel.dataset.sig=psig;
+  }
+}
+
+async function runSearch(q){
+  const seq=++searchSeq;
+  if(!q || q.trim().length<2){ searchKeys=null; snippets={}; renderRuns(); return; }
+  try{
+    const r=await fetch("/api/search?q="+encodeURIComponent(q.trim()), {headers:{"X-CC-Token":TOKEN}});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    const j=await r.json();
+    if(seq!==searchSeq) return;            // a newer query superseded this one
+    searchKeys=new Set(); snippets={};
+    (j.results||[]).forEach(x=>{ const k=x.id+"|"+x.start; searchKeys.add(k); if(x.snippet) snippets[k]=x.snippet; });
+    page=1; renderRuns();
+  }catch(e){ if(seq===searchSeq) toast("Search failed — "+e.message, true); }
+}
+
+/* ---------------------------------------------------------------- editor */
+const DEFAULT_PRECHECK="#!/bin/bash\n# Exit 0 to wake a Claude run; exit 1 to stay idle (a skipped tick costs nothing).\n# Put a cheap check here — curl an API, grep a log, test a file.\nexit 0\n";
+
+function getDays(){
+  return [...document.querySelectorAll("#ed-days-pick .day-btn.on")].map(b=>+b.dataset.day);
+}
+function setDays(arr){
+  const on=new Set((arr&&arr.length?arr:[]).map(Number));
+  document.querySelectorAll("#ed-days-pick .day-btn").forEach(b=>b.classList.toggle("on", on.has(+b.dataset.day)));
+}
+function fmtBudget(){ const el=$("ed-budget"), v=parseFloat(el.value.replace(/[^0-9.]/g,""));
+  el.value=isNaN(v)?"":v.toFixed(2); }
+
+/* ---- reusable searchable combobox (project select, model select) ---- */
+function createCombo(cfg){
+  // cfg: {id, allowNone, noneLabel, def, withIcon, onPick}
+  // DOM: <id>-combo wrapper, -trigger, -val, -pop, -search, -opts; hidden input #<id>.
+  const st={opts:[], val:"", active:0};
+  const g=(s)=>$(cfg.id+"-"+s), hid=()=>$(cfg.id);
+  const norm=(o)=>(typeof o==="string")?{v:o,label:o}:o;
+  function items(q){
+    const raw=(q||"").trim();
+    q=raw.toLowerCase();
+    const out=[];
+    if(cfg.allowNone) out.push({v:"",label:cfg.noneLabel||"— None —",none:true});
+    for(const o of st.opts){ if(!q||o.label.toLowerCase().includes(q)||o.v.toLowerCase().includes(q)) out.push(o); }
+    // Let an id the list doesn't know be entered by hand — a model can exist in
+    // the API before the installed CLI lists it (claude-opus-5 did exactly that).
+    if(cfg.allowCustom && raw && !st.opts.some(o=>o.v.toLowerCase()===q)){
+      out.push({v:raw, label:'Use "'+raw+'"', custom:true});
+    }
+    return out;
+  }
+  function labelFor(v){ const o=st.opts.find(x=>x.v===v); return o?o.label:v; }
+  function renderTrigger(){
+    const e=g("val");
+    if(st.val){ e.textContent=labelFor(st.val); e.classList.remove("none"); }
+    else { e.textContent=cfg.noneLabel||"— None —"; e.classList.add("none"); }
+  }
+  function renderList(q){
+    const its=items(q), ul=g("opts");
+    if(!its.length){ ul.innerHTML='<div class="combo-empty">No match</div>'; return; }
+    if(st.active>its.length-1) st.active=its.length-1;
+    if(st.active<0) st.active=0;
+    ul.innerHTML=its.map((it,i)=>'<li role="option" data-v="'+esc(it.v)+'" class="'
+      +(it.none?"none ":"")+(it.v===st.val?"sel ":"")+(i===st.active?"active":"")+'">'
+      +((cfg.withIcon&&!it.none)?I.folder:"")+esc(it.label)+'</li>').join("");
+    const a=ul.querySelector("li.active"); if(a) a.scrollIntoView({block:"nearest"});
+  }
+  function positionPop(){
+    // fixed positioning so the popover escapes the dialog body's overflow clip
+    // (an absolute popover near the bottom gets cut off). Anchor to the trigger
+    // WITHOUT measuring the popover height (that was unreliable after the width
+    // change): drop down from the trigger bottom, or — when there's more room
+    // above — anchor the popover's bottom just above the trigger via `bottom`.
+    const pop=g("pop"), t=g("trigger").getBoundingClientRect(), vh=window.innerHeight;
+    pop.style.position="fixed"; pop.style.left=t.left+"px"; pop.style.width=t.width+"px"; pop.style.right="auto";
+    if((vh-t.bottom)>=t.top){ pop.style.top=(t.bottom+4)+"px"; pop.style.bottom="auto"; }
+    else { pop.style.bottom=(vh-t.top+4)+"px"; pop.style.top="auto"; }
+  }
+  function reposition(){ if(g("combo").classList.contains("open")) positionPop(); }
+  function open(){
+    g("combo").classList.add("open"); g("pop").hidden=false;
+    g("trigger").setAttribute("aria-expanded","true"); g("search").value="";
+    const its=items(""); st.active=Math.max(0, its.findIndex(it=>it.v===st.val));
+    renderList(""); positionPop(); g("search").focus({preventScroll:true});
+    // Re-anchor the fixed popover on any scroll or viewport change while open
+    // (scroll/resize fire even in a background tab, unlike rAF); the timeouts
+    // catch the layout settling right after open.
+    setTimeout(reposition,0); setTimeout(reposition,120);
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+  }
+  function close(){ const c=g("combo"); if(!c) return; c.classList.remove("open");
+    window.removeEventListener("scroll", reposition, true);
+    window.removeEventListener("resize", reposition);
+    const pop=g("pop"); pop.hidden=true;
+    pop.style.position=""; pop.style.left=""; pop.style.top=""; pop.style.bottom=""; pop.style.width=""; pop.style.right="";
+    g("trigger").setAttribute("aria-expanded","false"); }
+  function pick(v){ st.val=v||""; hid().value=st.val; renderTrigger(); close(); if(cfg.onPick) cfg.onPick(st.val); }
+  function set(val, options){
+    if(options) st.opts=options.map(norm);
+    let v=val||"";
+    if(!v && cfg.allowNone===false) v=cfg.def||(st.opts[0]&&st.opts[0].v)||"";
+    st.val=v; hid().value=v; renderTrigger(); close();
+  }
+  const caret=g("combo").querySelector(".combo-caret"); if(caret) caret.innerHTML=I.cdown;
+  g("trigger").addEventListener("click",()=>{ g("combo").classList.contains("open")?close():open(); });
+  g("search").addEventListener("input",()=>{ st.active=0; renderList(g("search").value); });
+  g("search").addEventListener("keydown",(e)=>{
+    const its=items(g("search").value);
+    if(e.key==="ArrowDown"){ e.preventDefault(); st.active=Math.min(st.active+1,its.length-1); renderList(g("search").value); }
+    else if(e.key==="ArrowUp"){ e.preventDefault(); st.active=Math.max(st.active-1,0); renderList(g("search").value); }
+    else if(e.key==="Enter"){ e.preventDefault(); const it=its[st.active]; if(it) pick(it.v); }
+    else if(e.key==="Escape"){ e.preventDefault(); close(); g("trigger").focus(); }
+  });
+  g("opts").addEventListener("click",(e)=>{ const li=e.target.closest("li[data-v]"); if(li) pick(li.dataset.v); });
+  document.addEventListener("click",(e)=>{ if(g("combo").classList.contains("open") && !e.target.closest("#"+cfg.id+"-combo")) close(); });
+  return {set, get:()=>st.val};
+}
+
+// You pick a FAMILY, never a version: the engine resolves it to that family's
+// newest model at run time (config/models.json, refreshed by `resolve-models`).
+// The label shows what it currently resolves to, so the choice stays honest.
+// Exact model ids only — each job states precisely which model it runs.
+let MODELS=[];
+async function loadModels(){
+  try{
+    const r=await fetch("/api/models",{headers:{"X-CC-Token":TOKEN}});
+    if(!r.ok) return;
+    const d=await r.json();
+    if(!d.models||!d.models.length) return;
+    MODELS=d.models.map(m=>({v:m, label:m}));
+    if(modelCombo) modelCombo.set(modelCombo.get(), MODELS);
+  }catch(e){ /* keep the built-in fallback list */ }
+}
+
+// Effort: slider position ↔ CLI value. 0 leaves it unset (the CLI decides).
+// slider stops, in order; labels come from the shared EFFORT_LABELS map
+const EFFORTS=["","low","medium","high","xhigh","max"];
+function setEffort(v){
+  const i=Math.max(0, EFFORTS.indexOf(v||""));
+  $("ed-effort").value=String(i);
+  $("ed-effort-label").textContent=(EFFORTS[i]===""?"Default (CLI decides)":effortLabel(EFFORTS[i]));
+}
+function getEffort(){ return EFFORTS[+$("ed-effort").value||0]; }
+const PERMS=[
+  {v:"dontAsk",label:"dontAsk — run tools without prompting"},
+  {v:"bypassPermissions",label:"bypassPermissions — full autonomy (headless default)"},
+  {v:"acceptEdits",label:"acceptEdits"},
+  {v:"auto",label:"auto"},
+  {v:"plan",label:"plan"},
+  {v:"manual",label:"manual"},
+];
+let projectCombo=null, modelCombo=null, permCombo=null;
+function initCombos(){
+  projectCombo=createCombo({id:"ed-project", allowNone:true, noneLabel:"— None —", withIcon:true,
+    onPick:(v)=>{ const p=v?projById(v):null; $("ed-cwd").placeholder=(p&&p.cwd)?("inherits from "+v+": "+p.cwd):"/Users/…/some-repo"; }});
+  modelCombo=createCombo({id:"ed-model", allowNone:false, def:"opus"});
+  modelCombo.set("opus", MODELS);
+  loadModels();
+  permCombo=createCombo({id:"ed-perm", allowNone:false, def:"dontAsk"});
+  permCombo.set("dontAsk", PERMS);
+}
+
+/* ---- system folder picker (backend lists dirs; browser can't expose abs paths) ---- */
+let _fsTarget=null, _fsPath="";
+async function fsLoad(path){
+  try{
+    const r=await fetch("/api/fs"+(path?("?path="+encodeURIComponent(path)):""),{headers:{"X-CC-Token":TOKEN}});
+    if(!r.ok){ toast("Cannot read that folder"); return; }
+    const d=await r.json();
+    _fsPath=d.path; $("fs-path").textContent=d.path;
+    let html="";
+    if(d.parent) html+='<li class="fs-up" data-path="'+esc(d.parent)+'">'+I.folder+'‹ parent folder</li>';
+    for(const dir of d.dirs) html+='<li data-path="'+esc(dir.path)+'">'+I.folder+esc(dir.name)+'</li>';
+    if(!d.dirs.length) html+='<li class="fs-empty">No sub-folders here</li>';
+    $("fs-list").innerHTML=html; $("fs-list").scrollTop=0;
+  }catch(e){ toast("Folder picker error"); }
+}
+async function fsOpen(targetId){
+  _fsTarget=targetId;
+  const cur=($(targetId).value||"").trim();
+  await fsLoad(cur||null);
+  $("fsmodal").showModal();
+}
+function initFolderPicker(){
+  $("fs-halo").innerHTML=I.folder;
+  $("fs-list").addEventListener("click",(e)=>{ const li=e.target.closest("li[data-path]"); if(li) fsLoad(li.dataset.path); });
+  $("fs-cancel").addEventListener("click",()=>$("fsmodal").close());
+  $("fs-use").addEventListener("click",()=>{ if(_fsTarget) $(_fsTarget).value=_fsPath; $("fsmodal").close(); });
+  document.addEventListener("click",(e)=>{ const b=e.target.closest("[data-cwd-target]"); if(b) fsOpen(b.dataset.cwdTarget); });
+}
+
+function fill(j){
+  // project combobox (searchable select of existing projects, or None)
+  const projs=[...new Set((DATA.projects||[]).map(p=>p.name).concat((DATA.jobs||[]).map(x=>x.project||"")).filter(Boolean))].sort();
+  projectCombo.set(j.project||"", projs);
+  $("ed-desc").value=j.description||"";
+  $("ed-cwd").value=j.cwd||"";
+  // when the job has a project with a cwd and no own cwd, show the inherited value
+  const _p=j.project?projById(j.project):null;
+  $("ed-cwd").placeholder=(_p&&_p.cwd)?("inherits from "+j.project+": "+_p.cwd):"/Users/…/some-repo";
+  $("ed-prompt").value=j.prompt||"";
+  $("ed-precheck").value=j._precheck||"";
+  $("ed-interval").value=Math.round((j.interval_seconds||300)/60);
+  modelCombo.set(j.model||"opus");
+  setEffort(j.effort||"");
+  const hp=String(j.active_hours||"").split("-");
+  $("ed-hours-start").value=hp[0]||""; $("ed-hours-end").value=hp[1]||"";
+  setDays(j.active_days||[]);
+  $("ed-budget").value=(j.max_budget_usd!=null?j.max_budget_usd:2).toFixed(2);
+  $("ed-daily").value=(j.daily_budget_usd!=null?Number(j.daily_budget_usd).toFixed(2):"");
+  // Both optional: empty means "no hard limit" / "no stall guard".
+  $("ed-timeout").value=j.timeout_seconds?Math.max(1,Math.round(j.timeout_seconds/60)):"";
+  $("ed-stall").value=j.stall_timeout_seconds?Math.max(1,Math.round(j.stall_timeout_seconds/60)):"";
+  permCombo.set(j.permission_mode||"dontAsk");
+}
+
+function openEditor(id){
+  const j=(DATA.jobs||[]).find(x=>x.id===id); if(!j) return;
+  editingId=id; creating=false;
+  $("ed-halo").innerHTML=I.pencil;
+  $("ed-title").textContent="Edit — "+id;
+  $("ed-id-row").style.display="none";
+  fill(j);
+  $("ed-save").textContent="Save changes";
+  $("editor").showModal();
+}
+
+function openCreator(){
+  editingId=null; creating=true;
+  $("ed-halo").innerHTML=I.plus;
+  $("ed-title").textContent="New job";
+  $("ed-id-row").style.display="";
+  $("ed-id").value="";
+  fill({_precheck:DEFAULT_PRECHECK, interval_seconds:300, model:"opus",
+        active_hours:"08:00-20:00", active_days:[1,2,3,4,5],
+        max_budget_usd:2, stall_timeout_seconds:1200, permission_mode:"dontAsk"});
+  $("ed-save").textContent="Create job";
+  $("editor").showModal();
+}
+
+function readForm(){
+  const hs=$("ed-hours-start").value, he=$("ed-hours-end").value;
+  if((hs && !he) || (!hs && he)){ toast("Active hours: fill both times, or neither for 24h", true); return null; }
+  const days=getDays();
+  if(!days.length){ toast("Pick at least one active day", true); return null; }
+  const dailyRaw=$("ed-daily").value.trim().replace(/[^0-9.]/g,"");
+  return {
+    secs: Math.max(60,(parseInt($("ed-interval").value,10)||5)*60),
+    model: $("ed-model").value||"opus",
+    effort: getEffort(),
+    hours: hs && he ? hs+"-"+he : "",
+    days,
+    budget: (parseFloat($("ed-budget").value.replace(/[^0-9.]/g,""))||2),
+    daily: dailyRaw==="" ? null : parseFloat(dailyRaw),   // null = no cap
+    // Both optional; null = leave unset (no hard limit / no stall guard).
+    timeoutSecs: $("ed-timeout").value.trim()==="" ? null : Math.max(60,(parseInt($("ed-timeout").value,10)||30)*60),
+    stallSecs: $("ed-stall").value.trim()==="" ? null : Math.max(60,(parseInt($("ed-stall").value,10)||20)*60),
+  };
+}
+
+async function saveEditor(){
+  const btn=$("ed-save"); btn.disabled=true;
+  try{
+    const f=readForm(); if(!f) return;
+    if(creating){
+      const id=$("ed-id").value.trim();
+      if(!/^[A-Za-z0-9_-]+$/.test(id)){ toast("id: only letters, digits, - and _",true); return; }
+      const prompt=$("ed-prompt").value.trim();
+      if(!prompt){ toast("prompt is required",true); return; }
+      const job={id, description:$("ed-desc").value.trim(), prompt, interval_seconds:f.secs,
+        model:f.model, active_hours:f.hours, active_days:f.days, max_budget_usd:f.budget,
+        permission_mode:$("ed-perm").value};
+      if(f.effort) job.effort=f.effort;
+      if(f.timeoutSecs!=null) job.timeout_seconds=f.timeoutSecs;
+      if(f.stallSecs!=null) job.stall_timeout_seconds=f.stallSecs;
+      if(f.daily!=null) job.daily_budget_usd=f.daily;
+      const proj=$("ed-project").value.trim(); if(proj) job.project=proj;
+      const cwd=$("ed-cwd").value.trim(); if(cwd) job.cwd=cwd;
+      if(!await api("create",{id, job, precheck:$("ed-precheck").value})) return;
+      $("editor").close(); toast("Created "+id); refresh(); return;
+    }
+    const id=editingId, j=(DATA.jobs||[]).find(x=>x.id===id)||{};
+    const setF=async(field,value,cur)=> String(value)===String(cur) ? true : api("set_field",{id,field,value:String(value)});
+    const prompt=$("ed-prompt").value.trim();
+    if(prompt && prompt!==(j.prompt||"")){ if(!await api("set_prompt",{id,prompt})) return; }
+    const pc=$("ed-precheck").value;
+    if(pc.trim() && pc!==(j._precheck||"")){ if(!await api("set_precheck",{id,script:pc})) return; }
+    if(!await setF("interval_seconds",f.secs,j.interval_seconds||300)) return;
+    if(!await setF("model",f.model,j.model||"opus")) return;
+    if(!await setF("effort",f.effort,j.effort||"")) return;
+    if(!await setF("active_hours",f.hours,j.active_hours||"")) return;
+    if(!await setF("active_days",f.days.join(","),(j.active_days||[]).join(","))) return;
+    if(!await setF("max_budget_usd",f.budget,(j.max_budget_usd!=null?j.max_budget_usd:2))) return;
+    const curDaily=(j.daily_budget_usd!=null?+j.daily_budget_usd:null);
+    if(f.daily!==curDaily){ if(!await api("set_field",{id,field:"daily_budget_usd",value:(f.daily==null?"":String(f.daily))})) return; }
+    const curTo=(j.timeout_seconds!=null?+j.timeout_seconds:null);
+    if(f.timeoutSecs!==curTo){ if(!await api("set_field",{id,field:"timeout_seconds",value:(f.timeoutSecs==null?"":String(f.timeoutSecs))})) return; }
+    const curStall=(j.stall_timeout_seconds!=null?+j.stall_timeout_seconds:null);
+    if(f.stallSecs!==curStall){ if(!await api("set_field",{id,field:"stall_timeout_seconds",value:(f.stallSecs==null?"":String(f.stallSecs))})) return; }
+    if(!await setF("project",$("ed-project").value.trim(),j.project||"")) return;
+    if(!await setF("description",$("ed-desc").value.trim(),j.description||"")) return;
+    if(!await setF("cwd",$("ed-cwd").value.trim(),j.cwd||"")) return;
+    if(!await setF("permission_mode",$("ed-perm").value,j.permission_mode||"dontAsk")) return;
+    $("editor").close(); toast("Saved "+id); refresh();
+  } finally { btn.disabled=false; }
+}
+
+/* ---------------------------------------------------------------- log modal */
+// Minimal, safe Markdown -> HTML. Input is HTML-escaped FIRST, then a small set
+// of block/inline rules are applied, so nothing the agent wrote can inject HTML.
+// Links are limited to http(s)/mailto.
+function mdInline(s){
+  const codes=[];
+  s=s.replace(/`([^`]+)`/g,(m,c)=>{ codes.push(c); return "@@CC"+(codes.length-1)+"@@"; });
+  s=s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,(m,t,u)=>
+    /^(https?:\/\/|mailto:)/i.test(u) ? '<a href="'+u+'" target="_blank" rel="noopener noreferrer">'+t+'</a>' : m);
+  s=s.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/__([^_]+)__/g,'<strong>$1</strong>');
+  s=s.replace(/(^|[^*])\*(?!\s)([^*\n]+?)\*/g,'$1<em>$2</em>');
+  s=s.replace(/@@CC(\d+)@@/g,(m,i)=>'<code>'+codes[+i]+'</code>');
+  return s;
+}
+function mdToHtml(src){
+  const lines=esc(src).replace(/\r/g,"").split("\n");
+  let html="", inCode=false, codeBuf=[], para=[], list=null;
+  const flushPara=()=>{ if(para.length){ html+='<p>'+mdInline(para.join(" "))+'</p>'; para=[]; } };
+  const flushList=()=>{ if(list){ html+='<ul>'+list.map(x=>'<li>'+mdInline(x)+'</li>').join("")+'</ul>'; list=null; } };
+  for(const line of lines){
+    if(/^\s*```/.test(line)){
+      if(inCode){ html+='<pre class="log">'+codeBuf.join("\n")+'</pre>'; codeBuf=[]; inCode=false; }
+      else { flushPara(); flushList(); inCode=true; }
+      continue;
+    }
+    if(inCode){ codeBuf.push(line); continue; }
+    const hd=line.match(/^(#{1,4})\s+(.*)$/);
+    if(hd){ flushPara(); flushList(); html+='<div class="md-h">'+mdInline(hd[2])+'</div>'; continue; }
+    const li=line.match(/^\s*[-*]\s+(.*)$/);
+    if(li){ flushPara(); (list=list||[]).push(li[1]); continue; }
+    if(line.trim()===""){ flushPara(); flushList(); continue; }
+    flushList(); para.push(line.trim());
+  }
+  if(inCode) html+='<pre class="log">'+codeBuf.join("\n")+'</pre>';
+  flushPara(); flushList();
+  return html || '<span class="muted">—</span>';
+}
+
+function statusPill(s){ const n=normStatus(s); return '<span class="stat-cell s-'+esc(n)+'">'+(STATUS_ICON[n]||"")+esc(n)+'</span>'; }
+
+function renderLog(d){
+  const rec=d.record||{}, a=d.agent||{};
+  const rows=[
+    ["When", esc(fmtWhen(rec.start))],
+    ["Status", statusPill(rec.status)],
+    ["Trigger", rec.forced ? "Run now (forced)" : "scheduled — precheck passed"],
+    ["Duration", esc(fmtDur(rec.duration||0))],
+    ["Cost", esc(money(rec.cost))],
+    // The job stores an alias ("opus"); model_id is what it actually resolved to
+    // on the day of the run, so history stays truthful after a model ships.
+    // Older runs predate the alias being recorded — then show the resolved id
+    // alone (derived from the stored stream), which is the fact that matters.
+    ["Model", (rec.model && rec.model_id) ? esc(rec.model)+' <span class="muted">→ '+esc(rec.model_id)+'</span>'
+      : (rec.model_id ? esc(rec.model_id)
+      : (rec.model ? esc(rec.model)+' <span class="muted">(resolved id not recorded)</span>' : "—"))],
+    ["Session", esc(a.session||rec.session||"—")],
+    ["Stop reason", esc(a.stop_reason||"—")],
+  ];
+  // While the run is live, say so and state the refresh cadence, so a still
+  // screen reads as "nothing new yet" rather than "this page is stale".
+  // It renders in the dialog header (right-aligned), not in the body.
+  $("lg-live").innerHTML = d.live
+    ? '<span class="livedot"></span><span class="livetxt">live</span>'
+      +'<span class="muted">refreshing every '+Math.round(LOG_POLL_MS/1000)+'s</span>'
+    : "";
+  const meta='<dl class="kv loginfo">'+rows.map(x=>'<dt>'+x[0]+'</dt><dd>'+x[1]+'</dd>').join("")+'</dl>';
+
+  const turns=d.turns||[];
+  const timelinePane = turns.length
+    ? '<ol class="timeline">'+turns.map(t=>{
+        let line='<li><span class="tn">T'+t.n+'</span>';
+        (t.tools||[]).forEach(x=>{ line+='<span class="tool">'+esc(x.tool)+'</span>';
+          if(x.hint) line+='<span class="thint">'+esc(x.hint)+'</span> '; });
+        if(t.text) line+='<span class="ttext">'+esc(t.text)+'</span>';
+        return line+'</li>'; }).join("")+'</ol>'
+    : '<div class="muted">No per-turn trace for this run (it pre-dates stream capture).</div>';
+
+  const answerPane = a.result ? '<div class="md">'+mdToHtml(a.result)+'</div>'
+                              : '<div class="muted">No agent output recorded.</div>';
+  const precheckPane = d.precheck ? '<pre class="log">'+esc(d.precheck)+'</pre>'
+                                  : '<div class="muted">No precheck output recorded.</div>';
+
+  // tabs: Answer (default), Timeline, Precheck, and Blocked/stderr when present
+  const tabs=[
+    {id:"answer",   icon:I.file,     label:"Answer",             pane:answerPane},
+    {id:"timeline", icon:I.terminal, label:"Timeline ("+turns.length+")", pane:timelinePane},
+    {id:"precheck", icon:I.radar,    label:"Precheck",           pane:precheckPane},
+  ];
+  const den=a.permission_denials;
+  if(Array.isArray(den) && den.length){
+    tabs.push({id:"blocked", icon:I.shield, label:"Blocked ("+den.length+")",
+      pane:'<ul class="denials">'+den.map(x=>'<li><code>'+esc((x&&(x.tool_name||x.tool))||JSON.stringify(x))+'</code></li>').join("")+'</ul>'});
+  }
+  if(d.stderr && d.stderr.trim()){
+    tabs.push({id:"stderr", icon:I.alert, label:"stderr", pane:'<pre class="log">'+esc(d.stderr)+'</pre>'});
+  }
+  if(d.error) tabs.push({id:"note", icon:I.alert, label:"Note", pane:'<div class="muted">'+esc(d.error)+'</div>'});
+
+  const bar='<div class="tabs" role="tablist">'+tabs.map((t,i)=>
+    '<button class="tab'+(i===0?" active":"")+'" data-tab="'+t.id+'">'+t.icon+t.label+'</button>').join("")+'</div>';
+  const panes='<div class="tabpanes">'+tabs.map((t,i)=>
+    '<div class="tabpane'+(i===0?" active":"")+'" data-pane="'+t.id+'">'+t.pane+'</div>').join("")+'</div>';
+
+  return meta+bar+panes;
+}
+
+/* A live run's log keeps refreshing while the modal is open. Re-rendering must
+   not fight the reader: the open tab is restored, and the pane only jumps to the
+   newest line when the reader was already at the bottom (classic tail).       */
+const LOG_POLL_MS=3000;
+let logPoll=null, logCtx=null;
+function stopLogPoll(){ if(logPoll){ clearInterval(logPoll); logPoll=null; } logCtx=null; }
+
+function paintLog(d){
+  const body=$("lg-body");
+  const prevTab=body.querySelector(".tab.active")?.dataset.tab || null;
+  const panes=body.querySelector(".tabpanes");
+  const wasAtBottom = panes ? (panes.scrollHeight - panes.scrollTop - panes.clientHeight < 40) : true;
+  const prevTop = panes ? panes.scrollTop : 0;
+  body.innerHTML=renderLog(d);
+  if(prevTab){
+    const t=body.querySelector('.tab[data-tab="'+prevTab+'"]');
+    if(t){
+      body.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active", x===t));
+      body.querySelectorAll(".tabpane").forEach(p=>p.classList.toggle("active", p.dataset.pane===prevTab));
+    }
+  }
+  const np=body.querySelector(".tabpanes");
+  if(np) np.scrollTop = wasAtBottom ? np.scrollHeight : prevTop;
+  // stop polling once the run is no longer live (this render is the final one)
+  if(logPoll && !d.live) stopLogPoll();
+}
+
+async function fetchLog(id, start){
+  const r=await fetch("/api/log?id="+encodeURIComponent(id)+"&start="+encodeURIComponent(start), {headers:{"X-CC-Token":TOKEN}});
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  return r.json();
+}
+
+async function openLog(id, start){
+  stopLogPoll();
+  $("lg-halo").innerHTML=I.file;
+  $("lg-title").textContent="Run — "+id;
+  $("lg-body").innerHTML="<div class='empty'>Loading…</div>";
+  $("logmodal").showModal();
+  try{
+    const d=await fetchLog(id, start);
+    paintLog(d);
+    if(d.live){
+      logCtx={id, start};
+      logPoll=setInterval(async ()=>{
+        if(!$("logmodal").open){ stopLogPoll(); return; }
+        try{ paintLog(await fetchLog(logCtx.id, logCtx.start)); }
+        catch(e){ /* transient — keep polling */ }
+      }, LOG_POLL_MS);
+    }
+  }catch(e){ $("lg-body").innerHTML="<div class='empty'>Could not load log — "+esc(e.message)+"</div>"; }
+}
+
+/* ---------------------------------------------------------------- events */
+document.addEventListener("click", async (e)=>{
+  const step=e.target.closest(".step-btn");
+  if(step){
+    const inp=$(step.dataset.for), min=parseInt(inp.min,10)||1;
+    inp.value=Math.max(min,(parseInt(inp.value,10)||min)+parseInt(step.dataset.step,10));
+    return;
+  }
+  const day=e.target.closest(".day-btn");
+  if(day){ day.classList.toggle("on"); return; }
+  const lg=e.target.closest("button[data-log-id]");
+  if(lg){ openLog(lg.dataset.logId, lg.dataset.logStart); return; }
+  // project editing (must run before the group toggle, since it's inside the header)
+  const edp=e.target.closest("[data-editproj]");
+  if(edp){ openProjectEditor(edp.dataset.editproj); return; }
+  // collapse/expand a project group (animated via CSS; persisted in localStorage)
+  const tog=e.target.closest("[data-toggle]");
+  if(tog){
+    const g=tog.closest(".projgroup"), key=tog.dataset.toggle;
+    g.classList.toggle("collapsed");
+    if(g.classList.contains("collapsed")) collapsedGroups.add(key); else collapsedGroups.delete(key);
+    localStorage.ccCollapsed=JSON.stringify([...collapsedGroups]);
+    return;
+  }
+  if(e.target.closest("#new-project")){ openProjectEditor(); return; }
+  if(e.target.closest("#new-job")){ openCreator(); return; }
+  const b=e.target.closest("button[data-op]"); if(!b) return;
+  const op=b.dataset.op, id=b.dataset.id;
+  if(op==="edit"){ openEditor(id); return; }
+  if(op==="delete"){
+    const yes=await showConfirm({tone:"danger", icon:"trash", title:"Delete job "+id+"?",
+      message:"This removes the job from jobs.json. Its logs and precheck script are kept on disk.",
+      confirmLabel:"Delete job"});
+    if(!yes) return;
+  }
+  b.disabled=true;
+  if(op==="run"){
+    // Guard: forcing bypasses the precheck, so probe it first and warn when
+    // it reports nothing to do — a forced idle run still costs a session.
+    toast("Checking precheck…", false, "radar");
+    try{
+      const r=await fetch("/api/action",{method:"POST",
+        headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+        body:JSON.stringify({op:"precheck",id})});
+      const j=await r.json().catch(()=>({}));
+      if(r.ok && j.ok && j.work===false){
+        const yes=await showConfirm({tone:"warn", icon:"alert", title:"Nothing to do right now",
+          message:"The precheck reports no pending work. Run now bypasses the precheck — a forced run will still spend a full agent session.",
+          mono:(j.output||""), confirmLabel:"Run anyway"});
+        if(!yes){ b.disabled=false; return; }
+      }
+    }catch(err){ /* probe failed — fall through, the run itself will tell */ }
+  }
+  const ok=await api(op,{id});
+  // A resume that actually started: remember it, so the button stays disabled
+  // and the failed row can point at the run it was resumed into.
+  if(ok && op==="run" && b.dataset.resumeKey){
+    const [rid,rstart]=b.dataset.resumeKey.split("|");
+    markResumed(rid, +rstart);
+  }
+  if(ok) toast((op==="run"?"Started ":op+"d ")+id, false, op==="run"?"play":"check");
+  setTimeout(refresh, op==="run"?1200:250);
+  b.disabled=!!(ok && b.dataset.resumeKey);   // a used resume button stays disabled
+});
+
+$("pj-cancel").addEventListener("click", ()=>$("projmodal").close());
+$("pj-save").addEventListener("click", saveProject);
+$("pj-delete").addEventListener("click", deleteProjectFromModal);
+initCombos();
+initFolderPicker();
+initTooltips();
+$("ed-cancel").addEventListener("click", ()=>$("editor").close());
+$("ed-save").addEventListener("click", saveEditor);
+$("ed-effort").addEventListener("input", ()=>setEffort(getEffort()));
+$("ed-budget").addEventListener("blur", fmtBudget);
+["ed-budget","ed-daily"].forEach(id=>$(id).addEventListener("input", ()=>{
+  const el=$(id); el.value=el.value.replace(/[^0-9.]/g,"").replace(/(\..*)\./g,"$1");
+}));
+$("ed-daily").addEventListener("blur", ()=>{ const el=$("ed-daily"), v=el.value.trim();
+  if(v!=="") el.value=(parseFloat(v.replace(/[^0-9.]/g,""))||0).toFixed(2); });
+$("lg-close").addEventListener("click", ()=>$("logmodal").close());
+// close covers Esc and the backdrop too, so stop the live tail from one place
+$("logmodal").addEventListener("close", stopLogPoll);
+// tab switching inside the log modal (delegated; #lg-body persists across opens)
+$("lg-body").addEventListener("click",(e)=>{
+  const t=e.target.closest(".tab"); if(!t) return;
+  const id=t.dataset.tab, body=$("lg-body");
+  body.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active", x===t));
+  body.querySelectorAll(".tabpane").forEach(p=>p.classList.toggle("active", p.dataset.pane===id));
+  body.querySelector(".tabpanes").scrollTop=0;
+});
+$("themebtn").addEventListener("click", ()=>{
+  const t=(document.documentElement.dataset.theme==="dark")?"light":"dark";
+  localStorage.ccTheme=t; applyTheme(t);
+});
+$("f-toggle").addEventListener("click", ()=>{ $("fpanel").hidden=!$("fpanel").hidden; });
+["f-project","f-job","f-status","f-from","f-to"].forEach(id=>$(id).addEventListener("change",()=>{
+  RF.project=$("f-project").value; RF.job=$("f-job").value; RF.status=$("f-status").value;
+  RF.from=$("f-from").value; RF.to=$("f-to").value;
+  page=1; renderRuns();
+}));
+$("f-size").addEventListener("change",()=>{
+  pageSize=parseInt($("f-size").value,10)||25;
+  localStorage.ccPageSize=pageSize; page=1; renderRuns();
+});
+$("f-clear").addEventListener("click",()=>{
+  RF.project=RF.job=RF.status=RF.from=RF.to="";
+  ["f-project","f-job","f-status","f-from","f-to"].forEach(i=>$(i).value="");
+  page=1; renderRuns();
+});
+// project chips filter the Jobs section (grouping)
+$("projchips").addEventListener("click",(e)=>{
+  const c=e.target.closest(".projchip"); if(!c) return;
+  jobProjectFilter=c.dataset.proj; renderJobs();
+});
+$("pg-prev").addEventListener("click",()=>{ page--; renderRuns(); });
+$("pg-next").addEventListener("click",()=>{ page++; renderRuns(); });
+let _qTimer=null;
+$("q").addEventListener("input",()=>{
+  const v=$("q").value;
+  $("q-clear").hidden=!v;
+  clearTimeout(_qTimer); _qTimer=setTimeout(()=>runSearch(v), 350);
+});
+$("q-clear").addEventListener("click",()=>{
+  $("q").value=""; $("q-clear").hidden=true; runSearch("");
+});
+
+/* ---------------------------------------------------------------- boot */
+$("brandmark").innerHTML=I.bot;
+$("h-jobs").innerHTML=I.zap+"Jobs";
+$("h-runs").innerHTML=I.activity+"Recent runs";
+$("new-job").innerHTML=I.plus+"New job";
+$("new-project").innerHTML=I.folder+"New project";
+$("f-toggle").innerHTML=I.filter+"Filters "+I.cdown;
+$("f-clear").innerHTML=I.x+"Clear filters";
+$("pg-prev").innerHTML=I.cleft+"Prev";
+$("pg-next").innerHTML="Next"+I.cright;
+$("q-clear").innerHTML=I.x;
+$("searchbox").insertAdjacentHTML("afterbegin", I.search);
+$("f-size").value=String(pageSize);
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body></html>"""
+
+
+def render_page() -> str:
+    return (PAGE.replace("__TOKEN__", TOKEN)
+                .replace("__BUILD__", BUILD)
+                .replace("__FAVICON__", FAVICON))
+
+
+def main():
+    httpd = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    sys.stderr.write(f"claude-cron control server on http://127.0.0.1:{PORT}/\n")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

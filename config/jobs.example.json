@@ -1,0 +1,20 @@
+{
+  "jobs": [
+    {
+      "id": "example-hello",
+      "description": "Demo job (disabled). Enable it, then `touch /tmp/claude-cron-hello` to see one run.",
+      "enabled": false,
+      "cwd": "/tmp",
+      "interval_seconds": 300,
+      "active_days": [1, 2, 3, 4, 5, 6, 7],
+      "active_hours": "",
+      "precheck": "test -f /tmp/claude-cron-hello",
+      "model": "haiku",
+      "max_budget_usd": 0.25,
+      "daily_budget_usd": 1,
+      "timeout_seconds": 300,
+      "permission_mode": "dontAsk",
+      "prompt": "Run the shell command `rm -f /tmp/claude-cron-hello` to clear the trigger, then reply with one friendly line confirming claude-cron is working and the current date."
+    }
+  ]
+}

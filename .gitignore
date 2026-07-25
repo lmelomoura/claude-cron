@@ -1,0 +1,19 @@
+# Local runtime state — never shared
+data/
+dist/
+
+# Secrets and personal configuration
+config/control.token
+config/jobs.json
+config/projects.json
+config/models.json
+
+# Personal precheck scripts (keep only the shipped examples)
+config/prechecks/*.sh
+!config/prechecks/example-*.sh
+
+# Logs and OS cruft
+*.log
+.DS_Store
+__pycache__/
+*.pyc
