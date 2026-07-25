@@ -908,7 +908,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200 if ok else 500, {"ok": ok, "work": work, "output": out})
 
         if op == "run":
+            # The engine silently skips a forced run when the job's lock is held,
+            # and this call is detached, so without asking first the dashboard
+            # would cheerfully report "Started" while nothing started.
+            busy, _ = cc(["running", jid])
+            if busy:
+                return self._send(409, {"error": "a run is already in progress for this job",
+                                        "running": True})
             ok, out = cc(["run", jid], background=True)
+        elif op == "stop":
+            ok, out = cc(["stop", jid])
         elif op == "enable":
             ok, out = cc(["enable", jid])
         elif op == "disable":
@@ -1044,6 +1053,10 @@ td .projtag .ic{width:12px;height:12px;color:var(--accent)}
 .projgroup .card{box-shadow:none}
 .card h2{font-size:14px;margin:0 0 2px;display:flex;align-items:center;gap:9px;justify-content:space-between}
 .card h2 .jobname{display:flex;align-items:center;gap:8px}
+.warnline{display:flex;align-items:flex-start;gap:7px;margin:2px 0 8px;padding:7px 9px;
+  border:1px solid color-mix(in srgb,var(--warn) 40%,var(--line));border-radius:8px;
+  background:var(--warn-soft);color:var(--warn);font-size:11.5px;line-height:1.45}
+.warnline .ic{width:13px;height:13px;flex:none;margin-top:1px}
 .card h2 .jobname .ic{width:15px;height:15px;color:var(--accent)}
 .card .desc{color:var(--muted);font-size:12px;margin:0 0 12px}
 /* card body in two internal columns; each column its own kv list */
@@ -1768,6 +1781,7 @@ function jobCard(j){
     ? '<span class="runningbadge"><span class="pulse"></span>running now…</span>'
     : (st.last_run_start ? fmtAgo(st.last_run_start)+' <span class="stat-cell s-'+esc(rs)+'">'+(STATUS_ICON[rs]||"")+esc(rs)+'</span>' : "never");
   const model=eff(j,"model","opus"), perm=eff(j,"permission_mode","dontAsk"), budg=eff(j,"max_budget_usd",2);
+  const liveNow = st.last_status==="running";   // a run is in flight right now
   const kv='<dl class="kv">'
     +'<dt>'+I.clock+'Every</dt><dd>'+fmtDur(j.interval_seconds||300)+'</dd>'
     +'<dt>'+I.calendar+'Window</dt><dd>'+esc(j.active_hours||"24h")+' · '+esc(fmtDays(j.active_days||[1,2,3,4,5,6,7]))+'</dd>'
@@ -1789,10 +1803,15 @@ function jobCard(j){
   const pillTip=idle?' title="Outside its active window — no runs until the window reopens"':"";
   return '<div class="card"><h2><span class="jobname">'+I.bot+esc(j.id)+'</span>'
     +'<span class="pill '+pillCls+'"'+pillTip+'>'+pillTxt+'</span></h2>'
+    // Disabling stops FUTURE runs; one already in flight keeps going. Say so,
+    // instead of letting "disabled" sit beside a spinning "running now…".
+    +(disabled&&liveNow?'<div class="warnline">'+I.alert+'Disabled — a run started earlier is still going. Use <b>Stop run</b> to end it.</div>':"")
     +'<div class="desc">'+esc(j.description||"")+'</div>'
     +kv
     +'<div class="actions">'
-    +'<button class="btn primary" data-op="run" data-id="'+esc(j.id)+'">'+I.play+'Run now</button>'
+    +(liveNow
+       ? '<button class="btn danger" data-op="stop" data-id="'+esc(j.id)+'">'+I.power+'Stop run</button>'
+       : '<button class="btn primary" data-op="run" data-id="'+esc(j.id)+'">'+I.play+'Run now</button>')
     +'<button class="btn" data-op="'+(disabled?"enable":"disable")+'" data-id="'+esc(j.id)+'">'+I.power+(disabled?"Enable":"Disable")+'</button>'
     +'<button class="btn" data-op="edit" data-id="'+esc(j.id)+'">'+I.pencil+'Edit</button>'
     +'<button class="btn danger" data-op="delete" data-id="'+esc(j.id)+'">'+I.trash+'Delete</button>'
@@ -2612,6 +2631,20 @@ document.addEventListener("click", async (e)=>{
         if(!yes){ b.disabled=false; return; }
       }
     }catch(err){ /* probe failed — fall through, the run itself will tell */ }
+  }
+  // "Run now" is refused with 409 while a run is in flight — report that plainly
+  // instead of the old blanket "Started".
+  if(op==="run"){
+    const r=await fetch("/api/action",{method:"POST",
+      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+      body:JSON.stringify({op:"run",id})});
+    if(r.status===409){
+      toast("Not started — a run is already in progress for "+id, true, "alert");
+      b.disabled=false; refresh(); return;
+    }
+    if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Failed — "+(j.error||("HTTP "+r.status)), true); b.disabled=false; return; }
+    toast("Started "+id, false, "play");
+    setTimeout(refresh, 1200); b.disabled=false; return;
   }
   const ok=await api(op,{id});
   // A resume that actually started: remember it, so the button stays disabled

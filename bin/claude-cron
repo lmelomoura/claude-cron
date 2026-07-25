@@ -67,10 +67,16 @@ jobs_json() {
 
 job_ids() { jobs_json | "$JQ" -r '.jobs[].id'; }
 
+# NOTE: deliberately NOT jq's `//` operator. `//` treats **false** as absent, so
+# `(.enabled) // "true"` returned "true" for a job with `enabled: false` — which
+# meant Disable never disabled anything and the tick kept launching runs. Fall
+# back only on null/missing.
 job_get() { # job_get <id> <jq-path> [default]
   local id="$1" path="$2" def="${3:-}"
   jobs_json | "$JQ" -r --arg id "$id" --arg def "$def" \
-    '(.jobs[] | select(.id == $id) | '"$path"') // $def | if type == "array" then join(",") else tostring end'
+    '[.jobs[] | select(.id == $id) | '"$path"'] | .[0] as $v
+     | (if $v == null then $def else $v end)
+     | if type == "array" then join(",") else tostring end'
 }
 
 # ---------------------------------------------------------------- projects
@@ -83,7 +89,9 @@ projects_json() {
 project_get() { # project_get <name> <jq-path> [default]
   local name="$1" path="$2" def="${3:-}"
   projects_json | "$JQ" -r --arg n "$name" --arg def "$def" \
-    '(.projects[] | select(.name == $n) | '"$path"') // $def | if type == "array" then join(",") else tostring end'
+    '[.projects[] | select(.name == $n) | '"$path"'] | .[0] as $v
+     | (if $v == null then $def else $v end)
+     | if type == "array" then join(",") else tostring end'
 }
 
 write_projects() { # write_projects <jq-filter> [jq-args...]
@@ -107,7 +115,7 @@ resolve() { # resolve <id> <field> <default>
 
 state_get() { # state_get <id> <field> [default]
   "$JQ" -r --arg id "$1" --arg f "$2" --arg def "${3:-}" \
-    '(.[$id][$f] // $def) | tostring' "$STATE_FILE" 2>/dev/null
+    '.[$id][$f] as $v | (if $v == null then $def else $v end) | tostring' "$STATE_FILE" 2>/dev/null
 }
 
 # Serialize state writes: detached runs execute in parallel, and state_set is a
@@ -305,6 +313,27 @@ models_stale() { # 0 = the cache is missing or older than MODELS_TTL
   [ "$(( $(now_epoch) - oldest ))" -ge "$MODELS_TTL" ]
 }
 
+cmd_running() { # exit 0 when a run currently holds this job's lock
+  lock_active "$1" && { echo "running"; return 0; }
+  echo "idle"; return 1
+}
+
+cmd_stop() { # stop the run in flight, and let it record itself as stopped
+  local id="$1" child logf
+  lock_active "$id" || { echo "no run in progress for $id"; return 1; }
+  # Leave the same breadcrumb the watchdog uses, so the run explains why it ended.
+  logf="$(state_get "$id" last_log '')"
+  [ -n "$logf" ] && [ "$logf" != "null" ] && printf 'stopped by the user\n' > "$logf.watchdog" 2>/dev/null
+  child="$(cat "$LOCK_DIR/$id/child" 2>/dev/null || true)"
+  if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
+    kill -TERM "$child" 2>/dev/null
+    echo "stopping $id (agent pid $child)"
+  else
+    echo "run for $id is not stoppable (no live agent process); clearing its lock"
+    release_lock "$id"
+  fi
+}
+
 cmd_resolve_models() { # refresh the family→id cache (all four families)
   local fam id
   for fam in opus sonnet haiku fable; do
@@ -443,6 +472,8 @@ ${prompt}"
     "$CLAUDE_BIN" $args "$prompt" > "$streamfile" 2> "$logfile.err"
   ) &
   local child=$!
+  # Publish the agent's PID so `claude-cron stop` can end this run cleanly.
+  echo "$child" > "$LOCK_DIR/$id/child" 2>/dev/null || true
 
   # Liveness watchdog. It asks "is this run still doing anything?", not "has it
   # taken too long" — the stream file grows with every agent event, so while it
@@ -975,6 +1006,8 @@ case "${1:-}" in
   project-delete) [ $# -ge 2 ] || die "usage: claude-cron project-delete <name>"; cmd_project_delete "$2" ;;
   project-list)   cmd_project_list ;;
   resolve-models) cmd_resolve_models ;;
+  running)   [ $# -ge 2 ] || die "usage: claude-cron running <job-id>"; cmd_running "$2" ;;
+  stop)      [ $# -ge 2 ] || die "usage: claude-cron stop <job-id>"; cmd_stop "$2" ;;
   set-prompt) [ $# -ge 2 ] || die "usage: claude-cron set-prompt <job-id> (prompt on stdin)"; cmd_set_prompt "$2" ;;
   set-field) [ $# -ge 3 ] || die "usage: claude-cron set-field <job-id> <field> (value on stdin)"; cmd_set_field "$2" "$3" ;;
   set-precheck) [ $# -ge 2 ] || die "usage: claude-cron set-precheck <job-id> (script on stdin)"; cmd_set_precheck "$2" ;;
