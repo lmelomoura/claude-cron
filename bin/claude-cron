@@ -232,23 +232,61 @@ acquire_lock() { # 0 = acquired
 
 release_lock() { rm -rf "$LOCK_DIR/$1"; }
 
+# ---- concurrent run slots (per job) ---------------------------------------
+# A job may now run several times in parallel — worktrees remove the working-tree
+# contention that used to force one-at-a-time. Each run holds its OWN slot dir
+# $LOCK_DIR/<id>/<pid>/ carrying its pid, child pid and worktree breadcrumb.
+# `max_parallel` caps how many run at once (default 1, so review/promote stay
+# single). This is separate from acquire_lock above, which remains a single
+# mutex for internal locks (_models).
+
+slots_dir() { echo "$LOCK_DIR/$1"; }     # base dir holding a job's run slots
+
+slots_active() { # <id> -> prints count of live slots; prunes dead ones
+  local id="$1"                           # separate stmt: $id must exist before...
+  local base="$LOCK_DIR/$id" d pid n=0    # ...it is expanded here (set -u)
+  [ -d "$base" ] || { echo 0; return 0; }
+  for d in "$base"/*/; do                # glob skips the dotfile mutex (.acq)
+    [ -d "$d" ] || continue
+    pid="$(cat "$d/pid" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then n=$((n + 1)); else rm -rf "$d"; fi
+  done
+  echo "$n"
+}
+
+acquire_slot() { # <id> <max> -> prints the slot dir; non-zero when at capacity
+  local id="$1" max="$2"
+  local base="$LOCK_DIR/$id" slot n L="" i=0
+  mkdir -p "$base"
+  L="$base/.acq"                         # short mutex so the ceiling holds under a race
+  while ! mkdir "$L" 2>/dev/null; do i=$((i + 1)); [ "$i" -ge 300 ] && { rm -rf "$L"; i=0; }; sleep 0.01; done
+  n="$(slots_active "$id")"              # also prunes dead slots
+  if [ "$n" -ge "$max" ]; then rmdir "$L" 2>/dev/null; return 1; fi
+  slot="$base/$$"                        # unique per _exec process
+  mkdir -p "$slot"; echo $$ > "$slot/pid"
+  rmdir "$L" 2>/dev/null
+  printf '%s\n' "$slot"
+}
+
+release_slot() { rm -rf "$1"; }          # <slot-dir>
+
 # End-of-run cleanup, shared by the normal exit path and the EXIT trap (so a
 # crashed or killed run cleans up too). Tears down the run's worktree if it is
-# safe (see wt_teardown), THEN releases the lock. Reads the worktree path from a
-# breadcrumb keyed by id, so the trap needs only the id baked in — never a live
-# local. Idempotent: safe to call from both paths.
-run_cleanup() { # <id>
-  local id="$1" wt project cwd
-  wt="$(cat "$LOCK_DIR/$id/worktree" 2>/dev/null || true)"
+# safe (see wt_teardown), THEN releases its slot. Reads the worktree from the
+# slot breadcrumb; the trap bakes in the slot path. Idempotent.
+run_cleanup() { # <id> <slot-dir>
+  local id="$1" slot="${2:-}" wt project cwd
+  [ -n "$slot" ] || return 0
+  wt="$(cat "$slot/worktree" 2>/dev/null || true)"
   if [ -n "$wt" ]; then
     project="$(job_get "$id" '.project' '')"
     cwd="$(resolve "$id" cwd "$HOME")"
     wt_teardown "$id" "$project" "$cwd" "$wt"
   fi
-  release_lock "$id"
+  release_slot "$slot"
 }
 
-lock_active() { # 0 = a run is currently holding the lock for <id>
+lock_active() { # 0 = a run is currently holding the lock for <id> (single mutex)
   local lock="$LOCK_DIR/$1" pid
   [ -d "$lock" ] || return 1
   pid="$(cat "$lock/pid" 2>/dev/null)"
@@ -438,25 +476,60 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   [ "$fail" -eq 0 ]
 }
 
-cmd_running() { # exit 0 when a run currently holds this job's lock
-  lock_active "$1" && { echo "running"; return 0; }
+cmd_running() { # prints "running (N)" + exit 0 if any slot is live, else "idle"
+  local n; n="$(slots_active "$1")"
+  if [ "$n" -ge 1 ]; then echo "running ($n)"; return 0; fi
   echo "idle"; return 1
 }
 
-cmd_stop() { # stop the run in flight, and let it record itself as stopped
-  local id="$1" child logf
-  lock_active "$id" || { echo "no run in progress for $id"; return 1; }
-  # Leave the same breadcrumb the watchdog uses, so the run explains why it ended.
-  logf="$(state_get "$id" last_log '')"
-  [ -n "$logf" ] && [ "$logf" != "null" ] && printf 'stopped by the user\n' > "$logf.watchdog" 2>/dev/null
-  child="$(cat "$LOCK_DIR/$id/child" 2>/dev/null || true)"
+cmd_runs() { # <id> — one active run per line: <run-pid>\t<agent-pid>\t<logfile>
+  local base="$LOCK_DIR/$1" d pid child logf
+  [ -d "$base" ] || return 0
+  for d in "$base"/*/; do
+    [ -d "$d" ] || continue
+    pid="$(cat "$d/pid" 2>/dev/null || true)"
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || { rm -rf "$d"; continue; }
+    child="$(cat "$d/child" 2>/dev/null || true)"
+    logf="$(cat "$d/logfile" 2>/dev/null || true)"
+    printf '%s\t%s\t%s\n' "$pid" "$child" "$logf"
+  done
+}
+
+# Stop ONE run by its slot. Leaves the watchdog breadcrumb so the run explains
+# itself, then TERMs the agent (or clears a dead slot).
+_stop_slot() { # <id> <slot-dir>
+  local id="$1" slot="$2" child logf
+  [ -d "$slot" ] || { echo "no such run for $id"; return 1; }
+  logf="$(cat "$slot/logfile" 2>/dev/null || true)"
+  [ -n "$logf" ] && printf 'stopped by the user\n' > "$logf.watchdog" 2>/dev/null
+  child="$(cat "$slot/child" 2>/dev/null || true)"
   if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
     kill -TERM "$child" 2>/dev/null
-    echo "stopping $id (agent pid $child)"
+    echo "stopping $id run $(basename "$slot") (agent pid $child)"
   else
-    echo "run for $id is not stoppable (no live agent process); clearing its lock"
-    release_lock "$id"
+    echo "run $(basename "$slot") of $id not stoppable (no live agent); clearing its slot"
+    release_slot "$slot"
   fi
+}
+
+cmd_stop() { # <id> [run-pid] — stop ONE run (by its run-pid) or, with no pid, ALL
+  local id="$1" rpid="${2:-}" any=0 d
+  if [ -n "$rpid" ]; then
+    _stop_slot "$id" "$LOCK_DIR/$id/$rpid"
+  else
+    for d in "$LOCK_DIR/$id"/*/; do [ -d "$d" ] || continue; _stop_slot "$id" "$d"; any=1; done
+    [ "$any" -eq 1 ] || echo "no runs in progress for $id"
+  fi
+}
+
+cmd_precheck() { # <id> — run the job's precheck once and RECORD it, without the agent
+  local id="$1" precheck cwd pc_out pc_rc
+  precheck="$(jobs_json | "$JQ" -r --arg id "$id" '.jobs[] | select(.id==$id) | .precheck // ""')"
+  [ -n "$precheck" ] || { echo "no precheck configured for $id"; return 0; }
+  cwd="$(resolve "$id" cwd "$HOME")"
+  pc_out="$( cd "$cwd" && eval "$precheck" 2>&1 )"; pc_rc=$?
+  state_set "$id" last_precheck "$("$JQ" -nc --arg o "${pc_out:-(no output)}" --argjson rc "$pc_rc" '{output:$o, exit:$rc}')"
+  printf '%s\n(exit %s)\n' "$pc_out" "$pc_rc"
 }
 
 cmd_resolve_models() { # refresh the family→id cache (all four families)
@@ -469,10 +542,16 @@ cmd_resolve_models() { # refresh the family→id cache (all four families)
   done
 }
 
-run_job() { # run_job <id> [--force]
-  local id="$1" force="${2:-}"
+run_job() { # run_job <id> [--force] [resume-session-id]
+  # A RESUME picks the failed run's own session back up (`claude --resume <sid>`)
+  # instead of starting the job afresh: same task, same conversation, continuing
+  # where it stopped. It is always forced (the precheck describes the board now,
+  # not the work this session was already doing) and it produces a normal run —
+  # its own log, stream, timeline and journal record, nothing lost.
+  local id="$1" force="${2:-}" resume_sid="${3:-}"
+  [ -n "$resume_sid" ] && force="--force"
   local cwd prompt model effort budget timeout stall permission allowed precheck project proj_desc interactive fifo
-  local run_cwd worktree wt_env _envln
+  local run_cwd worktree wt_env _envln slot max_par
   project="$(job_get "$id" '.project' '')"
   # cwd, model, permission, budget and timeout inherit from the project when the
   # job doesn't set them (see resolve()).
@@ -521,11 +600,13 @@ ${prompt}"
     fi
   fi
 
-  if ! acquire_lock "$id"; then
-    log_tick "$id: previous run still active, skipped"
+  max_par="$(resolve "$id" max_parallel 1)"
+  case "$max_par" in ''|*[!0-9]*) max_par=1 ;; esac
+  if ! slot="$(acquire_slot "$id" "$max_par")"; then
+    log_tick "$id: already at max_parallel=$max_par run(s), not launching another"
     return 0
   fi
-  trap 'run_cleanup "'"$id"'"' EXIT
+  trap 'run_cleanup "'"$id"'" "'"$slot"'"' EXIT
 
   local forced="false"
   [ "$force" = "--force" ] && forced="true"
@@ -541,7 +622,7 @@ ${prompt}"
         state_set "$id" last_status '"capped"'
         state_set "$id" last_capped "$("$JQ" -nc --arg s "$spent" --arg c "$cap" '{spent:($s|tonumber),cap:($c|tonumber)}')"
         log_tick "$id: daily cap reached (\$$spent / \$$cap) — skipping"
-        release_lock "$id"; trap - EXIT
+        release_slot "$slot"; trap - EXIT
         return 0
       fi
     fi
@@ -557,7 +638,7 @@ ${prompt}"
       state_set "$id" last_start "$(now_epoch)"
       state_set "$id" last_status '"idle"'
       log_tick "$id: precheck found nothing to do (exit $pc_rc)"
-      release_lock "$id"; trap - EXIT
+      release_slot "$slot"; trap - EXIT
       return 0
     fi
   fi
@@ -585,11 +666,11 @@ ${prompt}"
       state_set "$id" last_start "$start"
       state_set "$id" last_status '"error"'
       log_tick "$id: worktree isolation failed — run aborted (no shared-checkout fallback)"
-      release_lock "$id"; trap - EXIT
+      release_slot "$slot"; trap - EXIT
       return 1
     fi
     run_cwd="$worktree"
-    echo "$worktree" > "$LOCK_DIR/$id/worktree"     # breadcrumb for run_cleanup
+    echo "$worktree" > "$slot/worktree"     # breadcrumb for run_cleanup
     state_set "$id" cur_worktree "$("$JQ" -nc --arg p "$worktree" '$p')"
     while IFS= read -r _envln; do
       [ -n "$_envln" ] && wt_env+=("$_envln")
@@ -613,6 +694,7 @@ ${prompt}"
   # Publish the log path up front so the dashboard can tail a run while it is
   # still going (the journal record only lands when the run finishes).
   state_set "$id" last_log "$("$JQ" -nc --arg p "$logfile" '$p')"
+  echo "$logfile" > "$slot/logfile" 2>/dev/null || true   # per-run breadcrumb for stop
   log_tick "$id: starting run ($stamp)"
 
   # stream-json gives one NDJSON event per message — the per-turn trace the
@@ -621,8 +703,20 @@ ${prompt}"
   # every existing reader keeps working.
   local args
   args="-p --output-format stream-json --verbose --model $model --permission-mode $permission --max-budget-usd $budget"
+  # Resume: continue the failed run's own session rather than starting over.
+  [ -n "$resume_sid" ] && args="$args --resume $resume_sid"
   [ -n "$effort" ] && args="$args --effort $effort"
   [ -n "$allowed" ] && [ "$allowed" != "null" ] && args="$args --allowedTools $allowed"
+
+  # On a resume the session already carries the job's instructions and everything
+  # it did; re-sending the whole prompt would restart the task instead of
+  # continuing it. Send a short continuation instruction instead — and tell it to
+  # say so plainly when the work is already done or no longer possible (the card
+  # moved, the ticket is gone), so the run ends cleanly rather than inventing work.
+  if [ -n "$resume_sid" ]; then
+    prompt="Continue exactly where you stopped. This is the same task, resumed after the previous run ended early — re-read your own last messages and carry on from there; do NOT start over.
+If the work turns out to be already finished, or it can no longer be done at all (the ticket is gone, the card moved on, another run took it), then do NOT invent new work: stop and answer with one line starting exactly with 'NOTHING TO DO: ' followed by the reason."
+  fi
 
   fifo=""
   if [ "$interactive" = "true" ]; then
@@ -651,7 +745,7 @@ ${prompt}"
     state_set "$id" last_fifo "$("$JQ" -nc --arg p "$fifo" '$p')"
   fi
   # Publish the agent's PID so `claude-cron stop` can end this run cleanly.
-  echo "$child" > "$LOCK_DIR/$id/child" 2>/dev/null || true
+  echo "$child" > "$slot/child" 2>/dev/null || true
 
   # An interactive run does not end on its own: stdin is held open, so after each
   # answer the agent simply waits for more. This ends it once the conversation is
@@ -800,6 +894,17 @@ ${prompt}"
     status="success"
   fi
 
+  # "Ran fine, but there was nothing to do" — a resumed task already finished, or
+  # its ticket is gone. The agent answers `NOTHING TO DO: <reason>` (see the
+  # resume prompt): the run genuinely succeeded, so it stays SUCCESS, and the
+  # reason rides in the run's note so the dashboard can flag it with a "?" whose
+  # tooltip explains that nothing actually ran.
+  local nothing_line
+  nothing_line="$("$JQ" -r '.result // ""' "$logfile" 2>/dev/null | grep -m1 -oE 'NOTHING TO DO:.*' || true)"
+  if [ -n "$nothing_line" ] && [ "$status" = "success" ]; then
+    wdreason="${nothing_line}"
+  fi
+
   state_set "$id" last_end "$end"
   state_set "$id" last_status "\"$status\""
   state_set "$id" last_run_start "$start"
@@ -810,7 +915,7 @@ ${prompt}"
   record_run "$id" "$status" "$start" "$end" "${cost:-0}" "${turns:-0}" "$session" "$logfile" "$wdreason" "$forced" "$pc_out" "$project" "${model_family:-$model}" "$model_id"
   log_tick "$id: finished status=$status rc=$rc denials=${denials:-0} cost=\$$cost turns=$turns model=$model${model_id:+ ($model_id)} forced=$forced${wdreason:+ — $wdreason}"
 
-  run_cleanup "$id"; trap - EXIT
+  run_cleanup "$id" "$slot"; trap - EXIT
   [ "$status" != "error" ]
 }
 
@@ -838,8 +943,10 @@ cmd_tick() {
     [ "$(job_get "$id" '.enabled' 'true')" = "true" ] || continue
     in_window "$id" >/dev/null || continue
     is_due "$id" || continue
-    if lock_active "$id"; then
-      log_tick "$id: previous run still active, not relaunching"
+    max_par="$(resolve "$id" max_parallel 1)"
+    case "$max_par" in ''|*[!0-9]*) max_par=1 ;; esac
+    if [ "$(slots_active "$id")" -ge "$max_par" ]; then
+      log_tick "$id: at max_parallel=$max_par run(s), not launching another"
       continue
     fi
     nohup /bin/bash "$SELF" _exec "$id" </dev/null >> "$DATA_DIR/exec.log" 2>&1 &
@@ -1234,6 +1341,7 @@ case "${1:-}" in
     cmd_resolve_models
     ;;
   run)       [ $# -ge 2 ] || die "usage: claude-cron run <job-id>"; run_job "$2" --force ;;
+  resume)    [ $# -ge 3 ] || die "usage: claude-cron resume <job-id> <session-id>"; run_job "$2" --force "$3" ;;
   check)     [ $# -ge 2 ] || die "usage: claude-cron check <job-id>"; cmd_check "$2" ;;
   logs)      shift; cmd_logs "$@" ;;
   enable)    [ $# -ge 2 ] || die "usage: claude-cron enable <job-id>"; cmd_toggle "$2" true ;;
@@ -1246,8 +1354,10 @@ case "${1:-}" in
   resolve-models) cmd_resolve_models ;;
   selftest)  cmd_selftest ;;
   running)   [ $# -ge 2 ] || die "usage: claude-cron running <job-id>"; cmd_running "$2" ;;
+  runs)      [ $# -ge 2 ] || die "usage: claude-cron runs <job-id>"; cmd_runs "$2" ;;
+  precheck)  [ $# -ge 2 ] || die "usage: claude-cron precheck <job-id>"; cmd_precheck "$2" ;;
   say)       [ $# -ge 2 ] || die "usage: claude-cron say <job-id> (message on stdin)"; cmd_say "$2" ;;
-  stop)      [ $# -ge 2 ] || die "usage: claude-cron stop <job-id>"; cmd_stop "$2" ;;
+  stop)      [ $# -ge 2 ] || die "usage: claude-cron stop <job-id> [run-pid]"; cmd_stop "$2" "${3:-}" ;;
   set-prompt) [ $# -ge 2 ] || die "usage: claude-cron set-prompt <job-id> (prompt on stdin)"; cmd_set_prompt "$2" ;;
   set-field) [ $# -ge 3 ] || die "usage: claude-cron set-field <job-id> <field> (value on stdin)"; cmd_set_field "$2" "$3" ;;
   set-precheck) [ $# -ge 2 ] || die "usage: claude-cron set-precheck <job-id> (script on stdin)"; cmd_set_precheck "$2" ;;

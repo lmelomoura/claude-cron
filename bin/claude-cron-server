@@ -113,7 +113,7 @@ def db_init(conn):
         duration INTEGER, cost REAL, session TEXT, log TEXT, forced INTEGER,
         precheck_note TEXT, result_json TEXT, stream TEXT, precheck_txt TEXT,
         stderr TEXT, doc TEXT, project TEXT, model TEXT, model_id TEXT,
-        pruned INTEGER DEFAULT 0)""")
+        note TEXT, pruned INTEGER DEFAULT 0)""")
     try:
         conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS runs_fts USING fts5(key UNINDEXED, content)")
         return True
@@ -269,15 +269,16 @@ def _upsert(conn, fts, rec, preserve=None):
     conn.execute(
         "INSERT OR REPLACE INTO runs (key, job, start, status, duration, cost, session,"
         " log, forced, precheck_note, result_json, stream, precheck_txt, stderr, doc, project,"
-        " model, model_id, pruned)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " model, model_id, note, pruned)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (key, rec.get("id", ""), rec.get("start", 0), rec.get("status", ""),
          rec.get("duration", 0), rec.get("cost", 0), rec.get("session", ""),
          rec.get("log", ""), 1 if rec.get("forced") else 0,
          (rec.get("precheck") or "")[:500],
          art["result_json"], art["stream"], art["precheck_txt"], art["stderr"], doc,
          rec.get("project") or "", rec.get("model") or "",
-         (rec.get("model_id") or _model_id_from_stream(art["stream"])), pruned))
+         (rec.get("model_id") or _model_id_from_stream(art["stream"])),
+         (rec.get("note") or "")[:500], pruned))
     if fts:
         conn.execute("DELETE FROM runs_fts WHERE key=?", (key,))
         conn.execute("INSERT INTO runs_fts (key, content) VALUES (?,?)", (key, doc))
@@ -316,7 +317,7 @@ def ingest():
                 ("log", "TEXT"), ("forced", "INTEGER"), ("precheck_note", "TEXT"),
                 ("result_json", "TEXT"), ("stream", "TEXT"), ("precheck_txt", "TEXT"),
                 ("stderr", "TEXT"), ("doc", "TEXT"), ("project", "TEXT"),
-                ("model", "TEXT"), ("model_id", "TEXT"),
+                ("model", "TEXT"), ("model_id", "TEXT"), ("note", "TEXT"),
                 ("pruned", "INTEGER DEFAULT 0"),
             ]
             for name, decl in canon:
@@ -442,6 +443,31 @@ def checks_24h():
     return counts
 
 
+def active_runs_for(jid):
+    """Live run slots for a job — read straight from data/locks/<jid>/<pid>/, so
+    N CONCURRENT runs each show up (state only tracks the most recent). Each entry
+    is {pid, child, log}; dead slots are skipped (the engine prunes them)."""
+    out = []
+    base = DATA_DIR / "locks" / str(jid)
+    if not base.is_dir():
+        return out
+    for d in sorted(base.iterdir()):
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        try:
+            pid = int((d / "pid").read_text().strip())
+            os.kill(pid, 0)  # alive?
+        except (OSError, ValueError):
+            continue
+        def _read(name):
+            try:
+                return (d / name).read_text().strip()
+            except Exception:  # noqa: BLE001
+                return ""
+        out.append({"pid": pid, "child": _read("child"), "log": _read("logfile")})
+    return out
+
+
 def load_data():
     jobs = read_json(JOBS_FILE, {}).get("jobs", [])
     projects = read_json(PROJECTS_FILE, {}).get("projects", [])
@@ -458,13 +484,16 @@ def load_data():
         conn = db_conn()
         db_init(conn)
         for row in conn.execute(
-                "SELECT job, start, status, duration, cost, session, log, forced, precheck_note, project"
+                "SELECT job, start, status, duration, cost, session, log, forced, precheck_note, project, note"
                 " FROM runs ORDER BY start DESC, rowid DESC LIMIT 1000"):
             runs.append({"id": row["job"], "start": row["start"], "status": row["status"],
                          "duration": row["duration"], "cost": row["cost"],
                          "session": row["session"], "log": row["log"],
                          "forced": bool(row["forced"]), "precheck": row["precheck_note"],
-                         "project": row["project"] or ""})
+                         "project": row["project"] or "",
+                         # Why a run ended as it did. Carries "NOTHING TO DO: …"
+                         # for a run that succeeded without any work to do.
+                         "note": row["note"] or ""})
         conn.close()
     except Exception:
         runs = []
@@ -484,6 +513,7 @@ def load_data():
     now = subprocess.run(["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"], capture_output=True, text=True).stdout.strip()
     return {"generated": now, "launchd_loaded": launchd, "build": BUILD,
             "jobs": jobs, "projects": projects, "state": state, "runs": runs,
+            "active_runs": {j.get("id"): active_runs_for(j.get("id")) for j in jobs},
             "db_bytes": db_bytes, "checks": checks_24h()}
 
 
@@ -965,16 +995,46 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200 if ok else 500, {"ok": ok, "work": work, "output": out})
 
         if op == "run":
-            # The engine silently skips a forced run when the job's lock is held,
-            # and this call is detached, so without asking first the dashboard
-            # would cheerfully report "Started" while nothing started.
-            busy, _ = cc(["running", jid])
-            if busy:
-                return self._send(409, {"error": "a run is already in progress for this job",
+            # Multiple runs of one job may now run in parallel (each isolated in
+            # its own worktree), capped by the job's max_parallel. The forced run
+            # is detached, so check the ceiling first — otherwise the dashboard
+            # would report "Started" when the engine silently skipped it at cap.
+            maxp = 1
+            try:
+                for j in json.loads(JOBS_FILE.read_text()).get("jobs", []):
+                    if j.get("id") == jid:
+                        maxp = int(j.get("max_parallel") or 1)
+                        break
+            except Exception:  # noqa: BLE001
+                pass
+            n = len(active_runs_for(jid))
+            if n >= maxp:
+                return self._send(409, {"error": f"already at max_parallel ({n}/{maxp}) runs for this job",
                                         "running": True})
             ok, out = cc(["run", jid], background=True)
         elif op == "stop":
-            ok, out = cc(["stop", jid])
+            # With concurrent runs, a stop targets ONE run by its pid; no pid = all.
+            pid = body.get("pid")
+            ok, out = cc(["stop", jid, str(pid)] if pid else ["stop", jid])
+        elif op == "resume":
+            # Resume THE SAME TASK: continue that run's own session
+            # (`claude --resume <sid>`), not a fresh run of the job.
+            sid = (body.get("session") or "").strip()
+            if not sid:
+                return self._send(400, {"error": "this run has no session id to resume"})
+            maxp = 1
+            try:
+                for j in json.loads(JOBS_FILE.read_text()).get("jobs", []):
+                    if j.get("id") == jid:
+                        maxp = int(j.get("max_parallel") or 1)
+                        break
+            except Exception:  # noqa: BLE001
+                pass
+            n = len(active_runs_for(jid))
+            if n >= maxp:
+                return self._send(409, {"error": f"already at max_parallel ({n}/{maxp}) runs for this job",
+                                        "running": True})
+            ok, out = cc(["resume", jid, sid], background=True)
         elif op == "say":
             # Deliver a human message into the run that is happening right now.
             text = body.get("text", "")
@@ -1964,12 +2024,18 @@ function jobCard(j){
   const pc=st.last_precheck||null;
   let checkStr=fmtAgo(st.last_start);
   if(pc && typeof pc==="object"){ checkStr+=" — "+(pc.exit===0?"work found":"nothing to do")+checkList(pc.output); }
-  const rs=normStatus(st.last_run_status||"");
-  const runStr = st.last_status==="running"
-    ? '<span class="runningbadge"><span class="pulse"></span>running now…</span>'
-    : (st.last_run_start ? fmtAgo(st.last_run_start)+' <span class="stat-cell s-'+esc(rs)+'">'+(STATUS_ICON[rs]||"")+esc(rs)+'</span>' : "never");
+  // A job may have SEVERAL runs going at once, so say how many rather than one
+  // "running now". The per-run outcome is no longer summarised on the card: each
+  // run is individual and carries its own status in the Runs table.
+  const nLive = activeRunsOf(j.id).length;
+  const runStr = (nLive
+      ? '<span class="runningbadge"><span class="pulse"></span>'
+        +nLive+' running now'+(nLive===1?'':'')+'…</span>'
+      : "")
+    + (st.last_run_start
+        ? (nLive?' <span class="muted">· last ':'<span class="muted">last ')+esc(fmtAgo(st.last_run_start))+'</span>'
+        : (nLive?"":"never"));
   const model=eff(j,"model","opus"), perm=eff(j,"permission_mode","dontAsk"), budg=eff(j,"max_budget_usd",2);
-  const liveNow = st.last_status==="running";   // a run is in flight right now
   const kv='<dl class="kv">'
     +'<dt>'+I.clock+'Every</dt><dd>'+fmtDur(j.interval_seconds||300)+'</dd>'
     +'<dt>'+I.calendar+'Window</dt><dd>'+esc(j.active_hours||"24h")+' · '+esc(fmtDays(j.active_days||[1,2,3,4,5,6,7]))+'</dd>'
@@ -1984,7 +2050,7 @@ function jobCard(j){
     +'</dl>';
   // Badge has three states: disabled (red), idle (amber — enabled but outside
   // its active window and not currently running), enabled (green).
-  const running=st.last_status==="running";
+  const running=nLive>0;
   const idle=!disabled && !running && !inWindow(j);
   const pillCls=disabled?"off":(idle?"idle":"on");
   const pillTxt=disabled?"disabled":(idle?"idle":"enabled");
@@ -1993,13 +2059,15 @@ function jobCard(j){
     +'<span class="pill '+pillCls+'"'+pillTip+'>'+pillTxt+'</span></h2>'
     // Disabling stops FUTURE runs; one already in flight keeps going. Say so,
     // instead of letting "disabled" sit beside a spinning "running now…".
-    +(disabled&&liveNow?'<div class="warnline">'+I.alert+'Disabled — a run started earlier is still going. Use <b>Stop run</b> to end it.</div>':"")
+    +(disabled&&nLive?'<div class="warnline">'+I.alert+'Disabled — '+nLive+' run'+(nLive===1?'':'s')+' started earlier '+(nLive===1?'is':'are')+' still going. Stop '+(nLive===1?'it':'them')+' from the Runs table.</div>':"")
     +'<div class="desc">'+esc(j.description||"")+'</div>'
     +kv
     +'<div class="actions">'
-    +(liveNow
-       ? '<button class="btn danger" data-op="stop" data-id="'+esc(j.id)+'">'+I.power+'Stop run</button>'
-       : '<button class="btn primary" data-op="run" data-id="'+esc(j.id)+'">'+I.play+'Run now</button>')
+    // Run now always available: several runs of a job may go at once (up to
+    // max_parallel), so a live run no longer replaces this with a stop. Stopping
+    // is per-run, from the Runs table — a job-wide stop would kill them all.
+    +'<button class="btn primary" data-op="run" data-id="'+esc(j.id)+'">'+I.play+'Run now'
+      +(nLive?' <span class="muted">('+nLive+' going)</span>':'')+'</button>'
     +'<button class="btn" data-op="'+(disabled?"enable":"disable")+'" data-id="'+esc(j.id)+'">'+I.power+(disabled?"Enable":"Disable")+'</button>'
     +'<button class="btn" data-op="edit" data-id="'+esc(j.id)+'">'+I.pencil+'Edit</button>'
     +'<button class="btn danger" data-op="delete" data-id="'+esc(j.id)+'">'+I.trash+'Delete</button>'
@@ -2197,6 +2265,21 @@ function initTooltips(){
   document.addEventListener("scroll",tipHide,true);
 }
 
+// "Succeeded, but nothing actually ran" — the engine puts the agent's own
+// `NOTHING TO DO: <reason>` in the run's note. Returns the reason, or "".
+function nothingNote(r){
+  const n=(r&&r.note)||"";
+  const i=n.indexOf("NOTHING TO DO:");
+  return i<0 ? "" : n.slice(i+"NOTHING TO DO:".length).trim();
+}
+
+/* ---- live runs: a job may now have SEVERAL at once (one slot each) ---- */
+const activeRunsOf = id => (DATA.active_runs||{})[id] || [];
+// Which live slot to stop from a runs-table row. With one live run it is that
+// run; with several, the row cannot tell them apart, so fall back to the first
+// and let the engine's per-pid stop do the precise work.
+function livePidFor(id){ const a=activeRunsOf(id); return a.length ? a[0].pid : ""; }
+
 /* ---- resume bookkeeping: which failed run was already resumed, and into what ---- */
 let resumedRuns={};
 try{ resumedRuns=JSON.parse(localStorage.ccResumed||"{}"); }catch(e){ resumedRuns={}; }
@@ -2205,24 +2288,28 @@ function markResumed(id,start){
   resumedRuns[runKey(id,start)]=Math.floor(Date.now()/1000);
   localStorage.ccResumed=JSON.stringify(resumedRuns);
 }
-// The run that followed a failed one — the job's next run after it, or its live
-// run if one is going. Derived from the data, NOT from the click: localStorage is
-// per-browser, so a resume clicked elsewhere (or before this existed) would
-// otherwise still look un-resumed. If a later run exists, the failure has been
-// followed up and must not be resumed again.
+// Has THIS failed run's own task already been picked back up? Resume now means
+// `claude --resume <session>` — it continues that one conversation, so a later
+// run of the same job is NOT a follow-up: it was a different ticket, in its own
+// worktree, and this session is still sitting there unfinished. Only a run that
+// actually resumed THIS session counts, which the journal records by carrying
+// the same session id forward.
 function resumeTarget(id, after){
-  const later=(DATA.runs||[]).filter(r=>r.id===id && r.start>after+1).sort((a,b)=>a.start-b.start);
-  const st=(DATA.state||{})[id]||{};
-  const live=(st.last_status==="running" && st.last_start>after+1) ? {run:{id, start:st.last_start}, running:true} : null;
-  if(later.length && live) return (later[0].start<=live.run.start) ? {run:later[0], running:false} : live;
-  if(later.length) return {run:later[0], running:false};
-  return live;
+  const src=(DATA.runs||[]).find(r=>r.id===id && r.start===after);
+  const sid=src&&src.session;
+  if(!sid) return null;
+  const again=(DATA.runs||[]).filter(r=>r.id===id && r.session===sid && r.start>after+1)
+                             .sort((a,b)=>a.start-b.start);
+  if(again.length) return {run:again[0], running:false};
+  const liveSame=activeRunsOf(id).length && (DATA.runs||[]).some(r=>r.id===id && r.session===sid && r.live);
+  return liveSame ? {run:{id, start:after}, running:true} : null;
 }
 function resumeTip(id, start){
   const t=resumeTarget(id, start);
   if(!t) return "";
   const clickedAt=resumedRuns[runKey(id,start)];   // set only if resumed from this browser
-  const head=clickedAt ? "Resumed into a new run" : "Followed by a new run";
+  // Only a run that continued THIS session lands here (see resumeTarget).
+  const head=clickedAt ? "Resumed into a new run" : "This task was already resumed";
   let rows=clickedAt ? '<div class="tt-row"><span class="tt-k">Resumed at</span><span class="tt-v">'+esc(fmtWhen(clickedAt))+'</span></div>' : "";
   rows+='<div class="tt-row"><span class="tt-k">New run</span><span class="tt-v">'+esc(fmtWhen(t.run.start))+'</span></div>';
   if(t.running){
@@ -2257,7 +2344,13 @@ function renderRuns(){
           ? '<span class="runningbadge"><span class="pulse"></span>running…</span>'
           : '<span class="stat-cell s-'+esc(s)+'">'+(STATUS_ICON[s]||"")+esc(s)+"</span>"
             +((s==="error" && followUp)
-               ? '<span class="tipbadge" data-tip="'+encodeURIComponent(resumeTip(r.id,r.start)).replace(/"/g,"%22")+'">?</span>' : ""))
+               ? '<span class="tipbadge" data-tip="'+encodeURIComponent(resumeTip(r.id,r.start)).replace(/"/g,"%22")+'">?</span>'
+               // A run can succeed having done nothing at all — a resumed task
+               // already finished, or its ticket is gone. The engine records the
+               // reason; flag it so "success" is never read as "work happened".
+               : (nothingNote(r)
+                  ? '<span class="tipbadge" data-tip="'+encodeURIComponent("Nothing was done in this run — "+nothingNote(r)).replace(/"/g,"%22")+'">!</span>'
+                  : "")))
       +"</td>"
       +"<td class=num>"+esc(fmtDur(r.duration))+(r.live?' <span class="muted">so far</span>':"")+"</td>"
       +"<td class=num>"+(r.live?'<span class="muted">—</span>':esc(money(r.cost)))+"</td>"
@@ -2271,15 +2364,25 @@ function renderRuns(){
         // line up in the same columns.
         // Disabled once the job has run again (resumed here or anywhere) — a
         // second resume would just duplicate work. The "?" says where it went.
-        +(r.live ? '<button class="iconbtn retry" disabled title="This run is still going">'+I.play+'</button>'
-         : s==="error"
-           ? (followUp
-              ? '<button class="iconbtn retry" disabled title="'
-                +(followUp.running?"A newer run is in progress":"Already followed by a newer run")
-                +' — see the ? beside the status">'+I.play+'</button>'
-              : '<button class="iconbtn retry" title="Resume — run '+esc(r.id)+' again now"'
-                +' data-op="run" data-id="'+esc(r.id)+'" data-resume-key="'+esc(runKey(r.id,r.start))+'">'+I.play+'</button>')
-           : '<button class="iconbtn retry" disabled title="Only failed runs can be resumed">'+I.play+'</button>')
+        // A live run gets a STOP (each run is individual now, so this ends THIS
+        // one, by its pid). A failed one gets a RESUME that continues its own
+        // session — the same task, picked back up, exactly like
+        // `claude --resume <session>` — never a fresh run of the job.
+        +(r.live
+           ? '<button class="iconbtn danger" title="Stop this run"'
+             +' data-op="stop" data-id="'+esc(r.id)+'" data-run-pid="'+esc(livePidFor(r.id))+'">'+I.power+'</button>'
+           : s==="error"
+             ? (!r.session
+                ? '<button class="iconbtn retry" disabled title="This run recorded no session id, so it cannot be resumed">'+I.play+'</button>'
+                : followUp
+                  ? '<button class="iconbtn retry" disabled title="'
+                    +(followUp.running?"A newer run is in progress":"Already followed by a newer run")
+                    +' — see the ? beside the status">'+I.play+'</button>'
+                  : '<button class="iconbtn retry" title="Resume this task — continue session '
+                    +esc((r.session||"").slice(0,8))+' where it stopped"'
+                    +' data-op="resume" data-id="'+esc(r.id)+'" data-session="'+esc(r.session||"")+'"'
+                    +' data-resume-key="'+esc(runKey(r.id,r.start))+'">'+I.play+'</button>')
+             : '<button class="iconbtn retry" disabled title="Only failed runs can be resumed">'+I.play+'</button>')
       +'</td></tr>';
   }).join("") || '<tr><td colspan=8 class="empty">'+I.inbox
       +(DATA.runs.length?(searchKeys?"No runs match this search.":"No runs match the filters."):"No runs recorded yet.")+'</td></tr>';
@@ -3022,13 +3125,26 @@ document.addEventListener("click", async (e)=>{
     toast("Started "+id, false, "play");
     setTimeout(refresh, 1200); b.disabled=false; return;
   }
-  const ok=await api(op,{id});
-  // A resume that actually started: remember it, so the button stays disabled
-  // and the failed row can point at the run it was resumed into.
-  if(ok && op==="run" && b.dataset.resumeKey){
-    const [rid,rstart]=b.dataset.resumeKey.split("|");
-    markResumed(rid, +rstart);
+  // Resume continues THAT run's own session (the same task), so it carries the
+  // session id. Stop from a runs row targets that one run by its pid — with
+  // concurrent runs a job-wide stop would kill the others too.
+  if(op==="resume"){
+    const sid=b.dataset.session||"";
+    const r=await fetch("/api/action",{method:"POST",
+      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+      body:JSON.stringify({op:"resume",id,session:sid})});
+    if(r.status===409){
+      toast("Not resumed — this job is already at its parallel-run limit", true, "alert");
+      b.disabled=false; refresh(); return;
+    }
+    if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Resume failed — "+(j.error||("HTTP "+r.status)), true); b.disabled=false; return; }
+    if(b.dataset.resumeKey){ const [rid,rstart]=b.dataset.resumeKey.split("|"); markResumed(rid, +rstart); }
+    toast("Resuming "+id+" — continuing session "+sid.slice(0,8), false, "play");
+    setTimeout(refresh, 1200); b.disabled=true; return;
   }
+  const extra={id};
+  if(op==="stop" && b.dataset.runPid) extra.pid=b.dataset.runPid;
+  const ok=await api(op,extra);
   if(ok) toast((op==="run"?"Started ":op+"d ")+id, false, op==="run"?"play":"check");
   setTimeout(refresh, op==="run"?1200:250);
   b.disabled=!!(ok && b.dataset.resumeKey);   // a used resume button stays disabled
