@@ -455,6 +455,40 @@ def checks_24h():
     return counts
 
 
+def compact_db():
+    """Give the deleted pages back to the filesystem.
+
+    SQLite keeps the pages a DELETE frees in its own freelist and reuses them
+    later, so the file never shrinks on its own — after deleting runs the index
+    can sit at twice the size of what it actually holds. VACUUM rewrites it at
+    its true size; the FTS optimise first is what lets the index give up its
+    own pages too. Returns (bytes_before, bytes_after).
+    """
+    def _size():
+        n = 0
+        for p in (DB_FILE, Path(str(DB_FILE) + "-wal"), Path(str(DB_FILE) + "-shm")):
+            try:
+                n += p.stat().st_size
+            except OSError:
+                pass
+        return n
+
+    before = _size()
+    try:
+        conn = db_conn()
+        conn.isolation_level = None          # VACUUM cannot run inside a transaction
+        try:
+            conn.execute("INSERT INTO runs_fts(runs_fts) VALUES('optimize')")
+        except sqlite3.OperationalError:
+            pass                              # no FTS on this build; VACUUM still helps
+        conn.execute("VACUUM")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.close()
+    except sqlite3.Error:
+        return before, before                 # busy or locked: leave it for next time
+    return before, _size()
+
+
 def delete_run(jid, start):
     """Erase one run completely: its files, its journal line and its DB rows.
 
@@ -520,6 +554,11 @@ def delete_run(jid, start):
         conn.close()
     except Exception:  # noqa: BLE001
         pass
+
+    # Hand the freed pages back to the filesystem, so deleting a run actually
+    # makes the index smaller instead of only marking space reusable.
+    before, after = compact_db()
+    removed["bytes"] = max(0, before - after)
     return removed
 
 
@@ -3397,7 +3436,9 @@ document.addEventListener("click", async (e)=>{
         headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
         body:JSON.stringify({op:"run_delete",id,start})});
       if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Delete failed — "+(j.error||("HTTP "+r.status)), true); del.disabled=false; return; }
-      toast("Run deleted", false, "trash");
+      const j=await r.json().catch(()=>({}));
+      const freed=(j.removed&&j.removed.bytes)||0;
+      toast("Run deleted"+(freed>0?" — "+fmtBytes(freed)+" reclaimed":""), false, "trash");
       refresh();
     })();
     return;
