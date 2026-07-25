@@ -521,11 +521,20 @@ def load_live_detail(jid, start_i):
            "duration": max(0, int(time.time()) - start_i), "cost": None, "session": sess,
            "log": logp, "forced": False, "precheck": (pc.get("output") if isinstance(pc, dict) else "") or "",
            "project": "", "model": "", "model_id": _model_id_from_stream(stream), "live": True}
-    return {"record": rec, "live": True,
+    interactive = False
+    try:
+        for j in json.loads(JOBS_FILE.read_text()).get("jobs", []):
+            if j.get("id") == jid:
+                interactive = bool(j.get("interactive"))
+                break
+    except Exception:  # noqa: BLE001
+        pass
+    return {"record": rec, "live": True, "interactive": interactive,
             "agent": {"result": last_text, "num_turns": turns, "session": sess,
                       "stop_reason": "still running"},
             "precheck": (pc.get("output") if isinstance(pc, dict) else "") or "",
-            "stderr": "", "turns": parse_turns_text(stream)}
+            "stderr": "", "turns": parse_turns_text(stream),
+            "conversation": parse_conversation(stream)}
 
 
 def load_run_detail(jid, start):
@@ -595,6 +604,7 @@ def load_run_detail(jid, start):
                 "salvaged": True,
             }
     detail["turns"] = parse_turns_text(stream)
+    detail["conversation"] = parse_conversation(stream)
     return detail
 
 
@@ -654,6 +664,53 @@ def parse_turns_text(text):
     except Exception:
         pass
     return turns
+
+
+def parse_conversation(text, limit=400):
+    """The run as a dialogue: the human's messages AND the agent's, in order.
+
+    `parse_turns_text` deliberately keeps only assistant turns (that is what the
+    Timeline shows). The terminal needs both sides — an interactive run echoes
+    the human's messages back into the stream (`--replay-user-messages`), so
+    they are here too."""
+    out = []
+    if not text:
+        return out
+    for ln in text.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            ev = json.loads(ln)
+        except Exception:  # noqa: BLE001
+            continue
+        kind = ev.get("type")
+        if kind not in ("assistant", "user"):
+            continue
+        msg = ev.get("message") or {}
+        content = msg.get("content")
+        if isinstance(content, str):
+            content = [{"type": "text", "text": content}]
+        texts, tools = [], []
+        for block in content or []:
+            if not isinstance(block, dict):
+                continue
+            bt = block.get("type")
+            if bt == "text" and (block.get("text") or "").strip():
+                texts.append(block["text"].strip())
+            elif bt == "tool_use":
+                tools.append(_tool_line(block))
+            # tool_result blocks are the machine's echo — noise in a terminal
+        if not texts and not tools:
+            continue
+        body = " ".join(texts)
+        if len(body) > 2000:
+            body = body[:1997] + "…"
+        out.append({"role": "user" if kind == "user" else "agent",
+                    "text": body, "tools": tools})
+        if len(out) >= limit:
+            break
+    return out
 
 
 def cc(args, stdin=None, background=False):
@@ -918,6 +975,14 @@ class Handler(BaseHTTPRequestHandler):
             ok, out = cc(["run", jid], background=True)
         elif op == "stop":
             ok, out = cc(["stop", jid])
+        elif op == "say":
+            # Deliver a human message into the run that is happening right now.
+            text = body.get("text", "")
+            if not isinstance(text, str) or not text.strip():
+                return self._send(400, {"error": "empty message"})
+            ok, out = cc(["say", jid], stdin=text)
+            if not ok:
+                return self._send(409, {"error": out or "could not deliver"})
         elif op == "enable":
             ok, out = cc(["enable", jid])
         elif op == "disable":
@@ -934,7 +999,7 @@ class Handler(BaseHTTPRequestHandler):
             value = str(body.get("value", ""))
             if field not in ("interval_seconds", "active_hours", "active_days",
                              "max_budget_usd", "daily_budget_usd", "model", "timeout_seconds",
-                             "stall_timeout_seconds", "effort",
+                             "stall_timeout_seconds", "effort", "interactive",
                              "description", "cwd", "permission_mode", "project"):
                 return self._send(400, {"error": "bad field"})
             ok, out = cc(["set-field", jid, field], stdin=value)
@@ -952,6 +1017,7 @@ PAGE = r"""<!doctype html>
 <style>
 :root{
   --bg:#f6f7f9; --panel:#ffffff; --panel2:#fbfbfc; --ink:#16181d; --muted:#697077;
+  --term-bg:#fbfbfd; --term-brd:#d7d9e0; --term-tool:#c2410c; --term-sys:#0f766e;
   --line:#e4e7ec; --line2:#eef0f4; --accent:#4f46e5; --accent-soft:#eef0ff;
   --accent-ink:#ffffff; --ok:#0f9d63; --ok-soft:#e6f7ef; --warn:#c77700;
   --warn-soft:#fdf3e2; --err:#d92d20; --err-soft:#feecea; --idle:#8b919a;
@@ -960,6 +1026,7 @@ PAGE = r"""<!doctype html>
 }
 :root[data-theme="dark"]{
   --bg:#0d1017; --panel:#151a23; --panel2:#11151d; --ink:#e8eaee; --muted:#98a0ab;
+  --term-bg:#0b0e14; --term-brd:#2b3444; --term-tool:#fb923c; --term-sys:#5eead4;
   --line:#242b37; --line2:#1c222d; --accent:#818cf8; --accent-soft:#232848;
   --accent-ink:#0d1017; --ok:#34d399; --ok-soft:#0e2b22; --warn:#fbbf24;
   --warn-soft:#33270e; --err:#f87171; --err-soft:#391716; --idle:#6b7280;
@@ -1167,6 +1234,39 @@ code{font:11.5px ui-monospace,"SF Mono",Menlo,monospace;
   animation:ccpulse 1.2s ease-in-out infinite}
 @keyframes ccpulse{0%,100%{opacity:.35;transform:scale(.85)}50%{opacity:1;transform:scale(1.2)}}
 /* live-tail indicator in the log modal */
+/* Interactive terminal, styled after the Claude CLI. Always dark, whatever the
+   dashboard theme: it is a terminal. Only the transcript scrolls — the prompt
+   bar stays pinned at the bottom, so it never drifts away while output pours in. */
+.tabpanes.termmode{overflow:hidden;display:flex;flex-direction:column}
+.tabpanes.termmode > .tabpane.active{flex:1 1 auto;min-height:0;display:flex}
+.termwrap{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;width:100%}
+.term{flex:1 1 auto;min-height:0;overflow-y:auto;padding:14px 16px;border-radius:10px;
+  background:#181818;border:1px solid #2e2a27;color:#d8d4d0;
+  font:12.5px/1.7 ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  white-space:pre-wrap;word-break:break-word}
+.term::-webkit-scrollbar{width:9px}
+.term::-webkit-scrollbar-thumb{background:#3a3532;border-radius:5px}
+.term .t-you{color:#d97757;font-weight:600}
+.term .t-agent{color:#d8d4d0}
+.term .t-tool{color:#8a837d}
+.term .t-tool b{color:#d97757;font-weight:600}
+.term .t-sys{color:#6f8f88}
+.term .row{margin:0 0 9px}
+.term .row:last-child{margin-bottom:0}
+/* The transcript above is a terminal; this bar is part of the app, so it follows
+   the dashboard theme rather than being a black box in a light UI. */
+.termbar{flex:none;display:flex;align-items:center;gap:10px;margin-top:10px;padding:9px 10px 9px 13px;
+  border:1px solid var(--line);border-radius:10px;background:var(--panel2)}
+.termbar:focus-within{border-color:var(--accent)}
+.termbar .caret{color:var(--accent);font:13px ui-monospace,Menlo,monospace;flex:none;font-weight:700}
+.termbar input{flex:1 1 auto;min-width:0;border:0;background:transparent;color:var(--ink);
+  font:12.5px ui-monospace,"SF Mono",Menlo,monospace;padding:4px 0}
+.termbar input:focus{outline:none}
+.termbar input::placeholder{color:var(--muted)}
+.termbar .hint{flex:none;font-size:10.5px;color:var(--muted)}
+.termbar .btn{flex:none;padding:6px 13px;font-size:12px}
+.termnote{flex:none;margin-top:10px;font-size:11.5px;color:var(--muted)}
+.termnote code{background:var(--panel2);border:1px solid var(--line2);border-radius:5px;padding:1px 5px}
 #lg-live{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px;font-weight:400}
 #lg-live:empty{display:none}
 .livedot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none;
@@ -1253,6 +1353,8 @@ textarea:focus,.dlg-b input:focus,.dlg-b select:focus{outline:none;border-color:
 .cwdrow{display:flex;gap:8px;align-items:stretch}
 .cwdrow input{flex:1 1 auto;min-width:0}
 .cwd-browse{flex:none;white-space:nowrap}
+.checkline{display:flex!important;align-items:center;gap:9px;text-transform:none;letter-spacing:0;font-size:12.5px;color:var(--ink);cursor:pointer;margin-bottom:6px}
+.checkline input{width:auto!important;margin:0}
 .dlg-b .hint{font-size:11.5px;color:var(--muted);margin:-4px 0 11px;line-height:1.5}
 /* effort slider — Faster ↔ Smarter, mirroring Claude Code's control */
 .efflabel{margin-left:8px;color:var(--accent);font-weight:700;text-transform:none;letter-spacing:0}
@@ -1500,6 +1602,10 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
     <input id="ed-timeout" type="number" min="1" step="1" inputmode="numeric" placeholder="no limit">
     <button type="button" class="step-btn" data-step="1" data-for="ed-timeout">+</button>
   </div>
+  <label class="checkline"><input type="checkbox" id="ed-interactive">
+    Interactive — keep a terminal open so you can talk to the run while it works</label>
+  <div class="hint">The run then waits a few seconds after each answer in case you want to
+    reply, instead of ending immediately. Leave off for unattended jobs.</div>
   <label>Permission mode</label>
   <div class="combo" id="ed-perm-combo">
     <button type="button" class="combo-trigger" id="ed-perm-trigger" aria-haspopup="listbox" aria-expanded="false">
@@ -2318,6 +2424,7 @@ function fill(j){
   $("ed-interval").value=Math.round((j.interval_seconds||300)/60);
   modelCombo.set(j.model||"opus");
   setEffort(j.effort||"");
+  $("ed-interactive").checked = j.interactive===true;
   const hp=String(j.active_hours||"").split("-");
   $("ed-hours-start").value=hp[0]||""; $("ed-hours-end").value=hp[1]||"";
   setDays(j.active_days||[]);
@@ -2363,6 +2470,7 @@ function readForm(){
     secs: Math.max(60,(parseInt($("ed-interval").value,10)||5)*60),
     model: $("ed-model").value||"opus",
     effort: getEffort(),
+    interactive: $("ed-interactive").checked,
     hours: hs && he ? hs+"-"+he : "",
     days,
     budget: (parseFloat($("ed-budget").value.replace(/[^0-9.]/g,""))||2),
@@ -2386,6 +2494,7 @@ async function saveEditor(){
         model:f.model, active_hours:f.hours, active_days:f.days, max_budget_usd:f.budget,
         permission_mode:$("ed-perm").value};
       if(f.effort) job.effort=f.effort;
+      if(f.interactive) job.interactive=true;
       if(f.timeoutSecs!=null) job.timeout_seconds=f.timeoutSecs;
       if(f.stallSecs!=null) job.stall_timeout_seconds=f.stallSecs;
       if(f.daily!=null) job.daily_budget_usd=f.daily;
@@ -2403,6 +2512,7 @@ async function saveEditor(){
     if(!await setF("interval_seconds",f.secs,j.interval_seconds||300)) return;
     if(!await setF("model",f.model,j.model||"opus")) return;
     if(!await setF("effort",f.effort,j.effort||"")) return;
+    if(!await setF("interactive",String(f.interactive),String(j.interactive===true))) return;
     if(!await setF("active_hours",f.hours,j.active_hours||"")) return;
     if(!await setF("active_days",f.days.join(","),(j.active_days||[]).join(","))) return;
     if(!await setF("max_budget_usd",f.budget,(j.max_budget_usd!=null?j.max_budget_usd:2))) return;
@@ -2503,7 +2613,40 @@ function renderLog(d){
                                   : '<div class="muted">No precheck output recorded.</div>';
 
   // tabs: Answer (default), Timeline, Precheck, and Blocked/stderr when present
+  // Terminal: the run as a conversation, and — while it is live and the job is
+  // interactive — a prompt box that delivers what you type into that same run.
+  const convo = d.conversation||[];
+  const termRows = convo.map(t=>{
+    const you = t.role==="user";
+    let line = "";
+    // _tool_line yields {tool, hint} — stringifying it printed "[object Object]"
+    (t.tools||[]).forEach(x=>{
+      const nm = (x && x.tool) ? x.tool : String(x||"tool");
+      const hint = (x && x.hint) ? x.hint : "";
+      line += '<span class="t-tool">⏺ <b>'+esc(nm)+'</b>'+(hint?' '+esc(hint):'')+'</span>\n';
+    });
+    if(t.text) line += '<span class="t-'+(you?"you":"agent")+'">'
+      + (you ? "&gt; " : "") + esc(t.text) + '</span>';
+    return line ? '<div class="row">'+line+'</div>' : "";
+  }).join("");
+  const termPane = '<div class="termwrap">'
+    + '<div class="term" id="term-body">'
+    +   (termRows || '<span class="t-sys">Waiting for the first turn…</span>')
+    +   (d.live?'<div class="row"><span class="t-sys">▍</span></div>':'')
+    + '</div>'
+    + (d.live && d.interactive
+        ? '<div class="termbar"><span class="caret">&gt;</span>'
+          + '<input id="term-input" placeholder="Say something to this run…" autocomplete="off">'
+          + '<span class="hint">Enter</span>'
+          + '<button type="button" class="btn primary" id="term-send">'+I.play+'Send</button></div>'
+        : (d.live
+            ? '<div class="termnote">This run is read-only — turn on <b>Interactive</b> on the job to talk to it while it works.</div>'
+            : '<div class="termnote">This run has finished. Reopen it in the real CLI with <code>claude --resume '
+              + esc(a.session||rec.session||"") + '</code></div>'))
+    + '</div>';
+
   const tabs=[
+    {id:"terminal", icon:I.terminal, label:"Terminal",            pane:termPane},
     {id:"answer",   icon:I.file,     label:"Answer",             pane:answerPane},
     {id:"timeline", icon:I.terminal, label:"Timeline ("+turns.length+")", pane:timelinePane},
     {id:"precheck", icon:I.radar,    label:"Precheck",           pane:precheckPane},
@@ -2533,8 +2676,31 @@ const LOG_POLL_MS=3000;
 let logPoll=null, logCtx=null;
 function stopLogPoll(){ if(logPoll){ clearInterval(logPoll); logPoll=null; } logCtx=null; }
 
+async function sendToRun(){
+  const inp=$("term-input"); if(!inp) return;
+  const text=inp.value.trim(); if(!text || !logCtx) return;
+  inp.value=""; inp.disabled=true;
+  try{
+    const r=await fetch("/api/action",{method:"POST",
+      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+      body:JSON.stringify({op:"say", id:logCtx.id, text})});
+    if(!r.ok){
+      const j=await r.json().catch(()=>({}));
+      toast("Not delivered — "+(j.error||("HTTP "+r.status)), true, "alert");
+      inp.value=text;                       // give the message back, do not lose it
+    }
+  }catch(e){ toast("Not delivered — "+e.message, true); inp.value=text; }
+  inp.disabled=false; inp.focus();
+}
+
 function paintLog(d){
   const body=$("lg-body");
+  // Keep whatever is half-typed (and the caret) across the 3s live refresh.
+  const oldInp=$("term-input");
+  const draft = oldInp ? oldInp.value : null;
+  const hadFocus = oldInp && document.activeElement===oldInp;
+  const oldTerm=body.querySelector(".term");
+  const termAtBottom = oldTerm ? (oldTerm.scrollHeight-oldTerm.scrollTop-oldTerm.clientHeight < 40) : true;
   const prevTab=body.querySelector(".tab.active")?.dataset.tab || null;
   const panes=body.querySelector(".tabpanes");
   const wasAtBottom = panes ? (panes.scrollHeight - panes.scrollTop - panes.clientHeight < 40) : true;
@@ -2549,6 +2715,16 @@ function paintLog(d){
   }
   const np=body.querySelector(".tabpanes");
   if(np) np.scrollTop = wasAtBottom ? np.scrollHeight : prevTop;
+  syncTermMode(body);
+  const inp=$("term-input");
+  if(inp){
+    if(draft!==null) inp.value=draft;
+    if(hadFocus) inp.focus();
+    inp.onkeydown=(e)=>{ if(e.key==="Enter"){ e.preventDefault(); sendToRun(); } };
+    const sb=$("term-send"); if(sb) sb.onclick=()=>sendToRun();
+  }
+  const term=body.querySelector(".term");
+  if(term && termAtBottom) term.scrollTop=term.scrollHeight;   // tail the conversation
   // stop polling once the run is no longer live (this render is the final one)
   if(logPoll && !d.live) stopLogPoll();
 }
@@ -2682,8 +2858,21 @@ $("lg-body").addEventListener("click",(e)=>{
   const id=t.dataset.tab, body=$("lg-body");
   body.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active", x===t));
   body.querySelectorAll(".tabpane").forEach(p=>p.classList.toggle("active", p.dataset.pane===id));
-  body.querySelector(".tabpanes").scrollTop=0;
+  syncTermMode(body);
+  const panes=body.querySelector(".tabpanes");
+  if(id!=="terminal") panes.scrollTop=0;
+  const term=body.querySelector(".term");
+  if(term) term.scrollTop=term.scrollHeight;
+  const inp=$("term-input"); if(inp && id==="terminal") inp.focus();
 });
+
+// The terminal owns its own scrolling: the transcript scrolls, the prompt bar
+// does not. Any other tab keeps the normal single scroll area.
+function syncTermMode(body){
+  const panes=body.querySelector(".tabpanes"); if(!panes) return;
+  const active=body.querySelector(".tabpane.active");
+  panes.classList.toggle("termmode", !!active && active.dataset.pane==="terminal");
+}
 $("themebtn").addEventListener("click", ()=>{
   const t=(document.documentElement.dataset.theme==="dark")?"light":"dark";
   localStorage.ccTheme=t; applyTheme(t);

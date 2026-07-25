@@ -28,6 +28,8 @@ DATA_DIR="${CLAUDE_CRON_DATA:-$BASE_DIR/data}"
 JOBS_FILE="$CONFIG_DIR/jobs.json"
 PROJECTS_FILE="$CONFIG_DIR/projects.json"
 MODELS_FILE="$CONFIG_DIR/models.json"
+INTERACTIVE_GRACE=20        # seconds to wait for a human reply before ending
+                            # an interactive run that has finished its turn
 MODELS_TTL=86400            # 24h — how long a family→id resolution is trusted,
                             # and how often the tick refreshes it on its own
 STATE_FILE="$DATA_DIR/state.json"
@@ -313,6 +315,24 @@ models_stale() { # 0 = the cache is missing or older than MODELS_TTL
   [ "$(( $(now_epoch) - oldest ))" -ge "$MODELS_TTL" ]
 }
 
+cmd_say() { # cmd_say <id> — message on stdin, delivered to the live run
+  local id="$1" fifo text w
+  lock_active "$id" || die "no run in progress for $id"
+  fifo="$(state_get "$id" last_fifo '')"
+  [ -n "$fifo" ] && [ "$fifo" != "null" ] && [ -p "$fifo" ] \
+    || die "this run is not interactive (enable 'interactive' on the job)"
+  text="$(cat)"
+  [ -n "$text" ] || die "empty message"
+  # Non-blocking: if the agent died between the checks above, writing to the
+  # FIFO would block forever, so give up after a few seconds.
+  "$JQ" -nc --arg t "$text" \
+    '{type:"user",message:{role:"user",content:[{type:"text",text:$t}]}}' > "$fifo" &
+  w=$!
+  ( sleep 5; kill "$w" 2>/dev/null ) >/dev/null 2>&1 &
+  wait "$w" 2>/dev/null || die "could not deliver — the run may have just ended"
+  echo "delivered to $id"
+}
+
 cmd_running() { # exit 0 when a run currently holds this job's lock
   lock_active "$1" && { echo "running"; return 0; }
   echo "idle"; return 1
@@ -346,7 +366,7 @@ cmd_resolve_models() { # refresh the family→id cache (all four families)
 
 run_job() { # run_job <id> [--force]
   local id="$1" force="${2:-}"
-  local cwd prompt model effort budget timeout stall permission allowed precheck project proj_desc
+  local cwd prompt model effort budget timeout stall permission allowed precheck project proj_desc interactive fifo
   project="$(job_get "$id" '.project' '')"
   # cwd, model, permission, budget and timeout inherit from the project when the
   # job doesn't set them (see resolve()).
@@ -360,6 +380,11 @@ run_job() { # run_job <id> [--force]
   # How hard the model thinks: low|medium|high|xhigh|max (empty = the CLI default)
   effort="$(resolve "$id" effort '')"
   case "$effort" in null) effort="" ;; esac
+  # Interactive runs keep stdin open so a human can talk to the agent while it
+  # works (see the launch block). Opt-in per job: a normal run must keep ending
+  # by itself, and holding stdin open changes exactly that.
+  interactive="$(resolve "$id" interactive 'false')"
+  case "$interactive" in true) ;; *) interactive="false" ;; esac
   budget="$(resolve "$id" max_budget_usd '2')"
   # A long run is NOT a hung run. `stall_timeout_seconds` is the real guard: kill
   # only after the agent has produced NO output for that long. `timeout_seconds`
@@ -467,13 +492,64 @@ ${prompt}"
   [ -n "$effort" ] && args="$args --effort $effort"
   [ -n "$allowed" ] && [ "$allowed" != "null" ] && args="$args --allowedTools $allowed"
 
-  (
-    cd "$cwd" || exit 1
-    "$CLAUDE_BIN" $args "$prompt" > "$streamfile" 2> "$logfile.err"
-  ) &
+  fifo=""
+  if [ "$interactive" = "true" ]; then
+    # `--input-format stream-json` accepts further user messages on stdin while
+    # the run is going, which is what makes the dashboard's terminal two-way.
+    # The prompt is sent as the first message instead of as an argument.
+    fifo="$logfile.stdin"
+    rm -f "$fifo"; mkfifo "$fifo" 2>/dev/null
+    args="$args --input-format stream-json --replay-user-messages"
+    (
+      cd "$cwd" || exit 1
+      "$CLAUDE_BIN" $args < "$fifo" > "$streamfile" 2> "$logfile.err"
+    ) &
+  else
+    (
+      cd "$cwd" || exit 1
+      "$CLAUDE_BIN" $args "$prompt" > "$streamfile" 2> "$logfile.err"
+    ) &
+  fi
   local child=$!
+
+  if [ "$interactive" = "true" ]; then
+    exec 9> "$fifo"                       # hold it open: EOF would end the turn loop
+    "$JQ" -nc --arg t "$prompt" \
+      '{type:"user",message:{role:"user",content:[{type:"text",text:$t}]}}' >&9
+    state_set "$id" last_fifo "$("$JQ" -nc --arg p "$fifo" '$p')"
+  fi
   # Publish the agent's PID so `claude-cron stop` can end this run cleanly.
   echo "$child" > "$LOCK_DIR/$id/child" 2>/dev/null || true
+
+  # An interactive run does not end on its own: stdin is held open, so after each
+  # answer the agent simply waits for more. This ends it once the conversation is
+  # over — after a `result` event, give the human a short window to type; any new
+  # output (their replayed message, or the agent working again) cancels it.
+  if [ "$interactive" = "true" ]; then
+    (
+      seen=0
+      while kill -0 "$child" 2>/dev/null; do
+        sleep 2
+        n="$(grep -c '"type":"result"' "$streamfile" 2>/dev/null || echo 0)"
+        [ "$n" -le "$seen" ] && continue
+        seen="$n"
+        size="$(wc -c < "$streamfile" 2>/dev/null | tr -d ' ')"
+        waited=0
+        while [ "$waited" -lt "$INTERACTIVE_GRACE" ]; do
+          sleep 2; waited=$(( waited + 2 ))
+          kill -0 "$child" 2>/dev/null || exit 0
+          [ "$(wc -c < "$streamfile" 2>/dev/null | tr -d ' ')" != "$size" ] && break
+        done
+        if [ "$waited" -ge "$INTERACTIVE_GRACE" ]; then
+          # Deliberate, orderly end of an interactive conversation — mark it so
+          # the run is not classified as an error just because we sent TERM.
+          : > "$logfile.turnend"
+          kill -TERM "$child" 2>/dev/null
+          exit 0
+        fi
+      done
+    ) & local turnloop=$!
+  fi
 
   # Liveness watchdog. It asks "is this run still doing anything?", not "has it
   # taken too long" — the stream file grows with every agent event, so while it
@@ -504,6 +580,12 @@ ${prompt}"
   ) & local watchdog=$!
   wait "$child"; rc=$?
   kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
+  if [ "$interactive" = "true" ]; then
+    kill "${turnloop:-0}" 2>/dev/null; wait "${turnloop:-0}" 2>/dev/null
+    exec 9>&- 2>/dev/null || true
+    rm -f "$fifo"
+    state_set "$id" last_fifo '""'
+  fi
   local wdreason=""
   [ -s "$wdfile" ] && wdreason="$(cat "$wdfile")"
   rm -f "$wdfile"
@@ -556,6 +638,9 @@ ${prompt}"
   #   warning — the run completed but something smells: stderr output, or an
   #             empty agent result;
   #   success — clean run, agent produced a result, nothing denied.
+  # An interactive run is ENDED BY US once the conversation goes quiet, so its
+  # exit status is a signal, not a failure. Treat that as a clean exit.
+  if [ -f "$logfile.turnend" ]; then rc=0; rm -f "$logfile.turnend"; fi
   local denials subtype result_len errbytes
   denials="$("$JQ" -r '.permission_denials // [] | length' "$logfile" 2>/dev/null || echo 0)"
   subtype="$("$JQ" -r '.subtype // "success"' "$logfile" 2>/dev/null || echo success)"
@@ -782,6 +867,13 @@ cmd_set_field() { # cmd_set_field <id> <field> ; value on stdin
       [ "$value" -lt 60 ] && value=60
       write_jobs --arg id "$id" --argjson v "$value" \
         '.jobs = [.jobs[] | if .id == $id then .interval_seconds = $v else . end]' ;;
+    interactive)
+      case "$value" in
+        true|false) write_jobs --arg id "$id" --argjson v "$value" \
+            '.jobs = [.jobs[] | if .id == $id then .interactive = $v else . end]' ;;
+        "") write_jobs --arg id "$id" '.jobs = [.jobs[] | if .id == $id then del(.interactive) else . end]' ;;
+        *) die "interactive must be true or false" ;;
+      esac ;;
     effort)
       # empty clears it (the CLI then uses its own default)
       case "$value" in
@@ -1007,6 +1099,7 @@ case "${1:-}" in
   project-list)   cmd_project_list ;;
   resolve-models) cmd_resolve_models ;;
   running)   [ $# -ge 2 ] || die "usage: claude-cron running <job-id>"; cmd_running "$2" ;;
+  say)       [ $# -ge 2 ] || die "usage: claude-cron say <job-id> (message on stdin)"; cmd_say "$2" ;;
   stop)      [ $# -ge 2 ] || die "usage: claude-cron stop <job-id>"; cmd_stop "$2" ;;
   set-prompt) [ $# -ge 2 ] || die "usage: claude-cron set-prompt <job-id> (prompt on stdin)"; cmd_set_prompt "$2" ;;
   set-field) [ $# -ge 3 ] || die "usage: claude-cron set-field <job-id> <field> (value on stdin)"; cmd_set_field "$2" "$3" ;;
