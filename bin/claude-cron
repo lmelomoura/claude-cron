@@ -1078,8 +1078,16 @@ cmd_logs() {
 job_exists() { jobs_json | "$JQ" -e --arg id "$1" 'any(.jobs[]; .id == $id)' >/dev/null 2>&1; }
 
 write_jobs() { # write_jobs <jq-filter> [jq-args...]
+  # Never replace the jobs file with a broken document: a filter that errors, or
+  # that yields anything other than an object carrying .jobs, is discarded. One
+  # bad write here would take every job down with it.
   local tmp; tmp="$(mktemp "$CONFIG_DIR/.jobs.XXXXXX")"
-  "$JQ" "$@" "$JOBS_FILE" > "$tmp" && mv "$tmp" "$JOBS_FILE"
+  if "$JQ" "$@" "$JOBS_FILE" > "$tmp" 2>/dev/null \
+     && "$JQ" -e 'type == "object" and (.jobs | type) == "array"' "$tmp" >/dev/null 2>&1; then
+    mv "$tmp" "$JOBS_FILE"
+  else
+    rm -f "$tmp"; die "refusing to write a malformed jobs file (change discarded)"
+  fi
 }
 
 cmd_toggle() {
@@ -1088,6 +1096,71 @@ cmd_toggle() {
   write_jobs --arg id "$id" --argjson v "$val" \
     '.jobs = [.jobs[] | if .id == $id then .enabled = $v else . end]'
   echo "$id enabled=$val"
+}
+
+cmd_rename() { # cmd_rename <old-id> <new-id> — id + everything keyed by it
+  local old="$1" new="$2" tmp path newpath
+  job_exists "$old" || die "no such job: $old"
+  # Validate the NEW id exactly as creation does, so a rename can never produce
+  # an id that `create` would have refused.
+  case "$new" in *[!a-zA-Z0-9_-]*|'') die "rename: id must contain only letters, digits, - and _" ;; esac
+  [ "$old" = "$new" ] && { echo "unchanged: $old"; return 0; }
+  job_exists "$new" && die "rename: a job named '$new' already exists"
+  # A live run holds a slot dir, a worktree and a logfile under the OLD id; let
+  # it finish rather than renaming the ground out from under it.
+  [ "$(slots_active "$old")" -gt 0 ] && die "rename: $old has a run in progress — stop it or wait for it to finish"
+
+  # The job itself, and its precheck command if it points at the per-job script.
+  path="$(precheck_path "$old")"; newpath="$(precheck_path "$new")"
+  if [ -f "$path" ] && [ ! -e "$newpath" ]; then
+    mv "$path" "$newpath"
+    write_jobs --arg o "$old" --arg n "$new" --arg np "bash $newpath" \
+      '.jobs = [.jobs[] | if .id == $o then (.id = $n | .precheck = $np) else . end]'
+  else
+    write_jobs --arg o "$old" --arg n "$new" '.jobs = [.jobs[] | if .id == $o then (.id = $n) else . end]'
+  fi
+
+  # Everything else keyed by the id: state, logs, journal. The dashboard's DB
+  # re-ingests on its own — it resyncs whenever runs.ndjson's signature changes.
+  tmp="$(mktemp "$DATA_DIR/.state.XXXXXX")"
+  "$JQ" --arg o "$old" --arg n "$new" \
+    'if has($o) then (.[$n] = .[$o] | del(.[$o])) else . end' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+  [ -d "$LOG_DIR/$old" ] && [ ! -e "$LOG_DIR/$new" ] && mv "$LOG_DIR/$old" "$LOG_DIR/$new"
+  if [ -s "$RUNS_FILE" ]; then
+    tmp="$(mktemp "$DATA_DIR/.runs.XXXXXX")"
+    "$JQ" -c --arg o "$old" --arg n "$new" \
+      'if .id == $o then (.id = $n | .log = ((.log // "") | sub("/logs/" + $o + "/"; "/logs/" + $n + "/"))) else . end' \
+      "$RUNS_FILE" > "$tmp" && mv "$tmp" "$RUNS_FILE"
+  fi
+  rm -rf "$LOCK_DIR/$old"
+  [ -d "$WORKTREES_DIR/$old" ] && rmdir "$WORKTREES_DIR/$old" 2>/dev/null
+  echo "renamed $old -> $new"
+}
+
+cmd_reorder() { # new order of ids on stdin (one per line, or a JSON array)
+  # Reorders ONLY the jobs named, into the positions those jobs already occupy —
+  # so reordering inside one project group never disturbs the others.
+  local ids raw
+  raw="$(cat)"
+  [ -n "$raw" ] || die "reorder: no ids given"
+  # Accept a JSON array or one id per line. NOTE: `try … catch` hands the ERROR
+  # to the catch branch, not the input, so use `fromjson?` + `//` instead — with
+  # catch, a plain list would be parsed out of jq's own error message.
+  ids="$(printf '%s' "$raw" | "$JQ" -c -R -s '. as $t | ($t | fromjson?) // ($t | split("\n") | map(select(length > 0)))')"
+  printf '%s' "$ids" | "$JQ" -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1 \
+    || die "reorder: expected a non-empty list of job ids"
+  local missing
+  # `. as $doc` first: inside `$want[]` the dot is the id, not the document.
+  missing="$(jobs_json | "$JQ" -r --argjson want "$ids" '. as $doc | ($doc.jobs | map(.id)) as $have | [$want[] | . as $w | select(($have | index($w)) == null)] | join(", ")')"
+  [ -n "$missing" ] && die "reorder: unknown job(s): $missing"
+  write_jobs --argjson want "$ids" '
+    . as $doc
+    # The positions the named jobs already occupy, in file order. Rewriting only
+    # those slots keeps every other job exactly where it was.
+    | [range(0; ($doc.jobs | length)) as $i | select(($want | index($doc.jobs[$i].id)) != null) | $i] as $slots
+    | reduce range(0; ($slots | length)) as $k ($doc;
+        .jobs[$slots[$k]] = ($doc.jobs[] | select(.id == $want[$k])))'
+  echo "reordered: $(printf '%s' "$ids" | "$JQ" -r 'join(" -> ")')"
 }
 
 cmd_delete() {
@@ -1347,6 +1420,8 @@ case "${1:-}" in
   enable)    [ $# -ge 2 ] || die "usage: claude-cron enable <job-id>"; cmd_toggle "$2" true ;;
   disable)   [ $# -ge 2 ] || die "usage: claude-cron disable <job-id>"; cmd_toggle "$2" false ;;
   delete)    [ $# -ge 2 ] || die "usage: claude-cron delete <job-id>"; cmd_delete "$2" ;;
+  rename)    [ $# -ge 3 ] || die "usage: claude-cron rename <job-id> <new-id>"; cmd_rename "$2" "$3" ;;
+  reorder)   cmd_reorder ;;   # new order of job ids on stdin
   create)    cmd_create ;;
   project-set)    cmd_project_set ;;
   project-delete) [ $# -ge 2 ] || die "usage: claude-cron project-delete <name>"; cmd_project_delete "$2" ;;

@@ -968,6 +968,19 @@ class Handler(BaseHTTPRequestHandler):
             ok, out = cc(["project-delete", name])
             return self._send(200 if ok else 500, {"ok": ok, "output": out})
 
+        # Reorder carries a LIST of ids rather than one — handle it before the
+        # single-id check below. Jobs outside the list keep their positions, so
+        # reordering one project group never disturbs another.
+        if op == "reorder":
+            order = body.get("order")
+            if not isinstance(order, list) or not order:
+                return self._send(400, {"error": "no order given"})
+            if not all(isinstance(x, str) and x and all(c.isalnum() or c in "-_" for c in x) for x in order):
+                return self._send(400, {"error": "bad id in order"})
+            ok, out = cc(["reorder"], stdin=json.dumps(order))
+            return self._send(200 if ok else 409, {"ok": ok, "output": out} if ok
+                              else {"error": out or "reorder refused"})
+
         jid = str(body.get("id", ""))
         if not jid or not all(c.isalnum() or c in "-_" for c in jid):
             return self._send(400, {"error": "bad id"})
@@ -1043,6 +1056,15 @@ class Handler(BaseHTTPRequestHandler):
             ok, out = cc(["say", jid], stdin=text)
             if not ok:
                 return self._send(409, {"error": out or "could not deliver"})
+        elif op == "rename":
+            # The engine owns every rule here (id syntax, collisions, refusing
+            # while a run is live) and migrates state/logs/journal with the id.
+            new = (body.get("new_id") or "").strip()
+            if not new:
+                return self._send(400, {"error": "no new id given"})
+            ok, out = cc(["rename", jid, new])
+            if not ok:
+                return self._send(409, {"error": out or "rename refused"})
         elif op == "enable":
             ok, out = cc(["enable", jid])
         elif op == "disable":
@@ -1191,6 +1213,10 @@ td .projtag .ic{width:12px;height:12px;color:var(--accent)}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:16px 18px;
   box-shadow:var(--shadow);display:flex;flex-direction:column}
 .projgroup .card{box-shadow:none}
+/* drag to reorder: the card being dragged fades, the drop target is outlined */
+.card[draggable="true"] h2 .jobname{cursor:grab}
+.card.dragging{opacity:.45}
+.card.dragover{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 35%,transparent)}
 .card h2{font-size:14px;margin:0 0 2px;display:flex;align-items:center;gap:9px;justify-content:space-between}
 .card h2 .jobname{display:flex;align-items:center;gap:8px}
 .warnline{display:flex;align-items:flex-start;gap:7px;margin:2px 0 8px;padding:7px 9px;
@@ -2055,7 +2081,10 @@ function jobCard(j){
   const pillCls=disabled?"off":(idle?"idle":"on");
   const pillTxt=disabled?"disabled":(idle?"idle":"enabled");
   const pillTip=idle?' title="Outside its active window — no runs until the window reopens"':"";
-  return '<div class="card"><h2><span class="jobname">'+I.bot+esc(j.id)+'</span>'
+  // Cards are draggable so a group can be put in the order the work runs in.
+  // The drag handle is the whole card; buttons and inputs still work normally.
+  return '<div class="card" draggable="true" data-job-id="'+esc(j.id)+'">'
+    +'<h2><span class="jobname" title="Drag to reorder within the project">'+I.bot+esc(j.id)+'</span>'
     +'<span class="pill '+pillCls+'"'+pillTip+'>'+pillTxt+'</span></h2>'
     // Disabling stops FUTURE runs; one already in flight keeps going. Say so,
     // instead of letting "disabled" sit beside a spinning "running now…".
@@ -2072,6 +2101,53 @@ function jobCard(j){
     +'<button class="btn" data-op="edit" data-id="'+esc(j.id)+'">'+I.pencil+'Edit</button>'
     +'<button class="btn danger" data-op="delete" data-id="'+esc(j.id)+'">'+I.trash+'Delete</button>'
     +'</div></div>';
+}
+
+/* ---- drag to reorder job cards within their group ---- */
+// Order lives in jobs.json (the engine rewrites only the dragged group's slots),
+// so it survives reloads and is the order the tick walks the jobs in.
+let _dragId=null;
+function initJobDrag(){
+  const host=$("jobs"); if(!host) return;
+  host.addEventListener("dragstart",(e)=>{
+    const c=e.target.closest(".card[data-job-id]"); if(!c) return;
+    _dragId=c.dataset.jobId; c.classList.add("dragging");
+    e.dataTransfer.effectAllowed="move";
+    try{ e.dataTransfer.setData("text/plain", _dragId); }catch(_){}
+  });
+  host.addEventListener("dragend",()=>{
+    _dragId=null;
+    host.querySelectorAll(".dragging,.dragover").forEach(x=>x.classList.remove("dragging","dragover"));
+  });
+  host.addEventListener("dragover",(e)=>{
+    if(!_dragId) return;
+    const over=e.target.closest(".card[data-job-id]");
+    const from=host.querySelector('.card[data-job-id="'+CSS.escape(_dragId)+'"]');
+    // Only within the same group: reordering is per project, never across.
+    if(!over || !from || over===from || over.closest(".grid")!==from.closest(".grid")) return;
+    e.preventDefault(); e.dataTransfer.dropEffect="move";
+    host.querySelectorAll(".dragover").forEach(x=>x.classList.remove("dragover"));
+    over.classList.add("dragover");
+  });
+  host.addEventListener("drop",async(e)=>{
+    const over=e.target.closest(".card[data-job-id]");
+    const from=_dragId && host.querySelector('.card[data-job-id="'+CSS.escape(_dragId)+'"]');
+    if(!over || !from || over===from || over.closest(".grid")!==from.closest(".grid")) return;
+    e.preventDefault();
+    const grid=over.closest(".grid");
+    // Insert before or after, depending on which way the card was dragged.
+    const cards=[...grid.querySelectorAll(".card[data-job-id]")];
+    grid.insertBefore(from, cards.indexOf(from)<cards.indexOf(over) ? over.nextSibling : over);
+    over.classList.remove("dragover");
+    const order=[...grid.querySelectorAll(".card[data-job-id]")].map(c=>c.dataset.jobId);
+    _dragId=null;
+    const r=await fetch("/api/action",{method:"POST",
+      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+      body:JSON.stringify({op:"reorder",order})});
+    if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Could not save the order — "+(j.error||("HTTP "+r.status)), true); }
+    else toast("Order saved", false, "check");
+    refresh();
+  });
 }
 
 function collapsibleGroup(key, headerInner, cards){
@@ -2364,19 +2440,24 @@ function renderRuns(){
         // line up in the same columns.
         // Disabled once the job has run again (resumed here or anywhere) — a
         // second resume would just duplicate work. The "?" says where it went.
-        // A live run gets a STOP (each run is individual now, so this ends THIS
-        // one, by its pid). A failed one gets a RESUME that continues its own
+        // STOP and RESUME are BOTH always rendered, each enabled only when it
+        // applies, so every row's icons line up in the same columns and the
+        // controls are findable even on rows where they are not usable.
+        // Stop ends THIS run (by its pid); resume continues THIS run's own
         // session — the same task, picked back up, exactly like
         // `claude --resume <session>` — never a fresh run of the job.
         +(r.live
            ? '<button class="iconbtn danger" title="Stop this run"'
              +' data-op="stop" data-id="'+esc(r.id)+'" data-run-pid="'+esc(livePidFor(r.id))+'">'+I.power+'</button>'
+           : '<button class="iconbtn" disabled title="This run has already finished — only a running run can be stopped">'+I.power+'</button>')
+        +(r.live
+           ? '<button class="iconbtn retry" disabled title="This run is still going">'+I.play+'</button>'
            : s==="error"
              ? (!r.session
                 ? '<button class="iconbtn retry" disabled title="This run recorded no session id, so it cannot be resumed">'+I.play+'</button>'
                 : followUp
                   ? '<button class="iconbtn retry" disabled title="'
-                    +(followUp.running?"A newer run is in progress":"Already followed by a newer run")
+                    +(followUp.running?"A newer run is in progress":"This task was already resumed")
                     +' — see the ? beside the status">'+I.play+'</button>'
                   : '<button class="iconbtn retry" title="Resume this task — continue session '
                     +esc((r.session||"").slice(0,8))+' where it stopped"'
@@ -2691,7 +2772,11 @@ function openEditor(id){
   editingId=id; creating=false;
   $("ed-halo").innerHTML=I.pencil;
   $("ed-title").textContent="Edit — "+id;
-  $("ed-id-row").style.display="none";
+  // The id is editable here too: renaming carries the job's state, logs and
+  // history with it (the engine refuses a bad or taken id, and refuses while a
+  // run is live).
+  $("ed-id-row").style.display="";
+  $("ed-id").value=id;
   fill(j);
   $("ed-save").textContent="Save changes";
   $("editor").showModal();
@@ -2755,7 +2840,19 @@ async function saveEditor(){
       if(!await api("create",{id, job, precheck:$("ed-precheck").value})) return;
       $("editor").close(); toast("Created "+id); refresh(); return;
     }
-    const id=editingId, j=(DATA.jobs||[]).find(x=>x.id===id)||{};
+    let id=editingId; const j=(DATA.jobs||[]).find(x=>x.id===id)||{};
+    // Rename FIRST — every call below is keyed by the id, so they must target
+    // the new one. The engine validates the id and moves state/logs/history.
+    const wantId=$("ed-id").value.trim();
+    if(wantId && wantId!==id){
+      if(!/^[A-Za-z0-9_-]+$/.test(wantId)){ toast("id: only letters, digits, - and _",true); return; }
+      const r=await fetch("/api/action",{method:"POST",
+        headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+        body:JSON.stringify({op:"rename",id,new_id:wantId})});
+      if(!r.ok){ const e=await r.json().catch(()=>({})); toast("Rename failed — "+(e.error||("HTTP "+r.status)), true); return; }
+      id=wantId; editingId=wantId;
+      toast("Renamed to "+wantId, false, "check");
+    }
     const setF=async(field,value,cur)=> String(value)===String(cur) ? true : api("set_field",{id,field,value:String(value)});
     const prompt=$("ed-prompt").value.trim();
     if(prompt && prompt!==(j.prompt||"")){ if(!await api("set_prompt",{id,prompt})) return; }
@@ -3156,6 +3253,7 @@ $("pj-delete").addEventListener("click", deleteProjectFromModal);
 initCombos();
 initFolderPicker();
 initTooltips();
+initJobDrag();
 initModalScrollLock();
 initPromptEditor();
 $("ed-cancel").addEventListener("click", ()=>$("editor").close());
