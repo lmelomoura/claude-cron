@@ -1060,6 +1060,19 @@ body{margin:0;background:var(--bg);color:var(--ink);
 h3{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
   margin:0;display:flex;align-items:center;gap:7px}
 h3 .ic{width:14px;height:14px}
+/* Top-level views. With more than a handful of projects the runs table pushes
+   the jobs off the screen, so the two live on their own tabs. */
+.viewtabs{display:flex;gap:4px;margin:18px 0 4px;border-bottom:1px solid var(--line)}
+.viewtab{display:inline-flex;align-items:center;gap:8px;font:inherit;font-size:13px;font-weight:600;
+  padding:9px 15px;border:0;background:transparent;color:var(--muted);cursor:pointer;
+  border-bottom:2px solid transparent;margin-bottom:-1px}
+.viewtab:hover{color:var(--ink)}
+.viewtab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.viewtab .ic{width:15px;height:15px}
+.viewtab .vcount{font-size:11px;font-weight:600;color:var(--muted);background:var(--panel2);
+  border:1px solid var(--line);border-radius:20px;padding:1px 7px;line-height:1.5}
+.viewtab.active .vcount{background:var(--accent-soft);border-color:transparent;color:var(--accent)}
+.view[hidden]{display:none}
 .secthead{display:flex;align-items:center;justify-content:space-between;margin:26px 0 12px}
 .projchips{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
 .projchip{display:inline-flex;align-items:center;gap:6px;padding:6px 11px;border-radius:20px;
@@ -1526,6 +1539,13 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
 </header>
 <main class="wrap">
   <section class="stats" id="stats"></section>
+
+  <nav class="viewtabs" id="viewtabs">
+    <button class="viewtab active" data-view="jobs" id="vt-jobs"></button>
+    <button class="viewtab" data-view="runs" id="vt-runs"></button>
+  </nav>
+
+  <div class="view" id="view-jobs">
   <div class="secthead"><h3 id="h-jobs"></h3>
     <div style="display:flex;gap:8px">
       <button class="btn ghost" id="new-project"></button>
@@ -1533,6 +1553,9 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
     </div></div>
   <div class="projchips" id="projchips"></div>
   <div id="jobs"></div>
+  </div><!-- /view-jobs -->
+
+  <div class="view" id="view-runs" hidden>
   <div class="secthead"><h3 id="h-runs"></h3></div>
   <div class="toolbar">
     <div class="searchbox" id="searchbox">
@@ -1563,6 +1586,8 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
     <span id="pg-info"></span>
     <button class="btn ghost" id="pg-next"></button>
   </div>
+  </div><!-- /view-runs -->
+
   <footer id="foot"></footer>
 </main>
 
@@ -2100,6 +2125,7 @@ function render(){
   $("stats").innerHTML=tiles.map(([icn,tone,n,l])=>
     '<div class="stat"><div class="stat-top"><div class="bubble '+tone+'">'+icn+'</div><div class="n">'+esc(n)+'</div></div><div class="l">'+esc(l)+'</div></div>').join("");
 
+  paintViewTabs();
   renderJobs();
   renderRuns();
   $("foot").textContent="claude-cron · control server on 127.0.0.1 · SQLite index.db ("
@@ -2901,6 +2927,31 @@ function initModalScrollLock(){
   syncModalScrollLock();
 }
 
+/* Jobs / Runs as top-level views. The choice is remembered, and the counters are
+   refreshed with the data so switching tabs is never needed just to see numbers. */
+let currentView = localStorage.ccView === "runs" ? "runs" : "jobs";
+function setView(v){
+  currentView = (v === "runs") ? "runs" : "jobs";
+  localStorage.ccView = currentView;
+  $("view-jobs").hidden = currentView !== "jobs";
+  $("view-runs").hidden = currentView !== "runs";
+  document.querySelectorAll(".viewtab").forEach(b =>
+    b.classList.toggle("active", b.dataset.view === currentView));
+}
+function paintViewTabs(){
+  const jobs = (DATA.jobs || []).length;
+  const runs = (DATA.runs || []).length;
+  const live = (DATA.jobs || []).filter(j => ((DATA.state || {})[j.id] || {}).last_status === "running").length;
+  $("vt-jobs").innerHTML = I.zap + "Jobs" + '<span class="vcount">' + jobs + "</span>"
+    + (live ? '<span class="runningbadge"><span class="pulse"></span>' + live + "</span>" : "");
+  $("vt-runs").innerHTML = I.activity + "Runs" + '<span class="vcount">' + runs + "</span>";
+}
+function initViews(){
+  document.querySelectorAll(".viewtab").forEach(b =>
+    b.addEventListener("click", () => setView(b.dataset.view)));
+  setView(currentView);
+}
+
 /* ---------------------------------------------------------------- events */
 document.addEventListener("click", async (e)=>{
   const step=e.target.closest(".step-btn");
@@ -3059,6 +3110,7 @@ $("q-clear").addEventListener("click",()=>{
 
 /* ---------------------------------------------------------------- boot */
 $("brandmark").innerHTML=I.bot;
+initViews();
 $("h-jobs").innerHTML=I.zap+"Jobs";
 $("h-runs").innerHTML=I.activity+"Recent runs";
 $("new-job").innerHTML=I.plus+"New job";
