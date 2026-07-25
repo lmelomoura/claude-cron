@@ -631,6 +631,33 @@ def _session_from_log(logp):
     return ""
 
 
+def max_parallel_for(jid):
+    """How many runs of this job may work at once — 0 means no ceiling.
+
+    A JOB-level setting only, never inherited: missing or blank means 3. Kept in
+    step with the engine so the dashboard never promises a run the engine would
+    refuse, nor refuses one it would have allowed.
+    """
+    try:
+        for j in json.loads(JOBS_FILE.read_text()).get("jobs", []):
+            if j.get("id") == jid:
+                try:
+                    n = int(j.get("max_parallel"))
+                except (TypeError, ValueError):
+                    return 3
+                return n if n >= 0 else 3
+    except Exception:  # noqa: BLE001
+        pass
+    return 3
+
+
+def at_capacity(jid):
+    """(is_full, running, ceiling) — ceiling 0 means unlimited, so never full."""
+    ceiling = max_parallel_for(jid)
+    running = len(active_runs_for(jid))
+    return (ceiling > 0 and running >= ceiling), running, ceiling
+
+
 def resume_in_flight(jid, sid):
     """Is a run already resuming this session right now?"""
     return bool(sid) and any(r.get("resume_of") == sid for r in active_runs_for(jid))
@@ -1221,18 +1248,13 @@ class Handler(BaseHTTPRequestHandler):
             # its own worktree), capped by the job's max_parallel. The forced run
             # is detached, so check the ceiling first — otherwise the dashboard
             # would report "Started" when the engine silently skipped it at cap.
-            maxp = 1
-            try:
-                for j in json.loads(JOBS_FILE.read_text()).get("jobs", []):
-                    if j.get("id") == jid:
-                        maxp = int(j.get("max_parallel") or 1)
-                        break
-            except Exception:  # noqa: BLE001
-                pass
-            n = len(active_runs_for(jid))
-            if n >= maxp:
-                return self._send(409, {"error": f"already at max_parallel ({n}/{maxp}) runs for this job",
-                                        "running": True})
+            full, n, ceiling = at_capacity(jid)
+            if full:
+                return self._send(409, {
+                    "error": f"{jid} already has {n} run{'' if n == 1 else 's'} going and its limit "
+                             f"is {ceiling} at a time, so nothing was started. Stop a run, wait for "
+                             f"one to finish, or raise “Max simultaneous runs” on this job.",
+                    "running": True, "at_capacity": True, "running_count": n, "max_parallel": ceiling})
             ok, out = cc(["run", jid], background=True)
         elif op == "stop":
             # With concurrent runs, a stop targets ONE run by its pid; no pid = all.
@@ -1248,18 +1270,13 @@ class Handler(BaseHTTPRequestHandler):
             # twice in parallel would have both runs doing the same work.
             if resume_in_flight(jid, sid):
                 return self._send(409, {"error": "this task is already being resumed right now"})
-            maxp = 1
-            try:
-                for j in json.loads(JOBS_FILE.read_text()).get("jobs", []):
-                    if j.get("id") == jid:
-                        maxp = int(j.get("max_parallel") or 1)
-                        break
-            except Exception:  # noqa: BLE001
-                pass
-            n = len(active_runs_for(jid))
-            if n >= maxp:
-                return self._send(409, {"error": f"already at max_parallel ({n}/{maxp}) runs for this job",
-                                        "running": True})
+            full, n, ceiling = at_capacity(jid)
+            if full:
+                return self._send(409, {
+                    "error": f"{jid} already has {n} run{'' if n == 1 else 's'} going and its limit "
+                             f"is {ceiling} at a time, so this task was not resumed. Stop a run, wait "
+                             f"for one to finish, or raise “Max simultaneous runs” on this job.",
+                    "running": True, "at_capacity": True, "running_count": n, "max_parallel": ceiling})
             ok, out = cc(["resume", jid, sid], background=True)
         elif op == "say":
             # Deliver a human message into the run that is happening right now.
@@ -1294,7 +1311,7 @@ class Handler(BaseHTTPRequestHandler):
             value = str(body.get("value", ""))
             if field not in ("interval_seconds", "active_hours", "active_days",
                              "max_budget_usd", "daily_budget_usd", "model", "timeout_seconds",
-                             "stall_timeout_seconds", "effort", "interactive",
+                             "stall_timeout_seconds", "effort", "interactive", "max_parallel",
                              "description", "cwd", "permission_mode", "project"):
                 return self._send(400, {"error": "bad field"})
             ok, out = cc(["set-field", jid, field], stdin=value)
@@ -1956,6 +1973,11 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
       <div class="moneyin"><span class="cur">$</span>
         <input id="ed-budget" inputmode="decimal" autocomplete="off" placeholder="2.00"></div></div>
   </div>
+  <label>Max simultaneous runs</label>
+  <input id="ed-maxpar" type="number" min="0" step="1" inputmode="numeric" placeholder="3">
+  <div class="hint">How many runs of this job may work at once, each in its own worktree.
+    Default 3. Set 0 (or leave empty) for no limit. At the limit, Run now and Resume
+    say so instead of starting anything.</div>
   <label>Active hours (leave both empty for 24h)</label>
   <div class="timerow">
     <input type="time" id="ed-hours-start"><span class="sep">until</span><input type="time" id="ed-hours-end">
@@ -2178,6 +2200,9 @@ function showConfirm(o){
   const ok=$("cf-ok");
   ok.textContent=o.confirmLabel||"Confirm";
   ok.className="btn "+(o.tone==="danger"?"danger":"primary");
+  // An alert states something that already happened — there is nothing to
+  // cancel, so it gets the one button that dismisses it.
+  $("cf-cancel").hidden = o.alertOnly===true;
   $("confirm").showModal();
   return new Promise(res=>{ _cfResolve=res; });
 }
@@ -3059,6 +3084,9 @@ function fill(j){
   const hp=String(j.active_hours||"").split("-");
   $("ed-hours-start").value=hp[0]||""; $("ed-hours-end").value=hp[1]||"";
   setDays(j.active_days||[]);
+  // Empty shows the default (3) as a placeholder; 0 is a real value meaning
+  // "no limit", so it must be shown rather than treated as unset.
+  $("ed-maxpar").value=(j.max_parallel!=null && j.max_parallel!=="")?String(j.max_parallel):"";
   $("ed-budget").value=(j.max_budget_usd!=null?j.max_budget_usd:2).toFixed(2);
   $("ed-daily").value=(j.daily_budget_usd!=null?Number(j.daily_budget_usd).toFixed(2):"");
   // Both optional: empty means "no hard limit" / "no stall guard".
@@ -3109,6 +3137,9 @@ function readForm(){
     hours: hs && he ? hs+"-"+he : "",
     days,
     budget: (parseFloat($("ed-budget").value.replace(/[^0-9.]/g,""))||2),
+    // How many runs of this job may work at once. Empty means "use the default"
+    // (3); 0 is a value in its own right and means no limit.
+    maxPar: $("ed-maxpar").value.trim()==="" ? null : Math.max(0, parseInt($("ed-maxpar").value,10)||0),
     daily: dailyRaw==="" ? null : parseFloat(dailyRaw),   // null = no cap
     // Both optional; null = leave unset (no hard limit / no stall guard).
     timeoutSecs: $("ed-timeout").value.trim()==="" ? null : Math.max(60,(parseInt($("ed-timeout").value,10)||30)*60),
@@ -3127,6 +3158,7 @@ async function saveEditor(){
       if(!prompt){ toast("prompt is required",true); return; }
       const job={id, description:$("ed-desc").value.trim(), prompt, interval_seconds:f.secs,
         model:f.model, active_hours:f.hours, active_days:f.days, max_budget_usd:f.budget,
+        ...(f.maxPar!=null?{max_parallel:f.maxPar}:{}),
         permission_mode:$("ed-perm").value};
       if(f.effort) job.effort=f.effort;
       if(f.interactive) job.interactive=true;
@@ -3165,6 +3197,10 @@ async function saveEditor(){
     if(!await setF("active_hours",f.hours,j.active_hours||"")) return;
     if(!await setF("active_days",f.days.join(","),(j.active_days||[]).join(","))) return;
     if(!await setF("max_budget_usd",f.budget,(j.max_budget_usd!=null?j.max_budget_usd:2))) return;
+    const curMax=(j.max_parallel!=null?String(j.max_parallel):"");
+    if(String(f.maxPar==null?"":f.maxPar)!==curMax){
+      if(!await api("set_field",{id,field:"max_parallel",value:(f.maxPar==null?"":String(f.maxPar))})) return;
+    }
     const curDaily=(j.daily_budget_usd!=null?+j.daily_budget_usd:null);
     if(f.daily!==curDaily){ if(!await api("set_field",{id,field:"daily_budget_usd",value:(f.daily==null?"":String(f.daily))})) return; }
     const curTo=(j.timeout_seconds!=null?+j.timeout_seconds:null);
@@ -3550,7 +3586,12 @@ document.addEventListener("click", async (e)=>{
       headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
       body:JSON.stringify({op:"run",id})});
     if(r.status===409){
-      toast("Not started — a run is already in progress for "+id, true, "alert");
+      // At the ceiling: say plainly that nothing started, and why, rather than
+      // letting a click look like it worked.
+      const j=await r.json().catch(()=>({}));
+      await showConfirm({tone:"warn", icon:"alert", title:"Nothing was started",
+        message: j.error || ("A run is already in progress for "+id),
+        confirmLabel:"OK", alertOnly:true});
       b.disabled=false; refresh(); return;
     }
     if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Failed — "+(j.error||("HTTP "+r.status)), true); b.disabled=false; return; }
@@ -3567,7 +3608,10 @@ document.addEventListener("click", async (e)=>{
       headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
       body:JSON.stringify({op:"resume",id,session:sid})});
     if(r.status===409){
-      toast("Not resumed — this job is already at its parallel-run limit", true, "alert");
+      const j=await r.json().catch(()=>({}));
+      await showConfirm({tone:"warn", icon:"alert", title:"Nothing was resumed",
+        message: j.error || "This task could not be resumed right now.",
+        confirmLabel:"OK", alertOnly:true});
       b.disabled=false; refresh(); return;
     }
     if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Resume failed — "+(j.error||("HTTP "+r.status)), true); b.disabled=false; return; }

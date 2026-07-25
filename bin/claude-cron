@@ -255,13 +255,14 @@ slots_active() { # <id> -> prints count of live slots; prunes dead ones
 }
 
 acquire_slot() { # <id> <max> -> prints the slot dir; non-zero when at capacity
+  # max 0 means no ceiling: run as many at once as are asked for.
   local id="$1" max="$2"
   local base="$LOCK_DIR/$id" slot n L="" i=0
   mkdir -p "$base"
   L="$base/.acq"                         # short mutex so the ceiling holds under a race
   while ! mkdir "$L" 2>/dev/null; do i=$((i + 1)); [ "$i" -ge 300 ] && { rm -rf "$L"; i=0; }; sleep 0.01; done
   n="$(slots_active "$id")"              # also prunes dead slots
-  if [ "$n" -ge "$max" ]; then rmdir "$L" 2>/dev/null; return 1; fi
+  if [ "$max" -gt 0 ] && [ "$n" -ge "$max" ]; then rmdir "$L" 2>/dev/null; return 1; fi
   slot="$base/$$"                        # unique per _exec process
   mkdir -p "$slot"; echo $$ > "$slot/pid"
   rmdir "$L" 2>/dev/null
@@ -603,8 +604,10 @@ ${prompt}"
     fi
   fi
 
-  max_par="$(resolve "$id" max_parallel 1)"
-  case "$max_par" in ''|*[!0-9]*) max_par=1 ;; esac
+  # How many runs of THIS job may work at once — a job-level setting only, never
+  # inherited. Blank or missing means 3; zero means no ceiling at all.
+  max_par="$(job_get "$id" '.max_parallel' '3')"
+  case "$max_par" in ''|null|*[!0-9]*) max_par=3 ;; esac
   if ! slot="$(acquire_slot "$id" "$max_par")"; then
     log_tick "$id: already at max_parallel=$max_par run(s), not launching another"
     return 0
@@ -959,9 +962,9 @@ cmd_tick() {
     [ "$(job_get "$id" '.enabled' 'true')" = "true" ] || continue
     in_window "$id" >/dev/null || continue
     is_due "$id" || continue
-    max_par="$(resolve "$id" max_parallel 1)"
-    case "$max_par" in ''|*[!0-9]*) max_par=1 ;; esac
-    if [ "$(slots_active "$id")" -ge "$max_par" ]; then
+    max_par="$(job_get "$id" '.max_parallel' '3')"
+    case "$max_par" in ''|null|*[!0-9]*) max_par=3 ;; esac
+    if [ "$max_par" -gt 0 ] && [ "$(slots_active "$id")" -ge "$max_par" ]; then
       log_tick "$id: at max_parallel=$max_par run(s), not launching another"
       continue
     fi
@@ -1224,6 +1227,16 @@ cmd_set_field() { # cmd_set_field <id> <field> ; value on stdin
         "") write_jobs --arg id "$id" '.jobs = [.jobs[] | if .id == $id then del(.interactive) else . end]' ;;
         *) die "interactive must be true or false" ;;
       esac ;;
+    max_parallel)
+      # How many runs of this job may work at once. Empty clears it (the engine
+      # then uses its default of 3); 0 is a value in its own right — no ceiling.
+      if [ -z "$value" ]; then
+        write_jobs --arg id "$id" '.jobs = [.jobs[] | if .id == $id then del(.max_parallel) else . end]'
+      else
+        case "$value" in *[!0-9]*) die "max_parallel must be a whole number (0 = no limit)" ;; esac
+        write_jobs --arg id "$id" --argjson v "$value" \
+          '.jobs = [.jobs[] | if .id == $id then .max_parallel = $v else . end]'
+      fi ;;
     effort)
       # empty clears it (the CLI then uses its own default)
       case "$value" in
