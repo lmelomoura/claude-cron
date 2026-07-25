@@ -1279,6 +1279,14 @@ code{font:11.5px ui-monospace,"SF Mono",Menlo,monospace;
 .empty{padding:34px;text-align:center;color:var(--muted);font-size:13px}
 .empty .ic{width:22px;height:22px;display:block;margin:0 auto 8px;opacity:.6}
 footer{margin-top:30px;color:var(--muted);font-size:11px;text-align:center}
+/* While any modal is open the page behind must be inert: a native <dialog>
+   blocks clicks but NOT the wheel, so scrolling over it used to scroll the page
+   underneath. Lock the page, and contain scrolling inside each scrollable area
+   so reaching its end never chains outwards. */
+html.modal-open, html.modal-open body{overflow:hidden!important}
+dialog .dlg-b, dialog .tabpanes, dialog .term, dialog .combo-list,
+dialog .fs-list, dialog textarea, dialog pre{overscroll-behavior:contain}
+dialog{overscroll-behavior:contain}
 dialog{border:1px solid var(--line);border-radius:14px;background:var(--panel);color:var(--ink);
   padding:0;box-shadow:var(--shadow-lg)}
 dialog::backdrop{background:rgba(9,11,16,.55);backdrop-filter:blur(3px)}
@@ -2761,6 +2769,22 @@ async function openLog(id, start){
   }catch(e){ $("lg-body").innerHTML="<div class='empty'>Could not load log — "+esc(e.message)+"</div>"; }
 }
 
+// The page must not scroll while a modal is open. Driven by observing the
+// dialogs' `open` attribute rather than by patching every call site, so it holds
+// no matter who opens or closes one (buttons, Esc, backdrop, code).
+function syncModalScrollLock(){
+  const anyOpen=[...document.querySelectorAll("dialog")].some(d=>d.open);
+  document.documentElement.classList.toggle("modal-open", anyOpen);
+}
+function initModalScrollLock(){
+  const obs=new MutationObserver(syncModalScrollLock);
+  document.querySelectorAll("dialog").forEach(d=>{
+    obs.observe(d,{attributes:true, attributeFilter:["open"]});
+    d.addEventListener("close", syncModalScrollLock);
+  });
+  syncModalScrollLock();
+}
+
 /* ---------------------------------------------------------------- events */
 document.addEventListener("click", async (e)=>{
   const step=e.target.closest(".step-btn");
@@ -2846,6 +2870,7 @@ $("pj-delete").addEventListener("click", deleteProjectFromModal);
 initCombos();
 initFolderPicker();
 initTooltips();
+initModalScrollLock();
 $("ed-cancel").addEventListener("click", ()=>$("editor").close());
 $("ed-save").addEventListener("click", saveEditor);
 $("ed-effort").addEventListener("input", ()=>setEffort(getEffort()));
