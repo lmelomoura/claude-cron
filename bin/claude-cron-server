@@ -113,7 +113,7 @@ def db_init(conn):
         duration INTEGER, cost REAL, session TEXT, log TEXT, forced INTEGER,
         precheck_note TEXT, result_json TEXT, stream TEXT, precheck_txt TEXT,
         stderr TEXT, doc TEXT, project TEXT, model TEXT, model_id TEXT,
-        note TEXT, pruned INTEGER DEFAULT 0)""")
+        note TEXT, resumed_from TEXT, pruned INTEGER DEFAULT 0)""")
     try:
         conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS runs_fts USING fts5(key UNINDEXED, content)")
         return True
@@ -269,8 +269,8 @@ def _upsert(conn, fts, rec, preserve=None):
     conn.execute(
         "INSERT OR REPLACE INTO runs (key, job, start, status, duration, cost, session,"
         " log, forced, precheck_note, result_json, stream, precheck_txt, stderr, doc, project,"
-        " model, model_id, note, pruned)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " model, model_id, note, resumed_from, pruned)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (key, rec.get("id", ""), rec.get("start", 0), rec.get("status", ""),
          rec.get("duration", 0), rec.get("cost", 0), rec.get("session", ""),
          rec.get("log", ""), 1 if rec.get("forced") else 0,
@@ -278,7 +278,7 @@ def _upsert(conn, fts, rec, preserve=None):
          art["result_json"], art["stream"], art["precheck_txt"], art["stderr"], doc,
          rec.get("project") or "", rec.get("model") or "",
          (rec.get("model_id") or _model_id_from_stream(art["stream"])),
-         (rec.get("note") or "")[:500], pruned))
+         (rec.get("note") or "")[:500], rec.get("resumed_from") or "", pruned))
     if fts:
         conn.execute("DELETE FROM runs_fts WHERE key=?", (key,))
         conn.execute("INSERT INTO runs_fts (key, content) VALUES (?,?)", (key, doc))
@@ -318,6 +318,7 @@ def ingest():
                 ("result_json", "TEXT"), ("stream", "TEXT"), ("precheck_txt", "TEXT"),
                 ("stderr", "TEXT"), ("doc", "TEXT"), ("project", "TEXT"),
                 ("model", "TEXT"), ("model_id", "TEXT"), ("note", "TEXT"),
+                ("resumed_from", "TEXT"),
                 ("pruned", "INTEGER DEFAULT 0"),
             ]
             for name, decl in canon:
@@ -543,8 +544,15 @@ def active_runs_for(jid):
                 return (d / name).read_text().strip()
             except Exception:  # noqa: BLE001
                 return ""
-        out.append({"pid": pid, "child": _read("child"), "log": _read("logfile")})
+        out.append({"pid": pid, "child": _read("child"), "log": _read("logfile"),
+                    # set when this run is continuing another run's session
+                    "resume_of": _read("resume_of")})
     return out
+
+
+def resume_in_flight(jid, sid):
+    """Is a run already resuming this session right now?"""
+    return bool(sid) and any(r.get("resume_of") == sid for r in active_runs_for(jid))
 
 
 def load_data():
@@ -563,7 +571,7 @@ def load_data():
         conn = db_conn()
         db_init(conn)
         for row in conn.execute(
-                "SELECT job, start, status, duration, cost, session, log, forced, precheck_note, project, note"
+                "SELECT job, start, status, duration, cost, session, log, forced, precheck_note, project, note, resumed_from"
                 " FROM runs ORDER BY start DESC, rowid DESC LIMIT 1000"):
             runs.append({"id": row["job"], "start": row["start"], "status": row["status"],
                          "duration": row["duration"], "cost": row["cost"],
@@ -572,7 +580,9 @@ def load_data():
                          "project": row["project"] or "",
                          # Why a run ended as it did. Carries "NOTHING TO DO: …"
                          # for a run that succeeded without any work to do.
-                         "note": row["note"] or ""})
+                         "note": row["note"] or "",
+                         # the session this run continued, when it was a resume
+                         "resumed_from": row["resumed_from"] or ""})
         conn.close()
     except Exception:
         runs = []
@@ -1146,6 +1156,10 @@ class Handler(BaseHTTPRequestHandler):
             sid = (body.get("session") or "").strip()
             if not sid:
                 return self._send(400, {"error": "this run has no session id to resume"})
+            # One resume per session at a time: the same conversation continued
+            # twice in parallel would have both runs doing the same work.
+            if resume_in_flight(jid, sid):
+                return self._send(409, {"error": "this task is already being resumed right now"})
             maxp = 1
             try:
                 for j in json.loads(JOBS_FILE.read_text()).get("jobs", []):
@@ -2515,11 +2529,16 @@ function resumeTarget(id, after){
   const src=(DATA.runs||[]).find(r=>r.id===id && r.start===after);
   const sid=src&&src.session;
   if(!sid) return null;
-  const again=(DATA.runs||[]).filter(r=>r.id===id && r.session===sid && r.start>after+1)
-                             .sort((a,b)=>a.start-b.start);
-  if(again.length) return {run:again[0], running:false};
-  const liveSame=activeRunsOf(id).length && (DATA.runs||[]).some(r=>r.id===id && r.session===sid && r.live);
-  return liveSame ? {run:{id, start:after}, running:true} : null;
+  // A run that CONTINUED this session says so itself: while it is live through
+  // its slot (resume_of), and once finished through resumed_from in the journal.
+  // Inferring it from "a later run of the same job" was wrong twice over — a
+  // later run is usually a different ticket, and a resume in flight is not in
+  // the journal yet, which left the button live and allowed the very same
+  // session to be launched again and again.
+  const done=(DATA.runs||[]).filter(r=>r.resumed_from===sid).sort((a,b)=>a.start-b.start);
+  if(done.length) return {run:done[0], running:false};
+  if(activeRunsOf(id).some(a=>a.resume_of===sid)) return {run:{id, start:after}, running:true};
+  return null;
 }
 function resumeTip(id, start){
   const t=resumeTarget(id, start);
@@ -3408,6 +3427,7 @@ document.addEventListener("click", async (e)=>{
   // concurrent runs a job-wide stop would kill the others too.
   if(op==="resume"){
     const sid=b.dataset.session||"";
+    b.disabled=true;   // stays down: one resume per session, and no double-click
     const r=await fetch("/api/action",{method:"POST",
       headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
       body:JSON.stringify({op:"resume",id,session:sid})});

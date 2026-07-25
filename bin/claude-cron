@@ -295,17 +295,20 @@ lock_active() { # 0 = a run is currently holding the lock for <id> (single mutex
 
 # ------------------------------------------------------------------ run a job
 
-record_run() { # <id> <status> <start> <end> <cost> <turns> <session> <logfile> <note> <forced> <precheck> <project> <model> <model_id>
+record_run() { # <id> <status> <start> <end> <cost> <turns> <session> <logfile> <note> <forced> <precheck> <project> <model> <model_id> <resumed_from>
   "$JQ" -nc \
     --arg id "$1" --arg status "$2" --argjson start "$3" --argjson end "$4" \
     --arg cost "$5" --arg turns "$6" --arg session "$7" --arg logfile "$8" --arg note "$9" \
     --arg forced "${10:-false}" --arg precheck "${11:-}" --arg project "${12:-}" \
-    --arg model "${13:-}" --arg model_id "${14:-}" \
+    --arg model "${13:-}" --arg model_id "${14:-}" --arg resumed_from "${15:-}" \
     '{id:$id, status:$status, start:$start, end:$end, duration:($end-$start),
       cost:($cost|tonumber? // 0), turns:($turns|tonumber? // 0),
       session:$session, log:$logfile, note:$note,
       forced:($forced=="true"), precheck:$precheck, project:$project,
-      model:$model, model_id:$model_id}' >> "$RUNS_FILE"
+      model:$model, model_id:$model_id,
+      # The session this run continued, when it was a resume — this is what
+      # makes a resumed task identifiable as already picked up.
+      resumed_from:$resumed_from}' >> "$RUNS_FILE"
 }
 
 # Total cost of a job's runs since local midnight — powers the daily cap.
@@ -695,6 +698,9 @@ ${prompt}"
   # still going (the journal record only lands when the run finishes).
   state_set "$id" last_log "$("$JQ" -nc --arg p "$logfile" '$p')"
   echo "$logfile" > "$slot/logfile" 2>/dev/null || true   # per-run breadcrumb for stop
+  # A resume is in flight for that session: recorded here so nothing offers to
+  # resume it a second time while this one is still working.
+  [ -n "$resume_sid" ] && echo "$resume_sid" > "$slot/resume_of" 2>/dev/null || true
   log_tick "$id: starting run ($stamp)"
 
   # stream-json gives one NDJSON event per message — the per-turn trace the
@@ -914,7 +920,7 @@ If the work turns out to be already finished, or it can no longer be done at all
   state_set "$id" last_cost "${cost:-0}"
   state_set "$id" last_session "\"$session\""
   # Record what was CHOSEN (the family, when one was) plus what actually ran.
-  record_run "$id" "$status" "$start" "$end" "${cost:-0}" "${turns:-0}" "$session" "$logfile" "$wdreason" "$forced" "$pc_out" "$project" "${model_family:-$model}" "$model_id"
+  record_run "$id" "$status" "$start" "$end" "${cost:-0}" "${turns:-0}" "$session" "$logfile" "$wdreason" "$forced" "$pc_out" "$project" "${model_family:-$model}" "$model_id" "$resume_sid"
   log_tick "$id: finished status=$status rc=$rc denials=${denials:-0} cost=\$$cost turns=$turns model=$model${model_id:+ ($model_id)} forced=$forced${wdreason:+ — $wdreason}"
 
   run_cleanup "$id" "$slot"; trap - EXIT
