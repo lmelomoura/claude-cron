@@ -1459,6 +1459,8 @@ code{font:11.5px ui-monospace,"SF Mono",Menlo,monospace;
   text-overflow:ellipsis;white-space:nowrap}
 .trigger-badge{font-size:10px;color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 40%,var(--line));
   border-radius:5px;padding:1px 6px;margin-left:7px;vertical-align:1px}
+/* a run that continued an earlier one — hover to see which */
+.trigger-badge.resumed{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,var(--line));cursor:help}
 .runningbadge{display:inline-flex;align-items:center;gap:7px;color:var(--warn);font-weight:600}
 .runningbadge .pulse{width:8px;height:8px;border-radius:50%;background:var(--warn);
   animation:ccpulse 1.2s ease-in-out infinite}
@@ -2525,18 +2527,37 @@ function markResumed(id,start){
 // worktree, and this session is still sitting there unfinished. Only a run that
 // actually resumed THIS session counts, which the journal records by carrying
 // the same session id forward.
+// Every run that CONTINUED the session `sid`, oldest first. Two signals, and
+// both are needed: `--resume` makes the new run report the SAME session id (so
+// a later run carrying it is a continuation — true even for runs from before
+// this was tracked), and `resumed_from` records the parent explicitly, which is
+// what identifies a continuation whose own session id came out different.
+function continuationsOf(sid, after){
+  if(!sid) return [];
+  return (DATA.runs||[])
+    .filter(r=>r.resumed_from===sid || (r.session===sid && r.start>after))
+    .sort((a,b)=>a.start-b.start);
+}
+// The run this one continued, if any — the other side of the same link. The
+// parent is always EARLIER: a resumed run reports the very session it resumed,
+// so matching on the session alone would find the run itself.
+function continuedRun(r){
+  if(!r || !r.start) return null;
+  const sid=r.resumed_from || r.session;
+  if(!sid) return null;
+  const earlier=(DATA.runs||[])
+    .filter(x=>x.start<r.start && (x.session===sid || x.resumed_from===sid))
+    .sort((a,b)=>b.start-a.start);
+  return earlier[0]||null;
+}
 function resumeTarget(id, after){
   const src=(DATA.runs||[]).find(r=>r.id===id && r.start===after);
   const sid=src&&src.session;
   if(!sid) return null;
-  // A run that CONTINUED this session says so itself: while it is live through
-  // its slot (resume_of), and once finished through resumed_from in the journal.
-  // Inferring it from "a later run of the same job" was wrong twice over — a
-  // later run is usually a different ticket, and a resume in flight is not in
-  // the journal yet, which left the button live and allowed the very same
-  // session to be launched again and again.
-  const done=(DATA.runs||[]).filter(r=>r.resumed_from===sid).sort((a,b)=>a.start-b.start);
+  const done=continuationsOf(sid, after);
   if(done.length) return {run:done[0], running:false};
+  // A resume still in flight is not in the journal yet (a record is written
+  // when a run ENDS), so ask the live slots as well.
   if(activeRunsOf(id).some(a=>a.resume_of===sid)) return {run:{id, start:after}, running:true};
   return null;
 }
@@ -2571,8 +2592,22 @@ function renderRuns(){
     // For a failed run: has the job run again since? (drives the disabled Resume
     // button and the "?" badge, and is true regardless of which browser resumed it)
     const followUp = s==="error" ? resumeTarget(r.id, r.start) : null;
+    // A run that continued an earlier one says so, and points at it: without
+    // this the two rows look unrelated, and the pair is the whole story.
+    const parent = continuedRun(r);
+    const resumedBadge = parent
+      ? '<span class="trigger-badge resumed" data-tip="'
+        +encodeURIComponent('<div class="tt-h">'+I.play+'Resumed run</div>'
+          +'<div class="tt-row"><span class="tt-k">Continues</span><span class="tt-v">'+esc(fmtWhen(parent.start))+'</span></div>'
+          +'<div class="tt-row"><span class="tt-k">That run</span><span class="tt-v stat-cell s-'+esc(normStatus(parent.status))+'">'
+            +(STATUS_ICON[normStatus(parent.status)]||"")+esc(normStatus(parent.status))+'</span></div>'
+          +'<div class="tt-row"><span class="tt-k">Session</span><span class="tt-v"><code>'+esc((parent.session||"—").slice(0,8))+'</code></span></div>'
+          +'<div class="tt-foot">Same conversation, picked up where it stopped.</div>').replace(/"/g,"%22")
+        +'">resumed</span>'
+      : '';
     return "<tr><td class=num>"+esc(fmtWhen(r.start))
       +(r.forced?'<span class="trigger-badge">forced</span>':'')
+      +resumedBadge
       +(snip?'<div class="snip" title="'+esc(snip)+'">'+esc(snip)+'</div>':'')+"</td>"
       +"<td><code>"+esc(r.id)+"</code></td>"
       +'<td>'+(r.project?'<span class="projtag">'+I.folder+esc(r.project)+'</span>':'<span class="muted">—</span>')+'</td>'
