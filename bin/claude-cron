@@ -702,6 +702,10 @@ ${prompt}"
   # still going (the journal record only lands when the run finishes).
   state_set "$id" last_log "$("$JQ" -nc --arg p "$logfile" '$p')"
   echo "$logfile" > "$slot/logfile" 2>/dev/null || true   # per-run breadcrumb for stop
+  # This run's own start. The shared state holds only one per job, so when
+  # several run at once it is the slot that says when each began — without it
+  # the dashboard can only ever show the most recent one.
+  echo "$start" > "$slot/start" 2>/dev/null || true
   # A resume is in flight for that session: recorded here so nothing offers to
   # resume it a second time while this one is still working.
   [ -n "$resume_sid" ] && echo "$resume_sid" > "$slot/resume_of" 2>/dev/null || true

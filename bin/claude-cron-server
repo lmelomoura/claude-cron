@@ -583,10 +583,52 @@ def active_runs_for(jid):
                 return (d / name).read_text().strip()
             except Exception:  # noqa: BLE001
                 return ""
-        out.append({"pid": pid, "child": _read("child"), "log": _read("logfile"),
+        try:
+            started = int(_read("start") or 0)
+        except ValueError:
+            started = 0
+        if not started:
+            # A run started before slots recorded their own start: fall back to
+            # when the slot directory was created, which is that same moment.
+            try:
+                started = int(d.stat().st_mtime)
+            except OSError:
+                started = 0
+        logf = _read("logfile")
+        out.append({"pid": pid, "child": _read("child"), "log": logf,
+                    # when THIS run began: the shared state holds one value per
+                    # job, so concurrent runs are told apart by their slots
+                    "start": started,
+                    # The session is known from the transcript's first event, so
+                    # a running row can show it instead of a dash — it is what
+                    # you need to follow or resume the run.
+                    "session": _session_from_log(logf),
                     # set when this run is continuing another run's session
                     "resume_of": _read("resume_of")})
     return out
+
+
+def _session_from_log(logp):
+    """The session id a live run reported in its transcript's init event."""
+    if not logp or not logp.endswith(".json"):
+        return ""
+    sp = Path(logp[:-5] + ".stream.ndjson")
+    try:
+        if not sp.resolve().is_relative_to(_logs_root()):
+            return ""
+        with open(sp, "r", errors="replace") as fh:
+            head = fh.read(8192)      # the init event is the first line
+    except OSError:
+        return ""
+    for line in head.splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        sid = ev.get("session_id")
+        if sid:
+            return str(sid)
+    return ""
 
 
 def resume_in_flight(jid, sid):
@@ -652,11 +694,18 @@ def load_live_detail(jid, start_i):
     try:
         state = json.loads(STATE_FILE.read_text())
     except Exception:  # noqa: BLE001
-        return None
+        state = {}
     st = (state or {}).get(jid) or {}
-    if st.get("last_status") != "running" or int(st.get("last_start") or 0) != start_i:
+
+    # Find THIS run among the live ones by its start. The slots are the source:
+    # the shared state keeps a single last_start/last_log per job, so with two
+    # runs of one job it can only ever describe the newer — asking it made the
+    # older run's log unopenable ("could not load log").
+    slot = next((s for s in active_runs_for(jid) if s.get("start") == start_i), None)
+    if slot is None and (st.get("last_status") != "running"
+                         or int(st.get("last_start") or 0) != start_i):
         return None
-    logp = st.get("last_log") or ""
+    logp = (slot or {}).get("log") or (st.get("last_log") or "")
     sp = None
     if logp.endswith(".json"):
         sp = Path(logp[:-5] + ".stream.ndjson")
@@ -2265,8 +2314,9 @@ function jobCard(j){
     // Run now always available: several runs of a job may go at once (up to
     // max_parallel), so a live run no longer replaces this with a stop. Stopping
     // is per-run, from the Runs table — a job-wide stop would kill them all.
-    +'<button class="btn primary" data-op="run" data-id="'+esc(j.id)+'">'+I.play+'Run now'
-      +(nLive?' <span class="muted">('+nLive+' going)</span>':'')+'</button>'
+    // No run count here: how many are going is already said above, in plain
+    // words, and crowding it into the button only made the label unreadable.
+    +'<button class="btn primary" data-op="run" data-id="'+esc(j.id)+'">'+I.play+'Run now</button>'
     +'<button class="btn" data-op="'+(disabled?"enable":"disable")+'" data-id="'+esc(j.id)+'">'+I.power+(disabled?"Enable":"Disable")+'</button>'
     +'<button class="btn" data-op="edit" data-id="'+esc(j.id)+'">'+I.pencil+'Edit</button>'
     +'<button class="btn danger" data-op="delete" data-id="'+esc(j.id)+'">'+I.trash+'Delete</button>'
@@ -2480,15 +2530,22 @@ let searchKeys=null, snippets={}, searchSeq=0;
 function activeFilterCount(){ return ["project","job","status","from","to"].filter(k=>RF[k]).length; }
 
 // Runs happening right now. They are not in the journal yet (a record is only
-// written when a run ends), so synthesize rows from the live state — that is what
-// puts an in-flight run in the table, where its log can be followed live.
+// written when a run ends), so synthesize their rows — that is what puts an
+// in-flight run in the table, where its log can be followed live.
+//
+// Built from the run SLOTS, one per live run. The shared state cannot be the
+// source here: it holds a single last_start/last_status per JOB, so when a job
+// has several runs at once they overwrite each other and every run but the most
+// recent disappears — from this table and from the tab's count with it.
 function liveRuns(){
   const now=Math.floor(Date.now()/1000), out=[];
-  for(const [id,st] of Object.entries(DATA.state||{})){
-    if(st && st.last_status==="running" && st.last_start){
-      const j=(DATA.jobs||[]).find(x=>x.id===id)||{};
-      out.push({id, start:st.last_start, status:"running", duration:Math.max(0,now-st.last_start),
-                cost:null, session:"", project:j.project||"", live:true});
+  for(const [id, slots] of Object.entries(DATA.active_runs||{})){
+    const j=(DATA.jobs||[]).find(x=>x.id===id)||{};
+    for(const s of (slots||[])){
+      const started=s.start||0;
+      out.push({id, start:started, status:"running",
+                duration:started?Math.max(0,now-started):0,
+                cost:null, session:s.session||"", project:j.project||"", live:true, pid:s.pid});
     }
   }
   return out.sort((a,b)=>b.start-a.start);
@@ -2682,8 +2739,10 @@ function renderRuns(){
         // session — the same task, picked back up, exactly like
         // `claude --resume <session>` — never a fresh run of the job.
         +(r.live
+           // Stop THIS run: the row carries its own pid now, so with several
+           // runs of one job the right one is ended, not merely the first.
            ? '<button class="iconbtn danger" title="Stop this run"'
-             +' data-op="stop" data-id="'+esc(r.id)+'" data-run-pid="'+esc(livePidFor(r.id))+'">'+I.power+'</button>'
+             +' data-op="stop" data-id="'+esc(r.id)+'" data-run-pid="'+esc(r.pid||livePidFor(r.id))+'">'+I.power+'</button>'
            : '<button class="iconbtn" disabled title="This run has already finished — only a running run can be stopped">'+I.power+'</button>')
         +(r.live
            ? '<button class="iconbtn retry" disabled title="This run is still going">'+I.play+'</button>'
