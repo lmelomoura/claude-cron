@@ -2700,7 +2700,13 @@ function paintLog(d){
   const draft = oldInp ? oldInp.value : null;
   const hadFocus = oldInp && document.activeElement===oldInp;
   const oldTerm=body.querySelector(".term");
+  // Terminal scrolling, the way a terminal behaves: follow new output only while
+  // the reader is already at the bottom. Scrolled up to read history? Then keep
+  // exactly where they were — new lines are appended below, so the same
+  // scrollTop shows the same text. (Restoring nothing is what made it jump to
+  // the top on every 3s refresh.)
   const termAtBottom = oldTerm ? (oldTerm.scrollHeight-oldTerm.scrollTop-oldTerm.clientHeight < 40) : true;
+  const termTop = oldTerm ? oldTerm.scrollTop : 0;
   const prevTab=body.querySelector(".tab.active")?.dataset.tab || null;
   const panes=body.querySelector(".tabpanes");
   const wasAtBottom = panes ? (panes.scrollHeight - panes.scrollTop - panes.clientHeight < 40) : true;
@@ -2724,7 +2730,7 @@ function paintLog(d){
     const sb=$("term-send"); if(sb) sb.onclick=()=>sendToRun();
   }
   const term=body.querySelector(".term");
-  if(term && termAtBottom) term.scrollTop=term.scrollHeight;   // tail the conversation
+  if(term) term.scrollTop = termAtBottom ? term.scrollHeight : termTop;
   // stop polling once the run is no longer live (this render is the final one)
   if(logPoll && !d.live) stopLogPoll();
 }
