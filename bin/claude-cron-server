@@ -1545,7 +1545,13 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
     <button type="button" class="btn cwd-browse" data-cwd-target="ed-cwd">Browse…</button>
   </div>
   <label>Prompt sent to the agent</label>
+  <div class="fieldbar">
+    <button type="button" class="segbtn active" id="pm-write">Write</button>
+    <button type="button" class="segbtn" id="pm-preview">Preview</button>
+    <span class="fieldnote">Markdown — the agent receives exactly this text</span>
+  </div>
   <textarea id="ed-prompt"></textarea>
+  <div class="md promptview" id="ed-prompt-view" hidden></div>
   <label>Precheck script — exit 0 wakes a run, exit 1 stays idle (a skipped tick costs nothing)</label>
   <textarea id="ed-precheck" spellcheck="false" style="min-height:120px"></textarea>
   <div class="row2">
@@ -2257,6 +2263,28 @@ function setDays(arr){
 function fmtBudget(){ const el=$("ed-budget"), v=parseFloat(el.value.replace(/[^0-9.]/g,""));
   el.value=isNaN(v)?"":v.toFixed(2); }
 
+/* The prompt is Markdown, but it is also the exact text handed to the agent, so
+   the textarea stays the single source of truth — Preview only renders it. A
+   rich editor would risk rewriting the bytes that get sent. */
+function setPromptMode(preview){
+  const ta=$("ed-prompt"), view=$("ed-prompt-view");
+  if(!ta||!view) return;
+  if(preview){
+    view.style.height = Math.max(190, ta.offsetHeight) + "px";
+    view.innerHTML = mdToHtml(ta.value || "");
+  }
+  ta.hidden = !!preview;
+  view.hidden = !preview;
+  $("pm-write").classList.toggle("active", !preview);
+  $("pm-preview").classList.toggle("active", !!preview);
+}
+function initPromptPreview(){
+  const w=$("pm-write"), pv=$("pm-preview");
+  if(!w||!pv) return;                       // never let an optional field abort boot
+  w.addEventListener("click", ()=>setPromptMode(false));
+  pv.addEventListener("click", ()=>setPromptMode(true));
+}
+
 /* ---- reusable searchable combobox (project select, model select) ---- */
 function createCombo(cfg){
   // cfg: {id, allowNone, noneLabel, def, withIcon, onPick}
@@ -2428,6 +2456,7 @@ function fill(j){
   const _p=j.project?projById(j.project):null;
   $("ed-cwd").placeholder=(_p&&_p.cwd)?("inherits from "+j.project+": "+_p.cwd):"/Users/…/some-repo";
   $("ed-prompt").value=j.prompt||"";
+  setPromptMode(false);   // always open on the editable view
   $("ed-precheck").value=j._precheck||"";
   $("ed-interval").value=Math.round((j.interval_seconds||300)/60);
   modelCombo.set(j.model||"opus");
@@ -2871,6 +2900,7 @@ initCombos();
 initFolderPicker();
 initTooltips();
 initModalScrollLock();
+initPromptPreview();
 $("ed-cancel").addEventListener("click", ()=>$("editor").close());
 $("ed-save").addEventListener("click", saveEditor);
 $("ed-effort").addEventListener("input", ()=>setEffort(getEffort()));
