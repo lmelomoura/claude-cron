@@ -665,16 +665,20 @@ ${prompt}"
   worktree=""
   wt_env=()
   if wt_isolation_enabled "$project" "$cwd"; then
+    # Claim the path BEFORE the worktree exists. The sweep removes any worktree
+    # no live slot claims, so creating first and claiming after leaves a window
+    # in which it can delete the very directory this agent is about to work in.
+    # The path is ours to predict, so stake it first.
+    echo "$WORKTREES_DIR/$id/$stamp" > "$slot/worktree"
     if ! worktree="$(wt_setup "$id" "$project" "$cwd" "$stamp")"; then
       state_set "$id" last_start "$start"
       state_set "$id" last_status '"error"'
       log_tick "$id: worktree isolation failed — run aborted (no shared-checkout fallback)"
-      release_slot "$slot"; trap - EXIT
+      run_cleanup "$id" "$slot"; trap - EXIT
       return 1
     fi
     run_cwd="$worktree"
-    echo "$worktree" > "$slot/worktree"     # breadcrumb for run_cleanup
-    state_set "$id" cur_worktree "$("$JQ" -nc --arg p "$worktree" '$p')"
+    echo "$worktree" > "$slot/worktree"     # the real path (same value, kept explicit)
     while IFS= read -r _envln; do
       [ -n "$_envln" ] && wt_env+=("$_envln")
     done < <(wt_env_line "$project" "$cwd" "$worktree")
