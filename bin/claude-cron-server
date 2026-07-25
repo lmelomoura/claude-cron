@@ -328,7 +328,18 @@ def ingest():
         size = RUNS_FILE.stat().st_size if RUNS_FILE.exists() else 0
         offset = int(_meta_get(conn, "offset", "0") or 0)
         sig = _ndjson_sig()
-        resync = (size < offset or sig != _meta_get(conn, "sig", "")
+        # The engine drops this flag whenever it REWRITES history (a job or
+        # project rename edits lines anywhere in the journal). The signature
+        # below only hashes the head of the file, so an edit further down would
+        # otherwise go unnoticed and this index would keep serving stale values.
+        flag = DATA_DIR / ".reingest"
+        forced = flag.exists()
+        if forced:
+            try:
+                flag.unlink()
+            except OSError:
+                pass
+        resync = (forced or size < offset or sig != _meta_get(conn, "sig", "")
                   or _meta_get(conn, "schema", "") != SCHEMA_VERSION)
         if resync:
             existing = {row["key"]: row for row in conn.execute("SELECT * FROM runs")}
@@ -1297,6 +1308,10 @@ td .projtag .ic{width:12px;height:12px;color:var(--accent)}
 .stat{display:flex;flex-direction:column;gap:9px;background:var(--panel);
   border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow)}
 .stat-top{display:flex;align-items:center;gap:12px}
+/* the warning/error tiles double as filters for the runs table */
+.stat.clickable{cursor:pointer;transition:border-color .12s,box-shadow .12s}
+.stat.clickable:hover{border-color:var(--line2)}
+.stat.active{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
 .stat .bubble{width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex:none}
 .stat .bubble .ic{width:17px;height:17px}
 .stat .n{font-size:19px;font-weight:650;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.2}
@@ -2370,16 +2385,30 @@ function render(){
   const t0=Math.floor(today.getTime()/1000), wk=Math.floor(Date.now()/1000)-7*86400;
   const sum=(rs,f)=>rs.reduce((a,r)=>a+(f(r)||0),0);
   const rt=DATA.runs.filter(r=>r.start>=t0), rw=DATA.runs.filter(r=>r.start>=wk);
+  const nWarn=rw.filter(r=>normStatus(r.status)==="warning").length;
+  const nErr =rw.filter(r=>normStatus(r.status)==="error").length;
+  // The last two tiles are the ones you act on, so they filter the Runs table:
+  // click to see exactly those runs, click again to clear.
   const tiles=[
-    [I.activity,"b-accent",rt.length,"Runs today"],
-    [I.dollar,"b-accent",money(sum(rt,r=>r.cost)),"Spent today"],
-    [I.calendar,"b-accent",rw.length,"Runs (7d)"],
-    [I.dollar,"b-accent",money(sum(rw,r=>r.cost)),"Spent (7d)"],
-    [I.alert,"b-warn",rw.filter(r=>normStatus(r.status)==="warning").length,"Warnings (7d)"],
-    [I.xcircle,"b-err",rw.filter(r=>normStatus(r.status)==="error").length,"Errors (7d)"],
+    [I.activity,"b-accent",rt.length,"Runs today",""],
+    [I.dollar,"b-accent",money(sum(rt,r=>r.cost)),"Spent today",""],
+    [I.calendar,"b-accent",rw.length,"Runs (7d)",""],
+    [I.dollar,"b-accent",money(sum(rw,r=>r.cost)),"Spent (7d)",""],
+    [I.alert,"b-warn",nWarn,"Warnings (7d)","warning"],
+    [I.xcircle,"b-err",nErr,"Errors (7d)","error"],
   ];
-  $("stats").innerHTML=tiles.map(([icn,tone,n,l])=>
-    '<div class="stat"><div class="stat-top"><div class="bubble '+tone+'">'+icn+'</div><div class="n">'+esc(n)+'</div></div><div class="l">'+esc(l)+'</div></div>').join("");
+  $("stats").innerHTML=tiles.map(([icn,tone,n,l,filter])=>{
+    const on=filter && RF.status===filter;
+    const tip=filter
+      ? (filter==="warning"
+          ? "Runs that finished without failing but did not do the work — click to see them"
+          : "Runs that failed — click to see them")
+      : "";
+    return '<div class="stat'+(filter?" clickable":"")+(on?" active":"")+'"'
+      +(filter?' data-statfilter="'+filter+'" title="'+esc(tip)+'"':"")+'>'
+      +'<div class="stat-top"><div class="bubble '+tone+'">'+icn+'</div><div class="n">'+esc(n)+'</div></div>'
+      +'<div class="l">'+esc(l)+'</div></div>';
+  }).join("");
 
   paintViewTabs();
   renderJobs();
@@ -2533,11 +2562,12 @@ function renderRuns(){
           : '<span class="stat-cell s-'+esc(s)+'">'+(STATUS_ICON[s]||"")+esc(s)+"</span>"
             +((s==="error" && followUp)
                ? '<span class="tipbadge" data-tip="'+encodeURIComponent(resumeTip(r.id,r.start)).replace(/"/g,"%22")+'">?</span>'
-               // A run can succeed having done nothing at all — a resumed task
-               // already finished, or its ticket is gone. The engine records the
-               // reason; flag it so "success" is never read as "work happened".
+               // A run can end fine having done nothing at all — a resumed task
+               // already finished, or its ticket is gone. That is recorded as a
+               // WARNING, and the reason is shown here, so a clean-looking run is
+               // never mistaken for work that happened.
                : (nothingNote(r)
-                  ? '<span class="tipbadge" data-tip="'+encodeURIComponent("Nothing was done in this run — "+nothingNote(r)).replace(/"/g,"%22")+'">!</span>'
+                  ? '<span class="tipbadge" data-tip="'+encodeURIComponent("Nothing was done in this run — "+nothingNote(r)).replace(/"/g,"%22")+'">?</span>'
                   : "")))
       +"</td>"
       +"<td class=num>"+esc(fmtDur(r.duration))+(r.live?' <span class="muted">so far</span>':"")+"</td>"
@@ -3272,6 +3302,20 @@ function initViews(){
     b.addEventListener("click", () => setView(b.dataset.view)));
   setView(currentView);
 }
+// The warning and error tiles are a way IN to the runs they count: click one to
+// show exactly those runs, click it again to clear the filter.
+function initStatFilters(){
+  const host=$("stats"); if(!host) return;
+  host.addEventListener("click",(e)=>{
+    const t=e.target.closest("[data-statfilter]"); if(!t) return;
+    const want=t.dataset.statfilter;
+    RF.status = (RF.status===want) ? "" : want;
+    const sel=$("f-status"); if(sel) sel.value=RF.status;
+    page=1;
+    setView("runs");
+    render();          // redraws the tiles (so the active one is highlighted) and the table
+  });
+}
 
 /* ---------------------------------------------------------------- events */
 document.addEventListener("click", async (e)=>{
@@ -3391,6 +3435,7 @@ initCombos();
 initFolderPicker();
 initTooltips();
 initJobDrag();
+initStatFilters();
 initModalScrollLock();
 initPromptEditor();
 $("ed-cancel").addEventListener("click", ()=>$("editor").close());

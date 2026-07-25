@@ -896,13 +896,15 @@ If the work turns out to be already finished, or it can no longer be done at all
 
   # "Ran fine, but there was nothing to do" — a resumed task already finished, or
   # its ticket is gone. The agent answers `NOTHING TO DO: <reason>` (see the
-  # resume prompt): the run genuinely succeeded, so it stays SUCCESS, and the
-  # reason rides in the run's note so the dashboard can flag it with a "?" whose
-  # tooltip explains that nothing actually ran.
+  # resume prompt). The run did not FAIL, but calling it a plain success hides
+  # that a session was spent doing nothing, so it is a WARNING: worth a look,
+  # never a blocker. The reason rides in the run's note, which the dashboard
+  # shows behind the "?" beside the status.
   local nothing_line
   nothing_line="$("$JQ" -r '.result // ""' "$logfile" 2>/dev/null | grep -m1 -oE 'NOTHING TO DO:.*' || true)"
   if [ -n "$nothing_line" ] && [ "$status" = "success" ]; then
     wdreason="${nothing_line}"
+    status="warning"
   fi
 
   state_set "$id" last_end "$end"
@@ -1077,6 +1079,13 @@ cmd_logs() {
 
 job_exists() { jobs_json | "$JQ" -e --arg id "$1" 'any(.jobs[]; .id == $id)' >/dev/null 2>&1; }
 
+# Tell the dashboard its index is stale after we REWRITE history (a rename
+# rewrites lines anywhere in the journal). Its own change detection hashes only
+# the head of the file, so an edit further down would otherwise go unnoticed and
+# the index would keep serving the old values. The server clears this flag when
+# it re-ingests.
+journal_rewritten() { : > "$DATA_DIR/.reingest" 2>/dev/null || true; }
+
 write_jobs() { # write_jobs <jq-filter> [jq-args...]
   # Never replace the jobs file with a broken document: a filter that errors, or
   # that yields anything other than an object carrying .jobs, is discarded. One
@@ -1131,6 +1140,7 @@ cmd_rename() { # cmd_rename <old-id> <new-id> — id + everything keyed by it
     "$JQ" -c --arg o "$old" --arg n "$new" \
       'if .id == $o then (.id = $n | .log = ((.log // "") | sub("/logs/" + $o + "/"; "/logs/" + $n + "/"))) else . end' \
       "$RUNS_FILE" > "$tmp" && mv "$tmp" "$RUNS_FILE"
+    journal_rewritten
   fi
   rm -rf "$LOCK_DIR/$old"
   [ -d "$WORKTREES_DIR/$old" ] && rmdir "$WORKTREES_DIR/$old" 2>/dev/null
@@ -1352,6 +1362,19 @@ cmd_project_rename() { # <old-name> <new-name> — the project and every job poi
   # silently stop inheriting cwd/model/worktree settings.
   write_jobs --arg o "$old" --arg n "$new" \
     '.jobs = [.jobs[] | if .project==$o then (.project = $n) else . end]'
+  # Every past run recorded the project name it ran under, so the history must
+  # follow too — otherwise the runs table keeps showing the old name forever.
+  # The dashboard's DB re-ingests on its own once the journal's signature changes.
+  if [ -s "$RUNS_FILE" ]; then
+    local tmp; tmp="$(mktemp "$DATA_DIR/.runs.XXXXXX")"
+    if "$JQ" -c --arg o "$old" --arg n "$new" \
+         'if .project == $o then (.project = $n) else . end' "$RUNS_FILE" > "$tmp" 2>/dev/null; then
+      mv "$tmp" "$RUNS_FILE"
+      journal_rewritten
+    else
+      rm -f "$tmp"
+    fi
+  fi
   echo "project '$old' renamed to '$new'"
 }
 
