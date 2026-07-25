@@ -443,6 +443,74 @@ def checks_24h():
     return counts
 
 
+def delete_run(jid, start):
+    """Erase one run completely: its files, its journal line and its DB rows.
+
+    Irreversible on purpose — the user asked for the run to be gone, not hidden.
+    Order matters: drop the journal line LAST-but-one and the DB rows last, so a
+    crash midway leaves the journal as the source of truth and the next ingest
+    reconciles rather than resurrecting half a run.
+    """
+    removed = {"files": 0, "journal": 0, "db": 0}
+    kept, target = [], None
+    if RUNS_FILE.exists():
+        for ln in RUNS_FILE.read_text().splitlines():
+            s = ln.strip()
+            if not s:
+                continue
+            try:
+                rec = json.loads(s)
+            except Exception:  # noqa: BLE001
+                kept.append(ln)
+                continue
+            if rec.get("id") == jid and int(rec.get("start") or 0) == start:
+                target = rec
+            else:
+                kept.append(ln)
+    if target is None:
+        return None
+
+    # On-disk artifacts, plus the transient siblings a run can leave behind.
+    ap = _artifact_paths(target) or {}
+    extra = []
+    try:
+        logp = Path(target.get("log", ""))
+        if str(logp.resolve()).startswith(str(_logs_root())):
+            extra = [Path(str(logp) + ".watchdog"), Path(str(logp) + ".stdin"),
+                     Path(str(logp) + ".turnend")]
+    except Exception:  # noqa: BLE001
+        extra = []
+    for p in list(ap.values()) + extra:
+        try:
+            if p.exists():
+                p.unlink()
+                removed["files"] += 1
+        except Exception:  # noqa: BLE001
+            pass
+
+    RUNS_FILE.write_text("".join(ln + "\n" for ln in kept))
+    removed["journal"] = 1
+
+    # Clear the DB rows now rather than waiting for the next ingest, and reset
+    # the ingest offset so the shortened journal is re-read from the start
+    # instead of being treated as appended-to.
+    try:
+        conn = db_conn()
+        fts = db_init(conn)
+        key = _rec_key(target)
+        conn.execute("DELETE FROM runs WHERE key=?", (key,))
+        removed["db"] = conn.total_changes
+        if fts:
+            conn.execute("DELETE FROM runs_fts WHERE key=?", (key,))
+        _meta_set(conn, "offset", str(RUNS_FILE.stat().st_size if RUNS_FILE.exists() else 0))
+        _meta_set(conn, "sig", _ndjson_sig())
+        conn.commit()
+        conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+    return removed
+
+
 def active_runs_for(jid):
     """Live run slots for a job — read straight from data/locks/<jid>/<pid>/, so
     N CONCURRENT runs each show up (state only tracks the most recent). Each entry
@@ -961,6 +1029,38 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "missing project name"})
             ok, out = cc(["project-set"], stdin=json.dumps(proj))
             return self._send(200 if ok else 500, {"ok": ok, "output": out})
+        if op == "project_rename":
+            # A project's name IS its identity — jobs reference it by name, so
+            # the engine renames both sides and refuses a name already in use.
+            old = str(body.get("name", "")).strip()
+            new = str(body.get("new_name", "")).strip()
+            if not old or not new:
+                return self._send(400, {"error": "missing project name"})
+            ok, out = cc(["project-rename", old, new])
+            return self._send(200 if ok else 409,
+                              {"ok": True, "output": out} if ok else {"error": out or "rename refused"})
+        if op == "run_delete":
+            # Erase one run for good: files, journal line and DB rows.
+            jid = str(body.get("id", ""))
+            try:
+                start = int(body.get("start") or 0)
+            except (TypeError, ValueError):
+                start = 0
+            if not jid or not start:
+                return self._send(400, {"error": "missing run id/start"})
+            # A run still in flight has no journal line yet (it is written when
+            # the run ends), so deleting it would silently do nothing. Say so.
+            if active_runs_for(jid):
+                try:
+                    st = (json.loads(STATE_FILE.read_text()) or {}).get(jid) or {}
+                except Exception:  # noqa: BLE001
+                    st = {}
+                if st.get("last_status") == "running" and int(st.get("last_start") or 0) == start:
+                    return self._send(409, {"error": "this run is still going — stop it first"})
+            res = delete_run(jid, start)
+            if res is None:
+                return self._send(404, {"error": "no such run"})
+            return self._send(200, {"ok": True, "output": "deleted", "removed": res})
         if op == "project_delete":
             name = str(body.get("name", "")).strip()
             if not name:
@@ -2213,7 +2313,9 @@ function openProjectEditor(name){
   const p=name?projById(name):null;
   $("pj-halo").innerHTML=name?I.pencil:I.plus;
   $("pj-title").textContent=name?("Edit project — "+name):"New project";
-  $("pj-name").value=p?p.name:""; $("pj-name").disabled=!!name;
+  // The name is editable when editing too: renaming carries the project's jobs
+  // with it (the engine refuses a name already in use).
+  $("pj-name").value=p?p.name:""; $("pj-name").disabled=false;
   $("pj-desc").value=(p&&p.description)||"";
   $("pj-cwd").value=(p&&p.cwd)||"";
   $("pj-delete").style.display=name?"":"none";
@@ -2231,6 +2333,16 @@ async function saveProject(){
   try{
     const name=$("pj-name").value.trim();
     if(!name){ toast("Project name is required",true); return; }
+    // Rename FIRST when the name changed: the project is keyed by name, and its
+    // jobs point at it by name, so both must move before anything else is saved.
+    if(editingProject && name!==editingProject){
+      const r=await fetch("/api/action",{method:"POST",
+        headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+        body:JSON.stringify({op:"project_rename",name:editingProject,new_name:name})});
+      if(!r.ok){ const e=await r.json().catch(()=>({})); toast("Rename failed — "+(e.error||("HTTP "+r.status)), true); return; }
+      editingProject=name;
+      toast("Renamed project to "+name, false, "check");
+    }
     const proj={name};
     const d=$("pj-desc").value.trim(); if(d) proj.description=d;
     const c=$("pj-cwd").value.trim(); if(c) proj.cwd=c;
@@ -2464,6 +2576,12 @@ function renderRuns(){
                     +' data-op="resume" data-id="'+esc(r.id)+'" data-session="'+esc(r.session||"")+'"'
                     +' data-resume-key="'+esc(runKey(r.id,r.start))+'">'+I.play+'</button>')
              : '<button class="iconbtn retry" disabled title="Only failed runs can be resumed">'+I.play+'</button>')
+        // Erase this run for good: its log files, its journal line and its rows
+        // in the search database. Never offered while it is still running.
+        +(r.live
+           ? '<button class="iconbtn" disabled title="A running run cannot be deleted — stop it first">'+I.trash+'</button>'
+           : '<button class="iconbtn danger" title="Delete this run and everything it left behind"'
+             +' data-del-id="'+esc(r.id)+'" data-del-start="'+esc(r.start)+'">'+I.trash+'</button>')
       +'</td></tr>';
   }).join("") || '<tr><td colspan=8 class="empty">'+I.inbox
       +(DATA.runs.length?(searchKeys?"No runs match this search.":"No runs match the filters."):"No runs recorded yet.")+'</td></tr>';
@@ -3167,6 +3285,25 @@ document.addEventListener("click", async (e)=>{
   if(day){ day.classList.toggle("on"); return; }
   const lg=e.target.closest("button[data-log-id]");
   if(lg){ openLog(lg.dataset.logId, lg.dataset.logStart); return; }
+  // delete one run, for good — files, journal line and search index alike
+  const del=e.target.closest("button[data-del-id]");
+  if(del){
+    const id=del.dataset.delId, start=+del.dataset.delStart;
+    (async()=>{
+      const yes=await showConfirm({tone:"danger", icon:"trash", title:"Delete this run?",
+        message:"Everything this run left behind goes: its log and transcript files, its line in the journal, and its rows in the search database. This cannot be undone.",
+        mono:id+" · "+fmtWhen(start), confirmLabel:"Delete run"});
+      if(!yes) return;
+      del.disabled=true;
+      const r=await fetch("/api/action",{method:"POST",
+        headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+        body:JSON.stringify({op:"run_delete",id,start})});
+      if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Delete failed — "+(j.error||("HTTP "+r.status)), true); del.disabled=false; return; }
+      toast("Run deleted", false, "trash");
+      refresh();
+    })();
+    return;
+  }
   // project editing (must run before the group toggle, since it's inside the header)
   const edp=e.target.closest("[data-editproj]");
   if(edp){ openProjectEditor(edp.dataset.editproj); return; }

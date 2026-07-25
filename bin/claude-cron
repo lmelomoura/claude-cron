@@ -1336,6 +1336,25 @@ cmd_project_set() { # reads a partial project object (JSON) from stdin; merges b
   echo "project '$name' saved"
 }
 
+cmd_project_rename() { # <old-name> <new-name> — the project and every job pointing at it
+  local old="$1" new="$2"
+  projects_json | "$JQ" -e --arg n "$old" 'any(.projects[]; .name==$n)' >/dev/null 2>&1 \
+    || die "project-rename: no such project: $old"
+  [ -n "$new" ] || die "project-rename: the new name cannot be empty"
+  [ "$old" = "$new" ] && { echo "unchanged: $old"; return 0; }
+  # A project name is its identity — two projects sharing one would make every
+  # lookup (cwd, description, worktree config) ambiguous.
+  projects_json | "$JQ" -e --arg n "$new" 'any(.projects[]; .name==$n)' >/dev/null 2>&1 \
+    && die "project-rename: a project named '$new' already exists"
+  write_projects --arg o "$old" --arg n "$new" \
+    '.projects = [.projects[] | if .name==$o then (.name = $n) else . end]'
+  # Jobs reference the project BY NAME, so they must follow it or they would
+  # silently stop inheriting cwd/model/worktree settings.
+  write_jobs --arg o "$old" --arg n "$new" \
+    '.jobs = [.jobs[] | if .project==$o then (.project = $n) else . end]'
+  echo "project '$old' renamed to '$new'"
+}
+
 cmd_project_delete() { # <name> — the project is removed; jobs keep .project (just stop inheriting)
   local name="$1"
   write_projects --arg n "$name" '.projects = [.projects[] | select(.name != $n)]'
@@ -1425,6 +1444,7 @@ case "${1:-}" in
   create)    cmd_create ;;
   project-set)    cmd_project_set ;;
   project-delete) [ $# -ge 2 ] || die "usage: claude-cron project-delete <name>"; cmd_project_delete "$2" ;;
+  project-rename) [ $# -ge 3 ] || die "usage: claude-cron project-rename <name> <new-name>"; cmd_project_rename "$2" "$3" ;;
   project-list)   cmd_project_list ;;
   resolve-models) cmd_resolve_models ;;
   selftest)  cmd_selftest ;;
