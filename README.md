@@ -163,6 +163,14 @@ count=$(curl -sf https://api.example.com/queue | jq -r '.pending')
   before each scheduled run and skips (status `capped`) once the total reaches
   the cap. Empty = unlimited. The card shows **Today: $spent / $cap**.
 
+### Self-test
+
+`claude-cron selftest` exercises, offline and without spending anything, the
+logic that can end a run early or hide what it cost: numbers parsed from command
+output, the assertion that decides an interactive turn is over, token recovery
+from a transcript with no result event, and the disabled-job guard. Run it after
+touching the engine.
+
 ### When a run is killed
 
 A long run is not a hung run, so there is no blind wall-clock timeout by default.
@@ -239,6 +247,7 @@ claude-cron delete <id>        # remove the job (its logs are kept)
 claude-cron project-set        # create/update a project (JSON on stdin)
 claude-cron project-list | project-delete <name>
 claude-cron resolve-models     # refresh which model each family points at
+claude-cron selftest           # offline checks of the logic that can kill a run
 claude-cron install | uninstall
 ```
 

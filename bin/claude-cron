@@ -55,6 +55,18 @@ mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" "$LOCK_DIR"
 [ -f "$PROJECTS_FILE" ] || echo '{"projects":[]}' > "$PROJECTS_FILE"
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
+# Every number that comes from a command goes through this. The interactive
+# supervisor once killed healthy agents because `grep -c` prints "0" AND exits 1,
+# so `$(grep -c … || echo 0)` produced "0\n0" and the arithmetic test below it
+# blew up instead of returning false. A validated integer makes that whole class
+# of failure impossible, so use num() rather than trusting command output.
+num() { # num <text> [fallback] -> a plain non-negative integer, always
+  local v="${1:-}" d="${2:-0}"
+  v="$(printf '%s' "$v" | tr -d '[:space:]')"
+  case "$v" in ''|*[!0-9]*) printf '%s' "$d" ;; *) printf '%s' "$v" ;; esac
+}
+
+
 now_epoch() { date +%s; }
 iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log_tick() { printf '%s %s\n' "$(iso_now)" "$*" >> "$TICK_LOG"; }
@@ -178,6 +190,18 @@ is_due() { # is_due <id> ; 0 = due
   last="$(state_get "$id" last_start 0)"
   now="$(now_epoch)"
   [ "$(( now - last ))" -ge "$interval" ]
+}
+
+# Is the agent's turn finished? True only when the LAST decodable event in the
+# transcript is a `result` — i.e. the agent has answered and is now waiting for
+# input. Deliberately a positive assertion on the file's current state: the
+# earlier counter-based version mis-fired and killed working agents. Isolated
+# and side-effect free so `claude-cron selftest` can exercise it directly.
+turn_is_over() { # turn_is_over <stream-file> ; 0 = the agent answered and is idle
+  local f="${1:-}" last
+  [ -s "$f" ] || return 1
+  last="$("$JQ" -rn -R '[inputs | fromjson? | select(.type != null) | .type] | last // ""' "$f" 2>/dev/null)"
+  [ "$last" = "result" ]
 }
 
 # ------------------------------------------------------------------- locking
@@ -331,6 +355,65 @@ cmd_say() { # cmd_say <id> — message on stdin, delivered to the live run
   ( sleep 5; kill "$w" 2>/dev/null ) >/dev/null 2>&1 &
   wait "$w" 2>/dev/null || die "could not deliver — the run may have just ended"
   echo "delivered to $id"
+}
+
+cmd_selftest() { # offline checks of the logic that can kill a run or lose money
+  local pass=0 fail=0 tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/ccselftest.XXXXXX")"
+  ok()   { pass=$(( pass + 1 )); printf '  ok    %s\n' "$1"; }
+  bad()  { fail=$(( fail + 1 )); printf '  FAIL  %s\n' "$1"; }
+  want() { # want <label> <expected 0|1> <actual-rc>
+    [ "$2" -eq "$3" ] && ok "$1" || bad "$1"
+  }
+
+  echo "num() — a number from a command is always an integer"
+  # This is the exact shape that once produced "0\n0" and killed live agents.
+  local n; n="$(num "$(grep -c 'nothing' /dev/null 2>/dev/null)")"
+  [ "$n" = "0" ] && ok "grep -c with no match yields 0" || bad "grep -c with no match yielded '$n'"
+  [ "$(num '')" = "0" ]        && ok "empty  -> 0"        || bad "empty"
+  [ "$(num '  7 ')" = "7" ]    && ok "spaces trimmed"     || bad "spaces"
+  [ "$(num 'x9')" = "0" ]      && ok "garbage -> 0"       || bad "garbage"
+  [ "$(num '' 5)" = "5" ]      && ok "fallback honoured"  || bad "fallback"
+  # and it must be usable in arithmetic without aborting
+  ( [ "$(num 'x')" -lt 1 ] ) >/dev/null 2>&1 && ok "usable in [ -lt ]" || bad "not usable in [ -lt ]"
+
+  echo "turn_is_over() — only a finished, quiet turn may end a run"
+  printf '%s\n' '{"type":"system"}' '{"type":"assistant","message":{}}' > "$tmp/working.ndjson"
+  printf '%s\n' '{"type":"system"}' '{"type":"result","subtype":"success"}' > "$tmp/done.ndjson"
+  printf '%s\n' '{"type":"result"}' '{"type":"assistant","message":{}}' > "$tmp/resumed.ndjson"
+  : > "$tmp/empty.ndjson"
+  printf '%s\n' '{"type":"result"}' '{"trunca' > "$tmp/cut.ndjson"
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"the word result appears here"}]}}' > "$tmp/decoy.ndjson"
+  turn_is_over "$tmp/working.ndjson"; want "mid-work run is NOT killable"        1 $?
+  turn_is_over "$tmp/done.ndjson";    want "answered run is killable"            0 $?
+  turn_is_over "$tmp/resumed.ndjson"; want "work after a result is NOT killable" 1 $?
+  turn_is_over "$tmp/empty.ndjson";   want "empty transcript is NOT killable"    1 $?
+  turn_is_over "$tmp/cut.ndjson";     want "truncated tail ignored"              0 $?
+  turn_is_over "$tmp/decoy.ndjson";   want "the word 'result' in text is not an event" 1 $?
+  turn_is_over "$tmp/missing.ndjson"; want "missing file is NOT killable"        1 $?
+
+  echo "killed runs report what they consumed"
+  printf '%s\n' \
+    '{"type":"system","subtype":"init","session_id":"s"}' \
+    '{"type":"assistant","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":5,"output_tokens":2}}}' \
+    > "$tmp/usage.ndjson"
+  local got
+  got="$("$JQ" -rn -R '[inputs | fromjson?] as $ev | [$ev[] | .message?.usage? // empty] as $u
+    | "\([$u[].input_tokens // 0] | add // 0)/\([$u[].cache_read_input_tokens // 0] | add // 0)/\([$u[].output_tokens // 0] | add // 0)"' \
+    "$tmp/usage.ndjson" 2>/dev/null)"
+  [ "$got" = "10/100/2" ] && ok "token usage recovered from a stream ($got)" \
+                          || bad "token usage wrong: got '$got', want 10/100/2"
+
+  echo "a disabled job is never launched"
+  [ "$(job_get __no_such_job__ '.enabled' 'true')" = "true" ] && ok "absent job defaults to enabled" || bad "default broke"
+  printf '%s' '{"jobs":[{"id":"x","enabled":false}]}' > "$tmp/jobs.json"
+  got="$("$JQ" -r '[.jobs[] | select(.id=="x") | .enabled] | .[0] as $v | (if $v == null then "true" else $v end) | tostring' "$tmp/jobs.json")"
+  [ "$got" = "false" ] && ok "enabled:false reads as false (jq // would say true)" || bad "enabled:false read as '$got'"
+
+  rm -rf "$tmp"
+  echo
+  echo "$pass passed, $fail failed"
+  [ "$fail" -eq 0 ]
 }
 
 cmd_running() { # exit 0 when a run currently holds this job's lock
@@ -527,35 +610,30 @@ ${prompt}"
   # output (their replayed message, or the agent working again) cancels it.
   if [ "$interactive" = "true" ]; then
     (
-      seen=0
+      # The decision is a POSITIVE ASSERTION about the transcript's current
+      # state — "the conversation is finished and quiet" — never an inference
+      # from a counter. turn_is_over() has to say yes twice, INTERACTIVE_GRACE
+      # apart, with the file unchanged in between, before anything is killed.
       while kill -0 "$child" 2>/dev/null; do
         sleep 2
-        # `grep -c` prints 0 AND exits 1 when there is no match, so `|| echo 0`
-        # appended a second line and the comparison below blew up with
-        # "integer expression expected". The test then fell through and this
-        # loop killed healthy agents after 20s of quiet thinking. Assign, then
-        # sanity-check the value.
-        n="$(grep -c '"type":"result"' "$streamfile" 2>/dev/null)" || n=0
-        case "$n" in ''|*[!0-9]*) n=0 ;; esac
-        # Never end a run that has not produced a single result yet: it is still
-        # working on its first answer.
-        [ "$n" -eq 0 ] && continue
-        [ "$n" -le "$seen" ] && continue
-        seen="$n"
-        size="$(wc -c < "$streamfile" 2>/dev/null | tr -d ' ')"
+        turn_is_over "$streamfile" || continue
+        size="$(num "$(wc -c < "$streamfile" 2>/dev/null)")"
         waited=0
         while [ "$waited" -lt "$INTERACTIVE_GRACE" ]; do
-          sleep 2; waited=$(( waited + 2 ))
+          sleep 2
+          waited="$(num "$(( waited + 2 ))")"
           kill -0 "$child" 2>/dev/null || exit 0
-          [ "$(wc -c < "$streamfile" 2>/dev/null | tr -d ' ')" != "$size" ] && break
+          [ "$(num "$(wc -c < "$streamfile" 2>/dev/null)")" != "$size" ] && break
         done
-        if [ "$waited" -ge "$INTERACTIVE_GRACE" ]; then
-          # Deliberate, orderly end of an interactive conversation — mark it so
-          # the run is not classified as an error just because we sent TERM.
-          : > "$logfile.turnend"
-          kill -TERM "$child" 2>/dev/null
-          exit 0
-        fi
+        # Re-assert after the wait: anything new, or a transcript that no longer
+        # ends on a result, means the agent is working again — leave it alone.
+        [ "$(num "$(wc -c < "$streamfile" 2>/dev/null)")" != "$size" ] && continue
+        turn_is_over "$streamfile" || continue
+        [ "$waited" -ge "$INTERACTIVE_GRACE" ] || continue
+        printf 'interactive: conversation idle for %ss after the last answer\n' \
+          "$INTERACTIVE_GRACE" > "$logfile.turnend"
+        kill -TERM "$child" 2>/dev/null
+        exit 0
       done
     ) & local turnloop=$!
   fi
@@ -613,11 +691,18 @@ ${prompt}"
     # run with 349 turns of real work ended up reported as "no information".
     "$JQ" -n -R --arg reason "${wdreason:-the run ended without a final result event (killed or crashed)}" '
       [inputs | fromjson?] as $ev
+      | [$ev[] | .message?.usage? // empty] as $u
       | { is_error: true,
           subtype: "no_result_event",
           session_id: ([$ev[] | select(.type=="system" and .subtype=="init") | .session_id] | first // ""),
           num_turns: ([$ev[] | select(.type=="assistant")] | length),
           stop_reason: $reason,
+          # A killed run consumed real tokens even though no cost was reported.
+          # Record them, so waste can never masquerade as a free $0.00 run.
+          usage: { input_tokens:        ([$u[].input_tokens // 0] | add // 0),
+                   cache_read_tokens:   ([$u[].cache_read_input_tokens // 0] | add // 0),
+                   cache_write_tokens:  ([$u[].cache_creation_input_tokens // 0] | add // 0),
+                   output_tokens:       ([$u[].output_tokens // 0] | add // 0) },
           result: (
             [ $ev[] | select(.type=="assistant") | .message.content[]? | select(.type=="text") | .text ]
             | map(select(length > 0)) | last // ""
@@ -1107,6 +1192,7 @@ case "${1:-}" in
   project-delete) [ $# -ge 2 ] || die "usage: claude-cron project-delete <name>"; cmd_project_delete "$2" ;;
   project-list)   cmd_project_list ;;
   resolve-models) cmd_resolve_models ;;
+  selftest)  cmd_selftest ;;
   running)   [ $# -ge 2 ] || die "usage: claude-cron running <job-id>"; cmd_running "$2" ;;
   say)       [ $# -ge 2 ] || die "usage: claude-cron say <job-id> (message on stdin)"; cmd_say "$2" ;;
   stop)      [ $# -ge 2 ] || die "usage: claude-cron stop <job-id>"; cmd_stop "$2" ;;
