@@ -489,6 +489,46 @@ def compact_db():
     return before, _size()
 
 
+class journal_lock:
+    """Hold the journal still while it is rewritten.
+
+    The engine appends a line when a run ends; deletes and renames rewrite the
+    file whole. Without this, a rewrite built from a snapshot taken before an
+    append silently overwrites it and that run's record is gone for good — which
+    also strands its row in the index, where deleting it then fails with "no
+    such run". Same mkdir lock the engine takes, by the same name.
+    """
+    def __init__(self, timeout=6.0):
+        self.path = DATA_DIR / "locks" / ".journal.lock"
+        self.timeout = timeout
+        self.held = False
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.time() + self.timeout
+        while True:
+            try:
+                self.path.mkdir()
+                self.held = True
+                return self
+            except FileExistsError:
+                if time.time() > deadline:      # stale lock: break it, as the engine does
+                    try:
+                        self.path.rmdir()
+                    except OSError:
+                        pass
+                    deadline = time.time() + self.timeout
+                time.sleep(0.01)
+
+    def __exit__(self, *exc):
+        if self.held:
+            try:
+                self.path.rmdir()
+            except OSError:
+                pass
+        return False
+
+
 def delete_run(jid, start):
     """Erase one run completely: its files, its journal line and its DB rows.
 
@@ -498,23 +538,34 @@ def delete_run(jid, start):
     reconciles rather than resurrecting half a run.
     """
     removed = {"files": 0, "journal": 0, "db": 0}
-    kept, target = [], None
-    if RUNS_FILE.exists():
-        for ln in RUNS_FILE.read_text().splitlines():
-            s = ln.strip()
-            if not s:
-                continue
-            try:
-                rec = json.loads(s)
-            except Exception:  # noqa: BLE001
-                kept.append(ln)
-                continue
-            if rec.get("id") == jid and int(rec.get("start") or 0) == start:
-                target = rec
-            else:
-                kept.append(ln)
+    # Read and rewrite under the lock: a run ending in between would append its
+    # record to the file this rewrite is about to replace, and lose it.
+    with journal_lock():
+        kept, target = [], None
+        if RUNS_FILE.exists():
+            for ln in RUNS_FILE.read_text().splitlines():
+                s = ln.strip()
+                if not s:
+                    continue
+                try:
+                    rec = json.loads(s)
+                except Exception:  # noqa: BLE001
+                    kept.append(ln)
+                    continue
+                if rec.get("id") == jid and int(rec.get("start") or 0) == start:
+                    target = rec
+                else:
+                    kept.append(ln)
+        if target is not None:
+            RUNS_FILE.write_text("".join(ln + "\n" for ln in kept))
+            removed["journal"] = 1
+
     if target is None:
-        return None
+        # Not in the journal, but the index may still carry it — a row stranded
+        # by an earlier loss. Clear it rather than refusing forever with "no such
+        # run": the journal is the source of truth, so anything the index holds
+        # that the journal does not is exactly what should go.
+        return _forget_stranded_row(jid, start, removed)
 
     # On-disk artifacts, plus the transient siblings a run can leave behind.
     ap = _artifact_paths(target) or {}
@@ -533,9 +584,6 @@ def delete_run(jid, start):
                 removed["files"] += 1
         except Exception:  # noqa: BLE001
             pass
-
-    RUNS_FILE.write_text("".join(ln + "\n" for ln in kept))
-    removed["journal"] = 1
 
     # Clear the DB rows now rather than waiting for the next ingest, and reset
     # the ingest offset so the shortened journal is re-read from the start
@@ -557,6 +605,44 @@ def delete_run(jid, start):
 
     # Hand the freed pages back to the filesystem, so deleting a run actually
     # makes the index smaller instead of only marking space reusable.
+    before, after = compact_db()
+    removed["bytes"] = max(0, before - after)
+    return removed
+
+
+def _forget_stranded_row(jid, start, removed):
+    """Delete an index row whose journal line is gone. Returns None if truly absent."""
+    try:
+        conn = db_conn()
+        fts = db_init(conn)
+        # Match on job+start, not on the row key: the key also carries the log
+        # path, which a caller identifying a run by when it ran does not have.
+        row = conn.execute("SELECT key, log FROM runs WHERE job=? AND start=?",
+                           (jid, start)).fetchone()
+        if row is None:
+            conn.close()
+            return None
+        key = row["key"]
+        # Its files, if any survived, then the row and its search entry.
+        try:
+            logp = Path(row["log"] or "")
+            if str(logp) and str(logp.resolve()).startswith(str(_logs_root())):
+                for p in (logp, logp.with_name(logp.stem + ".stream.ndjson"),
+                          logp.with_name(logp.stem + ".precheck.txt"),
+                          Path(str(logp) + ".err"), Path(str(logp) + ".watchdog")):
+                    if p.exists():
+                        p.unlink()
+                        removed["files"] += 1
+        except Exception:  # noqa: BLE001
+            pass
+        conn.execute("DELETE FROM runs WHERE key=?", (key,))
+        removed["db"] = conn.total_changes
+        if fts:
+            conn.execute("DELETE FROM runs_fts WHERE key=?", (key,))
+        conn.commit()
+        conn.close()
+    except sqlite3.Error:
+        return None
     before, after = compact_db()
     removed["bytes"] = max(0, before - after)
     return removed
