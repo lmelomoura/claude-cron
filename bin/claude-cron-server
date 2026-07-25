@@ -2940,8 +2940,11 @@ function setView(v){
 }
 function paintViewTabs(){
   const jobs = (DATA.jobs || []).length;
-  const runs = (DATA.runs || []).length;
-  const live = (DATA.jobs || []).filter(j => ((DATA.state || {})[j.id] || {}).last_status === "running").length;
+  // Count what the table can actually show: the journal PLUS the runs in flight,
+  // which are synthesized (a record is only journaled when a run ends). Using
+  // DATA.runs alone made the tab read 43 while the pager said 45.
+  const live = liveRuns().length;
+  const runs = (DATA.runs || []).length + live;
   $("vt-jobs").innerHTML = I.zap + "Jobs" + '<span class="vcount">' + jobs + "</span>"
     + (live ? '<span class="runningbadge"><span class="pulse"></span>' + live + "</span>" : "");
   $("vt-runs").innerHTML = I.activity + "Runs" + '<span class="vcount">' + runs + "</span>";
