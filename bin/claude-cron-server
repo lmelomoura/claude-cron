@@ -1332,6 +1332,38 @@ textarea,.dlg-b input,.dlg-b select{width:100%;font:inherit;font-size:13px;paddi
   border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--ink);resize:vertical}
 textarea{min-height:170px;font-family:ui-monospace,"SF Mono",Menlo,monospace;line-height:1.5}
 textarea:focus,.dlg-b input:focus,.dlg-b select:focus{outline:none;border-color:var(--accent)}
+/* The prompt editor renders its own Markdown. A highlight layer sits exactly
+   under a transparent textarea: you keep native editing, selection, caret and
+   scrolling, and the bytes handed to the agent are still literally what you
+   typed. Both layers MUST share font, size, line-height, padding and border —
+   any difference and the text drifts out of register. Monospace makes bold safe
+   (same advance width), which is why headings can be bold without shifting. */
+.mdedit{position:relative;min-height:170px;height:230px;resize:vertical;overflow:hidden;
+  border:1px solid var(--line);border-radius:8px;background:var(--panel2)}
+.mdedit:focus-within{border-color:var(--accent)}
+.mdedit > .mdedit-hl,
+.mdedit > textarea{position:absolute;inset:0;margin:0;width:100%;height:100%;
+  padding:9px 11px;border:0;border-radius:8px;background:transparent;
+  font:13px/1.5 ui-monospace,"SF Mono",Menlo,monospace;
+  /* a textarea wraps with overflow-wrap only; `word-break: break-word` makes a
+     <pre> break in different places and the two layers drift apart mid-text */
+  white-space:pre-wrap;overflow-wrap:break-word;word-break:normal;
+  overflow-y:auto;overscroll-behavior:contain}
+/* The textarea's scrollbar steals ~15px of text width, so it wraps earlier than
+   the layer would. Reserving the same gutter here keeps both wrapping at the
+   very same column — without it the two drift apart a few lines in. */
+.mdedit > .mdedit-hl{pointer-events:none;overflow-y:hidden;scrollbar-gutter:stable;color:var(--ink)}
+.mdedit > textarea{color:transparent;caret-color:var(--accent);resize:none;min-height:0}
+.mdedit > textarea::selection{background:color-mix(in srgb,var(--accent) 30%,transparent)}
+.mdedit > textarea:focus{outline:none}
+/* the rendered marks */
+.mdedit-hl .h{font-weight:700;color:var(--accent)}
+.mdedit-hl .b{font-weight:700}
+.mdedit-hl .i{font-style:italic}
+.mdedit-hl .c{color:var(--term-tool,#c2410c)}
+.mdedit-hl .fence{color:var(--muted)}
+.mdedit-hl .bullet{color:var(--accent);font-weight:700}
+.mdedit-hl .mark{color:var(--muted)}
 /* searchable project select (combobox) */
 .combo{position:relative}
 .combo-trigger{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;
@@ -1545,13 +1577,10 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
     <button type="button" class="btn cwd-browse" data-cwd-target="ed-cwd">Browse…</button>
   </div>
   <label>Prompt sent to the agent</label>
-  <div class="fieldbar">
-    <button type="button" class="segbtn active" id="pm-write">Write</button>
-    <button type="button" class="segbtn" id="pm-preview">Preview</button>
-    <span class="fieldnote">Markdown — the agent receives exactly this text</span>
+  <div class="mdedit" id="ed-prompt-wrap">
+    <pre class="mdedit-hl" id="ed-prompt-hl" aria-hidden="true"></pre>
+    <textarea id="ed-prompt" spellcheck="false"></textarea>
   </div>
-  <textarea id="ed-prompt"></textarea>
-  <div class="md promptview" id="ed-prompt-view" hidden></div>
   <label>Precheck script — exit 0 wakes a run, exit 1 stays idle (a skipped tick costs nothing)</label>
   <textarea id="ed-precheck" spellcheck="false" style="min-height:120px"></textarea>
   <div class="row2">
@@ -2263,26 +2292,45 @@ function setDays(arr){
 function fmtBudget(){ const el=$("ed-budget"), v=parseFloat(el.value.replace(/[^0-9.]/g,""));
   el.value=isNaN(v)?"":v.toFixed(2); }
 
-/* The prompt is Markdown, but it is also the exact text handed to the agent, so
-   the textarea stays the single source of truth — Preview only renders it. A
-   rich editor would risk rewriting the bytes that get sent. */
-function setPromptMode(preview){
-  const ta=$("ed-prompt"), view=$("ed-prompt-view");
-  if(!ta||!view) return;
-  if(preview){
-    view.style.height = Math.max(190, ta.offsetHeight) + "px";
-    view.innerHTML = mdToHtml(ta.value || "");
+
+/* Markdown highlighting for the prompt editor.
+   Every character of the source is preserved — marks are only wrapped in spans,
+   never removed or rewritten — so the highlight layer lines up character for
+   character with the textarea above it and the saved prompt is byte-identical
+   to what was typed. */
+function mdHighlight(src){
+  const out=[]; let fenced=false;
+  for(const line of String(src).replace(/\r/g,"").split("\n")){
+    if(/^\s*```/.test(line)){ fenced=!fenced; out.push('<span class="fence">'+esc(line)+'</span>'); continue; }
+    if(fenced){ out.push('<span class="c">'+esc(line)+'</span>'); continue; }
+    if(/^\s*#{1,6}\s/.test(line)){ out.push('<span class="h">'+esc(line)+'</span>'); continue; }
+    let html=esc(line);
+    // inline code first, so ** inside backticks is not treated as bold
+    html=html.replace(/(`[^`]+`)/g, '<span class="c">$1</span>');
+    html=html.replace(/(\*\*[^*]+\*\*)/g, '<span class="b">$1</span>');
+    html=html.replace(/(^\s*)([-*])(\s)/, '$1<span class="bullet">$2</span>$3');
+    html=html.replace(/(^\s*)(\d+\.)(\s)/, '$1<span class="mark">$2</span>$3');
+    out.push(html);
   }
-  ta.hidden = !!preview;
-  view.hidden = !preview;
-  $("pm-write").classList.toggle("active", !preview);
-  $("pm-preview").classList.toggle("active", !!preview);
+  return out.join("\n");
 }
-function initPromptPreview(){
-  const w=$("pm-write"), pv=$("pm-preview");
-  if(!w||!pv) return;                       // never let an optional field abort boot
-  w.addEventListener("click", ()=>setPromptMode(false));
-  pv.addEventListener("click", ()=>setPromptMode(true));
+
+function paintPromptHighlight(){
+  const ta=$("ed-prompt"), hl=$("ed-prompt-hl");
+  if(!ta||!hl) return;
+  hl.innerHTML=mdHighlight(ta.value||"");
+  hl.scrollTop=ta.scrollTop; hl.scrollLeft=ta.scrollLeft;
+}
+
+function initPromptEditor(){
+  const ta=$("ed-prompt"), hl=$("ed-prompt-hl");
+  if(!ta||!hl) return;                        // never let this take the page down
+  const sync=()=>{ hl.scrollTop=ta.scrollTop; hl.scrollLeft=ta.scrollLeft; };
+  ta.addEventListener("input", paintPromptHighlight);
+  ta.addEventListener("scroll", sync);
+  // typing near the bottom scrolls the textarea without firing "scroll" first
+  ta.addEventListener("keyup", sync);
+  ta.addEventListener("click", sync);
 }
 
 /* ---- reusable searchable combobox (project select, model select) ---- */
@@ -2456,7 +2504,7 @@ function fill(j){
   const _p=j.project?projById(j.project):null;
   $("ed-cwd").placeholder=(_p&&_p.cwd)?("inherits from "+j.project+": "+_p.cwd):"/Users/…/some-repo";
   $("ed-prompt").value=j.prompt||"";
-  setPromptMode(false);   // always open on the editable view
+  paintPromptHighlight();
   $("ed-precheck").value=j._precheck||"";
   $("ed-interval").value=Math.round((j.interval_seconds||300)/60);
   modelCombo.set(j.model||"opus");
@@ -2900,7 +2948,7 @@ initCombos();
 initFolderPicker();
 initTooltips();
 initModalScrollLock();
-initPromptPreview();
+initPromptEditor();
 $("ed-cancel").addEventListener("click", ()=>$("editor").close());
 $("ed-save").addEventListener("click", saveEditor);
 $("ed-effort").addEventListener("input", ()=>setEffort(getEffort()));
