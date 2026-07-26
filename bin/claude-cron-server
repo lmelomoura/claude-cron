@@ -527,36 +527,97 @@ class journal_lock:
     file whole. Without this, a rewrite built from a snapshot taken before an
     append silently overwrites it and that run's record is gone for good — which
     also strands its row in the index, where deleting it then fails with "no
-    such run". Same mkdir lock the engine takes, by the same name.
+    such run". Same mkdir lock the engine takes, by the same name — so the two
+    sides must also agree on when a lock may be BROKEN.
+
+    They now do: the holder writes its pid, and the lock is stolen only when
+    that pid is gone. Breaking on elapsed time (what both sides used to do)
+    robs the slowest legitimate holder first, and the slowest holder here is a
+    rewrite of a long journal — precisely the case the lock exists for.
+
+    A live holder is waited for, but NOT for ever: this runs inside an HTTP
+    handler, so a wedged holder has to surface as a failed request rather than
+    a hung thread. Hence TimeoutError in place of the old endless retry.
     """
-    def __init__(self, timeout=6.0):
+    # Long enough that no honest rewrite loses its lock; short enough that an
+    # owner killed between mkdir and writing its pid cannot wedge the journal.
+    GRACE = 30.0
+
+    def __init__(self, timeout=30.0):
         self.path = DATA_DIR / "locks" / ".journal.lock"
         self.timeout = timeout
         self.held = False
 
+    def _owner(self):
+        """The pid holding the lock: int, or None when it cannot be read."""
+        try:
+            return int((self.path / "pid").read_text().strip())
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _alive(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True          # it exists, it is just not ours
+        return True
+
+    def _break(self):
+        """Remove a lock we have decided is stale — pid file and all.
+
+        rmdir() alone is not enough any more: the engine writes a pid into the
+        directory, and a non-empty rmdir fails silently, which turned the old
+        breaker into an infinite loop inside a request handler.
+        """
+        try:
+            for child in self.path.iterdir():
+                child.unlink()
+            self.path.rmdir()
+        except OSError:
+            pass
+
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.time() + self.timeout
+        ownerless_since = None
         while True:
             try:
                 self.path.mkdir()
+            except FileExistsError:
+                pass
+            else:
+                try:
+                    (self.path / "pid").write_text(str(os.getpid()))
+                except OSError:
+                    pass
                 self.held = True
                 return self
-            except FileExistsError:
-                if time.time() > deadline:      # stale lock: break it, as the engine does
-                    try:
-                        self.path.rmdir()
-                    except OSError:
-                        pass
-                    deadline = time.time() + self.timeout
-                time.sleep(0.01)
+
+            owner = self._owner()
+            if owner is not None and not self._alive(owner):
+                self._break()                 # the owner is gone: genuinely stale
+                continue
+            if owner is None:
+                # The narrow race between mkdir and writing the pid. Only this
+                # case gets a time-based escape.
+                ownerless_since = ownerless_since or time.time()
+                if time.time() - ownerless_since > self.GRACE:
+                    self._break()
+                    ownerless_since = None
+                    continue
+            else:
+                ownerless_since = None
+            if time.time() > deadline:
+                raise TimeoutError(
+                    f"the journal lock is held by live pid {owner} — try again in a moment")
+            time.sleep(0.01)
 
     def __exit__(self, *exc):
         if self.held:
-            try:
-                self.path.rmdir()
-            except OSError:
-                pass
+            self._break()
         return False
 
 
@@ -1326,10 +1387,29 @@ class Handler(BaseHTTPRequestHandler):
                     st = {}
                 if st.get("last_status") == "running" and int(st.get("last_start") or 0) == start:
                     return self._send(409, {"error": "this run is still going — stop it first"})
-            res = delete_run(jid, start)
+            try:
+                res = delete_run(jid, start)
+            except TimeoutError as e:
+                # The engine is rewriting the journal right now. Refusing is the
+                # honest answer — the alternative is stealing its lock and
+                # losing whatever it was writing.
+                return self._send(409, {"error": str(e)})
             if res is None:
                 return self._send(404, {"error": "no such run"})
             return self._send(200, {"ok": True, "output": "deleted", "removed": res})
+        if op == "worktree_drop":
+            # Discarding a retained run dir throws away whatever it holds —
+            # which is the point (it is kept BECAUSE it holds unpushed work),
+            # so the engine owns the refusal rules and this only forwards.
+            wjid = str(body.get("id", ""))
+            stamp = str(body.get("stamp", ""))
+            if not wjid or not all(c.isalnum() or c in "-_" for c in wjid):
+                return self._send(400, {"error": "bad id"})
+            if not stamp or not all(c.isalnum() or c in "-_." for c in stamp) or ".." in stamp:
+                return self._send(400, {"error": "bad stamp"})
+            ok, out = cc(["worktree-drop", wjid, stamp])
+            return self._send(200 if ok else 409,
+                              {"ok": True, "output": out} if ok else {"error": out or "refused"})
         if op == "project_delete":
             name = str(body.get("name", "")).strip()
             if not name:

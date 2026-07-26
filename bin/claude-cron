@@ -175,18 +175,41 @@ state_get() { # state_get <id> <field> [default]
     '.[$id][$f] as $v | (if $v == null then $def else $v end) | tostring' "$STATE_FILE" 2>/dev/null
 }
 
-# Serialize state writes: detached runs execute in parallel, and state_set is a
-# read-modify-write on one shared file, so two of them racing would drop a
-# field. A short mkdir spin-lock keeps writes atomic across processes.
-_state_lock() {
-  local lock="$LOCK_DIR/.state.lock" i=0
-  while ! mkdir "$lock" 2>/dev/null; do
+# ---- the one mkdir lock every serialized write uses ------------------------
+# Every lock here used to break purely on ELAPSED TIME (~4s) without ever asking
+# whether the holder was still alive. That inverts the point of a lock: the
+# slowest legitimate holder is precisely the one most likely to be robbed, and
+# the slowest holder here is a journal rewrite over a long history — so the
+# record a run had just appended could be lost to the very mechanism meant to
+# protect it. `acquire_lock` already knew the right answer (write your pid, and
+# only break the lock when that pid is gone); this generalises it to the rest.
+LOCK_GRACE_SECONDS="${CLAUDE_CRON_LOCK_GRACE:-30}"
+
+lock_take() { # lock_take <lockdir> — blocks until held; always succeeds
+  local d="${1:-}" hold i=0
+  while ! mkdir "$d" 2>/dev/null; do
+    hold="$(cat "$d/pid" 2>/dev/null || true)"
+    if [ -n "$hold" ] && ! kill -0 "$hold" 2>/dev/null; then
+      rm -rf "$d"; continue          # the owner is gone: genuinely stale
+    fi
+    # A live owner is WAITED for, however long it takes. An unreadable owner is
+    # the narrow race between mkdir and writing the pid — give that, and only
+    # that, a time-based escape.
     i=$(( i + 1 ))
-    [ "$i" -ge 400 ] && { rm -rf "$lock"; i=0; }   # break a stale lock (~4s)
+    if [ -z "$hold" ] && [ "$i" -ge $(( LOCK_GRACE_SECONDS * 100 )) ]; then
+      rm -rf "$d"; i=0; continue
+    fi
     sleep 0.01
   done
+  echo $$ > "$d/pid" 2>/dev/null || true
+  return 0
 }
-_state_unlock() { rmdir "$LOCK_DIR/.state.lock" 2>/dev/null; }
+lock_drop() { rm -rf "${1:-}"; }   # rm -rf, not rmdir: the dir holds a pid file
+
+# Serialize state writes: detached runs execute in parallel, and state_set is a
+# read-modify-write on one shared file, so two of them racing would drop a field.
+_state_lock()   { lock_take "$LOCK_DIR/.state.lock"; }
+_state_unlock() { lock_drop "$LOCK_DIR/.state.lock"; }
 
 state_set() { # state_set <id> <field> <value-as-json>
   local id="$1" field="$2" value="$3" tmp
@@ -317,12 +340,12 @@ acquire_slot() { # <id> <max> -> prints the slot dir; non-zero when at capacity
   local base="$LOCK_DIR/$id" slot n L="" i=0
   mkdir -p "$base"
   L="$base/.acq"                         # short mutex so the ceiling holds under a race
-  while ! mkdir "$L" 2>/dev/null; do i=$((i + 1)); [ "$i" -ge 300 ] && { rm -rf "$L"; i=0; }; sleep 0.01; done
+  lock_take "$L"
   n="$(slots_active "$id")"              # also prunes dead slots
-  if [ "$max" -gt 0 ] && [ "$n" -ge "$max" ]; then rmdir "$L" 2>/dev/null; return 1; fi
+  if [ "$max" -gt 0 ] && [ "$n" -ge "$max" ]; then lock_drop "$L"; return 1; fi
   slot="$base/$$"                        # unique per _exec process
   mkdir -p "$slot"; echo $$ > "$slot/pid"
-  rmdir "$L" 2>/dev/null
+  lock_drop "$L"
   printf '%s\n' "$slot"
 }
 
@@ -359,15 +382,8 @@ lock_active() { # 0 = a run is currently holding the lock for <id> (single mutex
 # renames. Without a shared lock a rewrite can be built from a snapshot taken
 # before an append and then overwrite it — losing a finished run's record for
 # good. Both sides take this lock; the dashboard takes the same one by name.
-journal_lock() {
-  local lock="$LOCK_DIR/.journal.lock" i=0
-  while ! mkdir "$lock" 2>/dev/null; do
-    i=$(( i + 1 ))
-    [ "$i" -ge 400 ] && { rm -rf "$lock"; i=0; }   # break a stale lock (~4s)
-    sleep 0.01
-  done
-}
-journal_unlock() { rmdir "$LOCK_DIR/.journal.lock" 2>/dev/null; }
+journal_lock()   { lock_take "$LOCK_DIR/.journal.lock"; }
+journal_unlock() { lock_drop "$LOCK_DIR/.journal.lock"; }
 
 record_run() { # <id> <status> <start> <end> <cost> <turns> <session> <logfile> <note> <forced> <precheck> <project> <model> <model_id> <resumed_from>
   "$JQ" -nc \
@@ -793,6 +809,33 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   [ "$(precheck_verdict 2)" = "error" ] && ok "exit 2 is a broken probe"       || bad "exit 2 -> $(precheck_verdict 2)"
   [ "$(precheck_verdict 127)" = "error" ] && ok "exit 127 (missing command) is broken" || bad "exit 127 -> $(precheck_verdict 127)"
   [ "$(precheck_verdict '')" = "error" ]  && ok "a missing exit code is broken" || bad "empty -> $(precheck_verdict '')"
+
+  echo "lock_take() — a lock is stolen from the dead, never from the living"
+  local t0 elapsed dead=99999
+  if kill -0 "$dead" 2>/dev/null; then dead=99998; fi
+  lock_take "$tmp/free" && ok "a free lock is taken" || bad "could not take a free lock"
+  [ "$(cat "$tmp/free/pid" 2>/dev/null)" = "$$" ] && ok "the holder records its pid" || bad "no pid recorded"
+  lock_drop "$tmp/free"
+  [ ! -d "$tmp/free" ] && ok "dropping removes the lock" || bad "lock survived the drop"
+
+  mkdir -p "$tmp/stale"; echo "$dead" > "$tmp/stale/pid"
+  t0="$(now_epoch)"; lock_take "$tmp/stale"; elapsed=$(( $(now_epoch) - t0 ))
+  [ "$elapsed" -lt 2 ] && ok "a lock whose owner is gone is taken at once (${elapsed}s)" \
+    || bad "waited ${elapsed}s for a dead owner"
+  lock_drop "$tmp/stale"
+
+  # The regression that matters. Every one of these locks used to be broken
+  # purely on elapsed time (~4s), so a journal rewrite over a large history —
+  # exactly the slow case — would have its lock stolen mid-rewrite by a run
+  # ending, and lose the record the lock exists to protect.
+  mkdir -p "$tmp/live"; echo $$ > "$tmp/live/pid"
+  ( lock_take "$tmp/live" && : > "$tmp/live-was-stolen" ) >/dev/null 2>&1 & local waiter=$!
+  sleep 5
+  [ ! -f "$tmp/live-was-stolen" ] \
+    && ok "a lock held by a LIVE process is still held after 5s" \
+    || bad "the lock was stolen from a live holder"
+  kill "$waiter" 2>/dev/null; wait "$waiter" 2>/dev/null
+  rm -rf "$tmp/live"
 
   rm -rf "$tmp"
   echo
