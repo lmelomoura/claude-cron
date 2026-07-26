@@ -155,6 +155,25 @@ count=$(curl -sf https://api.example.com/queue | jq -r '.pending')
 [ "${count:-0}" -gt 0 ]     # exit 0 → work; exit 1 → idle
 ```
 
+#### The exit status is three-way, not two
+
+| Exit | Meaning | What the engine does |
+|---|---|---|
+| `0` | there is work | spends a session |
+| `1` | nothing to do | stays idle, costs nothing |
+| anything else | **the probe itself is broken** | records `precheck_error`, shows the job in red, and backs off |
+
+The third row matters more than it looks. A missing credentials file, a helper
+that will not source, a typo, a `command not found` — all of those exit with
+something that is neither 0 nor 1. They used to be read as "nothing to do", so a
+job could stop working for good while the dashboard kept reporting it as healthy
+and up to date. Write prechecks that **fail loudly**: let the error status
+escape rather than mapping everything onto `exit 1`.
+
+If your probe genuinely cannot tell (the API is down, and you would rather wait
+than guess) that is `exit 1` — "no work found" — and it is right to be quiet
+about it. Reserve the other codes for "this probe is not working".
+
 #### A precheck that writes: `CC_PRECHECK_DRY_RUN`
 
 A precheck may do more than look. The useful case is a **claim**: reading a queue
@@ -248,6 +267,23 @@ and never hands a half-built tree to an agent. A hook that outlives
 per run, even when the run dir is preserved: whatever the hook registered outside
 the directory still has to be released.
 
+Every worktree is cut from a freshly fetched base, and that fetch is bounded by
+`worktree.fetch_timeout_seconds` (default 120). It has to be: the fetch happens
+after the run has taken its slot but before the watchdog exists, so a remote
+that accepts the connection and then goes quiet would pin the slot for as long
+as the network stayed broken — and with `max_parallel: 1` that is the job dead
+until someone notices. On a timeout the base is resolved from the refs already
+on disk and the tick log says so.
+
+#### Worktrees that are kept back
+
+When a run ends with commits or changes that exist on no remote, its worktree is
+**preserved** rather than removed — the work would otherwise be lost. Nothing
+can ever release it on its own, so the dashboard lists every retained run dir
+with its size and age, and **Discard** throws one away once you have salvaged
+what you need (`claude-cron worktree-drop <job-id> <stamp>` from the CLI). A run
+dir a live run is using is never offered, and never dropped.
+
 Anything with a global name must derive it from `$CC_RUN_DIR`, or two concurrent
 runs of the same repo collide:
 
@@ -259,19 +295,104 @@ herd unlink "$SITE"; docker compose -p "$SITE" down -v  # down
 
 ### Budgets
 
+Three ceilings, each answering a different question.
+
 - **Per-run** (`max_budget_usd`) — passed to `claude -p --max-budget-usd`; caps a
-  single run.
-- **Per-day** (`daily_budget_usd`) — the engine sums today's runs for the job
-  before each scheduled run and skips (status `capped`) once the total reaches
-  the cap. Empty = unlimited. The card shows **Today: $spent / $cap**.
+  single run. Job value first, else the project's.
+- **Per-day, per job** (`daily_budget_usd`) — the engine sums today's runs for
+  the job before each scheduled run and skips (status `capped`) once the total
+  reaches the cap. Job value first, **else the project's** — so a project with
+  six jobs can set one number in one place. Empty = unlimited. The card shows
+  **Today: $spent / $cap**.
+- **Per-day, everything** (`global_daily_budget_usd`, at the top level of
+  `projects.json`) — the ceiling for the whole machine:
 
-### Self-test
+  ```json
+  { "global_daily_budget_usd": 120,
+    "projects": [ … ] }
+  ```
 
-`claude-cron selftest` exercises, offline and without spending anything, the
-logic that can end a run early or hide what it cost: numbers parsed from command
-output, the assertion that decides an interactive turn is over, token recovery
-from a transcript with no result event, and the disabled-job guard. Run it after
-touching the engine.
+  Per-job caps cannot express this. With a job per repo per role, every single
+  one can sit correctly under its own limit and the day still cost several times
+  what you meant to spend; the only number that answers "what will a bad night
+  cost me?" is the sum.
+
+All three are skipped for a **forced** run (Run now), which is a deliberate
+override — the same way it bypasses the precheck.
+
+### Backing off a job that keeps failing
+
+A job that errors used to relaunch every interval at full budget, for as long as
+it kept failing, with nothing in the loop noticing. Now the engine counts
+**consecutive** failures per job:
+
+| Consecutive errors | Wait |
+|---|---|
+| 0–2 | the configured interval |
+| 3 | 2× |
+| 4 | 4× |
+| 5 | 8× |
+| 6+ | 16× (the cap) |
+
+Two failures are treated as noise — a flaky network, a busy remote. From the
+third the wait doubles each time, capped at 16× so a job that gets fixed
+recovers within one long interval rather than hours later. **Any** run that is
+not an error resets the count, so one good run puts the job straight back on its
+normal cadence. A broken precheck (see above) counts too. The card says so:
+*backing off 4× after 4 failed runs*.
+
+### Telling someone a run ended: `config/hooks/on-run-end.sh`
+
+A loop that can only be checked by opening a web page is not really unattended.
+Drop an executable script at `config/hooks/on-run-end.sh` and the engine runs it
+after every run, with the outcome in its environment:
+
+| Variable | |
+|---|---|
+| `CC_JOB_ID` | which job |
+| `CC_STATUS` | `success`, `warning` or `error` |
+| `CC_COST` | dollars this run spent |
+| `CC_NOTE` | why it ended as it did (`BUDGET LIMITED: …`, `NOTHING TO DO: …`, a watchdog reason) |
+| `CC_PROJECT`, `CC_SESSION`, `CC_LOG` | |
+| `CC_START`, `CC_END`, `CC_DURATION` | epoch seconds, and the span |
+| `CC_DASHBOARD` | the dashboard URL |
+
+The engine knows nothing about notifiers, so this is where they go:
+
+```bash
+#!/usr/bin/env bash
+[ "$CC_STATUS" = error ] || exit 0
+terminal-notifier -title "claude-cron: $CC_JOB_ID failed" \
+                  -message "${CC_NOTE:-see the run log}" -open "$CC_DASHBOARD"
+```
+
+It is detached and time-limited (`CLAUDE_CRON_HOOK_TIMEOUT`, default 60s): a
+notifier that hangs must never hold a run's slot open. Its output goes to
+`data/exec.log`.
+
+### Tests
+
+Two suites, both offline and free:
+
+```bash
+claude-cron selftest        # the engine (bash)
+python3 -m pytest tests/    # the control server (python)
+```
+
+`selftest` exercises the logic that can end a run early, lose money or corrupt
+state: integer parsing from command output, the assertion that decides an
+interactive turn is over, token recovery from a transcript with no result event,
+the disabled-job guard, the schedule window (including one that wraps midnight),
+the failure backoff curve, lock ownership, worktree setup/teardown/provisioning,
+and log rotation. It runs entirely inside a scratch directory — it will not
+touch `data/`.
+
+`pytest tests/` covers the server: journal ingest and resync, the 24h activity
+counters, retained worktrees, the journal lock, and the dashboard page itself
+(that its JavaScript parses, that every element it reaches for exists, and that
+the backoff curve it recomputes still agrees with the engine's).
+
+Run both after touching either side.
 
 ### When a run is killed
 
@@ -393,10 +514,16 @@ claude-cron project-set        # create/update a project (JSON on stdin)
 claude-cron project-list | project-delete <name>
 claude-cron provision-set <project> up|down   # worktree provisioning script (stdin)
 claude-cron provision-get <project> up|down
+claude-cron worktree-drop <id> <stamp>   # discard a preserved run dir for good
 claude-cron resolve-models     # refresh which model each family points at
 claude-cron selftest           # offline checks of the logic that can kill a run
 claude-cron install | uninstall
 ```
+
+Environment overrides: `CLAUDE_CRON_PORT`, `CLAUDE_CRON_CONFIG`,
+`CLAUDE_CRON_DATA`, `CLAUDE_CRON_CLAUDE_BIN`, `CLAUDE_CRON_CLAUDE_CONFIG_DIR`,
+`CLAUDE_CRON_PYTHON`, `CLAUDE_CRON_JQ`, `CLAUDE_CRON_LOG_MAX` (log rotation
+threshold, default 4 MiB), `CLAUDE_CRON_HOOK_TIMEOUT`, `CLAUDE_CRON_LOCK_GRACE`.
 
 ---
 
@@ -410,6 +537,11 @@ then deletes the bulky artifact files. **To back up or migrate: copy
 `data/index.db`** (plus the journal). Disk usage ≈ the DB size, shown in the
 dashboard footer. Deleting `index.db` only loses runs whose files were already
 pruned.
+
+**Logs.** `data/tick.log` (scheduler decisions) and `data/exec.log` (detached
+runner and provisioning-hook output) are append-only and are rotated by the tick
+once either passes `CLAUDE_CRON_LOG_MAX` (4 MiB). Exactly one previous
+generation is kept, as `.1` — the chain never grows.
 
 ---
 

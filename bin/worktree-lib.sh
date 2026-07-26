@@ -37,6 +37,27 @@
 # Is <dir> inside a git working tree?
 wt_is_git_repo() { git -C "${1:-}" rev-parse --is-inside-work-tree >/dev/null 2>&1; }
 
+# Run a command SILENTLY with a wall-clock ceiling. macOS ships no timeout(1),
+# so this is the killer-subshell pattern the provisioning hook already relied
+# on, lifted out so anything that can block on the network uses the same guard.
+# Returns the command's status, or non-zero when it was killed.
+#
+# The child's stdout is closed deliberately, not as tidiness. Killing a process
+# does NOT kill its children, and a caller inside `$( … )` blocks until every
+# process holding the pipe exits — so an orphaned grandchild (the `sleep` in a
+# wrapper script, a `git` subprocess) keeps the command substitution waiting for
+# the full original duration and the timeout buys nothing at all. Neither caller
+# wants the output; both write what they need to a log themselves.
+wt_run_limited() { # wt_run_limited <seconds> <command...>
+  local t="${1:-60}"; shift
+  local pid killer rc
+  "$@" >/dev/null 2>&1 & pid=$!
+  ( sleep "$t"; kill -TERM "$pid" 2>/dev/null ) >/dev/null 2>&1 & killer=$!
+  wait "$pid"; rc=$?
+  kill "$killer" 2>/dev/null; wait "$killer" 2>/dev/null
+  return "$rc"
+}
+
 # Every repo this project spans: name<TAB>canonical path<TAB>base branch.
 # A project that declares `.repos[]` is taken at its word — that list is what a
 # run gets a worktree of. One that declares none is the single-repo case: the
@@ -73,10 +94,15 @@ wt_isolation_enabled() { # <project> <canonical_cwd>
 # It fetches first, because a review run has to see the branch a dev run pushed
 # minutes ago -- but a network that is down must never fail a run: fall back to
 # what is already local and say so in the tick log.
-wt_base_ref() { # <canonical> <base> -> prints a ref; non-zero if nothing resolves
+wt_base_ref() { # <canonical> <base> [fetch-timeout] -> prints a ref; non-zero if nothing resolves
   local repo="${1:-}" base="${2:-}" ref
-  git -C "$repo" fetch --prune --quiet 2>/dev/null \
-    || log_tick "worktree: fetch failed in $repo — resolving the base from local refs"
+  # A remote that accepts the TCP connection and then goes quiet does not fail —
+  # it hangs, and this runs before the watchdog exists, so it would hold the
+  # run's slot for as long as the network stayed broken. Bound it: a stale base
+  # resolved from local refs is worth far more than a wedged job.
+  local ft; ft="$(num "${3:-}" 120)"
+  wt_run_limited "$ft" git -C "$repo" fetch --prune --quiet 2>/dev/null \
+    || log_tick "worktree: fetch failed or timed out (${ft}s) in $repo — resolving the base from local refs"
   if [ -z "$base" ]; then
     base="$(git -C "$repo" symbolic-ref --short --quiet HEAD 2>/dev/null || true)"
     if [ -z "$base" ]; then
@@ -133,21 +159,20 @@ wt_env_line() { # <project> <repo> <worktree>
 wt_provision() { # <up|down> <project> <id> <run_dir> <name> <canonical> <worktree> <base>
   local phase="${1:-}" project="${2:-}" id="${3:-}" run_dir="${4:-}"
   local name="${5:-}" repo="${6:-}" wt="${7:-}" base="${8:-}"
-  local script t rc pid killer
+  local script t rc
   script="$CONFIG_DIR/provision/$project.$phase.sh"
   [ -f "$script" ] || return 0
   t="$(project_get "$project" '.worktree.provision_timeout_seconds' '900')"
   case "$t" in ''|null|*[!0-9]*) t=900 ;; esac
-  (
-    cd "$wt" 2>/dev/null || exit 1
+  _wt_hook() {
+    cd "$wt" 2>/dev/null || return 1
     CC_REPO_NAME="$name" CC_REPO_PATH="$repo" CC_WORKTREE="$wt" CC_BASE="$base" \
     CC_RUN_DIR="$run_dir" CC_RUN_MANIFEST="$run_dir/.run.json" \
     CC_PROJECT="$project" CC_JOB_ID="$id" \
       bash "$script" >>"$DATA_DIR/exec.log" 2>&1
-  ) & pid=$!
-  ( sleep "$t"; kill -TERM "$pid" 2>/dev/null ) >/dev/null 2>&1 & killer=$!
-  wait "$pid"; rc=$?
-  kill "$killer" 2>/dev/null; wait "$killer" 2>/dev/null
+  }
+  wt_run_limited "$t" _wt_hook; rc=$?
+  unset -f _wt_hook
   [ "$rc" -eq 0 ] || log_tick "$id: provision $phase failed for $name (rc=$rc) — see exec.log"
   return "$rc"
 }
@@ -197,6 +222,9 @@ wt_setup() { # <id> <project> <canonical_cwd> <stamp>
   local id="${1:-}" project="${2:-}" cwd="${3:-}" stamp="${4:-}"
   local run_dir="$WORKTREES_DIR/$id/$stamp" tsv="$WORKTREES_DIR/$id/.$stamp.tsv"
   local name repo base ref wt sha primary=""
+  # How long a single repo's fetch may block before the base is resolved from
+  # local refs instead. Declared per project, like every other worktree knob.
+  local fetch_t; fetch_t="$(num "$(project_get "$project" '.worktree.fetch_timeout_seconds' '120')" 120)"
   mkdir -p "$run_dir" || { log_tick "$id: cannot create the run dir $run_dir"; return 1; }
   : > "$tsv"
   while IFS="$(printf '\t')" read -r name repo base; do
@@ -205,7 +233,7 @@ wt_setup() { # <id> <project> <canonical_cwd> <stamp>
       log_tick "$id: repo path missing ($name -> $repo)"
       rm -f "$tsv"; wt_teardown "$id" "$project" "$run_dir"; return 1
     fi
-    if ! ref="$(wt_base_ref "$repo" "$base")"; then
+    if ! ref="$(wt_base_ref "$repo" "$base" "$fetch_t")"; then
       log_tick "$id: no base ref resolvable in $repo"
       rm -f "$tsv"; wt_teardown "$id" "$project" "$run_dir"; return 1
     fi
@@ -323,6 +351,16 @@ wt_teardown() { # <id> <project> <run dir>
     log_tick "$id: run dir kept — unpushed or uncommitted work at $run_dir"
     return 0
   fi
+  wt_remove_all "$run_dir"
+}
+
+# Take a run dir off disk unconditionally, leaving git with no stale worktree
+# registrations. Split out of wt_teardown so an explicit, human-initiated drop
+# can reuse exactly the same removal — the ONLY difference being that it does
+# not consult wt_unsafe_to_remove first.
+wt_remove_all() { # <run dir>
+  local run_dir="${1:-}" wt main
+  [ -n "$run_dir" ] && [ -d "$run_dir" ] || return 0
   while IFS= read -r wt; do
     [ -n "$wt" ] || continue
     main="$(wt_main_of "$wt")"

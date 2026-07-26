@@ -57,7 +57,12 @@ CLAUDE_BIN="${CLAUDE_CRON_CLAUDE_BIN:-$HOME/.local/bin/claude}"
 CLAUDE_CONFIG_DIR="${CLAUDE_CRON_CLAUDE_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-}}"
 if [ -n "$CLAUDE_CONFIG_DIR" ]; then export CLAUDE_CONFIG_DIR; else unset CLAUDE_CONFIG_DIR; fi
 PYTHON="${CLAUDE_CRON_PYTHON:-$(command -v python3 2>/dev/null || echo /usr/bin/python3)}"
-JQ=/usr/bin/jq
+# /usr/bin/jq is only guaranteed on macOS 15 and later; before that jq comes
+# from Homebrew, at a path that differs between Apple Silicon and Intel. The
+# installer checks `jq` on PATH, so hard-coding a different path here meant an
+# install could pass every check and then have every single run fail. Resolve
+# it the same way python3 is resolved, and let the environment override.
+JQ="${CLAUDE_CRON_JQ:-$(command -v jq 2>/dev/null || echo /usr/bin/jq)}"
 
 mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" "$LOCK_DIR" "$WORKTREES_DIR"
 [ -f "$STATE_FILE" ] || echo '{}' > "$STATE_FILE"
@@ -97,6 +102,23 @@ now_epoch() { date +%s; }
 iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log_tick() { printf '%s %s\n' "$(iso_now)" "$*" >> "$TICK_LOG"; }
 
+# Nothing ever trimmed tick.log or exec.log, so both grew for the life of the
+# install — and the dashboard re-reads tick.log WHOLE every 5s to count the
+# day's activity, so an old install pays for that growth on every poll. Keep one
+# previous generation and start fresh: history far enough back to be useless for
+# the 24h counters is not worth carrying for ever.
+LOG_MAX_BYTES="${CLAUDE_CRON_LOG_MAX:-4194304}"   # 4 MiB per file
+log_rotate() { # log_rotate <file> [max-bytes]
+  local f="${1:-}" max; max="$(num "${2:-$LOG_MAX_BYTES}" "$LOG_MAX_BYTES")"
+  [ -f "$f" ] || return 0
+  [ "$(num "$(wc -c < "$f" 2>/dev/null)")" -ge "$max" ] || return 0
+  # Exactly one generation: mv replaces any existing .1, so the chain never
+  # grows. A run holding exec.log open keeps writing into the renamed file —
+  # harmless, and it stops at the end of that run.
+  mv -f "$f" "$f.1" 2>/dev/null || return 0
+  : > "$f" 2>/dev/null || true
+}
+
 # ---------------------------------------------------------------- job helpers
 
 jobs_json() {
@@ -104,8 +126,6 @@ jobs_json() {
   "$JQ" -e . "$JOBS_FILE" >/dev/null 2>&1 || die "Malformed JSON in $JOBS_FILE"
   cat "$JOBS_FILE"
 }
-
-job_ids() { jobs_json | "$JQ" -r '.jobs[].id'; }
 
 # NOTE: deliberately NOT jq's `//` operator. `//` treats **false** as absent, so
 # `(.enabled) // "true"` returned "true" for a job with `enabled: false` — which
@@ -158,18 +178,41 @@ state_get() { # state_get <id> <field> [default]
     '.[$id][$f] as $v | (if $v == null then $def else $v end) | tostring' "$STATE_FILE" 2>/dev/null
 }
 
-# Serialize state writes: detached runs execute in parallel, and state_set is a
-# read-modify-write on one shared file, so two of them racing would drop a
-# field. A short mkdir spin-lock keeps writes atomic across processes.
-_state_lock() {
-  local lock="$LOCK_DIR/.state.lock" i=0
-  while ! mkdir "$lock" 2>/dev/null; do
+# ---- the one mkdir lock every serialized write uses ------------------------
+# Every lock here used to break purely on ELAPSED TIME (~4s) without ever asking
+# whether the holder was still alive. That inverts the point of a lock: the
+# slowest legitimate holder is precisely the one most likely to be robbed, and
+# the slowest holder here is a journal rewrite over a long history — so the
+# record a run had just appended could be lost to the very mechanism meant to
+# protect it. `acquire_lock` already knew the right answer (write your pid, and
+# only break the lock when that pid is gone); this generalises it to the rest.
+LOCK_GRACE_SECONDS="${CLAUDE_CRON_LOCK_GRACE:-30}"
+
+lock_take() { # lock_take <lockdir> — blocks until held; always succeeds
+  local d="${1:-}" hold i=0
+  while ! mkdir "$d" 2>/dev/null; do
+    hold="$(cat "$d/pid" 2>/dev/null || true)"
+    if [ -n "$hold" ] && ! kill -0 "$hold" 2>/dev/null; then
+      rm -rf "$d"; continue          # the owner is gone: genuinely stale
+    fi
+    # A live owner is WAITED for, however long it takes. An unreadable owner is
+    # the narrow race between mkdir and writing the pid — give that, and only
+    # that, a time-based escape.
     i=$(( i + 1 ))
-    [ "$i" -ge 400 ] && { rm -rf "$lock"; i=0; }   # break a stale lock (~4s)
+    if [ -z "$hold" ] && [ "$i" -ge $(( LOCK_GRACE_SECONDS * 100 )) ]; then
+      rm -rf "$d"; i=0; continue
+    fi
     sleep 0.01
   done
+  echo $$ > "$d/pid" 2>/dev/null || true
+  return 0
 }
-_state_unlock() { rmdir "$LOCK_DIR/.state.lock" 2>/dev/null; }
+lock_drop() { rm -rf "${1:-}"; }   # rm -rf, not rmdir: the dir holds a pid file
+
+# Serialize state writes: detached runs execute in parallel, and state_set is a
+# read-modify-write on one shared file, so two of them racing would drop a field.
+_state_lock()   { lock_take "$LOCK_DIR/.state.lock"; }
+_state_unlock() { lock_drop "$LOCK_DIR/.state.lock"; }
 
 state_set() { # state_set <id> <field> <value-as-json>
   local id="$1" field="$2" value="$3" tmp
@@ -180,27 +223,62 @@ state_set() { # state_set <id> <field> <value-as-json>
   _state_unlock
 }
 
+# Several fields in ONE locked read-modify-write. The end of a run set seven
+# fields one at a time, so it took the state lock seven times and forked jq
+# seven times to record a single event — and every other run on the machine
+# queued behind each of them. Merges into whatever the job already has, so no
+# field written elsewhere is lost.
+state_set_many() { # state_set_many <id> <json-object>
+  local id="$1" obj="$2" tmp
+  _state_lock
+  tmp="$(mktemp "$DATA_DIR/.state.XXXXXX")"
+  "$JQ" --arg id "$id" --argjson o "$obj" \
+    '.[$id] = ((.[$id] // {}) + $o)' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+  _state_unlock
+}
+
+# What a precheck's exit status MEANS. The engine used to read every non-zero
+# status as "nothing to do", which made the two failures that matter look
+# identical to the one healthy outcome: a probe that ran and found no work
+# (exit 1) and a probe that could not run AT ALL (a missing credentials file,
+# an unsourceable helper, a typo -> 2, 126, 127) both left the job sitting
+# quietly "idle". A job could therefore stop working for good and the dashboard
+# would keep reporting it as healthy and up to date. The contract is now
+# explicit and narrow: 0 = work, 1 = idle, anything else = the probe is broken.
+precheck_verdict() { # precheck_verdict <exit-code> -> work|idle|error
+  case "$(num "${1:-}" 99)" in
+    0) printf 'work'  ;;
+    1) printf 'idle'  ;;
+    *) printf 'error' ;;
+  esac
+}
+
 # ------------------------------------------------------------- schedule gates
 
-# Is now inside the job's active window? 0 = yes, 1 = no (reason on stdout).
-in_window() {
-  local id="$1" days hours start end nowmin dow
-  days="$(job_get "$id" '.active_days' '')"
-  hours="$(job_get "$id" '.active_hours' '')"
+# Is a moment inside a job's active window? 0 = yes, 1 = no (reason on stdout).
+# Takes VALUES rather than a job id: the tick reads every job's fields in one jq
+# pass (see tick_plan), and passing the day/minute in makes the rule testable
+# without waiting for a Tuesday.
+in_window_vals() { # in_window_vals <days-csv> <hours> [dow] [minute-of-day]
+  local days="${1:-}" hours="${2:-}" dow="${3:-}" nowmin="${4:-}" start end s e
+  case "$days" in null) days="" ;; esac
+  case "$hours" in null) hours="" ;; esac
+  [ -n "$dow" ] || dow="$(date +%u)"                         # 1=Mon .. 7=Sun
+  [ -n "$nowmin" ] || nowmin=$(( 10#$(date +%H) * 60 + 10#$(date +%M) ))
 
-  if [ -n "$days" ] && [ "$days" != "null" ]; then
-    dow="$(date +%u)"   # 1=Mon .. 7=Sun
+  if [ -n "$days" ]; then
     case ",$days," in
       *",$dow,"*) : ;;
       *) echo "outside active_days ($days)"; return 1 ;;
     esac
   fi
 
-  if [ -n "$hours" ] && [ "$hours" != "null" ]; then
+  if [ -n "$hours" ]; then
     start="${hours%%-*}"; end="${hours##*-}"
-    nowmin=$(( 10#$(date +%H) * 60 + 10#$(date +%M) ))
-    local s=$(( 10#${start%%:*} * 60 + 10#${start##*:} ))
-    local e=$(( 10#${end%%:*} * 60 + 10#${end##*:} ))
+    # 10# throughout: "08" is octal to bash arithmetic otherwise, and 08/09 are
+    # not even valid octal — the window would abort rather than merely misread.
+    s=$(( 10#${start%%:*} * 60 + 10#${start##*:} ))
+    e=$(( 10#${end%%:*} * 60 + 10#${end##*:} ))
     if [ "$s" -le "$e" ]; then
       [ "$nowmin" -ge "$s" ] && [ "$nowmin" -lt "$e" ] || { echo "outside active_hours ($hours)"; return 1; }
     else  # window crosses midnight
@@ -210,12 +288,37 @@ in_window() {
   return 0
 }
 
-is_due() { # is_due <id> ; 0 = due
-  local id="$1" interval last now
-  interval="$(job_get "$id" '.interval_seconds' '300')"
-  last="$(state_get "$id" last_start 0)"
-  now="$(now_epoch)"
-  [ "$(( now - last ))" -ge "$interval" ]
+# --- backoff on repeated failure -------------------------------------------
+# A job that fails relaunched every interval at full budget, for as long as it
+# kept failing — the loop had no notion of "this is not working". Two failures
+# are noise (a flaky network, a busy remote); from the third the wait doubles
+# each time, capped so a job that is fixed recovers within one capped interval
+# rather than hours later. The streak resets on ANY run that is not an error,
+# so one good run puts the job straight back on its normal cadence.
+BACKOFF_AFTER=3        # failures before the wait starts growing
+BACKOFF_MAX=16         # never wait more than 16x the configured interval
+
+backoff_multiplier() { # backoff_multiplier <consecutive-failures> -> 1|2|4|8|16
+  local s m=1; s="$(num "${1:-}" 0)"
+  [ "$s" -lt "$BACKOFF_AFTER" ] && { printf '1'; return; }
+  local steps=$(( s - BACKOFF_AFTER + 1 )) i=0
+  while [ "$i" -lt "$steps" ] && [ "$m" -lt "$BACKOFF_MAX" ]; do
+    m=$(( m * 2 )); i=$(( i + 1 ))
+  done
+  [ "$m" -gt "$BACKOFF_MAX" ] && m="$BACKOFF_MAX"
+  printf '%s' "$m"
+}
+
+effective_interval() { # effective_interval <interval> <streak>
+  local iv; iv="$(num "${1:-}" 300)"
+  printf '%s' "$(( iv * $(backoff_multiplier "${2:-0}") ))"
+}
+
+is_due_vals() { # is_due_vals <interval> <last-start> <fail-streak> ; 0 = due
+  local interval last
+  interval="$(effective_interval "${1:-300}" "${3:-0}")"
+  last="$(num "${2:-0}")"
+  [ "$(( $(now_epoch) - last ))" -ge "$interval" ]
 }
 
 # Is the agent's turn finished? True only when the LAST decodable event in the
@@ -284,12 +387,12 @@ acquire_slot() { # <id> <max> -> prints the slot dir; non-zero when at capacity
   local base="$LOCK_DIR/$id" slot n L="" i=0
   mkdir -p "$base"
   L="$base/.acq"                         # short mutex so the ceiling holds under a race
-  while ! mkdir "$L" 2>/dev/null; do i=$((i + 1)); [ "$i" -ge 300 ] && { rm -rf "$L"; i=0; }; sleep 0.01; done
+  lock_take "$L"
   n="$(slots_active "$id")"              # also prunes dead slots
-  if [ "$max" -gt 0 ] && [ "$n" -ge "$max" ]; then rmdir "$L" 2>/dev/null; return 1; fi
+  if [ "$max" -gt 0 ] && [ "$n" -ge "$max" ]; then lock_drop "$L"; return 1; fi
   slot="$base/$$"                        # unique per _exec process
   mkdir -p "$slot"; echo $$ > "$slot/pid"
-  rmdir "$L" 2>/dev/null
+  lock_drop "$L"
   printf '%s\n' "$slot"
 }
 
@@ -326,15 +429,8 @@ lock_active() { # 0 = a run is currently holding the lock for <id> (single mutex
 # renames. Without a shared lock a rewrite can be built from a snapshot taken
 # before an append and then overwrite it — losing a finished run's record for
 # good. Both sides take this lock; the dashboard takes the same one by name.
-journal_lock() {
-  local lock="$LOCK_DIR/.journal.lock" i=0
-  while ! mkdir "$lock" 2>/dev/null; do
-    i=$(( i + 1 ))
-    [ "$i" -ge 400 ] && { rm -rf "$lock"; i=0; }   # break a stale lock (~4s)
-    sleep 0.01
-  done
-}
-journal_unlock() { rmdir "$LOCK_DIR/.journal.lock" 2>/dev/null; }
+journal_lock()   { lock_take "$LOCK_DIR/.journal.lock"; }
+journal_unlock() { lock_drop "$LOCK_DIR/.journal.lock"; }
 
 record_run() { # <id> <status> <start> <end> <cost> <turns> <session> <logfile> <note> <forced> <precheck> <project> <model> <model_id> <resumed_from>
   "$JQ" -nc \
@@ -359,14 +455,47 @@ record_run() { # <id> <status> <start> <end> <cost> <turns> <session> <logfile> 
   rm -f "$LOCK_DIR/.rec.$$"
 }
 
-# Total cost of a job's runs since local midnight — powers the daily cap.
-spent_today() { # spent_today <id> -> dollars (float)
-  local id="$1" midnight
+# How much of the journal the daily-spend scan reads. Records are appended in
+# time order, so today's are always at the END — reading the whole file to find
+# them made every single run launch O(all history ever). 4 MiB is thousands of
+# records: far more than any day, and bounded for ever. A partial first line is
+# dropped by `fromjson?`, which is why the offset can be a plain byte count.
+SPEND_SCAN_BYTES="${CLAUDE_CRON_SPEND_SCAN:-4194304}"
+
+_spend_since_midnight() { # _spend_since_midnight [id] -> dollars (float)
+  local id="${1:-}" midnight
   midnight="$(date -v0H -v0M -v0S +%s 2>/dev/null || echo 0)"
-  [ -f "$RUNS_FILE" ] || { echo 0; return; }
-  "$JQ" -rR --arg id "$id" --argjson mid "$midnight" \
-    'fromjson? | select(.id==$id and ((.start//0)>=$mid)) | (.cost//0)' "$RUNS_FILE" 2>/dev/null \
+  [ -f "$RUNS_FILE" ] || { printf '0'; return; }
+  tail -c "$SPEND_SCAN_BYTES" "$RUNS_FILE" 2>/dev/null \
+    | "$JQ" -rR --arg id "$id" --argjson mid "$midnight" \
+        'fromjson? | select(((.start//0)>=$mid) and ($id=="" or .id==$id)) | (.cost//0)' 2>/dev/null \
     | awk '{s+=$1} END{printf "%.6f", s+0}'
+}
+
+# Total cost of a job's runs since local midnight — powers the per-job daily cap.
+spent_today() { _spend_since_midnight "$1"; }
+
+# Total cost of EVERY job's runs since local midnight — powers the global cap.
+spent_today_all() { _spend_since_midnight ""; }
+
+# The daily ceiling that applies to a job: its own, else its project's, else
+# none. It used to be read from the job ALONE, so a `daily_budget_usd` set on a
+# project silently did nothing — which is the one place you would naturally put
+# it when a project owns several jobs.
+daily_cap_for() { # daily_cap_for <id> -> dollars, or empty for "no cap"
+  local v; v="$(resolve "$1" daily_budget_usd '')"
+  case "$v" in null) v="" ;; esac
+  printf '%s' "$v"
+}
+
+# A ceiling on what EVERYTHING spends in a day, declared once at the top of
+# projects.json. Per-job caps cannot express "the whole fleet has a budget":
+# 21 jobs each correctly under their own limit still add up.
+global_daily_cap() { # -> dollars, or empty for "no cap"
+  local v
+  v="$(projects_json | "$JQ" -r '.global_daily_budget_usd // "" | tostring' 2>/dev/null)"
+  case "$v" in null) v="" ;; esac
+  printf '%s' "$v"
 }
 
 # --- family → newest concrete model id -------------------------------------
@@ -476,6 +605,23 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   want() { # want <label> <expected 0|1> <actual-rc>
     [ "$2" -eq "$3" ] && ok "$1" || bad "$1"
   }
+  size_of() { num "$(wc -c < "${1:-/nonexistent}" 2>/dev/null)"; }
+
+  # The suite exercises wt_setup/wt_teardown/wt_provision for real, and those
+  # write through log_tick and the provisioning hooks. Pointed at the live data
+  # dir they append fake jobs (j1..j9, "provision up failed for repoA") to the
+  # very tick.log the dashboard parses for its 24h activity counts — the test
+  # suite inventing jobs in production history. Shadow the whole data dir, at
+  # FUNCTION scope so every helper these tests call sees it too (bash is
+  # dynamically scoped), and prove at the end that nothing leaked.
+  local _real_tick="$TICK_LOG" _real_exec="$DATA_DIR/exec.log"
+  local _tick0 _exec0
+  _tick0="$(size_of "$_real_tick")"; _exec0="$(size_of "$_real_exec")"
+  local DATA_DIR="$tmp/data"
+  local TICK_LOG="$DATA_DIR/tick.log"
+  local LOG_DIR="$DATA_DIR/logs" LOCK_DIR="$DATA_DIR/locks"
+  local WORKTREES_DIR="$DATA_DIR/worktrees" RUNS_FILE="$DATA_DIR/runs.ndjson"
+  mkdir -p "$DATA_DIR" "$LOG_DIR" "$LOCK_DIR" "$WORKTREES_DIR"
 
   echo "num() — a number from a command is always an integer"
   # This is the exact shape that once produced "0\n0" and killed live agents.
@@ -552,6 +698,26 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   [ "$got" = "HEAD" ] && ok "an unresolvable base falls back to HEAD" || bad "got '$got'"
   got="$(wt_base_ref "$tmp/g/repo" "")"
   [ "$got" = "origin/develop" ] && ok "an empty base is inferred from the current branch" || bad "got '$got'"
+
+  echo "wt_base_ref() — a hung fetch cannot hold a run for ever"
+  # The fetch runs inside wt_setup, i.e. AFTER the run has taken its slot and
+  # BEFORE the watchdog exists — so a remote that accepts the connection and
+  # then says nothing used to pin the slot indefinitely. With max_parallel=1
+  # that is the job dead until a human notices.
+  mkdir -p "$tmp/fakebin"
+  printf '%s\n' '#!/bin/bash' \
+    'for a in "$@"; do [ "$a" = fetch ] && { sleep 8; exit 0; }; done' \
+    'exec /usr/bin/git "$@"' > "$tmp/fakebin/git"
+  chmod +x "$tmp/fakebin/git"
+  local t0 elapsed ref_got
+  t0="$(now_epoch)"
+  ref_got="$( PATH="$tmp/fakebin:$PATH"; wt_base_ref "$tmp/g/repo" develop 2 2>/dev/null )"
+  elapsed=$(( $(now_epoch) - t0 ))
+  [ "$elapsed" -lt 6 ] && ok "a stalled fetch is abandoned after the timeout (${elapsed}s)" \
+    || bad "wt_base_ref waited ${elapsed}s for a hung fetch"
+  [ "$ref_got" = "origin/develop" ] \
+    && ok "the base still resolves from the refs already on disk" \
+    || bad "after a timed-out fetch the base resolved to '$ref_got'"
 
   echo "wt_provision() — a missing hook is a no-op, a failing one is a failure"
   mkdir -p "$tmp/cfg/provision" "$tmp/run/repoA"
@@ -686,6 +852,213 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   [ "$got" = '{"jobs":[{"id":"a"},{"id":"b","enabled":true},{"id":"c"}]}' ] \
     && ok "enabling one job adds no key to the others" \
     || bad "toggle-many enable produced: $got"
+
+  echo "the suite itself touches nothing outside its scratch dir"
+  [ "$(size_of "$_real_tick")" = "$_tick0" ] \
+    && ok "the real tick.log is byte-identical after the suite" \
+    || bad "the suite appended to the real tick.log ($_tick0 -> $(size_of "$_real_tick") bytes)"
+  [ "$(size_of "$_real_exec")" = "$_exec0" ] \
+    && ok "the real exec.log is byte-identical after the suite" \
+    || bad "the suite appended to the real exec.log ($_exec0 -> $(size_of "$_real_exec") bytes)"
+
+  echo "log_rotate() — a log that grows without bound is capped, never lost"
+  printf 'old line\n' > "$tmp/r.log"
+  log_rotate "$tmp/r.log" 1000000
+  [ ! -e "$tmp/r.log.1" ] && ok "a small log is left alone" || bad "a small log was rotated"
+  local i=0; : > "$tmp/r.log"
+  while [ "$i" -lt 200 ]; do printf 'a line that takes up some space %s\n' "$i" >> "$tmp/r.log"; i=$((i+1)); done
+  log_rotate "$tmp/r.log" 1000
+  [ "$(size_of "$tmp/r.log")" = "0" ] && ok "an oversized log is truncated" \
+    || bad "log still $(size_of "$tmp/r.log") bytes"
+  grep -q 'a line that takes up some space 199' "$tmp/r.log.1" 2>/dev/null \
+    && ok "the previous generation is kept in .1" || bad "rotated content was lost"
+  # A second rotation must not stack generations for ever.
+  : > "$tmp/r.log"; i=0
+  while [ "$i" -lt 200 ]; do printf 'second generation %s\n' "$i" >> "$tmp/r.log"; i=$((i+1)); done
+  log_rotate "$tmp/r.log" 1000
+  grep -q 'second generation 199' "$tmp/r.log.1" 2>/dev/null \
+    && ok "rotating again replaces .1 rather than growing a chain" || bad ".1 was not replaced"
+  [ ! -e "$tmp/r.log.2" ] && ok "no .2 is ever created" || bad "a .2 generation appeared"
+
+  echo "precheck_verdict() — a broken probe is not an idle one"
+  [ "$(precheck_verdict 0)" = "work" ]  && ok "exit 0 means work was found"    || bad "exit 0 -> $(precheck_verdict 0)"
+  [ "$(precheck_verdict 1)" = "idle" ]  && ok "exit 1 means nothing to do"     || bad "exit 1 -> $(precheck_verdict 1)"
+  # The whole point: a probe that could not run at all used to be indistinguishable
+  # from one that ran and found nothing, so a job whose credentials had gone
+  # missing sat "idle" for ever with nothing showing red anywhere.
+  [ "$(precheck_verdict 2)" = "error" ] && ok "exit 2 is a broken probe"       || bad "exit 2 -> $(precheck_verdict 2)"
+  [ "$(precheck_verdict 127)" = "error" ] && ok "exit 127 (missing command) is broken" || bad "exit 127 -> $(precheck_verdict 127)"
+  [ "$(precheck_verdict '')" = "error" ]  && ok "a missing exit code is broken" || bad "empty -> $(precheck_verdict '')"
+
+  echo "lock_take() — a lock is stolen from the dead, never from the living"
+  local t0 elapsed dead=99999
+  if kill -0 "$dead" 2>/dev/null; then dead=99998; fi
+  lock_take "$tmp/free" && ok "a free lock is taken" || bad "could not take a free lock"
+  [ "$(cat "$tmp/free/pid" 2>/dev/null)" = "$$" ] && ok "the holder records its pid" || bad "no pid recorded"
+  lock_drop "$tmp/free"
+  [ ! -d "$tmp/free" ] && ok "dropping removes the lock" || bad "lock survived the drop"
+
+  mkdir -p "$tmp/stale"; echo "$dead" > "$tmp/stale/pid"
+  t0="$(now_epoch)"; lock_take "$tmp/stale"; elapsed=$(( $(now_epoch) - t0 ))
+  [ "$elapsed" -lt 2 ] && ok "a lock whose owner is gone is taken at once (${elapsed}s)" \
+    || bad "waited ${elapsed}s for a dead owner"
+  lock_drop "$tmp/stale"
+
+  # The regression that matters. Every one of these locks used to be broken
+  # purely on elapsed time (~4s), so a journal rewrite over a large history —
+  # exactly the slow case — would have its lock stolen mid-rewrite by a run
+  # ending, and lose the record the lock exists to protect.
+  mkdir -p "$tmp/live"; echo $$ > "$tmp/live/pid"
+  ( lock_take "$tmp/live" && : > "$tmp/live-was-stolen" ) >/dev/null 2>&1 & local waiter=$!
+  sleep 5
+  [ ! -f "$tmp/live-was-stolen" ] \
+    && ok "a lock held by a LIVE process is still held after 5s" \
+    || bad "the lock was stolen from a live holder"
+  kill "$waiter" 2>/dev/null; wait "$waiter" 2>/dev/null
+  rm -rf "$tmp/live"
+
+  echo "backoff_multiplier() — a job that only ever fails must stop costing full price"
+  # Nothing slowed a failing job down: it relaunched every interval, at full
+  # budget, for as long as it kept failing. 14 dev/review jobs on a 5-minute
+  # interval is a lot of money to spend discovering the same breakage.
+  [ "$(backoff_multiplier 0)" = "1" ] && ok "a healthy job is never slowed"        || bad "streak 0 -> $(backoff_multiplier 0)"
+  [ "$(backoff_multiplier 2)" = "1" ] && ok "two failures are still just noise"    || bad "streak 2 -> $(backoff_multiplier 2)"
+  [ "$(backoff_multiplier 3)" = "2" ] && ok "the third failure doubles the wait"   || bad "streak 3 -> $(backoff_multiplier 3)"
+  [ "$(backoff_multiplier 4)" = "4" ] && ok "it keeps doubling"                    || bad "streak 4 -> $(backoff_multiplier 4)"
+  [ "$(backoff_multiplier 7)" = "16" ] && ok "the multiplier is capped at 16x"     || bad "streak 7 -> $(backoff_multiplier 7)"
+  [ "$(backoff_multiplier 99)" = "16" ] && ok "and stays capped"                   || bad "streak 99 -> $(backoff_multiplier 99)"
+  [ "$(backoff_multiplier '')" = "1" ] && ok "an absent streak is not a failure"   || bad "empty -> $(backoff_multiplier '')"
+  [ "$(effective_interval 300 0)" = "300" ] && ok "a healthy job keeps its interval" || bad "300/0 -> $(effective_interval 300 0)"
+  [ "$(effective_interval 300 4)" = "1200" ] && ok "a failing job waits 4x longer" || bad "300/4 -> $(effective_interval 300 4)"
+
+  echo "state_set_many() — the end of a run is one write, not seven"
+  ( STATE_FILE="$tmp/state.json"; echo '{"x":{"keep":"me"}}' > "$STATE_FILE"
+    state_set_many x '{"last_status":"success","last_cost":1.25,"fail_streak":0}'
+    printf '%s|%s|%s|%s\n' "$(state_get x last_status)" "$(state_get x last_cost)" \
+           "$(state_get x fail_streak)" "$(state_get x keep)" ) > "$tmp/sm.out" 2>/dev/null
+  got="$(cat "$tmp/sm.out")"
+  [ "$got" = "success|1.25|0|me" ] \
+    && ok "every field lands and the fields already there survive" || bad "got '$got'"
+  ( STATE_FILE="$tmp/state2.json"; echo '{}' > "$STATE_FILE"
+    state_set_many newjob '{"a":1}'; state_get newjob a ) > "$tmp/sm2.out" 2>/dev/null
+  [ "$(cat "$tmp/sm2.out")" = "1" ] && ok "a job with no state yet is created" || bad "new job: $(cat "$tmp/sm2.out")"
+
+  echo "in_window_vals() — the schedule window, including the one that wraps midnight"
+  in_window_vals "" "" 3 600            ; want "no restriction is always open"        0 $?
+  in_window_vals "1,2,3,4,5" "" 3 600   ; want "a listed weekday is open"             0 $?
+  in_window_vals "1,2,3,4,5" "" 6 600   ; want "an unlisted weekday is closed"        1 $?
+  in_window_vals "" "08:00-20:00" 3 600 ; want "inside the hours is open (10:00)"     0 $?
+  in_window_vals "" "08:00-20:00" 3 479 ; want "a minute before opening is closed"    1 $?
+  in_window_vals "" "08:00-20:00" 3 480 ; want "the opening minute is open"           0 $?
+  in_window_vals "" "08:00-20:00" 3 1200; want "the closing minute is closed"         1 $?
+  # A window that wraps midnight is the one people get wrong: 22:00-06:00 must
+  # be open at 23:00 AND at 02:00, and shut at midday.
+  in_window_vals "" "22:00-06:00" 3 1380; want "a wrapping window is open at 23:00"   0 $?
+  in_window_vals "" "22:00-06:00" 3 120 ; want "a wrapping window is open at 02:00"   0 $?
+  in_window_vals "" "22:00-06:00" 3 720 ; want "a wrapping window is shut at midday"  1 $?
+  in_window_vals "6,7" "22:00-06:00" 7 120; want "day and hour must BOTH match"       0 $?
+  in_window_vals "6,7" "22:00-06:00" 1 120; want "the wrong day closes it"            1 $?
+  # 08:00 written as 08 must not be read as octal — the classic bash trap.
+  in_window_vals "" "08:00-09:00" 3 510 ; want "a leading zero is decimal, not octal" 0 $?
+
+  echo "is_due_vals() — due-ness accounts for the failure backoff"
+  is_due_vals 300 "$(( $(now_epoch) - 400 ))" 0 ; want "past its interval is due"     0 $?
+  is_due_vals 300 "$(( $(now_epoch) - 100 ))" 0 ; want "inside its interval is not"   1 $?
+  is_due_vals 300 "$(( $(now_epoch) - 400 ))" 4 ; want "a backed-off job waits longer" 1 $?
+  is_due_vals 300 "$(( $(now_epoch) - 1300 ))" 4; want "and runs once the longer wait passes" 0 $?
+  is_due_vals 300 0 0                           ; want "a job that never ran is due"  0 $?
+
+  echo "daily caps — a ceiling can be set per job, per project, and for everything"
+  mkdir -p "$tmp/caps"
+  printf '%s' '{"jobs":[{"id":"own","project":"P","daily_budget_usd":5},
+                        {"id":"inherits","project":"P"},
+                        {"id":"loner"}]}' > "$tmp/caps/jobs.json"
+  printf '%s' '{"global_daily_budget_usd":100,
+                "projects":[{"name":"P","daily_budget_usd":20}]}' > "$tmp/caps/projects.json"
+  got="$( JOBS_FILE="$tmp/caps/jobs.json"; PROJECTS_FILE="$tmp/caps/projects.json"; daily_cap_for own )"
+  [ "$got" = "5" ] && ok "a job's own cap wins" || bad "own -> '$got'"
+  got="$( JOBS_FILE="$tmp/caps/jobs.json"; PROJECTS_FILE="$tmp/caps/projects.json"; daily_cap_for inherits )"
+  # This is the gap: daily_budget_usd was read from the job ALONE, so setting it
+  # on a project quietly did nothing at all.
+  [ "$got" = "20" ] && ok "a job with no cap inherits its project's" || bad "inherits -> '$got'"
+  got="$( JOBS_FILE="$tmp/caps/jobs.json"; PROJECTS_FILE="$tmp/caps/projects.json"; daily_cap_for loner )"
+  [ -z "$got" ] && ok "no cap anywhere means no cap" || bad "loner -> '$got'"
+  got="$( PROJECTS_FILE="$tmp/caps/projects.json"; global_daily_cap )"
+  [ "$got" = "100" ] && ok "a global ceiling can be declared" || bad "global -> '$got'"
+  got="$( PROJECTS_FILE="$tmp/proj/projects.json"; global_daily_cap )"
+  [ -z "$got" ] && ok "and is absent unless declared" || bad "undeclared global -> '$got'"
+
+  echo "spent_today() — today's spend is summed without reading all of history"
+  local midnight; midnight="$(date -v0H -v0M -v0S +%s)"
+  : > "$tmp/runs.ndjson"
+  printf '{"id":"a","start":%s,"cost":1.5}\n' "$(( midnight + 10 ))" >> "$tmp/runs.ndjson"
+  printf '{"id":"a","start":%s,"cost":2.25}\n' "$(( midnight + 20 ))" >> "$tmp/runs.ndjson"
+  printf '{"id":"b","start":%s,"cost":4}\n'    "$(( midnight + 30 ))" >> "$tmp/runs.ndjson"
+  printf '{"id":"a","start":%s,"cost":99}\n'   "$(( midnight - 8000 ))" >> "$tmp/runs.ndjson"
+  got="$( RUNS_FILE="$tmp/runs.ndjson"; spent_today a )"
+  [ "$got" = "3.750000" ] && ok "one job's spend today is summed" || bad "spent_today a -> '$got'"
+  got="$( RUNS_FILE="$tmp/runs.ndjson"; spent_today_all )"
+  [ "$got" = "7.750000" ] && ok "every job's spend today is summed" || bad "spent_today_all -> '$got'"
+  # A truncated leading line (the scan starts at a byte offset, not a line
+  # boundary) must be skipped, never parsed into a bogus cost.
+  printf '%s\n' '{"id":"a","start":1,"co' > "$tmp/cut.ndjson"
+  cat "$tmp/runs.ndjson" >> "$tmp/cut.ndjson"
+  got="$( RUNS_FILE="$tmp/cut.ndjson"; spent_today a )"
+  [ "$got" = "3.750000" ] && ok "a truncated first line is ignored" || bad "with a cut line -> '$got'"
+
+  echo "cmd_worktree_drop() — a retained run dir can be discarded on purpose"
+  # wt_teardown deliberately KEEPS a run dir holding unpushed work, and the
+  # sweep then re-examines it every tick for ever. Nothing could ever let go of
+  # it, so the only exit was rm -rf by hand.
+  local rd4="$tmp/wtroot/j7/stampF"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup j7 two "$tmp/g/repo" stampF ) >/dev/null 2>&1
+  ( cd "$rd4/two" && echo keep > unpushed.txt && git add unpushed.txt \
+      && $gitc commit -qm keep ) >/dev/null 2>&1
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_teardown j7 two "$rd4" ) >/dev/null 2>&1
+  [ -d "$rd4" ] && ok "unpushed work is still preserved by the normal path" || bad "teardown removed it"
+
+  mkdir -p "$tmp/locks/j7/888"; echo $$ > "$tmp/locks/j7/888/pid"
+  echo "$rd4" > "$tmp/locks/j7/888/worktree"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
+    cmd_worktree_drop j7 stampF ) >/dev/null 2>&1
+  [ -d "$rd4" ] && ok "a dir a LIVE run is using is never dropped" || bad "dropped a live run's dir"
+  rm -rf "$tmp/locks/j7"
+
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
+    cmd_worktree_drop j7 stampF ) >/dev/null 2>&1
+  want "dropping an unclaimed dir succeeds" 0 $?
+  [ ! -d "$rd4" ] && ok "the retained dir is gone once dropped explicitly" || bad "dir survived the drop"
+  # And git must not be left believing the worktrees are still checked out.
+  got="$(git -C "$tmp/g/repo" worktree list --porcelain 2>/dev/null | grep -c "stampF" || true)"
+  [ "$(num "$got")" = "0" ] && ok "git no longer lists the removed worktree" || bad "git still lists $got"
+
+  echo "run_end_hook() — an unattended pipeline can tell someone it broke"
+  mkdir -p "$tmp/hookcfg/hooks"
+  ( CONFIG_DIR="$tmp/hookcfg"; run_end_hook j1 error 1.5 "boom" P sess /tmp/l.json 1 2 ) >/dev/null 2>&1
+  want "no hook installed is a no-op" 0 $?
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'printf "%s|%s|%s|%s|%s\n" "$CC_JOB_ID" "$CC_STATUS" "$CC_COST" "$CC_NOTE" "$CC_PROJECT" > "$CC_HOOK_OUT"' \
+    > "$tmp/hookcfg/hooks/on-run-end.sh"
+  export CC_HOOK_OUT="$tmp/hook.seen"; rm -f "$CC_HOOK_OUT"
+  ( CONFIG_DIR="$tmp/hookcfg"; run_end_hook j1 error 1.5 "boom" P sess /tmp/l.json 1 2 ) >/dev/null 2>&1
+  local waited=0
+  while [ ! -f "$CC_HOOK_OUT" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited+1)); done
+  got="$(cat "$CC_HOOK_OUT" 2>/dev/null)"
+  [ "$got" = "j1|error|1.5|boom|P" ] && ok "the hook is told which run ended and how" \
+    || bad "the hook saw '$got'"
+  # It must never delay the run's cleanup, however slow or wedged it is.
+  printf '%s\n' '#!/usr/bin/env bash' 'sleep 30' > "$tmp/hookcfg/hooks/on-run-end.sh"
+  t0="$(now_epoch)"
+  ( CONFIG_DIR="$tmp/hookcfg"; run_end_hook j1 error 0 "" P s /tmp/l.json 1 2 ) >/dev/null 2>&1
+  elapsed=$(( $(now_epoch) - t0 ))
+  [ "$elapsed" -lt 3 ] && ok "a slow hook does not hold the run open (${elapsed}s)" \
+    || bad "run_end_hook blocked for ${elapsed}s"
+  unset CC_HOOK_OUT
+  rm -f "$tmp/hookcfg/hooks/on-run-end.sh"
 
   rm -rf "$tmp"
   echo
@@ -859,14 +1232,28 @@ ${prompt}"
   # Daily budget gate: a per-job ceiling on today's spend. Empty = no cap.
   # Scheduled runs only — Run now is a deliberate override, like the precheck.
   if [ "$forced" != "true" ]; then
-    local cap spent
-    cap="$(job_get "$id" '.daily_budget_usd' '')"
-    if [ -n "$cap" ] && [ "$cap" != "null" ]; then
+    local cap spent gcap gspent
+    cap="$(daily_cap_for "$id")"
+    if [ -n "$cap" ]; then
       spent="$(spent_today "$id")"
       if awk -v s="$spent" -v c="$cap" 'BEGIN{exit !((s+0)>=(c+0))}'; then
         state_set "$id" last_status '"capped"'
         state_set "$id" last_capped "$("$JQ" -nc --arg s "$spent" --arg c "$cap" '{spent:($s|tonumber),cap:($c|tonumber)}')"
         log_tick "$id: daily cap reached (\$$spent / \$$cap) — skipping"
+        release_slot "$slot"; trap - EXIT
+        return 0
+      fi
+    fi
+    # The fleet-wide ceiling. Every job can sit correctly under its own cap and
+    # the day still cost far more than intended — with a job per repo per role,
+    # the sum is the number that actually matters.
+    gcap="$(global_daily_cap)"
+    if [ -n "$gcap" ]; then
+      gspent="$(spent_today_all)"
+      if awk -v s="$gspent" -v c="$gcap" 'BEGIN{exit !((s+0)>=(c+0))}'; then
+        state_set "$id" last_status '"capped"'
+        state_set "$id" last_capped "$("$JQ" -nc --arg s "$gspent" --arg c "$gcap" '{spent:($s|tonumber),cap:($c|tonumber),scope:"global"}')"
+        log_tick "$id: GLOBAL daily cap reached (\$$gspent / \$$gcap across all jobs) — skipping"
         release_slot "$slot"; trap - EXIT
         return 0
       fi
@@ -889,10 +1276,22 @@ ${prompt}"
                               [ -n "$resume_sid" ] && export CC_PRECHECK_DRY_RUN=1
                               eval "$precheck" 2>&1; } )"; pc_rc=$?
     state_set "$id" last_precheck "$("$JQ" -nc --arg o "${pc_out:-(no output)}" --argjson rc "$pc_rc" '{output:$o, exit:$rc}')"
-    if [ "$forced" != "true" ] && [ "$pc_rc" -ne 0 ]; then
+    local pc_verdict; pc_verdict="$(precheck_verdict "$pc_rc")"
+    if [ "$forced" != "true" ] && [ "$pc_verdict" != "work" ]; then
       state_set "$id" last_start "$(now_epoch)"
-      state_set "$id" last_status '"idle"'
-      log_tick "$id: precheck found nothing to do (exit $pc_rc)"
+      if [ "$pc_verdict" = "error" ]; then
+        # NOT idle: the probe itself failed, so nothing is known about the
+        # board. Surfaced as its own status so the card can go red instead of
+        # claiming, reassuringly and wrongly, that there was nothing to do.
+        state_set "$id" last_status '"precheck_error"'
+        # A broken probe repeats every interval just as a failing run does, and
+        # costs a shell each time, so it feeds the same backoff.
+        state_set "$id" fail_streak "$(( $(num "$(state_get "$id" fail_streak 0)") + 1 ))"
+        log_tick "$id: PRECHECK FAILED (exit $pc_rc) — the probe could not run, so no work was looked for"
+      else
+        state_set "$id" last_status '"idle"'
+        log_tick "$id: precheck found nothing to do (exit $pc_rc)"
+      fi
       release_slot "$slot"; trap - EXIT
       return 0
     fi
@@ -1222,21 +1621,88 @@ If the work turns out to be already finished, or it can no longer be done at all
     status="warning"
   fi
 
-  state_set "$id" last_end "$end"
-  state_set "$id" last_status "\"$status\""
-  state_set "$id" last_run_start "$start"
-  state_set "$id" last_run_status "\"$status\""
-  state_set "$id" last_cost "${cost:-0}"
-  state_set "$id" last_session "\"$session\""
+  # Consecutive failures drive the backoff (see backoff_multiplier). A warning
+  # is NOT a failure: the run worked, it just wants a look — slowing those down
+  # would throttle the very jobs that are doing their job.
+  local streak_next=0
+  [ "$status" = "error" ] && streak_next="$(( $(num "$(state_get "$id" fail_streak 0)") + 1 ))"
+
+  # One write for the whole outcome. Seven separate ones meant seven turns of
+  # the state lock, which every concurrent run had to queue behind.
+  state_set_many "$id" "$("$JQ" -nc \
+    --argjson end "$end" --arg status "$status" --argjson start "$start" \
+    --arg cost "${cost:-0}" --arg session "$session" \
+    --argjson streak "$streak_next" \
+    '{last_end:$end, last_status:$status, last_run_start:$start,
+      last_run_status:$status,
+      # the CLI reports cost as a decimal string; tonumber? keeps a malformed
+      # one from making the whole state write fail
+      last_cost:($cost|tonumber? // 0),
+      last_session:$session, fail_streak:$streak}')"
   # Record what was CHOSEN (the family, when one was) plus what actually ran.
   record_run "$id" "$status" "$start" "$end" "${cost:-0}" "${turns:-0}" "$session" "$logfile" "$wdreason" "$forced" "$pc_out" "$project" "${model_family:-$model}" "$model_id" "$resume_sid"
   log_tick "$id: finished status=$status rc=$rc denials=${denials:-0} cost=\$$cost turns=$turns model=$model${model_id:+ ($model_id)} forced=$forced${wdreason:+ — $wdreason}"
+  # Fired after the record exists, so a hook that opens the dashboard or reads
+  # the journal sees this run already in it.
+  run_end_hook "$id" "$status" "${cost:-0}" "$wdreason" "$project" "$session" "$logfile" "$start" "$end"
 
   run_cleanup "$id" "$slot"; trap - EXIT
   [ "$status" != "error" ]
 }
 
+# --- telling someone a run ended --------------------------------------------
+# An unattended pipeline that can only be checked by opening a web page is not
+# really unattended: a job can fail every five minutes all night and the first
+# anyone knows is the next morning. This is the same shape as the provisioning
+# hooks — a script on disk, run with the facts in its environment — so the
+# engine stays ignorant of notifiers, and terminal-notifier, ntfy, a Slack
+# webhook or a Linear comment are all just things the user writes here.
+#
+# Detached AND time-limited: a notifier that hangs must not hold the run's slot,
+# and a run must never be kept alive by something that only reports on it.
+RUN_HOOK_TIMEOUT="${CLAUDE_CRON_HOOK_TIMEOUT:-60}"
+run_end_hook() { # <id> <status> <cost> <note> <project> <session> <log> <start> <end>
+  local script="$CONFIG_DIR/hooks/on-run-end.sh"
+  [ -f "$script" ] || return 0
+  (
+    _hook() {
+      CC_JOB_ID="$1" CC_STATUS="$2" CC_COST="$3" CC_NOTE="$4" CC_PROJECT="$5" \
+      CC_SESSION="$6" CC_LOG="$7" CC_START="$8" CC_END="$9" \
+      CC_DURATION="$(( ${9:-0} - ${8:-0} ))" CC_DASHBOARD="http://127.0.0.1:$PORT/" \
+        bash "$script" >>"$DATA_DIR/exec.log" 2>&1
+    }
+    wt_run_limited "$RUN_HOOK_TIMEOUT" _hook "$@" \
+      || log_tick "$1: on-run-end hook failed or timed out — see exec.log"
+  ) >/dev/null 2>&1 &
+  return 0
+}
+
 # ---------------------------------------------------------------------- tick
+
+# Everything the tick needs to decide about every enabled job, in ONE jq pass
+# over both files: id, window, interval, last start, failure streak, ceiling.
+#
+# The loop used to ask job_get/state_get per field per job, and each of those
+# cats and re-parses the whole jobs file — about seven jq processes per job, so
+# roughly 150 forks a minute at 21 jobs, for ever, almost always to conclude
+# that nothing is due. Disabled jobs are filtered here rather than in the loop:
+# `// true` would be wrong (it treats false as absent), hence the explicit test.
+tick_plan() { # id \t days \t hours \t interval \t last_start \t fail_streak \t max_parallel
+  [ -f "$JOBS_FILE" ] || return 0
+  "$JQ" -e . "$JOBS_FILE" >/dev/null 2>&1 || { log_tick "tick: malformed $JOBS_FILE — no job examined"; return 0; }
+  "$JQ" -r --slurpfile st "$STATE_FILE" '
+    (($st[0]) // {}) as $S
+    | .jobs[]
+    | select(.enabled != false)
+    | . as $j | ($S[$j.id] // {}) as $s
+    | [ $j.id,
+        (($j.active_days // []) | map(tostring) | join(",")),
+        ($j.active_hours // ""),
+        (($j.interval_seconds // 300) | tostring),
+        (($s.last_start // 0) | tostring),
+        (($s.fail_streak // 0) | tostring),
+        (($j.max_parallel // 3) | tostring) ] | @tsv' "$JOBS_FILE" 2>/dev/null
+}
 
 # The tick only DECIDES and LAUNCHES — it never waits for a run. Each due job is
 # handed to a detached `_exec` process that carries out the precheck + Claude run
@@ -1244,6 +1710,11 @@ If the work turns out to be already finished, or it can no longer be done at all
 # holding its lock is not relaunched.
 cmd_tick() {
   local id
+  # Cap the two append-only logs before anything else writes to them. Once a
+  # minute is the right cadence: the tick is the only thing guaranteed to run,
+  # and doing it per log line would cost a wc(1) per line instead of two a tick.
+  log_rotate "$TICK_LOG"
+  log_rotate "$DATA_DIR/exec.log"
   # Reap worktrees left by runs that died without cleaning up (safe teardown:
   # anything with unpushed/uncommitted work is kept, not deleted).
   wt_prune_orphans
@@ -1256,11 +1727,11 @@ cmd_tick() {
     nohup /bin/bash "$SELF" _resolve_models </dev/null >> "$DATA_DIR/exec.log" 2>&1 &
     log_tick "models: refreshing family→id resolutions (cache older than ${MODELS_TTL}s)"
   fi
-  for id in $(job_ids); do
-    [ "$(job_get "$id" '.enabled' 'true')" = "true" ] || continue
-    in_window "$id" >/dev/null || continue
-    is_due "$id" || continue
-    max_par="$(job_get "$id" '.max_parallel' '3')"
+  local days hours interval last streak max_par
+  while IFS="$(printf '\t')" read -r id days hours interval last streak max_par; do
+    [ -n "$id" ] || continue
+    in_window_vals "$days" "$hours" >/dev/null || continue
+    is_due_vals "$interval" "$last" "$streak" || continue
     case "$max_par" in ''|null|*[!0-9]*) max_par=3 ;; esac
     if [ "$max_par" -gt 0 ] && [ "$(slots_active "$id")" -ge "$max_par" ]; then
       log_tick "$id: at max_parallel=$max_par run(s), not launching another"
@@ -1268,7 +1739,7 @@ cmd_tick() {
     fi
     nohup /bin/bash "$SELF" _exec "$id" </dev/null >> "$DATA_DIR/exec.log" 2>&1 &
     log_tick "$id: launched detached run"
-  done
+  done < <(tick_plan)
 }
 
 # ------------------------------------------------------------------ commands
@@ -1385,19 +1856,23 @@ cmd_status() {
   echo "data      : $DATA_DIR"
   echo
   printf '%-20s %-8s %-9s %-11s %-9s %s\n' JOB ENABLED EVERY LAST STATUS COST
-  local id
-  for id in $(job_ids); do
-    local en iv ls st lc ago
-    en="$(job_get "$id" '.enabled' 'true')"
-    iv="$(job_get "$id" '.interval_seconds' '300')"
-    ls="$(state_get "$id" last_start 0)"
-    st="$(state_get "$id" last_status '—')"
-    lc="$(state_get "$id" last_cost 0)"
-    if [ "$ls" -gt 0 ] 2>/dev/null; then
-      ago="$(( ( $(now_epoch) - ls ) / 60 ))m ago"
-    else ago="never"; fi
-    printf '%-20s %-8s %-9s %-11s %-9s $%s\n' "$id" "$en" "$(( iv / 60 ))m" "$ago" "$st" "$lc"
-  done
+  # One jq over both files, for the same reason the tick does it (see
+  # tick_plan): five per job meant a hundred processes just to print a table.
+  local id en iv ls st lc ago now
+  now="$(now_epoch)"
+  while IFS="$(printf '\t')" read -r id en iv ls st lc; do
+    [ -n "$id" ] || continue
+    if [ "$(num "$ls")" -gt 0 ]; then ago="$(( ( now - ls ) / 60 ))m ago"; else ago="never"; fi
+    printf '%-20s %-8s %-9s %-11s %-9s $%s\n' "$id" "$en" "$(( $(num "$iv" 300) / 60 ))m" "$ago" "$st" "$lc"
+  done < <("$JQ" -r --slurpfile st "$STATE_FILE" '
+      (($st[0]) // {}) as $S
+      | .jobs[] | . as $j | ($S[$j.id] // {}) as $s
+      | [ $j.id,
+          (if $j.enabled == false then "false" else "true" end),
+          (($j.interval_seconds // 300) | tostring),
+          (($s.last_start // 0) | tostring),
+          (($s.last_status // "—") | tostring),
+          (($s.last_cost // 0) | tostring) ] | @tsv' "$JOBS_FILE" 2>/dev/null)
   echo
   echo "Dashboard : http://127.0.0.1:$PORT/   (claude-cron dashboard)"
 }
@@ -1664,6 +2139,25 @@ cmd_set_field() { # cmd_set_field <id> <field> ; value on stdin
   echo "$field updated for $id"
 }
 
+# A run dir that wt_teardown decided to keep (it holds unpushed or uncommitted
+# work) is preserved for ever: the sweep re-examines it every tick and always
+# reaches the same conclusion. Nothing could release it, so the only way out was
+# rm -rf by hand — and because nothing listed them either, they were invisible
+# until the disk filled. This is the deliberate way to let one go.
+cmd_worktree_drop() { # cmd_worktree_drop <job-id> <stamp>
+  local id="$1" stamp="$2" run_dir="$WORKTREES_DIR/$1/$2"
+  case "$stamp" in *[!a-zA-Z0-9_.-]*|''|*..*) die "worktree-drop: bad stamp '$stamp'" ;; esac
+  [ -d "$run_dir" ] || die "worktree-drop: no such run dir: $run_dir"
+  # Never pull the ground out from under a running agent.
+  if wt_is_claimed "$id" "$run_dir"; then
+    die "worktree-drop: $id/$stamp belongs to a run that is still going — stop it first"
+  fi
+  wt_remove_all "$run_dir"
+  [ -d "$WORKTREES_DIR/$id" ] && rmdir "$WORKTREES_DIR/$id" 2>/dev/null
+  log_tick "$id: run dir $stamp dropped by the user (discarding whatever it held)"
+  echo "dropped $id/$stamp"
+}
+
 precheck_path() { echo "$CONFIG_DIR/prechecks/$1.sh"; }
 
 PRECHECK_SKELETON='#!/bin/bash
@@ -1867,11 +2361,12 @@ cmd_check() {
   cwd="$(resolve "$id" cwd "$HOME")"   # inherit the project's cwd, like run_job
   [ -n "$precheck" ] || { echo "$id has no precheck — every due tick spends a session."; return 0; }
   # Read-only, like every standalone probe (see CC_PRECHECK_DRY_RUN).
-  if ( cd "$cwd" && export CC_PRECHECK_DRY_RUN=1 && eval "$precheck" ); then
-    echo "precheck: WORK FOUND — a due tick would start a Claude run"
-  else
-    echo "precheck: nothing to do — a due tick would cost nothing"
-  fi
+  ( cd "$cwd" && export CC_PRECHECK_DRY_RUN=1 && eval "$precheck" ); local rc=$?
+  case "$(precheck_verdict "$rc")" in
+    work)  echo "precheck: WORK FOUND — a due tick would start a Claude run" ;;
+    idle)  echo "precheck: nothing to do — a due tick would cost nothing" ;;
+    *)     echo "precheck: BROKEN (exit $rc) — the probe could not run, so this job is stuck: it will never find work until this is fixed" ; return 1 ;;
+  esac
 }
 
 case "${1:-}" in
@@ -1916,6 +2411,7 @@ case "${1:-}" in
   get-precheck) [ $# -ge 2 ] || die "usage: claude-cron get-precheck <job-id>"; cmd_get_precheck "$2" ;;
   provision-set) [ $# -ge 3 ] || die "usage: claude-cron provision-set <project> <up|down> (script on stdin)"; cmd_provision_set "$2" "$3" ;;
   provision-get) [ $# -ge 3 ] || die "usage: claude-cron provision-get <project> <up|down>"; cmd_provision_get "$2" "$3" ;;
+  worktree-drop) [ $# -ge 3 ] || die "usage: claude-cron worktree-drop <job-id> <stamp>"; cmd_worktree_drop "$2" "$3" ;;
   serve)     cmd_serve ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command: $1 (try: claude-cron help)" ;;

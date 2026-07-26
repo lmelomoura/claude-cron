@@ -429,12 +429,43 @@ def search_runs(q):
 
 # ------------------------------------------------------------------- app data
 
+# How far back into tick.log the 24h counters look. A byte window, not a line
+# count: the old `[-6000:]` slice was both too small (21 jobs on a 5-minute
+# interval write past it in about a day, so a busy install silently
+# under-reported) and too expensive (it read the WHOLE file first, on a poll
+# that runs every 5s). The engine caps the file at 4 MiB; this window covers
+# well over a day of entries at any realistic job count.
+TICK_TAIL_BYTES = 1_500_000
+
+
+def _tail_lines(path, max_bytes):
+    """The last `max_bytes` of a text file, as whole lines.
+
+    Seeking past the start lands mid-line, so the first fragment is dropped —
+    it is not an entry and must not be parsed as one.
+    """
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            start = max(0, size - max_bytes)
+            fh.seek(start)
+            blob = fh.read()
+    except OSError:
+        return []
+    text = blob.decode("utf-8", "replace")
+    if start:
+        _, sep, rest = text.partition("\n")
+        text = rest if sep else ""
+    return text.splitlines()
+
+
 def checks_24h():
     """Per-job counts of the last 24h of scheduler activity, straight from
     tick.log — makes the autonomy visible even when every check stays idle."""
     counts = {}
     try:
-        lines = (DATA_DIR / "tick.log").read_text().splitlines()[-6000:]
+        lines = _tail_lines(DATA_DIR / "tick.log", TICK_TAIL_BYTES)
         cutoff = time.time() - 86400
         for ln in lines:
             try:
@@ -496,36 +527,97 @@ class journal_lock:
     file whole. Without this, a rewrite built from a snapshot taken before an
     append silently overwrites it and that run's record is gone for good — which
     also strands its row in the index, where deleting it then fails with "no
-    such run". Same mkdir lock the engine takes, by the same name.
+    such run". Same mkdir lock the engine takes, by the same name — so the two
+    sides must also agree on when a lock may be BROKEN.
+
+    They now do: the holder writes its pid, and the lock is stolen only when
+    that pid is gone. Breaking on elapsed time (what both sides used to do)
+    robs the slowest legitimate holder first, and the slowest holder here is a
+    rewrite of a long journal — precisely the case the lock exists for.
+
+    A live holder is waited for, but NOT for ever: this runs inside an HTTP
+    handler, so a wedged holder has to surface as a failed request rather than
+    a hung thread. Hence TimeoutError in place of the old endless retry.
     """
-    def __init__(self, timeout=6.0):
+    # Long enough that no honest rewrite loses its lock; short enough that an
+    # owner killed between mkdir and writing its pid cannot wedge the journal.
+    GRACE = 30.0
+
+    def __init__(self, timeout=30.0):
         self.path = DATA_DIR / "locks" / ".journal.lock"
         self.timeout = timeout
         self.held = False
 
+    def _owner(self):
+        """The pid holding the lock: int, or None when it cannot be read."""
+        try:
+            return int((self.path / "pid").read_text().strip())
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _alive(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True          # it exists, it is just not ours
+        return True
+
+    def _break(self):
+        """Remove a lock we have decided is stale — pid file and all.
+
+        rmdir() alone is not enough any more: the engine writes a pid into the
+        directory, and a non-empty rmdir fails silently, which turned the old
+        breaker into an infinite loop inside a request handler.
+        """
+        try:
+            for child in self.path.iterdir():
+                child.unlink()
+            self.path.rmdir()
+        except OSError:
+            pass
+
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.time() + self.timeout
+        ownerless_since = None
         while True:
             try:
                 self.path.mkdir()
+            except FileExistsError:
+                pass
+            else:
+                try:
+                    (self.path / "pid").write_text(str(os.getpid()))
+                except OSError:
+                    pass
                 self.held = True
                 return self
-            except FileExistsError:
-                if time.time() > deadline:      # stale lock: break it, as the engine does
-                    try:
-                        self.path.rmdir()
-                    except OSError:
-                        pass
-                    deadline = time.time() + self.timeout
-                time.sleep(0.01)
+
+            owner = self._owner()
+            if owner is not None and not self._alive(owner):
+                self._break()                 # the owner is gone: genuinely stale
+                continue
+            if owner is None:
+                # The narrow race between mkdir and writing the pid. Only this
+                # case gets a time-based escape.
+                ownerless_since = ownerless_since or time.time()
+                if time.time() - ownerless_since > self.GRACE:
+                    self._break()
+                    ownerless_since = None
+                    continue
+            else:
+                ownerless_since = None
+            if time.time() > deadline:
+                raise TimeoutError(
+                    f"the journal lock is held by live pid {owner} — try again in a moment")
+            time.sleep(0.01)
 
     def __exit__(self, *exc):
         if self.held:
-            try:
-                self.path.rmdir()
-            except OSError:
-                pass
+            self._break()
         return False
 
 
@@ -717,6 +809,67 @@ def _session_from_log(logp):
     return ""
 
 
+def retained_worktrees():
+    """Run dirs sitting on disk that no live run is using.
+
+    wt_teardown keeps a run dir whose worktrees hold uncommitted or unpushed
+    work — correct, but permanent: the sweep re-reaches the same verdict every
+    tick and nothing ever lets go. They were also invisible, mentioned only in
+    tick.log, so the first symptom was a full disk. Listing them is what makes
+    the deliberate drop (worktree-drop) something a user can actually reach.
+
+    Read straight from the directory tree, the same way active_runs_for reads
+    the slots — no fork, cheap enough for the poll.
+    """
+    root = DATA_DIR / "worktrees"
+    if not root.is_dir():
+        return []
+    claimed = set()
+    locks = DATA_DIR / "locks"
+    if locks.is_dir():
+        for jobdir in locks.iterdir():
+            if not jobdir.is_dir():
+                continue
+            for slot in jobdir.iterdir():
+                if not slot.is_dir() or slot.name.startswith("."):
+                    continue
+                try:
+                    pid = int((slot / "pid").read_text().strip())
+                    os.kill(pid, 0)
+                except (OSError, ValueError):
+                    continue           # dead slot: whatever it named is nobody's
+                try:
+                    claimed.add((slot / "worktree").read_text().strip())
+                except OSError:
+                    pass
+    out = []
+    now = time.time()
+    for jobdir in sorted(root.iterdir()):
+        if not jobdir.is_dir():
+            continue
+        for d in sorted(jobdir.iterdir()):
+            if not d.is_dir() or str(d) in claimed:
+                continue
+            try:
+                age = max(0, int(now - d.stat().st_mtime))
+            except OSError:
+                age = 0
+            repos, bytes_ = [], 0
+            try:
+                repos = sorted(c.name for c in d.iterdir() if c.is_dir())
+            except OSError:
+                pass
+            for dirpath, _dirs, files in os.walk(d):
+                for f in files:
+                    try:
+                        bytes_ += os.lstat(os.path.join(dirpath, f)).st_size
+                    except OSError:
+                        pass
+            out.append({"job": jobdir.name, "stamp": d.name, "path": str(d),
+                        "age": age, "repos": repos, "bytes": bytes_})
+    return out
+
+
 def max_parallel_for(jid):
     """How many runs of this job may work at once — 0 means no ceiling.
 
@@ -749,15 +902,57 @@ def resume_in_flight(jid, sid):
     return bool(sid) and any(r.get("resume_of") == sid for r in active_runs_for(jid))
 
 
+_LAUNCHD_TTL = 60
+_launchd_cache = {"at": 0.0, "loaded": False}
+
+
+def launchd_loaded():
+    """Is the tick agent loaded? Cached: this forks launchctl, and the poll it
+    serves runs every 5s — roughly 17k forks a day to answer a question that
+    changes when someone runs the installer."""
+    now = time.time()
+    if now - _launchd_cache["at"] < _LAUNCHD_TTL:
+        return _launchd_cache["loaded"]
+    loaded = _launchd_cache["loaded"]
+    try:
+        out = subprocess.run(["launchctl", "list"], capture_output=True, text=True, timeout=5)
+        loaded = PLIST_LABEL in out.stdout
+    except Exception:  # noqa: BLE001
+        pass
+    _launchd_cache.update(at=now, loaded=loaded)
+    return loaded
+
+
+def config_sig():
+    """Fingerprint of the two config files, so the page can tell when the parts
+    of the payload that almost never change actually did."""
+    parts = []
+    for p in (JOBS_FILE, PROJECTS_FILE):
+        try:
+            st = p.stat()
+            parts.append(f"{st.st_mtime_ns}:{st.st_size}")
+        except OSError:
+            parts.append("-")
+    return hashlib.md5("|".join(parts).encode()).hexdigest()
+
+
+def load_config():
+    """The static half of the page's data: the job definitions and projects.
+
+    Split out of /api/data because it is both the bulk of the payload and the
+    part that does not change — full prompts for every job plus a couple of
+    kilobytes of project description each, re-sent every 5 seconds. The precheck
+    SCRIPTS are deliberately not here: only the editor ever reads one, and
+    shipping 21 shell scripts on every poll to service the occasional click is
+    the same waste in miniature.
+    """
+    return {"sig": config_sig(),
+            "jobs": read_json(JOBS_FILE, {}).get("jobs", []),
+            "projects": read_json(PROJECTS_FILE, {}).get("projects", [])}
+
+
 def load_data():
     jobs = read_json(JOBS_FILE, {}).get("jobs", [])
-    projects = read_json(PROJECTS_FILE, {}).get("projects", [])
-    for j in jobs:
-        p = CONFIG_DIR / "prechecks" / (str(j.get("id", "")) + ".sh")
-        try:
-            j["_precheck"] = p.read_text() if p.exists() else ""
-        except Exception:
-            j["_precheck"] = ""
     state = read_json(STATE_FILE, {})
     runs = []
     try:
@@ -787,16 +982,14 @@ def load_data():
                 db_bytes += p.stat().st_size
         except Exception:
             pass
-    launchd = False
-    try:
-        out = subprocess.run(["launchctl", "list"], capture_output=True, text=True, timeout=5)
-        launchd = PLIST_LABEL in out.stdout
-    except Exception:
-        pass
-    now = subprocess.run(["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"], capture_output=True, text=True).stdout.strip()
-    return {"generated": now, "launchd_loaded": launchd, "build": BUILD,
-            "jobs": jobs, "projects": projects, "state": state, "runs": runs,
+    # strftime, not a `date` subprocess: same string, no fork, and this ran on
+    # every one of those 5-second polls.
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return {"generated": now, "launchd_loaded": launchd_loaded(), "build": BUILD,
+            "config_sig": config_sig(),
+            "state": state, "runs": runs,
             "active_runs": {j.get("id"): active_runs_for(j.get("id")) for j in jobs},
+            "retained_worktrees": retained_worktrees(),
             "db_bytes": db_bytes, "checks": checks_24h()}
 
 
@@ -1190,6 +1383,10 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authed():
                 return self._send(403, {"error": "forbidden"})
             return self._send(200, load_data())
+        if path == "/api/config":
+            if not self._authed():
+                return self._send(403, {"error": "forbidden"})
+            return self._send(200, load_config())
         if path == "/api/search":
             if not self._authed():
                 return self._send(403, {"error": "forbidden"})
@@ -1295,10 +1492,29 @@ class Handler(BaseHTTPRequestHandler):
                     st = {}
                 if st.get("last_status") == "running" and int(st.get("last_start") or 0) == start:
                     return self._send(409, {"error": "this run is still going — stop it first"})
-            res = delete_run(jid, start)
+            try:
+                res = delete_run(jid, start)
+            except TimeoutError as e:
+                # The engine is rewriting the journal right now. Refusing is the
+                # honest answer — the alternative is stealing its lock and
+                # losing whatever it was writing.
+                return self._send(409, {"error": str(e)})
             if res is None:
                 return self._send(404, {"error": "no such run"})
             return self._send(200, {"ok": True, "output": "deleted", "removed": res})
+        if op == "worktree_drop":
+            # Discarding a retained run dir throws away whatever it holds —
+            # which is the point (it is kept BECAUSE it holds unpushed work),
+            # so the engine owns the refusal rules and this only forwards.
+            wjid = str(body.get("id", ""))
+            stamp = str(body.get("stamp", ""))
+            if not wjid or not all(c.isalnum() or c in "-_" for c in wjid):
+                return self._send(400, {"error": "bad id"})
+            if not stamp or not all(c.isalnum() or c in "-_." for c in stamp) or ".." in stamp:
+                return self._send(400, {"error": "bad stamp"})
+            ok, out = cc(["worktree-drop", wjid, stamp])
+            return self._send(200 if ok else 409,
+                              {"ok": True, "output": out} if ok else {"error": out or "refused"})
         if op == "project_delete":
             name = str(body.get("name", "")).strip()
             if not name:
@@ -1351,6 +1567,11 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(pc, str) and pc.strip():
                     cc(["set-precheck", str(job["id"])], stdin=pc)
             return self._send(200 if ok else 500, {"ok": ok, "output": out})
+        if op == "precheck_get":
+            # Fetched when the editor opens, instead of riding along on every
+            # 5-second poll for all 21 jobs. Same shape as provision_get.
+            ok, out = cc(["get-precheck", jid])
+            return self._send(200 if ok else 500, {"ok": ok, "script": out})
         if op == "set_precheck":
             script = body.get("script", "")
             if not isinstance(script, str) or not script.strip():
@@ -1366,7 +1587,13 @@ class Handler(BaseHTTPRequestHandler):
             # Exit 0 is the engine's own "there is work" signal; a job with no
             # precheck at all runs on every due tick, so it always has work.
             work = ("no precheck configured" in out) or ("(exit 0)" in out)
-            return self._send(200 if ok else 500, {"ok": ok, "work": work, "output": out})
+            # Same three-way contract as the engine (0 work / 1 idle / else
+            # broken), so the Run-now guard can say "your probe is broken"
+            # instead of the far more misleading "nothing to do".
+            m = re.search(r"\(exit (\d+)\)\s*$", out.strip())
+            broken = bool(m) and m.group(1) not in ("0", "1")
+            return self._send(200 if ok else 500,
+                              {"ok": ok, "work": work, "broken": broken, "output": out})
 
         if op == "run":
             # Multiple runs of one job may now run in parallel (each isolated in
@@ -1445,2626 +1672,36 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200 if ok else 500, {"ok": ok, "output": out})
 
 
-PAGE = r"""<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>claude-cron · Agent Loop Manager</title>
-<link rel="icon" type="image/svg+xml" href="__FAVICON__">
-<meta name="theme-color" content="#4f46e5">
-<style>
-:root{
-  --bg:#f6f7f9; --panel:#ffffff; --panel2:#fbfbfc; --ink:#16181d; --muted:#697077;
-  --term-bg:#fbfbfd; --term-brd:#d7d9e0; --term-tool:#c2410c; --term-sys:#0f766e;
-  --line:#e4e7ec; --line2:#eef0f4; --accent:#4f46e5; --accent-soft:#eef0ff;
-  --accent-ink:#ffffff; --ok:#0f9d63; --ok-soft:#e6f7ef; --warn:#c77700;
-  --warn-soft:#fdf3e2; --err:#d92d20; --err-soft:#feecea; --idle:#8b919a;
-  --shadow:0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.08);
-  --shadow-lg:0 12px 32px rgba(16,24,40,.16);
-}
-:root[data-theme="dark"]{
-  --bg:#0d1017; --panel:#151a23; --panel2:#11151d; --ink:#e8eaee; --muted:#98a0ab;
-  --term-bg:#0b0e14; --term-brd:#2b3444; --term-tool:#fb923c; --term-sys:#5eead4;
-  --line:#242b37; --line2:#1c222d; --accent:#818cf8; --accent-soft:#232848;
-  --accent-ink:#0d1017; --ok:#34d399; --ok-soft:#0e2b22; --warn:#fbbf24;
-  --warn-soft:#33270e; --err:#f87171; --err-soft:#391716; --idle:#6b7280;
-  --shadow:0 1px 2px rgba(0,0,0,.35);
-  --shadow-lg:0 16px 44px rgba(0,0,0,.55);
-}
-*{box-sizing:border-box}
-html{color-scheme:light} :root[data-theme="dark"]{color-scheme:dark}
-body{margin:0;background:var(--bg);color:var(--ink);
-  font:13.5px/1.55 ui-sans-serif,-apple-system,"SF Pro Text",system-ui,sans-serif;
-  -webkit-font-smoothing:antialiased}
-.ic{width:16px;height:16px;flex:none;vertical-align:-3px}
-.topbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;
-  padding:12px 22px;background:color-mix(in srgb,var(--panel) 82%,transparent);
-  backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
-.brand{display:flex;align-items:center;gap:11px}
-.brand .mark{width:34px;height:34px;border-radius:9px;background:var(--accent);color:var(--accent-ink);
-  display:flex;align-items:center;justify-content:center}
-.brand .mark .ic{width:19px;height:19px}
-.brand h1{font-size:15px;margin:0;letter-spacing:-.01em}
-.brand .tag{font-size:11px;color:var(--muted);letter-spacing:.02em}
-.topright{display:flex;align-items:center;gap:12px}
-.updated{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums}
-.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:20px;
-  font-size:11px;font-weight:600;letter-spacing:.02em}
-.pill .ic{width:12px;height:12px}
-.pill.on{background:var(--ok-soft);color:var(--ok)}
-.pill.off{background:var(--err-soft);color:var(--err)}
-.pill.idle{background:var(--warn-soft);color:var(--warn)}
-.wrap{max-width:1560px;margin:0 auto;padding:24px 22px 70px}
-h3{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
-  margin:0;display:flex;align-items:center;gap:7px}
-h3 .ic{width:14px;height:14px}
-/* Top-level views. With more than a handful of projects the runs table pushes
-   the jobs off the screen, so the two live on their own tabs. */
-.viewtabs{display:flex;gap:4px;margin:18px 0 4px;border-bottom:1px solid var(--line)}
-.viewtab{display:inline-flex;align-items:center;gap:8px;font:inherit;font-size:13px;font-weight:600;
-  padding:9px 15px;border:0;background:transparent;color:var(--muted);cursor:pointer;
-  border-bottom:2px solid transparent;margin-bottom:-1px}
-.viewtab:hover{color:var(--ink)}
-.viewtab.active{color:var(--accent);border-bottom-color:var(--accent)}
-.viewtab .ic{width:15px;height:15px}
-.viewtab .vcount{font-size:11px;font-weight:600;color:var(--muted);background:var(--panel2);
-  border:1px solid var(--line);border-radius:20px;padding:1px 7px;line-height:1.5}
-.viewtab.active .vcount{background:var(--accent-soft);border-color:transparent;color:var(--accent)}
-.view[hidden]{display:none}
-.secthead{display:flex;align-items:center;justify-content:space-between;margin:26px 0 12px}
-.projchips{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px}
-.projchip{display:inline-flex;align-items:center;gap:6px;padding:6px 11px;border-radius:20px;
-  border:1px solid var(--line);background:var(--panel);color:var(--muted);cursor:pointer;
-  font:inherit;font-size:12.5px;font-weight:550;transition:.13s}
-.projchip .ic{width:13px;height:13px}
-.projchip:hover{border-color:var(--accent);color:var(--accent)}
-.projchip.active{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
-.projchip .chipn{font-size:11px;opacity:.75;font-variant-numeric:tabular-nums}
-.projgroup{background:var(--panel);border:1px solid var(--line);border-radius:14px;
-  box-shadow:var(--shadow);margin:0 0 14px;overflow:hidden}
-.projgroup-h{display:flex;align-items:center;gap:10px;padding:13px 18px;cursor:pointer;
-  user-select:none;transition:background .12s}
-.projgroup-h:hover{background:var(--panel2)}
-.projgroup-h .pgh-ic{width:18px;height:18px;color:var(--accent);flex:none}
-.projgroup-h .pgh-name{font-size:14px;font-weight:640;letter-spacing:-.01em}
-.projgroup-h .pgh-name.standalone{color:var(--muted);font-weight:600}
-.projgroup-h .pgh-count{font-size:11px;font-weight:600;color:var(--muted);background:var(--accent-soft);
-  border-radius:20px;padding:2px 9px}
-.projgroup-h .pgh-desc{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;
-  white-space:nowrap;max-width:340px}
-.projgroup-h .spacer{flex:1}
-.projgroup-h .pgh-edit{display:flex;border:0;background:transparent;color:var(--muted);cursor:pointer;
-  padding:5px;border-radius:7px}
-.projgroup-h .pgh-edit:hover{color:var(--accent);background:var(--accent-soft)}
-.projgroup-h .pgh-edit .ic{width:15px;height:15px}
-.projgroup-h .pgh-bulk{display:flex;align-items:center;gap:6px;border:1px solid var(--line);
-  background:transparent;color:var(--muted);cursor:pointer;font:inherit;font-size:11px;
-  font-weight:600;padding:4px 9px;border-radius:7px;white-space:nowrap}
-.projgroup-h .pgh-bulk:hover{color:var(--ink);border-color:var(--muted);background:var(--panel)}
-.projgroup-h .pgh-bulk .ic{width:13px;height:13px}
-.projgroup-h .pgh-chevron{color:var(--muted);display:flex;transition:transform .28s ease}
-.projgroup-h .pgh-chevron .ic{width:18px;height:18px}
-.projgroup.collapsed .pgh-chevron{transform:rotate(-90deg)}
-/* animate open/close via grid-template-rows 1fr<->0fr (no fixed height needed) */
-.projgroup-body{display:grid;grid-template-rows:1fr;transition:grid-template-rows .28s ease}
-.projgroup.collapsed .projgroup-body{grid-template-rows:0fr}
-.projgroup-body > .pgb-inner{overflow:hidden;min-height:0}
-.projgroup-body .grid{padding:2px 16px 16px}
-td .projtag{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--muted)}
-td .projtag .ic{width:12px;height:12px;color:var(--accent)}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
-/* Row 1: icon + number side by side. Row 2: the label spans the whole tile,
-   so it never wraps against the icon. */
-.stat{display:flex;flex-direction:column;gap:9px;background:var(--panel);
-  border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow)}
-.stat-top{display:flex;align-items:center;gap:12px}
-/* the warning/error tiles double as filters for the runs table */
-.stat.clickable{cursor:pointer;transition:border-color .12s,box-shadow .12s}
-.stat.clickable:hover{border-color:var(--line2)}
-.stat.active{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
-.stat .bubble{width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex:none}
-.stat .bubble .ic{width:17px;height:17px}
-.stat .n{font-size:19px;font-weight:650;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.2}
-.stat .l{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
-.b-accent{background:var(--accent-soft);color:var(--accent)}
-.b-ok{background:var(--ok-soft);color:var(--ok)}
-.b-warn{background:var(--warn-soft);color:var(--warn)}
-.b-err{background:var(--err-soft);color:var(--err)}
-/* wider cards, two per row; standalone jobs reuse the same grid outside a group */
-.grid{display:grid;gap:14px;grid-template-columns:repeat(3,minmax(0,1fr))}
-@media (max-width:1080px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media (max-width:720px){.grid{grid-template-columns:1fr}}
-#jobs > .grid{margin-bottom:14px}   /* standalone grid rendered bare */
-.card{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:16px 18px;
-  box-shadow:var(--shadow);display:flex;flex-direction:column}
-.projgroup .card{box-shadow:none}
-/* drag to reorder: the card being dragged fades, the drop target is outlined */
-.card[draggable="true"] h2 .jobname{cursor:grab}
-.card.dragging{opacity:.45}
-.card.dragover{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 35%,transparent)}
-.card h2{font-size:14px;margin:0 0 2px;display:flex;align-items:center;gap:9px;justify-content:space-between}
-.card h2 .jobname{display:flex;align-items:center;gap:8px}
-.warnline{display:flex;align-items:flex-start;gap:7px;margin:2px 0 8px;padding:7px 9px;
-  border:1px solid color-mix(in srgb,var(--warn) 40%,var(--line));border-radius:8px;
-  background:var(--warn-soft);color:var(--warn);font-size:11.5px;line-height:1.45}
-.warnline .ic{width:13px;height:13px;flex:none;margin-top:1px}
-.card h2 .jobname .ic{width:15px;height:15px;color:var(--accent)}
-.card .desc{color:var(--muted);font-size:12px;margin:0 0 12px}
-/* card body in two internal columns; each column its own kv list */
-.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:12.5px;margin:2px 0 13px;align-content:start}
-.kv dt{color:var(--muted);display:flex;align-items:center;gap:6px;white-space:nowrap}
-.kv dt .ic{width:13px;height:13px}
-.kv dd{margin:0;font-variant-numeric:tabular-nums;min-width:0}
-.checklist{margin:6px 0 2px;padding:0 0 0 17px;display:flex;flex-direction:column;gap:2px;
-  font-variant-numeric:normal}
-.checklist li{font-size:11.5px;color:var(--muted)}
-.checklist li::marker{color:var(--accent)}
-.checklist .ck-v{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
-.actions{display:flex;gap:6px;flex-wrap:nowrap;border-top:1px solid var(--line2);padding-top:12px;
-  margin-top:auto}
-/* The four card actions share the row in equal parts — `flex:1` with a zero
-   basis, so the widths come out identical regardless of label length, and
-   `min-width:0` lets them shrink instead of wrapping on a narrow card. */
-.actions .btn{padding:6px 8px;font-size:12px;gap:5px;flex:1 1 0;min-width:0;
-  white-space:nowrap;justify-content:center}
-.actions .btn .ic{width:13px;height:13px}
-.btn{display:inline-flex;align-items:center;gap:7px;font:inherit;font-size:12.5px;font-weight:560;
-  padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);
-  color:var(--ink);cursor:pointer;transition:.13s;text-decoration:none}
-.btn .ic{width:14px;height:14px}
-.btn:hover{border-color:var(--accent);color:var(--accent)}
-.btn:active{transform:translateY(1px)}
-.btn:disabled{opacity:.45;cursor:progress}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
-.btn.primary:hover{filter:brightness(1.08);color:var(--accent-ink)}
-.btn.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 35%,var(--line))}
-.btn.danger:hover{background:var(--err-soft);border-color:var(--err)}
-.btn.ghost{background:transparent}
-#bulk-all[hidden]{display:none} /* author display beats the UA [hidden] rule; see .view[hidden] above */
-.iconbtn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;
-  border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--muted);
-  cursor:pointer;transition:.13s}
-.iconbtn:hover{color:var(--accent);border-color:var(--accent)}
-.rowacts{display:flex;gap:6px;justify-content:flex-end}
-.iconbtn.live{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
-/* hover tooltip — the bubble is fixed-position and lives on <body>, because the
-   table wrapper's overflow would otherwise clip it. */
-.tipbadge{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;
-  margin-left:7px;border-radius:50%;border:1px solid color-mix(in srgb,var(--warn) 45%,var(--line));
-  color:var(--warn);background:var(--warn-soft);font-size:9.5px;font-weight:800;cursor:help;
-  line-height:1;vertical-align:middle;flex:none;transition:transform .12s ease}
-.tipbadge:hover{transform:scale(1.14)}
-#tipbubble{position:fixed;z-index:90;max-width:330px;padding:11px 13px;border-radius:11px;
-  background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow-lg);
-  font-size:12px;line-height:1.5;color:var(--ink);pointer-events:none;
-  opacity:0;transform:translateY(-4px);transition:opacity .15s ease,transform .15s ease}
-#tipbubble.show{opacity:1;transform:translateY(0)}
-#tipbubble .tt-h{display:flex;align-items:center;gap:7px;font-weight:650;font-size:12.5px;
-  margin:0 0 7px;padding-bottom:7px;border-bottom:1px solid var(--line2)}
-#tipbubble .tt-h .ic{width:14px;height:14px;color:var(--accent)}
-#tipbubble .tt-row{display:flex;gap:14px;justify-content:space-between;align-items:baseline;margin-top:4px}
-#tipbubble .tt-k{color:var(--muted);white-space:nowrap}
-#tipbubble .tt-v{font-variant-numeric:tabular-nums;text-align:right}
-#tipbubble code{font:11px ui-monospace,"SF Mono",Menlo,monospace;background:var(--panel2);
-  border:1px solid var(--line2);border-radius:5px;padding:1px 5px}
-#tipbubble .tt-foot{margin-top:8px;padding-top:7px;border-top:1px solid var(--line2);
-  color:var(--muted);font-size:11px}
-.iconbtn.retry{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 35%,var(--line))}
-.iconbtn.retry:hover:not(:disabled){color:var(--warn);border-color:var(--warn);background:var(--warn-soft)}
-.iconbtn:disabled{opacity:.28;cursor:default;color:var(--muted);border-color:var(--line);background:transparent}
-.iconbtn .ic{width:15px;height:15px}
-.toolbar{display:flex;align-items:center;gap:10px;margin:0 0 10px;flex-wrap:wrap}
-.searchbox{display:flex;align-items:center;gap:8px;flex:1;min-width:230px;background:var(--panel);
-  border:1px solid var(--line);border-radius:9px;padding:7px 12px;box-shadow:var(--shadow)}
-.searchbox:focus-within{border-color:var(--accent)}
-.searchbox .ic{color:var(--muted)}
-.searchbox input{flex:1;border:0;outline:0;background:transparent;color:var(--ink);font:inherit}
-.searchbox .clear{display:flex;border:0;background:transparent;color:var(--muted);cursor:pointer;padding:0}
-.searchbox .clear:hover{color:var(--err)}
-.fbadge{display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:17px;
-  border-radius:9px;background:var(--accent);color:var(--accent-ink);font-size:10.5px;font-weight:700;
-  padding:0 5px}
-.perpage{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}
-.perpage select{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);
-  border-radius:7px;padding:5px 8px}
-.fpanel{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px 16px;
-  margin:0 0 12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;
-  box-shadow:var(--shadow)}
-.fpanel[hidden]{display:none}
-.fpanel label{display:flex;flex-direction:column;gap:5px;font-size:10.5px;text-transform:uppercase;
-  letter-spacing:.05em;color:var(--muted)}
-.fpanel select,.fpanel input{font:inherit;font-size:12.5px;color:var(--ink);background:var(--panel2);
-  border:1px solid var(--line);border-radius:8px;padding:7px 9px}
-.fpanel .fclear{align-self:end}
-.tablewrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;
-  box-shadow:var(--shadow)}
-table{border-collapse:collapse;width:100%;font-size:12.5px}
-th{text-align:left;font-weight:600;color:var(--muted);font-size:10.5px;text-transform:uppercase;
-  letter-spacing:.05em;padding:11px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
-td{padding:10px 14px;border-bottom:1px solid var(--line2);vertical-align:top}
-tr:last-child td{border-bottom:none}
-tbody tr{transition:.1s}
-tbody tr:hover{background:var(--panel2)}
-td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
-.stat-cell{display:inline-flex;align-items:center;gap:6px;font-weight:560}
-.stat-cell .ic{width:14px;height:14px}
-.s-success{color:var(--ok)} .s-warning{color:var(--warn)} .s-error{color:var(--err)}
-.s-idle{color:var(--idle)} .s-running{color:var(--warn)}
-code{font:11.5px ui-monospace,"SF Mono",Menlo,monospace;
-  background:color-mix(in srgb,var(--ink) 6%,transparent);padding:1px 6px;border-radius:5px}
-.snip{font-size:11px;color:var(--muted);margin-top:3px;max-width:420px;overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap}
-.trigger-badge{font-size:10px;color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 40%,var(--line));
-  border-radius:5px;padding:1px 6px;margin-left:7px;vertical-align:1px}
-/* a run that continued an earlier one — hover to see which */
-.trigger-badge.resumed{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,var(--line));cursor:help}
-.runningbadge{display:inline-flex;align-items:center;gap:7px;color:var(--warn);font-weight:600}
-.runningbadge .pulse{width:8px;height:8px;border-radius:50%;background:var(--warn);
-  animation:ccpulse 1.2s ease-in-out infinite}
-@keyframes ccpulse{0%,100%{opacity:.35;transform:scale(.85)}50%{opacity:1;transform:scale(1.2)}}
-/* live-tail indicator in the log modal */
-/* Interactive terminal, styled after the Claude CLI. Always dark, whatever the
-   dashboard theme: it is a terminal. Only the transcript scrolls — the prompt
-   bar stays pinned at the bottom, so it never drifts away while output pours in. */
-.tabpanes.termmode{overflow:hidden;display:flex;flex-direction:column}
-.tabpanes.termmode > .tabpane.active{flex:1 1 auto;min-height:0;display:flex}
-.termwrap{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;width:100%}
-.term{flex:1 1 auto;min-height:0;overflow-y:auto;padding:14px 16px;border-radius:10px;
-  background:#181818;border:1px solid #2e2a27;color:#d8d4d0;
-  font:12.5px/1.7 ui-monospace,"SF Mono",Menlo,Consolas,monospace;
-  white-space:pre-wrap;word-break:break-word}
-.term::-webkit-scrollbar{width:9px}
-.term::-webkit-scrollbar-thumb{background:#3a3532;border-radius:5px}
-.term .t-you{color:#d97757;font-weight:600}
-.term .t-agent{color:#d8d4d0}
-.term .t-tool{color:#8a837d}
-.term .t-tool b{color:#d97757;font-weight:600}
-.term .t-sys{color:#6f8f88}
-.term .row{margin:0 0 9px}
-.term .row:last-child{margin-bottom:0}
-/* The transcript above is a terminal; this bar is part of the app, so it follows
-   the dashboard theme rather than being a black box in a light UI. */
-.termbar{flex:none;display:flex;align-items:center;gap:10px;margin-top:10px;padding:9px 10px 9px 13px;
-  border:1px solid var(--line);border-radius:10px;background:var(--panel2)}
-.termbar:focus-within{border-color:var(--accent)}
-.termbar .caret{color:var(--accent);font:13px ui-monospace,Menlo,monospace;flex:none;font-weight:700}
-.termbar input{flex:1 1 auto;min-width:0;border:0;background:transparent;color:var(--ink);
-  font:12.5px ui-monospace,"SF Mono",Menlo,monospace;padding:4px 0}
-.termbar input:focus{outline:none}
-.termbar input::placeholder{color:var(--muted)}
-.termbar .hint{flex:none;font-size:10.5px;color:var(--muted)}
-.termbar .btn{flex:none;padding:6px 13px;font-size:12px}
-.termnote{flex:none;margin-top:10px;font-size:11.5px;color:var(--muted)}
-.termnote code{background:var(--panel2);border:1px solid var(--line2);border-radius:5px;padding:1px 5px}
-#lg-live{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px;font-weight:400}
-#lg-live:empty{display:none}
-.livedot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none;
-  box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 22%,transparent);
-  animation:ccpulse 1.4s ease-in-out infinite}
-.livetxt{color:var(--ok);font-weight:650;letter-spacing:.02em}
-#lg-live .muted{font-size:11.5px}
-.pager{display:flex;gap:12px;align-items:center;justify-content:flex-end;margin-top:12px;
-  font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
-.empty{padding:34px;text-align:center;color:var(--muted);font-size:13px}
-.empty .ic{width:22px;height:22px;display:block;margin:0 auto 8px;opacity:.6}
-footer{margin-top:30px;color:var(--muted);font-size:11px;text-align:center}
-/* While any modal is open the page behind must be inert: a native <dialog>
-   blocks clicks but NOT the wheel, so scrolling over it used to scroll the page
-   underneath. Lock the page, and contain scrolling inside each scrollable area
-   so reaching its end never chains outwards. */
-html.modal-open, html.modal-open body{overflow:hidden!important}
-dialog .dlg-b, dialog .tabpanes, dialog .term, dialog .combo-list,
-dialog .fs-list, dialog textarea, dialog pre{overscroll-behavior:contain}
-dialog{overscroll-behavior:contain}
-dialog{border:1px solid var(--line);border-radius:14px;background:var(--panel);color:var(--ink);
-  padding:0;box-shadow:var(--shadow-lg)}
-dialog::backdrop{background:rgba(9,11,16,.55);backdrop-filter:blur(3px)}
-/* Tall modals: fixed header + footer, scrollable middle. The [open] guard is
-   essential — a bare `display:flex` would override the UA's
-   `dialog:not([open]){display:none}` and the modal would never hide (Close
-   would appear to do nothing). The log modal takes a fixed default size and
-   scrolls its content; the editor grows with its form up to the viewport. */
-#editor[open],#logmodal[open]{display:flex;flex-direction:column}
-#logmodal[open]{height:min(90vh,860px)}
-#editor[open]{max-height:92vh}
-#editor{max-width:min(880px,94vw);width:880px}
-/* the <form> is the dialog's only flex child — it must itself be the scroll
-   column, or the body never scrolls and the footer overflows below the modal */
-#editor>form{display:flex;flex-direction:column;min-height:0;flex:1 1 auto;overflow:hidden}
-#logmodal{max-width:min(1000px,95vw);width:1000px}
-#confirm{max-width:min(460px,92vw);width:460px}
-#editor .dlg-h,#editor .dlg-f,#logmodal .dlg-h,#logmodal .dlg-f{flex:none}
-#editor .dlg-b{flex:1 1 auto;min-height:0;overflow-y:auto}
-/* log modal: fixed metadata + tab bar, only the active pane scrolls */
-#lg-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden}
-#lg-body .loginfo{flex:none}
-/* overflow-y must be stated: with only overflow-x:auto, the `visible` y-axis
-   computes to `auto` too and the tab strip grows a stray vertical scrollbar. */
-.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:14px 0 0;flex:none;
-  overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
-.tabs::-webkit-scrollbar{display:none}
-.tab{padding:8px 12px;font:inherit;font-size:12.5px;font-weight:550;color:var(--muted);cursor:pointer;
-  border:0;background:transparent;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap;
-  display:inline-flex;align-items:center;gap:6px}
-.tab .ic{width:14px;height:14px}
-.tab:hover{color:var(--ink)}
-.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
-.tabpanes{flex:1 1 auto;min-height:0;overflow-y:auto;padding-top:14px}
-.tabpane{display:none} .tabpane.active{display:block}
-.dlg-h{display:flex;align-items:center;gap:11px;padding:17px 20px 0;font-size:14.5px;font-weight:640}
-.dlg-h .halo{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex:none}
-.dlg-h .halo .ic{width:18px;height:18px}
-.dlg-b{padding:13px 20px}
-.dlg-b label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
-  color:var(--muted);margin:12px 0 5px}
-textarea,.dlg-b input,.dlg-b select{width:100%;font:inherit;font-size:13px;padding:9px 11px;
-  border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--ink);resize:vertical}
-textarea{min-height:170px;font-family:ui-monospace,"SF Mono",Menlo,monospace;line-height:1.5}
-textarea:focus,.dlg-b input:focus,.dlg-b select:focus{outline:none;border-color:var(--accent)}
-/* The prompt editor renders its own Markdown. A highlight layer sits exactly
-   under a transparent textarea: you keep native editing, selection, caret and
-   scrolling, and the bytes handed to the agent are still literally what you
-   typed. Both layers MUST share font, size, line-height, padding and border —
-   any difference and the text drifts out of register. Monospace makes bold safe
-   (same advance width), which is why headings can be bold without shifting. */
-.mdedit{position:relative;min-height:170px;height:230px;resize:vertical;overflow:hidden;
-  border:1px solid var(--line);border-radius:8px;background:var(--panel2)}
-.mdedit:focus-within{border-color:var(--accent)}
-.mdedit > .mdedit-hl,
-.mdedit > textarea{position:absolute;inset:0;margin:0;width:100%;height:100%;
-  padding:9px 11px;border:0;border-radius:8px;background:transparent;
-  font:13px/1.5 ui-monospace,"SF Mono",Menlo,monospace;
-  /* a textarea wraps with overflow-wrap only; `word-break: break-word` makes a
-     <pre> break in different places and the two layers drift apart mid-text */
-  white-space:pre-wrap;overflow-wrap:break-word;word-break:normal;
-  overflow-y:auto;overscroll-behavior:contain}
-/* The textarea's scrollbar steals ~15px of text width, so it wraps earlier than
-   the layer would. Reserving the same gutter here keeps both wrapping at the
-   very same column — without it the two drift apart a few lines in. */
-.mdedit > .mdedit-hl{pointer-events:none;overflow-y:hidden;scrollbar-gutter:stable;color:var(--ink)}
-.mdedit > textarea{color:transparent;caret-color:var(--accent);resize:none;min-height:0}
-.mdedit > textarea::selection{background:color-mix(in srgb,var(--accent) 30%,transparent)}
-.mdedit > textarea:focus{outline:none}
-/* the rendered marks */
-.mdedit-hl .h{font-weight:700;color:var(--accent)}
-.mdedit-hl .b{font-weight:700}
-.mdedit-hl .i{font-style:italic}
-.mdedit-hl .c{color:var(--term-tool,#c2410c)}
-.mdedit-hl .fence{color:var(--muted)}
-.mdedit-hl .bullet{color:var(--accent);font-weight:700}
-.mdedit-hl .mark{color:var(--muted)}
-/* searchable project select (combobox) */
-.combo{position:relative}
-.combo-trigger{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;
-  font:inherit;font-size:13px;padding:9px 11px;border:1px solid var(--line);border-radius:8px;
-  background:var(--panel2);color:var(--ink);cursor:pointer;text-align:left}
-.combo-trigger:hover{border-color:var(--muted)}
-.combo.open .combo-trigger{border-color:var(--accent)}
-.combo-val{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.combo-val.none{color:var(--muted)}
-.combo-caret{color:var(--muted);flex:none;display:flex;transition:transform .18s ease}
-.combo-caret .ic{width:16px;height:16px}
-.combo.open .combo-caret{transform:rotate(180deg)}
-.combo-pop{position:absolute;z-index:30;top:calc(100% + 4px);left:0;right:0;
-  background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow-lg);padding:7px}
-.combo-search{width:100%;font:inherit;font-size:12.5px;padding:7px 9px;margin:0 0 6px;
-  border:1px solid var(--line);border-radius:7px;background:var(--panel2);color:var(--ink)}
-.combo-search:focus{outline:none;border-color:var(--accent)}
-.combo-list{list-style:none;margin:0;padding:0;max-height:200px;overflow-y:auto}
-.combo-list li{padding:8px 10px;border-radius:6px;font-size:12.5px;cursor:pointer;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:8px}
-.combo-list li .ic{width:13px;height:13px;color:var(--muted);flex:none}
-.combo-list li.active,.combo-list li:hover{background:var(--accent-soft);color:var(--accent)}
-.combo-list li.sel{font-weight:650}
-.combo-list li.none{color:var(--muted)}
-.combo-empty{padding:9px 10px;font-size:12px;color:var(--muted)}
-/* cwd input + Browse button, and the system folder picker */
-.cwdrow{display:flex;gap:8px;align-items:stretch}
-.cwdrow input{flex:1 1 auto;min-width:0}
-.cwd-browse{flex:none;white-space:nowrap}
-.checkline{display:flex!important;align-items:center;gap:9px;text-transform:none;letter-spacing:0;font-size:12.5px;color:var(--ink);cursor:pointer;margin-bottom:6px}
-.checkline input{width:auto!important;margin:0}
-/* Field notes: set apart from the control they explain (the negative top margin
-   used to glue them to it), italic, and a step softer than --muted — mixed
-   towards the panel so it dims in dark mode instead of getting brighter. */
-.dlg-b .hint{font-size:11.5px;font-style:italic;line-height:1.55;
-  /* 72% measured 2.91:1 against white — under the 3:1 floor for auxiliary text.
-     82% keeps it clearly a step softer than --muted while staying readable. */
-  color:color-mix(in srgb,var(--muted) 82%,var(--panel));
-  margin:9px 0 18px}
-/* effort slider — Faster ↔ Smarter, mirroring Claude Code's control */
-.efflabel{margin-left:8px;color:var(--accent);font-weight:700;text-transform:none;letter-spacing:0}
-.effslider{-webkit-appearance:none;appearance:none;width:100%;height:26px;background:transparent;
-  cursor:pointer;padding:0;border:0;margin:1px 0 0}
-.effslider::-webkit-slider-runnable-track{height:4px;border-radius:3px;background:var(--line);
-  border:0}
-.effslider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:16px;
-  border-radius:50%;background:var(--accent);border:2px solid var(--panel);margin-top:-6px;
-  box-shadow:0 1px 4px rgba(0,0,0,.28)}
-.effslider:focus{outline:none}
-.effslider:focus::-webkit-slider-thumb{box-shadow:0 0 0 4px var(--accent-soft)}
-.effends{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:-2px}
-.cwd-ro{cursor:pointer}
-.cwd-ro:hover:not(:disabled){border-color:var(--muted)}
-/* inherited from a project: shown, but plainly not yours to edit here */
-.cwdrow input:disabled{cursor:default;color:var(--muted);background:var(--panel);
-  border-style:dashed;opacity:1}
-.cwdrow .btn:disabled{opacity:.4;cursor:default}
-#fsmodal{max-width:min(560px,94vw);width:560px}
-#fsmodal[open]{display:flex;flex-direction:column;height:min(78vh,600px)}
-#fsmodal .dlg-h,#fsmodal .fs-cur,#fsmodal .dlg-f{flex:none}
-#fsmodal .dlg-b{flex:1 1 auto;min-height:0;overflow-y:auto;padding:8px 0}
-.fs-cur{margin:9px 20px 2px;padding:8px 11px;font:12px ui-monospace,"SF Mono",Menlo,monospace;
-  background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--muted);
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.fs-list{list-style:none;margin:0;padding:0}
-.fs-list li{display:flex;align-items:center;gap:10px;padding:9px 20px;cursor:pointer;font-size:13px}
-.fs-list li:hover{background:var(--panel2)}
-.fs-list li .ic{width:15px;height:15px;color:var(--accent);flex:none}
-.fs-list li.fs-up{color:var(--muted)}
-.fs-list li.fs-up .ic{color:var(--muted)}
-.fs-list li.fs-empty{color:var(--muted);font-size:12.5px;cursor:default}
-.fs-list li.fs-empty:hover{background:transparent}
-.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.stepper{display:flex;align-items:stretch;border:1px solid var(--line);border-radius:8px;
-  background:var(--panel2);overflow:hidden}
-.stepper input{flex:1;border:0;background:transparent;text-align:center;font:inherit;font-size:13px;
-  color:var(--ink);padding:9px 4px;appearance:textfield;-moz-appearance:textfield;min-width:0}
-.stepper input::-webkit-outer-spin-button,.stepper input::-webkit-inner-spin-button{
-  -webkit-appearance:none;margin:0}
-.stepper input:focus{outline:none}
-.stepper:focus-within{border-color:var(--accent)}
-.step-btn{width:36px;border:0;background:transparent;color:var(--muted);cursor:pointer;
-  font-size:16px;font-weight:600;transition:.12s;display:flex;align-items:center;justify-content:center}
-.step-btn:hover{background:var(--accent-soft);color:var(--accent)}
-.step-btn:first-child{border-right:1px solid var(--line)}
-.step-btn:last-child{border-left:1px solid var(--line)}
-.daypick{display:flex;gap:6px;flex-wrap:wrap}
-.day-btn{font:inherit;font-size:12px;font-weight:600;padding:7px 0;width:46px;text-align:center;
-  border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--muted);
-  cursor:pointer;transition:.12s}
-.day-btn:hover{border-color:var(--accent);color:var(--accent)}
-.day-btn.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
-.moneyin{display:flex;align-items:center;border:1px solid var(--line);border-radius:8px;
-  background:var(--panel2);overflow:hidden}
-.moneyin .cur{padding:0 0 0 11px;color:var(--muted);font-size:13px}
-.moneyin input{flex:1;border:0;background:transparent;font:inherit;font-size:13px;color:var(--ink);
-  padding:9px 11px 9px 6px;min-width:0}
-.moneyin input:focus{outline:none}
-.moneyin:focus-within{border-color:var(--accent)}
-.timerow{display:flex;align-items:center;gap:9px}
-.timerow input[type=time]{flex:1}
-.timerow .sep{color:var(--muted);font-size:12px}
-.dlg-f{display:flex;justify-content:flex-end;gap:9px;padding:13px 20px 19px}
-.confirm-msg{font-size:13px;color:var(--muted);margin:4px 0 0}
-.confirm-mono{font:11.5px/1.6 ui-monospace,"SF Mono",Menlo,monospace;background:var(--panel2);
-  border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin:12px 0 0;
-  white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto}
-.loginfo{grid-template-columns:auto 1fr;gap:5px 16px;margin:0 0 4px}
-.logsec{margin-top:16px}
-.logsec h4{margin:0 0 7px;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
-  color:var(--muted);display:flex;align-items:center;gap:6px}
-.logsec h4 .ic{width:13px;height:13px}
-pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:11px 13px;margin:0;
-  font:11.5px/1.6 ui-monospace,"SF Mono",Menlo,monospace;white-space:pre-wrap;word-break:break-word;
-  max-height:300px;overflow:auto}
-.muted{color:var(--muted);font-size:12px}
-.md{font-size:12.5px;line-height:1.6}
-.md p{margin:0 0 8px} .md p:last-child{margin-bottom:0}
-.md ul,.md ol{margin:0 0 8px;padding-left:20px} .md li{margin:2px 0}
-.md code{font:11.5px ui-monospace,"SF Mono",Menlo,monospace;
-  background:color-mix(in srgb,var(--ink) 8%,transparent);padding:1px 5px;border-radius:4px;word-break:break-word}
-.md pre.log{margin:8px 0}
-.md a{color:var(--accent);text-decoration:none} .md a:hover{text-decoration:underline}
-.md strong{font-weight:650} .md em{font-style:italic}
-.md .md-h{margin:11px 0 5px;font-weight:650;font-size:13px;color:var(--ink);
-  text-transform:none;letter-spacing:0}
-.denials{margin:0;padding-left:18px} .denials li{margin:2px 0}
-.timeline{margin:0;padding:0;list-style:none;border:1px solid var(--line);border-radius:9px;
-  background:var(--panel2)}  /* scroll handled by the tab pane */
-.timeline li{padding:8px 13px;border-bottom:1px solid var(--line2);font-size:12px;line-height:1.55}
-.timeline li:last-child{border-bottom:none}
-.timeline .tn{color:var(--muted);font-variant-numeric:tabular-nums;margin-right:8px;font-weight:600}
-.timeline .tool{font:11px ui-monospace,"SF Mono",Menlo,monospace;background:var(--accent-soft);
-  color:var(--accent);border-radius:5px;padding:1px 7px;margin-right:6px;white-space:nowrap}
-.timeline .thint{font:11px ui-monospace,"SF Mono",Menlo,monospace;color:var(--muted);word-break:break-all}
-.timeline .ttext{display:block;margin-top:3px}
-#toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(6px);
-  display:flex;align-items:center;gap:9px;background:var(--ink);color:var(--bg);
-  padding:10px 17px;border-radius:10px;font-size:13px;opacity:0;pointer-events:none;
-  transition:.22s;z-index:9;box-shadow:var(--shadow-lg)}
-#toast .ic{width:15px;height:15px}
-#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
-#toast.err{background:var(--err);color:#fff}
-.spacer{flex:1}
-@media (max-width:640px){.topbar{padding:10px 14px}.wrap{padding:18px 14px 60px}}
-</style></head>
-<body>
-<header class="topbar">
-  <div class="brand">
-    <div class="mark" id="brandmark"></div>
-    <div><h1>claude-cron</h1><div class="tag">Agent Loop Manager</div></div>
-  </div>
-  <div class="topright">
-    <span id="pill-launchd"></span>
-    <span class="updated" id="updated"></span>
-    <button class="iconbtn" id="themebtn" title="Toggle light/dark"></button>
-  </div>
-</header>
-<main class="wrap">
-  <section class="stats" id="stats"></section>
-
-  <nav class="viewtabs" id="viewtabs">
-    <button class="viewtab active" data-view="jobs" id="vt-jobs"></button>
-    <button class="viewtab" data-view="runs" id="vt-runs"></button>
-  </nav>
-
-  <div class="view" id="view-jobs">
-  <div class="secthead"><h3 id="h-jobs"></h3>
-    <div style="display:flex;gap:8px">
-      <button class="btn ghost" id="bulk-all" hidden></button>
-      <button class="btn ghost" id="new-project"></button>
-      <button class="btn primary" id="new-job"></button>
-    </div></div>
-  <div class="projchips" id="projchips"></div>
-  <div id="jobs"></div>
-  </div><!-- /view-jobs -->
-
-  <div class="view" id="view-runs" hidden>
-  <div class="secthead"><h3 id="h-runs"></h3></div>
-  <div class="toolbar">
-    <div class="searchbox" id="searchbox">
-      <input id="q" placeholder="Search runs & log content…" autocomplete="off">
-      <button class="clear" id="q-clear" hidden></button>
-    </div>
-    <button class="btn ghost" id="f-toggle"></button>
-    <div class="spacer"></div>
-    <label class="perpage">Per page
-      <select id="f-size"><option>10</option><option>25</option><option>50</option><option>100</option></select>
-    </label>
-  </div>
-  <div class="fpanel" id="fpanel" hidden>
-    <label>Project <select id="f-project"><option value="">All projects</option></select></label>
-    <label>Job <select id="f-job"><option value="">All jobs</option></select></label>
-    <label>Status <select id="f-status"><option value="">All</option>
-      <option value="success">success</option><option value="warning">warning</option>
-      <option value="error">error</option></select></label>
-    <label>From <input type="datetime-local" id="f-from"></label>
-    <label>To <input type="datetime-local" id="f-to"></label>
-    <button class="btn ghost fclear" id="f-clear"></button>
-  </div>
-  <div class="tablewrap"><table>
-    <thead><tr><th>When</th><th>Job</th><th>Project</th><th>Status</th><th>Duration</th><th>Cost</th><th>Session</th><th></th></tr></thead>
-    <tbody id="runs"></tbody></table></div>
-  <div class="pager">
-    <button class="btn ghost" id="pg-prev"></button>
-    <span id="pg-info"></span>
-    <button class="btn ghost" id="pg-next"></button>
-  </div>
-  </div><!-- /view-runs -->
-
-  <footer id="foot"></footer>
-</main>
-
-<dialog id="editor"><form method="dialog">
-<div class="dlg-h"><div class="halo b-accent" id="ed-halo"></div><span id="ed-title">Edit job</span></div>
-<div class="dlg-b">
-  <div id="ed-id-row" style="display:none"><label>Job id (letters, digits, - and _)</label>
-    <input id="ed-id" type="text" placeholder="my-job" autocomplete="off"></div>
-  <label>Project (optional — groups jobs; leave empty for none)</label>
-  <div class="combo" id="ed-project-combo">
-    <button type="button" class="combo-trigger" id="ed-project-trigger" aria-haspopup="listbox" aria-expanded="false">
-      <span class="combo-val none" id="ed-project-val">— None —</span>
-      <span class="combo-caret"></span>
-    </button>
-    <div class="combo-pop" id="ed-project-pop" hidden>
-      <input type="text" class="combo-search" id="ed-project-search" placeholder="Search projects…" autocomplete="off">
-      <ul class="combo-list" id="ed-project-opts" role="listbox"></ul>
-    </div>
-    <input type="hidden" id="ed-project">
-  </div>
-  <label>Description</label><input id="ed-desc" type="text" placeholder="what this job does">
-  <label>Working directory (cwd the agent runs in)</label>
-  <div class="cwdrow">
-    <input id="ed-cwd" type="text" placeholder="/Users/…/some-repo" readonly data-cwd-target="ed-cwd" class="cwd-ro">
-    <button type="button" class="btn cwd-browse" data-cwd-target="ed-cwd">Browse…</button>
-  </div>
-  <div class="hint" id="ed-cwd-note" hidden></div>
-  <label>Prompt sent to the agent</label>
-  <div class="mdedit" id="ed-prompt-wrap">
-    <pre class="mdedit-hl" id="ed-prompt-hl" aria-hidden="true"></pre>
-    <textarea id="ed-prompt" spellcheck="false"></textarea>
-  </div>
-  <label>Precheck script — exit 0 wakes a run, exit 1 stays idle (a skipped tick costs nothing)</label>
-  <textarea id="ed-precheck" spellcheck="false" style="min-height:120px"></textarea>
-  <div class="row2">
-    <div><label>Interval (minutes)</label>
-      <div class="stepper">
-        <button type="button" class="step-btn" data-step="-1" data-for="ed-interval">−</button>
-        <input id="ed-interval" type="number" min="1" step="1" inputmode="numeric">
-        <button type="button" class="step-btn" data-step="1" data-for="ed-interval">+</button>
-      </div></div>
-    <div><label>Model</label>
-      <div class="combo" id="ed-model-combo">
-        <button type="button" class="combo-trigger" id="ed-model-trigger" aria-haspopup="listbox" aria-expanded="false">
-          <span class="combo-val" id="ed-model-val">Opus — most capable</span>
-          <span class="combo-caret"></span>
-        </button>
-        <div class="combo-pop" id="ed-model-pop" hidden>
-          <input type="text" class="combo-search" id="ed-model-search" placeholder="Search models…" autocomplete="off">
-          <ul class="combo-list" id="ed-model-opts" role="listbox"></ul>
-        </div>
-        <input type="hidden" id="ed-model">
-      </div></div>
-  </div>
-  <div class="row2">
-    <div><label>Effort <span class="efflabel" id="ed-effort-label">—</span></label>
-      <input type="range" id="ed-effort" class="effslider" min="0" max="5" step="1" value="0">
-      <div class="effends"><span>Faster</span><span>Smarter</span></div>
-    </div>
-    <div><label>Max budget per run — empty = no cap</label>
-      <div class="moneyin"><span class="cur">$</span>
-        <input id="ed-budget" inputmode="decimal" autocomplete="off" placeholder="no cap"></div></div>
-  </div>
-  <label>Max simultaneous runs</label>
-  <input id="ed-maxpar" type="number" min="0" step="1" inputmode="numeric" placeholder="3">
-  <div class="hint">How many runs of this job may work at once, each in its own worktree.
-    Default 3. Set 0 (or leave empty) for no limit. At the limit, Run now and Resume
-    say so instead of starting anything.</div>
-  <label>Active hours (leave both empty for 24h)</label>
-  <div class="timerow">
-    <input type="time" id="ed-hours-start"><span class="sep">until</span><input type="time" id="ed-hours-end">
-  </div>
-  <label>Active days</label>
-  <div class="daypick" id="ed-days-pick">
-    <button type="button" class="day-btn" data-day="1">Mon</button>
-    <button type="button" class="day-btn" data-day="2">Tue</button>
-    <button type="button" class="day-btn" data-day="3">Wed</button>
-    <button type="button" class="day-btn" data-day="4">Thu</button>
-    <button type="button" class="day-btn" data-day="5">Fri</button>
-    <button type="button" class="day-btn" data-day="6">Sat</button>
-    <button type="button" class="day-btn" data-day="7">Sun</button>
-  </div>
-  <div class="row2">
-    <div><label>Daily budget cap — empty = no cap</label>
-      <div class="moneyin"><span class="cur">$</span>
-        <input id="ed-daily" inputmode="decimal" autocomplete="off" placeholder="no cap — unlimited"></div></div>
-    <div><label>Stall guard (minutes with no output)</label>
-      <div class="stepper">
-        <button type="button" class="step-btn" data-step="-1" data-for="ed-stall">−</button>
-        <input id="ed-stall" type="number" min="1" step="1" inputmode="numeric" placeholder="20">
-        <button type="button" class="step-btn" data-step="1" data-for="ed-stall">+</button>
-      </div></div>
-  </div>
-  <div class="hint">A run is killed only when it goes silent for this long — a task that
-    legitimately takes hours keeps running while it produces output. Leave empty for no stall guard.</div>
-  <label>Hard time limit (minutes) — optional, empty = no limit</label>
-  <div class="stepper">
-    <button type="button" class="step-btn" data-step="-1" data-for="ed-timeout">−</button>
-    <input id="ed-timeout" type="number" min="1" step="1" inputmode="numeric" placeholder="no limit">
-    <button type="button" class="step-btn" data-step="1" data-for="ed-timeout">+</button>
-  </div>
-  <label class="checkline"><input type="checkbox" id="ed-interactive">
-    Interactive — keep a terminal open so you can talk to the run while it works</label>
-  <div class="hint">The run then waits a few seconds after each answer in case you want to
-    reply, instead of ending immediately. Leave off for unattended jobs.</div>
-  <label>Permission mode</label>
-  <div class="combo" id="ed-perm-combo">
-    <button type="button" class="combo-trigger" id="ed-perm-trigger" aria-haspopup="listbox" aria-expanded="false">
-      <span class="combo-val" id="ed-perm-val">dontAsk — run tools without prompting</span>
-      <span class="combo-caret"></span>
-    </button>
-    <div class="combo-pop" id="ed-perm-pop" hidden>
-      <input type="text" class="combo-search" id="ed-perm-search" placeholder="Search modes…" autocomplete="off">
-      <ul class="combo-list" id="ed-perm-opts" role="listbox"></ul>
-    </div>
-    <input type="hidden" id="ed-perm">
-  </div>
-</div>
-<div class="dlg-f">
-  <button type="button" class="btn ghost" id="ed-cancel">Cancel</button>
-  <button type="button" class="btn primary" id="ed-save">Save changes</button>
-</div>
-</form></dialog>
-
-<dialog id="logmodal">
-  <div class="dlg-h"><div class="halo b-accent" id="lg-halo"></div><span id="lg-title">Run detail</span>
-    <span id="lg-live"></span></div>
-  <div class="dlg-b" id="lg-body"></div>
-  <div class="dlg-f"><button type="button" class="btn ghost" id="lg-close">Close</button></div>
-</dialog>
-
-<dialog id="projmodal"><form method="dialog">
-<div class="dlg-h"><div class="halo b-accent" id="pj-halo"></div><span id="pj-title">New project</span></div>
-<div class="dlg-b">
-  <div id="pj-name-row"><label>Project name</label>
-    <input id="pj-name" type="text" placeholder="e.g. my-repo" autocomplete="off"></div>
-  <label>Description — passed to the agent as context on every run</label>
-  <textarea id="pj-desc" style="min-height:110px"></textarea>
-  <label>Working directory (cwd) — jobs in this project inherit it unless they set their own</label>
-  <div class="cwdrow">
-    <input id="pj-cwd" type="text" placeholder="click Browse to choose a folder" readonly data-cwd-target="pj-cwd" class="cwd-ro">
-    <button type="button" class="btn cwd-browse" data-cwd-target="pj-cwd">Browse…</button>
-  </div>
-  <label>Claude account — the config directory this project's runs sign in as</label>
-  <input id="pj-ccd" type="text" placeholder="default — the account the scheduler itself runs as"
-         autocomplete="off" spellcheck="false">
-  <div class="hint">Claude Code keeps credentials, settings, plugins, MCP servers and past sessions
-    per config directory — one signed-in account each — so this is what puts a project's runs on
-    your work account (<code>~/.claude-work</code>) rather than your personal one
-    (<code>~/.claude-personal</code>). Leave it empty to inherit whatever
-    <code>CLAUDE_CONFIG_DIR</code> the scheduler runs with. It is typed, not browsed: the folder
-    picker hides dot-directories. Keep it stable once runs exist — a resumed session is looked up
-    inside the account that created it.</div>
-  <label>Repos — the repositories one run of this project spans</label>
-  <div id="pj-repos"></div>
-  <button type="button" class="btn ghost" id="pj-repo-add" style="align-self:flex-start">+ repo</button>
-  <div class="hint">Leave it empty for a single-repo project: the run works in a worktree of the
-    working directory above. Add rows when one ticket touches several repositories — each gets its
-    own worktree inside the run's directory, and the agent finds them through
-    <code>CC_RUN_MANIFEST</code>. <b>Base</b> is the branch the worktree is cut from and the branch
-    a merge request targets; it is declared here, not read from the checkout, because a checkout can
-    be detached or sitting on somebody's feature branch. The repo whose path matches the working
-    directory above is the run's own working directory.</div>
-  <label>Worktree isolation — where a run actually works</label>
-  <div class="combo" id="pj-wt-combo">
-    <button type="button" class="combo-trigger" id="pj-wt-trigger" aria-haspopup="listbox" aria-expanded="false">
-      <span class="combo-val" id="pj-wt-val">Auto — isolate when the cwd is a git repo</span>
-      <span class="combo-caret"></span>
-    </button>
-    <div class="combo-pop" id="pj-wt-pop" hidden>
-      <input type="text" class="combo-search" id="pj-wt-search" placeholder="Search…" autocomplete="off">
-      <ul class="combo-list" id="pj-wt-opts" role="listbox"></ul>
-    </div>
-    <input type="hidden" id="pj-wt">
-  </div>
-  <div class="hint">Turn this off and every run of this project works in the same folder. Two agents
-    then share one working tree: one <code>git checkout</code> silently moves the other off its
-    branch, and its work is gone. Worse, anything else pointed at that folder — a Docker bind-mount,
-    your editor, a running dev server — gets served whichever branch an agent happened to leave
-    behind. <b>Auto</b> is the safe default and isolates whenever the cwd is a git repo;
-    <b>Always</b> refuses to run in the cwd even when the git check is inconclusive — use it when
-    something outside claude-cron depends on that folder. Only choose <b>Off</b> for a cwd nothing
-    else reads.</div>
-  <label>Provisioning — <code>up</code>, run in every repo's fresh worktree</label>
-  <textarea id="pj-up" style="min-height:120px" spellcheck="false"
-            placeholder="#!/usr/bin/env bash&#10;cp -c &quot;$CC_REPO_PATH/.env&quot; .env"></textarea>
-  <label>Provisioning — <code>down</code>, run when the run ends</label>
-  <textarea id="pj-down" style="min-height:80px" spellcheck="false"></textarea>
-  <div class="hint">A fresh worktree has no <code>.env</code>, no <code>vendor</code>, no
-    <code>node_modules</code> — they are gitignored, so no checkout produces them. These scripts run
-    <b>once per repo</b>, with the working directory set to that repo's worktree and the run in the
-    environment: <code>CC_REPO_NAME</code>, <code>CC_REPO_PATH</code> (the canonical checkout to copy
-    from), <code>CC_WORKTREE</code>, <code>CC_BASE</code>, <code>CC_RUN_DIR</code>,
-    <code>CC_RUN_MANIFEST</code>, <code>CC_PROJECT</code>, <code>CC_JOB_ID</code>. A non-zero
-    <code>up</code> aborts the run rather than hand an agent a half-built tree. Anything with a
-    global name — a herd site, a compose project — must derive it from <code>$CC_RUN_DIR</code>, or
-    two runs of the same repo collide.</div>
-</div>
-<div class="dlg-f">
-  <button type="button" class="btn danger" id="pj-delete" style="margin-right:auto">Delete</button>
-  <button type="button" class="btn ghost" id="pj-cancel">Cancel</button>
-  <button type="button" class="btn primary" id="pj-save">Save project</button>
-</div>
-</form></dialog>
-
-<dialog id="fsmodal">
-  <div class="dlg-h"><div class="halo b-accent" id="fs-halo"></div><span>Choose a folder</span></div>
-  <div class="fs-cur" id="fs-path">/</div>
-  <div class="dlg-b"><ul class="fs-list" id="fs-list"></ul></div>
-  <div class="dlg-f">
-    <button type="button" class="btn ghost" id="fs-cancel">Cancel</button>
-    <button type="button" class="btn primary" id="fs-use">Use this folder</button>
-  </div>
-</dialog>
-
-<dialog id="confirm">
-  <div class="dlg-h"><div class="halo" id="cf-halo"></div><span id="cf-title"></span></div>
-  <div class="dlg-b"><div class="confirm-msg" id="cf-msg"></div><div class="confirm-mono" id="cf-mono" hidden></div></div>
-  <div class="dlg-f">
-    <button type="button" class="btn ghost" id="cf-cancel">Cancel</button>
-    <button type="button" class="btn primary" id="cf-ok">Confirm</button>
-  </div>
-</dialog>
-
-<div id="toast"></div>
-
-<script>
-const TOKEN = "__TOKEN__";
-const BUILD = "__BUILD__";
-const $ = (id) => document.getElementById(id);
-
-/* ---------------------------------------------------------------- icons */
-const ic=(p)=>'<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+p+'</svg>';
-const I={
-  bot:ic('<rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><path d="M8 16h.01"/><path d="M16 16h.01"/>'),
-  zap:ic('<polygon points="13 2 3 14 12 14 11 22 21 10 12 10"/>'),
-  activity:ic('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'),
-  dollar:ic('<path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>'),
-  calendar:ic('<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/>'),
-  clock:ic('<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>'),
-  alert:ic('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>'),
-  xcircle:ic('<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>'),
-  check:ic('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'),
-  play:ic('<polygon points="6 3 20 12 6 21"/>'),
-  power:ic('<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/>'),
-  pencil:ic('<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/>'),
-  trash:ic('<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>'),
-  search:ic('<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>'),
-  filter:ic('<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46"/>'),
-  x:ic('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
-  sun:ic('<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>'),
-  moon:ic('<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>'),
-  cleft:ic('<path d="m15 18-6-6 6-6"/>'),
-  cright:ic('<path d="m9 18 6-6-6-6"/>'),
-  cdown:ic('<path d="m6 9 6 6 6-6"/>'),
-  plus:ic('<path d="M5 12h14"/><path d="M12 5v14"/>'),
-  eye:ic('<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>'),
-  file:ic('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/>'),
-  terminal:ic('<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>'),
-  shield:ic('<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1 1 0 0 1 1.52 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"/>'),
-  cpu:ic('<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v2"/><path d="M15 2v2"/><path d="M9 20v2"/><path d="M15 20v2"/><path d="M2 9h2"/><path d="M2 15h2"/><path d="M20 9h2"/><path d="M20 15h2"/>'),
-  timer:ic('<path d="M10 2h4"/><path d="M12 14v-4"/><circle cx="12" cy="14" r="8"/>'),
-  inbox:ic('<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>'),
-  radar:ic('<path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/><path d="M4 6h.01"/><path d="M2.29 9.62a10 10 0 1 0 19.02-1.27"/><path d="M16.24 7.76a6 6 0 1 0-8.01 8.91"/><path d="M12 18h.01"/><path d="M17.99 11.66a6 6 0 0 1-2.22 4.58"/><circle cx="12" cy="12" r="2"/><path d="m13.41 10.59 5.66-5.66"/>'),
-  folder:ic('<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'),
-};
-const STATUS_ICON={success:I.check, warning:I.alert, error:I.xcircle, idle:I.clock, running:I.timer};
-
-/* ---------------------------------------------------------------- theme */
-function themePref(){ return localStorage.ccTheme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); }
-function applyTheme(t){ document.documentElement.dataset.theme=t; $("themebtn").innerHTML = t==="dark" ? I.sun : I.moon; }
-applyTheme(themePref());
-
-/* ---------------------------------------------------------------- utils */
-let DATA={jobs:[],state:{},runs:[],launchd_loaded:false};
-let editingId=null, creating=false;
-const esc=(s)=>String(s ?? "").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const fmtAgo=(s)=>{ if(!s) return "never"; const d=Math.floor(Date.now()/1000)-s;
-  if(d<60)return d+"s ago"; if(d<3600)return Math.floor(d/60)+"m ago";
-  if(d<86400)return Math.floor(d/3600)+"h ago"; return Math.floor(d/86400)+"d ago"; };
-const fmtDur=(s)=>s<60 ? s+"s" : Math.floor(s/60)+"m "+(s%60)+"s";
-// Explicit parts rather than dateStyle:"short" — that renders a 2-digit year.
-const fmtWhen=(s)=>new Date(s*1000).toLocaleString(undefined,{year:"numeric",month:"numeric",
-  day:"numeric",hour:"numeric",minute:"2-digit",second:"2-digit"});
-// Canonical USD mask: $150.00, $1,234.56 — 2 decimals + thousands separator;
-// tiny agent costs keep up to 4 decimals so a $0.004 run isn't shown as $0.00.
-const money=(n)=>new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",
-  minimumFractionDigits:2, maximumFractionDigits:(Math.abs(n||0)<0.1?4:2)}).format(n||0);
-const normStatus=(s)=>s==="ok"?"success":(s||"—");
-// effort level → human label (empty = the flag is omitted and the CLI decides)
-const EFFORT_LABELS={"":"default","low":"Low","medium":"Medium","high":"High","xhigh":"Extra high","max":"Max"};
-const effortLabel=(v)=>EFFORT_LABELS[v||""]||v;
-const fmtBytes=(b)=>{ if(!b) return "0 B"; const u=["B","KB","MB","GB"]; let i=0;
-  while(b>=1024 && i<u.length-1){ b/=1024; i++; } return (i?b.toFixed(1):b)+" "+u[i]; };
-const DOW=["","Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-function fmtDays(arr){
-  const a=[...new Set((arr||[]).map(Number))].filter(n=>n>=1&&n<=7).sort((x,y)=>x-y);
-  if(!a.length) return "—";
-  const s=a.join(",");
-  if(s==="1,2,3,4,5,6,7") return "Every day";
-  if(s==="1,2,3,4,5") return "Mon–Fri";
-  if(s==="6,7") return "Sat–Sun";
-  return a.map(n=>DOW[n]).join(", ");
-}
-// The precheck's first output line as a bulleted key:value list on its own row,
-// so it never wraps against the "nothing to do" text.
-function checkList(output){
-  const raw=String(output||"").split("\n")[0];
-  if(!raw) return "";
-  const pairs=[...raw.matchAll(/([A-Za-z_]+)=(\S+)/g)];
-  const rest=raw.replace(/[A-Za-z_]+=\S+/g,"").replace(/->/g,"→").replace(/\s+/g," ").trim();
-  const items=pairs.map(m=>'<li>'+esc(m[1].replace(/_/g," "))+': <span class="ck-v">'+esc(m[2])+'</span></li>');
-  if(rest) items.push('<li>'+esc(rest)+'</li>');
-  return items.length ? '<ul class="checklist">'+items.join("")+'</ul>' : '';
-}
-
-function toast(msg,isErr,iconName){
-  const t=$("toast");
-  t.innerHTML=(I[iconName||((isErr)?"xcircle":"check")]||"")+"<span>"+esc(msg)+"</span>";
-  t.className=isErr?"show err":"show";
-  clearTimeout(t._h); t._h=setTimeout(()=>t.className="",2600);
-}
-
-async function api(op, extra){
-  const r = await fetch("/api/action", {method:"POST",
-    headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
-    body: JSON.stringify(Object.assign({op}, extra))});
-  const j = await r.json().catch(()=>({}));
-  if(!r.ok || j.ok===false){ toast((j.output||j.error||("HTTP "+r.status)), true); return false; }
-  return true;
-}
-
-/* ------------------------------------------------------------ confirm modal */
-let _cfResolve=null;
-function showConfirm(o){
-  $("cf-halo").className="halo "+(o.tone==="danger"?"b-err":"b-warn");
-  $("cf-halo").innerHTML=I[o.icon||"alert"]||I.alert;
-  $("cf-title").textContent=o.title||"Are you sure?";
-  $("cf-msg").textContent=o.message||"";
-  const mono=$("cf-mono");
-  if(o.mono){ mono.textContent=o.mono; mono.hidden=false; } else { mono.hidden=true; }
-  const ok=$("cf-ok");
-  ok.textContent=o.confirmLabel||"Confirm";
-  ok.className="btn "+(o.tone==="danger"?"danger":"primary");
-  // An alert states something that already happened — there is nothing to
-  // cancel, so it gets the one button that dismisses it.
-  $("cf-cancel").hidden = o.alertOnly===true;
-  $("confirm").showModal();
-  return new Promise(res=>{ _cfResolve=res; });
-}
-$("cf-ok").addEventListener("click",()=>{ $("confirm").close(); if(_cfResolve){_cfResolve(true);_cfResolve=null;} });
-$("cf-cancel").addEventListener("click",()=>{ $("confirm").close(); if(_cfResolve){_cfResolve(false);_cfResolve=null;} });
-$("confirm").addEventListener("cancel",()=>{ if(_cfResolve){_cfResolve(false);_cfResolve=null;} });
-
-/* ---------------------------------------------------------------- refresh */
-async function refresh(){
-  try{
-    const r = await fetch("/api/data", {headers:{"X-CC-Token":TOKEN}});
-    if(!r.ok) throw new Error("HTTP "+r.status);
-    DATA = await r.json();
-    // Server upgraded since this page loaded → reload once to pick up new UI.
-    if(DATA.build && DATA.build!==BUILD && sessionStorage.ccReloadedFor!==DATA.build){
-      sessionStorage.ccReloadedFor=DATA.build; location.reload(); return;
-    }
-    render();
-  }catch(e){ $("updated").textContent = "server unreachable — "+e.message; }
-}
-
-let jobProjectFilter="";  // "" = all, "__none__" = standalone, else a project name
-let collapsedGroups=new Set(JSON.parse(localStorage.ccCollapsed||"[]"));
-
-function projById(name){ return (DATA.projects||[]).find(p=>p.name===name)||null; }
-// effective value with project inheritance: job's own, else project's, else default
-function eff(j, field, def){
-  if(j[field]!=null && j[field]!=="") return j[field];
-  const p=j.project?projById(j.project):null;
-  if(p && p[field]!=null && p[field]!=="") return p[field];
-  return def;
-}
-
-// Mirrors in_window() in the bash engine: is NOW inside the job's active window?
-// Same rules — active_days is 1=Mon..7=Sun, active_hours is "HH:MM-HH:MM" and
-// may cross midnight; an empty/absent value means "no restriction".
-function inWindow(j, when){
-  const now=when||new Date();
-  const days=j.active_days;
-  if(Array.isArray(days) && days.length){
-    const dow=now.getDay()===0?7:now.getDay();   // JS 0=Sun → 7
-    if(!days.map(Number).includes(dow)) return false;
-  }
-  const hours=j.active_hours;
-  if(hours && /^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(hours)){
-    const [a,b]=hours.split("-");
-    const toMin=(s)=>{ const [h,m]=s.split(":").map(Number); return h*60+m; };
-    const s=toMin(a), e=toMin(b), nowMin=now.getHours()*60+now.getMinutes();
-    if(s<=e){ if(!(nowMin>=s && nowMin<e)) return false; }
-    else { if(!(nowMin>=s || nowMin<e)) return false; }   // window crosses midnight
-  }
-  return true;
-}
-
-// When the next precheck will actually happen. The tick skips any job outside
-// its window (in_window is checked BEFORE the precheck), so "last + interval" is
-// wrong once that lands outside the schedule — the real answer is when the
-// window next opens. Returns epoch seconds, or null if nothing fits in 8 days.
-function nextCheckAt(j, fromEpoch){
-  const from=new Date(fromEpoch*1000);
-  if(inWindow(j, from)) return fromEpoch;
-  const days=(Array.isArray(j.active_days)&&j.active_days.length)?j.active_days.map(Number):null;
-  const hours=(j.active_hours && /^\d{1,2}:\d{2}-\d{1,2}:\d{2}$/.test(j.active_hours))?j.active_hours:null;
-  const [oh,om]=(hours?hours.split("-")[0]:"00:00").split(":").map(Number);
-  for(let i=0;i<=8;i++){
-    const c=new Date(from); c.setDate(c.getDate()+i); c.setHours(oh,om,0,0);
-    if(c.getTime()<from.getTime()) continue;      // that day's opening already passed
-    const dow=c.getDay()===0?7:c.getDay();
-    if(days && !days.includes(dow)) continue;
-    return Math.floor(c.getTime()/1000);
-  }
-  return null;
-}
-
-function jobCard(j){
-  const t0=Math.floor(new Date().setHours(0,0,0,0)/1000);
-  const st=DATA.state[j.id]||{}, disabled=j.enabled===false;
-  const chk=(DATA.checks||{})[j.id]||{checks:0,runs:0};
-  const spentToday=DATA.runs.filter(r=>r.id===j.id && r.start>=t0).reduce((a,r)=>a+(r.cost||0),0);
-  const cap=(j.daily_budget_usd!=null?+j.daily_budget_usd:null);
-  const capped=(cap!=null && spentToday>=cap);
-  // Due time by interval, then pushed to the next window opening if that falls
-  // outside the schedule — so the card never promises a check that cannot run.
-  const dueAt=st.last_start?(st.last_start+(j.interval_seconds||300)):Math.floor(Date.now()/1000);
-  const nextAt=nextCheckAt(j, dueAt);
-  const next = j.enabled===false ? '<span class="muted">disabled</span>'
-    : (nextAt==null ? '<span class="muted">no matching window</span>'
-    : esc(fmtWhen(nextAt))+(nextAt>dueAt+30?' <span class="muted">· when the window reopens</span>':''));
-  const pc=st.last_precheck||null;
-  let checkStr=fmtAgo(st.last_start);
-  if(pc && typeof pc==="object"){ checkStr+=" — "+(pc.exit===0?"work found":"nothing to do")+checkList(pc.output); }
-  // A job may have SEVERAL runs going at once, so say how many rather than one
-  // "running now". The per-run outcome is no longer summarised on the card: each
-  // run is individual and carries its own status in the Runs table.
-  const nLive = activeRunsOf(j.id).length;
-  const runStr = (nLive
-      ? '<span class="runningbadge"><span class="pulse"></span>'
-        +nLive+' running now'+(nLive===1?'':'')+'…</span>'
-      : "")
-    + (st.last_run_start
-        ? (nLive?' <span class="muted">· last ':'<span class="muted">last ')+esc(fmtAgo(st.last_run_start))+'</span>'
-        : (nLive?"":"never"));
-  const model=eff(j,"model","opus"), perm=eff(j,"permission_mode","dontAsk"), budg=eff(j,"max_budget_usd",2);
-  const kv='<dl class="kv">'
-    +'<dt>'+I.clock+'Every</dt><dd>'+fmtDur(j.interval_seconds||300)+'</dd>'
-    +'<dt>'+I.calendar+'Window</dt><dd>'+esc(j.active_hours||"24h")+' · '+esc(fmtDays(j.active_days||[1,2,3,4,5,6,7]))+'</dd>'
-    +'<dt>'+I.play+'Last run</dt><dd>'+runStr+'</dd>'
-    +'<dt>'+I.radar+'Last check</dt><dd>'+checkStr+'</dd>'
-    +'<dt>'+I.cright+'Next check</dt><dd>'+next+'</dd>'   /* already escaped above */
-    +'<dt>'+I.dollar+'Today</dt><dd>'+money(spentToday)
-      +(cap!=null ? ' / '+money(cap)+(capped?' <span class="s-error">· capped</span>':'') : ' <span class="muted">· no cap</span>')+'</dd>'
-    +'<dt>'+I.cpu+'Model</dt><dd>'+esc(model)+' · cap '+money(budg)+'/run · '+esc(perm)+'</dd>'
-    +'<dt>'+I.activity+'Effort</dt><dd>'+esc(effortLabel(eff(j,"effort","")))+'</dd>'
-    +'<dt>'+I.activity+'Checks (24h)</dt><dd>'+chk.checks+' automatic check'+(chk.checks===1?"":"s")+' · '+chk.runs+' run'+(chk.runs===1?"":"s")+' woken</dd>'
-    +'</dl>';
-  // Badge has three states: disabled (red), idle (amber — enabled but outside
-  // its active window and not currently running), enabled (green).
-  const running=nLive>0;
-  const idle=!disabled && !running && !inWindow(j);
-  const pillCls=disabled?"off":(idle?"idle":"on");
-  const pillTxt=disabled?"disabled":(idle?"idle":"enabled");
-  const pillTip=idle?' title="Outside its active window — no runs until the window reopens"':"";
-  // Cards are draggable so a group can be put in the order the work runs in.
-  // The drag handle is the whole card; buttons and inputs still work normally.
-  return '<div class="card" draggable="true" data-job-id="'+esc(j.id)+'">'
-    +'<h2><span class="jobname" title="Drag to reorder within the project">'+I.bot+esc(j.id)+'</span>'
-    +'<span class="pill '+pillCls+'"'+pillTip+'>'+pillTxt+'</span></h2>'
-    // Disabling stops FUTURE runs; one already in flight keeps going. Say so,
-    // instead of letting "disabled" sit beside a spinning "running now…".
-    +(disabled&&nLive?'<div class="warnline">'+I.alert+'Disabled — '+nLive+' run'+(nLive===1?'':'s')+' started earlier '+(nLive===1?'is':'are')+' still going. Stop '+(nLive===1?'it':'them')+' from the Runs table.</div>':"")
-    +'<div class="desc">'+esc(j.description||"")+'</div>'
-    +kv
-    +'<div class="actions">'
-    // Run now always available: several runs of a job may go at once (up to
-    // max_parallel), so a live run no longer replaces this with a stop. Stopping
-    // is per-run, from the Runs table — a job-wide stop would kill them all.
-    // No run count here: how many are going is already said above, in plain
-    // words, and crowding it into the button only made the label unreadable.
-    +'<button class="btn primary" data-op="run" data-id="'+esc(j.id)+'">'+I.play+'Run now</button>'
-    +'<button class="btn" data-op="'+(disabled?"enable":"disable")+'" data-id="'+esc(j.id)+'">'+I.power+(disabled?"Enable":"Disable")+'</button>'
-    +'<button class="btn" data-op="edit" data-id="'+esc(j.id)+'">'+I.pencil+'Edit</button>'
-    +'<button class="btn danger" data-op="delete" data-id="'+esc(j.id)+'">'+I.trash+'Delete</button>'
-    +'</div></div>';
-}
-
-/* ---- drag to reorder job cards within their group ---- */
-// Order lives in jobs.json (the engine rewrites only the dragged group's slots),
-// so it survives reloads and is the order the tick walks the jobs in.
-let _dragId=null;
-function initJobDrag(){
-  const host=$("jobs"); if(!host) return;
-  host.addEventListener("dragstart",(e)=>{
-    const c=e.target.closest(".card[data-job-id]"); if(!c) return;
-    _dragId=c.dataset.jobId; c.classList.add("dragging");
-    e.dataTransfer.effectAllowed="move";
-    try{ e.dataTransfer.setData("text/plain", _dragId); }catch(_){}
-  });
-  host.addEventListener("dragend",()=>{
-    _dragId=null;
-    host.querySelectorAll(".dragging,.dragover").forEach(x=>x.classList.remove("dragging","dragover"));
-  });
-  host.addEventListener("dragover",(e)=>{
-    if(!_dragId) return;
-    const over=e.target.closest(".card[data-job-id]");
-    const from=host.querySelector('.card[data-job-id="'+CSS.escape(_dragId)+'"]');
-    // Only within the same group: reordering is per project, never across.
-    if(!over || !from || over===from || over.closest(".grid")!==from.closest(".grid")) return;
-    e.preventDefault(); e.dataTransfer.dropEffect="move";
-    host.querySelectorAll(".dragover").forEach(x=>x.classList.remove("dragover"));
-    over.classList.add("dragover");
-  });
-  host.addEventListener("drop",async(e)=>{
-    const over=e.target.closest(".card[data-job-id]");
-    const from=_dragId && host.querySelector('.card[data-job-id="'+CSS.escape(_dragId)+'"]');
-    if(!over || !from || over===from || over.closest(".grid")!==from.closest(".grid")) return;
-    e.preventDefault();
-    const grid=over.closest(".grid");
-    // Insert before or after, depending on which way the card was dragged.
-    const cards=[...grid.querySelectorAll(".card[data-job-id]")];
-    grid.insertBefore(from, cards.indexOf(from)<cards.indexOf(over) ? over.nextSibling : over);
-    over.classList.remove("dragover");
-    const order=[...grid.querySelectorAll(".card[data-job-id]")].map(c=>c.dataset.jobId);
-    _dragId=null;
-    const r=await fetch("/api/action",{method:"POST",
-      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
-      body:JSON.stringify({op:"reorder",order})});
-    if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Could not save the order — "+(j.error||("HTTP "+r.status)), true); }
-    else toast("Order saved", false, "check");
-    refresh();
-  });
-}
-
-function collapsibleGroup(key, headerInner, cards){
-  const collapsed=collapsedGroups.has(key);
-  return '<div class="projgroup'+(collapsed?" collapsed":"")+'" data-group="'+esc(key)+'">'
-    +'<div class="projgroup-h" data-toggle="'+esc(key)+'">'+headerInner
-      +'<span class="pgh-chevron">'+I.cdown+'</span></div>'
-    +'<div class="projgroup-body"><div class="pgb-inner"><div class="grid">'+cards+'</div></div></div>'
-  +'</div>';
-}
-
-/* ---- bulk enable/disable ---- */
-// The set the Jobs tab is showing right now. Mirrors the chip filter that
-// renderJobs applies below, so the top button can never reach a job that the
-// current filter has taken off-screen.
-function visibleJobs(){
-  const jobs=DATA.jobs||[];
-  if(jobProjectFilter==="") return jobs;
-  if(jobProjectFilter==="__none__") return jobs.filter(j=>!j.project);
-  return jobs.filter(j=>j.project===jobProjectFilter);
-}
-// Direction of the switch: while ANY job in the set is still on, the button
-// turns them off; it only offers to turn them on once every one is off. Same
-// defaulting as the engine — a job with no `enabled` key is enabled.
-function bulkOn(js){ return js.some(j=>j.enabled!==false); }
-// Single source for the button phrasing, with or without a trailing count —
-// used by bulkBtn's group buttons (no count; the pgh-count badge already
-// shows one) and by the #bulk-all block below (count, since "all" is
-// ambiguous while a chip filter is on).
-function bulkLabel(on, n){ return (on?"Disable all":"Enable all")+(n===undefined?"":" "+n); }
-// `kind` disambiguates the scope from the key: project NAMES are free-form
-// (the engine only requires non-empty), so a project literally named
-// "__standalone__" must never be mistaken for the standalone sentinel. kind
-// is a fixed enum ("project"/"standalone") set by the caller, never user text.
-function bulkBtn(cls, kind, key, js){
-  const on=bulkOn(js);
-  return '<button class="'+cls+'" data-bulk-kind="'+kind+'" data-bulk="'+esc(key)+'" data-bulk-to="'+(on?"0":"1")+'"'
-    +' title="'+(on?"Disable":"Enable")+' every job in this group">'
-    +I.power+bulkLabel(on)+'</button>';
-}
-// Resolved at CLICK time, not render time: ids baked into the DOM go stale the
-// moment a refresh lands, and acting on a stale list is how a bulk switch hits
-// a job that is no longer there. Dispatches on `kind`, not on `key` — a
-// project named "standalone" or "visible" only ever matches the `key` branch.
-function bulkScope(kind, key){
-  const jobs=DATA.jobs||[];
-  if(kind==="standalone") return {label:"standalone jobs", js:jobs.filter(j=>!j.project)};
-  if(kind==="visible")    return {label:"", js:visibleJobs()};
-  return {label:key, js:jobs.filter(j=>j.project===key)};
-}
-async function bulkToggle(btn, kind, key, enable){
-  const sc=bulkScope(kind, key), js=sc.js;
-  if(!js.length) return;
-  const n=js.length, word=(n===1?"job":"jobs"), where=(sc.label?" in "+sc.label:"");
-  const yes=await showConfirm({tone:"warn", icon:"alert",
-    title:(enable?"Enable all ":"Disable all ")+n+" "+word+where+"?",
-    message: enable
-      ? "The tick will start launching runs for all of them as their schedules come due, spending agent sessions and money."
-      : "No new runs will be started for these jobs. Runs already in flight keep going — stop those from the Runs table. Which jobs were already disabled is not remembered: enabling them all later will enable every one of them.",
-    confirmLabel:(enable?"Enable ":"Disable ")+n+" "+word});
-  if(!yes) return;
-  btn.disabled=true;
-  const r=await fetch("/api/action",{method:"POST",
-    headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
-    body:JSON.stringify({op:"toggle_many", ids:js.map(j=>j.id), enabled:enable})});
-  const j=await r.json().catch(()=>({}));
-  if(!r.ok||j.ok===false){ toast(j.error||j.output||("HTTP "+r.status), true); btn.disabled=false; return; }
-  toast(j.output||"Done", false, "check");
-  btn.disabled=false;
-  refresh();
-}
-
-function renderJobs(){
-  const jobs=DATA.jobs||[];
-  const projects=[...new Set(jobs.map(j=>j.project||"").filter(Boolean))].sort();
-  const nStandalone=jobs.filter(j=>!j.project).length;
-  if(jobProjectFilter && jobProjectFilter!=="__none__" && !projects.includes(jobProjectFilter)) jobProjectFilter="";
-
-  // Top button: acts on exactly what this render is about to show, so it can
-  // never touch a job the chip filter has taken off-screen. Its label carries
-  // the count for the same reason — "all" is ambiguous while a filter is on.
-  // Runs after the stale-filter guard above so a renamed/removed project's
-  // dead filter value has already been reset before visibleJobs() reads it.
-  const vis=visibleJobs(), ball=$("bulk-all");
-  ball.hidden=!vis.length;
-  if(vis.length){
-    const on=bulkOn(vis);
-    ball.dataset.bulkKind="visible";
-    ball.dataset.bulk="__visible__";
-    ball.dataset.bulkTo=on?"0":"1";
-    ball.innerHTML=I.power+bulkLabel(on, vis.length);
-  }
-
-  // chips (shown only when at least one project exists)
-  if(projects.length){
-    const chips=[["","All"]].concat(projects.map(p=>[p,p]));
-    if(nStandalone) chips.push(["__none__","Standalone"]);
-    $("projchips").innerHTML=chips.map(([v,l])=>{
-      const cnt = v===""?jobs.length : v==="__none__"?nStandalone : jobs.filter(j=>j.project===v).length;
-      return '<button class="projchip'+(jobProjectFilter===v?" active":"")+'" data-proj="'+esc(v)+'">'
-        +(v&&v!=="__none__"?I.folder:"")+esc(l)+' <span class="chipn">'+cnt+'</span></button>';
-    }).join("");
-  } else { $("projchips").innerHTML=""; }
-
-  // no projects at all → flat grid, no group chrome
-  if(!projects.length){
-    $("jobs").innerHTML = jobs.length ? '<div class="grid">'+jobs.map(jobCard).join("")+'</div>'
-      : '<div class="card empty">'+I.inbox+'No jobs yet — create one.</div>';
-    return;
-  }
-
-  const names = jobProjectFilter==="" ? projects : (jobProjectFilter==="__none__" ? [] : [jobProjectFilter]);
-  const showStandalone = (jobProjectFilter===""||jobProjectFilter==="__none__") && nStandalone>0;
-  let html="";
-  for(const name of names){
-    const js=jobs.filter(j=>j.project===name); if(!js.length) continue;
-    const p=projById(name);
-    const head='<span class="pgh-ic">'+I.folder+'</span><span class="pgh-name">'+esc(name)+'</span>'
-      +'<span class="pgh-count">'+js.length+' job'+(js.length===1?"":"s")+'</span>'
-      +(p&&p.description?'<span class="pgh-desc">'+esc(p.description)+'</span>':'')
-      +'<span class="spacer"></span>'
-      +bulkBtn("pgh-bulk", "project", name, js)
-      +'<button class="pgh-edit" data-editproj="'+esc(name)+'" title="Edit project">'+I.pencil+'</button>';
-    html+=collapsibleGroup(name, head, js.map(jobCard).join(""));
-  }
-  if(showStandalone){
-    const js=jobs.filter(j=>!j.project);
-    const head='<span class="pgh-ic">'+I.folder+'</span><span class="pgh-name standalone">Standalone jobs</span>'
-      +'<span class="pgh-count">'+js.length+' job'+(js.length===1?"":"s")+'</span>'
-      +'<span class="spacer"></span>'
-      +bulkBtn("pgh-bulk", "standalone", "__standalone__", js);
-    html+=collapsibleGroup("__standalone__", head, js.map(jobCard).join(""));
-  }
-  $("jobs").innerHTML = html || '<div class="card empty">'+I.inbox+'No jobs in this view.</div>';
-}
-
-/* ---- projects modal ---- */
-let editingProject=null;
-function repoRow(r){
-  r=r||{};
-  return '<div class="repo-row" style="display:flex;gap:6px;margin-bottom:6px">'
-    +'<input class="rp-name" placeholder="name" value="'+esc(r.name||"")+'" style="flex:1">'
-    +'<input class="rp-path" placeholder="/absolute/path" value="'+esc(r.path||"")+'" style="flex:2">'
-    +'<input class="rp-base" placeholder="base branch" value="'+esc(r.base||"")+'" style="flex:1">'
-    +'<button type="button" class="btn ghost rp-del" title="Remove">×</button></div>';
-}
-function renderRepos(list){ $("pj-repos").innerHTML=(list||[]).map(repoRow).join(""); }
-// Read at SAVE time from the DOM, so rows added and removed since the editor
-// opened are both honoured.
-function collectRepos(){
-  return [...document.querySelectorAll("#pj-repos .repo-row")].map(d=>({
-    name: d.querySelector(".rp-name").value.trim(),
-    path: d.querySelector(".rp-path").value.trim(),
-    base: d.querySelector(".rp-base").value.trim()
-  })).filter(r=>r.name && r.path);
-}
-function openProjectEditor(name){
-  editingProject=name||null;
-  const p=name?projById(name):null;
-  $("pj-halo").innerHTML=name?I.pencil:I.plus;
-  $("pj-title").textContent=name?("Edit project — "+name):"New project";
-  // The name is editable when editing too: renaming carries the project's jobs
-  // with it (the engine refuses a name already in use).
-  $("pj-name").value=p?p.name:""; $("pj-name").disabled=false;
-  $("pj-desc").value=(p&&p.description)||"";
-  $("pj-cwd").value=(p&&p.cwd)||"";
-  $("pj-ccd").value=(p&&p.claude_config_dir)||"";
-  // The stored value is "auto" | true | false; the select speaks strings.
-  const wt=(p&&p.worktree&&p.worktree.enabled);
-  wtCombo.set((wt===true||wt==="true") ? "true" : (wt===false||wt==="false") ? "false" : "auto");
-  renderRepos((p&&p.repos)||[]);
-  // The hooks are files on disk, not part of the project object, so they are
-  // fetched on open. Cleared first: a script left over from the previously
-  // edited project would otherwise be saved onto this one.
-  $("pj-up").value=""; $("pj-down").value="";
-  if(name){
-    ["up","down"].forEach(async ph=>{
-      const r=await fetch("/api/action",{method:"POST",
-        headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
-        body:JSON.stringify({op:"provision_get", name, phase:ph})});
-      const j=await r.json().catch(()=>({}));
-      if(r.ok && j.ok!==false) $("pj-"+ph).value=j.script||"";
-    });
-  }
-  $("pj-delete").style.display=name?"":"none";
-  $("projmodal").showModal();
-}
-async function projApi(op, extra){
-  const r=await fetch("/api/action",{method:"POST",headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
-    body:JSON.stringify(Object.assign({op}, extra))});
-  const j=await r.json().catch(()=>({}));
-  if(!r.ok||j.ok===false){ toast(j.output||j.error||("HTTP "+r.status),true); return false; }
-  return true;
-}
-async function saveProject(){
-  const btn=$("pj-save"); btn.disabled=true;
-  try{
-    const name=$("pj-name").value.trim();
-    if(!name){ toast("Project name is required",true); return; }
-    // Rename FIRST when the name changed: the project is keyed by name, and its
-    // jobs point at it by name, so both must move before anything else is saved.
-    if(editingProject && name!==editingProject){
-      const r=await fetch("/api/action",{method:"POST",
-        headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
-        body:JSON.stringify({op:"project_rename",name:editingProject,new_name:name})});
-      if(!r.ok){ const e=await r.json().catch(()=>({})); toast("Rename failed — "+(e.error||("HTTP "+r.status)), true); return; }
-      editingProject=name;
-      toast("Renamed project to "+name, false, "check");
-    }
-    const proj={name};
-    const d=$("pj-desc").value.trim(); if(d) proj.description=d;
-    const c=$("pj-cwd").value.trim(); if(c) proj.cwd=c;
-    // Sent even when empty, unlike the fields above: emptying this one is how you
-    // put a project back on the default account, and project-set merges, so a key
-    // that is simply omitted would keep the old account forever.
-    proj.claude_config_dir=$("pj-ccd").value.trim();
-    // Send only .worktree.enabled: project-set merges (jq `. * $p`), so any
-    // venv/env the project declares alongside it survives the save.
-    const wv=$("pj-wt").value;
-    proj.worktree={enabled: wv==="true" ? true : wv==="false" ? false : "auto"};
-    // Always sent, and always whole: project-set merges with jq `. * $p`, which
-    // merges objects but REPLACES arrays -- so a partial array would silently
-    // drop repos, and an omitted one would make removing the last repo impossible.
-    proj.repos=collectRepos();
-    if(!await projApi("project_set",{project:proj})) return;
-    // Saved after the project, and by name: provision-set refuses a project the
-    // engine does not know yet, so a brand-new one has to exist first.
-    for(const ph of ["up","down"]){
-      if(!await projApi("provision_set",{name, phase:ph, script:$("pj-"+ph).value})) return;
-    }
-    $("projmodal").close(); toast("Saved project "+name); refresh();
-  } finally { btn.disabled=false; }
-}
-async function deleteProjectFromModal(){
-  if(!editingProject) return;
-  const yes=await showConfirm({tone:"danger",icon:"trash",title:"Delete project "+editingProject+"?",
-    message:"The project is removed. Its jobs keep their project label but stop inheriting its cwd/description; their runs are untouched.",
-    confirmLabel:"Delete project"});
-  if(!yes) return;
-  if(!await projApi("project_delete",{name:editingProject})) return;
-  $("projmodal").close(); toast("Deleted project "+editingProject); refresh();
-}
-
-function render(){
-  const _g=DATA.generated?new Date(DATA.generated):null;
-  $("updated").textContent=(_g&&!isNaN(_g))?_g.toLocaleString(undefined,{dateStyle:"medium",timeStyle:"medium"}):"";
-  $("pill-launchd").innerHTML='<span class="pill '+(DATA.launchd_loaded?"on":"off")+'">'
-    +(DATA.launchd_loaded?I.check+"launchd":I.xcircle+"launchd off")+'</span>';
-
-  const today=new Date(); today.setHours(0,0,0,0);
-  const t0=Math.floor(today.getTime()/1000), wk=Math.floor(Date.now()/1000)-7*86400;
-  const sum=(rs,f)=>rs.reduce((a,r)=>a+(f(r)||0),0);
-  const rt=DATA.runs.filter(r=>r.start>=t0), rw=DATA.runs.filter(r=>r.start>=wk);
-  const nWarn=rw.filter(r=>normStatus(r.status)==="warning").length;
-  const nErr =rw.filter(r=>normStatus(r.status)==="error").length;
-  // The last two tiles are the ones you act on, so they filter the Runs table:
-  // click to see exactly those runs, click again to clear.
-  const tiles=[
-    [I.activity,"b-accent",rt.length,"Runs today",""],
-    [I.dollar,"b-accent",money(sum(rt,r=>r.cost)),"Spent today",""],
-    [I.calendar,"b-accent",rw.length,"Runs (7d)",""],
-    [I.dollar,"b-accent",money(sum(rw,r=>r.cost)),"Spent (7d)",""],
-    [I.alert,"b-warn",nWarn,"Warnings (7d)","warning"],
-    [I.xcircle,"b-err",nErr,"Errors (7d)","error"],
-  ];
-  $("stats").innerHTML=tiles.map(([icn,tone,n,l,filter])=>{
-    const on=filter && RF.status===filter;
-    const tip=filter
-      ? (filter==="warning"
-          ? "Runs that finished without failing but did not do the work — click to see them"
-          : "Runs that failed — click to see them")
-      : "";
-    return '<div class="stat'+(filter?" clickable":"")+(on?" active":"")+'"'
-      +(filter?' data-statfilter="'+filter+'" title="'+esc(tip)+'"':"")+'>'
-      +'<div class="stat-top"><div class="bubble '+tone+'">'+icn+'</div><div class="n">'+esc(n)+'</div></div>'
-      +'<div class="l">'+esc(l)+'</div></div>';
-  }).join("");
-
-  paintViewTabs();
-  renderJobs();
-  renderRuns();
-  $("foot").textContent="claude-cron · control server on 127.0.0.1 · SQLite index.db ("
-    +fmtBytes(DATA.db_bytes)+") holds run history & search · runs.ndjson is the append journal";
-}
-
-/* ------------------------------------------- runs: search + filters + pages */
-const RF={project:"",job:"",status:"",from:"",to:""};
-let pageSize=parseInt(localStorage.ccPageSize||"25",10)||25, page=1;
-let searchKeys=null, snippets={}, searchSeq=0;
-
-function activeFilterCount(){ return ["project","job","status","from","to"].filter(k=>RF[k]).length; }
-
-// Runs happening right now. They are not in the journal yet (a record is only
-// written when a run ends), so synthesize their rows — that is what puts an
-// in-flight run in the table, where its log can be followed live.
-//
-// Built from the run SLOTS, one per live run. The shared state cannot be the
-// source here: it holds a single last_start/last_status per JOB, so when a job
-// has several runs at once they overwrite each other and every run but the most
-// recent disappears — from this table and from the tab's count with it.
-function liveRuns(){
-  const now=Math.floor(Date.now()/1000), out=[];
-  for(const [id, slots] of Object.entries(DATA.active_runs||{})){
-    const j=(DATA.jobs||[]).find(x=>x.id===id)||{};
-    for(const s of (slots||[])){
-      const started=s.start||0;
-      out.push({id, start:started, status:"running",
-                duration:started?Math.max(0,now-started):0,
-                cost:null, session:s.session||"", project:j.project||"", live:true, pid:s.pid});
-    }
-  }
-  return out.sort((a,b)=>b.start-a.start);
-}
-
-function filteredRuns(){
-  const fromT=RF.from?Date.parse(RF.from):null, toT=RF.to?Date.parse(RF.to):null;
-  // live rows first — a search narrows to indexed runs, so they drop out there
-  const live=searchKeys?[]:liveRuns();
-  return live.concat(DATA.runs).filter(r=>{
-    if(r.live){
-      if(RF.project){ const rp=r.project||""; if(RF.project==="__none__" ? rp!=="" : rp!==RF.project) return false; }
-      if(RF.job && r.id!==RF.job) return false;
-      if(RF.status && RF.status!=="running") return false;
-      return true;
-    }
-    if(searchKeys && !searchKeys.has(r.id+"|"+r.start)) return false;
-    if(RF.project){ const rp=r.project||""; if(RF.project==="__none__" ? rp!=="" : rp!==RF.project) return false; }
-    if(RF.job && r.id!==RF.job) return false;
-    if(RF.status && normStatus(r.status)!==RF.status) return false;
-    const t=r.start*1000;
-    if(fromT && t<fromT) return false;
-    if(toT && t>toT) return false;
-    return true;
-  });
-}
-
-/* ---- hover tooltip (fixed bubble on <body>, so no container can clip it) ---- */
-let _tipEl=null;
-function tipShow(anchor, html){
-  if(!_tipEl){ _tipEl=document.createElement("div"); _tipEl.id="tipbubble"; document.body.appendChild(_tipEl); }
-  _tipEl.innerHTML=html; _tipEl.style.visibility="hidden"; _tipEl.classList.remove("show");
-  // measure, then place above the anchor (flipping below when there's no room)
-  const a=anchor.getBoundingClientRect(), b=_tipEl.getBoundingClientRect();
-  let left=Math.min(Math.max(8, a.left+a.width/2-b.width/2), window.innerWidth-b.width-8);
-  const above=a.top-b.height-9;
-  _tipEl.style.left=left+"px";
-  _tipEl.style.top=(above>8 ? above : a.bottom+9)+"px";
-  _tipEl.style.visibility="visible";
-  requestAnimationFrame(()=>_tipEl&&_tipEl.classList.add("show"));
-}
-function tipHide(){ if(_tipEl){ _tipEl.classList.remove("show"); _tipEl.style.visibility="hidden"; } }
-function initTooltips(){
-  document.addEventListener("mouseover",(e)=>{ const t=e.target.closest("[data-tip]"); if(t) tipShow(t, decodeURIComponent(t.dataset.tip)); });
-  document.addEventListener("mouseout",(e)=>{ if(e.target.closest("[data-tip]")) tipHide(); });
-  document.addEventListener("scroll",tipHide,true);
-}
-
-// "Succeeded, but nothing actually ran" — the engine puts the agent's own
-// `NOTHING TO DO: <reason>` in the run's note. Returns the reason, or "".
-function nothingNote(r){
-  const n=(r&&r.note)||"";
-  const i=n.indexOf("NOTHING TO DO:");
-  return i<0 ? "" : n.slice(i+"NOTHING TO DO:".length).trim();
-}
-
-/* ---- live runs: a job may now have SEVERAL at once (one slot each) ---- */
-const activeRunsOf = id => (DATA.active_runs||{})[id] || [];
-// Which live slot to stop from a runs-table row. With one live run it is that
-// run; with several, the row cannot tell them apart, so fall back to the first
-// and let the engine's per-pid stop do the precise work.
-function livePidFor(id){ const a=activeRunsOf(id); return a.length ? a[0].pid : ""; }
-
-/* ---- resume bookkeeping: which failed run was already resumed, and into what ---- */
-let resumedRuns={};
-try{ resumedRuns=JSON.parse(localStorage.ccResumed||"{}"); }catch(e){ resumedRuns={}; }
-const runKey=(id,start)=>id+"|"+start;
-function markResumed(id,start){
-  resumedRuns[runKey(id,start)]=Math.floor(Date.now()/1000);
-  localStorage.ccResumed=JSON.stringify(resumedRuns);
-}
-// Has THIS failed run's own task already been picked back up? Resume now means
-// `claude --resume <session>` — it continues that one conversation, so a later
-// run of the same job is NOT a follow-up: it was a different ticket, in its own
-// worktree, and this session is still sitting there unfinished. Only a run that
-// actually resumed THIS session counts, which the journal records by carrying
-// the same session id forward.
-// Every run that CONTINUED the session `sid`, oldest first. Two signals, and
-// both are needed: `--resume` makes the new run report the SAME session id (so
-// a later run carrying it is a continuation — true even for runs from before
-// this was tracked), and `resumed_from` records the parent explicitly, which is
-// what identifies a continuation whose own session id came out different.
-function continuationsOf(sid, after){
-  if(!sid) return [];
-  return (DATA.runs||[])
-    .filter(r=>r.resumed_from===sid || (r.session===sid && r.start>after))
-    .sort((a,b)=>a.start-b.start);
-}
-// The run this one continued, if any — the other side of the same link. The
-// parent is always EARLIER: a resumed run reports the very session it resumed,
-// so matching on the session alone would find the run itself.
-function continuedRun(r){
-  if(!r || !r.start) return null;
-  const sid=r.resumed_from || r.session;
-  if(!sid) return null;
-  const earlier=(DATA.runs||[])
-    .filter(x=>x.start<r.start && (x.session===sid || x.resumed_from===sid))
-    .sort((a,b)=>b.start-a.start);
-  return earlier[0]||null;
-}
-function resumeTarget(id, after){
-  const src=(DATA.runs||[]).find(r=>r.id===id && r.start===after);
-  const sid=src&&src.session;
-  if(!sid) return null;
-  const done=continuationsOf(sid, after);
-  if(done.length) return {run:done[0], running:false};
-  // A resume still in flight is not in the journal yet (a record is written
-  // when a run ENDS), so ask the live slots as well.
-  if(activeRunsOf(id).some(a=>a.resume_of===sid)) return {run:{id, start:after}, running:true};
-  return null;
-}
-function resumeTip(id, start){
-  const t=resumeTarget(id, start);
-  if(!t) return "";
-  const clickedAt=resumedRuns[runKey(id,start)];   // set only if resumed from this browser
-  // Only a run that continued THIS session lands here (see resumeTarget).
-  const head=clickedAt ? "Resumed into a new run" : "This task was already resumed";
-  let rows=clickedAt ? '<div class="tt-row"><span class="tt-k">Resumed at</span><span class="tt-v">'+esc(fmtWhen(clickedAt))+'</span></div>' : "";
-  rows+='<div class="tt-row"><span class="tt-k">New run</span><span class="tt-v">'+esc(fmtWhen(t.run.start))+'</span></div>';
-  if(t.running){
-    rows+='<div class="tt-row"><span class="tt-k">Session</span><span class="tt-v"><span class="runningbadge"><span class="pulse"></span>running now…</span></span></div>'
-      +'<div class="tt-foot">Its session id is recorded when the run finishes.</div>';
-  } else {
-    const s=normStatus(t.run.status||"");
-    rows+='<div class="tt-row"><span class="tt-k">Session</span><span class="tt-v"><code>'+esc((t.run.session||"—").slice(0,8))+'</code></span></div>'
-      +'<div class="tt-row"><span class="tt-k">Outcome</span><span class="tt-v stat-cell s-'+esc(s)+'">'+(STATUS_ICON[s]||"")+esc(s)+'</span></div>'
-      +'<div class="tt-foot">Open that row&rsquo;s log to see what it did.</div>';
-  }
-  return '<div class="tt-h">'+I.play+esc(head)+'</div>'+rows;
-}
-
-function renderRuns(){
-  const all=filteredRuns();
-  const pages=Math.max(1,Math.ceil(all.length/pageSize));
-  if(page>pages) page=pages;
-  const slice=all.slice((page-1)*pageSize, page*pageSize);
-  $("runs").innerHTML = slice.map(r=>{
-    const s=normStatus(r.status);
-    const snip=searchKeys?(snippets[r.id+"|"+r.start]||""):"";
-    // For a failed run: has the job run again since? (drives the disabled Resume
-    // button and the "?" badge, and is true regardless of which browser resumed it)
-    const followUp = s==="error" ? resumeTarget(r.id, r.start) : null;
-    // A run that continued an earlier one says so, and points at it: without
-    // this the two rows look unrelated, and the pair is the whole story.
-    const parent = continuedRun(r);
-    const resumedBadge = parent
-      ? '<span class="trigger-badge resumed" data-tip="'
-        +encodeURIComponent('<div class="tt-h">'+I.play+'Resumed run</div>'
-          +'<div class="tt-row"><span class="tt-k">Continues</span><span class="tt-v">'+esc(fmtWhen(parent.start))+'</span></div>'
-          +'<div class="tt-row"><span class="tt-k">That run</span><span class="tt-v stat-cell s-'+esc(normStatus(parent.status))+'">'
-            +(STATUS_ICON[normStatus(parent.status)]||"")+esc(normStatus(parent.status))+'</span></div>'
-          +'<div class="tt-row"><span class="tt-k">Session</span><span class="tt-v"><code>'+esc((parent.session||"—").slice(0,8))+'</code></span></div>'
-          +'<div class="tt-foot">Same conversation, picked up where it stopped.</div>').replace(/"/g,"%22")
-        +'">resumed</span>'
-      : '';
-    return "<tr><td class=num>"+esc(fmtWhen(r.start))
-      +(r.forced?'<span class="trigger-badge">forced</span>':'')
-      +resumedBadge
-      +(snip?'<div class="snip" title="'+esc(snip)+'">'+esc(snip)+'</div>':'')+"</td>"
-      +"<td><code>"+esc(r.id)+"</code></td>"
-      +'<td>'+(r.project?'<span class="projtag">'+I.folder+esc(r.project)+'</span>':'<span class="muted">—</span>')+'</td>'
-      +'<td>'+(r.live
-          ? '<span class="runningbadge"><span class="pulse"></span>running…</span>'
-          : '<span class="stat-cell s-'+esc(s)+'">'+(STATUS_ICON[s]||"")+esc(s)+"</span>"
-            +((s==="error" && followUp)
-               ? '<span class="tipbadge" data-tip="'+encodeURIComponent(resumeTip(r.id,r.start)).replace(/"/g,"%22")+'">?</span>'
-               // A run can end fine having done nothing at all — a resumed task
-               // already finished, or its ticket is gone. That is recorded as a
-               // WARNING, and the reason is shown here, so a clean-looking run is
-               // never mistaken for work that happened.
-               : (nothingNote(r)
-                  ? '<span class="tipbadge" data-tip="'+encodeURIComponent("Nothing was done in this run — "+nothingNote(r)).replace(/"/g,"%22")+'">?</span>'
-                  : "")))
-      +"</td>"
-      +"<td class=num>"+esc(fmtDur(r.duration))+(r.live?' <span class="muted">so far</span>':"")+"</td>"
-      +"<td class=num>"+(r.live?'<span class="muted">—</span>':esc(money(r.cost)))+"</td>"
-      +"<td><code>"+esc((r.session||"").slice(0,8)||"—")+"</code></td>"
-      +'<td class="rowacts">'
-        +'<button class="iconbtn'+(r.live?' live':'')+'" title="'+(r.live?"Follow this run live":"View log")+'"'
-          +' data-log-id="'+esc(r.id)+'" data-log-start="'+esc(r.start)+'">'+I.eye+'</button>'
-        // A failed run is worth retrying — offer it right where the failure shows.
-        // Reuses the Run-now op, so it inherits the precheck guard and toasts.
-        // Always rendered (disabled when not applicable) so every row's icons
-        // line up in the same columns.
-        // Disabled once the job has run again (resumed here or anywhere) — a
-        // second resume would just duplicate work. The "?" says where it went.
-        // STOP and RESUME are BOTH always rendered, each enabled only when it
-        // applies, so every row's icons line up in the same columns and the
-        // controls are findable even on rows where they are not usable.
-        // Stop ends THIS run (by its pid); resume continues THIS run's own
-        // session — the same task, picked back up, exactly like
-        // `claude --resume <session>` — never a fresh run of the job.
-        +(r.live
-           // Stop THIS run: the row carries its own pid now, so with several
-           // runs of one job the right one is ended, not merely the first.
-           ? '<button class="iconbtn danger" title="Stop this run"'
-             +' data-op="stop" data-id="'+esc(r.id)+'" data-run-pid="'+esc(r.pid||livePidFor(r.id))+'">'+I.power+'</button>'
-           : '<button class="iconbtn" disabled title="This run has already finished — only a running run can be stopped">'+I.power+'</button>')
-        +(r.live
-           ? '<button class="iconbtn retry" disabled title="This run is still going">'+I.play+'</button>'
-           : s==="error"
-             ? (!r.session
-                ? '<button class="iconbtn retry" disabled title="This run recorded no session id, so it cannot be resumed">'+I.play+'</button>'
-                : followUp
-                  ? '<button class="iconbtn retry" disabled title="'
-                    +(followUp.running?"A newer run is in progress":"This task was already resumed")
-                    +' — see the ? beside the status">'+I.play+'</button>'
-                  : '<button class="iconbtn retry" title="Resume this task — continue session '
-                    +esc((r.session||"").slice(0,8))+' where it stopped"'
-                    +' data-op="resume" data-id="'+esc(r.id)+'" data-session="'+esc(r.session||"")+'"'
-                    +' data-resume-key="'+esc(runKey(r.id,r.start))+'">'+I.play+'</button>')
-             : '<button class="iconbtn retry" disabled title="Only failed runs can be resumed">'+I.play+'</button>')
-        // Erase this run for good: its log files, its journal line and its rows
-        // in the search database. Never offered while it is still running.
-        +(r.live
-           ? '<button class="iconbtn" disabled title="A running run cannot be deleted — stop it first">'+I.trash+'</button>'
-           : '<button class="iconbtn danger" title="Delete this run and everything it left behind"'
-             +' data-del-id="'+esc(r.id)+'" data-del-start="'+esc(r.start)+'">'+I.trash+'</button>')
-      +'</td></tr>';
-  }).join("") || '<tr><td colspan=8 class="empty">'+I.inbox
-      +(DATA.runs.length?(searchKeys?"No runs match this search.":"No runs match the filters."):"No runs recorded yet.")+'</td></tr>';
-  $("pg-info").textContent="Page "+page+" / "+pages+" · "+all.length+" run"+(all.length===1?"":"s")
-    +(searchKeys?" · searching logs":"");
-  $("pg-prev").disabled = page<=1;
-  $("pg-next").disabled = page>=pages;
-  const n=activeFilterCount();
-  $("f-toggle").innerHTML=I.filter+"Filters "+(n?'<span class="fbadge">'+n+"</span>":"")+I.cdown;
-  const ids=[...new Set(DATA.runs.map(r=>r.id))].sort(), sig=ids.join("|"), sel=$("f-job");
-  if(sel.dataset.sig!==sig){
-    const cur=sel.value;
-    sel.innerHTML='<option value="">All jobs</option>'+ids.map(i=>'<option>'+esc(i)+'</option>').join("");
-    sel.value=cur; sel.dataset.sig=sig;
-  }
-  const projs=[...new Set(DATA.runs.map(r=>r.project||"").filter(Boolean))].sort();
-  const psig=projs.join("|"), psel=$("f-project");
-  if(psel.dataset.sig!==psig){
-    const cur=psel.value;
-    psel.innerHTML='<option value="">All projects</option>'+projs.map(p=>'<option>'+esc(p)+'</option>').join("")
-      +(DATA.runs.some(r=>!r.project)?'<option value="__none__">No project</option>':"");
-    psel.value=cur; psel.dataset.sig=psig;
-  }
-}
-
-async function runSearch(q){
-  const seq=++searchSeq;
-  if(!q || q.trim().length<2){ searchKeys=null; snippets={}; renderRuns(); return; }
-  try{
-    const r=await fetch("/api/search?q="+encodeURIComponent(q.trim()), {headers:{"X-CC-Token":TOKEN}});
-    if(!r.ok) throw new Error("HTTP "+r.status);
-    const j=await r.json();
-    if(seq!==searchSeq) return;            // a newer query superseded this one
-    searchKeys=new Set(); snippets={};
-    (j.results||[]).forEach(x=>{ const k=x.id+"|"+x.start; searchKeys.add(k); if(x.snippet) snippets[k]=x.snippet; });
-    page=1; renderRuns();
-  }catch(e){ if(seq===searchSeq) toast("Search failed — "+e.message, true); }
-}
-
-/* ---------------------------------------------------------------- editor */
-const DEFAULT_PRECHECK="#!/bin/bash\n# Exit 0 to wake a Claude run; exit 1 to stay idle (a skipped tick costs nothing).\n# Put a cheap check here — curl an API, grep a log, test a file.\nexit 0\n";
-
-function getDays(){
-  return [...document.querySelectorAll("#ed-days-pick .day-btn.on")].map(b=>+b.dataset.day);
-}
-function setDays(arr){
-  const on=new Set((arr&&arr.length?arr:[]).map(Number));
-  document.querySelectorAll("#ed-days-pick .day-btn").forEach(b=>b.classList.toggle("on", on.has(+b.dataset.day)));
-}
-function fmtBudget(){ const el=$("ed-budget"), v=parseFloat(el.value.replace(/[^0-9.]/g,""));
-  el.value=isNaN(v)?"":v.toFixed(2); }
-
-
-/* Markdown highlighting for the prompt editor.
-   Every character of the source is preserved — marks are only wrapped in spans,
-   never removed or rewritten — so the highlight layer lines up character for
-   character with the textarea above it and the saved prompt is byte-identical
-   to what was typed. */
-function mdHighlight(src){
-  const out=[]; let fenced=false;
-  for(const line of String(src).replace(/\r/g,"").split("\n")){
-    if(/^\s*```/.test(line)){ fenced=!fenced; out.push('<span class="fence">'+esc(line)+'</span>'); continue; }
-    if(fenced){ out.push('<span class="c">'+esc(line)+'</span>'); continue; }
-    if(/^\s*#{1,6}\s/.test(line)){ out.push('<span class="h">'+esc(line)+'</span>'); continue; }
-    let html=esc(line);
-    // inline code first, so ** inside backticks is not treated as bold
-    html=html.replace(/(`[^`]+`)/g, '<span class="c">$1</span>');
-    html=html.replace(/(\*\*[^*]+\*\*)/g, '<span class="b">$1</span>');
-    html=html.replace(/(^\s*)([-*])(\s)/, '$1<span class="bullet">$2</span>$3');
-    html=html.replace(/(^\s*)(\d+\.)(\s)/, '$1<span class="mark">$2</span>$3');
-    out.push(html);
-  }
-  return out.join("\n");
-}
-
-function paintPromptHighlight(){
-  const ta=$("ed-prompt"), hl=$("ed-prompt-hl");
-  if(!ta||!hl) return;
-  hl.innerHTML=mdHighlight(ta.value||"");
-  hl.scrollTop=ta.scrollTop; hl.scrollLeft=ta.scrollLeft;
-}
-
-/* A job in a project INHERITS that project's working directory — it must not be
-   editable there, or the two would silently disagree. With no project the job
-   owns its own cwd and the picker is available. */
-function syncCwdField(projectName){
-  const inp=$("ed-cwd"), btn=document.querySelector('.cwd-browse'), note=$("ed-cwd-note");
-  if(!inp||!note) return;
-  const p = projectName ? projById(projectName) : null;
-  const inherited = p && p.cwd ? p.cwd : "";
-  if(inherited){
-    inp.value = inherited;
-    inp.disabled = true;
-    inp.removeAttribute("data-cwd-target");     // clicking must not open the picker
-    if(btn) btn.disabled = true;
-    note.textContent = "Inherited from the project “" + projectName + "”. Change it there, "
-      + "or clear the project above to give this job its own directory.";
-    note.hidden = false;
-  }else{
-    inp.disabled = false;
-    inp.setAttribute("data-cwd-target","ed-cwd");
-    if(btn) btn.disabled = false;
-    note.hidden = true; note.textContent = "";
-  }
-}
-
-function initPromptEditor(){
-  const ta=$("ed-prompt"), hl=$("ed-prompt-hl");
-  if(!ta||!hl) return;                        // never let this take the page down
-  const sync=()=>{ hl.scrollTop=ta.scrollTop; hl.scrollLeft=ta.scrollLeft; };
-  ta.addEventListener("input", paintPromptHighlight);
-  ta.addEventListener("scroll", sync);
-  // typing near the bottom scrolls the textarea without firing "scroll" first
-  ta.addEventListener("keyup", sync);
-  ta.addEventListener("click", sync);
-}
-
-/* ---- reusable searchable combobox (project select, model select) ---- */
-function createCombo(cfg){
-  // cfg: {id, allowNone, noneLabel, def, withIcon, onPick}
-  // DOM: <id>-combo wrapper, -trigger, -val, -pop, -search, -opts; hidden input #<id>.
-  const st={opts:[], val:"", active:0};
-  const g=(s)=>$(cfg.id+"-"+s), hid=()=>$(cfg.id);
-  const norm=(o)=>(typeof o==="string")?{v:o,label:o}:o;
-  function items(q){
-    const raw=(q||"").trim();
-    q=raw.toLowerCase();
-    const out=[];
-    if(cfg.allowNone) out.push({v:"",label:cfg.noneLabel||"— None —",none:true});
-    for(const o of st.opts){ if(!q||o.label.toLowerCase().includes(q)||o.v.toLowerCase().includes(q)) out.push(o); }
-    // Let an id the list doesn't know be entered by hand — a model can exist in
-    // the API before the installed CLI lists it (claude-opus-5 did exactly that).
-    if(cfg.allowCustom && raw && !st.opts.some(o=>o.v.toLowerCase()===q)){
-      out.push({v:raw, label:'Use "'+raw+'"', custom:true});
-    }
-    return out;
-  }
-  function labelFor(v){ const o=st.opts.find(x=>x.v===v); return o?o.label:v; }
-  function renderTrigger(){
-    const e=g("val");
-    if(st.val){ e.textContent=labelFor(st.val); e.classList.remove("none"); }
-    else { e.textContent=cfg.noneLabel||"— None —"; e.classList.add("none"); }
-  }
-  function renderList(q){
-    const its=items(q), ul=g("opts");
-    if(!its.length){ ul.innerHTML='<div class="combo-empty">No match</div>'; return; }
-    if(st.active>its.length-1) st.active=its.length-1;
-    if(st.active<0) st.active=0;
-    ul.innerHTML=its.map((it,i)=>'<li role="option" data-v="'+esc(it.v)+'" class="'
-      +(it.none?"none ":"")+(it.v===st.val?"sel ":"")+(i===st.active?"active":"")+'">'
-      +((cfg.withIcon&&!it.none)?I.folder:"")+esc(it.label)+'</li>').join("");
-    const a=ul.querySelector("li.active"); if(a) a.scrollIntoView({block:"nearest"});
-  }
-  function positionPop(){
-    // fixed positioning so the popover escapes the dialog body's overflow clip
-    // (an absolute popover near the bottom gets cut off). Anchor to the trigger
-    // WITHOUT measuring the popover height (that was unreliable after the width
-    // change): drop down from the trigger bottom, or — when there's more room
-    // above — anchor the popover's bottom just above the trigger via `bottom`.
-    const pop=g("pop"), t=g("trigger").getBoundingClientRect(), vh=window.innerHeight;
-    pop.style.position="fixed"; pop.style.left=t.left+"px"; pop.style.width=t.width+"px"; pop.style.right="auto";
-    if((vh-t.bottom)>=t.top){ pop.style.top=(t.bottom+4)+"px"; pop.style.bottom="auto"; }
-    else { pop.style.bottom=(vh-t.top+4)+"px"; pop.style.top="auto"; }
-  }
-  function reposition(){ if(g("combo").classList.contains("open")) positionPop(); }
-  function open(){
-    g("combo").classList.add("open"); g("pop").hidden=false;
-    g("trigger").setAttribute("aria-expanded","true"); g("search").value="";
-    const its=items(""); st.active=Math.max(0, its.findIndex(it=>it.v===st.val));
-    renderList(""); positionPop(); g("search").focus({preventScroll:true});
-    // Re-anchor the fixed popover on any scroll or viewport change while open
-    // (scroll/resize fire even in a background tab, unlike rAF); the timeouts
-    // catch the layout settling right after open.
-    setTimeout(reposition,0); setTimeout(reposition,120);
-    window.addEventListener("scroll", reposition, true);
-    window.addEventListener("resize", reposition);
-  }
-  function close(){ const c=g("combo"); if(!c) return; c.classList.remove("open");
-    window.removeEventListener("scroll", reposition, true);
-    window.removeEventListener("resize", reposition);
-    const pop=g("pop"); pop.hidden=true;
-    pop.style.position=""; pop.style.left=""; pop.style.top=""; pop.style.bottom=""; pop.style.width=""; pop.style.right="";
-    g("trigger").setAttribute("aria-expanded","false"); }
-  function pick(v){ st.val=v||""; hid().value=st.val; renderTrigger(); close(); if(cfg.onPick) cfg.onPick(st.val); }
-  function set(val, options){
-    if(options) st.opts=options.map(norm);
-    let v=val||"";
-    if(!v && cfg.allowNone===false) v=cfg.def||(st.opts[0]&&st.opts[0].v)||"";
-    st.val=v; hid().value=v; renderTrigger(); close();
-  }
-  const caret=g("combo").querySelector(".combo-caret"); if(caret) caret.innerHTML=I.cdown;
-  g("trigger").addEventListener("click",()=>{ g("combo").classList.contains("open")?close():open(); });
-  g("search").addEventListener("input",()=>{ st.active=0; renderList(g("search").value); });
-  g("search").addEventListener("keydown",(e)=>{
-    const its=items(g("search").value);
-    if(e.key==="ArrowDown"){ e.preventDefault(); st.active=Math.min(st.active+1,its.length-1); renderList(g("search").value); }
-    else if(e.key==="ArrowUp"){ e.preventDefault(); st.active=Math.max(st.active-1,0); renderList(g("search").value); }
-    else if(e.key==="Enter"){ e.preventDefault(); const it=its[st.active]; if(it) pick(it.v); }
-    else if(e.key==="Escape"){ e.preventDefault(); close(); g("trigger").focus(); }
-  });
-  g("opts").addEventListener("click",(e)=>{ const li=e.target.closest("li[data-v]"); if(li) pick(li.dataset.v); });
-  document.addEventListener("click",(e)=>{ if(g("combo").classList.contains("open") && !e.target.closest("#"+cfg.id+"-combo")) close(); });
-  return {set, get:()=>st.val};
-}
-
-// You pick a FAMILY, never a version: the engine resolves it to that family's
-// newest model at run time (config/models.json, refreshed by `resolve-models`).
-// The label shows what it currently resolves to, so the choice stays honest.
-// Exact model ids only — each job states precisely which model it runs.
-let MODELS=[];
-async function loadModels(){
-  try{
-    const r=await fetch("/api/models",{headers:{"X-CC-Token":TOKEN}});
-    if(!r.ok) return;
-    const d=await r.json();
-    if(!d.models||!d.models.length) return;
-    MODELS=d.models.map(m=>({v:m, label:m}));
-    if(modelCombo) modelCombo.set(modelCombo.get(), MODELS);
-  }catch(e){ /* keep the built-in fallback list */ }
-}
-
-// Effort: slider position ↔ CLI value. 0 leaves it unset (the CLI decides).
-// slider stops, in order; labels come from the shared EFFORT_LABELS map
-const EFFORTS=["","low","medium","high","xhigh","max"];
-function setEffort(v){
-  const i=Math.max(0, EFFORTS.indexOf(v||""));
-  $("ed-effort").value=String(i);
-  $("ed-effort-label").textContent=(EFFORTS[i]===""?"Default (CLI decides)":effortLabel(EFFORTS[i]));
-}
-function getEffort(){ return EFFORTS[+$("ed-effort").value||0]; }
-const WT_MODES=[
-  {v:"auto", label:"Auto — isolate when the cwd is a git repo"},
-  {v:"true", label:"Always — never run in the cwd"},
-  {v:"false",label:"Off — every run works directly in the cwd"},
-];
-const PERMS=[
-  {v:"dontAsk",label:"dontAsk — run tools without prompting"},
-  {v:"bypassPermissions",label:"bypassPermissions — full autonomy (headless default)"},
-  {v:"acceptEdits",label:"acceptEdits"},
-  {v:"auto",label:"auto"},
-  {v:"plan",label:"plan"},
-  {v:"manual",label:"manual"},
-];
-let projectCombo=null, modelCombo=null, permCombo=null, wtCombo=null;
-function initCombos(){
-  projectCombo=createCombo({id:"ed-project", allowNone:true, noneLabel:"— None —", withIcon:true,
-    onPick:(v)=>syncCwdField(v)});
-  modelCombo=createCombo({id:"ed-model", allowNone:false, def:"opus"});
-  modelCombo.set("opus", MODELS);
-  loadModels();
-  permCombo=createCombo({id:"ed-perm", allowNone:false, def:"dontAsk"});
-  wtCombo=createCombo({id:"pj-wt", allowNone:false, def:"auto"});
-  wtCombo.set("auto", WT_MODES);
-  permCombo.set("dontAsk", PERMS);
-}
-
-/* ---- system folder picker (backend lists dirs; browser can't expose abs paths) ---- */
-let _fsTarget=null, _fsPath="";
-async function fsLoad(path){
-  try{
-    const r=await fetch("/api/fs"+(path?("?path="+encodeURIComponent(path)):""),{headers:{"X-CC-Token":TOKEN}});
-    if(!r.ok){ toast("Cannot read that folder"); return; }
-    const d=await r.json();
-    _fsPath=d.path; $("fs-path").textContent=d.path;
-    let html="";
-    if(d.parent) html+='<li class="fs-up" data-path="'+esc(d.parent)+'">'+I.folder+'‹ parent folder</li>';
-    for(const dir of d.dirs) html+='<li data-path="'+esc(dir.path)+'">'+I.folder+esc(dir.name)+'</li>';
-    if(!d.dirs.length) html+='<li class="fs-empty">No sub-folders here</li>';
-    $("fs-list").innerHTML=html; $("fs-list").scrollTop=0;
-  }catch(e){ toast("Folder picker error"); }
-}
-async function fsOpen(targetId){
-  _fsTarget=targetId;
-  const cur=($(targetId).value||"").trim();
-  await fsLoad(cur||null);
-  $("fsmodal").showModal();
-}
-function initFolderPicker(){
-  $("fs-halo").innerHTML=I.folder;
-  $("fs-list").addEventListener("click",(e)=>{ const li=e.target.closest("li[data-path]"); if(li) fsLoad(li.dataset.path); });
-  $("fs-cancel").addEventListener("click",()=>$("fsmodal").close());
-  $("fs-use").addEventListener("click",()=>{ if(_fsTarget) $(_fsTarget).value=_fsPath; $("fsmodal").close(); });
-  document.addEventListener("click",(e)=>{ const b=e.target.closest("[data-cwd-target]"); if(b) fsOpen(b.dataset.cwdTarget); });
-}
-
-function fill(j){
-  // project combobox (searchable select of existing projects, or None)
-  const projs=[...new Set((DATA.projects||[]).map(p=>p.name).concat((DATA.jobs||[]).map(x=>x.project||"")).filter(Boolean))].sort();
-  projectCombo.set(j.project||"", projs);
-  $("ed-desc").value=j.description||"";
-  $("ed-cwd").value=j.cwd||"";
-  syncCwdField(j.project||"");
-  $("ed-prompt").value=j.prompt||"";
-  paintPromptHighlight();
-  $("ed-precheck").value=j._precheck||"";
-  $("ed-interval").value=Math.round((j.interval_seconds||300)/60);
-  modelCombo.set(j.model||"opus");
-  setEffort(j.effort||"");
-  $("ed-interactive").checked = j.interactive===true;
-  const hp=String(j.active_hours||"").split("-");
-  $("ed-hours-start").value=hp[0]||""; $("ed-hours-end").value=hp[1]||"";
-  setDays(j.active_days||[]);
-  // Empty shows the default (3) as a placeholder; 0 is a real value meaning
-  // "no limit", so it must be shown rather than treated as unset.
-  $("ed-maxpar").value=(j.max_parallel!=null && j.max_parallel!=="")?String(j.max_parallel):"";
-  // null is a DELIBERATE "no cap", so it must show as empty rather than as the
-  // default -- the same rule the daily cap and the time limit already follow.
-  $("ed-budget").value=(j.max_budget_usd!=null?Number(j.max_budget_usd).toFixed(2):"");
-  $("ed-daily").value=(j.daily_budget_usd!=null?Number(j.daily_budget_usd).toFixed(2):"");
-  // Both optional: empty means "no hard limit" / "no stall guard".
-  $("ed-timeout").value=j.timeout_seconds?Math.max(1,Math.round(j.timeout_seconds/60)):"";
-  $("ed-stall").value=j.stall_timeout_seconds?Math.max(1,Math.round(j.stall_timeout_seconds/60)):"";
-  permCombo.set(j.permission_mode||"dontAsk");
-}
-
-function openEditor(id){
-  const j=(DATA.jobs||[]).find(x=>x.id===id); if(!j) return;
-  editingId=id; creating=false;
-  $("ed-halo").innerHTML=I.pencil;
-  $("ed-title").textContent="Edit — "+id;
-  // The id is editable here too: renaming carries the job's state, logs and
-  // history with it (the engine refuses a bad or taken id, and refuses while a
-  // run is live).
-  $("ed-id-row").style.display="";
-  $("ed-id").value=id;
-  fill(j);
-  $("ed-save").textContent="Save changes";
-  $("editor").showModal();
-}
-
-function openCreator(){
-  editingId=null; creating=true;
-  $("ed-halo").innerHTML=I.plus;
-  $("ed-title").textContent="New job";
-  $("ed-id-row").style.display="";
-  $("ed-id").value="";
-  fill({_precheck:DEFAULT_PRECHECK, interval_seconds:300, model:"opus",
-        active_hours:"08:00-20:00", active_days:[1,2,3,4,5],
-        max_budget_usd:2, stall_timeout_seconds:1200, permission_mode:"dontAsk"});
-  $("ed-save").textContent="Create job";
-  $("editor").showModal();
-}
-
-function readForm(){
-  const hs=$("ed-hours-start").value, he=$("ed-hours-end").value;
-  if((hs && !he) || (!hs && he)){ toast("Active hours: fill both times, or neither for 24h", true); return null; }
-  const days=getDays();
-  if(!days.length){ toast("Pick at least one active day", true); return null; }
-  const dailyRaw=$("ed-daily").value.trim().replace(/[^0-9.]/g,"");
-  return {
-    secs: Math.max(60,(parseInt($("ed-interval").value,10)||5)*60),
-    model: $("ed-model").value||"opus",
-    effort: getEffort(),
-    interactive: $("ed-interactive").checked,
-    hours: hs && he ? hs+"-"+he : "",
-    days,
-    budget: (function(){ const raw=$("ed-budget").value.replace(/[^0-9.]/g,"").trim();
-      return raw==="" ? null : (parseFloat(raw)||null); })(),   // null = no cap
-    // How many runs of this job may work at once. Empty means "use the default"
-    // (3); 0 is a value in its own right and means no limit.
-    maxPar: $("ed-maxpar").value.trim()==="" ? null : Math.max(0, parseInt($("ed-maxpar").value,10)||0),
-    daily: dailyRaw==="" ? null : parseFloat(dailyRaw),   // null = no cap
-    // Both optional; null = leave unset (no hard limit / no stall guard).
-    timeoutSecs: $("ed-timeout").value.trim()==="" ? null : Math.max(60,(parseInt($("ed-timeout").value,10)||30)*60),
-    stallSecs: $("ed-stall").value.trim()==="" ? null : Math.max(60,(parseInt($("ed-stall").value,10)||20)*60),
-  };
-}
-
-async function saveEditor(){
-  const btn=$("ed-save"); btn.disabled=true;
-  try{
-    const f=readForm(); if(!f) return;
-    if(creating){
-      const id=$("ed-id").value.trim();
-      if(!/^[A-Za-z0-9_-]+$/.test(id)){ toast("id: only letters, digits, - and _",true); return; }
-      const prompt=$("ed-prompt").value.trim();
-      if(!prompt){ toast("prompt is required",true); return; }
-      const job={id, description:$("ed-desc").value.trim(), prompt, interval_seconds:f.secs,
-        model:f.model, active_hours:f.hours, active_days:f.days, max_budget_usd:f.budget,
-        ...(f.maxPar!=null?{max_parallel:f.maxPar}:{}),
-        permission_mode:$("ed-perm").value};
-      if(f.effort) job.effort=f.effort;
-      if(f.interactive) job.interactive=true;
-      if(f.timeoutSecs!=null) job.timeout_seconds=f.timeoutSecs;
-      if(f.stallSecs!=null) job.stall_timeout_seconds=f.stallSecs;
-      if(f.daily!=null) job.daily_budget_usd=f.daily;
-      const proj=$("ed-project").value.trim(); if(proj) job.project=proj;
-      // an inherited directory belongs to the project, never to the job
-      const cwd=$("ed-cwd").disabled ? "" : $("ed-cwd").value.trim();
-      if(cwd) job.cwd=cwd;
-      if(!await api("create",{id, job, precheck:$("ed-precheck").value})) return;
-      $("editor").close(); toast("Created "+id); refresh(); return;
-    }
-    let id=editingId; const j=(DATA.jobs||[]).find(x=>x.id===id)||{};
-    // Rename FIRST — every call below is keyed by the id, so they must target
-    // the new one. The engine validates the id and moves state/logs/history.
-    const wantId=$("ed-id").value.trim();
-    if(wantId && wantId!==id){
-      if(!/^[A-Za-z0-9_-]+$/.test(wantId)){ toast("id: only letters, digits, - and _",true); return; }
-      const r=await fetch("/api/action",{method:"POST",
-        headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
-        body:JSON.stringify({op:"rename",id,new_id:wantId})});
-      if(!r.ok){ const e=await r.json().catch(()=>({})); toast("Rename failed — "+(e.error||("HTTP "+r.status)), true); return; }
-      id=wantId; editingId=wantId;
-      toast("Renamed to "+wantId, false, "check");
-    }
-    const setF=async(field,value,cur)=> String(value)===String(cur) ? true : api("set_field",{id,field,value:String(value)});
-    const prompt=$("ed-prompt").value.trim();
-    if(prompt && prompt!==(j.prompt||"")){ if(!await api("set_prompt",{id,prompt})) return; }
-    const pc=$("ed-precheck").value;
-    if(pc.trim() && pc!==(j._precheck||"")){ if(!await api("set_precheck",{id,script:pc})) return; }
-    if(!await setF("interval_seconds",f.secs,j.interval_seconds||300)) return;
-    if(!await setF("model",f.model,j.model||"opus")) return;
-    if(!await setF("effort",f.effort,j.effort||"")) return;
-    if(!await setF("interactive",String(f.interactive),String(j.interactive===true))) return;
-    if(!await setF("active_hours",f.hours,j.active_hours||"")) return;
-    if(!await setF("active_days",f.days.join(","),(j.active_days||[]).join(","))) return;
-    const curBudget=(j.max_budget_usd!=null?+j.max_budget_usd:null);
-    if(f.budget!==curBudget){ if(!await api("set_field",{id,field:"max_budget_usd",value:(f.budget==null?"":String(f.budget))})) return; }
-    const curMax=(j.max_parallel!=null?String(j.max_parallel):"");
-    if(String(f.maxPar==null?"":f.maxPar)!==curMax){
-      if(!await api("set_field",{id,field:"max_parallel",value:(f.maxPar==null?"":String(f.maxPar))})) return;
-    }
-    const curDaily=(j.daily_budget_usd!=null?+j.daily_budget_usd:null);
-    if(f.daily!==curDaily){ if(!await api("set_field",{id,field:"daily_budget_usd",value:(f.daily==null?"":String(f.daily))})) return; }
-    const curTo=(j.timeout_seconds!=null?+j.timeout_seconds:null);
-    if(f.timeoutSecs!==curTo){ if(!await api("set_field",{id,field:"timeout_seconds",value:(f.timeoutSecs==null?"":String(f.timeoutSecs))})) return; }
-    const curStall=(j.stall_timeout_seconds!=null?+j.stall_timeout_seconds:null);
-    if(f.stallSecs!==curStall){ if(!await api("set_field",{id,field:"stall_timeout_seconds",value:(f.stallSecs==null?"":String(f.stallSecs))})) return; }
-    if(!await setF("project",$("ed-project").value.trim(),j.project||"")) return;
-    if(!await setF("description",$("ed-desc").value.trim(),j.description||"")) return;
-    const cwdVal = $("ed-cwd").disabled ? "" : $("ed-cwd").value.trim();
-    if(!await setF("cwd",cwdVal,j.cwd||"")) return;
-    if(!await setF("permission_mode",$("ed-perm").value,j.permission_mode||"dontAsk")) return;
-    $("editor").close(); toast("Saved "+id); refresh();
-  } finally { btn.disabled=false; }
-}
-
-/* ---------------------------------------------------------------- log modal */
-// Minimal, safe Markdown -> HTML. Input is HTML-escaped FIRST, then a small set
-// of block/inline rules are applied, so nothing the agent wrote can inject HTML.
-// Links are limited to http(s)/mailto.
-function mdInline(s){
-  const codes=[];
-  s=s.replace(/`([^`]+)`/g,(m,c)=>{ codes.push(c); return "@@CC"+(codes.length-1)+"@@"; });
-  s=s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,(m,t,u)=>
-    /^(https?:\/\/|mailto:)/i.test(u) ? '<a href="'+u+'" target="_blank" rel="noopener noreferrer">'+t+'</a>' : m);
-  s=s.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/__([^_]+)__/g,'<strong>$1</strong>');
-  s=s.replace(/(^|[^*])\*(?!\s)([^*\n]+?)\*/g,'$1<em>$2</em>');
-  s=s.replace(/@@CC(\d+)@@/g,(m,i)=>'<code>'+codes[+i]+'</code>');
-  return s;
-}
-function mdToHtml(src){
-  const lines=esc(src).replace(/\r/g,"").split("\n");
-  let html="", inCode=false, codeBuf=[], para=[], list=null;
-  const flushPara=()=>{ if(para.length){ html+='<p>'+mdInline(para.join(" "))+'</p>'; para=[]; } };
-  const flushList=()=>{ if(list){ html+='<ul>'+list.map(x=>'<li>'+mdInline(x)+'</li>').join("")+'</ul>'; list=null; } };
-  for(const line of lines){
-    if(/^\s*```/.test(line)){
-      if(inCode){ html+='<pre class="log">'+codeBuf.join("\n")+'</pre>'; codeBuf=[]; inCode=false; }
-      else { flushPara(); flushList(); inCode=true; }
-      continue;
-    }
-    if(inCode){ codeBuf.push(line); continue; }
-    const hd=line.match(/^(#{1,4})\s+(.*)$/);
-    if(hd){ flushPara(); flushList(); html+='<div class="md-h">'+mdInline(hd[2])+'</div>'; continue; }
-    const li=line.match(/^\s*[-*]\s+(.*)$/);
-    if(li){ flushPara(); (list=list||[]).push(li[1]); continue; }
-    if(line.trim()===""){ flushPara(); flushList(); continue; }
-    flushList(); para.push(line.trim());
-  }
-  if(inCode) html+='<pre class="log">'+codeBuf.join("\n")+'</pre>';
-  flushPara(); flushList();
-  return html || '<span class="muted">—</span>';
-}
-
-function statusPill(s){ const n=normStatus(s); return '<span class="stat-cell s-'+esc(n)+'">'+(STATUS_ICON[n]||"")+esc(n)+'</span>'; }
-
-function renderLog(d){
-  const rec=d.record||{}, a=d.agent||{};
-  const rows=[
-    ["When", esc(fmtWhen(rec.start))],
-    ["Status", statusPill(rec.status)],
-    ["Trigger", rec.forced ? "Run now (forced)" : "scheduled — precheck passed"],
-    ["Duration", esc(fmtDur(rec.duration||0))],
-    ["Cost", esc(money(rec.cost))],
-    // The job stores an alias ("opus"); model_id is what it actually resolved to
-    // on the day of the run, so history stays truthful after a model ships.
-    // Older runs predate the alias being recorded — then show the resolved id
-    // alone (derived from the stored stream), which is the fact that matters.
-    ["Model", (rec.model && rec.model_id) ? esc(rec.model)+' <span class="muted">→ '+esc(rec.model_id)+'</span>'
-      : (rec.model_id ? esc(rec.model_id)
-      : (rec.model ? esc(rec.model)+' <span class="muted">(resolved id not recorded)</span>' : "—"))],
-    ["Session", esc(a.session||rec.session||"—")],
-    ["Stop reason", esc(a.stop_reason||"—")],
-  ];
-  // While the run is live, say so and state the refresh cadence, so a still
-  // screen reads as "nothing new yet" rather than "this page is stale".
-  // It renders in the dialog header (right-aligned), not in the body.
-  $("lg-live").innerHTML = d.live
-    ? '<span class="livedot"></span><span class="livetxt">live</span>'
-      +'<span class="muted">refreshing every '+Math.round(LOG_POLL_MS/1000)+'s</span>'
-    : "";
-  const meta='<dl class="kv loginfo">'+rows.map(x=>'<dt>'+x[0]+'</dt><dd>'+x[1]+'</dd>').join("")+'</dl>';
-
-  const turns=d.turns||[];
-  const timelinePane = turns.length
-    ? '<ol class="timeline">'+turns.map(t=>{
-        let line='<li><span class="tn">T'+t.n+'</span>';
-        (t.tools||[]).forEach(x=>{ line+='<span class="tool">'+esc(x.tool)+'</span>';
-          if(x.hint) line+='<span class="thint">'+esc(x.hint)+'</span> '; });
-        if(t.text) line+='<span class="ttext">'+esc(t.text)+'</span>';
-        return line+'</li>'; }).join("")+'</ol>'
-    : '<div class="muted">No per-turn trace for this run (it pre-dates stream capture).</div>';
-
-  const answerPane = a.result ? '<div class="md">'+mdToHtml(a.result)+'</div>'
-                              : '<div class="muted">No agent output recorded.</div>';
-  const precheckPane = d.precheck ? '<pre class="log">'+esc(d.precheck)+'</pre>'
-                                  : '<div class="muted">No precheck output recorded.</div>';
-
-  // tabs: Answer (default), Timeline, Precheck, and Blocked/stderr when present
-  // Terminal: the run as a conversation, and — while it is live and the job is
-  // interactive — a prompt box that delivers what you type into that same run.
-  const convo = d.conversation||[];
-  const termRows = convo.map(t=>{
-    const you = t.role==="user";
-    let line = "";
-    // _tool_line yields {tool, hint} — stringifying it printed "[object Object]"
-    (t.tools||[]).forEach(x=>{
-      const nm = (x && x.tool) ? x.tool : String(x||"tool");
-      const hint = (x && x.hint) ? x.hint : "";
-      line += '<span class="t-tool">⏺ <b>'+esc(nm)+'</b>'+(hint?' '+esc(hint):'')+'</span>\n';
-    });
-    if(t.text) line += '<span class="t-'+(you?"you":"agent")+'">'
-      + (you ? "&gt; " : "") + esc(t.text) + '</span>';
-    return line ? '<div class="row">'+line+'</div>' : "";
-  }).join("");
-  const termPane = '<div class="termwrap">'
-    + '<div class="term" id="term-body">'
-    +   (termRows || '<span class="t-sys">Waiting for the first turn…</span>')
-    +   (d.live?'<div class="row"><span class="t-sys">▍</span></div>':'')
-    + '</div>'
-    + (d.live && d.interactive
-        ? '<div class="termbar"><span class="caret">&gt;</span>'
-          + '<input id="term-input" placeholder="Say something to this run…" autocomplete="off">'
-          + '<span class="hint">Enter</span>'
-          + '<button type="button" class="btn primary" id="term-send">'+I.play+'Send</button></div>'
-        : (d.live
-            ? '<div class="termnote">This run is read-only — turn on <b>Interactive</b> on the job to talk to it while it works.</div>'
-            : '<div class="termnote">This run has finished. Reopen it in the real CLI with <code>claude --resume '
-              + esc(a.session||rec.session||"") + '</code></div>'))
-    + '</div>';
-
-  const tabs=[
-    {id:"terminal", icon:I.terminal, label:"Terminal",            pane:termPane},
-    {id:"answer",   icon:I.file,     label:"Answer",             pane:answerPane},
-    {id:"timeline", icon:I.terminal, label:"Timeline ("+turns.length+")", pane:timelinePane},
-    {id:"precheck", icon:I.radar,    label:"Precheck",           pane:precheckPane},
-  ];
-  const den=a.permission_denials;
-  if(Array.isArray(den) && den.length){
-    tabs.push({id:"blocked", icon:I.shield, label:"Blocked ("+den.length+")",
-      pane:'<ul class="denials">'+den.map(x=>'<li><code>'+esc((x&&(x.tool_name||x.tool))||JSON.stringify(x))+'</code></li>').join("")+'</ul>'});
-  }
-  if(d.stderr && d.stderr.trim()){
-    tabs.push({id:"stderr", icon:I.alert, label:"stderr", pane:'<pre class="log">'+esc(d.stderr)+'</pre>'});
-  }
-  if(d.error) tabs.push({id:"note", icon:I.alert, label:"Note", pane:'<div class="muted">'+esc(d.error)+'</div>'});
-
-  const bar='<div class="tabs" role="tablist">'+tabs.map((t,i)=>
-    '<button class="tab'+(i===0?" active":"")+'" data-tab="'+t.id+'">'+t.icon+t.label+'</button>').join("")+'</div>';
-  const panes='<div class="tabpanes">'+tabs.map((t,i)=>
-    '<div class="tabpane'+(i===0?" active":"")+'" data-pane="'+t.id+'">'+t.pane+'</div>').join("")+'</div>';
-
-  return meta+bar+panes;
-}
-
-/* A live run's log keeps refreshing while the modal is open. Re-rendering must
-   not fight the reader: the open tab is restored, and the pane only jumps to the
-   newest line when the reader was already at the bottom (classic tail).       */
-const LOG_POLL_MS=3000;
-let logPoll=null, logCtx=null;
-function stopLogPoll(){ if(logPoll){ clearInterval(logPoll); logPoll=null; } logCtx=null; }
-
-async function sendToRun(){
-  const inp=$("term-input"); if(!inp) return;
-  const text=inp.value.trim(); if(!text || !logCtx) return;
-  inp.value=""; inp.disabled=true;
-  try{
-    const r=await fetch("/api/action",{method:"POST",
-      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
-      body:JSON.stringify({op:"say", id:logCtx.id, text})});
-    if(!r.ok){
-      const j=await r.json().catch(()=>({}));
-      toast("Not delivered — "+(j.error||("HTTP "+r.status)), true, "alert");
-      inp.value=text;                       // give the message back, do not lose it
-    }
-  }catch(e){ toast("Not delivered — "+e.message, true); inp.value=text; }
-  inp.disabled=false; inp.focus();
-}
-
-function paintLog(d){
-  const body=$("lg-body");
-  // Keep whatever is half-typed (and the caret) across the 3s live refresh.
-  const oldInp=$("term-input");
-  const draft = oldInp ? oldInp.value : null;
-  const hadFocus = oldInp && document.activeElement===oldInp;
-  const oldTerm=body.querySelector(".term");
-  // Terminal scrolling, the way a terminal behaves: follow new output only while
-  // the reader is already at the bottom. Scrolled up to read history? Then keep
-  // exactly where they were — new lines are appended below, so the same
-  // scrollTop shows the same text. (Restoring nothing is what made it jump to
-  // the top on every 3s refresh.)
-  const termAtBottom = oldTerm ? (oldTerm.scrollHeight-oldTerm.scrollTop-oldTerm.clientHeight < 40) : true;
-  const termTop = oldTerm ? oldTerm.scrollTop : 0;
-  const prevTab=body.querySelector(".tab.active")?.dataset.tab || null;
-  const panes=body.querySelector(".tabpanes");
-  const wasAtBottom = panes ? (panes.scrollHeight - panes.scrollTop - panes.clientHeight < 40) : true;
-  const prevTop = panes ? panes.scrollTop : 0;
-  body.innerHTML=renderLog(d);
-  if(prevTab){
-    const t=body.querySelector('.tab[data-tab="'+prevTab+'"]');
-    if(t){
-      body.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active", x===t));
-      body.querySelectorAll(".tabpane").forEach(p=>p.classList.toggle("active", p.dataset.pane===prevTab));
-    }
-  }
-  const np=body.querySelector(".tabpanes");
-  if(np) np.scrollTop = wasAtBottom ? np.scrollHeight : prevTop;
-  syncTermMode(body);
-  const inp=$("term-input");
-  if(inp){
-    if(draft!==null) inp.value=draft;
-    if(hadFocus) inp.focus();
-    inp.onkeydown=(e)=>{ if(e.key==="Enter"){ e.preventDefault(); sendToRun(); } };
-    const sb=$("term-send"); if(sb) sb.onclick=()=>sendToRun();
-  }
-  const term=body.querySelector(".term");
-  if(term) term.scrollTop = termAtBottom ? term.scrollHeight : termTop;
-  // stop polling once the run is no longer live (this render is the final one)
-  if(logPoll && !d.live) stopLogPoll();
-}
-
-async function fetchLog(id, start){
-  const r=await fetch("/api/log?id="+encodeURIComponent(id)+"&start="+encodeURIComponent(start), {headers:{"X-CC-Token":TOKEN}});
-  if(!r.ok) throw new Error("HTTP "+r.status);
-  return r.json();
-}
-
-async function openLog(id, start){
-  stopLogPoll();
-  $("lg-halo").innerHTML=I.file;
-  $("lg-title").textContent="Run — "+id;
-  $("lg-body").innerHTML="<div class='empty'>Loading…</div>";
-  $("logmodal").showModal();
-  try{
-    const d=await fetchLog(id, start);
-    paintLog(d);
-    if(d.live){
-      logCtx={id, start};
-      logPoll=setInterval(async ()=>{
-        if(!$("logmodal").open){ stopLogPoll(); return; }
-        try{ paintLog(await fetchLog(logCtx.id, logCtx.start)); }
-        catch(e){ /* transient — keep polling */ }
-      }, LOG_POLL_MS);
-    }
-  }catch(e){ $("lg-body").innerHTML="<div class='empty'>Could not load log — "+esc(e.message)+"</div>"; }
-}
-
-// The page must not scroll while a modal is open. Driven by observing the
-// dialogs' `open` attribute rather than by patching every call site, so it holds
-// no matter who opens or closes one (buttons, Esc, backdrop, code).
-function syncModalScrollLock(){
-  const anyOpen=[...document.querySelectorAll("dialog")].some(d=>d.open);
-  document.documentElement.classList.toggle("modal-open", anyOpen);
-}
-function initModalScrollLock(){
-  const obs=new MutationObserver(syncModalScrollLock);
-  document.querySelectorAll("dialog").forEach(d=>{
-    obs.observe(d,{attributes:true, attributeFilter:["open"]});
-    d.addEventListener("close", syncModalScrollLock);
-  });
-  syncModalScrollLock();
-}
-
-/* Jobs / Runs as top-level views. The choice is remembered, and the counters are
-   refreshed with the data so switching tabs is never needed just to see numbers. */
-let currentView = localStorage.ccView === "runs" ? "runs" : "jobs";
-function setView(v){
-  currentView = (v === "runs") ? "runs" : "jobs";
-  localStorage.ccView = currentView;
-  $("view-jobs").hidden = currentView !== "jobs";
-  $("view-runs").hidden = currentView !== "runs";
-  document.querySelectorAll(".viewtab").forEach(b =>
-    b.classList.toggle("active", b.dataset.view === currentView));
-}
-function paintViewTabs(){
-  const jobs = (DATA.jobs || []).length;
-  // Count what the table can actually show: the journal PLUS the runs in flight,
-  // which are synthesized (a record is only journaled when a run ends). Using
-  // DATA.runs alone made the tab read 43 while the pager said 45.
-  const live = liveRuns().length;
-  const runs = (DATA.runs || []).length + live;
-  $("vt-jobs").innerHTML = I.zap + "Jobs" + '<span class="vcount">' + jobs + "</span>"
-    + (live ? '<span class="runningbadge"><span class="pulse"></span>' + live + "</span>" : "");
-  $("vt-runs").innerHTML = I.activity + "Runs" + '<span class="vcount">' + runs + "</span>";
-}
-function initViews(){
-  document.querySelectorAll(".viewtab").forEach(b =>
-    b.addEventListener("click", () => setView(b.dataset.view)));
-  setView(currentView);
-}
-// The warning and error tiles are a way IN to the runs they count: click one to
-// show exactly those runs, click it again to clear the filter.
-function initStatFilters(){
-  const host=$("stats"); if(!host) return;
-  host.addEventListener("click",(e)=>{
-    const t=e.target.closest("[data-statfilter]"); if(!t) return;
-    const want=t.dataset.statfilter;
-    RF.status = (RF.status===want) ? "" : want;
-    const sel=$("f-status"); if(sel) sel.value=RF.status;
-    page=1;
-    setView("runs");
-    render();          // redraws the tiles (so the active one is highlighted) and the table
-  });
-}
-
-/* ---------------------------------------------------------------- events */
-document.addEventListener("click", async (e)=>{
-  const step=e.target.closest(".step-btn");
-  if(step){
-    const inp=$(step.dataset.for), min=parseInt(inp.min,10)||1;
-    inp.value=Math.max(min,(parseInt(inp.value,10)||min)+parseInt(step.dataset.step,10));
-    return;
-  }
-  const day=e.target.closest(".day-btn");
-  if(day){ day.classList.toggle("on"); return; }
-  const lg=e.target.closest("button[data-log-id]");
-  if(lg){ openLog(lg.dataset.logId, lg.dataset.logStart); return; }
-  // delete one run, for good — files, journal line and search index alike
-  const del=e.target.closest("button[data-del-id]");
-  if(del){
-    const id=del.dataset.delId, start=+del.dataset.delStart;
-    (async()=>{
-      const yes=await showConfirm({tone:"danger", icon:"trash", title:"Delete this run?",
-        message:"Everything this run left behind goes: its log and transcript files, its line in the journal, and its rows in the search database. This cannot be undone.",
-        mono:id+" · "+fmtWhen(start), confirmLabel:"Delete run"});
-      if(!yes) return;
-      del.disabled=true;
-      const r=await fetch("/api/action",{method:"POST",
-        headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
-        body:JSON.stringify({op:"run_delete",id,start})});
-      if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Delete failed — "+(j.error||("HTTP "+r.status)), true); del.disabled=false; return; }
-      const j=await r.json().catch(()=>({}));
-      const freed=(j.removed&&j.removed.bytes)||0;
-      toast("Run deleted"+(freed>0?" — "+fmtBytes(freed)+" reclaimed":""), false, "trash");
-      refresh();
-    })();
-    return;
-  }
-  // project editing (must run before the group toggle, since it's inside the header)
-  const edp=e.target.closest("[data-editproj]");
-  if(edp){ openProjectEditor(edp.dataset.editproj); return; }
-  // repo rows inside the project editor
-  if(e.target.closest("#pj-repo-add")){ $("pj-repos").insertAdjacentHTML("beforeend", repoRow()); return; }
-  const rpd=e.target.closest(".rp-del");
-  if(rpd){ rpd.closest(".repo-row").remove(); return; }
-  // bulk switch (must run before the group toggle — the button lives inside the
-  // header, and the header's own click collapses the group)
-  const blk=e.target.closest("[data-bulk]");
-  if(blk){ await bulkToggle(blk, blk.dataset.bulkKind, blk.dataset.bulk, blk.dataset.bulkTo==="1"); return; }
-  // collapse/expand a project group (animated via CSS; persisted in localStorage)
-  const tog=e.target.closest("[data-toggle]");
-  if(tog){
-    const g=tog.closest(".projgroup"), key=tog.dataset.toggle;
-    g.classList.toggle("collapsed");
-    if(g.classList.contains("collapsed")) collapsedGroups.add(key); else collapsedGroups.delete(key);
-    localStorage.ccCollapsed=JSON.stringify([...collapsedGroups]);
-    return;
-  }
-  if(e.target.closest("#new-project")){ openProjectEditor(); return; }
-  if(e.target.closest("#new-job")){ openCreator(); return; }
-  const b=e.target.closest("button[data-op]"); if(!b) return;
-  const op=b.dataset.op, id=b.dataset.id;
-  if(op==="edit"){ openEditor(id); return; }
-  if(op==="delete"){
-    const yes=await showConfirm({tone:"danger", icon:"trash", title:"Delete job "+id+"?",
-      message:"This removes the job from jobs.json. Its logs and precheck script are kept on disk.",
-      confirmLabel:"Delete job"});
-    if(!yes) return;
-  }
-  b.disabled=true;
-  if(op==="run"){
-    // Guard: forcing bypasses the precheck, so probe it first and warn when
-    // it reports nothing to do — a forced idle run still costs a session.
-    toast("Checking precheck…", false, "radar");
-    try{
-      const r=await fetch("/api/action",{method:"POST",
-        headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
-        body:JSON.stringify({op:"precheck",id})});
-      const j=await r.json().catch(()=>({}));
-      if(r.ok && j.ok && j.work===false){
-        const yes=await showConfirm({tone:"warn", icon:"alert", title:"Nothing to do right now",
-          message:"The precheck reports no pending work. Run now bypasses the precheck — a forced run will still spend a full agent session.",
-          mono:(j.output||""), confirmLabel:"Run anyway"});
-        if(!yes){ b.disabled=false; return; }
-      }
-    }catch(err){ /* probe failed — fall through, the run itself will tell */ }
-  }
-  // "Run now" is refused with 409 while a run is in flight — report that plainly
-  // instead of the old blanket "Started".
-  if(op==="run"){
-    const r=await fetch("/api/action",{method:"POST",
-      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
-      body:JSON.stringify({op:"run",id})});
-    if(r.status===409){
-      // At the ceiling: say plainly that nothing started, and why, rather than
-      // letting a click look like it worked.
-      const j=await r.json().catch(()=>({}));
-      await showConfirm({tone:"warn", icon:"alert", title:"Nothing was started",
-        message: j.error || ("A run is already in progress for "+id),
-        confirmLabel:"OK", alertOnly:true});
-      b.disabled=false; refresh(); return;
-    }
-    if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Failed — "+(j.error||("HTTP "+r.status)), true); b.disabled=false; return; }
-    toast("Started "+id, false, "play");
-    setTimeout(refresh, 1200); b.disabled=false; return;
-  }
-  // Resume continues THAT run's own session (the same task), so it carries the
-  // session id. Stop from a runs row targets that one run by its pid — with
-  // concurrent runs a job-wide stop would kill the others too.
-  if(op==="resume"){
-    const sid=b.dataset.session||"";
-    b.disabled=true;   // stays down: one resume per session, and no double-click
-    const r=await fetch("/api/action",{method:"POST",
-      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
-      body:JSON.stringify({op:"resume",id,session:sid})});
-    if(r.status===409){
-      const j=await r.json().catch(()=>({}));
-      await showConfirm({tone:"warn", icon:"alert", title:"Nothing was resumed",
-        message: j.error || "This task could not be resumed right now.",
-        confirmLabel:"OK", alertOnly:true});
-      b.disabled=false; refresh(); return;
-    }
-    if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Resume failed — "+(j.error||("HTTP "+r.status)), true); b.disabled=false; return; }
-    if(b.dataset.resumeKey){ const [rid,rstart]=b.dataset.resumeKey.split("|"); markResumed(rid, +rstart); }
-    toast("Resuming "+id+" — continuing session "+sid.slice(0,8), false, "play");
-    setTimeout(refresh, 1200); b.disabled=true; return;
-  }
-  const extra={id};
-  if(op==="stop" && b.dataset.runPid) extra.pid=b.dataset.runPid;
-  const ok=await api(op,extra);
-  if(ok) toast((op==="run"?"Started ":op+"d ")+id, false, op==="run"?"play":"check");
-  setTimeout(refresh, op==="run"?1200:250);
-  b.disabled=!!(ok && b.dataset.resumeKey);   // a used resume button stays disabled
-});
-
-$("pj-cancel").addEventListener("click", ()=>$("projmodal").close());
-$("pj-save").addEventListener("click", saveProject);
-$("pj-delete").addEventListener("click", deleteProjectFromModal);
-initCombos();
-initFolderPicker();
-initTooltips();
-initJobDrag();
-initStatFilters();
-initModalScrollLock();
-initPromptEditor();
-$("ed-cancel").addEventListener("click", ()=>$("editor").close());
-$("ed-save").addEventListener("click", saveEditor);
-$("ed-effort").addEventListener("input", ()=>setEffort(getEffort()));
-$("ed-budget").addEventListener("blur", fmtBudget);
-["ed-budget","ed-daily"].forEach(id=>$(id).addEventListener("input", ()=>{
-  const el=$(id); el.value=el.value.replace(/[^0-9.]/g,"").replace(/(\..*)\./g,"$1");
-}));
-$("ed-daily").addEventListener("blur", ()=>{ const el=$("ed-daily"), v=el.value.trim();
-  if(v!=="") el.value=(parseFloat(v.replace(/[^0-9.]/g,""))||0).toFixed(2); });
-$("lg-close").addEventListener("click", ()=>$("logmodal").close());
-// close covers Esc and the backdrop too, so stop the live tail from one place
-$("logmodal").addEventListener("close", stopLogPoll);
-// tab switching inside the log modal (delegated; #lg-body persists across opens)
-$("lg-body").addEventListener("click",(e)=>{
-  const t=e.target.closest(".tab"); if(!t) return;
-  const id=t.dataset.tab, body=$("lg-body");
-  body.querySelectorAll(".tab").forEach(x=>x.classList.toggle("active", x===t));
-  body.querySelectorAll(".tabpane").forEach(p=>p.classList.toggle("active", p.dataset.pane===id));
-  syncTermMode(body);
-  const panes=body.querySelector(".tabpanes");
-  if(id!=="terminal") panes.scrollTop=0;
-  const term=body.querySelector(".term");
-  if(term) term.scrollTop=term.scrollHeight;
-  const inp=$("term-input"); if(inp && id==="terminal") inp.focus();
-});
-
-// The terminal owns its own scrolling: the transcript scrolls, the prompt bar
-// does not. Any other tab keeps the normal single scroll area.
-function syncTermMode(body){
-  const panes=body.querySelector(".tabpanes"); if(!panes) return;
-  const active=body.querySelector(".tabpane.active");
-  panes.classList.toggle("termmode", !!active && active.dataset.pane==="terminal");
-}
-$("themebtn").addEventListener("click", ()=>{
-  const t=(document.documentElement.dataset.theme==="dark")?"light":"dark";
-  localStorage.ccTheme=t; applyTheme(t);
-});
-$("f-toggle").addEventListener("click", ()=>{ $("fpanel").hidden=!$("fpanel").hidden; });
-["f-project","f-job","f-status","f-from","f-to"].forEach(id=>$(id).addEventListener("change",()=>{
-  RF.project=$("f-project").value; RF.job=$("f-job").value; RF.status=$("f-status").value;
-  RF.from=$("f-from").value; RF.to=$("f-to").value;
-  page=1; renderRuns();
-}));
-$("f-size").addEventListener("change",()=>{
-  pageSize=parseInt($("f-size").value,10)||25;
-  localStorage.ccPageSize=pageSize; page=1; renderRuns();
-});
-$("f-clear").addEventListener("click",()=>{
-  RF.project=RF.job=RF.status=RF.from=RF.to="";
-  ["f-project","f-job","f-status","f-from","f-to"].forEach(i=>$(i).value="");
-  page=1; renderRuns();
-});
-// project chips filter the Jobs section (grouping)
-$("projchips").addEventListener("click",(e)=>{
-  const c=e.target.closest(".projchip"); if(!c) return;
-  jobProjectFilter=c.dataset.proj; renderJobs();
-});
-$("pg-prev").addEventListener("click",()=>{ page--; renderRuns(); });
-$("pg-next").addEventListener("click",()=>{ page++; renderRuns(); });
-let _qTimer=null;
-$("q").addEventListener("input",()=>{
-  const v=$("q").value;
-  $("q-clear").hidden=!v;
-  clearTimeout(_qTimer); _qTimer=setTimeout(()=>runSearch(v), 350);
-});
-$("q-clear").addEventListener("click",()=>{
-  $("q").value=""; $("q-clear").hidden=true; runSearch("");
-});
-
-/* ---------------------------------------------------------------- boot */
-$("brandmark").innerHTML=I.bot;
-initViews();
-$("h-jobs").innerHTML=I.zap+"Jobs";
-$("h-runs").innerHTML=I.activity+"Recent runs";
-$("new-job").innerHTML=I.plus+"New job";
-$("new-project").innerHTML=I.folder+"New project";
-$("f-toggle").innerHTML=I.filter+"Filters "+I.cdown;
-$("f-clear").innerHTML=I.x+"Clear filters";
-$("pg-prev").innerHTML=I.cleft+"Prev";
-$("pg-next").innerHTML="Next"+I.cright;
-$("q-clear").innerHTML=I.x;
-$("searchbox").insertAdjacentHTML("afterbegin", I.search);
-$("f-size").value=String(pageSize);
-
-refresh();
-setInterval(refresh, 5000);
-</script>
-</body></html>"""
+# The dashboard page lives in bin/dashboard.html, next to this file.
+#
+# It used to be a 2,600-line raw string in the middle of this module, which
+# meant ~100 KB of HTML, CSS and JavaScript that no editor would highlight, no
+# linter would check and no diff would render usefully — a typo in it was
+# invisible until the page came up blank in a browser. As a file it is still
+# entirely self-contained (same package, no CDN, nothing fetched at runtime),
+# and `node --check` can be pointed straight at its script block.
+PAGE_FILE = BIN_DIR / "dashboard.html"
+_page_cache = {"mtime": None, "text": ""}
+
+
+def _page_source() -> str:
+    """The page template, re-read whenever the file on disk changes.
+
+    Cached by mtime rather than read once at import: the server is a KeepAlive
+    launchd agent that only restarts when it crashes, so reading once would mean
+    editing the page had no effect until someone remembered to kick it.
+    """
+    try:
+        mtime = PAGE_FILE.stat().st_mtime_ns
+    except OSError:
+        return _page_cache["text"] or "<h1>dashboard.html is missing</h1>"
+    if _page_cache["mtime"] != mtime:
+        _page_cache.update(mtime=mtime, text=PAGE_FILE.read_text())
+    return _page_cache["text"]
 
 
 def render_page() -> str:
-    return (PAGE.replace("__TOKEN__", TOKEN)
+    return (_page_source().replace("__TOKEN__", TOKEN)
                 .replace("__BUILD__", BUILD)
                 .replace("__FAVICON__", FAVICON))
 
