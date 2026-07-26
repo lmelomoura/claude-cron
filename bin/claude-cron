@@ -1031,6 +1031,30 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   got="$(git -C "$tmp/g/repo" worktree list --porcelain 2>/dev/null | grep -c "stampF" || true)"
   [ "$(num "$got")" = "0" ] && ok "git no longer lists the removed worktree" || bad "git still lists $got"
 
+  echo "run_end_hook() — an unattended pipeline can tell someone it broke"
+  mkdir -p "$tmp/hookcfg/hooks"
+  ( CONFIG_DIR="$tmp/hookcfg"; run_end_hook j1 error 1.5 "boom" P sess /tmp/l.json 1 2 ) >/dev/null 2>&1
+  want "no hook installed is a no-op" 0 $?
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'printf "%s|%s|%s|%s|%s\n" "$CC_JOB_ID" "$CC_STATUS" "$CC_COST" "$CC_NOTE" "$CC_PROJECT" > "$CC_HOOK_OUT"' \
+    > "$tmp/hookcfg/hooks/on-run-end.sh"
+  export CC_HOOK_OUT="$tmp/hook.seen"; rm -f "$CC_HOOK_OUT"
+  ( CONFIG_DIR="$tmp/hookcfg"; run_end_hook j1 error 1.5 "boom" P sess /tmp/l.json 1 2 ) >/dev/null 2>&1
+  local waited=0
+  while [ ! -f "$CC_HOOK_OUT" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited+1)); done
+  got="$(cat "$CC_HOOK_OUT" 2>/dev/null)"
+  [ "$got" = "j1|error|1.5|boom|P" ] && ok "the hook is told which run ended and how" \
+    || bad "the hook saw '$got'"
+  # It must never delay the run's cleanup, however slow or wedged it is.
+  printf '%s\n' '#!/usr/bin/env bash' 'sleep 30' > "$tmp/hookcfg/hooks/on-run-end.sh"
+  t0="$(now_epoch)"
+  ( CONFIG_DIR="$tmp/hookcfg"; run_end_hook j1 error 0 "" P s /tmp/l.json 1 2 ) >/dev/null 2>&1
+  elapsed=$(( $(now_epoch) - t0 ))
+  [ "$elapsed" -lt 3 ] && ok "a slow hook does not hold the run open (${elapsed}s)" \
+    || bad "run_end_hook blocked for ${elapsed}s"
+  unset CC_HOOK_OUT
+  rm -f "$tmp/hookcfg/hooks/on-run-end.sh"
+
   rm -rf "$tmp"
   echo
   echo "$pass passed, $fail failed"
@@ -1613,9 +1637,39 @@ If the work turns out to be already finished, or it can no longer be done at all
   # Record what was CHOSEN (the family, when one was) plus what actually ran.
   record_run "$id" "$status" "$start" "$end" "${cost:-0}" "${turns:-0}" "$session" "$logfile" "$wdreason" "$forced" "$pc_out" "$project" "${model_family:-$model}" "$model_id" "$resume_sid"
   log_tick "$id: finished status=$status rc=$rc denials=${denials:-0} cost=\$$cost turns=$turns model=$model${model_id:+ ($model_id)} forced=$forced${wdreason:+ — $wdreason}"
+  # Fired after the record exists, so a hook that opens the dashboard or reads
+  # the journal sees this run already in it.
+  run_end_hook "$id" "$status" "${cost:-0}" "$wdreason" "$project" "$session" "$logfile" "$start" "$end"
 
   run_cleanup "$id" "$slot"; trap - EXIT
   [ "$status" != "error" ]
+}
+
+# --- telling someone a run ended --------------------------------------------
+# An unattended pipeline that can only be checked by opening a web page is not
+# really unattended: a job can fail every five minutes all night and the first
+# anyone knows is the next morning. This is the same shape as the provisioning
+# hooks — a script on disk, run with the facts in its environment — so the
+# engine stays ignorant of notifiers, and terminal-notifier, ntfy, a Slack
+# webhook or a Linear comment are all just things the user writes here.
+#
+# Detached AND time-limited: a notifier that hangs must not hold the run's slot,
+# and a run must never be kept alive by something that only reports on it.
+RUN_HOOK_TIMEOUT="${CLAUDE_CRON_HOOK_TIMEOUT:-60}"
+run_end_hook() { # <id> <status> <cost> <note> <project> <session> <log> <start> <end>
+  local script="$CONFIG_DIR/hooks/on-run-end.sh"
+  [ -f "$script" ] || return 0
+  (
+    _hook() {
+      CC_JOB_ID="$1" CC_STATUS="$2" CC_COST="$3" CC_NOTE="$4" CC_PROJECT="$5" \
+      CC_SESSION="$6" CC_LOG="$7" CC_START="$8" CC_END="$9" \
+      CC_DURATION="$(( ${9:-0} - ${8:-0} ))" CC_DASHBOARD="http://127.0.0.1:$PORT/" \
+        bash "$script" >>"$DATA_DIR/exec.log" 2>&1
+    }
+    wt_run_limited "$RUN_HOOK_TIMEOUT" _hook "$@" \
+      || log_tick "$1: on-run-end hook failed or timed out — see exec.log"
+  ) >/dev/null 2>&1 &
+  return 0
 }
 
 # ---------------------------------------------------------------------- tick
