@@ -476,6 +476,23 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   want() { # want <label> <expected 0|1> <actual-rc>
     [ "$2" -eq "$3" ] && ok "$1" || bad "$1"
   }
+  size_of() { num "$(wc -c < "${1:-/nonexistent}" 2>/dev/null)"; }
+
+  # The suite exercises wt_setup/wt_teardown/wt_provision for real, and those
+  # write through log_tick and the provisioning hooks. Pointed at the live data
+  # dir they append fake jobs (j1..j9, "provision up failed for repoA") to the
+  # very tick.log the dashboard parses for its 24h activity counts — the test
+  # suite inventing jobs in production history. Shadow the whole data dir, at
+  # FUNCTION scope so every helper these tests call sees it too (bash is
+  # dynamically scoped), and prove at the end that nothing leaked.
+  local _real_tick="$TICK_LOG" _real_exec="$DATA_DIR/exec.log"
+  local _tick0 _exec0
+  _tick0="$(size_of "$_real_tick")"; _exec0="$(size_of "$_real_exec")"
+  local DATA_DIR="$tmp/data"
+  local TICK_LOG="$DATA_DIR/tick.log"
+  local LOG_DIR="$DATA_DIR/logs" LOCK_DIR="$DATA_DIR/locks"
+  local WORKTREES_DIR="$DATA_DIR/worktrees" RUNS_FILE="$DATA_DIR/runs.ndjson"
+  mkdir -p "$DATA_DIR" "$LOG_DIR" "$LOCK_DIR" "$WORKTREES_DIR"
 
   echo "num() — a number from a command is always an integer"
   # This is the exact shape that once produced "0\n0" and killed live agents.
@@ -686,6 +703,14 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   [ "$got" = '{"jobs":[{"id":"a"},{"id":"b","enabled":true},{"id":"c"}]}' ] \
     && ok "enabling one job adds no key to the others" \
     || bad "toggle-many enable produced: $got"
+
+  echo "the suite itself touches nothing outside its scratch dir"
+  [ "$(size_of "$_real_tick")" = "$_tick0" ] \
+    && ok "the real tick.log is byte-identical after the suite" \
+    || bad "the suite appended to the real tick.log ($_tick0 -> $(size_of "$_real_tick") bytes)"
+  [ "$(size_of "$_real_exec")" = "$_exec0" ] \
+    && ok "the real exec.log is byte-identical after the suite" \
+    || bad "the suite appended to the real exec.log ($_exec0 -> $(size_of "$_real_exec") bytes)"
 
   rm -rf "$tmp"
   echo
