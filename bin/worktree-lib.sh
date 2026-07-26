@@ -159,6 +159,15 @@ wt_main_of() { # <worktree>
   git -C "${1:-}" worktree list --porcelain 2>/dev/null | awk 'NR==1{print $2; exit}'
 }
 
+# A fingerprint of everything git currently calls dirty in a worktree. Taken
+# once after provisioning and again at teardown: what provisioning left behind
+# is not the agent's work, and mistaking the two preserves every run dir for
+# ever. Comparing fingerprints rather than listing paths keeps this O(1) to
+# store, and "created then deleted" correctly reads as "nothing changed".
+wt_dirt_sha() { # <worktree>
+  git -C "${1:-}" status --porcelain 2>/dev/null | shasum | awk '{print $1}'
+}
+
 # Every worktree a run dir currently holds. Reads the DISK, not the manifest, so
 # it is still correct when setup died before writing one.
 wt_run_worktrees() { # <run dir>
@@ -224,14 +233,28 @@ wt_setup() { # <id> <project> <canonical_cwd> <stamp>
                 base:.[3], base_ref:.[4], fork_sha:.[5]}]}' "$tsv" > "$run_dir/.run.json"
   rm -f "$tsv"
 
+  : > "$tsv"
   while IFS="$(printf '\t')" read -r name repo wt base; do
     [ -n "$name" ] || continue
     if ! wt_provision up "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base"; then
       log_tick "$id: provisioning failed for $name — aborting the run"
-      wt_teardown "$id" "$project" "$run_dir"
+      rm -f "$tsv"; wt_teardown "$id" "$project" "$run_dir"
       return 1
     fi
+    printf '%s\t%s\n' "$name" "$(wt_dirt_sha "$wt")" >> "$tsv"
   done < <("$JQ" -r '.repos[] | [.name,.canonical,.worktree,.base] | @tsv' "$run_dir/.run.json" 2>/dev/null)
+
+  # Record what the tree looked like once provisioning was done, so teardown can
+  # tell the hook's leftovers from anything the agent went on to write.
+  if "$JQ" -R -n --slurpfile mf "$run_dir/.run.json" '
+        ([inputs | split("\t") | {(.[0]): .[1]}] | add // {}) as $d
+        | $mf[0] | .repos = [.repos[] | . + {dirt_sha: ($d[.name] // "")}]' \
+        "$tsv" > "$run_dir/.run.json.new" 2>/dev/null; then
+    mv "$run_dir/.run.json.new" "$run_dir/.run.json"
+  else
+    rm -f "$run_dir/.run.json.new"
+  fi
+  rm -f "$tsv"
 
   printf '%s\n' "$primary"
 }
@@ -241,12 +264,22 @@ wt_setup() { # <id> <project> <canonical_cwd> <stamp>
 # dir stays. Removing some repos of a run and keeping others produces a half-run
 # nobody can reason about.
 wt_unsafe_to_remove() { # <run dir>
-  local run_dir="${1:-}" mf="${1:-}/.run.json" wt head fork
+  local run_dir="${1:-}" mf="${1:-}/.run.json" wt head fork snap
   [ -d "$run_dir" ] || return 1
   while IFS= read -r wt; do
     [ -n "$wt" ] || continue
-    # Uncommitted or untracked changes → keep.
-    [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ] && return 0
+    # Dirty compared to the END OF PROVISIONING → the agent wrote something → keep.
+    # Compared to a pristine checkout it is always dirty: the hook just copied a
+    # .env and a vendor/ in. With no snapshot (setup died before provisioning)
+    # fall back to the strict reading and keep anything dirty at all.
+    snap=""
+    [ -f "$mf" ] && snap="$("$JQ" -r --arg w "$wt" \
+        '.repos[] | select(.worktree==$w) | .dirt_sha // ""' "$mf" 2>/dev/null)"
+    if [ -n "$snap" ]; then
+      [ "$(wt_dirt_sha "$wt")" != "$snap" ] && return 0
+    else
+      [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ] && return 0
+    fi
     head="$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
     [ -n "$head" ] || continue
     fork=""
@@ -274,7 +307,12 @@ wt_teardown() { # <id> <project> <run dir>
   local id="${1:-}" project="${2:-}" run_dir="${3:-}" mf="${3:-}/.run.json"
   local name repo wt base main
   [ -n "$run_dir" ] && [ -d "$run_dir" ] || return 0
-  if [ -f "$mf" ]; then
+  # ONCE per run dir. A preserved run dir is swept again on every tick, and
+  # `down` is not a query: re-running it would take the same compose stack down
+  # every minute for as long as the unpushed work sits there. The marker lives
+  # in the run dir, so it disappears exactly when the run does.
+  if [ -f "$mf" ] && [ ! -f "$run_dir/.down" ]; then
+    : > "$run_dir/.down"
     while IFS="$(printf '\t')" read -r name repo wt base; do
       [ -n "$wt" ] && [ -d "$wt" ] || continue
       wt_provision down "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base" || true

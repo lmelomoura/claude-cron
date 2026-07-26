@@ -629,7 +629,31 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   got="$(sort -u "$rd2/down.log" 2>/dev/null | tr '\n' ' ')"
   [ "$got" = "one two " ] && ok "down ran for every repo even though the run was kept" \
     || bad "down.log held '$got'"
+  # A preserved run dir is swept again on every tick. Without a marker, `down`
+  # re-runs for ever -- a `docker compose down -v` a minute, for as long as the
+  # unpushed work sits there.
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_teardown j2 two "$rd2" ) >/dev/null 2>&1
+  got="$(wc -l < "$rd2/down.log" 2>/dev/null | tr -d ' ')"
+  [ "$got" = "2" ] && ok "down runs ONCE per run dir, however often teardown is called" \
+    || bad "down ran $got times for 2 repos"
   rm -f "$tmp/cfg/provision/two.down.sh"
+
+  echo "wt_unsafe_to_remove() — what provisioning left behind is not the agent's work"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo residue > provisioned.txt' \
+    > "$tmp/cfg/provision/two.up.sh"
+  local rd3="$tmp/wtroot/j4/stampE"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup j4 two "$tmp/g/repo" stampE ) >/dev/null 2>&1
+  [ -f "$rd3/one/provisioned.txt" ] && ok "the hook's untracked file is there" || bad "hook wrote nothing"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_unsafe_to_remove "$rd3" ) >/dev/null 2>&1
+  want "provisioning residue alone does NOT preserve a run" 1 $?
+  echo "the agent was here" > "$rd3/two/agent.txt"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_unsafe_to_remove "$rd3" ) >/dev/null 2>&1
+  want "a file the agent added after provisioning DOES preserve it" 0 $?
+  rm -f "$tmp/cfg/provision/two.up.sh"
 
   echo "wt_prune_orphans() — an unclaimed run dir is reaped, a claimed one is not"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
