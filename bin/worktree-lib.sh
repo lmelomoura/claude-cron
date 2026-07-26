@@ -37,6 +37,25 @@
 # Is <dir> inside a git working tree?
 wt_is_git_repo() { git -C "${1:-}" rev-parse --is-inside-work-tree >/dev/null 2>&1; }
 
+# Every repo this project spans: name<TAB>canonical path<TAB>base branch.
+# A project that declares `.repos[]` is taken at its word — that list is what a
+# run gets a worktree of. One that declares none is the single-repo case: the
+# row is synthesised from `.cwd`, with an EMPTY base meaning "infer it"
+# (wt_base_ref decides), because there is nothing declared to read.
+wt_repos() { # <project> <canonical_cwd>
+  local project="${1:-}" cwd="${2:-}" n
+  n="$(projects_json | "$JQ" -r --arg n "$project" \
+        '[.projects[] | select(.name==$n) | .repos // [] | .[]] | length' 2>/dev/null)"
+  case "$n" in ''|null|*[!0-9]*) n=0 ;; esac
+  if [ "$n" -gt 0 ]; then
+    projects_json | "$JQ" -r --arg n "$project" '
+      .projects[] | select(.name==$n) | .repos[]
+      | [(.name // ""), (.path // ""), (.base // "")] | @tsv' 2>/dev/null
+    return 0
+  fi
+  printf '%s\t%s\t\n' "$(basename "$cwd")" "$cwd"
+}
+
 # Should this run be isolated in a worktree? 0 = yes.
 wt_isolation_enabled() { # <project> <canonical_cwd>
   local project="${1:-}" cwd="${2:-}" mode

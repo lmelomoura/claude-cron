@@ -515,6 +515,21 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   got="$("$JQ" -r '[.jobs[] | select(.id=="x") | .enabled] | .[0] as $v | (if $v == null then "true" else $v end) | tostring' "$tmp/jobs.json")"
   [ "$got" = "false" ] && ok "enabled:false reads as false (jq // would say true)" || bad "enabled:false read as '$got'"
 
+  echo "wt_repos() — declared repos win, a bare cwd is the single-repo case"
+  mkdir -p "$tmp/proj"
+  printf '%s' '{"projects":[{"name":"multi","cwd":"/x/front","repos":[
+      {"name":"front","path":"/x/front","base":"develop"},
+      {"name":"back","path":"/x/back","base":"release"}]},
+    {"name":"solo","cwd":"/x/solo"}]}' > "$tmp/proj/projects.json"
+  got="$( PROJECTS_FILE="$tmp/proj/projects.json"; wt_repos multi /x/front | wc -l | tr -d ' ' )"
+  [ "$got" = "2" ] && ok "a declared multi-repo project yields 2 rows" || bad "multi yielded '$got' rows"
+  got="$( PROJECTS_FILE="$tmp/proj/projects.json"; wt_repos multi /x/front | sed -n '2p' )"
+  [ "$got" = "$(printf 'back\t/x/back\trelease')" ] && ok "name/path/base survive the round trip" \
+    || bad "second row was '$got'"
+  got="$( PROJECTS_FILE="$tmp/proj/projects.json"; wt_repos solo /x/solo )"
+  [ "$got" = "$(printf 'solo\t/x/solo\t')" ] && ok "no .repos[] synthesises one row from cwd" \
+    || bad "solo row was '$got'"
+
   rm -rf "$tmp"
   echo
   echo "$pass passed, $fail failed"
