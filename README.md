@@ -185,6 +185,75 @@ fi
 claim "$candidate"          # the real run: a write, and the lock
 ```
 
+### Isolation: one worktree per repo, per run
+
+Every run of a project works in its **own directory**, so two agents can never
+share a working tree — one `git checkout` would otherwise move the other off its
+branch mid-thought. A project that spans several repositories declares them, and
+a run gets a worktree of each:
+
+```json
+"repos": [
+  {"name": "web", "path": "/Users/me/code/web", "base": "develop"},
+  {"name": "api", "path": "/Users/me/code/api", "base": "develop"}
+],
+"worktree": {"enabled": "auto"}
+```
+
+```
+data/worktrees/<job>/<stamp>/
+├── web/        ← the run's cwd: the repo whose path is the project's cwd
+├── api/
+└── .run.json   ← the manifest: every repo, its worktree, its canonical checkout, its base
+```
+
+`base` is the branch each worktree is cut from and the branch a merge request
+targets. It is **declared, not observed**: a canonical checkout can be detached
+or parked on somebody's feature branch, and neither is a base. A project that
+declares no `repos` is the single-repo case — the entry is derived from `cwd`
+and its base inferred from the current branch.
+
+The agent finds everything through `$CC_RUN_MANIFEST`. The canonical checkouts
+are never modified: they are read to cut worktrees from, nothing more.
+
+`enabled` is `"auto"` (isolate when the cwd is a git repo), `true` or `false`.
+
+A run dir is removed when the run ends — unless a worktree still holds work that
+exists nowhere else (uncommitted changes, or commits on no remote), in which case
+the whole run dir is kept and the tick log says so.
+
+### Provisioning: `up` and `down`
+
+A fresh worktree has no `.env`, no `vendor/`, no `node_modules/` — they are
+gitignored, so no checkout can produce them. Two optional scripts per project
+fill that gap:
+
+```
+config/provision/<project>.up.sh     # after the worktrees exist, before the agent starts
+config/provision/<project>.down.sh   # when the run ends, before they are removed
+```
+
+Each runs **once per repo**, with the working directory set to that repo's
+worktree and the run described in its environment: `CC_REPO_NAME`,
+`CC_REPO_PATH` (the canonical checkout), `CC_WORKTREE`, `CC_BASE`, `CC_RUN_DIR`,
+`CC_RUN_MANIFEST`, `CC_PROJECT`, `CC_JOB_ID`. See
+`config/provision/example-hello.up.sh`.
+
+A non-zero `up` **aborts the run** — the engine takes down what it provisioned
+and never hands a half-built tree to an agent. A hook that outlives
+`worktree.provision_timeout_seconds` (default 900) is killed. `down` runs once
+per run, even when the run dir is preserved: whatever the hook registered outside
+the directory still has to be released.
+
+Anything with a global name must derive it from `$CC_RUN_DIR`, or two concurrent
+runs of the same repo collide:
+
+```bash
+SITE="${CC_REPO_NAME}-$(basename "$CC_RUN_DIR")"
+herd link "$SITE"; docker compose -p "$SITE" up -d      # up
+herd unlink "$SITE"; docker compose -p "$SITE" down -v  # down
+```
+
 ### Budgets
 
 - **Per-run** (`max_budget_usd`) — passed to `claude -p --max-budget-usd`; caps a
@@ -366,6 +435,7 @@ claude-cron/
 │   ├── projects.json          # your projects (generated)
 │   ├── models.json            # cached family→model resolutions (generated)
 │   ├── prechecks/<id>.sh      # one precheck per job
+│   ├── provision/<project>.{up,down}.sh   # per-repo worktree provisioning
 │   └── control.token          # dashboard secret (chmod 600, generated)
 ├── data/                      # index.db, journal, logs, state — all local
 ├── install.sh · uninstall.sh

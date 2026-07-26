@@ -14,6 +14,13 @@ config/models.json
 config/prechecks/*.sh
 !config/prechecks/example-*.sh
 
+# Personal worktree provisioning hooks (keep only the shipped examples)
+config/provision/*.sh
+!config/provision/example-*.sh
+
+# Personal helper libraries sourced by prechecks and prompts
+config/lib/
+
 # Logs and OS cruft
 *.log
 .DS_Store
