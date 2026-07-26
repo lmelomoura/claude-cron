@@ -884,6 +884,14 @@ const fmtWhen=(s)=>new Date(s*1000).toLocaleString(undefined,{year:"numeric",mon
 const money=(n)=>new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",
   minimumFractionDigits:2, maximumFractionDigits:(Math.abs(n||0)<0.1?4:2)}).format(n||0);
 const normStatus=(s)=>s==="ok"?"success":(s||"—");
+// Mirrors backoff_multiplier() in the engine — 3 consecutive failures double
+// the wait, doubling again per failure, capped at 16x. Kept in step by hand:
+// if one side changes, the card starts promising checks the tick will not make.
+const BACKOFF_AFTER=3, BACKOFF_MAX=16;
+const backoffMultiplier=(streak)=>{
+  const s=+streak||0; if(s<BACKOFF_AFTER) return 1;
+  return Math.min(BACKOFF_MAX, Math.pow(2, s-BACKOFF_AFTER+1));
+};
 // effort level → human label (empty = the flag is omitted and the CLI decides)
 const EFFORT_LABELS={"":"default","low":"Low","medium":"Medium","high":"High","xhigh":"Extra high","max":"Max"};
 const effortLabel=(v)=>EFFORT_LABELS[v||""]||v;
@@ -1025,11 +1033,20 @@ function jobCard(j){
   const capped=(cap!=null && spentToday>=cap);
   // Due time by interval, then pushed to the next window opening if that falls
   // outside the schedule — so the card never promises a check that cannot run.
-  const dueAt=st.last_start?(st.last_start+(j.interval_seconds||300)):Math.floor(Date.now()/1000);
+  // Repeated failures stretch the interval (see backoff_multiplier in the
+  // engine). The card has to use the SAME arithmetic or it promises a check
+  // minutes before the tick will actually take one.
+  const streak=+(st.fail_streak||0);
+  const backoff=backoffMultiplier(streak);
+  const ivEff=(j.interval_seconds||300)*backoff;
+  const dueAt=st.last_start?(st.last_start+ivEff):Math.floor(Date.now()/1000);
+
   const nextAt=nextCheckAt(j, dueAt);
   const next = j.enabled===false ? '<span class="muted">disabled</span>'
     : (nextAt==null ? '<span class="muted">no matching window</span>'
-    : esc(fmtWhen(nextAt))+(nextAt>dueAt+30?' <span class="muted">· when the window reopens</span>':''));
+    : esc(fmtWhen(nextAt))+(nextAt>dueAt+30?' <span class="muted">· when the window reopens</span>':'')
+      +(backoff>1?' <span style="color:var(--warn)">· backing off '+backoff+'× after '
+        +streak+' failed runs</span>':''));
   const pc=st.last_precheck||null;
   let checkStr=fmtAgo(st.last_start);
   if(pc && typeof pc==="object"){
