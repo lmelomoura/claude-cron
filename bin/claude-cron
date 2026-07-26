@@ -122,8 +122,6 @@ jobs_json() {
   cat "$JOBS_FILE"
 }
 
-job_ids() { jobs_json | "$JQ" -r '.jobs[].id'; }
-
 # NOTE: deliberately NOT jq's `//` operator. `//` treats **false** as absent, so
 # `(.enabled) // "true"` returned "true" for a job with `enabled: false` — which
 # meant Disable never disabled anything and the tick kept launching runs. Fall
@@ -220,6 +218,20 @@ state_set() { # state_set <id> <field> <value-as-json>
   _state_unlock
 }
 
+# Several fields in ONE locked read-modify-write. The end of a run set seven
+# fields one at a time, so it took the state lock seven times and forked jq
+# seven times to record a single event — and every other run on the machine
+# queued behind each of them. Merges into whatever the job already has, so no
+# field written elsewhere is lost.
+state_set_many() { # state_set_many <id> <json-object>
+  local id="$1" obj="$2" tmp
+  _state_lock
+  tmp="$(mktemp "$DATA_DIR/.state.XXXXXX")"
+  "$JQ" --arg id "$id" --argjson o "$obj" \
+    '.[$id] = ((.[$id] // {}) + $o)' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+  _state_unlock
+}
+
 # What a precheck's exit status MEANS. The engine used to read every non-zero
 # status as "nothing to do", which made the two failures that matter look
 # identical to the one healthy outcome: a probe that ran and found no work
@@ -238,25 +250,30 @@ precheck_verdict() { # precheck_verdict <exit-code> -> work|idle|error
 
 # ------------------------------------------------------------- schedule gates
 
-# Is now inside the job's active window? 0 = yes, 1 = no (reason on stdout).
-in_window() {
-  local id="$1" days hours start end nowmin dow
-  days="$(job_get "$id" '.active_days' '')"
-  hours="$(job_get "$id" '.active_hours' '')"
+# Is a moment inside a job's active window? 0 = yes, 1 = no (reason on stdout).
+# Takes VALUES rather than a job id: the tick reads every job's fields in one jq
+# pass (see tick_plan), and passing the day/minute in makes the rule testable
+# without waiting for a Tuesday.
+in_window_vals() { # in_window_vals <days-csv> <hours> [dow] [minute-of-day]
+  local days="${1:-}" hours="${2:-}" dow="${3:-}" nowmin="${4:-}" start end s e
+  case "$days" in null) days="" ;; esac
+  case "$hours" in null) hours="" ;; esac
+  [ -n "$dow" ] || dow="$(date +%u)"                         # 1=Mon .. 7=Sun
+  [ -n "$nowmin" ] || nowmin=$(( 10#$(date +%H) * 60 + 10#$(date +%M) ))
 
-  if [ -n "$days" ] && [ "$days" != "null" ]; then
-    dow="$(date +%u)"   # 1=Mon .. 7=Sun
+  if [ -n "$days" ]; then
     case ",$days," in
       *",$dow,"*) : ;;
       *) echo "outside active_days ($days)"; return 1 ;;
     esac
   fi
 
-  if [ -n "$hours" ] && [ "$hours" != "null" ]; then
+  if [ -n "$hours" ]; then
     start="${hours%%-*}"; end="${hours##*-}"
-    nowmin=$(( 10#$(date +%H) * 60 + 10#$(date +%M) ))
-    local s=$(( 10#${start%%:*} * 60 + 10#${start##*:} ))
-    local e=$(( 10#${end%%:*} * 60 + 10#${end##*:} ))
+    # 10# throughout: "08" is octal to bash arithmetic otherwise, and 08/09 are
+    # not even valid octal — the window would abort rather than merely misread.
+    s=$(( 10#${start%%:*} * 60 + 10#${start##*:} ))
+    e=$(( 10#${end%%:*} * 60 + 10#${end##*:} ))
     if [ "$s" -le "$e" ]; then
       [ "$nowmin" -ge "$s" ] && [ "$nowmin" -lt "$e" ] || { echo "outside active_hours ($hours)"; return 1; }
     else  # window crosses midnight
@@ -292,13 +309,11 @@ effective_interval() { # effective_interval <interval> <streak>
   printf '%s' "$(( iv * $(backoff_multiplier "${2:-0}") ))"
 }
 
-is_due() { # is_due <id> ; 0 = due
-  local id="$1" interval last now
-  interval="$(job_get "$id" '.interval_seconds' '300')"
-  interval="$(effective_interval "$interval" "$(state_get "$id" fail_streak 0)")"
-  last="$(state_get "$id" last_start 0)"
-  now="$(now_epoch)"
-  [ "$(( now - last ))" -ge "$interval" ]
+is_due_vals() { # is_due_vals <interval> <last-start> <fail-streak> ; 0 = due
+  local interval last
+  interval="$(effective_interval "${1:-300}" "${3:-0}")"
+  last="$(num "${2:-0}")"
+  [ "$(( $(now_epoch) - last ))" -ge "$interval" ]
 }
 
 # Is the agent's turn finished? True only when the LAST decodable event in the
@@ -878,6 +893,43 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   [ "$(effective_interval 300 0)" = "300" ] && ok "a healthy job keeps its interval" || bad "300/0 -> $(effective_interval 300 0)"
   [ "$(effective_interval 300 4)" = "1200" ] && ok "a failing job waits 4x longer" || bad "300/4 -> $(effective_interval 300 4)"
 
+  echo "state_set_many() — the end of a run is one write, not seven"
+  ( STATE_FILE="$tmp/state.json"; echo '{"x":{"keep":"me"}}' > "$STATE_FILE"
+    state_set_many x '{"last_status":"success","last_cost":1.25,"fail_streak":0}'
+    printf '%s|%s|%s|%s\n' "$(state_get x last_status)" "$(state_get x last_cost)" \
+           "$(state_get x fail_streak)" "$(state_get x keep)" ) > "$tmp/sm.out" 2>/dev/null
+  got="$(cat "$tmp/sm.out")"
+  [ "$got" = "success|1.25|0|me" ] \
+    && ok "every field lands and the fields already there survive" || bad "got '$got'"
+  ( STATE_FILE="$tmp/state2.json"; echo '{}' > "$STATE_FILE"
+    state_set_many newjob '{"a":1}'; state_get newjob a ) > "$tmp/sm2.out" 2>/dev/null
+  [ "$(cat "$tmp/sm2.out")" = "1" ] && ok "a job with no state yet is created" || bad "new job: $(cat "$tmp/sm2.out")"
+
+  echo "in_window_vals() — the schedule window, including the one that wraps midnight"
+  in_window_vals "" "" 3 600            ; want "no restriction is always open"        0 $?
+  in_window_vals "1,2,3,4,5" "" 3 600   ; want "a listed weekday is open"             0 $?
+  in_window_vals "1,2,3,4,5" "" 6 600   ; want "an unlisted weekday is closed"        1 $?
+  in_window_vals "" "08:00-20:00" 3 600 ; want "inside the hours is open (10:00)"     0 $?
+  in_window_vals "" "08:00-20:00" 3 479 ; want "a minute before opening is closed"    1 $?
+  in_window_vals "" "08:00-20:00" 3 480 ; want "the opening minute is open"           0 $?
+  in_window_vals "" "08:00-20:00" 3 1200; want "the closing minute is closed"         1 $?
+  # A window that wraps midnight is the one people get wrong: 22:00-06:00 must
+  # be open at 23:00 AND at 02:00, and shut at midday.
+  in_window_vals "" "22:00-06:00" 3 1380; want "a wrapping window is open at 23:00"   0 $?
+  in_window_vals "" "22:00-06:00" 3 120 ; want "a wrapping window is open at 02:00"   0 $?
+  in_window_vals "" "22:00-06:00" 3 720 ; want "a wrapping window is shut at midday"  1 $?
+  in_window_vals "6,7" "22:00-06:00" 7 120; want "day and hour must BOTH match"       0 $?
+  in_window_vals "6,7" "22:00-06:00" 1 120; want "the wrong day closes it"            1 $?
+  # 08:00 written as 08 must not be read as octal — the classic bash trap.
+  in_window_vals "" "08:00-09:00" 3 510 ; want "a leading zero is decimal, not octal" 0 $?
+
+  echo "is_due_vals() — due-ness accounts for the failure backoff"
+  is_due_vals 300 "$(( $(now_epoch) - 400 ))" 0 ; want "past its interval is due"     0 $?
+  is_due_vals 300 "$(( $(now_epoch) - 100 ))" 0 ; want "inside its interval is not"   1 $?
+  is_due_vals 300 "$(( $(now_epoch) - 400 ))" 4 ; want "a backed-off job waits longer" 1 $?
+  is_due_vals 300 "$(( $(now_epoch) - 1300 ))" 4; want "and runs once the longer wait passes" 0 $?
+  is_due_vals 300 0 0                           ; want "a job that never ran is due"  0 $?
+
   rm -rf "$tmp"
   echo
   echo "$pass passed, $fail failed"
@@ -1428,18 +1480,21 @@ If the work turns out to be already finished, or it can no longer be done at all
   # Consecutive failures drive the backoff (see backoff_multiplier). A warning
   # is NOT a failure: the run worked, it just wants a look — slowing those down
   # would throttle the very jobs that are doing their job.
-  if [ "$status" = "error" ]; then
-    state_set "$id" fail_streak "$(( $(num "$(state_get "$id" fail_streak 0)") + 1 ))"
-  else
-    state_set "$id" fail_streak 0
-  fi
+  local streak_next=0
+  [ "$status" = "error" ] && streak_next="$(( $(num "$(state_get "$id" fail_streak 0)") + 1 ))"
 
-  state_set "$id" last_end "$end"
-  state_set "$id" last_status "\"$status\""
-  state_set "$id" last_run_start "$start"
-  state_set "$id" last_run_status "\"$status\""
-  state_set "$id" last_cost "${cost:-0}"
-  state_set "$id" last_session "\"$session\""
+  # One write for the whole outcome. Seven separate ones meant seven turns of
+  # the state lock, which every concurrent run had to queue behind.
+  state_set_many "$id" "$("$JQ" -nc \
+    --argjson end "$end" --arg status "$status" --argjson start "$start" \
+    --arg cost "${cost:-0}" --arg session "$session" \
+    --argjson streak "$streak_next" \
+    '{last_end:$end, last_status:$status, last_run_start:$start,
+      last_run_status:$status,
+      # the CLI reports cost as a decimal string; tonumber? keeps a malformed
+      # one from making the whole state write fail
+      last_cost:($cost|tonumber? // 0),
+      last_session:$session, fail_streak:$streak}')"
   # Record what was CHOSEN (the family, when one was) plus what actually ran.
   record_run "$id" "$status" "$start" "$end" "${cost:-0}" "${turns:-0}" "$session" "$logfile" "$wdreason" "$forced" "$pc_out" "$project" "${model_family:-$model}" "$model_id" "$resume_sid"
   log_tick "$id: finished status=$status rc=$rc denials=${denials:-0} cost=\$$cost turns=$turns model=$model${model_id:+ ($model_id)} forced=$forced${wdreason:+ — $wdreason}"
@@ -1449,6 +1504,31 @@ If the work turns out to be already finished, or it can no longer be done at all
 }
 
 # ---------------------------------------------------------------------- tick
+
+# Everything the tick needs to decide about every enabled job, in ONE jq pass
+# over both files: id, window, interval, last start, failure streak, ceiling.
+#
+# The loop used to ask job_get/state_get per field per job, and each of those
+# cats and re-parses the whole jobs file — about seven jq processes per job, so
+# roughly 150 forks a minute at 21 jobs, for ever, almost always to conclude
+# that nothing is due. Disabled jobs are filtered here rather than in the loop:
+# `// true` would be wrong (it treats false as absent), hence the explicit test.
+tick_plan() { # id \t days \t hours \t interval \t last_start \t fail_streak \t max_parallel
+  [ -f "$JOBS_FILE" ] || return 0
+  "$JQ" -e . "$JOBS_FILE" >/dev/null 2>&1 || { log_tick "tick: malformed $JOBS_FILE — no job examined"; return 0; }
+  "$JQ" -r --slurpfile st "$STATE_FILE" '
+    (($st[0]) // {}) as $S
+    | .jobs[]
+    | select(.enabled != false)
+    | . as $j | ($S[$j.id] // {}) as $s
+    | [ $j.id,
+        (($j.active_days // []) | map(tostring) | join(",")),
+        ($j.active_hours // ""),
+        (($j.interval_seconds // 300) | tostring),
+        (($s.last_start // 0) | tostring),
+        (($s.fail_streak // 0) | tostring),
+        (($j.max_parallel // 3) | tostring) ] | @tsv' "$JOBS_FILE" 2>/dev/null
+}
 
 # The tick only DECIDES and LAUNCHES — it never waits for a run. Each due job is
 # handed to a detached `_exec` process that carries out the precheck + Claude run
@@ -1473,11 +1553,11 @@ cmd_tick() {
     nohup /bin/bash "$SELF" _resolve_models </dev/null >> "$DATA_DIR/exec.log" 2>&1 &
     log_tick "models: refreshing family→id resolutions (cache older than ${MODELS_TTL}s)"
   fi
-  for id in $(job_ids); do
-    [ "$(job_get "$id" '.enabled' 'true')" = "true" ] || continue
-    in_window "$id" >/dev/null || continue
-    is_due "$id" || continue
-    max_par="$(job_get "$id" '.max_parallel' '3')"
+  local days hours interval last streak max_par
+  while IFS="$(printf '\t')" read -r id days hours interval last streak max_par; do
+    [ -n "$id" ] || continue
+    in_window_vals "$days" "$hours" >/dev/null || continue
+    is_due_vals "$interval" "$last" "$streak" || continue
     case "$max_par" in ''|null|*[!0-9]*) max_par=3 ;; esac
     if [ "$max_par" -gt 0 ] && [ "$(slots_active "$id")" -ge "$max_par" ]; then
       log_tick "$id: at max_parallel=$max_par run(s), not launching another"
@@ -1485,7 +1565,7 @@ cmd_tick() {
     fi
     nohup /bin/bash "$SELF" _exec "$id" </dev/null >> "$DATA_DIR/exec.log" 2>&1 &
     log_tick "$id: launched detached run"
-  done
+  done < <(tick_plan)
 }
 
 # ------------------------------------------------------------------ commands
@@ -1602,19 +1682,23 @@ cmd_status() {
   echo "data      : $DATA_DIR"
   echo
   printf '%-20s %-8s %-9s %-11s %-9s %s\n' JOB ENABLED EVERY LAST STATUS COST
-  local id
-  for id in $(job_ids); do
-    local en iv ls st lc ago
-    en="$(job_get "$id" '.enabled' 'true')"
-    iv="$(job_get "$id" '.interval_seconds' '300')"
-    ls="$(state_get "$id" last_start 0)"
-    st="$(state_get "$id" last_status '—')"
-    lc="$(state_get "$id" last_cost 0)"
-    if [ "$ls" -gt 0 ] 2>/dev/null; then
-      ago="$(( ( $(now_epoch) - ls ) / 60 ))m ago"
-    else ago="never"; fi
-    printf '%-20s %-8s %-9s %-11s %-9s $%s\n' "$id" "$en" "$(( iv / 60 ))m" "$ago" "$st" "$lc"
-  done
+  # One jq over both files, for the same reason the tick does it (see
+  # tick_plan): five per job meant a hundred processes just to print a table.
+  local id en iv ls st lc ago now
+  now="$(now_epoch)"
+  while IFS="$(printf '\t')" read -r id en iv ls st lc; do
+    [ -n "$id" ] || continue
+    if [ "$(num "$ls")" -gt 0 ]; then ago="$(( ( now - ls ) / 60 ))m ago"; else ago="never"; fi
+    printf '%-20s %-8s %-9s %-11s %-9s $%s\n' "$id" "$en" "$(( $(num "$iv" 300) / 60 ))m" "$ago" "$st" "$lc"
+  done < <("$JQ" -r --slurpfile st "$STATE_FILE" '
+      (($st[0]) // {}) as $S
+      | .jobs[] | . as $j | ($S[$j.id] // {}) as $s
+      | [ $j.id,
+          (if $j.enabled == false then "false" else "true" end),
+          (($j.interval_seconds // 300) | tostring),
+          (($s.last_start // 0) | tostring),
+          (($s.last_status // "—") | tostring),
+          (($s.last_cost // 0) | tostring) ] | @tsv' "$JOBS_FILE" 2>/dev/null)
   echo
   echo "Dashboard : http://127.0.0.1:$PORT/   (claude-cron dashboard)"
 }

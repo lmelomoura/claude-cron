@@ -1040,7 +1040,6 @@ function jobCard(j){
   const backoff=backoffMultiplier(streak);
   const ivEff=(j.interval_seconds||300)*backoff;
   const dueAt=st.last_start?(st.last_start+ivEff):Math.floor(Date.now()/1000);
-
   const nextAt=nextCheckAt(j, dueAt);
   const next = j.enabled===false ? '<span class="muted">disabled</span>'
     : (nextAt==null ? '<span class="muted">no matching window</span>'
@@ -1059,7 +1058,6 @@ function jobCard(j){
                   : '<span style="color:var(--err);font-weight:600">probe FAILED (exit '+esc(String(pc.exit))+')</span>';
     checkStr+=" — "+verdict+checkList(pc.output);
   }
-
   // A job may have SEVERAL runs going at once, so say how many rather than one
   // "running now". The per-run outcome is no longer summarised on the card: each
   // run is individual and carries its own status in the Runs table.
