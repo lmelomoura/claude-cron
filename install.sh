@@ -29,8 +29,8 @@ chmod +x "$HERE"/bin/* "$HERE"/*.sh 2>/dev/null || true
 # 2) dependencies --------------------------------------------------------
 echo "Checking dependencies…"
 missing=0
-for c in bash jq python3 curl; do
-  if command -v "$c" >/dev/null 2>&1; then say "✓ $c"; else say "✗ $c (required)"; missing=1; fi
+for c in bash jq python3 curl git; do
+  if command -v "$c" >/dev/null 2>&1; then say "✓ $c ($(command -v "$c"))"; else say "✗ $c (required)"; missing=1; fi
 done
 if command -v claude >/dev/null 2>&1; then
   say "✓ claude ($(claude --version 2>/dev/null | head -1))"

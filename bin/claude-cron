@@ -57,7 +57,12 @@ CLAUDE_BIN="${CLAUDE_CRON_CLAUDE_BIN:-$HOME/.local/bin/claude}"
 CLAUDE_CONFIG_DIR="${CLAUDE_CRON_CLAUDE_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-}}"
 if [ -n "$CLAUDE_CONFIG_DIR" ]; then export CLAUDE_CONFIG_DIR; else unset CLAUDE_CONFIG_DIR; fi
 PYTHON="${CLAUDE_CRON_PYTHON:-$(command -v python3 2>/dev/null || echo /usr/bin/python3)}"
-JQ=/usr/bin/jq
+# /usr/bin/jq is only guaranteed on macOS 15 and later; before that jq comes
+# from Homebrew, at a path that differs between Apple Silicon and Intel. The
+# installer checks `jq` on PATH, so hard-coding a different path here meant an
+# install could pass every check and then have every single run fail. Resolve
+# it the same way python3 is resolved, and let the environment override.
+JQ="${CLAUDE_CRON_JQ:-$(command -v jq 2>/dev/null || echo /usr/bin/jq)}"
 
 mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" "$LOCK_DIR" "$WORKTREES_DIR"
 [ -f "$STATE_FILE" ] || echo '{}' > "$STATE_FILE"
