@@ -1001,6 +1001,36 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   got="$( RUNS_FILE="$tmp/cut.ndjson"; spent_today a )"
   [ "$got" = "3.750000" ] && ok "a truncated first line is ignored" || bad "with a cut line -> '$got'"
 
+  echo "cmd_worktree_drop() — a retained run dir can be discarded on purpose"
+  # wt_teardown deliberately KEEPS a run dir holding unpushed work, and the
+  # sweep then re-examines it every tick for ever. Nothing could ever let go of
+  # it, so the only exit was rm -rf by hand.
+  local rd4="$tmp/wtroot/j7/stampF"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup j7 two "$tmp/g/repo" stampF ) >/dev/null 2>&1
+  ( cd "$rd4/two" && echo keep > unpushed.txt && git add unpushed.txt \
+      && $gitc commit -qm keep ) >/dev/null 2>&1
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_teardown j7 two "$rd4" ) >/dev/null 2>&1
+  [ -d "$rd4" ] && ok "unpushed work is still preserved by the normal path" || bad "teardown removed it"
+
+  mkdir -p "$tmp/locks/j7/888"; echo $$ > "$tmp/locks/j7/888/pid"
+  echo "$rd4" > "$tmp/locks/j7/888/worktree"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
+    cmd_worktree_drop j7 stampF ) >/dev/null 2>&1
+  [ -d "$rd4" ] && ok "a dir a LIVE run is using is never dropped" || bad "dropped a live run's dir"
+  rm -rf "$tmp/locks/j7"
+
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
+    cmd_worktree_drop j7 stampF ) >/dev/null 2>&1
+  want "dropping an unclaimed dir succeeds" 0 $?
+  [ ! -d "$rd4" ] && ok "the retained dir is gone once dropped explicitly" || bad "dir survived the drop"
+  # And git must not be left believing the worktrees are still checked out.
+  got="$(git -C "$tmp/g/repo" worktree list --porcelain 2>/dev/null | grep -c "stampF" || true)"
+  [ "$(num "$got")" = "0" ] && ok "git no longer lists the removed worktree" || bad "git still lists $got"
+
   rm -rf "$tmp"
   echo
   echo "$pass passed, $fail failed"
@@ -2050,6 +2080,25 @@ cmd_set_field() { # cmd_set_field <id> <field> ; value on stdin
   echo "$field updated for $id"
 }
 
+# A run dir that wt_teardown decided to keep (it holds unpushed or uncommitted
+# work) is preserved for ever: the sweep re-examines it every tick and always
+# reaches the same conclusion. Nothing could release it, so the only way out was
+# rm -rf by hand — and because nothing listed them either, they were invisible
+# until the disk filled. This is the deliberate way to let one go.
+cmd_worktree_drop() { # cmd_worktree_drop <job-id> <stamp>
+  local id="$1" stamp="$2" run_dir="$WORKTREES_DIR/$1/$2"
+  case "$stamp" in *[!a-zA-Z0-9_.-]*|''|*..*) die "worktree-drop: bad stamp '$stamp'" ;; esac
+  [ -d "$run_dir" ] || die "worktree-drop: no such run dir: $run_dir"
+  # Never pull the ground out from under a running agent.
+  if wt_is_claimed "$id" "$run_dir"; then
+    die "worktree-drop: $id/$stamp belongs to a run that is still going — stop it first"
+  fi
+  wt_remove_all "$run_dir"
+  [ -d "$WORKTREES_DIR/$id" ] && rmdir "$WORKTREES_DIR/$id" 2>/dev/null
+  log_tick "$id: run dir $stamp dropped by the user (discarding whatever it held)"
+  echo "dropped $id/$stamp"
+}
+
 precheck_path() { echo "$CONFIG_DIR/prechecks/$1.sh"; }
 
 PRECHECK_SKELETON='#!/bin/bash
@@ -2303,6 +2352,7 @@ case "${1:-}" in
   get-precheck) [ $# -ge 2 ] || die "usage: claude-cron get-precheck <job-id>"; cmd_get_precheck "$2" ;;
   provision-set) [ $# -ge 3 ] || die "usage: claude-cron provision-set <project> <up|down> (script on stdin)"; cmd_provision_set "$2" "$3" ;;
   provision-get) [ $# -ge 3 ] || die "usage: claude-cron provision-get <project> <up|down>"; cmd_provision_get "$2" "$3" ;;
+  worktree-drop) [ $# -ge 3 ] || die "usage: claude-cron worktree-drop <job-id> <stamp>"; cmd_worktree_drop "$2" "$3" ;;
   serve)     cmd_serve ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command: $1 (try: claude-cron help)" ;;

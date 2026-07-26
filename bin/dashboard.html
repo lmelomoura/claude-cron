@@ -545,6 +545,9 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
 </header>
 <main class="wrap">
   <section class="stats" id="stats"></section>
+  <!-- Run dirs the sweep is preserving because they hold unpushed work.
+       Hidden entirely when there are none, which is the normal state. -->
+  <section id="retained" hidden></section>
 
   <nav class="viewtabs" id="viewtabs">
     <button class="viewtab active" data-view="jobs" id="vt-jobs"></button>
@@ -1404,11 +1407,42 @@ async function deleteProjectFromModal(){
   $("projmodal").close(); toast("Deleted project "+editingProject); refresh();
 }
 
+/* Run dirs kept back because an agent left work in them that exists nowhere
+   else. The engine is right to keep them, but it can never let go on its own —
+   so without this panel they pile up unseen until the disk is full, and the
+   work they were protecting is never noticed either. */
+function renderRetained(){
+  const host=$("retained"); if(!host) return;
+  const items=DATA.retained_worktrees||[];
+  if(!items.length){ host.hidden=true; host.innerHTML=""; return; }
+  host.hidden=false;
+  const rows=items.map(w=>{
+    const age=fmtAgo(Math.floor(Date.now()/1000)-(w.age||0));
+    return '<tr><td><code>'+esc(w.job)+'</code></td>'
+      +'<td class="muted">'+esc(w.stamp)+'</td>'
+      +'<td>'+esc((w.repos||[]).join(", "))+'</td>'
+      +'<td>'+esc(fmtBytes(w.bytes||0))+'</td>'
+      +'<td class="muted">'+esc(age)+'</td>'
+      +'<td style="text-align:right"><button class="btn ghost sm" data-wtdrop="'
+        +esc(w.job)+'" data-wtstamp="'+esc(w.stamp)+'">Discard</button></td></tr>';
+  }).join("");
+  host.innerHTML='<div class="card" style="margin-bottom:16px">'
+    +'<div class="secthead" style="margin:0 0 8px"><h3 style="color:var(--warn)">'
+      +I.alert+' '+items.length+' worktree'+(items.length===1?"":"s")+' kept back</h3></div>'
+    +'<p class="muted" style="margin:0 0 10px">These runs ended with commits or changes that exist'
+    +' nowhere else, so their worktrees were preserved instead of removed. Push or salvage what you'
+    +' need, then discard them — nothing else will ever clean them up.</p>'
+    +'<table class="tbl"><thead><tr><th>Job</th><th>Run</th><th>Repos</th><th>Size</th>'
+    +'<th>Kept since</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+
 function render(){
   const _g=DATA.generated?new Date(DATA.generated):null;
   $("updated").textContent=(_g&&!isNaN(_g))?_g.toLocaleString(undefined,{dateStyle:"medium",timeStyle:"medium"}):"";
   $("pill-launchd").innerHTML='<span class="pill '+(DATA.launchd_loaded?"on":"off")+'">'
     +(DATA.launchd_loaded?I.check+"launchd":I.xcircle+"launchd off")+'</span>';
+
+  renderRetained();
 
   const today=new Date(); today.setHours(0,0,0,0);
   const t0=Math.floor(today.getTime()/1000), wk=Math.floor(Date.now()/1000)-7*86400;
@@ -2467,6 +2501,25 @@ document.addEventListener("click", async (e)=>{
     if(g.classList.contains("collapsed")) collapsedGroups.add(key); else collapsedGroups.delete(key);
     localStorage.ccCollapsed=JSON.stringify([...collapsedGroups]);
     return;
+  }
+  // discarding a preserved run dir — irreversible, and the whole reason it was
+  // kept is that it holds work that exists nowhere else, so spell that out.
+  const wtd=e.target.closest("[data-wtdrop]");
+  if(wtd){
+    const job=wtd.dataset.wtdrop, stamp=wtd.dataset.wtstamp;
+    const yes=await showConfirm({tone:"danger", icon:"trash",
+      title:"Discard "+job+" / "+stamp+"?",
+      message:"This worktree was kept because it holds commits or changes that are on no remote."
+        +" Discarding it deletes them permanently. Make sure anything you need is pushed first.",
+      confirmLabel:"Discard for good"});
+    if(!yes) return;
+    wtd.disabled=true;
+    const r=await fetch("/api/action",{method:"POST",
+      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+      body:JSON.stringify({op:"worktree_drop", id:job, stamp})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok){ toast(j.error||"could not discard", true); wtd.disabled=false; return; }
+    toast("Discarded "+job+" / "+stamp); refresh(); return;
   }
   if(e.target.closest("#new-project")){ openProjectEditor(); return; }
   if(e.target.closest("#new-job")){ openCreator(); return; }

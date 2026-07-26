@@ -514,10 +514,16 @@ claude-cron project-set        # create/update a project (JSON on stdin)
 claude-cron project-list | project-delete <name>
 claude-cron provision-set <project> up|down   # worktree provisioning script (stdin)
 claude-cron provision-get <project> up|down
+claude-cron worktree-drop <id> <stamp>   # discard a preserved run dir for good
 claude-cron resolve-models     # refresh which model each family points at
 claude-cron selftest           # offline checks of the logic that can kill a run
 claude-cron install | uninstall
 ```
+
+Environment overrides: `CLAUDE_CRON_PORT`, `CLAUDE_CRON_CONFIG`,
+`CLAUDE_CRON_DATA`, `CLAUDE_CRON_CLAUDE_BIN`, `CLAUDE_CRON_CLAUDE_CONFIG_DIR`,
+`CLAUDE_CRON_PYTHON`, `CLAUDE_CRON_JQ`, `CLAUDE_CRON_LOG_MAX` (log rotation
+threshold, default 4 MiB), `CLAUDE_CRON_HOOK_TIMEOUT`, `CLAUDE_CRON_LOCK_GRACE`.
 
 ---
 

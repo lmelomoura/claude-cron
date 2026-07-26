@@ -351,6 +351,16 @@ wt_teardown() { # <id> <project> <run dir>
     log_tick "$id: run dir kept — unpushed or uncommitted work at $run_dir"
     return 0
   fi
+  wt_remove_all "$run_dir"
+}
+
+# Take a run dir off disk unconditionally, leaving git with no stale worktree
+# registrations. Split out of wt_teardown so an explicit, human-initiated drop
+# can reuse exactly the same removal — the ONLY difference being that it does
+# not consult wt_unsafe_to_remove first.
+wt_remove_all() { # <run dir>
+  local run_dir="${1:-}" wt main
+  [ -n "$run_dir" ] && [ -d "$run_dir" ] || return 0
   while IFS= read -r wt; do
     [ -n "$wt" ] || continue
     main="$(wt_main_of "$wt")"

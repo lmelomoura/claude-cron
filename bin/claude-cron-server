@@ -809,6 +809,67 @@ def _session_from_log(logp):
     return ""
 
 
+def retained_worktrees():
+    """Run dirs sitting on disk that no live run is using.
+
+    wt_teardown keeps a run dir whose worktrees hold uncommitted or unpushed
+    work — correct, but permanent: the sweep re-reaches the same verdict every
+    tick and nothing ever lets go. They were also invisible, mentioned only in
+    tick.log, so the first symptom was a full disk. Listing them is what makes
+    the deliberate drop (worktree-drop) something a user can actually reach.
+
+    Read straight from the directory tree, the same way active_runs_for reads
+    the slots — no fork, cheap enough for the poll.
+    """
+    root = DATA_DIR / "worktrees"
+    if not root.is_dir():
+        return []
+    claimed = set()
+    locks = DATA_DIR / "locks"
+    if locks.is_dir():
+        for jobdir in locks.iterdir():
+            if not jobdir.is_dir():
+                continue
+            for slot in jobdir.iterdir():
+                if not slot.is_dir() or slot.name.startswith("."):
+                    continue
+                try:
+                    pid = int((slot / "pid").read_text().strip())
+                    os.kill(pid, 0)
+                except (OSError, ValueError):
+                    continue           # dead slot: whatever it named is nobody's
+                try:
+                    claimed.add((slot / "worktree").read_text().strip())
+                except OSError:
+                    pass
+    out = []
+    now = time.time()
+    for jobdir in sorted(root.iterdir()):
+        if not jobdir.is_dir():
+            continue
+        for d in sorted(jobdir.iterdir()):
+            if not d.is_dir() or str(d) in claimed:
+                continue
+            try:
+                age = max(0, int(now - d.stat().st_mtime))
+            except OSError:
+                age = 0
+            repos, bytes_ = [], 0
+            try:
+                repos = sorted(c.name for c in d.iterdir() if c.is_dir())
+            except OSError:
+                pass
+            for dirpath, _dirs, files in os.walk(d):
+                for f in files:
+                    try:
+                        bytes_ += os.lstat(os.path.join(dirpath, f)).st_size
+                    except OSError:
+                        pass
+            out.append({"job": jobdir.name, "stamp": d.name, "path": str(d),
+                        "age": age, "repos": repos, "bytes": bytes_})
+    return out
+
+
 def max_parallel_for(jid):
     """How many runs of this job may work at once — 0 means no ceiling.
 
