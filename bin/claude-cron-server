@@ -2144,6 +2144,15 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
     <input id="pj-cwd" type="text" placeholder="click Browse to choose a folder" readonly data-cwd-target="pj-cwd" class="cwd-ro">
     <button type="button" class="btn cwd-browse" data-cwd-target="pj-cwd">Browse…</button>
   </div>
+  <label>Worktree isolation — where a run actually works</label>
+  <select id="pj-wt">
+    <option value="auto">Auto — isolate when the cwd is a git repo (recommended)</option>
+    <option value="true">Always — never run in the cwd, even if the git check is inconclusive</option>
+    <option value="false">Off — every run works directly in the cwd</option>
+  </select>
+  <div class="hint">Without isolation, two runs share one working tree: one <code>git checkout</code>
+    clobbers the other's branch, and anything else reading that folder — a Docker bind-mount, your
+    editor — silently gets the wrong code. Turn it Off only for a cwd nothing else depends on.</div>
 </div>
 <div class="dlg-f">
   <button type="button" class="btn danger" id="pj-delete" style="margin-right:auto">Delete</button>
@@ -2554,6 +2563,9 @@ function openProjectEditor(name){
   $("pj-name").value=p?p.name:""; $("pj-name").disabled=false;
   $("pj-desc").value=(p&&p.description)||"";
   $("pj-cwd").value=(p&&p.cwd)||"";
+  // The stored value is "auto" | true | false; the select speaks strings.
+  const wt=(p&&p.worktree&&p.worktree.enabled);
+  $("pj-wt").value = (wt===true||wt==="true") ? "true" : (wt===false||wt==="false") ? "false" : "auto";
   $("pj-delete").style.display=name?"":"none";
   $("projmodal").showModal();
 }
@@ -2582,6 +2594,10 @@ async function saveProject(){
     const proj={name};
     const d=$("pj-desc").value.trim(); if(d) proj.description=d;
     const c=$("pj-cwd").value.trim(); if(c) proj.cwd=c;
+    // Send only .worktree.enabled: project-set merges (jq `. * $p`), so any
+    // venv/env the project declares alongside it survives the save.
+    const wv=$("pj-wt").value;
+    proj.worktree={enabled: wv==="true" ? true : wv==="false" ? false : "auto"};
     if(!await projApi("project_set",{project:proj})) return;
     $("projmodal").close(); toast("Saved project "+name); refresh();
   } finally { btn.disabled=false; }
