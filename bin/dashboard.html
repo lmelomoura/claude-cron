@@ -961,15 +961,30 @@ $("cf-cancel").addEventListener("click",()=>{ $("confirm").close(); if(_cfResolv
 $("confirm").addEventListener("cancel",()=>{ if(_cfResolve){_cfResolve(false);_cfResolve=null;} });
 
 /* ---------------------------------------------------------------- refresh */
+/* The job and project definitions, fetched separately from the live data.
+   They are the bulk of the payload (every job's full prompt, every project's
+   description) and they change when someone edits them — not every 5 seconds.
+   /api/data carries a signature; we re-fetch only when it moves. */
+let CFG={sig:null, jobs:[], projects:[]};
+async function loadConfig(){
+  const r = await fetch("/api/config", {headers:{"X-CC-Token":TOKEN}});
+  if(!r.ok) throw new Error("HTTP "+r.status);
+  CFG = await r.json();
+}
+
 async function refresh(){
   try{
     const r = await fetch("/api/data", {headers:{"X-CC-Token":TOKEN}});
     if(!r.ok) throw new Error("HTTP "+r.status);
-    DATA = await r.json();
+    const d = await r.json();
     // Server upgraded since this page loaded → reload once to pick up new UI.
-    if(DATA.build && DATA.build!==BUILD && sessionStorage.ccReloadedFor!==DATA.build){
-      sessionStorage.ccReloadedFor=DATA.build; location.reload(); return;
+    if(d.build && d.build!==BUILD && sessionStorage.ccReloadedFor!==d.build){
+      sessionStorage.ccReloadedFor=d.build; location.reload(); return;
     }
+    if(CFG.sig!==d.config_sig) await loadConfig();
+    // Everything downstream still reads DATA.jobs / DATA.projects, so the split
+    // stays invisible to the rest of the page.
+    DATA = Object.assign(d, {jobs:CFG.jobs, projects:CFG.projects});
     render();
   }catch(e){ $("updated").textContent = "server unreachable — "+e.message; }
 }
@@ -2016,7 +2031,10 @@ function fill(j){
   syncCwdField(j.project||"");
   $("ed-prompt").value=j.prompt||"";
   paintPromptHighlight();
+  // Filled asynchronously by openEditor for an existing job; a job being
+  // created carries its skeleton in _precheck already.
   $("ed-precheck").value=j._precheck||"";
+  editingPrecheck=j._precheck||"";
   $("ed-interval").value=Math.round((j.interval_seconds||300)/60);
   modelCombo.set(j.model||"opus");
   setEffort(j.effort||"");
@@ -2037,6 +2055,20 @@ function fill(j){
   permCombo.set(j.permission_mode||"dontAsk");
 }
 
+/* The precheck script of the job being edited. It is no longer shipped with
+   every poll (21 shell scripts, 12 times a minute, to serve the rare click), so
+   the editor fetches the one it needs and remembers it for the dirty check. */
+let editingPrecheck="";
+async function fetchPrecheck(id){
+  try{
+    const r=await fetch("/api/action",{method:"POST",
+      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+      body:JSON.stringify({op:"precheck_get",id})});
+    const j=await r.json().catch(()=>({}));
+    return (r.ok && j.ok) ? (j.script||"") : "";
+  }catch(e){ return ""; }
+}
+
 function openEditor(id){
   const j=(DATA.jobs||[]).find(x=>x.id===id); if(!j) return;
   editingId=id; creating=false;
@@ -2050,6 +2082,15 @@ function openEditor(id){
   fill(j);
   $("ed-save").textContent="Save changes";
   $("editor").showModal();
+  // Fetched after the dialog is up so opening it stays instant; the textarea
+  // fills a moment later, and editingPrecheck is what "did the user change it?"
+  // compares against on save.
+  $("ed-precheck").value="loading…";
+  fetchPrecheck(id).then(src=>{
+    if(editingId!==id) return;             // the user moved on while it loaded
+    editingPrecheck=src;
+    $("ed-precheck").value=src;
+  });
 }
 
 function openCreator(){
@@ -2132,7 +2173,8 @@ async function saveEditor(){
     const prompt=$("ed-prompt").value.trim();
     if(prompt && prompt!==(j.prompt||"")){ if(!await api("set_prompt",{id,prompt})) return; }
     const pc=$("ed-precheck").value;
-    if(pc.trim() && pc!==(j._precheck||"")){ if(!await api("set_precheck",{id,script:pc})) return; }
+    if(pc.trim() && pc!=="loading…" && pc!==editingPrecheck){
+      if(!await api("set_precheck",{id,script:pc})) return; }
     if(!await setF("interval_seconds",f.secs,j.interval_seconds||300)) return;
     if(!await setF("model",f.model,j.model||"opus")) return;
     if(!await setF("effort",f.effort,j.effort||"")) return;

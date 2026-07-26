@@ -902,15 +902,57 @@ def resume_in_flight(jid, sid):
     return bool(sid) and any(r.get("resume_of") == sid for r in active_runs_for(jid))
 
 
+_LAUNCHD_TTL = 60
+_launchd_cache = {"at": 0.0, "loaded": False}
+
+
+def launchd_loaded():
+    """Is the tick agent loaded? Cached: this forks launchctl, and the poll it
+    serves runs every 5s — roughly 17k forks a day to answer a question that
+    changes when someone runs the installer."""
+    now = time.time()
+    if now - _launchd_cache["at"] < _LAUNCHD_TTL:
+        return _launchd_cache["loaded"]
+    loaded = _launchd_cache["loaded"]
+    try:
+        out = subprocess.run(["launchctl", "list"], capture_output=True, text=True, timeout=5)
+        loaded = PLIST_LABEL in out.stdout
+    except Exception:  # noqa: BLE001
+        pass
+    _launchd_cache.update(at=now, loaded=loaded)
+    return loaded
+
+
+def config_sig():
+    """Fingerprint of the two config files, so the page can tell when the parts
+    of the payload that almost never change actually did."""
+    parts = []
+    for p in (JOBS_FILE, PROJECTS_FILE):
+        try:
+            st = p.stat()
+            parts.append(f"{st.st_mtime_ns}:{st.st_size}")
+        except OSError:
+            parts.append("-")
+    return hashlib.md5("|".join(parts).encode()).hexdigest()
+
+
+def load_config():
+    """The static half of the page's data: the job definitions and projects.
+
+    Split out of /api/data because it is both the bulk of the payload and the
+    part that does not change — full prompts for every job plus a couple of
+    kilobytes of project description each, re-sent every 5 seconds. The precheck
+    SCRIPTS are deliberately not here: only the editor ever reads one, and
+    shipping 21 shell scripts on every poll to service the occasional click is
+    the same waste in miniature.
+    """
+    return {"sig": config_sig(),
+            "jobs": read_json(JOBS_FILE, {}).get("jobs", []),
+            "projects": read_json(PROJECTS_FILE, {}).get("projects", [])}
+
+
 def load_data():
     jobs = read_json(JOBS_FILE, {}).get("jobs", [])
-    projects = read_json(PROJECTS_FILE, {}).get("projects", [])
-    for j in jobs:
-        p = CONFIG_DIR / "prechecks" / (str(j.get("id", "")) + ".sh")
-        try:
-            j["_precheck"] = p.read_text() if p.exists() else ""
-        except Exception:
-            j["_precheck"] = ""
     state = read_json(STATE_FILE, {})
     runs = []
     try:
@@ -940,16 +982,14 @@ def load_data():
                 db_bytes += p.stat().st_size
         except Exception:
             pass
-    launchd = False
-    try:
-        out = subprocess.run(["launchctl", "list"], capture_output=True, text=True, timeout=5)
-        launchd = PLIST_LABEL in out.stdout
-    except Exception:
-        pass
-    now = subprocess.run(["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"], capture_output=True, text=True).stdout.strip()
-    return {"generated": now, "launchd_loaded": launchd, "build": BUILD,
-            "jobs": jobs, "projects": projects, "state": state, "runs": runs,
+    # strftime, not a `date` subprocess: same string, no fork, and this ran on
+    # every one of those 5-second polls.
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return {"generated": now, "launchd_loaded": launchd_loaded(), "build": BUILD,
+            "config_sig": config_sig(),
+            "state": state, "runs": runs,
             "active_runs": {j.get("id"): active_runs_for(j.get("id")) for j in jobs},
+            "retained_worktrees": retained_worktrees(),
             "db_bytes": db_bytes, "checks": checks_24h()}
 
 
@@ -1343,6 +1383,10 @@ class Handler(BaseHTTPRequestHandler):
             if not self._authed():
                 return self._send(403, {"error": "forbidden"})
             return self._send(200, load_data())
+        if path == "/api/config":
+            if not self._authed():
+                return self._send(403, {"error": "forbidden"})
+            return self._send(200, load_config())
         if path == "/api/search":
             if not self._authed():
                 return self._send(403, {"error": "forbidden"})
@@ -1523,6 +1567,11 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(pc, str) and pc.strip():
                     cc(["set-precheck", str(job["id"])], stdin=pc)
             return self._send(200 if ok else 500, {"ok": ok, "output": out})
+        if op == "precheck_get":
+            # Fetched when the editor opens, instead of riding along on every
+            # 5-second poll for all 21 jobs. Same shape as provision_get.
+            ok, out = cc(["get-precheck", jid])
+            return self._send(200 if ok else 500, {"ok": ok, "script": out})
         if op == "set_precheck":
             script = body.get("script", "")
             if not isinstance(script, str) or not script.strip():
