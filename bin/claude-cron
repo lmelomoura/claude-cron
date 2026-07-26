@@ -547,6 +547,23 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   got="$(wt_base_ref "$tmp/g/repo" "")"
   [ "$got" = "origin/develop" ] && ok "an empty base is inferred from the current branch" || bad "got '$got'"
 
+  echo "wt_provision() — a missing hook is a no-op, a failing one is a failure"
+  mkdir -p "$tmp/cfg/provision" "$tmp/run/repoA"
+  ( CONFIG_DIR="$tmp/cfg"; PROJECTS_FILE="$tmp/proj/projects.json"
+    wt_provision up nohooks j1 "$tmp/run" repoA /x/a "$tmp/run/repoA" develop ) >/dev/null 2>&1
+  want "no script at all is a no-op" 0 $?
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s %s\n" "$CC_REPO_NAME" "$CC_BASE" > "$CC_WORKTREE/seen"' \
+    > "$tmp/cfg/provision/hooked.up.sh"
+  ( CONFIG_DIR="$tmp/cfg"; PROJECTS_FILE="$tmp/proj/projects.json"
+    wt_provision up hooked j1 "$tmp/run" repoA /x/a "$tmp/run/repoA" develop ) >/dev/null 2>&1
+  want "a passing hook returns 0" 0 $?
+  got="$(cat "$tmp/run/repoA/seen" 2>/dev/null)"
+  [ "$got" = "repoA develop" ] && ok "the hook sees CC_REPO_NAME and CC_BASE" || bad "hook saw '$got'"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 3' > "$tmp/cfg/provision/broken.up.sh"
+  ( CONFIG_DIR="$tmp/cfg"; PROJECTS_FILE="$tmp/proj/projects.json"
+    wt_provision up broken j1 "$tmp/run" repoA /x/a "$tmp/run/repoA" develop ) >/dev/null 2>&1
+  [ $? -ne 0 ] && ok "a failing hook reports failure" || bad "a failing hook reported success"
+
   rm -rf "$tmp"
   echo
   echo "$pass passed, $fail failed"

@@ -28,7 +28,7 @@
 # tweaks. A non-git .cwd is left to run in place. Adding a future project is a
 # projects.json entry, never a code change here.
 #
-# Depends on the sourcing script for: JQ, DATA_DIR, WORKTREES_DIR, LOCK_DIR,
+# Depends on the sourcing script for: JQ, CONFIG_DIR, DATA_DIR, WORKTREES_DIR, LOCK_DIR,
 # projects_json, project_get, job_get, resolve, lock_active, state_get, log_tick.
 # Targets bash 3.2 (macOS system bash) under `set -u`: no mapfile, no
 # associative arrays, empty arrays expanded as ${a[@]+"${a[@]}"}.
@@ -121,6 +121,35 @@ wt_env_line() { # <project> <repo> <worktree>
   done < <(projects_json | "$JQ" -r --arg n "$project" '
       .projects[] | select(.name==$n) | .worktree.env // {}
       | to_entries[] | .key + "\t" + (.value|tostring)' 2>/dev/null)
+}
+
+# Run a project's provisioning hook for ONE repo, in that repo's worktree.
+# A missing script means "nothing to provision" and is not an error.
+#
+# The hook is killed if it outlives the project's timeout: it runs before the
+# agent exists, so nothing else is watching it, and a `composer install` that
+# hangs on a dead mirror would hold the run's slot for ever. macOS ships no
+# timeout(1), hence the killer subshell.
+wt_provision() { # <up|down> <project> <id> <run_dir> <name> <canonical> <worktree> <base>
+  local phase="${1:-}" project="${2:-}" id="${3:-}" run_dir="${4:-}"
+  local name="${5:-}" repo="${6:-}" wt="${7:-}" base="${8:-}"
+  local script t rc pid killer
+  script="$CONFIG_DIR/provision/$project.$phase.sh"
+  [ -f "$script" ] || return 0
+  t="$(project_get "$project" '.worktree.provision_timeout_seconds' '900')"
+  case "$t" in ''|null|*[!0-9]*) t=900 ;; esac
+  (
+    cd "$wt" 2>/dev/null || exit 1
+    CC_REPO_NAME="$name" CC_REPO_PATH="$repo" CC_WORKTREE="$wt" CC_BASE="$base" \
+    CC_RUN_DIR="$run_dir" CC_RUN_MANIFEST="$run_dir/.run.json" \
+    CC_PROJECT="$project" CC_JOB_ID="$id" \
+      bash "$script" >>"$DATA_DIR/exec.log" 2>&1
+  ) & pid=$!
+  ( sleep "$t"; kill -TERM "$pid" 2>/dev/null ) >/dev/null 2>&1 & killer=$!
+  wait "$pid"; rc=$?
+  kill "$killer" 2>/dev/null; wait "$killer" 2>/dev/null
+  [ "$rc" -eq 0 ] || log_tick "$id: provision $phase failed for $name (rc=$rc) — see exec.log"
+  return "$rc"
 }
 
 # Create the worktree for a run and print its path on stdout. Returns non-zero
