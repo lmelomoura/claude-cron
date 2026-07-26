@@ -1984,6 +1984,7 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
   <div class="view" id="view-jobs">
   <div class="secthead"><h3 id="h-jobs"></h3>
     <div style="display:flex;gap:8px">
+      <button class="btn ghost" id="bulk-all" hidden></button>
       <button class="btn ghost" id="new-project"></button>
       <button class="btn primary" id="new-job"></button>
     </div></div>
@@ -2599,6 +2600,17 @@ async function bulkToggle(key, enable){
 
 function renderJobs(){
   const jobs=DATA.jobs||[];
+  // Top button: acts on exactly what this render is about to show, so it can
+  // never touch a job the chip filter has taken off-screen. Its label carries
+  // the count for the same reason — "all" is ambiguous while a filter is on.
+  const vis=visibleJobs(), ball=$("bulk-all");
+  ball.hidden=!vis.length;
+  if(vis.length){
+    const on=bulkOn(vis);
+    ball.dataset.bulk="__visible__";
+    ball.dataset.bulkTo=on?"0":"1";
+    ball.innerHTML=I.power+(on?"Disable all ":"Enable all ")+vis.length;
+  }
   const projects=[...new Set(jobs.map(j=>j.project||"").filter(Boolean))].sort();
   const nStandalone=jobs.filter(j=>!j.project).length;
   if(jobProjectFilter && jobProjectFilter!=="__none__" && !projects.includes(jobProjectFilter)) jobProjectFilter="";
