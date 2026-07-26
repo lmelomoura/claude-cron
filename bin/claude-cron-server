@@ -2145,14 +2145,25 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
     <button type="button" class="btn cwd-browse" data-cwd-target="pj-cwd">Browse…</button>
   </div>
   <label>Worktree isolation — where a run actually works</label>
-  <select id="pj-wt">
-    <option value="auto">Auto — isolate when the cwd is a git repo (recommended)</option>
-    <option value="true">Always — never run in the cwd, even if the git check is inconclusive</option>
-    <option value="false">Off — every run works directly in the cwd</option>
-  </select>
-  <div class="hint">Without isolation, two runs share one working tree: one <code>git checkout</code>
-    clobbers the other's branch, and anything else reading that folder — a Docker bind-mount, your
-    editor — silently gets the wrong code. Turn it Off only for a cwd nothing else depends on.</div>
+  <div class="combo" id="pj-wt-combo">
+    <button type="button" class="combo-trigger" id="pj-wt-trigger" aria-haspopup="listbox" aria-expanded="false">
+      <span class="combo-val" id="pj-wt-val">Auto — isolate when the cwd is a git repo</span>
+      <span class="combo-caret"></span>
+    </button>
+    <div class="combo-pop" id="pj-wt-pop" hidden>
+      <input type="text" class="combo-search" id="pj-wt-search" placeholder="Search…" autocomplete="off">
+      <ul class="combo-list" id="pj-wt-opts" role="listbox"></ul>
+    </div>
+    <input type="hidden" id="pj-wt">
+  </div>
+  <div class="hint">Turn this off and every run of this project works in the same folder. Two agents
+    then share one working tree: one <code>git checkout</code> silently moves the other off its
+    branch, and its work is gone. Worse, anything else pointed at that folder — a Docker bind-mount,
+    your editor, a running dev server — gets served whichever branch an agent happened to leave
+    behind. <b>Auto</b> is the safe default and isolates whenever the cwd is a git repo;
+    <b>Always</b> refuses to run in the cwd even when the git check is inconclusive — use it when
+    something outside claude-cron depends on that folder. Only choose <b>Off</b> for a cwd nothing
+    else reads.</div>
 </div>
 <div class="dlg-f">
   <button type="button" class="btn danger" id="pj-delete" style="margin-right:auto">Delete</button>
@@ -2565,7 +2576,7 @@ function openProjectEditor(name){
   $("pj-cwd").value=(p&&p.cwd)||"";
   // The stored value is "auto" | true | false; the select speaks strings.
   const wt=(p&&p.worktree&&p.worktree.enabled);
-  $("pj-wt").value = (wt===true||wt==="true") ? "true" : (wt===false||wt==="false") ? "false" : "auto";
+  wtCombo.set((wt===true||wt==="true") ? "true" : (wt===false||wt==="false") ? "false" : "auto");
   $("pj-delete").style.display=name?"":"none";
   $("projmodal").showModal();
 }
@@ -3126,6 +3137,11 @@ function setEffort(v){
   $("ed-effort-label").textContent=(EFFORTS[i]===""?"Default (CLI decides)":effortLabel(EFFORTS[i]));
 }
 function getEffort(){ return EFFORTS[+$("ed-effort").value||0]; }
+const WT_MODES=[
+  {v:"auto", label:"Auto — isolate when the cwd is a git repo"},
+  {v:"true", label:"Always — never run in the cwd"},
+  {v:"false",label:"Off — every run works directly in the cwd"},
+];
 const PERMS=[
   {v:"dontAsk",label:"dontAsk — run tools without prompting"},
   {v:"bypassPermissions",label:"bypassPermissions — full autonomy (headless default)"},
@@ -3134,7 +3150,7 @@ const PERMS=[
   {v:"plan",label:"plan"},
   {v:"manual",label:"manual"},
 ];
-let projectCombo=null, modelCombo=null, permCombo=null;
+let projectCombo=null, modelCombo=null, permCombo=null, wtCombo=null;
 function initCombos(){
   projectCombo=createCombo({id:"ed-project", allowNone:true, noneLabel:"— None —", withIcon:true,
     onPick:(v)=>syncCwdField(v)});
@@ -3142,6 +3158,8 @@ function initCombos(){
   modelCombo.set("opus", MODELS);
   loadModels();
   permCombo=createCombo({id:"ed-perm", allowNone:false, def:"dontAsk"});
+  wtCombo=createCombo({id:"pj-wt", allowNone:false, def:"auto"});
+  wtCombo.set("auto", WT_MODES);
   permCombo.set("dontAsk", PERMS);
 }
 
