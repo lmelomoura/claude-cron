@@ -327,6 +327,27 @@ it back, every single time. Being careful is right; being careful about a decisi
 that is not yours to revisit is how work stops moving altogether.
 
 So do the work you were given, and block only on something NEW — naming what it is.
+
+## Never trust a hard-coded workflow id — resolve it by name
+
+Any transition id written in a prompt is a snapshot of a board that has since been
+edited. Worse, ids are per SOURCE STATE: the same destination is reached by a
+different id depending on where the card sits, so an id that was right when the
+prompt was written becomes wrong the moment anything moves the card first — which
+is exactly what a claim does.
+
+So before every transition: list the legal ones and match on the destination NAME.
+
+    GET  /rest/api/3/issue/<KEY>/transitions
+    pick .transitions[] | select(.to.name == "<the status you want>") | .id
+
+If no transition to that name exists from where the card is, that is information,
+not an obstacle: say which transitions DO exist and which one is missing, and
+leave the card in the status that is truthfully correct. Never route around it by
+taking some other action that happens to reach the status you wanted.
+
+Ids quoted anywhere in your instructions are a hint for recognising the right
+transition, never a value to send unverified.
 CONTRACT
 }
 
@@ -708,6 +729,20 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   case "$(run_ending_contract)" in
     *"RUN COMPLETE:"*"NOTHING TO DO:"*"BLOCKED:"*) ok "contract names every marker the classifier accepts" ;;
     *) bad "contract and classifier disagree on the markers" ;;
+  esac
+
+  echo "workflow ids are resolved, never trusted"
+  # The reviewer prompts carried ids that were correct FROM `Review - DEV` and
+  # wrong from `In Review - DEV` -- and the precheck moves the card to the latter
+  # before the session starts, so every closing transition used the wrong number.
+  # The durable cure is in the contract every job receives: resolve by to.name.
+  case "$(run_ending_contract)" in
+    *"resolve it by name"*) ok "the contract tells every run to resolve ids by name" ;;
+    *) bad "the contract never warns about hard-coded transition ids" ;;
+  esac
+  case "$(run_ending_contract)" in
+    *"per SOURCE STATE"*) ok "and says WHY a correct id goes stale (source state)" ;;
+    *) bad "the contract states the rule without the reason it exists" ;;
   esac
 
   echo "the changelog moves when main moves"

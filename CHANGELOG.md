@@ -35,6 +35,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Workflow transition ids are resolved by name, never trusted from a prompt.**
+  Both reviewer prompts carried ids that were right *from* `Review - DEV` and wrong
+  from `In Review - DEV` — and the precheck claims a ticket by moving it to the
+  latter before the session begins, so every closing transition used a stale
+  number. Ids are per source state and boards get edited; the injected contract
+  now tells every run to `GET /transitions` and match on `to.name`, with quoted
+  ids demoted to recognition hints.
+
 - **A human moving a card into the ready column is an answer, not a board glitch.**
   The round cap parks an exhausted ticket and waits for a human; the human's reply
   is the board move. A run then read the spent rounds, decided the card's presence
