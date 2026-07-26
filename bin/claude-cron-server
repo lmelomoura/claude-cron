@@ -1603,6 +1603,7 @@ td .projtag .ic{width:12px;height:12px;color:var(--accent)}
 .btn.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 35%,var(--line))}
 .btn.danger:hover{background:var(--err-soft);border-color:var(--err)}
 .btn.ghost{background:transparent}
+#bulk-all[hidden]{display:none} /* author display beats the UA [hidden] rule; see .view[hidden] above */
 .iconbtn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;
   border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--muted);
   cursor:pointer;transition:.13s}
@@ -2563,23 +2564,33 @@ function visibleJobs(){
 // turns them off; it only offers to turn them on once every one is off. Same
 // defaulting as the engine — a job with no `enabled` key is enabled.
 function bulkOn(js){ return js.some(j=>j.enabled!==false); }
-function bulkBtn(cls, key, js, withCount){
+// Single source for the button phrasing, with or without a trailing count —
+// used by bulkBtn's group buttons (no count; the pgh-count badge already
+// shows one) and by the #bulk-all block below (count, since "all" is
+// ambiguous while a chip filter is on).
+function bulkLabel(on, n){ return (on?"Disable all":"Enable all")+(n===undefined?"":" "+n); }
+// `kind` disambiguates the scope from the key: project NAMES are free-form
+// (the engine only requires non-empty), so a project literally named
+// "__standalone__" must never be mistaken for the standalone sentinel. kind
+// is a fixed enum ("project"/"standalone") set by the caller, never user text.
+function bulkBtn(cls, kind, key, js){
   const on=bulkOn(js);
-  return '<button class="'+cls+'" data-bulk="'+esc(key)+'" data-bulk-to="'+(on?"0":"1")+'"'
+  return '<button class="'+cls+'" data-bulk-kind="'+kind+'" data-bulk="'+esc(key)+'" data-bulk-to="'+(on?"0":"1")+'"'
     +' title="'+(on?"Disable":"Enable")+' every job in this group">'
-    +I.power+(on?"Disable all":"Enable all")+(withCount?" "+js.length:"")+'</button>';
+    +I.power+bulkLabel(on)+'</button>';
 }
 // Resolved at CLICK time, not render time: ids baked into the DOM go stale the
 // moment a refresh lands, and acting on a stale list is how a bulk switch hits
-// a job that is no longer there.
-function bulkScope(key){
+// a job that is no longer there. Dispatches on `kind`, not on `key` — a
+// project named "standalone" or "visible" only ever matches the `key` branch.
+function bulkScope(kind, key){
   const jobs=DATA.jobs||[];
-  if(key==="__standalone__") return {label:"standalone jobs", js:jobs.filter(j=>!j.project)};
-  if(key==="__visible__")    return {label:"", js:visibleJobs()};
+  if(kind==="standalone") return {label:"standalone jobs", js:jobs.filter(j=>!j.project)};
+  if(kind==="visible")    return {label:"", js:visibleJobs()};
   return {label:key, js:jobs.filter(j=>j.project===key)};
 }
-async function bulkToggle(key, enable){
-  const sc=bulkScope(key), js=sc.js;
+async function bulkToggle(btn, kind, key, enable){
+  const sc=bulkScope(kind, key), js=sc.js;
   if(!js.length) return;
   const n=js.length, word=(n===1?"job":"jobs"), where=(sc.label?" in "+sc.label:"");
   const yes=await showConfirm({tone:"warn", icon:"alert",
@@ -2589,12 +2600,14 @@ async function bulkToggle(key, enable){
       : "No new runs will be started for these jobs. Runs already in flight keep going — stop those from the Runs table. Which jobs were already disabled is not remembered: enabling them all later will enable every one of them.",
     confirmLabel:(enable?"Enable ":"Disable ")+n+" "+word});
   if(!yes) return;
+  btn.disabled=true;
   const r=await fetch("/api/action",{method:"POST",
     headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
     body:JSON.stringify({op:"toggle_many", ids:js.map(j=>j.id), enabled:enable})});
   const j=await r.json().catch(()=>({}));
-  if(!r.ok||j.ok===false){ toast(j.error||j.output||("HTTP "+r.status), true); return; }
+  if(!r.ok||j.ok===false){ toast(j.error||j.output||("HTTP "+r.status), true); btn.disabled=false; return; }
   toast(j.output||"Done", false, "check");
+  btn.disabled=false;
   refresh();
 }
 
@@ -2613,9 +2626,10 @@ function renderJobs(){
   ball.hidden=!vis.length;
   if(vis.length){
     const on=bulkOn(vis);
+    ball.dataset.bulkKind="visible";
     ball.dataset.bulk="__visible__";
     ball.dataset.bulkTo=on?"0":"1";
-    ball.innerHTML=I.power+(on?"Disable all ":"Enable all ")+vis.length;
+    ball.innerHTML=I.power+bulkLabel(on, vis.length);
   }
 
   // chips (shown only when at least one project exists)
@@ -2646,7 +2660,7 @@ function renderJobs(){
       +'<span class="pgh-count">'+js.length+' job'+(js.length===1?"":"s")+'</span>'
       +(p&&p.description?'<span class="pgh-desc">'+esc(p.description)+'</span>':'')
       +'<span class="spacer"></span>'
-      +bulkBtn("pgh-bulk", name, js, false)
+      +bulkBtn("pgh-bulk", "project", name, js)
       +'<button class="pgh-edit" data-editproj="'+esc(name)+'" title="Edit project">'+I.pencil+'</button>';
     html+=collapsibleGroup(name, head, js.map(jobCard).join(""));
   }
@@ -2655,7 +2669,7 @@ function renderJobs(){
     const head='<span class="pgh-ic">'+I.folder+'</span><span class="pgh-name standalone">Standalone jobs</span>'
       +'<span class="pgh-count">'+js.length+' job'+(js.length===1?"":"s")+'</span>'
       +'<span class="spacer"></span>'
-      +bulkBtn("pgh-bulk", "__standalone__", js, false);
+      +bulkBtn("pgh-bulk", "standalone", "__standalone__", js);
     html+=collapsibleGroup("__standalone__", head, js.map(jobCard).join(""));
   }
   $("jobs").innerHTML = html || '<div class="card empty">'+I.inbox+'No jobs in this view.</div>';
@@ -3777,7 +3791,7 @@ document.addEventListener("click", async (e)=>{
   // bulk switch (must run before the group toggle — the button lives inside the
   // header, and the header's own click collapses the group)
   const blk=e.target.closest("[data-bulk]");
-  if(blk){ await bulkToggle(blk.dataset.bulk, blk.dataset.bulkTo==="1"); return; }
+  if(blk){ await bulkToggle(blk, blk.dataset.bulkKind, blk.dataset.bulk, blk.dataset.bulkTo==="1"); return; }
   // collapse/expand a project group (animated via CSS; persisted in localStorage)
   const tog=e.target.closest("[data-toggle]");
   if(tog){

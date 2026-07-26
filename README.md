@@ -307,6 +307,7 @@ claude-cron status             # jobs + last run + cost, in the terminal
 claude-cron run <id>           # force a run now (ignores precheck + daily cap)
 claude-cron check <id>         # run only the precheck, report what it saw
 claude-cron enable|disable <id>
+claude-cron toggle-many true|false   # ids on stdin (JSON array or one per line)
 claude-cron create <id>        # JSON object on stdin
 claude-cron set-prompt <id>    # prompt on stdin
 claude-cron set-precheck <id>  # script on stdin

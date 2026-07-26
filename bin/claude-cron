@@ -1286,8 +1286,12 @@ TOGGLE_MANY_FILTER='.jobs = [.jobs[] | if (.id | IN($want[])) then .enabled = $v
 
 cmd_toggle_many() { # cmd_toggle_many <true|false> — ids on stdin (JSON array or one per line)
   # Flips a WHOLE SET in one write. A loop of cmd_toggle calls would rewrite
-  # jobs.json once per job, so a failure halfway leaves the set half applied, and
-  # a tick landing between two writes launches from a state nobody asked for.
+  # jobs.json once per job, so a failure halfway leaves the set half applied,
+  # and a reader could catch the file between two of those writes. One atomic
+  # write (one mv) rules both out: no half-applied batch, no torn read of the
+  # file. It does NOT make a concurrent tick see one consistent snapshot for
+  # the whole run — cmd_tick re-reads jobs.json per job, so a batch landing
+  # mid-loop is still old for jobs already visited and new for the rest.
   local val="$1" raw ids missing n
   raw="$(cat)"
   [ -n "$raw" ] || die "toggle-many: no ids given"
