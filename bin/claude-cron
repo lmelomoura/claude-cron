@@ -562,6 +562,62 @@ cmd_say() { # cmd_say <id> — message on stdin, delivered to the live run
   echo "delivered to $id"
 }
 
+# ---------------------------------------------------------------------- skills
+
+# The agent prompts make several skills MANDATORY ("invoke `using-superpowers`",
+# "work each finding through `closing-review-findings`"). A prompt that names a
+# skill the machine does not have is a prompt whose standards silently do not
+# apply -- and the skills we maintain lived only in ~/.claude/skills, which is not
+# version controlled anywhere. Same failure as putting a rule in a gitignored
+# jobs.json: the half that demands it shipped, the half that supplies it did not.
+#
+# So the skills this loop depends on and WE maintain live in skills/ here, and are
+# linked into ~/.claude/skills. A link rather than a copy, so editing either path
+# edits the versioned file and there is never a stale second copy to diverge.
+#
+# Not everything is ours: most of these skills come from the `superpowers` vendor
+# package and are left pointing at it. `test-driven-development` is the exception
+# -- it carries our own addition (axis 9: fixtures for external things must come
+# from a real sample), which a vendor update would otherwise overwrite, so it is
+# forked here deliberately. That trade is stated in the README.
+SKILLS_DIR="$BASE_DIR/skills"
+USER_SKILLS="$HOME/.claude/skills"
+
+cmd_skills() { # claude-cron skills [install]
+  local action="${1:-status}" name target link
+  local _skills_pending=0
+  [ -d "$SKILLS_DIR" ] || die "no skills/ directory in $BASE_DIR"
+  mkdir -p "$USER_SKILLS"
+  for target in "$SKILLS_DIR"/*/; do
+    [ -d "$target" ] || continue
+    name="$(basename "$target")"
+    link="$USER_SKILLS/$name"
+    if [ -L "$link" ] && [ "$(readlink "$link")" = "${target%/}" ]; then
+      printf '  linked   %s\n' "$name"; continue
+    fi
+    if [ "$action" != "install" ]; then
+      _skills_pending=$(( _skills_pending + 1 ))
+      if [ -e "$link" ]; then printf '  DIVERGED %s (a different copy is installed)\n' "$name"
+      else                    printf '  MISSING  %s\n' "$name"; fi
+      continue
+    fi
+    # Never destroy an unversioned edit without keeping it: a skill someone tuned
+    # in place is exactly the thing worth reading before it disappears.
+    if [ -e "$link" ] && [ ! -L "$link" ]; then
+      mv "$link" "$link.before-claude-cron.$(date -u +%Y%m%dT%H%M%SZ)"
+      printf '  kept old %s (renamed .before-claude-cron.*)\n' "$name"
+    fi
+    rm -f "$link"
+    ln -s "${target%/}" "$link"
+    printf '  linked   %s\n' "$name"
+  done
+  # Only nag when something is actually out of place; a clean status that still
+  # tells you to run install is noise that trains you to ignore the output.
+  if [ "$action" != "install" ] && [ "${_skills_pending:-0}" -gt 0 ]; then
+    echo "  (run \`claude-cron skills install\` to link them)"
+  fi
+}
+
 cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   local pass=0 fail=0 tmp
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/ccselftest.XXXXXX")"
@@ -653,6 +709,29 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     *"RUN COMPLETE:"*"NOTHING TO DO:"*"BLOCKED:"*) ok "contract names every marker the classifier accepts" ;;
     *) bad "contract and classifier disagree on the markers" ;;
   esac
+
+  echo "the changelog moves when main moves"
+  # Other people run this scheduler on their own projects: a change they cannot
+  # see the shape of is a change they cannot trust or adopt. Writing the entry
+  # afterwards never happens, so the check is here -- if the code moved and
+  # CHANGELOG.md did not, this fails while the reason is still known.
+  if [ -d "$BASE_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+    local _code _log
+    _code="$(git -C "$BASE_DIR" log -1 --format=%ct -- bin skills test 2>/dev/null)"
+    _log="$(git -C "$BASE_DIR" log -1 --format=%ct -- CHANGELOG.md 2>/dev/null)"
+    if [ -z "${_code:-}" ]; then
+      ok "no committed code yet — nothing to describe"
+    elif [ -z "${_log:-}" ]; then
+      bad "CHANGELOG.md has never been committed, but bin/ has"
+    elif [ "$_log" -ge "$_code" ]; then
+      ok "CHANGELOG.md is at least as new as the last code commit"
+    else
+      bad "code moved after the last CHANGELOG.md entry — describe the change before pushing"
+    fi
+  else
+    ok "not a git checkout — changelog freshness not checkable here"
+  fi
+  [ -f "$BASE_DIR/CHANGELOG.md" ] && ok "CHANGELOG.md exists" || bad "CHANGELOG.md is missing"
 
   echo "a human's board move is an answer, not an anomaly"
   # QG-15: the cap parked the ticket, the human moved it to the ready column, and
@@ -1434,7 +1513,14 @@ PLIST
   echo "Installed and loaded:"
   echo "  $PLIST_LABEL   — ticks every 60s (survives logout and reboot)"
   echo "  $SERVER_LABEL  — control dashboard on http://127.0.0.1:$PORT/"
-  echo "Open it with: claude-cron dashboard"
+  # The agent prompts make these skills mandatory by name. A fresh clone whose
+  # ~/.claude/skills lacks them runs agents that cite standards they cannot read,
+  # and nothing anywhere says so -- the run just quietly holds a lower bar. So a
+  # clone that installs the scheduler installs the skills it depends on, in the
+  # same step, rather than leaving it as a documented step somebody skips.
+  echo "Skills (linked into ~/.claude/skills):"
+  cmd_skills install
+  echo "Open the dashboard with: claude-cron dashboard"
 }
 
 cmd_uninstall() {
@@ -1904,6 +1990,7 @@ case "${1:-}" in
   project-rename) [ $# -ge 3 ] || die "usage: claude-cron project-rename <name> <new-name>"; cmd_project_rename "$2" "$3" ;;
   project-list)   cmd_project_list ;;
   resolve-models) cmd_resolve_models ;;
+  skills)    shift; cmd_skills "${1:-status}" ;;
   selftest)  cmd_selftest ;;
   running)   [ $# -ge 2 ] || die "usage: claude-cron running <job-id>"; cmd_running "$2" ;;
   runs)      [ $# -ge 2 ] || die "usage: claude-cron runs <job-id>"; cmd_runs "$2" ;;
