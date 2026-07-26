@@ -387,6 +387,8 @@ claude-cron set-field <id> <field>   # value on stdin (interval_seconds, active_
 claude-cron delete <id>        # remove the job (its logs are kept)
 claude-cron project-set        # create/update a project (JSON on stdin)
 claude-cron project-list | project-delete <name>
+claude-cron provision-set <project> up|down   # worktree provisioning script (stdin)
+claude-cron provision-get <project> up|down
 claude-cron resolve-models     # refresh which model each family points at
 claude-cron selftest           # offline checks of the logic that can kill a run
 claude-cron install | uninstall

@@ -1643,6 +1643,35 @@ cmd_get_precheck() {
   [ -f "$path" ] && cat "$path" || true
 }
 
+# The worktree provisioning hooks, kept the same way prechecks are: a script on
+# disk, named after what owns it, with the CLI as the only writer.
+provision_path() { printf '%s/provision/%s.%s.sh\n' "$CONFIG_DIR" "$1" "$2"; }
+
+cmd_provision_set() { # <project> <up|down> — the script arrives on stdin
+  local project="$1" phase="$2" script path
+  projects_json | "$JQ" -e --arg n "$project" 'any(.projects[]; .name==$n)' >/dev/null 2>&1 \
+    || die "no such project: $project"
+  case "$phase" in up|down) ;; *) die "phase must be up or down" ;; esac
+  script="$(cat)"
+  path="$(provision_path "$project" "$phase")"
+  # An empty script means "no hook": remove the file rather than leave one that
+  # runs nothing, so the engine's `[ -f ]` check stays the whole truth.
+  if [ -z "$script" ]; then
+    rm -f "$path"
+    echo "provision $phase cleared for $project"
+    return 0
+  fi
+  mkdir -p "$CONFIG_DIR/provision"
+  printf '%s\n' "$script" > "$path"
+  chmod +x "$path"
+  echo "provision $phase updated for $project ($path)"
+}
+
+cmd_provision_get() { # <project> <up|down>
+  local path; path="$(provision_path "$1" "$2")"
+  [ -f "$path" ] && cat "$path" || true
+}
+
 cmd_create() { # reads a partial job object (JSON) from stdin
   local partial id path defaults merged
   partial="$(cat)"
@@ -1768,6 +1797,8 @@ claude-cron — durable local scheduler for headless Claude Code runs
                               model|max_budget_usd|timeout_seconds|
                               stall_timeout_seconds, value from stdin
   claude-cron set-precheck <id>   replace a job's precheck script, read from stdin
+  claude-cron provision-set <project> <up|down>   replace a worktree provisioning hook (stdin)
+  claude-cron provision-get <project> <up|down>   print one
   claude-cron get-precheck <id>   print a job's precheck script
   claude-cron tick            internal — what launchd calls every minute
 
@@ -1825,6 +1856,8 @@ case "${1:-}" in
   set-field) [ $# -ge 3 ] || die "usage: claude-cron set-field <job-id> <field> (value on stdin)"; cmd_set_field "$2" "$3" ;;
   set-precheck) [ $# -ge 2 ] || die "usage: claude-cron set-precheck <job-id> (script on stdin)"; cmd_set_precheck "$2" ;;
   get-precheck) [ $# -ge 2 ] || die "usage: claude-cron get-precheck <job-id>"; cmd_get_precheck "$2" ;;
+  provision-set) [ $# -ge 3 ] || die "usage: claude-cron provision-set <project> <up|down> (script on stdin)"; cmd_provision_set "$2" "$3" ;;
+  provision-get) [ $# -ge 3 ] || die "usage: claude-cron provision-get <project> <up|down>"; cmd_provision_get "$2" "$3" ;;
   serve)     cmd_serve ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command: $1 (try: claude-cron help)" ;;
