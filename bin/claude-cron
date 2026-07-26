@@ -258,6 +258,56 @@ cpu_tree_sum() { # cpu_tree_sum <root-pid>  < "pid ppid time" lines
     }'
 }
 
+# The run-ending contract, injected into every job's prompt at launch.
+#
+# It lives HERE, in the shipped script, and not in a job's prompt, because the
+# half that ENFORCES it is here: the classifier treats an ending with no marker
+# as a warning. Put the requirement in the product and the contract in one
+# person's jobs.json -- which is gitignored, and rightly so, being their paths,
+# repos and tracker ids -- and everyone else clones a scheduler that demands a
+# marker no prompt of theirs ever writes, so every run they make is filed
+# `warning`. A rule the code enforces has to travel with the code.
+#
+# Injection is idempotent: a prompt that already states the contract is left
+# alone, so a job may still word it its own way.
+RUN_ENDING_MARKER='Never end your turn with work still running'
+
+run_ending_contract() {
+  cat <<'CONTRACT'
+## Never end your turn with work still running — there is no "wait and resume"
+
+This run is HEADLESS. The moment you return text without a tool call, the session
+process exits: anything you launched in the background is killed with it, your
+worktree can be torn down, and nothing reinvokes you. There is no notification
+coming, no next turn, no picking it up when the suite finishes. A message saying
+you will wait IS the end of the run, and everything still in flight is lost.
+
+So never park work:
+- Make the WAIT ITSELF a tool call — a foreground command that blocks until the
+  work is done, or a blocking `until` loop on a marker the work writes when it
+  finishes. While a tool call is open the run is alive: the watchdog counts your
+  process tree's CPU, not just your output, so a suite that runs for an hour is
+  fine and will not be killed for taking its time.
+- Backgrounding a long command is only safe if you block on its result in the
+  SAME turn. Never background something and then end your message.
+- Do not hand-poll a log every few seconds. It burns budget and decides nothing.
+  Block once, on the thing you are actually waiting for.
+- If you are genuinely out of work but a process is still running, you are not
+  out of work: block on it.
+
+## Declare how your run ended
+Your FINAL message must start with exactly one of these markers. The harness
+classifies the run by it, and an ending with no marker is recorded as a warning
+("may have stopped mid-task") rather than a success:
+- `RUN COMPLETE: <one line>` — the work is finished, pushed, and handed over.
+- `NOTHING TO DO: <reason>` — there was genuinely nothing to pick up.
+- `BLOCKED: <what blocks it>` — you escalated; it awaits a human.
+
+The marker is a claim about the state of the repository and the tracker, never
+about what you intend to do next. Never write one while work is still in flight.
+CONTRACT
+}
+
 # ------------------------------------------------------------------- locking
 
 acquire_lock() { # 0 = acquired
@@ -554,6 +604,34 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   cpu="$(num "$(tree_cpu_seconds '')")"
   [ "$cpu" = "0" ] && ok "an empty pid reports no CPU" || bad "empty pid: got '$cpu'"
 
+  echo "the run-ending contract ships with the CODE, not with a personal jobs.json"
+  # The classifier demands a marker. If the contract that teaches it lives only in
+  # one person's (gitignored) jobs.json, everyone else clones a scheduler that
+  # files every run as a warning. So injection must reach a prompt that has never
+  # heard of it, and must not double up on one that has.
+  inject() { # inject <prompt> -> the prompt as the agent will receive it
+    case "$1" in
+      *"$RUN_ENDING_MARKER"*) printf '%s' "$1" ;;
+      *) printf '%s\n\n%s' "$1" "$(run_ending_contract)" ;;
+    esac
+  }
+  local plain injected twice
+  plain="Do the thing."
+  injected="$(inject "$plain")"
+  case "$injected" in *"RUN COMPLETE:"*) ok "a bare prompt receives the contract" ;;
+    *) bad "a bare prompt did NOT receive the contract" ;; esac
+  case "$injected" in "$plain"*) ok "the job's own prompt is kept, not replaced" ;;
+    *) bad "the job's prompt was lost" ;; esac
+  twice="$(inject "$injected")"
+  [ "$twice" = "$injected" ] && ok "injection is idempotent (no double contract)" \
+                             || bad "injection duplicated the contract"
+  # And the marker the classifier looks for must be the one the contract teaches:
+  # if these two ever drift, every run is a warning and nothing says why.
+  case "$(run_ending_contract)" in
+    *"RUN COMPLETE:"*"NOTHING TO DO:"*"BLOCKED:"*) ok "contract names every marker the classifier accepts" ;;
+    *) bad "contract and classifier disagree on the markers" ;;
+  esac
+
   echo "a run that stops talking is not a run that finished"
   # The exact shape that filed an abandoned ticket as a clean success: a normal
   # result event whose text simply never claims the work is done.
@@ -728,6 +806,18 @@ ${proj_desc}
 ${prompt}"
     fi
   fi
+
+  # Append the run-ending contract, unless this prompt already states it. The
+  # classifier downgrades an undeclared ending to a warning, so the rule has to
+  # reach EVERY job -- including one written by someone who never saw this
+  # scheduler's release notes -- and a job's own jobs.json is the one place that
+  # cannot carry it, being personal and unversioned.
+  case "$prompt" in
+    *"$RUN_ENDING_MARKER"*) ;;
+    *) prompt="${prompt}
+
+$(run_ending_contract)" ;;
+  esac
 
   # How many runs of THIS job may work at once — a job-level setting only, never
   # inherited. Blank or missing means 3; zero means no ceiling at all.
