@@ -869,7 +869,13 @@ ${prompt}"
     # The precheck sees the same account as the run it gates: a probe that asks
     # Claude itself must not answer for one account the session then spends on
     # another, and MCP credentials live per config dir too.
+    # A RESUME must never let the precheck claim. The session already has its
+    # work, and the continuation prompt below REPLACES this output entirely --
+    # so a precheck that takes a ticket would move one out of the queue for a
+    # run that is never going to look at it. Same contract as the standalone
+    # probes: report, touch nothing.
     pc_out="$( cd "$cwd" && { [ -n "$run_cfgdir" ] && export CLAUDE_CONFIG_DIR="$run_cfgdir"
+                              [ -n "$resume_sid" ] && export CC_PRECHECK_DRY_RUN=1
                               eval "$precheck" 2>&1; } )"; pc_rc=$?
     state_set "$id" last_precheck "$("$JQ" -nc --arg o "${pc_out:-(no output)}" --argjson rc "$pc_rc" '{output:$o, exit:$rc}')"
     if [ "$forced" != "true" ] && [ "$pc_rc" -ne 0 ]; then
