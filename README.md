@@ -267,6 +267,23 @@ and never hands a half-built tree to an agent. A hook that outlives
 per run, even when the run dir is preserved: whatever the hook registered outside
 the directory still has to be released.
 
+Every worktree is cut from a freshly fetched base, and that fetch is bounded by
+`worktree.fetch_timeout_seconds` (default 120). It has to be: the fetch happens
+after the run has taken its slot but before the watchdog exists, so a remote
+that accepts the connection and then goes quiet would pin the slot for as long
+as the network stayed broken — and with `max_parallel: 1` that is the job dead
+until someone notices. On a timeout the base is resolved from the refs already
+on disk and the tick log says so.
+
+#### Worktrees that are kept back
+
+When a run ends with commits or changes that exist on no remote, its worktree is
+**preserved** rather than removed — the work would otherwise be lost. Nothing
+can ever release it on its own, so the dashboard lists every retained run dir
+with its size and age, and **Discard** throws one away once you have salvaged
+what you need (`claude-cron worktree-drop <job-id> <stamp>` from the CLI). A run
+dir a live run is using is never offered, and never dropped.
+
 Anything with a global name must derive it from `$CC_RUN_DIR`, or two concurrent
 runs of the same repo collide:
 

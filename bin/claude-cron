@@ -603,6 +603,26 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   got="$(wt_base_ref "$tmp/g/repo" "")"
   [ "$got" = "origin/develop" ] && ok "an empty base is inferred from the current branch" || bad "got '$got'"
 
+  echo "wt_base_ref() — a hung fetch cannot hold a run for ever"
+  # The fetch runs inside wt_setup, i.e. AFTER the run has taken its slot and
+  # BEFORE the watchdog exists — so a remote that accepts the connection and
+  # then says nothing used to pin the slot indefinitely. With max_parallel=1
+  # that is the job dead until a human notices.
+  mkdir -p "$tmp/fakebin"
+  printf '%s\n' '#!/bin/bash' \
+    'for a in "$@"; do [ "$a" = fetch ] && { sleep 8; exit 0; }; done' \
+    'exec /usr/bin/git "$@"' > "$tmp/fakebin/git"
+  chmod +x "$tmp/fakebin/git"
+  local t0 elapsed ref_got
+  t0="$(now_epoch)"
+  ref_got="$( PATH="$tmp/fakebin:$PATH"; wt_base_ref "$tmp/g/repo" develop 2 2>/dev/null )"
+  elapsed=$(( $(now_epoch) - t0 ))
+  [ "$elapsed" -lt 6 ] && ok "a stalled fetch is abandoned after the timeout (${elapsed}s)" \
+    || bad "wt_base_ref waited ${elapsed}s for a hung fetch"
+  [ "$ref_got" = "origin/develop" ] \
+    && ok "the base still resolves from the refs already on disk" \
+    || bad "after a timed-out fetch the base resolved to '$ref_got'"
+
   echo "wt_provision() — a missing hook is a no-op, a failing one is a failure"
   mkdir -p "$tmp/cfg/provision" "$tmp/run/repoA"
   ( CONFIG_DIR="$tmp/cfg"; PROJECTS_FILE="$tmp/proj/projects.json"
