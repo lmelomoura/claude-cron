@@ -1251,6 +1251,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "missing project name"})
             ok, out = cc(["project-set"], stdin=json.dumps(proj))
             return self._send(200 if ok else 500, {"ok": ok, "output": out})
+        if op in ("provision_get", "provision_set"):
+            name = str(body.get("name", "")).strip()
+            phase = str(body.get("phase", "")).strip()
+            if not name or phase not in ("up", "down"):
+                return self._send(400, {"error": "need a project name and phase up|down"})
+            if op == "provision_get":
+                ok, out = cc(["provision-get", name, phase])
+                return self._send(200 if ok else 500, {"ok": ok, "script": out})
+            # An empty script is meaningful here, unlike a precheck: it clears
+            # the hook, which is the only way to say "this project provisions
+            # nothing" once it has said otherwise.
+            script = body.get("script", "")
+            if not isinstance(script, str):
+                return self._send(400, {"error": "script must be a string"})
+            ok, out = cc(["provision-set", name, phase], stdin=script)
+            return self._send(200 if ok else 500, {"ok": ok, "output": out})
         if op == "project_rename":
             # A project's name IS its identity — jobs reference it by name, so
             # the engine renames both sides and refuses a name already in use.
@@ -2154,6 +2170,16 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
     <code>CLAUDE_CONFIG_DIR</code> the scheduler runs with. It is typed, not browsed: the folder
     picker hides dot-directories. Keep it stable once runs exist — a resumed session is looked up
     inside the account that created it.</div>
+  <label>Repos — the repositories one run of this project spans</label>
+  <div id="pj-repos"></div>
+  <button type="button" class="btn ghost" id="pj-repo-add" style="align-self:flex-start">+ repo</button>
+  <div class="hint">Leave it empty for a single-repo project: the run works in a worktree of the
+    working directory above. Add rows when one ticket touches several repositories — each gets its
+    own worktree inside the run's directory, and the agent finds them through
+    <code>CC_RUN_MANIFEST</code>. <b>Base</b> is the branch the worktree is cut from and the branch
+    a merge request targets; it is declared here, not read from the checkout, because a checkout can
+    be detached or sitting on somebody's feature branch. The repo whose path matches the working
+    directory above is the run's own working directory.</div>
   <label>Worktree isolation — where a run actually works</label>
   <div class="combo" id="pj-wt-combo">
     <button type="button" class="combo-trigger" id="pj-wt-trigger" aria-haspopup="listbox" aria-expanded="false">
@@ -2174,6 +2200,20 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
     <b>Always</b> refuses to run in the cwd even when the git check is inconclusive — use it when
     something outside claude-cron depends on that folder. Only choose <b>Off</b> for a cwd nothing
     else reads.</div>
+  <label>Provisioning — <code>up</code>, run in every repo's fresh worktree</label>
+  <textarea id="pj-up" style="min-height:120px" spellcheck="false"
+            placeholder="#!/usr/bin/env bash&#10;cp -c &quot;$CC_REPO_PATH/.env&quot; .env"></textarea>
+  <label>Provisioning — <code>down</code>, run when the run ends</label>
+  <textarea id="pj-down" style="min-height:80px" spellcheck="false"></textarea>
+  <div class="hint">A fresh worktree has no <code>.env</code>, no <code>vendor</code>, no
+    <code>node_modules</code> — they are gitignored, so no checkout produces them. These scripts run
+    <b>once per repo</b>, with the working directory set to that repo's worktree and the run in the
+    environment: <code>CC_REPO_NAME</code>, <code>CC_REPO_PATH</code> (the canonical checkout to copy
+    from), <code>CC_WORKTREE</code>, <code>CC_BASE</code>, <code>CC_RUN_DIR</code>,
+    <code>CC_RUN_MANIFEST</code>, <code>CC_PROJECT</code>, <code>CC_JOB_ID</code>. A non-zero
+    <code>up</code> aborts the run rather than hand an agent a half-built tree. Anything with a
+    global name — a herd site, a compose project — must derive it from <code>$CC_RUN_DIR</code>, or
+    two runs of the same repo collide.</div>
 </div>
 <div class="dlg-f">
   <button type="button" class="btn danger" id="pj-delete" style="margin-right:auto">Delete</button>
@@ -2574,6 +2614,24 @@ function renderJobs(){
 
 /* ---- projects modal ---- */
 let editingProject=null;
+function repoRow(r){
+  r=r||{};
+  return '<div class="repo-row" style="display:flex;gap:6px;margin-bottom:6px">'
+    +'<input class="rp-name" placeholder="name" value="'+esc(r.name||"")+'" style="flex:1">'
+    +'<input class="rp-path" placeholder="/absolute/path" value="'+esc(r.path||"")+'" style="flex:2">'
+    +'<input class="rp-base" placeholder="base branch" value="'+esc(r.base||"")+'" style="flex:1">'
+    +'<button type="button" class="btn ghost rp-del" title="Remove">×</button></div>';
+}
+function renderRepos(list){ $("pj-repos").innerHTML=(list||[]).map(repoRow).join(""); }
+// Read at SAVE time from the DOM, so rows added and removed since the editor
+// opened are both honoured.
+function collectRepos(){
+  return [...document.querySelectorAll("#pj-repos .repo-row")].map(d=>({
+    name: d.querySelector(".rp-name").value.trim(),
+    path: d.querySelector(".rp-path").value.trim(),
+    base: d.querySelector(".rp-base").value.trim()
+  })).filter(r=>r.name && r.path);
+}
 function openProjectEditor(name){
   editingProject=name||null;
   const p=name?projById(name):null;
@@ -2588,6 +2646,20 @@ function openProjectEditor(name){
   // The stored value is "auto" | true | false; the select speaks strings.
   const wt=(p&&p.worktree&&p.worktree.enabled);
   wtCombo.set((wt===true||wt==="true") ? "true" : (wt===false||wt==="false") ? "false" : "auto");
+  renderRepos((p&&p.repos)||[]);
+  // The hooks are files on disk, not part of the project object, so they are
+  // fetched on open. Cleared first: a script left over from the previously
+  // edited project would otherwise be saved onto this one.
+  $("pj-up").value=""; $("pj-down").value="";
+  if(name){
+    ["up","down"].forEach(async ph=>{
+      const r=await fetch("/api/action",{method:"POST",
+        headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+        body:JSON.stringify({op:"provision_get", name, phase:ph})});
+      const j=await r.json().catch(()=>({}));
+      if(r.ok && j.ok!==false) $("pj-"+ph).value=j.script||"";
+    });
+  }
   $("pj-delete").style.display=name?"":"none";
   $("projmodal").showModal();
 }
@@ -2624,7 +2696,16 @@ async function saveProject(){
     // venv/env the project declares alongside it survives the save.
     const wv=$("pj-wt").value;
     proj.worktree={enabled: wv==="true" ? true : wv==="false" ? false : "auto"};
+    // Always sent, and always whole: project-set merges with jq `. * $p`, which
+    // merges objects but REPLACES arrays -- so a partial array would silently
+    // drop repos, and an omitted one would make removing the last repo impossible.
+    proj.repos=collectRepos();
     if(!await projApi("project_set",{project:proj})) return;
+    // Saved after the project, and by name: provision-set refuses a project the
+    // engine does not know yet, so a brand-new one has to exist first.
+    for(const ph of ["up","down"]){
+      if(!await projApi("provision_set",{name, phase:ph, script:$("pj-"+ph).value})) return;
+    }
     $("projmodal").close(); toast("Saved project "+name); refresh();
   } finally { btn.disabled=false; }
 }
@@ -3685,6 +3766,10 @@ document.addEventListener("click", async (e)=>{
   // project editing (must run before the group toggle, since it's inside the header)
   const edp=e.target.closest("[data-editproj]");
   if(edp){ openProjectEditor(edp.dataset.editproj); return; }
+  // repo rows inside the project editor
+  if(e.target.closest("#pj-repo-add")){ $("pj-repos").insertAdjacentHTML("beforeend", repoRow()); return; }
+  const rpd=e.target.closest(".rp-del");
+  if(rpd){ rpd.closest(".repo-row").remove(); return; }
   // collapse/expand a project group (animated via CSS; persisted in localStorage)
   const tog=e.target.closest("[data-toggle]");
   if(tog){
