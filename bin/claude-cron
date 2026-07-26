@@ -564,6 +564,71 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     wt_provision up broken j1 "$tmp/run" repoA /x/a "$tmp/run/repoA" develop ) >/dev/null 2>&1
   [ $? -ne 0 ] && ok "a failing hook reports failure" || bad "a failing hook reported success"
 
+  echo "wt_setup() — one worktree per repo, a manifest, and an untouched canonical"
+  git -c init.defaultBranch=develop init -q "$tmp/g/repo2"
+  ( cd "$tmp/g/repo2" && echo hi > f && git add f && $gitc commit -qm init ) >/dev/null 2>&1
+  printf '%s' '{"projects":[{"name":"two","cwd":"'"$tmp"'/g/repo","repos":[
+      {"name":"one","path":"'"$tmp"'/g/repo","base":"develop"},
+      {"name":"two","path":"'"$tmp"'/g/repo2","base":"develop"}]}]}' > "$tmp/proj/two.json"
+  local rd="$tmp/wtroot/j2/stampA" prim
+  prim="$( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+           wt_setup j2 two "$tmp/g/repo" stampA )"
+  [ "$prim" = "$rd/one" ] && ok "the primary worktree is the repo matching .cwd" || bad "primary was '$prim'"
+  [ -d "$rd/one" ] && [ -d "$rd/two" ] && ok "one worktree per declared repo" || bad "missing worktrees"
+  got="$("$JQ" -r '.repos | length' "$rd/.run.json" 2>/dev/null)"
+  [ "$got" = "2" ] && ok "the manifest lists both repos" || bad "manifest listed '$got'"
+  got="$("$JQ" -r '.repos[0].fork_sha' "$rd/.run.json" 2>/dev/null)"
+  [ "$got" = "$(git -C "$rd/one" rev-parse HEAD)" ] && ok "fork_sha matches the worktree's HEAD" \
+    || bad "fork_sha was '$got'"
+  got="$(git -C "$tmp/g/repo" symbolic-ref --short --quiet HEAD 2>/dev/null)"
+  [ "$got" = "develop" ] && ok "the canonical checkout keeps its branch" || bad "canonical is on '$got'"
+
+  echo "wt_setup() — a project that declares no repos still gets its one worktree"
+  printf '%s' '{"projects":[{"name":"solo1","cwd":"'"$tmp"'/g/repo2"}]}' > "$tmp/proj/solo.json"
+  prim="$( PROJECTS_FILE="$tmp/proj/solo.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+           wt_setup j9 solo1 "$tmp/g/repo2" stampS )"
+  [ "$prim" = "$tmp/wtroot/j9/stampS/repo2" ] && ok "the single-repo path needs no .repos[]" \
+    || bad "single-repo primary was '$prim'"
+  got="$(wt_run_worktrees "$tmp/wtroot/j9/stampS" | wc -l | tr -d ' ')"
+  [ "$got" = "1" ] && ok "exactly one worktree, named after the cwd" || bad "got $got worktrees"
+
+  echo "wt_setup() — a failing hook aborts, takes down what it built, leaves nothing"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$tmp/cfg/provision/two.up.sh"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "$CC_REPO_NAME" >> "$tmp_down_log"' \
+    > "$tmp/cfg/provision/two.down.sh"
+  export tmp_down_log="$tmp/abort-down.log"; : > "$tmp_down_log"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup j2 two "$tmp/g/repo" stampB ) >/dev/null 2>&1
+  want "a failing up aborts the setup" 1 $?
+  [ ! -d "$tmp/wtroot/j2/stampB" ] && ok "the run dir is gone after a rollback" || bad "run dir survived"
+  got="$(sort -u "$tmp_down_log" 2>/dev/null | tr '\n' ' ')"
+  [ "$got" = "one two " ] && ok "down ran for what had been built before the abort" \
+    || bad "abort ran down for '$got'"
+  unset tmp_down_log
+  rm -f "$tmp/cfg/provision/two.up.sh" "$tmp/cfg/provision/two.down.sh"
+
+  echo "wt_teardown() — down runs, and unpushed work in ANY repo preserves the run"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "$CC_REPO_NAME" >> "$CC_RUN_DIR/down.log"' \
+    > "$tmp/cfg/provision/two.down.sh"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_teardown j2 two "$rd" ) >/dev/null 2>&1
+  [ ! -d "$rd" ] && ok "a clean run dir is removed" || bad "clean run dir survived"
+
+  local rd2="$tmp/wtroot/j2/stampC"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup j2 two "$tmp/g/repo" stampC ) >/dev/null 2>&1
+  ( cd "$rd2/two" && echo work > new.txt && git add new.txt && $gitc commit -qm work ) >/dev/null 2>&1
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_unsafe_to_remove "$rd2" ) >/dev/null 2>&1
+  want "an unpushed commit in one repo preserves the whole run" 0 $?
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_teardown j2 two "$rd2" ) >/dev/null 2>&1
+  [ -d "$rd2/one" ] && ok "the clean sibling is kept too (all or nothing)" || bad "sibling was removed"
+  got="$(sort -u "$rd2/down.log" 2>/dev/null | tr '\n' ' ')"
+  [ "$got" = "one two " ] && ok "down ran for every repo even though the run was kept" \
+    || bad "down.log held '$got'"
+  rm -f "$tmp/cfg/provision/two.down.sh"
+
   rm -rf "$tmp"
   echo
   echo "$pass passed, $fail failed"

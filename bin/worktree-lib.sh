@@ -152,60 +152,150 @@ wt_provision() { # <up|down> <project> <id> <run_dir> <name> <canonical> <worktr
   return "$rc"
 }
 
-# Create the worktree for a run and print its path on stdout. Returns non-zero
-# if creation fails (the caller must then abort the run, never fall back to the
-# shared checkout — that is the race we are removing).
+# The canonical checkout that owns a linked worktree. `git worktree list` names
+# the main worktree first, from any of them, which is how teardown finds the repo
+# to remove from without depending on the manifest.
+wt_main_of() { # <worktree>
+  git -C "${1:-}" worktree list --porcelain 2>/dev/null | awk 'NR==1{print $2; exit}'
+}
+
+# Every worktree a run dir currently holds. Reads the DISK, not the manifest, so
+# it is still correct when setup died before writing one.
+wt_run_worktrees() { # <run dir>
+  local run_dir="${1:-}" d
+  [ -d "$run_dir" ] || return 0
+  for d in "$run_dir"/*/; do
+    [ -d "$d" ] || continue
+    printf '%s\n' "${d%/}"
+  done
+}
+
+# Create this run's dir and one worktree per repo the project spans, provision
+# each, and write the manifest. Prints the PRIMARY worktree (the repo whose path
+# is the project's .cwd) — that becomes the agent's cwd. Returns non-zero if
+# anything fails, having left nothing behind (the caller must then abort the run,
+# never fall back to the shared checkout — that is the race we are removing).
+#
+# ORDER MATTERS: every worktree is created first, then the manifest, and only
+# then does `up` run. A hook therefore always sees a complete $CC_RUN_MANIFEST
+# and can reach a sibling repo's worktree. It also means "no manifest" implies
+# "no hook ran", which is what lets teardown skip `down` after a half-built run.
+#
+# The canonical checkout is NEVER modified: the base is declared, so there is
+# nothing to free by detaching it, and a detach it never undoes would leave the
+# operator's own repo headless for good.
 wt_setup() { # <id> <project> <canonical_cwd> <stamp>
-  local id="${1:-}" project="${2:-}" cwd="${3:-}" stamp="${4:-}" wt
-  wt="$WORKTREES_DIR/$id/$stamp"
-  mkdir -p "$WORKTREES_DIR/$id"
-  # Free any branch the canonical checkout is holding so worktrees can check
-  # branches out — but never disturb a canonical that has uncommitted work
-  # (that would be a crashed run's unsaved changes).
-  if [ -z "$(git -C "$cwd" status --porcelain 2>/dev/null)" ]; then
-    git -C "$cwd" checkout --detach --quiet 2>/dev/null || true
+  local id="${1:-}" project="${2:-}" cwd="${3:-}" stamp="${4:-}"
+  local run_dir="$WORKTREES_DIR/$id/$stamp" tsv="$WORKTREES_DIR/$id/.$stamp.tsv"
+  local name repo base ref wt sha primary=""
+  mkdir -p "$run_dir" || { log_tick "$id: cannot create the run dir $run_dir"; return 1; }
+  : > "$tsv"
+  while IFS="$(printf '\t')" read -r name repo base; do
+    [ -n "$name" ] || continue
+    if [ ! -d "$repo" ]; then
+      log_tick "$id: repo path missing ($name -> $repo)"
+      rm -f "$tsv"; wt_teardown "$id" "$project" "$run_dir"; return 1
+    fi
+    if ! ref="$(wt_base_ref "$repo" "$base")"; then
+      log_tick "$id: no base ref resolvable in $repo"
+      rm -f "$tsv"; wt_teardown "$id" "$project" "$run_dir"; return 1
+    fi
+    wt="$run_dir/$name"
+    git -C "$repo" worktree prune >/dev/null 2>&1 || true
+    if ! git -C "$repo" worktree add --detach "$wt" "$ref" >/dev/null 2>>"$DATA_DIR/exec.log"; then
+      log_tick "$id: worktree add failed ($wt from $ref) — see exec.log"
+      rm -f "$tsv"; wt_teardown "$id" "$project" "$run_dir"; return 1
+    fi
+    sha="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$repo" "$wt" "${base:-$ref}" "$ref" "$sha" >> "$tsv"
+    [ "$repo" = "$cwd" ] && primary="$wt"
+  done < <(wt_repos "$project" "$cwd")
+
+  if [ -z "$primary" ]; then
+    log_tick "$id: no repo matches the project's cwd ($cwd) — cannot choose a primary"
+    rm -f "$tsv"; wt_teardown "$id" "$project" "$run_dir"; return 1
   fi
-  git -C "$cwd" worktree prune >/dev/null 2>&1 || true
-  if ! git -C "$cwd" worktree add --detach "$wt" HEAD >/dev/null 2>>"$DATA_DIR/exec.log"; then
-    log_tick "$id: worktree add failed ($wt) — see exec.log"
-    return 1
-  fi
-  # Remember the fork point so teardown can tell "made no commits" (safe to drop)
-  # from "made commits, not pushed" (must preserve).
-  git -C "$wt" rev-parse HEAD > "$wt.base" 2>/dev/null || true
-  printf '%s\n' "$wt"
+
+  "$JQ" -Rn --arg job "$id" --arg project "$project" --arg run_dir "$run_dir" \
+        --arg primary "$(basename "$primary")" '
+    {job:$job, project:$project, run_dir:$run_dir, primary:$primary,
+     repos: [inputs | split("\t")
+             | {name:.[0], canonical:.[1], worktree:.[2],
+                base:.[3], base_ref:.[4], fork_sha:.[5]}]}' "$tsv" > "$run_dir/.run.json"
+  rm -f "$tsv"
+
+  while IFS="$(printf '\t')" read -r name repo wt base; do
+    [ -n "$name" ] || continue
+    if ! wt_provision up "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base"; then
+      log_tick "$id: provisioning failed for $name — aborting the run"
+      wt_teardown "$id" "$project" "$run_dir"
+      return 1
+    fi
+  done < <("$JQ" -r '.repos[] | [.name,.canonical,.worktree,.base] | @tsv' "$run_dir/.run.json" 2>/dev/null)
+
+  printf '%s\n' "$primary"
 }
 
-# 0 = the worktree holds work that must be preserved (do NOT remove).
-wt_unsafe_to_remove() { # <worktree>
-  local wt="${1:-}" base head
-  [ -d "$wt" ] || return 1
-  # Uncommitted or untracked changes → keep.
-  [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ] && return 0
-  head="$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
-  [ -n "$head" ] || return 1
-  base=""
-  [ -f "$wt.base" ] && base="$(cat "$wt.base" 2>/dev/null || true)"
-  # No new commits since the fork point → nothing was made here → safe.
-  [ -n "$base" ] && [ "$head" = "$base" ] && return 1
-  # New commits exist: safe only if they already live on some remote branch.
-  if [ -n "$(git -C "$wt" branch -r --contains "$head" 2>/dev/null)" ]; then
-    return 1
-  fi
-  return 0   # new local commits, on no remote → preserve
+# 0 = this run dir holds work that must be preserved. ALL-OR-NOTHING: if any one
+# repo has uncommitted changes, or commits that exist on no remote, the whole run
+# dir stays. Removing some repos of a run and keeping others produces a half-run
+# nobody can reason about.
+wt_unsafe_to_remove() { # <run dir>
+  local run_dir="${1:-}" mf="${1:-}/.run.json" wt head fork
+  [ -d "$run_dir" ] || return 1
+  while IFS= read -r wt; do
+    [ -n "$wt" ] || continue
+    # Uncommitted or untracked changes → keep.
+    [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ] && return 0
+    head="$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
+    [ -n "$head" ] || continue
+    fork=""
+    [ -f "$mf" ] && fork="$("$JQ" -r --arg w "$wt" \
+        '.repos[] | select(.worktree==$w) | .fork_sha' "$mf" 2>/dev/null)"
+    # No new commits since the fork point → nothing was made here → safe.
+    [ -n "$fork" ] && [ "$fork" = "$head" ] && continue
+    # New commits exist: safe only if they already live on some remote branch.
+    [ -n "$(git -C "$wt" branch -r --contains "$head" 2>/dev/null)" ] && continue
+    return 0   # new local commits, on no remote → preserve
+  done < <(wt_run_worktrees "$run_dir")
+  return 1
 }
 
-# Remove a run's worktree if it is safe, else leave it and say so.
-wt_teardown() { # <id> <project> <canonical_cwd> <worktree>
-  local id="${1:-}" project="${2:-}" cwd="${3:-}" wt="${4:-}"
-  [ -n "$wt" ] && [ -d "$wt" ] || return 0
-  if wt_unsafe_to_remove "$wt"; then
-    log_tick "$id: worktree kept — unpushed/uncommitted work at $wt"
+# Finish a run's directory: `down` for every repo (in reverse declaration order,
+# while the worktrees still exist), then remove them if that is safe.
+#
+# `down` runs even when the run dir is preserved: whatever the hook registered
+# outside the directory -- a herd site, a compose stack -- has to be released
+# when the run ends, whether or not a human still wants the files.
+#
+# No manifest means setup never got as far as provisioning, so there is nothing
+# to take down; the worktrees are still removed.
+wt_teardown() { # <id> <project> <run dir>
+  local id="${1:-}" project="${2:-}" run_dir="${3:-}" mf="${3:-}/.run.json"
+  local name repo wt base main
+  [ -n "$run_dir" ] && [ -d "$run_dir" ] || return 0
+  if [ -f "$mf" ]; then
+    while IFS="$(printf '\t')" read -r name repo wt base; do
+      [ -n "$wt" ] && [ -d "$wt" ] || continue
+      wt_provision down "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base" || true
+    done < <("$JQ" -r '.repos | reverse | .[] | [.name,.canonical,.worktree,.base] | @tsv' \
+                "$mf" 2>/dev/null)
+  fi
+  if wt_unsafe_to_remove "$run_dir"; then
+    log_tick "$id: run dir kept — unpushed or uncommitted work at $run_dir"
     return 0
   fi
-  git -C "$cwd" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
-  rm -f "$wt.base"
-  git -C "$cwd" worktree prune >/dev/null 2>&1 || true
+  while IFS= read -r wt; do
+    [ -n "$wt" ] || continue
+    main="$(wt_main_of "$wt")"
+    if [ -n "$main" ]; then
+      git -C "$main" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+      git -C "$main" worktree prune >/dev/null 2>&1 || true
+    else
+      rm -rf "$wt"
+    fi
+  done < <(wt_run_worktrees "$run_dir")
+  rm -rf "$run_dir"
 }
 
 # Sweep worktrees whose owning run is no longer active (a killed or crashed run),
