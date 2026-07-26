@@ -668,6 +668,26 @@ ${prompt}"
       release_slot "$slot"; trap - EXIT
       return 0
     fi
+    # Hand the precheck's own words to the agent. The precheck runs per-run, in
+    # shell, before the session exists — so it is the only place that can hold a
+    # LOCK. A precheck that atomically claims a ticket has to be able to say WHICH
+    # one it claimed, and until now its output went only to a sidecar file the
+    # agent never reads: two runs then each picked from the same board query and
+    # reviewed the same pull request. Passing it here makes the claim reach the
+    # only party that can honour it.
+    if [ -n "$pc_out" ]; then
+      prompt="Your precheck ran before this session started and reported:
+
+${pc_out}
+
+Treat that as fact about right now — it is the harness speaking, not a suggestion.
+Where it names the specific work claimed for this run, that is your work: take it
+and nothing else.
+
+---
+
+${prompt}"
+    fi
   fi
 
   local start end stamp logfile streamfile precheckfile rc out cost turns session status
