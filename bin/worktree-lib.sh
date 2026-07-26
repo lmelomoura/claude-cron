@@ -67,6 +67,35 @@ wt_isolation_enabled() { # <project> <canonical_cwd>
   esac
 }
 
+# The ref a repo's worktree is cut from. A declared base wins; an empty one is
+# inferred from the canonical's current branch, then from the remote's default.
+#
+# It fetches first, because a review run has to see the branch a dev run pushed
+# minutes ago -- but a network that is down must never fail a run: fall back to
+# what is already local and say so in the tick log.
+wt_base_ref() { # <canonical> <base> -> prints a ref; non-zero if nothing resolves
+  local repo="${1:-}" base="${2:-}" ref
+  git -C "$repo" fetch --prune --quiet 2>/dev/null \
+    || log_tick "worktree: fetch failed in $repo — resolving the base from local refs"
+  if [ -z "$base" ]; then
+    base="$(git -C "$repo" symbolic-ref --short --quiet HEAD 2>/dev/null || true)"
+    if [ -z "$base" ]; then
+      ref="$(git -C "$repo" symbolic-ref --short --quiet refs/remotes/origin/HEAD 2>/dev/null || true)"
+      base="${ref#origin/}"
+    fi
+  fi
+  if [ -n "$base" ]; then
+    if git -C "$repo" rev-parse --verify --quiet "origin/$base^{commit}" >/dev/null 2>&1; then
+      printf 'origin/%s\n' "$base"; return 0
+    fi
+    if git -C "$repo" rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1; then
+      printf '%s\n' "$base"; return 0
+    fi
+  fi
+  git -C "$repo" rev-parse --verify --quiet HEAD >/dev/null 2>&1 || return 1
+  printf 'HEAD\n'
+}
+
 # Expand {repo} and {worktree} placeholders in a template.
 wt_subst() { # <template> <repo> <worktree>
   local t="${1:-}" repo="${2:-}" wt="${3:-}"
