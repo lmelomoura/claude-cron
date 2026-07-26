@@ -1303,6 +1303,24 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200 if ok else 409, {"ok": ok, "output": out} if ok
                               else {"error": out or "reorder refused"})
 
+        # A bulk switch carries a LIST of ids and a flag rather than one id —
+        # handle it before the single-id check below, like reorder above.
+        if op == "toggle_many":
+            ids = body.get("ids")
+            val = body.get("enabled")
+            if not isinstance(ids, list) or not ids:
+                return self._send(400, {"error": "no ids given"})
+            if not all(isinstance(x, str) and x and all(c.isalnum() or c in "-_" for c in x) for x in ids):
+                return self._send(400, {"error": "bad id in list"})
+            # A real boolean only: the string "false" is truthy on the other end
+            # of the wire, so coercing it would turn "disable all" into its
+            # opposite. isinstance(True, int) is also true, so check bool first.
+            if not isinstance(val, bool):
+                return self._send(400, {"error": "missing enabled flag"})
+            ok, out = cc(["toggle-many", "true" if val else "false"], stdin=json.dumps(ids))
+            return self._send(200 if ok else 409, {"ok": ok, "output": out} if ok
+                              else {"error": out or "refused"})
+
         jid = str(body.get("id", ""))
         if not jid or not all(c.isalnum() or c in "-_" for c in jid):
             return self._send(400, {"error": "bad id"})
