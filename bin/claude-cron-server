@@ -429,12 +429,43 @@ def search_runs(q):
 
 # ------------------------------------------------------------------- app data
 
+# How far back into tick.log the 24h counters look. A byte window, not a line
+# count: the old `[-6000:]` slice was both too small (21 jobs on a 5-minute
+# interval write past it in about a day, so a busy install silently
+# under-reported) and too expensive (it read the WHOLE file first, on a poll
+# that runs every 5s). The engine caps the file at 4 MiB; this window covers
+# well over a day of entries at any realistic job count.
+TICK_TAIL_BYTES = 1_500_000
+
+
+def _tail_lines(path, max_bytes):
+    """The last `max_bytes` of a text file, as whole lines.
+
+    Seeking past the start lands mid-line, so the first fragment is dropped —
+    it is not an entry and must not be parsed as one.
+    """
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            start = max(0, size - max_bytes)
+            fh.seek(start)
+            blob = fh.read()
+    except OSError:
+        return []
+    text = blob.decode("utf-8", "replace")
+    if start:
+        _, sep, rest = text.partition("\n")
+        text = rest if sep else ""
+    return text.splitlines()
+
+
 def checks_24h():
     """Per-job counts of the last 24h of scheduler activity, straight from
     tick.log — makes the autonomy visible even when every check stays idle."""
     counts = {}
     try:
-        lines = (DATA_DIR / "tick.log").read_text().splitlines()[-6000:]
+        lines = _tail_lines(DATA_DIR / "tick.log", TICK_TAIL_BYTES)
         cutoff = time.time() - 86400
         for ln in lines:
             try:

@@ -411,6 +411,11 @@ then deletes the bulky artifact files. **To back up or migrate: copy
 dashboard footer. Deleting `index.db` only loses runs whose files were already
 pruned.
 
+**Logs.** `data/tick.log` (scheduler decisions) and `data/exec.log` (detached
+runner and provisioning-hook output) are append-only and are rotated by the tick
+once either passes `CLAUDE_CRON_LOG_MAX` (4 MiB). Exactly one previous
+generation is kept, as `.1` — the chain never grows.
+
 ---
 
 ## Security

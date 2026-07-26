@@ -97,6 +97,23 @@ now_epoch() { date +%s; }
 iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log_tick() { printf '%s %s\n' "$(iso_now)" "$*" >> "$TICK_LOG"; }
 
+# Nothing ever trimmed tick.log or exec.log, so both grew for the life of the
+# install — and the dashboard re-reads tick.log WHOLE every 5s to count the
+# day's activity, so an old install pays for that growth on every poll. Keep one
+# previous generation and start fresh: history far enough back to be useless for
+# the 24h counters is not worth carrying for ever.
+LOG_MAX_BYTES="${CLAUDE_CRON_LOG_MAX:-4194304}"   # 4 MiB per file
+log_rotate() { # log_rotate <file> [max-bytes]
+  local f="${1:-}" max; max="$(num "${2:-$LOG_MAX_BYTES}" "$LOG_MAX_BYTES")"
+  [ -f "$f" ] || return 0
+  [ "$(num "$(wc -c < "$f" 2>/dev/null)")" -ge "$max" ] || return 0
+  # Exactly one generation: mv replaces any existing .1, so the chain never
+  # grows. A run holding exec.log open keeps writing into the renamed file —
+  # harmless, and it stops at the end of that run.
+  mv -f "$f" "$f.1" 2>/dev/null || return 0
+  : > "$f" 2>/dev/null || true
+}
+
 # ---------------------------------------------------------------- job helpers
 
 jobs_json() {
@@ -712,6 +729,25 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     && ok "the real exec.log is byte-identical after the suite" \
     || bad "the suite appended to the real exec.log ($_exec0 -> $(size_of "$_real_exec") bytes)"
 
+  echo "log_rotate() — a log that grows without bound is capped, never lost"
+  printf 'old line\n' > "$tmp/r.log"
+  log_rotate "$tmp/r.log" 1000000
+  [ ! -e "$tmp/r.log.1" ] && ok "a small log is left alone" || bad "a small log was rotated"
+  local i=0; : > "$tmp/r.log"
+  while [ "$i" -lt 200 ]; do printf 'a line that takes up some space %s\n' "$i" >> "$tmp/r.log"; i=$((i+1)); done
+  log_rotate "$tmp/r.log" 1000
+  [ "$(size_of "$tmp/r.log")" = "0" ] && ok "an oversized log is truncated" \
+    || bad "log still $(size_of "$tmp/r.log") bytes"
+  grep -q 'a line that takes up some space 199' "$tmp/r.log.1" 2>/dev/null \
+    && ok "the previous generation is kept in .1" || bad "rotated content was lost"
+  # A second rotation must not stack generations for ever.
+  : > "$tmp/r.log"; i=0
+  while [ "$i" -lt 200 ]; do printf 'second generation %s\n' "$i" >> "$tmp/r.log"; i=$((i+1)); done
+  log_rotate "$tmp/r.log" 1000
+  grep -q 'second generation 199' "$tmp/r.log.1" 2>/dev/null \
+    && ok "rotating again replaces .1 rather than growing a chain" || bad ".1 was not replaced"
+  [ ! -e "$tmp/r.log.2" ] && ok "no .2 is ever created" || bad "a .2 generation appeared"
+
   rm -rf "$tmp"
   echo
   echo "$pass passed, $fail failed"
@@ -1269,6 +1305,11 @@ If the work turns out to be already finished, or it can no longer be done at all
 # holding its lock is not relaunched.
 cmd_tick() {
   local id
+  # Cap the two append-only logs before anything else writes to them. Once a
+  # minute is the right cadence: the tick is the only thing guaranteed to run,
+  # and doing it per log line would cost a wc(1) per line instead of two a tick.
+  log_rotate "$TICK_LOG"
+  log_rotate "$DATA_DIR/exec.log"
   # Reap worktrees left by runs that died without cleaning up (safe teardown:
   # anything with unpushed/uncommitted work is kept, not deleted).
   wt_prune_orphans
