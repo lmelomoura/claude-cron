@@ -1029,7 +1029,11 @@ function jobCard(j){
   const st=DATA.state[j.id]||{}, disabled=j.enabled===false;
   const chk=(DATA.checks||{})[j.id]||{checks:0,runs:0};
   const spentToday=DATA.runs.filter(r=>r.id===j.id && r.start>=t0).reduce((a,r)=>a+(r.cost||0),0);
-  const cap=(j.daily_budget_usd!=null?+j.daily_budget_usd:null);
+  // Inherited from the project when the job does not set it, exactly as
+  // daily_cap_for() does in the engine — reading it from the job alone made a
+  // project-level cap invisible here as well as inert there.
+  const capRaw=eff(j,"daily_budget_usd",null);
+  const cap=(capRaw!=null && capRaw!==""?+capRaw:null);
   const capped=(cap!=null && spentToday>=cap);
   // Due time by interval, then pushed to the next window opening if that falls
   // outside the schedule — so the card never promises a check that cannot run.

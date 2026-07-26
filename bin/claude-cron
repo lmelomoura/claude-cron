@@ -450,14 +450,47 @@ record_run() { # <id> <status> <start> <end> <cost> <turns> <session> <logfile> 
   rm -f "$LOCK_DIR/.rec.$$"
 }
 
-# Total cost of a job's runs since local midnight — powers the daily cap.
-spent_today() { # spent_today <id> -> dollars (float)
-  local id="$1" midnight
+# How much of the journal the daily-spend scan reads. Records are appended in
+# time order, so today's are always at the END — reading the whole file to find
+# them made every single run launch O(all history ever). 4 MiB is thousands of
+# records: far more than any day, and bounded for ever. A partial first line is
+# dropped by `fromjson?`, which is why the offset can be a plain byte count.
+SPEND_SCAN_BYTES="${CLAUDE_CRON_SPEND_SCAN:-4194304}"
+
+_spend_since_midnight() { # _spend_since_midnight [id] -> dollars (float)
+  local id="${1:-}" midnight
   midnight="$(date -v0H -v0M -v0S +%s 2>/dev/null || echo 0)"
-  [ -f "$RUNS_FILE" ] || { echo 0; return; }
-  "$JQ" -rR --arg id "$id" --argjson mid "$midnight" \
-    'fromjson? | select(.id==$id and ((.start//0)>=$mid)) | (.cost//0)' "$RUNS_FILE" 2>/dev/null \
+  [ -f "$RUNS_FILE" ] || { printf '0'; return; }
+  tail -c "$SPEND_SCAN_BYTES" "$RUNS_FILE" 2>/dev/null \
+    | "$JQ" -rR --arg id "$id" --argjson mid "$midnight" \
+        'fromjson? | select(((.start//0)>=$mid) and ($id=="" or .id==$id)) | (.cost//0)' 2>/dev/null \
     | awk '{s+=$1} END{printf "%.6f", s+0}'
+}
+
+# Total cost of a job's runs since local midnight — powers the per-job daily cap.
+spent_today() { _spend_since_midnight "$1"; }
+
+# Total cost of EVERY job's runs since local midnight — powers the global cap.
+spent_today_all() { _spend_since_midnight ""; }
+
+# The daily ceiling that applies to a job: its own, else its project's, else
+# none. It used to be read from the job ALONE, so a `daily_budget_usd` set on a
+# project silently did nothing — which is the one place you would naturally put
+# it when a project owns several jobs.
+daily_cap_for() { # daily_cap_for <id> -> dollars, or empty for "no cap"
+  local v; v="$(resolve "$1" daily_budget_usd '')"
+  case "$v" in null) v="" ;; esac
+  printf '%s' "$v"
+}
+
+# A ceiling on what EVERYTHING spends in a day, declared once at the top of
+# projects.json. Per-job caps cannot express "the whole fleet has a budget":
+# 21 jobs each correctly under their own limit still add up.
+global_daily_cap() { # -> dollars, or empty for "no cap"
+  local v
+  v="$(projects_json | "$JQ" -r '.global_daily_budget_usd // "" | tostring' 2>/dev/null)"
+  case "$v" in null) v="" ;; esac
+  printf '%s' "$v"
 }
 
 # --- family → newest concrete model id -------------------------------------
@@ -930,6 +963,44 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   is_due_vals 300 "$(( $(now_epoch) - 1300 ))" 4; want "and runs once the longer wait passes" 0 $?
   is_due_vals 300 0 0                           ; want "a job that never ran is due"  0 $?
 
+  echo "daily caps — a ceiling can be set per job, per project, and for everything"
+  mkdir -p "$tmp/caps"
+  printf '%s' '{"jobs":[{"id":"own","project":"P","daily_budget_usd":5},
+                        {"id":"inherits","project":"P"},
+                        {"id":"loner"}]}' > "$tmp/caps/jobs.json"
+  printf '%s' '{"global_daily_budget_usd":100,
+                "projects":[{"name":"P","daily_budget_usd":20}]}' > "$tmp/caps/projects.json"
+  got="$( JOBS_FILE="$tmp/caps/jobs.json"; PROJECTS_FILE="$tmp/caps/projects.json"; daily_cap_for own )"
+  [ "$got" = "5" ] && ok "a job's own cap wins" || bad "own -> '$got'"
+  got="$( JOBS_FILE="$tmp/caps/jobs.json"; PROJECTS_FILE="$tmp/caps/projects.json"; daily_cap_for inherits )"
+  # This is the gap: daily_budget_usd was read from the job ALONE, so setting it
+  # on a project quietly did nothing at all.
+  [ "$got" = "20" ] && ok "a job with no cap inherits its project's" || bad "inherits -> '$got'"
+  got="$( JOBS_FILE="$tmp/caps/jobs.json"; PROJECTS_FILE="$tmp/caps/projects.json"; daily_cap_for loner )"
+  [ -z "$got" ] && ok "no cap anywhere means no cap" || bad "loner -> '$got'"
+  got="$( PROJECTS_FILE="$tmp/caps/projects.json"; global_daily_cap )"
+  [ "$got" = "100" ] && ok "a global ceiling can be declared" || bad "global -> '$got'"
+  got="$( PROJECTS_FILE="$tmp/proj/projects.json"; global_daily_cap )"
+  [ -z "$got" ] && ok "and is absent unless declared" || bad "undeclared global -> '$got'"
+
+  echo "spent_today() — today's spend is summed without reading all of history"
+  local midnight; midnight="$(date -v0H -v0M -v0S +%s)"
+  : > "$tmp/runs.ndjson"
+  printf '{"id":"a","start":%s,"cost":1.5}\n' "$(( midnight + 10 ))" >> "$tmp/runs.ndjson"
+  printf '{"id":"a","start":%s,"cost":2.25}\n' "$(( midnight + 20 ))" >> "$tmp/runs.ndjson"
+  printf '{"id":"b","start":%s,"cost":4}\n'    "$(( midnight + 30 ))" >> "$tmp/runs.ndjson"
+  printf '{"id":"a","start":%s,"cost":99}\n'   "$(( midnight - 8000 ))" >> "$tmp/runs.ndjson"
+  got="$( RUNS_FILE="$tmp/runs.ndjson"; spent_today a )"
+  [ "$got" = "3.750000" ] && ok "one job's spend today is summed" || bad "spent_today a -> '$got'"
+  got="$( RUNS_FILE="$tmp/runs.ndjson"; spent_today_all )"
+  [ "$got" = "7.750000" ] && ok "every job's spend today is summed" || bad "spent_today_all -> '$got'"
+  # A truncated leading line (the scan starts at a byte offset, not a line
+  # boundary) must be skipped, never parsed into a bogus cost.
+  printf '%s\n' '{"id":"a","start":1,"co' > "$tmp/cut.ndjson"
+  cat "$tmp/runs.ndjson" >> "$tmp/cut.ndjson"
+  got="$( RUNS_FILE="$tmp/cut.ndjson"; spent_today a )"
+  [ "$got" = "3.750000" ] && ok "a truncated first line is ignored" || bad "with a cut line -> '$got'"
+
   rm -rf "$tmp"
   echo
   echo "$pass passed, $fail failed"
@@ -1102,14 +1173,28 @@ ${prompt}"
   # Daily budget gate: a per-job ceiling on today's spend. Empty = no cap.
   # Scheduled runs only — Run now is a deliberate override, like the precheck.
   if [ "$forced" != "true" ]; then
-    local cap spent
-    cap="$(job_get "$id" '.daily_budget_usd' '')"
-    if [ -n "$cap" ] && [ "$cap" != "null" ]; then
+    local cap spent gcap gspent
+    cap="$(daily_cap_for "$id")"
+    if [ -n "$cap" ]; then
       spent="$(spent_today "$id")"
       if awk -v s="$spent" -v c="$cap" 'BEGIN{exit !((s+0)>=(c+0))}'; then
         state_set "$id" last_status '"capped"'
         state_set "$id" last_capped "$("$JQ" -nc --arg s "$spent" --arg c "$cap" '{spent:($s|tonumber),cap:($c|tonumber)}')"
         log_tick "$id: daily cap reached (\$$spent / \$$cap) — skipping"
+        release_slot "$slot"; trap - EXIT
+        return 0
+      fi
+    fi
+    # The fleet-wide ceiling. Every job can sit correctly under its own cap and
+    # the day still cost far more than intended — with a job per repo per role,
+    # the sum is the number that actually matters.
+    gcap="$(global_daily_cap)"
+    if [ -n "$gcap" ]; then
+      gspent="$(spent_today_all)"
+      if awk -v s="$gspent" -v c="$gcap" 'BEGIN{exit !((s+0)>=(c+0))}'; then
+        state_set "$id" last_status '"capped"'
+        state_set "$id" last_capped "$("$JQ" -nc --arg s "$gspent" --arg c "$gcap" '{spent:($s|tonumber),cap:($c|tonumber),scope:"global"}')"
+        log_tick "$id: GLOBAL daily cap reached (\$$gspent / \$$gcap across all jobs) — skipping"
         release_slot "$slot"; trap - EXIT
         return 0
       fi

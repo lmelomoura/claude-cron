@@ -295,19 +295,104 @@ herd unlink "$SITE"; docker compose -p "$SITE" down -v  # down
 
 ### Budgets
 
+Three ceilings, each answering a different question.
+
 - **Per-run** (`max_budget_usd`) — passed to `claude -p --max-budget-usd`; caps a
-  single run.
-- **Per-day** (`daily_budget_usd`) — the engine sums today's runs for the job
-  before each scheduled run and skips (status `capped`) once the total reaches
-  the cap. Empty = unlimited. The card shows **Today: $spent / $cap**.
+  single run. Job value first, else the project's.
+- **Per-day, per job** (`daily_budget_usd`) — the engine sums today's runs for
+  the job before each scheduled run and skips (status `capped`) once the total
+  reaches the cap. Job value first, **else the project's** — so a project with
+  six jobs can set one number in one place. Empty = unlimited. The card shows
+  **Today: $spent / $cap**.
+- **Per-day, everything** (`global_daily_budget_usd`, at the top level of
+  `projects.json`) — the ceiling for the whole machine:
 
-### Self-test
+  ```json
+  { "global_daily_budget_usd": 120,
+    "projects": [ … ] }
+  ```
 
-`claude-cron selftest` exercises, offline and without spending anything, the
-logic that can end a run early or hide what it cost: numbers parsed from command
-output, the assertion that decides an interactive turn is over, token recovery
-from a transcript with no result event, and the disabled-job guard. Run it after
-touching the engine.
+  Per-job caps cannot express this. With a job per repo per role, every single
+  one can sit correctly under its own limit and the day still cost several times
+  what you meant to spend; the only number that answers "what will a bad night
+  cost me?" is the sum.
+
+All three are skipped for a **forced** run (Run now), which is a deliberate
+override — the same way it bypasses the precheck.
+
+### Backing off a job that keeps failing
+
+A job that errors used to relaunch every interval at full budget, for as long as
+it kept failing, with nothing in the loop noticing. Now the engine counts
+**consecutive** failures per job:
+
+| Consecutive errors | Wait |
+|---|---|
+| 0–2 | the configured interval |
+| 3 | 2× |
+| 4 | 4× |
+| 5 | 8× |
+| 6+ | 16× (the cap) |
+
+Two failures are treated as noise — a flaky network, a busy remote. From the
+third the wait doubles each time, capped at 16× so a job that gets fixed
+recovers within one long interval rather than hours later. **Any** run that is
+not an error resets the count, so one good run puts the job straight back on its
+normal cadence. A broken precheck (see above) counts too. The card says so:
+*backing off 4× after 4 failed runs*.
+
+### Telling someone a run ended: `config/hooks/on-run-end.sh`
+
+A loop that can only be checked by opening a web page is not really unattended.
+Drop an executable script at `config/hooks/on-run-end.sh` and the engine runs it
+after every run, with the outcome in its environment:
+
+| Variable | |
+|---|---|
+| `CC_JOB_ID` | which job |
+| `CC_STATUS` | `success`, `warning` or `error` |
+| `CC_COST` | dollars this run spent |
+| `CC_NOTE` | why it ended as it did (`BUDGET LIMITED: …`, `NOTHING TO DO: …`, a watchdog reason) |
+| `CC_PROJECT`, `CC_SESSION`, `CC_LOG` | |
+| `CC_START`, `CC_END`, `CC_DURATION` | epoch seconds, and the span |
+| `CC_DASHBOARD` | the dashboard URL |
+
+The engine knows nothing about notifiers, so this is where they go:
+
+```bash
+#!/usr/bin/env bash
+[ "$CC_STATUS" = error ] || exit 0
+terminal-notifier -title "claude-cron: $CC_JOB_ID failed" \
+                  -message "${CC_NOTE:-see the run log}" -open "$CC_DASHBOARD"
+```
+
+It is detached and time-limited (`CLAUDE_CRON_HOOK_TIMEOUT`, default 60s): a
+notifier that hangs must never hold a run's slot open. Its output goes to
+`data/exec.log`.
+
+### Tests
+
+Two suites, both offline and free:
+
+```bash
+claude-cron selftest        # the engine (bash)
+python3 -m pytest tests/    # the control server (python)
+```
+
+`selftest` exercises the logic that can end a run early, lose money or corrupt
+state: integer parsing from command output, the assertion that decides an
+interactive turn is over, token recovery from a transcript with no result event,
+the disabled-job guard, the schedule window (including one that wraps midnight),
+the failure backoff curve, lock ownership, worktree setup/teardown/provisioning,
+and log rotation. It runs entirely inside a scratch directory — it will not
+touch `data/`.
+
+`pytest tests/` covers the server: journal ingest and resync, the 24h activity
+counters, retained worktrees, the journal lock, and the dashboard page itself
+(that its JavaScript parses, that every element it reaches for exists, and that
+the backoff curve it recomputes still agrees with the engine's).
+
+Run both after touching either side.
 
 ### When a run is killed
 
