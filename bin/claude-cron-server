@@ -2600,9 +2600,15 @@ async function bulkToggle(key, enable){
 
 function renderJobs(){
   const jobs=DATA.jobs||[];
+  const projects=[...new Set(jobs.map(j=>j.project||"").filter(Boolean))].sort();
+  const nStandalone=jobs.filter(j=>!j.project).length;
+  if(jobProjectFilter && jobProjectFilter!=="__none__" && !projects.includes(jobProjectFilter)) jobProjectFilter="";
+
   // Top button: acts on exactly what this render is about to show, so it can
   // never touch a job the chip filter has taken off-screen. Its label carries
   // the count for the same reason — "all" is ambiguous while a filter is on.
+  // Runs after the stale-filter guard above so a renamed/removed project's
+  // dead filter value has already been reset before visibleJobs() reads it.
   const vis=visibleJobs(), ball=$("bulk-all");
   ball.hidden=!vis.length;
   if(vis.length){
@@ -2611,9 +2617,6 @@ function renderJobs(){
     ball.dataset.bulkTo=on?"0":"1";
     ball.innerHTML=I.power+(on?"Disable all ":"Enable all ")+vis.length;
   }
-  const projects=[...new Set(jobs.map(j=>j.project||"").filter(Boolean))].sort();
-  const nStandalone=jobs.filter(j=>!j.project).length;
-  if(jobProjectFilter && jobProjectFilter!=="__none__" && !projects.includes(jobProjectFilter)) jobProjectFilter="";
 
   // chips (shown only when at least one project exists)
   if(projects.length){
