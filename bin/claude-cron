@@ -552,7 +552,10 @@ cmd_precheck() { # <id> — run the job's precheck once and RECORD it, without t
   precheck="$(jobs_json | "$JQ" -r --arg id "$id" '.jobs[] | select(.id==$id) | .precheck // ""')"
   [ -n "$precheck" ] || { echo "no precheck configured for $id"; return 0; }
   cwd="$(resolve "$id" cwd "$HOME")"
-  pc_out="$( cd "$cwd" && eval "$precheck" 2>&1 )"; pc_rc=$?
+  # A probe reports; it must not claim. See CC_PRECHECK_DRY_RUN in the
+  # prechecks: a claim is a write, and spending it here leaves a ticket
+  # claimed with no session behind it.
+  pc_out="$( cd "$cwd" && export CC_PRECHECK_DRY_RUN=1 && eval "$precheck" 2>&1 )"; pc_rc=$?
   state_set "$id" last_precheck "$("$JQ" -nc --arg o "${pc_out:-(no output)}" --argjson rc "$pc_rc" '{output:$o, exit:$rc}')"
   printf '%s\n(exit %s)\n' "$pc_out" "$pc_rc"
 }
@@ -1511,7 +1514,8 @@ cmd_check() {
   precheck="$(jobs_json | "$JQ" -r --arg id "$id" '.jobs[] | select(.id==$id) | .precheck // ""')"
   cwd="$(resolve "$id" cwd "$HOME")"   # inherit the project's cwd, like run_job
   [ -n "$precheck" ] || { echo "$id has no precheck — every due tick spends a session."; return 0; }
-  if ( cd "$cwd" && eval "$precheck" ); then
+  # Read-only, like every standalone probe (see CC_PRECHECK_DRY_RUN).
+  if ( cd "$cwd" && export CC_PRECHECK_DRY_RUN=1 && eval "$precheck" ); then
     echo "precheck: WORK FOUND — a due tick would start a Claude run"
   else
     echo "precheck: nothing to do — a due tick would cost nothing"

@@ -155,6 +155,36 @@ count=$(curl -sf https://api.example.com/queue | jq -r '.pending')
 [ "${count:-0}" -gt 0 ]     # exit 0 → work; exit 1 → idle
 ```
 
+#### A precheck that writes: `CC_PRECHECK_DRY_RUN`
+
+A precheck may do more than look. The useful case is a **claim**: reading a queue
+tells you what *was* free, and only a write that succeeds tells you what *is*
+yours — so a precheck that atomically takes a ticket is what stops two runs
+working the same one. Its output is handed to the agent, which is how the session
+learns what was claimed for it.
+
+That makes the precheck **not idempotent**, and the engine runs it standalone in
+two places that only mean to *look*: `claude-cron check <id>`, and the guard the
+dashboard's **Run now** fires before starting a forced run. Both export
+
+```bash
+CC_PRECHECK_DRY_RUN=1
+```
+
+A precheck that writes MUST honour it: report the candidate it *would* take,
+keep the same exit status (0 = work, 1 = idle), and touch nothing. Ignoring it
+costs you the claim — the probe moves the ticket out of the queue, the run that
+follows finds an empty board and reports there is nothing to do, and the ticket
+is left claimed with no session behind it.
+
+```bash
+if [ -n "${CC_PRECHECK_DRY_RUN:-}" ]; then
+  echo "would_claim=$candidate — dry run, the board was untouched"
+  exit 0
+fi
+claim "$candidate"          # the real run: a write, and the lock
+```
+
 ### Budgets
 
 - **Per-run** (`max_budget_usd`) — passed to `claude -p --max-budget-usd`; caps a
