@@ -598,7 +598,16 @@ run_job() { # run_job <id> [--force] [resume-session-id]
   # by itself, and holding stdin open changes exactly that.
   interactive="$(resolve "$id" interactive 'false')"
   case "$interactive" in true) ;; *) interactive="false" ;; esac
-  budget="$(resolve "$id" max_budget_usd '2')"
+  # An absent per-run budget means "no cap", the same way an absent daily cap,
+  # time limit and stall guard already do -- clearing the field in the editor
+  # deletes the key. `resolve` cannot express it (it collapses a missing value
+  # onto its default, so a cleared field would silently read as $2), so read the
+  # job directly and let empty stay empty. A project may still set a floor.
+  budget="$(job_get "$id" '.max_budget_usd' '')"
+  if [ -z "$budget" ] || [ "$budget" = "null" ]; then
+    budget="$(project_get "$(job_get "$id" '.project' '')" '.max_budget_usd' '')"
+    case "$budget" in null) budget="" ;; esac
+  fi
   # A long run is NOT a hung run. `stall_timeout_seconds` is the real guard: kill
   # only after the agent has produced NO output for that long. `timeout_seconds`
   # is now an OPTIONAL absolute cap — empty or 0 means "no wall-clock limit", so
@@ -763,7 +772,10 @@ ${prompt}"
   # the plain json format used to emit; it is extracted into $logfile below so
   # every existing reader keeps working.
   local args
-  args="-p --output-format stream-json --verbose --model $model --permission-mode $permission --max-budget-usd $budget"
+  args="-p --output-format stream-json --verbose --model $model --permission-mode $permission"
+  # No flag at all when the budget is cleared: the CLI has no value meaning
+  # "unlimited", so the absence of the flag is what expresses it.
+  [ -n "$budget" ] && args="$args --max-budget-usd $budget"
   # Resume: continue the failed run's own session rather than starting over.
   [ -n "$resume_sid" ] && args="$args --resume $resume_sid"
   [ -n "$effort" ] && args="$args --effort $effort"
@@ -1322,9 +1334,14 @@ cmd_set_field() { # cmd_set_field <id> <field> ; value on stdin
           '.jobs = [.jobs[] | if .id == $id then .[$f] = $v else . end]'
       fi ;;
     max_budget_usd)
-      "$JQ" -n --arg v "$value" '$v|tonumber' >/dev/null 2>&1 || die "$field must be a number"
-      write_jobs --arg id "$id" --argjson v "$value" \
-        '.jobs = [.jobs[] | if .id == $id then .max_budget_usd = $v else . end]' ;;
+      if [ -z "$value" ]; then   # empty clears the cap: the run may spend what the task needs
+        write_jobs --arg id "$id" \
+          '.jobs = [.jobs[] | if .id == $id then del(.max_budget_usd) else . end]'
+      else
+        "$JQ" -n --arg v "$value" '$v|tonumber' >/dev/null 2>&1 || die "$field must be a number or empty"
+        write_jobs --arg id "$id" --argjson v "$value" \
+          '.jobs = [.jobs[] | if .id == $id then .max_budget_usd = $v else . end]'
+      fi ;;
     daily_budget_usd)
       if [ -z "$value" ]; then   # empty clears the cap (no daily ceiling)
         write_jobs --arg id "$id" \

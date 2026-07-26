@@ -2060,9 +2060,9 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
       <input type="range" id="ed-effort" class="effslider" min="0" max="5" step="1" value="0">
       <div class="effends"><span>Faster</span><span>Smarter</span></div>
     </div>
-    <div><label>Max budget per run</label>
+    <div><label>Max budget per run — empty = no cap</label>
       <div class="moneyin"><span class="cur">$</span>
-        <input id="ed-budget" inputmode="decimal" autocomplete="off" placeholder="2.00"></div></div>
+        <input id="ed-budget" inputmode="decimal" autocomplete="off" placeholder="no cap"></div></div>
   </div>
   <label>Max simultaneous runs</label>
   <input id="ed-maxpar" type="number" min="0" step="1" inputmode="numeric" placeholder="3">
@@ -3212,7 +3212,9 @@ function fill(j){
   // Empty shows the default (3) as a placeholder; 0 is a real value meaning
   // "no limit", so it must be shown rather than treated as unset.
   $("ed-maxpar").value=(j.max_parallel!=null && j.max_parallel!=="")?String(j.max_parallel):"";
-  $("ed-budget").value=(j.max_budget_usd!=null?j.max_budget_usd:2).toFixed(2);
+  // null is a DELIBERATE "no cap", so it must show as empty rather than as the
+  // default -- the same rule the daily cap and the time limit already follow.
+  $("ed-budget").value=(j.max_budget_usd!=null?Number(j.max_budget_usd).toFixed(2):"");
   $("ed-daily").value=(j.daily_budget_usd!=null?Number(j.daily_budget_usd).toFixed(2):"");
   // Both optional: empty means "no hard limit" / "no stall guard".
   $("ed-timeout").value=j.timeout_seconds?Math.max(1,Math.round(j.timeout_seconds/60)):"";
@@ -3261,7 +3263,8 @@ function readForm(){
     interactive: $("ed-interactive").checked,
     hours: hs && he ? hs+"-"+he : "",
     days,
-    budget: (parseFloat($("ed-budget").value.replace(/[^0-9.]/g,""))||2),
+    budget: (function(){ const raw=$("ed-budget").value.replace(/[^0-9.]/g,"").trim();
+      return raw==="" ? null : (parseFloat(raw)||null); })(),   // null = no cap
     // How many runs of this job may work at once. Empty means "use the default"
     // (3); 0 is a value in its own right and means no limit.
     maxPar: $("ed-maxpar").value.trim()==="" ? null : Math.max(0, parseInt($("ed-maxpar").value,10)||0),
@@ -3321,7 +3324,8 @@ async function saveEditor(){
     if(!await setF("interactive",String(f.interactive),String(j.interactive===true))) return;
     if(!await setF("active_hours",f.hours,j.active_hours||"")) return;
     if(!await setF("active_days",f.days.join(","),(j.active_days||[]).join(","))) return;
-    if(!await setF("max_budget_usd",f.budget,(j.max_budget_usd!=null?j.max_budget_usd:2))) return;
+    const curBudget=(j.max_budget_usd!=null?+j.max_budget_usd:null);
+    if(f.budget!==curBudget){ if(!await api("set_field",{id,field:"max_budget_usd",value:(f.budget==null?"":String(f.budget))})) return; }
     const curMax=(j.max_parallel!=null?String(j.max_parallel):"");
     if(String(f.maxPar==null?"":f.maxPar)!==curMax){
       if(!await api("set_field",{id,field:"max_parallel",value:(f.maxPar==null?"":String(f.maxPar))})) return;
