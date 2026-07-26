@@ -240,6 +240,48 @@ jobs then just pick it (a job without a project sets its own `cwd`).
 Projects live in `config/projects.json` and are personal to your install, so
 they are not committed.
 
+### Which Claude account a run signs in as
+
+Claude Code keeps credentials, settings, plugins, MCP servers and past sessions
+**per config directory** — one signed-in account each. If you keep two accounts
+on the same Mac (a company one and a personal one, say), the directory is the
+only thing that chooses between them:
+
+```bash
+CLAUDE_CONFIG_DIR=~/.claude-work     claude    # work account
+CLAUDE_CONFIG_DIR=~/.claude-personal claude    # personal account
+```
+
+Shell aliases for that never reach claude-cron: `launchd` inherits nothing from
+your shell, so by default every run signs in as the CLI's own `~/.claude`. There
+are two levels:
+
+| Level | Where | Applies to |
+|---|---|---|
+| default | `CLAUDE_CRON_CLAUDE_CONFIG_DIR` at install time | every run, and the model probes |
+| per project | `claude_config_dir` in `config/projects.json` (**Edit project** in the dashboard) | that project's runs and their prechecks |
+
+```bash
+CLAUDE_CRON_CLAUDE_CONFIG_DIR=~/.claude-work bash install.sh
+```
+
+The value is written into both `launchd` plists, so it survives logout and
+reboot; re-running the installer without the variable keeps whatever is already
+pinned. A project's own setting wins over it, and an empty one inherits it.
+
+Three things to know before splitting jobs across accounts:
+
+- **Keep a job's account stable.** Sessions are stored per config directory, so
+  a resumed run is looked up inside the account that created it — moving a
+  project to another account strands anything still open.
+- **The account brings its whole environment.** Its `settings.json`, plugins,
+  MCP servers and any managed policy come with it, so the same prompt can behave
+  differently on the other account. An MCP server authenticated interactively in
+  one directory is *not* authenticated in the other.
+- **A missing directory is refused, not created.** The run is skipped with
+  `claude_config_dir missing` in `data/tick.log` rather than launching a session
+  that would stop at a login prompt. Sign that account in once, interactively.
+
 ---
 
 ## Dashboard

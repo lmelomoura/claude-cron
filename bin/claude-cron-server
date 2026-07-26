@@ -2144,6 +2144,16 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
     <input id="pj-cwd" type="text" placeholder="click Browse to choose a folder" readonly data-cwd-target="pj-cwd" class="cwd-ro">
     <button type="button" class="btn cwd-browse" data-cwd-target="pj-cwd">Browse…</button>
   </div>
+  <label>Claude account — the config directory this project's runs sign in as</label>
+  <input id="pj-ccd" type="text" placeholder="default — the account the scheduler itself runs as"
+         autocomplete="off" spellcheck="false">
+  <div class="hint">Claude Code keeps credentials, settings, plugins, MCP servers and past sessions
+    per config directory — one signed-in account each — so this is what puts a project's runs on
+    your work account (<code>~/.claude-work</code>) rather than your personal one
+    (<code>~/.claude-personal</code>). Leave it empty to inherit whatever
+    <code>CLAUDE_CONFIG_DIR</code> the scheduler runs with. It is typed, not browsed: the folder
+    picker hides dot-directories. Keep it stable once runs exist — a resumed session is looked up
+    inside the account that created it.</div>
   <label>Worktree isolation — where a run actually works</label>
   <div class="combo" id="pj-wt-combo">
     <button type="button" class="combo-trigger" id="pj-wt-trigger" aria-haspopup="listbox" aria-expanded="false">
@@ -2574,6 +2584,7 @@ function openProjectEditor(name){
   $("pj-name").value=p?p.name:""; $("pj-name").disabled=false;
   $("pj-desc").value=(p&&p.description)||"";
   $("pj-cwd").value=(p&&p.cwd)||"";
+  $("pj-ccd").value=(p&&p.claude_config_dir)||"";
   // The stored value is "auto" | true | false; the select speaks strings.
   const wt=(p&&p.worktree&&p.worktree.enabled);
   wtCombo.set((wt===true||wt==="true") ? "true" : (wt===false||wt==="false") ? "false" : "auto");
@@ -2605,6 +2616,10 @@ async function saveProject(){
     const proj={name};
     const d=$("pj-desc").value.trim(); if(d) proj.description=d;
     const c=$("pj-cwd").value.trim(); if(c) proj.cwd=c;
+    // Sent even when empty, unlike the fields above: emptying this one is how you
+    // put a project back on the default account, and project-set merges, so a key
+    // that is simply omitted would keep the old account forever.
+    proj.claude_config_dir=$("pj-ccd").value.trim();
     // Send only .worktree.enabled: project-set merges (jq `. * $p`), so any
     // venv/env the project declares alongside it survives the save.
     const wv=$("pj-wt").value;

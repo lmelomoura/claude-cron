@@ -47,6 +47,15 @@ SERVER_BIN="$BIN_DIR/claude-cron-server"
 PORT="${CLAUDE_CRON_PORT:-8787}"
 
 CLAUDE_BIN="${CLAUDE_CRON_CLAUDE_BIN:-$HOME/.local/bin/claude}"
+# Which Claude account every run signs in as. Claude Code keeps credentials,
+# settings, plugins, MCP servers and past sessions per config directory — one
+# signed-in account each — so this variable is the only thing that chooses
+# between two accounts on the same Mac. Set here it is the default for
+# everything, model probes included; a project may pin its own (see
+# `claude_config_dir` in projects.json). Empty leaves the CLI's own default
+# (~/.claude), which is what this tool used before the setting existed.
+CLAUDE_CONFIG_DIR="${CLAUDE_CRON_CLAUDE_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-}}"
+if [ -n "$CLAUDE_CONFIG_DIR" ]; then export CLAUDE_CONFIG_DIR; else unset CLAUDE_CONFIG_DIR; fi
 PYTHON="${CLAUDE_CRON_PYTHON:-$(command -v python3 2>/dev/null || echo /usr/bin/python3)}"
 JQ=/usr/bin/jq
 
@@ -72,6 +81,17 @@ num() { # num <text> [fallback] -> a plain non-negative integer, always
   case "$v" in ''|*[!0-9]*) printf '%s' "$d" ;; *) printf '%s' "$v" ;; esac
 }
 
+
+# A leading ~ is the shell's, not the filesystem's: a path that arrives from
+# JSON has never been through word expansion, so "~/.claude-work" would be taken
+# literally and land a directory called "~" next to the config file.
+expand_home() { # expand_home <path>
+  case "${1:-}" in
+    '~')   printf '%s' "$HOME" ;;
+    '~/'*) printf '%s/%s' "$HOME" "${1#\~/}" ;;
+    *)     printf '%s' "${1:-}" ;;
+  esac
+}
 
 now_epoch() { date +%s; }
 iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -579,8 +599,17 @@ run_job() { # run_job <id> [--force] [resume-session-id]
   local id="$1" force="${2:-}" resume_sid="${3:-}"
   [ -n "$resume_sid" ] && force="--force"
   local cwd prompt model effort budget timeout stall permission allowed precheck project proj_desc interactive fifo
-  local run_cwd worktree wt_env _envln slot max_par
+  local run_cwd worktree run_env run_cfgdir _envln slot max_par
   project="$(job_get "$id" '.project' '')"
+  # Which account this run signs in as. A project pins one when its work belongs
+  # to a different Claude login than the scheduler's default — a company account
+  # for client work, a personal one for your own repos. It carries far more than
+  # billing: the config dir holds that account's settings, plugins, MCP servers
+  # AND its past sessions, so it must stay stable for a job or `--resume` below
+  # would go looking for the session in the other account's directory.
+  run_cfgdir="$(project_get "$project" '.claude_config_dir' '')"
+  case "$run_cfgdir" in null) run_cfgdir="" ;; esac
+  run_cfgdir="$(expand_home "$run_cfgdir")"
   # cwd, model, permission, budget and timeout inherit from the project when the
   # job doesn't set them (see resolve()).
   cwd="$(resolve "$id" cwd "$HOME")"
@@ -622,6 +651,11 @@ run_job() { # run_job <id> [--force] [resume-session-id]
 
   [ -n "$prompt" ] && [ "$prompt" != "null" ] || { log_tick "$id: no prompt, skipped"; return 1; }
   [ -d "$cwd" ] || { log_tick "$id: cwd missing ($cwd), skipped"; return 1; }
+  # Refuse rather than let the CLI create the directory and find no credentials
+  # in it: that spends a launch to fail at the login prompt, and every later run
+  # would fail the same way with nothing saying why.
+  [ -z "$run_cfgdir" ] || [ -d "$run_cfgdir" ] || {
+    log_tick "$id: claude_config_dir missing ($run_cfgdir), skipped"; return 1; }
 
   # Prepend the project's description as context, so a run carries the project's
   # purpose without repeating it in every job prompt.
@@ -671,7 +705,11 @@ ${prompt}"
   # session when it passes (exit 0) — unless this run was forced (Run now).
   local pc_out="" pc_rc=0
   if [ -n "$precheck" ]; then
-    pc_out="$( cd "$cwd" && eval "$precheck" 2>&1 )"; pc_rc=$?
+    # The precheck sees the same account as the run it gates: a probe that asks
+    # Claude itself must not answer for one account the session then spends on
+    # another, and MCP credentials live per config dir too.
+    pc_out="$( cd "$cwd" && { [ -n "$run_cfgdir" ] && export CLAUDE_CONFIG_DIR="$run_cfgdir"
+                              eval "$precheck" 2>&1; } )"; pc_rc=$?
     state_set "$id" last_precheck "$("$JQ" -nc --arg o "${pc_out:-(no output)}" --argjson rc "$pc_rc" '{output:$o, exit:$rc}')"
     if [ "$forced" != "true" ] && [ "$pc_rc" -ne 0 ]; then
       state_set "$id" last_start "$(now_epoch)"
@@ -719,7 +757,11 @@ ${prompt}"
   # silently run in the shared tree (falling back would reintroduce the race).
   run_cwd="$cwd"
   worktree=""
-  wt_env=()
+  # The env the agent starts with. It exists whether or not this project is
+  # isolated — the account is a property of the project, not of the worktree —
+  # and the worktree's own venv/vars are appended to it below when there is one.
+  run_env=()
+  [ -n "$run_cfgdir" ] && run_env+=("CLAUDE_CONFIG_DIR=$run_cfgdir")
   if wt_isolation_enabled "$project" "$cwd"; then
     # Claim the path BEFORE the worktree exists. The sweep removes any worktree
     # no live slot claims, so creating first and claiming after leaves a window
@@ -736,7 +778,7 @@ ${prompt}"
     run_cwd="$worktree"
     echo "$worktree" > "$slot/worktree"     # the real path (same value, kept explicit)
     while IFS= read -r _envln; do
-      [ -n "$_envln" ] && wt_env+=("$_envln")
+      [ -n "$_envln" ] && run_env+=("$_envln")
     done < <(wt_env_line "$project" "$cwd" "$worktree")
     log_tick "$id: isolated in worktree $worktree"
   fi
@@ -801,12 +843,12 @@ If the work turns out to be already finished, or it can no longer be done at all
     args="$args --input-format stream-json --replay-user-messages"
     (
       cd "$run_cwd" || exit 1
-      env ${wt_env[@]+"${wt_env[@]}"} "$CLAUDE_BIN" $args < "$fifo" > "$streamfile" 2> "$logfile.err"
+      env ${run_env[@]+"${run_env[@]}"} "$CLAUDE_BIN" $args < "$fifo" > "$streamfile" 2> "$logfile.err"
     ) &
   else
     (
       cd "$run_cwd" || exit 1
-      env ${wt_env[@]+"${wt_env[@]}"} "$CLAUDE_BIN" $args "$prompt" > "$streamfile" 2> "$logfile.err"
+      env ${run_env[@]+"${run_env[@]}"} "$CLAUDE_BIN" $args "$prompt" > "$streamfile" 2> "$logfile.err"
     ) &
   fi
   local child=$!
@@ -1051,6 +1093,29 @@ cmd_tick() {
 PLIST_PATH_ENV="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 cmd_install() {
+  # A global default account, carried into launchd — which inherits nothing from
+  # the shell, so without this every run signs in as ~/.claude however the
+  # scheduler was installed. Taken ONLY from the explicit variable, never from an
+  # ambient CLAUDE_CONFIG_DIR: installing from inside a Claude session would
+  # otherwise silently pin that session's account for every job, forever.
+  local plist_cfgdir=""
+  if [ -n "${CLAUDE_CRON_CLAUDE_CONFIG_DIR:-}" ]; then
+    plist_cfgdir="
+    <key>CLAUDE_CONFIG_DIR</key><string>$(expand_home "$CLAUDE_CRON_CLAUDE_CONFIG_DIR")</string>"
+  elif [ -f "$PLIST_PATH" ]; then
+    # Re-running the installer must not quietly drop an account pinned earlier.
+    plist_cfgdir="$("$PYTHON" - "$PLIST_PATH" <<'PY'
+import plistlib, sys
+try:
+    v = plistlib.load(open(sys.argv[1], "rb")).get("EnvironmentVariables", {}).get("CLAUDE_CONFIG_DIR")
+except Exception:
+    v = None
+if v:
+    print("\n    <key>CLAUDE_CONFIG_DIR</key><string>%s</string>" % v, end="")
+PY
+)"
+  fi
+
   # 1) the tick agent — fires the scheduler once a minute
   cat > "$PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -1072,7 +1137,7 @@ cmd_install() {
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>$PLIST_PATH_ENV</string>
-    <key>HOME</key><string>$HOME</string>
+    <key>HOME</key><string>$HOME</string>$plist_cfgdir
   </dict>
   <key>StandardOutPath</key><string>$DATA_DIR/launchd.out.log</string>
   <key>StandardErrorPath</key><string>$DATA_DIR/launchd.err.log</string>
@@ -1098,7 +1163,7 @@ PLIST
   <dict>
     <key>PATH</key><string>$PLIST_PATH_ENV</string>
     <key>HOME</key><string>$HOME</string>
-    <key>CLAUDE_CRON_PORT</key><string>$PORT</string>
+    <key>CLAUDE_CRON_PORT</key><string>$PORT</string>$plist_cfgdir
   </dict>
   <key>StandardOutPath</key><string>$DATA_DIR/server.log</string>
   <key>StandardErrorPath</key><string>$DATA_DIR/server.log</string>
@@ -1113,6 +1178,11 @@ PLIST
   echo "Installed and loaded:"
   echo "  $PLIST_LABEL   — ticks every 60s (survives logout and reboot)"
   echo "  $SERVER_LABEL  — control dashboard on http://127.0.0.1:$PORT/"
+  if [ -n "$plist_cfgdir" ]; then
+    echo "Claude account : ${plist_cfgdir##*<string>}" | sed 's|</string>||'
+  else
+    echo "Claude account : the CLI default (~/.claude) — set CLAUDE_CRON_CLAUDE_CONFIG_DIR and re-run to change it"
+  fi
   echo "Open it with: claude-cron dashboard"
 }
 
