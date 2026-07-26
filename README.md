@@ -163,9 +163,12 @@ yours — so a precheck that atomically takes a ticket is what stops two runs
 working the same one. Its output is handed to the agent, which is how the session
 learns what was claimed for it.
 
-That makes the precheck **not idempotent**, and the engine runs it standalone in
-two places that only mean to *look*: `claude-cron check <id>`, and the guard the
-dashboard's **Run now** fires before starting a forced run. Both export
+That makes the precheck **not idempotent**, and the engine runs it in three
+places that only mean to *look*: `claude-cron check <id>`, the guard the
+dashboard's **Run now** fires before starting a forced run, and a **resume** —
+where the session already has its work and the continuation prompt replaces the
+precheck's output entirely, so anything claimed there would be claimed for a run
+that never reads it. All three export
 
 ```bash
 CC_PRECHECK_DRY_RUN=1
