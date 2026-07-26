@@ -1032,7 +1032,17 @@ function jobCard(j){
     : esc(fmtWhen(nextAt))+(nextAt>dueAt+30?' <span class="muted">· when the window reopens</span>':''));
   const pc=st.last_precheck||null;
   let checkStr=fmtAgo(st.last_start);
-  if(pc && typeof pc==="object"){ checkStr+=" — "+(pc.exit===0?"work found":"nothing to do")+checkList(pc.output); }
+  if(pc && typeof pc==="object"){
+    // Three outcomes, not two. A probe that could not run (any exit other than
+    // 0 or 1) once rendered as the calm "nothing to do", so a job whose
+    // credentials had gone missing looked healthy while it silently never ran
+    // again. It now says so, in the error colour.
+    const verdict = pc.exit===0 ? '<span style="color:var(--ok)">work found</span>'
+                  : pc.exit===1 ? "nothing to do"
+                  : '<span style="color:var(--err);font-weight:600">probe FAILED (exit '+esc(String(pc.exit))+')</span>';
+    checkStr+=" — "+verdict+checkList(pc.output);
+  }
+
   // A job may have SEVERAL runs going at once, so say how many rather than one
   // "running now". The per-run outcome is no longer summarised on the card: each
   // run is individual and carries its own status in the Runs table.
@@ -2460,7 +2470,14 @@ document.addEventListener("click", async (e)=>{
         headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
         body:JSON.stringify({op:"precheck",id})});
       const j=await r.json().catch(()=>({}));
-      if(r.ok && j.ok && j.work===false){
+      if(r.ok && j.broken){
+        // A probe that could not run knows nothing about the board, so
+        // "nothing to do" would be a lie. Say what actually happened.
+        const yes=await showConfirm({tone:"danger", icon:"alert", title:"This job's precheck is broken",
+          message:"The probe exited with an error instead of reporting on the board, so nothing is known about whether there is work. Until it is fixed this job will never start on its own. A forced run will still spend a full agent session.",
+          mono:(j.output||""), confirmLabel:"Run anyway"});
+        if(!yes){ b.disabled=false; return; }
+      } else if(r.ok && j.ok && j.work===false){
         const yes=await showConfirm({tone:"warn", icon:"alert", title:"Nothing to do right now",
           message:"The precheck reports no pending work. Run now bypasses the precheck — a forced run will still spend a full agent session.",
           mono:(j.output||""), confirmLabel:"Run anyway"});

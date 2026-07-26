@@ -197,6 +197,22 @@ state_set() { # state_set <id> <field> <value-as-json>
   _state_unlock
 }
 
+# What a precheck's exit status MEANS. The engine used to read every non-zero
+# status as "nothing to do", which made the two failures that matter look
+# identical to the one healthy outcome: a probe that ran and found no work
+# (exit 1) and a probe that could not run AT ALL (a missing credentials file,
+# an unsourceable helper, a typo -> 2, 126, 127) both left the job sitting
+# quietly "idle". A job could therefore stop working for good and the dashboard
+# would keep reporting it as healthy and up to date. The contract is now
+# explicit and narrow: 0 = work, 1 = idle, anything else = the probe is broken.
+precheck_verdict() { # precheck_verdict <exit-code> -> work|idle|error
+  case "$(num "${1:-}" 99)" in
+    0) printf 'work'  ;;
+    1) printf 'idle'  ;;
+    *) printf 'error' ;;
+  esac
+}
+
 # ------------------------------------------------------------- schedule gates
 
 # Is now inside the job's active window? 0 = yes, 1 = no (reason on stdout).
@@ -748,6 +764,16 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     && ok "rotating again replaces .1 rather than growing a chain" || bad ".1 was not replaced"
   [ ! -e "$tmp/r.log.2" ] && ok "no .2 is ever created" || bad "a .2 generation appeared"
 
+  echo "precheck_verdict() — a broken probe is not an idle one"
+  [ "$(precheck_verdict 0)" = "work" ]  && ok "exit 0 means work was found"    || bad "exit 0 -> $(precheck_verdict 0)"
+  [ "$(precheck_verdict 1)" = "idle" ]  && ok "exit 1 means nothing to do"     || bad "exit 1 -> $(precheck_verdict 1)"
+  # The whole point: a probe that could not run at all used to be indistinguishable
+  # from one that ran and found nothing, so a job whose credentials had gone
+  # missing sat "idle" for ever with nothing showing red anywhere.
+  [ "$(precheck_verdict 2)" = "error" ] && ok "exit 2 is a broken probe"       || bad "exit 2 -> $(precheck_verdict 2)"
+  [ "$(precheck_verdict 127)" = "error" ] && ok "exit 127 (missing command) is broken" || bad "exit 127 -> $(precheck_verdict 127)"
+  [ "$(precheck_verdict '')" = "error" ]  && ok "a missing exit code is broken" || bad "empty -> $(precheck_verdict '')"
+
   rm -rf "$tmp"
   echo
   echo "$pass passed, $fail failed"
@@ -950,10 +976,22 @@ ${prompt}"
                               [ -n "$resume_sid" ] && export CC_PRECHECK_DRY_RUN=1
                               eval "$precheck" 2>&1; } )"; pc_rc=$?
     state_set "$id" last_precheck "$("$JQ" -nc --arg o "${pc_out:-(no output)}" --argjson rc "$pc_rc" '{output:$o, exit:$rc}')"
-    if [ "$forced" != "true" ] && [ "$pc_rc" -ne 0 ]; then
+    local pc_verdict; pc_verdict="$(precheck_verdict "$pc_rc")"
+    if [ "$forced" != "true" ] && [ "$pc_verdict" != "work" ]; then
       state_set "$id" last_start "$(now_epoch)"
-      state_set "$id" last_status '"idle"'
-      log_tick "$id: precheck found nothing to do (exit $pc_rc)"
+      if [ "$pc_verdict" = "error" ]; then
+        # NOT idle: the probe itself failed, so nothing is known about the
+        # board. Surfaced as its own status so the card can go red instead of
+        # claiming, reassuringly and wrongly, that there was nothing to do.
+        state_set "$id" last_status '"precheck_error"'
+        # A broken probe repeats every interval just as a failing run does, and
+        # costs a shell each time, so it feeds the same backoff.
+        state_set "$id" fail_streak "$(( $(num "$(state_get "$id" fail_streak 0)") + 1 ))"
+        log_tick "$id: PRECHECK FAILED (exit $pc_rc) — the probe could not run, so no work was looked for"
+      else
+        state_set "$id" last_status '"idle"'
+        log_tick "$id: precheck found nothing to do (exit $pc_rc)"
+      fi
       release_slot "$slot"; trap - EXIT
       return 0
     fi
@@ -1933,11 +1971,12 @@ cmd_check() {
   cwd="$(resolve "$id" cwd "$HOME")"   # inherit the project's cwd, like run_job
   [ -n "$precheck" ] || { echo "$id has no precheck — every due tick spends a session."; return 0; }
   # Read-only, like every standalone probe (see CC_PRECHECK_DRY_RUN).
-  if ( cd "$cwd" && export CC_PRECHECK_DRY_RUN=1 && eval "$precheck" ); then
-    echo "precheck: WORK FOUND — a due tick would start a Claude run"
-  else
-    echo "precheck: nothing to do — a due tick would cost nothing"
-  fi
+  ( cd "$cwd" && export CC_PRECHECK_DRY_RUN=1 && eval "$precheck" ); local rc=$?
+  case "$(precheck_verdict "$rc")" in
+    work)  echo "precheck: WORK FOUND — a due tick would start a Claude run" ;;
+    idle)  echo "precheck: nothing to do — a due tick would cost nothing" ;;
+    *)     echo "precheck: BROKEN (exit $rc) — the probe could not run, so this job is stuck: it will never find work until this is fixed" ; return 1 ;;
+  esac
 }
 
 case "${1:-}" in

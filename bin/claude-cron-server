@@ -1397,7 +1397,13 @@ class Handler(BaseHTTPRequestHandler):
             # Exit 0 is the engine's own "there is work" signal; a job with no
             # precheck at all runs on every due tick, so it always has work.
             work = ("no precheck configured" in out) or ("(exit 0)" in out)
-            return self._send(200 if ok else 500, {"ok": ok, "work": work, "output": out})
+            # Same three-way contract as the engine (0 work / 1 idle / else
+            # broken), so the Run-now guard can say "your probe is broken"
+            # instead of the far more misleading "nothing to do".
+            m = re.search(r"\(exit (\d+)\)\s*$", out.strip())
+            broken = bool(m) and m.group(1) not in ("0", "1")
+            return self._send(200 if ok else 500,
+                              {"ok": ok, "work": work, "broken": broken, "output": out})
 
         if op == "run":
             # Multiple runs of one job may now run in parallel (each isolated in

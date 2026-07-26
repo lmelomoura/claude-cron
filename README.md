@@ -155,6 +155,25 @@ count=$(curl -sf https://api.example.com/queue | jq -r '.pending')
 [ "${count:-0}" -gt 0 ]     # exit 0 → work; exit 1 → idle
 ```
 
+#### The exit status is three-way, not two
+
+| Exit | Meaning | What the engine does |
+|---|---|---|
+| `0` | there is work | spends a session |
+| `1` | nothing to do | stays idle, costs nothing |
+| anything else | **the probe itself is broken** | records `precheck_error`, shows the job in red, and backs off |
+
+The third row matters more than it looks. A missing credentials file, a helper
+that will not source, a typo, a `command not found` — all of those exit with
+something that is neither 0 nor 1. They used to be read as "nothing to do", so a
+job could stop working for good while the dashboard kept reporting it as healthy
+and up to date. Write prechecks that **fail loudly**: let the error status
+escape rather than mapping everything onto `exit 1`.
+
+If your probe genuinely cannot tell (the API is down, and you would rather wait
+than guess) that is `exit 1` — "no work found" — and it is right to be quiet
+about it. Reserve the other codes for "this probe is not working".
+
 #### A precheck that writes: `CC_PRECHECK_DRY_RUN`
 
 A precheck may do more than look. The useful case is a **claim**: reading a queue
