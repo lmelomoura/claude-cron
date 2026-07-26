@@ -5,6 +5,8 @@ dist/
 # Secrets and personal configuration
 config/control.token
 config/jobs.json
+config/jobs.json.bak*
+config/*.bak*
 config/projects.json
 config/models.json
 
