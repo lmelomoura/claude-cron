@@ -665,6 +665,76 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   got="$("$JQ" -r '[.jobs[] | select(.id=="x") | .enabled] | .[0] as $v | (if $v == null then "true" else $v end) | tostring' "$tmp/jobs.json")"
   [ "$got" = "false" ] && ok "enabled:false reads as false (jq // would say true)" || bad "enabled:false read as '$got'"
 
+  echo "the round cap itself — counting, parking, failing open"
+  # The cap is the only hard stop on the dev/review loop, so its own behaviour is
+  # tested against a fake Jira rather than asserted by reading the source.
+  if [ -x "$BASE_DIR/test/round-cap.test.sh" ]; then
+    local rcout
+    if rcout="$("$BASE_DIR/test/round-cap.test.sh" 2>&1)"; then
+      ok "round-cap suite ($(printf '%s' "$rcout" | grep -c '  PASS') cases)"
+    else
+      bad "round-cap suite failed:"
+      printf '%s\n' "$rcout" | grep '  FAIL' | sed 's/^/      /'
+    fi
+  else
+    ok "round-cap suite not installed — skipped"
+  fi
+
+  echo "the dev/review loop has an exit condition"
+  # The loop between the dev and review agents once ran without a terminating
+  # condition: both prompts said "repeat until nothing blocks", and the reviewer's
+  # bar ("any behavioural finding of any severity") is not a state a real pull
+  # request reaches. Rounds only ended when the budget did. Three properties keep
+  # that closed, and each has been silently undone before by an edit elsewhere —
+  # so they are asserted here rather than trusted to prose.
+  local jf="${CC_JOBS_FILE:-$CONFIG_DIR/jobs.json}"
+  if [ ! -f "$jf" ]; then
+    ok "no jobs.json — loop invariants not applicable"
+  else
+    # 1. The cap is enforced in shell, before a session exists, on BOTH boards.
+    local capped=0 devjobs=0
+    for pc in "$CONFIG_DIR"/prechecks/*-dev-agent.sh; do
+      [ -f "$pc" ] || continue
+      devjobs=$(( devjobs + 1 ))
+      grep -q 'rc_gate_rework' "$pc" && capped=$(( capped + 1 ))
+    done
+    [ "$devjobs" -gt 0 ] && [ "$capped" -eq "$devjobs" ] \
+      && ok "every dev precheck enforces the round cap ($capped/$devjobs)" \
+      || bad "round cap missing from $(( devjobs - capped )) of $devjobs dev prechecks"
+
+    # 2. No prompt still promises an unbounded loop, or a bar that cannot be met.
+    local residual
+    residual="$("$JQ" -r '.jobs[] | .id as $i | .prompt // "" | split("\n")[]
+                          | select(test("any finding of any severity|repeating until nothing blocks|repeating until the review is genuinely clean|found nothing at all"))
+                          | $i' "$jf" 2>/dev/null | sort -u | tr '\n' ' ')"
+    [ -z "$residual" ] \
+      && ok "no prompt promises an unbounded loop" \
+      || bad "unbounded-loop wording is back in: $residual"
+
+    # 3. The reviewer can actually approve over a non-blocking finding, and the
+    #    dev is told to prove a widening did not go too far. Losing either one
+    #    restarts the pendulum that produced the expensive rounds.
+    local rev_ok=0 rev_n=0 dev_ok=0 dev_n=0
+    while IFS=$'\t' read -r id prompt; do
+      case "$id" in
+        *-reviewer-agent)
+          rev_n=$(( rev_n + 1 ))
+          printf '%s' "$prompt" | grep -q 'Follow-up findings (not blocking)' \
+            && rev_ok=$(( rev_ok + 1 )) ;;
+        *-dev-agent)
+          dev_n=$(( dev_n + 1 ))
+          printf '%s' "$prompt" | grep -q 'containment test' \
+            && dev_ok=$(( dev_ok + 1 )) ;;
+      esac
+    done < <("$JQ" -r '.jobs[] | [.id, (.prompt // "")] | @tsv' "$jf" 2>/dev/null)
+    [ "$rev_n" -gt 0 ] && [ "$rev_ok" -eq "$rev_n" ] \
+      && ok "every reviewer may record a finding without spending a round ($rev_ok/$rev_n)" \
+      || bad "the non-blocking route is missing from $(( rev_n - rev_ok )) of $rev_n reviewers"
+    [ "$dev_n" -gt 0 ] && [ "$dev_ok" -eq "$dev_n" ] \
+      && ok "every dev prompt requires a containment test when a rule widens ($dev_ok/$dev_n)" \
+      || bad "the containment rule is missing from $(( dev_n - dev_ok )) of $dev_n dev prompts"
+  fi
+
   rm -rf "$tmp"
   echo
   echo "$pass passed, $fail failed"
