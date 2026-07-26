@@ -1324,9 +1324,14 @@ class Handler(BaseHTTPRequestHandler):
             ok, out = cc(["set-precheck", jid], stdin=script)
             return self._send(200 if ok else 500, {"ok": ok, "output": out})
         if op == "precheck":
-            # Dry probe for the Run now guard: does the precheck see work?
-            ok, out = cc(["check", jid])
-            work = "nothing to do" not in out
+            # The Run now guard: does the precheck see work? It RECORDS what it
+            # saw, so the card's "last check" reflects the probe the user just
+            # triggered — reading a check and then showing an older one is how a
+            # card ends up describing a board that has since moved on.
+            ok, out = cc(["precheck", jid])
+            # Exit 0 is the engine's own "there is work" signal; a job with no
+            # precheck at all runs on every due tick, so it always has work.
+            work = ("no precheck configured" in out) or ("(exit 0)" in out)
             return self._send(200 if ok else 500, {"ok": ok, "work": work, "output": out})
 
         if op == "run":
