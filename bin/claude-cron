@@ -256,9 +256,13 @@ release_lock() { rm -rf "$LOCK_DIR/$1"; }
 # A job may now run several times in parallel — worktrees remove the working-tree
 # contention that used to force one-at-a-time. Each run holds its OWN slot dir
 # $LOCK_DIR/<id>/<pid>/ carrying its pid, child pid and worktree breadcrumb.
-# `max_parallel` caps how many run at once (default 1, so review/promote stay
-# single). This is separate from acquire_lock above, which remains a single
-# mutex for internal locks (_models).
+# `max_parallel` caps how many run at once. The default is 3 (see run_job and
+# the tick), NOT the 1 this comment used to claim -- and the difference matters
+# to anyone reading it before setting the field: a job whose agent only records
+# its progress at the END of a run (moving a card, applying a label) will have a
+# second run launched against the same work by the next tick. Such a job wants
+# an explicit 1. This is separate from acquire_lock above, which remains a
+# single mutex for internal locks (_models).
 
 slots_dir() { echo "$LOCK_DIR/$1"; }     # base dir holding a job's run slots
 
