@@ -1319,6 +1319,24 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200 if ok else 409, {"ok": ok, "output": out} if ok
                               else {"error": out or "reorder refused"})
 
+        # A bulk switch carries a LIST of ids and a flag rather than one id —
+        # handle it before the single-id check below, like reorder above.
+        if op == "toggle_many":
+            ids = body.get("ids")
+            val = body.get("enabled")
+            if not isinstance(ids, list) or not ids:
+                return self._send(400, {"error": "no ids given"})
+            if not all(isinstance(x, str) and x and all(c.isalnum() or c in "-_" for c in x) for x in ids):
+                return self._send(400, {"error": "bad id in list"})
+            # A real boolean only: the string "false" is truthy on the other end
+            # of the wire, so coercing it would turn "disable all" into its
+            # opposite. isinstance(True, int) is also true, so check bool first.
+            if not isinstance(val, bool):
+                return self._send(400, {"error": "missing enabled flag"})
+            ok, out = cc(["toggle-many", "true" if val else "false"], stdin=json.dumps(ids))
+            return self._send(200 if ok else 409, {"ok": ok, "output": out} if ok
+                              else {"error": out or "refused"})
+
         jid = str(body.get("id", ""))
         if not jid or not all(c.isalnum() or c in "-_" for c in jid):
             return self._send(400, {"error": "bad id"})
@@ -1518,6 +1536,11 @@ h3 .ic{width:14px;height:14px}
   padding:5px;border-radius:7px}
 .projgroup-h .pgh-edit:hover{color:var(--accent);background:var(--accent-soft)}
 .projgroup-h .pgh-edit .ic{width:15px;height:15px}
+.projgroup-h .pgh-bulk{display:flex;align-items:center;gap:6px;border:1px solid var(--line);
+  background:transparent;color:var(--muted);cursor:pointer;font:inherit;font-size:11px;
+  font-weight:600;padding:4px 9px;border-radius:7px;white-space:nowrap}
+.projgroup-h .pgh-bulk:hover{color:var(--ink);border-color:var(--muted);background:var(--panel)}
+.projgroup-h .pgh-bulk .ic{width:13px;height:13px}
 .projgroup-h .pgh-chevron{color:var(--muted);display:flex;transition:transform .28s ease}
 .projgroup-h .pgh-chevron .ic{width:18px;height:18px}
 .projgroup.collapsed .pgh-chevron{transform:rotate(-90deg)}
@@ -1596,6 +1619,7 @@ td .projtag .ic{width:12px;height:12px;color:var(--accent)}
 .btn.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 35%,var(--line))}
 .btn.danger:hover{background:var(--err-soft);border-color:var(--err)}
 .btn.ghost{background:transparent}
+#bulk-all[hidden]{display:none} /* author display beats the UA [hidden] rule; see .view[hidden] above */
 .iconbtn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;
   border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--muted);
   cursor:pointer;transition:.13s}
@@ -1977,6 +2001,7 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
   <div class="view" id="view-jobs">
   <div class="secthead"><h3 id="h-jobs"></h3>
     <div style="display:flex;gap:8px">
+      <button class="btn ghost" id="bulk-all" hidden></button>
       <button class="btn ghost" id="new-project"></button>
       <button class="btn primary" id="new-job"></button>
     </div></div>
@@ -2565,11 +2590,87 @@ function collapsibleGroup(key, headerInner, cards){
   +'</div>';
 }
 
+/* ---- bulk enable/disable ---- */
+// The set the Jobs tab is showing right now. Mirrors the chip filter that
+// renderJobs applies below, so the top button can never reach a job that the
+// current filter has taken off-screen.
+function visibleJobs(){
+  const jobs=DATA.jobs||[];
+  if(jobProjectFilter==="") return jobs;
+  if(jobProjectFilter==="__none__") return jobs.filter(j=>!j.project);
+  return jobs.filter(j=>j.project===jobProjectFilter);
+}
+// Direction of the switch: while ANY job in the set is still on, the button
+// turns them off; it only offers to turn them on once every one is off. Same
+// defaulting as the engine — a job with no `enabled` key is enabled.
+function bulkOn(js){ return js.some(j=>j.enabled!==false); }
+// Single source for the button phrasing, with or without a trailing count —
+// used by bulkBtn's group buttons (no count; the pgh-count badge already
+// shows one) and by the #bulk-all block below (count, since "all" is
+// ambiguous while a chip filter is on).
+function bulkLabel(on, n){ return (on?"Disable all":"Enable all")+(n===undefined?"":" "+n); }
+// `kind` disambiguates the scope from the key: project NAMES are free-form
+// (the engine only requires non-empty), so a project literally named
+// "__standalone__" must never be mistaken for the standalone sentinel. kind
+// is a fixed enum ("project"/"standalone") set by the caller, never user text.
+function bulkBtn(cls, kind, key, js){
+  const on=bulkOn(js);
+  return '<button class="'+cls+'" data-bulk-kind="'+kind+'" data-bulk="'+esc(key)+'" data-bulk-to="'+(on?"0":"1")+'"'
+    +' title="'+(on?"Disable":"Enable")+' every job in this group">'
+    +I.power+bulkLabel(on)+'</button>';
+}
+// Resolved at CLICK time, not render time: ids baked into the DOM go stale the
+// moment a refresh lands, and acting on a stale list is how a bulk switch hits
+// a job that is no longer there. Dispatches on `kind`, not on `key` — a
+// project named "standalone" or "visible" only ever matches the `key` branch.
+function bulkScope(kind, key){
+  const jobs=DATA.jobs||[];
+  if(kind==="standalone") return {label:"standalone jobs", js:jobs.filter(j=>!j.project)};
+  if(kind==="visible")    return {label:"", js:visibleJobs()};
+  return {label:key, js:jobs.filter(j=>j.project===key)};
+}
+async function bulkToggle(btn, kind, key, enable){
+  const sc=bulkScope(kind, key), js=sc.js;
+  if(!js.length) return;
+  const n=js.length, word=(n===1?"job":"jobs"), where=(sc.label?" in "+sc.label:"");
+  const yes=await showConfirm({tone:"warn", icon:"alert",
+    title:(enable?"Enable all ":"Disable all ")+n+" "+word+where+"?",
+    message: enable
+      ? "The tick will start launching runs for all of them as their schedules come due, spending agent sessions and money."
+      : "No new runs will be started for these jobs. Runs already in flight keep going — stop those from the Runs table. Which jobs were already disabled is not remembered: enabling them all later will enable every one of them.",
+    confirmLabel:(enable?"Enable ":"Disable ")+n+" "+word});
+  if(!yes) return;
+  btn.disabled=true;
+  const r=await fetch("/api/action",{method:"POST",
+    headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+    body:JSON.stringify({op:"toggle_many", ids:js.map(j=>j.id), enabled:enable})});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok||j.ok===false){ toast(j.error||j.output||("HTTP "+r.status), true); btn.disabled=false; return; }
+  toast(j.output||"Done", false, "check");
+  btn.disabled=false;
+  refresh();
+}
+
 function renderJobs(){
   const jobs=DATA.jobs||[];
   const projects=[...new Set(jobs.map(j=>j.project||"").filter(Boolean))].sort();
   const nStandalone=jobs.filter(j=>!j.project).length;
   if(jobProjectFilter && jobProjectFilter!=="__none__" && !projects.includes(jobProjectFilter)) jobProjectFilter="";
+
+  // Top button: acts on exactly what this render is about to show, so it can
+  // never touch a job the chip filter has taken off-screen. Its label carries
+  // the count for the same reason — "all" is ambiguous while a filter is on.
+  // Runs after the stale-filter guard above so a renamed/removed project's
+  // dead filter value has already been reset before visibleJobs() reads it.
+  const vis=visibleJobs(), ball=$("bulk-all");
+  ball.hidden=!vis.length;
+  if(vis.length){
+    const on=bulkOn(vis);
+    ball.dataset.bulkKind="visible";
+    ball.dataset.bulk="__visible__";
+    ball.dataset.bulkTo=on?"0":"1";
+    ball.innerHTML=I.power+bulkLabel(on, vis.length);
+  }
 
   // chips (shown only when at least one project exists)
   if(projects.length){
@@ -2599,6 +2700,7 @@ function renderJobs(){
       +'<span class="pgh-count">'+js.length+' job'+(js.length===1?"":"s")+'</span>'
       +(p&&p.description?'<span class="pgh-desc">'+esc(p.description)+'</span>':'')
       +'<span class="spacer"></span>'
+      +bulkBtn("pgh-bulk", "project", name, js)
       +'<button class="pgh-edit" data-editproj="'+esc(name)+'" title="Edit project">'+I.pencil+'</button>';
     html+=collapsibleGroup(name, head, js.map(jobCard).join(""));
   }
@@ -2606,7 +2708,8 @@ function renderJobs(){
     const js=jobs.filter(j=>!j.project);
     const head='<span class="pgh-ic">'+I.folder+'</span><span class="pgh-name standalone">Standalone jobs</span>'
       +'<span class="pgh-count">'+js.length+' job'+(js.length===1?"":"s")+'</span>'
-      +'<span class="spacer"></span>';
+      +'<span class="spacer"></span>'
+      +bulkBtn("pgh-bulk", "standalone", "__standalone__", js);
     html+=collapsibleGroup("__standalone__", head, js.map(jobCard).join(""));
   }
   $("jobs").innerHTML = html || '<div class="card empty">'+I.inbox+'No jobs in this view.</div>';
@@ -3770,6 +3873,10 @@ document.addEventListener("click", async (e)=>{
   if(e.target.closest("#pj-repo-add")){ $("pj-repos").insertAdjacentHTML("beforeend", repoRow()); return; }
   const rpd=e.target.closest(".rp-del");
   if(rpd){ rpd.closest(".repo-row").remove(); return; }
+  // bulk switch (must run before the group toggle — the button lives inside the
+  // header, and the header's own click collapses the group)
+  const blk=e.target.closest("[data-bulk]");
+  if(blk){ await bulkToggle(blk, blk.dataset.bulkKind, blk.dataset.bulk, blk.dataset.bulkTo==="1"); return; }
   // collapse/expand a project group (animated via CSS; persisted in localStorage)
   const tog=e.target.closest("[data-toggle]");
   if(tog){

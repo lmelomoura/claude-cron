@@ -676,6 +676,17 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     wt_prune_orphans ) >/dev/null 2>&1
   [ ! -d "$tmp/wtroot/j3/stampD" ] && ok "an unclaimed run dir is reaped" || bad "orphan survived"
 
+  echo "toggle-many flips only the jobs it was handed"
+  printf '%s' '{"jobs":[{"id":"a"},{"id":"b","enabled":false},{"id":"c"}]}' > "$tmp/tm.json"
+  got="$("$JQ" -c --argjson want '["a","b"]' --argjson v false "$TOGGLE_MANY_FILTER" "$tmp/tm.json")"
+  [ "$got" = '{"jobs":[{"id":"a","enabled":false},{"id":"b","enabled":false},{"id":"c"}]}' ] \
+    && ok "disabling a set leaves every job outside it byte-identical" \
+    || bad "toggle-many disable produced: $got"
+  got="$("$JQ" -c --argjson want '["b"]' --argjson v true "$TOGGLE_MANY_FILTER" "$tmp/tm.json")"
+  [ "$got" = '{"jobs":[{"id":"a"},{"id":"b","enabled":true},{"id":"c"}]}' ] \
+    && ok "enabling one job adds no key to the others" \
+    || bad "toggle-many enable produced: $got"
+
   rm -rf "$tmp"
   echo
   echo "$pass passed, $fail failed"
@@ -1439,6 +1450,38 @@ cmd_toggle() {
   echo "$id enabled=$val"
 }
 
+# The one filter that flips `enabled` on a named set of jobs. It lives in a
+# constant so selftest exercises the exact string the command runs: a second copy
+# in the test would drift, and the property being proved is precisely that jobs
+# outside the set come out untouched.
+TOGGLE_MANY_FILTER='.jobs = [.jobs[] | if (.id | IN($want[])) then .enabled = $v else . end]'
+
+cmd_toggle_many() { # cmd_toggle_many <true|false> — ids on stdin (JSON array or one per line)
+  # Flips a WHOLE SET in one write. A loop of cmd_toggle calls would rewrite
+  # jobs.json once per job, so a failure halfway leaves the set half applied,
+  # and a reader could catch the file between two of those writes. One atomic
+  # write (one mv) rules both out: no half-applied batch, no torn read of the
+  # file. It does NOT make a concurrent tick see one consistent snapshot for
+  # the whole run — cmd_tick re-reads jobs.json per job, so a batch landing
+  # mid-loop is still old for jobs already visited and new for the rest.
+  local val="$1" raw ids missing n
+  raw="$(cat)"
+  [ -n "$raw" ] || die "toggle-many: no ids given"
+  # Same input contract as reorder. NOTE: `try … catch` hands the ERROR to the
+  # catch branch, not the input, so use `fromjson?` + `//` instead — with catch,
+  # a plain list would be parsed out of jq's own error message.
+  ids="$(printf '%s' "$raw" | "$JQ" -c -R -s '. as $t | ($t | fromjson?) // ($t | split("\n") | map(select(length > 0)))')"
+  printf '%s' "$ids" | "$JQ" -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1 \
+    || die "toggle-many: expected a non-empty list of job ids"
+  # Resolve every id BEFORE writing: one unknown id refuses the whole batch,
+  # rather than applying the part that happened to match.
+  missing="$(jobs_json | "$JQ" -r --argjson want "$ids" '. as $doc | ($doc.jobs | map(.id)) as $have | [$want[] | . as $w | select(($have | index($w)) == null)] | join(", ")')"
+  [ -n "$missing" ] && die "toggle-many: unknown job(s): $missing"
+  write_jobs --argjson want "$ids" --argjson v "$val" "$TOGGLE_MANY_FILTER"
+  n="$(printf '%s' "$ids" | "$JQ" -r 'length')"
+  if [ "$n" = 1 ]; then echo "1 job enabled=$val"; else echo "$n jobs enabled=$val"; fi
+}
+
 cmd_rename() { # cmd_rename <old-id> <new-id> — id + everything keyed by it
   local old="$1" new="$2" tmp path newpath
   job_exists "$old" || die "no such job: $old"
@@ -1800,6 +1843,8 @@ claude-cron — durable local scheduler for headless Claude Code runs
   claude-cron logs <id> [n]   print the result of the n-th most recent run
   claude-cron enable <id>     re-enable a job
   claude-cron disable <id>    stop a job without deleting it
+  claude-cron toggle-many <true|false>   enable or disable a whole set of jobs;
+                              ids on stdin, as a JSON array or one per line
   claude-cron delete <id>     remove a job from jobs.json (keeps its logs)
   claude-cron create <id>     create a job from a partial JSON object on stdin
   claude-cron set-prompt <id> replace a job's prompt, read from stdin
@@ -1850,6 +1895,9 @@ case "${1:-}" in
   delete)    [ $# -ge 2 ] || die "usage: claude-cron delete <job-id>"; cmd_delete "$2" ;;
   rename)    [ $# -ge 3 ] || die "usage: claude-cron rename <job-id> <new-id>"; cmd_rename "$2" "$3" ;;
   reorder)   cmd_reorder ;;   # new order of job ids on stdin
+  toggle-many) [ $# -ge 2 ] || die "usage: claude-cron toggle-many <true|false>  (job ids on stdin)"
+               case "$2" in true|false) ;; *) die "toggle-many: expected true or false, got '$2'" ;; esac
+               cmd_toggle_many "$2" ;;
   create)    cmd_create ;;
   project-set)    cmd_project_set ;;
   project-delete) [ $# -ge 2 ] || die "usage: claude-cron project-delete <name>"; cmd_project_delete "$2" ;;
