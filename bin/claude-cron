@@ -210,6 +210,54 @@ turn_is_over() { # turn_is_over <stream-file> ; 0 = the agent answered and is id
   [ "$last" = "result" ]
 }
 
+# CPU seconds burnt by a process and every descendant of it.
+#
+# The stream file is the agent's heartbeat, but it goes SILENT for exactly as
+# long as one tool call takes: a 40-minute test suite emits no events at all
+# between the `tool_use` and its result. Treating that silence as a hang is how
+# a healthy run gets killed for the crime of running the tests — the failure
+# this exists to prevent. Work the agent has delegated to a child process is the
+# second, independent proof of life, and it is the one that covers long tools.
+#
+# One `ps` sweep, closed transitively in awk, so a deep tool tree (shell -> make
+# -> pytest -> workers) counts in full. Isolated and side-effect free so
+# `claude-cron selftest` can exercise the parsing directly.
+tree_cpu_seconds() { # tree_cpu_seconds <pid> -> integer CPU seconds (0 when gone)
+  local root="${1:-}"
+  case "$root" in ''|*[!0-9]*) echo 0; return ;; esac
+  ps -eo pid=,ppid=,time= 2>/dev/null | cpu_tree_sum "$root"
+}
+
+# Split out so the selftest can feed it a fixed process table. Reads `ps` lines
+# (pid ppid TIME) on stdin and prints the CPU seconds of <root>'s whole tree.
+cpu_tree_sum() { # cpu_tree_sum <root-pid>  < "pid ppid time" lines
+  awk -v root="$1" '
+    { n++; pid[n]=$1; ppid[n]=$2; t[n]=$3 }
+    END {
+      want[root]=1
+      # Descendants can appear in any order, so close the set to a fixed point
+      # rather than assuming a parent is listed before its child.
+      changed=1
+      while (changed) {
+        changed=0
+        for (i=1;i<=n;i++)
+          if (!(pid[i] in want) && (ppid[i] in want)) { want[pid[i]]=1; changed=1 }
+      }
+      total=0
+      for (i=1;i<=n;i++) if (pid[i] in want) {
+        # TIME is [dd-]hh:mm:ss or mm:ss.cc. Peel the day field off FIRST — it is
+        # 24 hours, not another base-60 place, and folding it sexagesimally
+        # overstates a long-running child by a factor of 2.4.
+        s=t[i]; days=0
+        if (match(s, /^[0-9]+-/)) { days = substr(s, 1, RLENGTH-1)+0; s = substr(s, RLENGTH+1) }
+        m=split(s, p, ":"); sec=0
+        for (j=1;j<=m;j++) sec = sec*60 + (p[j]+0)
+        total += sec + days*86400
+      }
+      printf "%d", total
+    }'
+}
+
 # ------------------------------------------------------------------- locking
 
 acquire_lock() { # 0 = acquired
@@ -476,6 +524,50 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   turn_is_over "$tmp/cut.ndjson";     want "truncated tail ignored"              0 $?
   turn_is_over "$tmp/decoy.ndjson";   want "the word 'result' in text is not an event" 1 $?
   turn_is_over "$tmp/missing.ndjson"; want "missing file is NOT killable"        1 $?
+
+  echo "cpu_tree_sum() — a busy tool tree is proof of life, not a stall"
+  # A run whose agent is quiet because a test suite is grinding away in a child
+  # (shell -> make -> pytest) must read as ALIVE. This is the case that got a
+  # healthy run killed at the stall timeout for running the tests it was told to.
+  printf '%s\n' '100 1 00:10' '200 100 05:00' '300 200 10:00' '999 1 99:00' > "$tmp/ps.txt"
+  local cpu
+  cpu="$(cpu_tree_sum 100 < "$tmp/ps.txt")"   # 10s + 300s + 600s
+  [ "$cpu" = "910" ] && ok "whole descendant tree counted ($cpu s)" \
+                     || bad "tree cpu wrong: got '$cpu', want 910"
+  # An unrelated process's CPU must never keep a genuinely hung run alive.
+  cpu="$(cpu_tree_sum 999 < "$tmp/ps.txt")"
+  [ "$cpu" = "5940" ] && ok "an unrelated tree is not counted in" \
+                      || bad "isolation broke: got '$cpu', want 5940"
+  # Children are not guaranteed to be listed after their parents.
+  printf '%s\n' '300 200 10:00' '200 100 05:00' '100 1 00:10' > "$tmp/ps2.txt"
+  cpu="$(cpu_tree_sum 100 < "$tmp/ps2.txt")"
+  [ "$cpu" = "910" ] && ok "descendants found regardless of ps order" \
+                     || bad "ordering broke: got '$cpu', want 910"
+  # [dd-]hh:mm:ss must not be read as mm:ss — a day of CPU is not 0 seconds.
+  printf '%s\n' '100 1 1-02:03:04' > "$tmp/ps3.txt"
+  cpu="$(cpu_tree_sum 100 < "$tmp/ps3.txt")"
+  [ "$cpu" = "93784" ] && ok "dd-hh:mm:ss parsed ($cpu s)" \
+                       || bad "day-form parse wrong: got '$cpu', want 93784"
+  # A dead or absent pid burns nothing — it must never look busy.
+  cpu="$(cpu_tree_sum 4242 < "$tmp/ps.txt")"
+  [ "$cpu" = "0" ] && ok "an absent pid reports no CPU" || bad "absent pid: got '$cpu'"
+  cpu="$(num "$(tree_cpu_seconds '')")"
+  [ "$cpu" = "0" ] && ok "an empty pid reports no CPU" || bad "empty pid: got '$cpu'"
+
+  echo "a run that stops talking is not a run that finished"
+  # The exact shape that filed an abandoned ticket as a clean success: a normal
+  # result event whose text simply never claims the work is done.
+  declared() { printf '%s' "$1" | grep -qE '(RUN COMPLETE|NOTHING TO DO|BLOCKED):'; }
+  declared "I'll wait for the suite to finish and then commit."
+  want "an agent promising to continue is NOT a finished run"        1 $?
+  declared "RUN COMPLETE: QG-15 reworked, pushed, moved to Review - DEV."
+  want "a declared completion is a finished run"                     0 $?
+  declared "NOTHING TO DO: the board had no ready ticket."
+  want "a declared no-op is accepted"                                0 $?
+  declared "BLOCKED: QG-15 — needs a human decision on scope."
+  want "a declared escalation is accepted"                           0 $?
+  declared ""
+  want "an empty final message is NOT a finished run"                1 $?
 
   echo "killed runs report what they consumed"
   printf '%s\n' \
@@ -860,19 +952,29 @@ If the work turns out to be already finished, or it can no longer be done at all
   # We kill only when it has been silent for $stall seconds (a genuine hang), or
   # when an explicit absolute cap $timeout is set and exceeded. The reason is
   # written to the watchdog file so the run can explain itself afterwards.
+  #
+  # "Silent" means BOTH signals are quiet. The stream alone is not enough: it
+  # stops for the entire duration of a single tool call, so a long test suite
+  # reads as a hang and gets killed at $stall for doing exactly what it was
+  # asked to do. CPU burnt by the run's process tree covers that gap — while a
+  # child is computing, the run is working, and only a run that is neither
+  # emitting events nor burning CPU is genuinely hung.
   local wdfile="$logfile.watchdog"
   : > "$wdfile"
   (
-    local last_size=-1 last_change now size began poll=30
+    local last_size=-1 last_cpu=-1 last_change now size cpu began poll=30
     began="$(now_epoch)"; last_change="$began"
     while kill -0 "$child" 2>/dev/null; do
       sleep "$poll"
       kill -0 "$child" 2>/dev/null || break
       now="$(now_epoch)"
       size="$(wc -c < "$streamfile" 2>/dev/null | tr -d ' ')"; size="${size:-0}"
-      if [ "$size" != "$last_size" ]; then last_size="$size"; last_change="$now"; fi
+      cpu="$(num "$(tree_cpu_seconds "$child")")"
+      if [ "$size" != "$last_size" ] || [ "$cpu" != "$last_cpu" ]; then
+        last_size="$size"; last_cpu="$cpu"; last_change="$now"
+      fi
       if [ "$stall" -gt 0 ] && [ "$((now - last_change))" -ge "$stall" ]; then
-        printf 'stalled: no output for %ss (killed by watchdog)\n' "$stall" > "$wdfile"
+        printf 'stalled: no output and no CPU for %ss (killed by watchdog)\n' "$stall" > "$wdfile"
         kill -TERM "$child" 2>/dev/null; break
       fi
       if [ "$timeout" -gt 0 ] && [ "$((now - began))" -ge "$timeout" ]; then
@@ -977,6 +1079,29 @@ If the work turns out to be already finished, or it can no longer be done at all
   nothing_line="$("$JQ" -r '.result // ""' "$logfile" 2>/dev/null | grep -m1 -oE 'NOTHING TO DO:.*' || true)"
   if [ -n "$nothing_line" ] && [ "$status" = "success" ]; then
     wdreason="${nothing_line}"
+    status="warning"
+  fi
+
+  # "The agent stopped talking" is NOT "the agent finished the job".
+  #
+  # A headless run ends the instant the model returns text without a tool call.
+  # An agent that says "I'll wait for the background suite and then commit" gets
+  # exactly what it asked for in an interactive session and nothing at all here:
+  # the process exits, its children die with it, and the work is abandoned
+  # mid-task. That produces a textbook-clean record — rc 0, subtype success, a
+  # non-empty result — so it was filed as SUCCESS, which is how a ticket with no
+  # commit, no push and no PR came to be reported as done. The one fact the
+  # operator needed was the one fact the status did not carry.
+  #
+  # So a clean exit now has to be CLAIMED, not inferred. The agent declares how
+  # its run ended (see the job prompt's "Declare how your run ended"); an
+  # undeclared ending is the signature of a run that stopped mid-task, and it is
+  # a warning — never a silent success. A warning that is occasionally
+  # unnecessary costs a glance; a success that is occasionally false costs a day.
+  if [ "$status" = "success" ] \
+     && ! "$JQ" -r '.result // ""' "$logfile" 2>/dev/null \
+          | grep -qE '(RUN COMPLETE|NOTHING TO DO|BLOCKED):'; then
+    wdreason="UNDECLARED ENDING: the agent stopped without saying its run was finished (no 'RUN COMPLETE:', 'NOTHING TO DO:' or 'BLOCKED:' line), which is what a run cut off mid-task looks like. Do NOT assume the ticket is done — check the branch, the PR and the ticket, and resume this run to continue with its context."
     status="warning"
   fi
 
