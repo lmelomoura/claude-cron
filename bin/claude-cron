@@ -292,17 +292,19 @@ acquire_slot() { # <id> <max> -> prints the slot dir; non-zero when at capacity
 release_slot() { rm -rf "$1"; }          # <slot-dir>
 
 # End-of-run cleanup, shared by the normal exit path and the EXIT trap (so a
-# crashed or killed run cleans up too). Tears down the run's worktree if it is
-# safe (see wt_teardown), THEN releases its slot. Reads the worktree from the
+# crashed or killed run cleans up too). Tears down the run's worktrees if that is
+# safe (see wt_teardown), THEN releases its slot. Reads the run dir from the
 # slot breadcrumb; the trap bakes in the slot path. Idempotent.
 run_cleanup() { # <id> <slot-dir>
-  local id="$1" slot="${2:-}" wt project cwd
+  local id="$1" slot="${2:-}" wt project
   [ -n "$slot" ] || return 0
   wt="$(cat "$slot/worktree" 2>/dev/null || true)"
   if [ -n "$wt" ]; then
     project="$(job_get "$id" '.project' '')"
-    cwd="$(resolve "$id" cwd "$HOME")"
-    wt_teardown "$id" "$project" "$cwd" "$wt"
+    # The job's cwd is not needed: teardown finds each repo's canonical checkout
+    # through wt_main_of, which works even for a run dir built from repos the
+    # job itself never names.
+    wt_teardown "$id" "$project" "$wt"
   fi
   release_slot "$slot"
 }
@@ -629,6 +631,23 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     || bad "down.log held '$got'"
   rm -f "$tmp/cfg/provision/two.down.sh"
 
+  echo "wt_prune_orphans() — an unclaimed run dir is reaped, a claimed one is not"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup j3 two "$tmp/g/repo" stampD ) >/dev/null 2>&1
+  mkdir -p "$tmp/locks/j3/999"
+  echo $$ > "$tmp/locks/j3/999/pid"
+  echo "$tmp/wtroot/j3/stampD" > "$tmp/locks/j3/999/worktree"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
+    wt_prune_orphans ) >/dev/null 2>&1
+  [ -d "$tmp/wtroot/j3/stampD" ] && ok "a run dir a live slot claims is left alone" \
+    || bad "the sweep deleted a claimed run dir"
+  rm -rf "$tmp/locks/j3"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
+    wt_prune_orphans ) >/dev/null 2>&1
+  [ ! -d "$tmp/wtroot/j3/stampD" ] && ok "an unclaimed run dir is reaped" || bad "orphan survived"
+
   rm -rf "$tmp"
   echo
   echo "$pass passed, $fail failed"
@@ -713,7 +732,7 @@ run_job() { # run_job <id> [--force] [resume-session-id]
   local id="$1" force="${2:-}" resume_sid="${3:-}"
   [ -n "$resume_sid" ] && force="--force"
   local cwd prompt model effort budget timeout stall permission allowed precheck project proj_desc interactive fifo
-  local run_cwd worktree run_env run_cfgdir _envln slot max_par
+  local run_cwd worktree run_dir run_env run_cfgdir _envln slot max_par
   project="$(job_get "$id" '.project' '')"
   # Which account this run signs in as. A project pins one when its work belongs
   # to a different Claude login than the scheduler's default — a company account
@@ -877,11 +896,12 @@ ${prompt}"
   run_env=()
   [ -n "$run_cfgdir" ] && run_env+=("CLAUDE_CONFIG_DIR=$run_cfgdir")
   if wt_isolation_enabled "$project" "$cwd"; then
-    # Claim the path BEFORE the worktree exists. The sweep removes any worktree
+    # Claim the path BEFORE anything exists there. The sweep removes any run dir
     # no live slot claims, so creating first and claiming after leaves a window
     # in which it can delete the very directory this agent is about to work in.
     # The path is ours to predict, so stake it first.
-    echo "$WORKTREES_DIR/$id/$stamp" > "$slot/worktree"
+    run_dir="$WORKTREES_DIR/$id/$stamp"
+    echo "$run_dir" > "$slot/worktree"
     if ! worktree="$(wt_setup "$id" "$project" "$cwd" "$stamp")"; then
       state_set "$id" last_start "$start"
       state_set "$id" last_status '"error"'
@@ -890,11 +910,15 @@ ${prompt}"
       return 1
     fi
     run_cwd="$worktree"
-    echo "$worktree" > "$slot/worktree"     # the real path (same value, kept explicit)
+    # What the agent needs to find the OTHER repos of this run, and the canonical
+    # checkout of each: the manifest. Everything else it could only guess at.
+    run_env+=("CC_RUN_DIR=$run_dir" "CC_RUN_MANIFEST=$run_dir/.run.json" \
+              "CC_PROJECT=$project" "CC_JOB_ID=$id" \
+              "CC_PRIMARY_REPO=$(basename "$run_cwd")")
     while IFS= read -r _envln; do
       [ -n "$_envln" ] && run_env+=("$_envln")
-    done < <(wt_env_line "$project" "$cwd" "$worktree")
-    log_tick "$id: isolated in worktree $worktree"
+    done < <(wt_env_line "$project" "$cwd" "$run_cwd")
+    log_tick "$id: isolated in $run_dir (cwd $run_cwd)"
   fi
 
   # Persist what the precheck saw, next to the run log.

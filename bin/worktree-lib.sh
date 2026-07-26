@@ -298,32 +298,31 @@ wt_teardown() { # <id> <project> <run dir>
   rm -rf "$run_dir"
 }
 
-# Sweep worktrees whose owning run is no longer active (a killed or crashed run),
-# tearing each down safely. Called at the top of every tick.
+# Sweep the run dirs whose owning run is no longer active (a killed or crashed
+# run, or a tick that died between setup and launch), tearing each down safely.
+# Called at the top of every tick.
 wt_prune_orphans() {
   [ -d "$WORKTREES_DIR" ] || return 0
-  local iddir id d project cwd
+  local iddir id d project
   for iddir in "$WORKTREES_DIR"/*; do
     [ -d "$iddir" ] || continue
     id="$(basename "$iddir")"
     for d in "$iddir"/*; do
-      case "$d" in *.base) continue ;; esac   # sidecars, not worktrees
-      [ -d "$d" ] || continue
+      [ -d "$d" ] || continue                 # skips the .<stamp>.tsv scratch files
       # Claimed by a LIVE run? Ask the run slots, which is where that fact
-      # lives: every running job holds a slot naming its worktree. Asking the
+      # lives: every running job holds a slot naming its run dir. Asking the
       # old single mutex (or the state's one cur_worktree, which cannot describe
       # several concurrent runs) said "nobody owns this" for worktrees that were
       # very much in use — and the sweep deleted them out from under the agents.
       wt_is_claimed "$id" "$d" && continue
       project="$(job_get "$id" '.project' '')"
-      cwd="$(resolve "$id" cwd "$HOME")"
-      wt_teardown "$id" "$project" "$cwd" "$d"
+      wt_teardown "$id" "$project" "$d"
     done
   done
 }
 
-# Is this worktree the working directory of a run that is alive right now?
-wt_is_claimed() { # <id> <worktree>
+# Is this run dir the working directory of a run that is alive right now?
+wt_is_claimed() { # <id> <run dir>
   local id="$1" wt="$2"
   local base="$LOCK_DIR/$id" slot pid owner
   [ -d "$base" ] || return 1
