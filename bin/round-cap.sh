@@ -183,3 +183,32 @@ rc_round_note() {
     echo "rounds=$used/$RC_CAP"
   fi
 }
+
+# rc_develop_note <KEY> -> what a run claiming from the READY queue must be told.
+#
+# WHY THIS EXISTS. The cap parks an exhausted ticket in Blocked and waits for a
+# human. The human's answer is a BOARD MOVE — they drag the card to the ready
+# column — because that is the whole interface, and demanding a magic label or a
+# comment on top of it would be a second interface to remember and forget.
+#
+# But the agent that then picks the card up can read the history: it sees three
+# closed rounds, a cap of two, and a reviewer's "parks for a human" verdict. A
+# careful agent concludes the card's presence in the ready column is a BOARD
+# GLITCH it would be exploiting, escalates straight back to Blocked, and the
+# ticket is now permanently stuck: the human's only lever moves it, and the
+# agent's caution undoes it, forever. Observed on QG-15 — the run reasoned well
+# and reached exactly the wrong answer, because nothing told it that the anomaly
+# it spotted WAS the decision it was waiting for.
+#
+# So say it. A ticket in the ready queue got there because a human put it there;
+# the cap has already been answered, and re-deriving it from the round count is
+# reading the question after it has been answered.
+rc_develop_note() { # rc_develop_note <KEY>
+  local k="$1" used
+  used="$(rc_rounds_used "$k" 2>/dev/null)" || used=""
+  if [ -n "$used" ] && [ "${used:-0}" -ge "$RC_CAP" ]; then
+    echo "human-released — this ticket had spent its $used/$RC_CAP rework rounds and a human has since moved it into the ready queue. THAT MOVE IS THE HUMAN DECISION the cap was waiting for: it is not a board glitch and not something to re-check. Do the work. Do NOT re-park it in Blocked over the round count — only a NEW blocker (an unanswered business question, a broken assumption) justifies blocking, exactly as it would on any other ticket."
+  else
+    echo "from the ready queue — no rework cap applies"
+  fi
+}

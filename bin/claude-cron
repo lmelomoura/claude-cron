@@ -305,6 +305,28 @@ classifies the run by it, and an ending with no marker is recorded as a warning
 
 The marker is a claim about the state of the repository and the tracker, never
 about what you intend to do next. Never write one while work is still in flight.
+
+## Blocking is for NEW blockers — a human's move is an answer, not an anomaly
+
+`BLOCKED:` exists for something that genuinely stops you: an unanswered business
+question, a broken assumption, a change that would exceed this ticket. It is not
+for re-litigating a decision that has already been taken.
+
+In particular, when a ticket reaches you from the READY queue — the column a
+human drags cards into — **that move IS a human decision**, and it is very often
+the answer to a question the harness itself raised: a retry limit reached, a
+review loop parked, an escalation you or a peer filed earlier. You will sometimes
+see the history behind it — rounds already spent, a cap already hit, a prior
+verdict saying "parks for a human". Do not read that history and conclude the
+board is glitched and you should put the card back. **The card is in front of you
+because a human put it there, having seen exactly that history.**
+
+A run that re-blocks a ticket over a limit a human has already answered leaves it
+stuck forever: the human's only lever moves it forward, the agent's caution moves
+it back, every single time. Being careful is right; being careful about a decision
+that is not yours to revisit is how work stops moving altogether.
+
+So do the work you were given, and block only on something NEW — naming what it is.
 CONTRACT
 }
 
@@ -630,6 +652,20 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   case "$(run_ending_contract)" in
     *"RUN COMPLETE:"*"NOTHING TO DO:"*"BLOCKED:"*) ok "contract names every marker the classifier accepts" ;;
     *) bad "contract and classifier disagree on the markers" ;;
+  esac
+
+  echo "a human's board move is an answer, not an anomaly"
+  # QG-15: the cap parked the ticket, the human moved it to the ready column, and
+  # the next run read the spent rounds, decided the board was glitched, and put it
+  # straight back in Blocked. The human's only lever moves it forward; the agent's
+  # caution moved it back. Both halves of the cure must be present.
+  case "$(run_ending_contract)" in
+    *"a human's move is an answer"*|*"human decision"*) ok "the injected contract tells a run not to re-block a human's move" ;;
+    *) bad "the contract never mentions the human-released case" ;;
+  esac
+  case "$(run_ending_contract)" in
+    *"block only on something NEW"*) ok "and says what DOES still justify blocking" ;;
+    *) bad "the contract removed blocking without saying when it is still right" ;;
   esac
 
   echo "a run that stops talking is not a run that finished"

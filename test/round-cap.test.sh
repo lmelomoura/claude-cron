@@ -46,6 +46,39 @@ rc_gate_rework T-NOPARK 2>/dev/null && bad "unparkable -> still refused" "allowe
                                     || ok "unparkable -> still refused"
 
 echo
+echo "== the human-released ticket (rc_develop_note) =="
+# The cap parks a ticket and waits for a human. The human's answer is a board
+# move into the ready column. QG-15: the next run read the spent rounds, decided
+# the board was glitched, and put the card straight back in Blocked -- so the
+# human's only lever moved it forward and the agent moved it back, forever.
+# A ticket arriving via the READY queue must therefore be told, in words, that
+# the move it can see IS the decision, and must not be re-derived from the count.
+case "$(rc_develop_note T-2)" in
+  *"human-released"*) ok "an over-cap ticket in the ready queue reads as human-released" ;;
+  *) bad "over-cap ready ticket" "note was: $(rc_develop_note T-2)" ;;
+esac
+case "$(rc_develop_note T-2)" in
+  *"Do NOT re-park"*) ok "and is told not to re-park it over the round count" ;;
+  *) bad "over-cap ready ticket" "no instruction against re-parking" ;;
+esac
+case "$(rc_develop_note T-2)" in
+  *"NEW blocker"*) ok "while a genuinely new blocker still justifies blocking" ;;
+  *) bad "over-cap ready ticket" "blocking was removed without saying when it is still right" ;;
+esac
+case "$(rc_develop_note T-0)" in
+  *"no rework cap applies"*) ok "an ordinary ready ticket gets the plain note" ;;
+  *) bad "under-cap ready ticket" "note was: $(rc_develop_note T-0)" ;;
+esac
+# A changelog blip must not turn an ordinary ticket into a "human-released" one:
+# that would silently tell a run to ignore a cap that was never reached.
+case "$(rc_develop_note T-ERR)" in
+  *"human-released"*) bad "unreadable changelog" "claimed human-released on no evidence" ;;
+  *) ok "unreadable changelog does not fabricate a human release" ;;
+esac
+# And reading the note must never move anything.
+eq "rc_develop_note left T-2 where it was" "$(rc_current_status T-2)" "$(rc_current_status T-2)"
+
+echo
 echo "== re-entrancy: a second tick must not re-comment =="
 # The real failure mode: comment lands, transition fails, next tick parks again.
 rc_gate_rework T-2 2>/dev/null; rc_gate_rework T-2 2>/dev/null   # two more attempts
