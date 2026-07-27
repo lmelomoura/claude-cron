@@ -92,6 +92,57 @@ runs** — click the 🔍 to see the full trace.
 
 ---
 
+## Skills
+
+The job prompts make several skills **mandatory by name** — "invoke
+`using-superpowers` at the start of every run", "work each finding through
+`closing-review-findings`". That only means something if the machine running the
+agent actually has them.
+
+Skills live in `~/.claude/skills`, which is not version controlled. So the ones
+this loop depends on and **we** maintain live in `skills/` here and are linked
+into `~/.claude/skills` — `claude-cron install` does it, and `install.sh` runs
+that, so a fresh clone is ready without a documented step for someone to skip.
+
+```bash
+claude-cron skills           # what is linked, diverged, or missing
+claude-cron skills install    # link them (idempotent)
+```
+
+Links, not copies: editing either path edits the versioned file, so there is
+never a stale second copy quietly disagreeing with the repository. An existing
+unversioned skill is never destroyed — it is renamed `*.before-claude-cron.<ts>`
+so you can read what was there before adopting ours.
+
+| skill | why the loop needs it |
+|---|---|
+| `closing-review-findings` | how a finding is actually closed: every adjacent route in the same commit, plus a versioned probe so it cannot reopen |
+| `reviewing-pull-requests` | the reviewer's contract — verify by execution, walk the whole attack taxonomy on round one |
+| `test-driven-development` | a fork of the `superpowers` copy, carrying our addition (below); a vendor update would otherwise overwrite it |
+
+The other skills the prompts cite — `using-superpowers`, `systematic-debugging`,
+`subagent-driven-development`, `receiving-code-review`,
+`verification-before-completion` — come from the `superpowers` vendor package and
+are deliberately left pointing at it. We only fork what we change.
+
+### Why these three carry a ninth axis
+
+The reviewer skill has long walked eight "attack axes" against a change. All eight
+interrogate the **code**. None asked whether the test proving the code works is
+**real** — and that gap produced three consecutive review rounds on a single pull
+request, each fixing a defect whose fixture had been hand-written from a guess.
+The assumption sat in the code *and* in the fake, so they agreed with each other
+while both disagreed with the tool. 842 tests, none of which had ever seen a byte
+a real tool printed.
+
+**Axis 9 — the fidelity of the evidence:** does any fixture here come from a real
+sample, or is every one hand-written? It is in the author skill
+(`closing-review-findings`), the reviewer skill (`reviewing-pull-requests`) and,
+most importantly, in `test-driven-development`, where fakes are born — the other
+two only fire once a finding already exists.
+
+---
+
 ## How it works
 
 ```
@@ -516,6 +567,7 @@ claude-cron provision-set <project> up|down   # worktree provisioning script (st
 claude-cron provision-get <project> up|down
 claude-cron worktree-drop <id> <stamp>   # discard a preserved run dir for good
 claude-cron resolve-models     # refresh which model each family points at
+claude-cron skills             # show / link the skills the agent prompts require
 claude-cron selftest           # offline checks of the logic that can kill a run
 claude-cron install | uninstall
 ```
@@ -561,6 +613,42 @@ a `daily_budget_usd`, watch the run log, and use the kill switch
 
 ---
 
+## Changing this scheduler
+
+Other people run this on their own projects, so two rules hold for every change
+that reaches `main`:
+
+1. **Fill in `CHANGELOG.md` in the same commit as the code.** Not afterwards, not
+   batched at release time — written while the reason is still known. An entry
+   says what behaviour changed and what it cost to not have it: *"a long tool call
+   is no longer read as a hang — a 40-minute suite used to be killed at the stall
+   timeout"*, never *"fixed watchdog"*. `claude-cron selftest` fails when `bin/`,
+   `skills/` or `test/` moved after the last changelog entry.
+
+2. **A rule the code enforces must travel with the code.** `config/` is
+   git-ignored — personal paths, repositories, tracker ids, budgets — and rightly
+   so. Anything the scheduler *depends on* therefore cannot live only there. This
+   was learned the hard way twice: a run classifier that demanded a `RUN COMPLETE:`
+   marker shipped while the contract teaching agents to write one sat in a local
+   `jobs.json`, so every other user's runs would have been filed `warning`; and
+   prompts citing skills by name shipped while the skills themselves lived only in
+   an unversioned `~/.claude/skills`. Versioned code, an injected prompt contract,
+   or a `selftest` assertion — never prompt prose in a personal config file.
+
+Run the checks before pushing:
+
+```bash
+claude-cron selftest      # includes test/round-cap.test.sh
+```
+
+**Contributions are welcome.** The repository is public and forks are open;
+`main` is protected, so everything arrives by pull request. `CONTRIBUTING.md` has
+the workflow and the reasoning behind these rules, and
+`.bitbucket/PULL_REQUEST_TEMPLATE.md` is the description to copy into a new pull
+request (Bitbucket Cloud does not insert it for you).
+
+---
+
 ## Layout
 
 ```
@@ -576,7 +664,10 @@ claude-cron/
 │   ├── provision/<project>.{up,down}.sh   # per-repo worktree provisioning
 │   └── control.token          # dashboard secret (chmod 600, generated)
 ├── data/                      # index.db, journal, logs, state — all local
+├── skills/                    # the skills the agent loop requires, linked into ~/.claude/skills
+├── test/round-cap.test.sh     # behavioural suite, run by `claude-cron selftest`
 ├── install.sh · uninstall.sh
+├── CHANGELOG.md
 └── README.md
 ```
 

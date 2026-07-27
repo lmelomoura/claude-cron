@@ -333,6 +333,147 @@ turn_is_over() { # turn_is_over <stream-file> ; 0 = the agent answered and is id
   [ "$last" = "result" ]
 }
 
+# CPU seconds burnt by a process and every descendant of it.
+#
+# The stream file is the agent's heartbeat, but it goes SILENT for exactly as
+# long as one tool call takes: a 40-minute test suite emits no events at all
+# between the `tool_use` and its result. Treating that silence as a hang is how
+# a healthy run gets killed for the crime of running the tests — the failure
+# this exists to prevent. Work the agent has delegated to a child process is the
+# second, independent proof of life, and it is the one that covers long tools.
+#
+# One `ps` sweep, closed transitively in awk, so a deep tool tree (shell -> make
+# -> pytest -> workers) counts in full. Isolated and side-effect free so
+# `claude-cron selftest` can exercise the parsing directly.
+tree_cpu_seconds() { # tree_cpu_seconds <pid> -> integer CPU seconds (0 when gone)
+  local root="${1:-}"
+  case "$root" in ''|*[!0-9]*) echo 0; return ;; esac
+  ps -eo pid=,ppid=,time= 2>/dev/null | cpu_tree_sum "$root"
+}
+
+# Split out so the selftest can feed it a fixed process table. Reads `ps` lines
+# (pid ppid TIME) on stdin and prints the CPU seconds of <root>'s whole tree.
+cpu_tree_sum() { # cpu_tree_sum <root-pid>  < "pid ppid time" lines
+  awk -v root="$1" '
+    { n++; pid[n]=$1; ppid[n]=$2; t[n]=$3 }
+    END {
+      want[root]=1
+      # Descendants can appear in any order, so close the set to a fixed point
+      # rather than assuming a parent is listed before its child.
+      changed=1
+      while (changed) {
+        changed=0
+        for (i=1;i<=n;i++)
+          if (!(pid[i] in want) && (ppid[i] in want)) { want[pid[i]]=1; changed=1 }
+      }
+      total=0
+      for (i=1;i<=n;i++) if (pid[i] in want) {
+        # TIME is [dd-]hh:mm:ss or mm:ss.cc. Peel the day field off FIRST — it is
+        # 24 hours, not another base-60 place, and folding it sexagesimally
+        # overstates a long-running child by a factor of 2.4.
+        s=t[i]; days=0
+        if (match(s, /^[0-9]+-/)) { days = substr(s, 1, RLENGTH-1)+0; s = substr(s, RLENGTH+1) }
+        m=split(s, p, ":"); sec=0
+        for (j=1;j<=m;j++) sec = sec*60 + (p[j]+0)
+        total += sec + days*86400
+      }
+      printf "%d", total
+    }'
+}
+
+# The run-ending contract, injected into every job's prompt at launch.
+#
+# It lives HERE, in the shipped script, and not in a job's prompt, because the
+# half that ENFORCES it is here: the classifier treats an ending with no marker
+# as a warning. Put the requirement in the product and the contract in one
+# person's jobs.json -- which is gitignored, and rightly so, being their paths,
+# repos and tracker ids -- and everyone else clones a scheduler that demands a
+# marker no prompt of theirs ever writes, so every run they make is filed
+# `warning`. A rule the code enforces has to travel with the code.
+#
+# Injection is idempotent: a prompt that already states the contract is left
+# alone, so a job may still word it its own way.
+RUN_ENDING_MARKER='Never end your turn with work still running'
+
+run_ending_contract() {
+  cat <<'CONTRACT'
+## Never end your turn with work still running — there is no "wait and resume"
+
+This run is HEADLESS. The moment you return text without a tool call, the session
+process exits: anything you launched in the background is killed with it, your
+worktree can be torn down, and nothing reinvokes you. There is no notification
+coming, no next turn, no picking it up when the suite finishes. A message saying
+you will wait IS the end of the run, and everything still in flight is lost.
+
+So never park work:
+- Make the WAIT ITSELF a tool call — a foreground command that blocks until the
+  work is done, or a blocking `until` loop on a marker the work writes when it
+  finishes. While a tool call is open the run is alive: the watchdog counts your
+  process tree's CPU, not just your output, so a suite that runs for an hour is
+  fine and will not be killed for taking its time.
+- Backgrounding a long command is only safe if you block on its result in the
+  SAME turn. Never background something and then end your message.
+- Do not hand-poll a log every few seconds. It burns budget and decides nothing.
+  Block once, on the thing you are actually waiting for.
+- If you are genuinely out of work but a process is still running, you are not
+  out of work: block on it.
+
+## Declare how your run ended
+Your FINAL message must start with exactly one of these markers. The harness
+classifies the run by it, and an ending with no marker is recorded as a warning
+("may have stopped mid-task") rather than a success:
+- `RUN COMPLETE: <one line>` — the work is finished, pushed, and handed over.
+- `NOTHING TO DO: <reason>` — there was genuinely nothing to pick up.
+- `BLOCKED: <what blocks it>` — you escalated; it awaits a human.
+
+The marker is a claim about the state of the repository and the tracker, never
+about what you intend to do next. Never write one while work is still in flight.
+
+## Blocking is for NEW blockers — a human's move is an answer, not an anomaly
+
+`BLOCKED:` exists for something that genuinely stops you: an unanswered business
+question, a broken assumption, a change that would exceed this ticket. It is not
+for re-litigating a decision that has already been taken.
+
+In particular, when a ticket reaches you from the READY queue — the column a
+human drags cards into — **that move IS a human decision**, and it is very often
+the answer to a question the harness itself raised: a retry limit reached, a
+review loop parked, an escalation you or a peer filed earlier. You will sometimes
+see the history behind it — rounds already spent, a cap already hit, a prior
+verdict saying "parks for a human". Do not read that history and conclude the
+board is glitched and you should put the card back. **The card is in front of you
+because a human put it there, having seen exactly that history.**
+
+A run that re-blocks a ticket over a limit a human has already answered leaves it
+stuck forever: the human's only lever moves it forward, the agent's caution moves
+it back, every single time. Being careful is right; being careful about a decision
+that is not yours to revisit is how work stops moving altogether.
+
+So do the work you were given, and block only on something NEW — naming what it is.
+
+## Never trust a hard-coded workflow id — resolve it by name
+
+Any transition id written in a prompt is a snapshot of a board that has since been
+edited. Worse, ids are per SOURCE STATE: the same destination is reached by a
+different id depending on where the card sits, so an id that was right when the
+prompt was written becomes wrong the moment anything moves the card first — which
+is exactly what a claim does.
+
+So before every transition: list the legal ones and match on the destination NAME.
+
+    GET  /rest/api/3/issue/<KEY>/transitions
+    pick .transitions[] | select(.to.name == "<the status you want>") | .id
+
+If no transition to that name exists from where the card is, that is information,
+not an obstacle: say which transitions DO exist and which one is missing, and
+leave the card in the status that is truthfully correct. Never route around it by
+taking some other action that happens to reach the status you wanted.
+
+Ids quoted anywhere in your instructions are a hint for recognising the right
+transition, never a value to send unverified.
+CONTRACT
+}
+
 # ------------------------------------------------------------------- locking
 
 acquire_lock() { # 0 = acquired
@@ -597,6 +738,62 @@ cmd_say() { # cmd_say <id> — message on stdin, delivered to the live run
   echo "delivered to $id"
 }
 
+# ---------------------------------------------------------------------- skills
+
+# The agent prompts make several skills MANDATORY ("invoke `using-superpowers`",
+# "work each finding through `closing-review-findings`"). A prompt that names a
+# skill the machine does not have is a prompt whose standards silently do not
+# apply -- and the skills we maintain lived only in ~/.claude/skills, which is not
+# version controlled anywhere. Same failure as putting a rule in a gitignored
+# jobs.json: the half that demands it shipped, the half that supplies it did not.
+#
+# So the skills this loop depends on and WE maintain live in skills/ here, and are
+# linked into ~/.claude/skills. A link rather than a copy, so editing either path
+# edits the versioned file and there is never a stale second copy to diverge.
+#
+# Not everything is ours: most of these skills come from the `superpowers` vendor
+# package and are left pointing at it. `test-driven-development` is the exception
+# -- it carries our own addition (axis 9: fixtures for external things must come
+# from a real sample), which a vendor update would otherwise overwrite, so it is
+# forked here deliberately. That trade is stated in the README.
+SKILLS_DIR="$BASE_DIR/skills"
+USER_SKILLS="$HOME/.claude/skills"
+
+cmd_skills() { # claude-cron skills [install]
+  local action="${1:-status}" name target link
+  local _skills_pending=0
+  [ -d "$SKILLS_DIR" ] || die "no skills/ directory in $BASE_DIR"
+  mkdir -p "$USER_SKILLS"
+  for target in "$SKILLS_DIR"/*/; do
+    [ -d "$target" ] || continue
+    name="$(basename "$target")"
+    link="$USER_SKILLS/$name"
+    if [ -L "$link" ] && [ "$(readlink "$link")" = "${target%/}" ]; then
+      printf '  linked   %s\n' "$name"; continue
+    fi
+    if [ "$action" != "install" ]; then
+      _skills_pending=$(( _skills_pending + 1 ))
+      if [ -e "$link" ]; then printf '  DIVERGED %s (a different copy is installed)\n' "$name"
+      else                    printf '  MISSING  %s\n' "$name"; fi
+      continue
+    fi
+    # Never destroy an unversioned edit without keeping it: a skill someone tuned
+    # in place is exactly the thing worth reading before it disappears.
+    if [ -e "$link" ] && [ ! -L "$link" ]; then
+      mv "$link" "$link.before-claude-cron.$(date -u +%Y%m%dT%H%M%SZ)"
+      printf '  kept old %s (renamed .before-claude-cron.*)\n' "$name"
+    fi
+    rm -f "$link"
+    ln -s "${target%/}" "$link"
+    printf '  linked   %s\n' "$name"
+  done
+  # Only nag when something is actually out of place; a clean status that still
+  # tells you to run install is noise that trains you to ignore the output.
+  if [ "$action" != "install" ] && [ "${_skills_pending:-0}" -gt 0 ]; then
+    echo "  (run \`claude-cron skills install\` to link them)"
+  fi
+}
+
 cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   local pass=0 fail=0 tmp
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/ccselftest.XXXXXX")"
@@ -648,6 +845,129 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   turn_is_over "$tmp/cut.ndjson";     want "truncated tail ignored"              0 $?
   turn_is_over "$tmp/decoy.ndjson";   want "the word 'result' in text is not an event" 1 $?
   turn_is_over "$tmp/missing.ndjson"; want "missing file is NOT killable"        1 $?
+
+  echo "cpu_tree_sum() — a busy tool tree is proof of life, not a stall"
+  # A run whose agent is quiet because a test suite is grinding away in a child
+  # (shell -> make -> pytest) must read as ALIVE. This is the case that got a
+  # healthy run killed at the stall timeout for running the tests it was told to.
+  printf '%s\n' '100 1 00:10' '200 100 05:00' '300 200 10:00' '999 1 99:00' > "$tmp/ps.txt"
+  local cpu
+  cpu="$(cpu_tree_sum 100 < "$tmp/ps.txt")"   # 10s + 300s + 600s
+  [ "$cpu" = "910" ] && ok "whole descendant tree counted ($cpu s)" \
+                     || bad "tree cpu wrong: got '$cpu', want 910"
+  # An unrelated process's CPU must never keep a genuinely hung run alive.
+  cpu="$(cpu_tree_sum 999 < "$tmp/ps.txt")"
+  [ "$cpu" = "5940" ] && ok "an unrelated tree is not counted in" \
+                      || bad "isolation broke: got '$cpu', want 5940"
+  # Children are not guaranteed to be listed after their parents.
+  printf '%s\n' '300 200 10:00' '200 100 05:00' '100 1 00:10' > "$tmp/ps2.txt"
+  cpu="$(cpu_tree_sum 100 < "$tmp/ps2.txt")"
+  [ "$cpu" = "910" ] && ok "descendants found regardless of ps order" \
+                     || bad "ordering broke: got '$cpu', want 910"
+  # [dd-]hh:mm:ss must not be read as mm:ss — a day of CPU is not 0 seconds.
+  printf '%s\n' '100 1 1-02:03:04' > "$tmp/ps3.txt"
+  cpu="$(cpu_tree_sum 100 < "$tmp/ps3.txt")"
+  [ "$cpu" = "93784" ] && ok "dd-hh:mm:ss parsed ($cpu s)" \
+                       || bad "day-form parse wrong: got '$cpu', want 93784"
+  # A dead or absent pid burns nothing — it must never look busy.
+  cpu="$(cpu_tree_sum 4242 < "$tmp/ps.txt")"
+  [ "$cpu" = "0" ] && ok "an absent pid reports no CPU" || bad "absent pid: got '$cpu'"
+  cpu="$(num "$(tree_cpu_seconds '')")"
+  [ "$cpu" = "0" ] && ok "an empty pid reports no CPU" || bad "empty pid: got '$cpu'"
+
+  echo "the run-ending contract ships with the CODE, not with a personal jobs.json"
+  # The classifier demands a marker. If the contract that teaches it lives only in
+  # one person's (gitignored) jobs.json, everyone else clones a scheduler that
+  # files every run as a warning. So injection must reach a prompt that has never
+  # heard of it, and must not double up on one that has.
+  inject() { # inject <prompt> -> the prompt as the agent will receive it
+    case "$1" in
+      *"$RUN_ENDING_MARKER"*) printf '%s' "$1" ;;
+      *) printf '%s\n\n%s' "$1" "$(run_ending_contract)" ;;
+    esac
+  }
+  local plain injected twice
+  plain="Do the thing."
+  injected="$(inject "$plain")"
+  case "$injected" in *"RUN COMPLETE:"*) ok "a bare prompt receives the contract" ;;
+    *) bad "a bare prompt did NOT receive the contract" ;; esac
+  case "$injected" in "$plain"*) ok "the job's own prompt is kept, not replaced" ;;
+    *) bad "the job's prompt was lost" ;; esac
+  twice="$(inject "$injected")"
+  [ "$twice" = "$injected" ] && ok "injection is idempotent (no double contract)" \
+                             || bad "injection duplicated the contract"
+  # And the marker the classifier looks for must be the one the contract teaches:
+  # if these two ever drift, every run is a warning and nothing says why.
+  case "$(run_ending_contract)" in
+    *"RUN COMPLETE:"*"NOTHING TO DO:"*"BLOCKED:"*) ok "contract names every marker the classifier accepts" ;;
+    *) bad "contract and classifier disagree on the markers" ;;
+  esac
+
+  echo "workflow ids are resolved, never trusted"
+  # The reviewer prompts carried ids that were correct FROM `Review - DEV` and
+  # wrong from `In Review - DEV` -- and the precheck moves the card to the latter
+  # before the session starts, so every closing transition used the wrong number.
+  # The durable cure is in the contract every job receives: resolve by to.name.
+  case "$(run_ending_contract)" in
+    *"resolve it by name"*) ok "the contract tells every run to resolve ids by name" ;;
+    *) bad "the contract never warns about hard-coded transition ids" ;;
+  esac
+  case "$(run_ending_contract)" in
+    *"per SOURCE STATE"*) ok "and says WHY a correct id goes stale (source state)" ;;
+    *) bad "the contract states the rule without the reason it exists" ;;
+  esac
+
+  echo "the changelog moves when main moves"
+  # Other people run this scheduler on their own projects: a change they cannot
+  # see the shape of is a change they cannot trust or adopt. Writing the entry
+  # afterwards never happens, so the check is here -- if the code moved and
+  # CHANGELOG.md did not, this fails while the reason is still known.
+  if [ -d "$BASE_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+    local _code _log
+    _code="$(git -C "$BASE_DIR" log -1 --format=%ct -- bin skills test 2>/dev/null)"
+    _log="$(git -C "$BASE_DIR" log -1 --format=%ct -- CHANGELOG.md 2>/dev/null)"
+    if [ -z "${_code:-}" ]; then
+      ok "no committed code yet — nothing to describe"
+    elif [ -z "${_log:-}" ]; then
+      bad "CHANGELOG.md has never been committed, but bin/ has"
+    elif [ "$_log" -ge "$_code" ]; then
+      ok "CHANGELOG.md is at least as new as the last code commit"
+    else
+      bad "code moved after the last CHANGELOG.md entry — describe the change before pushing"
+    fi
+  else
+    ok "not a git checkout — changelog freshness not checkable here"
+  fi
+  [ -f "$BASE_DIR/CHANGELOG.md" ] && ok "CHANGELOG.md exists" || bad "CHANGELOG.md is missing"
+
+  echo "a human's board move is an answer, not an anomaly"
+  # QG-15: the cap parked the ticket, the human moved it to the ready column, and
+  # the next run read the spent rounds, decided the board was glitched, and put it
+  # straight back in Blocked. The human's only lever moves it forward; the agent's
+  # caution moved it back. Both halves of the cure must be present.
+  case "$(run_ending_contract)" in
+    *"a human's move is an answer"*|*"human decision"*) ok "the injected contract tells a run not to re-block a human's move" ;;
+    *) bad "the contract never mentions the human-released case" ;;
+  esac
+  case "$(run_ending_contract)" in
+    *"block only on something NEW"*) ok "and says what DOES still justify blocking" ;;
+    *) bad "the contract removed blocking without saying when it is still right" ;;
+  esac
+
+  echo "a run that stops talking is not a run that finished"
+  # The exact shape that filed an abandoned ticket as a clean success: a normal
+  # result event whose text simply never claims the work is done.
+  declared() { printf '%s' "$1" | grep -qE '(RUN COMPLETE|NOTHING TO DO|BLOCKED):'; }
+  declared "I'll wait for the suite to finish and then commit."
+  want "an agent promising to continue is NOT a finished run"        1 $?
+  declared "RUN COMPLETE: QG-15 reworked, pushed, moved to Review - DEV."
+  want "a declared completion is a finished run"                     0 $?
+  declared "NOTHING TO DO: the board had no ready ticket."
+  want "a declared no-op is accepted"                                0 $?
+  declared "BLOCKED: QG-15 — needs a human decision on scope."
+  want "a declared escalation is accepted"                           0 $?
+  declared ""
+  want "an empty final message is NOT a finished run"                1 $?
 
   echo "killed runs report what they consumed"
   printf '%s\n' \
@@ -1060,6 +1380,76 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   unset CC_HOOK_OUT
   rm -f "$tmp/hookcfg/hooks/on-run-end.sh"
 
+  echo "the round cap itself — counting, parking, failing open"
+  # The cap is the only hard stop on the dev/review loop, so its own behaviour is
+  # tested against a fake Jira rather than asserted by reading the source.
+  if [ -x "$BASE_DIR/test/round-cap.test.sh" ]; then
+    local rcout
+    if rcout="$("$BASE_DIR/test/round-cap.test.sh" 2>&1)"; then
+      ok "round-cap suite ($(printf '%s' "$rcout" | grep -c '  PASS') cases)"
+    else
+      bad "round-cap suite failed:"
+      printf '%s\n' "$rcout" | grep '  FAIL' | sed 's/^/      /'
+    fi
+  else
+    ok "round-cap suite not installed — skipped"
+  fi
+
+  echo "the dev/review loop has an exit condition"
+  # The loop between the dev and review agents once ran without a terminating
+  # condition: both prompts said "repeat until nothing blocks", and the reviewer's
+  # bar ("any behavioural finding of any severity") is not a state a real pull
+  # request reaches. Rounds only ended when the budget did. Three properties keep
+  # that closed, and each has been silently undone before by an edit elsewhere —
+  # so they are asserted here rather than trusted to prose.
+  local jf="${CC_JOBS_FILE:-$CONFIG_DIR/jobs.json}"
+  if [ ! -f "$jf" ]; then
+    ok "no jobs.json — loop invariants not applicable"
+  else
+    # 1. The cap is enforced in shell, before a session exists, on BOTH boards.
+    local capped=0 devjobs=0
+    for pc in "$CONFIG_DIR"/prechecks/*-dev-agent.sh; do
+      [ -f "$pc" ] || continue
+      devjobs=$(( devjobs + 1 ))
+      grep -q 'rc_gate_rework' "$pc" && capped=$(( capped + 1 ))
+    done
+    [ "$devjobs" -gt 0 ] && [ "$capped" -eq "$devjobs" ] \
+      && ok "every dev precheck enforces the round cap ($capped/$devjobs)" \
+      || bad "round cap missing from $(( devjobs - capped )) of $devjobs dev prechecks"
+
+    # 2. No prompt still promises an unbounded loop, or a bar that cannot be met.
+    local residual
+    residual="$("$JQ" -r '.jobs[] | .id as $i | .prompt // "" | split("\n")[]
+                          | select(test("any finding of any severity|repeating until nothing blocks|repeating until the review is genuinely clean|found nothing at all"))
+                          | $i' "$jf" 2>/dev/null | sort -u | tr '\n' ' ')"
+    [ -z "$residual" ] \
+      && ok "no prompt promises an unbounded loop" \
+      || bad "unbounded-loop wording is back in: $residual"
+
+    # 3. The reviewer can actually approve over a non-blocking finding, and the
+    #    dev is told to prove a widening did not go too far. Losing either one
+    #    restarts the pendulum that produced the expensive rounds.
+    local rev_ok=0 rev_n=0 dev_ok=0 dev_n=0
+    while IFS=$'\t' read -r id prompt; do
+      case "$id" in
+        *-reviewer-agent)
+          rev_n=$(( rev_n + 1 ))
+          printf '%s' "$prompt" | grep -q 'Follow-up findings (not blocking)' \
+            && rev_ok=$(( rev_ok + 1 )) ;;
+        *-dev-agent)
+          dev_n=$(( dev_n + 1 ))
+          printf '%s' "$prompt" | grep -q 'containment test' \
+            && dev_ok=$(( dev_ok + 1 )) ;;
+      esac
+    done < <("$JQ" -r '.jobs[] | [.id, (.prompt // "")] | @tsv' "$jf" 2>/dev/null)
+    [ "$rev_n" -gt 0 ] && [ "$rev_ok" -eq "$rev_n" ] \
+      && ok "every reviewer may record a finding without spending a round ($rev_ok/$rev_n)" \
+      || bad "the non-blocking route is missing from $(( rev_n - rev_ok )) of $rev_n reviewers"
+    [ "$dev_n" -gt 0 ] && [ "$dev_ok" -eq "$dev_n" ] \
+      && ok "every dev prompt requires a containment test when a rule widens ($dev_ok/$dev_n)" \
+      || bad "the containment rule is missing from $(( dev_n - dev_ok )) of $dev_n dev prompts"
+  fi
+
   rm -rf "$tmp"
   echo
   echo "$pass passed, $fail failed"
@@ -1215,6 +1605,18 @@ ${proj_desc}
 ${prompt}"
     fi
   fi
+
+  # Append the run-ending contract, unless this prompt already states it. The
+  # classifier downgrades an undeclared ending to a warning, so the rule has to
+  # reach EVERY job -- including one written by someone who never saw this
+  # scheduler's release notes -- and a job's own jobs.json is the one place that
+  # cannot carry it, being personal and unversioned.
+  case "$prompt" in
+    *"$RUN_ENDING_MARKER"*) ;;
+    *) prompt="${prompt}
+
+$(run_ending_contract)" ;;
+  esac
 
   # How many runs of THIS job may work at once — a job-level setting only, never
   # inherited. Blank or missing means 3; zero means no ceiling at all.
@@ -1484,19 +1886,29 @@ If the work turns out to be already finished, or it can no longer be done at all
   # We kill only when it has been silent for $stall seconds (a genuine hang), or
   # when an explicit absolute cap $timeout is set and exceeded. The reason is
   # written to the watchdog file so the run can explain itself afterwards.
+  #
+  # "Silent" means BOTH signals are quiet. The stream alone is not enough: it
+  # stops for the entire duration of a single tool call, so a long test suite
+  # reads as a hang and gets killed at $stall for doing exactly what it was
+  # asked to do. CPU burnt by the run's process tree covers that gap — while a
+  # child is computing, the run is working, and only a run that is neither
+  # emitting events nor burning CPU is genuinely hung.
   local wdfile="$logfile.watchdog"
   : > "$wdfile"
   (
-    local last_size=-1 last_change now size began poll=30
+    local last_size=-1 last_cpu=-1 last_change now size cpu began poll=30
     began="$(now_epoch)"; last_change="$began"
     while kill -0 "$child" 2>/dev/null; do
       sleep "$poll"
       kill -0 "$child" 2>/dev/null || break
       now="$(now_epoch)"
       size="$(wc -c < "$streamfile" 2>/dev/null | tr -d ' ')"; size="${size:-0}"
-      if [ "$size" != "$last_size" ]; then last_size="$size"; last_change="$now"; fi
+      cpu="$(num "$(tree_cpu_seconds "$child")")"
+      if [ "$size" != "$last_size" ] || [ "$cpu" != "$last_cpu" ]; then
+        last_size="$size"; last_cpu="$cpu"; last_change="$now"
+      fi
       if [ "$stall" -gt 0 ] && [ "$((now - last_change))" -ge "$stall" ]; then
-        printf 'stalled: no output for %ss (killed by watchdog)\n' "$stall" > "$wdfile"
+        printf 'stalled: no output and no CPU for %ss (killed by watchdog)\n' "$stall" > "$wdfile"
         kill -TERM "$child" 2>/dev/null; break
       fi
       if [ "$timeout" -gt 0 ] && [ "$((now - began))" -ge "$timeout" ]; then
@@ -1601,6 +2013,29 @@ If the work turns out to be already finished, or it can no longer be done at all
   nothing_line="$("$JQ" -r '.result // ""' "$logfile" 2>/dev/null | grep -m1 -oE 'NOTHING TO DO:.*' || true)"
   if [ -n "$nothing_line" ] && [ "$status" = "success" ]; then
     wdreason="${nothing_line}"
+    status="warning"
+  fi
+
+  # "The agent stopped talking" is NOT "the agent finished the job".
+  #
+  # A headless run ends the instant the model returns text without a tool call.
+  # An agent that says "I'll wait for the background suite and then commit" gets
+  # exactly what it asked for in an interactive session and nothing at all here:
+  # the process exits, its children die with it, and the work is abandoned
+  # mid-task. That produces a textbook-clean record — rc 0, subtype success, a
+  # non-empty result — so it was filed as SUCCESS, which is how a ticket with no
+  # commit, no push and no PR came to be reported as done. The one fact the
+  # operator needed was the one fact the status did not carry.
+  #
+  # So a clean exit now has to be CLAIMED, not inferred. The agent declares how
+  # its run ended (see the job prompt's "Declare how your run ended"); an
+  # undeclared ending is the signature of a run that stopped mid-task, and it is
+  # a warning — never a silent success. A warning that is occasionally
+  # unnecessary costs a glance; a success that is occasionally false costs a day.
+  if [ "$status" = "success" ] \
+     && ! "$JQ" -r '.result // ""' "$logfile" 2>/dev/null \
+          | grep -qE '(RUN COMPLETE|NOTHING TO DO|BLOCKED):'; then
+    wdreason="UNDECLARED ENDING: the agent stopped without saying its run was finished (no 'RUN COMPLETE:', 'NOTHING TO DO:' or 'BLOCKED:' line), which is what a run cut off mid-task looks like. Do NOT assume the ticket is done — check the branch, the PR and the ticket, and resume this run to continue with its context."
     status="warning"
   fi
 
@@ -1837,7 +2272,14 @@ PLIST
   else
     echo "Claude account : the CLI default (~/.claude) — set CLAUDE_CRON_CLAUDE_CONFIG_DIR and re-run to change it"
   fi
-  echo "Open it with: claude-cron dashboard"
+  # The agent prompts make these skills mandatory by name. A fresh clone whose
+  # ~/.claude/skills lacks them runs agents that cite standards they cannot read,
+  # and nothing anywhere says so -- the run just quietly holds a lower bar. So a
+  # clone that installs the scheduler installs the skills it depends on, in the
+  # same step, rather than leaving it as a documented step somebody skips.
+  echo "Skills (linked into ~/.claude/skills):"
+  cmd_skills install
+  echo "Open the dashboard with: claude-cron dashboard"
 }
 
 cmd_uninstall() {
@@ -2399,6 +2841,7 @@ case "${1:-}" in
   project-rename) [ $# -ge 3 ] || die "usage: claude-cron project-rename <name> <new-name>"; cmd_project_rename "$2" "$3" ;;
   project-list)   cmd_project_list ;;
   resolve-models) cmd_resolve_models ;;
+  skills)    shift; cmd_skills "${1:-status}" ;;
   selftest)  cmd_selftest ;;
   running)   [ $# -ge 2 ] || die "usage: claude-cron running <job-id>"; cmd_running "$2" ;;
   runs)      [ $# -ge 2 ] || die "usage: claude-cron runs <job-id>"; cmd_runs "$2" ;;
