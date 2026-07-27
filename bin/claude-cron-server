@@ -460,30 +460,98 @@ def _tail_lines(path, max_bytes):
     return text.splitlines()
 
 
-def checks_24h():
-    """Per-job counts of the last 24h of scheduler activity, straight from
-    tick.log — makes the autonomy visible even when every check stays idle."""
+# The band at the top of the page and the sparkline on every card are drawn
+# from these. Both want the same 24 hours of tick.log, so one pass produces
+# both: 96 fifteen-minute buckets for the band, 24 hourly ones per job.
+TICK_BUCKET_SECONDS = 900
+TICK_BUCKETS = 86400 // TICK_BUCKET_SECONDS   # 96
+JOB_BUCKETS = 24
+
+
+def classify_tick(msg):
+    """What one tick.log line says the scheduler decided.
+
+    Only lines that represent a *decision about a job* count as a check. The
+    engine also logs isolation, provisioning and sweep chatter against a job id;
+    counting those would inflate the band with events the loop did not choose.
+
+    Returns one of woke / idle / failed / capped / blocked, or None to ignore.
+    """
+    if msg.startswith("starting run"):
+        return "woke"
+    if "precheck found nothing" in msg:
+        return "idle"
+    if msg.startswith("PRECHECK FAILED"):
+        return "failed"
+    if "daily cap reached" in msg:          # covers the per-job and GLOBAL lines
+        return "capped"
+    if "max_parallel" in msg:
+        return "blocked"
+    # A tick that could not even get as far as the probe: no prompt, a cwd that
+    # has gone missing, a config dir that is not there, a worktree or a
+    # provisioning step that failed. All of them mean the job did not run and
+    # somebody has to look.
+    if (msg.endswith(", skipped")
+            or "isolation failed" in msg
+            or msg.startswith("provisioning failed")):
+        return "failed"
+    return None
+
+
+# Outcomes that mean "the loop looked at this job", in the order the band
+# stacks them. `woke` is the signal; the rest are degrees of quiet.
+TICK_OUTCOMES = ("woke", "idle", "capped", "blocked", "failed")
+
+
+def checks_24h(now=None):
+    """The last 24h of scheduler activity, straight from tick.log — makes the
+    autonomy visible even when every check stays idle.
+
+    Returns (per-job counts, band). The counts keep the shape the card has
+    always read (`checks`, `runs`) and add `failed` plus an hourly `series`;
+    the band is the whole install bucketed at 15 minutes, oldest first, so the
+    page can draw it without knowing anything about timestamps.
+    """
+    now = time.time() if now is None else now
     counts = {}
+    # bucket 0 is the OLDEST: the band reads left to right as time does. Each
+    # bucket is a list in TICK_OUTCOMES order rather than an object — this goes
+    # out on every 5-second poll, and the keys would be 5× the numbers.
+    band = [[0] * len(TICK_OUTCOMES) for _ in range(TICK_BUCKETS)]
+    slot_of = {k: i for i, k in enumerate(TICK_OUTCOMES)}
+    start = now - 86400
     try:
         lines = _tail_lines(DATA_DIR / "tick.log", TICK_TAIL_BYTES)
-        cutoff = time.time() - 86400
         for ln in lines:
             try:
                 t = calendar.timegm(time.strptime(ln[:20], "%Y-%m-%dT%H:%M:%SZ"))
             except Exception:
                 continue
-            if t < cutoff:
+            if t < start or t > now:
                 continue
             job, _, msg = ln[21:].partition(": ")
-            d = counts.setdefault(job, {"checks": 0, "runs": 0})
-            if "precheck found nothing" in msg:
-                d["checks"] += 1
-            elif msg.startswith("starting run"):
-                d["checks"] += 1
+            kind = classify_tick(msg)
+            if kind is None:
+                continue
+            d = counts.get(job)
+            if d is None:
+                d = counts[job] = {"checks": 0, "runs": 0, "failed": 0,
+                                   "series": [0] * JOB_BUCKETS,
+                                   "woke": [0] * JOB_BUCKETS}
+            d["checks"] += 1
+            hour = min(JOB_BUCKETS - 1, int((t - start) // 3600))
+            d["series"][hour] += 1
+            if kind == "woke":
                 d["runs"] += 1
+                d["woke"][hour] += 1
+            elif kind == "failed":
+                d["failed"] += 1
+            slot = min(TICK_BUCKETS - 1, int((t - start) // TICK_BUCKET_SECONDS))
+            band[slot][slot_of[kind]] += 1
     except Exception:
         pass
-    return counts
+    return counts, {"bucket_seconds": TICK_BUCKET_SECONDS, "start": int(start),
+                    "outcomes": list(TICK_OUTCOMES), "buckets": band}
 
 
 def compact_db():
@@ -985,12 +1053,13 @@ def load_data():
     # strftime, not a `date` subprocess: same string, no fork, and this ran on
     # every one of those 5-second polls.
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    checks, ticks = checks_24h()
     return {"generated": now, "launchd_loaded": launchd_loaded(), "build": BUILD,
             "config_sig": config_sig(),
             "state": state, "runs": runs,
             "active_runs": {j.get("id"): active_runs_for(j.get("id")) for j in jobs},
             "retained_worktrees": retained_worktrees(),
-            "db_bytes": db_bytes, "checks": checks_24h()}
+            "db_bytes": db_bytes, "checks": checks, "ticks": ticks}
 
 
 def load_live_detail(jid, start_i):
