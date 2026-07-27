@@ -181,11 +181,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **The runs table has its Duration and Cost columns back, each sortable on its
-  own.** Merging them into one "Duration & cost" column silently dropped the cost
-  sort: the comparator was still there, but no header could reach it, so the most
-  expensive run of a day was unfindable in a 25-row page. They answer different
-  questions — what is slow and what is expensive are rarely the same run.
+- **The runs table is back to the shape it had before the rewrite** — `When ·
+  Job · Project · Status · Duration · Cost · Session · actions`, eight columns,
+  at its previous density. The rewrite had folded Duration and Cost into one
+  column and moved Session inside the Job cell; merging the two silently dropped
+  the cost sort (the comparator survived, but no header could reach it, so the
+  most expensive run of a day was unfindable in a 25-row page), and the row grew
+  tall enough to cost about four rows of a screenful.
+
+  The one thing deliberately NOT reverted is **When**, which keeps the relative
+  form (`1h ago`) rather than the full timestamp: what you read that column for
+  is recency, and the stamp to the second is one hover away.
 - **`Run now` carries the accent whether or not its job is enabled**, because it
   works whether or not the job is enabled: it is a deliberate manual override and
   the primary action on the card. Tying the accent to `enabled` made the one

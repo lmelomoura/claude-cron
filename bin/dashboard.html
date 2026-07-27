@@ -365,8 +365,6 @@ th.sortable.sorted .ic{opacity:1;color:var(--accent)}
 td{padding:10px 14px;border-bottom:1px solid var(--line2);vertical-align:top}
 /* When: relative reads at a glance, the exact stamp is one hover away. */
 .when-rel{font-variant-numeric:tabular-nums;cursor:help;border-bottom:1px dotted var(--line)}
-.dur,.cost-cell{font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
-.cost-cell .cost{color:var(--fg)}
 /* align-items must be stated: the default `stretch` made the job id's <code>
    background run the whole width of the column. */
 .jobcell{display:flex;flex-direction:column;align-items:flex-start;gap:3px;min-width:0;max-width:100%}
@@ -2161,7 +2159,7 @@ const actSlot=(why)=>'<span class="actslot" aria-hidden="true" title="'+esc(why)
 // it, so the most expensive run of a day became unfindable in a 25-row page.
 const RUN_COLS=[
   ["when","When"],["job","Job"],[null,"Project"],["status","Status"],
-  ["duration","Duration"],["cost","Cost"],[null,""],
+  ["duration","Duration"],["cost","Cost"],[null,"Session"],[null,""],
 ];
 function renderRunHead(){
   $("runhead").innerHTML=RUN_COLS.map(([key,label])=>{
@@ -2206,8 +2204,7 @@ function renderRuns(){
       +(r.forced?'<span class="trigger-badge">forced</span>':'')
       +resumedBadge
       +(snip?'<div class="snip" title="'+esc(snip)+'">'+esc(snip)+'</div>':'')+"</td>"
-      +'<td><div class="jobcell"><code>'+esc(r.id)+'</code>'
-      +'<span class="sess">'+esc((r.session||"").slice(0,8)||"no session")+'</span></div></td>'
+      +"<td><code>"+esc(r.id)+"</code></td>"
       +'<td>'+(r.project?'<span class="projtag">'+I.folder+esc(r.project)+'</span>':'<span class="muted">—</span>')+'</td>'
       +'<td>'+(r.live
           ? '<span class="runningbadge"><span class="pulse"></span>running…</span>'
@@ -2224,8 +2221,9 @@ function renderRuns(){
       +"</td>"
       // How long and how much are read together — two columns half the table
       // apart just made you scan across the empty middle.
-      +'<td class="dur">'+esc(fmtDur(r.duration))+(r.live?' <span class="muted">so far</span>':"")+"</td>"
-      +'<td class="cost-cell">'+(r.live?'<span class="muted">—</span>':'<span class="cost">'+esc(money(r.cost))+'</span>')+"</td>"
+      +"<td class=num>"+esc(fmtDur(r.duration))+(r.live?' <span class="muted">so far</span>':"")+"</td>"
+      +"<td class=num>"+(r.live?'<span class="muted">—</span>':esc(money(r.cost)))+"</td>"
+      +"<td><code>"+esc((r.session||"").slice(0,8)||"—")+"</code></td>"
       +'<td class="rowacts">'
         +'<button class="iconbtn'+(r.live?' live':'')+'" title="'+(r.live?"Follow this run live":"View log")+'"'
           +' data-log-id="'+esc(r.id)+'" data-log-start="'+esc(r.start)+'">'+I.eye+'</button>'
