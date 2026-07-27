@@ -15,11 +15,20 @@ pull request.
 
 ## The workflow
 
-`main` is protected: it takes no direct pushes and no force-pushes, and it cannot
-be deleted. Everything arrives by pull request.
+`main` is protected: no force-pushes, no deletion, and a pull request with one
+approval to merge. **Working branches are unrestricted** — push `fix/…` and
+`feat/…` freely.
 
-1. **Fork** the repository (it is public, forks are open) and branch from `main`.
-   Name the branch for what it does: `fix/stall-watchdog-cpu`, `feat/skills-link`.
+1. **Fork** the repository and branch from `main`. Name the branch for what it
+   does: `fix/stall-watchdog-cpu`, `feat/skills-link`.
+
+   ```bash
+   gh repo fork lmelomoura/claude-cron --clone
+   cd claude-cron && git switch -c fix/your-change
+   ```
+
+   (If you have write access, skip the fork and branch directly in the repository.)
+
 2. Make the change.
 3. **Run the checks** — they are offline and take seconds:
 
@@ -34,9 +43,8 @@ be deleted. Everything arrives by pull request.
    at release time. `claude-cron selftest` fails when `bin/`, `skills/` or `test/`
    moved after the last changelog entry, so a forgotten entry is caught before the
    pull request exists.
-5. Open the pull request against `main` and fill in the description (see
-   `.bitbucket/PULL_REQUEST_TEMPLATE.md` — Bitbucket Cloud does not insert it for
-   you, so copy it in).
+5. Open the pull request against `main`. The description is pre-filled from
+   `.github/pull_request_template.md` — answer it rather than deleting it.
 
 ## The three rules that actually matter
 
