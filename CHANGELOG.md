@@ -32,6 +32,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pull request came from fixtures that were hand-written guesses, so the wrong
   assumption sat in the code *and* in the test and they agreed with each other.
 - **This changelog**, plus a selftest case that fails when `main` moves without it.
+- **`CONTRIBUTING.md` and a pull-request template**, and `main` is now protected —
+  no direct pushes, no force-pushes, no deletion — so outside contributions arrive
+  by pull request against a branch that cannot be rewritten under them.
 
 ### Fixed
 
