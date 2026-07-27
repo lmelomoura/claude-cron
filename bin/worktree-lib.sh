@@ -110,6 +110,22 @@ wt_base_ref() { # <canonical> <base> [fetch-timeout] -> prints a ref; non-zero i
       base="${ref#origin/}"
     fi
   fi
+  # A base ending in `*` names a FAMILY of branches rather than one -- `release/*`
+  # on a project that ships through release trains. A literal `release/0.9.0` is
+  # correct for exactly as long as 0.9.0 is current and then silently keeps
+  # cutting worktrees from last month's train: the value rots, nothing reports
+  # it, and the only symptom is agents working from the wrong baseline. Resolving
+  # the pattern means the setting is written once and stays true.
+  case "$base" in
+    *'*')
+      if ref="$(wt_latest_matching "$repo" "$base")"; then
+        printf '%s\n' "$ref"; return 0
+      fi
+      # Falling through to HEAD here would be the silent-wrong-baseline failure
+      # this exists to prevent, so refuse instead and let the caller report it.
+      log_tick "worktree: base pattern '$base' matched no branch in $repo"
+      return 1 ;;
+  esac
   if [ -n "$base" ]; then
     if git -C "$repo" rev-parse --verify --quiet "origin/$base^{commit}" >/dev/null 2>&1; then
       printf 'origin/%s\n' "$base"; return 0
@@ -120,6 +136,29 @@ wt_base_ref() { # <canonical> <base> [fetch-timeout] -> prints a ref; non-zero i
   fi
   git -C "$repo" rev-parse --verify --quiet HEAD >/dev/null 2>&1 || return 1
   printf 'HEAD\n'
+}
+
+# wt_latest_matching <repo> <pattern> -> the highest-versioned branch matching it.
+#
+# "Highest" is by VERSION, not by string: sorted as text, release/0.9.0 beats
+# release/0.10.0, which would quietly pin a project to an abandoned train right
+# after the version that needed it most. `git for-each-ref --sort=-v:refname`
+# understands the numbering; nothing else here has to.
+#
+# Remote branches are the source of truth -- a release exists once it is pushed,
+# and a stale local ref must never outrank it. Local refs are consulted only when
+# the remote knows nothing, which is the offline case the fetch above already
+# degrades to.
+wt_latest_matching() { # <repo> <pattern like release/*>
+  local repo="${1:-}" pat="${2:-}" out
+  [ -n "$pat" ] || return 1
+  out="$(git -C "$repo" for-each-ref --sort=-v:refname --count=1 \
+          --format='%(refname:short)' "refs/remotes/origin/${pat}" 2>/dev/null)"
+  if [ -n "$out" ]; then printf '%s\n' "$out"; return 0; fi
+  out="$(git -C "$repo" for-each-ref --sort=-v:refname --count=1 \
+          --format='%(refname:short)' "refs/heads/${pat}" 2>/dev/null)"
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
 }
 
 # Expand {repo} and {worktree} placeholders in a template.

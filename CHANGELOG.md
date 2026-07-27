@@ -19,6 +19,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A repo's base branch can be a pattern** — `release/*` resolves to the
+  highest-*versioned* matching branch, so a project that ships through release
+  trains is configured once instead of edited every release. Sorted by version and
+  not as text, because as text `release/0.9.0` beats `release/0.10.0` and the
+  project would silently pin itself to the train it had just left. A pattern that
+  matches nothing **refuses** rather than falling back to `HEAD` — falling back is
+  the silent-wrong-baseline failure this exists to prevent.
+
+
 - **A run is isolated per *run*, not per repository.** A ticket routinely touches a
   frontend and a backend, and both have to be checked out from the same base at the
   same moment. A project declares `repos[]` (name, path, base) and a run now gets one
@@ -171,6 +180,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   O(all history ever).
 
 ### Fixed
+
+- **The focus ring is no longer sliced off fields that sit flush against a scroll
+  container.** The ring paints 4px outside the border box (2px outline + 2px
+  offset) while the project editor's panes clipped at padding 0, so the first
+  field of any row lost the left side of its ring — the visible symptom being a
+  field that looks half-outlined when tabbed to. Reserving the ring's width costs
+  nothing when nothing is focused. `stepper` and `moneyin` are deliberately left
+  alone: those wrappers draw the border themselves and their inner field carries
+  none, so padding them would break the visual join.
+- **A repo row is labelled like every other field in the editor**, with its own
+  `Name` / `Path` / `Base branch` captions instead of three unlabelled boxes whose
+  meaning could only be recovered by having filled them in before — and the path
+  now uses the same folder picker as the working directory on the first tab, so a
+  mistyped path fails at edit time rather than hours later inside a run.
+- **`syncCwdField` addresses its own Browse button** rather than the first
+  `.cwd-browse` in the document. That only ever worked because the job editor
+  happens to come first in source order, which no one maintains on purpose, and
+  it breaks the moment another Browse button is added earlier.
+
 
 - **The Claude account is no longer taken from an ambient `CLAUDE_CONFIG_DIR`.** The
   installer already refused it; the runtime did not, and the two have to agree. These
