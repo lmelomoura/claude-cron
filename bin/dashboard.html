@@ -297,7 +297,6 @@ button.kpi:disabled b{color:var(--muted);font-weight:600}
 .rowacts{display:flex;gap:6px;justify-content:flex-end}
 /* An action that cannot apply to this row keeps its column and loses its button.
    Four icons with three permanently greyed out read as a broken toolbar. */
-.actslot{display:inline-block;width:30px;height:30px;flex:none}
 .iconbtn.live{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
 /* hover tooltip — the bubble is fixed-position and lives on <body>, because the
    table wrapper's overflow would otherwise clip it. */
@@ -365,16 +364,8 @@ th.sortable.sorted .ic{opacity:1;color:var(--accent)}
 td{padding:10px 14px;border-bottom:1px solid var(--line2);vertical-align:top}
 /* When: relative reads at a glance, the exact stamp is one hover away. */
 .when-rel{font-variant-numeric:tabular-nums;cursor:help;border-bottom:1px dotted var(--line)}
-.dur-cost{font-variant-numeric:tabular-nums;white-space:nowrap}
-.dur-cost .cost{color:var(--muted)}
 /* align-items must be stated: the default `stretch` made the job id's <code>
    background run the whole width of the column. */
-.jobcell{display:flex;flex-direction:column;align-items:flex-start;gap:3px;min-width:0;max-width:100%}
-.jobcell code{max-width:100%;overflow:hidden;text-overflow:ellipsis}
-.jobcell .sess{font:10.5px ui-monospace,"SF Mono",Menlo,monospace;color:var(--muted)}
-/* the action column takes only what its icons need; the slack belongs to the
-   columns that carry text */
-td.rowacts,th:last-child{width:1%;white-space:nowrap}
 tr:last-child td{border-bottom:none}
 tbody tr{transition:.1s}
 tbody tr:hover{background:var(--panel2)}
@@ -1505,9 +1496,12 @@ function jobCard(j){
     // Run now always available: several runs of a job may go at once (up to
     // max_parallel), so a live run no longer replaces this with a stop. Stopping
     // is per-run, from the Runs table — a job-wide stop would kill them all.
-    // The filled treatment is for a job that is actually working: on a board
-    // where every job is off, twenty-one filled buttons said nothing.
-    +'<button class="btn'+(disabled?"":" primary")+'" data-op="run" data-id="'+esc(j.id)+'">'+I.play+'Run now</button>'
+    //
+    // It carries the accent whether or not the job is enabled, because it WORKS
+    // whether or not the job is enabled — it is a deliberate manual override, and
+    // the primary action on the card. Tying the accent to `enabled` made the one
+    // button that still does something look as inert as the ones that do not.
+    +'<button class="btn primary" data-op="run" data-id="'+esc(j.id)+'">'+I.play+'Run now</button>'
     +'<button class="btn" data-op="'+(disabled?"enable":"disable")+'" data-id="'+esc(j.id)+'">'+I.power+(disabled?"Enable":"Disable")+'</button>'
     +'<button class="btn" data-op="edit" data-id="'+esc(j.id)+'">'+I.pencil+'Edit</button>'
     // Delete sits behind the overflow: it is irreversible, and as a fourth
@@ -2146,14 +2140,18 @@ function resumeTip(id, start){
 // An action that does not apply to this row keeps its column and loses its
 // button. `aria-hidden` because there is nothing here to announce — the reason
 // is on the tooltip, for a pointer that goes looking.
-const actSlot=(why)=>'<span class="actslot" aria-hidden="true" title="'+esc(why)+'"></span>';
 
 // The table head. Sortable columns say so — the caret is reserved in the layout
 // so the header does not jump when it appears, and aria-sort tells a screen
 // reader what the visual caret tells everybody else.
+// Duration and cost are SEPARATE columns because they answer different
+// questions and you sort by them for different reasons — "what is slow" and
+// "what is expensive" are rarely the same run. Merging them dropped the cost
+// sort entirely: the comparator below still existed, but no header could reach
+// it, so the most expensive run of a day became unfindable in a 25-row page.
 const RUN_COLS=[
   ["when","When"],["job","Job"],[null,"Project"],["status","Status"],
-  ["duration","Duration & cost"],[null,""],
+  ["duration","Duration"],["cost","Cost"],[null,"Session"],[null,""],
 ];
 function renderRunHead(){
   $("runhead").innerHTML=RUN_COLS.map(([key,label])=>{
@@ -2198,8 +2196,7 @@ function renderRuns(){
       +(r.forced?'<span class="trigger-badge">forced</span>':'')
       +resumedBadge
       +(snip?'<div class="snip" title="'+esc(snip)+'">'+esc(snip)+'</div>':'')+"</td>"
-      +'<td><div class="jobcell"><code>'+esc(r.id)+'</code>'
-      +'<span class="sess">'+esc((r.session||"").slice(0,8)||"no session")+'</span></div></td>'
+      +"<td><code>"+esc(r.id)+"</code></td>"
       +'<td>'+(r.project?'<span class="projtag">'+I.folder+esc(r.project)+'</span>':'<span class="muted">—</span>')+'</td>'
       +'<td>'+(r.live
           ? '<span class="runningbadge"><span class="pulse"></span>running…</span>'
@@ -2216,18 +2213,18 @@ function renderRuns(){
       +"</td>"
       // How long and how much are read together — two columns half the table
       // apart just made you scan across the empty middle.
-      +'<td class="dur-cost">'+esc(fmtDur(r.duration))+(r.live?' <span class="muted">so far</span>':"")
-      +(r.live?"":' <span class="cost">'+esc(money(r.cost))+'</span>')+"</td>"
+      +"<td class=num>"+esc(fmtDur(r.duration))+(r.live?' <span class="muted">so far</span>':"")+"</td>"
+      +"<td class=num>"+(r.live?'<span class="muted">—</span>':esc(money(r.cost)))+"</td>"
+      +"<td><code>"+esc((r.session||"").slice(0,8)||"—")+"</code></td>"
       +'<td class="rowacts">'
         +'<button class="iconbtn'+(r.live?' live':'')+'" title="'+(r.live?"Follow this run live":"View log")+'"'
           +' data-log-id="'+esc(r.id)+'" data-log-start="'+esc(r.start)+'">'+I.eye+'</button>'
-        // Stop and Resume apply to different rows and never to the same one, so
-        // on any given row at most one of them is real. They used to be rendered
-        // as permanently greyed buttons to keep the columns lined up — which
-        // meant three of four icons were dead on every finished run, and the
-        // toolbar read as broken. Each now keeps its COLUMN (an empty slot of
-        // the same width) without keeping a button nobody can press; the reason
-        // it does not apply lives on the slot's tooltip.
+        // Stop and Resume are rendered on EVERY row, greyed where they do not
+        // apply, because a toolbar whose icons move between rows is one you have
+        // to re-read each time: the eye is in a different place on a finished run
+        // than on a live one, and you end up aiming instead of clicking. The
+        // reason a button is dead is on its tooltip, and a dead button still
+        // teaches that the action exists — an empty slot teaches nothing.
         // Stop ends THIS run (by its pid); resume continues THIS run's own
         // session — the same task, picked back up, exactly like
         // `claude --resume <session>` — never a fresh run of the job.
@@ -2236,29 +2233,30 @@ function renderRuns(){
            // runs of one job the right one is ended, not merely the first.
            ? '<button class="iconbtn danger" title="Stop this run"'
              +' data-op="stop" data-id="'+esc(r.id)+'" data-run-pid="'+esc(r.pid||livePidFor(r.id))+'">'+I.power+'</button>'
-           : actSlot("Only a running run can be stopped"))
+           : '<button class="iconbtn" disabled title="This run has already finished — only a running run can be stopped">'+I.power+'</button>')
         // A failed run is worth retrying — offer it right where the failure
         // shows. Reuses the Run-now op, so it inherits the precheck guard and
         // toasts. Gone once the job has picked the task back up (resumed here or
         // anywhere): a second resume would just duplicate the work, and the "?"
         // beside the status says where it went.
         +(r.live
-           ? actSlot("This run is still going")
+           ? '<button class="iconbtn retry" disabled title="This run is still going">'+I.play+'</button>'
            : s==="error"
              ? (!r.session
-                ? actSlot("This run recorded no session id, so it cannot be resumed")
+                ? '<button class="iconbtn retry" disabled title="This run recorded no session id, so it cannot be resumed">'+I.play+'</button>'
                 : followUp
-                  ? actSlot((followUp.running?"A newer run is in progress":"This task was already resumed")
-                            +" — see the ? beside the status")
+                  ? '<button class="iconbtn retry" disabled title="'
+                    +(followUp.running?"A newer run is in progress":"This task was already resumed")
+                    +' — see the ? beside the status">'+I.play+'</button>'
                   : '<button class="iconbtn retry" title="Resume this task — continue session '
                     +esc((r.session||"").slice(0,8))+' where it stopped"'
                     +' data-op="resume" data-id="'+esc(r.id)+'" data-session="'+esc(r.session||"")+'"'
                     +' data-resume-key="'+esc(runKey(r.id,r.start))+'">'+I.play+'</button>')
-             : actSlot("Only failed runs can be resumed"))
+             : '<button class="iconbtn retry" disabled title="Only a failed run can be resumed">'+I.play+'</button>')
         // Erase this run for good: its log files, its journal line and its rows
         // in the search database. Never offered while it is still running.
         +(r.live
-           ? actSlot("A running run cannot be deleted — stop it first")
+           ? '<button class="iconbtn" disabled title="A running run cannot be deleted — stop it first">'+I.trash+'</button>'
            : '<button class="iconbtn danger" title="Delete this run and everything it left behind"'
              +' data-del-id="'+esc(r.id)+'" data-del-start="'+esc(r.start)+'">'+I.trash+'</button>')
       +'</td></tr>';

@@ -181,6 +181,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The runs table is back to the shape it had before the rewrite** — `When ·
+  Job · Project · Status · Duration · Cost · Session · actions`, eight columns,
+  at its previous density. The rewrite had folded Duration and Cost into one
+  column and moved Session inside the Job cell; merging the two silently dropped
+  the cost sort (the comparator survived, but no header could reach it, so the
+  most expensive run of a day was unfindable in a 25-row page), and the row grew
+  tall enough to cost about four rows of a screenful.
+
+  The four action icons are rendered on **every** row again, greyed where they do
+  not apply, rather than collapsing to empty slots. A toolbar whose icons move
+  between rows is one you have to re-read each time — the eye sits in a different
+  place on a finished run than on a live one — and a greyed button still teaches
+  that the action exists, which an empty slot does not. The reason each one is
+  unavailable stays on its tooltip.
+
+  The one thing deliberately NOT reverted is **When**, which keeps the relative
+  form (`1h ago`) rather than the full timestamp: what you read that column for
+  is recency, and the stamp to the second is one hover away.
+- **`Run now` carries the accent whether or not its job is enabled**, because it
+  works whether or not the job is enabled: it is a deliberate manual override and
+  the primary action on the card. Tying the accent to `enabled` made the one
+  button that still does something look as inert as the ones that do not.
+
+
 - **The focus ring is no longer sliced off fields that sit flush against a scroll
   container.** The ring paints 4px outside the border box (2px outline + 2px
   offset) while the project editor's panes clipped at padding 0, so the first
