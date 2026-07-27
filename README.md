@@ -286,6 +286,31 @@ or parked on somebody's feature branch, and neither is a base. A project that
 declares no `repos` is the single-repo case — the entry is derived from `cwd`
 and its base inferred from the current branch.
 
+**Declare `base` whenever `origin/HEAD` is not the branch your work targets.**
+Leaving it empty means *infer it*, and inference resolves to the canonical
+checkout's current branch, then to `origin/HEAD` — for a detached checkout, that
+is the repository's default branch, usually `main`. A project whose feature work
+targets `develop` will therefore be inferred onto `main`: correctly resolved, and
+still the wrong branch. Nothing downstream can detect this, because a base that
+exists looks exactly like a base that was meant. Inference is a floor that keeps
+an unconfigured project running, not a substitute for saying which branch you
+work from.
+
+Upgrading an install that predates this: worktrees used to be cut from the
+canonical checkout's `HEAD`, and the run then left that checkout **detached**.
+Both facts compound — agents built on whatever commit the last run happened to
+leave behind, drifting further from the branch with every run, invisibly. Runs no
+longer detach anything, but nothing repairs a checkout already in that state.
+Once per canonical checkout, put it back on its branch:
+
+```bash
+git -C /Users/me/code/web status --short --branch | head -1   # "HEAD (no branch)" == detached
+git -C /Users/me/code/web checkout develop
+```
+
+The only symptom of skipping this is agents working from a stale base, so it is
+worth checking even where nothing looks wrong.
+
 The agent finds everything through `$CC_RUN_MANIFEST`. The canonical checkouts
 are never modified: they are read to cut worktrees from, nothing more.
 

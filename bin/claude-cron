@@ -54,7 +54,16 @@ CLAUDE_BIN="${CLAUDE_CRON_CLAUDE_BIN:-$HOME/.local/bin/claude}"
 # everything, model probes included; a project may pin its own (see
 # `claude_config_dir` in projects.json). Empty leaves the CLI's own default
 # (~/.claude), which is what this tool used before the setting existed.
-CLAUDE_CONFIG_DIR="${CLAUDE_CRON_CLAUDE_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-}}"
+#
+# Taken ONLY from the explicit variable — an ambient CLAUDE_CONFIG_DIR is
+# deliberately not a fallback. cmd_install already refuses it, and the runtime
+# has to agree: `claude-cron run <job>` and `check <job>` are typed inside a
+# Claude Code session as a matter of course, and that session exports its own
+# account. Honouring it would sign the run in as whoever happened to open the
+# terminal — different billing, different plugins, different MCP servers — with
+# nothing in the run record saying which. Unsetting instead is the safe answer:
+# it lands on the CLI default, which is where a run with no setting belongs.
+CLAUDE_CONFIG_DIR="${CLAUDE_CRON_CLAUDE_CONFIG_DIR:-}"
 if [ -n "$CLAUDE_CONFIG_DIR" ]; then export CLAUDE_CONFIG_DIR; else unset CLAUDE_CONFIG_DIR; fi
 PYTHON="${CLAUDE_CRON_PYTHON:-$(command -v python3 2>/dev/null || echo /usr/bin/python3)}"
 # /usr/bin/jq is only guaranteed on macOS 15 and later; before that jq comes
@@ -1308,6 +1317,37 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   got="$( PROJECTS_FILE="$tmp/proj/projects.json"; global_daily_cap )"
   [ -z "$got" ] && ok "and is absent unless declared" || bad "undeclared global -> '$got'"
 
+  echo "the Claude account comes from the setting, never from the environment"
+  # cmd_install refuses an ambient CLAUDE_CONFIG_DIR, and for a while the runtime
+  # did not: `claude-cron run <job>` typed inside a Claude Code session inherited
+  # THAT session's account, so the run billed elsewhere and loaded another
+  # account's plugins with nothing in the record saying so. Probe the real script
+  # rather than a copy of the rule — the rule was never wrong, the wiring was.
+  # Sourcing it with `--help` runs every top-level assignment and then returns.
+  # An empty value and an unset one are the same to `${VAR:-}`, so both can be
+  # passed unconditionally — and stay quoted, which a conditional would not.
+  cc_account_probe() { # <ambient CLAUDE_CONFIG_DIR> <CLAUDE_CRON_CLAUDE_CONFIG_DIR>
+    env CLAUDE_CONFIG_DIR="$1" CLAUDE_CRON_CLAUDE_CONFIG_DIR="$2" \
+        CLAUDE_CRON_CONFIG="$tmp/acct/config" CLAUDE_CRON_DATA="$tmp/acct/data" \
+        bash -c '. "$1" --help >/dev/null 2>&1; printf "%s" "${CLAUDE_CONFIG_DIR-<unset>}"' _ "$SELF"
+  }
+  got="$(cc_account_probe /tmp/cc-someones-session "")"
+  [ "$got" = "<unset>" ] \
+    && ok "an ambient CLAUDE_CONFIG_DIR is not inherited" \
+    || bad "an ambient CLAUDE_CONFIG_DIR leaked in as '$got'"
+  got="$(cc_account_probe /tmp/cc-someones-session /tmp/cc-declared)"
+  [ "$got" = "/tmp/cc-declared" ] \
+    && ok "the declared account wins over the environment" \
+    || bad "declared account -> '$got'"
+  got="$(cc_account_probe "" /tmp/cc-declared)"
+  [ "$got" = "/tmp/cc-declared" ] \
+    && ok "and is honoured when nothing is ambient" \
+    || bad "declared account alone -> '$got'"
+  got="$(cc_account_probe "" "")"
+  [ "$got" = "<unset>" ] \
+    && ok "no setting anywhere leaves the CLI's own default" \
+    || bad "no setting -> '$got'"
+
   echo "spent_today() — today's spend is summed without reading all of history"
   local midnight; midnight="$(date -v0H -v0M -v0S +%s)"
   : > "$tmp/runs.ndjson"
@@ -1406,6 +1446,15 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   if [ ! -f "$jf" ]; then
     ok "no jobs.json — loop invariants not applicable"
   else
+    # All three invariants below find their subjects by an id convention
+    # (`<project>-dev-agent`, `<project>-reviewer-agent`). An install that names
+    # its jobs otherwise matches nothing — and "nothing matched" was reported as
+    # total non-compliance ("missing from 0 of 0"), so the suite was red on every
+    # install not using the suffix, for a rule none of its jobs were breaking.
+    # An invariant over an empty set holds. Say so, and say the convention out
+    # loud in the same breath: a check that silently examined nothing is the
+    # failure mode this whole block exists to prevent.
+    #
     # 1. The cap is enforced in shell, before a session exists, on BOTH boards.
     local capped=0 devjobs=0
     for pc in "$CONFIG_DIR"/prechecks/*-dev-agent.sh; do
@@ -1413,9 +1462,13 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
       devjobs=$(( devjobs + 1 ))
       grep -q 'rc_gate_rework' "$pc" && capped=$(( capped + 1 ))
     done
-    [ "$devjobs" -gt 0 ] && [ "$capped" -eq "$devjobs" ] \
-      && ok "every dev precheck enforces the round cap ($capped/$devjobs)" \
-      || bad "round cap missing from $(( devjobs - capped )) of $devjobs dev prechecks"
+    if [ "$devjobs" -eq 0 ]; then
+      ok "round cap: no prechecks/*-dev-agent.sh here — nothing to check"
+    elif [ "$capped" -eq "$devjobs" ]; then
+      ok "every dev precheck enforces the round cap ($capped/$devjobs)"
+    else
+      bad "round cap missing from $(( devjobs - capped )) of $devjobs dev prechecks"
+    fi
 
     # 2. No prompt still promises an unbounded loop, or a bar that cannot be met.
     local residual
@@ -1442,12 +1495,20 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
             && dev_ok=$(( dev_ok + 1 )) ;;
       esac
     done < <("$JQ" -r '.jobs[] | [.id, (.prompt // "")] | @tsv' "$jf" 2>/dev/null)
-    [ "$rev_n" -gt 0 ] && [ "$rev_ok" -eq "$rev_n" ] \
-      && ok "every reviewer may record a finding without spending a round ($rev_ok/$rev_n)" \
-      || bad "the non-blocking route is missing from $(( rev_n - rev_ok )) of $rev_n reviewers"
-    [ "$dev_n" -gt 0 ] && [ "$dev_ok" -eq "$dev_n" ] \
-      && ok "every dev prompt requires a containment test when a rule widens ($dev_ok/$dev_n)" \
-      || bad "the containment rule is missing from $(( dev_n - dev_ok )) of $dev_n dev prompts"
+    if [ "$rev_n" -eq 0 ]; then
+      ok "non-blocking route: no *-reviewer-agent job here — nothing to check"
+    elif [ "$rev_ok" -eq "$rev_n" ]; then
+      ok "every reviewer may record a finding without spending a round ($rev_ok/$rev_n)"
+    else
+      bad "the non-blocking route is missing from $(( rev_n - rev_ok )) of $rev_n reviewers"
+    fi
+    if [ "$dev_n" -eq 0 ]; then
+      ok "containment rule: no *-dev-agent job here — nothing to check"
+    elif [ "$dev_ok" -eq "$dev_n" ]; then
+      ok "every dev prompt requires a containment test when a rule widens ($dev_ok/$dev_n)"
+    else
+      bad "the containment rule is missing from $(( dev_n - dev_ok )) of $dev_n dev prompts"
+    fi
   fi
 
   rm -rf "$tmp"

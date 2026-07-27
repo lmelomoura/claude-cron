@@ -37,6 +37,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Relatedly, the canonical checkout is no longer detached during a run — the old
   detach never restored, so one isolated run left the operator's own checkout
   headless for good.
+
+  **Upgrading:** two things change how much this matters on an existing install.
+  Nothing repairs a checkout already detached, and a detached checkout is precisely
+  the case where an empty `base` infers wrongly — resolution falls through to
+  `origin/HEAD`, so a project whose work targets `develop` is inferred onto `main`.
+  Both are silent: the only symptom is agents building from a stale or wrong base.
+  So, once per canonical checkout, `git checkout <your-branch>`; and declare `base`
+  per repo wherever `origin/HEAD` is not the branch you work from. Detail in the
+  README's isolation section.
 - **Provisioning hooks: a project makes each fresh worktree usable**
   (`config/provision/<project>.up.sh` / `.down.sh`, editable from the CLI and the
   project editor). A fresh worktree has no `.env`, no `vendor`, no `node_modules` —
@@ -162,6 +171,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   O(all history ever).
 
 ### Fixed
+
+- **The Claude account is no longer taken from an ambient `CLAUDE_CONFIG_DIR`.** The
+  installer already refused it; the runtime did not, and the two have to agree. These
+  commands are typed inside a Claude Code session as a matter of course, and a session
+  exports its own account — so `claude-cron run <job>` and `check <job>` signed in as
+  whoever happened to open that terminal: another account's billing, plugins and MCP
+  servers, with nothing in the run record saying which. Scheduled runs were never
+  affected, launchd inheriting no shell environment, which is exactly why this could
+  sit unnoticed: the failure only appeared on the path a human drives. Only
+  `CLAUDE_CRON_CLAUDE_CONFIG_DIR` and a project's `claude_config_dir` select an
+  account now; with neither set the variable is unset rather than passed through, so a
+  run lands on the CLI's own default. Pinned by a selftest case that sources the real
+  script under a polluted environment — the rule was never wrong, the wiring was, so
+  only an end-to-end probe catches it coming back.
+- **A loop invariant with nothing to match no longer reports total non-compliance.**
+  The dev/review guards find their subjects by an id convention (`*-dev-agent`,
+  `*-reviewer-agent`); an install naming its jobs otherwise matched nothing, and
+  `0 of 0` was arithmetic that failed open into `bad`. `selftest` was therefore red on
+  every such install, for a rule none of its jobs were breaking — and a suite that is
+  always red is a suite nobody reads. An empty set now passes, naming the convention it
+  looked for so a check that examined nothing says so out loud rather than passing
+  quietly.
 
 - **A precheck that could not run no longer reads as "nothing to do".** The gate
   treated every non-zero exit as idle, collapsing the two failures that matter into the
