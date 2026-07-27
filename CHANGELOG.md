@@ -181,6 +181,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The action column no longer collapses onto the Session column.**
+  `td.rowacts{width:1%}` sized a `display:flex` cell below its own content, so the
+  icons overflowed to the left and landed on top of the session id — showing as
+  `e6 [eye] 55`, the text passing under the buttons, with the row's horizontal
+  rule stopping short for the same reason. The original had no such rule: the
+  table sizes that column from its content. Removed, along with the leftover
+  `.jobcell` CSS from the version that put the session inside the Job cell.
+- **The changelog check no longer fires on merge commits.** A merge touches
+  `bin/` by definition and is always newer than the entry that arrived with the
+  branch it merges, so the check failed after every merge with the entry
+  correctly in place — and a check that cries wolf on a healthy repository is one
+  people learn to ignore.
+
+
 - **The runs table is back to the shape it had before the rewrite** — `When ·
   Job · Project · Status · Duration · Cost · Session · actions`, eight columns,
   at its previous density. The rewrite had folded Duration and Cost into one

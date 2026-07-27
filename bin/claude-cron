@@ -933,7 +933,11 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   # CHANGELOG.md did not, this fails while the reason is still known.
   if [ -d "$BASE_DIR/.git" ] && command -v git >/dev/null 2>&1; then
     local _code _log
-    _code="$(git -C "$BASE_DIR" log -1 --format=%ct -- bin skills test 2>/dev/null)"
+    # --no-merges: a merge commit touches bin/ by definition, and is always newer
+    # than the changelog entry that came in WITH the branch it merges. Counting it
+    # made this fail after every single merge, with the entry correctly in place —
+    # a check that cries wolf on a healthy repo is one people learn to ignore.
+    _code="$(git -C "$BASE_DIR" log -1 --no-merges --format=%ct -- bin skills test 2>/dev/null)"
     _log="$(git -C "$BASE_DIR" log -1 --format=%ct -- CHANGELOG.md 2>/dev/null)"
     if [ -z "${_code:-}" ]; then
       ok "no committed code yet — nothing to describe"
