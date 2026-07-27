@@ -32,12 +32,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pull request came from fixtures that were hand-written guesses, so the wrong
   assumption sat in the code *and* in the test and they agreed with each other.
 - **This changelog**, plus a selftest case that fails when `main` moves without it.
-- **`CONTRIBUTING.md` and a pull-request template**, and `main` is now protected —
-  no direct pushes, no force-pushes, no deletion — so outside contributions arrive
-  by pull request against a branch that cannot be rewritten under them. The
-  contribution path is **clone-and-branch, not fork**: the repository is public but
-  its workspace is private, and Bitbucket refuses to fork a repository out of a
-  private workspace. Only `main` is restricted, so working branches push freely.
+- **`CONTRIBUTING.md` and a pull-request template**, and `main` is protected — no
+  force-pushes, no deletion, one approval to merge — so contributions arrive by
+  pull request against a branch that cannot be rewritten under them.
+
+### Changed
+
+- **The project moved to <https://github.com/lmelomoura/claude-cron>.** It was
+  public on Bitbucket, but inside a private company workspace — and Bitbucket
+  refuses to fork a repository out of one, so "public" bought nothing: no outside
+  contributor could fork it, and Bitbucket no longer allows creating the separate
+  workspace that would have fixed it. Full history moved; the old repository was
+  deleted after verifying every commit had arrived.
 
 ### Fixed
 

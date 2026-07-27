@@ -1,7 +1,7 @@
 <!--
-Bitbucket Cloud does not insert this automatically the way GitHub does — copy it
-into the pull request description and fill it in. It exists because the questions
-below are the ones a reviewer would otherwise have to ask, one round-trip each.
+These are the questions a reviewer would otherwise ask one round-trip at a time.
+Delete any line that genuinely does not apply — an unticked box you explain is
+fine, a ticked box that isn't true is not.
 -->
 
 ## What changes, and what it cost to not have it

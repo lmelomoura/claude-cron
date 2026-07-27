@@ -392,13 +392,10 @@ Run the checks before pushing:
 claude-cron selftest      # includes test/round-cap.test.sh
 ```
 
-**Contributions are welcome.** `main` is protected, so everything arrives by pull
-request — but **do not fork**: the repository lives in a private workspace, which
-Bitbucket will not let you fork out of. Clone it, branch (`fix/…`, `feat/…` are
-unrestricted), push, and open the pull request. `CONTRIBUTING.md` has
-the workflow and the reasoning behind these rules, and
-`.bitbucket/PULL_REQUEST_TEMPLATE.md` is the description to copy into a new pull
-request (Bitbucket Cloud does not insert it for you).
+**Contributions are welcome.** Fork it, branch, and open a pull request against
+`main` — which is protected: no force-pushes, no deletions, one approval to merge.
+`CONTRIBUTING.md` has the workflow and the reasoning behind the rules, and the
+pull request description is pre-filled from `.github/pull_request_template.md`.
 
 ---
 
