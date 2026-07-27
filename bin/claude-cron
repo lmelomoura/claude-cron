@@ -47,8 +47,31 @@ SERVER_BIN="$BIN_DIR/claude-cron-server"
 PORT="${CLAUDE_CRON_PORT:-8787}"
 
 CLAUDE_BIN="${CLAUDE_CRON_CLAUDE_BIN:-$HOME/.local/bin/claude}"
+# Which Claude account every run signs in as. Claude Code keeps credentials,
+# settings, plugins, MCP servers and past sessions per config directory — one
+# signed-in account each — so this variable is the only thing that chooses
+# between two accounts on the same Mac. Set here it is the default for
+# everything, model probes included; a project may pin its own (see
+# `claude_config_dir` in projects.json). Empty leaves the CLI's own default
+# (~/.claude), which is what this tool used before the setting existed.
+#
+# Taken ONLY from the explicit variable — an ambient CLAUDE_CONFIG_DIR is
+# deliberately not a fallback. cmd_install already refuses it, and the runtime
+# has to agree: `claude-cron run <job>` and `check <job>` are typed inside a
+# Claude Code session as a matter of course, and that session exports its own
+# account. Honouring it would sign the run in as whoever happened to open the
+# terminal — different billing, different plugins, different MCP servers — with
+# nothing in the run record saying which. Unsetting instead is the safe answer:
+# it lands on the CLI default, which is where a run with no setting belongs.
+CLAUDE_CONFIG_DIR="${CLAUDE_CRON_CLAUDE_CONFIG_DIR:-}"
+if [ -n "$CLAUDE_CONFIG_DIR" ]; then export CLAUDE_CONFIG_DIR; else unset CLAUDE_CONFIG_DIR; fi
 PYTHON="${CLAUDE_CRON_PYTHON:-$(command -v python3 2>/dev/null || echo /usr/bin/python3)}"
-JQ=/usr/bin/jq
+# /usr/bin/jq is only guaranteed on macOS 15 and later; before that jq comes
+# from Homebrew, at a path that differs between Apple Silicon and Intel. The
+# installer checks `jq` on PATH, so hard-coding a different path here meant an
+# install could pass every check and then have every single run fail. Resolve
+# it the same way python3 is resolved, and let the environment override.
+JQ="${CLAUDE_CRON_JQ:-$(command -v jq 2>/dev/null || echo /usr/bin/jq)}"
 
 mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" "$LOCK_DIR" "$WORKTREES_DIR"
 [ -f "$STATE_FILE" ] || echo '{}' > "$STATE_FILE"
@@ -73,9 +96,37 @@ num() { # num <text> [fallback] -> a plain non-negative integer, always
 }
 
 
+# A leading ~ is the shell's, not the filesystem's: a path that arrives from
+# JSON has never been through word expansion, so "~/.claude-work" would be taken
+# literally and land a directory called "~" next to the config file.
+expand_home() { # expand_home <path>
+  case "${1:-}" in
+    '~')   printf '%s' "$HOME" ;;
+    '~/'*) printf '%s/%s' "$HOME" "${1#\~/}" ;;
+    *)     printf '%s' "${1:-}" ;;
+  esac
+}
+
 now_epoch() { date +%s; }
 iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 log_tick() { printf '%s %s\n' "$(iso_now)" "$*" >> "$TICK_LOG"; }
+
+# Nothing ever trimmed tick.log or exec.log, so both grew for the life of the
+# install — and the dashboard re-reads tick.log WHOLE every 5s to count the
+# day's activity, so an old install pays for that growth on every poll. Keep one
+# previous generation and start fresh: history far enough back to be useless for
+# the 24h counters is not worth carrying for ever.
+LOG_MAX_BYTES="${CLAUDE_CRON_LOG_MAX:-4194304}"   # 4 MiB per file
+log_rotate() { # log_rotate <file> [max-bytes]
+  local f="${1:-}" max; max="$(num "${2:-$LOG_MAX_BYTES}" "$LOG_MAX_BYTES")"
+  [ -f "$f" ] || return 0
+  [ "$(num "$(wc -c < "$f" 2>/dev/null)")" -ge "$max" ] || return 0
+  # Exactly one generation: mv replaces any existing .1, so the chain never
+  # grows. A run holding exec.log open keeps writing into the renamed file —
+  # harmless, and it stops at the end of that run.
+  mv -f "$f" "$f.1" 2>/dev/null || return 0
+  : > "$f" 2>/dev/null || true
+}
 
 # ---------------------------------------------------------------- job helpers
 
@@ -84,8 +135,6 @@ jobs_json() {
   "$JQ" -e . "$JOBS_FILE" >/dev/null 2>&1 || die "Malformed JSON in $JOBS_FILE"
   cat "$JOBS_FILE"
 }
-
-job_ids() { jobs_json | "$JQ" -r '.jobs[].id'; }
 
 # NOTE: deliberately NOT jq's `//` operator. `//` treats **false** as absent, so
 # `(.enabled) // "true"` returned "true" for a job with `enabled: false` — which
@@ -138,18 +187,41 @@ state_get() { # state_get <id> <field> [default]
     '.[$id][$f] as $v | (if $v == null then $def else $v end) | tostring' "$STATE_FILE" 2>/dev/null
 }
 
-# Serialize state writes: detached runs execute in parallel, and state_set is a
-# read-modify-write on one shared file, so two of them racing would drop a
-# field. A short mkdir spin-lock keeps writes atomic across processes.
-_state_lock() {
-  local lock="$LOCK_DIR/.state.lock" i=0
-  while ! mkdir "$lock" 2>/dev/null; do
+# ---- the one mkdir lock every serialized write uses ------------------------
+# Every lock here used to break purely on ELAPSED TIME (~4s) without ever asking
+# whether the holder was still alive. That inverts the point of a lock: the
+# slowest legitimate holder is precisely the one most likely to be robbed, and
+# the slowest holder here is a journal rewrite over a long history — so the
+# record a run had just appended could be lost to the very mechanism meant to
+# protect it. `acquire_lock` already knew the right answer (write your pid, and
+# only break the lock when that pid is gone); this generalises it to the rest.
+LOCK_GRACE_SECONDS="${CLAUDE_CRON_LOCK_GRACE:-30}"
+
+lock_take() { # lock_take <lockdir> — blocks until held; always succeeds
+  local d="${1:-}" hold i=0
+  while ! mkdir "$d" 2>/dev/null; do
+    hold="$(cat "$d/pid" 2>/dev/null || true)"
+    if [ -n "$hold" ] && ! kill -0 "$hold" 2>/dev/null; then
+      rm -rf "$d"; continue          # the owner is gone: genuinely stale
+    fi
+    # A live owner is WAITED for, however long it takes. An unreadable owner is
+    # the narrow race between mkdir and writing the pid — give that, and only
+    # that, a time-based escape.
     i=$(( i + 1 ))
-    [ "$i" -ge 400 ] && { rm -rf "$lock"; i=0; }   # break a stale lock (~4s)
+    if [ -z "$hold" ] && [ "$i" -ge $(( LOCK_GRACE_SECONDS * 100 )) ]; then
+      rm -rf "$d"; i=0; continue
+    fi
     sleep 0.01
   done
+  echo $$ > "$d/pid" 2>/dev/null || true
+  return 0
 }
-_state_unlock() { rmdir "$LOCK_DIR/.state.lock" 2>/dev/null; }
+lock_drop() { rm -rf "${1:-}"; }   # rm -rf, not rmdir: the dir holds a pid file
+
+# Serialize state writes: detached runs execute in parallel, and state_set is a
+# read-modify-write on one shared file, so two of them racing would drop a field.
+_state_lock()   { lock_take "$LOCK_DIR/.state.lock"; }
+_state_unlock() { lock_drop "$LOCK_DIR/.state.lock"; }
 
 state_set() { # state_set <id> <field> <value-as-json>
   local id="$1" field="$2" value="$3" tmp
@@ -160,27 +232,62 @@ state_set() { # state_set <id> <field> <value-as-json>
   _state_unlock
 }
 
+# Several fields in ONE locked read-modify-write. The end of a run set seven
+# fields one at a time, so it took the state lock seven times and forked jq
+# seven times to record a single event — and every other run on the machine
+# queued behind each of them. Merges into whatever the job already has, so no
+# field written elsewhere is lost.
+state_set_many() { # state_set_many <id> <json-object>
+  local id="$1" obj="$2" tmp
+  _state_lock
+  tmp="$(mktemp "$DATA_DIR/.state.XXXXXX")"
+  "$JQ" --arg id "$id" --argjson o "$obj" \
+    '.[$id] = ((.[$id] // {}) + $o)' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+  _state_unlock
+}
+
+# What a precheck's exit status MEANS. The engine used to read every non-zero
+# status as "nothing to do", which made the two failures that matter look
+# identical to the one healthy outcome: a probe that ran and found no work
+# (exit 1) and a probe that could not run AT ALL (a missing credentials file,
+# an unsourceable helper, a typo -> 2, 126, 127) both left the job sitting
+# quietly "idle". A job could therefore stop working for good and the dashboard
+# would keep reporting it as healthy and up to date. The contract is now
+# explicit and narrow: 0 = work, 1 = idle, anything else = the probe is broken.
+precheck_verdict() { # precheck_verdict <exit-code> -> work|idle|error
+  case "$(num "${1:-}" 99)" in
+    0) printf 'work'  ;;
+    1) printf 'idle'  ;;
+    *) printf 'error' ;;
+  esac
+}
+
 # ------------------------------------------------------------- schedule gates
 
-# Is now inside the job's active window? 0 = yes, 1 = no (reason on stdout).
-in_window() {
-  local id="$1" days hours start end nowmin dow
-  days="$(job_get "$id" '.active_days' '')"
-  hours="$(job_get "$id" '.active_hours' '')"
+# Is a moment inside a job's active window? 0 = yes, 1 = no (reason on stdout).
+# Takes VALUES rather than a job id: the tick reads every job's fields in one jq
+# pass (see tick_plan), and passing the day/minute in makes the rule testable
+# without waiting for a Tuesday.
+in_window_vals() { # in_window_vals <days-csv> <hours> [dow] [minute-of-day]
+  local days="${1:-}" hours="${2:-}" dow="${3:-}" nowmin="${4:-}" start end s e
+  case "$days" in null) days="" ;; esac
+  case "$hours" in null) hours="" ;; esac
+  [ -n "$dow" ] || dow="$(date +%u)"                         # 1=Mon .. 7=Sun
+  [ -n "$nowmin" ] || nowmin=$(( 10#$(date +%H) * 60 + 10#$(date +%M) ))
 
-  if [ -n "$days" ] && [ "$days" != "null" ]; then
-    dow="$(date +%u)"   # 1=Mon .. 7=Sun
+  if [ -n "$days" ]; then
     case ",$days," in
       *",$dow,"*) : ;;
       *) echo "outside active_days ($days)"; return 1 ;;
     esac
   fi
 
-  if [ -n "$hours" ] && [ "$hours" != "null" ]; then
+  if [ -n "$hours" ]; then
     start="${hours%%-*}"; end="${hours##*-}"
-    nowmin=$(( 10#$(date +%H) * 60 + 10#$(date +%M) ))
-    local s=$(( 10#${start%%:*} * 60 + 10#${start##*:} ))
-    local e=$(( 10#${end%%:*} * 60 + 10#${end##*:} ))
+    # 10# throughout: "08" is octal to bash arithmetic otherwise, and 08/09 are
+    # not even valid octal — the window would abort rather than merely misread.
+    s=$(( 10#${start%%:*} * 60 + 10#${start##*:} ))
+    e=$(( 10#${end%%:*} * 60 + 10#${end##*:} ))
     if [ "$s" -le "$e" ]; then
       [ "$nowmin" -ge "$s" ] && [ "$nowmin" -lt "$e" ] || { echo "outside active_hours ($hours)"; return 1; }
     else  # window crosses midnight
@@ -190,12 +297,37 @@ in_window() {
   return 0
 }
 
-is_due() { # is_due <id> ; 0 = due
-  local id="$1" interval last now
-  interval="$(job_get "$id" '.interval_seconds' '300')"
-  last="$(state_get "$id" last_start 0)"
-  now="$(now_epoch)"
-  [ "$(( now - last ))" -ge "$interval" ]
+# --- backoff on repeated failure -------------------------------------------
+# A job that fails relaunched every interval at full budget, for as long as it
+# kept failing — the loop had no notion of "this is not working". Two failures
+# are noise (a flaky network, a busy remote); from the third the wait doubles
+# each time, capped so a job that is fixed recovers within one capped interval
+# rather than hours later. The streak resets on ANY run that is not an error,
+# so one good run puts the job straight back on its normal cadence.
+BACKOFF_AFTER=3        # failures before the wait starts growing
+BACKOFF_MAX=16         # never wait more than 16x the configured interval
+
+backoff_multiplier() { # backoff_multiplier <consecutive-failures> -> 1|2|4|8|16
+  local s m=1; s="$(num "${1:-}" 0)"
+  [ "$s" -lt "$BACKOFF_AFTER" ] && { printf '1'; return; }
+  local steps=$(( s - BACKOFF_AFTER + 1 )) i=0
+  while [ "$i" -lt "$steps" ] && [ "$m" -lt "$BACKOFF_MAX" ]; do
+    m=$(( m * 2 )); i=$(( i + 1 ))
+  done
+  [ "$m" -gt "$BACKOFF_MAX" ] && m="$BACKOFF_MAX"
+  printf '%s' "$m"
+}
+
+effective_interval() { # effective_interval <interval> <streak>
+  local iv; iv="$(num "${1:-}" 300)"
+  printf '%s' "$(( iv * $(backoff_multiplier "${2:-0}") ))"
+}
+
+is_due_vals() { # is_due_vals <interval> <last-start> <fail-streak> ; 0 = due
+  local interval last
+  interval="$(effective_interval "${1:-300}" "${3:-0}")"
+  last="$(num "${2:-0}")"
+  [ "$(( $(now_epoch) - last ))" -ge "$interval" ]
 }
 
 # Is the agent's turn finished? True only when the LAST decodable event in the
@@ -377,9 +509,13 @@ release_lock() { rm -rf "$LOCK_DIR/$1"; }
 # A job may now run several times in parallel — worktrees remove the working-tree
 # contention that used to force one-at-a-time. Each run holds its OWN slot dir
 # $LOCK_DIR/<id>/<pid>/ carrying its pid, child pid and worktree breadcrumb.
-# `max_parallel` caps how many run at once (default 1, so review/promote stay
-# single). This is separate from acquire_lock above, which remains a single
-# mutex for internal locks (_models).
+# `max_parallel` caps how many run at once. The default is 3 (see run_job and
+# the tick), NOT the 1 this comment used to claim -- and the difference matters
+# to anyone reading it before setting the field: a job whose agent only records
+# its progress at the END of a run (moving a card, applying a label) will have a
+# second run launched against the same work by the next tick. Such a job wants
+# an explicit 1. This is separate from acquire_lock above, which remains a
+# single mutex for internal locks (_models).
 
 slots_dir() { echo "$LOCK_DIR/$1"; }     # base dir holding a job's run slots
 
@@ -401,29 +537,31 @@ acquire_slot() { # <id> <max> -> prints the slot dir; non-zero when at capacity
   local base="$LOCK_DIR/$id" slot n L="" i=0
   mkdir -p "$base"
   L="$base/.acq"                         # short mutex so the ceiling holds under a race
-  while ! mkdir "$L" 2>/dev/null; do i=$((i + 1)); [ "$i" -ge 300 ] && { rm -rf "$L"; i=0; }; sleep 0.01; done
+  lock_take "$L"
   n="$(slots_active "$id")"              # also prunes dead slots
-  if [ "$max" -gt 0 ] && [ "$n" -ge "$max" ]; then rmdir "$L" 2>/dev/null; return 1; fi
+  if [ "$max" -gt 0 ] && [ "$n" -ge "$max" ]; then lock_drop "$L"; return 1; fi
   slot="$base/$$"                        # unique per _exec process
   mkdir -p "$slot"; echo $$ > "$slot/pid"
-  rmdir "$L" 2>/dev/null
+  lock_drop "$L"
   printf '%s\n' "$slot"
 }
 
 release_slot() { rm -rf "$1"; }          # <slot-dir>
 
 # End-of-run cleanup, shared by the normal exit path and the EXIT trap (so a
-# crashed or killed run cleans up too). Tears down the run's worktree if it is
-# safe (see wt_teardown), THEN releases its slot. Reads the worktree from the
+# crashed or killed run cleans up too). Tears down the run's worktrees if that is
+# safe (see wt_teardown), THEN releases its slot. Reads the run dir from the
 # slot breadcrumb; the trap bakes in the slot path. Idempotent.
 run_cleanup() { # <id> <slot-dir>
-  local id="$1" slot="${2:-}" wt project cwd
+  local id="$1" slot="${2:-}" wt project
   [ -n "$slot" ] || return 0
   wt="$(cat "$slot/worktree" 2>/dev/null || true)"
   if [ -n "$wt" ]; then
     project="$(job_get "$id" '.project' '')"
-    cwd="$(resolve "$id" cwd "$HOME")"
-    wt_teardown "$id" "$project" "$cwd" "$wt"
+    # The job's cwd is not needed: teardown finds each repo's canonical checkout
+    # through wt_main_of, which works even for a run dir built from repos the
+    # job itself never names.
+    wt_teardown "$id" "$project" "$wt"
   fi
   release_slot "$slot"
 }
@@ -441,15 +579,8 @@ lock_active() { # 0 = a run is currently holding the lock for <id> (single mutex
 # renames. Without a shared lock a rewrite can be built from a snapshot taken
 # before an append and then overwrite it — losing a finished run's record for
 # good. Both sides take this lock; the dashboard takes the same one by name.
-journal_lock() {
-  local lock="$LOCK_DIR/.journal.lock" i=0
-  while ! mkdir "$lock" 2>/dev/null; do
-    i=$(( i + 1 ))
-    [ "$i" -ge 400 ] && { rm -rf "$lock"; i=0; }   # break a stale lock (~4s)
-    sleep 0.01
-  done
-}
-journal_unlock() { rmdir "$LOCK_DIR/.journal.lock" 2>/dev/null; }
+journal_lock()   { lock_take "$LOCK_DIR/.journal.lock"; }
+journal_unlock() { lock_drop "$LOCK_DIR/.journal.lock"; }
 
 record_run() { # <id> <status> <start> <end> <cost> <turns> <session> <logfile> <note> <forced> <precheck> <project> <model> <model_id> <resumed_from>
   "$JQ" -nc \
@@ -474,14 +605,47 @@ record_run() { # <id> <status> <start> <end> <cost> <turns> <session> <logfile> 
   rm -f "$LOCK_DIR/.rec.$$"
 }
 
-# Total cost of a job's runs since local midnight — powers the daily cap.
-spent_today() { # spent_today <id> -> dollars (float)
-  local id="$1" midnight
+# How much of the journal the daily-spend scan reads. Records are appended in
+# time order, so today's are always at the END — reading the whole file to find
+# them made every single run launch O(all history ever). 4 MiB is thousands of
+# records: far more than any day, and bounded for ever. A partial first line is
+# dropped by `fromjson?`, which is why the offset can be a plain byte count.
+SPEND_SCAN_BYTES="${CLAUDE_CRON_SPEND_SCAN:-4194304}"
+
+_spend_since_midnight() { # _spend_since_midnight [id] -> dollars (float)
+  local id="${1:-}" midnight
   midnight="$(date -v0H -v0M -v0S +%s 2>/dev/null || echo 0)"
-  [ -f "$RUNS_FILE" ] || { echo 0; return; }
-  "$JQ" -rR --arg id "$id" --argjson mid "$midnight" \
-    'fromjson? | select(.id==$id and ((.start//0)>=$mid)) | (.cost//0)' "$RUNS_FILE" 2>/dev/null \
+  [ -f "$RUNS_FILE" ] || { printf '0'; return; }
+  tail -c "$SPEND_SCAN_BYTES" "$RUNS_FILE" 2>/dev/null \
+    | "$JQ" -rR --arg id "$id" --argjson mid "$midnight" \
+        'fromjson? | select(((.start//0)>=$mid) and ($id=="" or .id==$id)) | (.cost//0)' 2>/dev/null \
     | awk '{s+=$1} END{printf "%.6f", s+0}'
+}
+
+# Total cost of a job's runs since local midnight — powers the per-job daily cap.
+spent_today() { _spend_since_midnight "$1"; }
+
+# Total cost of EVERY job's runs since local midnight — powers the global cap.
+spent_today_all() { _spend_since_midnight ""; }
+
+# The daily ceiling that applies to a job: its own, else its project's, else
+# none. It used to be read from the job ALONE, so a `daily_budget_usd` set on a
+# project silently did nothing — which is the one place you would naturally put
+# it when a project owns several jobs.
+daily_cap_for() { # daily_cap_for <id> -> dollars, or empty for "no cap"
+  local v; v="$(resolve "$1" daily_budget_usd '')"
+  case "$v" in null) v="" ;; esac
+  printf '%s' "$v"
+}
+
+# A ceiling on what EVERYTHING spends in a day, declared once at the top of
+# projects.json. Per-job caps cannot express "the whole fleet has a budget":
+# 21 jobs each correctly under their own limit still add up.
+global_daily_cap() { # -> dollars, or empty for "no cap"
+  local v
+  v="$(projects_json | "$JQ" -r '.global_daily_budget_usd // "" | tostring' 2>/dev/null)"
+  case "$v" in null) v="" ;; esac
+  printf '%s' "$v"
 }
 
 # --- family → newest concrete model id -------------------------------------
@@ -647,6 +811,23 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   want() { # want <label> <expected 0|1> <actual-rc>
     [ "$2" -eq "$3" ] && ok "$1" || bad "$1"
   }
+  size_of() { num "$(wc -c < "${1:-/nonexistent}" 2>/dev/null)"; }
+
+  # The suite exercises wt_setup/wt_teardown/wt_provision for real, and those
+  # write through log_tick and the provisioning hooks. Pointed at the live data
+  # dir they append fake jobs (j1..j9, "provision up failed for repoA") to the
+  # very tick.log the dashboard parses for its 24h activity counts — the test
+  # suite inventing jobs in production history. Shadow the whole data dir, at
+  # FUNCTION scope so every helper these tests call sees it too (bash is
+  # dynamically scoped), and prove at the end that nothing leaked.
+  local _real_tick="$TICK_LOG" _real_exec="$DATA_DIR/exec.log"
+  local _tick0 _exec0
+  _tick0="$(size_of "$_real_tick")"; _exec0="$(size_of "$_real_exec")"
+  local DATA_DIR="$tmp/data"
+  local TICK_LOG="$DATA_DIR/tick.log"
+  local LOG_DIR="$DATA_DIR/logs" LOCK_DIR="$DATA_DIR/locks"
+  local WORKTREES_DIR="$DATA_DIR/worktrees" RUNS_FILE="$DATA_DIR/runs.ndjson"
+  mkdir -p "$DATA_DIR" "$LOG_DIR" "$LOCK_DIR" "$WORKTREES_DIR"
 
   echo "num() — a number from a command is always an integer"
   # This is the exact shape that once produced "0\n0" and killed live agents.
@@ -815,6 +996,430 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   got="$("$JQ" -r '[.jobs[] | select(.id=="x") | .enabled] | .[0] as $v | (if $v == null then "true" else $v end) | tostring' "$tmp/jobs.json")"
   [ "$got" = "false" ] && ok "enabled:false reads as false (jq // would say true)" || bad "enabled:false read as '$got'"
 
+  echo "wt_repos() — declared repos win, a bare cwd is the single-repo case"
+  mkdir -p "$tmp/proj"
+  printf '%s' '{"projects":[{"name":"multi","cwd":"/x/front","repos":[
+      {"name":"front","path":"/x/front","base":"develop"},
+      {"name":"back","path":"/x/back","base":"release"}]},
+    {"name":"solo","cwd":"/x/solo"}]}' > "$tmp/proj/projects.json"
+  got="$( PROJECTS_FILE="$tmp/proj/projects.json"; wt_repos multi /x/front | wc -l | tr -d ' ' )"
+  [ "$got" = "2" ] && ok "a declared multi-repo project yields 2 rows" || bad "multi yielded '$got' rows"
+  got="$( PROJECTS_FILE="$tmp/proj/projects.json"; wt_repos multi /x/front | sed -n '2p' )"
+  [ "$got" = "$(printf 'back\t/x/back\trelease')" ] && ok "name/path/base survive the round trip" \
+    || bad "second row was '$got'"
+  got="$( PROJECTS_FILE="$tmp/proj/projects.json"; wt_repos solo /x/solo )"
+  [ "$got" = "$(printf 'solo\t/x/solo\t')" ] && ok "no .repos[] synthesises one row from cwd" \
+    || bad "solo row was '$got'"
+
+  echo "wt_base_ref() — declared base wins, then local, then HEAD"
+  local gitc="git -c user.name=cc -c user.email=cc@local -c commit.gpgsign=false"
+  mkdir -p "$tmp/g"
+  git init -q --bare "$tmp/g/origin.git"
+  git -c init.defaultBranch=develop init -q "$tmp/g/repo"
+  ( cd "$tmp/g/repo" && echo hi > f && git add f && $gitc commit -qm init \
+      && git remote add origin "$tmp/g/origin.git" && git push -q -u origin develop ) >/dev/null 2>&1
+  got="$(wt_base_ref "$tmp/g/repo" develop)"
+  [ "$got" = "origin/develop" ] && ok "a pushed base resolves to origin/<base>" || bad "got '$got'"
+  ( cd "$tmp/g/repo" && git branch local-only ) >/dev/null 2>&1
+  got="$(wt_base_ref "$tmp/g/repo" local-only)"
+  [ "$got" = "local-only" ] && ok "a local-only base resolves to the local branch" || bad "got '$got'"
+  got="$(wt_base_ref "$tmp/g/repo" no-such-branch)"
+  [ "$got" = "HEAD" ] && ok "an unresolvable base falls back to HEAD" || bad "got '$got'"
+  got="$(wt_base_ref "$tmp/g/repo" "")"
+  [ "$got" = "origin/develop" ] && ok "an empty base is inferred from the current branch" || bad "got '$got'"
+
+  echo "wt_base_ref() — a hung fetch cannot hold a run for ever"
+  # The fetch runs inside wt_setup, i.e. AFTER the run has taken its slot and
+  # BEFORE the watchdog exists — so a remote that accepts the connection and
+  # then says nothing used to pin the slot indefinitely. With max_parallel=1
+  # that is the job dead until a human notices.
+  mkdir -p "$tmp/fakebin"
+  printf '%s\n' '#!/bin/bash' \
+    'for a in "$@"; do [ "$a" = fetch ] && { sleep 8; exit 0; }; done' \
+    'exec /usr/bin/git "$@"' > "$tmp/fakebin/git"
+  chmod +x "$tmp/fakebin/git"
+  local t0 elapsed ref_got
+  t0="$(now_epoch)"
+  ref_got="$( PATH="$tmp/fakebin:$PATH"; wt_base_ref "$tmp/g/repo" develop 2 2>/dev/null )"
+  elapsed=$(( $(now_epoch) - t0 ))
+  [ "$elapsed" -lt 6 ] && ok "a stalled fetch is abandoned after the timeout (${elapsed}s)" \
+    || bad "wt_base_ref waited ${elapsed}s for a hung fetch"
+  [ "$ref_got" = "origin/develop" ] \
+    && ok "the base still resolves from the refs already on disk" \
+    || bad "after a timed-out fetch the base resolved to '$ref_got'"
+
+  echo "wt_provision() — a missing hook is a no-op, a failing one is a failure"
+  mkdir -p "$tmp/cfg/provision" "$tmp/run/repoA"
+  ( CONFIG_DIR="$tmp/cfg"; PROJECTS_FILE="$tmp/proj/projects.json"
+    wt_provision up nohooks j1 "$tmp/run" repoA /x/a "$tmp/run/repoA" develop ) >/dev/null 2>&1
+  want "no script at all is a no-op" 0 $?
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s %s\n" "$CC_REPO_NAME" "$CC_BASE" > "$CC_WORKTREE/seen"' \
+    > "$tmp/cfg/provision/hooked.up.sh"
+  ( CONFIG_DIR="$tmp/cfg"; PROJECTS_FILE="$tmp/proj/projects.json"
+    wt_provision up hooked j1 "$tmp/run" repoA /x/a "$tmp/run/repoA" develop ) >/dev/null 2>&1
+  want "a passing hook returns 0" 0 $?
+  got="$(cat "$tmp/run/repoA/seen" 2>/dev/null)"
+  [ "$got" = "repoA develop" ] && ok "the hook sees CC_REPO_NAME and CC_BASE" || bad "hook saw '$got'"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 3' > "$tmp/cfg/provision/broken.up.sh"
+  ( CONFIG_DIR="$tmp/cfg"; PROJECTS_FILE="$tmp/proj/projects.json"
+    wt_provision up broken j1 "$tmp/run" repoA /x/a "$tmp/run/repoA" develop ) >/dev/null 2>&1
+  [ $? -ne 0 ] && ok "a failing hook reports failure" || bad "a failing hook reported success"
+
+  echo "wt_setup() — one worktree per repo, a manifest, and an untouched canonical"
+  git -c init.defaultBranch=develop init -q "$tmp/g/repo2"
+  ( cd "$tmp/g/repo2" && echo hi > f && git add f && $gitc commit -qm init ) >/dev/null 2>&1
+  printf '%s' '{"projects":[{"name":"two","cwd":"'"$tmp"'/g/repo","repos":[
+      {"name":"one","path":"'"$tmp"'/g/repo","base":"develop"},
+      {"name":"two","path":"'"$tmp"'/g/repo2","base":"develop"}]}]}' > "$tmp/proj/two.json"
+  local rd="$tmp/wtroot/j2/stampA" prim
+  prim="$( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+           wt_setup j2 two "$tmp/g/repo" stampA )"
+  [ "$prim" = "$rd/one" ] && ok "the primary worktree is the repo matching .cwd" || bad "primary was '$prim'"
+  [ -d "$rd/one" ] && [ -d "$rd/two" ] && ok "one worktree per declared repo" || bad "missing worktrees"
+  got="$("$JQ" -r '.repos | length' "$rd/.run.json" 2>/dev/null)"
+  [ "$got" = "2" ] && ok "the manifest lists both repos" || bad "manifest listed '$got'"
+  got="$("$JQ" -r '.repos[0].fork_sha' "$rd/.run.json" 2>/dev/null)"
+  [ "$got" = "$(git -C "$rd/one" rev-parse HEAD)" ] && ok "fork_sha matches the worktree's HEAD" \
+    || bad "fork_sha was '$got'"
+  got="$(git -C "$tmp/g/repo" symbolic-ref --short --quiet HEAD 2>/dev/null)"
+  [ "$got" = "develop" ] && ok "the canonical checkout keeps its branch" || bad "canonical is on '$got'"
+
+  echo "wt_setup() — a project that declares no repos still gets its one worktree"
+  printf '%s' '{"projects":[{"name":"solo1","cwd":"'"$tmp"'/g/repo2"}]}' > "$tmp/proj/solo.json"
+  prim="$( PROJECTS_FILE="$tmp/proj/solo.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+           wt_setup j9 solo1 "$tmp/g/repo2" stampS )"
+  [ "$prim" = "$tmp/wtroot/j9/stampS/repo2" ] && ok "the single-repo path needs no .repos[]" \
+    || bad "single-repo primary was '$prim'"
+  got="$(wt_run_worktrees "$tmp/wtroot/j9/stampS" | wc -l | tr -d ' ')"
+  [ "$got" = "1" ] && ok "exactly one worktree, named after the cwd" || bad "got $got worktrees"
+
+  echo "wt_setup() — a failing hook aborts, takes down what it built, leaves nothing"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$tmp/cfg/provision/two.up.sh"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "$CC_REPO_NAME" >> "$tmp_down_log"' \
+    > "$tmp/cfg/provision/two.down.sh"
+  export tmp_down_log="$tmp/abort-down.log"; : > "$tmp_down_log"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup j2 two "$tmp/g/repo" stampB ) >/dev/null 2>&1
+  want "a failing up aborts the setup" 1 $?
+  [ ! -d "$tmp/wtroot/j2/stampB" ] && ok "the run dir is gone after a rollback" || bad "run dir survived"
+  got="$(sort -u "$tmp_down_log" 2>/dev/null | tr '\n' ' ')"
+  [ "$got" = "one two " ] && ok "down ran for what had been built before the abort" \
+    || bad "abort ran down for '$got'"
+  unset tmp_down_log
+  rm -f "$tmp/cfg/provision/two.up.sh" "$tmp/cfg/provision/two.down.sh"
+
+  echo "wt_teardown() — down runs, and unpushed work in ANY repo preserves the run"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "$CC_REPO_NAME" >> "$CC_RUN_DIR/down.log"' \
+    > "$tmp/cfg/provision/two.down.sh"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_teardown j2 two "$rd" ) >/dev/null 2>&1
+  [ ! -d "$rd" ] && ok "a clean run dir is removed" || bad "clean run dir survived"
+
+  local rd2="$tmp/wtroot/j2/stampC"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup j2 two "$tmp/g/repo" stampC ) >/dev/null 2>&1
+  ( cd "$rd2/two" && echo work > new.txt && git add new.txt && $gitc commit -qm work ) >/dev/null 2>&1
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_unsafe_to_remove "$rd2" ) >/dev/null 2>&1
+  want "an unpushed commit in one repo preserves the whole run" 0 $?
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_teardown j2 two "$rd2" ) >/dev/null 2>&1
+  [ -d "$rd2/one" ] && ok "the clean sibling is kept too (all or nothing)" || bad "sibling was removed"
+  got="$(sort -u "$rd2/down.log" 2>/dev/null | tr '\n' ' ')"
+  [ "$got" = "one two " ] && ok "down ran for every repo even though the run was kept" \
+    || bad "down.log held '$got'"
+  # A preserved run dir is swept again on every tick. Without a marker, `down`
+  # re-runs for ever -- a `docker compose down -v` a minute, for as long as the
+  # unpushed work sits there.
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_teardown j2 two "$rd2" ) >/dev/null 2>&1
+  got="$(wc -l < "$rd2/down.log" 2>/dev/null | tr -d ' ')"
+  [ "$got" = "2" ] && ok "down runs ONCE per run dir, however often teardown is called" \
+    || bad "down ran $got times for 2 repos"
+  rm -f "$tmp/cfg/provision/two.down.sh"
+
+  echo "wt_unsafe_to_remove() — what provisioning left behind is not the agent's work"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo residue > provisioned.txt' \
+    > "$tmp/cfg/provision/two.up.sh"
+  local rd3="$tmp/wtroot/j4/stampE"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup j4 two "$tmp/g/repo" stampE ) >/dev/null 2>&1
+  [ -f "$rd3/one/provisioned.txt" ] && ok "the hook's untracked file is there" || bad "hook wrote nothing"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_unsafe_to_remove "$rd3" ) >/dev/null 2>&1
+  want "provisioning residue alone does NOT preserve a run" 1 $?
+  echo "the agent was here" > "$rd3/two/agent.txt"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_unsafe_to_remove "$rd3" ) >/dev/null 2>&1
+  want "a file the agent added after provisioning DOES preserve it" 0 $?
+  rm -f "$tmp/cfg/provision/two.up.sh"
+
+  echo "wt_prune_orphans() — an unclaimed run dir is reaped, a claimed one is not"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup j3 two "$tmp/g/repo" stampD ) >/dev/null 2>&1
+  mkdir -p "$tmp/locks/j3/999"
+  echo $$ > "$tmp/locks/j3/999/pid"
+  echo "$tmp/wtroot/j3/stampD" > "$tmp/locks/j3/999/worktree"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
+    wt_prune_orphans ) >/dev/null 2>&1
+  [ -d "$tmp/wtroot/j3/stampD" ] && ok "a run dir a live slot claims is left alone" \
+    || bad "the sweep deleted a claimed run dir"
+  rm -rf "$tmp/locks/j3"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
+    wt_prune_orphans ) >/dev/null 2>&1
+  [ ! -d "$tmp/wtroot/j3/stampD" ] && ok "an unclaimed run dir is reaped" || bad "orphan survived"
+
+  echo "toggle-many flips only the jobs it was handed"
+  printf '%s' '{"jobs":[{"id":"a"},{"id":"b","enabled":false},{"id":"c"}]}' > "$tmp/tm.json"
+  got="$("$JQ" -c --argjson want '["a","b"]' --argjson v false "$TOGGLE_MANY_FILTER" "$tmp/tm.json")"
+  [ "$got" = '{"jobs":[{"id":"a","enabled":false},{"id":"b","enabled":false},{"id":"c"}]}' ] \
+    && ok "disabling a set leaves every job outside it byte-identical" \
+    || bad "toggle-many disable produced: $got"
+  got="$("$JQ" -c --argjson want '["b"]' --argjson v true "$TOGGLE_MANY_FILTER" "$tmp/tm.json")"
+  [ "$got" = '{"jobs":[{"id":"a"},{"id":"b","enabled":true},{"id":"c"}]}' ] \
+    && ok "enabling one job adds no key to the others" \
+    || bad "toggle-many enable produced: $got"
+
+  echo "the suite itself touches nothing outside its scratch dir"
+  [ "$(size_of "$_real_tick")" = "$_tick0" ] \
+    && ok "the real tick.log is byte-identical after the suite" \
+    || bad "the suite appended to the real tick.log ($_tick0 -> $(size_of "$_real_tick") bytes)"
+  [ "$(size_of "$_real_exec")" = "$_exec0" ] \
+    && ok "the real exec.log is byte-identical after the suite" \
+    || bad "the suite appended to the real exec.log ($_exec0 -> $(size_of "$_real_exec") bytes)"
+
+  echo "log_rotate() — a log that grows without bound is capped, never lost"
+  printf 'old line\n' > "$tmp/r.log"
+  log_rotate "$tmp/r.log" 1000000
+  [ ! -e "$tmp/r.log.1" ] && ok "a small log is left alone" || bad "a small log was rotated"
+  local i=0; : > "$tmp/r.log"
+  while [ "$i" -lt 200 ]; do printf 'a line that takes up some space %s\n' "$i" >> "$tmp/r.log"; i=$((i+1)); done
+  log_rotate "$tmp/r.log" 1000
+  [ "$(size_of "$tmp/r.log")" = "0" ] && ok "an oversized log is truncated" \
+    || bad "log still $(size_of "$tmp/r.log") bytes"
+  grep -q 'a line that takes up some space 199' "$tmp/r.log.1" 2>/dev/null \
+    && ok "the previous generation is kept in .1" || bad "rotated content was lost"
+  # A second rotation must not stack generations for ever.
+  : > "$tmp/r.log"; i=0
+  while [ "$i" -lt 200 ]; do printf 'second generation %s\n' "$i" >> "$tmp/r.log"; i=$((i+1)); done
+  log_rotate "$tmp/r.log" 1000
+  grep -q 'second generation 199' "$tmp/r.log.1" 2>/dev/null \
+    && ok "rotating again replaces .1 rather than growing a chain" || bad ".1 was not replaced"
+  [ ! -e "$tmp/r.log.2" ] && ok "no .2 is ever created" || bad "a .2 generation appeared"
+
+  echo "precheck_verdict() — a broken probe is not an idle one"
+  [ "$(precheck_verdict 0)" = "work" ]  && ok "exit 0 means work was found"    || bad "exit 0 -> $(precheck_verdict 0)"
+  [ "$(precheck_verdict 1)" = "idle" ]  && ok "exit 1 means nothing to do"     || bad "exit 1 -> $(precheck_verdict 1)"
+  # The whole point: a probe that could not run at all used to be indistinguishable
+  # from one that ran and found nothing, so a job whose credentials had gone
+  # missing sat "idle" for ever with nothing showing red anywhere.
+  [ "$(precheck_verdict 2)" = "error" ] && ok "exit 2 is a broken probe"       || bad "exit 2 -> $(precheck_verdict 2)"
+  [ "$(precheck_verdict 127)" = "error" ] && ok "exit 127 (missing command) is broken" || bad "exit 127 -> $(precheck_verdict 127)"
+  [ "$(precheck_verdict '')" = "error" ]  && ok "a missing exit code is broken" || bad "empty -> $(precheck_verdict '')"
+
+  echo "lock_take() — a lock is stolen from the dead, never from the living"
+  local t0 elapsed dead=99999
+  if kill -0 "$dead" 2>/dev/null; then dead=99998; fi
+  lock_take "$tmp/free" && ok "a free lock is taken" || bad "could not take a free lock"
+  [ "$(cat "$tmp/free/pid" 2>/dev/null)" = "$$" ] && ok "the holder records its pid" || bad "no pid recorded"
+  lock_drop "$tmp/free"
+  [ ! -d "$tmp/free" ] && ok "dropping removes the lock" || bad "lock survived the drop"
+
+  mkdir -p "$tmp/stale"; echo "$dead" > "$tmp/stale/pid"
+  t0="$(now_epoch)"; lock_take "$tmp/stale"; elapsed=$(( $(now_epoch) - t0 ))
+  [ "$elapsed" -lt 2 ] && ok "a lock whose owner is gone is taken at once (${elapsed}s)" \
+    || bad "waited ${elapsed}s for a dead owner"
+  lock_drop "$tmp/stale"
+
+  # The regression that matters. Every one of these locks used to be broken
+  # purely on elapsed time (~4s), so a journal rewrite over a large history —
+  # exactly the slow case — would have its lock stolen mid-rewrite by a run
+  # ending, and lose the record the lock exists to protect.
+  mkdir -p "$tmp/live"; echo $$ > "$tmp/live/pid"
+  ( lock_take "$tmp/live" && : > "$tmp/live-was-stolen" ) >/dev/null 2>&1 & local waiter=$!
+  sleep 5
+  [ ! -f "$tmp/live-was-stolen" ] \
+    && ok "a lock held by a LIVE process is still held after 5s" \
+    || bad "the lock was stolen from a live holder"
+  kill "$waiter" 2>/dev/null; wait "$waiter" 2>/dev/null
+  rm -rf "$tmp/live"
+
+  echo "backoff_multiplier() — a job that only ever fails must stop costing full price"
+  # Nothing slowed a failing job down: it relaunched every interval, at full
+  # budget, for as long as it kept failing. 14 dev/review jobs on a 5-minute
+  # interval is a lot of money to spend discovering the same breakage.
+  [ "$(backoff_multiplier 0)" = "1" ] && ok "a healthy job is never slowed"        || bad "streak 0 -> $(backoff_multiplier 0)"
+  [ "$(backoff_multiplier 2)" = "1" ] && ok "two failures are still just noise"    || bad "streak 2 -> $(backoff_multiplier 2)"
+  [ "$(backoff_multiplier 3)" = "2" ] && ok "the third failure doubles the wait"   || bad "streak 3 -> $(backoff_multiplier 3)"
+  [ "$(backoff_multiplier 4)" = "4" ] && ok "it keeps doubling"                    || bad "streak 4 -> $(backoff_multiplier 4)"
+  [ "$(backoff_multiplier 7)" = "16" ] && ok "the multiplier is capped at 16x"     || bad "streak 7 -> $(backoff_multiplier 7)"
+  [ "$(backoff_multiplier 99)" = "16" ] && ok "and stays capped"                   || bad "streak 99 -> $(backoff_multiplier 99)"
+  [ "$(backoff_multiplier '')" = "1" ] && ok "an absent streak is not a failure"   || bad "empty -> $(backoff_multiplier '')"
+  [ "$(effective_interval 300 0)" = "300" ] && ok "a healthy job keeps its interval" || bad "300/0 -> $(effective_interval 300 0)"
+  [ "$(effective_interval 300 4)" = "1200" ] && ok "a failing job waits 4x longer" || bad "300/4 -> $(effective_interval 300 4)"
+
+  echo "state_set_many() — the end of a run is one write, not seven"
+  ( STATE_FILE="$tmp/state.json"; echo '{"x":{"keep":"me"}}' > "$STATE_FILE"
+    state_set_many x '{"last_status":"success","last_cost":1.25,"fail_streak":0}'
+    printf '%s|%s|%s|%s\n' "$(state_get x last_status)" "$(state_get x last_cost)" \
+           "$(state_get x fail_streak)" "$(state_get x keep)" ) > "$tmp/sm.out" 2>/dev/null
+  got="$(cat "$tmp/sm.out")"
+  [ "$got" = "success|1.25|0|me" ] \
+    && ok "every field lands and the fields already there survive" || bad "got '$got'"
+  ( STATE_FILE="$tmp/state2.json"; echo '{}' > "$STATE_FILE"
+    state_set_many newjob '{"a":1}'; state_get newjob a ) > "$tmp/sm2.out" 2>/dev/null
+  [ "$(cat "$tmp/sm2.out")" = "1" ] && ok "a job with no state yet is created" || bad "new job: $(cat "$tmp/sm2.out")"
+
+  echo "in_window_vals() — the schedule window, including the one that wraps midnight"
+  in_window_vals "" "" 3 600            ; want "no restriction is always open"        0 $?
+  in_window_vals "1,2,3,4,5" "" 3 600   ; want "a listed weekday is open"             0 $?
+  in_window_vals "1,2,3,4,5" "" 6 600   ; want "an unlisted weekday is closed"        1 $?
+  in_window_vals "" "08:00-20:00" 3 600 ; want "inside the hours is open (10:00)"     0 $?
+  in_window_vals "" "08:00-20:00" 3 479 ; want "a minute before opening is closed"    1 $?
+  in_window_vals "" "08:00-20:00" 3 480 ; want "the opening minute is open"           0 $?
+  in_window_vals "" "08:00-20:00" 3 1200; want "the closing minute is closed"         1 $?
+  # A window that wraps midnight is the one people get wrong: 22:00-06:00 must
+  # be open at 23:00 AND at 02:00, and shut at midday.
+  in_window_vals "" "22:00-06:00" 3 1380; want "a wrapping window is open at 23:00"   0 $?
+  in_window_vals "" "22:00-06:00" 3 120 ; want "a wrapping window is open at 02:00"   0 $?
+  in_window_vals "" "22:00-06:00" 3 720 ; want "a wrapping window is shut at midday"  1 $?
+  in_window_vals "6,7" "22:00-06:00" 7 120; want "day and hour must BOTH match"       0 $?
+  in_window_vals "6,7" "22:00-06:00" 1 120; want "the wrong day closes it"            1 $?
+  # 08:00 written as 08 must not be read as octal — the classic bash trap.
+  in_window_vals "" "08:00-09:00" 3 510 ; want "a leading zero is decimal, not octal" 0 $?
+
+  echo "is_due_vals() — due-ness accounts for the failure backoff"
+  is_due_vals 300 "$(( $(now_epoch) - 400 ))" 0 ; want "past its interval is due"     0 $?
+  is_due_vals 300 "$(( $(now_epoch) - 100 ))" 0 ; want "inside its interval is not"   1 $?
+  is_due_vals 300 "$(( $(now_epoch) - 400 ))" 4 ; want "a backed-off job waits longer" 1 $?
+  is_due_vals 300 "$(( $(now_epoch) - 1300 ))" 4; want "and runs once the longer wait passes" 0 $?
+  is_due_vals 300 0 0                           ; want "a job that never ran is due"  0 $?
+
+  echo "daily caps — a ceiling can be set per job, per project, and for everything"
+  mkdir -p "$tmp/caps"
+  printf '%s' '{"jobs":[{"id":"own","project":"P","daily_budget_usd":5},
+                        {"id":"inherits","project":"P"},
+                        {"id":"loner"}]}' > "$tmp/caps/jobs.json"
+  printf '%s' '{"global_daily_budget_usd":100,
+                "projects":[{"name":"P","daily_budget_usd":20}]}' > "$tmp/caps/projects.json"
+  got="$( JOBS_FILE="$tmp/caps/jobs.json"; PROJECTS_FILE="$tmp/caps/projects.json"; daily_cap_for own )"
+  [ "$got" = "5" ] && ok "a job's own cap wins" || bad "own -> '$got'"
+  got="$( JOBS_FILE="$tmp/caps/jobs.json"; PROJECTS_FILE="$tmp/caps/projects.json"; daily_cap_for inherits )"
+  # This is the gap: daily_budget_usd was read from the job ALONE, so setting it
+  # on a project quietly did nothing at all.
+  [ "$got" = "20" ] && ok "a job with no cap inherits its project's" || bad "inherits -> '$got'"
+  got="$( JOBS_FILE="$tmp/caps/jobs.json"; PROJECTS_FILE="$tmp/caps/projects.json"; daily_cap_for loner )"
+  [ -z "$got" ] && ok "no cap anywhere means no cap" || bad "loner -> '$got'"
+  got="$( PROJECTS_FILE="$tmp/caps/projects.json"; global_daily_cap )"
+  [ "$got" = "100" ] && ok "a global ceiling can be declared" || bad "global -> '$got'"
+  got="$( PROJECTS_FILE="$tmp/proj/projects.json"; global_daily_cap )"
+  [ -z "$got" ] && ok "and is absent unless declared" || bad "undeclared global -> '$got'"
+
+  echo "the Claude account comes from the setting, never from the environment"
+  # cmd_install refuses an ambient CLAUDE_CONFIG_DIR, and for a while the runtime
+  # did not: `claude-cron run <job>` typed inside a Claude Code session inherited
+  # THAT session's account, so the run billed elsewhere and loaded another
+  # account's plugins with nothing in the record saying so. Probe the real script
+  # rather than a copy of the rule — the rule was never wrong, the wiring was.
+  # Sourcing it with `--help` runs every top-level assignment and then returns.
+  # An empty value and an unset one are the same to `${VAR:-}`, so both can be
+  # passed unconditionally — and stay quoted, which a conditional would not.
+  cc_account_probe() { # <ambient CLAUDE_CONFIG_DIR> <CLAUDE_CRON_CLAUDE_CONFIG_DIR>
+    env CLAUDE_CONFIG_DIR="$1" CLAUDE_CRON_CLAUDE_CONFIG_DIR="$2" \
+        CLAUDE_CRON_CONFIG="$tmp/acct/config" CLAUDE_CRON_DATA="$tmp/acct/data" \
+        bash -c '. "$1" --help >/dev/null 2>&1; printf "%s" "${CLAUDE_CONFIG_DIR-<unset>}"' _ "$SELF"
+  }
+  got="$(cc_account_probe /tmp/cc-someones-session "")"
+  [ "$got" = "<unset>" ] \
+    && ok "an ambient CLAUDE_CONFIG_DIR is not inherited" \
+    || bad "an ambient CLAUDE_CONFIG_DIR leaked in as '$got'"
+  got="$(cc_account_probe /tmp/cc-someones-session /tmp/cc-declared)"
+  [ "$got" = "/tmp/cc-declared" ] \
+    && ok "the declared account wins over the environment" \
+    || bad "declared account -> '$got'"
+  got="$(cc_account_probe "" /tmp/cc-declared)"
+  [ "$got" = "/tmp/cc-declared" ] \
+    && ok "and is honoured when nothing is ambient" \
+    || bad "declared account alone -> '$got'"
+  got="$(cc_account_probe "" "")"
+  [ "$got" = "<unset>" ] \
+    && ok "no setting anywhere leaves the CLI's own default" \
+    || bad "no setting -> '$got'"
+
+  echo "spent_today() — today's spend is summed without reading all of history"
+  local midnight; midnight="$(date -v0H -v0M -v0S +%s)"
+  : > "$tmp/runs.ndjson"
+  printf '{"id":"a","start":%s,"cost":1.5}\n' "$(( midnight + 10 ))" >> "$tmp/runs.ndjson"
+  printf '{"id":"a","start":%s,"cost":2.25}\n' "$(( midnight + 20 ))" >> "$tmp/runs.ndjson"
+  printf '{"id":"b","start":%s,"cost":4}\n'    "$(( midnight + 30 ))" >> "$tmp/runs.ndjson"
+  printf '{"id":"a","start":%s,"cost":99}\n'   "$(( midnight - 8000 ))" >> "$tmp/runs.ndjson"
+  got="$( RUNS_FILE="$tmp/runs.ndjson"; spent_today a )"
+  [ "$got" = "3.750000" ] && ok "one job's spend today is summed" || bad "spent_today a -> '$got'"
+  got="$( RUNS_FILE="$tmp/runs.ndjson"; spent_today_all )"
+  [ "$got" = "7.750000" ] && ok "every job's spend today is summed" || bad "spent_today_all -> '$got'"
+  # A truncated leading line (the scan starts at a byte offset, not a line
+  # boundary) must be skipped, never parsed into a bogus cost.
+  printf '%s\n' '{"id":"a","start":1,"co' > "$tmp/cut.ndjson"
+  cat "$tmp/runs.ndjson" >> "$tmp/cut.ndjson"
+  got="$( RUNS_FILE="$tmp/cut.ndjson"; spent_today a )"
+  [ "$got" = "3.750000" ] && ok "a truncated first line is ignored" || bad "with a cut line -> '$got'"
+
+  echo "cmd_worktree_drop() — a retained run dir can be discarded on purpose"
+  # wt_teardown deliberately KEEPS a run dir holding unpushed work, and the
+  # sweep then re-examines it every tick for ever. Nothing could ever let go of
+  # it, so the only exit was rm -rf by hand.
+  local rd4="$tmp/wtroot/j7/stampF"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup j7 two "$tmp/g/repo" stampF ) >/dev/null 2>&1
+  ( cd "$rd4/two" && echo keep > unpushed.txt && git add unpushed.txt \
+      && $gitc commit -qm keep ) >/dev/null 2>&1
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_teardown j7 two "$rd4" ) >/dev/null 2>&1
+  [ -d "$rd4" ] && ok "unpushed work is still preserved by the normal path" || bad "teardown removed it"
+
+  mkdir -p "$tmp/locks/j7/888"; echo $$ > "$tmp/locks/j7/888/pid"
+  echo "$rd4" > "$tmp/locks/j7/888/worktree"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
+    cmd_worktree_drop j7 stampF ) >/dev/null 2>&1
+  [ -d "$rd4" ] && ok "a dir a LIVE run is using is never dropped" || bad "dropped a live run's dir"
+  rm -rf "$tmp/locks/j7"
+
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
+    cmd_worktree_drop j7 stampF ) >/dev/null 2>&1
+  want "dropping an unclaimed dir succeeds" 0 $?
+  [ ! -d "$rd4" ] && ok "the retained dir is gone once dropped explicitly" || bad "dir survived the drop"
+  # And git must not be left believing the worktrees are still checked out.
+  got="$(git -C "$tmp/g/repo" worktree list --porcelain 2>/dev/null | grep -c "stampF" || true)"
+  [ "$(num "$got")" = "0" ] && ok "git no longer lists the removed worktree" || bad "git still lists $got"
+
+  echo "run_end_hook() — an unattended pipeline can tell someone it broke"
+  mkdir -p "$tmp/hookcfg/hooks"
+  ( CONFIG_DIR="$tmp/hookcfg"; run_end_hook j1 error 1.5 "boom" P sess /tmp/l.json 1 2 ) >/dev/null 2>&1
+  want "no hook installed is a no-op" 0 $?
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'printf "%s|%s|%s|%s|%s\n" "$CC_JOB_ID" "$CC_STATUS" "$CC_COST" "$CC_NOTE" "$CC_PROJECT" > "$CC_HOOK_OUT"' \
+    > "$tmp/hookcfg/hooks/on-run-end.sh"
+  export CC_HOOK_OUT="$tmp/hook.seen"; rm -f "$CC_HOOK_OUT"
+  ( CONFIG_DIR="$tmp/hookcfg"; run_end_hook j1 error 1.5 "boom" P sess /tmp/l.json 1 2 ) >/dev/null 2>&1
+  local waited=0
+  while [ ! -f "$CC_HOOK_OUT" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited+1)); done
+  got="$(cat "$CC_HOOK_OUT" 2>/dev/null)"
+  [ "$got" = "j1|error|1.5|boom|P" ] && ok "the hook is told which run ended and how" \
+    || bad "the hook saw '$got'"
+  # It must never delay the run's cleanup, however slow or wedged it is.
+  printf '%s\n' '#!/usr/bin/env bash' 'sleep 30' > "$tmp/hookcfg/hooks/on-run-end.sh"
+  t0="$(now_epoch)"
+  ( CONFIG_DIR="$tmp/hookcfg"; run_end_hook j1 error 0 "" P s /tmp/l.json 1 2 ) >/dev/null 2>&1
+  elapsed=$(( $(now_epoch) - t0 ))
+  [ "$elapsed" -lt 3 ] && ok "a slow hook does not hold the run open (${elapsed}s)" \
+    || bad "run_end_hook blocked for ${elapsed}s"
+  unset CC_HOOK_OUT
+  rm -f "$tmp/hookcfg/hooks/on-run-end.sh"
+
   echo "the round cap itself — counting, parking, failing open"
   # The cap is the only hard stop on the dev/review loop, so its own behaviour is
   # tested against a fake Jira rather than asserted by reading the source.
@@ -841,6 +1446,15 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   if [ ! -f "$jf" ]; then
     ok "no jobs.json — loop invariants not applicable"
   else
+    # All three invariants below find their subjects by an id convention
+    # (`<project>-dev-agent`, `<project>-reviewer-agent`). An install that names
+    # its jobs otherwise matches nothing — and "nothing matched" was reported as
+    # total non-compliance ("missing from 0 of 0"), so the suite was red on every
+    # install not using the suffix, for a rule none of its jobs were breaking.
+    # An invariant over an empty set holds. Say so, and say the convention out
+    # loud in the same breath: a check that silently examined nothing is the
+    # failure mode this whole block exists to prevent.
+    #
     # 1. The cap is enforced in shell, before a session exists, on BOTH boards.
     local capped=0 devjobs=0
     for pc in "$CONFIG_DIR"/prechecks/*-dev-agent.sh; do
@@ -848,9 +1462,13 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
       devjobs=$(( devjobs + 1 ))
       grep -q 'rc_gate_rework' "$pc" && capped=$(( capped + 1 ))
     done
-    [ "$devjobs" -gt 0 ] && [ "$capped" -eq "$devjobs" ] \
-      && ok "every dev precheck enforces the round cap ($capped/$devjobs)" \
-      || bad "round cap missing from $(( devjobs - capped )) of $devjobs dev prechecks"
+    if [ "$devjobs" -eq 0 ]; then
+      ok "round cap: no prechecks/*-dev-agent.sh here — nothing to check"
+    elif [ "$capped" -eq "$devjobs" ]; then
+      ok "every dev precheck enforces the round cap ($capped/$devjobs)"
+    else
+      bad "round cap missing from $(( devjobs - capped )) of $devjobs dev prechecks"
+    fi
 
     # 2. No prompt still promises an unbounded loop, or a bar that cannot be met.
     local residual
@@ -877,12 +1495,20 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
             && dev_ok=$(( dev_ok + 1 )) ;;
       esac
     done < <("$JQ" -r '.jobs[] | [.id, (.prompt // "")] | @tsv' "$jf" 2>/dev/null)
-    [ "$rev_n" -gt 0 ] && [ "$rev_ok" -eq "$rev_n" ] \
-      && ok "every reviewer may record a finding without spending a round ($rev_ok/$rev_n)" \
-      || bad "the non-blocking route is missing from $(( rev_n - rev_ok )) of $rev_n reviewers"
-    [ "$dev_n" -gt 0 ] && [ "$dev_ok" -eq "$dev_n" ] \
-      && ok "every dev prompt requires a containment test when a rule widens ($dev_ok/$dev_n)" \
-      || bad "the containment rule is missing from $(( dev_n - dev_ok )) of $dev_n dev prompts"
+    if [ "$rev_n" -eq 0 ]; then
+      ok "non-blocking route: no *-reviewer-agent job here — nothing to check"
+    elif [ "$rev_ok" -eq "$rev_n" ]; then
+      ok "every reviewer may record a finding without spending a round ($rev_ok/$rev_n)"
+    else
+      bad "the non-blocking route is missing from $(( rev_n - rev_ok )) of $rev_n reviewers"
+    fi
+    if [ "$dev_n" -eq 0 ]; then
+      ok "containment rule: no *-dev-agent job here — nothing to check"
+    elif [ "$dev_ok" -eq "$dev_n" ]; then
+      ok "every dev prompt requires a containment test when a rule widens ($dev_ok/$dev_n)"
+    else
+      bad "the containment rule is missing from $(( dev_n - dev_ok )) of $dev_n dev prompts"
+    fi
   fi
 
   rm -rf "$tmp"
@@ -969,8 +1595,17 @@ run_job() { # run_job <id> [--force] [resume-session-id]
   local id="$1" force="${2:-}" resume_sid="${3:-}"
   [ -n "$resume_sid" ] && force="--force"
   local cwd prompt model effort budget timeout stall permission allowed precheck project proj_desc interactive fifo
-  local run_cwd worktree wt_env _envln slot max_par
+  local run_cwd worktree run_dir run_env run_cfgdir _envln slot max_par
   project="$(job_get "$id" '.project' '')"
+  # Which account this run signs in as. A project pins one when its work belongs
+  # to a different Claude login than the scheduler's default — a company account
+  # for client work, a personal one for your own repos. It carries far more than
+  # billing: the config dir holds that account's settings, plugins, MCP servers
+  # AND its past sessions, so it must stay stable for a job or `--resume` below
+  # would go looking for the session in the other account's directory.
+  run_cfgdir="$(project_get "$project" '.claude_config_dir' '')"
+  case "$run_cfgdir" in null) run_cfgdir="" ;; esac
+  run_cfgdir="$(expand_home "$run_cfgdir")"
   # cwd, model, permission, budget and timeout inherit from the project when the
   # job doesn't set them (see resolve()).
   cwd="$(resolve "$id" cwd "$HOME")"
@@ -1012,6 +1647,11 @@ run_job() { # run_job <id> [--force] [resume-session-id]
 
   [ -n "$prompt" ] && [ "$prompt" != "null" ] || { log_tick "$id: no prompt, skipped"; return 1; }
   [ -d "$cwd" ] || { log_tick "$id: cwd missing ($cwd), skipped"; return 1; }
+  # Refuse rather than let the CLI create the directory and find no credentials
+  # in it: that spends a launch to fail at the login prompt, and every later run
+  # would fail the same way with nothing saying why.
+  [ -z "$run_cfgdir" ] || [ -d "$run_cfgdir" ] || {
+    log_tick "$id: claude_config_dir missing ($run_cfgdir), skipped"; return 1; }
 
   # Prepend the project's description as context, so a run carries the project's
   # purpose without repeating it in every job prompt.
@@ -1055,14 +1695,28 @@ $(run_ending_contract)" ;;
   # Daily budget gate: a per-job ceiling on today's spend. Empty = no cap.
   # Scheduled runs only — Run now is a deliberate override, like the precheck.
   if [ "$forced" != "true" ]; then
-    local cap spent
-    cap="$(job_get "$id" '.daily_budget_usd' '')"
-    if [ -n "$cap" ] && [ "$cap" != "null" ]; then
+    local cap spent gcap gspent
+    cap="$(daily_cap_for "$id")"
+    if [ -n "$cap" ]; then
       spent="$(spent_today "$id")"
       if awk -v s="$spent" -v c="$cap" 'BEGIN{exit !((s+0)>=(c+0))}'; then
         state_set "$id" last_status '"capped"'
         state_set "$id" last_capped "$("$JQ" -nc --arg s "$spent" --arg c "$cap" '{spent:($s|tonumber),cap:($c|tonumber)}')"
         log_tick "$id: daily cap reached (\$$spent / \$$cap) — skipping"
+        release_slot "$slot"; trap - EXIT
+        return 0
+      fi
+    fi
+    # The fleet-wide ceiling. Every job can sit correctly under its own cap and
+    # the day still cost far more than intended — with a job per repo per role,
+    # the sum is the number that actually matters.
+    gcap="$(global_daily_cap)"
+    if [ -n "$gcap" ]; then
+      gspent="$(spent_today_all)"
+      if awk -v s="$gspent" -v c="$gcap" 'BEGIN{exit !((s+0)>=(c+0))}'; then
+        state_set "$id" last_status '"capped"'
+        state_set "$id" last_capped "$("$JQ" -nc --arg s "$gspent" --arg c "$gcap" '{spent:($s|tonumber),cap:($c|tonumber),scope:"global"}')"
+        log_tick "$id: GLOBAL daily cap reached (\$$gspent / \$$gcap across all jobs) — skipping"
         release_slot "$slot"; trap - EXIT
         return 0
       fi
@@ -1073,12 +1727,34 @@ $(run_ending_contract)" ;;
   # session when it passes (exit 0) — unless this run was forced (Run now).
   local pc_out="" pc_rc=0
   if [ -n "$precheck" ]; then
-    pc_out="$( cd "$cwd" && eval "$precheck" 2>&1 )"; pc_rc=$?
+    # The precheck sees the same account as the run it gates: a probe that asks
+    # Claude itself must not answer for one account the session then spends on
+    # another, and MCP credentials live per config dir too.
+    # A RESUME must never let the precheck claim. The session already has its
+    # work, and the continuation prompt below REPLACES this output entirely --
+    # so a precheck that takes a ticket would move one out of the queue for a
+    # run that is never going to look at it. Same contract as the standalone
+    # probes: report, touch nothing.
+    pc_out="$( cd "$cwd" && { [ -n "$run_cfgdir" ] && export CLAUDE_CONFIG_DIR="$run_cfgdir"
+                              [ -n "$resume_sid" ] && export CC_PRECHECK_DRY_RUN=1
+                              eval "$precheck" 2>&1; } )"; pc_rc=$?
     state_set "$id" last_precheck "$("$JQ" -nc --arg o "${pc_out:-(no output)}" --argjson rc "$pc_rc" '{output:$o, exit:$rc}')"
-    if [ "$forced" != "true" ] && [ "$pc_rc" -ne 0 ]; then
+    local pc_verdict; pc_verdict="$(precheck_verdict "$pc_rc")"
+    if [ "$forced" != "true" ] && [ "$pc_verdict" != "work" ]; then
       state_set "$id" last_start "$(now_epoch)"
-      state_set "$id" last_status '"idle"'
-      log_tick "$id: precheck found nothing to do (exit $pc_rc)"
+      if [ "$pc_verdict" = "error" ]; then
+        # NOT idle: the probe itself failed, so nothing is known about the
+        # board. Surfaced as its own status so the card can go red instead of
+        # claiming, reassuringly and wrongly, that there was nothing to do.
+        state_set "$id" last_status '"precheck_error"'
+        # A broken probe repeats every interval just as a failing run does, and
+        # costs a shell each time, so it feeds the same backoff.
+        state_set "$id" fail_streak "$(( $(num "$(state_get "$id" fail_streak 0)") + 1 ))"
+        log_tick "$id: PRECHECK FAILED (exit $pc_rc) — the probe could not run, so no work was looked for"
+      else
+        state_set "$id" last_status '"idle"'
+        log_tick "$id: precheck found nothing to do (exit $pc_rc)"
+      fi
       release_slot "$slot"; trap - EXIT
       return 0
     fi
@@ -1121,13 +1797,18 @@ ${prompt}"
   # silently run in the shared tree (falling back would reintroduce the race).
   run_cwd="$cwd"
   worktree=""
-  wt_env=()
+  # The env the agent starts with. It exists whether or not this project is
+  # isolated — the account is a property of the project, not of the worktree —
+  # and the worktree's own venv/vars are appended to it below when there is one.
+  run_env=()
+  [ -n "$run_cfgdir" ] && run_env+=("CLAUDE_CONFIG_DIR=$run_cfgdir")
   if wt_isolation_enabled "$project" "$cwd"; then
-    # Claim the path BEFORE the worktree exists. The sweep removes any worktree
+    # Claim the path BEFORE anything exists there. The sweep removes any run dir
     # no live slot claims, so creating first and claiming after leaves a window
     # in which it can delete the very directory this agent is about to work in.
     # The path is ours to predict, so stake it first.
-    echo "$WORKTREES_DIR/$id/$stamp" > "$slot/worktree"
+    run_dir="$WORKTREES_DIR/$id/$stamp"
+    echo "$run_dir" > "$slot/worktree"
     if ! worktree="$(wt_setup "$id" "$project" "$cwd" "$stamp")"; then
       state_set "$id" last_start "$start"
       state_set "$id" last_status '"error"'
@@ -1136,11 +1817,15 @@ ${prompt}"
       return 1
     fi
     run_cwd="$worktree"
-    echo "$worktree" > "$slot/worktree"     # the real path (same value, kept explicit)
+    # What the agent needs to find the OTHER repos of this run, and the canonical
+    # checkout of each: the manifest. Everything else it could only guess at.
+    run_env+=("CC_RUN_DIR=$run_dir" "CC_RUN_MANIFEST=$run_dir/.run.json" \
+              "CC_PROJECT=$project" "CC_JOB_ID=$id" \
+              "CC_PRIMARY_REPO=$(basename "$run_cwd")")
     while IFS= read -r _envln; do
-      [ -n "$_envln" ] && wt_env+=("$_envln")
-    done < <(wt_env_line "$project" "$cwd" "$worktree")
-    log_tick "$id: isolated in worktree $worktree"
+      [ -n "$_envln" ] && run_env+=("$_envln")
+    done < <(wt_env_line "$project" "$cwd" "$run_cwd")
+    log_tick "$id: isolated in $run_dir (cwd $run_cwd)"
   fi
 
   # Persist what the precheck saw, next to the run log.
@@ -1203,12 +1888,12 @@ If the work turns out to be already finished, or it can no longer be done at all
     args="$args --input-format stream-json --replay-user-messages"
     (
       cd "$run_cwd" || exit 1
-      env ${wt_env[@]+"${wt_env[@]}"} "$CLAUDE_BIN" $args < "$fifo" > "$streamfile" 2> "$logfile.err"
+      env ${run_env[@]+"${run_env[@]}"} "$CLAUDE_BIN" $args < "$fifo" > "$streamfile" 2> "$logfile.err"
     ) &
   else
     (
       cd "$run_cwd" || exit 1
-      env ${wt_env[@]+"${wt_env[@]}"} "$CLAUDE_BIN" $args "$prompt" > "$streamfile" 2> "$logfile.err"
+      env ${run_env[@]+"${run_env[@]}"} "$CLAUDE_BIN" $args "$prompt" > "$streamfile" 2> "$logfile.err"
     ) &
   fi
   local child=$!
@@ -1432,21 +2117,88 @@ If the work turns out to be already finished, or it can no longer be done at all
     status="warning"
   fi
 
-  state_set "$id" last_end "$end"
-  state_set "$id" last_status "\"$status\""
-  state_set "$id" last_run_start "$start"
-  state_set "$id" last_run_status "\"$status\""
-  state_set "$id" last_cost "${cost:-0}"
-  state_set "$id" last_session "\"$session\""
+  # Consecutive failures drive the backoff (see backoff_multiplier). A warning
+  # is NOT a failure: the run worked, it just wants a look — slowing those down
+  # would throttle the very jobs that are doing their job.
+  local streak_next=0
+  [ "$status" = "error" ] && streak_next="$(( $(num "$(state_get "$id" fail_streak 0)") + 1 ))"
+
+  # One write for the whole outcome. Seven separate ones meant seven turns of
+  # the state lock, which every concurrent run had to queue behind.
+  state_set_many "$id" "$("$JQ" -nc \
+    --argjson end "$end" --arg status "$status" --argjson start "$start" \
+    --arg cost "${cost:-0}" --arg session "$session" \
+    --argjson streak "$streak_next" \
+    '{last_end:$end, last_status:$status, last_run_start:$start,
+      last_run_status:$status,
+      # the CLI reports cost as a decimal string; tonumber? keeps a malformed
+      # one from making the whole state write fail
+      last_cost:($cost|tonumber? // 0),
+      last_session:$session, fail_streak:$streak}')"
   # Record what was CHOSEN (the family, when one was) plus what actually ran.
   record_run "$id" "$status" "$start" "$end" "${cost:-0}" "${turns:-0}" "$session" "$logfile" "$wdreason" "$forced" "$pc_out" "$project" "${model_family:-$model}" "$model_id" "$resume_sid"
   log_tick "$id: finished status=$status rc=$rc denials=${denials:-0} cost=\$$cost turns=$turns model=$model${model_id:+ ($model_id)} forced=$forced${wdreason:+ — $wdreason}"
+  # Fired after the record exists, so a hook that opens the dashboard or reads
+  # the journal sees this run already in it.
+  run_end_hook "$id" "$status" "${cost:-0}" "$wdreason" "$project" "$session" "$logfile" "$start" "$end"
 
   run_cleanup "$id" "$slot"; trap - EXIT
   [ "$status" != "error" ]
 }
 
+# --- telling someone a run ended --------------------------------------------
+# An unattended pipeline that can only be checked by opening a web page is not
+# really unattended: a job can fail every five minutes all night and the first
+# anyone knows is the next morning. This is the same shape as the provisioning
+# hooks — a script on disk, run with the facts in its environment — so the
+# engine stays ignorant of notifiers, and terminal-notifier, ntfy, a Slack
+# webhook or a Linear comment are all just things the user writes here.
+#
+# Detached AND time-limited: a notifier that hangs must not hold the run's slot,
+# and a run must never be kept alive by something that only reports on it.
+RUN_HOOK_TIMEOUT="${CLAUDE_CRON_HOOK_TIMEOUT:-60}"
+run_end_hook() { # <id> <status> <cost> <note> <project> <session> <log> <start> <end>
+  local script="$CONFIG_DIR/hooks/on-run-end.sh"
+  [ -f "$script" ] || return 0
+  (
+    _hook() {
+      CC_JOB_ID="$1" CC_STATUS="$2" CC_COST="$3" CC_NOTE="$4" CC_PROJECT="$5" \
+      CC_SESSION="$6" CC_LOG="$7" CC_START="$8" CC_END="$9" \
+      CC_DURATION="$(( ${9:-0} - ${8:-0} ))" CC_DASHBOARD="http://127.0.0.1:$PORT/" \
+        bash "$script" >>"$DATA_DIR/exec.log" 2>&1
+    }
+    wt_run_limited "$RUN_HOOK_TIMEOUT" _hook "$@" \
+      || log_tick "$1: on-run-end hook failed or timed out — see exec.log"
+  ) >/dev/null 2>&1 &
+  return 0
+}
+
 # ---------------------------------------------------------------------- tick
+
+# Everything the tick needs to decide about every enabled job, in ONE jq pass
+# over both files: id, window, interval, last start, failure streak, ceiling.
+#
+# The loop used to ask job_get/state_get per field per job, and each of those
+# cats and re-parses the whole jobs file — about seven jq processes per job, so
+# roughly 150 forks a minute at 21 jobs, for ever, almost always to conclude
+# that nothing is due. Disabled jobs are filtered here rather than in the loop:
+# `// true` would be wrong (it treats false as absent), hence the explicit test.
+tick_plan() { # id \t days \t hours \t interval \t last_start \t fail_streak \t max_parallel
+  [ -f "$JOBS_FILE" ] || return 0
+  "$JQ" -e . "$JOBS_FILE" >/dev/null 2>&1 || { log_tick "tick: malformed $JOBS_FILE — no job examined"; return 0; }
+  "$JQ" -r --slurpfile st "$STATE_FILE" '
+    (($st[0]) // {}) as $S
+    | .jobs[]
+    | select(.enabled != false)
+    | . as $j | ($S[$j.id] // {}) as $s
+    | [ $j.id,
+        (($j.active_days // []) | map(tostring) | join(",")),
+        ($j.active_hours // ""),
+        (($j.interval_seconds // 300) | tostring),
+        (($s.last_start // 0) | tostring),
+        (($s.fail_streak // 0) | tostring),
+        (($j.max_parallel // 3) | tostring) ] | @tsv' "$JOBS_FILE" 2>/dev/null
+}
 
 # The tick only DECIDES and LAUNCHES — it never waits for a run. Each due job is
 # handed to a detached `_exec` process that carries out the precheck + Claude run
@@ -1454,6 +2206,11 @@ If the work turns out to be already finished, or it can no longer be done at all
 # holding its lock is not relaunched.
 cmd_tick() {
   local id
+  # Cap the two append-only logs before anything else writes to them. Once a
+  # minute is the right cadence: the tick is the only thing guaranteed to run,
+  # and doing it per log line would cost a wc(1) per line instead of two a tick.
+  log_rotate "$TICK_LOG"
+  log_rotate "$DATA_DIR/exec.log"
   # Reap worktrees left by runs that died without cleaning up (safe teardown:
   # anything with unpushed/uncommitted work is kept, not deleted).
   wt_prune_orphans
@@ -1466,11 +2223,11 @@ cmd_tick() {
     nohup /bin/bash "$SELF" _resolve_models </dev/null >> "$DATA_DIR/exec.log" 2>&1 &
     log_tick "models: refreshing family→id resolutions (cache older than ${MODELS_TTL}s)"
   fi
-  for id in $(job_ids); do
-    [ "$(job_get "$id" '.enabled' 'true')" = "true" ] || continue
-    in_window "$id" >/dev/null || continue
-    is_due "$id" || continue
-    max_par="$(job_get "$id" '.max_parallel' '3')"
+  local days hours interval last streak max_par
+  while IFS="$(printf '\t')" read -r id days hours interval last streak max_par; do
+    [ -n "$id" ] || continue
+    in_window_vals "$days" "$hours" >/dev/null || continue
+    is_due_vals "$interval" "$last" "$streak" || continue
     case "$max_par" in ''|null|*[!0-9]*) max_par=3 ;; esac
     if [ "$max_par" -gt 0 ] && [ "$(slots_active "$id")" -ge "$max_par" ]; then
       log_tick "$id: at max_parallel=$max_par run(s), not launching another"
@@ -1478,7 +2235,7 @@ cmd_tick() {
     fi
     nohup /bin/bash "$SELF" _exec "$id" </dev/null >> "$DATA_DIR/exec.log" 2>&1 &
     log_tick "$id: launched detached run"
-  done
+  done < <(tick_plan)
 }
 
 # ------------------------------------------------------------------ commands
@@ -1486,6 +2243,29 @@ cmd_tick() {
 PLIST_PATH_ENV="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 cmd_install() {
+  # A global default account, carried into launchd — which inherits nothing from
+  # the shell, so without this every run signs in as ~/.claude however the
+  # scheduler was installed. Taken ONLY from the explicit variable, never from an
+  # ambient CLAUDE_CONFIG_DIR: installing from inside a Claude session would
+  # otherwise silently pin that session's account for every job, forever.
+  local plist_cfgdir=""
+  if [ -n "${CLAUDE_CRON_CLAUDE_CONFIG_DIR:-}" ]; then
+    plist_cfgdir="
+    <key>CLAUDE_CONFIG_DIR</key><string>$(expand_home "$CLAUDE_CRON_CLAUDE_CONFIG_DIR")</string>"
+  elif [ -f "$PLIST_PATH" ]; then
+    # Re-running the installer must not quietly drop an account pinned earlier.
+    plist_cfgdir="$("$PYTHON" - "$PLIST_PATH" <<'PY'
+import plistlib, sys
+try:
+    v = plistlib.load(open(sys.argv[1], "rb")).get("EnvironmentVariables", {}).get("CLAUDE_CONFIG_DIR")
+except Exception:
+    v = None
+if v:
+    print("\n    <key>CLAUDE_CONFIG_DIR</key><string>%s</string>" % v, end="")
+PY
+)"
+  fi
+
   # 1) the tick agent — fires the scheduler once a minute
   cat > "$PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -1507,7 +2287,7 @@ cmd_install() {
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>$PLIST_PATH_ENV</string>
-    <key>HOME</key><string>$HOME</string>
+    <key>HOME</key><string>$HOME</string>$plist_cfgdir
   </dict>
   <key>StandardOutPath</key><string>$DATA_DIR/launchd.out.log</string>
   <key>StandardErrorPath</key><string>$DATA_DIR/launchd.err.log</string>
@@ -1533,7 +2313,7 @@ PLIST
   <dict>
     <key>PATH</key><string>$PLIST_PATH_ENV</string>
     <key>HOME</key><string>$HOME</string>
-    <key>CLAUDE_CRON_PORT</key><string>$PORT</string>
+    <key>CLAUDE_CRON_PORT</key><string>$PORT</string>$plist_cfgdir
   </dict>
   <key>StandardOutPath</key><string>$DATA_DIR/server.log</string>
   <key>StandardErrorPath</key><string>$DATA_DIR/server.log</string>
@@ -1548,6 +2328,11 @@ PLIST
   echo "Installed and loaded:"
   echo "  $PLIST_LABEL   — ticks every 60s (survives logout and reboot)"
   echo "  $SERVER_LABEL  — control dashboard on http://127.0.0.1:$PORT/"
+  if [ -n "$plist_cfgdir" ]; then
+    echo "Claude account : ${plist_cfgdir##*<string>}" | sed 's|</string>||'
+  else
+    echo "Claude account : the CLI default (~/.claude) — set CLAUDE_CRON_CLAUDE_CONFIG_DIR and re-run to change it"
+  fi
   # The agent prompts make these skills mandatory by name. A fresh clone whose
   # ~/.claude/skills lacks them runs agents that cite standards they cannot read,
   # and nothing anywhere says so -- the run just quietly holds a lower bar. So a
@@ -1574,19 +2359,23 @@ cmd_status() {
   echo "data      : $DATA_DIR"
   echo
   printf '%-20s %-8s %-9s %-11s %-9s %s\n' JOB ENABLED EVERY LAST STATUS COST
-  local id
-  for id in $(job_ids); do
-    local en iv ls st lc ago
-    en="$(job_get "$id" '.enabled' 'true')"
-    iv="$(job_get "$id" '.interval_seconds' '300')"
-    ls="$(state_get "$id" last_start 0)"
-    st="$(state_get "$id" last_status '—')"
-    lc="$(state_get "$id" last_cost 0)"
-    if [ "$ls" -gt 0 ] 2>/dev/null; then
-      ago="$(( ( $(now_epoch) - ls ) / 60 ))m ago"
-    else ago="never"; fi
-    printf '%-20s %-8s %-9s %-11s %-9s $%s\n' "$id" "$en" "$(( iv / 60 ))m" "$ago" "$st" "$lc"
-  done
+  # One jq over both files, for the same reason the tick does it (see
+  # tick_plan): five per job meant a hundred processes just to print a table.
+  local id en iv ls st lc ago now
+  now="$(now_epoch)"
+  while IFS="$(printf '\t')" read -r id en iv ls st lc; do
+    [ -n "$id" ] || continue
+    if [ "$(num "$ls")" -gt 0 ]; then ago="$(( ( now - ls ) / 60 ))m ago"; else ago="never"; fi
+    printf '%-20s %-8s %-9s %-11s %-9s $%s\n' "$id" "$en" "$(( $(num "$iv" 300) / 60 ))m" "$ago" "$st" "$lc"
+  done < <("$JQ" -r --slurpfile st "$STATE_FILE" '
+      (($st[0]) // {}) as $S
+      | .jobs[] | . as $j | ($S[$j.id] // {}) as $s
+      | [ $j.id,
+          (if $j.enabled == false then "false" else "true" end),
+          (($j.interval_seconds // 300) | tostring),
+          (($s.last_start // 0) | tostring),
+          (($s.last_status // "—") | tostring),
+          (($s.last_cost // 0) | tostring) ] | @tsv' "$JOBS_FILE" 2>/dev/null)
   echo
   echo "Dashboard : http://127.0.0.1:$PORT/   (claude-cron dashboard)"
 }
@@ -1637,6 +2426,38 @@ cmd_toggle() {
   write_jobs --arg id "$id" --argjson v "$val" \
     '.jobs = [.jobs[] | if .id == $id then .enabled = $v else . end]'
   echo "$id enabled=$val"
+}
+
+# The one filter that flips `enabled` on a named set of jobs. It lives in a
+# constant so selftest exercises the exact string the command runs: a second copy
+# in the test would drift, and the property being proved is precisely that jobs
+# outside the set come out untouched.
+TOGGLE_MANY_FILTER='.jobs = [.jobs[] | if (.id | IN($want[])) then .enabled = $v else . end]'
+
+cmd_toggle_many() { # cmd_toggle_many <true|false> — ids on stdin (JSON array or one per line)
+  # Flips a WHOLE SET in one write. A loop of cmd_toggle calls would rewrite
+  # jobs.json once per job, so a failure halfway leaves the set half applied,
+  # and a reader could catch the file between two of those writes. One atomic
+  # write (one mv) rules both out: no half-applied batch, no torn read of the
+  # file. It does NOT make a concurrent tick see one consistent snapshot for
+  # the whole run — cmd_tick re-reads jobs.json per job, so a batch landing
+  # mid-loop is still old for jobs already visited and new for the rest.
+  local val="$1" raw ids missing n
+  raw="$(cat)"
+  [ -n "$raw" ] || die "toggle-many: no ids given"
+  # Same input contract as reorder. NOTE: `try … catch` hands the ERROR to the
+  # catch branch, not the input, so use `fromjson?` + `//` instead — with catch,
+  # a plain list would be parsed out of jq's own error message.
+  ids="$(printf '%s' "$raw" | "$JQ" -c -R -s '. as $t | ($t | fromjson?) // ($t | split("\n") | map(select(length > 0)))')"
+  printf '%s' "$ids" | "$JQ" -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1 \
+    || die "toggle-many: expected a non-empty list of job ids"
+  # Resolve every id BEFORE writing: one unknown id refuses the whole batch,
+  # rather than applying the part that happened to match.
+  missing="$(jobs_json | "$JQ" -r --argjson want "$ids" '. as $doc | ($doc.jobs | map(.id)) as $have | [$want[] | . as $w | select(($have | index($w)) == null)] | join(", ")')"
+  [ -n "$missing" ] && die "toggle-many: unknown job(s): $missing"
+  write_jobs --argjson want "$ids" --argjson v "$val" "$TOGGLE_MANY_FILTER"
+  n="$(printf '%s' "$ids" | "$JQ" -r 'length')"
+  if [ "$n" = 1 ]; then echo "1 job enabled=$val"; else echo "$n jobs enabled=$val"; fi
 }
 
 cmd_rename() { # cmd_rename <old-id> <new-id> — id + everything keyed by it
@@ -1821,6 +2642,25 @@ cmd_set_field() { # cmd_set_field <id> <field> ; value on stdin
   echo "$field updated for $id"
 }
 
+# A run dir that wt_teardown decided to keep (it holds unpushed or uncommitted
+# work) is preserved for ever: the sweep re-examines it every tick and always
+# reaches the same conclusion. Nothing could release it, so the only way out was
+# rm -rf by hand — and because nothing listed them either, they were invisible
+# until the disk filled. This is the deliberate way to let one go.
+cmd_worktree_drop() { # cmd_worktree_drop <job-id> <stamp>
+  local id="$1" stamp="$2" run_dir="$WORKTREES_DIR/$1/$2"
+  case "$stamp" in *[!a-zA-Z0-9_.-]*|''|*..*) die "worktree-drop: bad stamp '$stamp'" ;; esac
+  [ -d "$run_dir" ] || die "worktree-drop: no such run dir: $run_dir"
+  # Never pull the ground out from under a running agent.
+  if wt_is_claimed "$id" "$run_dir"; then
+    die "worktree-drop: $id/$stamp belongs to a run that is still going — stop it first"
+  fi
+  wt_remove_all "$run_dir"
+  [ -d "$WORKTREES_DIR/$id" ] && rmdir "$WORKTREES_DIR/$id" 2>/dev/null
+  log_tick "$id: run dir $stamp dropped by the user (discarding whatever it held)"
+  echo "dropped $id/$stamp"
+}
+
 precheck_path() { echo "$CONFIG_DIR/prechecks/$1.sh"; }
 
 PRECHECK_SKELETON='#!/bin/bash
@@ -1850,6 +2690,35 @@ cmd_set_precheck() { # reads the precheck script from stdin
 
 cmd_get_precheck() {
   local path; path="$(precheck_path "$1")"
+  [ -f "$path" ] && cat "$path" || true
+}
+
+# The worktree provisioning hooks, kept the same way prechecks are: a script on
+# disk, named after what owns it, with the CLI as the only writer.
+provision_path() { printf '%s/provision/%s.%s.sh\n' "$CONFIG_DIR" "$1" "$2"; }
+
+cmd_provision_set() { # <project> <up|down> — the script arrives on stdin
+  local project="$1" phase="$2" script path
+  projects_json | "$JQ" -e --arg n "$project" 'any(.projects[]; .name==$n)' >/dev/null 2>&1 \
+    || die "no such project: $project"
+  case "$phase" in up|down) ;; *) die "phase must be up or down" ;; esac
+  script="$(cat)"
+  path="$(provision_path "$project" "$phase")"
+  # An empty script means "no hook": remove the file rather than leave one that
+  # runs nothing, so the engine's `[ -f ]` check stays the whole truth.
+  if [ -z "$script" ]; then
+    rm -f "$path"
+    echo "provision $phase cleared for $project"
+    return 0
+  fi
+  mkdir -p "$CONFIG_DIR/provision"
+  printf '%s\n' "$script" > "$path"
+  chmod +x "$path"
+  echo "provision $phase updated for $project ($path)"
+}
+
+cmd_provision_get() { # <project> <up|down>
+  local path; path="$(provision_path "$1" "$2")"
   [ -f "$path" ] && cat "$path" || true
 }
 
@@ -1971,6 +2840,8 @@ claude-cron — durable local scheduler for headless Claude Code runs
   claude-cron logs <id> [n]   print the result of the n-th most recent run
   claude-cron enable <id>     re-enable a job
   claude-cron disable <id>    stop a job without deleting it
+  claude-cron toggle-many <true|false>   enable or disable a whole set of jobs;
+                              ids on stdin, as a JSON array or one per line
   claude-cron delete <id>     remove a job from jobs.json (keeps its logs)
   claude-cron create <id>     create a job from a partial JSON object on stdin
   claude-cron set-prompt <id> replace a job's prompt, read from stdin
@@ -1978,6 +2849,8 @@ claude-cron — durable local scheduler for headless Claude Code runs
                               model|max_budget_usd|timeout_seconds|
                               stall_timeout_seconds, value from stdin
   claude-cron set-precheck <id>   replace a job's precheck script, read from stdin
+  claude-cron provision-set <project> <up|down>   replace a worktree provisioning hook (stdin)
+  claude-cron provision-get <project> <up|down>   print one
   claude-cron get-precheck <id>   print a job's precheck script
   claude-cron tick            internal — what launchd calls every minute
 
@@ -1991,11 +2864,12 @@ cmd_check() {
   cwd="$(resolve "$id" cwd "$HOME")"   # inherit the project's cwd, like run_job
   [ -n "$precheck" ] || { echo "$id has no precheck — every due tick spends a session."; return 0; }
   # Read-only, like every standalone probe (see CC_PRECHECK_DRY_RUN).
-  if ( cd "$cwd" && export CC_PRECHECK_DRY_RUN=1 && eval "$precheck" ); then
-    echo "precheck: WORK FOUND — a due tick would start a Claude run"
-  else
-    echo "precheck: nothing to do — a due tick would cost nothing"
-  fi
+  ( cd "$cwd" && export CC_PRECHECK_DRY_RUN=1 && eval "$precheck" ); local rc=$?
+  case "$(precheck_verdict "$rc")" in
+    work)  echo "precheck: WORK FOUND — a due tick would start a Claude run" ;;
+    idle)  echo "precheck: nothing to do — a due tick would cost nothing" ;;
+    *)     echo "precheck: BROKEN (exit $rc) — the probe could not run, so this job is stuck: it will never find work until this is fixed" ; return 1 ;;
+  esac
 }
 
 case "${1:-}" in
@@ -2019,6 +2893,9 @@ case "${1:-}" in
   delete)    [ $# -ge 2 ] || die "usage: claude-cron delete <job-id>"; cmd_delete "$2" ;;
   rename)    [ $# -ge 3 ] || die "usage: claude-cron rename <job-id> <new-id>"; cmd_rename "$2" "$3" ;;
   reorder)   cmd_reorder ;;   # new order of job ids on stdin
+  toggle-many) [ $# -ge 2 ] || die "usage: claude-cron toggle-many <true|false>  (job ids on stdin)"
+               case "$2" in true|false) ;; *) die "toggle-many: expected true or false, got '$2'" ;; esac
+               cmd_toggle_many "$2" ;;
   create)    cmd_create ;;
   project-set)    cmd_project_set ;;
   project-delete) [ $# -ge 2 ] || die "usage: claude-cron project-delete <name>"; cmd_project_delete "$2" ;;
@@ -2036,6 +2913,9 @@ case "${1:-}" in
   set-field) [ $# -ge 3 ] || die "usage: claude-cron set-field <job-id> <field> (value on stdin)"; cmd_set_field "$2" "$3" ;;
   set-precheck) [ $# -ge 2 ] || die "usage: claude-cron set-precheck <job-id> (script on stdin)"; cmd_set_precheck "$2" ;;
   get-precheck) [ $# -ge 2 ] || die "usage: claude-cron get-precheck <job-id>"; cmd_get_precheck "$2" ;;
+  provision-set) [ $# -ge 3 ] || die "usage: claude-cron provision-set <project> <up|down> (script on stdin)"; cmd_provision_set "$2" "$3" ;;
+  provision-get) [ $# -ge 3 ] || die "usage: claude-cron provision-get <project> <up|down>"; cmd_provision_get "$2" "$3" ;;
+  worktree-drop) [ $# -ge 3 ] || die "usage: claude-cron worktree-drop <job-id> <stamp>"; cmd_worktree_drop "$2" "$3" ;;
   serve)     cmd_serve ;;
   ""|-h|--help|help) usage ;;
   *) die "unknown command: $1 (try: claude-cron help)" ;;

@@ -28,7 +28,7 @@
 # tweaks. A non-git .cwd is left to run in place. Adding a future project is a
 # projects.json entry, never a code change here.
 #
-# Depends on the sourcing script for: JQ, DATA_DIR, WORKTREES_DIR, LOCK_DIR,
+# Depends on the sourcing script for: JQ, CONFIG_DIR, DATA_DIR, WORKTREES_DIR, LOCK_DIR,
 # projects_json, project_get, job_get, resolve, lock_active, state_get, log_tick.
 # Targets bash 3.2 (macOS system bash) under `set -u`: no mapfile, no
 # associative arrays, empty arrays expanded as ${a[@]+"${a[@]}"}.
@@ -36,6 +36,46 @@
 
 # Is <dir> inside a git working tree?
 wt_is_git_repo() { git -C "${1:-}" rev-parse --is-inside-work-tree >/dev/null 2>&1; }
+
+# Run a command SILENTLY with a wall-clock ceiling. macOS ships no timeout(1),
+# so this is the killer-subshell pattern the provisioning hook already relied
+# on, lifted out so anything that can block on the network uses the same guard.
+# Returns the command's status, or non-zero when it was killed.
+#
+# The child's stdout is closed deliberately, not as tidiness. Killing a process
+# does NOT kill its children, and a caller inside `$( … )` blocks until every
+# process holding the pipe exits — so an orphaned grandchild (the `sleep` in a
+# wrapper script, a `git` subprocess) keeps the command substitution waiting for
+# the full original duration and the timeout buys nothing at all. Neither caller
+# wants the output; both write what they need to a log themselves.
+wt_run_limited() { # wt_run_limited <seconds> <command...>
+  local t="${1:-60}"; shift
+  local pid killer rc
+  "$@" >/dev/null 2>&1 & pid=$!
+  ( sleep "$t"; kill -TERM "$pid" 2>/dev/null ) >/dev/null 2>&1 & killer=$!
+  wait "$pid"; rc=$?
+  kill "$killer" 2>/dev/null; wait "$killer" 2>/dev/null
+  return "$rc"
+}
+
+# Every repo this project spans: name<TAB>canonical path<TAB>base branch.
+# A project that declares `.repos[]` is taken at its word — that list is what a
+# run gets a worktree of. One that declares none is the single-repo case: the
+# row is synthesised from `.cwd`, with an EMPTY base meaning "infer it"
+# (wt_base_ref decides), because there is nothing declared to read.
+wt_repos() { # <project> <canonical_cwd>
+  local project="${1:-}" cwd="${2:-}" n
+  n="$(projects_json | "$JQ" -r --arg n "$project" \
+        '[.projects[] | select(.name==$n) | .repos // [] | .[]] | length' 2>/dev/null)"
+  case "$n" in ''|null|*[!0-9]*) n=0 ;; esac
+  if [ "$n" -gt 0 ]; then
+    projects_json | "$JQ" -r --arg n "$project" '
+      .projects[] | select(.name==$n) | .repos[]
+      | [(.name // ""), (.path // ""), (.base // "")] | @tsv' 2>/dev/null
+    return 0
+  fi
+  printf '%s\t%s\t\n' "$(basename "$cwd")" "$cwd"
+}
 
 # Should this run be isolated in a worktree? 0 = yes.
 wt_isolation_enabled() { # <project> <canonical_cwd>
@@ -46,6 +86,40 @@ wt_isolation_enabled() { # <project> <canonical_cwd>
     true)  return 0 ;;
     *)     wt_is_git_repo "$cwd" ;;   # "auto" / anything else
   esac
+}
+
+# The ref a repo's worktree is cut from. A declared base wins; an empty one is
+# inferred from the canonical's current branch, then from the remote's default.
+#
+# It fetches first, because a review run has to see the branch a dev run pushed
+# minutes ago -- but a network that is down must never fail a run: fall back to
+# what is already local and say so in the tick log.
+wt_base_ref() { # <canonical> <base> [fetch-timeout] -> prints a ref; non-zero if nothing resolves
+  local repo="${1:-}" base="${2:-}" ref
+  # A remote that accepts the TCP connection and then goes quiet does not fail —
+  # it hangs, and this runs before the watchdog exists, so it would hold the
+  # run's slot for as long as the network stayed broken. Bound it: a stale base
+  # resolved from local refs is worth far more than a wedged job.
+  local ft; ft="$(num "${3:-}" 120)"
+  wt_run_limited "$ft" git -C "$repo" fetch --prune --quiet 2>/dev/null \
+    || log_tick "worktree: fetch failed or timed out (${ft}s) in $repo — resolving the base from local refs"
+  if [ -z "$base" ]; then
+    base="$(git -C "$repo" symbolic-ref --short --quiet HEAD 2>/dev/null || true)"
+    if [ -z "$base" ]; then
+      ref="$(git -C "$repo" symbolic-ref --short --quiet refs/remotes/origin/HEAD 2>/dev/null || true)"
+      base="${ref#origin/}"
+    fi
+  fi
+  if [ -n "$base" ]; then
+    if git -C "$repo" rev-parse --verify --quiet "origin/$base^{commit}" >/dev/null 2>&1; then
+      printf 'origin/%s\n' "$base"; return 0
+    fi
+    if git -C "$repo" rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1; then
+      printf '%s\n' "$base"; return 0
+    fi
+  fi
+  git -C "$repo" rev-parse --verify --quiet HEAD >/dev/null 2>&1 || return 1
+  printf 'HEAD\n'
 }
 
 # Expand {repo} and {worktree} placeholders in a template.
@@ -75,88 +149,256 @@ wt_env_line() { # <project> <repo> <worktree>
       | to_entries[] | .key + "\t" + (.value|tostring)' 2>/dev/null)
 }
 
-# Create the worktree for a run and print its path on stdout. Returns non-zero
-# if creation fails (the caller must then abort the run, never fall back to the
-# shared checkout — that is the race we are removing).
+# Run a project's provisioning hook for ONE repo, in that repo's worktree.
+# A missing script means "nothing to provision" and is not an error.
+#
+# The hook is killed if it outlives the project's timeout: it runs before the
+# agent exists, so nothing else is watching it, and a `composer install` that
+# hangs on a dead mirror would hold the run's slot for ever. macOS ships no
+# timeout(1), hence the killer subshell.
+wt_provision() { # <up|down> <project> <id> <run_dir> <name> <canonical> <worktree> <base>
+  local phase="${1:-}" project="${2:-}" id="${3:-}" run_dir="${4:-}"
+  local name="${5:-}" repo="${6:-}" wt="${7:-}" base="${8:-}"
+  local script t rc
+  script="$CONFIG_DIR/provision/$project.$phase.sh"
+  [ -f "$script" ] || return 0
+  t="$(project_get "$project" '.worktree.provision_timeout_seconds' '900')"
+  case "$t" in ''|null|*[!0-9]*) t=900 ;; esac
+  _wt_hook() {
+    cd "$wt" 2>/dev/null || return 1
+    CC_REPO_NAME="$name" CC_REPO_PATH="$repo" CC_WORKTREE="$wt" CC_BASE="$base" \
+    CC_RUN_DIR="$run_dir" CC_RUN_MANIFEST="$run_dir/.run.json" \
+    CC_PROJECT="$project" CC_JOB_ID="$id" \
+      bash "$script" >>"$DATA_DIR/exec.log" 2>&1
+  }
+  wt_run_limited "$t" _wt_hook; rc=$?
+  unset -f _wt_hook
+  [ "$rc" -eq 0 ] || log_tick "$id: provision $phase failed for $name (rc=$rc) — see exec.log"
+  return "$rc"
+}
+
+# The canonical checkout that owns a linked worktree. `git worktree list` names
+# the main worktree first, from any of them, which is how teardown finds the repo
+# to remove from without depending on the manifest.
+wt_main_of() { # <worktree>
+  git -C "${1:-}" worktree list --porcelain 2>/dev/null | awk 'NR==1{print $2; exit}'
+}
+
+# A fingerprint of everything git currently calls dirty in a worktree. Taken
+# once after provisioning and again at teardown: what provisioning left behind
+# is not the agent's work, and mistaking the two preserves every run dir for
+# ever. Comparing fingerprints rather than listing paths keeps this O(1) to
+# store, and "created then deleted" correctly reads as "nothing changed".
+wt_dirt_sha() { # <worktree>
+  git -C "${1:-}" status --porcelain 2>/dev/null | shasum | awk '{print $1}'
+}
+
+# Every worktree a run dir currently holds. Reads the DISK, not the manifest, so
+# it is still correct when setup died before writing one.
+wt_run_worktrees() { # <run dir>
+  local run_dir="${1:-}" d
+  [ -d "$run_dir" ] || return 0
+  for d in "$run_dir"/*/; do
+    [ -d "$d" ] || continue
+    printf '%s\n' "${d%/}"
+  done
+}
+
+# Create this run's dir and one worktree per repo the project spans, provision
+# each, and write the manifest. Prints the PRIMARY worktree (the repo whose path
+# is the project's .cwd) — that becomes the agent's cwd. Returns non-zero if
+# anything fails, having left nothing behind (the caller must then abort the run,
+# never fall back to the shared checkout — that is the race we are removing).
+#
+# ORDER MATTERS: every worktree is created first, then the manifest, and only
+# then does `up` run. A hook therefore always sees a complete $CC_RUN_MANIFEST
+# and can reach a sibling repo's worktree. It also means "no manifest" implies
+# "no hook ran", which is what lets teardown skip `down` after a half-built run.
+#
+# The canonical checkout is NEVER modified: the base is declared, so there is
+# nothing to free by detaching it, and a detach it never undoes would leave the
+# operator's own repo headless for good.
 wt_setup() { # <id> <project> <canonical_cwd> <stamp>
-  local id="${1:-}" project="${2:-}" cwd="${3:-}" stamp="${4:-}" wt
-  wt="$WORKTREES_DIR/$id/$stamp"
-  mkdir -p "$WORKTREES_DIR/$id"
-  # Free any branch the canonical checkout is holding so worktrees can check
-  # branches out — but never disturb a canonical that has uncommitted work
-  # (that would be a crashed run's unsaved changes).
-  if [ -z "$(git -C "$cwd" status --porcelain 2>/dev/null)" ]; then
-    git -C "$cwd" checkout --detach --quiet 2>/dev/null || true
+  local id="${1:-}" project="${2:-}" cwd="${3:-}" stamp="${4:-}"
+  local run_dir="$WORKTREES_DIR/$id/$stamp" tsv="$WORKTREES_DIR/$id/.$stamp.tsv"
+  local name repo base ref wt sha primary=""
+  # How long a single repo's fetch may block before the base is resolved from
+  # local refs instead. Declared per project, like every other worktree knob.
+  local fetch_t; fetch_t="$(num "$(project_get "$project" '.worktree.fetch_timeout_seconds' '120')" 120)"
+  mkdir -p "$run_dir" || { log_tick "$id: cannot create the run dir $run_dir"; return 1; }
+  : > "$tsv"
+  while IFS="$(printf '\t')" read -r name repo base; do
+    [ -n "$name" ] || continue
+    if [ ! -d "$repo" ]; then
+      log_tick "$id: repo path missing ($name -> $repo)"
+      rm -f "$tsv"; wt_teardown "$id" "$project" "$run_dir"; return 1
+    fi
+    if ! ref="$(wt_base_ref "$repo" "$base" "$fetch_t")"; then
+      log_tick "$id: no base ref resolvable in $repo"
+      rm -f "$tsv"; wt_teardown "$id" "$project" "$run_dir"; return 1
+    fi
+    wt="$run_dir/$name"
+    git -C "$repo" worktree prune >/dev/null 2>&1 || true
+    if ! git -C "$repo" worktree add --detach "$wt" "$ref" >/dev/null 2>>"$DATA_DIR/exec.log"; then
+      log_tick "$id: worktree add failed ($wt from $ref) — see exec.log"
+      rm -f "$tsv"; wt_teardown "$id" "$project" "$run_dir"; return 1
+    fi
+    sha="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$repo" "$wt" "${base:-$ref}" "$ref" "$sha" >> "$tsv"
+    [ "$repo" = "$cwd" ] && primary="$wt"
+  done < <(wt_repos "$project" "$cwd")
+
+  if [ -z "$primary" ]; then
+    log_tick "$id: no repo matches the project's cwd ($cwd) — cannot choose a primary"
+    rm -f "$tsv"; wt_teardown "$id" "$project" "$run_dir"; return 1
   fi
-  git -C "$cwd" worktree prune >/dev/null 2>&1 || true
-  if ! git -C "$cwd" worktree add --detach "$wt" HEAD >/dev/null 2>>"$DATA_DIR/exec.log"; then
-    log_tick "$id: worktree add failed ($wt) — see exec.log"
-    return 1
+
+  "$JQ" -Rn --arg job "$id" --arg project "$project" --arg run_dir "$run_dir" \
+        --arg primary "$(basename "$primary")" '
+    {job:$job, project:$project, run_dir:$run_dir, primary:$primary,
+     repos: [inputs | split("\t")
+             | {name:.[0], canonical:.[1], worktree:.[2],
+                base:.[3], base_ref:.[4], fork_sha:.[5]}]}' "$tsv" > "$run_dir/.run.json"
+  rm -f "$tsv"
+
+  : > "$tsv"
+  while IFS="$(printf '\t')" read -r name repo wt base; do
+    [ -n "$name" ] || continue
+    if ! wt_provision up "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base"; then
+      log_tick "$id: provisioning failed for $name — aborting the run"
+      rm -f "$tsv"; wt_teardown "$id" "$project" "$run_dir"
+      return 1
+    fi
+    printf '%s\t%s\n' "$name" "$(wt_dirt_sha "$wt")" >> "$tsv"
+  done < <("$JQ" -r '.repos[] | [.name,.canonical,.worktree,.base] | @tsv' "$run_dir/.run.json" 2>/dev/null)
+
+  # Record what the tree looked like once provisioning was done, so teardown can
+  # tell the hook's leftovers from anything the agent went on to write.
+  if "$JQ" -R -n --slurpfile mf "$run_dir/.run.json" '
+        ([inputs | split("\t") | {(.[0]): .[1]}] | add // {}) as $d
+        | $mf[0] | .repos = [.repos[] | . + {dirt_sha: ($d[.name] // "")}]' \
+        "$tsv" > "$run_dir/.run.json.new" 2>/dev/null; then
+    mv "$run_dir/.run.json.new" "$run_dir/.run.json"
+  else
+    rm -f "$run_dir/.run.json.new"
   fi
-  # Remember the fork point so teardown can tell "made no commits" (safe to drop)
-  # from "made commits, not pushed" (must preserve).
-  git -C "$wt" rev-parse HEAD > "$wt.base" 2>/dev/null || true
-  printf '%s\n' "$wt"
+  rm -f "$tsv"
+
+  printf '%s\n' "$primary"
 }
 
-# 0 = the worktree holds work that must be preserved (do NOT remove).
-wt_unsafe_to_remove() { # <worktree>
-  local wt="${1:-}" base head
-  [ -d "$wt" ] || return 1
-  # Uncommitted or untracked changes → keep.
-  [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ] && return 0
-  head="$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
-  [ -n "$head" ] || return 1
-  base=""
-  [ -f "$wt.base" ] && base="$(cat "$wt.base" 2>/dev/null || true)"
-  # No new commits since the fork point → nothing was made here → safe.
-  [ -n "$base" ] && [ "$head" = "$base" ] && return 1
-  # New commits exist: safe only if they already live on some remote branch.
-  if [ -n "$(git -C "$wt" branch -r --contains "$head" 2>/dev/null)" ]; then
-    return 1
-  fi
-  return 0   # new local commits, on no remote → preserve
+# 0 = this run dir holds work that must be preserved. ALL-OR-NOTHING: if any one
+# repo has uncommitted changes, or commits that exist on no remote, the whole run
+# dir stays. Removing some repos of a run and keeping others produces a half-run
+# nobody can reason about.
+wt_unsafe_to_remove() { # <run dir>
+  local run_dir="${1:-}" mf="${1:-}/.run.json" wt head fork snap
+  [ -d "$run_dir" ] || return 1
+  while IFS= read -r wt; do
+    [ -n "$wt" ] || continue
+    # Dirty compared to the END OF PROVISIONING → the agent wrote something → keep.
+    # Compared to a pristine checkout it is always dirty: the hook just copied a
+    # .env and a vendor/ in. With no snapshot (setup died before provisioning)
+    # fall back to the strict reading and keep anything dirty at all.
+    snap=""
+    [ -f "$mf" ] && snap="$("$JQ" -r --arg w "$wt" \
+        '.repos[] | select(.worktree==$w) | .dirt_sha // ""' "$mf" 2>/dev/null)"
+    if [ -n "$snap" ]; then
+      [ "$(wt_dirt_sha "$wt")" != "$snap" ] && return 0
+    else
+      [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ] && return 0
+    fi
+    head="$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
+    [ -n "$head" ] || continue
+    fork=""
+    [ -f "$mf" ] && fork="$("$JQ" -r --arg w "$wt" \
+        '.repos[] | select(.worktree==$w) | .fork_sha' "$mf" 2>/dev/null)"
+    # No new commits since the fork point → nothing was made here → safe.
+    [ -n "$fork" ] && [ "$fork" = "$head" ] && continue
+    # New commits exist: safe only if they already live on some remote branch.
+    [ -n "$(git -C "$wt" branch -r --contains "$head" 2>/dev/null)" ] && continue
+    return 0   # new local commits, on no remote → preserve
+  done < <(wt_run_worktrees "$run_dir")
+  return 1
 }
 
-# Remove a run's worktree if it is safe, else leave it and say so.
-wt_teardown() { # <id> <project> <canonical_cwd> <worktree>
-  local id="${1:-}" project="${2:-}" cwd="${3:-}" wt="${4:-}"
-  [ -n "$wt" ] && [ -d "$wt" ] || return 0
-  if wt_unsafe_to_remove "$wt"; then
-    log_tick "$id: worktree kept — unpushed/uncommitted work at $wt"
+# Finish a run's directory: `down` for every repo (in reverse declaration order,
+# while the worktrees still exist), then remove them if that is safe.
+#
+# `down` runs even when the run dir is preserved: whatever the hook registered
+# outside the directory -- a herd site, a compose stack -- has to be released
+# when the run ends, whether or not a human still wants the files.
+#
+# No manifest means setup never got as far as provisioning, so there is nothing
+# to take down; the worktrees are still removed.
+wt_teardown() { # <id> <project> <run dir>
+  local id="${1:-}" project="${2:-}" run_dir="${3:-}" mf="${3:-}/.run.json"
+  local name repo wt base main
+  [ -n "$run_dir" ] && [ -d "$run_dir" ] || return 0
+  # ONCE per run dir. A preserved run dir is swept again on every tick, and
+  # `down` is not a query: re-running it would take the same compose stack down
+  # every minute for as long as the unpushed work sits there. The marker lives
+  # in the run dir, so it disappears exactly when the run does.
+  if [ -f "$mf" ] && [ ! -f "$run_dir/.down" ]; then
+    : > "$run_dir/.down"
+    while IFS="$(printf '\t')" read -r name repo wt base; do
+      [ -n "$wt" ] && [ -d "$wt" ] || continue
+      wt_provision down "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base" || true
+    done < <("$JQ" -r '.repos | reverse | .[] | [.name,.canonical,.worktree,.base] | @tsv' \
+                "$mf" 2>/dev/null)
+  fi
+  if wt_unsafe_to_remove "$run_dir"; then
+    log_tick "$id: run dir kept — unpushed or uncommitted work at $run_dir"
     return 0
   fi
-  git -C "$cwd" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
-  rm -f "$wt.base"
-  git -C "$cwd" worktree prune >/dev/null 2>&1 || true
+  wt_remove_all "$run_dir"
 }
 
-# Sweep worktrees whose owning run is no longer active (a killed or crashed run),
-# tearing each down safely. Called at the top of every tick.
+# Take a run dir off disk unconditionally, leaving git with no stale worktree
+# registrations. Split out of wt_teardown so an explicit, human-initiated drop
+# can reuse exactly the same removal — the ONLY difference being that it does
+# not consult wt_unsafe_to_remove first.
+wt_remove_all() { # <run dir>
+  local run_dir="${1:-}" wt main
+  [ -n "$run_dir" ] && [ -d "$run_dir" ] || return 0
+  while IFS= read -r wt; do
+    [ -n "$wt" ] || continue
+    main="$(wt_main_of "$wt")"
+    if [ -n "$main" ]; then
+      git -C "$main" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+      git -C "$main" worktree prune >/dev/null 2>&1 || true
+    else
+      rm -rf "$wt"
+    fi
+  done < <(wt_run_worktrees "$run_dir")
+  rm -rf "$run_dir"
+}
+
+# Sweep the run dirs whose owning run is no longer active (a killed or crashed
+# run, or a tick that died between setup and launch), tearing each down safely.
+# Called at the top of every tick.
 wt_prune_orphans() {
   [ -d "$WORKTREES_DIR" ] || return 0
-  local iddir id d project cwd
+  local iddir id d project
   for iddir in "$WORKTREES_DIR"/*; do
     [ -d "$iddir" ] || continue
     id="$(basename "$iddir")"
     for d in "$iddir"/*; do
-      case "$d" in *.base) continue ;; esac   # sidecars, not worktrees
-      [ -d "$d" ] || continue
+      [ -d "$d" ] || continue                 # skips the .<stamp>.tsv scratch files
       # Claimed by a LIVE run? Ask the run slots, which is where that fact
-      # lives: every running job holds a slot naming its worktree. Asking the
+      # lives: every running job holds a slot naming its run dir. Asking the
       # old single mutex (or the state's one cur_worktree, which cannot describe
       # several concurrent runs) said "nobody owns this" for worktrees that were
       # very much in use — and the sweep deleted them out from under the agents.
       wt_is_claimed "$id" "$d" && continue
       project="$(job_get "$id" '.project' '')"
-      cwd="$(resolve "$id" cwd "$HOME")"
-      wt_teardown "$id" "$project" "$cwd" "$d"
+      wt_teardown "$id" "$project" "$d"
     done
   done
 }
 
-# Is this worktree the working directory of a run that is alive right now?
-wt_is_claimed() { # <id> <worktree>
+# Is this run dir the working directory of a run that is alive right now?
+wt_is_claimed() { # <id> <run dir>
   local id="$1" wt="$2"
   local base="$LOCK_DIR/$id" slot pid owner
   [ -d "$base" ] || return 1
