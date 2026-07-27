@@ -392,8 +392,10 @@ Run the checks before pushing:
 claude-cron selftest      # includes test/round-cap.test.sh
 ```
 
-**Contributions are welcome.** The repository is public and forks are open;
-`main` is protected, so everything arrives by pull request. `CONTRIBUTING.md` has
+**Contributions are welcome.** `main` is protected, so everything arrives by pull
+request — but **do not fork**: the repository lives in a private workspace, which
+Bitbucket will not let you fork out of. Clone it, branch (`fix/…`, `feat/…` are
+unrestricted), push, and open the pull request. `CONTRIBUTING.md` has
 the workflow and the reasoning behind these rules, and
 `.bitbucket/PULL_REQUEST_TEMPLATE.md` is the description to copy into a new pull
 request (Bitbucket Cloud does not insert it for you).

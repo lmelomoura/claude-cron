@@ -16,10 +16,30 @@ pull request.
 ## The workflow
 
 `main` is protected: it takes no direct pushes and no force-pushes, and it cannot
-be deleted. Everything arrives by pull request.
+be deleted. Everything arrives by pull request. **Working branches are not
+restricted** — push `fix/…` and `feat/…` freely.
 
-1. **Fork** the repository (it is public, forks are open) and branch from `main`.
-   Name the branch for what it does: `fix/stall-watchdog-cpu`, `feat/skills-link`.
+### Do not fork — branch directly
+
+The repository is public, but it lives in a **private workspace**, and Bitbucket
+refuses to fork a repository out of one (*"Forking to a different workspace is not
+allowed"*). That is a workspace-level rule, not something this repository can
+relax. If you have access to it, you do not need a fork:
+
+1. Clone it and branch from `main`. Name the branch for what it does:
+   `fix/stall-watchdog-cpu`, `feat/skills-link`.
+
+   ```bash
+   git clone git@bitbucket.org:revenue_learning/claude-cron.git
+   cd claude-cron && git switch -c fix/your-change
+   ```
+
+   Push it normally — only `main` is protected:
+
+   ```bash
+   git push -u origin fix/your-change
+   ```
+
 2. Make the change.
 3. **Run the checks** — they are offline and take seconds:
 
@@ -37,6 +57,11 @@ be deleted. Everything arrives by pull request.
 5. Open the pull request against `main` and fill in the description (see
    `.bitbucket/PULL_REQUEST_TEMPLATE.md` — Bitbucket Cloud does not insert it for
    you, so copy it in).
+
+**No access to the repository?** Ask a maintainer for write access rather than
+looking for a way around the fork restriction — there isn't one while the
+workspace is private. Working branches are unrestricted, so write access is enough
+to contribute and still cannot touch `main`.
 
 ## The three rules that actually matter
 

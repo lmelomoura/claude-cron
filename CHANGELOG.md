@@ -34,7 +34,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **This changelog**, plus a selftest case that fails when `main` moves without it.
 - **`CONTRIBUTING.md` and a pull-request template**, and `main` is now protected —
   no direct pushes, no force-pushes, no deletion — so outside contributions arrive
-  by pull request against a branch that cannot be rewritten under them.
+  by pull request against a branch that cannot be rewritten under them. The
+  contribution path is **clone-and-branch, not fork**: the repository is public but
+  its workspace is private, and Bitbucket refuses to fork a repository out of a
+  private workspace. Only `main` is restricted, so working branches push freely.
 
 ### Fixed
 
