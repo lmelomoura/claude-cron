@@ -69,9 +69,29 @@ def get_token() -> str:
 
 TOKEN = get_token()
 ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
-# Changes on every server (re)start; pages compare it against /api/data and
-# reload themselves once when stale — no manual refresh after upgrades.
-BUILD = str(int(time.time()))
+# Identifies the CODE a page is running, so an open tab can tell that the server
+# has moved on and reload itself once — no manual refresh after an upgrade.
+#
+# Derived from the CONTENT of the files it serves, not from the start time. A
+# timestamp answers "when did the server restart", which is the wrong question
+# twice over: restarting without changing anything forced every open tab to
+# reload, and — the case that actually bit — editing the page while a tab held
+# the old JavaScript in memory looked identical to nothing having happened,
+# because the 5s poll refreshes DATA and never the code.
+def _build_id() -> str:
+    h = hashlib.sha256()
+    for f in (PAGE_FILE, Path(__file__)):
+        try:
+            h.update(f.read_bytes())
+        except OSError:
+            # Unreadable is a state of its own: fall back to the mtime rather
+            # than to a constant, so a page served from a broken read is never
+            # mistaken for one that matches.
+            h.update(str(getattr(f, "stat", lambda: None)).encode())
+    return h.hexdigest()[:12]
+
+
+# BUILD is assigned once PAGE_FILE is known (see below).
 
 # Inline favicon: an indigo rounded tile with a white robot — matches the
 # in-app brand mark. Base64 data URI so the page stays fully self-contained.
@@ -1750,6 +1770,7 @@ class Handler(BaseHTTPRequestHandler):
 # entirely self-contained (same package, no CDN, nothing fetched at runtime),
 # and `node --check` can be pointed straight at its script block.
 PAGE_FILE = BIN_DIR / "dashboard.html"
+BUILD = _build_id()   # content-derived; needs PAGE_FILE
 _page_cache = {"mtime": None, "text": ""}
 
 

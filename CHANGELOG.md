@@ -181,6 +181,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The reload signal tracks the code, not the clock.** An open dashboard already
+  reloads itself when the server has moved on, but the id it compared was the
+  server's *start time* — which answers the wrong question twice. Restarting
+  without changing anything forced every open tab to reload; and, less visibly, it
+  tied a real code change to whether a restart happened to follow it. It is now a
+  hash of the served page and the server itself: identical across a restart with
+  no changes, different the moment either file changes.
+
+
 - **The action column no longer collapses onto the Session column.**
   `td.rowacts{width:1%}` sized a `display:flex` cell below its own content, so the
   icons overflowed to the left and landed on top of the session id — showing as
