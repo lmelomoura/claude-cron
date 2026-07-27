@@ -620,6 +620,26 @@ details.hint[open] > summary .ic{transform:rotate(90deg)}
 details.hint > div{font-style:italic;line-height:1.55;margin:9px 0 0;
   padding:0 0 0 11px;border-left:2px solid var(--line2)}
 /* effort slider — Faster ↔ Smarter, mirroring Claude Code's control */
+/* A repo row is a row of labelled fields, not a row of bare boxes. The delete
+   button aligns to the inputs rather than to the labels above them. */
+.repo-row{display:flex;gap:10px;align-items:flex-end;margin-bottom:10px}
+.repo-f{display:flex;flex-direction:column;gap:5px;min-width:0}
+.repo-f-name{flex:1}
+.repo-f-path{flex:2.2}
+.repo-f-base{flex:1.2}
+.repo-f > label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--muted);white-space:nowrap}
+.repo-row .rp-del{flex:none;margin-bottom:1px}
+.repo-row .cwdrow{display:flex;gap:6px;min-width:0}
+.repo-row .cwdrow input{min-width:0;flex:1}
+
+/* The focus ring paints OUTSIDE the border box (2px outline + 2px offset), so a
+   field sitting flush against a scroll container has its ring sliced off on that
+   side — visible on every tab of the project editor, where the panes clip at
+   padding 0. Reserving the ring's width as padding costs nothing when nothing is
+   focused and stops the clipping everywhere at once, rather than per field. */
+.tabpanes,#pj-tabs,#projmodal,.projgroup,.pgb-inner{padding-left:4px;padding-right:4px}
+.tabpanes{scroll-padding:4px}
 .efflabel{margin-left:8px;color:var(--accent);font-weight:700;text-transform:none;letter-spacing:0}
 .effslider{-webkit-appearance:none;appearance:none;width:100%;height:26px;background:transparent;
   cursor:pointer;padding:0;border:0;margin:1px 0 0}
@@ -1691,13 +1711,28 @@ function renderJobs(){
 
 /* ---- projects modal ---- */
 let editingProject=null;
+// One repo row. Three fields with no captions is a puzzle you can only solve by
+// having filled them in before, so each carries its own label like every other
+// field in this editor — and the path gets the same folder picker as the working
+// directory on the first tab, because a mistyped path here surfaces only when a
+// run fails, hours later.
 function repoRow(r){
   r=r||{};
-  return '<div class="repo-row" style="display:flex;gap:6px;margin-bottom:6px">'
-    +'<input class="rp-name" placeholder="name" value="'+esc(r.name||"")+'" style="flex:1">'
-    +'<input class="rp-path" placeholder="/absolute/path" value="'+esc(r.path||"")+'" style="flex:2">'
-    +'<input class="rp-base" placeholder="base branch" value="'+esc(r.base||"")+'" style="flex:1">'
-    +'<button type="button" class="btn ghost rp-del" title="Remove">×</button></div>';
+  var uid="rp"+(repoRow._n=(repoRow._n||0)+1);
+  return '<div class="repo-row">'
+    +  '<div class="repo-f repo-f-name"><label for="'+uid+'-name">Name</label>'
+    +    '<input id="'+uid+'-name" class="rp-name" placeholder="e.g. web" value="'+esc(r.name||"")+'"></div>'
+    +  '<div class="repo-f repo-f-path"><label for="'+uid+'-path">Path</label>'
+    +    '<div class="cwdrow">'
+    +      '<input id="'+uid+'-path" class="rp-path cwd-ro" type="text" readonly '
+    +        'placeholder="click Browse to choose a folder" data-cwd-target="'+uid+'-path" value="'+esc(r.path||"")+'">'
+    +      '<button type="button" class="btn cwd-browse" data-cwd-target="'+uid+'-path">Browse…</button>'
+    +    '</div></div>'
+    +  '<div class="repo-f repo-f-base"><label for="'+uid+'-base">Base branch</label>'
+    +    '<input id="'+uid+'-base" class="rp-base" placeholder="empty = infer · release/* = latest" '
+    +      'value="'+esc(r.base||"")+'"></div>'
+    +  '<button type="button" class="btn ghost rp-del" title="Remove this repo">×</button>'
+    +'</div>';
 }
 function renderRepos(list){ $("pj-repos").innerHTML=(list||[]).map(repoRow).join(""); }
 // Read at SAVE time from the DOM, so rows added and removed since the editor
@@ -2312,7 +2347,12 @@ function paintPromptHighlight(){
    editable there, or the two would silently disagree. With no project the job
    owns its own cwd and the picker is available. */
 function syncCwdField(projectName){
-  const inp=$("ed-cwd"), btn=document.querySelector('.cwd-browse'), note=$("ed-cwd-note");
+  // Address the job editor's OWN Browse button, not "the first one in the
+  // document": there are several now (the project editor, plus one per repo
+  // row), and a bare `.cwd-browse` only ever worked because this one happens to
+  // come first in source order — not a property anyone maintains on purpose.
+  const inp=$("ed-cwd"), note=$("ed-cwd-note"),
+        btn=document.querySelector('.cwd-browse[data-cwd-target="ed-cwd"]');
   if(!inp||!note) return;
   const p = projectName ? projById(projectName) : null;
   const inherited = p && p.cwd ? p.cwd : "";

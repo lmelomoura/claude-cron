@@ -1028,6 +1028,37 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   got="$(wt_base_ref "$tmp/g/repo" "")"
   [ "$got" = "origin/develop" ] && ok "an empty base is inferred from the current branch" || bad "got '$got'"
 
+  echo "wt_base_ref() — a base pattern tracks the release train by itself"
+  # A literal `release/0.9.0` is correct until 0.9.0 stops being current, and
+  # then keeps cutting worktrees from an abandoned train with no symptom but
+  # agents working on the wrong baseline. A pattern is written once.
+  # Pushed to the ORIGIN, not faked as local remote-refs: wt_base_ref fetches
+  # with --prune first, so a remote-tracking ref with no branch behind it is
+  # deleted before it can be resolved — which is correct, and is also exactly
+  # how a retired release train disappears on its own.
+  ( cd "$tmp/g/repo"
+    for v in 0.8.0 0.9.0 0.10.0; do git push -q origin "HEAD:refs/heads/release/$v"; done ) >/dev/null 2>&1
+  got="$(wt_base_ref "$tmp/g/repo" 'release/*')"
+  [ "$got" = "origin/release/0.10.0" ] \
+    && ok "a base pattern resolves to the highest VERSION (0.10.0 > 0.9.0)" \
+    || bad "pattern resolved to '$got', want origin/release/0.10.0"
+  # The whole point: sorted as text, 0.9.0 beats 0.10.0 and the project silently
+  # pins itself to the train it just left. This case is why --sort=-v:refname.
+  got="$(git -C "$tmp/g/repo" for-each-ref --sort=-refname --count=1 \
+          --format='%(refname:short)' 'refs/remotes/origin/release/*')"
+  [ "$got" = "origin/release/0.9.0" ] \
+    && ok "and text ordering would have picked 0.9.0 — the bug this avoids" \
+    || bad "the text-order control did not reproduce: got '$got'"
+  # A pattern that matches nothing must REFUSE, not fall through to HEAD:
+  # falling through is exactly the silent-wrong-baseline failure being prevented.
+  got="$(wt_base_ref "$tmp/g/repo" 'nosuch/*' 2>/dev/null)"; rc=$?
+  [ "$rc" -ne 0 ] && [ -z "$got" ] \
+    && ok "a pattern matching nothing refuses instead of falling back to HEAD" \
+    || bad "unmatched pattern returned '$got' (exit $rc) instead of refusing"
+  # And a literal base must be unaffected by any of this.
+  got="$(wt_base_ref "$tmp/g/repo" develop)"
+  [ "$got" = "origin/develop" ] && ok "a literal base still resolves as before" || bad "got '$got'"
+
   echo "wt_base_ref() — a hung fetch cannot hold a run for ever"
   # The fetch runs inside wt_setup, i.e. AFTER the run has taken its slot and
   # BEFORE the watchdog exists — so a remote that accepts the connection and
