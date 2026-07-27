@@ -77,14 +77,24 @@ h3 .ic{width:14px;height:14px}
 .projgroup-h{display:flex;align-items:center;gap:10px;padding:13px 18px;cursor:pointer;
   user-select:none;transition:background .12s}
 .projgroup-h:hover{background:var(--panel2)}
-.projgroup-h .pgh-ic{width:18px;height:18px;color:var(--accent);flex:none}
-.projgroup-h .pgh-name{font-size:14px;font-weight:640;letter-spacing:-.01em}
+/* THE DESCRIPTION IS THE ONLY THING IN THIS ROW THAT MAY GIVE. Everything else
+   is flex:none: a flex child shrinks by default, so as soon as the description
+   became greedy the count badge got squeezed under its own text and "3 jobs"
+   wrapped into a two-line blob. */
+.projgroup-h > *{flex:none}
+.projgroup-h .pgh-ic{width:18px;height:18px;color:var(--accent)}
+.projgroup-h .pgh-name{font-size:14px;font-weight:640;letter-spacing:-.01em;white-space:nowrap}
 .projgroup-h .pgh-name.standalone{color:var(--muted);font-weight:600}
 .projgroup-h .pgh-count{font-size:11px;font-weight:600;color:var(--muted);background:var(--accent-soft);
-  border-radius:20px;padding:2px 9px}
-.projgroup-h .pgh-desc{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;
-  white-space:nowrap;max-width:340px}
+  border-radius:20px;padding:2px 9px;white-space:nowrap}
+/* The description used to be capped at 340px while ~700px of the header sat
+   empty. Let it take the room that is actually there — and only it. */
+.projgroup-h .pgh-desc{flex:1 1 auto;font-size:12px;color:var(--muted);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .projgroup-h .spacer{flex:1}
+/* when there IS a description it takes the slack; the spacer only has a job on
+   a header that has none */
+.projgroup-h .pgh-desc + .spacer{flex:0 0 0}
 .projgroup-h .pgh-edit{display:flex;border:0;background:transparent;color:var(--muted);cursor:pointer;
   padding:5px;border-radius:7px}
 .projgroup-h .pgh-edit:hover{color:var(--accent);background:var(--accent-soft)}
@@ -104,20 +114,60 @@ h3 .ic{width:14px;height:14px}
 .projgroup-body .grid{padding:2px 16px 16px}
 td .projtag{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--muted)}
 td .projtag .ic{width:12px;height:12px;color:var(--accent)}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
-/* Row 1: icon + number side by side. Row 2: the label spans the whole tile,
-   so it never wraps against the icon. */
-.stat{display:flex;flex-direction:column;gap:9px;background:var(--panel);
-  border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow)}
-.stat-top{display:flex;align-items:center;gap:12px}
-/* the warning/error tiles double as filters for the runs table */
-.stat.clickable{cursor:pointer;transition:border-color .12s,box-shadow .12s}
-.stat.clickable:hover{border-color:var(--line2)}
-.stat.active{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
-.stat .bubble{width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex:none}
-.stat .bubble .ic{width:17px;height:17px}
-.stat .n{font-size:19px;font-weight:650;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.2}
-.stat .l{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
+/* ------------------------------------------------------------ the loop band
+   The product is a loop, so the top of the page is the loop's last 24 hours
+   rather than six tiles of mostly zeros. One column per 15 minutes, stacked by
+   what the scheduler decided: woke a run, found nothing, hit a cap, was at its
+   parallel limit, or could not probe at all. */
+.pulse{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  padding:15px 18px 14px;box-shadow:var(--shadow)}
+.pulse-h{display:flex;align-items:baseline;justify-content:space-between;gap:8px 16px;flex-wrap:wrap}
+.pulse-sum{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.pulse-sum b{color:var(--ink);font-weight:650}
+/* The floor matters: without it the bars hang in an empty box and the eye has
+   nothing to read them against. */
+.band{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:1px;
+  height:56px;margin:13px 0 0;align-items:end;border-bottom:1px solid var(--line)}
+.bk{display:flex;flex-direction:column;justify-content:flex-end;height:100%;
+  border-radius:2px 2px 0 0;overflow:hidden;min-width:0}
+.bk i{display:block;width:100%;min-height:1px}
+.bk:hover{outline:1px solid var(--accent);outline-offset:1px}
+.k-woke{background:var(--accent)}
+.k-idle{background:color-mix(in srgb,var(--muted) 32%,transparent)}
+.k-capped{background:var(--warn)}
+.k-blocked{background:color-mix(in srgb,var(--warn) 42%,transparent)}
+.k-failed{background:var(--err)}
+/* A day with no ticks at all is the normal state of a fresh install. Draw the
+   floor it would have stood on and say why it is empty, instead of a blank box
+   that reads as a broken chart. */
+.band.asleep{display:flex;align-items:center;justify-content:center;
+  border-bottom:1px dashed var(--line);height:56px}
+.band.asleep span{font-size:12px;color:var(--muted);text-align:center;padding:0 10px}
+.axis{display:flex;justify-content:space-between;margin:6px 0 0;font-size:10.5px;
+  color:var(--muted);font-variant-numeric:tabular-nums}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin:11px 0 0;font-size:11px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:9px;height:9px;border-radius:2px;flex:none}
+.pulse-f{display:flex;align-items:center;gap:7px 14px;flex-wrap:wrap;margin:13px 0 0;
+  padding:13px 0 0;border-top:1px solid var(--line2)}
+.kpi{display:inline-flex;align-items:baseline;gap:7px;font-size:11.5px;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.04em}
+.kpi b{font-size:15px;font-weight:650;color:var(--ink);letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums;text-transform:none}
+.kpi-sep{width:1px;height:18px;background:var(--line);flex:none}
+/* The warning and error counters filter the runs table. They used to be plain
+   tiles with a title attribute, so nothing on screen said they were clickable —
+   now they are shaped like the filter chips they are. */
+button.kpi{font-family:inherit;border:1px solid var(--line);background:var(--panel);
+  border-radius:20px;padding:5px 12px;cursor:pointer;transition:.13s;align-items:center}
+button.kpi .ic{width:13px;height:13px}
+button.kpi.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 38%,var(--line))}
+button.kpi.err{color:var(--err);border-color:color-mix(in srgb,var(--err) 38%,var(--line))}
+button.kpi:hover:not(:disabled){background:var(--panel2)}
+button.kpi.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+button.kpi.on b{color:var(--accent-ink)}
+button.kpi:disabled{cursor:default;color:var(--muted);border-color:var(--line2)}
+button.kpi:disabled b{color:var(--muted);font-weight:600}
 .b-accent{background:var(--accent-soft);color:var(--accent)}
 .b-ok{background:var(--ok-soft);color:var(--ok)}
 .b-warn{background:var(--warn-soft);color:var(--warn)}
@@ -127,9 +177,23 @@ td .projtag .ic{width:12px;height:12px;color:var(--accent)}
 @media (max-width:1080px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:720px){.grid{grid-template-columns:1fr}}
 #jobs > .grid{margin-bottom:14px}   /* standalone grid rendered bare */
-.card{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:16px 18px;
-  box-shadow:var(--shadow);display:flex;flex-direction:column}
+.card{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:13px;
+  padding:16px 18px 16px 20px;box-shadow:var(--shadow);display:flex;flex-direction:column}
 .projgroup .card{box-shadow:none}
+/* State is the card's left edge. Twenty-one cards' worth of it is then legible
+   in one sweep, instead of hunting for a pill in each top-right corner. */
+.card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;
+  border-radius:13px 0 0 13px;background:var(--idle)}
+.card.st-on::before{background:var(--ok)}
+.card.st-run::before{background:var(--warn)}
+.card.st-idle::before{background:color-mix(in srgb,var(--warn) 55%,transparent)}
+.card.st-off::before{background:color-mix(in srgb,var(--idle) 40%,transparent)}
+/* A disabled job should read as dormant. It used to carry a filled primary
+   button and full-contrast text, so a board of 21 disabled jobs looked busy. */
+.card.st-off{background:var(--panel2)}
+.card.st-off h2 .jobname{color:var(--muted)}
+.card.st-off h2 .jobname .ic{color:var(--muted)}
+.card.st-off .desc,.card.st-off .cfgline,.card.st-off .cardline{opacity:.85}
 /* drag to reorder: the card being dragged fades, the drop target is outlined */
 .card[draggable="true"] h2 .jobname{cursor:grab}
 .card.dragging{opacity:.45}
@@ -142,6 +206,41 @@ td .projtag .ic{width:12px;height:12px;color:var(--accent)}
 .warnline .ic{width:13px;height:13px;flex:none;margin-top:1px}
 .card h2 .jobname .ic{width:15px;height:15px;color:var(--accent)}
 .card .desc{color:var(--muted);font-size:12px;margin:0 0 12px}
+/* ---- card body: the pulse, what it last saw, what it cost, how it is set up.
+   The ten-row definition list this replaces said the same nine things on every
+   card; only the last one, the config, still lists settings — and only the ones
+   that differ from the project's. */
+.cardline{display:flex;align-items:center;gap:10px;font-size:12px;margin:0 0 9px;min-width:0}
+/* the probe line can carry a checklist under it, so its icon sits at the top */
+.cardline.top{align-items:flex-start}
+.cardline.top .ic{margin-top:2px}
+.cardline .ic{width:13px;height:13px;flex:none;color:var(--muted)}
+.cardline .grow{flex:1 1 auto;min-width:0}
+.cardline .lbl{color:var(--muted);flex:none}
+.spark{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:1px;align-items:end;
+  height:20px;width:110px;flex:none}
+.spark i{background:color-mix(in srgb,var(--muted) 30%,transparent);border-radius:1px;min-height:1px}
+.spark i.w{background:var(--accent)}
+.spark.flat{display:flex;align-items:flex-end;border-bottom:1px dashed var(--line);height:20px}
+.sparkn{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sparkn b{color:var(--ink);font-weight:650}
+.spend{margin:0 0 11px}
+.spendbar{height:4px;border-radius:3px;background:var(--line2);overflow:hidden}
+.spendbar i{display:block;height:100%;border-radius:3px;background:var(--accent);
+  transition:width .3s ease}
+.spendbar.near i{background:var(--warn)}
+.spendbar.over i{background:var(--err)}
+.spendtxt{display:flex;justify-content:space-between;gap:10px;font-size:11.5px;
+  color:var(--muted);font-variant-numeric:tabular-nums;margin:5px 0 0}
+.spendtxt .cap{color:var(--ink);font-weight:600}
+.spendtxt .s-error{font-weight:650}
+/* Settings, one line. Anything this job overrides on top of its project is
+   inked; everything it merely inherits stays quiet. */
+.cfgline{display:flex;flex-wrap:wrap;gap:3px 9px;font-size:11.5px;color:var(--muted);
+  margin:2px 0 13px;font-variant-numeric:tabular-nums}
+.cfgline .o{color:var(--ink);font-weight:600}
+.cfgline .warn{color:var(--warn);font-weight:600}
 /* card body in two internal columns; each column its own kv list */
 .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:12.5px;margin:2px 0 13px;align-content:start}
 .kv dt{color:var(--muted);display:flex;align-items:center;gap:6px;white-space:nowrap}
@@ -152,14 +251,30 @@ td .projtag .ic{width:12px;height:12px;color:var(--accent)}
 .checklist li{font-size:11.5px;color:var(--muted)}
 .checklist li::marker{color:var(--accent)}
 .checklist .ck-v{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
-.actions{display:flex;gap:6px;flex-wrap:nowrap;border-top:1px solid var(--line2);padding-top:12px;
+.actions{display:flex;align-items:stretch;gap:6px;border-top:1px solid var(--line2);padding-top:12px;
   margin-top:auto}
-/* The four card actions share the row in equal parts — `flex:1` with a zero
+/* The three everyday actions share the row in equal parts — `flex:1` with a zero
    basis, so the widths come out identical regardless of label length, and
-   `min-width:0` lets them shrink instead of wrapping on a narrow card. */
+   `min-width:0` lets them shrink instead of wrapping on a narrow card. Delete
+   is not one of them: it lives in the overflow, where an irreversible action
+   cannot be hit by aiming one button off. */
 .actions .btn{padding:6px 8px;font-size:12px;gap:5px;flex:1 1 0;min-width:0;
   white-space:nowrap;justify-content:center}
 .actions .btn .ic{width:13px;height:13px}
+.actions .menu{position:relative;flex:none;display:flex}
+.actions .menu > .iconbtn{width:32px;height:auto;align-self:stretch}
+.menu-pop{position:absolute;right:0;bottom:calc(100% + 6px);z-index:20;min-width:186px;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  box-shadow:var(--shadow-lg);padding:6px}
+.menu-pop[hidden]{display:none}
+.menu-pop button{display:flex;align-items:center;gap:9px;width:100%;font:inherit;font-size:12.5px;
+  padding:8px 10px;border:0;border-radius:7px;background:transparent;color:var(--ink);
+  cursor:pointer;text-align:left;white-space:nowrap}
+.menu-pop button .ic{width:14px;height:14px;flex:none}
+.menu-pop button:hover{background:var(--panel2)}
+.menu-pop button.danger{color:var(--err)}
+.menu-pop button.danger:hover{background:var(--err-soft)}
+.menu-pop .sep{height:1px;background:var(--line2);margin:5px 4px}
 .btn{display:inline-flex;align-items:center;gap:7px;font:inherit;font-size:12.5px;font-weight:560;
   padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);
   color:var(--ink);cursor:pointer;transition:.13s;text-decoration:none}
@@ -178,6 +293,9 @@ td .projtag .ic{width:12px;height:12px;color:var(--accent)}
   cursor:pointer;transition:.13s}
 .iconbtn:hover{color:var(--accent);border-color:var(--accent)}
 .rowacts{display:flex;gap:6px;justify-content:flex-end}
+/* An action that cannot apply to this row keeps its column and loses its button.
+   Four icons with three permanently greyed out read as a broken toolbar. */
+.actslot{display:inline-block;width:30px;height:30px;flex:none}
 .iconbtn.live{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
 /* hover tooltip — the bubble is fixed-position and lives on <body>, because the
    table wrapper's overflow would otherwise clip it. */
@@ -233,7 +351,28 @@ td .projtag .ic{width:12px;height:12px;color:var(--accent)}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
 th{text-align:left;font-weight:600;color:var(--muted);font-size:10.5px;text-transform:uppercase;
   letter-spacing:.05em;padding:11px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
+/* Sortable columns say so: the caret is always in the layout so the header does
+   not shift when it appears, and it only inks on hover or when it is the sort. */
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:var(--ink)}
+th.sortable .ic{width:12px;height:12px;vertical-align:-2px;margin-left:4px;opacity:0;
+  transition:opacity .12s}
+th.sortable:hover .ic{opacity:.45}
+th.sortable.sorted{color:var(--ink)}
+th.sortable.sorted .ic{opacity:1;color:var(--accent)}
 td{padding:10px 14px;border-bottom:1px solid var(--line2);vertical-align:top}
+/* When: relative reads at a glance, the exact stamp is one hover away. */
+.when-rel{font-variant-numeric:tabular-nums;cursor:help;border-bottom:1px dotted var(--line)}
+.dur-cost{font-variant-numeric:tabular-nums;white-space:nowrap}
+.dur-cost .cost{color:var(--muted)}
+/* align-items must be stated: the default `stretch` made the job id's <code>
+   background run the whole width of the column. */
+.jobcell{display:flex;flex-direction:column;align-items:flex-start;gap:3px;min-width:0;max-width:100%}
+.jobcell code{max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.jobcell .sess{font:10.5px ui-monospace,"SF Mono",Menlo,monospace;color:var(--muted)}
+/* the action column takes only what its icons need; the slack belongs to the
+   columns that carry text */
+td.rowacts,th:last-child{width:1%;white-space:nowrap}
 tr:last-child td{border-bottom:none}
 tbody tr{transition:.1s}
 tbody tr:hover{background:var(--panel2)}
@@ -316,17 +455,34 @@ dialog::backdrop{background:rgba(9,11,16,.55);backdrop-filter:blur(3px)}
    `dialog:not([open]){display:none}` and the modal would never hide (Close
    would appear to do nothing). The log modal takes a fixed default size and
    scrolls its content; the editor grows with its form up to the viewport. */
-#editor[open],#logmodal[open]{display:flex;flex-direction:column}
+/* The project modal was missing from this rule, so its header and footer were
+   not pinned: the dialog itself scrolled, and Save project sat ~700px below the
+   fold on open — the modal's whole point, off screen. */
+#editor[open],#logmodal[open],#projmodal[open]{display:flex;flex-direction:column}
 #logmodal[open]{height:min(90vh,860px)}
-#editor[open]{max-height:92vh}
+/* Both editors take a FIXED height rather than growing with their form. With
+   tabbed panes a max-height would resize the window on every tab click — the
+   schedule pane is a fifth of the height of the prompt pane — and a modal that
+   jumps under the cursor is worse than a pane with room to spare at the bottom. */
+/* Tuned to the tallest pane rather than to the viewport: the prompt pane wants
+   the room, the schedule pane needs 143px, and a fixed height keeps Save in a
+   constant place. Room to spare at the bottom of a short settings pane is not a
+   defect; a Save button that moves every time you change tab is. */
+#editor[open]{height:min(88vh,640px)}
+#projmodal[open]{height:min(88vh,640px)}
 #editor{max-width:min(880px,94vw);width:880px}
+#projmodal{max-width:min(880px,94vw);width:880px}
 /* the <form> is the dialog's only flex child — it must itself be the scroll
    column, or the body never scrolls and the footer overflows below the modal */
-#editor>form{display:flex;flex-direction:column;min-height:0;flex:1 1 auto;overflow:hidden}
+#editor>form,#projmodal>form{display:flex;flex-direction:column;min-height:0;flex:1 1 auto;overflow:hidden}
 #logmodal{max-width:min(1000px,95vw);width:1000px}
 #confirm{max-width:min(460px,92vw);width:460px}
-#editor .dlg-h,#editor .dlg-f,#logmodal .dlg-h,#logmodal .dlg-f{flex:none}
-#editor .dlg-b{flex:1 1 auto;min-height:0;overflow-y:auto}
+#editor .dlg-h,#editor .dlg-f,#logmodal .dlg-h,#logmodal .dlg-f,
+#projmodal .dlg-h,#projmodal .dlg-f{flex:none}
+/* The body is now the tab column, not the scroller: the strip stays put and
+   only the active pane moves. */
+#editor .dlg-b,#projmodal .dlg-b{flex:1 1 auto;min-height:0;display:flex;
+  flex-direction:column;overflow:hidden;padding-top:0}
 /* log modal: fixed metadata + tab bar, only the active pane scrolls */
 #lg-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden}
 #lg-body .loginfo{flex:none}
@@ -341,7 +497,22 @@ dialog::backdrop{background:rgba(9,11,16,.55);backdrop-filter:blur(3px)}
 .tab .ic{width:14px;height:14px}
 .tab:hover{color:var(--ink)}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+/* The one thing a tabbed FORM must not do is hide a consequence. A dot appears
+   on a tab only when that section holds something changing how the job behaves
+   right now — no prompt, no precheck, a backoff in effect, a cap already hit —
+   so nothing that matters can sit unseen behind a tab. Never decorative: if
+   there is nothing to report, there is no dot. */
+.tab .dot{width:6px;height:6px;border-radius:50%;flex:none}
+.tab .dot.warn{background:var(--warn)}
+.tab .dot.err{background:var(--err)}
 .tabpanes{flex:1 1 auto;min-height:0;overflow-y:auto;padding-top:14px}
+/* A pane whose content should fill the height instead of sitting at the top —
+   the prompt and the precheck script, which spent their life as 230px windows
+   inside three screens of scrolling. */
+.tabpane.fill.active{display:flex;flex-direction:column;height:100%;min-height:0}
+.tabpane.fill > .mdedit{flex:2 1 0;min-height:120px;height:auto;resize:none}
+.tabpane.fill > textarea{flex:1 1 0;min-height:90px}
+.tabpane.fill > label{flex:none}
 .tabpane{display:none} .tabpane.active{display:block}
 .dlg-h{display:flex;align-items:center;gap:11px;padding:17px 20px 0;font-size:14.5px;font-weight:640}
 .dlg-h .halo{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex:none}
@@ -424,6 +595,28 @@ textarea:focus,.dlg-b input:focus,.dlg-b select:focus{outline:none;border-color:
      82% keeps it clearly a step softer than --muted while staying readable. */
   color:color-mix(in srgb,var(--muted) 82%,var(--panel));
   margin:9px 0 18px}
+/* ------------------------------------------------------- editor structure
+   Fifteen fields in one flat scroll — 1670px of form inside a 626px window,
+   2.7 screens — put the controls a screen apart from each other. They live on
+   tabs now (the same strip the log modal uses), and a note that runs longer
+   than a line folds away behind its own summary. Open it when you need it, and
+   the form stays a form. */
+.sechint{margin:0 0 4px;font-size:11.5px;line-height:1.55;
+  color:color-mix(in srgb,var(--muted) 82%,var(--panel))}
+.sechint code{font-size:11px}
+/* the pane already has the strip's breathing room above it */
+.tabpane > *:first-child,.tabpane > *:first-child > label:first-child{margin-top:0}
+.tabpane.fill > p,.tabpane.fill > details{flex:none}
+.dlg-b details.hint{font-style:normal;margin:7px 0 16px}
+details.hint > summary{display:inline-flex;align-items:center;gap:6px;cursor:pointer;
+  font-size:11.5px;font-style:normal;color:var(--muted);list-style:none;
+  border:1px solid var(--line);border-radius:20px;padding:3px 11px 3px 9px;width:max-content}
+details.hint > summary::-webkit-details-marker{display:none}
+details.hint > summary:hover{color:var(--accent);border-color:var(--accent)}
+details.hint > summary .ic{width:12px;height:12px;transition:transform .18s ease}
+details.hint[open] > summary .ic{transform:rotate(90deg)}
+details.hint > div{font-style:italic;line-height:1.55;margin:9px 0 0;
+  padding:0 0 0 11px;border-left:2px solid var(--line2)}
 /* effort slider — Faster ↔ Smarter, mirroring Claude Code's control */
 .efflabel{margin-left:8px;color:var(--accent);font-weight:700;text-transform:none;letter-spacing:0}
 .effslider{-webkit-appearance:none;appearance:none;width:100%;height:26px;background:transparent;
@@ -529,7 +722,67 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 #toast.err{background:var(--err);color:#fff}
 .spacer{flex:1}
-@media (max-width:640px){.topbar{padding:10px 14px}.wrap{padding:18px 14px 60px}}
+/* --------------------------------------------------------------- a11y floor
+   One ring, everywhere, and only for keyboard users — :focus-visible keeps it
+   off a mouse click. The custom widgets (day picker, chips, tabs, steppers,
+   combo triggers, the folder list) had no focus style at all, so tabbing
+   through the editor was invisible. */
+:where(a,button,input,select,textarea,summary,[tabindex]):focus-visible,
+.fs-list li:focus-visible,.combo-list li:focus-visible{
+  outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+.btn:focus-visible,.iconbtn:focus-visible,.projchip:focus-visible,
+.day-btn:focus-visible,.viewtab:focus-visible,.tab:focus-visible{outline-offset:2px}
+/* These have to out-specify the `.dlg-b input:focus{outline:none}` above, which
+   replaced the ring with a 1px border-colour change — the only focus signal the
+   editor had, and (0,1,1) beats the (0,1,0) of the shared rule regardless of
+   which comes later in the file. */
+.dlg-b input:focus-visible,.dlg-b select:focus-visible,.dlg-b textarea:focus-visible,
+.combo-search:focus-visible,.fs-list li:focus-visible{
+  outline:2px solid var(--accent);outline-offset:2px}
+/* Inputs draw their ring on the wrapper that carries the visible border, so the
+   ring hugs the control instead of the bare input inside it. */
+.searchbox:focus-within,.stepper:focus-within,.moneyin:focus-within,
+.termbar:focus-within,.mdedit:focus-within{outline:2px solid var(--accent);outline-offset:1px}
+.searchbox input:focus-visible,.stepper input:focus-visible,.moneyin input:focus-visible,
+.termbar input:focus-visible,.mdedit > textarea:focus-visible{outline:none}
+/* Nothing here is worth making somebody motion-sick over: the run pulse becomes
+   a steady dot, and every transition collapses to an instant state change. */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;
+    transition-duration:.001ms!important;scroll-behavior:auto!important}
+  .runningbadge .pulse,.livedot{opacity:1;transform:none}
+}
+/* ------------------------------------------------------------------ narrow
+   Everything below used to have exactly one breakpoint between them, so the
+   page ran wider than the viewport on a phone: the stat labels were `nowrap`,
+   the four card buttons were `nowrap` and unwrapping, and three flex rows had
+   no `flex-wrap`. */
+@media (max-width:900px){
+  .band{height:44px}
+  .legend{gap:10px}
+}
+@media (max-width:640px){
+  .topbar{padding:10px 14px}
+  .wrap{padding:18px 14px 60px}
+  .brand .tag{display:none}
+  .pulse{padding:13px 14px 12px}
+  .band{gap:0}
+  .axis span:nth-child(2),.axis span:nth-child(4){display:none}
+  .pulse-f{gap:7px 10px}
+  .kpi-sep{display:none}
+  .secthead{flex-wrap:wrap}
+  .secthead .btn{flex:1 1 auto;justify-content:center}
+  .projgroup-h{flex-wrap:wrap}
+  /* its own row, still one line: these descriptions are whole prompt contracts,
+     and unwrapping one turned a header into forty lines of text */
+  .projgroup-h .pgh-desc{order:9;flex:1 1 100%}
+  .actions{flex-wrap:wrap}
+  .actions .btn{flex:1 1 calc(50% - 19px)}
+  .toolbar .perpage{flex:1 1 auto;justify-content:flex-end}
+  .row2{grid-template-columns:1fr}
+  .fpanel{grid-template-columns:1fr}
+  .spark{width:88px}
+}
 </style></head>
 <body>
 <header class="topbar">
@@ -544,7 +797,9 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
   </div>
 </header>
 <main class="wrap">
-  <section class="stats" id="stats"></section>
+  <!-- The loop's last 24 hours. Drawn from tick.log, so it shows the scheduler
+       working even on a day when every check found nothing to do. -->
+  <section class="pulse" id="stats"></section>
   <!-- Run dirs the sweep is preserving because they hold unpushed work.
        Hidden entirely when there are none, which is the normal state. -->
   <section id="retained" hidden></section>
@@ -589,7 +844,7 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
     <button class="btn ghost fclear" id="f-clear"></button>
   </div>
   <div class="tablewrap"><table>
-    <thead><tr><th>When</th><th>Job</th><th>Project</th><th>Status</th><th>Duration</th><th>Cost</th><th>Session</th><th></th></tr></thead>
+    <thead><tr id="runhead"></tr></thead>
     <tbody id="runs"></tbody></table></div>
   <div class="pager">
     <button class="btn ghost" id="pg-prev"></button>
@@ -604,6 +859,15 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
 <dialog id="editor"><form method="dialog">
 <div class="dlg-h"><div class="halo b-accent" id="ed-halo"></div><span id="ed-title">Edit job</span></div>
 <div class="dlg-b">
+  <nav class="tabs" id="ed-tabs">
+    <button type="button" class="tab active" data-edtab="job">The job</button>
+    <button type="button" class="tab" data-edtab="runs">What it runs</button>
+    <button type="button" class="tab" data-edtab="when">When it runs</button>
+    <button type="button" class="tab" data-edtab="agent">The agent</button>
+    <button type="button" class="tab" data-edtab="limits">Limits</button>
+  </nav>
+  <div class="tabpanes">
+  <div class="tabpane active" data-edpane="job">
   <div id="ed-id-row" style="display:none"><label>Job id (letters, digits, - and _)</label>
     <input id="ed-id" type="text" placeholder="my-job" autocomplete="off"></div>
   <label>Project (optional — groups jobs; leave empty for none)</label>
@@ -625,13 +889,19 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
     <button type="button" class="btn cwd-browse" data-cwd-target="ed-cwd">Browse…</button>
   </div>
   <div class="hint" id="ed-cwd-note" hidden></div>
+  </div><!-- /pane job -->
+
+  <div class="tabpane fill" data-edpane="runs">
   <label>Prompt sent to the agent</label>
   <div class="mdedit" id="ed-prompt-wrap">
     <pre class="mdedit-hl" id="ed-prompt-hl" aria-hidden="true"></pre>
     <textarea id="ed-prompt" spellcheck="false"></textarea>
   </div>
   <label>Precheck script — exit 0 wakes a run, exit 1 stays idle (a skipped tick costs nothing)</label>
-  <textarea id="ed-precheck" spellcheck="false" style="min-height:120px"></textarea>
+  <textarea id="ed-precheck" spellcheck="false"></textarea>
+  </div><!-- /pane runs -->
+
+  <div class="tabpane" data-edpane="when">
   <div class="row2">
     <div><label>Interval (minutes)</label>
       <div class="stepper">
@@ -639,6 +909,25 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
         <input id="ed-interval" type="number" min="1" step="1" inputmode="numeric">
         <button type="button" class="step-btn" data-step="1" data-for="ed-interval">+</button>
       </div></div>
+    <div><label>Active hours (leave both empty for 24h)</label>
+      <div class="timerow">
+        <input type="time" id="ed-hours-start"><span class="sep">until</span><input type="time" id="ed-hours-end">
+      </div></div>
+  </div>
+  <label>Active days</label>
+  <div class="daypick" id="ed-days-pick">
+    <button type="button" class="day-btn" data-day="1">Mon</button>
+    <button type="button" class="day-btn" data-day="2">Tue</button>
+    <button type="button" class="day-btn" data-day="3">Wed</button>
+    <button type="button" class="day-btn" data-day="4">Thu</button>
+    <button type="button" class="day-btn" data-day="5">Fri</button>
+    <button type="button" class="day-btn" data-day="6">Sat</button>
+    <button type="button" class="day-btn" data-day="7">Sun</button>
+  </div>
+  </div><!-- /pane when -->
+
+  <div class="tabpane" data-edpane="agent">
+  <div class="row2">
     <div><label>Model</label>
       <div class="combo" id="ed-model-combo">
         <button type="button" class="combo-trigger" id="ed-model-trigger" aria-haspopup="listbox" aria-expanded="false">
@@ -651,58 +940,11 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
         </div>
         <input type="hidden" id="ed-model">
       </div></div>
-  </div>
-  <div class="row2">
     <div><label>Effort <span class="efflabel" id="ed-effort-label">—</span></label>
       <input type="range" id="ed-effort" class="effslider" min="0" max="5" step="1" value="0">
       <div class="effends"><span>Faster</span><span>Smarter</span></div>
     </div>
-    <div><label>Max budget per run — empty = no cap</label>
-      <div class="moneyin"><span class="cur">$</span>
-        <input id="ed-budget" inputmode="decimal" autocomplete="off" placeholder="no cap"></div></div>
   </div>
-  <label>Max simultaneous runs</label>
-  <input id="ed-maxpar" type="number" min="0" step="1" inputmode="numeric" placeholder="3">
-  <div class="hint">How many runs of this job may work at once, each in its own worktree.
-    Default 3. Set 0 (or leave empty) for no limit. At the limit, Run now and Resume
-    say so instead of starting anything.</div>
-  <label>Active hours (leave both empty for 24h)</label>
-  <div class="timerow">
-    <input type="time" id="ed-hours-start"><span class="sep">until</span><input type="time" id="ed-hours-end">
-  </div>
-  <label>Active days</label>
-  <div class="daypick" id="ed-days-pick">
-    <button type="button" class="day-btn" data-day="1">Mon</button>
-    <button type="button" class="day-btn" data-day="2">Tue</button>
-    <button type="button" class="day-btn" data-day="3">Wed</button>
-    <button type="button" class="day-btn" data-day="4">Thu</button>
-    <button type="button" class="day-btn" data-day="5">Fri</button>
-    <button type="button" class="day-btn" data-day="6">Sat</button>
-    <button type="button" class="day-btn" data-day="7">Sun</button>
-  </div>
-  <div class="row2">
-    <div><label>Daily budget cap — empty = no cap</label>
-      <div class="moneyin"><span class="cur">$</span>
-        <input id="ed-daily" inputmode="decimal" autocomplete="off" placeholder="no cap — unlimited"></div></div>
-    <div><label>Stall guard (minutes with no output)</label>
-      <div class="stepper">
-        <button type="button" class="step-btn" data-step="-1" data-for="ed-stall">−</button>
-        <input id="ed-stall" type="number" min="1" step="1" inputmode="numeric" placeholder="20">
-        <button type="button" class="step-btn" data-step="1" data-for="ed-stall">+</button>
-      </div></div>
-  </div>
-  <div class="hint">A run is killed only when it goes silent for this long — a task that
-    legitimately takes hours keeps running while it produces output. Leave empty for no stall guard.</div>
-  <label>Hard time limit (minutes) — optional, empty = no limit</label>
-  <div class="stepper">
-    <button type="button" class="step-btn" data-step="-1" data-for="ed-timeout">−</button>
-    <input id="ed-timeout" type="number" min="1" step="1" inputmode="numeric" placeholder="no limit">
-    <button type="button" class="step-btn" data-step="1" data-for="ed-timeout">+</button>
-  </div>
-  <label class="checkline"><input type="checkbox" id="ed-interactive">
-    Interactive — keep a terminal open so you can talk to the run while it works</label>
-  <div class="hint">The run then waits a few seconds after each answer in case you want to
-    reply, instead of ending immediately. Leave off for unattended jobs.</div>
   <label>Permission mode</label>
   <div class="combo" id="ed-perm-combo">
     <button type="button" class="combo-trigger" id="ed-perm-trigger" aria-haspopup="listbox" aria-expanded="false">
@@ -715,6 +957,49 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
     </div>
     <input type="hidden" id="ed-perm">
   </div>
+  <label class="checkline"><input type="checkbox" id="ed-interactive">
+    Interactive — keep a terminal open so you can talk to the run while it works</label>
+  <details class="hint"><summary>What interactive changes</summary><div>The run then waits a
+    few seconds after each answer in case you want to reply, instead of ending immediately.
+    Leave off for unattended jobs.</div></details>
+  </div><!-- /pane agent -->
+
+  <div class="tabpane" data-edpane="limits">
+  <p class="sechint">Every one of these is optional. Left empty, the job runs until it is
+    done and spends what it spends.</p>
+  <div class="row2">
+    <div><label>Max budget per run — empty = no cap</label>
+      <div class="moneyin"><span class="cur">$</span>
+        <input id="ed-budget" inputmode="decimal" autocomplete="off" placeholder="no cap"></div></div>
+    <div><label>Daily budget cap — empty = no cap</label>
+      <div class="moneyin"><span class="cur">$</span>
+        <input id="ed-daily" inputmode="decimal" autocomplete="off" placeholder="no cap — unlimited"></div></div>
+  </div>
+  <div class="row2">
+    <div><label>Max simultaneous runs</label>
+      <input id="ed-maxpar" type="number" min="0" step="1" inputmode="numeric" placeholder="3"></div>
+    <div><label>Stall guard (minutes with no output)</label>
+      <div class="stepper">
+        <button type="button" class="step-btn" data-step="-1" data-for="ed-stall">−</button>
+        <input id="ed-stall" type="number" min="1" step="1" inputmode="numeric" placeholder="20">
+        <button type="button" class="step-btn" data-step="1" data-for="ed-stall">+</button>
+      </div></div>
+  </div>
+  <label>Hard time limit (minutes) — optional, empty = no limit</label>
+  <div class="stepper">
+    <button type="button" class="step-btn" data-step="-1" data-for="ed-timeout">−</button>
+    <input id="ed-timeout" type="number" min="1" step="1" inputmode="numeric" placeholder="no limit">
+    <button type="button" class="step-btn" data-step="1" data-for="ed-timeout">+</button>
+  </div>
+  <details class="hint"><summary>How these three interact</summary><div>
+    <b>Max simultaneous runs</b> is how many runs of this job may work at once, each in its own
+    worktree. Default 3; set 0 (or leave empty) for no limit. At the limit, Run now and Resume
+    say so instead of starting anything.<br><br>
+    <b>Stall guard</b> kills a run only when it goes silent for that long — a task that
+    legitimately takes hours keeps running while it produces output. The <b>hard time limit</b>
+    does not care about output: it ends the run either way.</div></details>
+  </div><!-- /pane limits -->
+  </div><!-- /tabpanes -->
 </div>
 <div class="dlg-f">
   <button type="button" class="btn ghost" id="ed-cancel">Cancel</button>
@@ -732,6 +1017,13 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
 <dialog id="projmodal"><form method="dialog">
 <div class="dlg-h"><div class="halo b-accent" id="pj-halo"></div><span id="pj-title">New project</span></div>
 <div class="dlg-b">
+  <nav class="tabs" id="pj-tabs">
+    <button type="button" class="tab active" data-pjtab="project">The project</button>
+    <button type="button" class="tab" data-pjtab="repos">Repos and worktrees</button>
+    <button type="button" class="tab" data-pjtab="prov">Provisioning</button>
+  </nav>
+  <div class="tabpanes">
+  <div class="tabpane active" data-pjpane="project">
   <div id="pj-name-row"><label>Project name</label>
     <input id="pj-name" type="text" placeholder="e.g. my-repo" autocomplete="off"></div>
   <label>Description — passed to the agent as context on every run</label>
@@ -744,23 +1036,28 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
   <label>Claude account — the config directory this project's runs sign in as</label>
   <input id="pj-ccd" type="text" placeholder="default — the account the scheduler itself runs as"
          autocomplete="off" spellcheck="false">
-  <div class="hint">Claude Code keeps credentials, settings, plugins, MCP servers and past sessions
+  <details class="hint"><summary>Which account a run signs in as</summary><div>Claude Code keeps
+    credentials, settings, plugins, MCP servers and past sessions
     per config directory — one signed-in account each — so this is what puts a project's runs on
     your work account (<code>~/.claude-work</code>) rather than your personal one
     (<code>~/.claude-personal</code>). Leave it empty to inherit whatever
     <code>CLAUDE_CONFIG_DIR</code> the scheduler runs with. It is typed, not browsed: the folder
     picker hides dot-directories. Keep it stable once runs exist — a resumed session is looked up
-    inside the account that created it.</div>
+    inside the account that created it.</div></details>
+  </div><!-- /pane project -->
+
+  <div class="tabpane" data-pjpane="repos">
+  <p class="sechint">Where a run of this project actually works, and what it finds there.</p>
   <label>Repos — the repositories one run of this project spans</label>
   <div id="pj-repos"></div>
   <button type="button" class="btn ghost" id="pj-repo-add" style="align-self:flex-start">+ repo</button>
-  <div class="hint">Leave it empty for a single-repo project: the run works in a worktree of the
+  <details class="hint"><summary>When to add repos</summary><div>Leave it empty for a single-repo project: the run works in a worktree of the
     working directory above. Add rows when one ticket touches several repositories — each gets its
     own worktree inside the run's directory, and the agent finds them through
     <code>CC_RUN_MANIFEST</code>. <b>Base</b> is the branch the worktree is cut from and the branch
     a merge request targets; it is declared here, not read from the checkout, because a checkout can
     be detached or sitting on somebody's feature branch. The repo whose path matches the working
-    directory above is the run's own working directory.</div>
+    directory above is the run's own working directory.</div></details>
   <label>Worktree isolation — where a run actually works</label>
   <div class="combo" id="pj-wt-combo">
     <button type="button" class="combo-trigger" id="pj-wt-trigger" aria-haspopup="listbox" aria-expanded="false">
@@ -773,28 +1070,35 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
     </div>
     <input type="hidden" id="pj-wt">
   </div>
-  <div class="hint">Turn this off and every run of this project works in the same folder. Two agents
+  <details class="hint"><summary>Why isolation matters</summary><div>Turn this off and every run of this project works in the same folder. Two agents
     then share one working tree: one <code>git checkout</code> silently moves the other off its
     branch, and its work is gone. Worse, anything else pointed at that folder — a Docker bind-mount,
     your editor, a running dev server — gets served whichever branch an agent happened to leave
     behind. <b>Auto</b> is the safe default and isolates whenever the cwd is a git repo;
     <b>Always</b> refuses to run in the cwd even when the git check is inconclusive — use it when
     something outside claude-cron depends on that folder. Only choose <b>Off</b> for a cwd nothing
-    else reads.</div>
-  <label>Provisioning — <code>up</code>, run in every repo's fresh worktree</label>
-  <textarea id="pj-up" style="min-height:120px" spellcheck="false"
+    else reads.</div></details>
+  </div><!-- /pane repos -->
+
+  <div class="tabpane fill" data-pjpane="prov">
+  <p class="sechint">A fresh worktree has no <code>.env</code>, no <code>vendor</code>, no
+    <code>node_modules</code> — they are gitignored, so no checkout produces them. These scripts
+    put them there.</p>
+  <label><code>up</code> — run in every repo's fresh worktree</label>
+  <textarea id="pj-up" spellcheck="false"
             placeholder="#!/usr/bin/env bash&#10;cp -c &quot;$CC_REPO_PATH/.env&quot; .env"></textarea>
-  <label>Provisioning — <code>down</code>, run when the run ends</label>
-  <textarea id="pj-down" style="min-height:80px" spellcheck="false"></textarea>
-  <div class="hint">A fresh worktree has no <code>.env</code>, no <code>vendor</code>, no
-    <code>node_modules</code> — they are gitignored, so no checkout produces them. These scripts run
+  <label><code>down</code> — run when the run ends</label>
+  <textarea id="pj-down" spellcheck="false"></textarea>
+  <details class="hint"><summary>What these scripts get</summary><div>They run
     <b>once per repo</b>, with the working directory set to that repo's worktree and the run in the
     environment: <code>CC_REPO_NAME</code>, <code>CC_REPO_PATH</code> (the canonical checkout to copy
     from), <code>CC_WORKTREE</code>, <code>CC_BASE</code>, <code>CC_RUN_DIR</code>,
     <code>CC_RUN_MANIFEST</code>, <code>CC_PROJECT</code>, <code>CC_JOB_ID</code>. A non-zero
     <code>up</code> aborts the run rather than hand an agent a half-built tree. Anything with a
     global name — a herd site, a compose project — must derive it from <code>$CC_RUN_DIR</code>, or
-    two runs of the same repo collide.</div>
+    two runs of the same repo collide.</div></details>
+  </div><!-- /pane prov -->
+  </div><!-- /tabpanes -->
 </div>
 <div class="dlg-f">
   <button type="button" class="btn danger" id="pj-delete" style="margin-right:auto">Delete</button>
@@ -822,7 +1126,7 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
   </div>
 </dialog>
 
-<div id="toast"></div>
+<div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <script>
 const TOKEN = "__TOKEN__";
@@ -863,6 +1167,9 @@ const I={
   inbox:ic('<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>'),
   radar:ic('<path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/><path d="M4 6h.01"/><path d="M2.29 9.62a10 10 0 1 0 19.02-1.27"/><path d="M16.24 7.76a6 6 0 1 0-8.01 8.91"/><path d="M12 18h.01"/><path d="M17.99 11.66a6 6 0 0 1-2.22 4.58"/><circle cx="12" cy="12" r="2"/><path d="m13.41 10.59 5.66-5.66"/>'),
   folder:ic('<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>'),
+  dots:ic('<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>'),
+  sortasc:ic('<path d="m5 15 7-7 7 7"/>'),
+  sortdesc:ic('<path d="m5 9 7 7 7-7"/>'),
 };
 const STATUS_ICON={success:I.check, warning:I.alert, error:I.xcircle, idle:I.clock, running:I.timer};
 
@@ -1069,7 +1376,7 @@ function jobCard(j){
       +(backoff>1?' <span style="color:var(--warn)">· backing off '+backoff+'× after '
         +streak+' failed runs</span>':''));
   const pc=st.last_precheck||null;
-  let checkStr=fmtAgo(st.last_start);
+  let checkStr=st.last_start?("probed "+fmtAgo(st.last_start)):"";
   if(pc && typeof pc==="object"){
     // Three outcomes, not two. A probe that could not run (any exit other than
     // 0 or 1) once rendered as the calm "nothing to do", so a job whose
@@ -1078,7 +1385,9 @@ function jobCard(j){
     const verdict = pc.exit===0 ? '<span style="color:var(--ok)">work found</span>'
                   : pc.exit===1 ? "nothing to do"
                   : '<span style="color:var(--err);font-weight:600">probe FAILED (exit '+esc(String(pc.exit))+')</span>';
-    checkStr+=" — "+verdict+checkList(pc.output);
+    // A probe result with no recorded check time is a probe you ran by hand.
+    // Leading with a bare em-dash then read as though a word had gone missing.
+    checkStr = (checkStr ? checkStr+" — " : "last probe: ")+verdict+checkList(pc.output);
   }
   // A job may have SEVERAL runs going at once, so say how many rather than one
   // "running now". The per-run outcome is no longer summarised on the card: each
@@ -1089,48 +1398,107 @@ function jobCard(j){
         +nLive+' running now'+(nLive===1?'':'')+'…</span>'
       : "")
     + (st.last_run_start
-        ? (nLive?' <span class="muted">· last ':'<span class="muted">last ')+esc(fmtAgo(st.last_run_start))+'</span>'
-        : (nLive?"":"never"));
+        ? (nLive?' <span class="muted">· last ran ':'<span class="muted">last ran ')+esc(fmtAgo(st.last_run_start))+'</span>'
+        : (nLive?"":'<span class="muted">never ran</span>'));
   const model=eff(j,"model","opus"), perm=eff(j,"permission_mode","dontAsk"), budg=eff(j,"max_budget_usd",2);
-  const kv='<dl class="kv">'
-    +'<dt>'+I.clock+'Every</dt><dd>'+fmtDur(j.interval_seconds||300)+'</dd>'
-    +'<dt>'+I.calendar+'Window</dt><dd>'+esc(j.active_hours||"24h")+' · '+esc(fmtDays(j.active_days||[1,2,3,4,5,6,7]))+'</dd>'
-    +'<dt>'+I.play+'Last run</dt><dd>'+runStr+'</dd>'
-    +'<dt>'+I.radar+'Last check</dt><dd>'+checkStr+'</dd>'
-    +'<dt>'+I.cright+'Next check</dt><dd>'+next+'</dd>'   /* already escaped above */
-    +'<dt>'+I.dollar+'Today</dt><dd>'+money(spentToday)
-      +(cap!=null ? ' / '+money(cap)+(capped?' <span class="s-error">· capped</span>':'') : ' <span class="muted">· no cap</span>')+'</dd>'
-    +'<dt>'+I.cpu+'Model</dt><dd>'+esc(model)+' · cap '+money(budg)+'/run · '+esc(perm)+'</dd>'
-    +'<dt>'+I.activity+'Effort</dt><dd>'+esc(effortLabel(eff(j,"effort","")))+'</dd>'
-    +'<dt>'+I.activity+'Checks (24h)</dt><dd>'+chk.checks+' automatic check'+(chk.checks===1?"":"s")+' · '+chk.runs+' run'+(chk.runs===1?"":"s")+' woken</dd>'
-    +'</dl>';
+
+  // ---- the pulse: this job's own 24h, at one bar an hour.
+  const series=Array.isArray(chk.series)?chk.series:[], woke=Array.isArray(chk.woke)?chk.woke:[];
+  const peak=series.reduce((m,n)=>Math.max(m,n),0);
+  // No bars at all when there is nothing to plot. An empty 110px sparkline just
+  // pushed the sentence that explains the emptiness into the middle of the card.
+  const spark = peak
+    ? '<span class="spark" title="'+esc(chk.checks+" checks in the last 24h, one bar an hour")+'">'
+      +series.map((n,i)=>'<i'+(woke[i]?' class="w"':"")+' style="height:'
+        +(n?Math.max(8,n/peak*100).toFixed(0):0)+'%"></i>').join("")+'</span>'
+    : I.activity;
+  const sparkn = chk.checks
+    ? '<b>'+chk.checks+'</b> check'+(chk.checks===1?"":"s")+' · <b>'+chk.runs+'</b> woke a run'
+      +(chk.failed?' · <b class="s-error">'+chk.failed+' failed</b>':"")
+    : (disabled?"no automatic checks — disabled":"no automatic checks in 24h");
+
+  // ---- what the probe last saw. Its own line only when there is something to
+  // say: on a job that has never been checked, three rows of "never" said
+  // nothing three times over.
+  const probeLine = checkStr
+    ? '<div class="cardline top">'+I.radar+'<span class="grow">'+checkStr+'</span></div>' : "";
+
+  // ---- the money. A cap you are close to is worth seeing before you hit it.
+  const pct = (cap!=null && cap>0) ? Math.min(100, spentToday/cap*100) : 0;
+  const barCls = capped ? " over" : (pct>=80 ? " near" : "");
+  const spend = '<div class="spend">'
+    +(cap!=null
+      ? '<div class="spendbar'+barCls+'"><i style="width:'+pct.toFixed(1)+'%"></i></div>'
+      : "")
+    +'<div class="spendtxt"><span>'+esc(money(spentToday))+' today'
+      +(cap!=null?' <span class="cap">of '+esc(money(cap))+'</span>':' <span class="muted">· no daily cap</span>')
+      +'</span>'
+      +(capped?'<span class="s-error">capped until midnight</span>':"")
+    +'</div></div>';
+
+  // ---- settings, one line. Only what this job overrides on top of its project
+  // is inked; the rest is inherited and stays quiet. Listing all nine on every
+  // card is what made twenty-one cards look identical.
+  const p=j.project?projById(j.project):null;
+  const own=(field)=>j[field]!=null && j[field]!=="" && p!=null
+                     && String(j[field])!==String(p[field]==null?"":p[field]);
+  const bit=(txt,mine,cls)=>'<span'+(mine?' class="'+(cls||"o")+'"':"")+'>'+esc(txt)+'</span>';
+  const cfg='<div class="cfgline">'
+    +bit("every "+fmtDur(j.interval_seconds||300), own("interval_seconds"))
+    +bit((j.active_hours||"24h")+" "+fmtDays(j.active_days||[1,2,3,4,5,6,7]), own("active_hours")||own("active_days"))
+    +bit(model, own("model"))
+    +(effortLabel(eff(j,"effort",""))!=="default"
+      ? bit(effortLabel(eff(j,"effort","")), own("effort")) : "")
+    +bit(money(budg)+"/run", own("max_budget_usd"))
+    // a permission mode is the one setting worth flagging rather than folding away
+    +bit(perm, perm!=="dontAsk", "warn")
+    +'</div>';
+
   // Badge has three states: disabled (red), idle (amber — enabled but outside
-  // its active window and not currently running), enabled (green).
+  // its active window and not currently running), enabled (green). The same
+  // three drive the card's left edge, which is what makes a board of them
+  // readable without stopping on each pill.
   const running=nLive>0;
   const idle=!disabled && !running && !inWindow(j);
   const pillCls=disabled?"off":(idle?"idle":"on");
   const pillTxt=disabled?"disabled":(idle?"idle":"enabled");
   const pillTip=idle?' title="Outside its active window — no runs until the window reopens"':"";
+  const stCls=disabled?"st-off":(running?"st-run":(idle?"st-idle":"st-on"));
   // Cards are draggable so a group can be put in the order the work runs in.
   // The drag handle is the whole card; buttons and inputs still work normally.
-  return '<div class="card" draggable="true" data-job-id="'+esc(j.id)+'">'
+  return '<div class="card '+stCls+'" draggable="true" data-job-id="'+esc(j.id)+'">'
     +'<h2><span class="jobname" title="Drag to reorder within the project">'+I.bot+esc(j.id)+'</span>'
     +'<span class="pill '+pillCls+'"'+pillTip+'>'+pillTxt+'</span></h2>'
     // Disabling stops FUTURE runs; one already in flight keeps going. Say so,
     // instead of letting "disabled" sit beside a spinning "running now…".
     +(disabled&&nLive?'<div class="warnline">'+I.alert+'Disabled — '+nLive+' run'+(nLive===1?'':'s')+' started earlier '+(nLive===1?'is':'are')+' still going. Stop '+(nLive===1?'it':'them')+' from the Runs table.</div>':"")
     +'<div class="desc">'+esc(j.description||"")+'</div>'
-    +kv
+    +'<div class="cardline">'+spark+'<span class="sparkn grow">'+sparkn+'</span></div>'
+    +'<div class="cardline">'+I.play+'<span class="grow">'+runStr+'</span></div>'
+    +probeLine
+    +'<div class="cardline">'+I.cright+'<span class="lbl">next</span><span class="grow">'+next+'</span></div>'
+    +spend
+    +cfg
     +'<div class="actions">'
     // Run now always available: several runs of a job may go at once (up to
     // max_parallel), so a live run no longer replaces this with a stop. Stopping
     // is per-run, from the Runs table — a job-wide stop would kill them all.
-    // No run count here: how many are going is already said above, in plain
-    // words, and crowding it into the button only made the label unreadable.
-    +'<button class="btn primary" data-op="run" data-id="'+esc(j.id)+'">'+I.play+'Run now</button>'
+    // The filled treatment is for a job that is actually working: on a board
+    // where every job is off, twenty-one filled buttons said nothing.
+    +'<button class="btn'+(disabled?"":" primary")+'" data-op="run" data-id="'+esc(j.id)+'">'+I.play+'Run now</button>'
     +'<button class="btn" data-op="'+(disabled?"enable":"disable")+'" data-id="'+esc(j.id)+'">'+I.power+(disabled?"Enable":"Disable")+'</button>'
     +'<button class="btn" data-op="edit" data-id="'+esc(j.id)+'">'+I.pencil+'Edit</button>'
-    +'<button class="btn danger" data-op="delete" data-id="'+esc(j.id)+'">'+I.trash+'Delete</button>'
+    // Delete sits behind the overflow: it is irreversible, and as a fourth
+    // equal button it was one slip away from Edit on every card.
+    +'<div class="menu">'
+      +'<button class="iconbtn" data-menu="'+esc(j.id)+'" aria-haspopup="menu" aria-expanded="false"'
+      +' title="More actions">'+I.dots+'</button>'
+      +'<div class="menu-pop" role="menu" hidden>'
+        +'<button role="menuitem" data-jobruns="'+esc(j.id)+'">'+I.activity+'Show this job\'s runs</button>'
+        +'<div class="sep"></div>'
+        +'<button role="menuitem" class="danger" data-op="delete" data-id="'+esc(j.id)+'">'+I.trash+'Delete job</button>'
+      +'</div>'
+    +'</div>'
     +'</div></div>';
 }
 
@@ -1252,6 +1620,10 @@ async function bulkToggle(btn, kind, key, enable){
 }
 
 function renderJobs(){
+  // The cards are rebuilt from scratch on every 5-second poll. An overflow menu
+  // is inside one, so redrawing while it is open would snatch it away mid-reach;
+  // the next poll is 5 seconds behind at worst.
+  if(document.querySelector(".menu-pop:not([hidden])")) return;
   const jobs=DATA.jobs||[];
   const projects=[...new Set(jobs.map(j=>j.project||"").filter(Boolean))].sort();
   const nStandalone=jobs.filter(j=>!j.project).length;
@@ -1364,6 +1736,7 @@ function openProjectEditor(name){
     });
   }
   $("pj-delete").style.display=name?"":"none";
+  showFormTab($("projmodal"),"data-pjtab","data-pjpane","project");
   $("projmodal").showModal();
 }
 async function projApi(op, extra){
@@ -1451,6 +1824,88 @@ function renderRetained(){
     +'<th>Kept since</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
 }
 
+/* --------------------------------------------------------------- loop band */
+// What each outcome means, in the order the server stacks them. `woke` is the
+// signal — everything else is a degree of quiet, and `failed` is the one that
+// needs somebody.
+const TICK_KINDS=[
+  ["woke",   "started a run"],
+  ["idle",   "nothing to do"],
+  ["capped", "daily cap reached"],
+  ["blocked","at its parallel limit"],
+  ["failed", "could not run"],
+];
+const clockAt=(sec)=>new Date(sec*1000)
+  .toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"});
+
+function pulseHtml(k){
+  const T=DATA.ticks||{}, buckets=Array.isArray(T.buckets)?T.buckets:[];
+  const kinds=Array.isArray(T.outcomes)?T.outcomes:TICK_KINDS.map(x=>x[0]);
+  const span=(T.bucket_seconds||900), start=T.start||(Math.floor(Date.now()/1000)-86400);
+  const totalOf=(b)=>b.reduce((a,n)=>a+n,0);
+  const per={}; kinds.forEach((name,i)=>{ per[name]=buckets.reduce((a,b)=>a+(b[i]||0),0); });
+  const checks=Object.values(per).reduce((a,n)=>a+n,0);
+  const max=buckets.reduce((m,b)=>Math.max(m,totalOf(b)),0);
+
+  let band;
+  if(!checks){
+    // The honest empty state. A fresh install, or an evening after everything
+    // was switched off, is not a broken chart — say which it is.
+    const jobs=DATA.jobs||[], off=jobs.filter(j=>j.enabled===false).length;
+    const why = !jobs.length ? "There are no jobs yet."
+      : off===jobs.length ? "All "+jobs.length+" jobs are disabled."
+      : off ? off+" of "+jobs.length+" jobs are disabled."
+      : "Every job is enabled — the next tick will show up here.";
+    band='<div class="band asleep"><span>The loop has not checked anything in the '
+      +'last 24 hours. '+esc(why)+'</span></div>';
+  }else{
+    band='<div class="band">'+buckets.map((b,bi)=>{
+      const at=start+bi*span, tot=totalOf(b);
+      const parts=kinds.map((name,i)=>b[i]?'<i class="k-'+name+'" style="height:'
+        +(b[i]/max*100).toFixed(2)+'%"></i>':"").join("");
+      const label=tot
+        ? clockAt(at)+"–"+clockAt(at+span)+"\n"
+          +kinds.map((name,i)=>b[i]?b[i]+" "+(TICK_KINDS.find(x=>x[0]===name)||[,name])[1]:"")
+              .filter(Boolean).join("\n")
+        : clockAt(at)+"–"+clockAt(at+span)+"\nno checks";
+      return '<div class="bk" title="'+esc(label)+'">'+parts+'</div>';
+    }).join("")+'</div>';
+  }
+
+  const marks=[0,.25,.5,.75].map(f=>'<span>'+esc(clockAt(start+86400*f))+'</span>')
+    .join("")+'<span>now</span>';
+  const legend=TICK_KINDS.filter(([name])=>per[name]).map(([name,what])=>
+    '<span><i class="k-'+name+'"></i>'+esc(per[name]+" "+what)+'</span>').join("");
+
+  // Warnings and errors are a way IN to the runs they count, so they are shaped
+  // like the filters they are — and are inert when there is nothing to filter to.
+  const chip=(kind,icon,n,label,tip)=>{
+    const on=RF.status===kind;
+    return '<button class="kpi '+(kind==="error"?"err":"warn")+(on?" on":"")+'"'
+      +(n?' data-statfilter="'+kind+'"':' disabled')
+      +' title="'+esc(n?tip:"No "+label.toLowerCase()+" in the last 7 days")+'">'
+      +icon+'<b>'+n+'</b> '+esc(label)+'</button>';
+  };
+  return '<div class="pulse-h"><h3>'+I.activity+'Last 24 hours</h3>'
+    +'<div class="pulse-sum"><b>'+checks+'</b> check'+(checks===1?"":"s")
+    +' · <b>'+per.woke+'</b> woke a run'
+    +(per.failed?' · <b class="s-error">'+per.failed+'</b> could not run':"")+'</div></div>'
+    +band
+    +'<div class="axis">'+marks+'</div>'
+    +(legend?'<div class="legend">'+legend+'</div>':"")
+    +'<div class="pulse-f">'
+      +'<span class="kpi">Today <b>'+k.runsToday+'</b> run'+(k.runsToday===1?"":"s")
+        +' <b>'+esc(money(k.spentToday))+'</b></span>'
+      +'<span class="kpi-sep"></span>'
+      +'<span class="kpi">7 days <b>'+k.runsWeek+'</b> run'+(k.runsWeek===1?"":"s")
+        +' <b>'+esc(money(k.spentWeek))+'</b></span>'
+      +'<span class="spacer"></span>'
+      +chip("warning",I.alert,k.warn,"warnings",
+            "Runs that finished without failing but did not do the work — click to see them")
+      +chip("error",I.xcircle,k.err,"errors","Runs that failed — click to see them")
+    +'</div>';
+}
+
 function render(){
   const _g=DATA.generated?new Date(DATA.generated):null;
   $("updated").textContent=(_g&&!isNaN(_g))?_g.toLocaleString(undefined,{dateStyle:"medium",timeStyle:"medium"}):"";
@@ -1465,28 +1920,9 @@ function render(){
   const rt=DATA.runs.filter(r=>r.start>=t0), rw=DATA.runs.filter(r=>r.start>=wk);
   const nWarn=rw.filter(r=>normStatus(r.status)==="warning").length;
   const nErr =rw.filter(r=>normStatus(r.status)==="error").length;
-  // The last two tiles are the ones you act on, so they filter the Runs table:
-  // click to see exactly those runs, click again to clear.
-  const tiles=[
-    [I.activity,"b-accent",rt.length,"Runs today",""],
-    [I.dollar,"b-accent",money(sum(rt,r=>r.cost)),"Spent today",""],
-    [I.calendar,"b-accent",rw.length,"Runs (7d)",""],
-    [I.dollar,"b-accent",money(sum(rw,r=>r.cost)),"Spent (7d)",""],
-    [I.alert,"b-warn",nWarn,"Warnings (7d)","warning"],
-    [I.xcircle,"b-err",nErr,"Errors (7d)","error"],
-  ];
-  $("stats").innerHTML=tiles.map(([icn,tone,n,l,filter])=>{
-    const on=filter && RF.status===filter;
-    const tip=filter
-      ? (filter==="warning"
-          ? "Runs that finished without failing but did not do the work — click to see them"
-          : "Runs that failed — click to see them")
-      : "";
-    return '<div class="stat'+(filter?" clickable":"")+(on?" active":"")+'"'
-      +(filter?' data-statfilter="'+filter+'" title="'+esc(tip)+'"':"")+'>'
-      +'<div class="stat-top"><div class="bubble '+tone+'">'+icn+'</div><div class="n">'+esc(n)+'</div></div>'
-      +'<div class="l">'+esc(l)+'</div></div>';
-  }).join("");
+  $("stats").innerHTML=pulseHtml({runsToday:rt.length, spentToday:sum(rt,r=>r.cost),
+                                  runsWeek:rw.length, spentWeek:sum(rw,r=>r.cost),
+                                  warn:nWarn, err:nErr});
 
   paintViewTabs();
   renderJobs();
@@ -1524,11 +1960,24 @@ function liveRuns(){
   return out.sort((a,b)=>b.start-a.start);
 }
 
+// Column sort. `when` descending is the default and the only order in which a
+// live run belongs at the top, so live rows keep their place there and are
+// sorted with everything else under any other key.
+const SORTERS={
+  when:(a,b)=>a.start-b.start,
+  job:(a,b)=>String(a.id).localeCompare(String(b.id)) || a.start-b.start,
+  status:(a,b)=>String(a.live?"running":normStatus(a.status))
+                  .localeCompare(String(b.live?"running":normStatus(b.status))) || a.start-b.start,
+  cost:(a,b)=>((a.cost||0)-(b.cost||0)) || a.start-b.start,
+  duration:(a,b)=>((a.duration||0)-(b.duration||0)) || a.start-b.start,
+};
+let sortKey="when", sortDir=-1;
+
 function filteredRuns(){
   const fromT=RF.from?Date.parse(RF.from):null, toT=RF.to?Date.parse(RF.to):null;
   // live rows first — a search narrows to indexed runs, so they drop out there
   const live=searchKeys?[]:liveRuns();
-  return live.concat(DATA.runs).filter(r=>{
+  const rows=live.concat(DATA.runs).filter(r=>{
     if(r.live){
       if(RF.project){ const rp=r.project||""; if(RF.project==="__none__" ? rp!=="" : rp!==RF.project) return false; }
       if(RF.job && r.id!==RF.job) return false;
@@ -1544,6 +1993,13 @@ function filteredRuns(){
     if(toT && t>toT) return false;
     return true;
   });
+  // The default order is already what the query produced, so only re-sort when
+  // the user has actually asked for something else.
+  if(sortKey!=="when" || sortDir!==-1){
+    const cmp=SORTERS[sortKey]||SORTERS.when;
+    rows.sort((a,b)=>cmp(a,b)*sortDir);
+  }
+  return rows;
 }
 
 /* ---- hover tooltip (fixed bubble on <body>, so no container can clip it) ---- */
@@ -1650,7 +2106,31 @@ function resumeTip(id, start){
   return '<div class="tt-h">'+I.play+esc(head)+'</div>'+rows;
 }
 
+// An action that does not apply to this row keeps its column and loses its
+// button. `aria-hidden` because there is nothing here to announce — the reason
+// is on the tooltip, for a pointer that goes looking.
+const actSlot=(why)=>'<span class="actslot" aria-hidden="true" title="'+esc(why)+'"></span>';
+
+// The table head. Sortable columns say so — the caret is reserved in the layout
+// so the header does not jump when it appears, and aria-sort tells a screen
+// reader what the visual caret tells everybody else.
+const RUN_COLS=[
+  ["when","When"],["job","Job"],[null,"Project"],["status","Status"],
+  ["duration","Duration & cost"],[null,""],
+];
+function renderRunHead(){
+  $("runhead").innerHTML=RUN_COLS.map(([key,label])=>{
+    if(!key) return "<th>"+esc(label)+"</th>";
+    const on=sortKey===key;
+    return '<th class="sortable'+(on?" sorted":"")+'" data-sort="'+key+'"'
+      +' aria-sort="'+(on?(sortDir<0?"descending":"ascending"):"none")+'"'
+      +' title="Sort by '+esc(label.toLowerCase())+'">'
+      +esc(label)+(on&&sortDir>0?I.sortasc:I.sortdesc)+'</th>';
+  }).join("");
+}
+
 function renderRuns(){
+  renderRunHead();
   const all=filteredRuns();
   const pages=Math.max(1,Math.ceil(all.length/pageSize));
   if(page>pages) page=pages;
@@ -1674,11 +2154,15 @@ function renderRuns(){
           +'<div class="tt-foot">Same conversation, picked up where it stopped.</div>').replace(/"/g,"%22")
         +'">resumed</span>'
       : '';
-    return "<tr><td class=num>"+esc(fmtWhen(r.start))
+    // "3 days ago" is what you are actually reading for; the stamp to the second
+    // is one hover away, where it belongs.
+    return "<tr><td class=num><span class=\"when-rel\" title=\""+esc(fmtWhen(r.start))+'">'
+      +esc(fmtAgo(r.start))+"</span>"
       +(r.forced?'<span class="trigger-badge">forced</span>':'')
       +resumedBadge
       +(snip?'<div class="snip" title="'+esc(snip)+'">'+esc(snip)+'</div>':'')+"</td>"
-      +"<td><code>"+esc(r.id)+"</code></td>"
+      +'<td><div class="jobcell"><code>'+esc(r.id)+'</code>'
+      +'<span class="sess">'+esc((r.session||"").slice(0,8)||"no session")+'</span></div></td>'
       +'<td>'+(r.project?'<span class="projtag">'+I.folder+esc(r.project)+'</span>':'<span class="muted">—</span>')+'</td>'
       +'<td>'+(r.live
           ? '<span class="runningbadge"><span class="pulse"></span>running…</span>'
@@ -1693,21 +2177,20 @@ function renderRuns(){
                   ? '<span class="tipbadge" data-tip="'+encodeURIComponent("Nothing was done in this run — "+nothingNote(r)).replace(/"/g,"%22")+'">?</span>'
                   : "")))
       +"</td>"
-      +"<td class=num>"+esc(fmtDur(r.duration))+(r.live?' <span class="muted">so far</span>':"")+"</td>"
-      +"<td class=num>"+(r.live?'<span class="muted">—</span>':esc(money(r.cost)))+"</td>"
-      +"<td><code>"+esc((r.session||"").slice(0,8)||"—")+"</code></td>"
+      // How long and how much are read together — two columns half the table
+      // apart just made you scan across the empty middle.
+      +'<td class="dur-cost">'+esc(fmtDur(r.duration))+(r.live?' <span class="muted">so far</span>':"")
+      +(r.live?"":' <span class="cost">'+esc(money(r.cost))+'</span>')+"</td>"
       +'<td class="rowacts">'
         +'<button class="iconbtn'+(r.live?' live':'')+'" title="'+(r.live?"Follow this run live":"View log")+'"'
           +' data-log-id="'+esc(r.id)+'" data-log-start="'+esc(r.start)+'">'+I.eye+'</button>'
-        // A failed run is worth retrying — offer it right where the failure shows.
-        // Reuses the Run-now op, so it inherits the precheck guard and toasts.
-        // Always rendered (disabled when not applicable) so every row's icons
-        // line up in the same columns.
-        // Disabled once the job has run again (resumed here or anywhere) — a
-        // second resume would just duplicate work. The "?" says where it went.
-        // STOP and RESUME are BOTH always rendered, each enabled only when it
-        // applies, so every row's icons line up in the same columns and the
-        // controls are findable even on rows where they are not usable.
+        // Stop and Resume apply to different rows and never to the same one, so
+        // on any given row at most one of them is real. They used to be rendered
+        // as permanently greyed buttons to keep the columns lined up — which
+        // meant three of four icons were dead on every finished run, and the
+        // toolbar read as broken. Each now keeps its COLUMN (an empty slot of
+        // the same width) without keeping a button nobody can press; the reason
+        // it does not apply lives on the slot's tooltip.
         // Stop ends THIS run (by its pid); resume continues THIS run's own
         // session — the same task, picked back up, exactly like
         // `claude --resume <session>` — never a fresh run of the job.
@@ -1716,29 +2199,33 @@ function renderRuns(){
            // runs of one job the right one is ended, not merely the first.
            ? '<button class="iconbtn danger" title="Stop this run"'
              +' data-op="stop" data-id="'+esc(r.id)+'" data-run-pid="'+esc(r.pid||livePidFor(r.id))+'">'+I.power+'</button>'
-           : '<button class="iconbtn" disabled title="This run has already finished — only a running run can be stopped">'+I.power+'</button>')
+           : actSlot("Only a running run can be stopped"))
+        // A failed run is worth retrying — offer it right where the failure
+        // shows. Reuses the Run-now op, so it inherits the precheck guard and
+        // toasts. Gone once the job has picked the task back up (resumed here or
+        // anywhere): a second resume would just duplicate the work, and the "?"
+        // beside the status says where it went.
         +(r.live
-           ? '<button class="iconbtn retry" disabled title="This run is still going">'+I.play+'</button>'
+           ? actSlot("This run is still going")
            : s==="error"
              ? (!r.session
-                ? '<button class="iconbtn retry" disabled title="This run recorded no session id, so it cannot be resumed">'+I.play+'</button>'
+                ? actSlot("This run recorded no session id, so it cannot be resumed")
                 : followUp
-                  ? '<button class="iconbtn retry" disabled title="'
-                    +(followUp.running?"A newer run is in progress":"This task was already resumed")
-                    +' — see the ? beside the status">'+I.play+'</button>'
+                  ? actSlot((followUp.running?"A newer run is in progress":"This task was already resumed")
+                            +" — see the ? beside the status")
                   : '<button class="iconbtn retry" title="Resume this task — continue session '
                     +esc((r.session||"").slice(0,8))+' where it stopped"'
                     +' data-op="resume" data-id="'+esc(r.id)+'" data-session="'+esc(r.session||"")+'"'
                     +' data-resume-key="'+esc(runKey(r.id,r.start))+'">'+I.play+'</button>')
-             : '<button class="iconbtn retry" disabled title="Only failed runs can be resumed">'+I.play+'</button>')
+             : actSlot("Only failed runs can be resumed"))
         // Erase this run for good: its log files, its journal line and its rows
         // in the search database. Never offered while it is still running.
         +(r.live
-           ? '<button class="iconbtn" disabled title="A running run cannot be deleted — stop it first">'+I.trash+'</button>'
+           ? actSlot("A running run cannot be deleted — stop it first")
            : '<button class="iconbtn danger" title="Delete this run and everything it left behind"'
              +' data-del-id="'+esc(r.id)+'" data-del-start="'+esc(r.start)+'">'+I.trash+'</button>')
       +'</td></tr>';
-  }).join("") || '<tr><td colspan=8 class="empty">'+I.inbox
+  }).join("") || '<tr><td colspan=6 class="empty">'+I.inbox
       +(DATA.runs.length?(searchKeys?"No runs match this search.":"No runs match the filters."):"No runs recorded yet.")+'</td></tr>';
   $("pg-info").textContent="Page "+page+" / "+pages+" · "+all.length+" run"+(all.length===1?"":"s")
     +(searchKeys?" · searching logs":"");
@@ -2081,7 +2568,15 @@ function openEditor(id){
   $("ed-id").value=id;
   fill(j);
   $("ed-save").textContent="Save changes";
+  // Always open on the first tab: whatever tab you left the last job on says
+  // nothing about the one you just opened.
+  showFormTab($("editor"),"data-edtab","data-edpane","job");
+  // MUST come before the first paint: fill() above leaves editingPrecheck as
+  // "", and "" is what the tab strip reads as "this job has no precheck". The
+  // script has not been fetched yet, so the honest value is "not known".
+  editingPrecheck=null;
   $("editor").showModal();
+  paintEditorTabs(j);
   // Fetched after the dialog is up so opening it stays instant; the textarea
   // fills a moment later, and editingPrecheck is what "did the user change it?"
   // compares against on save.
@@ -2090,6 +2585,7 @@ function openEditor(id){
     if(editingId!==id) return;             // the user moved on while it loaded
     editingPrecheck=src;
     $("ed-precheck").value=src;
+    paintEditorTabs(j);                    // "no precheck" is only knowable now
   });
 }
 
@@ -2103,6 +2599,9 @@ function openCreator(){
         active_hours:"08:00-20:00", active_days:[1,2,3,4,5],
         max_budget_usd:2, stall_timeout_seconds:1200, permission_mode:"dontAsk"});
   $("ed-save").textContent="Create job";
+  showFormTab($("editor"),"data-edtab","data-edpane","job");
+  // No id yet, so no state and no runs — only the prompt/precheck flags can fire
+  paintEditorTabs({id:""});
   $("editor").showModal();
 }
 
@@ -2440,8 +2939,91 @@ function syncModalScrollLock(){
   const anyOpen=[...document.querySelectorAll("dialog")].some(d=>d.open);
   document.documentElement.classList.toggle("modal-open", anyOpen);
 }
+/* ------------------------------------------------- tabbed editor modals */
+// One switcher for both editors: `attr` is the data attribute on the tabs,
+// `pane` the one on the panes.
+function initFormTabs(dialogId, attr, pane){
+  const d=$(dialogId);
+  d.addEventListener("click",(e)=>{
+    const t=e.target.closest("["+attr+"]"); if(!t) return;
+    showFormTab(d, attr, pane, t.dataset[attr.replace("data-","")]);
+  });
+}
+function showFormTab(d, attr, pane, key){
+  d.querySelectorAll("["+attr+"]").forEach(b=>{
+    const on=b.getAttribute(attr)===key;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", on?"true":"false");
+  });
+  d.querySelectorAll("["+pane+"]").forEach(p=>
+    p.classList.toggle("active", p.getAttribute(pane)===key));
+  // The prompt highlight layer is absolutely positioned over a textarea that
+  // was display:none a moment ago, so it has to be repainted once the pane has
+  // a size — otherwise the marks land on a box of zero height.
+  if(key==="runs") paintPromptHighlight();
+}
+
+// What each tab has to own up to. Only conditions that change how the job
+// behaves RIGHT NOW earn a dot — see the note on `.tab .dot`.
+function editorTabFlags(j){
+  const st=(DATA.state||{})[j.id]||{};
+  const t0=Math.floor(new Date().setHours(0,0,0,0)/1000);
+  const spent=(DATA.runs||[]).filter(r=>r.id===j.id && r.start>=t0)
+    .reduce((a,r)=>a+(r.cost||0),0);
+  const capRaw=eff(j,"daily_budget_usd",null);
+  const cap=(capRaw!=null && capRaw!=="")?+capRaw:null;
+  const backoff=backoffMultiplier(+(st.fail_streak||0));
+  const f={};
+  // The two form-fed flags read the FIELDS, not the saved job: what the strip
+  // reports has to be what you are about to save. Until the script has been
+  // fetched its emptiness is unknown, and unknown is not a warning.
+  const pcKnown=(editingPrecheck!=null)||creating;
+  if(!String($("ed-prompt").value||"").trim())
+    f.runs=["err","This job has no prompt, so every tick skips it"];
+  else if(pcKnown && !String($("ed-precheck").value||"").trim())
+    f.runs=["warn","No precheck — every tick starts a paid run"];
+  if(backoff>1)
+    f.when=["warn","Backing off "+backoff+"× after "+st.fail_streak+" failed runs"];
+  if(cap!=null && spent>=cap)
+    f.limits=["err","Today's spend has reached the "+money(cap)+" cap — no runs until midnight"];
+  return f;
+}
+let editingJob=null;   // what paintEditorTabs re-reads as the fields change
+function paintEditorTabs(j){
+  if(j!==undefined) editingJob=j;
+  j=editingJob;
+  const f=j?editorTabFlags(j):{};
+  $("ed-tabs").querySelectorAll("[data-edtab]").forEach(b=>{
+    b.querySelector(".dot")?.remove();
+    const hit=f[b.dataset.edtab];
+    b.title=hit?hit[1]:"";
+    if(hit) b.insertAdjacentHTML("beforeend",'<span class="dot '+hit[0]+'"></span>');
+  });
+}
+
+// A <dialog> with no autofocus target hands focus to its first focusable
+// descendant — and Chrome counts a scrollable div as one. The scrolling body is
+// therefore what opened focused, wearing a focus ring around the entire form,
+// which reads as a validation error on a form nobody has touched yet. Put the
+// focus on the first real control instead: the ring lands where it means
+// something, and the keyboard starts where the typing does.
+function focusFirstControl(d){
+  // The tab strip is navigation, not the first thing to fill in — landing on it
+  // put the focus ring on a tab and left the caret nowhere useful.
+  const pick=(root)=>root && [...root.querySelectorAll(
+      'input:not([type=hidden]):not([disabled]):not([readonly]),textarea:not([disabled]),'
+      +'select:not([disabled]),button:not([disabled])')]
+    .find(el=>el.offsetParent!==null && !el.closest(".tabs"));
+  const el=pick(d.querySelector(".tabpane.active"))
+        || pick(d.querySelector(".dlg-b"))
+        || pick(d.querySelector(".dlg-f"));
+  if(el) try{ el.focus({preventScroll:true}); }catch(_){ el.focus(); }
+}
 function initModalScrollLock(){
-  const obs=new MutationObserver(syncModalScrollLock);
+  const obs=new MutationObserver((recs)=>{
+    syncModalScrollLock();
+    recs.forEach(r=>{ if(r.target.open) focusFirstControl(r.target); });
+  });
   document.querySelectorAll("dialog").forEach(d=>{
     obs.observe(d,{attributes:true, attributeFilter:["open"]});
     d.addEventListener("close", syncModalScrollLock);
@@ -2492,6 +3074,19 @@ function initStatFilters(){
 }
 
 /* ---------------------------------------------------------------- events */
+// The card overflow menus. They live inside cards that are redrawn every poll,
+// so nothing here holds a reference to one — it always re-reads the DOM.
+function closeMenus(){
+  document.querySelectorAll(".menu-pop:not([hidden])").forEach(p=>{ p.hidden=true; });
+  document.querySelectorAll('[data-menu][aria-expanded="true"]')
+    .forEach(b=>b.setAttribute("aria-expanded","false"));
+}
+document.addEventListener("keydown",(e)=>{
+  if(e.key==="Escape" && document.querySelector(".menu-pop:not([hidden])")){
+    e.stopPropagation(); closeMenus();
+  }
+}, true);
+
 document.addEventListener("click", async (e)=>{
   const step=e.target.closest(".step-btn");
   if(step){
@@ -2563,6 +3158,36 @@ document.addEventListener("click", async (e)=>{
     if(!r.ok){ toast(j.error||"could not discard", true); wtd.disabled=false; return; }
     toast("Discarded "+job+" / "+stamp); refresh(); return;
   }
+  // sorting the runs table. First click on a new column takes the order that
+  // is useful for it — newest and dearest first, jobs A→Z — rather than always
+  // ascending, which for "when" would open on the oldest run you have.
+  const sh=e.target.closest("th[data-sort]");
+  if(sh){
+    const key=sh.dataset.sort;
+    if(sortKey===key) sortDir=-sortDir;
+    else { sortKey=key; sortDir=(key==="job"||key==="status")?1:-1; }
+    page=1; renderRuns(); return;
+  }
+  // the card's overflow menu — one open at a time
+  const mtrig=e.target.closest("[data-menu]");
+  if(mtrig){
+    const pop=mtrig.parentElement.querySelector(".menu-pop"), wasOpen=!pop.hidden;
+    closeMenus();
+    if(!wasOpen){ pop.hidden=false; mtrig.setAttribute("aria-expanded","true"); }
+    return;
+  }
+  // from a job straight to its runs — the filter the table already supports
+  const jr=e.target.closest("[data-jobruns]");
+  if(jr){
+    closeMenus();
+    RF.job=jr.dataset.jobruns; RF.status="";
+    const sel=$("f-job"); if(sel) sel.value=RF.job;
+    const ss=$("f-status"); if(ss) ss.value="";
+    page=1; setView("runs"); render();
+    $("fpanel").hidden=false;   // show WHY the table is short
+    return;
+  }
+  if(!e.target.closest(".menu-pop")) closeMenus();
   if(e.target.closest("#new-project")){ openProjectEditor(); return; }
   if(e.target.closest("#new-job")){ openCreator(); return; }
   const b=e.target.closest("button[data-op]"); if(!b) return;
@@ -2650,6 +3275,16 @@ document.addEventListener("click", async (e)=>{
 $("pj-cancel").addEventListener("click", ()=>$("projmodal").close());
 $("pj-save").addEventListener("click", saveProject);
 $("pj-delete").addEventListener("click", deleteProjectFromModal);
+// The disclosure carets on the long field notes.
+document.querySelectorAll("details.hint > summary")
+  .forEach(s=>s.insertAdjacentHTML("afterbegin", I.cright));
+initFormTabs("editor","data-edtab","data-edpane");
+initFormTabs("projmodal","data-pjtab","data-pjpane");
+// Two of the tab flags are fed by fields on a tab you may not be looking at, so
+// the strip has to keep up with the typing — clear the prompt and the warning
+// appears while you are still on that tab, not the next time you open the job.
+["ed-prompt","ed-precheck"].forEach(id=>
+  $(id).addEventListener("input", ()=>paintEditorTabs()));
 initCombos();
 initFolderPicker();
 initTooltips();
