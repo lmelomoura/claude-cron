@@ -189,6 +189,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   most expensive run of a day was unfindable in a 25-row page), and the row grew
   tall enough to cost about four rows of a screenful.
 
+  The four action icons are rendered on **every** row again, greyed where they do
+  not apply, rather than collapsing to empty slots. A toolbar whose icons move
+  between rows is one you have to re-read each time — the eye sits in a different
+  place on a finished run than on a live one — and a greyed button still teaches
+  that the action exists, which an empty slot does not. The reason each one is
+  unavailable stays on its tooltip.
+
   The one thing deliberately NOT reverted is **When**, which keeps the relative
   form (`1h ago`) rather than the full timestamp: what you read that column for
   is recency, and the stamp to the second is one hover away.
