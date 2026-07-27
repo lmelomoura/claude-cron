@@ -181,6 +181,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The runs table has its Duration and Cost columns back, each sortable on its
+  own.** Merging them into one "Duration & cost" column silently dropped the cost
+  sort: the comparator was still there, but no header could reach it, so the most
+  expensive run of a day was unfindable in a 25-row page. They answer different
+  questions — what is slow and what is expensive are rarely the same run.
+- **`Run now` carries the accent whether or not its job is enabled**, because it
+  works whether or not the job is enabled: it is a deliberate manual override and
+  the primary action on the card. Tying the accent to `enabled` made the one
+  button that still does something look as inert as the ones that do not.
+
+
 - **The focus ring is no longer sliced off fields that sit flush against a scroll
   container.** The ring paints 4px outside the border box (2px outline + 2px
   offset) while the project editor's panes clipped at padding 0, so the first
