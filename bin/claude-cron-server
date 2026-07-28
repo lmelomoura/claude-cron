@@ -31,7 +31,9 @@ import secrets
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -53,6 +55,7 @@ CLAUDE_CRON = str(BIN_DIR / "claude-cron")
 
 PORT = int(os.environ.get("CLAUDE_CRON_PORT", "8787"))
 PLIST_LABEL = "com.claude-cron.tick"
+SERVER_LABEL = "com.claude-cron.server"
 
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -93,6 +96,24 @@ def _build_id() -> str:
 
 # BUILD is assigned once PAGE_FILE is known (see below).
 
+_SELF_FILE = Path(__file__).resolve()
+_SELF_DIGEST = hashlib.sha256(_SELF_FILE.read_bytes()).hexdigest()
+
+
+def code_is_stale() -> bool:
+    """Has this file changed on disk since the running process loaded it?
+
+    The page is re-read per request but the Python is not, so `git pull` leaves a
+    new dashboard talking to old code — and the two then disagree about what the
+    API offers. Not theoretical: the profile setup screen shipped, appeared
+    immediately, and posted an op the running server had never heard of, which
+    came back as `bad id`.
+    """
+    try:
+        return hashlib.sha256(_SELF_FILE.read_bytes()).hexdigest() != _SELF_DIGEST
+    except OSError:
+        return False
+
 # Inline favicon: an indigo rounded tile with a white robot — matches the
 # in-app brand mark. Base64 data URI so the page stays fully self-contained.
 _FAVICON_SVG = (
@@ -111,6 +132,345 @@ def read_json(path, default):
         return json.loads(path.read_text())
     except Exception:
         return default
+
+
+# ------------------------------------------------------------- operator profile
+# Who is running this install: one person, name, email, avatar and a password.
+#
+# It lives in its own SQLite file rather than in index.db, which the module
+# docstring promises is derived and safe to delete — an account that a
+# documented-harmless `rm index.db` would destroy is a trap. And not in config/
+# either: that directory is hand-edited JSON, and a password hash is not
+# something to leave lying in a file somebody opens to change a cron window.
+
+APP_DB_FILE = DATA_DIR / "app.db"
+PBKDF2_ROUNDS = 600_000          # OWASP's floor for PBKDF2-HMAC-SHA256
+MIN_PASSWORD = 8
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def app_conn():
+    conn = sqlite3.connect(str(APP_DB_FILE), timeout=5)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    # CHECK (id = 1) is the single-user rule, enforced by the schema instead of
+    # by every caller remembering it. There is no user management to build.
+    conn.execute("""CREATE TABLE IF NOT EXISTS operator (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        name TEXT NOT NULL, email TEXT NOT NULL, avatar TEXT NOT NULL DEFAULT '',
+        password TEXT NOT NULL, created INTEGER NOT NULL, updated INTEGER NOT NULL)""")
+    # `expires` NULL is the whole "keep me logged in" feature: a session with no
+    # expiry. The cookie holds the raw token, the table only its hash — reading
+    # this file must not hand anyone a live session.
+    conn.execute("""CREATE TABLE IF NOT EXISTS session (
+        token_hash TEXT PRIMARY KEY, created INTEGER NOT NULL,
+        seen INTEGER NOT NULL, expires INTEGER)""")
+    # Operator preferences — which projects are starred, and whatever the UI
+    # needs to remember next. Here rather than in localStorage because they
+    # belong to the person, not to a browser profile: favourites that vanish in
+    # a different browser read as data loss, not as a cache miss.
+    conn.execute("""CREATE TABLE IF NOT EXISTS prefs (
+        key TEXT PRIMARY KEY, value TEXT NOT NULL, updated INTEGER NOT NULL)""")
+    return conn
+
+
+def hash_password(pw: str) -> str:
+    salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), salt, PBKDF2_ROUNDS)
+    return "pbkdf2_sha256${}${}${}".format(
+        PBKDF2_ROUNDS, base64.b64encode(salt).decode(), base64.b64encode(dk).decode())
+
+
+def verify_password(pw: str, stored: str) -> bool:
+    try:
+        algo, rounds, salt_b64, hash_b64 = stored.split("$", 3)
+        if algo != "pbkdf2_sha256":
+            return False
+        dk = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"),
+                                 base64.b64decode(salt_b64), int(rounds))
+    except Exception:  # noqa: BLE001 — a malformed row is a failed check, not a crash
+        return False
+    return secrets.compare_digest(dk, base64.b64decode(hash_b64))
+
+
+def _operator_row():
+    try:
+        conn = app_conn()
+    except sqlite3.Error:
+        return None
+    try:
+        return conn.execute("SELECT * FROM operator WHERE id=1").fetchone()
+    finally:
+        conn.close()
+
+
+def operator_stamp() -> str:
+    """Fingerprint of everything /api/config carries out of app.db.
+
+    The profile and the preferences both ride on that payload, and the page only
+    re-fetches it when this moves — without them, starring a project would not
+    reach the page until something unrelated edited jobs.json.
+
+    Derived from the CONTENT, not from an `updated` second. Two preference
+    writes inside the same second are ordinary — starring two projects in a row
+    does it — and a second-resolution stamp does not move between them, so the
+    page would keep serving the first state.
+    """
+    h = hashlib.md5()
+    row = _operator_row()
+    h.update(b"-" if row is None else
+             json.dumps([row["name"], row["email"], row["avatar"], row["updated"]]).encode())
+    try:
+        conn = app_conn()
+        try:
+            for r in conn.execute("SELECT key, value FROM prefs ORDER BY key"):
+                h.update(("\x00" + r["key"] + "\x00" + r["value"]).encode())
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        h.update(b"?")
+    return h.hexdigest()
+
+
+PREF_KEYS = {"favorite_projects", "recent_projects"}
+
+
+def load_prefs():
+    """The UI preferences, defaulted so the page never has to test for absence."""
+    out = {"favorite_projects": [], "recent_projects": []}
+    try:
+        conn = app_conn()
+    except sqlite3.Error:
+        return out
+    try:
+        for row in conn.execute("SELECT key, value FROM prefs"):
+            if row["key"] not in PREF_KEYS:
+                continue
+            try:
+                val = json.loads(row["value"])
+            except ValueError:
+                continue
+            if isinstance(val, list):
+                out[row["key"]] = [str(v) for v in val]
+    finally:
+        conn.close()
+    return out
+
+
+def set_pref(key, value):
+    """Write one preference. Returns (http_status, payload)."""
+    # An allowlist, not a free-form key/value store: this is reached from the
+    # browser, and an endpoint that writes any key is a way to fill the operator's
+    # disk one POST at a time.
+    if key not in PREF_KEYS:
+        return 400, {"error": "unknown preference"}
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        return 400, {"error": "that preference is a list of strings"}
+    value = value[:200]        # a favourites list longer than this is a bug upstream
+    conn = app_conn()
+    try:
+        conn.execute("INSERT OR REPLACE INTO prefs (key, value, updated) VALUES (?,?,?)",
+                     (key, json.dumps(value), int(time.time())))
+        conn.commit()
+    finally:
+        conn.close()
+    return 200, {"ok": True, "prefs": load_prefs()}
+
+
+def load_user():
+    """The operator profile as the page is allowed to see it.
+
+    Whitelisted field by field on purpose: the row also holds the password hash,
+    and a `dict(row)` would put it on the wire on every config poll. An install
+    that has not been set up says `configured: false` rather than inventing a
+    name — a made-up "Admin / user@example.com" reads as a real account.
+    """
+    row = _operator_row()
+    if row is None:
+        return {"configured": False, "name": "", "email": "", "avatar": ""}
+    return {"configured": True, "name": row["name"], "email": row["email"],
+            "avatar": row["avatar"]}
+
+
+# ------------------------------------------------------------------- sessions
+# The control token in the page proves the request came from our own page (the
+# anti-CSRF gate, unchanged). The session cookie proves somebody signed in. Both
+# are required: without the session, anyone who opened the port would be handed
+# a working dashboard, and "sign out" would mean nothing.
+
+SESSION_COOKIE = "cc_session"
+SESSION_TTL = 12 * 3600   # idle timeout; every authenticated call pushes it out
+
+
+def _hash_token(raw: str) -> str:
+    # High-entropy random token, so a plain digest is the right primitive here —
+    # there is nothing to brute-force and no reason to make lookups slow.
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def create_session(keep: bool):
+    """Mint a session. `keep` is "stay signed in": no expiry, ever."""
+    raw = secrets.token_urlsafe(32)
+    now = int(time.time())
+    conn = app_conn()
+    try:
+        conn.execute("INSERT INTO session (token_hash, created, seen, expires) VALUES (?,?,?,?)",
+                     (_hash_token(raw), now, now, None if keep else now + SESSION_TTL))
+        # Cheap moment to take out the dead ones — there is no other sweeper.
+        conn.execute("DELETE FROM session WHERE expires IS NOT NULL AND expires < ?", (now,))
+        conn.commit()
+    finally:
+        conn.close()
+    return raw
+
+
+def touch_session(raw: str):
+    """Return the live session for this cookie, sliding its expiry forward.
+
+    Sliding rather than absolute on purpose: a dashboard is left open, and an
+    absolute cap would sign the operator out mid-run for no security gain on a
+    loopback-only port. A session dies from being unused, not from age.
+    """
+    if not raw:
+        return None
+    now = int(time.time())
+    conn = app_conn()
+    try:
+        row = conn.execute("SELECT * FROM session WHERE token_hash=?",
+                           (_hash_token(raw),)).fetchone()
+        if row is None:
+            return None
+        if row["expires"] is not None and row["expires"] < now:
+            conn.execute("DELETE FROM session WHERE token_hash=?", (row["token_hash"],))
+            conn.commit()
+            return None
+        conn.execute("UPDATE session SET seen=?, expires=? WHERE token_hash=?",
+                     (now, None if row["expires"] is None else now + SESSION_TTL,
+                      row["token_hash"]))
+        conn.commit()
+        return {"created": row["created"], "keep": row["expires"] is None}
+    finally:
+        conn.close()
+
+
+def destroy_session(raw: str):
+    if not raw:
+        return
+    conn = app_conn()
+    try:
+        conn.execute("DELETE FROM session WHERE token_hash=?", (_hash_token(raw),))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def check_login(email, password):
+    """Verify credentials. Returns (ok, error)."""
+    row = _operator_row()
+    if row is None:
+        return False, "no profile on this install yet"
+    email = str(email or "").strip()
+    password = str(password or "")
+    # One message for both halves: saying which of the two was wrong tells an
+    # attacker which emails exist, and there is nothing here the operator does
+    # not already know.
+    ok = (email.lower() == row["email"].lower()) and verify_password(password, row["password"])
+    return (True, "") if ok else (False, "that email and password do not match")
+
+
+def create_operator(name, email, password, confirm):
+    """Create the one profile. Returns (http_status, payload)."""
+    name = str(name or "").strip()
+    email = str(email or "").strip()
+    password = str(password or "")
+    confirm = str(confirm or "")
+    if _operator_row() is not None:
+        # Setup runs once. Without this the screen would be a password reset for
+        # anyone who can reach the port, which is the opposite of its purpose.
+        return 409, {"error": "a profile already exists"}
+    if not name:
+        return 400, {"error": "name is required"}
+    if not EMAIL_RE.match(email):
+        return 400, {"error": "that does not look like an email address"}
+    if len(password) < MIN_PASSWORD:
+        return 400, {"error": f"password must be at least {MIN_PASSWORD} characters"}
+    # Checked here and not only in the page: a confirmation the server does not
+    # verify is decoration, and this password cannot be recovered from anywhere.
+    if password != confirm:
+        return 400, {"error": "the two passwords do not match"}
+    now = int(time.time())
+    conn = app_conn()
+    try:
+        conn.execute("INSERT INTO operator (id, name, email, avatar, password, created, updated)"
+                     " VALUES (1, ?, ?, '', ?, ?, ?)",
+                     (name, email, hash_password(password), now, now))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        return 409, {"error": "a profile already exists"}
+    finally:
+        conn.close()
+    return 200, {"ok": True, "user": load_user()}
+
+
+# An avatar is stored inline, as a data: URI in the operator row, so that the
+# page stays one self-contained file with nothing to serve and nothing to clean
+# up when the photo is replaced. That only works while the photo is small: it
+# rides along on /api/config and is hashed into operator_stamp(). The page
+# downscales before uploading; this is the backstop, because a limit only the
+# client enforces is not a limit.
+AVATAR_MAX_BYTES = 512 * 1024
+AVATAR_RE = re.compile(r"^data:image/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$")
+
+
+def update_operator(name, email, avatar, current, password, confirm):
+    """Edit the one profile. Returns (http_status, payload).
+
+    `avatar` is tri-state on purpose: absent leaves the photo alone, "" clears
+    it, and a data: URI replaces it — otherwise saving a name change would
+    silently drop the photo the form did not happen to send.
+    """
+    row = _operator_row()
+    if row is None:
+        return 428, {"error": "set up the operator profile first"}
+    name = str(name or "").strip()
+    email = str(email or "").strip()
+    if not name:
+        return 400, {"error": "name is required"}
+    if not EMAIL_RE.match(email):
+        return 400, {"error": "that does not look like an email address"}
+
+    if avatar is None:
+        avatar = row["avatar"]
+    else:
+        avatar = str(avatar or "").strip()
+        if avatar:
+            if len(avatar.encode("utf-8")) > AVATAR_MAX_BYTES:
+                return 400, {"error": "that photo is too large — pick a smaller one"}
+            if not AVATAR_RE.match(avatar):
+                return 400, {"error": "the photo must be an inline image"}
+
+    stored = row["password"]
+    password = str(password or "")
+    if password:
+        # The session alone is not enough to set a new password: it may be an
+        # unattended tab. Knowing the old one is what proves it is the operator.
+        if not verify_password(str(current or ""), stored):
+            return 403, {"error": "that is not the current password"}
+        if len(password) < MIN_PASSWORD:
+            return 400, {"error": f"password must be at least {MIN_PASSWORD} characters"}
+        if password != str(confirm or ""):
+            return 400, {"error": "the two new passwords do not match"}
+        stored = hash_password(password)
+
+    conn = app_conn()
+    try:
+        conn.execute("UPDATE operator SET name=?, email=?, avatar=?, password=?, updated=?"
+                     " WHERE id = 1",
+                     (name, email, avatar, stored, int(time.time())))
+        conn.commit()
+    finally:
+        conn.close()
+    return 200, {"ok": True, "user": load_user()}
 
 
 # ---------------------------------------------------------------- search index
@@ -1011,6 +1371,33 @@ def launchd_loaded():
     return loaded
 
 
+_SUPERVISED = {"at": 0.0, "is": False}
+
+
+def server_supervised():
+    """Is THIS process the KeepAlive agent — i.e. would exiting mean restarting?
+
+    A server started by hand must never take itself down: nothing would bring it
+    back and the operator would just watch the dashboard die. Matching on the
+    label alone was not enough — a hand-started server on a machine that also has
+    the agent installed saw the label, believed it was supervised, and would have
+    exited for good. So compare the pid launchd is actually holding.
+    """
+    now = time.time()
+    if now - _SUPERVISED["at"] < _LAUNCHD_TTL:
+        return _SUPERVISED["is"]
+    supervised = False
+    try:
+        out = subprocess.run(["launchctl", "list", SERVER_LABEL],
+                             capture_output=True, text=True, timeout=5)
+        m = re.search(r'"PID"\s*=\s*(\d+)', out.stdout)
+        supervised = bool(m) and int(m.group(1)) == os.getpid()
+    except Exception:  # noqa: BLE001
+        pass
+    _SUPERVISED.update(at=now, **{"is": supervised})
+    return supervised
+
+
 def config_sig():
     """Fingerprint of the two config files, so the page can tell when the parts
     of the payload that almost never change actually did."""
@@ -1021,6 +1408,10 @@ def config_sig():
             parts.append(f"{st.st_mtime_ns}:{st.st_size}")
         except OSError:
             parts.append("-")
+    # The operator profile rides on /api/config too, and it does not live in a
+    # file — without its stamp here the page would keep showing the old name in
+    # the sidebar until something unrelated edited jobs.json.
+    parts.append(operator_stamp())
     return hashlib.md5("|".join(parts).encode()).hexdigest()
 
 
@@ -1036,7 +1427,9 @@ def load_config():
     """
     return {"sig": config_sig(),
             "jobs": read_json(JOBS_FILE, {}).get("jobs", []),
-            "projects": read_json(PROJECTS_FILE, {}).get("projects", [])}
+            "projects": read_json(PROJECTS_FILE, {}).get("projects", []),
+            "user": load_user(),
+            "prefs": load_prefs()}
 
 
 def load_data():
@@ -1167,6 +1560,12 @@ def load_run_detail(jid, start):
            "duration": row["duration"], "cost": row["cost"], "session": row["session"],
            "log": row["log"], "forced": bool(row["forced"]), "precheck": row["precheck_note"],
            "project": row["project"] or "",
+           # The note IS the reason for anything the scheduler decided — stopped
+           # by the operator, budget-limited, nothing to do. Leaving it out of
+           # this payload meant the run modal had nothing to fall back on when
+           # the agent log carried no stop reason of its own, and showed a dash
+           # for a run whose journal entry said exactly why it ended.
+           "note": row["note"] or "",
            "model": row["model"] or "", "model_id": row["model_id"] or ""}
     detail = {"record": rec, "agent": {}, "precheck": row["precheck_txt"] or "",
               "stderr": (row["stderr"] or "")[:8000], "turns": []}
@@ -1435,7 +1834,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     # ---- helpers -------------------------------------------------------
-    def _send(self, code, body, ctype="application/json; charset=utf-8"):
+    def _send(self, code, body, ctype="application/json; charset=utf-8", cookie=None):
         if isinstance(body, (dict, list)):
             body = json.dumps(body)
         data = body.encode("utf-8") if isinstance(body, str) else body
@@ -1444,6 +1843,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         try:
             self.wfile.write(data)
@@ -1456,6 +1857,45 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return secrets.compare_digest(self.headers.get("X-CC-Token", ""), TOKEN)
 
+    def _raw_session(self) -> str:
+        jar = SimpleCookie()
+        try:
+            jar.load(self.headers.get("Cookie", ""))
+        except CookieError:
+            return ""
+        morsel = jar.get(SESSION_COOKIE)
+        return morsel.value if morsel else ""
+
+    def _signed_in(self):
+        return touch_session(self._raw_session())
+
+    def _gate(self):
+        """The two checks every real endpoint needs, as one answer.
+
+        Returns None when the call may proceed, or the (code, payload) to send
+        back. 401 and 428 are told apart deliberately: the page shows a login
+        screen for one and a create-profile screen for the other, and it cannot
+        guess which from a bare 403.
+        """
+        if not self._authed():
+            return 403, {"error": "forbidden"}
+        if _operator_row() is None:
+            return 428, {"error": "set up the operator profile first"}
+        if not self._signed_in():
+            return 401, {"error": "sign in first"}
+        return None
+
+    @staticmethod
+    def _cookie_header(raw, keep):
+        """HttpOnly so page scripts cannot read it, SameSite=Strict so it is
+        never sent from another site — the same anti-CSRF stance as the token.
+        No Secure: this server is http on loopback by design."""
+        base = f"{SESSION_COOKIE}={raw}; HttpOnly; SameSite=Strict; Path=/"
+        # A session cookie (no Max-Age) dies with the browser; "keep me logged
+        # in" is what makes it outlive the window, matching the row that has no
+        # expiry either.
+        return base + ("; Max-Age=34560000" if keep else "")
+
     def _body_json(self):
         try:
             n = int(self.headers.get("Content-Length", "0"))
@@ -1463,22 +1903,59 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def handle_one_request(self):
+        """Answer the request, then check whether this process is still the code
+        on disk.
+
+        After the response, and after EVERY request rather than off one route.
+        It used to hang off /api/data, which stopped working the moment that
+        route went behind the session gate: a signed-out page polls nothing, so a
+        stale server could never learn it was stale — and the deadlock was total,
+        because the version it was stuck on had no /api/login to sign in with.
+        Staleness is a property of the process, not of one endpoint.
+        """
+        super().handle_one_request()
+        self._restart_if_stale()
+
+    def _restart_if_stale(self):
+        """Step aside so launchd starts the version that is actually on disk.
+
+        An upgrade lands within one request without anyone remembering to kick
+        the agent. Only under launchd: a server started by hand has nothing to
+        bring it back. The response is already written; the delay lets it flush
+        before the process goes.
+        """
+        if not code_is_stale() or not server_supervised():
+            return
+        print("claude-cron-server: the server file changed on disk — exiting so "
+              "launchd restarts it on the new code", flush=True)
+        threading.Timer(0.4, lambda: os._exit(0)).start()
+
     # ---- routes --------------------------------------------------------
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         if path == "/health":
             return self._send(200, {"ok": True})
+        # The one endpoint that answers before you are signed in — it is what
+        # tells the page whether to draw the dashboard, the login screen or the
+        # create-profile screen.
+        if path == "/api/session":
+            sess = self._signed_in()
+            return self._send(200, {"configured": _operator_row() is not None,
+                                    "authenticated": bool(sess),
+                                    "keep": bool(sess and sess["keep"]),
+                                    "user": load_user() if sess else None})
+        # One gate for every remaining endpoint, rather than a check per route
+        # that a new route can forget to copy.
+        if path.startswith("/api/"):
+            gate = self._gate()
+            if gate:
+                return self._send(*gate)
         if path == "/api/data":
-            if not self._authed():
-                return self._send(403, {"error": "forbidden"})
             return self._send(200, load_data())
         if path == "/api/config":
-            if not self._authed():
-                return self._send(403, {"error": "forbidden"})
             return self._send(200, load_config())
         if path == "/api/search":
-            if not self._authed():
-                return self._send(403, {"error": "forbidden"})
             q = (parse_qs(urlparse(self.path).query).get("q") or [""])[0].strip()
             if not q:
                 return self._send(400, {"error": "q required"})
@@ -1487,8 +1964,6 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 return self._send(500, {"error": str(e)})
         if path == "/api/log":
-            if not self._authed():
-                return self._send(403, {"error": "forbidden"})
             q = parse_qs(urlparse(self.path).query)
             jid = (q.get("id") or [""])[0]
             start = (q.get("start") or [""])[0]
@@ -1499,22 +1974,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(404, {"error": "run not found"})
             return self._send(200, d)
         if path == "/api/models":
-            if not self._authed():
-                return self._send(403, {"error": "forbidden"})
             try:
                 return self._send(200, list_models())
             except Exception as e:  # noqa: BLE001
                 return self._send(500, {"error": str(e)})
         if path == "/api/fs":
-            if not self._authed():
-                return self._send(403, {"error": "forbidden"})
             p = (parse_qs(urlparse(self.path).query).get("path") or [""])[0]
             try:
                 return self._send(200, list_dirs(p))
             except Exception as e:  # noqa: BLE001
                 return self._send(500, {"error": str(e)})
         if path == "/":
-            return self._send(200, render_page(), "text/html; charset=utf-8")
+            # Same three states applyGates() works from, answered here so the
+            # page does not have to wait for /api/session to know which to show.
+            boot = ("boot-setup" if _operator_row() is None
+                    else "boot-authed" if self._signed_in() else "boot-login")
+            return self._send(200, render_page(boot), "text/html; charset=utf-8")
         return self._send(404, {"error": "not found"})
 
     def do_OPTIONS(self):
@@ -1523,12 +1998,60 @@ class Handler(BaseHTTPRequestHandler):
         self._send(403, {"error": "no cors"})
 
     def do_POST(self):
-        if self.path != "/api/action":
+        path = self.path.split("?", 1)[0]
+        if path not in ("/api/action", "/api/login", "/api/logout"):
             return self._send(404, {"error": "not found"})
+        # Every POST still has to come from our own page; only the session
+        # requirement differs between signing in and doing anything else.
         if not self._authed():
             return self._send(403, {"error": "forbidden"})
         body = self._body_json()
+
+        if path == "/api/login":
+            ok, err = check_login(body.get("email"), body.get("password"))
+            if not ok:
+                return self._send(401, {"error": err})
+            keep = bool(body.get("keep"))
+            raw = create_session(keep)
+            return self._send(200, {"ok": True, "keep": keep, "user": load_user()},
+                              cookie=self._cookie_header(raw, keep))
+        if path == "/api/logout":
+            destroy_session(self._raw_session())
+            # Expire the cookie too — a row-only delete leaves the browser
+            # presenting a dead token forever and the tab looking half signed in.
+            return self._send(200, {"ok": True},
+                              cookie=f"{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
+
         op = body.get("op", "")
+        # First-run setup, and the gate that makes it mandatory. It signs the
+        # operator straight in: they just typed the password twice, and asking
+        # for it a third time on the next screen is a form for its own sake.
+        if op == "profile_create":
+            code, payload = create_operator(body.get("name"), body.get("email"),
+                                            body.get("password"), body.get("password2"))
+            if code != 200:
+                return self._send(code, payload)
+            keep = bool(body.get("keep"))
+            raw = create_session(keep)
+            return self._send(200, dict(payload, keep=keep),
+                              cookie=self._cookie_header(raw, keep))
+        gate = self._gate()
+        if gate:
+            return self._send(*gate)
+
+        if op == "prefs_set":
+            code, payload = set_pref(str(body.get("key", "")), body.get("value"))
+            return self._send(code, payload)
+
+        # Behind the gate, unlike profile_create: this one edits a profile that
+        # already exists, so it needs the session that create_operator issues.
+        # `avatar` stays absent rather than empty when the form did not touch it.
+        if op == "profile_update":
+            code, payload = update_operator(
+                body.get("name"), body.get("email"),
+                body.get("avatar") if "avatar" in body else None,
+                body.get("current"), body.get("password"), body.get("password2"))
+            return self._send(code, payload)
 
         # Project ops are keyed by name, not by a job id — handle before the id check.
         if op == "project_set":
@@ -1790,9 +2313,19 @@ def _page_source() -> str:
     return _page_cache["text"]
 
 
-def render_page() -> str:
+def render_page(boot: str = "boot-authed") -> str:
+    """`boot` is which screen the page should already be showing when it paints.
+
+    The overlays are raised by JavaScript once /api/session answers, so without
+    this the shell is on screen for a round-trip first — the dashboard flashing
+    past before the login card lands. This server knows the answer while it is
+    still writing the response, so it says so and the first frame is right.
+    Answering wrongly is not a leak either way: every endpoint behind the gate
+    still refuses, and the page corrects itself the moment the session lands.
+    """
     return (_page_source().replace("__TOKEN__", TOKEN)
                 .replace("__BUILD__", BUILD)
+                .replace("__BOOT__", boot)
                 .replace("__FAVICON__", FAVICON))
 
 
