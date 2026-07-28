@@ -61,8 +61,14 @@ wt_run_limited() { # wt_run_limited <seconds> <command...>
 # Every repo this project spans: name<TAB>canonical path<TAB>base branch.
 # A project that declares `.repos[]` is taken at its word — that list is what a
 # run gets a worktree of. One that declares none is the single-repo case: the
-# row is synthesised from `.cwd`, with an EMPTY base meaning "infer it"
-# (wt_base_ref decides), because there is nothing declared to read.
+# row is synthesised from `.cwd`, taking its base from the project's `.base`.
+#
+# That project-level `.base` exists because the row a single-repo project had to
+# declare to pin its base was a copy of what `.cwd` already said: the name is
+# `basename .cwd` and the path IS `.cwd`, so only the base carried information —
+# and re-typing the path is exactly where a trailing slash creeps in and stops
+# the row matching `.cwd` at all. An EMPTY base still means "infer it"
+# (wt_base_ref decides), so a project that declares neither behaves as before.
 wt_repos() { # <project> <canonical_cwd>
   local project="${1:-}" cwd="${2:-}" n
   n="$(projects_json | "$JQ" -r --arg n "$project" \
@@ -74,7 +80,7 @@ wt_repos() { # <project> <canonical_cwd>
       | [(.name // ""), (.path // ""), (.base // "")] | @tsv' 2>/dev/null
     return 0
   fi
-  printf '%s\t%s\t\n' "$(basename "$cwd")" "$cwd"
+  printf '%s\t%s\t%s\n' "$(basename "$cwd")" "$cwd" "$(project_get "$project" '.base' '')"
 }
 
 # Should this run be isolated in a worktree? 0 = yes.
@@ -208,6 +214,8 @@ wt_provision() { # <up|down> <project> <id> <run_dir> <name> <canonical> <worktr
     CC_REPO_NAME="$name" CC_REPO_PATH="$repo" CC_WORKTREE="$wt" CC_BASE="$base" \
     CC_RUN_DIR="$run_dir" CC_RUN_MANIFEST="$run_dir/.run.json" \
     CC_PROJECT="$project" CC_JOB_ID="$id" \
+    CC_PORT_BASE="${CC_PORT_BASE:-}" CC_PORT_SPAN="${CC_PORT_SPAN:-100}" \
+    CC_PROVISION_LIB="${CC_PROVISION_LIB:-}" \
       bash "$script" >>"$DATA_DIR/exec.log" 2>&1
   }
   wt_run_limited "$t" _wt_hook; rc=$?

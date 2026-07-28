@@ -548,13 +548,110 @@ acquire_slot() { # <id> <max> -> prints the slot dir; non-zero when at capacity
 
 release_slot() { rm -rf "$1"; }          # <slot-dir>
 
+# --- a port block per run ----------------------------------------------------
+# Isolation gives every run its own worktree, which fixes the filesystem. It does
+# NOTHING about the ports the run's services bind: two runs of the same repo each
+# do `docker compose up postgres`, both publish 5432, and the second dies on
+# "address already in use". The worktree name makes the compose PROJECT unique;
+# the published ports are still whatever the compose file says.
+#
+# So every run also gets a block of ports nobody else is using. It is handed to
+# the run and to its provisioning hooks as CC_PORT_BASE, and provision-lib.sh
+# turns it into concrete numbers. Generic on purpose: this is not a Docker
+# feature or a Compose feature, it is "two copies of the same stack at once",
+# which every project that isolates will meet.
+CC_PORT_RANGE_START="${CLAUDE_CRON_PORT_RANGE_START:-21000}"
+CC_PORT_SPAN="${CLAUDE_CRON_PORT_SPAN:-100}"        # ports per run
+CC_PORT_BLOCKS="${CLAUDE_CRON_PORT_BLOCKS:-60}"     # how many runs can hold one at once
+
+# Lowest block no LIVE run holds. Recorded in the slot, so it is released exactly
+# when the slot is — no separate registry to leak. Allocated under a mutex:
+# two runs launching in the same instant would otherwise read the same "free"
+# block and both take it, which is the very collision this exists to prevent.
+alloc_port_base() { # <slot-dir> -> prints the base port
+  local slot="$1" L="$LOCK_DIR/.ports" taken="" d b i
+  mkdir -p "$LOCK_DIR"
+  lock_take "$L"
+  for d in "$LOCK_DIR"/*/*/; do
+    [ -d "$d" ] || continue
+    [ "$d" = "$slot/" ] && continue
+    # A slot whose pid is gone holds nothing: the sweep has not reached it yet,
+    # and treating it as live would shrink the pool for no reason.
+    kill -0 "$(cat "$d/pid" 2>/dev/null || echo 0)" 2>/dev/null || continue
+    b="$(cat "$d/portbase" 2>/dev/null || true)"
+    [ -n "$b" ] && taken="$taken $b"
+  done
+  i=0
+  while [ "$i" -lt "$CC_PORT_BLOCKS" ]; do
+    b=$(( CC_PORT_RANGE_START + i * CC_PORT_SPAN ))
+    case " $taken " in *" $b "*) ;; *) break ;; esac
+    i=$(( i + 1 ))
+  done
+  # Every block held. Rather than refuse the run, hand back the first one and say
+  # so: a port clash is a failure the operator can see and read, and a run that
+  # never started because 60 others were live is one they cannot.
+  if [ "$i" -ge "$CC_PORT_BLOCKS" ]; then
+    b="$CC_PORT_RANGE_START"
+    log_tick "all $CC_PORT_BLOCKS port blocks are in use — reusing $b, services may collide"
+  fi
+  # Same redirection trap as in provision-lib: the shell raises it before echo
+  # runs, so the group is what has to swallow it.
+  { echo "$b" > "$slot/portbase"; } 2>/dev/null || true
+  lock_drop "$L"
+  printf '%s\n' "$b"
+}
+
 # End-of-run cleanup, shared by the normal exit path and the EXIT trap (so a
 # crashed or killed run cleans up too). Tears down the run's worktrees if that is
 # safe (see wt_teardown), THEN releases its slot. Reads the run dir from the
 # slot breadcrumb; the trap bakes in the slot path. Idempotent.
+# A run the operator stopped BEFORE it had anything to report still has to leave
+# a record. Without this the row simply vanished from the table: no run, no log,
+# nothing saying it had ever been asked for — which reads as the dashboard losing
+# work rather than as a stop that was obeyed.
+#
+# Only fires when the stop marker is there and the normal path has not already
+# journaled (it drops `journaled` the moment it does), so a run that reached its
+# own ending is never recorded twice.
+run_record_stopped_early() { # <id> <slot-dir>
+  local id="$1" slot="${2:-}" start end logf project note model model_family
+  [ -n "$slot" ] || return 0
+  [ -f "$slot/stopped" ] || return 0
+  [ -f "$slot/journaled" ] && return 0
+  start="$(cat "$slot/start" 2>/dev/null || true)"
+  case "$start" in ''|*[!0-9]*) start="$(now_epoch)" ;; esac
+  end="$(now_epoch)"
+  project="$(job_get "$id" '.project' '')"
+  # What it WOULD have run. The record said "—" for the model, which reads as
+  # missing data rather than as a run that never got far enough to have one.
+  model="$(resolve "$id" model 'opus')"
+  model_family=""
+  case "$model" in opus|sonnet|haiku|fable) model_family="$model"; model="" ;; esac
+  note="STOPPED: ended from the dashboard before its agent started, so no work was done and nothing was spent."
+  # A log body, so opening the run explains itself instead of showing the blank
+  # record of a run that seemingly never happened. The slot only grows its
+  # `logfile` breadcrumb once the run is well underway, so when the stop lands
+  # earlier than that there is nothing to write to — name the file the same way
+  # the run itself would have, and write it.
+  logf="$(cat "$slot/logfile" 2>/dev/null || true)"
+  if [ -z "$logf" ]; then
+    mkdir -p "$LOG_DIR/$id" 2>/dev/null || true
+    logf="$LOG_DIR/$id/$(date -u -r "$start" +%Y%m%dT%H%M%SZ 2>/dev/null || date -u +%Y%m%dT%H%M%SZ)-$(basename "$slot").json"
+  fi
+  "$JQ" -nc --arg r "$note" '{is_error:false, subtype:"stopped_by_user", num_turns:0,
+    session_id:"", stop_reason:"stopped_by_user",
+    result:("**Stopped by you.**\n\n"+$r)}' > "$logf" 2>/dev/null || logf=""
+  state_set_many "$id" "$("$JQ" -nc --argjson end "$end" --argjson start "$start" \
+    '{last_end:$end, last_status:"stopped", last_run_start:$start, last_run_status:"stopped"}')"
+  record_run "$id" "stopped" "$start" "$end" "0" "0" "" "${logf:-}" "$note" "false" "" "$project" \
+             "${model_family:-$model}" "" ""
+  log_tick "$id: stopped by the user before the agent started"
+}
+
 run_cleanup() { # <id> <slot-dir>
   local id="$1" slot="${2:-}" wt project
   [ -n "$slot" ] || return 0
+  run_record_stopped_early "$id" "$slot"
   wt="$(cat "$slot/worktree" 2>/dev/null || true)"
   if [ -n "$wt" ]; then
     project="$(job_get "$id" '.project' '')"
@@ -1128,6 +1225,26 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   got="$(wt_run_worktrees "$tmp/wtroot/j9/stampS" | wc -l | tr -d ' ')"
   [ "$got" = "1" ] && ok "exactly one worktree, named after the cwd" || bad "got $got worktrees"
 
+  echo "wt_repos() — a single-repo project pins its base without declaring a repo"
+  # The row it used to need was a copy of .cwd carrying one new field. Reading
+  # .base directly is what lets the form stop asking for the path twice, which
+  # is where a trailing slash used to creep in and orphan the primary.
+  printf '%s' '{"projects":[{"name":"solo2","cwd":"'"$tmp"'/g/repo2","base":"develop"}]}' \
+    > "$tmp/proj/solobase.json"
+  got="$( PROJECTS_FILE="$tmp/proj/solobase.json"; wt_repos solo2 "$tmp/g/repo2" | cut -f3 )"
+  [ "$got" = "develop" ] && ok "the project's .base reaches the synthesised row" \
+    || bad "base came out '$got'"
+  got="$( PROJECTS_FILE="$tmp/proj/solo.json"; wt_repos solo1 "$tmp/g/repo2" | cut -f3 )"
+  [ -z "$got" ] && ok "a project declaring neither still infers, exactly as before" \
+    || bad "an undeclared base came out '$got'"
+  # .repos[] is the more specific statement, so it must not be quietly overruled
+  # by a .base left behind from before the project grew a second repository.
+  printf '%s' '{"projects":[{"name":"solo3","cwd":"'"$tmp"'/g/repo2","base":"develop","repos":[
+      {"name":"repo2","path":"'"$tmp"'/g/repo2","base":"main"}]}]}' > "$tmp/proj/both.json"
+  got="$( PROJECTS_FILE="$tmp/proj/both.json"; wt_repos solo3 "$tmp/g/repo2" | cut -f3 )"
+  [ "$got" = "main" ] && ok "a declared repo's base still wins over the project's" \
+    || bad "with both declared the base came out '$got'"
+
   echo "wt_setup() — a failing hook aborts, takes down what it built, leaves nothing"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$tmp/cfg/provision/two.up.sh"
   printf '%s\n' '#!/usr/bin/env bash' 'echo "$CC_REPO_NAME" >> "$tmp_down_log"' \
@@ -1431,6 +1548,105 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   got="$(git -C "$tmp/g/repo" worktree list --porcelain 2>/dev/null | grep -c "stampF" || true)"
   [ "$(num "$got")" = "0" ] && ok "git no longer lists the removed worktree" || bad "git still lists $got"
 
+  echo "a run the operator stops is recorded as stopped, never lost"
+  # Stopping in the seconds between claiming a slot and spawning the agent used
+  # to just delete the slot: the row vanished from the table with no run, no log
+  # and no record that it had ever been asked for. And a TERM'd agent exits
+  # non-zero, so a deliberate stop was filed as `error` — counted in the error
+  # tile and feeding the failure backoff, slowing the job down as punishment for
+  # a decision its owner made on purpose.
+  local sl="$tmp/locks/j9/777"
+  mkdir -p "$sl" "$tmp/stoplogs"
+  echo 777 > "$sl/pid"; echo 1700000000 > "$sl/start"
+  echo "$tmp/stoplogs/r.json" > "$sl/logfile"
+  : > "$sl/stopped"
+  ( CONFIG_DIR="$tmp/cfg"; DATA_DIR="$tmp"; RUNS_FILE="$tmp/stop.ndjson"
+    STATE_FILE="$tmp/stopstate.json"; LOG_DIR="$tmp/stoplogs"; TICK_LOG="$tmp/stop.tick"
+    run_record_stopped_early j9 "$sl" ) >/dev/null 2>&1
+  got="$("$JQ" -r '.status' "$tmp/stop.ndjson" 2>/dev/null | head -1)"
+  [ "$got" = "stopped" ] && ok "a stop before the agent starts still journals a run" \
+    || bad "journalled status '$got'"
+  got="$("$JQ" -r '.note // ""' "$tmp/stop.ndjson" 2>/dev/null | head -1)"
+  case "$got" in STOPPED:*) ok "and the record says why it ended" ;;
+                 *) bad "note was '$got'" ;; esac
+  got="$("$JQ" -r '.subtype // ""' "$tmp/stoplogs/r.json" 2>/dev/null)"
+  [ "$got" = "stopped_by_user" ] && ok "and it leaves a log body explaining itself" \
+    || bad "log subtype '$got'"
+  # The record used to carry no model at all, which in the run modal reads as
+  # missing data rather than as a run that never got far enough to have one.
+  got="$("$JQ" -r '.model // ""' "$tmp/stop.ndjson" 2>/dev/null | head -1)"
+  [ -n "$got" ] && ok "and says which model it would have run" || bad "model was empty"
+  # And a stop landing before the slot has a logfile breadcrumb still gets a log.
+  local sl2="$tmp/locks/j9/778"
+  mkdir -p "$sl2"; echo 778 > "$sl2/pid"; echo 1700000000 > "$sl2/start"; : > "$sl2/stopped"
+  ( CONFIG_DIR="$tmp/cfg"; DATA_DIR="$tmp"; RUNS_FILE="$tmp/stop2.ndjson"
+    STATE_FILE="$tmp/stopstate.json"; LOG_DIR="$tmp/stoplogs"; TICK_LOG="$tmp/stop.tick"
+    run_record_stopped_early j9 "$sl2" ) >/dev/null 2>&1
+  got="$("$JQ" -r '.log // ""' "$tmp/stop2.ndjson" 2>/dev/null | head -1)"
+  [ -n "$got" ] && [ -f "$got" ] && ok "a stop with no logfile breadcrumb still writes one" \
+    || bad "log path '$got'"
+  rm -rf "$tmp/locks/j9/778"
+  # Twice must not produce two rows: the normal path drops `journaled` the moment
+  # it files its own record, and this must respect that.
+  : > "$sl/journaled"
+  ( CONFIG_DIR="$tmp/cfg"; DATA_DIR="$tmp"; RUNS_FILE="$tmp/stop.ndjson"
+    STATE_FILE="$tmp/stopstate.json"; LOG_DIR="$tmp/stoplogs"; TICK_LOG="$tmp/stop.tick"
+    run_record_stopped_early j9 "$sl" ) >/dev/null 2>&1
+  got="$(wc -l < "$tmp/stop.ndjson" | tr -d ' ')"
+  [ "$got" = "1" ] && ok "a run that already journalled is not recorded twice" \
+    || bad "$got rows in the journal"
+  # And a slot with no stop marker is none of this function's business.
+  rm -f "$sl/stopped" "$sl/journaled"
+  ( CONFIG_DIR="$tmp/cfg"; DATA_DIR="$tmp"; RUNS_FILE="$tmp/stop.ndjson"
+    STATE_FILE="$tmp/stopstate.json"; LOG_DIR="$tmp/stoplogs"; TICK_LOG="$tmp/stop.tick"
+    run_record_stopped_early j9 "$sl" ) >/dev/null 2>&1
+  got="$(wc -l < "$tmp/stop.ndjson" | tr -d ' ')"
+  [ "$got" = "1" ] && ok "a run nobody stopped is left alone" || bad "$got rows after a no-op"
+  rm -rf "$tmp/locks/j9"
+
+  echo "alloc_port_base() — two live runs never get the same ports"
+  # Isolation settles the filesystem and says nothing about ports: two runs of
+  # one repo each publish 5432 and the second dies on "address already in use",
+  # which reads as a broken test suite and is nothing of the kind.
+  mkdir -p "$tmp/locks/pj/101" "$tmp/locks/pj/102" "$tmp/locks/pk/103"
+  echo $$ > "$tmp/locks/pj/101/pid"; echo $$ > "$tmp/locks/pj/102/pid"
+  local b1 b2 b3
+  b1="$( LOCK_DIR="$tmp/locks"; alloc_port_base "$tmp/locks/pj/101" )"
+  b2="$( LOCK_DIR="$tmp/locks"; alloc_port_base "$tmp/locks/pj/102" )"
+  [ -n "$b1" ] && [ "$b1" != "$b2" ] && ok "two live runs get different blocks ($b1 vs $b2)" \
+    || bad "both got '$b1'"
+  [ "$(( b2 - b1 ))" = "$CC_PORT_SPAN" ] && ok "the blocks do not overlap" \
+    || bad "blocks are $(( b2 - b1 )) apart, span is $CC_PORT_SPAN"
+  # A slot whose process is gone holds nothing — otherwise the pool shrinks by
+  # one for every run that ever ended and never came back.
+  echo 999999 > "$tmp/locks/pk/103/pid"
+  echo "$b1" > "$tmp/locks/pk/103/portbase"
+  rm -rf "$tmp/locks/pj/101" "$tmp/locks/pj/102"
+  mkdir -p "$tmp/locks/pj/104"
+  b3="$( LOCK_DIR="$tmp/locks"; alloc_port_base "$tmp/locks/pj/104" )"
+  [ "$b3" = "$b1" ] && ok "a dead slot's block is handed back out" || bad "got '$b3', wanted '$b1'"
+  rm -rf "$tmp/locks/pj" "$tmp/locks/pk"
+
+  echo "provision-lib.sh — a run's ports come from its own block"
+  local plib="$BIN_DIR/provision-lib.sh"
+  got="$( CC_PORT_BASE=21000 CC_PORT_SPAN=100 TMPDIR="$tmp" bash -c \
+    'source "$1"; echo "$(cc_port POSTGRES_PORT) $(cc_port REDIS_PORT) $(cc_port POSTGRES_PORT)"' _ "$plib" )"
+  [ "$got" = "21000 21001 21000" ] && ok "each name gets its own port, and keeps it" \
+    || bad "got '$got'"
+  # The whole point: rewrite the ports a checked-in .env carries, and touch
+  # nothing else in it.
+  printf '%s\n' 'POSTGRES_PORT=5432' 'REDIS_PORT=6379' 'SECRET=keepme' > "$tmp/dotenv"
+  ( CC_PORT_BASE=21200 CC_PORT_SPAN=100 TMPDIR="$tmp" bash -c \
+    'source "$1"; cc_env_ports "$2"' _ "$plib" "$tmp/dotenv" ) >/dev/null 2>&1
+  got="$(grep -c -E '^(POSTGRES|REDIS)_PORT=212[0-9][0-9]$' "$tmp/dotenv")"
+  [ "$got" = "2" ] && ok "every *_PORT in the file moves into the block" || bad "$got of 2 rewritten"
+  grep -q '^SECRET=keepme$' "$tmp/dotenv" && ok "and nothing else in the file is touched" \
+    || bad "the rest of the file did not survive"
+  # A key the file does not have must not be invented: publishing a service the
+  # project never asked for is worse than leaving it alone.
+  grep -q "QDRANT" "$tmp/dotenv" && bad "invented a key that was not there" \
+    || ok "keys the file never had are not added"
+
   echo "run_end_hook() — an unattended pipeline can tell someone it broke"
   mkdir -p "$tmp/hookcfg/hooks"
   ( CONFIG_DIR="$tmp/hookcfg"; run_end_hook j1 error 1.5 "boom" P sess /tmp/l.json 1 2 ) >/dev/null 2>&1
@@ -1574,16 +1790,36 @@ cmd_runs() { # <id> — one active run per line: <run-pid>\t<agent-pid>\t<logfil
 # Stop ONE run by its slot. Leaves the watchdog breadcrumb so the run explains
 # itself, then TERMs the agent (or clears a dead slot).
 _stop_slot() { # <id> <slot-dir>
-  local id="$1" slot="$2" child logf
+  local id="$1" slot="$2" child logf rpid
   [ -d "$slot" ] || { echo "no such run for $id"; return 1; }
   logf="$(cat "$slot/logfile" 2>/dev/null || true)"
-  [ -n "$logf" ] && printf 'stopped by the user\n' > "$logf.watchdog" 2>/dev/null
+  # The marker the classifier reads. A run the OPERATOR ended is not a failure,
+  # and the difference has to survive into the record: `stopped` is a decision,
+  # `error` is a fault, and filing one as the other is how a deliberate stop ends
+  # up in the error count and drives the failure backoff.
+  : > "$slot/stopped" 2>/dev/null || true
+  [ -n "$logf" ] && printf 'STOPPED: ended on purpose from the dashboard, not by a failure.\n' \
+    > "$logf.watchdog" 2>/dev/null
   child="$(cat "$slot/child" 2>/dev/null || true)"
   if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
     kill -TERM "$child" 2>/dev/null
     echo "stopping $id run $(basename "$slot") (agent pid $child)"
+    return 0
+  fi
+  # No agent yet — stopped in the seconds between claiming the slot and spawning.
+  # This used to just delete the slot, so the run vanished from the table with
+  # nothing written anywhere: no row, no log, no record that it had ever been
+  # asked for. Signal the run wrapper instead and let its EXIT path file the
+  # record, exactly as it does for every other ending.
+  rpid="$(basename "$slot")"
+  case "$rpid" in
+    ''|*[!0-9]*) echo "run of $id has no usable pid; clearing its slot"; release_slot "$slot"; return 0 ;;
+  esac
+  if kill -0 "$rpid" 2>/dev/null; then
+    kill -TERM "$rpid" 2>/dev/null
+    echo "stopping $id run $rpid (before its agent started)"
   else
-    echo "run $(basename "$slot") of $id not stoppable (no live agent); clearing its slot"
+    echo "run $rpid of $id is already gone; clearing its slot"
     release_slot "$slot"
   fi
 }
@@ -1815,7 +2051,7 @@ ${prompt}"
     fi
   fi
 
-  local start end stamp logfile streamfile precheckfile rc out cost turns session status
+  local start end stamp logfile streamfile precheckfile rc out cost turns session status port_base
   start="$(now_epoch)"
   # PID suffix keeps two same-second runs from clobbering each other's logs.
   stamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -1844,6 +2080,10 @@ ${prompt}"
     # The path is ours to predict, so stake it first.
     run_dir="$WORKTREES_DIR/$id/$stamp"
     echo "$run_dir" > "$slot/worktree"
+    # Before wt_setup, because the provisioning hooks it calls are what need the
+    # block: they are what write the run's ports into its config.
+    port_base="$(alloc_port_base "$slot")"
+    export CC_PORT_BASE="$port_base" CC_PORT_SPAN CC_PROVISION_LIB="$BIN_DIR/provision-lib.sh"
     if ! worktree="$(wt_setup "$id" "$project" "$cwd" "$stamp")"; then
       state_set "$id" last_start "$start"
       state_set "$id" last_status '"error"'
@@ -1856,7 +2096,9 @@ ${prompt}"
     # checkout of each: the manifest. Everything else it could only guess at.
     run_env+=("CC_RUN_DIR=$run_dir" "CC_RUN_MANIFEST=$run_dir/.run.json" \
               "CC_PROJECT=$project" "CC_JOB_ID=$id" \
-              "CC_PRIMARY_REPO=$(basename "$run_cwd")")
+              "CC_PRIMARY_REPO=$(basename "$run_cwd")" \
+              "CC_PORT_BASE=$port_base" "CC_PORT_SPAN=$CC_PORT_SPAN" \
+              "CC_PROVISION_LIB=$BIN_DIR/provision-lib.sh")
     while IFS= read -r _envln; do
       [ -n "$_envln" ] && run_env+=("$_envln")
     done < <(wt_env_line "$project" "$cwd" "$run_cwd")
@@ -2099,6 +2341,19 @@ If the work turns out to be already finished, or it can no longer be done at all
     status="success"
   fi
 
+  # A run the OPERATOR ended is not a failure, whatever the exit code says. A
+  # TERM'd agent exits non-zero and lands in the branch above as `error`, so a
+  # deliberate stop was counted in the error tile and drove the failure backoff,
+  # slowing the job down as punishment for a decision its owner made on purpose.
+  # This overrides every branch above precisely because those all read the exit
+  # code, and the exit code is the one thing a kill guarantees.
+  # The work itself is untouched: the stream, the log and the turns already
+  # written stay exactly where they are — only the verdict changes.
+  if [ -f "$slot/stopped" ]; then
+    status="stopped"
+    wdreason="STOPPED: you ended this run from the dashboard. Anything it had already done is in the log below and on disk; it was interrupted, not undone."
+  fi
+
   # "Ran fine, but there was nothing to do" — a resumed task already finished, or
   # its ticket is gone. The agent answers `NOTHING TO DO: <reason>` (see the
   # resume prompt). The run did not FAIL, but calling it a plain success hides
@@ -2172,6 +2427,9 @@ If the work turns out to be already finished, or it can no longer be done at all
       last_session:$session, fail_streak:$streak}')"
   # Record what was CHOSEN (the family, when one was) plus what actually ran.
   record_run "$id" "$status" "$start" "$end" "${cost:-0}" "${turns:-0}" "$session" "$logfile" "$wdreason" "$forced" "$pc_out" "$project" "${model_family:-$model}" "$model_id" "$resume_sid"
+  # Tells the EXIT path this run has already filed its record, so a stop that
+  # lands while we are finishing here cannot produce a second one.
+  : > "$slot/journaled" 2>/dev/null || true
   log_tick "$id: finished status=$status rc=$rc denials=${denials:-0} cost=\$$cost turns=$turns model=$model${model_id:+ ($model_id)} forced=$forced${wdreason:+ — $wdreason}"
   # Fired after the record exists, so a hook that opens the dashboard or reads
   # the journal sees this run already in it.

@@ -74,3 +74,8 @@ echo
 echo "Done. Open the dashboard with:"
 echo "    claude-cron dashboard"
 echo "It runs at http://127.0.0.1:8787/ and starts automatically on login."
+echo
+echo "The first thing it asks for is your operator profile — name, email and a"
+echo "password. Nothing else in the dashboard works until that exists, and the"
+echo "same screen appears on an existing install the first time it is opened"
+echo "after this update. There is no password reset: it is stored hashed."
