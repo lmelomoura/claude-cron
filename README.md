@@ -47,7 +47,10 @@ Then open the dashboard:
 claude-cron dashboard
 ```
 
-It lives at **http://127.0.0.1:8787/** (localhost only).
+It lives at **http://127.0.0.1:8787/** (localhost only). The first load asks you
+to create the operator profile — a name, an email and a password — before it will
+show anything else. There is no password reset, so pick one you keep; see
+[Signing in](#signing-in).
 
 ### What `install.sh` sets up under launchd
 
@@ -282,9 +285,27 @@ data/worktrees/<job>/<stamp>/
 
 `base` is the branch each worktree is cut from and the branch a merge request
 targets. It is **declared, not observed**: a canonical checkout can be detached
-or parked on somebody's feature branch, and neither is a base. A project that
-declares no `repos` is the single-repo case — the entry is derived from `cwd`
-and its base inferred from the current branch.
+or parked on somebody's feature branch, and neither is a base.
+
+A project that declares no `repos` is the single-repo case: the entry is derived
+from `cwd`, and its base comes from the project's own `base`.
+
+```json
+{"name": "web", "cwd": "/Users/me/code/web", "base": "develop"}
+```
+
+That is the whole configuration for one repository — `repos` is for projects that
+genuinely span several. Declaring a single row whose `path` **is** the `cwd` says
+nothing the two lines above do not, and it costs something: the engine picks the
+repo the agent starts in by matching a row's `path` against `cwd` as a literal
+string, so a trailing slash or a difference in case (one directory on macOS, two
+strings here) leaves no row matching and **the run is refused before it starts**.
+A declared row's `base` still wins over the project's, so a multi-repo project is
+unaffected.
+
+Ending a base in `*` follows a family rather than one branch: `release/*` resolves
+to the newest `release/x.y.z` at run time, so a project shipping through release
+trains is configured once instead of pointing at last month's train.
 
 **Declare `base` whenever `origin/HEAD` is not the branch your work targets.**
 Leaving it empty means *infer it*, and inference resolves to the canonical
@@ -334,7 +355,8 @@ config/provision/<project>.down.sh   # when the run ends, before they are remove
 Each runs **once per repo**, with the working directory set to that repo's
 worktree and the run described in its environment: `CC_REPO_NAME`,
 `CC_REPO_PATH` (the canonical checkout), `CC_WORKTREE`, `CC_BASE`, `CC_RUN_DIR`,
-`CC_RUN_MANIFEST`, `CC_PROJECT`, `CC_JOB_ID`. See
+`CC_RUN_MANIFEST`, `CC_PROJECT`, `CC_JOB_ID`, plus `CC_PORT_BASE`,
+`CC_PORT_SPAN` and `CC_PROVISION_LIB` (below). See
 `config/provision/example-hello.up.sh`.
 
 A non-zero `up` **aborts the run** — the engine takes down what it provisioned
@@ -368,6 +390,35 @@ SITE="${CC_REPO_NAME}-$(basename "$CC_RUN_DIR")"
 herd link "$SITE"; docker compose -p "$SITE" up -d      # up
 herd unlink "$SITE"; docker compose -p "$SITE" down -v  # down
 ```
+
+#### Ports: `CC_PORT_BASE` and `bin/provision-lib.sh`
+
+A unique compose project name stops two runs sharing containers. It does nothing
+about **published ports**: both runs bring up the same stack, both try to publish
+5432, and the second dies on "address already in use" — which reads as a broken
+test suite and is nothing of the kind. Worktrees settle the filesystem; ports are
+the other half.
+
+So every isolated run is given a block of ports no live run holds — `CC_PORT_BASE`
+and `CC_PORT_SPAN` (100 by default) — allocated under a lock and released with the
+run's slot. `bin/provision-lib.sh` turns that block into numbers:
+
+```bash
+source "$CC_PROVISION_LIB"
+
+cc_copy_ignored .env            # the canonical checkout's gitignored files, into this worktree
+cc_env_ports .env               # every *_PORT the file already declares moves into this run's block
+cc_port POSTGRES_PORT           # or one at a time -> 21003, and the same number if asked again
+cc_env_set .env APP_URL "http://localhost:$(cc_port APP_PORT)"
+```
+
+`cc_env_ports` only rewrites keys the file **already has**: inventing ports for
+services a project does not run would publish things nobody asked for. Nothing
+here is Docker-specific — this is the general shape of "two copies of one stack at
+once", which every project that isolates eventually meets.
+
+`CLAUDE_CRON_PORT_RANGE_START` (21000), `CLAUDE_CRON_PORT_SPAN` (100) and
+`CLAUDE_CRON_PORT_BLOCKS` (60) move or resize the range if it is already in use.
 
 ### Budgets
 
@@ -464,9 +515,13 @@ and log rotation. It runs entirely inside a scratch directory — it will not
 touch `data/`.
 
 `pytest tests/` covers the server: journal ingest and resync, the 24h activity
-counters, retained worktrees, the journal lock, and the dashboard page itself
-(that its JavaScript parses, that every element it reaches for exists, and that
-the backoff curve it recomputes still agrees with the engine's).
+counters, retained worktrees, the journal lock, the operator profile (what the
+avatar column will and will not accept, and that changing a password needs the
+current one), and the dashboard page itself — that its JavaScript parses, that
+every element it reaches for exists, that the backoff curve it recomputes still
+agrees with the engine's, and that its riskier save paths behave: they run the
+page's real functions over a stub DOM in `node`, so a save that would wipe a
+provisioning hook fails the suite rather than the operator's config.
 
 Run both after touching either side.
 
@@ -507,7 +562,23 @@ agent in the project what the project is. Create one with **+ New project**;
 jobs then just pick it (a job without a project sets its own `cwd`).
 
 Projects live in `config/projects.json` and are personal to your install, so
-they are not committed.
+they are not committed. The editor is a three-step form — the project, its repos
+and worktrees, its provisioning — and every step is reachable at any time, so
+fixing one field never means walking the other two.
+
+```json
+{
+  "name": "web",
+  "cwd": "/Users/me/code/web",
+  "base": "develop",
+  "worktree": {"enabled": "auto"}
+}
+```
+
+`base` is the branch its runs are cut from — see
+[Isolation](#isolation-one-worktree-per-repo-per-run) for what an empty one falls
+back to and why that is usually not what you want. Add `repos` only when one
+ticket really does touch several repositories.
 
 ### Which Claude account a run signs in as
 
@@ -566,6 +637,27 @@ Three things to know before splitting jobs across accounts:
   stderr.
 - **Theme** — light/dark toggle in the header.
 
+### Signing in
+
+The dashboard has one account — the person running this install — kept in
+`data/app.db`. A fresh install asks for a name, email and password before it will
+open anything; an existing install asks on the first load after updating. The
+password is stored PBKDF2-hashed and **cannot be recovered**: nothing on the
+machine can read it back, and there is no reset.
+
+A session lasts 12 idle hours, or forever with **Keep me signed in**. Signing out
+ends it everywhere. Clicking your name at the foot of the sidebar opens the
+profile: name, email, photo, and a password change that asks for the current one
+(a signed-in tab is not proof of who is at the keyboard). The photo is stored
+inline in the database, scaled to 256 px in the browser first, so there is no file
+to serve and nothing left behind when it is replaced.
+
+This is a lock on the **page**, not a second lock on the port. The server has
+always bound loopback only and required its token; the account is what stops
+someone at your unlocked desk from starting a run that spends money. Anyone who
+can already run commands as you can read `data/app.db` and mint their own session
+— treat it as it is.
+
 ---
 
 ## CLI
@@ -615,6 +707,11 @@ then deletes the bulky artifact files. **To back up or migrate: copy
 dashboard footer. Deleting `index.db` only loses runs whose files were already
 pruned.
 
+**`data/app.db`** is the other database, and the only one that is *not* derived:
+it holds your profile, your live sessions and the dashboard's preferences. Delete
+`index.db` and it rebuilds from the journal; delete `app.db` and the next load
+asks you to create a profile again. Back it up with the rest of `data/`.
+
 **Logs.** `data/tick.log` (scheduler decisions) and `data/exec.log` (detached
 runner and provisioning-hook output) are append-only and are rotated by the tick
 once either passes `CLAUDE_CRON_LOG_MAX` (4 MiB). Exactly one previous
@@ -630,6 +727,16 @@ chmod 600) that is embedded only in the same-origin page; cross-origin requests
 are rejected and a custom header forces a CORS preflight the server refuses — so
 no web page open in your browser can drive your agents. Every mutation shells out
 to the `claude-cron` CLI, so the bash engine stays the single source of truth.
+
+On top of that the page requires a **signed-in operator**: every endpoint but
+`/api/session` and `/api/login` refuses until there is one, and the sign-in and
+first-run screens are what you get instead. Passwords are PBKDF2-HMAC-SHA256 at
+600k rounds; the session cookie is `HttpOnly` and `SameSite=Strict`, and the table
+stores only its SHA-256 digest, so reading `app.db` hands over no live session.
+None of this defends against someone who can already run commands as you — they
+can write the database. It defends against the tab left open on an unlocked
+machine, which is the realistic way an unattended agent gets started by the wrong
+person.
 
 **Autonomous agents act with your Claude credentials.** A job with
 `permission_mode: bypassPermissions` runs tools without prompting. Give such jobs
@@ -679,6 +786,8 @@ pull request description is pre-filled from `.github/pull_request_template.md`.
 claude-cron/
 ├── bin/claude-cron            # the engine + CLI (bash)
 ├── bin/claude-cron-server     # the dashboard control server (python, stdlib)
+├── bin/worktree-lib.sh        # worktree setup, teardown and provisioning
+├── bin/provision-lib.sh       # helpers a provisioning hook sources (ports, dotenv, gitignored files)
 ├── config/
 │   ├── jobs.json              # your jobs (created from the example on install)
 │   ├── jobs.example.json      # a disabled demo job
@@ -687,7 +796,7 @@ claude-cron/
 │   ├── prechecks/<id>.sh      # one precheck per job
 │   ├── provision/<project>.{up,down}.sh   # per-repo worktree provisioning
 │   └── control.token          # dashboard secret (chmod 600, generated)
-├── data/                      # index.db, journal, logs, state — all local
+├── data/                      # index.db (derived), app.db (profile + sessions), journal, logs
 ├── skills/                    # the skills the agent loop requires, linked into ~/.claude/skills
 ├── test/round-cap.test.sh     # behavioural suite, run by `claude-cron selftest`
 ├── install.sh · uninstall.sh

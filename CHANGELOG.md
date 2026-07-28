@@ -19,6 +19,511 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The dashboard has an operator, and a way in and out.** It used to be that
+  anything reaching port 8787 got a working control panel — the token that
+  guarded the API was embedded in the page the server handed to whoever asked.
+  There is now a profile (name, email, password, avatar) in `data/app.db`, and a
+  session behind a cookie. The token still proves a request came from our own
+  page, which is the anti-CSRF gate and is unchanged; the session proves somebody
+  signed in, and every endpoint but `/api/session` refuses without one. So "sign
+  out" now removes something rather than hiding it.
+
+  The password is PBKDF2-HMAC-SHA256 at 600k rounds with a per-profile salt, and
+  the cookie is stored only as a digest — reading `app.db` hands over neither a
+  password nor a live session. There is **no reset**: nothing on the machine can
+  read the password back.
+
+  Sessions expire after 12 hours *idle*, pushed forward by every authenticated
+  call — absolute expiry would sign an operator out mid-run for nothing, on a
+  port only reachable from loopback. **Keep me signed in** stores no expiry at
+  all, and that session lives until it is signed out.
+
+  Not in `data/index.db`: that file is documented as a derived index and safe to
+  delete, and an account destroyed by a `rm` the README recommends is a trap.
+
+- **Setup happens on first open, not in the installer.** An existing install
+  never re-runs `install.sh`, so putting profile creation there would have left
+  every upgrade with no operator and no way to make one. The same screen serves a
+  fresh install and one that just pulled: no profile → nothing else is reachable
+  until name, email and a confirmed password exist. The confirmation is checked
+  on the server too — a confirmation only the page enforces is decoration, and
+  this password cannot be recovered.
+
+- **Overview opens with a line written for a person, and counters you can
+  compare.** The 24-hour panel is two columns now: what the loop did on the left,
+  what it cost on the right. Checks, woke-a-run and errors are figures with their
+  own denominator ("48% of checks", "0% error rate") instead of a sentence above
+  the chart, where a bare number sat with nothing to be read against. A
+  percentage of nothing prints as `—`, not a confident `0%` divided by an empty
+  denominator.
+
+  Above it, a greeting derived from the same tally the panel draws — one tally,
+  because two independent counts of one thing is how a page ends up contradicting
+  itself. It says what actually happened (nothing ran, everything is disabled,
+  three errors are waiting, the agents spent $110 today), and it is pinned to the
+  hour: this panel repaints every five seconds, and a line that rerolled each
+  time would read as the page glitching.
+
+- **Jobs and Runs have one filtering language instead of two.** Both pages now
+  carry the same toolbar — a search box, a dropdown per axis, Clear filters, and
+  a row of chips naming every filter that is on, each removable on its own. The
+  chip row is the part that was missing: two dropdowns reading "All projects"
+  and "Disabled" do not add up to "you are looking at a subset", and the old
+  collapsed Filters panel meant the answer to "why is this table short" was
+  behind a click. Jumping from a job to its runs now lands with that chip
+  already saying which job, rather than springing open a filter panel.
+
+  Runs keeps its date range: presets for the answer you usually want, the two
+  exact fields underneath for the one time you do not, and a single chip either
+  way — "Last 7 days" and a hand-typed range are the same filter, and two chips
+  for it would imply two.
+
+- **The project dropdown pages, and remembers.** Recent shows the last three you
+  filtered by; All projects loads five at a time as you scroll, with the footer
+  counting up as they arrive. The first page is topped up until the list
+  actually overflows its box — five rows that fit exactly leave nothing to
+  scroll, so the second page could never be asked for and the list would sit at
+  five for ever under a footer promising sixteen.
+
+- **A job card is two columns, and the precheck counts have a panel.** They were
+  a list trailing off the end of the "probed 7h ago" line — the densest thing on
+  the card, and the reason you are looking at it, tucked behind a timestamp.
+  "8 spec ready, 0 blocked" is the answer; when the probe ran is the label on it.
+
+  The card grid follows from a real minimum width rather than a fixed three
+  columns: three across a 1230px page is 380px each, which is under the width
+  where that split reads, so it silently stacked. On a wide screen it is still
+  three or four.
+
+- **A project can be starred, and starred projects sort to the top.** The star
+  is on the project card, where you are already looking at its jobs. It is
+  stored per operator in `data/app.db`, not in localStorage: favourites that
+  vanish in another browser read as data loss, not as a cache miss.
+
+- **Three destinations, three jobs to do.** The dashboard is the greeting, the
+  24-hour band and — under its own tabs — whichever list you were last reading.
+  They belong together: you see three warnings in the band, click, and the runs
+  that caused them are on the screen you were already looking at, with a chip
+  saying why the table is short. Putting a navigation step in the middle of that
+  single thought was the wrong shape.
+
+  Jobs and Runs in the sidebar are the narrowed views — that list and nothing
+  else, no band and no tabs. The dashboard's tabs move only the dashboard: they
+  are not the menu, so they no longer move the menu highlight and claim you
+  navigated when you did not.
+
+- **Projects has a page.** A table beside Jobs and Runs — name, how many jobs
+  inherit from it, the working directory, how many repos, whether runs get their
+  own worktree — sortable, searchable, with edit and delete inline on each row
+  and the favourite star where the project is. New project lives here, which
+  closes the gap left when it came off the Jobs toolbar: creating one had no
+  entry point at all.
+
+  Deleting says what it costs before it happens: a project's jobs survive it but
+  lose everything they inherited — directory, repos, account, provisioning — and
+  the confirmation counts them.
+
+- **One wizard, two dialogs.** Jobs and projects are configured the same way and
+  now behave the same way, from one implementation rather than two that drift:
+  the steps, the numbered strip, the create-walks/edit-navigates split, the
+  unsaved-changes dot and footer, the confirm-on-close, and the step marked when
+  a save is refused. The second copy of that would have been the one that
+  quietly stopped confirming a discard.
+
+- **One job editor, two modes.** Creating and editing want opposite things, so
+  the same five-step dialog behaves differently in each rather than being two
+  screens to keep in sync.
+
+  **Creating is a walk.** Five decisions in order, each narrowing the next, and a
+  half-filled job is not something the engine can run: Back and Next, the primary
+  button naming where it goes ("Next: When it runs"), validation before each
+  advance, and Create job at the end. A completed step is clickable, so a mistake
+  two steps ago costs a click rather than a cancel and a restart.
+
+  **Editing is navigation.** You already know which field you came for, so every
+  step opens immediately, there is no Back, and Save changes is always the button
+  — no walking to the end to commit one edit. Steps you have touched carry a dot
+  and the footer says "Unsaved changes", because with five steps the change you
+  made is usually not on the step you are looking at; closing with edits pending
+  asks first, including on Escape, which would otherwise drop them silently.
+
+  Required fields carry the same `*` the sign-in screen uses, the reason a save
+  or a step was refused sits beside the button that refused it, and the step at
+  fault is marked in the strip — a sentence in the footer cannot say which of the
+  five it means. Save re-checks **every** step in both modes: a field can be
+  emptied after its step was passed, and in edit mode most steps were never
+  opened at all. That last one was hiding a real fault — clearing the prompt and
+  saving used to do nothing at all, silently, because the save path only sends a
+  field it can see a value in.
+
+- **The prompt and precheck boxes can actually be resized.** Both drew a resize
+  grip and neither moved: they were flex items with a basis of `0`, so their own
+  height was ignored entirely and the inline height a drag writes did nothing —
+  a handle on a box that could not be resized. The basis is `auto` now, and the
+  pane grows past the dialog with the panes scrolling, rather than the two boxes
+  splitting a fixed budget until one hits its minimum and the handle goes dead
+  again. Their starting heights are deliberately under what fits, so `grow`
+  fills the pane exactly and no scrollbar appears until you ask for one.
+
+- **Dragging a box taller scrolls to follow it.** The browser grows the element
+  and leaves the view where it was, so the grip slides under the fold and you
+  carry on resizing something you can no longer see. The pane now keeps the
+  dragged box's bottom edge in view — downwards only, and only when the drag
+  started on the corner grip, so clicking into the middle of a textarea does not
+  yank the pane about.
+
+- **No form in either wizard hides its explanation behind a disclosure.** Six
+  `<details>` — what interactive changes, how the limits interact, which account
+  a run signs in as, when to add repos, why isolation matters, what the
+  provisioning scripts get — are now plain hints under the field they describe,
+  like every other field. A collapsed summary asks you to guess whether it is
+  worth opening; the sentence that stops you configuring something wrongly
+  should not be one click away from a field you are filling in right now.
+
+- **The job form says what each field is for.** Every field carries the sentence
+  that stops it being filled in wrongly; a label of three uppercase words could
+  not. The description is a three-line prose box rather than a single-line input
+  wearing a 170px monospace slab meant for prompts.
+
+- **Jobs has a table of its own.** Cards are for the dashboard, where you are
+  glancing at a handful; a table is for the page you opened *because* of the
+  jobs, and it sorts — by job, project, status, last run, next or today's spend.
+  Job, project, status, schedule, last run, next and today's spend, and nothing
+  else: a row carrying everything a card carries is unreadable at the twenty
+  rows where a table starts to win. The rest is one click into Edit, and New job
+  is in the toolbar.
+
+  Four flat actions per row — run, enable, edit, delete — instead of two of them
+  behind an overflow menu. In a table the row already is the list, so the menu
+  was a layer of chrome hiding half the actions; delete still confirms, which is
+  what actually keeps it off the edge of a slip.
+
+- **A sortable column now looks sortable.** The caret only inked on hover, which
+  on a trackpad means never — so the only column that appeared sortable was
+  whichever one already was, and the other five may as well not have existed.
+
+  A column with no answer for a row — never run, or disabled so never next —
+  sorts to the bottom whichever way the arrow points. Treating "never" as a very
+  large number is what put seventeen disabled jobs above the ones actually due
+  the moment you reversed the column.
+
+  The card and the table read one `jobFacts()`: two renderings of one set of
+  facts, so a "next check" cannot differ between them — a bug nobody would see
+  without opening both at once.
+
+  Relatedly, `fmtAgo` could only look backwards, so a check due in five minutes
+  rendered as "0s ago" — in the one column where the number is the entire point.
+
+- **Navigation moved into a sidebar: Overview, Jobs, Runs, Projects, Settings.**
+  Five destinations do not fit in a two-tab strip. Projects and Settings say
+  plainly that they are not built yet rather than showing an empty panel that
+  reads as a failed load. The hamburger collapses the sidebar to an icon rail on
+  a desktop and slides it off-canvas on a phone — one control, because 236px is
+  cheap on one and a quarter of the screen on the other.
+
+### Fixed
+
+- **A run you stop is `stopped`, and it is never lost.** Two separate faults, one
+  cause — the engine had no way to say "the operator decided this".
+
+  A TERM'd agent exits non-zero, so a deliberate stop was classified `error`:
+  counted in the error tile, and feeding the failure backoff, which slowed the
+  job down as punishment for a decision its owner made on purpose. `stopped` is
+  now its own status, set from a marker the stop leaves behind, and it overrides
+  the exit code precisely because a kill guarantees that code. The work is
+  untouched — the stream, the log and the turns already written stay where they
+  are; only the verdict changes, and the record carries a line saying it was
+  interrupted rather than failed.
+
+  Stopping in the seconds between claiming a slot and spawning the agent used to
+  delete the slot and write nothing at all: the row vanished from the table with
+  no run, no log and no record it had ever been asked for, which reads as the
+  dashboard losing work rather than as a stop being obeyed. The stop now signals
+  the run wrapper, whose exit path files a `stopped` record with a log body
+  explaining itself. A `journaled` breadcrumb keeps a run that reached its own
+  ending from being recorded twice.
+
+- **Every ending reads the same way: a badge, then the sentence.** `end_turn` is
+  a protocol word, not an answer — the most common way a headless run ends, and
+  printed raw it told the operator nothing and looked like a fault. The badge
+  carries the plain-English label ("Normal end") and the protocol token moves to
+  its tooltip, for whoever is matching this against a log. The scheduler's own
+  reasons take the same shape: their shouted prefix becomes the badge
+  (`STOPPED:` → "Stopped by you") and the rest becomes the sentence, so a stop
+  and a normal ending are not two different layouts to read.
+
+- **The run modal was throwing away the reason it had.** `/api/log` did not carry
+  the record's note, so when the agent log held no stop reason of its own the
+  modal showed a dash — for a run whose journal entry said, in words, exactly why
+  it ended. For anything the scheduler decided (stopped by the operator,
+  budget-limited, nothing to do) the note IS the reason.
+
+- **The model is named once.** `claude-sonnet-5 → claude-sonnet-5` drew a
+  resolution step for a job that never took one: the arrow belongs to a job
+  pinned to an ALIAS, and now only appears when the two sides actually differ. A
+  job pinned to a concrete id no longer gets "(resolved id not recorded)" either
+  — it ran that model by definition.
+
+- **The model picker groups by family and generation.** A flat list of a dozen
+  near-identical strings put the one distinction that matters — which generation
+  of which family — in the middle of each id, to be read out character by
+  character. Newest generation first, and a pinned snapshot sits under the alias
+  it pins: `claude-opus-4-20250514` used to sort above every current model in its
+  group, because the date after the family was being read as a version number
+  twenty million high.
+
+- **A run stopped before its agent started records its model and its reason.**
+  The record carried neither, so the run modal showed `—` twice — which reads as
+  missing data rather than as a run that never got far enough to have any. It now
+  names the model it would have run, and writes its log body even when the stop
+  landed before the slot had a logfile breadcrumb to write to.
+
+- **One run, one row — and one number.** The runs table draws from two sources:
+  the journal, and rows synthesized from the lock slots of runs in flight. They
+  overlap. A run writes its record and only THEN releases its slot, so for those
+  seconds it is in both — which is how stopping a run put it on screen twice,
+  `stopping…` sitting above `stopped`, and why the Runs counter briefly read one
+  too many. The journal is the record: a live slot for a run already in it is the
+  same run, already over, and the slot is merely the last thing to be cleared.
+  Everything that lists or counts runs now de-duplicates on that.
+
+- **Stop stays stopped.** A kill is not instant — the wrapper has to wind down —
+  and for those seconds the row repainted every 5s with a live stop button, so a
+  second click sent a second kill at a pid that was already dying. The run is now
+  marked stopping the moment the request succeeds: the button stays down, the
+  status says `stopping…` rather than continuing to claim it is running, and the
+  mark is dropped as soon as that pid stops being live so a reused slot is not
+  born disabled.
+
+- **Kept worktrees are a tab, not a banner that comes and goes.** A directory
+  holding the only copy of some work is not a notification — it is something you
+  have to deal with, and it has to still be there when you come back to deal with
+  it. It sits beside Jobs and Runs with the same table furniture, the count on
+  the tab in the warning colour, and Discard on every row. Previously it appeared
+  above the dashboard and vanished again the moment the sweep reached the
+  directory, which read as a glitch.
+
+  The copy no longer overstates what the server knows. It lists every run
+  directory no live run has claimed — not the ones git says hold unpushed work —
+  so a run cancelled before its agent started leaves an empty directory that
+  lands there too. That row now reads `0 B · nothing in it` instead of being
+  described as commits that exist nowhere else.
+
+- **The row separator runs all the way across.** `.rowacts` set `display:flex` on
+  a `<td>`, which takes the cell out of the table's row box: it then sizes to its
+  own content, and its border-bottom landed 36px above every other cell's. Both
+  tables had carried this from the start and it never showed, because every cell
+  in them was one line tall — the jobs table, whose first cell has a description
+  under the name, is where the step appeared. The cell is a cell again; the
+  buttons space themselves.
+
+- **The jobs table aligns, and no column swallows the slack.** `table-layout` was
+  `auto`, so the content set the minimum widths: the cap on the description
+  column was only a hint, the seven other columns added their own on top, and the
+  table came out 1106px inside a 983px box — scrolling sideways, with the actions
+  past the right edge and the header ending somewhere the rows did not. Declaring
+  only the narrow columns then left Job as the single elastic one, so it took
+  everything going: 64px in a narrow window, 730px in a wide one, where one job's
+  description ran on for half the table while six columns stayed cramped. Every
+  column is a percentage now and they hold their proportions at any width.
+
+- **The favourite star is filled, not outlined.** The icon set draws with
+  `stroke:currentColor` and the rule beside it paints the row's icons accent, so
+  an amber fill came out under a 2px indigo outline — which at 11px is neither
+  amber nor indigo but a muddy pink.
+
+- **A disabled row no longer washes out the things that carry meaning by their
+  colour.** `opacity` on the whole cell dimmed everything inside it, so the
+  status pill and the favourite star came out pale pink and pale amber — next to
+  the same pill and the same star on the dashboard, that read as two different
+  colours for one thing. The prose is muted; the pill and the star are not.
+
+- **The warnings and errors counters wrap as a pair.** "3 warnings, 0 errors" is
+  one fact about the week, and a narrow panel used to strand one of them a line
+  above the other.
+
+- **The job card's edge is a border rather than a strip laid over one.** The
+  state bar was absolutely positioned on top of the 1px border inside a 13px
+  radius, so at both left corners its square end and the border's curve did not
+  meet and the edge came out visibly broken. It is now `border-left`, which
+  cannot disagree with the border it is part of. The card border also carries the
+  accent: a board of grey rectangles reads as chrome rather than as the thing you
+  came to look at.
+
+- **The server restarts itself when its own file changes.** `dashboard.html` is
+  re-read per request but the Python is not, so a `git pull` left a new page
+  talking to old code — and the two then disagree about what the API offers. It
+  cost a real debugging round: the profile screen appeared immediately, posted an
+  op the running server had never heard of, and came back `bad id`. Every request
+  now compares the file on disk against what the process loaded and steps aside
+  for launchd, which brings it straight back on the new code.
+
+  **Every request, not one route.** The check first hung off `/api/data`, and
+  putting that route behind the session gate broke it within the hour: a
+  signed-out page polls nothing, so a stale server could never learn it was
+  stale — and the deadlock was total, because the version it was stuck on had no
+  `/api/login` to sign in with. Staleness is a property of the process.
+
+  Only when launchd is holding *this* pid. Matching the agent's label alone was
+  not enough: a server started by hand on a machine that also has the agent
+  installed saw the label, believed it was supervised, and would have exited for
+  good with nothing to bring it back.
+
+- **An element with its own `display` is not hidden by the `hidden` attribute.**
+  The author rule wins over the browser's, so the first-run screen stayed up
+  after creating the profile — the profile existed, the screen asking for it did
+  not go away, and the dashboard was unreachable. The codebase had been carrying
+  this fix one selector at a time (`.view[hidden]`, `.menu-pop[hidden]`,
+  `#bulk-all[hidden]`), which is why both new Clear-filters buttons shipped
+  visible with nothing to clear. It is now written for the button classes rather
+  than per id.
+
+- **The profile is editable.** Clicking your name, email or picture at the foot
+  of the sidebar opens a modal for all four: name, email, password and photo.
+  Sign out lives inside that same block and keeps its own click, so it does not
+  open the editor on the way out.
+
+  The photo is stored inline in the operator row as a `data:` URI rather than as
+  a file, so there is nothing to serve, nothing to name and nothing left behind
+  when it is replaced — which only stays reasonable while it is small. The page
+  centre-crops to a square, scales to 256&nbsp;px and re-encodes as JPEG before
+  uploading; a 1 MB photo lands as about 3 KB. The server enforces its own
+  ceiling and accepts only inline raster images, SVG included in what it turns
+  away: it is an image an `<img>` will render and a document that can carry a
+  `<script>`, and this column is handed back to the page.
+
+  Changing the password asks for the current one. The session is not enough on
+  its own — it may be an unattended tab — and there is no reset to fall back on.
+  Name, email and photo save without it; the three password boxes left empty
+  mean "keep the one I have". And `avatar` is tri-state on the wire (absent,
+  empty, or a URI) so that fixing a typo in a name cannot silently delete a
+  photo the form never touched.
+
+- **The dashboard no longer flashes past the login screen.** The sign-in and
+  first-run cards are raised by `applyGates()`, which cannot run until
+  `/api/session` answers — so every refresh of the login page painted the shell
+  first and swapped it a round-trip later. It looked exactly like what it was: a
+  curtain arriving after the room was already on show.
+
+  The server knows which of the three states applies while it is still writing
+  the response, so it now says so in a class on `<html>`, and CSS holds the shell
+  back and puts the right card up before a line of script has run. `applyGates()`
+  drops the class once it has the real answer. Nothing about what is *protected*
+  changed — the gate was never the overlay, it is the server refusing every
+  endpoint behind it — but a dashboard that strobes past on the way to a login
+  box invites exactly the wrong conclusion about that.
+
+- **The brand mark is the claude-cron robot.** It replaces the white line-art
+  robot in the three places that carry the mark: the top of the sidebar, the
+  sign-in card and the first-run profile card. The indigo tile behind it is
+  gone — that square existed to make white line art legible, and the logo brings
+  its own colour and silhouette.
+
+  Defined once as an SVG `<symbol>` and referenced where it is needed: its
+  gradients carry ids, so inlining the artwork three times would put three
+  `id="cc-g1"` into one document. It also moved from JavaScript into the markup,
+  so the mark is painted with the first frame instead of after the script runs.
+  The favicon is deliberately untouched.
+
+  The sign-in and first-run cards carry the full lockup — robot, wordmark and
+  tagline — since they have the width for it. The sidebar header carries a
+  compact one with no tagline, sized to the 172px the burger leaves it, and
+  falls back to the robot alone once collapsed: the rail is 48px wide and
+  nothing else fits. Both are in the markup at once and swapped by CSS, and the
+  `<h1>` stays in the document, hidden from view rather than removed, so the page
+  keeps a heading now that its words are artwork.
+
+  Each `<use>` carries the artwork's `viewBox`: without it the outer `<svg>` has
+  no intrinsic ratio, `height:auto` falls back to the 150px CSS default for a
+  replaced element, and the lockup floats in 80px of dead space above the
+  heading. The menu wordmark also draws with `currentColor` instead of the
+  near-black it shipped with, which would have been black on `#151a23` in the
+  dark theme.
+
+- **A single-repo project stops describing itself twice.** To pin its base branch
+  a project had to declare a `repos[]` row — and that row's other two fields were
+  a copy of what it had already said: the name is `basename .cwd`, the path IS
+  `.cwd`. Only the base carried information, so the form asked for the path a
+  second time to accept one new value.
+
+  That was not merely untidy. The engine picks the repo the agent starts in by
+  matching a row's path against `.cwd` as a literal string, and aborts the run
+  when none matches — so the duplicated path was the exact place a trailing slash
+  or a case difference (`/G/` and `/g/` are one directory on APFS) could kill
+  every run of a project, reported only in the tick log.
+
+  Projects now take a `base` of their own, used for the row the engine
+  synthesises when no `repos[]` is declared. Step 1 asks for it beside the
+  working directory; step 2 states that the project works in one repository and
+  offers *Several repositories…* for when a ticket really does span more, seeding
+  the first row from the cwd so the list starts valid rather than empty. Going
+  back carries the base with it. A declared row still wins over the project's
+  base, so nothing about an existing multi-repo project changes.
+
+  Projects saved the old way open in the new form with their base already in it
+  and no row to see — the row is shed on the next save. One that says anything
+  `.cwd` does not (a second repo, a custom worktree name, a path that is not the
+  cwd) keeps the list open, including a path differing only by a trailing slash:
+  that project is already broken, and silently rewriting it would hide the break
+  rather than show it. Saving a multi-repo project now also refuses a list where
+  no row matches the cwd, which is the run-time abort moved to where both paths
+  are on screen.
+
+- **Settings is hidden from the sidebar** until the page behind it exists. The
+  markup and the view stay put, and `VIEWS` drops the entry so anyone whose last
+  view was Settings is restored to the overview rather than to a blank pane with
+  no nav item to leave by.
+
+- **The repos hint contradicted itself.** It opened with "leave it empty for a
+  single-repo project" and closed with "Base is declared here, not read from the
+  checkout" — both true, but never at once: leave the list empty and the base
+  *is* read from the checkout, whatever branch it happens to be on. On a project
+  pinned to `release/*` that is the difference between cutting from the current
+  release train and cutting from `develop`, which is the one thing its agents are
+  told never to do. The hint now says which of the two you are choosing, and
+  documents the `*` suffix it never mentioned.
+
+- **Opening a project no longer claims unsaved changes it does not have — and
+  saving one no longer deletes its provisioning.** The up/down hooks are files
+  on disk rather than fields of the project, so the editor fetches them after
+  the modal is already up. The baseline for "what changed?" was taken before
+  they arrived, so every project opened already flagged as edited, with the dot
+  on Provisioning: the scripts landing in their textareas looked exactly like
+  typing.
+
+  The same gap was quietly dangerous. `provision_set` with an empty script
+  deletes the hook file, and the save sent whatever the textarea held — which,
+  in the window before the fetch resolved, was nothing. Opening a project and
+  hitting Save straight away erased both scripts. Now a hook that has not
+  loaded is held as `null`, distinct from a hook the operator genuinely
+  emptied, and a save skips it rather than writing over it; the textareas say
+  `loading…` and stay disabled until the real content is there.
+
+  A third bug in the same three lines: nothing tied a response to the project
+  that asked for it, so opening A and then B could drop A's script into B's
+  form and save it there. The response now checks it is still wanted.
+
+- **Every isolated run gets a block of ports nobody else holds.** Worktree
+  isolation settles the filesystem and says nothing about ports, which is half
+  the problem: two runs of one repo each bring up the same stack, both publish
+  5432, and the second dies on "address already in use" — a failure that reads
+  as a broken test suite and is nothing of the kind. The worktree name makes a
+  compose PROJECT unique; the published ports stay whatever the config says.
+
+  So the scheduler hands each run `CC_PORT_BASE` (a 100-port block by default),
+  allocated under a mutex against the blocks live runs hold, recorded in the
+  slot so it is released exactly when the slot is. A dead slot's block goes
+  straight back into the pool — otherwise the pool shrinks by one for every run
+  that ever ended.
+
+  `bin/provision-lib.sh` turns that into numbers: `cc_port NAME` for one port,
+  `cc_env_ports .env` to move every `*_PORT` a dotenv already declares into the
+  run's block, and `cc_copy_ignored` for the files a fresh worktree cannot have
+  because they are gitignored. None of it is Docker-specific — this is the
+  general shape of "two copies of one stack at once", which every project that
+  isolates eventually meets. `CLAUDE_CRON_PORT_RANGE_START`, `_SPAN` and
+  `_BLOCKS` move the range if 21000 is taken.
+
 - **A repo's base branch can be a pattern** — `release/*` resolves to the
   highest-*versioned* matching branch, so a project that ships through release
   trains is configured once instead of edited every release. Sorted by version and
