@@ -19,6 +19,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A precheck can tell "no work" apart from "I cannot see the work"**
+  (`bin/board-probe.sh`). Both used to end the same way — zero keys and the line
+  "nothing to do" — so a fleet whose Jira access had broken filed itself as idle,
+  indefinitely, and the tick chart and the greeting agreed with it. Observed for
+  real: a token that authenticates but is scoped away from the project makes the
+  search endpoint answer `200 {"issues":[]}`, a valid empty answer, while 49
+  tickets sit on the board. `bp_board_visible` now proves both halves —
+  credentials AND the project — before absence of work is reported at all, and
+  `bp_search` returns non-zero for a query that failed rather than passing it off
+  as a quiet one. A precheck that cannot look now says so instead of saying there
+  was nothing to see.
+
 - **The dashboard has an operator, and a way in and out.** It used to be that
   anything reaching port 8787 got a working control panel — the token that
   guarded the API was embedded in the page the server handed to whoever asked.
@@ -222,6 +234,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cheap on one and a quarter of the screen on the other.
 
 ### Fixed
+
+- **A run's transcript is no longer deleted when nothing was stored.** A
+  37-minute, $7.27 reviewer run had no timeline, no answer and no terminal, and
+  was filed as success. Two defects combined: the artifact reader wrapped four
+  reads in one `try/except` with a bare `pass`, so a single undecodable byte
+  anywhere in a multi-megabyte stream returned four empty strings silently; and
+  the pruner then deleted the files unconditionally, treating an empty row as
+  proof there had been nothing to keep. Artifacts are now read per file, as bytes
+  decoded with `errors="replace"` — a mangled character costs a character, not a
+  run — and pruning checks what actually landed in the database first, keeping
+  the files and saying so on stderr when the answer is nothing.
+
+- **A tick that found the job busy no longer reads as a configuration ceiling.**
+  The loop band labelled it "at its parallel limit", which with `max_parallel: 1`
+  — the common case — sounds like a limit worth raising, when all it means is
+  that the previous run had not finished. It now says "already running", which is
+  true at every limit.
 
 - **A run you stop is `stopped`, and it is never lost.** Two separate faults, one
   cause — the engine had no way to say "the operator decided this".

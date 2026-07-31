@@ -486,6 +486,13 @@ SCHEMA_VERSION = "5"   # bumped to backfill model_id from stored streams
 STREAM_CAP = 2_000_000
 
 
+def _log(msg):
+    """One line to stderr — launchd captures it. Used where staying silent would
+    hide the loss of something irreplaceable."""
+    sys.stderr.write(f"claude-cron-server: {msg}\n")
+    sys.stderr.flush()
+
+
 def db_init(conn):
     conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
     conn.execute("""CREATE TABLE IF NOT EXISTS runs (
@@ -538,21 +545,37 @@ def _artifact_paths(rec):
 
 
 def _read_artifacts(rec):
-    art = {"result_json": "", "stream": "", "precheck_txt": "", "stderr": ""}
+    """Read a run's on-disk artifacts. Never raises, and never lies about it.
+
+    `art["_read_failed"]` is the load-bearing part: whatever goes wrong here, the
+    caller must know it read nothing, because the next step deletes these files.
+    This used to be one try/except around all four reads with a bare `pass`, so a
+    single undecodable byte in a 20 MB stream returned four empty strings — and
+    ingestion then stored the emptiness and pruned the originals. A 37-minute,
+    $7.27 run was erased that way, and reported success. Read as bytes and decode
+    with errors="replace": a mangled character costs a character, not a run.
+    """
+    art = {"result_json": "", "stream": "", "precheck_txt": "", "stderr": "",
+           "_read_failed": False}
     ap = _artifact_paths(rec)
     if not ap:
         return art
-    try:
-        if ap["json"].exists():
-            art["result_json"] = ap["json"].read_text()[:200_000]
-        if ap["stream"].exists():
-            art["stream"] = ap["stream"].read_text()[:STREAM_CAP]
-        if ap["precheck"].exists():
-            art["precheck_txt"] = ap["precheck"].read_text()[:20_000]
-        if ap["err"].exists():
-            art["stderr"] = ap["err"].read_text()[:20_000]
-    except Exception:
-        pass
+
+    def slurp(path, cap):
+        # Per-file, so one bad artifact cannot take the others down with it.
+        try:
+            if not path.exists():
+                return ""
+            return path.read_bytes()[:cap].decode("utf-8", errors="replace")
+        except Exception as exc:                       # noqa: BLE001 — reported, not swallowed
+            art["_read_failed"] = True
+            _log(f"ingest: could not read {path}: {exc!r}")
+            return ""
+
+    art["result_json"] = slurp(ap["json"], 200_000)
+    art["stream"] = slurp(ap["stream"], STREAM_CAP)
+    art["precheck_txt"] = slurp(ap["precheck"], 20_000)
+    art["stderr"] = slurp(ap["err"], 20_000)
     return art
 
 
@@ -666,8 +689,22 @@ def _upsert(conn, fts, rec, preserve=None):
 
 
 def _finish_prune(conn, pending):
-    """After content is safely stored, delete the bulky files and mark rows."""
+    """Delete a run's files only once its content is provably in the database.
+
+    "Provably" is the whole point: pruning is irreversible, so an empty row is a
+    reason to KEEP the files, not to trust that there was nothing to keep. A run
+    that produced turns and cost but stored no stream did not have nothing to say
+    — something went wrong reading it, and the file on disk is the only remaining
+    copy.
+    """
     for key, rec in pending:
+        row = conn.execute(
+            "SELECT length(coalesce(result_json,'')) + length(coalesce(stream,''))"
+            " FROM runs WHERE key=?", (key,)).fetchone()
+        stored = row[0] if row else 0
+        if not stored:
+            _log(f"ingest: keeping artifacts for {key} — nothing was stored for it")
+            continue
         _prune_artifacts(rec)
         conn.execute("UPDATE runs SET pruned=1 WHERE key=?", (key,))
 
