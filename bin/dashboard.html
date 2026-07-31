@@ -345,8 +345,8 @@ td .projtag .ic{width:12px;height:12px;color:var(--accent)}
 /* ------------------------------------------------------------ the loop band
    The product is a loop, so the top of the page is the loop's last 24 hours
    rather than six tiles of mostly zeros. One column per 15 minutes, stacked by
-   what the scheduler decided: woke a run, found nothing, hit a cap, was at its
-   parallel limit, or could not probe at all. */
+   what the scheduler decided: woke a run, found nothing, hit a cap, was already
+   running, or could not probe at all. */
 /* `pulsepanel`, not `pulse`: the running badge's dot is a `.pulse` too, and a
    bare `.pulse` here dressed that 8px dot in this panel's padding and border. */
 .pulsepanel{background:var(--panel);border:1px solid var(--line);border-radius:14px;
@@ -3319,7 +3319,11 @@ const TICK_KINDS=[
   ["woke",   "started a run"],
   ["idle",   "nothing to do"],
   ["capped", "daily cap reached"],
-  ["blocked","at its parallel limit"],
+  // Not "at its parallel limit": with max_parallel=1 — the common case — that
+  // reads as a ceiling the operator should consider raising, when all it means
+  // is that the previous run had not finished. "Already running" is true at
+  // every limit and says the thing the operator actually needs to know.
+  ["blocked","already running"],
   ["failed", "could not run"],
 ];
 const clockAt=(sec)=>new Date(sec*1000)
