@@ -4579,7 +4579,15 @@ function renderLog(d){
   }).join("");
   const termPane = '<div class="termwrap">'
     + '<div class="term" id="term-body">'
-    +   (termRows || '<span class="t-sys">Waiting for the first turn…</span>')
+    +   (termRows || '<span class="t-sys">'
+          // A finished run with no rows has nothing to wait for. Saying "waiting"
+          // reads as "still going" and hides a real failure: the transcript was
+          // lost, not delayed.
+          + (d.live ? 'Waiting for the first turn…'
+                    : 'No transcript was captured for this run. It finished, and its cost '
+                      + 'and turn count were recorded, but the log could not be read back — '
+                      + 'so there is nothing to replay here.')
+          + '</span>')
     +   (d.live?'<div class="row"><span class="t-sys">▍</span></div>':'')
     + '</div>'
     + (d.live && d.interactive
