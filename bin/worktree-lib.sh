@@ -348,39 +348,51 @@ wt_setup() { # <id> <project> <canonical_cwd> <stamp> [port_base]
   printf '%s\n' "$primary"
 }
 
-# 0 = this run dir holds work that must be preserved. ALL-OR-NOTHING: if any one
-# repo has uncommitted changes, or commits that exist on no remote, the whole run
-# dir stays. Removing some repos of a run and keeping others produces a half-run
-# nobody can reason about.
-wt_unsafe_to_remove() { # <run dir>
-  local run_dir="${1:-}" mf="${1:-}/.run.json" wt head fork snap
+# 0 = this run produced work that exists on no remote, and prints a one-line
+# description of what and where. 1 = everything the agent made was delivered.
+#
+# This used to decide whether the run dir survived, and that was the wrong job
+# for it. A directory kept because it holds unpushed commits is a directory
+# nothing can ever release: the sweep re-reaches the same verdict every tick, and
+# only a human clicking Discard ends it. Worse, a resume never got it back — it
+# cut a fresh worktree from the base — so the work was preserved for nobody.
+#
+# The question is still the right question. Its answer belongs in the run's
+# STATUS: a run that ended with commits no remote knows about did not deliver,
+# and that is a failure the operator should see on the card, not a folder they
+# have to find. Push is the delivery channel; not pushing is a failed run.
+wt_undelivered_work() { # <run dir> -> 0 and a description, or 1
+  local run_dir="${1:-}" mf="${1:-}/.run.json" wt head fork snap name found=""
   [ -d "$run_dir" ] || return 1
   while IFS= read -r wt; do
     [ -n "$wt" ] || continue
-    # Dirty compared to the END OF PROVISIONING → the agent wrote something → keep.
-    # Compared to a pristine checkout it is always dirty: the hook just copied a
-    # .env and a vendor/ in. With no snapshot (setup died before provisioning)
-    # fall back to the strict reading and keep anything dirty at all.
+    name="$(basename "$wt")"
+    # Dirty compared to the END OF PROVISIONING, not to a pristine checkout:
+    # the hook just copied a .env and a vendor/ in, and calling that the agent's
+    # work marks every single run as undelivered. With no snapshot (setup died
+    # before provisioning) fall back to the strict reading.
     snap=""
     [ -f "$mf" ] && snap="$("$JQ" -r --arg w "$wt" \
         '.repos[] | select(.worktree==$w) | .dirt_sha // ""' "$mf" 2>/dev/null)"
     if [ -n "$snap" ]; then
-      [ "$(wt_dirt_sha "$wt")" != "$snap" ] && return 0
+      [ "$(wt_dirt_sha "$wt")" != "$snap" ] && found="$found, uncommitted changes in $name"
     else
-      [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ] && return 0
+      [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ] \
+        && found="$found, uncommitted changes in $name"
     fi
     head="$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
     [ -n "$head" ] || continue
     fork=""
     [ -f "$mf" ] && fork="$("$JQ" -r --arg w "$wt" \
         '.repos[] | select(.worktree==$w) | .fork_sha' "$mf" 2>/dev/null)"
-    # No new commits since the fork point → nothing was made here → safe.
+    # No new commits since the fork point → nothing was made here.
     [ -n "$fork" ] && [ "$fork" = "$head" ] && continue
-    # New commits exist: safe only if they already live on some remote branch.
+    # New commits exist: delivered only if they already live on some remote.
     [ -n "$(git -C "$wt" branch -r --contains "$head" 2>/dev/null)" ] && continue
-    return 0   # new local commits, on no remote → preserve
+    found="$found, unpushed commits in $name"
   done < <(wt_run_worktrees "$run_dir")
-  return 1
+  [ -n "$found" ] || return 1
+  printf '%s\n' "${found#, }"
 }
 
 # Finish a run's directory: `down` for every repo (in reverse declaration order,
@@ -408,7 +420,7 @@ wt_teardown() { # <id> <project> <run dir>
     done < <("$JQ" -r '.repos | reverse | .[] | [.name,.canonical,.worktree,.base] | @tsv' \
                 "$mf" 2>/dev/null)
   fi
-  if wt_unsafe_to_remove "$run_dir"; then
+  if wt_undelivered_work "$run_dir" >/dev/null; then
     log_tick "$id: run dir kept — unpushed or uncommitted work at $run_dir"
     return 0
   fi
@@ -418,7 +430,7 @@ wt_teardown() { # <id> <project> <run dir>
 # Take a run dir off disk unconditionally, leaving git with no stale worktree
 # registrations. Split out of wt_teardown so an explicit, human-initiated drop
 # can reuse exactly the same removal — the ONLY difference being that it does
-# not consult wt_unsafe_to_remove first.
+# not consult wt_undelivered_work first.
 wt_remove_all() { # <run dir>
   local run_dir="${1:-}" wt main
   [ -n "$run_dir" ] && [ -d "$run_dir" ] || return 0

@@ -249,6 +249,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a desktop and slides it off-canvas on a phone — one control, because 236px is
   cheap on one and a quarter of the screen on the other.
 
+### Changed
+
+- **A run that ends with work on no remote is reported, not filed away.**
+  `wt_unsafe_to_remove` is now `wt_undelivered_work`: it asks the same question —
+  are there commits or changes here that exist nowhere else? — but its answer no
+  longer decides what stays on disk. It decides the run's status. Keeping the
+  directory preserved the work for nobody: a resume cuts a fresh worktree from
+  the base, so the folder was never handed back to anyone, and only a human
+  clicking Discard ever ended it. The run now finishes `warning` with
+  `UNDELIVERED: unpushed commits in api` on the card. Push is the delivery
+  channel, and not pushing is a run that did not deliver.
+
 ### Fixed
 
 - **A run directory removed by hand no longer wedges its canonical checkout.**

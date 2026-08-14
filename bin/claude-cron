@@ -1228,6 +1228,18 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   declared ""
   want "an empty final message is NOT a finished run"                1 $?
 
+  echo "undelivered_note() — the note names what was left behind and how to continue"
+  got="$(undelivered_note "unpushed commits in api")"
+  case "$got" in
+    "UNDELIVERED: unpushed commits in api."*)
+      ok "it leads with the marker the dashboard matches on, then the finding" ;;
+    *) bad "the note read '$got'" ;;
+  esac
+  case "$got" in
+    *"resume this run"*) ok "and points at the one action that continues the work" ;;
+    *) bad "the note never says how to continue: '$got'" ;;
+  esac
+
   echo "killed runs report what they consumed"
   printf '%s\n' \
     '{"type":"system","subtype":"init","session_id":"s"}' \
@@ -1421,7 +1433,7 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     wt_setup j2 two "$tmp/g/repo" stampC ) >/dev/null 2>&1
   ( cd "$rd2/two" && echo work > new.txt && git add new.txt && $gitc commit -qm work ) >/dev/null 2>&1
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
-    wt_unsafe_to_remove "$rd2" ) >/dev/null 2>&1
+    wt_undelivered_work "$rd2" ) >/dev/null 2>&1
   want "an unpushed commit in one repo preserves the whole run" 0 $?
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
     wt_teardown j2 two "$rd2" ) >/dev/null 2>&1
@@ -1439,7 +1451,7 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     || bad "down ran $got times for 2 repos"
   rm -f "$tmp/cfg/provision/two.down.sh"
 
-  echo "wt_unsafe_to_remove() — what provisioning left behind is not the agent's work"
+  echo "wt_undelivered_work() — what provisioning left behind is not the agent's work"
   printf '%s\n' '#!/usr/bin/env bash' 'echo residue > provisioned.txt' \
     > "$tmp/cfg/provision/two.up.sh"
   local rd3="$tmp/wtroot/j4/stampE"
@@ -1447,12 +1459,16 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     wt_setup j4 two "$tmp/g/repo" stampE ) >/dev/null 2>&1
   [ -f "$rd3/one/provisioned.txt" ] && ok "the hook's untracked file is there" || bad "hook wrote nothing"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
-    wt_unsafe_to_remove "$rd3" ) >/dev/null 2>&1
-  want "provisioning residue alone does NOT preserve a run" 1 $?
+    wt_undelivered_work "$rd3" ) >/dev/null 2>&1
+  want "provisioning residue alone is NOT undelivered work" 1 $?
   echo "the agent was here" > "$rd3/two/agent.txt"
-  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
-    wt_unsafe_to_remove "$rd3" ) >/dev/null 2>&1
-  want "a file the agent added after provisioning DOES preserve it" 0 $?
+  got="$( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+          wt_undelivered_work "$rd3" )"
+  want "a file the agent added after provisioning IS undelivered work" 0 $?
+  case "$got" in *"uncommitted changes in two"*)
+      ok "and it names the repo it is in" ;;
+    *) bad "the description was '$got'" ;;
+  esac
   rm -f "$tmp/cfg/provision/two.up.sh"
 
   echo "boot_id() — an opaque per-boot identity, stable within one boot"
@@ -2337,6 +2353,14 @@ cmd_resolve_models() { # refresh the family→id cache (all four families)
   done
 }
 
+# What a run that delivered nothing tells the operator. Split out of the
+# classifier so the selftest can assert its shape rather than a whole run's:
+# a marker the dashboard can match on, the finding, and the one action that
+# continues the work.
+undelivered_note() { # undelivered_note <description>
+  printf 'UNDELIVERED: %s. The run made changes that exist on no remote, so nothing was handed over — push the branch, or resume this run to finish it, before treating the ticket as done.' "$1"
+}
+
 run_job() { # run_job <id> [--force] [resume-session-id]
   # A RESUME picks the failed run's own session back up (`claude --resume <sid>`)
   # instead of starting the job afresh: same task, same conversation, continuing
@@ -2877,6 +2901,21 @@ If the work turns out to be already finished, or it can no longer be done at all
           | grep -qE '(RUN COMPLETE|NOTHING TO DO|BLOCKED):'; then
     wdreason="UNDECLARED ENDING: the agent stopped without saying its run was finished (no 'RUN COMPLETE:', 'NOTHING TO DO:' or 'BLOCKED:' line), which is what a run cut off mid-task looks like. Do NOT assume the ticket is done — check the branch, the PR and the ticket, and resume this run to continue with its context."
     status="warning"
+  fi
+
+  # A run that produced commits or changes no remote knows about handed nothing
+  # over. It used to be answered by keeping the run directory on disk for ever,
+  # which preserved the work for nobody: a resume cuts a fresh worktree, so the
+  # only thing that folder ever did was fill the disk and wait for a human. Push
+  # is the delivery channel; failing to use it is a failed run, and it belongs on
+  # the card. A warning, not an error: the agent may have been cut off mid-task,
+  # and a resume is the right next move rather than a backoff.
+  if [ -n "$run_dir" ] && [ "$status" != "error" ]; then
+    local undelivered
+    if undelivered="$(wt_undelivered_work "$run_dir")"; then
+      wdreason="$(undelivered_note "$undelivered")"
+      status="warning"
+    fi
   fi
 
   # "Ran out of money mid-task" looks EXACTLY like "finished the job": the agent
