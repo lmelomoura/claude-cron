@@ -743,6 +743,18 @@ run_cleanup() { # <id> <slot-dir>
     # The job's cwd is not needed: teardown finds each repo's canonical checkout
     # through wt_main_of, which works even for a run dir built from repos the
     # job itself never names.
+    #
+    # A run that never reached its own classifier — killed, crashed, the machine
+    # went down — left no marker. Default it to `open`: its session may still be
+    # resumable, and Task 8's TTL is what ends it if nobody comes back. Only a
+    # run the operator stopped on purpose is closed here.
+    if [ ! -f "$wt/.ended" ]; then
+      if [ -f "$slot/stopped" ]; then
+        printf 'done\n' > "$wt/.ended" 2>/dev/null || true
+      else
+        printf 'open\n' > "$wt/.ended" 2>/dev/null || true
+      fi
+    fi
     wt_teardown "$id" "$project" "$wt"
   fi
   release_slot "$slot"
@@ -1133,7 +1145,15 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   # so a case that let `stopped` back in by being listed FIRST would still
   # read as `ok`. Only an exact compare catches every position it could be
   # inserted at, not just appended.
-  guard_line="$(printf '%s\n' "$got" | grep -A1 'case "\$status" in' | tail -1 \
+  #
+  # head -2, not a bare tail -1 over the whole -A1 output: run_job carries a
+  # SECOND `case "$status" in` below this one (Task 6's done/open marker,
+  # written once the status above is final). A bare tail -1 would silently
+  # start reading THAT guard the moment it existed — the wrong statement, not
+  # a missing one, so this assertion would keep passing while checking
+  # nothing it claims to. Anchoring on the FIRST match is what keeps it
+  # pinned to the rule it names, however many more get added after it.
+  guard_line="$(printf '%s\n' "$got" | grep -A1 'case "\$status" in' | head -2 | tail -1 \
                   | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
   [ "$guard_line" = "success|warning)" ] \
     && ok "and its guard covers success/warning only, never a stopped run" \
@@ -1459,35 +1479,46 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   unset tmp_down_log
   rm -f "$tmp/cfg/provision/two.up.sh" "$tmp/cfg/provision/two.down.sh"
 
-  echo "wt_teardown() — down runs, and unpushed work in ANY repo preserves the run"
-  printf '%s\n' '#!/usr/bin/env bash' 'echo "$CC_REPO_NAME" >> "$CC_RUN_DIR/down.log"' \
+  echo "wt_teardown() — a finished session's dir goes, whatever is in it"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo down >> "$CC_RUN_DIR/../down.count"' \
     > "$tmp/cfg/provision/two.down.sh"
-  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
-    wt_teardown j2 two "$rd" ) >/dev/null 2>&1
-  [ ! -d "$rd" ] && ok "a clean run dir is removed" || bad "clean run dir survived"
-
+  chmod +x "$tmp/cfg/provision/two.down.sh"
+  rm -f "$tmp/wtroot/j2/down.count"
   local rd2="$tmp/wtroot/j2/stampC"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
     wt_setup j2 two "$tmp/g/repo" stampC ) >/dev/null 2>&1
-  ( cd "$rd2/two" && echo work > new.txt && git add new.txt && $gitc commit -qm work ) >/dev/null 2>&1
-  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
-    wt_undelivered_work "$rd2" ) >/dev/null 2>&1
-  want "an unpushed commit in one repo preserves the whole run" 0 $?
+  echo "work nobody else has" > "$rd2/one/agent.txt"
+  echo done > "$rd2/.ended"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
     wt_teardown j2 two "$rd2" ) >/dev/null 2>&1
-  [ -d "$rd2/one" ] && ok "the clean sibling is kept too (all or nothing)" || bad "sibling was removed"
-  got="$(sort -u "$rd2/down.log" 2>/dev/null | tr '\n' ' ')"
-  [ "$got" = "one two " ] && ok "down ran for every repo even though the run was kept" \
-    || bad "down.log held '$got'"
-  # A preserved run dir is swept again on every tick. Without a marker, `down`
-  # re-runs for ever -- a `docker compose down -v` a minute, for as long as the
-  # unpushed work sits there.
+  [ ! -d "$rd2" ] \
+    && ok "a done session is removed even holding work on no remote" \
+    || bad "a done session's dir survived"
+  got="$(wc -l < "$tmp/wtroot/j2/down.count" 2>/dev/null | tr -d ' ')"
+  [ "${got:-0}" -eq 2 ] && ok "down ran once per repo" || bad "down ran $got times for 2 repos"
+
+  echo "wt_teardown() — an open session is kept, and its down is NOT run"
+  rm -f "$tmp/wtroot/j2/down.count"
+  local rd5="$tmp/wtroot/j2/stampO"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
-    wt_teardown j2 two "$rd2" ) >/dev/null 2>&1
-  got="$(wc -l < "$rd2/down.log" 2>/dev/null | tr -d ' ')"
-  [ "$got" = "2" ] && ok "down runs ONCE per run dir, however often teardown is called" \
-    || bad "down ran $got times for 2 repos"
-  rm -f "$tmp/cfg/provision/two.down.sh"
+    wt_setup j2 two "$tmp/g/repo" stampO ) >/dev/null 2>&1
+  echo open > "$rd5/.ended"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_teardown j2 two "$rd5" ) >/dev/null 2>&1
+  [ -d "$rd5" ] && ok "an open session keeps its tree" || bad "an open session was removed"
+  [ ! -f "$tmp/wtroot/j2/down.count" ] \
+    && ok "and its services are left up for the resume" \
+    || bad "down tore down a session that is still open"
+
+  echo "wt_teardown() — a dir with no marker is treated as done"
+  local rd6="$tmp/wtroot/j2/stampN"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup j2 two "$tmp/g/repo" stampN ) >/dev/null 2>&1
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_teardown j2 two "$rd6" ) >/dev/null 2>&1
+  [ ! -d "$rd6" ] && ok "a run that died before marking anything is reclaimed" \
+    || bad "an unmarked dir was kept, which is the old leak"
+  rm -f "$tmp/cfg/provision/two.down.sh" "$tmp/wtroot/j2/down.count"
 
   echo "wt_undelivered_work() — what provisioning left behind is not the agent's work"
   printf '%s\n' '#!/usr/bin/env bash' 'echo residue > provisioned.txt' \
@@ -1858,17 +1889,17 @@ NASTY
   [ "$got" = "3.750000" ] && ok "a truncated first line is ignored" || bad "with a cut line -> '$got'"
 
   echo "cmd_worktree_drop() — a retained run dir can be discarded on purpose"
-  # wt_teardown deliberately KEEPS a run dir holding unpushed work, and the
-  # sweep then re-examines it every tick for ever. Nothing could ever let go of
-  # it, so the only exit was rm -rf by hand.
+  # wt_teardown deliberately KEEPS an open session (a run cut short, waiting on
+  # a resume), and the sweep then re-examines it every tick for ever until one
+  # comes. Nothing could ever let go of it on its own, so the only exit is
+  # rm -rf by hand.
   local rd4="$tmp/wtroot/j7/stampF"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
     wt_setup j7 two "$tmp/g/repo" stampF ) >/dev/null 2>&1
-  ( cd "$rd4/two" && echo keep > unpushed.txt && git add unpushed.txt \
-      && $gitc commit -qm keep ) >/dev/null 2>&1
+  echo open > "$rd4/.ended"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
     wt_teardown j7 two "$rd4" ) >/dev/null 2>&1
-  [ -d "$rd4" ] && ok "unpushed work is still preserved by the normal path" || bad "teardown removed it"
+  [ -d "$rd4" ] && ok "an open session is still preserved by the normal path" || bad "teardown removed it"
 
   mkdir -p "$tmp/locks/j7/888"; echo $$ > "$tmp/locks/j7/888/pid"
   echo "$rd4" > "$tmp/locks/j7/888/worktree"
@@ -2989,6 +3020,16 @@ If the work turns out to be already finished, or it can no longer be done at all
       ;;
   esac
 
+  # The session's fate, written where teardown can read it. A run that reached a
+  # declared ending is over and its tree can go; anything else may be picked up
+  # by a resume, and the resume needs this exact directory.
+  if [ -n "$run_dir" ] && [ -d "$run_dir" ]; then
+    case "$status" in
+      success) printf 'done\n' > "$run_dir/.ended" 2>/dev/null || true ;;
+      *)       printf 'open\n' > "$run_dir/.ended" 2>/dev/null || true ;;
+    esac
+  fi
+
   # Consecutive failures drive the backoff (see backoff_multiplier). A warning
   # is NOT a failure: the run worked, it just wants a look — slowing those down
   # would throttle the very jobs that are doing their job.
@@ -3518,9 +3559,10 @@ cmd_set_field() { # cmd_set_field <id> <field> ; value on stdin
   echo "$field updated for $id"
 }
 
-# A run dir that wt_teardown decided to keep (it holds unpushed or uncommitted
-# work) is preserved for ever: the sweep re-examines it every tick and always
-# reaches the same conclusion. Nothing could release it, so the only way out was
+# A run dir that wt_teardown decided to keep (marked `open` — the session was
+# cut short and a resume has not claimed it) is preserved for as long as that
+# stands: the sweep re-examines it every tick and always reaches the same
+# conclusion. Nothing releases it on its own, so the only way out meanwhile is
 # rm -rf by hand — and because nothing listed them either, they were invisible
 # until the disk filled. This is the deliberate way to let one go.
 cmd_worktree_drop() { # cmd_worktree_drop <job-id> <stamp>

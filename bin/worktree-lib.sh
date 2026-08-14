@@ -395,23 +395,32 @@ wt_undelivered_work() { # <run dir> -> 0 and a description, or 1
   printf '%s\n' "${found#, }"
 }
 
-# Finish a run's directory: `down` for every repo (in reverse declaration order,
-# while the worktrees still exist), then remove them if that is safe.
+# Finish a run's directory. The question is whether the SESSION is done, and it
+# has exactly one right answer per state:
 #
-# `down` runs even when the run dir is preserved: whatever the hook registered
-# outside the directory -- a herd site, a compose stack -- has to be released
-# when the run ends, whether or not a human still wants the files.
+#   done    -> `down` for every repo (reverse declaration order, while the trees
+#              still exist), then remove. UNCONDITIONALLY: a session that is over
+#              is not coming back for its files, and anything it failed to
+#              deliver was already reported on the run (wt_undelivered_work).
+#   open    -> keep the tree AND leave the services up. The run was cut short and
+#              a resume will continue in this very directory, so tearing the
+#              stack down here would hand the resumed agent a provisioned tree
+#              with nothing running behind it.
 #
-# No manifest means setup never got as far as provisioning, so there is nothing
-# to take down; the worktrees are still removed.
+# No marker means the run died before it could write one — that is `done`. The
+# old default was the opposite, and it is what made this leak: every crash left a
+# directory nothing could ever release.
+#
+# `.down` still guards `down` from running twice, because an open session is
+# swept again on every tick.
 wt_teardown() { # <id> <project> <run dir>
   local id="${1:-}" project="${2:-}" run_dir="${3:-}" mf="${3:-}/.run.json"
-  local name repo wt base main
+  local name repo wt base ended
   [ -n "$run_dir" ] && [ -d "$run_dir" ] || return 0
-  # ONCE per run dir. A preserved run dir is swept again on every tick, and
-  # `down` is not a query: re-running it would take the same compose stack down
-  # every minute for as long as the unpushed work sits there. The marker lives
-  # in the run dir, so it disappears exactly when the run does.
+  ended="$(cat "$run_dir/.ended" 2>/dev/null || true)"
+  if [ "$ended" = "open" ]; then
+    return 0
+  fi
   if [ -f "$mf" ] && [ ! -f "$run_dir/.down" ]; then
     : > "$run_dir/.down"
     while IFS="$(printf '\t')" read -r name repo wt base; do
@@ -419,10 +428,6 @@ wt_teardown() { # <id> <project> <run dir>
       wt_provision down "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base" || true
     done < <("$JQ" -r '.repos | reverse | .[] | [.name,.canonical,.worktree,.base] | @tsv' \
                 "$mf" 2>/dev/null)
-  fi
-  if wt_undelivered_work "$run_dir" >/dev/null; then
-    log_tick "$id: run dir kept — unpushed or uncommitted work at $run_dir"
-    return 0
   fi
   wt_remove_all "$run_dir"
 }

@@ -251,6 +251,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Teardown asks whether the session is done, not whether the tree looks
+  precious.** A run directory was kept when git said it held work that existed
+  nowhere else — a verdict the sweep re-reached every tick, so nothing ever
+  released it, and one only a human could end. Directories are now marked with
+  how their run ended: a finished session is torn down and removed
+  unconditionally, and a run cut short is kept **with its services still up**,
+  because the resume continues in that same directory and would otherwise get a
+  provisioned tree with nothing running behind it. A run that died before
+  marking anything counts as finished, which is the case the old default got
+  backwards: every crash used to leave a folder nothing could reclaim.
+
 - **A run that ends with work on no remote is reported, not filed away.**
   `wt_unsafe_to_remove` is now `wt_undelivered_work`: it asks the same question —
   are there commits or changes here that exist nowhere else? — but its answer no
