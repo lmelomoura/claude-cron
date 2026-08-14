@@ -267,6 +267,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Provisioning hooks must therefore tolerate being run twice on the same tree —
   `cc_copy_ignored`, `cc_env_ports`, `herd link` and `compose up -d` all do.
 
+  Two `claude-cron resume` calls for the same session — a double click, a
+  retried automation — used to both reach this point and both launch an agent
+  into the same tree: nothing stopped them, and `max_parallel` does not help
+  since it defaults to 3. A resume now claims its tree under a lock, checking
+  whether another live run already holds it *before* writing its own slot's
+  breadcrumb (checking after would make it see its own claim and refuse
+  itself) — a second, concurrent resume is refused instead, cleanly, with
+  nothing written for it to clash with, and with its own start time and status
+  recorded rather than the previous attempt's left in place.
+
+  A manifest whose `primary` field is empty — missing, unparseable, or from
+  before this field existed — used to pass the worktree-exists check anyway:
+  an empty name turns it into `-d "$run_dir/"`, and the run dir itself always
+  exists. The resume would then launch its agent with its cwd set to the
+  folder holding the worktrees, not to a checkout. An empty primary is now
+  refused explicitly, the same way a missing directory already was.
+
+  A freshly allocated port block — the manifest predates this field, or could
+  not be read — is now written back into the manifest, not just handed to the
+  environment: the orphan sweep's `down` reads the block from there first,
+  with no ambient `CC_PORT_BASE` to fall back on, and a block that was only
+  ever in the environment would leave it releasing ports this run never took.
+
 - **Teardown asks whether the session is done, not whether the tree looks
   precious.** A run directory was kept when git said it held work that existed
   nowhere else — a verdict the sweep re-reached every tick, so nothing ever

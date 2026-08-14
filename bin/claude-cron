@@ -1591,17 +1591,111 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     || bad "found '$got'"
   got="$( WORKTREES_DIR="$tmp/wtroot"; wt_find_by_session jR sess-nope )"
   [ -z "$got" ] && ok "an unknown session finds nothing" || bad "found '$got'"
-  # Asked BEFORE jR closes its session, while stampS1 is still open and would be
-  # a real match for jR. Asked afterwards, a lookup that ignored the job id and
-  # searched every job's directory would ALSO find nothing here -- by then
+  # Two things have to be true for this to test anything.
+  #
+  # Asked BEFORE jR closes its session, while stampS1 is still open and would
+  # be a real match for jR. Asked afterwards, a lookup that ignored the job id
+  # and searched every job's directory would ALSO find nothing here -- by then
   # nothing open exists anywhere for it to wrongly return -- and this assertion
   # would pass whether or not job scoping was implemented at all.
+  #
+  # And jOther's directory has to EXIST. If it does not, `wt_find_by_session`'s
+  # own `[ -d "$WORKTREES_DIR/$id" ]` early return is what answers empty, and a
+  # DIFFERENT bug -- a scoping check that lets the id through but then globs
+  # every job's directory instead of just this one's -- would never even be
+  # reached, let alone caught.
+  mkdir -p "$tmp/wtroot/jOther"
   got="$( WORKTREES_DIR="$tmp/wtroot"; wt_find_by_session jOther sess-xyz )"
   [ -z "$got" ] && ok "another job's session is never returned" || bad "found '$got'"
   echo done > "$tmp/wtroot/jR/stampS1/.ended"
   got="$( WORKTREES_DIR="$tmp/wtroot"; wt_find_by_session jR sess-xyz )"
   [ -z "$got" ] && ok "a session already closed is not offered back" || bad "found '$got'"
-  rm -rf "$tmp/wtroot/jR"
+  rm -rf "$tmp/wtroot/jR" "$tmp/wtroot/jOther"
+
+  echo "run_job() — a reattach claims its tree under a lock, check before write"
+  # Structural, deliberately, like the bind_session call-site count above:
+  # run_job cannot be exercised end-to-end without mocking the agent CLI, so
+  # neither of these has a behavioural test in this file. What actually proves
+  # two concurrent resumes cannot both proceed is the real two-process race
+  # below, against the live lock_take/wt_is_claimed; this only guards against
+  # run_job's own inline code silently reordering the three away from each
+  # other, or the primary-name guard regressing to a bare directory check.
+  body="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/claude-cron")"
+  lt_line="$(printf '%s\n' "$body" | grep -n 'lock_take "\$rlock"'                  | head -1 | cut -d: -f1)"
+  wc_line="$(printf '%s\n' "$body" | grep -n 'wt_is_claimed "\$id" "\$run_dir"'     | head -1 | cut -d: -f1)"
+  wr_line="$(printf '%s\n' "$body" | grep -n 'echo "\$run_dir" > "\$slot/worktree"' | head -1 | cut -d: -f1)"
+  if [ -n "${lt_line:-}" ] && [ -n "${wc_line:-}" ] && [ -n "${wr_line:-}" ] \
+       && [ "$lt_line" -lt "$wc_line" ] && [ "$wc_line" -lt "$wr_line" ]; then
+    ok "the lock is taken, then the claim checked, then the tree written, in that order"
+  else
+    bad "reattach claim ordering broken (lock=${lt_line:-?} check=${wc_line:-?} write=${wr_line:-?})"
+  fi
+  got="$(printf '%s\n' "$body" | grep -c '\[ -z "\$primary_name" \] ||')"
+  [ "${got:-0}" -eq 1 ] \
+    && ok "an empty manifest primary refuses the resume, not just a missing directory" \
+    || bad "the primary-name emptiness guard is missing or duplicated (found $got)"
+
+  echo "run_job() — two concurrent reattaches to the same tree: exactly one wins"
+  # Not structural: this drives the real lock_take/lock_drop/wt_is_claimed/
+  # slot_alive under genuine concurrency, to prove the mechanism the ordering
+  # check above just confirmed run_job's code follows actually holds. Two
+  # background attempts race for the SAME run_dir; each performs precisely the
+  # sequence the reattach branch does -- lock, check wt_is_claimed, write the
+  # breadcrumb, unlock -- with a deliberate pause INSIDE the locked section so
+  # the second attempt is guaranteed to still be waiting on lock_take when the
+  # first finishes, rather than hoping OS scheduling happens to interleave
+  # them. bash 3.2 has no $BASHPID and does not reseed $$ inside a subshell,
+  # so each attempt's "process" is a real, separately-spawned placeholder --
+  # slot_alive needs a genuinely live pid to check.
+  (
+    LOCK_DIR="$tmp/locks"; WORKTREES_DIR="$tmp/wtroot"
+    mkdir -p "$LOCK_DIR/jRace"
+    rd="$tmp/wtroot/jRace/stampRace"; mkdir -p "$rd"
+    rlock="$LOCK_DIR/.resume"; rm -rf "$rlock"
+
+    sleep 5 & pidA=$!
+    sleep 5 & pidB=$!
+    slotA="$LOCK_DIR/jRace/$pidA"; slotB="$LOCK_DIR/jRace/$pidB"
+    mkdir -p "$slotA" "$slotB"
+    echo "$pidA" > "$slotA/pid"; boot_id > "$slotA/boot"
+    echo "$pidB" > "$slotB/pid"; boot_id > "$slotB/boot"
+
+    race_attempt() {
+      local slot="$1" resultfile="$2" hold="$3"
+      lock_take "$rlock"
+      if wt_is_claimed jRace "$rd"; then
+        echo REFUSED > "$resultfile"
+      else
+        [ "$hold" = "1" ] && sleep 0.1
+        echo "$rd" > "$slot/worktree"
+        echo CLAIMED > "$resultfile"
+      fi
+      lock_drop "$rlock"
+    }
+
+    race_attempt "$slotA" "$tmp/raceA" 1 & raceA=$!
+    i=0
+    while [ ! -d "$rlock" ] && [ "$i" -lt 200 ]; do sleep 0.01; i=$(( i + 1 )); done
+    if [ ! -d "$rlock" ]; then
+      echo "TIMEOUT" > "$tmp/race_summary"
+    else
+      race_attempt "$slotB" "$tmp/raceB" 0 & raceB=$!
+      wait "$raceA" "$raceB"
+      raceRA="$(cat "$tmp/raceA" 2>/dev/null)"; raceRB="$(cat "$tmp/raceB" 2>/dev/null)"
+      raceClaimed=0
+      [ "$raceRA" = "CLAIMED" ] && raceClaimed=$(( raceClaimed + 1 ))
+      [ "$raceRB" = "CLAIMED" ] && raceClaimed=$(( raceClaimed + 1 ))
+      printf '%s %s %s\n' "$raceClaimed" "$raceRA" "$raceRB" > "$tmp/race_summary"
+    fi
+    kill "$pidA" "$pidB" 2>/dev/null; wait "$pidA" "$pidB" 2>/dev/null
+  )
+  read -r raceN raceRA raceRB < "$tmp/race_summary"
+  if [ "$raceN" = "1" ]; then
+    ok "exactly one of two concurrent reattach attempts claims the tree ($raceRA/$raceRB)"
+  else
+    bad "expected exactly one claim, got '$raceN' ($raceRA/$raceRB) -- the lock did not serialise them"
+  fi
+  rm -rf "$tmp/locks/jRace" "$tmp/wtroot/jRace" "$tmp/raceA" "$tmp/raceB" "$tmp/race_summary"
 
   echo "wt_undelivered_work() — what provisioning left behind is not the agent's work"
   printf '%s\n' '#!/usr/bin/env bash' 'echo residue > provisioned.txt' \
@@ -2893,16 +2987,53 @@ ${prompt}"
       # session is open cannot change what that session is working on. Changing
       # the mount set means a new session, exactly as it does upstream.
       run_dir="$reattached"
+      # CLAIM IT UNDER A LOCK, BEFORE ANYTHING ELSE. Two `claude-cron resume`
+      # calls for the same session — a double click, a retried automation —
+      # otherwise both reach here and both launch an agent into the same tree,
+      # which is the exact race the whole worktree design exists to prevent.
+      # `max_parallel` does not stop it: it defaults to 3, so both get a slot.
+      #
+      # Two details are load-bearing. `wt_is_claimed` does NOT exclude the
+      # calling slot, so this has to run BEFORE our own breadcrumb is written —
+      # after it, every resume would refuse itself. And check-then-act without
+      # the mutex only narrows the window instead of closing it, so the check
+      # and the claim happen together.
+      #
+      # Refusing here also leaves the cleanest wreckage: `$slot/worktree` is
+      # still unwritten, so run_cleanup reads an empty run dir, skips teardown
+      # entirely, and never touches the directory the other run is using.
+      local rlock="$LOCK_DIR/.resume"
+      lock_take "$rlock"
+      if wt_is_claimed "$id" "$run_dir"; then
+        lock_drop "$rlock"
+        log_tick "$id: cannot resume $resume_sid — another run is already working in $run_dir"
+        state_set "$id" last_start "$start"
+        state_set "$id" last_status '"error"'
+        run_cleanup "$id" "$slot"; trap - EXIT
+        return 1
+      fi
       echo "$run_dir" > "$slot/worktree"
+      lock_drop "$rlock"
       port_base="$("$JQ" -r '.port_base // ""' "$run_dir/.run.json" 2>/dev/null)"
       case "$port_base" in null) port_base="" ;; esac
       if [ -z "$port_base" ]; then
         port_base="$(alloc_port_base "$slot")"
+        # Record it. The manifest is what teardown reads — wt_provision says so
+        # explicitly, because the orphan sweep runs `down` with no ambient
+        # CC_PORT_BASE. A block bound here and left out of the manifest means
+        # the eventual `down` releases ports this run never took.
+        if "$JQ" --arg pb "$port_base" '.port_base = $pb' "$run_dir/.run.json" \
+             > "$run_dir/.run.json.new" 2>/dev/null; then
+          mv -f "$run_dir/.run.json.new" "$run_dir/.run.json"
+        else
+          rm -f "$run_dir/.run.json.new"
+        fi
       elif ! port_base_free "$slot" "$port_base"; then
         # Its services are still bound to that block and somebody else holds it.
         # Refusing is the honest answer: a fresh block would silently point the
         # resumed agent's config at ports nothing is listening on.
         log_tick "$id: cannot resume $resume_sid — its port block $port_base is held by a live run"
+        state_set "$id" last_start "$start"
         state_set "$id" last_status '"error"'
         run_cleanup "$id" "$slot"; trap - EXIT
         return 1
@@ -2910,9 +3041,18 @@ ${prompt}"
         { echo "$port_base" > "$slot/portbase"; } 2>/dev/null || true
       fi
       export CC_PORT_BASE="$port_base" CC_PORT_SPAN CC_PROVISION_LIB="$BIN_DIR/provision-lib.sh"
-      worktree="$run_dir/$("$JQ" -r '.primary // ""' "$run_dir/.run.json" 2>/dev/null)"
-      if [ ! -d "$worktree" ]; then
-        log_tick "$id: cannot resume $resume_sid — its primary worktree is gone"
+      local primary_name
+      primary_name="$("$JQ" -r '.primary // ""' "$run_dir/.run.json" 2>/dev/null)"
+      case "$primary_name" in null) primary_name="" ;; esac
+      worktree="$run_dir/$primary_name"
+      # AN EMPTY primary IS THE DANGEROUS CASE, not a missing directory. Empty
+      # makes this "$run_dir/" — and the run dir exists, so a bare `-d` test
+      # passes and the agent is launched with its cwd set to the folder holding
+      # the worktrees instead of to a checkout. The port block four lines up is
+      # read defensively for exactly this reason; so is this.
+      if [ -z "$primary_name" ] || [ ! -d "$worktree" ]; then
+        log_tick "$id: cannot resume $resume_sid — its primary worktree is gone or unnamed"
+        state_set "$id" last_start "$start"
         state_set "$id" last_status '"error"'
         run_cleanup "$id" "$slot"; trap - EXIT
         return 1
@@ -2923,6 +3063,12 @@ ${prompt}"
       # while the session sat open.
       while IFS="$(printf '\t')" read -r rname rrepo rwt rbase; do
         [ -n "$rname" ] || continue
+        # `|| true` here, unlike the fresh path which aborts. A reattach finds a
+        # stack that is usually already up, so the common failure is a hook
+        # declining work it has done rather than a tree left half-built — and
+        # refusing the resume would strand a session that is otherwise fine.
+        # It is not silent: wt_provision logs the rc and the repo to the tick
+        # log itself.
         wt_provision up "$project" "$id" "$run_dir" "$rname" "$rrepo" "$rwt" "$rbase" || true
       done < <("$JQ" -r '.repos[] | [.name,.canonical,.worktree,.base] | @tsv' \
                   "$run_dir/.run.json" 2>/dev/null)
