@@ -20,10 +20,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **A run directory now records the session working in it** (`.session`). The id
-  arrives in the transcript's first event and is written as soon as it is seen —
-  while the run is alive, because a run that crashes is exactly the one whose
-  directory has to be findable afterwards. Nothing reads it yet; it is what the
-  resume and the teardown below are built on.
+  arrives in the transcript's first event and is bound to the run directory as
+  soon as the watchdog notices it, plus a final pass right after the run exits —
+  so a run that crashes inside the watchdog's first 30-second poll window still
+  ends up bound instead of being lost for good, with the id sitting unread in a
+  transcript nothing ever looks at again. The write goes through a temp file and
+  rename, since a resume will look run directories up by this file while runs
+  are still live. Nothing reads it yet; it is what the resume and the teardown
+  below are built on.
 
 - **A precheck can tell "no work" apart from "I cannot see the work"**
   (`bin/board-probe.sh`). Both used to end the same way — zero keys and the line
