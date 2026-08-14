@@ -26,8 +26,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ends up bound instead of being lost for good, with the id sitting unread in a
   transcript nothing ever looks at again. The write goes through a temp file and
   rename, since a resume will look run directories up by this file while runs
-  are still live. Nothing reads it yet; it is what the resume and the teardown
-  below are built on.
+  are still live. That temp file is now named by `mktemp`, not `$$` — bash 3.2
+  never reseeds `$$` inside a subshell, so the watchdog's write and the
+  post-wait write were silently computing the identical path, correct only
+  because both always resolved to the same id. `selftest` also now checks
+  structurally that both binding call sites remain in `run_job`, since a
+  behavioural test of `bind_session` alone cannot see which callers still reach
+  it. Nothing reads the file yet; it is what the resume and the teardown below
+  are built on.
 
 - **A precheck can tell "no work" apart from "I cannot see the work"**
   (`bin/board-probe.sh`). Both used to end the same way — zero keys and the line
