@@ -56,6 +56,10 @@ CLAUDE_CRON = str(BIN_DIR / "claude-cron")
 PORT = int(os.environ.get("CLAUDE_CRON_PORT", "8787"))
 PLIST_LABEL = "com.claude-cron.tick"
 SERVER_LABEL = "com.claude-cron.server"
+# Kept in step with the engine's own default (bin/worktree-lib.sh,
+# wt_prune_orphans): the dashboard must never promise a directory more time than
+# the sweep will give it.
+SESSION_TTL = int(os.environ.get("CLAUDE_CRON_SESSION_TTL") or 86400)
 
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1400,8 +1404,22 @@ def retained_worktrees():
                         bytes_ += os.lstat(os.path.join(dirpath, f)).st_size
                     except OSError:
                         pass
+            # An open session is kept for a resume, and the sweep reclaims it
+            # once its TTL is up. Saying when turns a folder that looks abandoned
+            # into a queue with an end.
+            try:
+                ended = (d / ".ended").read_text().strip()
+            except OSError:
+                ended = ""
+            # Anything the engine has not marked `done` is on the expiry clock,
+            # including a dir with no marker at all — a run killed with -9 never
+            # wrote one, and it is exactly the kind that sits there longest. The
+            # sweep uses the same `!= done` test; these two must not disagree,
+            # or the dashboard promises a reclaim that never comes.
+            expires_in = None if ended == "done" else max(0, SESSION_TTL - age)
             out.append({"job": jobdir.name, "stamp": d.name, "path": str(d),
-                        "age": age, "repos": repos, "bytes": bytes_})
+                        "age": age, "repos": repos, "bytes": bytes_,
+                        "ended": ended, "expires_in": expires_in})
     return out
 
 

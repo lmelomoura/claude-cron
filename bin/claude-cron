@@ -1860,6 +1860,44 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     && bad "the stale registration survived the prune" \
     || ok "the canonical checkout is clean again"
 
+  echo "wt_prune_orphans() — an open session outlives one sweep and dies of old age"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup jT two "$tmp/g/repo" stampT ) >/dev/null 2>&1
+  echo open > "$tmp/wtroot/jT/stampT/.ended"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
+    wt_prune_orphans ) >/dev/null 2>&1
+  [ -d "$tmp/wtroot/jT/stampT" ] && ok "an open session survives the sweep" \
+    || bad "the sweep reaped a session that is still open"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
+    CLAUDE_CRON_SESSION_TTL=0
+    wt_prune_orphans ) >/dev/null 2>&1
+  [ ! -d "$tmp/wtroot/jT/stampT" ] && ok "and is reclaimed once its ttl is up" \
+    || bad "an expired session was kept"
+
+  echo "wt_prune_orphans() — a deleted job's run dir still takes its services down"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo down >> "$CC_RUN_DIR/../orphan-down.log"' \
+    > "$tmp/cfg/provision/two.down.sh"
+  chmod +x "$tmp/cfg/provision/two.down.sh"
+  rm -f "$tmp/wtroot/jGone/orphan-down.log"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup jGone two "$tmp/g/repo" stampG ) >/dev/null 2>&1
+  # jGone is in NO jobs.json — the job was deleted while its run dir sat there.
+  # The project has to come from the manifest, or `down` never runs at all.
+  # Left unmarked and young, this dir is exactly the "outlives the sweep" case
+  # above and would be kept, not reaped — nothing will ever resume a deleted
+  # job to mark it done, so TTL=0 is the only way this dir ever reaches
+  # teardown at all, same as it would in the wild once the real TTL is up.
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
+    CLAUDE_CRON_SESSION_TTL=0
+    wt_prune_orphans ) >/dev/null 2>&1
+  [ -f "$tmp/wtroot/jGone/orphan-down.log" ] \
+    && ok "the manifest's project is what teardown uses, so down still fires" \
+    || bad "a deleted job's services were left running for ever"
+  rm -f "$tmp/cfg/provision/two.down.sh" "$tmp/wtroot/jGone/orphan-down.log"
+
   echo "wt_prune_canonicals() — the path list survives spaces and a malformed entry"
   # The enumeration is the fragile half, so test it directly rather than through
   # a git side effect: a path silently dropped here is a repo that is never

@@ -3282,16 +3282,15 @@ async function deleteProjectFromModal(){
    below describes the size and lets you read it, rather than asserting that
    every row is irreplaceable work. An empty one is safe to discard; a 40 MB one
    with repos listed is not. */
-const WT_COLS=["Job","Run","Repos","Size","Kept since",""];
+const WT_COLS=["Job","Run","Repos","Size","Kept since","Expires",""];
 function renderRetained(){
   const items=DATA.retained_worktrees||[];
   $("wthead").innerHTML=WT_COLS.map(h=>"<th>"+esc(h)+"</th>").join("");
   $("wt-blurb").textContent = items.length
-    ? "Directories from runs that are over, still on disk. The scheduler keeps one when its "
-      + "worktrees hold commits or changes that exist nowhere else — so check the size and the "
-      + "repos before discarding. An empty one is a run that stopped before it started working."
-    : "Nothing on disk. A finished run whose worktrees held work that exists nowhere else would "
-      + "be kept here instead of removed, and nothing but you would ever clean it up.";
+    ? "Directories from runs that are over, still on disk. One whose session was cut short is "
+      + "kept so a resume can continue in it — with its services still up — and is reclaimed on "
+      + "its own once the session expires. Discard ends one early."
+    : "Nothing on disk. A run cut short keeps its tree here until it is resumed or expires.";
   if(!items.length){
     $("wtrows").innerHTML='<tr><td colspan="'+WT_COLS.length+'" class="tblempty">'+I.check
       +'No run directories are being kept.</td></tr>';
@@ -3306,6 +3305,11 @@ function renderRetained(){
       +'<td class="nowrap">'+esc(fmtBytes(w.bytes||0))
         +(empty?' <span class="muted">· nothing in it</span>':"")+'</td>'
       +'<td class="muted nowrap">'+esc(age)+'</td>'
+      +'<td class="muted nowrap">'+(w.expires_in==null
+          ? '<span class="muted">—</span>'
+          : (w.expires_in<=0 ? "due now"
+             : (w.expires_in>=3600 ? "in "+Math.floor(w.expires_in/3600)+"h"
+                                   : "in "+Math.max(1,Math.floor(w.expires_in/60))+"m")))+'</td>'
       +'<td class="rowacts"><button class="btn ghost sm" data-wtdrop="'
         +esc(w.job)+'" data-wtstamp="'+esc(w.stamp)+'">Discard</button></td></tr>';
   }).join("");

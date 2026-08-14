@@ -502,9 +502,17 @@ wt_remove_all() { # <run dir>
 # Sweep the run dirs whose owning run is no longer active (a killed or crashed
 # run, or a tick that died between setup and launch), tearing each down safely.
 # Called at the top of every tick.
+#
+# A dir whose session is still `open` is left alone — a resume needs it — but
+# only until its TTL is up. Without that, Task 6 would have swapped one leak for
+# another: a session nobody ever resumes is exactly as permanent as the unpushed
+# work it replaced. The expiry closes the session first, so the normal path runs
+# `down` and removes it like any other finished run.
 wt_prune_orphans() {
   [ -d "$WORKTREES_DIR" ] || return 0
-  local iddir id d project
+  local iddir id d project ttl age now
+  ttl="$(num "${CLAUDE_CRON_SESSION_TTL:-}" 86400)"
+  now="$(now_epoch)"
   for iddir in "$WORKTREES_DIR"/*; do
     [ -d "$iddir" ] || continue
     id="$(basename "$iddir")"
@@ -516,10 +524,43 @@ wt_prune_orphans() {
       # several concurrent runs) said "nobody owns this" for worktrees that were
       # very much in use — and the sweep deleted them out from under the agents.
       wt_is_claimed "$id" "$d" && continue
-      project="$(job_get "$id" '.project' '')"
+      # `!= done`, NOT `= open`. The Task 6 teardown keeps anything that is
+      # not explicitly `done`, and that deliberately includes a dir with NO
+      # marker at all — the SIGKILL, OOM and reboot case, where no exit path
+      # ever ran. Expiring only the ones that say `open` would leave exactly
+      # those unmarked dirs failing both tests, kept for ever, and would make
+      # the comment in wt_teardown that says the TTL closes this into a lie.
+      case "$(cat "$d/.ended" 2>/dev/null || true)" in
+        done) ;;
+        *)
+          age="$(( now - $(num "$(wt_mtime "$d")" "$now") ))"
+          [ "$age" -lt "$ttl" ] && continue
+          # Out of time. Close it, so the teardown below treats it as any other
+          # finished run: `down` for every repo, then gone.
+          printf 'done\n' > "$d/.ended" 2>/dev/null || true
+          log_tick "$id: session in $d expired after ${age}s with nobody resuming it"
+          ;;
+      esac
+      # The project comes from the MANIFEST, not from job_get. `job_get` reads
+      # the live `config/jobs.json`, so a job deleted or renamed while one of
+      # its run dirs was still on disk resolved to an empty project — and an
+      # empty project means `wt_provision` looks for `provision/.down.sh`,
+      # finds nothing, and silently takes nothing down. The compose stack and
+      # the herd site of a job you deleted would have outlived it for good.
+      # `.run.json` recorded the project when the run started; falling back to
+      # `job_get` only covers a run dir written before this field existed.
+      project="$("$JQ" -r '.project // ""' "$d/.run.json" 2>/dev/null)"
+      case "$project" in null) project="" ;; esac
+      [ -n "$project" ] || project="$(job_get "$id" '.project' '')"
       wt_teardown "$id" "$project" "$d"
     done
   done
+}
+
+# When a run dir was last touched, in epoch seconds. BSD stat; falls back to
+# nothing so the caller's own default applies.
+wt_mtime() { # <dir>
+  stat -f %m "${1:-}" 2>/dev/null || true
 }
 
 # Clear stale worktree registrations from every canonical checkout a project

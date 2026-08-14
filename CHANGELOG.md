@@ -251,6 +251,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **An open session expires instead of waiting for a human.** Keeping a cut-short
+  run's tree so a resume can use it would have swapped one permanent directory
+  for another: a session nobody ever resumes is exactly as immortal as the
+  unpushed work it replaced. Open sessions now expire after 24 hours
+  (`CLAUDE_CRON_SESSION_TTL`), and expiring closes the session so the ordinary
+  path runs its `down` hooks and removes the tree like any other finished run.
+  The dashboard shows how long each has left, so the list reads as a queue with
+  an end rather than a pile.
+
 - **A resume continues in the tree its session was working in.** `run_job`
   computed a fresh timestamp and cut new worktrees from the base with no special
   case for a resume at all — so `claude-cron resume` handed the agent a

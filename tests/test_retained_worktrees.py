@@ -74,3 +74,21 @@ def _alive(pid):
         return True
     except OSError:
         return False
+
+
+def test_an_open_session_reports_the_time_it_has_left(clean_data):
+    """A kept directory that says nothing about when it goes is the old leak
+    wearing a new label."""
+    srv = clean_data
+    d = _mk_run_dir(srv, "epsilon", "s-open")
+    (d / ".ended").write_text("open\n")
+    got = srv.retained_worktrees()[0]
+    assert got["expires_in"] > 0
+
+
+def test_a_closed_session_has_no_expiry_because_it_goes_next_sweep(clean_data):
+    srv = clean_data
+    d = _mk_run_dir(srv, "zeta", "s-done")
+    (d / ".ended").write_text("done\n")
+    got = srv.retained_worktrees()[0]
+    assert got["expires_in"] is None
