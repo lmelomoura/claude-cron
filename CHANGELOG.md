@@ -242,9 +242,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the job silently stopped running with nothing on the card saying why; the
   sweep read the orphaned worktree as claimed and never reaped it; and the port
   block it named was never handed back. Every slot now records the boot it was
-  taken in, and a slot from an earlier boot is dead however healthy its pid
-  looks. Slots written before this change carry no boot and still fall back to
-  the pid, so an upgrade does not reap the runs it finds in flight.
+  taken in — the kernel's own opaque per-boot session id, not a boot timestamp,
+  because a boot timestamp moves under a slot whenever the calendar clock is
+  stepped (NTP resync, wake from sleep), which would read a live run's slot as
+  belonging to another boot — and a slot from an earlier boot is dead however
+  healthy its pid looks. Slots written before this change carry no boot and
+  still fall back to the pid, so an upgrade does not reap the runs it finds in
+  flight.
 
 - **A run's transcript is no longer deleted when nothing was stored.** A
   37-minute, $7.27 reviewer run had no timeline, no answer and no terminal, and

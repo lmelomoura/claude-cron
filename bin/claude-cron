@@ -228,17 +228,20 @@ lock_drop() { rm -rf "${1:-}"; }   # rm -rf, not rmdir: the dir holds a pid file
 # process. Managed Agents has no equivalent bug because its claims are
 # server-side leases with an expiry; ours are directories, so they carry the
 # boot themselves.
+# `kern.bootsessionuuid`, NOT `kern.boottime`. The obvious identifier is the
+# boot time, and it is wrong: XNU shifts `kern.boottime` whenever the calendar
+# clock is stepped — NTP resync, wake from sleep — so that uptime stays
+# monotonic. Comparing it exactly would then declare every slot taken before
+# the step to be from another boot, and every consequence of that runs the
+# WRONG WAY: a live run's slot deleted and its worktree swept out from under
+# it, its port block handed to somebody else. Widening the compare to a
+# tolerance would paper over it; the boot session UUID has no such behaviour to
+# tolerate. It is opaque, so there is also no field to parse and no greedy
+# pattern to get wrong.
 CC_BOOT_ID=""
 boot_id() {
   if [ -z "$CC_BOOT_ID" ]; then
-    # ANCHOR THE PATTERN. `kern.boottime` prints
-    #   { sec = 1786677896, usec = 71358 } Fri Aug 14 04:24:56 2026
-    # and an unanchored `.*sec` is greedy: it walks straight past `sec` into
-    # `usec` and captures the microseconds. That value happens to be constant
-    # per boot too, so the lease would have worked by accident while meaning
-    # something else entirely — and no test here would have noticed.
-    CC_BOOT_ID="$(sysctl -n kern.boottime 2>/dev/null \
-                  | sed -n 's/^[^0-9]*sec *= *\([0-9][0-9]*\).*/\1/p')"
+    CC_BOOT_ID="$(sysctl -n kern.bootsessionuuid 2>/dev/null | tr -d '[:space:]')"
   fi
   printf '%s\n' "$CC_BOOT_ID"
 }
@@ -1343,14 +1346,14 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   want "a file the agent added after provisioning DOES preserve it" 0 $?
   rm -f "$tmp/cfg/provision/two.up.sh"
 
-  echo "boot_id() — the boot second, not the microseconds beside it"
+  echo "boot_id() — an opaque per-boot identity, stable within one boot"
   got="$(boot_id)"
   case "$got" in
-    ''|*[!0-9]*) bad "boot_id printed '$got'" ;;
-    *) [ "${#got}" -ge 10 ] \
-         && ok "it is an epoch second, so an unanchored match on 'usec' is out" \
-         || bad "boot_id printed '$got', which is too short to be an epoch second" ;;
+    *-*-*-*-*) ok "it is a boot session uuid, not a timestamp that a clock step moves" ;;
+    *) bad "boot_id printed '$got', which is not a uuid" ;;
   esac
+  [ "$got" = "$(CC_BOOT_ID=""; boot_id)" ] \
+    && ok "and two reads inside one boot agree" || bad "boot_id is not stable"
 
   echo "slot_alive() — a lease is pinned to the boot it was taken in"
   mkdir -p "$tmp/locks/j8/$$"
@@ -1699,13 +1702,69 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   kill "$bgpid" 2>/dev/null; wait "$bgpid" 2>/dev/null
   rm -rf "$tmp/locks/j9"
 
+  echo "_stop_slot() — signals the pid the FILE names, not the directory"
+  # locks/j3/999 above (wt_prune_orphans, dir named 999 holding pid=$$) is not a
+  # one-off fixture shape: a stale slot's directory name and its own pid file
+  # can genuinely disagree. Signalling the name instead of the file is worse
+  # than the leak that fixture guards against -- it is a live TERM aimed at
+  # whichever unrelated process the kernel now happens to call by that number.
+  sleep 60 & local realpid=$!
+  sleep 60 & local decoypid=$!
+  mkdir -p "$tmp/locks/j9/$decoypid"
+  echo "$realpid" > "$tmp/locks/j9/$decoypid/pid"
+  boot_id > "$tmp/locks/j9/$decoypid/boot"
+  _stop_slot j9 "$tmp/locks/j9/$decoypid" >/dev/null 2>&1
+  sleep 0.3
+  kill -0 "$realpid" 2>/dev/null
+  want "the process the pid FILE names is the one TERM'd" 1 $?
+  kill -0 "$decoypid" 2>/dev/null
+  want "the process the directory merely happens to be named after is untouched" 0 $?
+  kill "$realpid" "$decoypid" 2>/dev/null; wait "$realpid" "$decoypid" 2>/dev/null
+  rm -rf "$tmp/locks/j9"
+
+  echo "_stop_slot() — a slot claimed but not yet given a pid file is still signalled"
+  # The window inside acquire_slot between mkdir and its own pid write: nothing
+  # was read wrong here, there is simply nothing written yet to read. slot_alive
+  # cannot call this alive without a pid file, and treating "cannot tell" as
+  # "dead" would silently clear a run mid-claim -- the exact bug the comment
+  # inside _stop_slot exists to keep fixed.
+  sleep 60 & local midpid=$!
+  mkdir -p "$tmp/locks/j9/$midpid"        # mkdir happened; pid/boot files did not
+  _stop_slot j9 "$tmp/locks/j9/$midpid" >/dev/null 2>&1
+  sleep 0.3
+  kill -0 "$midpid" 2>/dev/null
+  want "a claim with no pid file yet is signalled, not silently ignored" 1 $?
+  [ -d "$tmp/locks/j9/$midpid" ] && ok "its slot is left for the run's own EXIT path to clear" \
+    || bad "the slot was cleared instead of signalled"
+  kill "$midpid" 2>/dev/null; wait "$midpid" 2>/dev/null
+  rm -rf "$tmp/locks/j9"
+
+  echo "slots_active() — a stale-boot slot is not counted, and is pruned"
+  # The other two leaks this task closes (a phantom counted against
+  # max_parallel, a retained port block) were, before this task, exercised only
+  # through the shared slot_alive() unit assertions above, never end to end
+  # through the functions that actually leak. This is that end-to-end path for
+  # max_parallel: a slot with a genuinely live pid but the wrong boot must
+  # neither be counted nor be left behind for the next call to recount.
+  mkdir -p "$tmp/locks/sa/$$" "$tmp/locks/sa/201"
+  echo $$ > "$tmp/locks/sa/$$/pid"; boot_id > "$tmp/locks/sa/$$/boot"
+  echo $$ > "$tmp/locks/sa/201/pid"; echo "0" > "$tmp/locks/sa/201/boot"
+  got="$( LOCK_DIR="$tmp/locks"; slots_active sa )"
+  [ "$got" = "1" ] && ok "a slot from an earlier boot is not counted against max_parallel" \
+    || bad "slots_active counted $got, wanted 1"
+  [ ! -d "$tmp/locks/sa/201" ] && ok "and its directory is pruned, not left behind" \
+    || bad "the stale-boot slot's directory survived the count"
+  [ -d "$tmp/locks/sa/$$" ] && ok "the genuinely live slot is left alone" \
+    || bad "slots_active pruned a live slot"
+  rm -rf "$tmp/locks/sa"
+
   echo "alloc_port_base() — two live runs never get the same ports"
   # Isolation settles the filesystem and says nothing about ports: two runs of
   # one repo each publish 5432 and the second dies on "address already in use",
   # which reads as a broken test suite and is nothing of the kind.
   mkdir -p "$tmp/locks/pj/101" "$tmp/locks/pj/102" "$tmp/locks/pk/103"
   echo $$ > "$tmp/locks/pj/101/pid"; echo $$ > "$tmp/locks/pj/102/pid"
-  local b1 b2 b3
+  local b1 b2 b3 b4
   b1="$( LOCK_DIR="$tmp/locks"; alloc_port_base "$tmp/locks/pj/101" )"
   b2="$( LOCK_DIR="$tmp/locks"; alloc_port_base "$tmp/locks/pj/102" )"
   [ -n "$b1" ] && [ "$b1" != "$b2" ] && ok "two live runs get different blocks ($b1 vs $b2)" \
@@ -1720,6 +1779,19 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   mkdir -p "$tmp/locks/pj/104"
   b3="$( LOCK_DIR="$tmp/locks"; alloc_port_base "$tmp/locks/pj/104" )"
   [ "$b3" = "$b1" ] && ok "a dead slot's block is handed back out" || bad "got '$b3', wanted '$b1'"
+  # Same again with a stale BOOT instead of a dead pid: pk/105 keeps b1
+  # genuinely taken (a live, current-boot pid) so the only way alloc_port_base
+  # can hand back b2 is by refusing pk/106's claim on it, and pk/106's pid is
+  # $$ -- very much alive -- so the only thing making it refusable is the boot
+  # it carries.
+  mkdir -p "$tmp/locks/pk/105" "$tmp/locks/pk/106"
+  echo $$ > "$tmp/locks/pk/105/pid"; echo "$b1" > "$tmp/locks/pk/105/portbase"
+  echo $$ > "$tmp/locks/pk/106/pid"; echo "0" > "$tmp/locks/pk/106/boot"
+  echo "$b2" > "$tmp/locks/pk/106/portbase"
+  mkdir -p "$tmp/locks/pj/107"
+  b4="$( LOCK_DIR="$tmp/locks"; alloc_port_base "$tmp/locks/pj/107" )"
+  [ "$b4" = "$b2" ] && ok "a live pid from an earlier boot holds no block either" \
+    || bad "got '$b4', wanted '$b2' ($b1 should still read taken, held by pk/105)"
   rm -rf "$tmp/locks/pj" "$tmp/locks/pk"
 
   echo "provision-lib.sh — a run's ports come from its own block"
@@ -1885,7 +1957,7 @@ cmd_runs() { # <id> — one active run per line: <run-pid>\t<agent-pid>\t<logfil
 # Stop ONE run by its slot. Leaves the watchdog breadcrumb so the run explains
 # itself, then TERMs the agent (or clears a dead slot).
 _stop_slot() { # <id> <slot-dir>
-  local id="$1" slot="$2" child logf rpid
+  local id="$1" slot="$2" child logf rpid midclaim
   [ -d "$slot" ] || { echo "no such run for $id"; return 1; }
   logf="$(cat "$slot/logfile" 2>/dev/null || true)"
   # The marker the classifier reads. A run the OPERATOR ended is not a failure,
@@ -1906,15 +1978,34 @@ _stop_slot() { # <id> <slot-dir>
   # nothing written anywhere: no row, no log, no record that it had ever been
   # asked for. Signal the run wrapper instead and let its EXIT path file the
   # record, exactly as it does for every other ending.
-  rpid="$(basename "$slot")"
+  #
+  # rpid has to be the SAME pid slot_alive is about to check below, not a second
+  # guess at it -- a slot's directory name and its pid file are two different
+  # sources and can disagree (this suite builds exactly that shape elsewhere: a
+  # dir named for one pid holding a file that names another). Signalling the
+  # name instead of the file aims the TERM at whatever unrelated process the
+  # kernel now happens to call by that number. The pid file is missing only in
+  # the instant inside acquire_slot between its mkdir and its own pid write --
+  # fall back to the directory name only then.
+  rpid="$(cat "$slot/pid" 2>/dev/null || true)"
+  midclaim=0
+  if [ -z "$rpid" ]; then
+    rpid="$(basename "$slot")"
+    midclaim=1
+  fi
   case "$rpid" in
     ''|*[!0-9]*) echo "run of $id has no usable pid; clearing its slot"; release_slot "$slot"; return 0 ;;
   esac
   # slot_alive, not a bare kill -0: rpid is only ever the pid this slot was
   # taken by, and the same reboot-recycling that makes a dead slot answer
   # kill -0 would otherwise point this TERM at whatever unrelated process the
-  # kernel handed that number to next.
-  if slot_alive "$slot"; then
+  # kernel handed that number to next. But slot_alive has no pid file to read in
+  # the mkdir-then-write instant above, so it always calls that slot dead --
+  # which would silently clear a run still being claimed instead of signalling
+  # it, the exact bug the comment above says this function no longer has. A
+  # bare kill -0 on the name is safe there and ONLY there: everywhere else the
+  # name already had to survive a pid file to be trusted.
+  if slot_alive "$slot" || { [ "$midclaim" -eq 1 ] && kill -0 "$rpid" 2>/dev/null; }; then
     kill -TERM "$rpid" 2>/dev/null
     echo "stopping $id run $rpid (before its agent started)"
   else

@@ -1301,6 +1301,13 @@ _BOOT_ID = None
 def boot_id():
     """The boot this machine is in, as the engine stamps it onto every slot.
 
+    Reads `kern.bootsessionuuid`, not `kern.boottime`: XNU steps the calendar
+    clock underlying `kern.boottime` on an NTP resync or a wake from sleep, so
+    it can move within a boot that never rebooted. Comparing it exactly would
+    then read a live slot as belonging to another boot. The session uuid is
+    opaque and does not move, so there is nothing here to parse and no shape
+    to get wrong.
+
     Slots live under data/ and survive a reboot; pids are reissued from 1 on the
     way up. Without the boot, a recycled pid makes a dead slot look live — and
     the dashboard then hides a run dir nobody owns from the only list that
@@ -1309,13 +1316,12 @@ def boot_id():
     global _BOOT_ID
     if _BOOT_ID is None:
         try:
-            out = subprocess.run(["sysctl", "-n", "kern.boottime"],
+            out = subprocess.run(["sysctl", "-n", "kern.bootsessionuuid"],
                                  capture_output=True, text=True,
                                  timeout=5).stdout
         except (OSError, subprocess.SubprocessError):
             out = ""
-        m = re.search(r"sec\s*=\s*(\d+)", out)
-        _BOOT_ID = m.group(1) if m else ""
+        _BOOT_ID = out.strip()
     return _BOOT_ID
 
 
