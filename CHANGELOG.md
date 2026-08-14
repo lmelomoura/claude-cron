@@ -235,6 +235,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A stop can no longer be aimed at a whole process group.** `claude-cron
+  stop` reads the agent's pid from the slot's `child` file and checked only
+  that it was non-empty before handing it to `kill -0` and `kill -TERM` —
+  never that it was actually a pid. Both treat pid `0` as *every process in
+  the caller's own group*, not as "no such process," so a `child` file that
+  ever held a literal `0` would have sent a real stop signal to `claude-cron`
+  itself and everything sharing its group, not to the one agent being
+  stopped. A slot's own claim pid gets the same refusal, closing the same gap
+  in the other place `stop` reads a pid from a file.
+
 - **A run slot is a lease pinned to a boot, not a bare pid.** `data/locks` lives
   under `data/`, so slots survive a reboot — and the kernel reissues pids from 1
   on the way up, so a recycled pid made a dead slot answer `kill -0`. One false

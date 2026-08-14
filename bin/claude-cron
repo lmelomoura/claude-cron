@@ -1784,6 +1784,32 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   [ ! -d "$tmp/locks/j9/997" ] && ok "and its slot is cleared" || bad "the slot survived"
   rm -rf "$tmp/locks/j9"
 
+  echo "_stop_slot() — a child file of literal 0 is refused, not signalled as the agent"
+  # The rpid guard above closes one route to kill -TERM 0; this is the other
+  # one, in the branch that runs BEFORE rpid is ever read. child comes from
+  # its own file and had no digit check at all before this section existed --
+  # kill -0 "0" succeeds the same way it does for rpid, so a child file that
+  # ever read "0" would reach a real kill -TERM 0 first, never mind what rpid
+  # would have said. Same shadow technique as above, for the same reason: not
+  # something to prove by actually sending it.
+  local child0_term=0
+  kill() {
+    if [ "$1" = "-TERM" ] && [ "$2" = "0" ]; then child0_term=1; return 0; fi
+    command kill "$@"
+  }
+  sleep 60 & local claimpid=$!; disown "$claimpid"
+  mkdir -p "$tmp/locks/j9/$claimpid"
+  echo "0" > "$tmp/locks/j9/$claimpid/child"
+  _stop_slot j9 "$tmp/locks/j9/$claimpid" > "$tmp/child0.out" 2>&1
+  unset -f kill
+  sleep 0.3
+  [ "$child0_term" -eq 0 ] && ok "kill -TERM 0 is never attempted" \
+    || bad "the guard let a child of 0 reach a real kill"
+  kill -0 "$claimpid" 2>/dev/null
+  want "and the run's own claim pid is TERM'd instead of the phantom agent" 1 $?
+  kill "$claimpid" 2>/dev/null; wait "$claimpid" 2>/dev/null
+  rm -rf "$tmp/locks/j9"
+
   echo "slots_active() — a stale-boot slot is not counted, and is pruned"
   # The other two leaks this task closes (a phantom counted against
   # max_parallel, a retained port block) were, before this task, exercised only
@@ -2013,7 +2039,13 @@ _stop_slot() { # <id> <slot-dir>
   [ -n "$logf" ] && printf 'STOPPED: ended on purpose from the dashboard, not by a failure.\n' \
     > "$logf.watchdog" 2>/dev/null
   child="$(cat "$slot/child" 2>/dev/null || true)"
-  if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then
+  # Same danger as the rpid guard below, reached through a different file:
+  # kill -0 "0" succeeds (it asks whether the CALLER's own process group
+  # exists, which it always does), so a child file that ever read "0" would
+  # clear the `-n` check, pass the liveness check, and reach a real
+  # kill -TERM 0 -- every process in the group that ran this stop, not the
+  # one agent it named.
+  if [ -n "$child" ] && [ "$child" != "0" ] && kill -0 "$child" 2>/dev/null; then
     kill -TERM "$child" 2>/dev/null
     echo "stopping $id run $(basename "$slot") (agent pid $child)"
     return 0
