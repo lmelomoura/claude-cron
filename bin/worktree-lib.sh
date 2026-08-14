@@ -205,17 +205,24 @@ wt_env_line() { # <project> <repo> <worktree>
 wt_provision() { # <up|down> <project> <id> <run_dir> <name> <canonical> <worktree> <base>
   local phase="${1:-}" project="${2:-}" id="${3:-}" run_dir="${4:-}"
   local name="${5:-}" repo="${6:-}" wt="${7:-}" base="${8:-}"
-  local script t rc
+  local script t rc pb
   script="$CONFIG_DIR/provision/$project.$phase.sh"
   [ -f "$script" ] || return 0
   t="$(project_get "$project" '.worktree.provision_timeout_seconds' '900')"
   case "$t" in ''|null|*[!0-9]*) t=900 ;; esac
+  # The manifest is the source of truth for the port block, not the environment.
+  # `down` also runs from the orphan sweep, which has no slot and so no ambient
+  # CC_PORT_BASE — a hook that asked cc_port there got different numbers from
+  # the ones `up` bound, and released nothing.
+  pb="$("$JQ" -r '.port_base // ""' "$run_dir/.run.json" 2>/dev/null)"
+  case "$pb" in null) pb="" ;; esac
+  [ -z "$pb" ] && pb="${CC_PORT_BASE:-}"
   _wt_hook() {
     cd "$wt" 2>/dev/null || return 1
     CC_REPO_NAME="$name" CC_REPO_PATH="$repo" CC_WORKTREE="$wt" CC_BASE="$base" \
     CC_RUN_DIR="$run_dir" CC_RUN_MANIFEST="$run_dir/.run.json" \
     CC_PROJECT="$project" CC_JOB_ID="$id" \
-    CC_PORT_BASE="${CC_PORT_BASE:-}" CC_PORT_SPAN="${CC_PORT_SPAN:-100}" \
+    CC_PORT_BASE="$pb" CC_PORT_SPAN="${CC_PORT_SPAN:-100}" \
     CC_PROVISION_LIB="${CC_PROVISION_LIB:-}" \
       bash "$script" >>"$DATA_DIR/exec.log" 2>&1
   }
@@ -266,8 +273,8 @@ wt_run_worktrees() { # <run dir>
 # The canonical checkout is NEVER modified: the base is declared, so there is
 # nothing to free by detaching it, and a detach it never undoes would leave the
 # operator's own repo headless for good.
-wt_setup() { # <id> <project> <canonical_cwd> <stamp>
-  local id="${1:-}" project="${2:-}" cwd="${3:-}" stamp="${4:-}"
+wt_setup() { # <id> <project> <canonical_cwd> <stamp> [port_base]
+  local id="${1:-}" project="${2:-}" cwd="${3:-}" stamp="${4:-}" port_base="${5:-}"
   local run_dir="$WORKTREES_DIR/$id/$stamp" tsv="$WORKTREES_DIR/$id/.$stamp.tsv"
   local name repo base ref wt sha primary=""
   # How long a single repo's fetch may block before the base is resolved from
@@ -302,8 +309,14 @@ wt_setup() { # <id> <project> <canonical_cwd> <stamp>
   fi
 
   "$JQ" -Rn --arg job "$id" --arg project "$project" --arg run_dir "$run_dir" \
-        --arg primary "$(basename "$primary")" '
+        --arg primary "$(basename "$primary")" --arg port_base "$port_base" '
     {job:$job, project:$project, run_dir:$run_dir, primary:$primary,
+     # The port block for this run. Recorded here and not left to the environment
+     # because `down` also runs from the orphan sweep, which has no slot and
+     # therefore no CC_PORT_BASE: a hook computing what to release from
+     # cc_port would have released numbers it never bound. Everything teardown
+     # needs must be reconstructible from disk alone.
+     port_base:$port_base,
      repos: [inputs | split("\t")
              | {name:.[0], canonical:.[1], worktree:.[2],
                 base:.[3], base_ref:.[4], fork_sha:.[5]}]}' "$tsv" > "$run_dir/.run.json"

@@ -235,6 +235,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A crashed run's `down` hook knows which ports it bound.** `wt_provision`
+  read `CC_PORT_BASE` from the environment, but `down` also runs from the orphan
+  sweep — which fires from the tick, and a run dir is an orphan precisely because
+  its slot is gone. So the one path that exists to clean up after a crash ran the
+  hook with no port block at all, and a hook computing what to release with
+  `cc_port` released numbers it had never bound: the compose stack from the
+  crashed run stayed up, holding the ports the next run wanted. The block is now
+  recorded in `.run.json` next to `fork_sha`, and the hook reads it from there.
+  Teardown is reconstructible from the disk alone, which is the whole point of
+  having a sweep.
+
 - **A stop can no longer be aimed at a whole process group.** `claude-cron
   stop` reads the agent's pid from the slot's `child` file and checked only
   that it was non-empty before handing it to `kill -0` and `kill -TERM` —

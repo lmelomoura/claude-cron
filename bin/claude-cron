@@ -1384,6 +1384,32 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     || bad "a stale pre-reboot claim kept an orphan alive"
   rm -rf "$tmp/locks/j8"
 
+  # No backticks in this string: inside double quotes the shell would run it.
+  echo "wt_provision() — a down hook from the orphan sweep still knows its ports"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "down saw ${CC_PORT_BASE:-none}" >> "$CC_RUN_DIR/../down.log"' \
+    > "$tmp/cfg/provision/two.down.sh"
+  chmod +x "$tmp/cfg/provision/two.down.sh"
+  rm -f "$tmp/wtroot/j6/down.log"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup j6 two "$tmp/g/repo" stampP 27100 ) >/dev/null 2>&1
+  got="$("$JQ" -r '.port_base' "$tmp/wtroot/j6/stampP/.run.json" 2>/dev/null)"
+  [ "$got" = "27100" ] && ok "the manifest records the run's port block" \
+    || bad "port_base was '$got'"
+  # No slot, no ambient CC_PORT_BASE: exactly the orphan sweep's situation.
+  # wt_prune_orphans resolves the project via job_get (JOBS_FILE), not by
+  # reading the manifest's own .project — so the sweep needs a job "j6" ->
+  # project "two" of its own, same as the real jobs.json a live job would
+  # have, or the down hook this test is proving out is never found.
+  printf '%s' '{"jobs":[{"id":"j6","project":"two"}]}' > "$tmp/proj/j6.jobs.json"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"; JOBS_FILE="$tmp/proj/j6.jobs.json"
+    unset CC_PORT_BASE
+    wt_prune_orphans ) >/dev/null 2>&1
+  grep -q "down saw 27100" "$tmp/wtroot/j6/down.log" 2>/dev/null \
+    && ok "a crashed run's down hook reads its ports from the manifest" \
+    || bad "down ran without the run's port block"
+  rm -f "$tmp/cfg/provision/two.down.sh" "$tmp/wtroot/j6/down.log"
+
   echo "wt_prune_orphans() — an unclaimed run dir is reaped, a claimed one is not"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
     wt_setup j3 two "$tmp/g/repo" stampD ) >/dev/null 2>&1
@@ -2357,7 +2383,7 @@ ${prompt}"
     # block: they are what write the run's ports into its config.
     port_base="$(alloc_port_base "$slot")"
     export CC_PORT_BASE="$port_base" CC_PORT_SPAN CC_PROVISION_LIB="$BIN_DIR/provision-lib.sh"
-    if ! worktree="$(wt_setup "$id" "$project" "$cwd" "$stamp")"; then
+    if ! worktree="$(wt_setup "$id" "$project" "$cwd" "$stamp" "$port_base")"; then
       state_set "$id" last_start "$start"
       state_set "$id" last_status '"error"'
       log_tick "$id: worktree isolation failed — run aborted (no shared-checkout fallback)"
