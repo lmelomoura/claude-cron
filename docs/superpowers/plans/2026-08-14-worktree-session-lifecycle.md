@@ -1297,7 +1297,28 @@ E em `run_cleanup()` (`bin/claude-cron:653`), imediatamente **antes** da chamada
 
 **Atenção:** em `run_cleanup` a variável do run dir chama-se `wt` (lida de `$slot/worktree`), não `run_dir`. O bloco acima usa `wt` de propósito.
 
-- [ ] **Step 5: Make the explicit drop release the services too**
+- [ ] **Step 5: Keep `wt_setup`'s own rollback working**
+
+`wt_teardown` deixou de remover fosse o que fosse sem um `done` explícito — e
+`wt_setup` usa-o para desfazer uma árvore meio-construída, em **cinco** sítios
+(repo em falta, base irresolúvel, `worktree add` falhado, nenhum repo a bater
+com o `cwd`, e hook de provisioning falhado). Sem marcador, cada uma dessas
+falhas passaria a deixar o directório para trás: um hook `up` partido encheria
+o disco a cada tick, e isso é uma fuga nova aberta por esta tarefa.
+
+Uma árvore que nunca chegou a ter agente é, por definição, terminada — não há
+sessão para retomar. Em cada um dos cinco sítios, escrever o marcador antes de
+chamar o teardown:
+
+```bash
+      rm -f "$tsv"; printf 'done\n' > "$run_dir/.ended" 2>/dev/null || true
+      wt_teardown "$id" "$project" "$run_dir"; return 1
+```
+
+Confirmar com `grep -c 'wt_teardown "\$id" "\$project" "\$run_dir"'` que são
+mesmo cinco antes de editar, e que nenhum ficou por marcar depois.
+
+- [ ] **Step 6: Make the explicit drop release the services too**
 
 Um `open` sai do `wt_teardown` **antes** do `down`, de propósito — os serviços
 ficam de pé para o resume. Isso abre um buraco novo no único caminho que
@@ -1327,7 +1348,7 @@ por
 Confirmar o nome real da variável do job em `cmd_worktree_drop` antes de
 editar (é `id` à data de escrita) e que `job_get` está em scope aí.
 
-- [ ] **Step 6: Correct the prose the change falsified**
+- [ ] **Step 7: Correct the prose the change falsified**
 
 Duas descrições passam a mentir e ambas descrevem este conceito a quem o lê:
 
@@ -1339,12 +1360,12 @@ Duas descrições passam a mentir e ambas descrevem este conceito a quem o lê:
 Reescrever ambas para o critério novo. É prosa, não comportamento; a Tarefa 8
 volta a esta função para lhe acrescentar o `expires_in`.
 
-- [ ] **Step 7: Run the selftest to verify it passes**
+- [ ] **Step 8: Run the selftest to verify it passes**
 
 Run: `bin/claude-cron selftest && python3 -m pytest tests/`
 Expected: PASS em ambas.
 
-- [ ] **Step 8: Write the changelog entry and commit**
+- [ ] **Step 9: Write the changelog entry and commit**
 
 ```markdown
 - **Teardown asks whether the session is done, not whether the tree looks
