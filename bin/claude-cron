@@ -375,6 +375,19 @@ is_due_vals() { # is_due_vals <interval> <last-start> <fail-streak> ; 0 = due
   [ "$(( $(now_epoch) - last ))" -ge "$interval" ]
 }
 
+# The session a run reported in its transcript. The id is what binds a run dir
+# to the conversation that owns it: a resume looks the directory up by this, so
+# the agent continues in the tree it was working in rather than in a fresh
+# checkout of the base. Only the head of the file is read — the id arrives in
+# the first event and never changes.
+session_from_stream() { # session_from_stream <streamfile>
+  local f="${1:-}"
+  [ -s "$f" ] || return 0
+  head -c 8192 "$f" 2>/dev/null \
+    | "$JQ" -r 'select(type=="object") | .session_id // empty' 2>/dev/null \
+    | head -1
+}
+
 # Is the agent's turn finished? True only when the LAST decodable event in the
 # transcript is a `result` — i.e. the agent has answered and is now waiting for
 # input. Deliberately a positive assertion on the file's current state: the
@@ -991,6 +1004,21 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   turn_is_over "$tmp/cut.ndjson";     want "truncated tail ignored"              0 $?
   turn_is_over "$tmp/decoy.ndjson";   want "the word 'result' in text is not an event" 1 $?
   turn_is_over "$tmp/missing.ndjson"; want "missing file is NOT killable"        1 $?
+
+  echo "session_from_stream() — the session id is read from the transcript's first event"
+  printf '%s\n' \
+    '{"type":"system","subtype":"init","session_id":"sess-abc123"}' \
+    '{"type":"assistant","message":{}}' > "$tmp/s1.ndjson"
+  got="$(session_from_stream "$tmp/s1.ndjson")"
+  [ "$got" = "sess-abc123" ] && ok "the init event's session is found" \
+    || bad "read '$got'"
+  printf '%s\n' '{"type":"assistant","message":{}}' > "$tmp/s2.ndjson"
+  got="$(session_from_stream "$tmp/s2.ndjson")"
+  [ -z "$got" ] && ok "a transcript with no session yet reports nothing" \
+    || bad "invented a session '$got'"
+  : > "$tmp/s3.ndjson"
+  got="$(session_from_stream "$tmp/s3.ndjson")"
+  [ -z "$got" ] && ok "an empty transcript reports nothing" || bad "read '$got' from nothing"
 
   echo "cpu_tree_sum() — a busy tool tree is proof of life, not a stall"
   # A run whose agent is quiet because a test suite is grinding away in a child
@@ -2422,7 +2450,7 @@ ${prompt}"
     fi
   fi
 
-  local start end stamp logfile streamfile precheckfile rc out cost turns session status port_base
+  local start end stamp logfile streamfile precheckfile rc out cost turns session status port_base sid_seen
   start="$(now_epoch)"
   # PID suffix keeps two same-second runs from clobbering each other's logs.
   stamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -2608,6 +2636,13 @@ If the work turns out to be already finished, or it can no longer be done at all
     local last_size=-1 last_cpu=-1 last_change now size cpu began poll=30
     began="$(now_epoch)"; last_change="$began"
     while kill -0 "$child" 2>/dev/null; do
+      # Bind this run dir to its session the moment the transcript names one.
+      # It has to happen while the run is alive: a run that crashes is exactly
+      # the one whose directory a resume will need to find again.
+      if [ -n "$run_dir" ] && [ ! -f "$run_dir/.session" ]; then
+        sid_seen="$(session_from_stream "$streamfile")"
+        [ -n "$sid_seen" ] && printf '%s\n' "$sid_seen" > "$run_dir/.session" 2>/dev/null || true
+      fi
       sleep "$poll"
       kill -0 "$child" 2>/dev/null || break
       now="$(now_epoch)"

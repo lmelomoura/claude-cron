@@ -19,6 +19,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A run directory now records the session working in it** (`.session`). The id
+  arrives in the transcript's first event and is written as soon as it is seen —
+  while the run is alive, because a run that crashes is exactly the one whose
+  directory has to be findable afterwards. Nothing reads it yet; it is what the
+  resume and the teardown below are built on.
+
 - **A precheck can tell "no work" apart from "I cannot see the work"**
   (`bin/board-probe.sh`). Both used to end the same way — zero keys and the line
   "nothing to do" — so a fleet whose Jira access had broken filed itself as idle,
