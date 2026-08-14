@@ -56,10 +56,14 @@ CLAUDE_CRON = str(BIN_DIR / "claude-cron")
 PORT = int(os.environ.get("CLAUDE_CRON_PORT", "8787"))
 PLIST_LABEL = "com.claude-cron.tick"
 SERVER_LABEL = "com.claude-cron.server"
-# Kept in step with the engine's own default (bin/worktree-lib.sh,
-# wt_prune_orphans): the dashboard must never promise a directory more time than
-# the sweep will give it.
-SESSION_TTL = int(os.environ.get("CLAUDE_CRON_SESSION_TTL") or 86400)
+# WORKTREE_SESSION_TTL, not SESSION_TTL: this module already has a SESSION_TTL,
+# and it is the HTTP sign-in idle timeout (12h). Two module-level assignments of
+# one name do not collide loudly — the later one silently wins at import, and
+# the dashboard would have counted every kept directory down against an auth
+# constant that has nothing to do with the sweep. Kept in step with the engine's
+# own default (bin/worktree-lib.sh, wt_prune_orphans): the dashboard must never
+# promise a directory more time than the sweep will give it.
+WORKTREE_SESSION_TTL = int(os.environ.get("CLAUDE_CRON_SESSION_TTL") or 86400)
 
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1416,7 +1420,7 @@ def retained_worktrees():
             # wrote one, and it is exactly the kind that sits there longest. The
             # sweep uses the same `!= done` test; these two must not disagree,
             # or the dashboard promises a reclaim that never comes.
-            expires_in = None if ended == "done" else max(0, SESSION_TTL - age)
+            expires_in = None if ended == "done" else max(0, WORKTREE_SESSION_TTL - age)
             out.append({"job": jobdir.name, "stamp": d.name, "path": str(d),
                         "age": age, "repos": repos, "bytes": bytes_,
                         "ended": ended, "expires_in": expires_in})

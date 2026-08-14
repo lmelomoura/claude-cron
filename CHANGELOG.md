@@ -260,6 +260,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The dashboard shows how long each has left, so the list reads as a queue with
   an end rather than a pile.
 
+  The dashboard's countdown reads `WORKTREE_SESSION_TTL`, not `SESSION_TTL`:
+  the control server already used that name for the HTTP sign-in idle timeout
+  (12h), and a second module-level assignment of one name does not fail — it
+  just wins silently at import, with the first one gone. `retained_worktrees()`
+  would have computed every `expires_in` against that unrelated 12-hour
+  constant instead of the sweep's real one, so the Expires column would have
+  read "due now" up to twelve hours before the sweep was ever going to reclaim
+  anything. A test asserting only `expires_in > 0` cannot see that; the fix
+  pins the actual number.
+
 - **A resume continues in the tree its session was working in.** `run_job`
   computed a fresh timestamp and cut new worktrees from the base with no special
   case for a resume at all — so `claude-cron resume` handed the agent a

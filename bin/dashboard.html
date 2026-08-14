@@ -3271,10 +3271,11 @@ async function deleteProjectFromModal(){
   pjWiz.markClean(); $("projmodal").close(); toast("Deleted project "+editingProject); refresh();
 }
 
-/* Run dirs kept back because an agent left work in them that exists nowhere
-   else. The engine is right to keep them, but it can never let go on its own —
-   so without this panel they pile up unseen until the disk is full, and the
-   work they were protecting is never noticed either. */
+/* Run dirs kept back because their session was cut short and a resume might
+   still return to them, with services left running. The engine reclaims one
+   on its own once the TTL is up — but without this panel they were invisible
+   until then, indistinguishable on screen from one nobody was ever coming
+   back for. */
 /* Run directories under data/worktrees that no live run has claimed.
    NOTE what the server actually knows: it lists every UNCLAIMED directory, not
    the ones git says hold unpushed work. A run cancelled before its agent

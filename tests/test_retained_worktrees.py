@@ -92,3 +92,29 @@ def test_a_closed_session_has_no_expiry_because_it_goes_next_sweep(clean_data):
     (d / ".ended").write_text("done\n")
     got = srv.retained_worktrees()[0]
     assert got["expires_in"] is None
+
+
+def test_a_dir_with_no_marker_at_all_is_also_on_the_clock(clean_data):
+    """A kill -9 or a reboot writes no marker. The engine expires anything that
+    is not `done`, so the dashboard has to agree — a directory it shows as
+    permanent while the sweep is counting it down is a lie in the other
+    direction."""
+    srv = clean_data
+    _mk_run_dir(srv, "eta", "s-unmarked")
+    got = srv.retained_worktrees()[0]
+    assert got["expires_in"] > 0
+
+
+def test_the_countdown_uses_the_worktree_ttl_and_not_some_other_one(clean_data):
+    """Pins the value, not just its sign. `SESSION_TTL` was already taken in
+    this module by the HTTP sign-in idle timeout, and a second module-level
+    assignment of that name loses silently — leaving the dashboard counting
+    every kept directory down against an auth constant. Asserting `> 0` cannot
+    see that; asserting the number can."""
+    srv = clean_data
+    d = _mk_run_dir(srv, "theta", "s-ttl")
+    (d / ".ended").write_text("open\n")
+    got = srv.retained_worktrees()[0]
+    # Freshly created, so age is 0 or 1 second.
+    assert srv.WORKTREE_SESSION_TTL - got["expires_in"] <= 2
+    assert srv.WORKTREE_SESSION_TTL == 86400

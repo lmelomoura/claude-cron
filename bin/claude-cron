@@ -1896,7 +1896,28 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   [ -f "$tmp/wtroot/jGone/orphan-down.log" ] \
     && ok "the manifest's project is what teardown uses, so down still fires" \
     || bad "a deleted job's services were left running for ever"
-  rm -f "$tmp/cfg/provision/two.down.sh" "$tmp/wtroot/jGone/orphan-down.log"
+
+  # And the OTHER half of that line. `wt_setup` always writes `.project`, so the
+  # assertion above can never reach the `job_get` fallback — it short-circuits
+  # every time. The fallback exists for a manifest that cannot answer (truncated,
+  # corrupt, or written before the field existed), so build one and prove it
+  # still finds a project.
+  rm -f "$tmp/wtroot/jGone/orphan-down.log"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup jFallback two "$tmp/g/repo" stampF2 ) >/dev/null 2>&1
+  "$JQ" 'del(.project)' "$tmp/wtroot/jFallback/stampF2/.run.json" \
+    > "$tmp/wtroot/jFallback/stampF2/.run.json.tmp" 2>/dev/null \
+    && mv "$tmp/wtroot/jFallback/stampF2/.run.json.tmp" \
+          "$tmp/wtroot/jFallback/stampF2/.run.json"
+  printf '%s' '{"jobs":[{"id":"jFallback","project":"two"}]}' > "$tmp/cfg/jobs.json"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; JOBS_FILE="$tmp/cfg/jobs.json"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"; CLAUDE_CRON_SESSION_TTL=0
+    wt_prune_orphans ) >/dev/null 2>&1
+  [ -f "$tmp/wtroot/jFallback/orphan-down.log" ] \
+    && ok "a manifest with no project falls back to the jobs file" \
+    || bad "the job_get fallback never supplied a project"
+  rm -f "$tmp/cfg/provision/two.down.sh" "$tmp/wtroot/jGone/orphan-down.log" \
+        "$tmp/wtroot/jFallback/orphan-down.log"
 
   echo "wt_prune_canonicals() — the path list survives spaces and a malformed entry"
   # The enumeration is the fragile half, so test it directly rather than through
