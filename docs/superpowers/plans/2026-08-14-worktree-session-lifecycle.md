@@ -598,6 +598,30 @@ Em `bin/claude-cron`, no selftest, imediatamente a seguir ao bloco `wt_prune_orp
   git -C "$tmp/g/repo" worktree list --porcelain 2>/dev/null | grep -q 'stampR' \
     && bad "the stale registration survived the prune" \
     || ok "the canonical checkout is clean again"
+
+  echo "wt_prune_canonicals() — the path list survives spaces and a malformed entry"
+  # The enumeration is the fragile half, so test it directly rather than through
+  # a git side effect: a path silently dropped here is a repo that is never
+  # pruned again, and nothing anywhere would say so.
+  mkdir -p "$tmp/proj"
+  cat > "$tmp/proj/nasty.json" <<'NASTY'
+{"projects":[
+ {"cwd":"/Users/Jane Doe/repo-a"},
+ {"cwd":"/Users/Jane"},
+ {"cwd":"/Users/Jane Doe/repo-a"},
+ {"repos":["not-an-object"],"cwd":"/tmp/malformed"},
+ {"repos":[{"path":"/tmp/api"},{"name":"no-path"}],"cwd":"/tmp/web"},
+ {"name":"no-cwd-at-all"},
+ {"cwd":null}
+]}
+NASTY
+  got="$("$JQ" -r '
+    .projects[]? | ((.repos // [])[]? | objects | .path), .cwd
+    | strings | select(. != "")' "$tmp/proj/nasty.json" 2>/dev/null | sort -u | tr '\n' '|')"
+  [ "$got" = "/Users/Jane|/Users/Jane Doe/repo-a|/tmp/api|/tmp/malformed|/tmp/web|" ] \
+    && ok "a home dir with a space is its own path, and one bad entry drops only itself" \
+    || bad "the path list came out as '$got'"
+  rm -f "$tmp/proj/nasty.json"
 ```
 
 - [ ] **Step 2: Run the selftest to verify it fails**
@@ -618,14 +642,26 @@ Em `bin/worktree-lib.sh`, imediatamente **antes** de `wt_is_claimed()` (`:448`),
 # still believes the branch is checked out, so the canonical cannot have it back.
 # Pruning is idempotent and costs a fork per repo per tick.
 wt_prune_canonicals() {
-  local path seen=""
+  local path
+  # `sort -u` is the de-duplication (a repo two projects share is pruned once).
+  # Accumulating seen paths in a space-delimited string and matching them with a
+  # glob is the obvious alternative and it is wrong on this platform: a macOS
+  # home directory routinely has a space in it, and `/Users/Jane` then matches
+  # inside `/Users/Jane Doe/repo-a`, so a real second checkout is silently
+  # skipped for ever. A whole line is a whole path, so sorting lines cannot
+  # make that mistake.
+  #
+  # `objects` and `strings` are load-bearing too. A single malformed entry —
+  # `"repos": ["not-an-object"]` — makes jq exit 5 mid-stream, and with the
+  # error swallowed by 2>/dev/null every project declared AFTER it silently
+  # stops being pruned. Filtering by type keeps one bad entry from taking its
+  # neighbours down with it.
   while IFS= read -r path; do
     [ -n "$path" ] && [ -d "$path" ] || continue
-    case " $seen " in *" $path "*) continue ;; esac   # a repo shared by two projects
-    seen="$seen $path"
     git -C "$path" worktree prune >/dev/null 2>&1 || true
   done < <(projects_json | "$JQ" -r '
-    .projects[]? | (.repos // [] | .[].path), .cwd | select(. != null and . != "")' 2>/dev/null)
+    .projects[]? | ((.repos // [])[]? | objects | .path), .cwd
+    | strings | select(. != "")' 2>/dev/null | sort -u)
 }
 ```
 
