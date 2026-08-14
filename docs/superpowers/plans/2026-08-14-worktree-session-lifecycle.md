@@ -78,14 +78,14 @@ caso, dizê-lo no relatório.
 Em `bin/claude-cron`, dentro da função de selftest, imediatamente **antes** da linha `echo "wt_prune_orphans() — an unclaimed run dir is reaped, a claimed one is not"` (`bin/claude-cron:1309`), inserir:
 
 ```bash
-  echo "boot_id() — the boot second, not the microseconds beside it"
+  echo "boot_id() — an opaque per-boot identity, stable within one boot"
   got="$(boot_id)"
   case "$got" in
-    ''|*[!0-9]*) bad "boot_id printed '$got'" ;;
-    *) [ "${#got}" -ge 10 ] \
-         && ok "it is an epoch second, so an unanchored match on 'usec' is out" \
-         || bad "boot_id printed '$got', which is too short to be an epoch second" ;;
+    *-*-*-*-*) ok "it is a boot session uuid, not a timestamp that a clock step moves" ;;
+    *) bad "boot_id printed '$got', which is not a uuid" ;;
   esac
+  [ "$got" = "$(CC_BOOT_ID=""; boot_id)" ] \
+    && ok "and two reads inside one boot agree" || bad "boot_id is not stable"
 
   echo "slot_alive() — a lease is pinned to the boot it was taken in"
   mkdir -p "$tmp/locks/j8/$$"
@@ -137,17 +137,20 @@ Em `bin/claude-cron`, imediatamente **a seguir** a `lock_drop() { rm -rf "${1:-}
 # process. Managed Agents has no equivalent bug because its claims are
 # server-side leases with an expiry; ours are directories, so they carry the
 # boot themselves.
+# `kern.bootsessionuuid`, NOT `kern.boottime`. The obvious identifier is the
+# boot time, and it is wrong: XNU shifts `kern.boottime` whenever the calendar
+# clock is stepped — NTP resync, wake from sleep — so that uptime stays
+# monotonic. Comparing it exactly would then declare every slot taken before
+# the step to be from another boot, and every consequence of that runs the
+# WRONG WAY: a live run's slot deleted and its worktree swept out from under
+# it, its port block handed to somebody else. Widening the compare to a
+# tolerance would paper over it; the boot session UUID has no such behaviour to
+# tolerate. It is opaque, so there is also no field to parse and no greedy
+# pattern to get wrong.
 CC_BOOT_ID=""
 boot_id() {
   if [ -z "$CC_BOOT_ID" ]; then
-    # ANCHOR THE PATTERN. `kern.boottime` prints
-    #   { sec = 1786677896, usec = 71358 } Fri Aug 14 04:24:56 2026
-    # and an unanchored `.*sec` is greedy: it walks straight past `sec` into
-    # `usec` and captures the microseconds. That value happens to be constant
-    # per boot too, so the lease would have worked by accident while meaning
-    # something else entirely — and no test here would have noticed.
-    CC_BOOT_ID="$(sysctl -n kern.boottime 2>/dev/null \
-                  | sed -n 's/^[^0-9]*sec *= *\([0-9][0-9]*\).*/\1/p')"
+    CC_BOOT_ID="$(sysctl -n kern.bootsessionuuid 2>/dev/null | tr -d '[:space:]')"
   fi
   printf '%s\n' "$CC_BOOT_ID"
 }
@@ -339,13 +342,12 @@ def boot_id():
     global _BOOT_ID
     if _BOOT_ID is None:
         try:
-            out = subprocess.run(["sysctl", "-n", "kern.boottime"],
+            out = subprocess.run(["sysctl", "-n", "kern.bootsessionuuid"],
                                  capture_output=True, text=True,
                                  timeout=5).stdout
         except (OSError, subprocess.SubprocessError):
             out = ""
-        m = re.search(r"sec\s*=\s*(\d+)", out)
-        _BOOT_ID = m.group(1) if m else ""
+        _BOOT_ID = out.strip()
     return _BOOT_ID
 
 
