@@ -1627,7 +1627,9 @@ O último fio solto: uma sessão aberta que ninguém retoma. Sem TTL, a Tarefa 6
 
 **Interfaces:**
 - Consumes: `.ended` (Tarefa 6), `slot_alive` (Tarefa 1).
-- Produces: `CLAUDE_CRON_SESSION_TTL` (segundos, default `86400`). Cada linha de `retained_worktrees()` ganha `expires_in` (segundos até à expiração; `0` quando já expirou; `null` quando a sessão está fechada e vai na próxima varredura).
+- Produces: `CLAUDE_CRON_SESSION_TTL` (segundos, default `86400`). Cada linha de `retained_worktrees()` ganha `expires_in` (segundos até à expiração; `0` quando já expirou; `null` **apenas** quando o marcador diz `done`, isto é, quando a sessão vai na próxima varredura).
+- **O teste é `!= "done"`, nunca `= "open"`**, e nos dois lados (motor e servidor). A Tarefa 6 deixa o teardown a guardar tudo o que não seja explicitamente `done` — incluindo um directório **sem marcador nenhum**, que é o caso do `kill -9`, do OOM e do reboot. Expirar só os que dizem `open` deixaria precisamente esses a falhar os dois testes e a ficar para sempre, e tornaria mentira o comentário do `wt_teardown` que diz que o TTL fecha isto.
+- `cmd_worktree_drop` também resolve o projecto pelo `job_get`, e tem o mesmo problema que o sweep: um job apagado resolve para projecto vazio, o `wt_provision` procura `provision/.down.sh`, não encontra nada, e não desliga nada. Aplicar-lhe a mesma leitura do manifesto — e são precisamente os directórios de jobs apagados que mais provavelmente acabam num Discard manual.
 
 - [ ] **Step 1: Write the failing selftest assertion**
 
@@ -1706,14 +1708,23 @@ wt_prune_orphans() {
       # several concurrent runs) said "nobody owns this" for worktrees that were
       # very much in use — and the sweep deleted them out from under the agents.
       wt_is_claimed "$id" "$d" && continue
-      if [ "$(cat "$d/.ended" 2>/dev/null || true)" = "open" ]; then
-        age="$(( now - $(num "$(wt_mtime "$d")" "$now") ))"
-        [ "$age" -lt "$ttl" ] && continue
-        # Out of time. Close it, so the teardown below treats it as any other
-        # finished run: `down` for every repo, then gone.
-        printf 'done\n' > "$d/.ended" 2>/dev/null || true
-        log_tick "$id: session in $d expired after ${age}s with nobody resuming it"
-      fi
+      # `!= done`, NOT `= open`. The Tarefa 6 teardown keeps anything that is
+      # not explicitly `done`, and that deliberately includes a dir with NO
+      # marker at all — the SIGKILL, OOM and reboot case, where no exit path
+      # ever ran. Expiring only the ones that say `open` would leave exactly
+      # those unmarked dirs failing both tests, kept for ever, and would make
+      # the comment in wt_teardown that says the TTL closes this into a lie.
+      case "$(cat "$d/.ended" 2>/dev/null || true)" in
+        done) ;;
+        *)
+          age="$(( now - $(num "$(wt_mtime "$d")" "$now") ))"
+          [ "$age" -lt "$ttl" ] && continue
+          # Out of time. Close it, so the teardown below treats it as any other
+          # finished run: `down` for every repo, then gone.
+          printf 'done\n' > "$d/.ended" 2>/dev/null || true
+          log_tick "$id: session in $d expired after ${age}s with nobody resuming it"
+          ;;
+      esac
       # The project comes from the MANIFEST, not from job_get. `job_get` reads
       # the live `config/jobs.json`, so a job deleted or renamed while one of
       # its run dirs was still on disk resolved to an empty project — and an
@@ -1789,7 +1800,12 @@ por:
                 ended = (d / ".ended").read_text().strip()
             except OSError:
                 ended = ""
-            expires_in = max(0, SESSION_TTL - age) if ended == "open" else None
+            # Anything the engine has not marked `done` is on the expiry clock,
+            # including a dir with no marker at all — a run killed with -9 never
+            # wrote one, and it is exactly the kind that sits there longest. The
+            # sweep uses the same `!= done` test; these two must not disagree,
+            # or the dashboard promises a reclaim that never comes.
+            expires_in = None if ended == "done" else max(0, SESSION_TTL - age)
             out.append({"job": jobdir.name, "stamp": d.name, "path": str(d),
                         "age": age, "repos": repos, "bytes": bytes_,
                         "ended": ended, "expires_in": expires_in})
