@@ -29,7 +29,8 @@
 # projects.json entry, never a code change here.
 #
 # Depends on the sourcing script for: JQ, CONFIG_DIR, DATA_DIR, WORKTREES_DIR, LOCK_DIR,
-# projects_json, project_get, job_get, resolve, lock_active, state_get, log_tick.
+# projects_json, project_get, job_get, resolve, lock_active, slot_alive, state_get,
+# log_tick, num, now_epoch.
 # Targets bash 3.2 (macOS system bash) under `set -u`: no mapfile, no
 # associative arrays, empty arrays expanded as ${a[@]+"${a[@]}"}.
 # ---------------------------------------------------------------------------
@@ -447,12 +448,11 @@ wt_prune_orphans() {
 # Is this run dir the working directory of a run that is alive right now?
 wt_is_claimed() { # <id> <run dir>
   local id="$1" wt="$2"
-  local base="$LOCK_DIR/$id" slot pid owner
+  local base="$LOCK_DIR/$id" slot owner
   [ -d "$base" ] || return 1
   for slot in "$base"/*/; do
     [ -d "$slot" ] || continue
-    pid="$(cat "$slot/pid" 2>/dev/null || true)"
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || continue
+    slot_alive "${slot%/}" || continue
     owner="$(cat "$slot/worktree" 2>/dev/null || true)"
     [ "$owner" = "$wt" ] && return 0
   done

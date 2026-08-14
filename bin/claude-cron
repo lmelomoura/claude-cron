@@ -218,6 +218,48 @@ lock_take() { # lock_take <lockdir> — blocks until held; always succeeds
 }
 lock_drop() { rm -rf "${1:-}"; }   # rm -rf, not rmdir: the dir holds a pid file
 
+# A slot is a LEASE, and a pid alone cannot express one. $LOCK_DIR lives under
+# data/, so every slot survives a reboot — and the kernel reissues pids from 1
+# on the way up, so a recycled pid makes a dead slot answer `kill -0`. That one
+# false positive leaked three ways at once: it counted a phantom against
+# max_parallel (the job simply stopped running, with nothing saying why), it kept
+# an orphaned worktree unreapable, and it held a port block for good. Pinning the
+# lease to the boot it was taken in is what makes "this process" mean the same
+# process. Managed Agents has no equivalent bug because its claims are
+# server-side leases with an expiry; ours are directories, so they carry the
+# boot themselves.
+CC_BOOT_ID=""
+boot_id() {
+  if [ -z "$CC_BOOT_ID" ]; then
+    # ANCHOR THE PATTERN. `kern.boottime` prints
+    #   { sec = 1786677896, usec = 71358 } Fri Aug 14 04:24:56 2026
+    # and an unanchored `.*sec` is greedy: it walks straight past `sec` into
+    # `usec` and captures the microseconds. That value happens to be constant
+    # per boot too, so the lease would have worked by accident while meaning
+    # something else entirely — and no test here would have noticed.
+    CC_BOOT_ID="$(sysctl -n kern.boottime 2>/dev/null \
+                  | sed -n 's/^[^0-9]*sec *= *\([0-9][0-9]*\).*/\1/p')"
+  fi
+  printf '%s\n' "$CC_BOOT_ID"
+}
+
+# 0 = the process this slot names is still the process that took it.
+slot_alive() { # slot_alive <slot-dir>
+  local slot="${1:-}" pid boot now
+  [ -d "$slot" ] || return 1
+  pid="$(cat "$slot/pid" 2>/dev/null || true)"
+  [ -n "$pid" ] || return 1
+  boot="$(cat "$slot/boot" 2>/dev/null || true)"
+  now="$(boot_id)"
+  # A slot from an earlier boot is dead however healthy its pid looks. One with
+  # no boot file at all predates this change: fall back to the pid alone, so an
+  # upgrade does not reap the runs it finds in flight.
+  if [ -n "$boot" ] && [ -n "$now" ] && [ "$boot" != "$now" ]; then
+    return 1
+  fi
+  kill -0 "$pid" 2>/dev/null
+}
+
 # Serialize state writes: detached runs execute in parallel, and state_set is a
 # read-modify-write on one shared file, so two of them racing would drop a field.
 _state_lock()   { lock_take "$LOCK_DIR/.state.lock"; }
@@ -492,14 +534,13 @@ acquire_lock() { # 0 = acquired
   local id="$1" pid
   local lock="$LOCK_DIR/$id"
   if mkdir "$lock" 2>/dev/null; then
-    echo $$ > "$lock/pid"; return 0
+    echo $$ > "$lock/pid"; boot_id > "$lock/boot"; return 0
   fi
-  pid="$(cat "$lock/pid" 2>/dev/null)"
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+  if slot_alive "$lock"; then
     return 1                      # a previous run is still going
   fi
-  rm -rf "$lock"                  # stale lock from a killed run
-  mkdir "$lock" 2>/dev/null && { echo $$ > "$lock/pid"; return 0; }
+  rm -rf "$lock"                  # stale lock from a killed run, or an old boot
+  mkdir "$lock" 2>/dev/null && { echo $$ > "$lock/pid"; boot_id > "$lock/boot"; return 0; }
   return 1
 }
 
@@ -521,12 +562,11 @@ slots_dir() { echo "$LOCK_DIR/$1"; }     # base dir holding a job's run slots
 
 slots_active() { # <id> -> prints count of live slots; prunes dead ones
   local id="$1"                           # separate stmt: $id must exist before...
-  local base="$LOCK_DIR/$id" d pid n=0    # ...it is expanded here (set -u)
+  local base="$LOCK_DIR/$id" d n=0        # ...it is expanded here (set -u)
   [ -d "$base" ] || { echo 0; return 0; }
   for d in "$base"/*/; do                # glob skips the dotfile mutex (.acq)
     [ -d "$d" ] || continue
-    pid="$(cat "$d/pid" 2>/dev/null || true)"
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then n=$((n + 1)); else rm -rf "$d"; fi
+    if slot_alive "${d%/}"; then n=$((n + 1)); else rm -rf "$d"; fi
   done
   echo "$n"
 }
@@ -541,7 +581,7 @@ acquire_slot() { # <id> <max> -> prints the slot dir; non-zero when at capacity
   n="$(slots_active "$id")"              # also prunes dead slots
   if [ "$max" -gt 0 ] && [ "$n" -ge "$max" ]; then lock_drop "$L"; return 1; fi
   slot="$base/$$"                        # unique per _exec process
-  mkdir -p "$slot"; echo $$ > "$slot/pid"
+  mkdir -p "$slot"; echo $$ > "$slot/pid"; boot_id > "$slot/boot"
   lock_drop "$L"
   printf '%s\n' "$slot"
 }
@@ -577,7 +617,7 @@ alloc_port_base() { # <slot-dir> -> prints the base port
     [ "$d" = "$slot/" ] && continue
     # A slot whose pid is gone holds nothing: the sweep has not reached it yet,
     # and treating it as live would shrink the pool for no reason.
-    kill -0 "$(cat "$d/pid" 2>/dev/null || echo 0)" 2>/dev/null || continue
+    slot_alive "${d%/}" || continue
     b="$(cat "$d/portbase" 2>/dev/null || true)"
     [ -n "$b" ] && taken="$taken $b"
   done
@@ -664,10 +704,7 @@ run_cleanup() { # <id> <slot-dir>
 }
 
 lock_active() { # 0 = a run is currently holding the lock for <id> (single mutex)
-  local lock="$LOCK_DIR/$1" pid
-  [ -d "$lock" ] || return 1
-  pid="$(cat "$lock/pid" 2>/dev/null)"
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+  slot_alive "$LOCK_DIR/$1"
 }
 
 # ------------------------------------------------------------------ run a job
@@ -1306,6 +1343,44 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   want "a file the agent added after provisioning DOES preserve it" 0 $?
   rm -f "$tmp/cfg/provision/two.up.sh"
 
+  echo "boot_id() — the boot second, not the microseconds beside it"
+  got="$(boot_id)"
+  case "$got" in
+    ''|*[!0-9]*) bad "boot_id printed '$got'" ;;
+    *) [ "${#got}" -ge 10 ] \
+         && ok "it is an epoch second, so an unanchored match on 'usec' is out" \
+         || bad "boot_id printed '$got', which is too short to be an epoch second" ;;
+  esac
+
+  echo "slot_alive() — a lease is pinned to the boot it was taken in"
+  mkdir -p "$tmp/locks/j8/$$"
+  echo $$ > "$tmp/locks/j8/$$/pid"
+  boot_id > "$tmp/locks/j8/$$/boot"
+  ( LOCK_DIR="$tmp/locks"; slot_alive "$tmp/locks/j8/$$" )
+  want "this process's own slot, stamped with this boot, is alive" 0 $?
+  echo "0" > "$tmp/locks/j8/$$/boot"
+  ( LOCK_DIR="$tmp/locks"; slot_alive "$tmp/locks/j8/$$" )
+  want "the same live pid from an earlier boot is dead" 1 $?
+  rm -f "$tmp/locks/j8/$$/boot"
+  ( LOCK_DIR="$tmp/locks"; slot_alive "$tmp/locks/j8/$$" )
+  want "a slot with no boot file predates this and falls back to the pid" 0 $?
+  rm -rf "$tmp/locks/j8"
+
+  echo "wt_is_claimed() — a claim from an earlier boot holds nothing"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup j8 two "$tmp/g/repo" stampBoot ) >/dev/null 2>&1
+  mkdir -p "$tmp/locks/j8/$$"
+  echo $$ > "$tmp/locks/j8/$$/pid"
+  echo "0" > "$tmp/locks/j8/$$/boot"
+  echo "$tmp/wtroot/j8/stampBoot" > "$tmp/locks/j8/$$/worktree"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
+    wt_prune_orphans ) >/dev/null 2>&1
+  [ ! -d "$tmp/wtroot/j8/stampBoot" ] \
+    && ok "a run dir claimed only by a pre-reboot slot is reaped" \
+    || bad "a stale pre-reboot claim kept an orphan alive"
+  rm -rf "$tmp/locks/j8"
+
   echo "wt_prune_orphans() — an unclaimed run dir is reaped, a claimed one is not"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
     wt_setup j3 two "$tmp/g/repo" stampD ) >/dev/null 2>&1
@@ -1604,6 +1679,26 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   [ "$got" = "1" ] && ok "a run nobody stopped is left alone" || bad "$got rows after a no-op"
   rm -rf "$tmp/locks/j9"
 
+  echo "_stop_slot() — a live pid from an earlier boot is cleared, never signalled"
+  # Same reboot-recycled-pid risk slot_alive exists for, but with teeth: the old
+  # bare kill -0 here did not just miscount a slot, it aimed a real TERM at
+  # whatever unrelated process the kernel had since handed that pid to.
+  sleep 60 & local bgpid=$!
+  mkdir -p "$tmp/locks/j9/$bgpid"
+  echo "$bgpid" > "$tmp/locks/j9/$bgpid/pid"
+  echo "0" > "$tmp/locks/j9/$bgpid/boot"
+  _stop_slot j9 "$tmp/locks/j9/$bgpid" >/dev/null 2>&1
+  # A TERM just sent is not necessarily a TERM already delivered: give the
+  # kernel a moment before asking whether the process is still there, so a
+  # signal in flight cannot read as "never sent".
+  sleep 0.3
+  kill -0 "$bgpid" 2>/dev/null
+  want "a live pid from an earlier boot is left running, not TERM'd" 0 $?
+  [ ! -d "$tmp/locks/j9/$bgpid" ] && ok "its stale slot is cleared instead" \
+    || bad "the stale slot survived the stop"
+  kill "$bgpid" 2>/dev/null; wait "$bgpid" 2>/dev/null
+  rm -rf "$tmp/locks/j9"
+
   echo "alloc_port_base() — two live runs never get the same ports"
   # Isolation settles the filesystem and says nothing about ports: two runs of
   # one repo each publish 5432 and the second dies on "address already in use",
@@ -1779,8 +1874,8 @@ cmd_runs() { # <id> — one active run per line: <run-pid>\t<agent-pid>\t<logfil
   [ -d "$base" ] || return 0
   for d in "$base"/*/; do
     [ -d "$d" ] || continue
+    slot_alive "${d%/}" || { rm -rf "$d"; continue; }
     pid="$(cat "$d/pid" 2>/dev/null || true)"
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || { rm -rf "$d"; continue; }
     child="$(cat "$d/child" 2>/dev/null || true)"
     logf="$(cat "$d/logfile" 2>/dev/null || true)"
     printf '%s\t%s\t%s\n' "$pid" "$child" "$logf"
@@ -1815,7 +1910,11 @@ _stop_slot() { # <id> <slot-dir>
   case "$rpid" in
     ''|*[!0-9]*) echo "run of $id has no usable pid; clearing its slot"; release_slot "$slot"; return 0 ;;
   esac
-  if kill -0 "$rpid" 2>/dev/null; then
+  # slot_alive, not a bare kill -0: rpid is only ever the pid this slot was
+  # taken by, and the same reboot-recycling that makes a dead slot answer
+  # kill -0 would otherwise point this TERM at whatever unrelated process the
+  # kernel handed that number to next.
+  if slot_alive "$slot"; then
     kill -TERM "$rpid" 2>/dev/null
     echo "stopping $id run $rpid (before its agent started)"
   else

@@ -235,6 +235,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A run slot is a lease pinned to a boot, not a bare pid.** `data/locks` lives
+  under `data/`, so slots survive a reboot — and the kernel reissues pids from 1
+  on the way up, so a recycled pid made a dead slot answer `kill -0`. One false
+  positive leaked three ways at once: the phantom counted against `max_parallel`
+  and the job silently stopped running with nothing on the card saying why; the
+  sweep read the orphaned worktree as claimed and never reaped it; and the port
+  block it named was never handed back. Every slot now records the boot it was
+  taken in, and a slot from an earlier boot is dead however healthy its pid
+  looks. Slots written before this change carry no boot and still fall back to
+  the pid, so an upgrade does not reap the runs it finds in flight.
+
 - **A run's transcript is no longer deleted when nothing was stored.** A
   37-minute, $7.27 reviewer run had no timeline, no answer and no terminal, and
   was filed as success. Two defects combined: the artifact reader wrapped four

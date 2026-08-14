@@ -1236,9 +1236,10 @@ def active_runs_for(jid):
     for d in sorted(base.iterdir()):
         if not d.is_dir() or d.name.startswith("."):
             continue
+        if not slot_alive(d):
+            continue
         try:
             pid = int((d / "pid").read_text().strip())
-            os.kill(pid, 0)  # alive?
         except (OSError, ValueError):
             continue
         def _read(name):
@@ -1294,6 +1295,50 @@ def _session_from_log(logp):
     return ""
 
 
+_BOOT_ID = None
+
+
+def boot_id():
+    """The boot this machine is in, as the engine stamps it onto every slot.
+
+    Slots live under data/ and survive a reboot; pids are reissued from 1 on the
+    way up. Without the boot, a recycled pid makes a dead slot look live — and
+    the dashboard then hides a run dir nobody owns from the only list that
+    offers to discard it.
+    """
+    global _BOOT_ID
+    if _BOOT_ID is None:
+        try:
+            out = subprocess.run(["sysctl", "-n", "kern.boottime"],
+                                 capture_output=True, text=True,
+                                 timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+        m = re.search(r"sec\s*=\s*(\d+)", out)
+        _BOOT_ID = m.group(1) if m else ""
+    return _BOOT_ID
+
+
+def slot_alive(slot):
+    """Is the process this slot names still the process that took it?"""
+    try:
+        pid = int((slot / "pid").read_text().strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        boot = (slot / "boot").read_text().strip()
+    except OSError:
+        boot = ""       # predates the boot id: fall back to the pid alone
+    now = boot_id()
+    if boot and now and boot != now:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 def retained_worktrees():
     """Run dirs sitting on disk that no live run is using.
 
@@ -1318,10 +1363,7 @@ def retained_worktrees():
             for slot in jobdir.iterdir():
                 if not slot.is_dir() or slot.name.startswith("."):
                     continue
-                try:
-                    pid = int((slot / "pid").read_text().strip())
-                    os.kill(pid, 0)
-                except (OSError, ValueError):
+                if not slot_alive(slot):
                     continue           # dead slot: whatever it named is nobody's
                 try:
                     claimed.add((slot / "worktree").read_text().strip())
