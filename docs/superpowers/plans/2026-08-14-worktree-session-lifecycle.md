@@ -715,12 +715,31 @@ Em `bin/claude-cron`, no selftest, junto das outras asserções sobre transcript
 
 ```bash
   echo "session_from_stream() — the session id is read from the transcript's first event"
+  # Absence has to be caught explicitly: a missing function prints to stderr and
+  # yields an EMPTY stdout, which is exactly what the negative assertions below
+  # accept. Without this line, deleting the reader outright would leave two of
+  # the three still reporting ok.
+  type session_from_stream >/dev/null 2>&1 \
+    && ok "the reader is defined" || bad "session_from_stream does not exist"
   printf '%s\n' \
     '{"type":"system","subtype":"init","session_id":"sess-abc123"}' \
     '{"type":"assistant","message":{}}' > "$tmp/s1.ndjson"
   got="$(session_from_stream "$tmp/s1.ndjson")"
   [ "$got" = "sess-abc123" ] && ok "the init event's session is found" \
     || bad "read '$got'"
+
+  # A fixed byte window would silently lose this one for good: the transcript is
+  # append-only, so a first event that does not fit never starts fitting.
+  { printf '{"type":"system","subtype":"init","session_id":"sess-big","tools":['
+    i=0; while [ "$i" -lt 900 ]; do printf '"a-tool-with-a-long-name-%s",' "$i"; i=$((i+1)); done
+    printf '"last"]}\n'
+    printf '%s\n' '{"type":"assistant","message":{}}'
+  } > "$tmp/s4.ndjson"
+  [ "$(wc -c < "$tmp/s4.ndjson" | tr -d ' ')" -gt 8192 ] \
+    && ok "the fixture init event really is over 8 KB" || bad "the fixture is too small to prove anything"
+  got="$(session_from_stream "$tmp/s4.ndjson")"
+  [ "$got" = "sess-big" ] && ok "an init event bigger than 8 KB is still read" \
+    || bad "read '$got' from a large init event"
   printf '%s\n' '{"type":"assistant","message":{}}' > "$tmp/s2.ndjson"
   got="$(session_from_stream "$tmp/s2.ndjson")"
   [ -z "$got" ] && ok "a transcript with no session yet reports nothing" \
@@ -728,6 +747,26 @@ Em `bin/claude-cron`, no selftest, junto das outras asserções sobre transcript
   : > "$tmp/s3.ndjson"
   got="$(session_from_stream "$tmp/s3.ndjson")"
   [ -z "$got" ] && ok "an empty transcript reports nothing" || bad "read '$got' from nothing"
+
+  echo "bind_session() — one shot, atomic, and a no-op without a run dir"
+  mkdir -p "$tmp/rd1"
+  bind_session "$tmp/rd1" "$tmp/s1.ndjson"
+  [ "$(cat "$tmp/rd1/.session" 2>/dev/null)" = "sess-abc123" ] \
+    && ok "it writes the session it found" || bad "wrote '$(cat "$tmp/rd1/.session" 2>/dev/null)'"
+  # A later transcript must not move a binding that already exists: the run dir
+  # belongs to the session that claimed it.
+  bind_session "$tmp/rd1" "$tmp/s4.ndjson"
+  [ "$(cat "$tmp/rd1/.session" 2>/dev/null)" = "sess-abc123" ] \
+    && ok "a second call never rebinds it" || bad "the binding moved"
+  [ -z "$(ls "$tmp/rd1"/.session.* 2>/dev/null)" ] \
+    && ok "and leaves no temp file behind" || bad "a .session.* temp survived"
+  mkdir -p "$tmp/rd2"
+  bind_session "$tmp/rd2" "$tmp/s3.ndjson"
+  [ ! -f "$tmp/rd2/.session" ] \
+    && ok "a transcript with no session writes no file at all" || bad "bound an empty session"
+  bind_session "" "$tmp/s1.ndjson"
+  want "an empty run dir is a no-op, not a write to /.session" 0 $?
+  [ ! -f "/.session" ] && ok "and nothing landed at the filesystem root" || bad "wrote /.session"
 ```
 
 - [ ] **Step 2: Run the selftest to verify it fails**
@@ -748,29 +787,63 @@ Em `bin/claude-cron`, imediatamente **antes** de `turn_is_over()`, inserir:
 session_from_stream() { # session_from_stream <streamfile>
   local f="${1:-}"
   [ -s "$f" ] || return 0
-  head -c 8192 "$f" 2>/dev/null \
+  # By LINES, not by a byte window. A fixed `head -c` looks safe and is not:
+  # the init event carries the run's whole tool roster, and with a few MCP
+  # servers attached it passes 8 KB on its own — jq then never finishes parsing
+  # that first object and emits nothing at all. The transcript is append-only,
+  # so those first bytes never change: the miss would be permanent, not a
+  # transient the next poll recovers from.
+  head -n 5 "$f" 2>/dev/null \
     | "$JQ" -r 'select(type=="object") | .session_id // empty' 2>/dev/null \
     | head -1
+}
+
+# Bind a run dir to its session, once. Idempotent, cheap, and safe to call from
+# anywhere: it stops looking the moment the file exists.
+#
+# Written through a temp file and renamed, because a later task looks a run dir
+# up BY this file while runs are live — and a reader that catches a plain
+# `>` redirection between create and write sees a zero-byte file.
+bind_session() { # bind_session <run_dir> <streamfile>
+  local rd="${1:-}" sf="${2:-}" sid tmp
+  [ -n "$rd" ] && [ -d "$rd" ] || return 0
+  [ -f "$rd/.session" ] && return 0
+  sid="$(session_from_stream "$sf")"
+  [ -n "$sid" ] || return 0
+  tmp="$rd/.session.$$"
+  printf '%s\n' "$sid" > "$tmp" 2>/dev/null || return 0
+  mv -f "$tmp" "$rd/.session" 2>/dev/null || rm -f "$tmp"
 }
 ```
 
 - [ ] **Step 4: Bind the run dir to the session as soon as it is known**
 
-Em `bin/claude-cron`, no ciclo do watchdog dentro de `run_job` (o `while kill -0 "$child"` que vigia `$streamfile`), inserir no topo do corpo do ciclo:
+A ligação tem de acontecer em **dois** sítios, e os dois são precisos.
+
+**(a) No ciclo do watchdog**, no topo do corpo — o `while kill -0 "$child"` que vigia `$streamfile` e que tanto os runs interactivos como os não-interactivos atravessam:
 
 ```bash
-      # Bind this run dir to its session the moment the transcript names one.
-      # It has to happen while the run is alive: a run that crashes is exactly
-      # the one whose directory a resume will need to find again.
-      if [ -n "$run_dir" ] && [ ! -f "$run_dir/.session" ]; then
-        sid_seen="$(session_from_stream "$streamfile")"
-        [ -n "$sid_seen" ] && printf '%s\n' "$sid_seen" > "$run_dir/.session" 2>/dev/null || true
-      fi
+      # Bind this run dir to its session the moment the transcript names one,
+      # so a machine that goes down mid-run still leaves the directory findable.
+      bind_session "$run_dir" "$streamfile"
 ```
 
-Declarar `sid_seen` na lista de `local` no topo de `run_job` (a linha que já declara `start end stamp logfile streamfile …`), acrescentando ` sid_seen` ao fim.
+**(b) Imediatamente a seguir a `wait "$child"; rc=$?`**, depois de o watchdog ser recolhido:
 
-**Nota para o executor:** `run_job` tem mais do que um ciclo de vigilância — o interactivo e o não-interactivo. O bloco acima vai **no ciclo do watchdog que ambos atravessam** (o que faz `kill -0 "$child"` e mede o crescimento de `$streamfile`). Se existirem dois, inserir em ambos: a escrita é idempotente e guardada por `[ ! -f ]`.
+```bash
+  # Again, now that the transcript is final. The watchdog polls every 30s and
+  # its first pass runs before the child has even exec'd, so a run that dies
+  # inside that first window would otherwise never be bound — and a run that
+  # dies early is exactly the one a resume is for. Here the file is static and
+  # complete, so this pass cannot miss what the polling one raced.
+  bind_session "$run_dir" "$streamfile"
+```
+
+**Porque é que (a) sozinho não chega** — e isto foi medido, não suposto. O watchdog tem `poll=30`. A primeira iteração corre a t≈0, quando o filho acabou de ser criado e ainda não escreveu nada; depois adormece 30 s; e se o filho morrer durante esse sono, o `kill -0 "$child" 2>/dev/null || break` a seguir ao `sleep` sai do ciclo **sem voltar a passar pelo topo**. Não havia mais nenhuma chamada depois. Resultado: todo o run que rebentasse entre o primeiro segundo e os 30 s ficava sem `.session`, com o id à espera no transcript em disco.
+
+**Porque é que (b) sozinho também não chega:** um `kill -9` no processo do run, ou a máquina a desligar-se, nunca chegam ao `wait`. (a) é o que cobre isso — escreve cedo, enquanto há quem escreva.
+
+Nada disto precisa de uma variável nova em `run_job`: `bind_session` guarda o seu próprio estado no ficheiro.
 
 - [ ] **Step 5: Run the selftest to verify it passes**
 
