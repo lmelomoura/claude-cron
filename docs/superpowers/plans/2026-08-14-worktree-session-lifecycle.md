@@ -1215,7 +1215,17 @@ wt_teardown() { # <id> <project> <run dir>
 
 - [ ] **Step 4: Mark how the run ended**
 
-Em `bin/claude-cron`, dentro de `run_job`, imediatamente **a seguir** ao bloco que insere a regra `UNDELIVERED` (Tarefa 5, passo 8) e **antes** de `local cap`, inserir:
+Em `bin/claude-cron`, dentro de `run_job`, **depois de o classificador estar completo** e antes de o resultado ser consumido. Concretamente: imediatamente a seguir ao `esac` que fecha o bloco `UNDELIVERED` da Tarefa 5 — que é a última regra do classificador — e imediatamente **antes** da linha
+
+```bash
+  local streak_next=0
+```
+
+que abre o cálculo do backoff. O `status` tem de estar no seu valor final quando isto corre: escrever `.ended` a meio do classificador marcaria `open` um run que a regra seguinte ainda ia promover a `success`.
+
+*(Nota: uma versão anterior deste plano dizia "antes de `local cap`". Estava certo quando o bloco `UNDELIVERED` corria antes do `BUDGET LIMITED`; a Tarefa 5 mudou essa ordem por uma razão — ver lá — e a âncora deixou de valer. Ignorar a referência antiga.)*
+
+Inserir:
 
 ```bash
   # The session's fate, written where teardown can read it. A run that reached a
