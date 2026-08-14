@@ -481,7 +481,9 @@ E a escrita do manifesto (o bloco `"$JQ" -Rn ...` em `:303-309`) passa a:
   "$JQ" -Rn --arg job "$id" --arg project "$project" --arg run_dir "$run_dir" \
         --arg primary "$(basename "$primary")" --arg port_base "$port_base" '
     {job:$job, project:$project, run_dir:$run_dir, primary:$primary,
-     # The run's port block. It is recorded here and not left to the environment
+     # NOTE: no apostrophes in this comment — it sits inside a single-quoted
+     # bash string, so one would terminate the jq program mid-word.
+     # The port block for this run. Recorded here and not left to the environment
      # because `down` also runs from the orphan sweep, which has no slot and
      # therefore no CC_PORT_BASE: a hook computing what to release from
      # cc_port would have released numbers it never bound. Everything teardown
