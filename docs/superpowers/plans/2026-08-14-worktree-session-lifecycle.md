@@ -1039,7 +1039,7 @@ undelivered_note() { # undelivered_note <description>
 }
 ```
 
-E imediatamente **a seguir** ao bloco `UNDECLARED ENDING` (`:2386-2392`) e **antes** do bloco `BUDGET LIMITED`, inserir:
+E imediatamente **a seguir** ao bloco `BUDGET LIMITED` — ou seja, **depois de todas as outras regras do classificador**, não antes — inserir:
 
 ```bash
   # A run that produced commits or changes no remote knows about handed nothing
@@ -1049,13 +1049,29 @@ E imediatamente **a seguir** ao bloco `UNDECLARED ENDING` (`:2386-2392`) e **ant
   # is the delivery channel; failing to use it is a failed run, and it belongs on
   # the card. A warning, not an error: the agent may have been cut off mid-task,
   # and a resume is the right next move rather than a backoff.
-  if [ -n "$run_dir" ] && [ "$status" != "error" ]; then
-    local undelivered
-    if undelivered="$(wt_undelivered_work "$run_dir")"; then
-      wdreason="$(undelivered_note "$undelivered")"
-      status="warning"
-    fi
-  fi
+  #
+  # LAST, and appending rather than replacing. Last because every rule above
+  # fires only while the status is still `success` — setting `warning` here
+  # first would silence UNDECLARED ENDING and BUDGET LIMITED entirely. And
+  # appending because "spent the whole cap" and "pushed nothing" are two
+  # different things the operator needs in one glance, not a choice between
+  # them.
+  #
+  # `stopped` is excluded deliberately: an operator who ended the run already
+  # knows it did not finish, and replacing their STOPPED record with a generic
+  # "you did not push" is less information, not more. `error` is excluded
+  # because a run that failed has a cause worth more than its symptom.
+  case "$status" in
+    success|warning)
+      if [ -n "$run_dir" ]; then
+        local undelivered
+        if undelivered="$(wt_undelivered_work "$run_dir")"; then
+          wdreason="${wdreason:-}${wdreason:+ · }$(undelivered_note "$undelivered")"
+          status="warning"
+        fi
+      fi
+      ;;
+  esac
 ```
 
 - [ ] **Step 9: Run both suites to verify they pass**
