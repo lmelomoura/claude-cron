@@ -1364,6 +1364,23 @@ e acaba na sua última asserção — inserir:
     wt_prune_orphans ) >/dev/null 2>&1
   [ ! -d "$tmp/wtroot/jT/stampT" ] && ok "and is reclaimed once its ttl is up" \
     || bad "an expired session was kept"
+
+  echo "wt_prune_orphans() — a deleted job's run dir still takes its services down"
+  printf '%s\n' '#!/usr/bin/env bash' 'echo down >> "$CC_RUN_DIR/../orphan-down.log"' \
+    > "$tmp/cfg/provision/two.down.sh"
+  chmod +x "$tmp/cfg/provision/two.down.sh"
+  rm -f "$tmp/wtroot/jGone/orphan-down.log"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup jGone two "$tmp/g/repo" stampG ) >/dev/null 2>&1
+  # jGone is in NO jobs.json — the job was deleted while its run dir sat there.
+  # The project has to come from the manifest, or `down` never runs at all.
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
+    wt_prune_orphans ) >/dev/null 2>&1
+  [ -f "$tmp/wtroot/jGone/orphan-down.log" ] \
+    && ok "the manifest's project is what teardown uses, so down still fires" \
+    || bad "a deleted job's services were left running for ever"
+  rm -f "$tmp/cfg/provision/two.down.sh" "$tmp/wtroot/jGone/orphan-down.log"
 ```
 
 - [ ] **Step 2: Run the selftest to verify it fails**
@@ -1409,7 +1426,17 @@ wt_prune_orphans() {
         printf 'done\n' > "$d/.ended" 2>/dev/null || true
         log_tick "$id: session in $d expired after ${age}s with nobody resuming it"
       fi
-      project="$(job_get "$id" '.project' '')"
+      # The project comes from the MANIFEST, not from job_get. `job_get` reads
+      # the live `config/jobs.json`, so a job deleted or renamed while one of
+      # its run dirs was still on disk resolved to an empty project — and an
+      # empty project means `wt_provision` looks for `provision/.down.sh`,
+      # finds nothing, and silently takes nothing down. The compose stack and
+      # the herd site of a job you deleted would have outlived it for good.
+      # `.run.json` recorded the project when the run started; falling back to
+      # `job_get` only covers a run dir written before this field existed.
+      project="$("$JQ" -r '.project // ""' "$d/.run.json" 2>/dev/null)"
+      case "$project" in null) project="" ;; esac
+      [ -n "$project" ] || project="$(job_get "$id" '.project' '')"
       wt_teardown "$id" "$project" "$d"
     done
   done
