@@ -1431,17 +1431,24 @@ Em `bin/claude-cron`, no selftest, a seguir ao bloco `wt_teardown()`, inserir:
     || bad "found '$got'"
   got="$( WORKTREES_DIR="$tmp/wtroot"; wt_find_by_session jR sess-nope )"
   [ -z "$got" ] && ok "an unknown session finds nothing" || bad "found '$got'"
-  echo done > "$tmp/wtroot/jR/stampS1/.ended"
-  got="$( WORKTREES_DIR="$tmp/wtroot"; wt_find_by_session jR sess-xyz )"
-  [ -z "$got" ] && ok "a session already closed is not offered back" || bad "found '$got'"
-  # The directory has to EXIST, or the lookup is satisfied by its own
-  # `[ -d "$WORKTREES_DIR/$id" ]` early return and never reaches the glob that
-  # is what actually scopes it. An assertion that cannot tell those two apart
-  # is not testing the scoping.
+  # THE CROSS-JOB ASSERTION GOES BEFORE stampS1 IS CLOSED. Both halves of this
+  # are load-bearing and neither works alone:
+  #   - the directory has to EXIST, or the lookup is answered by its own
+  #     `[ -d "$WORKTREES_DIR/$id" ]` early return and never reaches the glob
+  #     that is what actually scopes it;
+  #   - and stampS1 has to still be `open`, or a lookup with NO job scoping at
+  #     all finds nothing open anywhere in the fixture and passes anyway.
+  # Closing stampS1 first — which an earlier draft of this plan did — makes the
+  # assertion pass against a wt_find_by_session that ignores its job argument
+  # entirely.
   mkdir -p "$tmp/wtroot/jOther"
   got="$( WORKTREES_DIR="$tmp/wtroot"; wt_find_by_session jOther sess-xyz )"
   [ -z "$got" ] && ok "another job's session is never returned" || bad "found '$got'"
-  rm -rf "$tmp/wtroot/jR"
+
+  echo done > "$tmp/wtroot/jR/stampS1/.ended"
+  got="$( WORKTREES_DIR="$tmp/wtroot"; wt_find_by_session jR sess-xyz )"
+  [ -z "$got" ] && ok "a session already closed is not offered back" || bad "found '$got'"
+  rm -rf "$tmp/wtroot/jR" "$tmp/wtroot/jOther"
 ```
 
 - [ ] **Step 2: Run the selftest to verify it fails**
