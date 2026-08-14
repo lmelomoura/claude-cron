@@ -1154,14 +1154,27 @@ até (exclusive) à linha
     && ok "and its services are left up for the resume" \
     || bad "down tore down a session that is still open"
 
-  echo "wt_teardown() — a dir with no marker is treated as done"
+  echo "wt_teardown() — a dir with no marker is KEPT, because a crash writes none"
+  # The discriminating half of this task, and the one that can destroy work if
+  # it is wrong. A SIGKILL or a reboot runs no EXIT trap: no marker is written,
+  # AND the classifier never fires, so the UNDELIVERED report that justifies
+  # deleting a tree never happens either. The fixture therefore carries real
+  # work — an empty dir would be reclaimed by any implementation and would
+  # prove nothing.
   local rd6="$tmp/wtroot/j2/stampN"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
     wt_setup j2 two "$tmp/g/repo" stampN ) >/dev/null 2>&1
+  echo "work only this tree has" > "$rd6/one/agent.txt"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
     wt_teardown j2 two "$rd6" ) >/dev/null 2>&1
-  [ ! -d "$rd6" ] && ok "a run that died before marking anything is reclaimed" \
-    || bad "an unmarked dir was kept, which is the old leak"
+  [ -d "$rd6" ] && ok "a run killed before it could mark anything keeps its work" \
+    || bad "an unmarked dir was deleted — a reboot would take every in-flight run with it"
+  # And once it IS marked done, the same work is no obstacle: it was reported.
+  echo done > "$rd6/.ended"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_teardown j2 two "$rd6" ) >/dev/null 2>&1
+  [ ! -d "$rd6" ] && ok "and a done session goes even holding work on no remote" \
+    || bad "a done session was kept"
   rm -f "$tmp/cfg/provision/two.down.sh" "$tmp/wtroot/j2/down.count"
 ```
 
@@ -1187,29 +1200,44 @@ Em `bin/worktree-lib.sh`, substituir `wt_teardown()` (`:381-406`, com o comentá
 #              stack down here would hand the resumed agent a provisioned tree
 #              with nothing running behind it.
 #
-# No marker means the run died before it could write one — that is `done`. The
-# old default was the opposite, and it is what made this leak: every crash left a
-# directory nothing could ever release.
+# NO MARKER MEANS `open`, NOT `done`. This is the one place where the safe
+# default and the tidy default disagree, and the tidy one destroys work: a
+# SIGKILL, an OOM kill or a reboot never runs the EXIT trap, so no marker is
+# ever written AND the classifier never fires — which means Task 5's
+# UNDELIVERED report, the compensating control for deleting a tree, never runs
+# either. Defaulting to `done` there would have let the first tick after a
+# reboot reclaim every run that was in flight, silently, with nothing anywhere
+# saying what was in them. The leak that argument was trying to avoid is closed
+# by the TTL instead: an open session nobody resumes expires on its own.
 #
 # `.down` still guards `down` from running twice, because an open session is
 # swept again on every tick.
 wt_teardown() { # <id> <project> <run dir>
-  local id="${1:-}" project="${2:-}" run_dir="${3:-}" mf="${3:-}/.run.json"
-  local name repo wt base ended
+  local run_dir="${3:-}" ended
   [ -n "$run_dir" ] && [ -d "$run_dir" ] || return 0
   ended="$(cat "$run_dir/.ended" 2>/dev/null || true)"
-  if [ "$ended" = "open" ]; then
-    return 0
-  fi
-  if [ -f "$mf" ] && [ ! -f "$run_dir/.down" ]; then
-    : > "$run_dir/.down"
-    while IFS="$(printf '\t')" read -r name repo wt base; do
-      [ -n "$wt" ] && [ -d "$wt" ] || continue
-      wt_provision down "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base" || true
-    done < <("$JQ" -r '.repos | reverse | .[] | [.name,.canonical,.worktree,.base] | @tsv' \
-                "$mf" 2>/dev/null)
-  fi
+  [ "$ended" = "done" ] || return 0
+  wt_down_all "$1" "$2" "$run_dir"
   wt_remove_all "$run_dir"
+}
+
+# Run `down` for every repo of a run dir, once. Split out of wt_teardown so the
+# explicit drop can reuse it. An open session returns from wt_teardown BEFORE
+# any of this — its services are meant to stay up for the resume — so a drop
+# that only removed the tree would strand the compose stack and the ports with
+# nothing left to enumerate them: `.run.json` goes out with the directory.
+wt_down_all() { # <id> <project> <run dir>
+  local id="${1:-}" project="${2:-}" run_dir="${3:-}" mf="${3:-}/.run.json"
+  local name repo wt base
+  [ -n "$run_dir" ] && [ -d "$run_dir" ] || return 0
+  [ -f "$mf" ] || return 0
+  [ -f "$run_dir/.down" ] && return 0
+  : > "$run_dir/.down"
+  while IFS="$(printf '\t')" read -r name repo wt base; do
+    [ -n "$wt" ] && [ -d "$wt" ] || continue
+    wt_provision down "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base" || true
+  done < <("$JQ" -r '.repos | reverse | .[] | [.name,.canonical,.worktree,.base] | @tsv' \
+              "$mf" 2>/dev/null)
 }
 ```
 
@@ -1244,10 +1272,22 @@ E em `run_cleanup()` (`bin/claude-cron:653`), imediatamente **antes** da chamada
 ```bash
     # A run that never reached its own classifier — killed, crashed, the machine
     # went down — left no marker. Default it to `open`: its session may still be
-    # resumable, and Task 8's TTL is what ends it if nobody comes back. Only a
-    # run the operator stopped on purpose is closed here.
+    # resumable, and Task 8's TTL is what ends it if nobody comes back.
+    #
+    # `done` needs BOTH a stop and proof that no agent ever ran. `$slot/stopped`
+    # alone does not mean that, however much `_stop_slot`'s comment says it
+    # does: that function TERMs the run wrapper whenever the agent's pid is not
+    # ALIVE, which includes an agent that already finished. So a Stop clicked
+    # while the run is in its post-agent bookkeeping — the classifier forks
+    # `git status` and `git branch -r --contains` per repo, seconds on a big
+    # checkout, with the dashboard still showing the run as active — would
+    # otherwise land here with the agent's commits on disk and mark them
+    # `done`. They would be deleted, and the only record left would be
+    # run_record_stopped_early's, which states in as many words that no work
+    # was done. `$slot/child` is written the moment an agent is spawned, so its
+    # absence is the fact this branch actually needs.
     if [ ! -f "$wt/.ended" ]; then
-      if [ -f "$slot/stopped" ]; then
+      if [ -f "$slot/stopped" ] && [ ! -f "$slot/child" ]; then
         printf 'done\n' > "$wt/.ended" 2>/dev/null || true
       else
         printf 'open\n' > "$wt/.ended" 2>/dev/null || true
@@ -1257,12 +1297,54 @@ E em `run_cleanup()` (`bin/claude-cron:653`), imediatamente **antes** da chamada
 
 **Atenção:** em `run_cleanup` a variável do run dir chama-se `wt` (lida de `$slot/worktree`), não `run_dir`. O bloco acima usa `wt` de propósito.
 
-- [ ] **Step 5: Run the selftest to verify it passes**
+- [ ] **Step 5: Make the explicit drop release the services too**
 
-Run: `bin/claude-cron selftest`
-Expected: PASS, incluindo as cinco asserções novas.
+Um `open` sai do `wt_teardown` **antes** do `down`, de propósito — os serviços
+ficam de pé para o resume. Isso abre um buraco novo no único caminho que
+existe hoje para acabar com uma sessão aberta: `cmd_worktree_drop` chama
+`wt_remove_all` directamente, nunca corre `down`, e leva o `.run.json` com o
+directório — depois disso já não há como enumerar os repos para libertar nada.
+A stack e as portas ficariam alocadas para sempre. Antes desta tarefa não era
+possível: o `down` corria sempre antes da decisão de preservar.
 
-- [ ] **Step 6: Write the changelog entry and commit**
+Em `bin/claude-cron`, `cmd_worktree_drop`, substituir a linha
+
+```bash
+  wt_remove_all "$run_dir"
+```
+
+por
+
+```bash
+  # `down` first, and by hand: an open session deliberately never reached the
+  # down block in wt_teardown, so this is the only chance its compose stack and
+  # its ports get to be released — the manifest that names them goes out with
+  # the directory on the next line.
+  wt_down_all "$id" "$(job_get "$id" '.project' '')" "$run_dir"
+  wt_remove_all "$run_dir"
+```
+
+Confirmar o nome real da variável do job em `cmd_worktree_drop` antes de
+editar (é `id` à data de escrita) e que `job_get` está em scope aí.
+
+- [ ] **Step 6: Correct the prose the change falsified**
+
+Duas descrições passam a mentir e ambas descrevem este conceito a quem o lê:
+
+- `bin/claude-cron-server`, docstring de `retained_worktrees()` — diz
+  *"wt_teardown keeps a run dir whose worktrees hold uncommitted or unpushed
+  work"*. Já não é assim: guarda um dir cuja sessão está aberta.
+- `tests/test_retained_worktrees.py`, docstring do módulo — a mesma frase.
+
+Reescrever ambas para o critério novo. É prosa, não comportamento; a Tarefa 8
+volta a esta função para lhe acrescentar o `expires_in`.
+
+- [ ] **Step 7: Run the selftest to verify it passes**
+
+Run: `bin/claude-cron selftest && python3 -m pytest tests/`
+Expected: PASS em ambas.
+
+- [ ] **Step 8: Write the changelog entry and commit**
 
 ```markdown
 - **Teardown asks whether the session is done, not whether the tree looks
@@ -1272,13 +1354,31 @@ Expected: PASS, incluindo as cinco asserções novas.
   how their run ended: a finished session is torn down and removed
   unconditionally, and a run cut short is kept **with its services still up**,
   because the resume continues in that same directory and would otherwise get a
-  provisioned tree with nothing running behind it. A run that died before
-  marking anything counts as finished, which is the case the old default got
-  backwards: every crash used to leave a folder nothing could reclaim.
+  provisioned tree with nothing running behind it.
+
+  A run that died before marking anything counts as **open**, not finished. The
+  tidier default would delete it, and it would delete work: a SIGKILL, an OOM
+  kill or a reboot runs no exit path, so no marker is written and the classifier
+  never fires — which means the `UNDELIVERED` report that justifies removing a
+  tree never runs either. The first tick after a reboot would have reclaimed
+  every run that was in flight, silently, with nothing anywhere saying what was
+  in them. The leak that default was avoiding is closed by the expiry instead.
+
+  Stopping a run from the dashboard closes it only when no agent had started
+  yet. `claude-cron stop` signals the run wrapper whenever the agent pid is not
+  *alive* — which includes an agent that has already finished — so a Stop
+  clicked during the seconds of post-agent bookkeeping used to look identical to
+  a Stop clicked before the agent ever existed. Telling them apart takes the
+  presence of the spawned agent, not the stop.
+
+  Discarding a kept directory now runs its `down` hooks first. An open session
+  deliberately never reaches them in teardown, so the drop is the only chance
+  its compose stack and its ports have to be released — and the manifest naming
+  them leaves with the directory.
 ```
 
 ```bash
-git add bin/worktree-lib.sh bin/claude-cron CHANGELOG.md
+git add bin/worktree-lib.sh bin/claude-cron bin/claude-cron-server tests/test_retained_worktrees.py CHANGELOG.md
 git commit -m "feat: tear a run directory down by session state, not by what git finds in it"
 ```
 
