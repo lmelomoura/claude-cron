@@ -1624,11 +1624,24 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   lt_line="$(printf '%s\n' "$body" | grep -n 'lock_take "\$rlock"'                  | head -1 | cut -d: -f1)"
   wc_line="$(printf '%s\n' "$body" | grep -n 'wt_is_claimed "\$id" "\$run_dir"'     | head -1 | cut -d: -f1)"
   wr_line="$(printf '%s\n' "$body" | grep -n 'echo "\$run_dir" > "\$slot/worktree"' | head -1 | cut -d: -f1)"
+  # Both exits from the locked region have to drop it: the refusal path drops
+  # BETWEEN the check and the write (it never reaches the write at all), and
+  # the fall-through path drops AFTER it. Missing either leaks $LOCK_DIR/.resume
+  # -- bounded (lock_take's own stale-owner recovery frees it once the holding
+  # pid exits) but every OTHER resume serialises behind this one in the
+  # meantime, which the line-order check above cannot see: deleting a
+  # lock_drop leaves lt_line/wc_line/wr_line untouched and passes it clean.
+  ld_lines="$(printf '%s\n' "$body" | grep -n 'lock_drop "\$rlock"' | cut -d: -f1)"
+  ld1_line="$(printf '%s\n' "$ld_lines" | sed -n '1p')"
+  ld2_line="$(printf '%s\n' "$ld_lines" | sed -n '2p')"
   if [ -n "${lt_line:-}" ] && [ -n "${wc_line:-}" ] && [ -n "${wr_line:-}" ] \
-       && [ "$lt_line" -lt "$wc_line" ] && [ "$wc_line" -lt "$wr_line" ]; then
-    ok "the lock is taken, then the claim checked, then the tree written, in that order"
+       && [ -n "${ld1_line:-}" ] && [ -n "${ld2_line:-}" ] \
+       && [ "$lt_line" -lt "$wc_line" ] && [ "$wc_line" -lt "$wr_line" ] \
+       && [ "$wc_line" -lt "$ld1_line" ] && [ "$ld1_line" -lt "$wr_line" ] \
+       && [ "$wr_line" -lt "$ld2_line" ]; then
+    ok "the lock is taken, the claim checked, and dropped on both exits -- the refusal and the claim -- in order"
   else
-    bad "reattach claim ordering broken (lock=${lt_line:-?} check=${wc_line:-?} write=${wr_line:-?})"
+    bad "reattach claim ordering broken (lock=${lt_line:-?} check=${wc_line:-?} drop1=${ld1_line:-?} write=${wr_line:-?} drop2=${ld2_line:-?})"
   fi
   got="$(printf '%s\n' "$body" | grep -c '\[ -z "\$primary_name" \] ||')"
   [ "${got:-0}" -eq 1 ] \
@@ -1647,6 +1660,14 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   # them. bash 3.2 has no $BASHPID and does not reseed $$ inside a subshell,
   # so each attempt's "process" is a real, separately-spawned placeholder --
   # slot_alive needs a genuinely live pid to check.
+  #
+  # Initialised here, not left to the read below: both branches inside the
+  # subshell write race_summary, but if the subshell dies before either does
+  # (an interrupted wait, a killed sleep), the file never exists, the read's
+  # redirection fails, and under `set -u` an unbound $raceN on the next line
+  # would abort THIS WHOLE SCRIPT, not just this one assertion -- a flaky
+  # harness has no business taking the other ~90 down with it.
+  local raceN="" raceRA="" raceRB=""
   (
     LOCK_DIR="$tmp/locks"; WORKTREES_DIR="$tmp/wtroot"
     mkdir -p "$LOCK_DIR/jRace"
@@ -1689,7 +1710,11 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     fi
     kill "$pidA" "$pidB" 2>/dev/null; wait "$pidA" "$pidB" 2>/dev/null
   )
-  read -r raceN raceRA raceRB < "$tmp/race_summary"
+  # Same redirection trap as alloc_port_base's portbase write: a missing file
+  # is raised by the shell setting up the `<` before read ever runs, so a
+  # 2>/dev/null on read itself does not silence it -- the group is what has
+  # to swallow it.
+  { read -r raceN raceRA raceRB < "$tmp/race_summary"; } 2>/dev/null || true
   if [ "$raceN" = "1" ]; then
     ok "exactly one of two concurrent reattach attempts claims the tree ($raceRA/$raceRB)"
   else

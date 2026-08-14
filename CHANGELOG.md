@@ -275,7 +275,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   breadcrumb (checking after would make it see its own claim and refuse
   itself) — a second, concurrent resume is refused instead, cleanly, with
   nothing written for it to clash with, and with its own start time and status
-  recorded rather than the previous attempt's left in place.
+  recorded rather than the previous attempt's left in place. The lock itself
+  is dropped on both exits from that check — a refusal releases it
+  immediately rather than holding it until the run's own cleanup gets there.
 
   A manifest whose `primary` field is empty — missing, unparseable, or from
   before this field existed — used to pass the worktree-exists check anyway:
