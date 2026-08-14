@@ -767,6 +767,19 @@ Em `bin/claude-cron`, no selftest, junto das outras asserções sobre transcript
   bind_session "" "$tmp/s1.ndjson"
   want "an empty run dir is a no-op, not a write to /.session" 0 $?
   [ ! -f "/.session" ] && ok "and nothing landed at the filesystem root" || bad "wrote /.session"
+
+  echo "run_job() — the session is bound from BOTH call sites, not just the loop"
+  # A structural assertion, deliberately. The two calls look interchangeable to
+  # anyone reading them without the timing context, so the realistic way this
+  # regresses is somebody deleting the second as a duplicate — and every
+  # behavioural test here would still pass, because bind_session itself is
+  # fine. What breaks is only which runs reach it: the polling one alone loses
+  # every run that dies inside the 30s window, and the post-wait one alone
+  # loses every run killed with -9. Both, or the guarantee is gone.
+  got="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/claude-cron" | grep -c 'bind_session "\$run_dir"')"
+  [ "${got:-0}" -ge 2 ] \
+    && ok "both bind_session call sites are still there ($got)" \
+    || bad "run_job has $got bind_session call sites, expected 2 — see the plan for why each is load-bearing"
 ```
 
 - [ ] **Step 2: Run the selftest to verify it fails**
@@ -810,8 +823,14 @@ bind_session() { # bind_session <run_dir> <streamfile>
   [ -f "$rd/.session" ] && return 0
   sid="$(session_from_stream "$sf")"
   [ -n "$sid" ] || return 0
-  tmp="$rd/.session.$$"
-  printf '%s\n' "$sid" > "$tmp" 2>/dev/null || return 0
+  # `mktemp`, not `$$`. This is called from two places — the watchdog, which
+  # runs inside a backgrounded `( … ) &` subshell, and the main body after
+  # `wait` — and bash 3.2 does NOT reseed `$$` in a subshell: both would
+  # compute the same path. It is harmless only for as long as both writers
+  # happen to write the identical id, which is an invariant nobody stated and
+  # the next change to this function is free to break.
+  tmp="$(mktemp "$rd/.session.XXXXXX" 2>/dev/null)" || return 0
+  printf '%s\n' "$sid" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
   mv -f "$tmp" "$rd/.session" 2>/dev/null || rm -f "$tmp"
 }
 ```
