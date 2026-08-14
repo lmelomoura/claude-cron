@@ -1434,6 +1434,11 @@ Em `bin/claude-cron`, no selftest, a seguir ao bloco `wt_teardown()`, inserir:
   echo done > "$tmp/wtroot/jR/stampS1/.ended"
   got="$( WORKTREES_DIR="$tmp/wtroot"; wt_find_by_session jR sess-xyz )"
   [ -z "$got" ] && ok "a session already closed is not offered back" || bad "found '$got'"
+  # The directory has to EXIST, or the lookup is satisfied by its own
+  # `[ -d "$WORKTREES_DIR/$id" ]` early return and never reaches the glob that
+  # is what actually scopes it. An assertion that cannot tell those two apart
+  # is not testing the scoping.
+  mkdir -p "$tmp/wtroot/jOther"
   got="$( WORKTREES_DIR="$tmp/wtroot"; wt_find_by_session jOther sess-xyz )"
   [ -z "$got" ] && ok "another job's session is never returned" || bad "found '$got'"
   rm -rf "$tmp/wtroot/jR"
@@ -1501,16 +1506,53 @@ e acaba na linha imediatamente **antes** de
       # session is open cannot change what that session is working on. Changing
       # the mount set means a new session, exactly as it does upstream.
       run_dir="$reattached"
+      # CLAIM IT UNDER A LOCK, BEFORE ANYTHING ELSE. Two `claude-cron resume`
+      # calls for the same session — a double click, a retried automation —
+      # otherwise both reach here and both launch an agent into the same tree,
+      # which is the exact race the whole worktree design exists to prevent.
+      # `max_parallel` does not stop it: it defaults to 3, so both get a slot.
+      #
+      # Two details are load-bearing. `wt_is_claimed` does NOT exclude the
+      # calling slot, so this has to run BEFORE our own breadcrumb is written —
+      # after it, every resume would refuse itself. And check-then-act without
+      # the mutex only narrows the window instead of closing it, so the check
+      # and the claim happen together.
+      #
+      # Refusing here also leaves the cleanest wreckage: `$slot/worktree` is
+      # still unwritten, so run_cleanup reads an empty run dir, skips teardown
+      # entirely, and never touches the directory the other run is using.
+      local rlock="$LOCK_DIR/.resume"
+      lock_take "$rlock"
+      if wt_is_claimed "$id" "$run_dir"; then
+        lock_drop "$rlock"
+        log_tick "$id: cannot resume $resume_sid — another run is already working in $run_dir"
+        state_set "$id" last_start "$start"
+        state_set "$id" last_status '"error"'
+        run_cleanup "$id" "$slot"; trap - EXIT
+        return 1
+      fi
       echo "$run_dir" > "$slot/worktree"
+      lock_drop "$rlock"
       port_base="$("$JQ" -r '.port_base // ""' "$run_dir/.run.json" 2>/dev/null)"
       case "$port_base" in null) port_base="" ;; esac
       if [ -z "$port_base" ]; then
         port_base="$(alloc_port_base "$slot")"
+        # Record it. The manifest is what teardown reads — wt_provision says so
+        # explicitly, because the orphan sweep runs `down` with no ambient
+        # CC_PORT_BASE. A block bound here and left out of the manifest means
+        # the eventual `down` releases ports this run never took.
+        if "$JQ" --arg pb "$port_base" '.port_base = $pb' "$run_dir/.run.json" \
+             > "$run_dir/.run.json.new" 2>/dev/null; then
+          mv -f "$run_dir/.run.json.new" "$run_dir/.run.json"
+        else
+          rm -f "$run_dir/.run.json.new"
+        fi
       elif ! port_base_free "$slot" "$port_base"; then
         # Its services are still bound to that block and somebody else holds it.
         # Refusing is the honest answer: a fresh block would silently point the
         # resumed agent's config at ports nothing is listening on.
         log_tick "$id: cannot resume $resume_sid — its port block $port_base is held by a live run"
+        state_set "$id" last_start "$start"
         state_set "$id" last_status '"error"'
         run_cleanup "$id" "$slot"; trap - EXIT
         return 1
@@ -1518,9 +1560,18 @@ e acaba na linha imediatamente **antes** de
         { echo "$port_base" > "$slot/portbase"; } 2>/dev/null || true
       fi
       export CC_PORT_BASE="$port_base" CC_PORT_SPAN CC_PROVISION_LIB="$BIN_DIR/provision-lib.sh"
-      worktree="$run_dir/$("$JQ" -r '.primary // ""' "$run_dir/.run.json" 2>/dev/null)"
-      if [ ! -d "$worktree" ]; then
-        log_tick "$id: cannot resume $resume_sid — its primary worktree is gone"
+      local primary_name
+      primary_name="$("$JQ" -r '.primary // ""' "$run_dir/.run.json" 2>/dev/null)"
+      case "$primary_name" in null) primary_name="" ;; esac
+      worktree="$run_dir/$primary_name"
+      # AN EMPTY primary IS THE DANGEROUS CASE, not a missing directory. Empty
+      # makes this "$run_dir/" — and the run dir exists, so a bare `-d` test
+      # passes and the agent is launched with its cwd set to the folder holding
+      # the worktrees instead of to a checkout. The port block four lines up is
+      # read defensively for exactly this reason; so is this.
+      if [ -z "$primary_name" ] || [ ! -d "$worktree" ]; then
+        log_tick "$id: cannot resume $resume_sid — its primary worktree is gone or unnamed"
+        state_set "$id" last_start "$start"
         state_set "$id" last_status '"error"'
         run_cleanup "$id" "$slot"; trap - EXIT
         return 1
@@ -1531,6 +1582,12 @@ e acaba na linha imediatamente **antes** de
       # while the session sat open.
       while IFS="$(printf '\t')" read -r rname rrepo rwt rbase; do
         [ -n "$rname" ] || continue
+        # `|| true` here, unlike the fresh path which aborts. A reattach finds a
+        # stack that is usually already up, so the common failure is a hook
+        # declining work it has done rather than a tree left half-built — and
+        # refusing the resume would strand a session that is otherwise fine.
+        # It is not silent: wt_provision logs the rc and the repo to the tick
+        # log itself.
         wt_provision up "$project" "$id" "$run_dir" "$rname" "$rrepo" "$rwt" "$rbase" || true
       done < <("$JQ" -r '.repos[] | [.name,.canonical,.worktree,.base] | @tsv' \
                   "$run_dir/.run.json" 2>/dev/null)
