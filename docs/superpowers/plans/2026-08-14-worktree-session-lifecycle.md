@@ -1734,7 +1734,28 @@ e acaba na sua última asserção — inserir:
   [ -f "$tmp/wtroot/jGone/orphan-down.log" ] \
     && ok "the manifest's project is what teardown uses, so down still fires" \
     || bad "a deleted job's services were left running for ever"
-  rm -f "$tmp/cfg/provision/two.down.sh" "$tmp/wtroot/jGone/orphan-down.log"
+
+  # And the OTHER half of that line. `wt_setup` always writes `.project`, so the
+  # assertion above can never reach the `job_get` fallback — it short-circuits
+  # every time. The fallback exists for a manifest that cannot answer (truncated,
+  # corrupt, or written before the field existed), so build one and prove it
+  # still finds a project.
+  rm -f "$tmp/wtroot/jGone/orphan-down.log"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup jFallback two "$tmp/g/repo" stampF2 ) >/dev/null 2>&1
+  "$JQ" 'del(.project)' "$tmp/wtroot/jFallback/stampF2/.run.json" \
+    > "$tmp/wtroot/jFallback/stampF2/.run.json.tmp" 2>/dev/null \
+    && mv "$tmp/wtroot/jFallback/stampF2/.run.json.tmp" \
+          "$tmp/wtroot/jFallback/stampF2/.run.json"
+  printf '%s' '{"jobs":[{"id":"jFallback","project":"two"}]}' > "$tmp/cfg/jobs.json"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; JOBS_FILE="$tmp/cfg/jobs.json"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"; CLAUDE_CRON_SESSION_TTL=0
+    wt_prune_orphans ) >/dev/null 2>&1
+  [ -f "$tmp/wtroot/jFallback/orphan-down.log" ] \
+    && ok "a manifest with no project falls back to the jobs file" \
+    || bad "the job_get fallback never supplied a project"
+  rm -f "$tmp/cfg/provision/two.down.sh" "$tmp/wtroot/jGone/orphan-down.log" \
+        "$tmp/wtroot/jFallback/orphan-down.log"
 ```
 
 - [ ] **Step 2: Run the selftest to verify it fails**
@@ -1838,6 +1859,32 @@ def test_a_closed_session_has_no_expiry_because_it_goes_next_sweep(clean_data):
     (d / ".ended").write_text("done\n")
     got = srv.retained_worktrees()[0]
     assert got["expires_in"] is None
+
+
+def test_a_dir_with_no_marker_at_all_is_also_on_the_clock(clean_data):
+    """A kill -9 or a reboot writes no marker. The engine expires anything that
+    is not `done`, so the dashboard has to agree — a directory it shows as
+    permanent while the sweep is counting it down is a lie in the other
+    direction."""
+    srv = clean_data
+    _mk_run_dir(srv, "eta", "s-unmarked")
+    got = srv.retained_worktrees()[0]
+    assert got["expires_in"] > 0
+
+
+def test_the_countdown_uses_the_worktree_ttl_and_not_some_other_one(clean_data):
+    """Pins the value, not just its sign. `SESSION_TTL` was already taken in
+    this module by the HTTP sign-in idle timeout, and a second module-level
+    assignment of that name loses silently — leaving the dashboard counting
+    every kept directory down against an auth constant. Asserting `> 0` cannot
+    see that; asserting the number can."""
+    srv = clean_data
+    d = _mk_run_dir(srv, "theta", "s-ttl")
+    (d / ".ended").write_text("open\n")
+    got = srv.retained_worktrees()[0]
+    # Freshly created, so age is 0 or 1 second.
+    assert srv.WORKTREE_SESSION_TTL - got["expires_in"] <= 2
+    assert srv.WORKTREE_SESSION_TTL == 86400
 ```
 
 - [ ] **Step 6: Run the server test to verify it fails**
@@ -1869,7 +1916,7 @@ por:
             # wrote one, and it is exactly the kind that sits there longest. The
             # sweep uses the same `!= done` test; these two must not disagree,
             # or the dashboard promises a reclaim that never comes.
-            expires_in = None if ended == "done" else max(0, SESSION_TTL - age)
+            expires_in = None if ended == "done" else max(0, WORKTREE_SESSION_TTL - age)
             out.append({"job": jobdir.name, "stamp": d.name, "path": str(d),
                         "age": age, "repos": repos, "bytes": bytes_,
                         "ended": ended, "expires_in": expires_in})
@@ -1878,11 +1925,17 @@ por:
 E junto das outras constantes no topo do módulo (onde `DATA_DIR` e `CONFIG_DIR` são resolvidos), acrescentar:
 
 ```python
-# Kept in step with the engine's own default (bin/worktree-lib.sh,
-# wt_prune_orphans): the dashboard must never promise a directory more time than
-# the sweep will give it.
-SESSION_TTL = int(os.environ.get("CLAUDE_CRON_SESSION_TTL") or 86400)
+# WORKTREE_SESSION_TTL, not SESSION_TTL: this module already has a SESSION_TTL,
+# and it is the HTTP sign-in idle timeout (12h). Two module-level assignments of
+# one name do not collide loudly — the later one silently wins at import, and
+# the dashboard would have counted every kept directory down against an auth
+# constant that has nothing to do with the sweep. Kept in step with the engine's
+# own default (bin/worktree-lib.sh, wt_prune_orphans): the dashboard must never
+# promise a directory more time than the sweep will give it.
+WORKTREE_SESSION_TTL = int(os.environ.get("CLAUDE_CRON_SESSION_TTL") or 86400)
 ```
+
+**Antes de acrescentar, confirmar que o nome está livre**: `grep -n '^SESSION_TTL\|^WORKTREE_SESSION_TTL' bin/claude-cron-server`. Um nome já usado a nível de módulo não dá erro nenhum — dá silêncio, e o valor errado.
 
 - [ ] **Step 8: Run both suites to verify they pass**
 
