@@ -261,6 +261,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `UNDELIVERED: unpushed commits in api` on the card. Push is the delivery
   channel, and not pushing is a run that did not deliver.
 
+  The check runs LAST among the classifier's rules, and appends rather than
+  replaces. `UNDECLARED ENDING` and `BUDGET LIMITED` both only fire while the
+  status is still `success`, so setting `warning` any earlier would have
+  silently disabled both the moment this one found something — a run that
+  spent its whole cap AND pushed nothing would have reported only whichever
+  rule ran last, hiding the other half of the story. It also never overrides a
+  run the operator stopped on purpose: a `STOPPED` record already says the run
+  did not finish, and replacing it with a generic "you did not push" would be
+  less information, not more.
+
 ### Fixed
 
 - **A run directory removed by hand no longer wedges its canonical checkout.**

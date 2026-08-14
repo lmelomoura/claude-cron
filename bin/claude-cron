@@ -1101,6 +1101,32 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     && ok "both bind_session call sites are still there ($got)" \
     || bad "run_job has $got bind_session call sites, expected 2 — see the plan for why each is load-bearing"
 
+  echo "run_job() — the undelivered-work rule runs LAST, and never on a stopped run"
+  # A structural assertion, deliberately. run_job is never invoked directly
+  # anywhere in this suite (it needs a mocked agent CLI, a real worktree, a
+  # budget cap...), and wt_undelivered_work / undelivered_note are both already
+  # exercised on their own, above, so a behavioural test of either would stay
+  # green even after the regression this guards against. That regression is
+  # precedence: every rule above this one guards on `status = success`, so a
+  # future edit that moves it back above BUDGET LIMITED (to sit next to
+  # UNDECLARED ENDING, which is where it lived before this was caught in
+  # review) would silently disable both of them the moment it sets `warning` —
+  # and a guard that let `stopped` through would overwrite an operator's
+  # STOPPED record with a less informative one. Both are one-line edits that
+  # look like harmless cleanup.
+  local budget_at undelivered_at guard_line
+  got="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/claude-cron")"
+  budget_at="$(printf '%s\n' "$got" | grep -n 'BUDGET LIMITED:' | head -1 | cut -d: -f1)"
+  undelivered_at="$(printf '%s\n' "$got" | grep -n 'wt_undelivered_work "\$run_dir"' | head -1 | cut -d: -f1)"
+  [ -n "${budget_at:-}" ] && [ -n "${undelivered_at:-}" ] && [ "$undelivered_at" -gt "$budget_at" ] \
+    && ok "the rule sits after BUDGET LIMITED, not before it (line $undelivered_at vs $budget_at)" \
+    || bad "undelivered-work rule at line ${undelivered_at:-?}, BUDGET LIMITED at ${budget_at:-?} — expected it after"
+  guard_line="$(printf '%s\n' "$got" | grep -A1 'case "\$status" in' | tail -1)"
+  case "$guard_line" in
+    *'success|warning)') ok "and its guard covers success/warning only, never a stopped run" ;;
+    *) bad "the line after the status case reads '$guard_line', not 'success|warning)'" ;;
+  esac
+
   echo "cpu_tree_sum() — a busy tool tree is proof of life, not a stall"
   # A run whose agent is quiet because a test suite is grinding away in a child
   # (shell -> make -> pytest) must read as ALIVE. This is the case that got a
@@ -2903,21 +2929,6 @@ If the work turns out to be already finished, or it can no longer be done at all
     status="warning"
   fi
 
-  # A run that produced commits or changes no remote knows about handed nothing
-  # over. It used to be answered by keeping the run directory on disk for ever,
-  # which preserved the work for nobody: a resume cuts a fresh worktree, so the
-  # only thing that folder ever did was fill the disk and wait for a human. Push
-  # is the delivery channel; failing to use it is a failed run, and it belongs on
-  # the card. A warning, not an error: the agent may have been cut off mid-task,
-  # and a resume is the right next move rather than a backoff.
-  if [ -n "$run_dir" ] && [ "$status" != "error" ]; then
-    local undelivered
-    if undelivered="$(wt_undelivered_work "$run_dir")"; then
-      wdreason="$(undelivered_note "$undelivered")"
-      status="warning"
-    fi
-  fi
-
   # "Ran out of money mid-task" looks EXACTLY like "finished the job": the agent
   # sees the budget running down, wraps up cleanly and returns a result, so the
   # subtype is `success` and nothing in the record says the work was cut short.
@@ -2934,6 +2945,37 @@ If the work turns out to be already finished, or it can no longer be done at all
     wdreason="BUDGET LIMITED: spent \$${cost:-0} of a \$$cap cap — the agent wrapped up early, so the task may be unfinished. Check the ticket and the branch before assuming it is done; resume this run to continue with its context."
     status="warning"
   fi
+
+  # A run that produced commits or changes no remote knows about handed nothing
+  # over. It used to be answered by keeping the run directory on disk for ever,
+  # which preserved the work for nobody: a resume cuts a fresh worktree, so the
+  # only thing that folder ever did was fill the disk and wait for a human. Push
+  # is the delivery channel; failing to use it is a failed run, and it belongs on
+  # the card. A warning, not an error: the agent may have been cut off mid-task,
+  # and a resume is the right next move rather than a backoff.
+  #
+  # LAST, and appending rather than replacing. Last because every rule above
+  # fires only while the status is still `success` — setting `warning` here
+  # first would silence UNDECLARED ENDING and BUDGET LIMITED entirely. And
+  # appending because "spent the whole cap" and "pushed nothing" are two
+  # different things the operator needs in one glance, not a choice between
+  # them.
+  #
+  # `stopped` is excluded deliberately: an operator who ended the run already
+  # knows it did not finish, and replacing their STOPPED record with a generic
+  # "you did not push" is less information, not more. `error` is excluded
+  # because a run that failed has a cause worth more than its symptom.
+  case "$status" in
+    success|warning)
+      if [ -n "$run_dir" ]; then
+        local undelivered
+        if undelivered="$(wt_undelivered_work "$run_dir")"; then
+          wdreason="${wdreason:-}${wdreason:+ · }$(undelivered_note "$undelivered")"
+          status="warning"
+        fi
+      fi
+      ;;
+  esac
 
   # Consecutive failures drive the backoff (see backoff_multiplier). A warning
   # is NOT a failure: the run worked, it just wants a look — slowing those down
