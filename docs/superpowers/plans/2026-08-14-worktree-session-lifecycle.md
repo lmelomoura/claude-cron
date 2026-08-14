@@ -16,6 +16,7 @@
 - **Duas suites, ambas offline:** `claude-cron selftest` (motor, bash) e `python3 -m pytest tests/` (servidor, Python). Correr **as duas** depois de tocar em qualquer lado.
 - **`config/` é git-ignored.** Nenhuma regra de que o motor dependa pode viver só lá: ou é código versionado, ou é um contrato injectado no prompt, ou é uma asserção do `selftest`.
 - **Nada em `worktree-lib.sh` nomeia um repositório ou uma linguagem.** Tudo o que é específico de um projecto declara-se em `projects.json`.
+- **Os números de linha deste plano são do estado inicial e já não batem certo.** Foram tirados de `feat/reload-notice` antes de qualquer tarefa correr; as Tarefas 1–5 acrescentaram ~500 linhas a `bin/claude-cron`, portanto tudo o que esteja depois de `:400` está deslocado. **Localizar sempre pelo texto âncora citado, nunca pelo número** — e se o texto não aparecer exactamente uma vez, parar e dizê-lo em vez de adivinhar. Os números ficam como indicação de ordem de grandeza.
 - **Branch:** todo o trabalho vai para `feat/worktree-session-lifecycle`, cortado de **`feat/reload-notice`** — **não** de `main`. As duas divergiram: `feat/reload-notice` está 7 commits à frente e por fundir, e traz `562c270 feat: per-run port blocks`, que é `alloc_port_base()`, `bin/provision-lib.sh` e todo o `CC_PORT_BASE`. As Tarefas 1, 2 e 7 dependem dessa commit; sobre `main` não há nada para editar.
 
 ---
@@ -1339,7 +1340,19 @@ wt_find_by_session() { # <id> <session-id> -> prints a run dir, or nothing
 
 - [ ] **Step 4: Reattach on resume**
 
-Em `bin/claude-cron`, `run_job`, substituir o corpo do `if wt_isolation_enabled …` (`:2076` até ao `fi` que fecha o ramo, imediatamente antes de `run_cwd="$worktree"`) por:
+Em `bin/claude-cron`, `run_job`. **Delimitar o bloco pelo texto, não por números** (ver Global Constraints): começa na linha
+
+```bash
+  if wt_isolation_enabled "$project" "$cwd"; then
+```
+
+e acaba na linha imediatamente **antes** de
+
+```bash
+    run_cwd="$worktree"
+```
+
+— ou seja, todo o corpo do ramo isolado, sem o `run_cwd=` que se lhe segue. Cada uma destas duas linhas ocorre exactamente uma vez no ficheiro; confirmar isso com `grep -c` antes de editar, e parar se não for o caso. À data de escrita ficam por volta de `:2606` e `:2624`. Substituir esse bloco por:
 
 ```bash
   if wt_isolation_enabled "$project" "$cwd"; then
