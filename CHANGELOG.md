@@ -269,7 +269,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rule ran last, hiding the other half of the story. It also never overrides a
   run the operator stopped on purpose: a `STOPPED` record already says the run
   did not finish, and replacing it with a generic "you did not push" would be
-  less information, not more.
+  less information, not more. Both the ordering and the stopped-exclusion are
+  guarded by a structural selftest assertion, comparing the guard's status
+  list for exact equality rather than a pattern it could still match with
+  `stopped` slipped back in — `run_job` cannot be exercised behaviourally here
+  without mocking the agent CLI itself.
 
 ### Fixed
 

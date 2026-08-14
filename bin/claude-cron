@@ -1114,18 +1114,30 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   # and a guard that let `stopped` through would overwrite an operator's
   # STOPPED record with a less informative one. Both are one-line edits that
   # look like harmless cleanup.
-  local budget_at undelivered_at guard_line
+  local budget_at undelivered_at guard_line budget_n undelivered_n
   got="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/claude-cron")"
+  # -c (a count), not just -n | head -1: a SECOND "BUDGET LIMITED:" or a
+  # duplicated call site would make head -1 silently anchor on whichever
+  # comes first, and the ordering compare below would pass or fail on the
+  # wrong pair of lines without ever saying so.
+  budget_n="$(printf '%s\n' "$got" | grep -c 'BUDGET LIMITED:')"
+  undelivered_n="$(printf '%s\n' "$got" | grep -c 'wt_undelivered_work "\$run_dir"')"
   budget_at="$(printf '%s\n' "$got" | grep -n 'BUDGET LIMITED:' | head -1 | cut -d: -f1)"
   undelivered_at="$(printf '%s\n' "$got" | grep -n 'wt_undelivered_work "\$run_dir"' | head -1 | cut -d: -f1)"
-  [ -n "${budget_at:-}" ] && [ -n "${undelivered_at:-}" ] && [ "$undelivered_at" -gt "$budget_at" ] \
+  [ "${budget_n:-0}" -eq 1 ] && [ "${undelivered_n:-0}" -eq 1 ] && [ "$undelivered_at" -gt "$budget_at" ] \
     && ok "the rule sits after BUDGET LIMITED, not before it (line $undelivered_at vs $budget_at)" \
-    || bad "undelivered-work rule at line ${undelivered_at:-?}, BUDGET LIMITED at ${budget_at:-?} — expected it after"
-  guard_line="$(printf '%s\n' "$got" | grep -A1 'case "\$status" in' | tail -1)"
-  case "$guard_line" in
-    *'success|warning)') ok "and its guard covers success/warning only, never a stopped run" ;;
-    *) bad "the line after the status case reads '$guard_line', not 'success|warning)'" ;;
-  esac
+    || bad "undelivered-work rule x$undelivered_n at line ${undelivered_at:-?}, BUDGET LIMITED x$budget_n at ${budget_at:-?} — expected exactly one of each, with the rule after"
+  # Trimmed and compared for EXACT equality, not globbed: a suffix pattern
+  # like *'success|warning)' also matches `stopped|success|warning)` — `*`
+  # absorbs the prepended "stopped|" just as happily as it absorbs nothing —
+  # so a case that let `stopped` back in by being listed FIRST would still
+  # read as `ok`. Only an exact compare catches every position it could be
+  # inserted at, not just appended.
+  guard_line="$(printf '%s\n' "$got" | grep -A1 'case "\$status" in' | tail -1 \
+                  | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  [ "$guard_line" = "success|warning)" ] \
+    && ok "and its guard covers success/warning only, never a stopped run" \
+    || bad "the line after the status case reads '$guard_line', not exactly 'success|warning)'"
 
   echo "cpu_tree_sum() — a busy tool tree is proof of life, not a stall"
   # A run whose agent is quiet because a test suite is grinding away in a child
