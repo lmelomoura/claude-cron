@@ -251,7 +251,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it, and every project declared after it stopped being pruned. Both are now
   `sort -u` over whole lines, filtered by jq type, so one bad entry cannot take
   its neighbours down and a path is a path no matter what character it
-  contains.
+  contains. Verified end to end against two real canonical checkouts shaped
+  exactly like the failure case — one path a literal, space-truncated prefix
+  of the other — not only against the de-duplication logic in isolation.
 
 - **A crashed run's `down` hook knows which ports it bound.** `wt_provision`
   read `CC_PORT_BASE` from the environment, but `down` also runs from the orphan

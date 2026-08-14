@@ -1464,6 +1464,41 @@ NASTY
     || bad "the path list came out as '$got'"
   rm -f "$tmp/proj/nasty.json"
 
+  echo "wt_prune_canonicals() — end to end, a canonical whose path is a space-truncated prefix of another is pruned too"
+  # The two blocks above prove the dedup logic in isolation (the jq expression)
+  # and the git side effect for a single canonical (the stampR case). Neither
+  # can regress on the one thing the finding was actually about: a SECOND real
+  # canonical checkout whose path is what "/Users/Jane" is to
+  # "/Users/Jane Doe/repo-a" — a literal prefix ending right where the longer
+  # path has a space. This drives the real wt_prune_canonicals against two real
+  # git repos shaped exactly that way, so a regression back to the
+  # space-delimited seen/glob would fail this assertion even though it cannot
+  # touch the fixture above (whose paths do not exist on disk).
+  mkdir -p "$tmp/g/spacer/Jane Doe/repo-a" "$tmp/g/spacer/Jane"
+  for r in "$tmp/g/spacer/Jane Doe/repo-a" "$tmp/g/spacer/Jane"; do
+    git -c init.defaultBranch=develop init -q "$r"
+    ( cd "$r" && echo hi > f && git add f && $gitc commit -qm init ) >/dev/null 2>&1
+  done
+  printf '%s' '{"projects":[
+      {"name":"spacer-a","cwd":"'"$tmp"'/g/spacer/Jane Doe/repo-a"},
+      {"name":"spacer-b","cwd":"'"$tmp"'/g/spacer/Jane"}]}' > "$tmp/proj/spacer.json"
+  ( PROJECTS_FILE="$tmp/proj/spacer.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup jsp1 spacer-a "$tmp/g/spacer/Jane Doe/repo-a" stampSA
+    wt_setup jsp2 spacer-b "$tmp/g/spacer/Jane" stampSB ) >/dev/null 2>&1
+  rm -rf "$tmp/wtroot/jsp1/stampSA" "$tmp/wtroot/jsp2/stampSB"
+  ( git -C "$tmp/g/spacer/Jane Doe/repo-a" worktree list --porcelain 2>/dev/null | grep -q 'stampSA' \
+    && git -C "$tmp/g/spacer/Jane" worktree list --porcelain 2>/dev/null | grep -q 'stampSB' ) \
+    && ok "both stale registrations exist before the prune" \
+    || bad "the fixture did not leave both stale registrations to clear"
+  ( PROJECTS_FILE="$tmp/proj/spacer.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_prune_canonicals ) >/dev/null 2>&1
+  git -C "$tmp/g/spacer/Jane" worktree list --porcelain 2>/dev/null | grep -q 'stampSB' \
+    && bad "the shorter canonical (.../Jane) was never pruned -- the old seen-glob bug is back" \
+    || ok "the shorter canonical (.../Jane) was pruned despite matching a longer path up to a space"
+  git -C "$tmp/g/spacer/Jane Doe/repo-a" worktree list --porcelain 2>/dev/null | grep -q 'stampSA' \
+    && bad "the longer canonical (.../Jane Doe/repo-a) survived the prune" \
+    || ok "the longer canonical (.../Jane Doe/repo-a) was pruned"
+
   echo "toggle-many flips only the jobs it was handed"
   printf '%s' '{"jobs":[{"id":"a"},{"id":"b","enabled":false},{"id":"c"}]}' > "$tmp/tm.json"
   got="$("$JQ" -c --argjson want '["a","b"]' --argjson v false "$TOGGLE_MANY_FILTER" "$tmp/tm.json")"
