@@ -69,7 +69,7 @@ caso, dizê-lo no relatório.
 - Modify: `CHANGELOG.md`
 
 **Interfaces:**
-- Produces (bash): `boot_id()` → imprime o id do boot actual (string de dígitos), vazio se não conseguir apurar. `slot_alive <slot-dir>` → 0 se o processo que o slot nomeia ainda é o processo que o tomou.
+- Produces (bash): `boot_id()` → imprime a **boot session UUID** desta máquina (`kern.bootsessionuuid`, opaca — nunca comparada por ordem, só por igualdade), vazia se não conseguir apurar. `slot_alive <slot-dir>` → 0 se o processo que o slot nomeia ainda é o processo que o tomou.
 - Produces (Python): `boot_id()` → `str`. `slot_alive(slot: Path)` → `bool`.
 - Consumes: nada de tarefas anteriores.
 
