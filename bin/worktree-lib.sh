@@ -458,6 +458,24 @@ wt_prune_orphans() {
   done
 }
 
+# Clear stale worktree registrations from every canonical checkout a project
+# names. wt_remove_all prunes the one repo it just removed from, which covers
+# every path this engine controls — but not the one a human takes: the dashboard
+# lists each retained run dir with its size, so sooner or later somebody reaches
+# for `rm -rf`. Git then keeps the registration in .git/worktrees/ and, worse,
+# still believes the branch is checked out, so the canonical cannot have it back.
+# Pruning is idempotent and costs a fork per repo per tick.
+wt_prune_canonicals() {
+  local path seen=""
+  while IFS= read -r path; do
+    [ -n "$path" ] && [ -d "$path" ] || continue
+    case " $seen " in *" $path "*) continue ;; esac   # a repo shared by two projects
+    seen="$seen $path"
+    git -C "$path" worktree prune >/dev/null 2>&1 || true
+  done < <(projects_json | "$JQ" -r '
+    .projects[]? | (.repos // [] | .[].path), .cwd | select(. != null and . != "")' 2>/dev/null)
+}
+
 # Is this run dir the working directory of a run that is alive right now?
 wt_is_claimed() { # <id> <run dir>
   local id="$1" wt="$2"

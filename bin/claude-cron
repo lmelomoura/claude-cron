@@ -1427,6 +1427,19 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     wt_prune_orphans ) >/dev/null 2>&1
   [ ! -d "$tmp/wtroot/j3/stampD" ] && ok "an unclaimed run dir is reaped" || bad "orphan survived"
 
+  echo "wt_prune_canonicals() — a run dir removed by hand leaves no registration behind"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup j5 two "$tmp/g/repo" stampR ) >/dev/null 2>&1
+  rm -rf "$tmp/wtroot/j5/stampR"          # behind git's back, the way a human does it
+  git -C "$tmp/g/repo" worktree list --porcelain 2>/dev/null | grep -q 'stampR' \
+    && ok "git still lists the registration before the prune" \
+    || bad "the fixture did not leave a stale registration to clear"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_prune_canonicals ) >/dev/null 2>&1
+  git -C "$tmp/g/repo" worktree list --porcelain 2>/dev/null | grep -q 'stampR' \
+    && bad "the stale registration survived the prune" \
+    || ok "the canonical checkout is clean again"
+
   echo "toggle-many flips only the jobs it was handed"
   printf '%s' '{"jobs":[{"id":"a"},{"id":"b","enabled":false},{"id":"c"}]}' > "$tmp/tm.json"
   got="$("$JQ" -c --argjson want '["a","b"]' --argjson v false "$TOGGLE_MANY_FILTER" "$tmp/tm.json")"
@@ -2806,6 +2819,7 @@ cmd_tick() {
   # Reap worktrees left by runs that died without cleaning up (safe teardown:
   # anything with unpushed/uncommitted work is kept, not deleted).
   wt_prune_orphans
+  wt_prune_canonicals
   # Keep the family→model resolutions fresh (about once a day). It rides on the
   # tick this package already installs — deliberately NOT a second launchd job or
   # a crontab entry, so nothing lives outside the project folder and the whole

@@ -235,6 +235,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A run directory removed by hand no longer wedges its canonical checkout.**
+  `git worktree remove` was only ever reached through the engine's own teardown,
+  so a run dir deleted with `rm -rf` — which the dashboard invites, by listing
+  each one with its size — left the registration in `.git/worktrees/`. Git went
+  on believing the branch was checked out somewhere, and the canonical checkout
+  could not have it back: `git checkout <branch>` failed with "already checked
+  out" against a directory that no longer existed. The tick now prunes every
+  canonical checkout the projects declare.
+
 - **A crashed run's `down` hook knows which ports it bound.** `wt_provision`
   read `CC_PORT_BASE` from the environment, but `down` also runs from the orphan
   sweep — which fires from the tick, and a run dir is an orphan precisely because
