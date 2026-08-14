@@ -283,10 +283,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a Stop clicked before the agent ever existed. Telling them apart takes the
   presence of the spawned agent, not the stop.
 
+  The record that same Stop leaves behind used to lie about it: whatever
+  ended the run early, `run_record_stopped_early` always filed "no work was
+  done and nothing was spent" — so a Stop clicked mid-classifier now correctly
+  kept the tree, while the only surviving record of that run denied there was
+  anything in it, on a dashboard whose one remaining exit is Discard. It reads
+  the presence of a spawned agent the same way teardown does, and says instead
+  that the run's outcome was never classified and its directory is being kept.
+
   Discarding a kept directory now runs its `down` hooks first. An open session
   deliberately never reaches them in teardown, so the drop is the only chance
   its compose stack and its ports have to be released — and the manifest naming
-  them leaves with the directory.
+  them leaves with the directory. It resolves which project's hook to run from
+  the manifest itself, falling back to the live job only if that is missing:
+  a kept-open directory is exactly the kind a job can outlive, and resolving
+  its project from a job that may no longer exist would run no hook at all,
+  silently, for the directories most likely to be dropped by hand.
 
 - **A run that ends with work on no remote is reported, not filed away.**
   `wt_unsafe_to_remove` is now `wt_undelivered_work`: it asks the same question —

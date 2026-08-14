@@ -712,7 +712,20 @@ run_record_stopped_early() { # <id> <slot-dir>
   model="$(resolve "$id" model 'opus')"
   model_family=""
   case "$model" in opus|sonnet|haiku|fable) model_family="$model"; model="" ;; esac
-  note="STOPPED: ended from the dashboard before its agent started, so no work was done and nothing was spent."
+  # This function only ever runs when the run's OWN classifier never finished
+  # (see the journaled guard above), so "no work was done" is a guess, not a
+  # fact — and $slot/child, written the instant an agent is spawned and never
+  # removed, is the one thing here that can tell a guess from a fact. A Stop
+  # that lands while the wrapper is still classifying an agent that already
+  # exited reaches this exact function with the agent's commits sitting on
+  # disk, unclassified: claiming "nothing was spent" invited an operator to
+  # Discard a tree that might hold real work, on the strength of a record that
+  # was simply wrong about what happened.
+  if [ -f "$slot/child" ]; then
+    note="STOPPED: ended from the dashboard after its agent had already been at work; its outcome was never classified. The run directory is kept, not deleted, until you resume it or drop it by hand."
+  else
+    note="STOPPED: ended from the dashboard before its agent started, so no work was done and nothing was spent."
+  fi
   # A log body, so opening the run explains itself instead of showing the blank
   # record of a run that seemingly never happened. The slot only grows its
   # `logfile` breadcrumb once the run is well underway, so when the stop lands
@@ -730,7 +743,11 @@ run_record_stopped_early() { # <id> <slot-dir>
     '{last_end:$end, last_status:"stopped", last_run_start:$start, last_run_status:"stopped"}')"
   record_run "$id" "stopped" "$start" "$end" "0" "0" "" "${logf:-}" "$note" "false" "" "$project" \
              "${model_family:-$model}" "" ""
-  log_tick "$id: stopped by the user before the agent started"
+  if [ -f "$slot/child" ]; then
+    log_tick "$id: stopped by the user after its agent had already run"
+  else
+    log_tick "$id: stopped by the user before the agent started"
+  fi
 }
 
 run_cleanup() { # <id> <slot-dir>
@@ -1600,17 +1617,20 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   echo $$ > "$tmp/locks/j8/$$/pid"
   echo "0" > "$tmp/locks/j8/$$/boot"
   echo "$tmp/wtroot/j8/stampBoot" > "$tmp/locks/j8/$$/worktree"
+  # `done`, not left unmarked: an unmarked dir is now kept regardless of
+  # whether its claim is live or stale (see wt_teardown), so leaving this one
+  # unmarked could not tell THIS function's job -- disregarding a pre-reboot
+  # claim -- apart from the boot-pinning being broken and the sweep never
+  # reaching wt_teardown at all. Both would leave the dir standing and read as
+  # `ok`. A done dir is reaped ONLY if the stale claim is correctly
+  # disregarded, which is the exact recycled-pid risk Task 1 exists for.
+  echo done > "$tmp/wtroot/j8/stampBoot/.ended"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
     WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
     wt_prune_orphans ) >/dev/null 2>&1
-  # A pre-reboot slot is not a LIVE claim -- wt_is_claimed correctly says so --
-  # but a reboot is exactly the crash this task exists to protect: no EXIT trap
-  # ran, so this dir carries no `.ended` either. Reading "not claimed" as "reap
-  # it" is the old behaviour Important #2 inverted; the sweep must leave it for
-  # a resume (or the TTL) instead.
-  [ -d "$tmp/wtroot/j8/stampBoot" ] \
-    && ok "a run dir orphaned by a reboot is kept, not reaped like ordinary garbage" \
-    || bad "a stale pre-reboot claim was reaped, taking its unmarked work with it"
+  [ ! -d "$tmp/wtroot/j8/stampBoot" ] \
+    && ok "a run dir claimed only by a pre-reboot slot is reaped" \
+    || bad "a stale pre-reboot claim kept an orphan alive"
   rm -rf "$tmp/locks/j8" "$tmp/wtroot/j8"
 
   # No backticks in this string: inside double quotes the shell would run it.
@@ -1960,14 +1980,27 @@ NASTY
   [ -d "$rd4" ] && ok "a dir a LIVE run is using is never dropped" || bad "dropped a live run's dir"
   rm -rf "$tmp/locks/j7"
 
+  # The one remedy for round-1's Important #3 (a leaked compose stack and
+  # ports) had no assertion of its own: nothing here ever proved `down`
+  # actually fires on a drop, only that the directory goes. An open session
+  # never reaches wt_teardown's own down block, so this explicit drop is the
+  # ONLY place left that can still release it -- prove it does.
+  printf '%s\n' '#!/usr/bin/env bash' 'echo down >> "$CC_RUN_DIR/../down.count"' \
+    > "$tmp/cfg/provision/two.down.sh"
+  chmod +x "$tmp/cfg/provision/two.down.sh"
+  rm -f "$tmp/wtroot/j7/down.count"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
     WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
     cmd_worktree_drop j7 stampF ) >/dev/null 2>&1
   want "dropping an unclaimed dir succeeds" 0 $?
   [ ! -d "$rd4" ] && ok "the retained dir is gone once dropped explicitly" || bad "dir survived the drop"
+  got="$(wc -l < "$tmp/wtroot/j7/down.count" 2>/dev/null | tr -d ' ')"
+  [ "${got:-0}" -eq 2 ] && ok "the drop released what teardown left up, once per repo" \
+    || bad "down ran $got times for 2 repos on an explicit drop"
   # And git must not be left believing the worktrees are still checked out.
   got="$(git -C "$tmp/g/repo" worktree list --porcelain 2>/dev/null | grep -c "stampF" || true)"
   [ "$(num "$got")" = "0" ] && ok "git no longer lists the removed worktree" || bad "git still lists $got"
+  rm -f "$tmp/cfg/provision/two.down.sh" "$tmp/wtroot/j7/down.count"
 
   echo "a run the operator stops is recorded as stopped, never lost"
   # Stopping in the seconds between claiming a slot and spawning the agent used
@@ -2023,6 +2056,33 @@ NASTY
     run_record_stopped_early j9 "$sl" ) >/dev/null 2>&1
   got="$(wc -l < "$tmp/stop.ndjson" | tr -d ' ')"
   [ "$got" = "1" ] && ok "a run nobody stopped is left alone" || bad "$got rows after a no-op"
+  rm -rf "$tmp/locks/j9"
+
+  echo "run_record_stopped_early() — a stop after the agent ran does not claim nothing happened"
+  # Review: the tree now survives a mid-classifier stop (see run_cleanup
+  # below), but this function still filed "no work was done and nothing was
+  # spent" regardless of $slot/child -- a record that actively denies the very
+  # thing the kept directory proves, and the only exit before the TTL is
+  # Discard. $slot/child (written the instant an agent is spawned, never
+  # removed) was already in hand to tell the two cases apart; no cost or turns
+  # accounting needed, just a different note.
+  local sl3="$tmp/locks/j9/779"
+  mkdir -p "$sl3"
+  echo 779 > "$sl3/pid"; echo 1700000000 > "$sl3/start"
+  echo "$tmp/stoplogs/r3.json" > "$sl3/logfile"
+  echo 55555 > "$sl3/child"          # an agent WAS spawned before the stop landed
+  : > "$sl3/stopped"
+  ( CONFIG_DIR="$tmp/cfg"; DATA_DIR="$tmp"; RUNS_FILE="$tmp/stop3.ndjson"
+    STATE_FILE="$tmp/stopstate.json"; LOG_DIR="$tmp/stoplogs"; TICK_LOG="$tmp/stop3.tick"
+    run_record_stopped_early j9 "$sl3" ) >/dev/null 2>&1
+  got="$("$JQ" -r '.note // ""' "$tmp/stop3.ndjson" 2>/dev/null | head -1)"
+  case "$got" in
+    *"no work was done"*) bad "with an agent spawned, the note still claims '$got'" ;;
+    STOPPED:*)            ok "and it no longer denies the agent ever ran" ;;
+    *)                    bad "note was '$got'" ;;
+  esac
+  grep -q "already run" "$tmp/stop3.tick" 2>/dev/null \
+    && ok "the tick log tells the two cases apart too" || bad "tick log did not distinguish the case"
   rm -rf "$tmp/locks/j9"
 
   echo "run_cleanup() — a stop landing after the agent finished must not delete its work"
@@ -3684,7 +3744,18 @@ cmd_worktree_drop() { # cmd_worktree_drop <job-id> <stamp>
   # down block in wt_teardown, so this is the only chance its compose stack and
   # its ports get to be released — the manifest that names them goes out with
   # the directory on the next line.
-  wt_down_all "$id" "$(job_get "$id" '.project' '')" "$run_dir"
+  #
+  # The project comes from .run.json first, job_get only as a fallback: a job
+  # can be deleted (or renamed) while its run dir still sits on disk, and
+  # these are exactly the directories most likely to be dropped by hand long
+  # after the job that made them is gone. job_get alone would resolve such a
+  # job to no project at all, wt_provision would look for `provision/.down.sh`
+  # and find nothing, and the drop would silently take nothing down.
+  local dproject
+  dproject="$("$JQ" -r '.project // ""' "$run_dir/.run.json" 2>/dev/null)"
+  case "$dproject" in null) dproject="" ;; esac
+  [ -n "$dproject" ] || dproject="$(job_get "$id" '.project' '')"
+  wt_down_all "$id" "$dproject" "$run_dir"
   wt_remove_all "$run_dir"
   [ -d "$WORKTREES_DIR/$id" ] && rmdir "$WORKTREES_DIR/$id" 2>/dev/null
   log_tick "$id: run dir $stamp dropped by the user (discarding whatever it held)"

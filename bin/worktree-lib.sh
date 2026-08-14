@@ -433,11 +433,11 @@ wt_undelivered_work() { # <run dir> -> 0 and a description, or 1
 # `.down` still guards `down` from running twice, because an open session is
 # swept again on every tick.
 wt_teardown() { # <id> <project> <run dir>
-  local run_dir="${3:-}" ended
+  local id="${1:-}" project="${2:-}" run_dir="${3:-}" ended
   [ -n "$run_dir" ] && [ -d "$run_dir" ] || return 0
   ended="$(cat "$run_dir/.ended" 2>/dev/null || true)"
   [ "$ended" = "done" ] || return 0
-  wt_down_all "$1" "$2" "$run_dir"
+  wt_down_all "$id" "$project" "$run_dir"
   wt_remove_all "$run_dir"
 }
 
