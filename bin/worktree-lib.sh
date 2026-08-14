@@ -259,6 +259,25 @@ wt_run_worktrees() { # <run dir>
   done
 }
 
+# The run dir an open session is working in, or nothing. Scoped to one job on
+# purpose: session ids are unique, but a job's directories are the only ones it
+# has any business reattaching to, and a lookup that crossed jobs would let a
+# mistyped id hand one agent another's tree.
+wt_find_by_session() { # <id> <session-id> -> prints a run dir, or nothing
+  local id="${1:-}" sid="${2:-}" d
+  [ -n "$sid" ] || return 0
+  [ -d "$WORKTREES_DIR/$id" ] || return 0
+  for d in "$WORKTREES_DIR/$id"/*; do
+    [ -d "$d" ] || continue
+    [ "$(cat "$d/.session" 2>/dev/null || true)" = "$sid" ] || continue
+    # Only an OPEN session is offered back. A closed one is on its way out, and
+    # handing it to a resume would race the sweep for the same directory.
+    [ "$(cat "$d/.ended" 2>/dev/null || true)" = "open" ] || continue
+    printf '%s\n' "$d"
+    return 0
+  done
+}
+
 # Create this run's dir and one worktree per repo the project spans, provision
 # each, and write the manifest. Prints the PRIMARY worktree (the repo whose path
 # is the project's .cwd) — that becomes the agent's cwd. Returns non-zero if

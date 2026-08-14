@@ -251,6 +251,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A resume continues in the tree its session was working in.** `run_job`
+  computed a fresh timestamp and cut new worktrees from the base with no special
+  case for a resume at all — so `claude-cron resume` handed the agent a
+  conversation that remembered editing files and a checkout that had none of
+  them, while the crashed run's directory sat preserved on disk for nobody. The
+  resume now finds the directory by the session id recorded in it, takes back the
+  same port block (and refuses outright if a live run holds it, rather than
+  pointing the agent's config at ports nothing is listening on), and re-runs the
+  provisioning hooks so a stack a reboot took down comes back.
+
+  It reads the run's manifest and never re-derives the repo set from
+  `projects.json`, which fixes that set for the session's life: editing a
+  project's `repos` no longer changes what an already-open session is working on.
+  Provisioning hooks must therefore tolerate being run twice on the same tree —
+  `cc_copy_ignored`, `cc_env_ports`, `herd link` and `compose up -d` all do.
+
 - **Teardown asks whether the session is done, not whether the tree looks
   precious.** A run directory was kept when git said it held work that existed
   nowhere else — a verdict the sweep re-reached every tick, so nothing ever

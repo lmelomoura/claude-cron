@@ -686,6 +686,20 @@ alloc_port_base() { # <slot-dir> -> prints the base port
   printf '%s\n' "$b"
 }
 
+# Is this port block free for <slot> to take? Used by a resume, which must have
+# the block its services were bound to or none at all.
+port_base_free() { # port_base_free <slot-dir> <base>
+  local slot="$1" want="$2" d b
+  for d in "$LOCK_DIR"/*/*/; do
+    [ -d "$d" ] || continue
+    [ "$d" = "$slot/" ] && continue
+    slot_alive "${d%/}" || continue
+    b="$(cat "$d/portbase" 2>/dev/null || true)"
+    [ "$b" = "$want" ] && return 1
+  done
+  return 0
+}
+
 # End-of-run cleanup, shared by the normal exit path and the EXIT trap (so a
 # crashed or killed run cleans up too). Tears down the run's worktrees if that is
 # safe (see wt_teardown), THEN releases its slot. Reads the run dir from the
@@ -1567,6 +1581,28 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     || bad "a done session was kept"
   rm -f "$tmp/cfg/provision/two.down.sh" "$tmp/wtroot/j2/down.count"
 
+  echo "wt_find_by_session() — a session's directory is found again by its id"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup jR two "$tmp/g/repo" stampS1 ) >/dev/null 2>&1
+  echo "sess-xyz" > "$tmp/wtroot/jR/stampS1/.session"
+  echo open       > "$tmp/wtroot/jR/stampS1/.ended"
+  got="$( WORKTREES_DIR="$tmp/wtroot"; wt_find_by_session jR sess-xyz )"
+  [ "$got" = "$tmp/wtroot/jR/stampS1" ] && ok "the open session's dir is found" \
+    || bad "found '$got'"
+  got="$( WORKTREES_DIR="$tmp/wtroot"; wt_find_by_session jR sess-nope )"
+  [ -z "$got" ] && ok "an unknown session finds nothing" || bad "found '$got'"
+  # Asked BEFORE jR closes its session, while stampS1 is still open and would be
+  # a real match for jR. Asked afterwards, a lookup that ignored the job id and
+  # searched every job's directory would ALSO find nothing here -- by then
+  # nothing open exists anywhere for it to wrongly return -- and this assertion
+  # would pass whether or not job scoping was implemented at all.
+  got="$( WORKTREES_DIR="$tmp/wtroot"; wt_find_by_session jOther sess-xyz )"
+  [ -z "$got" ] && ok "another job's session is never returned" || bad "found '$got'"
+  echo done > "$tmp/wtroot/jR/stampS1/.ended"
+  got="$( WORKTREES_DIR="$tmp/wtroot"; wt_find_by_session jR sess-xyz )"
+  [ -z "$got" ] && ok "a session already closed is not offered back" || bad "found '$got'"
+  rm -rf "$tmp/wtroot/jR"
+
   echo "wt_undelivered_work() — what provisioning left behind is not the agent's work"
   printf '%s\n' '#!/usr/bin/env bash' 'echo residue > provisioned.txt' \
     > "$tmp/cfg/provision/two.up.sh"
@@ -2324,6 +2360,29 @@ NASTY
     || bad "got '$b4', wanted '$b2' ($b1 should still read taken, held by pk/105)"
   rm -rf "$tmp/locks/pj" "$tmp/locks/pk"
 
+  echo "port_base_free() — a resume takes its block back only if nothing live holds it"
+  # The gate that decides between reusing a resume's own block and refusing the
+  # resume outright, so it earns the same scrutiny alloc_port_base's own tests
+  # give allocation: get this backwards and a resume either steals ports out
+  # from under a live run, or refuses one it should have been free to take.
+  mkdir -p "$tmp/locks/pf1/201" "$tmp/locks/pf2/301"
+  echo $$ > "$tmp/locks/pf1/201/pid"; echo "21000" > "$tmp/locks/pf1/201/portbase"
+  ( LOCK_DIR="$tmp/locks"; port_base_free "$tmp/locks/pf2/301" 21000 )
+  want "a block a live run holds is refused" 1 $?
+  ( LOCK_DIR="$tmp/locks"; port_base_free "$tmp/locks/pf2/301" 21100 )
+  want "an unheld block is free" 0 $?
+  # The asking slot is excluded from its own search -- otherwise a slot that
+  # already recorded this exact block (a resume re-checking the block it is
+  # about to keep) would read it as held by somebody else and refuse itself.
+  ( LOCK_DIR="$tmp/locks"; port_base_free "$tmp/locks/pf1/201" 21000 )
+  want "a slot never finds its own block taken" 0 $?
+  # Same as alloc_port_base: a slot whose process is gone holds nothing.
+  mkdir -p "$tmp/locks/pf1/202"
+  echo 999999 > "$tmp/locks/pf1/202/pid"; echo "21200" > "$tmp/locks/pf1/202/portbase"
+  ( LOCK_DIR="$tmp/locks"; port_base_free "$tmp/locks/pf2/301" 21200 )
+  want "a dead slot holds no block either" 0 $?
+  rm -rf "$tmp/locks/pf1" "$tmp/locks/pf2"
+
   echo "provision-lib.sh — a run's ports come from its own block"
   local plib="$BIN_DIR/provision-lib.sh"
   got="$( CC_PORT_BASE=21000 CC_PORT_SPAN=100 TMPDIR="$tmp" bash -c \
@@ -2607,6 +2666,12 @@ run_job() { # run_job <id> [--force] [resume-session-id]
   [ -n "$resume_sid" ] && force="--force"
   local cwd prompt model effort budget timeout stall permission allowed precheck project proj_desc interactive fifo
   local run_cwd worktree run_dir run_env run_cfgdir _envln slot max_par
+  # Loop variables for replaying a reattached run's manifest through `up` again
+  # (see the isolation branch below). Declared here, not just inside the loop,
+  # because `read` happily creates GLOBALS for anything not already local, and
+  # a global `rname` etc. would then bleed into whatever run_job looks at next
+  # -- this function runs once per job per tick, in the same shell, in a loop.
+  local rname rrepo rwt rbase
   project="$(job_get "$id" '.project' '')"
   # Which account this run signs in as. A project pins one when its work belongs
   # to a different Claude login than the scheduler's default — a company account
@@ -2814,22 +2879,73 @@ ${prompt}"
   run_env=()
   [ -n "$run_cfgdir" ] && run_env+=("CLAUDE_CONFIG_DIR=$run_cfgdir")
   if wt_isolation_enabled "$project" "$cwd"; then
-    # Claim the path BEFORE anything exists there. The sweep removes any run dir
-    # no live slot claims, so creating first and claiming after leaves a window
-    # in which it can delete the very directory this agent is about to work in.
-    # The path is ours to predict, so stake it first.
-    run_dir="$WORKTREES_DIR/$id/$stamp"
-    echo "$run_dir" > "$slot/worktree"
-    # Before wt_setup, because the provisioning hooks it calls are what need the
-    # block: they are what write the run's ports into its config.
-    port_base="$(alloc_port_base "$slot")"
-    export CC_PORT_BASE="$port_base" CC_PORT_SPAN CC_PROVISION_LIB="$BIN_DIR/provision-lib.sh"
-    if ! worktree="$(wt_setup "$id" "$project" "$cwd" "$stamp" "$port_base")"; then
-      state_set "$id" last_start "$start"
-      state_set "$id" last_status '"error"'
-      log_tick "$id: worktree isolation failed — run aborted (no shared-checkout fallback)"
-      run_cleanup "$id" "$slot"; trap - EXIT
-      return 1
+    local reattached=""
+    [ -n "$resume_sid" ] && reattached="$(wt_find_by_session "$id" "$resume_sid")"
+    if [ -n "$reattached" ]; then
+      # THE RESUME CONTINUES IN THE TREE THE SESSION WAS WORKING IN. Cutting a
+      # fresh worktree here — which is what used to happen, with no special case
+      # for a resume at all — handed the agent a conversation that remembered
+      # editing files and a checkout of the base that had none of them.
+      #
+      # Everything below is read from the manifest, never re-derived from
+      # projects.json. That is deliberate and it is the freeze: the repo set is
+      # fixed for the session's life, so editing a project's `repos` while a
+      # session is open cannot change what that session is working on. Changing
+      # the mount set means a new session, exactly as it does upstream.
+      run_dir="$reattached"
+      echo "$run_dir" > "$slot/worktree"
+      port_base="$("$JQ" -r '.port_base // ""' "$run_dir/.run.json" 2>/dev/null)"
+      case "$port_base" in null) port_base="" ;; esac
+      if [ -z "$port_base" ]; then
+        port_base="$(alloc_port_base "$slot")"
+      elif ! port_base_free "$slot" "$port_base"; then
+        # Its services are still bound to that block and somebody else holds it.
+        # Refusing is the honest answer: a fresh block would silently point the
+        # resumed agent's config at ports nothing is listening on.
+        log_tick "$id: cannot resume $resume_sid — its port block $port_base is held by a live run"
+        state_set "$id" last_status '"error"'
+        run_cleanup "$id" "$slot"; trap - EXIT
+        return 1
+      else
+        { echo "$port_base" > "$slot/portbase"; } 2>/dev/null || true
+      fi
+      export CC_PORT_BASE="$port_base" CC_PORT_SPAN CC_PROVISION_LIB="$BIN_DIR/provision-lib.sh"
+      worktree="$run_dir/$("$JQ" -r '.primary // ""' "$run_dir/.run.json" 2>/dev/null)"
+      if [ ! -d "$worktree" ]; then
+        log_tick "$id: cannot resume $resume_sid — its primary worktree is gone"
+        state_set "$id" last_status '"error"'
+        run_cleanup "$id" "$slot"; trap - EXIT
+        return 1
+      fi
+      # `up` runs again, with the SAME port block. The hooks are written to be
+      # re-runnable (cc_copy_ignored, cc_env_ports, `herd link`, `compose up -d`
+      # all are), and this is what puts a stack back that a reboot took down
+      # while the session sat open.
+      while IFS="$(printf '\t')" read -r rname rrepo rwt rbase; do
+        [ -n "$rname" ] || continue
+        wt_provision up "$project" "$id" "$run_dir" "$rname" "$rrepo" "$rwt" "$rbase" || true
+      done < <("$JQ" -r '.repos[] | [.name,.canonical,.worktree,.base] | @tsv' \
+                  "$run_dir/.run.json" 2>/dev/null)
+      log_tick "$id: resumed $resume_sid in its own tree $run_dir (cwd $worktree)"
+    else
+      # Claim the path BEFORE anything exists there. The sweep removes any run dir
+      # no live slot claims, so creating first and claiming after leaves a window
+      # in which it can delete the very directory this agent is about to work in.
+      # The path is ours to predict, so stake it first.
+      run_dir="$WORKTREES_DIR/$id/$stamp"
+      echo "$run_dir" > "$slot/worktree"
+      # Before wt_setup, because the provisioning hooks it calls are what need the
+      # block: they are what write the run's ports into its config.
+      port_base="$(alloc_port_base "$slot")"
+      export CC_PORT_BASE="$port_base" CC_PORT_SPAN CC_PROVISION_LIB="$BIN_DIR/provision-lib.sh"
+      if ! worktree="$(wt_setup "$id" "$project" "$cwd" "$stamp" "$port_base")"; then
+        state_set "$id" last_start "$start"
+        state_set "$id" last_status '"error"'
+        log_tick "$id: worktree isolation failed — run aborted (no shared-checkout fallback)"
+        run_cleanup "$id" "$slot"; trap - EXIT
+        return 1
+      fi
+      log_tick "$id: isolated in $run_dir (cwd $worktree)"
     fi
     run_cwd="$worktree"
     # What the agent needs to find the OTHER repos of this run, and the canonical
@@ -2842,7 +2958,6 @@ ${prompt}"
     while IFS= read -r _envln; do
       [ -n "$_envln" ] && run_env+=("$_envln")
     done < <(wt_env_line "$project" "$cwd" "$run_cwd")
-    log_tick "$id: isolated in $run_dir (cwd $run_cwd)"
   fi
 
   # Persist what the precheck saw, next to the run log.
