@@ -1708,8 +1708,16 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   # can genuinely disagree. Signalling the name instead of the file is worse
   # than the leak that fixture guards against -- it is a live TERM aimed at
   # whichever unrelated process the kernel now happens to call by that number.
-  sleep 60 & local realpid=$!
-  sleep 60 & local decoypid=$!
+  # _stop_slot's TERM reaches realpid from inside this same shell -- no
+  # subshell sits between here and there -- so when the process dies, bash
+  # defers the news to the next command boundary instead of dropping it. Left
+  # tracked, that surfaces as `Terminated: 15   sleep 60` printed straight into
+  # a PASSING run's output, and that exact line is what this suite's own RED
+  # transcripts use as proof the bug is alive -- so a green run left tracked
+  # would read as a crashed one. Disowning drops only the job-table entry;
+  # kill -0 and the explicit wait below still see the real process.
+  sleep 60 & local realpid=$!; disown "$realpid"
+  sleep 60 & local decoypid=$!; disown "$decoypid"
   mkdir -p "$tmp/locks/j9/$decoypid"
   echo "$realpid" > "$tmp/locks/j9/$decoypid/pid"
   boot_id > "$tmp/locks/j9/$decoypid/boot"
@@ -1728,7 +1736,8 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   # cannot call this alive without a pid file, and treating "cannot tell" as
   # "dead" would silently clear a run mid-claim -- the exact bug the comment
   # inside _stop_slot exists to keep fixed.
-  sleep 60 & local midpid=$!
+  # Same job-control noise as the section above, same fix: disown right away.
+  sleep 60 & local midpid=$!; disown "$midpid"
   mkdir -p "$tmp/locks/j9/$midpid"        # mkdir happened; pid/boot files did not
   _stop_slot j9 "$tmp/locks/j9/$midpid" >/dev/null 2>&1
   sleep 0.3
@@ -1737,6 +1746,42 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   [ -d "$tmp/locks/j9/$midpid" ] && ok "its slot is left for the run's own EXIT path to clear" \
     || bad "the slot was cleared instead of signalled"
   kill "$midpid" 2>/dev/null; wait "$midpid" 2>/dev/null
+  rm -rf "$tmp/locks/j9"
+
+  echo "_stop_slot() — a pid file of literal 0 clears the slot, never signals the process group"
+  # kill -TERM 0 does not name a process, it names the CALLER's own process
+  # group -- so an unguarded rpid=0 would TERM this very selftest run, and
+  # whatever invoked it, instead of the one dead slot it was meant to clear.
+  # Proving that live would mean actually sending that signal from inside the
+  # process running this suite: the one outcome this guard exists to rule
+  # out, not something to reproduce for real just to watch it fail. Shadow
+  # `kill` instead -- real calls (slot_alive's own kill -0 check, reached only
+  # if the guard fails to refuse first) still pass through via `command
+  # kill`, only the exact dangerous shape is trapped -- so the guard runs for
+  # real, end to end, without ever risking the shell running it.
+  local pid0_term=0
+  kill() {
+    if [ "$1" = "-TERM" ] && [ "$2" = "0" ]; then pid0_term=1; return 0; fi
+    command kill "$@"
+  }
+  mkdir -p "$tmp/locks/j9/997"
+  echo "0" > "$tmp/locks/j9/997/pid"
+  # A plain `_stop_slot ... > file` runs in THIS shell, so the shadow above can
+  # mutate pid0_term. `got="$(_stop_slot ...)"` would not: command
+  # substitution forks a subshell, and a subshell's writes to an existing
+  # variable die with it -- pid0_term would read 0 whether the guard held or
+  # not, turning the very assertion this section exists for into one that
+  # always passes. Capture to a file instead and read it back after.
+  _stop_slot j9 "$tmp/locks/j9/997" > "$tmp/pid0.out" 2>&1
+  unset -f kill
+  got="$(cat "$tmp/pid0.out")"
+  [ "$pid0_term" -eq 0 ] && ok "kill -TERM 0 is never attempted" \
+    || bad "the guard let a pid of 0 reach a real kill"
+  case "$got" in
+    *"no usable pid"*) ok "and it is the refuse-early branch, not the kill branch, that ran" ;;
+    *) bad "unexpected output: '$got'" ;;
+  esac
+  [ ! -d "$tmp/locks/j9/997" ] && ok "and its slot is cleared" || bad "the slot survived"
   rm -rf "$tmp/locks/j9"
 
   echo "slots_active() — a stale-boot slot is not counted, and is pruned"
@@ -1993,8 +2038,14 @@ _stop_slot() { # <id> <slot-dir>
     rpid="$(basename "$slot")"
     midclaim=1
   fi
+  # `0` has to be refused here too, not just empty and non-digit shapes:
+  # kill -TERM 0 does not target a process, it targets the CALLER's whole
+  # process group -- the operator's own shell session along with it. A slot
+  # directory can never be named "0" (it is always stamped from a real $$),
+  # but rpid can now come from the pid FILE above, and a pid file that ever
+  # held a bare "0" would otherwise sail through unrefused.
   case "$rpid" in
-    ''|*[!0-9]*) echo "run of $id has no usable pid; clearing its slot"; release_slot "$slot"; return 0 ;;
+    ''|0|*[!0-9]*) echo "run of $id has no usable pid; clearing its slot"; release_slot "$slot"; return 0 ;;
   esac
   # slot_alive, not a bare kill -0: rpid is only ever the pid this slot was
   # taken by, and the same reboot-recycling that makes a dead slot answer

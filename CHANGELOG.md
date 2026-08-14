@@ -248,7 +248,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   belonging to another boot — and a slot from an earlier boot is dead however
   healthy its pid looks. Slots written before this change carry no boot and
   still fall back to the pid, so an upgrade does not reap the runs it finds in
-  flight.
+  flight. A pid of literal `0` gets the same refusal as an empty or
+  non-numeric one: `kill -TERM 0` does not name a process, it names the
+  caller's whole process group, not a value a lease can afford to pass
+  through unchecked.
 
 - **A run's transcript is no longer deleted when nothing was stored.** A
   37-minute, $7.27 reviewer run had no timeline, no answer and no terminal, and
