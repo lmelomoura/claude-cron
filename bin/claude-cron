@@ -746,10 +746,22 @@ run_cleanup() { # <id> <slot-dir>
     #
     # A run that never reached its own classifier — killed, crashed, the machine
     # went down — left no marker. Default it to `open`: its session may still be
-    # resumable, and Task 8's TTL is what ends it if nobody comes back. Only a
-    # run the operator stopped on purpose is closed here.
+    # resumable, and Task 8's TTL is what ends it if nobody comes back.
+    #
+    # `done` needs BOTH a stop and proof that no agent ever ran. `$slot/stopped`
+    # alone does not mean that, however much `_stop_slot`'s comment says it
+    # does: that function TERMs the run wrapper whenever the agent's pid is not
+    # ALIVE, which includes an agent that already finished. So a Stop clicked
+    # while the run is in its post-agent bookkeeping — the classifier forks
+    # `git status` and `git branch -r --contains` per repo, seconds on a big
+    # checkout, with the dashboard still showing the run as active — would
+    # otherwise land here with the agent's commits on disk and mark them
+    # `done`. They would be deleted, and the only record left would be
+    # run_record_stopped_early's, which states in as many words that no work
+    # was done. `$slot/child` is written the moment an agent is spawned, so its
+    # absence is the fact this branch actually needs.
     if [ ! -f "$wt/.ended" ]; then
-      if [ -f "$slot/stopped" ]; then
+      if [ -f "$slot/stopped" ] && [ ! -f "$slot/child" ]; then
         printf 'done\n' > "$wt/.ended" 2>/dev/null || true
       else
         printf 'open\n' > "$wt/.ended" 2>/dev/null || true
@@ -1126,7 +1138,7 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   # and a guard that let `stopped` through would overwrite an operator's
   # STOPPED record with a less informative one. Both are one-line edits that
   # look like harmless cleanup.
-  local budget_at undelivered_at guard_line budget_n undelivered_n
+  local budget_at undelivered_at guard_line budget_n undelivered_n case_at
   got="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/claude-cron")"
   # -c (a count), not just -n | head -1: a SECOND "BUDGET LIMITED:" or a
   # duplicated call site would make head -1 silently anchor on whichever
@@ -1146,14 +1158,19 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   # read as `ok`. Only an exact compare catches every position it could be
   # inserted at, not just appended.
   #
-  # head -2, not a bare tail -1 over the whole -A1 output: run_job carries a
-  # SECOND `case "$status" in` below this one (Task 6's done/open marker,
-  # written once the status above is final). A bare tail -1 would silently
-  # start reading THAT guard the moment it existed — the wrong statement, not
-  # a missing one, so this assertion would keep passing while checking
-  # nothing it claims to. Anchoring on the FIRST match is what keeps it
-  # pinned to the rule it names, however many more get added after it.
-  guard_line="$(printf '%s\n' "$got" | grep -A1 'case "\$status" in' | head -2 | tail -1 \
+  # Semantic anchor, not positional: find THIS rule's own case statement by
+  # searching backwards from wt_undelivered_work's own call (undelivered_at,
+  # already found above) rather than by counting `case "$status" in`
+  # occurrences from the top of run_job. A positional count breaks the moment
+  # a second one exists anywhere else in the function — already true today
+  # (Task 6's done/open marker sits below this one) — and would break again,
+  # silently, the day a third one lands ABOVE this rule instead. The nearest
+  # `case "$status" in` before wt_undelivered_work's own call can only ever be
+  # the statement that guards it, however many more exist elsewhere in either
+  # direction.
+  case_at="$(printf '%s\n' "$got" | head -n "$undelivered_at" \
+               | grep -n 'case "\$status" in' | tail -1 | cut -d: -f1)"
+  guard_line="$(printf '%s\n' "$got" | sed -n "$((case_at + 1))p" \
                   | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
   [ "$guard_line" = "success|warning)" ] \
     && ok "and its guard covers success/warning only, never a stopped run" \
@@ -1510,14 +1527,27 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     && ok "and its services are left up for the resume" \
     || bad "down tore down a session that is still open"
 
-  echo "wt_teardown() — a dir with no marker is treated as done"
+  echo "wt_teardown() — a dir with no marker is KEPT, because a crash writes none"
+  # The discriminating half of this task, and the one that can destroy work if
+  # it is wrong. A SIGKILL or a reboot runs no EXIT trap: no marker is written,
+  # AND the classifier never fires, so the UNDELIVERED report that justifies
+  # deleting a tree never happens either. The fixture therefore carries real
+  # work — an empty dir would be reclaimed by any implementation and would
+  # prove nothing.
   local rd6="$tmp/wtroot/j2/stampN"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
     wt_setup j2 two "$tmp/g/repo" stampN ) >/dev/null 2>&1
+  echo "work only this tree has" > "$rd6/one/agent.txt"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
     wt_teardown j2 two "$rd6" ) >/dev/null 2>&1
-  [ ! -d "$rd6" ] && ok "a run that died before marking anything is reclaimed" \
-    || bad "an unmarked dir was kept, which is the old leak"
+  [ -d "$rd6" ] && ok "a run killed before it could mark anything keeps its work" \
+    || bad "an unmarked dir was deleted — a reboot would take every in-flight run with it"
+  # And once it IS marked done, the same work is no obstacle: it was reported.
+  echo done > "$rd6/.ended"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_teardown j2 two "$rd6" ) >/dev/null 2>&1
+  [ ! -d "$rd6" ] && ok "and a done session goes even holding work on no remote" \
+    || bad "a done session was kept"
   rm -f "$tmp/cfg/provision/two.down.sh" "$tmp/wtroot/j2/down.count"
 
   echo "wt_undelivered_work() — what provisioning left behind is not the agent's work"
@@ -1573,10 +1603,15 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
     WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
     wt_prune_orphans ) >/dev/null 2>&1
-  [ ! -d "$tmp/wtroot/j8/stampBoot" ] \
-    && ok "a run dir claimed only by a pre-reboot slot is reaped" \
-    || bad "a stale pre-reboot claim kept an orphan alive"
-  rm -rf "$tmp/locks/j8"
+  # A pre-reboot slot is not a LIVE claim -- wt_is_claimed correctly says so --
+  # but a reboot is exactly the crash this task exists to protect: no EXIT trap
+  # ran, so this dir carries no `.ended` either. Reading "not claimed" as "reap
+  # it" is the old behaviour Important #2 inverted; the sweep must leave it for
+  # a resume (or the TTL) instead.
+  [ -d "$tmp/wtroot/j8/stampBoot" ] \
+    && ok "a run dir orphaned by a reboot is kept, not reaped like ordinary garbage" \
+    || bad "a stale pre-reboot claim was reaped, taking its unmarked work with it"
+  rm -rf "$tmp/locks/j8" "$tmp/wtroot/j8"
 
   # No backticks in this string: inside double quotes the shell would run it.
   echo "wt_provision() — a down hook from the orphan sweep still knows its ports"
@@ -1589,6 +1624,11 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   got="$("$JQ" -r '.port_base' "$tmp/wtroot/j6/stampP/.run.json" 2>/dev/null)"
   [ "$got" = "27100" ] && ok "the manifest records the run's port block" \
     || bad "port_base was '$got'"
+  # `done`, not left unmarked: the orphan sweep now KEEPS an unmarked dir (see
+  # above), so proving `down` still finds its ports needs a dir the sweep will
+  # actually tear down -- a crash that landed AFTER the run's own classifier
+  # wrote `done`, not one caught before any classifier ran.
+  echo done > "$tmp/wtroot/j6/stampP/.ended"
   # No slot, no ambient CC_PORT_BASE: exactly the orphan sweep's situation.
   # wt_prune_orphans resolves the project via job_get (JOBS_FILE), not by
   # reading the manifest's own .project — so the sweep needs a job "j6" ->
@@ -1604,7 +1644,7 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     || bad "down ran without the run's port block"
   rm -f "$tmp/cfg/provision/two.down.sh" "$tmp/wtroot/j6/down.log"
 
-  echo "wt_prune_orphans() — an unclaimed run dir is reaped, a claimed one is not"
+  echo "wt_prune_orphans() — an unclaimed run dir is kept until it is marked done"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
     wt_setup j3 two "$tmp/g/repo" stampD ) >/dev/null 2>&1
   mkdir -p "$tmp/locks/j3/999"
@@ -1619,7 +1659,18 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
     WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
     wt_prune_orphans ) >/dev/null 2>&1
-  [ ! -d "$tmp/wtroot/j3/stampD" ] && ok "an unclaimed run dir is reaped" || bad "orphan survived"
+  [ -d "$tmp/wtroot/j3/stampD" ] \
+    && ok "unclaimed but still unmarked, it is kept rather than reaped" \
+    || bad "the orphan was reaped though nothing ever said its run was done"
+  # The control: this is not "the sweep never reaps anything now" -- only that
+  # it needs telling. Once the run IS marked done, the very next sweep lets it
+  # go, same as any other done run the sweep finds.
+  echo done > "$tmp/wtroot/j3/stampD/.ended"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
+    wt_prune_orphans ) >/dev/null 2>&1
+  [ ! -d "$tmp/wtroot/j3/stampD" ] && ok "and a done, unclaimed run IS reaped by the sweep" \
+    || bad "a done run survived a sweep — the sweep no longer reaps anything"
 
   echo "wt_prune_canonicals() — a run dir removed by hand leaves no registration behind"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
@@ -1973,6 +2024,62 @@ NASTY
   got="$(wc -l < "$tmp/stop.ndjson" | tr -d ' ')"
   [ "$got" = "1" ] && ok "a run nobody stopped is left alone" || bad "$got rows after a no-op"
   rm -rf "$tmp/locks/j9"
+
+  echo "run_cleanup() — a stop landing after the agent finished must not delete its work"
+  # The Critical this closes. _stop_slot TERMs the run WRAPPER whenever the
+  # agent's own pid is not ALIVE -- true both when no agent has been spawned
+  # yet and when one already finished and exited. A Stop clicked while the
+  # wrapper is still inside its post-agent classifier (git status / git branch
+  # -r --contains per repo -- real wall-clock time on a real checkout, with the
+  # dashboard still showing the run as active) lands here with $slot/stopped
+  # set, no `.ended` written yet (the classifier never reached that line), and
+  # the agent's actual commits sitting in the tree. $slot/child is the one fact
+  # that tells the two cases apart: it is written the moment an agent is
+  # spawned and is never removed, so its VALUE does not matter here, only its
+  # presence.
+  local rd7="$tmp/wtroot/j2/stampS"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup j2 two "$tmp/g/repo" stampS ) >/dev/null 2>&1
+  echo "the agent's own commit, never pushed" > "$rd7/one/agent.txt"
+  local scl="$tmp/locks/j2/999"
+  mkdir -p "$scl" "$tmp/rclogs"
+  echo 999 > "$scl/pid"; echo 1700000000 > "$scl/start"
+  echo "$rd7" > "$scl/worktree"
+  echo "$tmp/rclogs/rc.json" > "$scl/logfile"
+  echo 12345 > "$scl/child"          # an agent WAS spawned -- dead or alive, it existed
+  : > "$scl/stopped"                 # the operator clicked Stop
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    DATA_DIR="$tmp"; RUNS_FILE="$tmp/rc.ndjson"; STATE_FILE="$tmp/rcstate.json"
+    LOG_DIR="$tmp/rclogs"; TICK_LOG="$tmp/rc.tick"
+    run_cleanup j2 "$scl" ) >/dev/null 2>&1
+  [ -d "$rd7" ] \
+    && ok "an agent that was spawned keeps its run open, never marked done" \
+    || bad "CRITICAL: a stop after the agent ran deleted its work"
+  got="$(cat "$rd7/.ended" 2>/dev/null)"
+  [ "$got" = "open" ] && ok "and .ended says so, not done" || bad ".ended was '$got'"
+
+  echo "run_cleanup() — a stop with no agent ever spawned is still closed as done"
+  # The control, not just the refusal: the ORIGINAL case this branch exists
+  # for -- stopped in the seconds between claiming the slot and spawning --
+  # must still resolve to done, or the fix above just traded one wrong default
+  # for another. Same fixture, minus the one fact ($slot/child) that changes
+  # the verdict.
+  local rd8="$tmp/wtroot/j2/stampS2"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup j2 two "$tmp/g/repo" stampS2 ) >/dev/null 2>&1
+  local scl2="$tmp/locks/j2/998"
+  mkdir -p "$scl2"
+  echo 998 > "$scl2/pid"; echo 1700000000 > "$scl2/start"
+  echo "$rd8" > "$scl2/worktree"
+  echo "$tmp/rclogs/rc2.json" > "$scl2/logfile"
+  : > "$scl2/stopped"                # stopped, and $scl2/child never existed
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    DATA_DIR="$tmp"; RUNS_FILE="$tmp/rc2.ndjson"; STATE_FILE="$tmp/rc2state.json"
+    LOG_DIR="$tmp/rclogs"; TICK_LOG="$tmp/rc.tick"
+    run_cleanup j2 "$scl2" ) >/dev/null 2>&1
+  [ ! -d "$rd8" ] && ok "no agent ever spawned still closes the run as done" \
+    || bad "a genuinely pre-agent stop was left open, unable to ever close"
+  rm -rf "$tmp/locks/j2" "$tmp/wtroot/j2/stampS" "$tmp/wtroot/j2/stampS2"
 
   echo "_stop_slot() — a live pid from an earlier boot is cleared, never signalled"
   # Same reboot-recycled-pid risk slot_alive exists for, but with teeth: the old
@@ -3573,6 +3680,11 @@ cmd_worktree_drop() { # cmd_worktree_drop <job-id> <stamp>
   if wt_is_claimed "$id" "$run_dir"; then
     die "worktree-drop: $id/$stamp belongs to a run that is still going — stop it first"
   fi
+  # `down` first, and by hand: an open session deliberately never reached the
+  # down block in wt_teardown, so this is the only chance its compose stack and
+  # its ports get to be released — the manifest that names them goes out with
+  # the directory on the next line.
+  wt_down_all "$id" "$(job_get "$id" '.project' '')" "$run_dir"
   wt_remove_all "$run_dir"
   [ -d "$WORKTREES_DIR/$id" ] && rmdir "$WORKTREES_DIR/$id" 2>/dev/null
   log_tick "$id: run dir $stamp dropped by the user (discarding whatever it held)"

@@ -273,6 +273,14 @@ wt_run_worktrees() { # <run dir>
 # The canonical checkout is NEVER modified: the base is declared, so there is
 # nothing to free by detaching it, and a detach it never undoes would leave the
 # operator's own repo headless for good.
+#
+# Every rollback below marks the run dir `done` before calling wt_teardown: a
+# setup that never got as far as launching an agent has no SESSION to be
+# `open` for -- there is nothing to resume. wt_teardown now reads a missing
+# marker as a crash that might still be open, which is right for a run that
+# died after the agent started and wrong here: "no marker yet" would read a
+# failed setup as a live run and keep it forever, the exact leak this whole
+# rollback exists to prevent.
 wt_setup() { # <id> <project> <canonical_cwd> <stamp> [port_base]
   local id="${1:-}" project="${2:-}" cwd="${3:-}" stamp="${4:-}" port_base="${5:-}"
   local run_dir="$WORKTREES_DIR/$id/$stamp" tsv="$WORKTREES_DIR/$id/.$stamp.tsv"
@@ -286,17 +294,20 @@ wt_setup() { # <id> <project> <canonical_cwd> <stamp> [port_base]
     [ -n "$name" ] || continue
     if [ ! -d "$repo" ]; then
       log_tick "$id: repo path missing ($name -> $repo)"
-      rm -f "$tsv"; wt_teardown "$id" "$project" "$run_dir"; return 1
+      rm -f "$tsv"; printf 'done\n' > "$run_dir/.ended" 2>/dev/null || true
+      wt_teardown "$id" "$project" "$run_dir"; return 1
     fi
     if ! ref="$(wt_base_ref "$repo" "$base" "$fetch_t")"; then
       log_tick "$id: no base ref resolvable in $repo"
-      rm -f "$tsv"; wt_teardown "$id" "$project" "$run_dir"; return 1
+      rm -f "$tsv"; printf 'done\n' > "$run_dir/.ended" 2>/dev/null || true
+      wt_teardown "$id" "$project" "$run_dir"; return 1
     fi
     wt="$run_dir/$name"
     git -C "$repo" worktree prune >/dev/null 2>&1 || true
     if ! git -C "$repo" worktree add --detach "$wt" "$ref" >/dev/null 2>>"$DATA_DIR/exec.log"; then
       log_tick "$id: worktree add failed ($wt from $ref) — see exec.log"
-      rm -f "$tsv"; wt_teardown "$id" "$project" "$run_dir"; return 1
+      rm -f "$tsv"; printf 'done\n' > "$run_dir/.ended" 2>/dev/null || true
+      wt_teardown "$id" "$project" "$run_dir"; return 1
     fi
     sha="$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)"
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$repo" "$wt" "${base:-$ref}" "$ref" "$sha" >> "$tsv"
@@ -305,7 +316,8 @@ wt_setup() { # <id> <project> <canonical_cwd> <stamp> [port_base]
 
   if [ -z "$primary" ]; then
     log_tick "$id: no repo matches the project's cwd ($cwd) — cannot choose a primary"
-    rm -f "$tsv"; wt_teardown "$id" "$project" "$run_dir"; return 1
+    rm -f "$tsv"; printf 'done\n' > "$run_dir/.ended" 2>/dev/null || true
+    wt_teardown "$id" "$project" "$run_dir"; return 1
   fi
 
   "$JQ" -Rn --arg job "$id" --arg project "$project" --arg run_dir "$run_dir" \
@@ -327,7 +339,8 @@ wt_setup() { # <id> <project> <canonical_cwd> <stamp> [port_base]
     [ -n "$name" ] || continue
     if ! wt_provision up "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base"; then
       log_tick "$id: provisioning failed for $name — aborting the run"
-      rm -f "$tsv"; wt_teardown "$id" "$project" "$run_dir"
+      rm -f "$tsv"; printf 'done\n' > "$run_dir/.ended" 2>/dev/null || true
+      wt_teardown "$id" "$project" "$run_dir"
       return 1
     fi
     printf '%s\t%s\n' "$name" "$(wt_dirt_sha "$wt")" >> "$tsv"
@@ -407,29 +420,44 @@ wt_undelivered_work() { # <run dir> -> 0 and a description, or 1
 #              stack down here would hand the resumed agent a provisioned tree
 #              with nothing running behind it.
 #
-# No marker means the run died before it could write one — that is `done`. The
-# old default was the opposite, and it is what made this leak: every crash left a
-# directory nothing could ever release.
+# NO MARKER MEANS `open`, NOT `done`. This is the one place where the safe
+# default and the tidy default disagree, and the tidy one destroys work: a
+# SIGKILL, an OOM kill or a reboot never runs the EXIT trap, so no marker is
+# ever written AND the classifier never fires — which means Task 5's
+# UNDELIVERED report, the compensating control for deleting a tree, never runs
+# either. Defaulting to `done` there would have let the first tick after a
+# reboot reclaim every run that was in flight, silently, with nothing anywhere
+# saying what was in them. The leak that argument was trying to avoid is closed
+# by the TTL instead: an open session nobody resumes expires on its own.
 #
 # `.down` still guards `down` from running twice, because an open session is
 # swept again on every tick.
 wt_teardown() { # <id> <project> <run dir>
-  local id="${1:-}" project="${2:-}" run_dir="${3:-}" mf="${3:-}/.run.json"
-  local name repo wt base ended
+  local run_dir="${3:-}" ended
   [ -n "$run_dir" ] && [ -d "$run_dir" ] || return 0
   ended="$(cat "$run_dir/.ended" 2>/dev/null || true)"
-  if [ "$ended" = "open" ]; then
-    return 0
-  fi
-  if [ -f "$mf" ] && [ ! -f "$run_dir/.down" ]; then
-    : > "$run_dir/.down"
-    while IFS="$(printf '\t')" read -r name repo wt base; do
-      [ -n "$wt" ] && [ -d "$wt" ] || continue
-      wt_provision down "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base" || true
-    done < <("$JQ" -r '.repos | reverse | .[] | [.name,.canonical,.worktree,.base] | @tsv' \
-                "$mf" 2>/dev/null)
-  fi
+  [ "$ended" = "done" ] || return 0
+  wt_down_all "$1" "$2" "$run_dir"
   wt_remove_all "$run_dir"
+}
+
+# Run `down` for every repo of a run dir, once. Split out of wt_teardown so the
+# explicit drop can reuse it. An open session returns from wt_teardown BEFORE
+# any of this — its services are meant to stay up for the resume — so a drop
+# that only removed the tree would strand the compose stack and the ports with
+# nothing left to enumerate them: `.run.json` goes out with the directory.
+wt_down_all() { # <id> <project> <run dir>
+  local id="${1:-}" project="${2:-}" run_dir="${3:-}" mf="${3:-}/.run.json"
+  local name repo wt base
+  [ -n "$run_dir" ] && [ -d "$run_dir" ] || return 0
+  [ -f "$mf" ] || return 0
+  [ -f "$run_dir/.down" ] && return 0
+  : > "$run_dir/.down"
+  while IFS="$(printf '\t')" read -r name repo wt base; do
+    [ -n "$wt" ] && [ -d "$wt" ] || continue
+    wt_provision down "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base" || true
+  done < <("$JQ" -r '.repos | reverse | .[] | [.name,.canonical,.worktree,.base] | @tsv' \
+              "$mf" 2>/dev/null)
 }
 
 # Take a run dir off disk unconditionally, leaving git with no stale worktree

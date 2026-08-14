@@ -1348,11 +1348,13 @@ def slot_alive(slot):
 def retained_worktrees():
     """Run dirs sitting on disk that no live run is using.
 
-    wt_teardown keeps a run dir whose worktrees hold uncommitted or unpushed
-    work — correct, but permanent: the sweep re-reaches the same verdict every
-    tick and nothing ever lets go. They were also invisible, mentioned only in
-    tick.log, so the first symptom was a full disk. Listing them is what makes
-    the deliberate drop (worktree-drop) something a user can actually reach.
+    wt_teardown keeps a run dir whose session is marked `open` — cut short and
+    waiting on a resume — or not marked at all, since a crash writes no marker
+    either. Correct, but permanent on its own: the sweep re-reaches the same
+    verdict every tick and nothing ever lets go without a resume or an explicit
+    drop. They were also invisible, mentioned only in tick.log, so the first
+    symptom was a full disk. Listing them is what makes the deliberate drop
+    (worktree-drop) something a user can actually reach.
 
     Read straight from the directory tree, the same way active_runs_for reads
     the slots — no fork, cheap enough for the poll.

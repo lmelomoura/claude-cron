@@ -258,9 +258,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   how their run ended: a finished session is torn down and removed
   unconditionally, and a run cut short is kept **with its services still up**,
   because the resume continues in that same directory and would otherwise get a
-  provisioned tree with nothing running behind it. A run that died before
-  marking anything counts as finished, which is the case the old default got
-  backwards: every crash used to leave a folder nothing could reclaim.
+  provisioned tree with nothing running behind it.
+
+  A run that died before marking anything counts as **open**, not finished. The
+  tidier default would delete it, and it would delete work: a SIGKILL, an OOM
+  kill or a reboot runs no exit path, so no marker is written and the classifier
+  never fires — which means the `UNDELIVERED` report that justifies removing a
+  tree never runs either. The first tick after a reboot would have reclaimed
+  every run that was in flight, silently, with nothing anywhere saying what was
+  in them. The leak that default was avoiding is closed by the expiry instead.
+
+  A failed provisioning hook still leaves nothing behind, which "no marker
+  means open" would otherwise have quietly undone: `wt_setup`'s own rollback
+  reuses `wt_teardown` for removal, and a setup that never got as far as
+  launching an agent has no session to be open FOR. Its five rollback paths now
+  mark the directory done, themselves, before handing it to teardown — a setup
+  failure is a known, finished outcome, not an uncertain one waiting on a
+  resume.
+
+  Stopping a run from the dashboard closes it only when no agent had started
+  yet. `claude-cron stop` signals the run wrapper whenever the agent pid is not
+  *alive* — which includes an agent that has already finished — so a Stop
+  clicked during the seconds of post-agent bookkeeping used to look identical to
+  a Stop clicked before the agent ever existed. Telling them apart takes the
+  presence of the spawned agent, not the stop.
+
+  Discarding a kept directory now runs its `down` hooks first. An open session
+  deliberately never reaches them in teardown, so the drop is the only chance
+  its compose stack and its ports have to be released — and the manifest naming
+  them leaves with the directory.
 
 - **A run that ends with work on no remote is reported, not filed away.**
   `wt_unsafe_to_remove` is now `wt_undelivered_work`: it asks the same question —

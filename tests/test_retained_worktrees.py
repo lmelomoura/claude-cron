@@ -1,8 +1,10 @@
 """Run dirs the sweep decided to keep.
 
-wt_teardown preserves a run dir holding unpushed work, and re-reaches that same
-conclusion on every tick — so nothing ever releases it. Until these were listed
-they were invisible: disk filling up with no screen anywhere admitting it.
+wt_teardown preserves a run dir whose session is marked `open`, or not marked
+at all (a crash writes no marker either), and re-reaches that same conclusion
+on every tick — so nothing ever releases it on its own. Until these were
+listed they were invisible: disk filling up with no screen anywhere admitting
+it.
 """
 
 import os
