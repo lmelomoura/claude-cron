@@ -1440,6 +1440,30 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     && bad "the stale registration survived the prune" \
     || ok "the canonical checkout is clean again"
 
+  echo "wt_prune_canonicals() — the path list survives spaces and a malformed entry"
+  # The enumeration is the fragile half, so test it directly rather than through
+  # a git side effect: a path silently dropped here is a repo that is never
+  # pruned again, and nothing anywhere would say so.
+  mkdir -p "$tmp/proj"
+  cat > "$tmp/proj/nasty.json" <<'NASTY'
+{"projects":[
+ {"cwd":"/Users/Jane Doe/repo-a"},
+ {"cwd":"/Users/Jane"},
+ {"cwd":"/Users/Jane Doe/repo-a"},
+ {"repos":["not-an-object"],"cwd":"/tmp/malformed"},
+ {"repos":[{"path":"/tmp/api"},{"name":"no-path"}],"cwd":"/tmp/web"},
+ {"name":"no-cwd-at-all"},
+ {"cwd":null}
+]}
+NASTY
+  got="$("$JQ" -r '
+    .projects[]? | ((.repos // [])[]? | objects | .path), .cwd
+    | strings | select(. != "")' "$tmp/proj/nasty.json" 2>/dev/null | sort -u | tr '\n' '|')"
+  [ "$got" = "/Users/Jane|/Users/Jane Doe/repo-a|/tmp/api|/tmp/malformed|/tmp/web|" ] \
+    && ok "a home dir with a space is its own path, and one bad entry drops only itself" \
+    || bad "the path list came out as '$got'"
+  rm -f "$tmp/proj/nasty.json"
+
   echo "toggle-many flips only the jobs it was handed"
   printf '%s' '{"jobs":[{"id":"a"},{"id":"b","enabled":false},{"id":"c"}]}' > "$tmp/tm.json"
   got="$("$JQ" -c --argjson want '["a","b"]' --argjson v false "$TOGGLE_MANY_FILTER" "$tmp/tm.json")"

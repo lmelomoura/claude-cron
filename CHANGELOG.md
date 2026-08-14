@@ -242,7 +242,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   on believing the branch was checked out somewhere, and the canonical checkout
   could not have it back: `git checkout <branch>` failed with "already checked
   out" against a directory that no longer existed. The tick now prunes every
-  canonical checkout the projects declare.
+  canonical checkout the projects declare. The de-duplication that shipped with
+  it was itself broken on this platform: it matched seen paths with a glob over
+  a space-joined string, so a canonical checkout under a home directory with a
+  space in it — routine on macOS — matched *inside* a longer path that started
+  the same way, and was silently skipped, every tick, forever. A single
+  malformed `repos` entry had the same silent-drop shape: jq exits mid-stream on
+  it, and every project declared after it stopped being pruned. Both are now
+  `sort -u` over whole lines, filtered by jq type, so one bad entry cannot take
+  its neighbours down and a path is a path no matter what character it
+  contains.
 
 - **A crashed run's `down` hook knows which ports it bound.** `wt_provision`
   read `CC_PORT_BASE` from the environment, but `down` also runs from the orphan
