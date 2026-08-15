@@ -251,6 +251,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A session is done when the agent says so and delivers everything — not
+  when the run merely looks good.** `.ended` used to come from the run's
+  quality verdict: only `success` wrote `done`. But `warning` fires for
+  `NOTHING TO DO:`, an undeclared ending, a spent budget cap, a stray byte of
+  stderr, an empty result, and now `UNDELIVERED`; `stopped` and `error` also
+  land `warning`-adjacent as far as this was concerned. Every one of those
+  kept its worktrees **and left its services running** for a full TTL window,
+  and `alloc_port_base` only skips port blocks held by a *live slot* — a
+  retained session has none — so the next run was routinely handed the port
+  block of a stack that was still up and listening. On one real install this
+  was roughly a quarter of all runs.
+
+  `.ended` now asks two questions instead: did the agent declare how its run
+  ended (`RUN COMPLETE:` / `NOTHING TO DO:` / `BLOCKED:`), and did it leave
+  anything undelivered? Both true is `done`; anything else is `open`. Exit
+  code, stderr and the budget cap say how *well* a run went, not whether the
+  session still has work to pick back up, so none of them feed this anymore.
+  The declaration check itself now runs unconditionally rather than only
+  while the status is still `success` — a run this classifier calls
+  `warning` for an unrelated reason (stray stderr, say) can still have said
+  exactly how it ended, and the old gating silently discarded that fact for
+  precisely the runs where `.ended` most needed it.
+
 - **`lock_take` no longer waits forever for a recycled pid.** `.state.lock`,
   `.journal.lock`, `.ports` and the resume lock all live under `data/`, so
   they survive a reboot exactly like a run slot — and the kernel reissues

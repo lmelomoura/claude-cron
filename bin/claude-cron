@@ -1221,6 +1221,32 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     && ok "and its guard covers success/warning only, never a stopped run" \
     || bad "the line after the status case reads '$guard_line', not exactly 'success|warning)'"
 
+  echo "run_job() — .ended is decided by declared_ending + undelivered, not by status"
+  # Structural, like the two checks just above: run_job cannot be exercised
+  # end-to-end here without a mocked agent CLI, so the only thing that can
+  # catch a revert of finding 9.3 is reading the text. The regression this
+  # guards is reverting to `case "$status" in success) done ;; *) open ;;
+  # esac` -- a SMALLER, more innocent-looking diff than what replaced it, and
+  # every behavioural test in this file would stay green: nothing here drives
+  # run_job far enough to write a real .ended file.
+  ended_body="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/claude-cron")"
+  got="$(printf '%s\n' "$ended_body" \
+          | grep -c '\[ "\$declared_ending" = "true" \] && \[ -z "\${undelivered:-}" \]')"
+  [ "${got:-0}" -eq 1 ] \
+    && ok "the .ended gate reads declared_ending and undelivered ($got)" \
+    || bad "run_job's .ended gate no longer tests declared_ending+undelivered (matched $got times)"
+  # declared_ending itself has to be computed UNCONDITIONALLY, not only while
+  # status is still success (the shape it had before 9.3, when it fed only the
+  # UNDECLARED ENDING warning). Gating it on status would make it silently
+  # false for every run this classifier calls `warning` -- stray stderr, an
+  # empty result, NOTHING TO DO -- which is exactly the case 9.3 exists to
+  # stop losing: a warning run that DID say how it ended. Checked by exact
+  # indentation: two spaces means a bare statement in run_job's own body: put
+  # back inside `if [ "$status" = "success" ]`, it would indent four.
+  [ "$(printf '%s\n' "$ended_body" | grep -c '^  declared_ending=false$')" -eq 1 ] \
+    && ok "declared_ending=false is a bare statement, not nested inside a status guard" \
+    || bad "declared_ending's assignment is no longer an unconditional top-level statement"
+
   echo "cpu_tree_sum() — a busy tool tree is proof of life, not a stall"
   # A run whose agent is quiet because a test suite is grinding away in a child
   # (shell -> make -> pytest) must read as ALIVE. This is the case that got a
@@ -2970,6 +2996,16 @@ run_job() { # run_job <id> [--force] [resume-session-id]
   [ -n "$resume_sid" ] && force="--force"
   local cwd prompt model effort budget timeout stall permission allowed precheck project proj_desc interactive fifo
   local run_cwd worktree run_dir run_env run_cfgdir _envln slot max_par
+  # declared_ending and undelivered decide .ended (see the classifier below,
+  # near UNDECLARED ENDING and wt_undelivered_work). Declared HERE, at the top,
+  # same as run_dir and worktree below: `.ended`'s own read of $declared_ending
+  # is a bare expansion, not `${x:-}`, and undelivered is only ever assigned
+  # inside a `case "$status" in success|warning)` arm that an error or a
+  # stopped run never enters. Assigning either one inline without `local`
+  # first would make it a GLOBAL that survives this call -- run_job runs once
+  # per job per tick, in the same shell, in a loop -- and leak whatever the
+  # last job's outcome was into the next job's classifier.
+  local declared_ending="false" undelivered=""
   # Loop variables for replaying a reattached run's manifest through `up` again
   # (see the isolation branch below). Declared here, not just inside the loop,
   # because `read` happily creates GLOBALS for anything not already local, and
@@ -3603,9 +3639,18 @@ If the work turns out to be already finished, or it can no longer be done at all
   # undeclared ending is the signature of a run that stopped mid-task, and it is
   # a warning — never a silent success. A warning that is occasionally
   # unnecessary costs a glance; a success that is occasionally false costs a day.
-  if [ "$status" = "success" ] \
-     && ! "$JQ" -r '.result // ""' "$logfile" 2>/dev/null \
-          | grep -qE '(RUN COMPLETE|NOTHING TO DO|BLOCKED):'; then
+  #
+  # Computed UNCONDITIONALLY, not just while status is still success: this is
+  # also the fact `.ended` is decided on below, and a run this classifier calls
+  # `warning` (stray stderr, an empty result on an otherwise clean exit) can
+  # still have declared how it ended. Gating the computation itself on status
+  # would silently answer "false" for exactly the runs where it matters most.
+  declared_ending=false
+  if "$JQ" -r '.result // ""' "$logfile" 2>/dev/null \
+       | grep -qE '(RUN COMPLETE|NOTHING TO DO|BLOCKED):'; then
+    declared_ending=true
+  fi
+  if [ "$status" = "success" ] && [ "$declared_ending" = "false" ]; then
     wdreason="UNDECLARED ENDING: the agent stopped without saying its run was finished (no 'RUN COMPLETE:', 'NOTHING TO DO:' or 'BLOCKED:' line), which is what a run cut off mid-task looks like. Do NOT assume the ticket is done — check the branch, the PR and the ticket, and resume this run to continue with its context."
     status="warning"
   fi
@@ -3649,7 +3694,6 @@ If the work turns out to be already finished, or it can no longer be done at all
   case "$status" in
     success|warning)
       if [ -n "$run_dir" ]; then
-        local undelivered
         if undelivered="$(wt_undelivered_work "$run_dir")"; then
           wdreason="${wdreason:-}${wdreason:+ · }$(undelivered_note "$undelivered")"
           status="warning"
@@ -3658,14 +3702,26 @@ If the work turns out to be already finished, or it can no longer be done at all
       ;;
   esac
 
-  # The session's fate, written where teardown can read it. A run that reached a
-  # declared ending is over and its tree can go; anything else may be picked up
-  # by a resume, and the resume needs this exact directory.
+  # A SESSION IS DONE WHEN IT SAID SO AND LEFT NOTHING BEHIND — not when the
+  # run looks good. Deriving this from the status made every `warning` keep its
+  # worktrees and, worse, keep its services running; and `warning` fires for
+  # stderr noise, an empty result, a budget cap, and for NOTHING TO DO, which
+  # is the commonest thing a quiet loop ever reports. On a real install that
+  # was about a quarter of all runs holding a full multi-repo checkout and a
+  # live stack for a day each — and alloc_port_base skips only blocks held by
+  # LIVE SLOTS, so the next run was handed the port block of a stack still
+  # listening on it.
+  #
+  # Exit code, stderr and the budget cap say how WELL a run went, not whether
+  # the session still has work to do — so none of the three feed this. Only
+  # the two facts that answer "is there anything left to pick back up" do:
+  # did the agent say it was finished, and did it leave anything undelivered.
   if [ -n "$run_dir" ] && [ -d "$run_dir" ]; then
-    case "$status" in
-      success) printf 'done\n' > "$run_dir/.ended" 2>/dev/null || true ;;
-      *)       printf 'open\n' > "$run_dir/.ended" 2>/dev/null || true ;;
-    esac
+    if [ "$declared_ending" = "true" ] && [ -z "${undelivered:-}" ]; then
+      printf 'done\n' > "$run_dir/.ended" 2>/dev/null || true
+    else
+      printf 'open\n' > "$run_dir/.ended" 2>/dev/null || true
+    fi
   fi
 
   # Consecutive failures drive the backoff (see backoff_multiplier). A warning
