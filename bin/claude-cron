@@ -414,6 +414,10 @@ session_from_stream() { # session_from_stream <streamfile>
 # Written through a temp file and renamed, because a later task looks a run dir
 # up BY this file while runs are live — and a reader that catches a plain
 # `>` redirection between create and write sees a zero-byte file.
+#
+# Never REBOUND, on purpose — which means a resumed run's own `.session` is
+# whatever the FIRST bind wrote. See the `--resume` contract note in run_job
+# for what that assumes about the CLI.
 bind_session() { # bind_session <run_dir> <streamfile>
   local rd="${1:-}" sf="${2:-}" sid tmp
   [ -n "$rd" ] && [ -d "$rd" ] || return 0
@@ -1732,6 +1736,58 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   [ -n "${ld2_line:-}" ] && [ -n "${touch_line:-}" ] && [ "$touch_line" -gt "$ld2_line" ] \
     && ok "and it happens after the claim succeeds, at line $touch_line vs drop at $ld2_line" \
     || bad "touch (line ${touch_line:-?}) is not after the successful claim's lock_drop (line ${ld2_line:-?})"
+  # 9.10: the reattach's second `up` pass has to refresh dirt_sha, or its own
+  # residue reads as the resumed agent's work. Structural only, guarding the
+  # line that recomputes it -- the behavioural proof (that the refresh
+  # actually clears a false UNDELIVERED report) is below, driving the real
+  # wt_provision/wt_dirt_sha/wt_undelivered_work.
+  got="$(printf '%s\n' "$body" | grep -c 'wt_dirt_sha "\$rwt"')"
+  [ "${got:-0}" -eq 1 ] \
+    && ok "the reattach's second provisioning pass recomputes dirt_sha ($got)" \
+    || bad "run_job no longer recomputes dirt_sha after a reattach's second up pass ($got)"
+
+  echo "run_job() — a reattach's second provisioning pass refreshes dirt_sha too"
+  # Not structural alone: this drives the REAL wt_setup / wt_provision /
+  # wt_dirt_sha / wt_undelivered_work, replicating exactly what the reattach
+  # branch does inline (run_job itself cannot be called here). wt_dirt_sha
+  # hashes `git status --porcelain`'s TEXT, which for an untracked file is
+  # its PATH, not its content -- overwriting the same filename each run would
+  # leave that text, and the sha, identical. The hook instead names the file
+  # after its own pid -- a fresh bash subprocess every invocation -- so a
+  # second pass leaves a DIFFERENT untracked path behind, standing in for
+  # what a real hook can do (a compose lockfile or a temp dir named after its
+  # own pid).
+  printf '%s\n' '#!/usr/bin/env bash' 'echo hi > "$CC_WORKTREE/build-$$.txt"' \
+    > "$tmp/cfg/provision/two.up.sh"
+  chmod +x "$tmp/cfg/provision/two.up.sh"
+  local rdDirt="$tmp/wtroot/jDirt/stampDirt" wtDirt
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup jDirt two "$tmp/g/repo" stampDirt ) >/dev/null 2>&1
+  wtDirt="$rdDirt/one"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_undelivered_work "$rdDirt" ) >/dev/null 2>&1
+  want "right after setup, nothing is undelivered" 1 $?
+  # Re-run `up`, exactly as the reattach branch does -- WITHOUT refreshing
+  # dirt_sha yet. This reproduces the bug on its own: the hook's second
+  # stamp differs from its first, so the snapshot taken after the FIRST up
+  # no longer matches, and it now reads as the resumed agent's own work.
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    wt_provision up two jDirt "$rdDirt" one "$tmp/g/repo" "$wtDirt" develop ) >/dev/null 2>&1
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_undelivered_work "$rdDirt" ) >/dev/null 2>&1
+  want "WITHOUT a refresh, the second pass's own residue reads as undelivered work" 0 $?
+  # Refresh dirt_sha the way the fix does. The false report clears even
+  # though nothing about the actual residue changed since the check just
+  # above -- only the snapshot it is compared against did.
+  new_sha="$(wt_dirt_sha "$wtDirt")"
+  "$JQ" --arg n "one" --arg s "$new_sha" \
+    '.repos = [.repos[] | if .name==$n then .dirt_sha=$s else . end]' \
+    "$rdDirt/.run.json" > "$rdDirt/.run.json.new" 2>/dev/null \
+    && mv -f "$rdDirt/.run.json.new" "$rdDirt/.run.json"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_undelivered_work "$rdDirt" ) >/dev/null 2>&1
+  want "and WITH the refresh, that same residue is no longer undelivered" 1 $?
+  rm -rf "$tmp/wtroot/jDirt" "$tmp/cfg/provision/two.up.sh"
 
   echo "run_job() — two concurrent reattaches to the same tree: exactly one wins"
   # Not structural: this drives the real lock_take/lock_drop/wt_is_claimed/
@@ -3299,6 +3355,13 @@ ${prompt}"
   # silently run in the shared tree (falling back would reintroduce the race).
   run_cwd="$cwd"
   worktree=""
+  # Explicit, not just `local run_dir` up top and left to bash 3.2's habit of
+  # reading an unassigned local as "". Every reader below is a bare "$run_dir"
+  # expansion, not "${run_dir:-}" -- correct only because this target reads
+  # `local x` (no value) as set-to-empty. A bash where that is genuinely
+  # unset would abort every non-isolated run at the first of those reads
+  # under set -u; this line makes the safety explicit instead of borrowed.
+  run_dir=""
   # The env the agent starts with. It exists whether or not this project is
   # isolated — the account is a property of the project, not of the worktree —
   # and the worktree's own venv/vars are appended to it below when there is one.
@@ -3401,6 +3464,17 @@ ${prompt}"
       # re-runnable (cc_copy_ignored, cc_env_ports, `herd link`, `compose up -d`
       # all are), and this is what puts a stack back that a reboot took down
       # while the session sat open.
+      #
+      # dirt_sha is refreshed too, the same way wt_setup's own first pass
+      # records it (see there). A second `up` can leave DIFFERENT residue than
+      # the first — a regenerated .env, a compose state file with a new
+      # timestamp — and wt_undelivered_work compares the worktree's current
+      # dirt_sha against whatever is stored to tell provisioning noise from
+      # the agent's own work. Left at the first pass's value, that residue
+      # reads as the RESUMED agent's work and is reported UNDELIVERED for
+      # something it never touched.
+      local rdirt="$run_dir/.dirt.tsv"
+      : > "$rdirt" 2>/dev/null || rdirt=""
       while IFS="$(printf '\t')" read -r rname rrepo rwt rbase; do
         [ -n "$rname" ] || continue
         # `|| true` here, unlike the fresh path which aborts. A reattach finds a
@@ -3410,8 +3484,24 @@ ${prompt}"
         # It is not silent: wt_provision logs the rc and the repo to the tick
         # log itself.
         wt_provision up "$project" "$id" "$run_dir" "$rname" "$rrepo" "$rwt" "$rbase" || true
+        [ -n "$rdirt" ] && printf '%s\t%s\n' "$rname" "$(wt_dirt_sha "$rwt")" >> "$rdirt"
       done < <("$JQ" -r '.repos[] | [.name,.canonical,.worktree,.base] | @tsv' \
                   "$run_dir/.run.json" 2>/dev/null)
+      # Falls back to the EXISTING dirt_sha, not to empty, when a repo's fresh
+      # reading is missing (a provisioning failure, an empty $rdirt from the
+      # `: >` above failing on a read-only disk): an empty dirt_sha makes
+      # wt_undelivered_work fall back to its strict, no-snapshot reading,
+      # which would flag every ordinary bit of provisioning residue as the
+      # agent's own work — worse than just keeping the stale-but-valid value.
+      if [ -n "$rdirt" ] && "$JQ" -R -n --slurpfile mf "$run_dir/.run.json" '
+            ([inputs | split("\t") | {(.[0]): .[1]}] | add // {}) as $d
+            | $mf[0] | .repos = [.repos[] | . + {dirt_sha: ($d[.name] // .dirt_sha // "")}]' \
+            "$rdirt" > "$run_dir/.run.json.new" 2>/dev/null; then
+        mv -f "$run_dir/.run.json.new" "$run_dir/.run.json"
+      else
+        rm -f "$run_dir/.run.json.new"
+      fi
+      rm -f "$rdirt"
       log_tick "$id: resumed $resume_sid in its own tree $run_dir (cwd $worktree)"
     else
       # Claim the path BEFORE anything exists there. The sweep removes any run dir
@@ -3482,6 +3572,16 @@ ${prompt}"
   # "unlimited", so the absence of the flag is what expresses it.
   [ -n "$budget" ] && args="$args --max-budget-usd $budget"
   # Resume: continue the failed run's own session rather than starting over.
+  #
+  # UNENFORCED CONTRACT: this only works because the CLI reports BACK the
+  # SAME session_id for a `--resume`d conversation. bind_session (below) is
+  # one-shot -- it writes `.session` once and never again -- so if a future
+  # CLI version ever minted a new id for a continued session instead, the
+  # file here would keep naming the OLD one for ever, wt_find_by_session
+  # would still match on it, and nothing would say why every resume after
+  # that started silently rebinding to a session the transcript no longer
+  # matches. Nothing in this codebase checks the two agree; only the CLI's
+  # own behaviour keeps them in sync.
   [ -n "$resume_sid" ] && args="$args --resume $resume_sid"
   [ -n "$effort" ] && args="$args --effort $effort"
   [ -n "$allowed" ] && [ "$allowed" != "null" ] && args="$args --allowedTools $allowed"

@@ -251,6 +251,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A reattach's second provisioning pass no longer frames its own residue
+  as the resumed agent's work.** `wt_undelivered_work` tells a hook's
+  leftovers from the agent's own changes by comparing the worktree's current
+  `dirt_sha` against the snapshot taken right after provisioning — but a
+  reattach re-runs `up` (to put a stack back that a reboot took down) without
+  ever refreshing that snapshot. A second pass can legitimately leave
+  different residue than the first (a regenerated `.env`, a compose lockfile
+  or temp dir named after its own pid), and every byte of that difference was
+  attributed to the agent and reported `UNDELIVERED` on a run that may not
+  have touched the repo at all. The reattach branch now recomputes and
+  records `dirt_sha` after its own `up` pass, exactly the way `wt_setup`'s
+  first pass already does.
+
 - **Two single-line deletions that used to revert whole tasks silently now
   fail the suite.** Deleting the line that computes `reattached` from
   `wt_find_by_session` (leaving `local reattached=""`, which alone satisfies
