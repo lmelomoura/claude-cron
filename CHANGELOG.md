@@ -270,6 +270,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A broken `.git` pointer is reported, not read as a clean tree.**
+  `wt_dirt_sha` hashes `git status --porcelain`'s output, and that command
+  prints nothing both for a clean worktree and for one it cannot read at
+  all — so hashing the silence gave the exact same fingerprint either way
+  (measured: `da39a3ee5e6b4b0d3255bfef95601890afd80709` for a clean repo, a
+  missing path, and a non-repo alike). Reachable when an operator moves or
+  renames a canonical checkout, which breaks every one of its linked
+  worktrees' `.git` pointers at once. Survivable while the answer only
+  decided a note on a card; since 9.3 made `.ended` depend on it, the same
+  collision authorised `git worktree remove --force` on a tree holding real,
+  uncommitted work. `wt_dirt_sha` now returns non-zero, and prints nothing,
+  when git cannot answer, and `wt_undelivered_work` reports "cannot read
+  git" as undelivered rather than comparing a hash it never got. The same
+  reasoning closes the adjacent `[ -n "$head" ] || continue`: a `rev-parse`
+  that fails is "could not look", not "no commits", and is now reported too
+  — the two blind spots share one cause, a worktree git cannot read, and are
+  now closed together. Proved against a real worktree holding real
+  uncommitted work with its `.git` file broken: without the fix
+  `wt_undelivered_work` reports nothing; with it, the note names both the
+  unreadable status and the unreadable history.
+
 - **A reattach's second provisioning pass no longer frames its own residue
   as the resumed agent's work.** `wt_undelivered_work` tells a hook's
   leftovers from the agent's own changes by comparing the worktree's current

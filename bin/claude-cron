@@ -2016,6 +2016,103 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   esac
   rm -f "$tmp/cfg/provision/two.up.sh"
 
+  echo "wt_dirt_sha() / wt_undelivered_work() — git that cannot answer is reported, not read as clean"
+  # `git status --porcelain` prints nothing for a clean tree AND for one it
+  # cannot read at all — hashing empty stdout used to give the SAME
+  # fingerprint either way, measured for real: da39a3ee5e6b4b0d3255bfef9560
+  # 1890afd80709 for a clean repo, a missing path, and a non-repo alike. So a
+  # broken .git pointer — the operator moves or renames the canonical
+  # checkout, which breaks every one of its linked worktrees' pointers at
+  # once — used to compare equal to "nothing changed". Reproduced against the
+  # REAL classifier, not a reimplementation: a real wt_setup, a real
+  # uncommitted file, a real broken .git file, then wt_undelivered_work
+  # itself.
+  local rdG="$tmp/wtroot/jGitBroken/stampGB"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup jGitBroken two "$tmp/g/repo" stampGB ) >/dev/null 2>&1
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_undelivered_work "$rdG" ) >/dev/null 2>&1
+  want "right after setup, nothing is undelivered" 1 $?
+  echo "agent work, never committed" > "$rdG/one/agent-work.txt"
+  got="$( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+          wt_undelivered_work "$rdG" )"
+  want "the fixture is valid: a real uncommitted file IS caught while git still works" 0 $?
+  case "$got" in *"uncommitted changes in one"*) ok "and names the repo" ;;
+    *) bad "was '$got'" ;;
+  esac
+  # Break it exactly the way an operator moving the canonical does: a linked
+  # worktree's own .git is a FILE naming its gitdir inside the canonical's
+  # .git/worktrees/ — point it nowhere. (Editing this one worktree's pointer
+  # reproduces the identical symptom as moving $tmp/g/repo itself, without
+  # disturbing every other fixture in this suite that shares that checkout.)
+  echo "gitdir: $tmp/g/nonexistent/.git/worktrees/one" > "$rdG/one/.git"
+  git -C "$rdG/one" status --porcelain >/dev/null 2>&1
+  [ $? -ne 0 ] && ok "the fixture really is unreadable: git status fails on it" \
+    || bad "breaking .git did not actually break git -- fixture invalid"
+  ( wt_dirt_sha "$rdG/one" ) >/dev/null 2>&1
+  want "wt_dirt_sha itself reports failure rather than a colliding fingerprint" 1 $?
+  # The return code alone is not the whole story: `set -o pipefail` (active
+  # throughout this codebase) already made the OLD one-liner's OWN exit
+  # status non-zero on a git failure, by accident, since nothing ever CHECKED
+  # it -- wt_setup's snapshot pass still does not. What actually protects
+  # that call site is stdout: printing NOTHING on failure, instead of the
+  # collision hash, is what keeps a setup-time failure from being recorded as
+  # a real (but wrong) snapshot.
+  got="$(wt_dirt_sha "$rdG/one" 2>/dev/null)"
+  [ -z "$got" ] && ok "and prints nothing on failure, not the colliding hash" \
+    || bad "wt_dirt_sha printed '$got' on a git failure -- a caller that only checks stdout, like wt_setup's snapshot pass, would still be fooled"
+  got="$( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+          wt_undelivered_work "$rdG" )"
+  want "the SAME real uncommitted file is still reported once git cannot look" 0 $?
+  case "$got" in
+    *"cannot read git in one"*) ok "the note says git could not look, not that the tree is clean" ;;
+    *) bad "was '$got' -- the broken worktree went unreported" ;;
+  esac
+  case "$got" in
+    *"cannot read commits in one"*) ok "the commit-history blind spot ([ -n \"\$head\" ] || continue) is closed too" ;;
+    *) bad "rev-parse's failure was not reported: '$got'" ;;
+  esac
+  # The sibling worktree was never touched -- a broken repo must not make the
+  # whole run dir read as undelivered, only the repo that is actually broken.
+  case "$got" in
+    *"in two"*) bad "the healthy sibling worktree was blamed too: '$got'" ;;
+    *) ok "the healthy sibling worktree is not blamed" ;;
+  esac
+  rm -rf "$rdG"; git -C "$tmp/g/repo" worktree prune >/dev/null 2>&1 || true
+
+  echo "wt_setup() — a snapshot failure degrades to 'missing', not a crash or a false clean"
+  # The OTHER caller: a hook can succeed and still leave git unable to read
+  # the tree right afterward (corrupts its own index, say) -- provisioning
+  # itself is not at fault, so wt_setup does not abort the run over this
+  # alone. The manifest records an empty snapshot, the same shape as "no
+  # snapshot was ever taken", which wt_undelivered_work already has a defined
+  # meaning for. The safety net is downstream, not here: the live check at
+  # teardown time goes through this SAME wt_dirt_sha, so a failure still
+  # there when it matters is still reported, not silently read as clean.
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'echo residue > "$CC_WORKTREE/leftover.txt"' \
+    'echo "gitdir: $CC_WORKTREE/nonexistent-gitdir" > "$CC_WORKTREE/.git"' \
+    > "$tmp/cfg/provision/two.up.sh"
+  chmod +x "$tmp/cfg/provision/two.up.sh"
+  local rdSF="$tmp/wtroot/jSnapFail/stampSF"
+  prim="$( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+           wt_setup jSnapFail two "$tmp/g/repo" stampSF )"
+  [ -n "$prim" ] && [ -d "$rdSF" ] \
+    && ok "setup still completes: a post-provisioning snapshot failure alone does not abort the run" \
+    || bad "wt_setup aborted (or left nothing behind) over a dirt_sha failure alone -- prim='$prim'"
+  got="$("$JQ" -r '.repos[] | select(.name=="one") | .dirt_sha // "FIELD-ABSENT"' "$rdSF/.run.json" 2>/dev/null)"
+  [ "$got" = "" ] && ok "the manifest records an empty snapshot, not a crash or a stale value" \
+    || bad "dirt_sha recorded as '$got', expected empty"
+  got="$( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+          wt_undelivered_work "$rdSF" )"
+  want "the live check still catches it -- git is STILL broken at teardown time" 0 $?
+  case "$got" in
+    *"cannot read git in one"*) ok "reported as unreadable, not silently clean, even with no snapshot to compare against" ;;
+    *) bad "was '$got'" ;;
+  esac
+  rm -rf "$rdSF"; git -C "$tmp/g/repo" worktree prune >/dev/null 2>&1 || true
+  rm -f "$tmp/cfg/provision/two.up.sh"
+
   echo "boot_id() — an opaque per-boot identity, stable within one boot"
   got="$(boot_id)"
   case "$got" in

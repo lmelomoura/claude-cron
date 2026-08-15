@@ -244,8 +244,17 @@ wt_main_of() { # <worktree>
 # is not the agent's work, and mistaking the two preserves every run dir for
 # ever. Comparing fingerprints rather than listing paths keeps this O(1) to
 # store, and "created then deleted" correctly reads as "nothing changed".
-wt_dirt_sha() { # <worktree>
-  git -C "${1:-}" status --porcelain 2>/dev/null | shasum | awk '{print $1}'
+#
+# 0 and a fingerprint, or non-zero when git could not answer. The distinction is
+# the whole point: `git status --porcelain` prints nothing both for a clean tree
+# and for a tree it cannot read, and hashing that gives the SAME value — so a
+# broken .git pointer used to be indistinguishable from "no changes". That was
+# survivable while this only decided a note. Since the session marker learned to
+# ask it, the same answer authorises `git worktree remove --force`.
+wt_dirt_sha() { # <worktree> -> prints a fingerprint; non-zero if git could not look
+  local out
+  out="$(git -C "${1:-}" status --porcelain 2>/dev/null)" || return 1
+  printf '%s\n' "$out" | shasum | awk '{print $1}'
 }
 
 # Every worktree a run dir currently holds. Reads the DISK, not the manifest, so
@@ -365,6 +374,17 @@ wt_setup() { # <id> <project> <canonical_cwd> <stamp> [port_base]
       wt_teardown "$id" "$project" "$run_dir"
       return 1
     fi
+    # A failed wt_dirt_sha here (git could not read the tree moments after
+    # provisioning just succeeded in it) records an empty snapshot, same as
+    # $d[.name] never having a line at all -- indistinguishable from "no
+    # snapshot was ever taken". wt_undelivered_work already has a defined
+    # meaning for that: fall back to a strict, live check at teardown, which
+    # goes through this same wt_dirt_sha and so is reported, not silently
+    # read as clean, if the failure is still there by then. A transient
+    # failure self-heals before teardown ever asks again. Aborting the whole
+    # run here instead -- when provisioning itself just succeeded moments
+    # earlier -- would be a new, disproportionate failure mode this task does
+    # not add.
     printf '%s\t%s\n' "$name" "$(wt_dirt_sha "$wt")" >> "$tsv"
   done < <("$JQ" -r '.repos[] | [.name,.canonical,.worktree,.base] | @tsv' "$run_dir/.run.json" 2>/dev/null)
 
@@ -397,7 +417,7 @@ wt_setup() { # <id> <project> <canonical_cwd> <stamp> [port_base]
 # and that is a failure the operator should see on the card, not a folder they
 # have to find. Push is the delivery channel; not pushing is a failed run.
 wt_undelivered_work() { # <run dir> -> 0 and a description, or 1
-  local run_dir="${1:-}" mf="${1:-}/.run.json" wt head fork snap name found=""
+  local run_dir="${1:-}" mf="${1:-}/.run.json" wt head fork snap live name found=""
   [ -d "$run_dir" ] || return 1
   while IFS= read -r wt; do
     [ -n "$wt" ] || continue
@@ -405,18 +425,36 @@ wt_undelivered_work() { # <run dir> -> 0 and a description, or 1
     # Dirty compared to the END OF PROVISIONING, not to a pristine checkout:
     # the hook just copied a .env and a vendor/ in, and calling that the agent's
     # work marks every single run as undelivered. With no snapshot (setup died
-    # before provisioning) fall back to the strict reading.
+    # before provisioning, or its own dirt_sha call failed) fall back to the
+    # strict reading.
+    #
+    # wt_dirt_sha failing is reported, not silently read as clean: `git status
+    # --porcelain` prints nothing both for a clean tree and for one it cannot
+    # read, and hashing that gives the SAME fingerprint either way (see
+    # wt_dirt_sha's own comment). Since Task 9.3 this decides `.ended`, so a
+    # broken .git pointer must never be mistaken for "nothing changed" here.
     snap=""
     [ -f "$mf" ] && snap="$("$JQ" -r --arg w "$wt" \
         '.repos[] | select(.worktree==$w) | .dirt_sha // ""' "$mf" 2>/dev/null)"
-    if [ -n "$snap" ]; then
-      [ "$(wt_dirt_sha "$wt")" != "$snap" ] && found="$found, uncommitted changes in $name"
+    if ! live="$(wt_dirt_sha "$wt")"; then
+      found="$found, cannot read git in $name"
+    elif [ -n "$snap" ]; then
+      [ "$live" != "$snap" ] && found="$found, uncommitted changes in $name"
     else
       [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ] \
         && found="$found, uncommitted changes in $name"
     fi
-    head="$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null || true)"
-    [ -n "$head" ] || continue
+    # A rev-parse that fails is "could not look", not "no commits": every
+    # worktree here was cut from a ref that had already resolved (wt_setup
+    # requires it), so HEAD not resolving now means git cannot read the
+    # worktree -- the identical blind spot as above, applied to history
+    # instead of status. Not folded into the check above: an index can be
+    # unreadable (breaking status) while refs/HEAD still resolve fine, or the
+    # reverse, so each is asked and reported on its own.
+    if ! head="$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null)"; then
+      found="$found, cannot read commits in $name"
+      continue
+    fi
     fork=""
     [ -f "$mf" ] && fork="$("$JQ" -r --arg w "$wt" \
         '.repos[] | select(.worktree==$w) | .fork_sha' "$mf" 2>/dev/null)"
