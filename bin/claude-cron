@@ -1837,6 +1837,12 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   echo "wt_prune_orphans() — an unclaimed run dir is kept until it is marked done"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
     wt_setup j3 two "$tmp/g/repo" stampD ) >/dev/null 2>&1
+  # `.session` present, so this fixture reads as a dir THIS engine already
+  # bound (an ordinary in-flight or crashed-before-classifying run) rather
+  # than a pre-upgrade one — that adoption case gets its own dedicated test
+  # below, and conflating the two here would leave this test passing for
+  # either reason without saying which.
+  echo "sess-d1" > "$tmp/wtroot/j3/stampD/.session"
   mkdir -p "$tmp/locks/j3/999"
   echo $$ > "$tmp/locks/j3/999/pid"
   echo "$tmp/wtroot/j3/stampD" > "$tmp/locks/j3/999/worktree"
@@ -1861,6 +1867,57 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     wt_prune_orphans ) >/dev/null 2>&1
   [ ! -d "$tmp/wtroot/j3/stampD" ] && ok "and a done, unclaimed run IS reaped by the sweep" \
     || bad "a done run survived a sweep — the sweep no longer reaps anything"
+
+  echo "wt_prune_orphans() — a pre-upgrade retained dir is ADOPTED, not aged out"
+  # The exact shape the OLD code left on disk: a run dir holding a real commit
+  # that lives on no remote, no `.ended` (that file did not exist before this
+  # branch), no `.session` (bind_session did not exist either), and an mtime
+  # from whenever that old run last touched the directory -- which by the
+  # time anyone upgrades is routinely weeks old. Before the fix, this is the
+  # `*)` branch: age computed from that stale mtime, found past the ttl,
+  # written `done`, and wt_teardown runs `git worktree remove --force` --
+  # discarding the very commit the OLD teardown kept this directory alive to
+  # protect. Reproduced for real below: a real git worktree, a real commit,
+  # no mocks, no markers.
+  # "two" declares TWO repos (see wt_setup's own test above) and names the one
+  # at $tmp/g/repo "one", not "repo" -- so the primary has to be READ from
+  # wt_setup's own stdout, the same way its own test does, rather than guessed
+  # from a basename.
+  preprimary="$( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup jPre two "$tmp/g/repo" stampPre )"
+  echo "work nobody pushed" > "$preprimary/undelivered.txt"
+  ( cd "$preprimary" && git add undelivered.txt && $gitc commit -qm "pre-upgrade work, on no remote" ) >/dev/null 2>&1
+  presha="$(git -C "$preprimary" rev-parse HEAD 2>/dev/null)"
+  [ -n "$presha" ] && [ ! -f "$tmp/wtroot/jPre/stampPre/.ended" ] \
+    && [ ! -f "$tmp/wtroot/jPre/stampPre/.session" ] \
+    && ok "fixture: a real commit, no .ended, no .session -- exactly what pre-upgrade left behind" \
+    || bad "fixture setup is wrong ($presha) -- the rest of this test proves nothing"
+  # Weeks old: nobody has touched this directory since the run that made it
+  # ended, long before an operator ever runs an upgraded tick.
+  touch -t 202001010000 "$tmp/wtroot/jPre/stampPre"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
+    wt_prune_orphans ) >/dev/null 2>&1
+  [ -d "$tmp/wtroot/jPre/stampPre" ] \
+    && ok "the pre-upgrade directory survives the very first post-upgrade sweep" \
+    || bad "the sweep deleted a pre-upgrade run dir on its first tick"
+  [ "$(git -C "$preprimary" rev-parse HEAD 2>/dev/null)" = "$presha" ] \
+    && ok "and its commit is still there -- nothing was force-removed" \
+    || bad "the commit is gone: the worktree was force-removed"
+  [ "$(cat "$tmp/wtroot/jPre/stampPre/.ended" 2>/dev/null)" = "open" ] \
+    && ok "adopted as open, so a resume or the operator can still find it" \
+    || bad ".ended reads '$(cat "$tmp/wtroot/jPre/stampPre/.ended" 2>/dev/null)', expected open"
+  age_after="$(( $(now_epoch) - $(num "$(wt_mtime "$tmp/wtroot/jPre/stampPre")" 0) ))"
+  [ "$age_after" -lt 60 ] \
+    && ok "and its clock restarted -- it gets a full ttl window, not the remainder of the old one" \
+    || bad "mtime was not refreshed on adoption (age ${age_after}s)"
+  # wt_remove_all, not rm -rf: a raw rm -rf leaves $tmp/g/repo's own
+  # .git/worktrees/one registration behind, and the very next test in this
+  # file asserts on `git worktree list` for that same canonical -- a leaked
+  # registration here would fail a fixture three tests away for a reason that
+  # has nothing to do with what that test is checking.
+  wt_remove_all "$tmp/wtroot/jPre/stampPre" >/dev/null 2>&1
+  rmdir "$tmp/wtroot/jPre" 2>/dev/null || true
 
   echo "wt_prune_canonicals() — a run dir removed by hand leaves no registration behind"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
@@ -1898,6 +1955,12 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   rm -f "$tmp/wtroot/jGone/orphan-down.log"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
     wt_setup jGone two "$tmp/g/repo" stampG ) >/dev/null 2>&1
+  # `.session` present: this fixture is proving out the project-fallback rule
+  # for an ORDINARY unmarked dir, not the pre-upgrade adoption case above --
+  # without it, the very first sweep below would adopt (mark open, restart
+  # the clock, continue) before ever reaching the age/ttl check this test
+  # means to exercise, and the down hook this asserts on would never run.
+  echo "sess-gone" > "$tmp/wtroot/jGone/stampG/.session"
   # jGone is in NO jobs.json — the job was deleted while its run dir sat there.
   # The project has to come from the manifest, or `down` never runs at all.
   # Left unmarked and young, this dir is exactly the "outlives the sweep" case
@@ -1920,6 +1983,10 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   rm -f "$tmp/wtroot/jGone/orphan-down.log"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
     wt_setup jFallback two "$tmp/g/repo" stampF2 ) >/dev/null 2>&1
+  # Same reason as jGone above: `.session` keeps this out of the adoption
+  # branch, so the single sweep below reaches the age/ttl check and the
+  # job_get fallback this test is actually about.
+  echo "sess-fb" > "$tmp/wtroot/jFallback/stampF2/.session"
   "$JQ" 'del(.project)' "$tmp/wtroot/jFallback/stampF2/.run.json" \
     > "$tmp/wtroot/jFallback/stampF2/.run.json.tmp" 2>/dev/null \
     && mv "$tmp/wtroot/jFallback/stampF2/.run.json.tmp" \

@@ -251,6 +251,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Upgrading onto a directory this branch never created does not delete
+  it.** A run directory the OLD teardown had kept — because git said it held
+  commits or changes that exist on no remote — has no `.ended` and no
+  `.session`; neither file existed before this branch. `wt_prune_orphans` read
+  such a directory's age from its mtime, which is whenever that old run last
+  touched it, found it past the TTL on the very first post-upgrade tick,
+  wrote `done`, and `wt_teardown` ran `git worktree remove --force` —
+  discarding, unreported, exactly the work the old code was keeping the
+  directory alive to protect. A directory this engine never bound to a
+  session now has no age it can trust: the first sweep that finds one with
+  neither file **adopts** it instead of judging it — marks it `open`,
+  restarts its clock, and lets it stand for a full TTL window, so it shows up
+  on the dashboard with a countdown instead of vanishing silently on upgrade.
+  Proved against a fixture shaped exactly like a pre-upgrade install: a real
+  git worktree holding a real commit on no remote, no marker files, an mtime
+  set weeks in the past. Without this fix the commit is gone after one sweep;
+  with it, the directory and the commit both survive.
+
 - **A run killed with `-9` is resumable again.** `wt_find_by_session` alone
   demanded the literal string `open` in `.ended`, while every other reader of
   that file — `wt_teardown`, `wt_prune_orphans`, `run_cleanup`, `wt_setup`'s

@@ -527,6 +527,19 @@ wt_prune_orphans() {
       # several concurrent runs) said "nobody owns this" for worktrees that were
       # very much in use — and the sweep deleted them out from under the agents.
       wt_is_claimed "$id" "$d" && continue
+      # A directory this engine never bound to a session has no age we can
+      # trust. Before this branch, a retained run dir was one the OLD teardown
+      # kept BECAUSE git said it held work on no remote — and its mtime is
+      # whenever that run ended, so judging it by age reaps it on the first
+      # tick after the upgrade, with --force, unreported. Adopt it instead:
+      # mark it open and restart its clock, so it gets a full TTL window and
+      # shows up on the dashboard with a countdown the operator can act on.
+      if [ ! -f "$d/.ended" ] && [ ! -f "$d/.session" ]; then
+        printf 'open\n' > "$d/.ended" 2>/dev/null || true
+        touch "$d" 2>/dev/null || true
+        log_tick "$id: adopted $d from before this version — open, with a fresh ttl"
+        continue
+      fi
       # `!= done`, NOT `= open`. The Task 6 teardown keeps anything that is
       # not explicitly `done`, and that deliberately includes a dir with NO
       # marker at all — the SIGKILL, OOM and reboot case, where no exit path
