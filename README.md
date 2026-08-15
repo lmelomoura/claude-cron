@@ -659,7 +659,10 @@ Three things to know before splitting jobs across accounts:
 - **Jobs** — one card each: schedule, last check (with the precheck's output),
   checks in the last 24h (proof the loop runs even when idle), last run, today's
   spend vs cap, and **Run now / Enable / Disable / Edit / Delete**. Destructive or
-  wasteful actions confirm first.
+  wasteful actions confirm first. A job holding a session from a run that was
+  cut short says so right on the card — when it expires, and a **Resume**
+  button when there is a session id to continue — rather than only a count on
+  the Sessions tab below.
 - **Recent runs** — full-text **search** across run results, per-turn traces and
   precheck output; **Filters** (job, status, date range) behind a button;
   pagination. The 🔍 on each row opens the run: did the precheck pass, which tools

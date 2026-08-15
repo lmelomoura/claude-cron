@@ -483,6 +483,12 @@ button.kpi:disabled b{color:var(--muted);font-weight:600}
   border:1px solid color-mix(in srgb,var(--warn) 40%,var(--line));border-radius:8px;
   background:var(--warn-soft);color:var(--warn);font-size:11.5px;line-height:1.45}
 .warnline .ic{width:13px;height:13px;flex:none;margin-top:1px}
+/* A warnline that also carries a Resume button (a kept session, on the job
+   card) needs its text to claim the row so the button lands at the trailing
+   edge instead of stuck right after the last word -- same rule as .cardline
+   .grow, one selector over. */
+.warnline .grow{flex:1 1 auto;min-width:0}
+.warnline .btn,.warnline .runningbadge{flex:none;align-self:center}
 .card h2 .jobname .ic{width:15px;height:15px;color:var(--accent)}
 .card .desc{color:var(--muted);font-size:12px;margin:0 0 12px}
 /* ---- card body: the pulse, what it last saw, what it cost, how it is set up.
@@ -2354,6 +2360,10 @@ function jobCard(j){
     // Disabling stops FUTURE runs; one already in flight keeps going. Say so,
     // instead of letting "disabled" sit beside a spinning "running now…".
     +(disabled&&nLive?'<div class="warnline">'+I.alert+'Disabled — '+nLive+' run'+(nLive===1?'':'s')+' started earlier '+(nLive===1?'is':'are')+' still going. Stop '+(nLive===1?'it':'them')+' from the Runs table.</div>':"")
+    // A kept run dir used to be visible only as a count on the Sessions tab --
+    // findable only by an operator who already suspected one was there. See it
+    // here instead, on the job it belongs to.
+    +sessionLines(j.id)
     +'<div class="desc">'+esc(j.description||"")+'</div>'
     // Two columns when there is a probe result to show: the job's own state on
     // the left, what its precheck counted on the right. `next` sits under both
@@ -3283,6 +3293,17 @@ async function deleteProjectFromModal(){
    below describes the size and lets you read it, rather than asserting that
    every row is irreplaceable work. An empty one is safe to discard; a 40 MB one
    with repos listed is not. */
+// "in 3h" / "in 12m" / "due now", or null for a row with no countdown at all
+// (`.ended` already "done" -- a brief transient on its way out, see the
+// server's own retained_worktrees). One place for the arithmetic so the
+// Sessions table and a job card's own notice cannot count the same directory
+// down two different ways.
+function fmtExpiresIn(expiresIn){
+  if(expiresIn==null) return null;
+  if(expiresIn<=0) return "due now";
+  return expiresIn>=3600 ? "in "+Math.floor(expiresIn/3600)+"h"
+                          : "in "+Math.max(1,Math.floor(expiresIn/60))+"m";
+}
 const WT_COLS=["Job","Run","Repos","Size","Kept since","Expires",""];
 function renderRetained(){
   const items=DATA.retained_worktrees||[];
@@ -3308,11 +3329,53 @@ function renderRetained(){
       +'<td class="muted nowrap">'+esc(age)+'</td>'
       +'<td class="muted nowrap">'+(w.expires_in==null
           ? '<span class="muted">—</span>'
-          : (w.expires_in<=0 ? "due now"
-             : (w.expires_in>=3600 ? "in "+Math.floor(w.expires_in/3600)+"h"
-                                   : "in "+Math.max(1,Math.floor(w.expires_in/60))+"m")))+'</td>'
+          : esc(fmtExpiresIn(w.expires_in)))+'</td>'
       +'<td class="rowacts"><button class="btn ghost sm" data-wtdrop="'
         +esc(w.job)+'" data-wtstamp="'+esc(w.stamp)+'">Discard</button></td></tr>';
+  }).join("");
+}
+
+// Every retained run dir this job still owns. Almost always zero or one, but
+// nothing stops a job from having cut two runs short before either was
+// resumed or expired, so this is a filter, not a find. Same source as the
+// Sessions tab (DATA.retained_worktrees) -- no second fetch, no second shape
+// for one server-side list to drift against.
+function keptSessionsOf(jobId){
+  return (DATA.retained_worktrees||[]).filter(w=>w.job===jobId);
+}
+
+/* The Sessions tab is where a kept run dir actually lives, but a count on a
+   tab nobody is looking at is not "surfaced" -- the operator finds out by
+   opening the job whose run went quiet, not by auditing a tab. One line per
+   kept dir (see keptSessionsOf for why there can be more than one), each
+   honest about whether there is a session to resume: a run dir can be kept
+   with NO `.session` at all (the run died before its agent reported one), and
+   that is not the same claim as "a session is here, just busy" -- so it gets
+   different words, not a button that cannot work. */
+function sessionLines(jobId){
+  const kept=keptSessionsOf(jobId);
+  if(!kept.length) return "";
+  return kept.map(w=>{
+    const left=fmtExpiresIn(w.expires_in);
+    const until=left ? " — expires "+left : "";
+    if(!w.session){
+      return '<div class="warnline">'+I.folder+'<span class="grow">Holding a run '
+        +'directory with no session recorded'+esc(until)+' — it never got far enough '
+        +'to report one, so it cannot be resumed.</span></div>';
+    }
+    // Reuses the SAME guard resumeTarget uses for the Runs table -- see
+    // resumeInFlight's own comment for why this must not be a second
+    // `activeRunsOf(...).some(...)` of its own.
+    const inFlight=resumeInFlight(jobId, w.session);
+    return '<div class="warnline">'+I.folder+'<span class="grow">Holding a session '
+      +'that was cut short'+esc(until)+'.</span>'
+      +(inFlight
+        ? '<span class="runningbadge"><span class="pulse"></span>resuming…</span>'
+        : '<button class="btn" data-op="resume" data-id="'+esc(jobId)+'"'
+          +' data-session="'+esc(w.session)+'"'
+          +' title="Resume this task — continue session '+esc(w.session.slice(0,8))
+          +' where it stopped">'+I.play+'Resume</button>')
+      +'</div>';
   }).join("");
 }
 
@@ -3696,6 +3759,16 @@ function continuedRun(r){
     .sort((a,b)=>b.start-a.start);
   return earlier[0]||null;
 }
+// Is a resume of THIS session already running for THIS job? The one guard
+// that stops a task being resumed twice at once, read here (resumeTarget's
+// live-slot branch), and again from a job card's own Resume affordance for a
+// kept session with no run row of its own to look up. A THIRD inline
+// `activeRunsOf(id).some(a=>a.resume_of===sid)` is exactly the copy-drift
+// the comment below (on `resumable`) warns about, just for a different
+// predicate -- so this is the only place either reads .resume_of.
+function resumeInFlight(id, sid){
+  return !!sid && activeRunsOf(id).some(a=>a.resume_of===sid);
+}
 function resumeTarget(id, after){
   const src=(DATA.runs||[]).find(r=>r.id===id && r.start===after);
   const sid=src&&src.session;
@@ -3704,7 +3777,7 @@ function resumeTarget(id, after){
   if(done.length) return {run:done[0], running:false};
   // A resume still in flight is not in the journal yet (a record is written
   // when a run ENDS), so ask the live slots as well.
-  if(activeRunsOf(id).some(a=>a.resume_of===sid)) return {run:{id, start:after}, running:true};
+  if(resumeInFlight(id, sid)) return {run:{id, start:after}, running:true};
   return null;
 }
 function resumeTip(id, start){

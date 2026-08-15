@@ -118,3 +118,86 @@ def test_the_countdown_uses_the_worktree_ttl_and_not_some_other_one(clean_data):
     # Freshly created, so age is 0 or 1 second.
     assert srv.WORKTREE_SESSION_TTL - got["expires_in"] <= 2
     assert srv.WORKTREE_SESSION_TTL == 86400
+
+
+# ---- .session: absent, empty and unreadable are three different things, and
+# only the first of them means "no session" in the ordinary, nothing-went-
+# wrong sense. See _session_bound_to's own docstring for why they must not
+# collapse into one silently-swallowed "".
+
+def test_a_run_dir_with_a_bound_session_reports_it(clean_data):
+    srv = clean_data
+    d = _mk_run_dir(srv, "iota", "s-sess")
+    # bind_session's real write: a trailing newline, via mktemp + rename.
+    (d / ".session").write_text("sess-abc123\n")
+    got = srv.retained_worktrees()[0]
+    assert got["session"] == "sess-abc123"
+
+
+def test_a_run_dir_with_no_session_file_reports_no_session(clean_data):
+    """The ordinary case: bind_session only ever creates `.session` once it
+    already has a non-empty id, so its absence means the run's agent never
+    got far enough to report one — not that something went wrong reading it."""
+    srv = clean_data
+    _mk_run_dir(srv, "kappa", "s-none")
+    got = srv.retained_worktrees()[0]
+    assert got["session"] == ""
+
+
+def test_an_empty_session_file_reports_no_session_not_a_blank_id(clean_data):
+    """bind_session's write path cannot produce this file empty (it checks the
+    id is non-empty before ever calling mktemp), so an empty file on disk is a
+    contract violation, not a legitimate zero-length session id. Either way
+    there is nothing a resume could use."""
+    srv = clean_data
+    d = _mk_run_dir(srv, "lambda", "s-empty")
+    (d / ".session").write_text("")
+    got = srv.retained_worktrees()[0]
+    assert got["session"] == ""
+
+
+def test_a_session_file_that_cannot_be_read_does_not_crash_the_poll(clean_data):
+    """`.session` existing as a directory (not a file) stands in for "exists
+    but unreadable" — permission errors are hard to engineer portably in a
+    test, but both raise OSError on read_text() and must be handled the same
+    way. retained_worktrees backs every 5-second dashboard poll, so one bad
+    run dir raising out of this call would blank the whole page, not just its
+    own row."""
+    srv = clean_data
+    d = _mk_run_dir(srv, "mu", "s-unreadable")
+    (d / ".session").mkdir()
+    got = srv.retained_worktrees()[0]
+    assert got["session"] == ""
+
+
+def test_an_absent_session_file_is_the_quiet_case(clean_data, capsys):
+    """The ordinary state must not spam the server log every 5-second poll
+    just because a kept directory exists with no session yet — that would be
+    true of most freshly-cut-short runs, all day."""
+    srv = clean_data
+    _mk_run_dir(srv, "xi", "s-quiet")
+    srv.retained_worktrees()
+    assert capsys.readouterr().err == ""
+
+
+def test_an_empty_session_file_is_logged_as_empty(clean_data, capsys):
+    """Distinct from silence (the absent case) AND from the unreadable case
+    below — conflating either would hide which contract actually broke."""
+    srv = clean_data
+    d = _mk_run_dir(srv, "omicron", "s-loud-empty")
+    (d / ".session").write_text("")
+    srv.retained_worktrees()
+    err = capsys.readouterr().err
+    assert str(d / ".session") in err
+    assert "empty" in err
+
+
+def test_an_unreadable_session_file_is_logged_as_unreadable(clean_data, capsys):
+    srv = clean_data
+    d = _mk_run_dir(srv, "pi", "s-loud-bad")
+    (d / ".session").mkdir()
+    srv.retained_worktrees()
+    err = capsys.readouterr().err
+    assert str(d / ".session") in err
+    assert "could not be read" in err
+    assert "empty" not in err

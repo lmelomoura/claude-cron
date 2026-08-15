@@ -120,6 +120,19 @@ def _fn(js, name):
     raise AssertionError(f"unterminated {name}")
 
 
+def _plainfn(js, name):
+    """Same brace-matching as _fn, for an ordinary function -- _fn's exact
+    `async function NAME()` match only reaches a zero-argument async one, and
+    the helpers below are neither."""
+    i = js.index(f"function {name}(")
+    d, j = 0, js.index("{", i)
+    for k in range(j, len(js)):
+        d += (js[k] == "{") - (js[k] == "}")
+        if d == 0:
+            return js[i:k + 1]
+    raise AssertionError(f"unterminated {name}")
+
+
 CWD = "/x/web"
 ROW = {"name": "web", "path": CWD, "base": "develop"}
 
@@ -181,3 +194,102 @@ def test_a_multi_repo_project_keeps_its_rows_and_leaves_the_project_base_alone(s
     proj = next(e["project"] for op, e in sent if op == "project_set")
     assert proj["repos"] == [ROW], f"the declared rows were not sent whole: {proj['repos']}"
     assert "base" not in proj, "a project-wide base was sent for a multi-repo project"
+
+
+# ---- the job card's kept-session notice, and the guard it must share with
+# the Runs table rather than re-derive.
+
+def _harness_globals():
+    """The globals sessionLines/resumeInFlight/keptSessionsOf read, stood up
+    the same shape the real page gives them without pulling in the rest of
+    the page's DOM-touching code."""
+    return """
+    const I = {folder:"<folder>", play:"<play>"};
+    const esc = (s) => String(s ?? "").replace(/[&<>"]/g,
+      c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+    let DATA = {};
+    const activeRunsOf = id => (DATA.active_runs||{})[id] || [];
+    """
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_resume_in_flight_is_the_single_guard(srv, tmp_path):
+    """resumeTarget (Runs table) and sessionLines (job card) both need to know
+    "is a resume of this session already running" -- this pins resumeInFlight's
+    own behaviour so a later change to either caller has one function to trust
+    instead of two chances to disagree."""
+    js = _js(srv)
+    fn = _plainfn(js, "resumeInFlight")
+    script = tmp_path / "rif.js"
+    script.write_text(_harness_globals() + """
+    DATA = {active_runs: {jobA: [{resume_of: "sess-1"}, {resume_of: "sess-2"}]}};
+    """ + fn + """
+    console.log(JSON.stringify([
+      resumeInFlight("jobA", "sess-1"),   // this exact session, this job: busy
+      resumeInFlight("jobA", "sess-9"),   // a different session: free
+      resumeInFlight("jobB", "sess-1"),   // right session, wrong job: free
+      resumeInFlight("jobA", ""),         // no session to check: free
+    ]));
+    """)
+    out = subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout
+    assert __import__("json").loads(out) == [True, False, False, False]
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_resume_target_defers_to_resume_in_flight(srv, tmp_path):
+    """Structural, not behavioural: resumeTarget's live-slot branch must call
+    the shared resumeInFlight rather than keep its own `.some(a=>a.resume_of
+    ===sid)` -- a second copy would still pass every behavioural test today
+    and silently stop agreeing with sessionLines the next time one of them
+    changes (exactly what the renderRuns comment on the `resumable` set
+    describes happening once already, for a different predicate)."""
+    js = _js(srv)
+    body = _plainfn(js, "resumeTarget")
+    assert "resumeInFlight(" in body, "resumeTarget must call the shared guard, not re-derive it"
+    assert "resume_of" not in body, (
+        "resumeTarget still reads .resume_of directly -- resumeInFlight is no "
+        "longer the only place that knows this shape")
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_a_job_card_shows_every_kept_session_honestly(srv, tmp_path):
+    """Three rows, three different truths: no `.session` at all (held, no
+    button -- there is nothing valid to resume), a session nobody is touching
+    (a working Resume button carrying the real id), and a session already
+    being resumed (no second button -- resumeInFlight decides this, not a
+    fresh guess)."""
+    js = _js(srv)
+    deps = "\n".join(_plainfn(js, n) for n in
+                      ("resumeInFlight", "keptSessionsOf", "sessionLines", "fmtExpiresIn"))
+    script = tmp_path / "sess.js"
+    script.write_text(_harness_globals() + """
+    DATA = {
+      retained_worktrees: [
+        {job:"j1", stamp:"s1", session:"",           expires_in:3600},
+        {job:"j1", stamp:"s2", session:"sess-live00", expires_in:7200},
+        {job:"j1", stamp:"s3", session:"sess-busy00", expires_in:100},
+        {job:"j2", stamp:"s4", session:"sess-other",  expires_in:900},
+      ],
+      active_runs: {j1: [{resume_of:"sess-busy00"}]},
+    };
+    """ + deps + """
+    const html = sessionLines("j1");
+    console.log(JSON.stringify({
+      rowsForJ1: (html.match(/class="warnline"/g)||[]).length,
+      noSessionText: html.indexOf("cannot be resumed") !== -1,
+      resumeButtons: (html.match(/data-op="resume"/g)||[]).length,
+      liveButtonExact: html.indexOf('data-op="resume" data-id="j1" data-session="sess-live00"') !== -1,
+      busyGotAButton: html.indexOf('data-session="sess-busy00"') !== -1,
+      mentionsOtherJob: html.indexOf("sess-other") !== -1,
+      emptyForJobWithNothingKept: sessionLines("no-such-job") === "",
+    }));
+    """)
+    out = subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout
+    got = __import__("json").loads(out)
+    assert got["rowsForJ1"] == 3, "one line per kept run dir, including the sessionless one"
+    assert got["noSessionText"], "a run dir with no .session must say it cannot be resumed"
+    assert got["resumeButtons"] == 1, "only the free session gets a working Resume button"
+    assert got["liveButtonExact"], "the button must carry the real job id and real session id"
+    assert not got["busyGotAButton"], "a session already being resumed must not get a second button"
+    assert not got["mentionsOtherJob"], "sessionLines(j1) leaked another job's row"
+    assert got["emptyForJobWithNothingKept"], "a job with nothing kept renders nothing"

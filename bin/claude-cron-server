@@ -1395,6 +1395,50 @@ def slot_alive(slot):
     return True
 
 
+def _session_bound_to(run_dir):
+    """The session id `.session` names for this run dir, or "" when there is
+    none to resume with.
+
+    Absent, empty and unreadable are not the same claim, and collapsing them
+    into one silent "" is the exact defect class this branch kept
+    reintroducing (see .superpowers/sdd/progress.md) -- a value that only
+    exists on some paths, read by something that treats its default as an
+    answer.
+
+    - Absent is the ordinary case. bind_session (bin/claude-cron) writes this
+      file through mktemp + rename, and only once it already has a non-empty
+      id -- so a run dir with no `.session` is one whose agent never got far
+      enough to report one. There was never anything to resume; this is not a
+      fault, and it is not logged.
+    - Present but unreadable (permission denied, `.session` replaced by a
+      directory, a mid-flight filesystem error, ...) is a different claim: a
+      session may well be bound here and this simply could not read it.
+      Logged, so staying silent does not hide it the way a swallowed
+      exception would.
+    - Present but empty is a contract violation: bind_session's own write
+      goes through mktemp + rename and only after confirming the id is
+      non-empty, so an empty file is not a state its writer can produce.
+      Also logged, for the same reason as unreadable.
+
+    All three leave the caller with no usable id -- this only decides what
+    gets logged, never fabricates a placeholder the caller could mistake for
+    a real one.
+    """
+    p = run_dir / ".session"
+    try:
+        raw = p.read_text()
+    except FileNotFoundError:
+        return ""
+    except OSError as exc:
+        _log(f"retained_worktrees: {p} exists but could not be read: {exc!r}")
+        return ""
+    sid = raw.strip()
+    if not sid:
+        _log(f"retained_worktrees: {p} exists but is empty")
+        return ""
+    return sid
+
+
 def retained_worktrees():
     """Run dirs sitting on disk that no live run is using.
 
@@ -1463,9 +1507,12 @@ def retained_worktrees():
             # sweep uses the same `!= done` test; these two must not disagree,
             # or the dashboard promises a reclaim that never comes.
             expires_in = None if ended == "done" else max(0, WORKTREE_SESSION_TTL - age)
+            # What a resume would need. "" means there is nothing to resume
+            # WITH, for any of three different reasons -- see _session_bound_to.
             out.append({"job": jobdir.name, "stamp": d.name, "path": str(d),
                         "age": age, "repos": repos, "bytes": bytes_,
-                        "ended": ended, "expires_in": expires_in})
+                        "ended": ended, "expires_in": expires_in,
+                        "session": _session_bound_to(d)})
     return out
 
 

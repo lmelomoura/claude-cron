@@ -48,6 +48,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A job whose last run is being held for a resume now says so on its own
+  card**, with a Resume button whenever there is a session to continue. Until
+  now the only sign a run dir was being kept was a count on the Sessions tab —
+  something an operator had to already suspect before they would go looking
+  for it, then match back to the job by hand. The card reads the same
+  `retained_worktrees()` list the Sessions tab does, filtered to that job, and
+  the button is the Runs table's own Resume op, not a second one: it shares
+  the same in-flight guard (a resume already running for that session), so
+  the two cannot fall out of agreement about when the button is safe to press.
+  A run dir held with no `.session` at all — the run died before its agent
+  ever got far enough to report one — says so honestly instead of offering a
+  button that could only ever be refused.
+
 - **A run directory now records the session working in it** (`.session`). The id
   arrives in the transcript's first event and is bound to the run directory as
   soon as the watchdog notices it, plus a final pass right after the run exits —
