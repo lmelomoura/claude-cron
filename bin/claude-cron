@@ -742,7 +742,15 @@ port_base_reclaim() { # port_base_reclaim <slot-dir> <base>
     lock_drop "$L"
     return 1
   fi
-  { echo "$want" > "$slot/portbase"; } 2>/dev/null || true
+  # A write that does not land must not be reported as a claim: it is
+  # invisible to alloc_port_base's own scan, which reads $slot/portbase from
+  # disk, not from what this function believes it did. `|| true` here would
+  # be the identical cannot-express-failure shape this function exists to
+  # remove, one line inside it.
+  if ! { echo "$want" > "$slot/portbase"; } 2>/dev/null; then
+    lock_drop "$L"
+    return 1
+  fi
   lock_drop "$L"
   return 0
 }
@@ -3388,6 +3396,30 @@ NASTY
     || bad "portbase was written despite the refusal: $(cat "$tmp/locks/pr3/403/portbase" 2>/dev/null)"
   rm -rf "$tmp/locks/pr1" "$tmp/locks/pr2" "$tmp/locks/pr3"
 
+  echo "port_base_reclaim() — a write that cannot land is a failure, not a silent success"
+  # A block found free but never actually WRITTEN is invisible to
+  # alloc_port_base's own scan -- which reads $slot/portbase from disk, not
+  # from what this function believes it did -- so a caller told it succeeded
+  # would proceed as if the block were reserved while nothing on disk says
+  # so. The exact cannot-express-failure shape this function exists to
+  # remove, reintroduced by the one line inside it that swallowed its own
+  # outcome. $slot deliberately never created, so the write has nowhere to
+  # land; port_base_free's own scan does not require $slot to exist (it only
+  # excludes it by name), so this exercises the write failing on its own,
+  # not a failure earlier in the function.
+  local pr4="$tmp/locks/pr4/404"
+  ( LOCK_DIR="$tmp/locks"; port_base_reclaim "$pr4" 21100 )
+  want "a write that cannot land is reported as a failure, not a claim" 1 $?
+  [ ! -f "$pr4/portbase" ] && ok "and nothing exists to be read back (there was nowhere to write it)" \
+    || bad "a portbase file exists despite the slot dir never being created"
+  # And the lock is not left held: a different slot can still claim a block
+  # right afterwards.
+  mkdir -p "$tmp/locks/pr5/405"
+  echo $$ > "$tmp/locks/pr5/405/pid"
+  ( LOCK_DIR="$tmp/locks"; port_base_reclaim "$tmp/locks/pr5/405" 21300 )
+  want "the lock was not left held by the failed write" 0 $?
+  rm -rf "$tmp/locks/pr4" "$tmp/locks/pr5"
+
   echo "port_base_reclaim() — the scan and the write happen inside ONE lock hold, not around it"
   # Structural: what actually proves the lock closes the race against a
   # concurrent alloc_port_base is the real two-process test below; this
@@ -3395,6 +3427,8 @@ NASTY
   # scan-then-unlock-then-write shape (or to the wrong lock entirely), which
   # would defeat the whole point while every OTHER test here -- none of
   # which drives real contention against this exact function -- kept passing.
+  # Three exits share the lock now, not two: the block-held refusal, a write
+  # that could not land, and the success path -- all three must drop it.
   rbody="$(sed -n '/^port_base_reclaim()/,/^}/p' "$BIN_DIR/claude-cron")"
   rlt_line="$(printf '%s\n' "$rbody" | grep -n 'lock_take "\$L"'                   | head -1 | cut -d: -f1)"
   rpf_line="$(printf '%s\n' "$rbody" | grep -n 'port_base_free "\$slot" "\$want"'  | head -1 | cut -d: -f1)"
@@ -3402,14 +3436,19 @@ NASTY
   rld_lines="$(printf '%s\n' "$rbody" | grep -n 'lock_drop "\$L"' | cut -d: -f1)"
   rld1_line="$(printf '%s\n' "$rld_lines" | sed -n '1p')"
   rld2_line="$(printf '%s\n' "$rld_lines" | sed -n '2p')"
+  rld3_line="$(printf '%s\n' "$rld_lines" | sed -n '3p')"
   if [ -n "${rlt_line:-}" ] && [ -n "${rpf_line:-}" ] && [ -n "${rwr_line:-}" ] \
-       && [ -n "${rld1_line:-}" ] && [ -n "${rld2_line:-}" ] \
+       && [ -n "${rld1_line:-}" ] && [ -n "${rld2_line:-}" ] && [ -n "${rld3_line:-}" ] \
        && [ "$rlt_line" -lt "$rpf_line" ] && [ "$rpf_line" -lt "$rld1_line" ] \
-       && [ "$rld1_line" -lt "$rwr_line" ] && [ "$rwr_line" -lt "$rld2_line" ]; then
-    ok "the lock is taken, the block checked, and dropped on both exits -- the refusal and the claim -- in order"
+       && [ "$rld1_line" -lt "$rwr_line" ] && [ "$rwr_line" -lt "$rld2_line" ] \
+       && [ "$rld2_line" -lt "$rld3_line" ]; then
+    ok "the lock is taken, the block checked, and dropped on all three exits -- refusal, failed write, and claim -- in order"
   else
-    bad "port_base_reclaim's own lock ordering broke (lock=${rlt_line:-?} check=${rpf_line:-?} drop1=${rld1_line:-?} write=${rwr_line:-?} drop2=${rld2_line:-?})"
+    bad "port_base_reclaim's own lock ordering broke (lock=${rlt_line:-?} check=${rpf_line:-?} drop1=${rld1_line:-?} write=${rwr_line:-?} drop2=${rld2_line:-?} drop3=${rld3_line:-?})"
   fi
+  got="$(printf '%s\n' "$rbody" | grep -c 'lock_drop "\$L"')"
+  [ "${got:-0}" -eq 3 ] && ok "lock_drop appears exactly three times -- once per exit ($got)" \
+    || bad "port_base_reclaim drops \$L $got times, expected 3 (refusal, failed write, success)"
   got="$(printf '%s\n' "$rbody" | grep -c 'L="\$LOCK_DIR/.ports"')"
   [ "${got:-0}" -eq 1 ] && ok "and the mutex is \$LOCK_DIR/.ports -- the same one alloc_port_base uses" \
     || bad "port_base_reclaim's lock variable is not pinned to \$LOCK_DIR/.ports (found $got)"

@@ -70,6 +70,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   its own scan and write, the same idiom `alloc_port_base` already used for
   its side of this.
 
+  A write that failed inside that claim used to be reported as a success
+  anyway (`|| true` swallowed it) — a block found free but never actually
+  written to `$slot/portbase` is invisible to `alloc_port_base`'s own later
+  scan, which reads that file, not what `port_base_reclaim` believes it did.
+  A failed write now drops the lock and refuses the resume, the same as a
+  block that turned out to be held.
+
 - **A slow teardown in the orphan sweep no longer stalls an unrelated tick.**
   The sweep holds `$LOCK_DIR/.resume` while running a directory's `down`
   hook — a `docker compose down -v`, seconds to minutes — and `cmd_tick` had
