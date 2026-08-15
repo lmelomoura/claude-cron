@@ -1400,10 +1400,8 @@ def _session_bound_to(run_dir):
     none to resume with.
 
     Absent, empty and unreadable are not the same claim, and collapsing them
-    into one silent "" is the exact defect class this branch kept
-    reintroducing (see .superpowers/sdd/progress.md) -- a value that only
-    exists on some paths, read by something that treats its default as an
-    answer.
+    into one silent "" would let a value that only exists on some paths be
+    read by something that treats its default as an answer.
 
     - Absent is the ordinary case. bind_session (bin/claude-cron) writes this
       file through mktemp + rename, and only once it already has a non-empty
@@ -1423,10 +1421,19 @@ def _session_bound_to(run_dir):
     All three leave the caller with no usable id -- this only decides what
     gets logged, never fabricates a placeholder the caller could mistake for
     a real one.
+
+    Reads bytes and decodes with errors="replace", not .read_text(): a
+    session id is written by a single `printf` and should never be anything
+    but plain ASCII, but .read_text() raises UnicodeDecodeError -- a
+    ValueError, not an OSError -- on a byte that is not valid UTF-8, and that
+    would have gone uncaught here, crashing retained_worktrees() and the
+    /api/data poll it backs for every job's card, not just this one row's.
+    Same fix _load_artifacts already needed for the same reason, elsewhere in
+    this file.
     """
     p = run_dir / ".session"
     try:
-        raw = p.read_text()
+        raw = p.read_bytes()[:4096].decode("utf-8", errors="replace")
     except FileNotFoundError:
         return ""
     except OSError as exc:

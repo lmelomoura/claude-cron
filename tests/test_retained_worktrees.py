@@ -201,3 +201,20 @@ def test_an_unreadable_session_file_is_logged_as_unreadable(clean_data, capsys):
     assert str(d / ".session") in err
     assert "could not be read" in err
     assert "empty" not in err
+
+
+def test_a_session_file_with_invalid_utf8_bytes_does_not_crash_the_poll(clean_data):
+    """.session is written by a single `printf` and should always be plain
+    ASCII, but a corrupted or hand-edited file is still readable AS BYTES --
+    and Path.read_text() raises UnicodeDecodeError (a ValueError, not an
+    OSError) on one that is not valid UTF-8. An `except OSError` alone does
+    not catch that: it would propagate out of retained_worktrees() and take
+    down the whole /api/data poll, for every job's card, not just this one
+    row -- the exact failure this function's own docstring says the
+    unreadable branch exists to prevent."""
+    srv = clean_data
+    d = _mk_run_dir(srv, "rho", "s-badbytes")
+    (d / ".session").write_bytes(b"\xff\xfe\x00not-valid-utf8")
+    got = srv.retained_worktrees()  # must not raise
+    assert got[0]["session"] != ""  # decoded (lossily) rather than discarded
+    assert isinstance(got[0]["session"], str)

@@ -61,6 +61,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ever got far enough to report one — says so honestly instead of offering a
   button that could only ever be refused.
 
+  The id is read as bytes and decoded with `errors="replace"`, not
+  `Path.read_text()`: a session id is written by a single `printf` and should
+  always be plain ASCII, but `.read_text()` raises `UnicodeDecodeError` — a
+  `ValueError`, not an `OSError` — on a byte that is not valid UTF-8, which the
+  unreadable-file handling above did not catch. Uncaught, that would have
+  crashed `retained_worktrees()` and blanked the whole dashboard poll over one
+  corrupted file, not just its own row — the same fix `_load_artifacts`
+  already needed, elsewhere in this file, for the same reason.
+
 - **A run directory now records the session working in it** (`.session`). The id
   arrives in the transcript's first event and is bound to the run directory as
   soon as the watchdog notices it, plus a final pass right after the run exits —
