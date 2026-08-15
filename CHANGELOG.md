@@ -291,6 +291,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `wt_undelivered_work` reports nothing; with it, the note names both the
   unreadable status and the unreadable history.
 
+- **A reattach's second dirt_sha refresh no longer discards a stale-but-valid
+  snapshot when the fresh reading itself fails.** Found reviewing the
+  `wt_dirt_sha` fix above, not in the original finding: 9.10 taught the
+  reattach branch's dirt_sha merge to fall back to a repo's EXISTING
+  snapshot when a fresh reading is missing, specifically so an unreadable
+  one would not be misread as "nothing recorded" and fall into
+  `wt_undelivered_work`'s strict, no-snapshot check — which would then flag
+  ordinary provisioning residue as the agent's own work. That fallback
+  relied on jq's `//`, which only falls through on `null` — but a repo whose
+  `wt_dirt_sha` now fails during the re-up pass still gets a line in the
+  merge's tsv, just with an empty value, which is present, not absent. The
+  merge kept that `""` and silently discarded the good, stale value it was
+  supposed to fall back to. The merge now treats an empty fresh reading the
+  same as a missing one before falling back.
+
 - **The control server's journal lock is boot-aware too, matching the
   engine's own lock.** `journal_lock` and `lock_take` are the same mkdir
   lock, taken on `.journal.lock` by the same name, and 9.6 made `lock_take`

@@ -1847,6 +1847,46 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   want "and WITH the refresh, that same residue is no longer undelivered" 1 $?
   rm -rf "$tmp/wtroot/jDirt" "$tmp/cfg/provision/two.up.sh"
 
+  echo "run_job() — the reattach's dirt_sha merge keeps the stale value, not empty, when wt_dirt_sha itself fails"
+  # Found by an independent review of 10.1, not by the brief: 10.1 made
+  # wt_dirt_sha print NOTHING (not a hash) when git cannot read a worktree.
+  # This merge's own comment says a missing fresh reading should fall back to
+  # the EXISTING dirt_sha -- but a failed wt_dirt_sha still writes a TSV line
+  # for that repo, just with an EMPTY value, which is present, not absent.
+  # jq's `//` treats an empty string as truthy, so `$d[.name] // .dirt_sha`
+  # kept the "" and silently discarded the stale-but-valid value -- exactly
+  # the fallback the comment says exists. Reproduced against the REAL merge
+  # code (sed-extracted, the same technique errsnippet uses above), not a
+  # reimplementation of the jq filter.
+  local rdMerge="$tmp/wtroot/jMerge/stampMerge" mergesnippet
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup jMerge two "$tmp/g/repo" stampMerge ) >/dev/null 2>&1
+  "$JQ" --arg n "one" --arg s "STALE-BUT-VALID" \
+    '.repos = [.repos[] | if .name==$n then .dirt_sha=$s else . end]' \
+    "$rdMerge/.run.json" > "$rdMerge/.run.json.new" 2>/dev/null \
+    && mv -f "$rdMerge/.run.json.new" "$rdMerge/.run.json"
+  mergesnippet="$(sed -n '/^      if \[ -n "\$rdirt" \] && "\$JQ" -R -n --slurpfile mf "\$run_dir\/.run.json" .$/,/^      rm -f "\$rdirt"$/p' \
+                    "$BIN_DIR/claude-cron")"
+  [ -n "$mergesnippet" ] || bad "could not extract the reattach dirt_sha merge block -- its anchors moved"
+  # "one" has an empty fresh reading (exactly what a failed wt_dirt_sha now
+  # writes); "two" has a real one, to prove a genuine refresh still wins and
+  # this fix does not just make the merge ignore fresh readings altogether.
+  (
+    run_dir="$rdMerge"
+    rdirt="$rdMerge/.dirt.tsv"
+    printf 'one\t\ntwo\tFRESH-VALID\n' > "$rdirt"
+    eval "$mergesnippet"
+  )
+  got="$("$JQ" -r '.repos[] | select(.name=="one") | .dirt_sha' "$rdMerge/.run.json" 2>/dev/null)"
+  [ "$got" = "STALE-BUT-VALID" ] \
+    && ok "an empty fresh reading falls back to the stale-but-valid dirt_sha" \
+    || bad "dirt_sha for 'one' reads '$got', expected the stale value STALE-BUT-VALID to survive"
+  got="$("$JQ" -r '.repos[] | select(.name=="two") | .dirt_sha' "$rdMerge/.run.json" 2>/dev/null)"
+  [ "$got" = "FRESH-VALID" ] \
+    && ok "a real fresh reading still wins over whatever was there before" \
+    || bad "dirt_sha for 'two' reads '$got', expected the fresh value FRESH-VALID"
+  rm -rf "$tmp/wtroot/jMerge"
+
   echo "run_job() — an error run with a declared ending but undelivered work stays open"
   # The regression this task's own self-review caught (three independent
   # review passes converged on it), reproduced against the REAL code rather
@@ -3758,13 +3798,22 @@ ${prompt}"
                   "$run_dir/.run.json" 2>/dev/null)
       # Falls back to the EXISTING dirt_sha, not to empty, when a repo's fresh
       # reading is missing (a provisioning failure, an empty $rdirt from the
-      # `: >` above failing on a read-only disk): an empty dirt_sha makes
+      # `: >` above failing on a read-only disk) OR present but empty (10.1:
+      # wt_dirt_sha itself now prints nothing when git could not read that
+      # repo during this re-up pass): an empty dirt_sha makes
       # wt_undelivered_work fall back to its strict, no-snapshot reading,
       # which would flag every ordinary bit of provisioning residue as the
       # agent's own work — worse than just keeping the stale-but-valid value.
+      # `//` alone is not enough here: it treats an ABSENT entry (null) as
+      # falling through, but a PRESENT, empty-string one -- exactly what a
+      # failed wt_dirt_sha now writes -- is not null, so `$d[.name] // X`
+      # would keep the "" and silently discard X. Normalising "" to null
+      # first is what makes both shapes of "no fresh reading" fall back the
+      # same way.
       if [ -n "$rdirt" ] && "$JQ" -R -n --slurpfile mf "$run_dir/.run.json" '
             ([inputs | split("\t") | {(.[0]): .[1]}] | add // {}) as $d
-            | $mf[0] | .repos = [.repos[] | . + {dirt_sha: ($d[.name] // .dirt_sha // "")}]' \
+            | $mf[0] | .repos = [.repos[] | . + {dirt_sha:
+                (($d[.name] // "" | if . == "" then null else . end) // .dirt_sha // "")}]' \
             "$rdirt" > "$run_dir/.run.json.new" 2>/dev/null; then
         mv -f "$run_dir/.run.json.new" "$run_dir/.run.json"
       else
