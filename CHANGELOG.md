@@ -251,6 +251,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The dashboard's Resume button lights up for a `warning` run, not just
+  `error`.** `UNDELIVERED`, `UNDECLARED ENDING` and `BUDGET LIMITED` all end a
+  run `warning`, and every one of their own notes says "resume this run to
+  continue with its context" — while the engine keeps that run's worktree and
+  its services up specifically so a resume has something to continue in. The
+  button read only `error`, so the far more common case showed a dead icon
+  with "Only a failed run can be resumed" next to a note telling the operator
+  to do exactly that. `success` and `stopped` stay off. The already-resumed
+  guard (grey the button out once another run has picked the session back
+  up, so a second click cannot duplicate the work) now also applies to a
+  `warning` run's Resume button, not only an `error` one's — it reads the
+  same `resumeTarget` lookup, just no longer gated to one status.
+
 - **A retained run dir cannot be dropped out from under a resume that just
   claimed it.** `worktree-drop` checked `wt_is_claimed`, then ran
   `wt_down_all` — a provisioning `down` hook, seconds to minutes — and only

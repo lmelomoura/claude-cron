@@ -3763,9 +3763,14 @@ function renderRuns(){
   $("runs").innerHTML = slice.map(r=>{
     const s=normStatus(r.status);
     const snip=searchKeys?(snippets[r.id+"|"+r.start]||""):"";
-    // For a failed run: has the job run again since? (drives the disabled Resume
-    // button and the "?" badge, and is true regardless of which browser resumed it)
-    const followUp = s==="error" ? resumeTarget(r.id, r.start) : null;
+    // For a failed OR warning run: has the job run again since? (drives the
+    // disabled Resume button and the "?" badge, and is true regardless of
+    // which browser resumed it). Warning is not "worse than nothing" here --
+    // UNDELIVERED, UNDECLARED ENDING and BUDGET LIMITED all end warning, and
+    // the engine keeps their worktrees and their services up for exactly as
+    // long as it keeps an error's, specifically so a resume can pick them
+    // back up.
+    const followUp = (s==="error"||s==="warning") ? resumeTarget(r.id, r.start) : null;
     // A run that continued an earlier one says so, and points at it: without
     // this the two rows look unrelated, and the pair is the whole story.
     const parent = continuedRun(r);
@@ -3792,7 +3797,7 @@ function renderRuns(){
           ? '<span class="runningbadge'+(isStopping(r)?" stopping":"")+'"><span class="pulse"></span>'
             +(isStopping(r)?"stopping…":"running…")+'</span>'
           : '<span class="stat-cell s-'+esc(s)+'">'+(STATUS_ICON[s]||"")+esc(s)+"</span>"
-            +((s==="error" && followUp)
+            +(((s==="error"||s==="warning") && followUp)
                ? '<span class="tipbadge" data-tip="'+encodeURIComponent(resumeTip(r.id,r.start)).replace(/"/g,"%22")+'">?</span>'
                // A run can end fine having done nothing at all — a resumed task
                // already finished, or its ticket is gone. That is recorded as a
@@ -3828,14 +3833,22 @@ function renderRuns(){
              : '<button class="iconbtn danger" title="Stop this run"'
                +' data-op="stop" data-id="'+esc(r.id)+'" data-run-pid="'+esc(r.pid||livePidFor(r.id))+'">'+I.power+'</button>')
            : '<button class="iconbtn" disabled title="This run has already finished — only a running run can be stopped">'+I.power+'</button>')
-        // A failed run is worth retrying — offer it right where the failure
-        // shows. Reuses the Run-now op, so it inherits the precheck guard and
-        // toasts. Gone once the job has picked the task back up (resumed here or
-        // anywhere): a second resume would just duplicate the work, and the "?"
-        // beside the status says where it went.
+        // A failed OR warning run is worth retrying — offer it right where the
+        // problem shows. Reuses the Run-now op, so it inherits the precheck
+        // guard and toasts. Gone once the job has picked the task back up
+        // (resumed here or anywhere): a second resume would just duplicate
+        // the work, and the "?" beside the status says where it went.
+        //
+        // Warning belongs here too: UNDELIVERED, UNDECLARED ENDING and
+        // BUDGET LIMITED all end a run as `warning`, not `error`, and every
+        // one of their own notes says "resume this run to continue with its
+        // context" -- while the engine keeps the worktree and its services
+        // up specifically so that resume has something to continue IN. A
+        // button that only lit up for `error` was dead advice on the far
+        // more common case.
         +(r.live
            ? '<button class="iconbtn retry" disabled title="This run is still going">'+I.play+'</button>'
-           : s==="error"
+           : (s==="error"||s==="warning")
              ? (!r.session
                 ? '<button class="iconbtn retry" disabled title="This run recorded no session id, so it cannot be resumed">'+I.play+'</button>'
                 : followUp
@@ -3846,7 +3859,7 @@ function renderRuns(){
                     +esc((r.session||"").slice(0,8))+' where it stopped"'
                     +' data-op="resume" data-id="'+esc(r.id)+'" data-session="'+esc(r.session||"")+'"'
                     +' data-resume-key="'+esc(runKey(r.id,r.start))+'">'+I.play+'</button>')
-             : '<button class="iconbtn retry" disabled title="Only a failed run can be resumed">'+I.play+'</button>')
+             : '<button class="iconbtn retry" disabled title="Only a failed or warning run can be resumed">'+I.play+'</button>')
         // Erase this run for good: its log files, its journal line and its rows
         // in the search database. Never offered while it is still running.
         +(r.live
