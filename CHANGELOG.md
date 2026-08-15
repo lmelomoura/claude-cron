@@ -357,6 +357,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   exactly how it ended, and the old gating silently discarded that fact for
   precisely the runs where `.ended` most needed it.
 
+  The other half of the question — did it leave anything undelivered — is
+  now unconditional too, caught in this same task's own self-review (three
+  independent passes converged on it) rather than in the original finding:
+  `wt_undelivered_work` was still only called inside a
+  `case "$status" in success|warning)` arm the note it feeds has always been
+  scoped to, which left `undelivered` at its default empty value for `error`
+  or `stopped` — read by the `.ended` gate as "nothing undelivered" without
+  ever having been asked. An agent run that trips one denied tool call
+  (`status=error`, unrelated to whether anything got pushed) but still
+  finishes and says `RUN COMPLETE:` would have satisfied the gate and had
+  its uncommitted work force-removed on the next tick, unreported. The check
+  is now unconditional; only the note it can add and the bump to `warning`
+  stay scoped to success/warning, so a `stopped` or `error` record is still
+  never overwritten with a less informative one.
+
 - **`lock_take` no longer waits forever for a recycled pid.** `.state.lock`,
   `.journal.lock`, `.ports` and the resume lock all live under `data/`, so
   they survive a reboot exactly like a run slot — and the kernel reissues

@@ -1208,22 +1208,31 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   # inserted at, not just appended.
   #
   # Semantic anchor, not positional: find THIS rule's own case statement by
-  # searching backwards from wt_undelivered_work's own call (undelivered_at,
-  # already found above) rather than by counting `case "$status" in`
-  # occurrences from the top of run_job. A positional count breaks the moment
-  # a second one exists anywhere else in the function — already true today
-  # (Task 6's done/open marker sits below this one) — and would break again,
-  # silently, the day a third one lands ABOVE this rule instead. The nearest
-  # `case "$status" in` before wt_undelivered_work's own call can only ever be
-  # the statement that guards it, however many more exist elsewhere in either
-  # direction.
-  case_at="$(printf '%s\n' "$got" | head -n "$undelivered_at" \
-               | grep -n 'case "\$status" in' | tail -1 | cut -d: -f1)"
+  # its exact, anchored text -- two leading spaces, nothing after `in`, no
+  # trailing comment marker -- rather than a bare substring search. A bare
+  # substring match on `case "$status" in` is not safe here: this very
+  # function now carries several COMMENTS that quote that exact pattern in
+  # prose (the paragraph right above this one, for a start), and a search
+  # that cannot tell code from a comment describing that code finds whichever
+  # sits closer, silently reading the wrong text as the guard. Anchoring on
+  # the real statement's own shape sidesteps that regardless of how many
+  # comments discuss it or where they sit.
+  case_at="$(printf '%s\n' "$got" | grep -n '^  case "\$status" in$' | head -1 | cut -d: -f1)"
   guard_line="$(printf '%s\n' "$got" | sed -n "$((case_at + 1))p" \
                   | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-  [ "$guard_line" = "success|warning)" ] \
+  [ -n "${case_at:-}" ] && [ "$guard_line" = "success|warning)" ] \
     && ok "and its guard covers success/warning only, never a stopped run" \
     || bad "the line after the status case reads '$guard_line', not exactly 'success|warning)'"
+  # The regression this task's own self-review caught: wt_undelivered_work
+  # has to be CHECKED for every status, not only inside the success/warning
+  # arm above, or the .ended gate reads an error/stopped run's undelivered
+  # work as empty without ever having asked -- and force-removes a tree that
+  # may hold exactly the uncommitted work this mechanism exists to protect.
+  # Confirmed by ORDER: the check has to sit BEFORE the status guard, not
+  # nested inside it, so it runs unconditionally.
+  [ -n "${undelivered_at:-}" ] && [ -n "${case_at:-}" ] && [ "$undelivered_at" -lt "$case_at" ] \
+    && ok "undelivered is checked before the status guard, not nested inside it" \
+    || bad "the undelivered check (line ${undelivered_at:-?}) is not before the status guard (line ${case_at:-?}) -- it may be gated to success/warning again, leaving error/stopped unchecked"
 
   echo "run_job() — .ended is decided by declared_ending + undelivered, not by status"
   # Structural, like the two checks just above: run_job cannot be exercised
@@ -1250,6 +1259,7 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   [ "$(printf '%s\n' "$ended_body" | grep -c '^  declared_ending=false$')" -eq 1 ] \
     && ok "declared_ending=false is a bare statement, not nested inside a status guard" \
     || bad "declared_ending's assignment is no longer an unconditional top-level statement"
+
 
   echo "cpu_tree_sum() — a busy tool tree is proof of life, not a stall"
   # A run whose agent is quiet because a test suite is grinding away in a child
@@ -1788,6 +1798,46 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     wt_undelivered_work "$rdDirt" ) >/dev/null 2>&1
   want "and WITH the refresh, that same residue is no longer undelivered" 1 $?
   rm -rf "$tmp/wtroot/jDirt" "$tmp/cfg/provision/two.up.sh"
+
+  echo "run_job() — an error run with a declared ending but undelivered work stays open"
+  # The regression this task's own self-review caught (three independent
+  # review passes converged on it), reproduced against the REAL code rather
+  # than a reimplementation: sed-extract the exact block from
+  # declared_ending=false through the .ended write -- the same text the
+  # structural checks near the top of this suite examine -- and eval it for
+  # real, with a real run_dir holding real undelivered work. If this block is
+  # ever edited back to gating the undelivered CHECK on status (not just the
+  # note), this test runs the actual new text and catches it directly, not a
+  # stale copy of the old logic.
+  #
+  # The bug: `undelivered` used to be computed only inside
+  # `case "$status" in success|warning)`, so for status=error or
+  # status=stopped it stayed at its initial "" -- read by the .ended gate as
+  # "nothing undelivered" without ever having been asked. An agent run that
+  # trips one denied tool call (status=error, unrelated to whether it pushed
+  # anything) but still finishes and says `RUN COMPLETE:` would satisfy
+  # declared_ending=true with an unchecked, default-empty undelivered, mark
+  # `.ended=done`, and have its uncommitted work force-removed on the very
+  # next tick.
+  local rdErr="$tmp/wtroot/jErr/stampErr" errsnippet
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup jErr two "$tmp/g/repo" stampErr ) >/dev/null 2>&1
+  echo "never pushed" > "$rdErr/one/undelivered-err.txt"
+  printf '{"result":"RUN COMPLETE: done, but a tool call was denied along the way"}' \
+    > "$tmp/err.logfile.json"
+  errsnippet="$(sed -n '/^  declared_ending=false$/,/^  # Consecutive failures drive the backoff/p' \
+                  "$BIN_DIR/claude-cron")"
+  [ -n "$errsnippet" ] || bad "could not extract the .ended classifier block -- its anchors moved"
+  (
+    id="jErr"; status="error"; wdreason=""; cost=""
+    logfile="$tmp/err.logfile.json"; run_dir="$rdErr"
+    declared_ending=""; undelivered=""
+    eval "$errsnippet"
+  )
+  [ "$(cat "$rdErr/.ended" 2>/dev/null)" = "open" ] \
+    && ok "declared an ending, status=error, undelivered work -- .ended stays open" \
+    || bad ".ended reads '$(cat "$rdErr/.ended" 2>/dev/null)', expected open -- an error run's undelivered work would be force-removed"
+  rm -rf "$tmp/wtroot/jErr" "$tmp/err.logfile.json"
 
   echo "run_job() — two concurrent reattaches to the same tree: exactly one wins"
   # Not structural: this drives the real lock_take/lock_drop/wt_is_claimed/
@@ -3141,12 +3191,17 @@ run_job() { # run_job <id> [--force] [resume-session-id]
   # declared_ending and undelivered decide .ended (see the classifier below,
   # near UNDECLARED ENDING and wt_undelivered_work). Declared HERE, at the top,
   # same as run_dir and worktree below: `.ended`'s own read of $declared_ending
-  # is a bare expansion, not `${x:-}`, and undelivered is only ever assigned
-  # inside a `case "$status" in success|warning)` arm that an error or a
-  # stopped run never enters. Assigning either one inline without `local`
-  # first would make it a GLOBAL that survives this call -- run_job runs once
-  # per job per tick, in the same shell, in a loop -- and leak whatever the
-  # last job's outcome was into the next job's classifier.
+  # is a bare expansion, not `${x:-}`, and undelivered stays unassigned when
+  # $run_dir is empty (a non-isolated project). Assigning either one inline
+  # without `local` first would make it a GLOBAL that survives this call --
+  # run_job runs once per job per tick, in the same shell, in a loop -- and
+  # leak whatever the last job's outcome was into the next job's classifier.
+  #
+  # undelivered is checked for EVERY status, not only success/warning -- only
+  # the NOTE it can add and the bump to `warning` stay scoped that way (see
+  # the classifier below). Gating the check itself would leave it empty by
+  # default for an error or a stopped run, which the `.ended` gate below would
+  # then read as "nothing undelivered" without ever having asked.
   local declared_ending="false" undelivered=""
   # Loop variables for replaying a reattached run's manifest through `up` again
   # (see the isolation branch below). Declared here, not just inside the loop,
@@ -3874,24 +3929,40 @@ If the work turns out to be already finished, or it can no longer be done at all
   # the card. A warning, not an error: the agent may have been cut off mid-task,
   # and a resume is the right next move rather than a backoff.
   #
-  # LAST, and appending rather than replacing. Last because every rule above
-  # fires only while the status is still `success` — setting `warning` here
-  # first would silence UNDECLARED ENDING and BUDGET LIMITED entirely. And
-  # appending because "spent the whole cap" and "pushed nothing" are two
-  # different things the operator needs in one glance, not a choice between
-  # them.
+  # Checked for EVERY status, unconditionally — not gated on success/warning —
+  # because the `.ended` gate below reads it for every status too. Gating the
+  # CHECK itself (rather than just the note) would leave undelivered empty by
+  # default for an error or a stopped run, which reads to that gate as "nothing
+  # undelivered" without ever having asked: an agent run that trips a denied
+  # tool (status=error) but still finishes and says `RUN COMPLETE:` would then
+  # satisfy declared_ending=true, undelivered="" (never checked), and mark
+  # `.ended=done` — force-removing a tree that may hold exactly the uncommitted
+  # work this whole mechanism exists to protect, unreported. Caught in this
+  # task's own self-review, not by the brief: the brief's corrected `.ended`
+  # snippet was right, but the upstream `undelivered` computation it depends on
+  # was still the pre-9.3 shape.
+  if [ -n "$run_dir" ]; then
+    undelivered="$(wt_undelivered_work "$run_dir")" || true
+  fi
+  # The NOTE and the STATUS BUMP stay scoped to success/warning, appended LAST
+  # among this classifier's rules and appending rather than replacing. Last
+  # because every rule above fires only while the status is still `success` —
+  # setting `warning` here first would silence UNDECLARED ENDING and BUDGET
+  # LIMITED entirely. Appending because "spent the whole cap" and "pushed
+  # nothing" are two different things the operator needs in one glance, not a
+  # choice between them.
   #
   # `stopped` is excluded deliberately: an operator who ended the run already
   # knows it did not finish, and replacing their STOPPED record with a generic
   # "you did not push" is less information, not more. `error` is excluded
-  # because a run that failed has a cause worth more than its symptom.
+  # because a run that failed has a cause worth more than its symptom. Neither
+  # exclusion touches whether `undelivered` was CHECKED (it always is, above)
+  # — only whether it gets to overwrite what the card already says.
   case "$status" in
     success|warning)
-      if [ -n "$run_dir" ]; then
-        if undelivered="$(wt_undelivered_work "$run_dir")"; then
-          wdreason="${wdreason:-}${wdreason:+ · }$(undelivered_note "$undelivered")"
-          status="warning"
-        fi
+      if [ -n "$undelivered" ]; then
+        wdreason="${wdreason:-}${wdreason:+ · }$(undelivered_note "$undelivered")"
+        status="warning"
       fi
       ;;
   esac
