@@ -466,8 +466,9 @@ wt_teardown() { # <id> <project> <run dir>
 # Run `down` for every repo of a run dir, once. Split out of wt_teardown so the
 # explicit drop can reuse it. An open session returns from wt_teardown BEFORE
 # any of this — its services are meant to stay up for the resume — so a drop
-# that only removed the tree would strand the compose stack and the ports with
-# nothing left to enumerate them: `.run.json` goes out with the directory.
+# that only removed the tree would strand whatever the hooks started, and the
+# ports, with nothing left to enumerate them: `.run.json` goes out with the
+# directory.
 wt_down_all() { # <id> <project> <run dir>
   local id="${1:-}" project="${2:-}" run_dir="${3:-}" mf="${3:-}/.run.json"
   local name repo wt base
@@ -484,8 +485,10 @@ wt_down_all() { # <id> <project> <run dir>
 
 # Take a run dir off disk unconditionally, leaving git with no stale worktree
 # registrations. Split out of wt_teardown so an explicit, human-initiated drop
-# can reuse exactly the same removal — the ONLY difference being that it does
-# not consult wt_undelivered_work first.
+# can reuse exactly the same removal — the difference being that it skips
+# wt_teardown's own `.ended == done` gate entirely: a human dropping a
+# directory on purpose does not need the session to consider itself finished
+# first (the caller, cmd_worktree_drop, runs its own checks before this).
 wt_remove_all() { # <run dir>
   local run_dir="${1:-}" wt main
   [ -n "$run_dir" ] && [ -d "$run_dir" ] || return 0
@@ -561,8 +564,9 @@ wt_prune_orphans() {
       # the live `config/jobs.json`, so a job deleted or renamed while one of
       # its run dirs was still on disk resolved to an empty project — and an
       # empty project means `wt_provision` looks for `provision/.down.sh`,
-      # finds nothing, and silently takes nothing down. The compose stack and
-      # the herd site of a job you deleted would have outlived it for good.
+      # finds nothing, and silently takes nothing down. Whatever the project's
+      # own hooks started for a job you deleted would have outlived it for
+      # good.
       # `.run.json` recorded the project when the run started; falling back to
       # `job_get` only covers a run dir written before this field existed.
       project="$("$JQ" -r '.project // ""' "$d/.run.json" 2>/dev/null)"

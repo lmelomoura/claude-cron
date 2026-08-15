@@ -4016,7 +4016,8 @@ cmd_tick() {
   log_rotate "$TICK_LOG"
   log_rotate "$DATA_DIR/exec.log"
   # Reap worktrees left by runs that died without cleaning up (safe teardown:
-  # anything with unpushed/uncommitted work is kept, not deleted).
+  # a session is kept unless it declared how it ended AND left nothing
+  # undelivered — see the .ended write in run_job).
   wt_prune_orphans
   wt_prune_canonicals
   # Keep the family→model resolutions fresh (about once a day). It rides on the

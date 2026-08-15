@@ -249,6 +249,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a desktop and slides it off-canvas on a phone — one control, because 236px is
   cheap on one and a quarter of the screen on the other.
 
+### Fixed
+
+- **Five comments and a README section that described behaviour this branch
+  had already revoked.** `down` was documented as running "even when the run
+  dir is preserved" — exactly backwards: a preserved run dir is the one case
+  where `down` does *not* run, on purpose, so the resume it is being kept
+  for finds its services still up. "Sessions that are still open" said
+  undelivered work was the one thing that did *not* keep a directory; since
+  Task 6 it has been the opposite. `cmd_tick`'s own comment, the server's
+  `worktree_drop` handler and `wt_remove_all`'s header all still explained
+  keep/remove in terms of the pre-Task-6 "unpushed work" rule, superseded
+  first by the status-based one and now by declared-ending-and-delivered.
+  Two comments in `worktree-lib.sh` named a container-orchestration tool and
+  a local-dev-environment tool by name — the one file in this codebase whose
+  own header says it must never couple to a specific tool or language, since
+  every project-specific detail belongs in `projects.json` instead. Reworded
+  to describe what a project's own hooks start, generically, the way the
+  rest of the file already does.
+
 ### Changed
 
 - **A reattach's second provisioning pass no longer frames its own residue

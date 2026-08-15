@@ -2225,8 +2225,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "output": "deleted", "removed": res})
         if op == "worktree_drop":
             # Discarding a retained run dir throws away whatever it holds —
-            # which is the point (it is kept BECAUSE it holds unpushed work),
-            # so the engine owns the refusal rules and this only forwards.
+            # which is the point (it is kept because its SESSION is still
+            # open: cut short, never declared an ending, or holding work on
+            # no remote — not only for unpushed work specifically), so the
+            # engine owns the refusal rules and this only forwards.
             wjid = str(body.get("id", ""))
             stamp = str(body.get("stamp", ""))
             if not wjid or not all(c.isalnum() or c in "-_" for c in wjid):
