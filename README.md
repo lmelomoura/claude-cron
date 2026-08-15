@@ -366,6 +366,14 @@ not: an open session keeps its services running so a resume has something to
 continue in, and `down` waits until the session closes (by finishing,
 expiring, or being discarded by hand) before it ever runs.
 
+A `down` hook must never call `claude-cron worktree-drop` itself, directly or
+indirectly: both the automatic sweep and `worktree-drop` hold an internal lock
+across their own call into `down`, and it is the same lock `worktree-drop`
+needs before it can run — so a `down` hook that reaches for it deadlocks
+against its own caller, until `worktree.provision_timeout_seconds` kills the
+hook, wedging every other job's resume and drop behind that same lock for as
+long as it takes to time out.
+
 Every worktree is cut from a freshly fetched base, and that fetch is bounded by
 `worktree.fetch_timeout_seconds` (default 120). It has to be: the fetch happens
 after the run has taken its slot but before the watchdog exists, so a remote
