@@ -9,6 +9,8 @@ it.
 
 import os
 import shutil
+import sys
+import threading
 
 
 def _mk_run_dir(srv, job, stamp):
@@ -298,3 +300,94 @@ def test_a_removed_run_dir_does_not_leak_its_condition_forever(clean_data):
     shutil.rmtree(d.parent)
     srv.retained_worktrees()
     assert str(d) not in srv._session_bound_logged
+
+
+def test_the_throttle_prune_survives_concurrent_retained_worktrees_calls(clean_data):
+    """_session_bound_logged is the only module-level mutable cache in this
+    file with a key set that grows and shrinks, and nothing guards it. The
+    dashboard is served by ThreadingHTTPServer, so retained_worktrees() --
+    and with it, the prune loop's own iteration over the live dict -- runs on
+    more than one thread at once whenever two tabs poll, or one poll simply
+    outruns the next one's 5s interval.
+
+    The prune loop used to iterate the live dict directly and `del` a key by
+    name: a thread whose iteration overlaps a concurrent write anywhere in the
+    dict raises `RuntimeError: dictionary changed size during iteration`, and
+    a thread that reaches a key another thread already removed raises
+    `KeyError`. Either kills the request -- the exact failure _session_bound_to's
+    own docstring says the unreadable branch exists to prevent, reintroduced
+    two functions later by the very cache built to quiet it down.
+
+    A handful of real, churning directories alone makes this slow to
+    reproduce: retained_worktrees() re-walks every retained directory's own
+    bytes on disk each call, so getting many overlapping calls means either
+    many directories (slow) or many iterations (also slow). Pure in-memory
+    dict churn alone, with no real I/O, turned out not to reproduce it either
+    -- a thread doing nothing but dict operations rarely gets preempted
+    exactly inside another thread's iteration, even with the interpreter's
+    switch interval lowered; genuine OS-level overlap needs a thread to
+    actually block on something, which is what real file I/O -- and only
+    real file I/O -- reliably provides here. So both are combined: one real
+    directory keeps retained_worktrees() itself fast; _session_bound_logged
+    is ALSO padded directly with several thousand keys that are never "live"
+    (no matching directory on disk), stretching the prune loop's one
+    iteration from microseconds to milliseconds so a preemption is more
+    likely to land inside it; and the churner threads pair real, blocking
+    file writes (which actually yield the GIL to another thread) with direct
+    dict mutation in that same padded key range, so there is genuine
+    concurrent OS-scheduled overlap, not just cooperative switch-interval
+    preemption, while the window it can land in is wide."""
+    srv = clean_data
+    d = _mk_run_dir(srv, "concreal", "s-real")
+    (d / ".session").write_text("")
+    fake_keys = [f"/fake/concurrent/{i}" for i in range(3000)]
+    for k in fake_keys:
+        srv._session_bound_logged[k] = "empty"
+    errors = []
+    stop = threading.Event()
+
+    def churn(keys, churn_file):
+        try:
+            toggle = False
+            while not stop.is_set():
+                churn_file.write_text("x" if toggle else "y")  # real, blocking I/O
+                toggle = not toggle
+                # Re-adds the WHOLE batch every pass, racing the prune loop's
+                # own deletes -- add-one-then-immediately-pop-the-same-one
+                # nets to zero growth, so the dict drains to near-empty after
+                # the first few prune calls and the window collapses back
+                # down for the rest of the test. Keeping it refilled is what
+                # keeps every call's window wide, not just the first one's.
+                for k in keys:
+                    srv._session_bound_logged[k] = "empty"
+        except Exception as exc:  # noqa: BLE001 -- must catch anything to report it
+            errors.append(exc)
+
+    def poll():
+        try:
+            for _ in range(150):
+                srv.retained_worktrees()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-5)
+    try:
+        churn_files = []
+        for k in range(4):
+            f = d / f"churn{k}.txt"
+            f.write_text("x")
+            churn_files.append(f)
+        churners = [threading.Thread(target=churn, args=(fake_keys[k::4], churn_files[k]))
+                    for k in range(4)]
+        pollers = [threading.Thread(target=poll) for _ in range(8)]
+        for t in churners + pollers:
+            t.start()
+        for t in pollers:
+            t.join()
+        stop.set()
+        for t in churners:
+            t.join()
+    finally:
+        sys.setswitchinterval(old_interval)
+    assert not errors, f"concurrent retained_worktrees() raised: {errors!r}"

@@ -99,6 +99,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   resolves, so a later recurrence — even the identical condition — is still
   reported.
 
+  The throttle's own prune loop was not thread-safe: the dashboard is served
+  by `ThreadingHTTPServer`, so two tabs polling at once — or one poll simply
+  outrunning the next one's 5-second interval — genuinely ran
+  `retained_worktrees()` on more than one thread at the same time, and the
+  loop iterated its cache directly while another thread could be adding to
+  or removing from that same cache underneath it. That raised
+  `RuntimeError: dictionary changed size during iteration` or `KeyError`,
+  killing the request — the exact failure this whole throttle exists to
+  prevent, reintroduced by the throttle itself. It now snapshots the cache
+  before iterating it and tolerates a key another thread already removed.
+
 ### Added
 
 - **A job whose last run is being held for a resume now says so on its own

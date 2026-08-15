@@ -1559,9 +1559,23 @@ def retained_worktrees():
     # is gone -- a torn-down run dir is never asked about again, and without
     # this its last bad condition would sit in memory for the rest of the
     # server process's life.
+    #
+    # dict(...) snapshots the cache before iterating it, and pop(stale, None)
+    # tolerates a key that is already gone -- both load-bearing under the
+    # ThreadingHTTPServer this backs: retained_worktrees() genuinely runs on
+    # more than one thread at once (two tabs polling, or one poll outrunning
+    # the next one's 5s interval), and _session_bound_to (called just above,
+    # for every directory, by every one of those threads) adds and removes
+    # keys in this SAME dict. Iterating the live dict directly and `del`ing a
+    # key by name -- the previous shape -- raises `RuntimeError: dictionary
+    # changed size during iteration` the moment another thread's write lands
+    # mid-iteration, and `KeyError` the moment another thread has already
+    # removed the exact key this thread is about to delete. Either kills the
+    # request: the same failure _session_bound_to's own docstring says the
+    # unreadable branch exists to prevent, reintroduced here.
     live_paths = {e["path"] for e in out}
-    for stale in [k for k in _session_bound_logged if k not in live_paths]:
-        del _session_bound_logged[stale]
+    for stale in [k for k in dict(_session_bound_logged) if k not in live_paths]:
+        _session_bound_logged.pop(stale, None)
     return out
 
 
