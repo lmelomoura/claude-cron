@@ -718,6 +718,35 @@ port_base_free() { # port_base_free <slot-dir> <base>
   return 0
 }
 
+# Claim an EXISTING port block for <slot> — the resume counterpart to
+# alloc_port_base's own claim of a NEW one. A resume already knows which block
+# its services were bound to (recorded in its run manifest); this only has to
+# confirm nothing live holds it now and make that visible to alloc_port_base's
+# own scan, exactly the way alloc_port_base makes ITS pick visible: under
+# $LOCK_DIR/.ports, held across the check (port_base_free) AND the write, not
+# just the write.
+#
+# Unlocked, this was a scan and a write with nothing between them, and a fresh
+# run's alloc_port_base — which takes this identical mutex — could land in the
+# gap: it scans while the resume's claim is still unwritten, reads the block
+# as free, and hands it to a second live run. Two live runs then bind the same
+# published ports, which reads as a broken service, not as a scheduling race.
+#
+# Prints nothing; returns 1 and leaves $slot/portbase untouched if the block
+# turns out to be held.
+port_base_reclaim() { # port_base_reclaim <slot-dir> <base>
+  local slot="$1" want="$2" L="$LOCK_DIR/.ports"
+  mkdir -p "$LOCK_DIR"
+  lock_take "$L"
+  if ! port_base_free "$slot" "$want"; then
+    lock_drop "$L"
+    return 1
+  fi
+  { echo "$want" > "$slot/portbase"; } 2>/dev/null || true
+  lock_drop "$L"
+  return 0
+}
+
 # End-of-run cleanup, shared by the normal exit path and the EXIT trap (so a
 # crashed or killed run cleans up too). Tears down the run's worktrees if that is
 # safe (see wt_teardown), THEN releases its slot. Reads the run dir from the
@@ -3258,6 +3287,132 @@ NASTY
   want "a dead slot holds no block either" 0 $?
   rm -rf "$tmp/locks/pf1" "$tmp/locks/pf2"
 
+  echo "port_base_reclaim() — claims under the same mutex alloc_port_base uses, or refuses cleanly"
+  mkdir -p "$tmp/locks/pr1/401"
+  echo $$ > "$tmp/locks/pr1/401/pid"
+  ( LOCK_DIR="$tmp/locks"; port_base_reclaim "$tmp/locks/pr1/401" 21100 )
+  want "an unheld block is claimed" 0 $?
+  got="$(cat "$tmp/locks/pr1/401/portbase" 2>/dev/null)"
+  [ "$got" = "21100" ] && ok "and recorded in the slot" || bad "portbase was '$got'"
+  # Cross-visibility, not just self-consistency: a plain read of $slot/portbase
+  # could pass even if the claim were never made visible to anyone ELSE's scan.
+  # alloc_port_base is exactly that someone else -- the fresh-run path this
+  # whole function exists to stop colliding with.
+  mkdir -p "$tmp/locks/pr2/402"
+  echo $$ > "$tmp/locks/pr2/402/pid"
+  got="$( LOCK_DIR="$tmp/locks"; alloc_port_base "$tmp/locks/pr2/402" )"
+  [ "$got" != "21100" ] && ok "alloc_port_base's own scan sees the reclaimed block as taken ($got)" \
+    || bad "alloc_port_base handed out 21100, the block port_base_reclaim just claimed"
+  # A block a live run holds: refused, and NOTHING is written -- a half claim
+  # left on disk would be indistinguishable from a real one to the next reader.
+  mkdir -p "$tmp/locks/pr3/403"
+  echo $$ > "$tmp/locks/pr3/403/pid"
+  ( LOCK_DIR="$tmp/locks"; port_base_reclaim "$tmp/locks/pr3/403" 21100 )
+  want "a block a live run holds is refused" 1 $?
+  [ ! -f "$tmp/locks/pr3/403/portbase" ] && ok "and nothing is written on refusal" \
+    || bad "portbase was written despite the refusal: $(cat "$tmp/locks/pr3/403/portbase" 2>/dev/null)"
+  rm -rf "$tmp/locks/pr1" "$tmp/locks/pr2" "$tmp/locks/pr3"
+
+  echo "port_base_reclaim() — the scan and the write happen inside ONE lock hold, not around it"
+  # Structural: what actually proves the lock closes the race against a
+  # concurrent alloc_port_base is the real two-process test below; this
+  # guards against port_base_reclaim's own body silently reverting to a
+  # scan-then-unlock-then-write shape (or to the wrong lock entirely), which
+  # would defeat the whole point while every OTHER test here -- none of
+  # which drives real contention against this exact function -- kept passing.
+  rbody="$(sed -n '/^port_base_reclaim()/,/^}/p' "$BIN_DIR/claude-cron")"
+  rlt_line="$(printf '%s\n' "$rbody" | grep -n 'lock_take "\$L"'                   | head -1 | cut -d: -f1)"
+  rpf_line="$(printf '%s\n' "$rbody" | grep -n 'port_base_free "\$slot" "\$want"'  | head -1 | cut -d: -f1)"
+  rwr_line="$(printf '%s\n' "$rbody" | grep -n 'echo "\$want" > "\$slot/portbase"' | head -1 | cut -d: -f1)"
+  rld_lines="$(printf '%s\n' "$rbody" | grep -n 'lock_drop "\$L"' | cut -d: -f1)"
+  rld1_line="$(printf '%s\n' "$rld_lines" | sed -n '1p')"
+  rld2_line="$(printf '%s\n' "$rld_lines" | sed -n '2p')"
+  if [ -n "${rlt_line:-}" ] && [ -n "${rpf_line:-}" ] && [ -n "${rwr_line:-}" ] \
+       && [ -n "${rld1_line:-}" ] && [ -n "${rld2_line:-}" ] \
+       && [ "$rlt_line" -lt "$rpf_line" ] && [ "$rpf_line" -lt "$rld1_line" ] \
+       && [ "$rld1_line" -lt "$rwr_line" ] && [ "$rwr_line" -lt "$rld2_line" ]; then
+    ok "the lock is taken, the block checked, and dropped on both exits -- the refusal and the claim -- in order"
+  else
+    bad "port_base_reclaim's own lock ordering broke (lock=${rlt_line:-?} check=${rpf_line:-?} drop1=${rld1_line:-?} write=${rwr_line:-?} drop2=${rld2_line:-?})"
+  fi
+  got="$(printf '%s\n' "$rbody" | grep -c 'L="\$LOCK_DIR/.ports"')"
+  [ "${got:-0}" -eq 1 ] && ok "and the mutex is \$LOCK_DIR/.ports -- the same one alloc_port_base uses" \
+    || bad "port_base_reclaim's lock variable is not pinned to \$LOCK_DIR/.ports (found $got)"
+
+  echo "run_job() — the resume's port claim goes through port_base_reclaim, not an unlocked scan+write"
+  # Structural, same reasoning as the reattach-claim-ordering test above: what
+  # actually proves the mutex closes the race is the real two-process test
+  # below; this only guards against run_job's own call silently reverting to
+  # the unlocked port_base_free-then-echo shape the race exists to remove.
+  body="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/claude-cron")"
+  got="$(printf '%s\n' "$body" | grep -c 'port_base_reclaim "\$slot" "\$port_base"')"
+  [ "${got:-0}" -eq 1 ] && ok "the resume claims its existing block through port_base_reclaim ($got)" \
+    || bad "run_job calls port_base_reclaim $got times, expected 1"
+  got="$(printf '%s\n' "$body" | grep -c 'echo "\$port_base" > "\$slot/portbase"')"
+  [ "${got:-0}" -eq 0 ] && ok "and no longer writes \$slot/portbase itself, unlocked, beside it" \
+    || bad "run_job still writes \$slot/portbase directly $got times outside port_base_reclaim"
+
+  echo "port_base_reclaim() vs alloc_port_base() — a resume and a fresh run racing for \$LOCK_DIR/.ports never get the same block"
+  # The bug this closes: a resume used to scan port_base_free and write
+  # $slot/portbase with NO lock at all, so a fresh run's alloc_port_base --
+  # which DOES hold $LOCK_DIR/.ports across its own scan+write -- could land
+  # in the gap and hand the SAME block to both: two live runs binding the
+  # same published ports, which reads as a broken service, not a scheduling
+  # race.
+  #
+  # Not structural, for the same reason the reattach race above is not: it
+  # drives the real lock_take/port_base_free/lock_drop under genuine
+  # concurrency, with a deliberate pause INSIDE the held lock so the
+  # concurrent alloc_port_base is guaranteed to still be waiting on lock_take
+  # when the reclaim has decided the block is free but not yet written it --
+  # rather than hoping OS scheduling happens to interleave two calls that
+  # would otherwise each finish in well under a millisecond. Reimplements
+  # port_base_reclaim's own five-line body (same reason run_job's reattach
+  # sequence is reimplemented above, not called directly: there is no way to
+  # inject a deterministic pause into the real function without adding a
+  # test-only hook to production code) -- the structural test just above is
+  # what pins that the REAL function actually has this shape.
+  mkdir -p "$tmp/locks/jPort"
+  (
+    LOCK_DIR="$tmp/locks"
+    plock="$LOCK_DIR/.ports"; rm -rf "$plock"
+
+    sleep 5 & pidR=$!
+    sleep 5 & pidF=$!
+    slotR="$LOCK_DIR/jPort/$pidR"; slotF="$LOCK_DIR/jPort/$pidF"
+    mkdir -p "$slotR" "$slotF"
+    echo "$pidR" > "$slotR/pid"; boot_id > "$slotR/boot"
+    echo "$pidF" > "$slotF/pid"; boot_id > "$slotF/boot"
+
+    reclaim_slow() {
+      lock_take "$plock"
+      if port_base_free "$slotR" 21000; then
+        sleep 0.15
+        echo 21000 > "$slotR/portbase"
+        echo CLAIMED > "$tmp/portR.out"
+      else
+        echo REFUSED > "$tmp/portR.out"
+      fi
+      lock_drop "$plock"
+    }
+    reclaim_slow & rR=$!
+    i=0
+    while [ ! -d "$plock" ] && [ "$i" -lt 200 ]; do sleep 0.01; i=$(( i + 1 )); done
+    if [ ! -d "$plock" ]; then
+      echo "TIMEOUT" > "$tmp/portF.out"
+    else
+      alloc_port_base "$slotF" > "$tmp/portF.out" 2>/dev/null
+    fi
+    wait "$rR"
+    kill "$pidR" "$pidF" 2>/dev/null; wait "$pidR" "$pidF" 2>/dev/null
+  )
+  portR="$(cat "$tmp/portR.out" 2>/dev/null)"
+  portF="$(cat "$tmp/portF.out" 2>/dev/null)"
+  [ "$portR" = "CLAIMED" ] && ok "the resume's reclaim succeeds ($portR)" || bad "reclaim result was '$portR'"
+  [ "$portF" = "21100" ] && ok "the concurrent alloc_port_base gets the NEXT block, not the reclaimed one ($portF)" \
+    || bad "alloc_port_base returned '$portF', wanted 21100 -- either it collided with 21000 or timed out on the lock"
+  rm -rf "$tmp/locks/jPort" "$tmp/portR.out" "$tmp/portF.out"
+
   echo "provision-lib.sh — a run's ports come from its own block"
   local plib="$BIN_DIR/provision-lib.sh"
   got="$( CC_PORT_BASE=21000 CC_PORT_SPAN=100 TMPDIR="$tmp" bash -c \
@@ -3839,7 +3994,7 @@ ${prompt}"
         else
           rm -f "$run_dir/.run.json.new"
         fi
-      elif ! port_base_free "$slot" "$port_base"; then
+      elif ! port_base_reclaim "$slot" "$port_base"; then
         # Its services are still bound to that block and somebody else holds it.
         # Refusing is the honest answer: a fresh block would silently point the
         # resumed agent's config at ports nothing is listening on.
@@ -3848,8 +4003,6 @@ ${prompt}"
         state_set "$id" last_status '"error"'
         run_cleanup "$id" "$slot"; trap - EXIT
         return 1
-      else
-        { echo "$port_base" > "$slot/portbase"; } 2>/dev/null || true
       fi
       export CC_PORT_BASE="$port_base" CC_PORT_SPAN CC_PROVISION_LIB="$BIN_DIR/provision-lib.sh"
       local primary_name

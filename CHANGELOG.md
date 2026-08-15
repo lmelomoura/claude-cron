@@ -60,6 +60,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   own session was bound — a stale id left over from an earlier resume of the
   same directory is never claimed for a launch that never got that far.
 
+- **A resume and a fresh run can no longer end up bound to the same port
+  block.** A resume checked `port_base_free` and wrote its claim afterwards
+  with no lock held; a fresh run's `alloc_port_base` — which does hold
+  `$LOCK_DIR/.ports` across its own scan and write — could land in the gap
+  between the two and hand the same block to both. Two live runs then
+  published the same ports, which read as a broken service, not as a
+  scheduling race. `port_base_reclaim` now holds that identical mutex across
+  its own scan and write, the same idiom `alloc_port_base` already used for
+  its side of this.
+
 ### Added
 
 - **A job whose last run is being held for a resume now says so on its own
