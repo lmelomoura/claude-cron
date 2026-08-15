@@ -17,6 +17,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The filter-picker example names a generic project, not a real one.** A code
+  comment illustrated the control with a live client project name. This is a
+  public repository, so an example is a publication: it now uses the same
+  placeholder the README does.
+
 ### Fixed
 
 - **A live run with a large tool roster shows its session again.** The dashboard
