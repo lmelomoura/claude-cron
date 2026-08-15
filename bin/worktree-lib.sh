@@ -540,7 +540,14 @@ wt_prune_orphans() {
       if [ ! -f "$d/.ended" ] && [ ! -f "$d/.session" ]; then
         printf 'open\n' > "$d/.ended" 2>/dev/null || true
         touch "$d" 2>/dev/null || true
-        log_tick "$id: adopted $d from before this version — open, with a fresh ttl"
+        # "no marker at all" is a SHAPE, not a version check -- it is the
+        # signature a pre-upgrade dir leaves, but nothing here actually
+        # confirms that is why. Naming the observed condition instead of
+        # asserting a cause keeps this honest if it ever fires for a
+        # different reason (session_from_stream finding no id before a kill,
+        # say): the action taken is safe either way, but the log should not
+        # claim a story it did not verify.
+        log_tick "$id: adopted $d (no .ended, no .session found) — open, with a fresh ttl"
         continue
       fi
       # `!= done`, NOT `= open`. The Task 6 teardown keeps anything that is

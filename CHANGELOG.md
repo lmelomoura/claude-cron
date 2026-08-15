@@ -393,6 +393,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   set weeks in the past. Without this fix the commit is gone after one sweep;
   with it, the directory and the commit both survive.
 
+  The tick log for an adopted directory names the *condition* it was adopted
+  on ("no `.ended`, no `.session` found"), not a cause it never verified: the
+  shape is a strong signal a directory predates this branch, but nothing
+  here actually checks that, and a future log line claiming "from before
+  this version" for a directory that reached the same shape some other way
+  would misdirect whoever reads it.
+
 - **A run killed with `-9` is resumable again.** `wt_find_by_session` alone
   demanded the literal string `open` in `.ended`, while every other reader of
   that file — `wt_teardown`, `wt_prune_orphans`, `run_cleanup`, `wt_setup`'s
