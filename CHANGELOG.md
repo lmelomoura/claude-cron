@@ -322,6 +322,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   either branch has written to the run's slot. This also closes the case,
   previously open, of a resume whose directory was deleted by hand.
 
+- **A run's second ending restarts its ttl clock too, not just a resume's
+  first claim.** The first time `.ended` is written, creating the file
+  bumps its run dir's own mtime for free. Overwriting an EXISTING
+  `.ended` — a resumed run ending a second time — only touches the file's
+  content, not the directory entry, so the clock stayed wherever the
+  reattach's own claim-time touch (9.4) left it: `ttl` minus however long
+  the resumed run took, not a fresh window. A session resumed near the end
+  of its first ttl that then ran long enough on its own could read as
+  already expired the moment it stopped, with the very next sweep
+  reclaiming it while the operator was still reading a card that promised
+  a full day. The classifier now touches the run dir alongside every
+  `.ended` write, so a first ending and any later one measure the same
+  event.
+
 - **A reattach's second provisioning pass no longer frames its own residue
   as the resumed agent's work.** `wt_undelivered_work` tells a hook's
   leftovers from the agent's own changes by comparing the worktree's current

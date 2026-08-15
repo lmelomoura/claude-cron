@@ -1781,11 +1781,16 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   # refused claim (the branch just above, which returns rather than
   # continuing) would restart a clock for a run that never gets to keep the
   # directory at all.
-  got="$(printf '%s\n' "$body" | grep -c 'touch "\$run_dir" 2>/dev/null')"
+  # Scoped to BEFORE the resume-not-found refusal (10.3's elif, which closes
+  # the reattach branch): run_job also touches $run_dir a second time much
+  # later, alongside the classifier's OWN .ended write (10.4) -- a real,
+  # separate touch this count must not trip on, so a bare whole-function grep
+  # is no longer precise enough here.
+  got="$(printf '%s\n' "$body" | sed -n "1,${refuse_line:-0}p" | grep -c 'touch "\$run_dir" 2>/dev/null')"
   [ "${got:-0}" -eq 1 ] \
     && ok "the reattach branch touches its run dir exactly once ($got)" \
     || bad "run_job touches \$run_dir $got times in the reattach branch, expected 1"
-  touch_line="$(printf '%s\n' "$body" | grep -n 'touch "\$run_dir" 2>/dev/null' | head -1 | cut -d: -f1)"
+  touch_line="$(printf '%s\n' "$body" | sed -n "1,${refuse_line:-0}p" | grep -n 'touch "\$run_dir" 2>/dev/null' | head -1 | cut -d: -f1)"
   [ -n "${ld2_line:-}" ] && [ -n "${touch_line:-}" ] && [ "$touch_line" -gt "$ld2_line" ] \
     && ok "and it happens after the claim succeeds, at line $touch_line vs drop at $ld2_line" \
     || bad "touch (line ${touch_line:-?}) is not after the successful claim's lock_drop (line ${ld2_line:-?})"
@@ -1881,6 +1886,34 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     && ok "declared an ending, status=error, undelivered work -- .ended stays open" \
     || bad ".ended reads '$(cat "$rdErr/.ended" 2>/dev/null)', expected open -- an error run's undelivered work would be force-removed"
   rm -rf "$tmp/wtroot/jErr" "$tmp/err.logfile.json"
+
+  echo "run_job() — a second .ended write restarts the run dir's ttl clock too"
+  # 10.4: cycle 1 gets a fresh mtime for free -- CREATING .ended the first
+  # time bumps its parent directory's own entry. A resumed run's SECOND
+  # ending only overwrites that file's content, which does not touch the
+  # directory entry at all: without an explicit touch here, a long resume's
+  # clock would still read whatever the reattach's own claim-time touch (9.4)
+  # left it at -- ttl minus however long this cycle ran, not a fresh window.
+  # Same errsnippet extraction as the test just above -- eval'd again,
+  # against a run dir whose mtime is deliberately stale first, the way a
+  # claim made hours ago and a long-running resume would leave it.
+  local rdTtl="$tmp/wtroot/jTtl/stampTtl" ttlage
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup jTtl two "$tmp/g/repo" stampTtl ) >/dev/null 2>&1
+  echo open > "$rdTtl/.ended"            # already ended once, like a resumed run's tree
+  touch -t 202001010000 "$rdTtl"         # ... with a stale clock, like an old reattach claim
+  printf '{"result":"RUN COMPLETE: nothing left to do"}' > "$tmp/ttl.logfile.json"
+  (
+    id="jTtl"; status="warning"; wdreason=""; cost=""
+    logfile="$tmp/ttl.logfile.json"; run_dir="$rdTtl"
+    declared_ending=""; undelivered=""
+    eval "$errsnippet"
+  )
+  ttlage="$(( $(now_epoch) - $(num "$(wt_mtime "$rdTtl")") ))"
+  [ "$ttlage" -lt 60 ] \
+    && ok "ending a second time restarts the run dir's ttl clock (${ttlage}s old)" \
+    || bad "run dir mtime is ${ttlage}s old right after a second .ended write -- the ttl clock did not reset"
+  rm -rf "$tmp/wtroot/jTtl" "$tmp/ttl.logfile.json"
 
   echo "run_job() — two concurrent reattaches to the same tree: exactly one wins"
   # Not structural: this drives the real lock_take/lock_drop/wt_is_claimed/
@@ -4187,6 +4220,16 @@ If the work turns out to be already finished, or it can no longer be done at all
     else
       printf 'open\n' > "$run_dir/.ended" 2>/dev/null || true
     fi
+    # Alongside the write, not just at a resume's claim (9.4): overwriting
+    # .ended's CONTENT does not touch the directory ENTRY the way creating it
+    # the FIRST time does, so a second ending -- this same run dir, resumed
+    # and ending again -- would otherwise leave the ttl clock exactly where
+    # the reattach's own claim-time touch left it: ttl minus however long
+    # this cycle ran, not a fresh window. A resume that runs longer than the
+    # ttl on its own would then read as already-expired the instant it stops.
+    # The first ending gets this for free; this is what makes every later one
+    # measure the same event.
+    touch "$run_dir" 2>/dev/null || true
   fi
 
   # Consecutive failures drive the backoff (see backoff_multiplier). A warning
