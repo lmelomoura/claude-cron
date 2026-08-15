@@ -251,6 +251,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Two single-line deletions that used to revert whole tasks silently now
+  fail the suite.** Deleting the line that computes `reattached` from
+  `wt_find_by_session` (leaving `local reattached=""`, which alone satisfies
+  `set -u`) turns the entire reattach branch into dead code — every resume
+  falls through to a fresh worktree — while the existing ordering assertion
+  for that branch stays green, because it only checks the order of lines
+  *inside* a branch that has quietly become unreachable. Deleting `cmd_tick`'s
+  own call to `wt_prune_canonicals` reverts the stale-registration cleanup
+  the same way, while its behavioural test — which calls the function
+  directly, the way a test has to — keeps passing for the same reason. Two
+  new structural assertions close both, the same way an existing one already
+  protects `bind_session`'s two call sites: not by testing the function
+  (already covered elsewhere), but by testing that something still calls it.
+
 - **The dashboard's Resume button lights up for a `warning` run, not just
   `error`.** `UNDELIVERED`, `UNDECLARED ENDING` and `BUDGET LIMITED` all end a
   run `warning`, and every one of their own notes says "resume this run to

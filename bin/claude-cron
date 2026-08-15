@@ -1702,6 +1702,17 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   [ "${got:-0}" -eq 1 ] \
     && ok "an empty manifest primary refuses the resume, not just a missing directory" \
     || bad "the primary-name emptiness guard is missing or duplicated (found $got)"
+  # 9.9: deleting the line that COMPUTES reattached (leaving only
+  # `local reattached=""`, which alone silences set -u) turns the whole
+  # `if [ -n "$reattached" ]` branch into dead code -- every resume falls
+  # through to the fresh-worktree path and Task 7 is gone, silently, with
+  # every assertion above still reading text that is simply never reached at
+  # runtime: the ordering check just above protects everything INSIDE that
+  # branch, and says nothing about whether anything ever ENTERS it.
+  got="$(printf '%s\n' "$body" | grep -c 'reattached="\$(wt_find_by_session "\$id" "\$resume_sid")"')"
+  [ "${got:-0}" -eq 1 ] \
+    && ok "reattached is still computed from wt_find_by_session ($got)" \
+    || bad "run_job computes reattached from wt_find_by_session $got times, expected 1 -- a resume can no longer reach its own tree"
 
   echo "run_job() — a reattach restarts the ttl clock on its run dir"
   # wt_mtime reads the run dir's own mtime, and rewriting .ended on exit does
@@ -2019,6 +2030,20 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   # has nothing to do with what that test is checking.
   wt_remove_all "$tmp/wtroot/jPre/stampPre" >/dev/null 2>&1
   rmdir "$tmp/wtroot/jPre" 2>/dev/null || true
+
+  echo "cmd_tick() — every tick still prunes stale canonical registrations"
+  # Structural. wt_prune_canonicals has its full behavioural coverage just
+  # below, called directly the way every test here calls it -- which is
+  # exactly why deleting cmd_tick's OWN call to it (the only production call
+  # site; every other match below is this suite calling it itself) would
+  # leave every one of those tests green while Task 3 quietly stops running
+  # in production. Same shape as the reattached check above: a behavioural
+  # test of the function proves the function works, not that anything still
+  # calls it.
+  got="$(sed -n '/^cmd_tick()/,/^}/p' "$BIN_DIR/claude-cron" | grep -c 'wt_prune_canonicals')"
+  [ "${got:-0}" -eq 1 ] \
+    && ok "cmd_tick calls wt_prune_canonicals ($got)" \
+    || bad "cmd_tick calls wt_prune_canonicals $got times, expected 1 -- stale worktree registrations would accumulate for ever"
 
   echo "wt_prune_canonicals() — a run dir removed by hand leaves no registration behind"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
