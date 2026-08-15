@@ -1607,6 +1607,21 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   mkdir -p "$tmp/wtroot/jOther"
   got="$( WORKTREES_DIR="$tmp/wtroot"; wt_find_by_session jOther sess-xyz )"
   [ -z "$got" ] && ok "another job's session is never returned" || bad "found '$got'"
+  # A SIGKILL, an OOM kill or a reboot writes NO marker at all -- no EXIT trap
+  # ever runs, so `.ended` is never created. `.session` is still there (the
+  # watchdog binds it on its first pass, long before a run could reach an
+  # ending), so this directory is exactly the one a resume most needs back.
+  # wt_teardown, wt_prune_orphans, run_cleanup and the server's expires_in all
+  # already read "absent" as open; this function alone demanded the literal
+  # string "open" and refused it, so the resume fell through to a fresh
+  # worktree instead -- silently: the tick log said "isolated in", never
+  # "resumed ... in its own tree", so nothing anywhere recorded that a
+  # session had been dropped.
+  rm -f "$tmp/wtroot/jR/stampS1/.ended"
+  got="$( WORKTREES_DIR="$tmp/wtroot"; wt_find_by_session jR sess-xyz )"
+  [ "$got" = "$tmp/wtroot/jR/stampS1" ] \
+    && ok "a session with NO .ended marker (kill -9 / OOM / reboot) is still offered back" \
+    || bad "an unmarked session was refused -- found '$got'"
   echo done > "$tmp/wtroot/jR/stampS1/.ended"
   got="$( WORKTREES_DIR="$tmp/wtroot"; wt_find_by_session jR sess-xyz )"
   [ -z "$got" ] && ok "a session already closed is not offered back" || bad "found '$got'"

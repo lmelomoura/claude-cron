@@ -270,9 +270,12 @@ wt_find_by_session() { # <id> <session-id> -> prints a run dir, or nothing
   for d in "$WORKTREES_DIR/$id"/*; do
     [ -d "$d" ] || continue
     [ "$(cat "$d/.session" 2>/dev/null || true)" = "$sid" ] || continue
-    # Only an OPEN session is offered back. A closed one is on its way out, and
-    # handing it to a resume would race the sweep for the same directory.
-    [ "$(cat "$d/.ended" 2>/dev/null || true)" = "open" ] || continue
+    # Absent counts as open, like it does for every other reader of this file.
+    # A kill -9, an OOM or a reboot writes no marker at all — and that is
+    # precisely the run somebody wants back. Only an explicit `done` is
+    # refused, because that directory is on its way out and handing it to a
+    # resume would race the sweep.
+    case "$(cat "$d/.ended" 2>/dev/null || true)" in done) continue ;; esac
     printf '%s\n' "$d"
     return 0
   done

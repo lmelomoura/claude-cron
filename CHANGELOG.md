@@ -251,6 +251,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A run killed with `-9` is resumable again.** `wt_find_by_session` alone
+  demanded the literal string `open` in `.ended`, while every other reader of
+  that file — `wt_teardown`, `wt_prune_orphans`, `run_cleanup`, `wt_setup`'s
+  own rollback, the server's `expires_in` — already reads an absent marker as
+  open, which is what a SIGKILL, an OOM kill or a reboot leaves behind: no
+  exit path runs, so no marker is ever written. The mismatch meant the one
+  session a resume most needs back — one nothing had the chance to close —
+  was refused by the one function whose job is to find it. `run_job` fell
+  through to a fresh worktree with no error at all: the tick log said
+  `isolated in …` instead of `resumed … in its own tree`, so nothing anywhere
+  recorded that a session had been dropped and the agent's next turn carried a
+  conversation remembering edits its checkout did not have. Found in the final
+  whole-branch review, not by any single task's own tests: `.session` is
+  already written by the time a SIGKILL lands (the watchdog binds it on its
+  first pass), so this was reachable on the very first crash after Task 7
+  shipped.
+
 - **An open session expires instead of waiting for a human.** Keeping a cut-short
   run's tree so a resume can use it would have swapped one permanent directory
   for another: a session nobody ever resumes is exactly as immortal as the
