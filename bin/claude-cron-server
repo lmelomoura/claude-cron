@@ -1395,6 +1395,26 @@ def slot_alive(slot):
     return True
 
 
+# Throttle for _session_bound_to's own logging, keyed by run dir path (a
+# string, so it survives independently of any Path object identity). Maps a
+# path that currently has a bad condition to WHICH condition was last logged
+# for it. retained_worktrees() runs on every /api/data poll -- every 5
+# seconds -- and without this, one bad `.session` file would write a fresh
+# log line every poll until the TTL reclaims its directory, up to 24h of
+# identical lines for a condition already fully diagnosed the first time.
+#
+# In memory only, on purpose: the server is a long-lived process and this is
+# exactly the kind of thing that does not need to survive a restart (a
+# restart is itself a reasonable moment to re-report a standing condition).
+# Entries are removed the instant the condition clears (the file reads fine,
+# or is gone), so a LATER recurrence -- even the identical condition -- is
+# reported again rather than staying silent forever because of what an
+# earlier, since-resolved problem once logged. retained_worktrees() also
+# prunes it for paths that drop out of the listing entirely (a torn-down run
+# dir), so a path this function never sees again cannot sit here forever.
+_session_bound_logged = {}
+
+
 def _session_bound_to(run_dir):
     """The session id `.session` names for this run dir, or "" when there is
     none to resume with.
@@ -1422,6 +1442,12 @@ def _session_bound_to(run_dir):
     gets logged, never fabricates a placeholder the caller could mistake for
     a real one.
 
+    The unreadable and empty cases are throttled through _session_bound_logged
+    (see its own comment): logged the first time a directory shows one of
+    them, silent on every repeat of the SAME condition, logged again the
+    moment that directory's condition changes -- including clearing and then
+    recurring.
+
     Reads bytes and decodes with errors="replace", not .read_text(): a
     session id is written by a single `printf` and should never be anything
     but plain ASCII, but .read_text() raises UnicodeDecodeError -- a
@@ -1432,17 +1458,25 @@ def _session_bound_to(run_dir):
     this file.
     """
     p = run_dir / ".session"
+    key = str(run_dir)
     try:
         raw = p.read_bytes()[:4096].decode("utf-8", errors="replace")
     except FileNotFoundError:
+        _session_bound_logged.pop(key, None)
         return ""
     except OSError as exc:
-        _log(f"retained_worktrees: {p} exists but could not be read: {exc!r}")
+        condition = f"unreadable: {exc!r}"
+        if _session_bound_logged.get(key) != condition:
+            _log(f"retained_worktrees: {p} exists but could not be read: {exc!r}")
+            _session_bound_logged[key] = condition
         return ""
     sid = raw.strip()
     if not sid:
-        _log(f"retained_worktrees: {p} exists but is empty")
+        if _session_bound_logged.get(key) != "empty":
+            _log(f"retained_worktrees: {p} exists but is empty")
+            _session_bound_logged[key] = "empty"
         return ""
+    _session_bound_logged.pop(key, None)
     return sid
 
 
@@ -1520,6 +1554,14 @@ def retained_worktrees():
                         "age": age, "repos": repos, "bytes": bytes_,
                         "ended": ended, "expires_in": expires_in,
                         "session": _session_bound_to(d)})
+    # This is the one place that sees every path still on disk, so it is the
+    # one place that can tell _session_bound_logged's throttle cache a path
+    # is gone -- a torn-down run dir is never asked about again, and without
+    # this its last bad condition would sit in memory for the rest of the
+    # server process's life.
+    live_paths = {e["path"] for e in out}
+    for stale in [k for k in _session_bound_logged if k not in live_paths]:
+        del _session_bound_logged[stale]
     return out
 
 

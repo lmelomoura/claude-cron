@@ -88,6 +88,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   claiming a directory between the sweep marking it done and the hook
   actually finishing — an agent launched into a cwd being deleted under it.
 
+- **An unreadable or empty `.session` file no longer re-logs on every
+  dashboard poll.** `retained_worktrees()` backs `/api/data`, polled every 5
+  seconds, and `_session_bound_to` logged on both of those conditions every
+  time — one bad file wrote a fresh line every 5 seconds until the TTL
+  reclaimed its directory, up to 24 hours of an already-diagnosed condition.
+  It now logs once per standing condition and stays quiet on repeats, kept
+  in memory (the server is long-lived; nothing here needs to survive a
+  restart) and cleared the moment a directory's condition changes or
+  resolves, so a later recurrence — even the identical condition — is still
+  reported.
+
 ### Added
 
 - **A job whose last run is being held for a resume now says so on its own

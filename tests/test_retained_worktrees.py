@@ -8,6 +8,7 @@ it.
 """
 
 import os
+import shutil
 
 
 def _mk_run_dir(srv, job, stamp):
@@ -218,3 +219,82 @@ def test_a_session_file_with_invalid_utf8_bytes_does_not_crash_the_poll(clean_da
     got = srv.retained_worktrees()  # must not raise
     assert got[0]["session"] != ""  # decoded (lossily) rather than discarded
     assert isinstance(got[0]["session"], str)
+
+
+# ---- retained_worktrees() backs the /api/data poll, every 5 seconds. An
+# unthrottled log line for a standing bad-.session condition repeats for as
+# long as the TTL takes to reclaim the directory -- up to 24h of identical
+# lines for one already-diagnosed file. These pin the throttle: quiet on
+# repeat, loud again the moment the condition actually changes.
+
+def test_a_repeated_empty_session_is_logged_once_not_every_poll(clean_data, capsys):
+    srv = clean_data
+    d = _mk_run_dir(srv, "sigma", "s-repeat-empty")
+    (d / ".session").write_text("")
+    srv.retained_worktrees()
+    assert "empty" in capsys.readouterr().err
+    srv.retained_worktrees()
+    srv.retained_worktrees()
+    assert capsys.readouterr().err == ""
+
+
+def test_a_repeated_unreadable_session_is_logged_once_not_every_poll(clean_data, capsys):
+    srv = clean_data
+    d = _mk_run_dir(srv, "tau", "s-repeat-bad")
+    (d / ".session").mkdir()
+    srv.retained_worktrees()
+    assert "could not be read" in capsys.readouterr().err
+    srv.retained_worktrees()
+    assert capsys.readouterr().err == ""
+
+
+def test_a_condition_that_changes_for_the_same_directory_is_logged_again(clean_data, capsys):
+    """Throttling must not turn into permanent silence: a directory whose
+    problem changes shape, or clears and then recurs, is still news."""
+    srv = clean_data
+    d = _mk_run_dir(srv, "upsilon", "s-changing")
+    (d / ".session").write_text("")
+    srv.retained_worktrees()
+    assert "empty" in capsys.readouterr().err
+
+    # Same condition again: silence.
+    srv.retained_worktrees()
+    assert capsys.readouterr().err == ""
+
+    # Changes shape (empty -> unreadable): reported again, not swallowed by
+    # what the first occurrence already logged.
+    (d / ".session").unlink()
+    (d / ".session").mkdir()
+    srv.retained_worktrees()
+    assert "could not be read" in capsys.readouterr().err
+
+    # Resolves cleanly: no more log lines, and a real session reads through.
+    (d / ".session").rmdir()
+    (d / ".session").write_text("sess-recovered\n")
+    got = srv.retained_worktrees()
+    assert capsys.readouterr().err == ""
+    assert got[0]["session"] == "sess-recovered"
+
+    # The SAME bad condition recurs after having cleared: reported again, not
+    # silenced by the very first occurrence's now-stale cache entry.
+    (d / ".session").unlink()
+    (d / ".session").write_text("")
+    srv.retained_worktrees()
+    assert "empty" in capsys.readouterr().err
+
+
+def test_a_removed_run_dir_does_not_leak_its_condition_forever(clean_data):
+    """Without pruning, a directory that once had a bad .session and was later
+    torn down (the ordinary end of a retained run dir's life) would sit in the
+    in-memory throttle cache for the rest of the server process's life -- a
+    slow, unbounded leak across weeks of runs. retained_worktrees() sees the
+    full set of directories still on disk on every call, so it is the one
+    place that can know a cached path is now stale."""
+    srv = clean_data
+    d = _mk_run_dir(srv, "phi", "s-leak")
+    (d / ".session").write_text("")
+    srv.retained_worktrees()
+    assert str(d) in srv._session_bound_logged
+    shutil.rmtree(d.parent)
+    srv.retained_worktrees()
+    assert str(d) not in srv._session_bound_logged
