@@ -1796,6 +1796,48 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   fi
   rm -rf "$tmp/locks/jRace" "$tmp/wtroot/jRace" "$tmp/raceA" "$tmp/raceB" "$tmp/race_summary"
 
+  echo "cmd_worktree_drop() — a reattach that claims first cannot be deleted out from under it"
+  # Not structural: drives the REAL cmd_worktree_drop against a simulated
+  # reattach claim (run_job itself cannot be called here, same constraint as
+  # above), racing for the SAME $LOCK_DIR/.resume lock 9.5 adds to the drop.
+  # wt_down_all is a provisioning hook that can take real seconds to minutes;
+  # before this fix, cmd_worktree_drop never looked at this lock at all, so
+  # nothing stopped a resume from claiming the tree, starting its agent with
+  # a valid cwd, and then having wt_remove_all delete that cwd out from under
+  # the now-running agent. The claim goes FIRST and holds the lock a moment
+  # (like a resume doing its own checks) so the drop, which has to wait, is
+  # not just winning a lucky scheduling race.
+  local rdRace="$tmp/wtroot/jDropRace/stampRaceA"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup jDropRace two "$tmp/g/repo" stampRaceA ) >/dev/null 2>&1
+  printf '%s\n' '#!/usr/bin/env bash' 'sleep 0.3' > "$tmp/cfg/provision/two.down.sh"
+  chmod +x "$tmp/cfg/provision/two.down.sh"
+  (
+    LOCK_DIR="$tmp/locks"; WORKTREES_DIR="$tmp/wtroot"
+    rlock="$LOCK_DIR/.resume"; rm -rf "$rlock"
+    mkdir -p "$LOCK_DIR/jDropRace"
+    sleep 5 & pidR=$!
+    slotR="$LOCK_DIR/jDropRace/$pidR"; mkdir -p "$slotR"
+    echo "$pidR" > "$slotR/pid"; boot_id > "$slotR/boot"
+
+    ( lock_take "$rlock"; sleep 0.15; echo "$rdRace" > "$slotR/worktree"; lock_drop "$rlock" ) \
+      & reattach=$!
+    i=0; while [ ! -d "$rlock" ] && [ "$i" -lt 200 ]; do sleep 0.01; i=$(( i + 1 )); done
+    ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+      cmd_worktree_drop jDropRace stampRaceA ) > "$tmp/dropRace.out" 2>&1
+    echo "$?" > "$tmp/dropRace.rc"
+    wait "$reattach"
+    kill "$pidR" 2>/dev/null; wait "$pidR" 2>/dev/null
+  )
+  [ -d "$rdRace" ] \
+    && ok "the tree the reattach claimed first survives a concurrent drop" \
+    || bad "the tree was removed out from under a reattach that had already claimed it"
+  [ "$(cat "$tmp/dropRace.rc" 2>/dev/null)" != "0" ] && grep -q "still going" "$tmp/dropRace.out" 2>/dev/null \
+    && ok "the drop, arriving second, refuses citing the live claim ($(cat "$tmp/dropRace.out" 2>/dev/null))" \
+    || bad "the drop did not refuse (rc=$(cat "$tmp/dropRace.rc" 2>/dev/null), $(cat "$tmp/dropRace.out" 2>/dev/null))"
+  rm -rf "$tmp/locks/jDropRace" "$tmp/wtroot/jDropRace" "$tmp/dropRace.out" "$tmp/dropRace.rc"
+  rm -f "$tmp/cfg/provision/two.down.sh"
+
   echo "wt_undelivered_work() — what provisioning left behind is not the agent's work"
   printf '%s\n' '#!/usr/bin/env bash' 'echo residue > provisioned.txt' \
     > "$tmp/cfg/provision/two.up.sh"
@@ -4290,8 +4332,16 @@ cmd_worktree_drop() { # cmd_worktree_drop <job-id> <stamp>
   local id="$1" stamp="$2" run_dir="$WORKTREES_DIR/$1/$2"
   case "$stamp" in *[!a-zA-Z0-9_.-]*|''|*..*) die "worktree-drop: bad stamp '$stamp'" ;; esac
   [ -d "$run_dir" ] || die "worktree-drop: no such run dir: $run_dir"
+  # Claimed under the SAME lock a reattach claims its tree with. Without it,
+  # `wt_is_claimed` below can pass clean, and a resume can claim this exact
+  # directory before `wt_remove_all` reaches it -- wt_down_all alone is a
+  # provisioning `down` hook, seconds to minutes, easily enough window for an
+  # agent to be launched with a cwd that vanishes under it mid-run.
+  local rlock="$LOCK_DIR/.resume"
+  lock_take "$rlock"
   # Never pull the ground out from under a running agent.
   if wt_is_claimed "$id" "$run_dir"; then
+    lock_drop "$rlock"
     die "worktree-drop: $id/$stamp belongs to a run that is still going — stop it first"
   fi
   # `down` first, and by hand: an open session deliberately never reached the
@@ -4311,6 +4361,7 @@ cmd_worktree_drop() { # cmd_worktree_drop <job-id> <stamp>
   [ -n "$dproject" ] || dproject="$(job_get "$id" '.project' '')"
   wt_down_all "$id" "$dproject" "$run_dir"
   wt_remove_all "$run_dir"
+  lock_drop "$rlock"
   [ -d "$WORKTREES_DIR/$id" ] && rmdir "$WORKTREES_DIR/$id" 2>/dev/null
   log_tick "$id: run dir $stamp dropped by the user (discarding whatever it held)"
   echo "dropped $id/$stamp"

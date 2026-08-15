@@ -251,6 +251,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A retained run dir cannot be dropped out from under a resume that just
+  claimed it.** `worktree-drop` checked `wt_is_claimed`, then ran
+  `wt_down_all` — a provisioning `down` hook, seconds to minutes — and only
+  then removed the directory, without ever taking the lock a reattach claims
+  its tree under. A resume claiming the same directory inside that window
+  could start its agent with a valid cwd and then have the drop's removal
+  delete that cwd out from under the now-running agent. `worktree-drop` now
+  takes `$LOCK_DIR/.resume` before checking the claim and holds it through
+  the removal — the same lock, so whichever side gets there first completes
+  its whole check-then-act sequence before the other can even look.
+
 - **A resume restarts its session's ttl clock.** The expiry sweep reads a
   kept-open run dir's age from the directory's own mtime, and rewriting
   `.ended` on exit does not touch a directory entry — so without this, the
