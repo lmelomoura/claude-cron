@@ -30,7 +30,7 @@
 #
 # Depends on the sourcing script for: JQ, CONFIG_DIR, DATA_DIR, WORKTREES_DIR, LOCK_DIR,
 # projects_json, project_get, job_get, resolve, lock_active, slot_alive, state_get,
-# log_tick, num, now_epoch.
+# log_tick, num, now_epoch, lock_take, lock_drop.
 # Targets bash 3.2 (macOS system bash) under `set -u`: no mapfile, no
 # associative arrays, empty arrays expanded as ${a[@]+"${a[@]}"}.
 # ---------------------------------------------------------------------------
@@ -516,72 +516,100 @@ wt_remove_all() { # <run dir>
 # `down` and removes it like any other finished run.
 wt_prune_orphans() {
   [ -d "$WORKTREES_DIR" ] || return 0
-  local iddir id d project ttl age now
+  local iddir id d project ttl age now rlock
   ttl="$(num "${CLAUDE_CRON_SESSION_TTL:-}" 86400)"
   now="$(now_epoch)"
+  rlock="$LOCK_DIR/.resume"
+  # Everything one directory needs, called under $rlock below -- reads
+  # $id/$d/$now/$ttl from wt_prune_orphans' own scope (bash is dynamically
+  # scoped) the same way wt_provision's _wt_hook already does. A single
+  # function with `return` instead of a loop body full of `continue` is what
+  # makes the caller able to take the lock once and drop it exactly once, no
+  # matter which of the four exits below is taken -- bash has no
+  # try/finally, and a lock left held on a missed exit path wedges every
+  # other resume and drop behind a lock nothing will ever release until this
+  # whole tick process exits.
+  _wt_prune_one() {
+    # Claimed by a LIVE run? Ask the run slots, which is where that fact
+    # lives: every running job holds a slot naming its run dir. Asking the
+    # old single mutex (or the state's one cur_worktree, which cannot describe
+    # several concurrent runs) said "nobody owns this" for worktrees that were
+    # very much in use — and the sweep deleted them out from under the agents.
+    #
+    # Locked, not a bare read: without $rlock held here too, this check can
+    # read "not claimed yet" in the narrow window after a reattach has taken
+    # the SAME lock but before it has written its own claim -- and this sweep
+    # would then age-check and remove a directory the reattach is mid-way
+    # through claiming. The identical race 9.5 closed for a human's
+    # worktree-drop, reopened here for the sweep that runs every tick.
+    wt_is_claimed "$id" "$d" && return 0
+    # A directory this engine never bound to a session has no age we can
+    # trust. Before this branch, a retained run dir was one the OLD teardown
+    # kept BECAUSE git said it held work on no remote — and its mtime is
+    # whenever that run ended, so judging it by age reaps it on the first
+    # tick after the upgrade, with --force, unreported. Adopt it instead:
+    # mark it open and restart its clock, so it gets a full TTL window and
+    # shows up on the dashboard with a countdown the operator can act on.
+    if [ ! -f "$d/.ended" ] && [ ! -f "$d/.session" ]; then
+      printf 'open\n' > "$d/.ended" 2>/dev/null || true
+      touch "$d" 2>/dev/null || true
+      # "no marker at all" is a SHAPE, not a version check -- it is the
+      # signature a pre-upgrade dir leaves, but nothing here actually
+      # confirms that is why. Naming the observed condition instead of
+      # asserting a cause keeps this honest if it ever fires for a
+      # different reason (session_from_stream finding no id before a kill,
+      # say): the action taken is safe either way, but the log should not
+      # claim a story it did not verify.
+      log_tick "$id: adopted $d (no .ended, no .session found) — open, with a fresh ttl"
+      return 0
+    fi
+    # `!= done`, NOT `= open`. The Task 6 teardown keeps anything that is
+    # not explicitly `done`, and that deliberately includes a dir with NO
+    # marker at all — the SIGKILL, OOM and reboot case, where no exit path
+    # ever ran. Expiring only the ones that say `open` would leave exactly
+    # those unmarked dirs failing both tests, kept for ever, and would make
+    # the comment in wt_teardown that says the TTL closes this into a lie.
+    case "$(cat "$d/.ended" 2>/dev/null || true)" in
+      done) ;;
+      *)
+        age="$(( now - $(num "$(wt_mtime "$d")" "$now") ))"
+        [ "$age" -lt "$ttl" ] && return 0
+        # Out of time. Close it, so the teardown below treats it as any other
+        # finished run: `down` for every repo, then gone.
+        printf 'done\n' > "$d/.ended" 2>/dev/null || true
+        log_tick "$id: session in $d expired after ${age}s with nobody resuming it"
+        ;;
+    esac
+    # The project comes from the MANIFEST, not from job_get. `job_get` reads
+    # the live `config/jobs.json`, so a job deleted or renamed while one of
+    # its run dirs was still on disk resolved to an empty project — and an
+    # empty project means `wt_provision` looks for `provision/.down.sh`,
+    # finds nothing, and silently takes nothing down. Whatever the project's
+    # own hooks started for a job you deleted would have outlived it for
+    # good.
+    # `.run.json` recorded the project when the run started; falling back to
+    # `job_get` only covers a run dir written before this field existed.
+    project="$("$JQ" -r '.project // ""' "$d/.run.json" 2>/dev/null)"
+    case "$project" in null) project="" ;; esac
+    [ -n "$project" ] || project="$(job_get "$id" '.project' '')"
+    wt_teardown "$id" "$project" "$d"
+  }
   for iddir in "$WORKTREES_DIR"/*; do
     [ -d "$iddir" ] || continue
     id="$(basename "$iddir")"
     for d in "$iddir"/*; do
       [ -d "$d" ] || continue                 # skips the .<stamp>.tsv scratch files
-      # Claimed by a LIVE run? Ask the run slots, which is where that fact
-      # lives: every running job holds a slot naming its run dir. Asking the
-      # old single mutex (or the state's one cur_worktree, which cannot describe
-      # several concurrent runs) said "nobody owns this" for worktrees that were
-      # very much in use — and the sweep deleted them out from under the agents.
-      wt_is_claimed "$id" "$d" && continue
-      # A directory this engine never bound to a session has no age we can
-      # trust. Before this branch, a retained run dir was one the OLD teardown
-      # kept BECAUSE git said it held work on no remote — and its mtime is
-      # whenever that run ended, so judging it by age reaps it on the first
-      # tick after the upgrade, with --force, unreported. Adopt it instead:
-      # mark it open and restart its clock, so it gets a full TTL window and
-      # shows up on the dashboard with a countdown the operator can act on.
-      if [ ! -f "$d/.ended" ] && [ ! -f "$d/.session" ]; then
-        printf 'open\n' > "$d/.ended" 2>/dev/null || true
-        touch "$d" 2>/dev/null || true
-        # "no marker at all" is a SHAPE, not a version check -- it is the
-        # signature a pre-upgrade dir leaves, but nothing here actually
-        # confirms that is why. Naming the observed condition instead of
-        # asserting a cause keeps this honest if it ever fires for a
-        # different reason (session_from_stream finding no id before a kill,
-        # say): the action taken is safe either way, but the log should not
-        # claim a story it did not verify.
-        log_tick "$id: adopted $d (no .ended, no .session found) — open, with a fresh ttl"
-        continue
-      fi
-      # `!= done`, NOT `= open`. The Task 6 teardown keeps anything that is
-      # not explicitly `done`, and that deliberately includes a dir with NO
-      # marker at all — the SIGKILL, OOM and reboot case, where no exit path
-      # ever ran. Expiring only the ones that say `open` would leave exactly
-      # those unmarked dirs failing both tests, kept for ever, and would make
-      # the comment in wt_teardown that says the TTL closes this into a lie.
-      case "$(cat "$d/.ended" 2>/dev/null || true)" in
-        done) ;;
-        *)
-          age="$(( now - $(num "$(wt_mtime "$d")" "$now") ))"
-          [ "$age" -lt "$ttl" ] && continue
-          # Out of time. Close it, so the teardown below treats it as any other
-          # finished run: `down` for every repo, then gone.
-          printf 'done\n' > "$d/.ended" 2>/dev/null || true
-          log_tick "$id: session in $d expired after ${age}s with nobody resuming it"
-          ;;
-      esac
-      # The project comes from the MANIFEST, not from job_get. `job_get` reads
-      # the live `config/jobs.json`, so a job deleted or renamed while one of
-      # its run dirs was still on disk resolved to an empty project — and an
-      # empty project means `wt_provision` looks for `provision/.down.sh`,
-      # finds nothing, and silently takes nothing down. Whatever the project's
-      # own hooks started for a job you deleted would have outlived it for
-      # good.
-      # `.run.json` recorded the project when the run started; falling back to
-      # `job_get` only covers a run dir written before this field existed.
-      project="$("$JQ" -r '.project // ""' "$d/.run.json" 2>/dev/null)"
-      case "$project" in null) project="" ;; esac
-      [ -n "$project" ] || project="$(job_get "$id" '.project' '')"
-      wt_teardown "$id" "$project" "$d"
+      # PER DIRECTORY, not once for the whole sweep: wt_teardown below can run
+      # a provisioning `down` hook, seconds to minutes, the same as a human's
+      # drop -- taking the lock once for the entire sweep would hold it, and
+      # every other job's resume behind it, for as long as every directory
+      # this tick happens to expire takes to tear down, combined.
+      lock_take "$rlock"
+      _wt_prune_one
+      lock_drop "$rlock"
     done
   done
+  unset -f _wt_prune_one
 }
 
 # When a run dir was last touched, in epoch seconds. BSD stat; falls back to

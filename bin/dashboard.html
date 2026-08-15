@@ -3763,14 +3763,22 @@ function renderRuns(){
   $("runs").innerHTML = slice.map(r=>{
     const s=normStatus(r.status);
     const snip=searchKeys?(snippets[r.id+"|"+r.start]||""):"";
-    // For a failed OR warning run: has the job run again since? (drives the
+    // A single source of truth for "can this row's Resume button ever be
+    // live", read at three places below (the followUp lookup, the "?"
+    // badge, and the button itself) -- three separate `s==="error"||
+    // s==="warning"` checks is three places to keep in sync the day this
+    // set changes again, which is exactly what just happened going from
+    // `error`-only to `error`-or-`warning`.
+    //
+    // Warning is not "worse than nothing" here -- UNDELIVERED, UNDECLARED
+    // ENDING and BUDGET LIMITED all end warning, and the engine keeps their
+    // worktrees and their services up for exactly as long as it keeps an
+    // error's, specifically so a resume can pick them back up.
+    const resumable = s==="error"||s==="warning";
+    // For a resumable run: has the job run again since? (drives the
     // disabled Resume button and the "?" badge, and is true regardless of
-    // which browser resumed it). Warning is not "worse than nothing" here --
-    // UNDELIVERED, UNDECLARED ENDING and BUDGET LIMITED all end warning, and
-    // the engine keeps their worktrees and their services up for exactly as
-    // long as it keeps an error's, specifically so a resume can pick them
-    // back up.
-    const followUp = (s==="error"||s==="warning") ? resumeTarget(r.id, r.start) : null;
+    // which browser resumed it)
+    const followUp = resumable ? resumeTarget(r.id, r.start) : null;
     // A run that continued an earlier one says so, and points at it: without
     // this the two rows look unrelated, and the pair is the whole story.
     const parent = continuedRun(r);
@@ -3797,7 +3805,7 @@ function renderRuns(){
           ? '<span class="runningbadge'+(isStopping(r)?" stopping":"")+'"><span class="pulse"></span>'
             +(isStopping(r)?"stopping…":"running…")+'</span>'
           : '<span class="stat-cell s-'+esc(s)+'">'+(STATUS_ICON[s]||"")+esc(s)+"</span>"
-            +(((s==="error"||s==="warning") && followUp)
+            +((resumable && followUp)
                ? '<span class="tipbadge" data-tip="'+encodeURIComponent(resumeTip(r.id,r.start)).replace(/"/g,"%22")+'">?</span>'
                // A run can end fine having done nothing at all — a resumed task
                // already finished, or its ticket is gone. That is recorded as a
@@ -3848,7 +3856,7 @@ function renderRuns(){
         // more common case.
         +(r.live
            ? '<button class="iconbtn retry" disabled title="This run is still going">'+I.play+'</button>'
-           : (s==="error"||s==="warning")
+           : resumable
              ? (!r.session
                 ? '<button class="iconbtn retry" disabled title="This run recorded no session id, so it cannot be resumed">'+I.play+'</button>'
                 : followUp

@@ -1955,6 +1955,47 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   rm -rf "$tmp/locks/jDropRace" "$tmp/wtroot/jDropRace" "$tmp/dropRace.out" "$tmp/dropRace.rc"
   rm -f "$tmp/cfg/provision/two.down.sh"
 
+  echo "wt_prune_orphans() — a reattach that claims first cannot be swept out from under it"
+  # The adjacent route this task's own self-review found: 9.5 protected the
+  # HUMAN drop (cmd_worktree_drop, tested just above) with the resume lock,
+  # but wt_prune_orphans -- the automatic sweep every tick runs -- read
+  # wt_is_claimed unsynchronized, and could race a reattach the identical
+  # way: in the narrow window after a reattach has taken $LOCK_DIR/.resume
+  # but before it has written its own claim, the sweep's OWN unsynchronized
+  # read would see "not claimed", find the directory past its ttl, and
+  # remove it out from under the reattach that is mid-way through claiming
+  # it. Same technique as the drop-race test above: the reattach claims
+  # first and holds the lock a moment, so the sweep, arriving second, is not
+  # just winning a lucky scheduling race.
+  local rdSweep="$tmp/wtroot/jSweepRace/stampA"
+  ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
+    wt_setup jSweepRace two "$tmp/g/repo" stampA ) >/dev/null 2>&1
+  # `.session` present, so this reads as an ordinary open session past its
+  # ttl -- not the pre-upgrade adoption case, which is a different route
+  # already covered above and would never reach the age check at all.
+  echo "sess-sweep" > "$rdSweep/.session"
+  touch -t 202001010000 "$rdSweep"    # weeks past any ttl
+  (
+    LOCK_DIR="$tmp/locks"; WORKTREES_DIR="$tmp/wtroot"
+    rlock="$LOCK_DIR/.resume"; rm -rf "$rlock"
+    mkdir -p "$LOCK_DIR/jSweepRace"
+    sleep 5 & pidR=$!
+    slotR="$LOCK_DIR/jSweepRace/$pidR"; mkdir -p "$slotR"
+    echo "$pidR" > "$slotR/pid"; boot_id > "$slotR/boot"
+
+    ( lock_take "$rlock"; sleep 0.15; echo "$rdSweep" > "$slotR/worktree"; lock_drop "$rlock" ) \
+      & reattach=$!
+    i=0; while [ ! -d "$rlock" ] && [ "$i" -lt 200 ]; do sleep 0.01; i=$(( i + 1 )); done
+    ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
+      wt_prune_orphans ) >/dev/null 2>&1
+    wait "$reattach"
+    kill "$pidR" 2>/dev/null; wait "$pidR" 2>/dev/null
+  )
+  [ -d "$rdSweep" ] \
+    && ok "the tree the reattach claimed first survives a concurrent sweep" \
+    || bad "the sweep removed a tree that had already been claimed by a reattach"
+  rm -rf "$tmp/locks/jSweepRace" "$tmp/wtroot/jSweepRace"
+
   echo "wt_undelivered_work() — what provisioning left behind is not the agent's work"
   printf '%s\n' '#!/usr/bin/env bash' 'echo residue > provisioned.txt' \
     > "$tmp/cfg/provision/two.up.sh"

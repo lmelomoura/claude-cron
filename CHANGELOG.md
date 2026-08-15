@@ -299,16 +299,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **The dashboard's Resume button lights up for a `warning` run, not just
   `error`.** `UNDELIVERED`, `UNDECLARED ENDING` and `BUDGET LIMITED` all end a
-  run `warning`, and every one of their own notes says "resume this run to
-  continue with its context" — while the engine keeps that run's worktree and
-  its services up specifically so a resume has something to continue in. The
+  run `warning`, and every one of their own notes tells the operator to pick
+  the run back up — UNDECLARED ENDING and BUDGET LIMITED both say "resume
+  this run to continue with its context", UNDELIVERED says "resume this run
+  to finish it" — while the engine keeps that run's worktree and its
+  services up specifically so a resume has something to continue in. The
   button read only `error`, so the far more common case showed a dead icon
   with "Only a failed run can be resumed" next to a note telling the operator
   to do exactly that. `success` and `stopped` stay off. The already-resumed
   guard (grey the button out once another run has picked the session back
   up, so a second click cannot duplicate the work) now also applies to a
   `warning` run's Resume button, not only an `error` one's — it reads the
-  same `resumeTarget` lookup, just no longer gated to one status.
+  same `resumeTarget` lookup, just no longer gated to one status. The
+  `error`-or-`warning` test itself is now a single `resumable` value read at
+  all three sites that need to agree, not three separate copies of the same
+  comparison — three places to keep in sync is exactly how this went from
+  `error`-only to `error`-or-`warning` in the first place.
 
 - **A retained run dir cannot be dropped out from under a resume that just
   claimed it.** `worktree-drop` checked `wt_is_claimed`, then ran
@@ -320,6 +326,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   takes `$LOCK_DIR/.resume` before checking the claim and holds it through
   the removal — the same lock, so whichever side gets there first completes
   its whole check-then-act sequence before the other can even look.
+
+  The identical race existed on the *automatic* side too, found in this same
+  task's self-review: `wt_prune_orphans` — the sweep every tick runs — read
+  `wt_is_claimed` unsynchronized, so it could see "not claimed yet" in the
+  same narrow window a reattach is inside its own lock but has not yet
+  written its claim, age-check the directory, and remove it out from under
+  a reattach that was mid-way through claiming it. `wt_prune_orphans` now
+  takes the same `$LOCK_DIR/.resume` lock too, per directory rather than
+  once for the whole sweep — a global lock held for the entire sweep would
+  serialize every job's resume behind however many directories that tick
+  happens to expire, combined, rather than behind just the one it actually
+  contends with.
 
 - **A resume restarts its session's ttl clock.** The expiry sweep reads a
   kept-open run dir's age from the directory's own mtime, and rewriting
