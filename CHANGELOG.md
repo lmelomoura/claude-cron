@@ -307,6 +307,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   different boot: taken at once with the fix; without it, waits the full
   30s timeout and raises.
 
+- **A resume that cannot find its own tree refuses, instead of quietly
+  starting a fresh one.** Widening the dashboard's Resume button to
+  `error`-or-`warning` (9.7) lit it up for `NOTHING TO DO:` runs too — but
+  those end `warning` *and* `.ended=done` (9.3), so `run_cleanup` has
+  already removed the tree before the dashboard's next poll. Clicking
+  Resume reached `wt_find_by_session`, found nothing, and fell straight
+  through to the fresh-worktree branch: a whole new agent session spent on
+  a task that had already said there was nothing to do, with nothing
+  telling the operator that is what happened. `run_job` now refuses a
+  resume whose session directory cannot be found, the same way it already
+  refuses an already-claimed tree or a missing primary worktree — logging
+  why, and leaving nothing half-started, since the refusal sits before
+  either branch has written to the run's slot. This also closes the case,
+  previously open, of a resume whose directory was deleted by hand.
+
 - **A reattach's second provisioning pass no longer frames its own residue
   as the resumed agent's work.** `wt_undelivered_work` tells a hook's
   leftovers from the agent's own changes by comparing the worktree's current

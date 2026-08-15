@@ -1728,6 +1728,49 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     && ok "reattached is still computed from wt_find_by_session ($got)" \
     || bad "run_job computes reattached from wt_find_by_session $got times, expected 1 -- a resume can no longer reach its own tree"
 
+  echo "run_job() — a resume that cannot find its own tree refuses, instead of cutting a fresh one"
+  # 10.3: a `NOTHING TO DO:` run ends `warning` with `.ended=done` (9.3) when
+  # nothing was left undelivered, so run_cleanup has already removed its tree
+  # by the time an operator clicks Resume — wt_find_by_session then finds
+  # nothing (`reattached=""`) and, before this fix, fell straight through to
+  # the fresh-worktree branch below, silently: a whole new agent session
+  # spent on a task that had already said there was nothing to do. Structural
+  # only, like the checks around it: run_job cannot be exercised end-to-end
+  # here without a mocked agent CLI.
+  got="$(printf '%s\n' "$body" | grep -c '\[ -n "\$resume_sid" \] && \[ -z "\$reattached" \]')"
+  [ "${got:-0}" -eq 1 ] \
+    && ok "the refusal's condition (resume requested, no directory found) appears exactly once ($got)" \
+    || bad "the resume-not-found guard is missing or duplicated (found $got)"
+  got="$(printf '%s\n' "$body" | grep -c 'refusing to resume')"
+  [ "${got:-0}" -eq 1 ] \
+    && ok "the refusal logs its reason ($got)" \
+    || bad "the refusal's log_tick is missing or duplicated (found $got)"
+  # Ordering: it has to sit between the reattached branch's own success (so a
+  # FOUND tree is never refused) and the fresh-worktree branch's first write
+  # (so a normal, non-resume run is never even in reach of this condition,
+  # and a refused resume leaves $slot/worktree unwritten — the same "nothing
+  # half-started" shape the two refusals inside the reattached branch rely
+  # on, confirmed separately above).
+  resumed_line="$(printf '%s\n' "$body" | grep -n 'log_tick "\$id: resumed \$resume_sid in its own tree' | head -1 | cut -d: -f1)"
+  refuse_line="$(printf '%s\n' "$body" | grep -n 'elif \[ -n "\$resume_sid" \] && \[ -z "\$reattached" \]; then' | head -1 | cut -d: -f1)"
+  fresh_line="$(printf '%s\n' "$body" | grep -n 'run_dir="\$WORKTREES_DIR/\$id/\$stamp"' | head -1 | cut -d: -f1)"
+  [ -n "${resumed_line:-}" ] && [ -n "${refuse_line:-}" ] && [ -n "${fresh_line:-}" ] \
+       && [ "$resumed_line" -lt "$refuse_line" ] && [ "$refuse_line" -lt "$fresh_line" ] \
+    && ok "the refusal sits after a successful reattach and before the fresh worktree is staked" \
+    || bad "refusal ordering broken (resumed=${resumed_line:-?} refuse=${refuse_line:-?} fresh-claim=${fresh_line:-?})"
+  # A normal run (no resume requested at all) can never reach this branch:
+  # `reattached` is assigned only `[ -n "$resume_sid" ] &&`-guarded (checked
+  # above), so it stays "" whenever resume_sid is empty too -- but the
+  # refusal's OWN condition restates `[ -n "$resume_sid" ]` explicitly
+  # rather than leaning on that context, so it stays correct even if this
+  # if-chain is ever reordered or this branch is lifted into its own
+  # function. Already proven exactly-once by the condition-text check above;
+  # this just names the guarantee it buys.
+  case "$(printf '%s\n' "$body" | sed -n "${refuse_line:-0}p")" in
+    *'[ -n "$resume_sid" ]'*) ok "and the guard is self-contained: it names resume_sid itself, not just reattached's emptiness" ;;
+    *) bad "the refusal no longer checks resume_sid directly -- a future reorder of this if-chain could fire it for a non-resume run" ;;
+  esac
+
   echo "run_job() — a reattach restarts the ttl clock on its run dir"
   # wt_mtime reads the run dir's own mtime, and rewriting .ended on exit does
   # not touch a directory entry -- so without a fresh touch on the claim, the
@@ -3696,6 +3739,25 @@ ${prompt}"
       fi
       rm -f "$rdirt"
       log_tick "$id: resumed $resume_sid in its own tree $run_dir (cwd $worktree)"
+    elif [ -n "$resume_sid" ] && [ -z "$reattached" ]; then
+      # A resume whose own directory cannot be found must REFUSE, not fall
+      # through to the branch below and cut a fresh worktree in silence. A
+      # `NOTHING TO DO:` run ends `warning` with `.ended=done` when nothing
+      # was left undelivered (Task 9.3), so run_cleanup has already torn its
+      # tree down by the time an operator clicks the dashboard's Resume
+      # button — the tooltip promises to continue where the session
+      # stopped, and clicking it would otherwise spend a whole new agent
+      # session on a task that had already said there was nothing to do.
+      # The same refusal also covers a resume whose directory was removed
+      # by hand. Same shape as the two refusals above, and placed before
+      # either branch below has written anything: run_cleanup sees an
+      # empty run dir and skips teardown, so there is nothing half-started
+      # to unwind.
+      log_tick "$id: refusing to resume $resume_sid — no open session directory holds it (already finished, expired, or removed by hand)"
+      state_set "$id" last_start "$start"
+      state_set "$id" last_status '"error"'
+      run_cleanup "$id" "$slot"; trap - EXIT
+      return 1
     else
       # Claim the path BEFORE anything exists there. The sweep removes any run dir
       # no live slot claims, so creating first and claiming after leaves a window
