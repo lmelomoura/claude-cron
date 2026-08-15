@@ -3838,16 +3838,25 @@ function renderRuns(){
     const snip=searchKeys?(snippets[r.id+"|"+r.start]||""):"";
     // A single source of truth for "can this row's Resume button ever be
     // live", read at three places below (the followUp lookup, the "?"
-    // badge, and the button itself) -- three separate `s==="error"||
-    // s==="warning"` checks is three places to keep in sync the day this
-    // set changes again, which is exactly what just happened going from
-    // `error`-only to `error`-or-`warning`.
+    // badge, and the button itself) -- three separate checks is three
+    // places to keep in sync the day this set changes again, which is
+    // exactly what happened going from `error`-only to `error`-or-
+    // `warning`, and again when `stopped` was folded in here too.
     //
     // Warning is not "worse than nothing" here -- UNDELIVERED, UNDECLARED
     // ENDING and BUDGET LIMITED all end warning, and the engine keeps their
     // worktrees and their services up for exactly as long as it keeps an
-    // error's, specifically so a resume can pick them back up.
-    const resumable = s==="error"||s==="warning";
+    // error's, specifically so a resume can pick them back up. A run the
+    // operator stopped mid-work never declares an ending either, so its
+    // `.ended` is `open` too -- the engine keeps ITS tree and ITS services
+    // the identical way, for the identical reason, and used to be the one
+    // status that qualified for that but had no button to show for it.
+    //
+    // Whether there is a SESSION to actually resume is a separate question,
+    // answered below by the `!r.session` branch, not by this set: a stop
+    // that landed before the agent ever started recorded none, and this is
+    // the one row shape where that is the ordinary case, not a fault.
+    const resumable = s==="error"||s==="warning"||s==="stopped";
     // For a resumable run: has the job run again since? (drives the
     // disabled Resume button and the "?" badge, and is true regardless of
     // which browser resumed it)
@@ -3940,7 +3949,7 @@ function renderRuns(){
                     +esc((r.session||"").slice(0,8))+' where it stopped"'
                     +' data-op="resume" data-id="'+esc(r.id)+'" data-session="'+esc(r.session||"")+'"'
                     +' data-resume-key="'+esc(runKey(r.id,r.start))+'">'+I.play+'</button>')
-             : '<button class="iconbtn retry" disabled title="Only a failed or warning run can be resumed">'+I.play+'</button>')
+             : '<button class="iconbtn retry" disabled title="Only a failed, warning or stopped run can be resumed">'+I.play+'</button>')
         // Erase this run for good: its log files, its journal line and its rows
         // in the search database. Never offered while it is still running.
         +(r.live

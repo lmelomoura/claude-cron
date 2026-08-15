@@ -6,6 +6,7 @@ cheap guards: it parses, the elements the new code reaches for exist, and the
 arithmetic it duplicates from the engine still agrees with the engine.
 """
 
+import json
 import re
 import shutil
 import subprocess
@@ -293,3 +294,40 @@ def test_a_job_card_shows_every_kept_session_honestly(srv, tmp_path):
     assert not got["busyGotAButton"], "a session already being resumed must not get a second button"
     assert not got["mentionsOtherJob"], "sessionLines(j1) leaked another job's row"
     assert got["emptyForJobWithNothingKept"], "a job with nothing kept renders nothing"
+
+
+# ---- the Runs table's own Resume button: which statuses it ever lights up
+# for, distinct from the job card's sessionLines above (different data
+# source, different guard already proven by test_resume_target_defers_to_...
+# above) -- see the `resumable` comment in renderRuns for why this is ONE
+# const read from three places rather than three separate checks.
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_a_stopped_run_is_resumable_alongside_error_and_warning(srv, tmp_path):
+    """A `stopped` run never declares an ending either, so the engine keeps
+    its tree and its services exactly as it does for an error's or a
+    warning's -- specifically so a resume can pick them back up (see
+    "Sessions that are still open" in the README). Before this, `resumable`
+    covered error and warning only: the button did not cover the one status
+    whose whole run dir is sitting there, kept, for exactly this reason."""
+    js = _js(srv)
+    line = re.search(r"const resumable = .*?;", js).group(0)
+    script = tmp_path / "resumable.js"
+    script.write_text("""
+    function check(s){ %s return resumable; }
+    console.log(JSON.stringify(
+      ["error","warning","stopped","success","idle","capped","precheck_error"].map(check)));
+    """ % line)
+    out = subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout
+    assert json.loads(out) == [True, True, True, False, False, False, False]
+
+
+def test_the_disabled_resume_tooltip_names_every_resumable_status(srv):
+    """The other end of the same ladder: a status outside `resumable` falls
+    to a disabled button whose tooltip used to read "Only a failed or
+    warning run can be resumed" -- accurate right up until `stopped` joined
+    the set above, at which point it started telling the operator something
+    false about the very button it sits beside."""
+    js = _js(srv)
+    assert "Only a failed, warning or stopped run can be resumed" in js
+    assert "Only a failed or warning run can be resumed" not in js

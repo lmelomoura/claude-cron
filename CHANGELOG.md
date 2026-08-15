@@ -46,6 +46,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reading lines; this is the other half, so neither side can now see less than
   the other. Display only: the resume path never used this value.
 
+- **A run stopped from the dashboard mid-work can now be resumed from the
+  Runs table, not just from its job card.** It never declares an ending, so
+  its worktree and its services are kept exactly the way an error's or a
+  warning's are — but the Resume button only lit up for those two, so the
+  one status whose whole run dir sits there waiting had no way to reach it.
+  `run_record_stopped_early` also used to file every stopped run's session
+  as empty, unconditionally, even when the agent had already reported one —
+  so even widening the button on its own would have left it permanently
+  disabled for a real, resumable session. It now reads the run dir's own
+  `.session` when the agent had actually started (`$slot/child`), and still
+  reports none when it had not, or when the stop landed before that agent's
+  own session was bound — a stale id left over from an earlier resume of the
+  same directory is never claimed for a launch that never got that far.
+
 ### Added
 
 - **A job whose last run is being held for a resume now says so on its own

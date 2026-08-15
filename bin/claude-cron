@@ -731,7 +731,7 @@ port_base_free() { # port_base_free <slot-dir> <base>
 # journaled (it drops `journaled` the moment it does), so a run that reached its
 # own ending is never recorded twice.
 run_record_stopped_early() { # <id> <slot-dir>
-  local id="$1" slot="${2:-}" start end logf project note model model_family
+  local id="$1" slot="${2:-}" start end logf project note model model_family wt sid
   [ -n "$slot" ] || return 0
   [ -f "$slot/stopped" ] || return 0
   [ -f "$slot/journaled" ] && return 0
@@ -758,6 +758,26 @@ run_record_stopped_early() { # <id> <slot-dir>
   else
     note="STOPPED: ended from the dashboard before its agent started, so no work was done and nothing was spent."
   fi
+  # What this stop actually has to resume WITH. $slot/child alone answers "did
+  # an agent run" — it says nothing about whether that agent got far enough to
+  # REPORT a session, which is a separate race against the watchdog's own
+  # bind_session poll (see run_job: the first poll runs immediately, not
+  # gated on its 30s cadence, but a stop landing in the first instant can
+  # still beat it). Read $run_dir/.session directly rather than assume either
+  # way — the exact file wt_find_by_session trusts for a real
+  # `claude-cron resume` — so a run that never started, or one still mid-
+  # launch when the stop landed, correctly reports no session: there is
+  # nothing here to hand the dashboard's Resume button that would actually
+  # work, and guessing one would be exactly the button this task exists to
+  # rule out. Gated on $slot/child, not merely on the file existing: a
+  # resumed run reuses its run dir, whose .session already names the EARLIER
+  # session (bind_session never rebinds) — a stop before THIS launch's own
+  # agent ever started must not claim that leftover id as its own.
+  wt="$(cat "$slot/worktree" 2>/dev/null || true)"
+  sid=""
+  if [ -f "$slot/child" ] && [ -n "$wt" ]; then
+    sid="$(cat "$wt/.session" 2>/dev/null || true)"
+  fi
   # A log body, so opening the run explains itself instead of showing the blank
   # record of a run that seemingly never happened. The slot only grows its
   # `logfile` breadcrumb once the run is well underway, so when the stop lands
@@ -768,12 +788,12 @@ run_record_stopped_early() { # <id> <slot-dir>
     mkdir -p "$LOG_DIR/$id" 2>/dev/null || true
     logf="$LOG_DIR/$id/$(date -u -r "$start" +%Y%m%dT%H%M%SZ 2>/dev/null || date -u +%Y%m%dT%H%M%SZ)-$(basename "$slot").json"
   fi
-  "$JQ" -nc --arg r "$note" '{is_error:false, subtype:"stopped_by_user", num_turns:0,
-    session_id:"", stop_reason:"stopped_by_user",
+  "$JQ" -nc --arg r "$note" --arg sid "$sid" '{is_error:false, subtype:"stopped_by_user", num_turns:0,
+    session_id:$sid, stop_reason:"stopped_by_user",
     result:("**Stopped by you.**\n\n"+$r)}' > "$logf" 2>/dev/null || logf=""
   state_set_many "$id" "$("$JQ" -nc --argjson end "$end" --argjson start "$start" \
     '{last_end:$end, last_status:"stopped", last_run_start:$start, last_run_status:"stopped"}')"
-  record_run "$id" "stopped" "$start" "$end" "0" "0" "" "${logf:-}" "$note" "false" "" "$project" \
+  record_run "$id" "stopped" "$start" "$end" "0" "0" "$sid" "${logf:-}" "$note" "false" "" "$project" \
              "${model_family:-$model}" "" ""
   if [ -f "$slot/child" ]; then
     log_tick "$id: stopped by the user after its agent had already run"
@@ -2896,6 +2916,85 @@ NASTY
   grep -q "already run" "$tmp/stop3.tick" 2>/dev/null \
     && ok "the tick log tells the two cases apart too" || bad "tick log did not distinguish the case"
   rm -rf "$tmp/locks/j9"
+
+  echo "run_record_stopped_early() — a session bound before the stop is not thrown away"
+  # $slot/child says an agent was spawned; it says nothing about whether that
+  # agent got far enough to REPORT a session before the stop landed -- that is
+  # a separate race against the watchdog's own bind_session poll (see
+  # run_job), and the two must not be conflated. When the run dir's OWN
+  # .session is already bound (the ordinary case: bind_session's first poll
+  # runs immediately, not gated on its 30s cadence), the journal must carry
+  # the REAL id, not the unconditional "" this function used to write --
+  # otherwise the dashboard's Resume button can never work for a stopped run
+  # even when there is genuinely a session sitting right there to continue.
+  local rd9="$tmp/wtroot/j9/stampSess"
+  mkdir -p "$rd9"
+  printf 'sess-real-9000\n' > "$rd9/.session"
+  local sl4="$tmp/locks/j9/780"
+  mkdir -p "$sl4"
+  echo 780 > "$sl4/pid"; echo 1700000000 > "$sl4/start"
+  echo "$rd9" > "$sl4/worktree"
+  echo "$tmp/stoplogs/r4.json" > "$sl4/logfile"
+  echo 66666 > "$sl4/child"
+  : > "$sl4/stopped"
+  ( CONFIG_DIR="$tmp/cfg"; DATA_DIR="$tmp"; RUNS_FILE="$tmp/stop4.ndjson"
+    STATE_FILE="$tmp/stopstate.json"; LOG_DIR="$tmp/stoplogs"; TICK_LOG="$tmp/stop4.tick"
+    run_record_stopped_early j9 "$sl4" ) >/dev/null 2>&1
+  got="$("$JQ" -r '.session // "MISSING"' "$tmp/stop4.ndjson" 2>/dev/null | head -1)"
+  [ "$got" = "sess-real-9000" ] && ok "the journal carries the session that was actually bound" \
+    || bad "journal session was '$got', wanted sess-real-9000"
+  got="$("$JQ" -r '.session_id // "MISSING"' "$tmp/stoplogs/r4.json" 2>/dev/null)"
+  [ "$got" = "sess-real-9000" ] && ok "and the run's own log body agrees" \
+    || bad "log session_id was '$got'"
+  rm -rf "$tmp/locks/j9" "$tmp/wtroot/j9"
+
+  echo "run_record_stopped_early() — no session bound yet still reports none, not a guess"
+  # The other half of the SAME race: the agent was spawned ($slot/child
+  # exists) but the stop landed before bind_session's own poll ever ran, so
+  # the run dir has no .session at all yet. This must still report "",
+  # exactly like before an agent was ever spawned -- there is nothing here to
+  # hand a Resume button that would actually work, and fabricating one would
+  # be precisely the button this task exists to rule out.
+  local rd10="$tmp/wtroot/j9/stampNoSess"
+  mkdir -p "$rd10"
+  local sl5="$tmp/locks/j9/781"
+  mkdir -p "$sl5"
+  echo 781 > "$sl5/pid"; echo 1700000000 > "$sl5/start"
+  echo "$rd10" > "$sl5/worktree"
+  echo "$tmp/stoplogs/r5.json" > "$sl5/logfile"
+  echo 77777 > "$sl5/child"
+  : > "$sl5/stopped"
+  ( CONFIG_DIR="$tmp/cfg"; DATA_DIR="$tmp"; RUNS_FILE="$tmp/stop5.ndjson"
+    STATE_FILE="$tmp/stopstate.json"; LOG_DIR="$tmp/stoplogs"; TICK_LOG="$tmp/stop5.tick"
+    run_record_stopped_early j9 "$sl5" ) >/dev/null 2>&1
+  got="$("$JQ" -r '.session // "MISSING"' "$tmp/stop5.ndjson" 2>/dev/null | head -1)"
+  [ "$got" = "" ] && ok "an agent spawned but not yet bound still reports no session" \
+    || bad "journal session was '$got', wanted empty"
+  rm -rf "$tmp/locks/j9" "$tmp/wtroot/j9"
+
+  echo "run_record_stopped_early() — a stale .session from an earlier resume is not claimed by a run whose OWN agent never started"
+  # A resumed run reuses its run dir, whose .session already names the
+  # earlier session (bind_session never rebinds). A stop landing before
+  # THIS launch's own agent is spawned must not read that leftover file as
+  # though it were this run's own -- $slot/child is what actually
+  # distinguishes the two, not merely whether .session happens to exist.
+  local rd11="$tmp/wtroot/j9/stampStale"
+  mkdir -p "$rd11"
+  printf 'sess-from-a-previous-run\n' > "$rd11/.session"
+  local sl6="$tmp/locks/j9/782"
+  mkdir -p "$sl6"
+  echo 782 > "$sl6/pid"; echo 1700000000 > "$sl6/start"
+  echo "$rd11" > "$sl6/worktree"
+  echo "$tmp/stoplogs/r6.json" > "$sl6/logfile"
+  # $sl6/child deliberately never written -- this run's own agent never started.
+  : > "$sl6/stopped"
+  ( CONFIG_DIR="$tmp/cfg"; DATA_DIR="$tmp"; RUNS_FILE="$tmp/stop6.ndjson"
+    STATE_FILE="$tmp/stopstate.json"; LOG_DIR="$tmp/stoplogs"; TICK_LOG="$tmp/stop6.tick"
+    run_record_stopped_early j9 "$sl6" ) >/dev/null 2>&1
+  got="$("$JQ" -r '.session // "MISSING"' "$tmp/stop6.ndjson" 2>/dev/null | head -1)"
+  [ "$got" = "" ] && ok "a leftover session from an earlier resume is not claimed for a run that never started" \
+    || bad "journal session was '$got', wanted empty -- claimed a stale id"
+  rm -rf "$tmp/locks/j9" "$tmp/wtroot/j9"
 
   echo "run_cleanup() — a stop landing after the agent finished must not delete its work"
   # The Critical this closes. _stop_slot TERMs the run WRAPPER whenever the
