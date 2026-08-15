@@ -77,23 +77,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A failed write now drops the lock and refuses the resume, the same as a
   block that turned out to be held.
 
-- **A slow teardown in the orphan sweep no longer stalls an unrelated tick.**
-  The sweep holds `$LOCK_DIR/.resume` while running a directory's `down`
-  hook — a `docker compose down -v`, seconds to minutes — and `cmd_tick` had
-  no mutex against itself, so a second tick starting in that window (a
-  launchd interval firing again before the first returned, or a manual
-  `claude-cron tick`) raced it: its own sweep took the same lock for
-  whatever its own first directory was and blocked there too, so every job
-  it would have launched, and every other resume or drop, queued up behind a
-  teardown that had nothing to do with them. `cmd_tick` now takes its own
-  `$LOCK_DIR/.tick` around the whole tick, so a second one simply waits for
-  the first to finish before it starts. Narrowing `.resume` itself to cover
-  only the decision, not the hook, was considered and rejected: that lock is
-  also what stops a resume claiming a directory the sweep is mid-way through
-  removing (the same reason `cmd_worktree_drop` holds it the identical way
-  for a human's drop), and narrowing it would have reopened a resume
-  claiming a directory between the sweep marking it done and the hook
-  actually finishing — an agent launched into a cwd being deleted under it.
+- **Two overlapping ticks can no longer run `down` hooks for two different
+  directories at once.** The orphan sweep takes and drops `$LOCK_DIR/.resume`
+  once per directory, not once for the whole sweep, and `cmd_tick` had no
+  mutex against itself — so a second tick starting while the first was still
+  sweeping (a launchd interval firing again before the first returned, or a
+  manual `claude-cron tick`) could interleave with it: each sweep holding
+  `.resume` only briefly, per directory, let tick A run one directory's
+  `down` hook — a `docker compose down -v`, seconds to minutes — at the same
+  moment tick B ran a *different* directory's own, work the sweep's serial,
+  one-directory-at-a-time design never accounted for. `cmd_tick` now takes
+  its own `$LOCK_DIR/.tick` around the whole tick, so a second one simply
+  waits for the first to finish before it starts. Narrowing `.resume` itself
+  to cover only the sweep's decision, not the hook, was considered and
+  rejected: that lock is also what stops a resume claiming a directory the
+  sweep is mid-way through removing (the same reason `cmd_worktree_drop`
+  holds it the identical way for a human's drop), and narrowing it would
+  have reopened a resume claiming a directory between the sweep marking it
+  done and the hook actually finishing — an agent launched into a cwd being
+  deleted under it.
 
 - **An unreadable or empty `.session` file no longer re-logs on every
   dashboard poll.** `retained_worktrees()` backs `/api/data`, polled every 5

@@ -810,6 +810,16 @@ run_record_stopped_early() { # <id> <slot-dir>
   # resumed run reuses its run dir, whose .session already names the EARLIER
   # session (bind_session never rebinds) — a stop before THIS launch's own
   # agent ever started must not claim that leftover id as its own.
+  #
+  # That earlier case is genuinely resumable, just not from THIS row: the
+  # run dir's .session is real and current, so the job card's own Resume
+  # affordance (sessionLines, in the dashboard) reaches it directly, reading
+  # .session straight off disk rather than through this run's journal entry.
+  # Only the Runs table's row for THIS stopped run reports no session, since
+  # THIS launch's own agent never bound one — correct under "never offer a
+  # button that cannot work", not a gap. Do not "fix" this by dropping the
+  # $slot/child gate above: that is the exact stale-claim bug the paragraph
+  # above exists to prevent, and it has its own regression test.
   wt="$(cat "$slot/worktree" 2>/dev/null || true)"
   sid=""
   if [ -f "$slot/child" ] && [ -n "$wt" ]; then
@@ -2463,14 +2473,28 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     || bad "cmd_tick calls wt_prune_canonicals $got times, expected 1 -- stale worktree registrations would accumulate for ever"
 
   echo "cmd_tick() — .tick wraps the WHOLE body: the sweep AND the due-job loop, not just part of it"
-  # Structural, same reasoning as the wt_prune_canonicals call-site test just
-  # above and the reattach/port-claim ordering tests elsewhere in this suite:
-  # what actually proves the lock stops two ticks overlapping is the real
-  # two-process test below; this guards against lock_take/lock_drop silently
-  # narrowing to cover only PART of cmd_tick (e.g. just the sweep), which
-  # would leave the due-job loop still reachable by a second, concurrent tick
-  # -- exactly the narrower shape this task's own brief considered and
-  # rejected (see the comment on the lock in cmd_tick itself).
+  # This is what pins the regression -- not a timing-based real race. A real
+  # two-process test was tried and dropped: even with the sweep and the
+  # due-job loop reduced to instant no-ops, "cmd_tick has not finished N
+  # seconds after a second one started" is a claim about wall-clock time on
+  # a shared CI machine, and a genuinely lock-less cmd_tick that happens to
+  # be slow for any other reason reads as correctly blocked -- the one
+  # assertion in that shape that could survive its own subject being
+  # reverted. The lock_take/lock_drop primitive is ALREADY proven safe under
+  # real concurrency elsewhere in this suite (the reattach race, the
+  # port_base_reclaim race); what remains to prove for cmd_tick is only that
+  # it calls that already-proven primitive, on the right lock, wrapping the
+  # right span -- which is exactly a source-shape question, not a timing
+  # one. Same bar this codebase already holds simple single lock_take/
+  # lock_drop wraps to elsewhere (alloc_port_base has no dedicated race of
+  # its own either); the deeper, check-then-act critical sections earned
+  # theirs by being more than a single wrap.
+  #
+  # Guards against lock_take/lock_drop silently narrowing to cover only PART
+  # of cmd_tick (e.g. just the sweep), which would leave the due-job loop
+  # still reachable by a second, concurrent tick -- exactly the narrower
+  # shape this task's own brief considered and rejected (see the comment on
+  # the lock in cmd_tick itself).
   tbody="$(sed -n '/^cmd_tick()/,/^}/p' "$BIN_DIR/claude-cron")"
   tlt_line="$(printf '%s\n' "$tbody" | grep -n 'lock_take "\$LOCK_DIR/.tick"'  | head -1 | cut -d: -f1)"
   # Anchored to a bare call line, not a substring match: the comment on the
@@ -2491,51 +2515,6 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   got="$(printf '%s\n' "$tbody" | grep -c 'lock_drop "\$LOCK_DIR/.tick"')"
   [ "${got:-0}" -eq 1 ] && ok "lock_drop \$LOCK_DIR/.tick appears exactly once ($got)" \
     || bad "lock_drop \$LOCK_DIR/.tick appears $got times, expected 1"
-
-  echo "cmd_tick() — a second tick waits for the first instead of racing it"
-  # Real, not structural: a tick already holding $LOCK_DIR/.tick (simulating a
-  # slow orphan sweep mid-teardown -- seconds to minutes, see wt_prune_orphans)
-  # must block a second cmd_tick call entirely, not just its sweep. Driven
-  # against the REAL cmd_tick -- unlike run_job, nothing here needs an agent
-  # CLI, so there is no reason to reimplement it -- in an environment where
-  # the sweep and the due-job loop are both instant no-ops (no worktrees dir,
-  # no jobs file): every callee that could otherwise do real work is
-  # neutralised, so what is actually being timed is nothing but the lock
-  # itself. The "_models" background refresh is blocked the same way
-  # lock_active already gates it in production: a lock held for a pid that is
-  # genuinely alive ($$, which bash 3.2 does not reseed inside a subshell, so
-  # this really is the live selftest process).
-  mkdir -p "$tmp/ticktest/data/locks" "$tmp/ticktest/cfg"
-  (
-    LOCK_DIR="$tmp/ticktest/data/locks"; DATA_DIR="$tmp/ticktest/data"
-    TICK_LOG="$tmp/ticktest/data/tick.log"
-    JOBS_FILE="$tmp/ticktest/cfg/jobs-missing.json"
-    WORKTREES_DIR="$tmp/ticktest/data/wtroot-missing"
-    CONFIG_DIR="$tmp/ticktest/cfg"; PROJECTS_FILE="$tmp/ticktest/cfg/projects.json"
-    mkdir -p "$LOCK_DIR/_models"; echo $$ > "$LOCK_DIR/_models/pid"
-
-    tlock="$LOCK_DIR/.tick"; rm -rf "$tlock"
-    lock_take "$tlock"                      # simulates a tick already in flight
-
-    rm -f "$tmp/tickdone"
-    ( cmd_tick; touch "$tmp/tickdone" ) & tpid=$!
-    sleep 0.3
-    [ -f "$tmp/tickdone" ] && echo "TOO_EARLY" > "$tmp/tick_result" \
-      || echo "STILL_BLOCKED" > "$tmp/tick_result"
-
-    lock_drop "$tlock"
-    i=0
-    while [ ! -f "$tmp/tickdone" ] && [ "$i" -lt 300 ]; do sleep 0.01; i=$(( i + 1 )); done
-    [ -f "$tmp/tickdone" ] && echo "FINISHED" >> "$tmp/tick_result" || echo "NEVER_FINISHED" >> "$tmp/tick_result"
-    wait "$tpid" 2>/dev/null
-  )
-  got="$(sed -n '1p' "$tmp/tick_result" 2>/dev/null)"
-  [ "$got" = "STILL_BLOCKED" ] && ok "the second tick has not finished while .tick is held" \
-    || bad "the second tick finished (or the harness broke) while .tick was still held: '$got'"
-  got="$(sed -n '2p' "$tmp/tick_result" 2>/dev/null)"
-  [ "$got" = "FINISHED" ] && ok "and proceeds promptly once .tick is released" \
-    || bad "the second tick never finished after .tick was dropped"
-  rm -rf "$tmp/ticktest" "$tmp/tickdone" "$tmp/tick_result"
 
   echo "wt_prune_canonicals() — a run dir removed by hand leaves no registration behind"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
@@ -4739,30 +4718,39 @@ tick_plan() { # id \t days \t hours \t interval \t last_start \t fail_streak \t 
 # holding its lock is not relaunched.
 cmd_tick() {
   local id
-  # Serialises this tick against another cmd_tick already in flight. The
-  # orphan sweep below can hold $LOCK_DIR/.resume for as long as one
-  # directory's `down` hook takes — a `docker compose down -v`, seconds to
-  # minutes (see wt_prune_orphans) — and without a lock of its own, cmd_tick
-  # had no mutex against ITSELF: a second tick starting in that window (a
-  # launchd interval firing again before the first tick returned, or a manual
-  # `claude-cron tick`) did not proceed independently. Its own sweep took the
-  # SAME .resume lock for its own first directory, whatever that was, and
-  # blocked there too — so every job that second tick would have launched
-  # waited behind a teardown it had nothing to do with, and every OTHER
-  # resume or drop queued up behind the same lock waited with it.
+  # Serialises this tick against another cmd_tick already in flight.
+  # wt_prune_orphans (below) takes and drops $LOCK_DIR/.resume once PER
+  # DIRECTORY, not once for the whole sweep — so without a lock of its own,
+  # two overlapping ticks' sweeps could each hold .resume only briefly and
+  # interleave: tick A running a `down` hook for one directory (a
+  # `docker compose down -v`, seconds to minutes) at the same moment tick B
+  # is running its OWN down hook for a different directory. Neither sweep
+  # was ever designed to share the machine with a concurrent copy of itself
+  # — it is written, and reasoned about, as strictly one directory at a time.
   #
-  # A second, narrower lock scoped to just the sweep was considered and
-  # rejected: closing this race that way means the sweep can no longer hold
-  # .resume across a directory's whole teardown, and that lock is what stops
-  # a resume claiming a directory the sweep is mid-way through removing (see
-  # wt_prune_orphans and cmd_worktree_drop, which holds it the identical way
-  # for a human drop). Narrowing it back to just the decision would reopen
-  # exactly that: a resume could claim a directory between the sweep marking
-  # it done and the down hook actually finishing, and launch an agent into a
-  # cwd the sweep is deleting under it. One mutex around the whole tick
-  # avoids all of that: the second tick simply waits for the first to finish
-  # before it starts, the same lock_take/lock_drop idiom as every other lock
-  # here, boot-aware so a killed tick cannot wedge the next one forever.
+  # A second, narrower lock scoped to just the sweep's decision was
+  # considered and rejected: closing this race that way means the sweep can
+  # no longer hold .resume across a directory's whole teardown, and that
+  # lock is what stops a resume claiming a directory the sweep is mid-way
+  # through removing (see wt_prune_orphans and cmd_worktree_drop, which
+  # holds it the identical way for a human drop). Narrowing it back to just
+  # the decision would reopen exactly that: a resume could claim a directory
+  # between the sweep marking it done and the down hook actually finishing,
+  # and launch an agent into a cwd the sweep is deleting under it. One mutex
+  # around the whole tick avoids all of that: the second tick simply waits
+  # for the first to finish before it starts, the same lock_take/lock_drop
+  # idiom as every other lock here, boot-aware so a killed tick cannot wedge
+  # the next one forever.
+  #
+  # Lock order: wt_prune_orphans taking .resume WHILE .tick is already held
+  # is the intended nesting above, and the first lock nesting anywhere in
+  # this codebase — every other lock here is taken standalone. Nothing may
+  # acquire .tick while ALREADY holding .resume, .ports, .state.lock or
+  # .journal.lock: cmd_tick is the only caller of lock_take on .tick, and it
+  # is always the first thing this function does, before anything that could
+  # hold one of the others — keep it that way, or the reverse nesting (one
+  # of those held first, then a path into cmd_tick reaching for .tick) is
+  # how two of these locks deadlock against each other.
   lock_take "$LOCK_DIR/.tick"
   # Cap the two append-only logs before anything else writes to them. Once a
   # minute is the right cadence: the tick is the only thing guaranteed to run,
