@@ -2060,3 +2060,224 @@ bin/claude-cron selftest && python3 -m pytest tests/ -v
 5. `CLAUDE_CRON_SESSION_TTL=0` e esperar um tick → uma sessão aberta é reclamada, com a linha de expiração em `data/tick.log`.
 
 - [ ] **Reboot.** Reiniciar a máquina com um run a meio, e confirmar que no primeiro tick a seguir o slot antigo é considerado morto: o job volta a correr (não fica preso no `max_parallel`) e o run dir órfão é tratado pelo sweep.
+
+---
+
+## Task 9: Fixes from the whole-branch review
+
+As oito tarefas passaram cada uma o seu portão. A revisão final — a que olha
+para o conjunto — devolveu **não pronto para merge**. Estas são as correcções
+que faltam, e vale a pena dizer de onde vieram: nenhuma delas era visível numa
+revisão por tarefa, porque todas são consequências de decisões que se compõem.
+
+**Files:**
+- Modify: `bin/claude-cron` (a derivação do `.ended`; `lock_take`; `cmd_worktree_drop`; `run_dir=""`; `selftest`)
+- Modify: `bin/worktree-lib.sh` (`wt_find_by_session`; `wt_prune_orphans`; comentários)
+- Modify: `bin/dashboard.html` (o botão Resume)
+- Modify: `README.md`, `CHANGELOG.md`
+
+---
+
+### 9.1 (Critical) A migração apaga trabalho no primeiro tick
+
+Um directório retido de **antes** deste upgrade não tem `.ended`. O sweep
+manda-o para o ramo `*)`, lê a idade do mtime do directório — semanas, porque
+foi a última vez que o run lhe tocou — conclui que passou o TTL, marca-o `done`
+e o `wt_teardown` corre `git worktree remove --force`, que descarta alterações
+por commitar sem perguntar.
+
+São, por construção, exactamente os directórios que o `wt_teardown` **antigo**
+preservava *porque* o git dizia que continham trabalho que não existe em mais
+lado nenhum. Nada no CHANGELOG, no README ou no `install.sh` avisa disto.
+
+**A correcção:** um directório que este código nunca ligou a uma sessão não tem
+idade que se lhe conheça. Na primeira vez que o sweep vê um directório sem
+`.ended` **e** sem `.session`, marca-o `open` e reinicia-lhe o relógio, em vez
+de o julgar. Ganha uma janela de TTL inteira e aparece no dashboard com uma
+contagem, que é onde o operador o pode ver e decidir.
+
+Em `wt_prune_orphans`, antes do `case` que decide a expiração:
+
+```bash
+      # A directory this engine never bound to a session has no age we can
+      # trust. Before this branch, a retained run dir was one the OLD teardown
+      # kept BECAUSE git said it held work on no remote — and its mtime is
+      # whenever that run ended, so judging it by age reaps it on the first
+      # tick after the upgrade, with --force, unreported. Adopt it instead:
+      # mark it open and restart its clock, so it gets a full TTL window and
+      # shows up on the dashboard with a countdown the operator can act on.
+      if [ ! -f "$d/.ended" ] && [ ! -f "$d/.session" ]; then
+        printf 'open\n' > "$d/.ended" 2>/dev/null || true
+        touch "$d" 2>/dev/null || true
+        log_tick "$id: adopted $d from before this version — open, with a fresh ttl"
+        continue
+      fi
+```
+
+---
+
+### 9.2 (Critical) Um `kill -9` torna o run irrecuperável, em silêncio
+
+`wt_find_by_session` exige que o `.ended` diga literalmente `open`. Mas cinco
+outros leitores — `wt_teardown`, `wt_prune_orphans`, `run_cleanup`, o rollback
+do `wt_setup` e o `expires_in` do servidor — tratam **ausente** como aberto, e
+o comentário do próprio `wt_teardown` di-lo por escrito.
+
+Um SIGKILL, um OOM ou um reboot não escrevem marcador nenhum. O `.session` já
+lá está (o watchdog liga-o na primeira passagem), portanto o directório é
+encontrável — mas o `wt_find_by_session` recusa-o, o `run_job` cai no ramo do
+worktree novo, e **nada no log diz que isso aconteceu**: diz `isolated in …`
+em vez de `resumed … in its own tree`. É o defeito exacto que esta branch
+existe para eliminar, reintroduzido pela única porta que ficou fechada.
+
+Em `wt_find_by_session`, substituir o teste:
+
+```bash
+    # Absent counts as open, like it does for every other reader of this file.
+    # A kill -9, an OOM or a reboot writes no marker at all — and that is
+    # precisely the run somebody wants back. Only an explicit `done` is
+    # refused, because that directory is on its way out and handing it to a
+    # resume would race the sweep.
+    case "$(cat "$d/.ended" 2>/dev/null || true)" in done) continue ;; esac
+```
+
+---
+
+### 9.3 (Important) O `.ended` deriva do veredicto de qualidade
+
+Só `success` escreve `done`. Mas `warning` dispara para `NOTHING TO DO:`,
+`UNDECLARED ENDING`, `BUDGET LIMITED`, qualquer byte em stderr, um resultado
+vazio, e agora `UNDELIVERED`; `stopped` e `error` também caem em `open`. Cada
+um guarda os worktrees todos **e deixa os serviços de pé** durante 24 h — e o
+`alloc_port_base` só exclui blocos detidos por **slots vivos**, portanto o
+bloco de uma stack retida é entregue ao run seguinte.
+
+**A regra nova, decidida pelo operador: uma sessão está feita quando o agente
+declarou como acabou E não deixou nada por entregar.** Tudo o resto fica
+aberto. O código de saída, o stderr e o tecto de orçamento dizem *quão bem* o
+run correu — não se a sessão ainda tem que fazer.
+
+Guardar a declaração onde o classificador já a calcula (o bloco
+`UNDECLARED ENDING`), numa variável declarada no `local` do `run_job`:
+
+```bash
+  declared_ending=false
+  if "$JQ" -r '.result // ""' "$logfile" 2>/dev/null \
+       | grep -qE '(RUN COMPLETE|NOTHING TO DO|BLOCKED):'; then
+    declared_ending=true
+  fi
+```
+
+Hastear `undelivered` para o `local` do `run_job` (deixa de ser `local` dentro
+do `case`), e substituir a escrita do `.ended`:
+
+```bash
+  # A SESSION IS DONE WHEN IT SAID SO AND LEFT NOTHING BEHIND — not when the
+  # run looks good. Deriving this from the status made every `warning` keep its
+  # worktrees and, worse, keep its services running; and `warning` fires for
+  # stderr noise, an empty result, a budget cap, and for NOTHING TO DO, which
+  # is the commonest thing a quiet loop ever reports. On a real install that
+  # was about a quarter of all runs holding a full multi-repo checkout and a
+  # live stack for a day each — and alloc_port_base skips only blocks held by
+  # LIVE SLOTS, so the next run was handed the port block of a stack still
+  # listening on it.
+  if [ -n "$run_dir" ] && [ -d "$run_dir" ]; then
+    if [ "$declared_ending" = "true" ] && [ -z "${undelivered:-}" ]; then
+      printf 'done\n' > "$run_dir/.ended" 2>/dev/null || true
+    else
+      printf 'open\n' > "$run_dir/.ended" 2>/dev/null || true
+    fi
+  fi
+```
+
+---
+
+### 9.4 (Important) O relógio do TTL não avança num resume
+
+`wt_mtime` lê o mtime do run dir, e reescrever o `.ended` num resume não muda
+nenhuma entrada de directório. A janela do segundo ciclo é
+`TTL − (idade do primeiro)`: uma sessão retomada à hora 20 e que corra 5 h já
+está fora do TTL quando pára, e o tick seguinte apaga-a — enquanto o operador
+lê um cartão que diz "resume this run to finish it".
+
+`touch "$run_dir"` no ramo de reattach do `run_job`, logo a seguir à
+reivindicação, com o porquê ao lado.
+
+---
+
+### 9.5 (Important) `cmd_worktree_drop` não toma o lock do resume
+
+Verifica `wt_is_claimed`, depois corre `wt_down_all` — um `docker compose down
+-v`, segundos a minutos — e só então remove. Um resume que reivindique a árvore
+dentro dessa janela fica sem o `cwd` do seu agente. Envolver
+verificação-até-remoção em `lock_take "$LOCK_DIR/.resume"`.
+
+---
+
+### 9.6 (Important) O `lock_take` espera para sempre por um pid reciclado
+
+`lock_take` confia num `kill -0` nu, e com um detentor de aspecto vivo espera
+**indefinidamente** — o escape do `LOCK_GRACE` só se aplica quando o ficheiro
+de pid é ilegível. `.state.lock`, `.journal.lock`, `.ports` e o novo `.resume`
+vivem todos em `data/` e sobrevivem a um reboot exactamente como os slots.
+
+É o mesmo defeito que a Tarefa 1 foi criada para eliminar, e a Tarefa 7
+acrescentou-lhe uma instância nova. Usar `slot_alive` em vez do `kill -0`, e
+escrever o `boot` ao tomar o lock — a mesma correcção, no mesmo ficheiro, que
+já foi feita para os slots.
+
+---
+
+### 9.7 (Important) O dashboard não deixa retomar os runs para que guarda árvores
+
+O botão Resume só está activo para `s === "error"`. Mas `UNDELIVERED`,
+`UNDECLARED ENDING` e `BUDGET LIMITED` acabam todos `warning`, e as notas deles
+dizem "resume this run to continue with its context" — e o motor paga 24 h de
+disco e de serviços vivos para o tornar possível. Alargar a `error` e
+`warning`, mantendo-o desligado para `success` e `stopped`.
+
+---
+
+### 9.8 (Important) Documentação que descreve comportamento revogado
+
+- `README.md` — "`down` runs once per run, **even when the run dir is
+  preserved**". Está exactamente invertido: um run dir preservado é o único
+  caso em que o `down` não corre.
+- `README.md` — "A run that ends holding commits or changes that exist on no
+  remote is reported as a warning … **and its tree is still removed**". Com a
+  regra 9.3 isso passa a ser verdade outra vez para os runs que declararam fim;
+  reescrever para dizer o que o código faz agora.
+- `bin/claude-cron`, comentário do `cmd_tick` — "safe teardown: anything with
+  unpushed/uncommitted work is kept".
+- `bin/claude-cron-server` — "it is kept BECAUSE it holds unpushed work".
+- `bin/worktree-lib.sh`, cabeçalho do `wt_remove_all` — diz que difere do
+  teardown por "não consultar `wt_undelivered_work` primeiro"; o teardown já
+  não o consulta de todo.
+- `bin/worktree-lib.sh` — o comentário novo nomeia "the compose stack and the
+  herd site". Este ficheiro não pode nomear ferramentas nem linguagens.
+
+---
+
+### 9.9 (Important) Duas linhas cuja remoção reverte uma tarefa inteira, a verde
+
+Apagar a linha que atribui `reattached` reverte a Tarefa 7 por completo — todo
+o resume passa a cortar árvore nova — e as 234 asserções continuam verdes: a
+asserção estrutural só verifica a ordem das linhas *dentro* do ramo que passou
+a ser inalcançável, e o `local reattached=""` cala o `set -u`. Apagar a chamada
+a `wt_prune_canonicals` reverte a Tarefa 3 da mesma maneira.
+
+A branch já protege o `bind_session` com uma contagem de call sites por esta
+mesma razão. Dar-lhes o mesmo tratamento.
+
+---
+
+### 9.10 (Minor) Restantes
+
+- O `dirt_sha` não é refrescado quando o `up` volta a correr num reattach, por
+  isso o resíduo da segunda passagem de provisioning conta como trabalho do
+  agente retomado e é reportado como `UNDELIVERED`.
+- `run_dir` é declarado sem valor e lido sem guarda em quatro sítios. Seguro em
+  bash 3.2, onde `local x` atribui vazio; em bash ≥4.4 fica *unset* e o `set -u`
+  abortaria todo o run não isolado. `run_dir=""` ao lado do `worktree=""`.
+- Nada fixa o contrato do `--resume`: o `bind_session` nunca religa, o que só
+  está certo enquanto a CLI reportar o mesmo `session_id` num run retomado.
