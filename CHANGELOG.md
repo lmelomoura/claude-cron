@@ -251,6 +251,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`lock_take` no longer waits forever for a recycled pid.** `.state.lock`,
+  `.journal.lock`, `.ports` and the resume lock all live under `data/`, so
+  they survive a reboot exactly like a run slot — and the kernel reissues
+  pids from 1 on the way up, so a live-looking pid in one of these lock
+  directories can belong to an entirely different process than the one that
+  took the lock. The bare `kill -0` this function used to check a holder with
+  cannot tell the difference, and a *live* holder is waited for indefinitely
+  by design (that is the fix for the lock-broken-purely-on-elapsed-time bug),
+  so a false positive here wedges the scheduler on every write these locks
+  serialize — state, the journal, port allocation, a resume — with no escape.
+  This is the identical defect Task 1 removed from the run slots, reopened
+  here on a different kind of directory. `lock_take` now checks `slot_alive`
+  instead, which also refuses a pid from an earlier boot, and writes its own
+  `boot` file when it takes the lock, the same way a slot does. Proved by
+  reverting to the bare `kill -0` and watching `lock_take` spin forever on a
+  lock whose pid file names the calling process's own (genuinely alive, but
+  from a fabricated earlier boot) pid — confirmed hung via `ps`, not inferred.
+
 - **Upgrading onto a directory this branch never created does not delete
   it.** A run directory the OLD teardown had kept — because git said it held
   commits or changes that exist on no remote — has no `.ended` and no

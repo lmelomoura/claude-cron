@@ -201,7 +201,16 @@ lock_take() { # lock_take <lockdir> — blocks until held; always succeeds
   local d="${1:-}" hold i=0
   while ! mkdir "$d" 2>/dev/null; do
     hold="$(cat "$d/pid" 2>/dev/null || true)"
-    if [ -n "$hold" ] && ! kill -0 "$hold" 2>/dev/null; then
+    # slot_alive, not a bare `kill -0`: this is the identical defect Task 1
+    # exists to remove, on a different kind of directory. .state.lock,
+    # .journal.lock, .ports and .resume all live under data/, so they survive
+    # a reboot exactly like a run slot does, and the kernel reissues pids from
+    # 1 on the way up -- a bare kill -0 would then wait FOREVER for a recycled
+    # pid that only LOOKS like the same process, wedging every write these
+    # locks serialize (state, the journal, port allocation, a resume) behind
+    # a holder that is actually gone. slot_alive also refuses a pid from an
+    # earlier boot, which a bare kill -0 cannot express at all.
+    if [ -n "$hold" ] && ! slot_alive "$d"; then
       rm -rf "$d"; continue          # the owner is gone: genuinely stale
     fi
     # A live owner is WAITED for, however long it takes. An unreadable owner is
@@ -214,6 +223,11 @@ lock_take() { # lock_take <lockdir> — blocks until held; always succeeds
     sleep 0.01
   done
   echo $$ > "$d/pid" 2>/dev/null || true
+  # Written for the same reason a slot writes one: without it, a lock taken
+  # before this change (or read by slot_alive's own predate-fallback) reads as
+  # alive from any boot, which is correct only until the day this file
+  # disagrees with a slot about that fallback being safe to keep.
+  boot_id > "$d/boot" 2>/dev/null || true
   return 0
 }
 lock_drop() { rm -rf "${1:-}"; }   # rm -rf, not rmdir: the dir holds a pid file
@@ -2134,6 +2148,36 @@ NASTY
     || bad "the lock was stolen from a live holder"
   kill "$waiter" 2>/dev/null; wait "$waiter" 2>/dev/null
   rm -rf "$tmp/live"
+
+  # The regression 9.6 closes: a bare `kill -0` cannot tell a recycled pid
+  # from the SAME process. .state.lock, .journal.lock, .ports and .resume all
+  # live under data/ and survive a reboot exactly like a run slot -- and the
+  # kernel reissues pids from 1 on the way up, so a live-looking pid here can
+  # belong to an entirely different process than the one that took the lock.
+  # Simulate it directly: our own pid is alive by definition (kill -0 $$
+  # always succeeds), but a `boot` file that disagrees with boot_id says this
+  # lock is from a boot that is gone -- the same signal slot_alive already
+  # trusts for run slots.
+  mkdir -p "$tmp/oldboot"; echo $$ > "$tmp/oldboot/pid"; echo "0" > "$tmp/oldboot/boot"
+  t0="$(now_epoch)"; lock_take "$tmp/oldboot"; elapsed=$(( $(now_epoch) - t0 ))
+  [ "$elapsed" -lt 2 ] \
+    && ok "a live-looking pid from an earlier boot is taken at once (${elapsed}s), not waited on forever" \
+    || bad "waited ${elapsed}s for a pid that only looks like the same process"
+  [ "$(cat "$tmp/oldboot/boot" 2>/dev/null)" = "$(boot_id)" ] \
+    && ok "and the new holder records THIS boot" \
+    || bad "boot file was not refreshed on take"
+  lock_drop "$tmp/oldboot"
+
+  # The control: swapping kill -0 for slot_alive must not turn every lock into
+  # an instant steal -- a live holder from THIS boot is still waited for.
+  mkdir -p "$tmp/thisboot"; echo $$ > "$tmp/thisboot/pid"; boot_id > "$tmp/thisboot/boot"
+  ( lock_take "$tmp/thisboot" && : > "$tmp/thisboot-was-stolen" ) >/dev/null 2>&1 & local waiter2=$!
+  sleep 3
+  [ ! -f "$tmp/thisboot-was-stolen" ] \
+    && ok "a live holder from THIS boot is still held after 3s" \
+    || bad "a live same-boot holder was stolen from"
+  kill "$waiter2" 2>/dev/null; wait "$waiter2" 2>/dev/null
+  rm -rf "$tmp/thisboot" "$tmp/thisboot-was-stolen"
 
   echo "backoff_multiplier() — a job that only ever fails must stop costing full price"
   # Nothing slowed a failing job down: it relaunched every interval, at full
