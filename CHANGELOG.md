@@ -291,6 +291,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `wt_undelivered_work` reports nothing; with it, the note names both the
   unreadable status and the unreadable history.
 
+- **The control server's journal lock is boot-aware too, matching the
+  engine's own lock.** `journal_lock` and `lock_take` are the same mkdir
+  lock, taken on `.journal.lock` by the same name, and 9.6 made `lock_take`
+  refuse to wait forever on a pid recycled across a reboot — but the
+  server's own `_alive` stayed a bare `os.kill`, unable to tell the
+  difference. A `.journal.lock` left behind by the server across a reboot
+  falls into `lock_take`'s deliberate no-boot-file fallback, sees a
+  live-looking recycled pid, and waits forever inside `record_run`, before
+  `run_cleanup` ever runs — the run's slot is never released and its record
+  never written, the exact silent stall Task 1 was chartered to remove. The
+  server now writes a `boot` file alongside its `pid` on take, and checks it
+  in `_alive` the same way `slot_alive` already does. Proved against a lock
+  naming this test process's own (genuinely alive) pid but a boot id from a
+  different boot: taken at once with the fix; without it, waits the full
+  30s timeout and raises.
+
 - **A reattach's second provisioning pass no longer frames its own residue
   as the resumed agent's work.** `wt_undelivered_work` tells a hook's
   leftovers from the agent's own changes by comparing the worktree's current

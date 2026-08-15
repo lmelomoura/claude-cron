@@ -1023,10 +1023,18 @@ class journal_lock:
     such run". Same mkdir lock the engine takes, by the same name — so the two
     sides must also agree on when a lock may be BROKEN.
 
-    They now do: the holder writes its pid, and the lock is stolen only when
-    that pid is gone. Breaking on elapsed time (what both sides used to do)
-    robs the slowest legitimate holder first, and the slowest holder here is a
-    rewrite of a long journal — precisely the case the lock exists for.
+    They now do: the holder writes its pid AND the boot it was taken in, and
+    the lock is stolen only when that pid is gone OR belongs to an earlier
+    boot. Breaking on elapsed time (what both sides used to do) robs the
+    slowest legitimate holder first, and the slowest holder here is a rewrite
+    of a long journal — precisely the case the lock exists for. Breaking on
+    pid alone (what this class used to do after that) reopens the same defect
+    Task 1 removed from the run slots: pids are reissued from 1 on every boot,
+    so a `.journal.lock` left behind across a reboot can find its recorded pid
+    reused by an unrelated live process, and a bare `os.kill` cannot tell the
+    difference. `lock_take`, the engine's own mkdir lock, already checks
+    `slot_alive` for exactly this reason; this is the same fix on the other
+    side of the same lock, using the same `boot_id()`.
 
     A live holder is waited for, but NOT for ever: this runs inside an HTTP
     handler, so a wedged holder has to surface as a failed request rather than
@@ -1048,8 +1056,27 @@ class journal_lock:
         except (OSError, ValueError):
             return None
 
+    def _owner_boot(self):
+        """The boot the current holder took the lock in: str, or "" when it
+        cannot be read (predates this field, or races a concurrent _break)."""
+        try:
+            return (self.path / "boot").read_text().strip()
+        except OSError:
+            return ""
+
     @staticmethod
-    def _alive(pid):
+    def _alive(pid, boot):
+        """Is the process this pid names still the one that took the lock?
+
+        A boot that disagrees with the one this process is running in makes
+        the lock dead however healthy its pid looks — the pid was reissued to
+        someone else across the reboot. A lock with no boot file at all
+        predates this field: fall back to the pid alone, so an upgrade does
+        not treat every lock still held across it as stale.
+        """
+        now = boot_id()
+        if boot and now and boot != now:
+            return False
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -1084,14 +1111,15 @@ class journal_lock:
             else:
                 try:
                     (self.path / "pid").write_text(str(os.getpid()))
+                    (self.path / "boot").write_text(boot_id())
                 except OSError:
                     pass
                 self.held = True
                 return self
 
             owner = self._owner()
-            if owner is not None and not self._alive(owner):
-                self._break()                 # the owner is gone: genuinely stale
+            if owner is not None and not self._alive(owner, self._owner_boot()):
+                self._break()                 # the owner is gone, or from an earlier boot
                 continue
             if owner is None:
                 # The narrow race between mkdir and writing the pid. Only this
