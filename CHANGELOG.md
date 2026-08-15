@@ -251,6 +251,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A resume restarts its session's ttl clock.** The expiry sweep reads a
+  kept-open run dir's age from the directory's own mtime, and rewriting
+  `.ended` on exit does not touch a directory entry — so without this, the
+  second cycle's window was `ttl − (age when the resume started)`. A session
+  resumed near the end of its first TTL window that then ran for a few more
+  hours was already past the ttl the moment it stopped, and the very next
+  sweep deleted it while the operator was looking at a card that said "resume
+  this run to continue with its context". The claim now touches the run dir
+  the moment it succeeds, giving every resume a full, fresh window — but only
+  the moment it succeeds: a refused claim (another live run already holds the
+  tree) returns before reaching it, so a run that never gets to keep the
+  directory never resets a clock for it either.
+
 - **A session is done when the agent says so and delivers everything — not
   when the run merely looks good.** `.ended` used to come from the run's
   quality verdict: only `success` wrote `done`. But `warning` fires for

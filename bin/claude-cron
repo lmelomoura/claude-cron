@@ -1703,6 +1703,25 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     && ok "an empty manifest primary refuses the resume, not just a missing directory" \
     || bad "the primary-name emptiness guard is missing or duplicated (found $got)"
 
+  echo "run_job() — a reattach restarts the ttl clock on its run dir"
+  # wt_mtime reads the run dir's own mtime, and rewriting .ended on exit does
+  # not touch a directory entry -- so without a fresh touch on the claim, the
+  # second cycle's window is ttl minus however old the directory already was
+  # when the resume started, and a long resume can outlive it before it even
+  # finishes. Anchored to ld2_line (the SUCCESSFUL claim's lock_drop, found
+  # above): the touch has to land after it, not before -- before it, a
+  # refused claim (the branch just above, which returns rather than
+  # continuing) would restart a clock for a run that never gets to keep the
+  # directory at all.
+  got="$(printf '%s\n' "$body" | grep -c 'touch "\$run_dir" 2>/dev/null')"
+  [ "${got:-0}" -eq 1 ] \
+    && ok "the reattach branch touches its run dir exactly once ($got)" \
+    || bad "run_job touches \$run_dir $got times in the reattach branch, expected 1"
+  touch_line="$(printf '%s\n' "$body" | grep -n 'touch "\$run_dir" 2>/dev/null' | head -1 | cut -d: -f1)"
+  [ -n "${ld2_line:-}" ] && [ -n "${touch_line:-}" ] && [ "$touch_line" -gt "$ld2_line" ] \
+    && ok "and it happens after the claim succeeds, at line $touch_line vs drop at $ld2_line" \
+    || bad "touch (line ${touch_line:-?}) is not after the successful claim's lock_drop (line ${ld2_line:-?})"
+
   echo "run_job() — two concurrent reattaches to the same tree: exactly one wins"
   # Not structural: this drives the real lock_take/lock_drop/wt_is_claimed/
   # slot_alive under genuine concurrency, to prove the mechanism the ordering
@@ -3260,6 +3279,14 @@ ${prompt}"
       fi
       echo "$run_dir" > "$slot/worktree"
       lock_drop "$rlock"
+      # Restart the TTL clock on the claim, not on whatever this run does
+      # next. wt_mtime reads the run dir's own mtime, and rewriting .ended on
+      # exit does not touch a directory entry -- so without this, the second
+      # cycle's window is `ttl - (age when this resume started)`. A session
+      # resumed at hour 20 of a 24h ttl that then runs for 5h is already past
+      # it the moment it stops, and the very next sweep deletes it while the
+      # operator is reading a card that says "resume this run to finish it".
+      touch "$run_dir" 2>/dev/null || true
       port_base="$("$JQ" -r '.port_base // ""' "$run_dir/.run.json" 2>/dev/null)"
       case "$port_base" in null) port_base="" ;; esac
       if [ -z "$port_base" ]; then
