@@ -2281,3 +2281,128 @@ mesma razão. Dar-lhes o mesmo tratamento.
   abortaria todo o run não isolado. `run_dir=""` ao lado do `worktree=""`.
 - Nada fixa o contrato do `--resume`: o `bind_session` nunca religa, o que só
   está certo enquanto a CLI reportar o mesmo `session_id` num run retomado.
+
+---
+
+## Task 10: The last residue of the composition class
+
+A segunda revisão de branch inteira fechou os dois Critical e os sete Important
+da primeira, e confirmou o terceiro Critical que a própria ronda de correcção
+encontrou. Ficaram três, e o primeiro é a **quinta** instância do mesmo padrão:
+um valor que só existe nalguns caminhos, lido por um consumidor que assume que
+existe sempre.
+
+### 10.1 (Important) `wt_dirt_sha` não distingue "não há nada" de "não consegui ver"
+
+`wt_dirt_sha` é `git status --porcelain | shasum`. Quando o git **não consegue
+responder**, o stdout vem vazio e o hash é o SHA-1 do vazio — que é exactamente
+o que uma árvore limpa produz. Medido:
+
+```
+clean repo      : da39a3ee5e6b4b0d3255bfef95601890afd80709
+not a repo      : da39a3ee5e6b4b0d3255bfef95601890afd80709
+nonexistent path: da39a3ee5e6b4b0d3255bfef95601890afd80709
+```
+
+O `wt_undelivered_work` compara então igual ao snapshot e não reporta sujidade;
+duas linhas abaixo, o `[ -n "$head" ] || continue` salta a verificação de
+commits por push no mesmo repo quando o `git rev-parse` também falha. Os dois
+pontos cegos apontam para o mesmo lado. E desde a 9.3 essa resposta deixou de
+ser informativa e passou a **autorizar um `git worktree remove --force`**.
+
+Alcançável quando o operador move ou renomeia um checkout canónico (morre o
+ponteiro `.git` de todos os worktrees ligados de uma vez), quando o trabalho do
+próprio agente corrompe o índice, ou num volume momentaneamente ilegível.
+
+**A correcção**, no idioma que a branch já usa: o `wt_dirt_sha` devolve não-zero
+quando o `git status` falha, e o `wt_undelivered_work` reporta "could not
+determine" **como trabalho por entregar**. A direcção segura guarda a árvore e
+di-lo no cartão, que é a tese desta branch inteira.
+
+```bash
+# 0 and a fingerprint, or non-zero when git could not answer. The distinction is
+# the whole point: `git status --porcelain` prints nothing both for a clean tree
+# and for a tree it cannot read, and hashing that gives the SAME value — so a
+# broken .git pointer used to be indistinguishable from "no changes". That was
+# survivable while this only decided a note. Since the session marker learned to
+# ask it, the same answer authorises `git worktree remove --force`.
+wt_dirt_sha() { # <worktree> -> prints a fingerprint; non-zero if git could not look
+  local out
+  out="$(git -C "${1:-}" status --porcelain 2>/dev/null)" || return 1
+  printf '%s\n' "$out" | shasum | awk '{print $1}'
+}
+```
+
+E no `wt_undelivered_work`, tratar a falha como não entregue:
+
+```bash
+    if ! live="$(wt_dirt_sha "$wt")"; then
+      found="$found, cannot read git in $name"
+    elif [ -n "$snap" ]; then
+      [ "$live" != "$snap" ] && found="$found, uncommitted changes in $name"
+    ...
+```
+
+Aplicar o mesmo raciocínio ao `[ -n "$head" ] || continue`: um `rev-parse` que
+falha é "não consegui ver", não "não há commits".
+
+### 10.2 (Important) A correcção do boot ficou assimétrica sobre um lock partilhado
+
+`journal_lock`, no servidor Python, escreve `pid` e **não** escreve `boot`, e o
+seu `_alive` é um `os.kill` nu — enquanto o docstring da própria função diz que
+é *"the same mkdir lock the engine takes, by the same name — so the two sides
+must also agree on when a lock may be BROKEN"*. Depois da 9.6 já não concordam.
+
+E o perigo volta para o bash: o `slot_alive` tem o *fallback* deliberado para
+um lock sem ficheiro `boot` (mantido para um upgrade não ceifar runs em voo),
+portanto um `.journal.lock` deixado pelo **servidor** através de um reboot cai
+nesse fallback, vê um pid reciclado, e o `lock_take` espera para sempre — dentro
+do `record_run`, antes do `run_cleanup`. O registo do run nunca é escrito e o
+slot nunca é libertado: o job pára em silêncio, que é o sintoma que a entrada de
+CHANGELOG da Tarefa 1 descreve.
+
+Antes desta branch os dois lados estavam igualmente errados; a branch corrigiu
+um e deixou o outro, e é isso que cria a armadilha. Uma linha de cada lado:
+escrever `boot` ao lado de `pid` no `__enter__`, e consultar o `boot_id()` que
+já existe no módulo dentro do `_alive`.
+
+### 10.3 (Important) O botão Resume promete uma árvore que já não existe
+
+A correcção da I5 alargou o `resumable` a `error||warning`. Mas um run
+`NOTHING TO DO:` é `warning` **e** `.ended=done` — logo o `run_cleanup` remove-lhe
+a árvore antes do poll seguinte do dashboard. O botão acende, o tooltip diz
+*"continue session X where it stopped"*, e carregar nele chega ao
+`wt_find_by_session`, não encontra nada, e **arranca um worktree novo em
+silêncio**: uma sessão Claude inteira gasta numa tarefa que já tinha dito que
+não havia nada para fazer.
+
+A correcção barata não é no servidor — é no `run_job`. Um resume que não
+encontra directório cai hoje no ramo do worktree novo sem dizer nada. Recusar
+ali, da mesma maneira que já se recusa `its primary worktree is gone or
+unnamed`, transforma um gasto silencioso numa linha no cartão — e fecha ao mesmo
+tempo o caso, ainda aberto, de um resume cujo directório alguém apagou à mão.
+
+```bash
+      if [ -n "$resume_sid" ] && [ -z "$reattached" ]; then
+        log_tick "$id: refusing to resume $resume_sid — no open session directory holds it (already finished, expired, or removed by hand)"
+        state_set "$id" last_start "$start"
+        state_set "$id" last_status '"error"'
+        run_cleanup "$id" "$slot"; trap - EXIT
+        return 1
+      fi
+```
+
+### 10.4 (Minor) O relógio do TTL mede eventos diferentes em cada ciclo
+
+O ciclo 1 mede desde o **fim** do run (a primeira escrita do `.ended` cria a
+entrada de directório); o ciclo 2 mede desde o **início** (o `touch` no
+reattach). Sem `timeout_seconds` só o guard de estagnação limita um run, portanto
+uma sessão retomada que corra mais de 24 h é reclamável no minuto em que pára,
+contra uma coluna que promete um dia. Um `touch "$run_dir"` ao lado da escrita
+do `.ended` faz os dois ciclos medirem o mesmo evento.
+
+### 10.5 (Minor) Documentar o deadlock que o lock do sweep torna possível
+
+O sweep segura o `.resume` por directório enquanto corre o hook `down`. Um hook
+de provisioning que invoque `claude-cron worktree-drop` bloqueia contra o lock
+que o chamou. Uma linha no README, na secção dos hooks.
