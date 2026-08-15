@@ -19,6 +19,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The dashboard tab for kept run directories is now labelled Sessions, not
+  Worktrees.** Its own blurb already talked about sessions throughout —
+  "Worktrees" was the tab's original name, left behind once this branch gave a
+  cut-short session its own lifecycle. Worktree is the isolation mechanism
+  underneath; session is the thing actually being kept, and the word the
+  README and the rest of the dashboard already use for it. Label only: the
+  tab's id, its `data-tab` value and its pane were left exactly where every
+  other part of the page already looks for them.
+
 - **The filter-picker example names a generic project, not a real one.** A code
   comment illustrated the control with a live client project name. This is a
   public repository, so an example is a publication: it now uses the same

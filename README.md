@@ -665,6 +665,10 @@ Three things to know before splitting jobs across accounts:
   pagination. The 🔍 on each row opens the run: did the precheck pass, which tools
   were blocked, a **timeline with one line per agent turn**, the final answer, and
   stderr.
+- **Sessions** — every run directory still on disk, kept because its session
+  was cut short or still holds work that exists on no remote; see [Sessions
+  that are still open](#sessions-that-are-still-open). Size, age and time left
+  per row, and **Discard** ends one early.
 - **Theme** — light/dark toggle in the header.
 
 ### Signing in

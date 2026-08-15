@@ -53,6 +53,24 @@ def test_the_page_javascript_parses(srv, tmp_path):
     assert p.returncode == 0, p.stderr
 
 
+def test_the_sessions_tab_is_labelled_for_what_it_shows(srv):
+    """The tab lists retained run directories, kept because a session was cut
+    short and might still be resumed -- "Sessions" is the word the README and
+    the rest of the dashboard already use for that. It shipped this branch
+    labelled "Worktrees" instead, the word for the isolation mechanism
+    underneath, not the thing on screen. Pinned so it does not drift back."""
+    js = _js(srv)
+    assert 'I.folder + "Sessions"' in js, "the tab's own label was not renamed"
+    assert '"Worktrees"' not in js, "the old tab label text is still shipping somewhere"
+    # The internal wiring (id, data-tab, and by extension the dashTab value and
+    # localStorage key) is deliberately untouched -- this is a label change,
+    # not a restructure. test_every_element_the_script_reaches_for_exists
+    # covers ids existing at all; this pins that THIS one specifically did not
+    # get renamed along with its visible text.
+    assert '<button class="viewtab" data-tab="worktrees" id="vt-wt">' in _page(srv), \
+        "the tab's internal id/data-tab must stay stable even though its label changed"
+
+
 def test_every_element_the_script_reaches_for_exists(srv):
     """$("foo") against an id the markup does not define is a silent no-op that
     turns into a TypeError the first time the code touches .value."""
