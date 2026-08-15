@@ -70,6 +70,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   its own scan and write, the same idiom `alloc_port_base` already used for
   its side of this.
 
+- **A slow teardown in the orphan sweep no longer stalls an unrelated tick.**
+  The sweep holds `$LOCK_DIR/.resume` while running a directory's `down`
+  hook — a `docker compose down -v`, seconds to minutes — and `cmd_tick` had
+  no mutex against itself, so a second tick starting in that window (a
+  launchd interval firing again before the first returned, or a manual
+  `claude-cron tick`) raced it: its own sweep took the same lock for
+  whatever its own first directory was and blocked there too, so every job
+  it would have launched, and every other resume or drop, queued up behind a
+  teardown that had nothing to do with them. `cmd_tick` now takes its own
+  `$LOCK_DIR/.tick` around the whole tick, so a second one simply waits for
+  the first to finish before it starts. Narrowing `.resume` itself to cover
+  only the decision, not the hook, was considered and rejected: that lock is
+  also what stops a resume claiming a directory the sweep is mid-way through
+  removing (the same reason `cmd_worktree_drop` holds it the identical way
+  for a human's drop), and narrowing it would have reopened a resume
+  claiming a directory between the sweep marking it done and the hook
+  actually finishing — an agent launched into a cwd being deleted under it.
+
 ### Added
 
 - **A job whose last run is being held for a resume now says so on its own
