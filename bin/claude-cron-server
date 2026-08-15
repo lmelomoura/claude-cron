@@ -1309,18 +1309,32 @@ def active_runs_for(jid):
 
 
 def _session_from_log(logp):
-    """The session id a live run reported in its transcript's init event."""
+    """The session id a live run reported in its transcript's init event.
+
+    Read by LINES, not by a byte window. The init event carries the run's whole
+    tool roster, and with a few MCP servers attached it passes 8 KB on its own —
+    a byte cap then cuts it mid-object, json.loads raises on the fragment, and
+    this returns "" having found nothing. The transcript is append-only, so
+    those first bytes never change: the miss is permanent, not a transient the
+    next poll recovers from. `session_from_stream` in bin/claude-cron was fixed
+    the same way and for the same reason, and the two sides must not disagree
+    about what they are able to see.
+    """
     if not logp or not logp.endswith(".json"):
         return ""
     sp = Path(logp[:-5] + ".stream.ndjson")
     try:
         if not sp.resolve().is_relative_to(_logs_root()):
             return ""
+        head = []
         with open(sp, "r", errors="replace") as fh:
-            head = fh.read(8192)      # the init event is the first line
+            for line in fh:
+                head.append(line)
+                if len(head) >= 5:    # the same five lines `head -n 5` reads
+                    break
     except OSError:
         return ""
-    for line in head.splitlines():
+    for line in head:
         try:
             ev = json.loads(line)
         except ValueError:

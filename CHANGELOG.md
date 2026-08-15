@@ -17,6 +17,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A live run with a large tool roster shows its session again.** The dashboard
+  reads a running row's session id out of the transcript, and it read the first
+  8 KB of it rather than the first lines. The init event carries the run's whole
+  tool roster; with a few MCP servers attached it passes 8 KB on its own, so the
+  window cut it mid-object, the parse failed on the fragment, and the Session
+  column showed a dash. The transcript is append-only, so those first bytes never
+  changed — the dash stayed for the life of the run, on exactly the busiest
+  agents. The engine hit the same thing on its own side of this and was fixed by
+  reading lines; this is the other half, so neither side can now see less than
+  the other. Display only: the resume path never used this value.
+
 ### Added
 
 - **A run directory now records the session working in it** (`.session`). The id
