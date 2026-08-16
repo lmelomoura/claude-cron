@@ -543,6 +543,16 @@ classifies the run by it, and an ending with no marker is recorded as a warning
 The marker is a claim about the state of the repository and the tracker, never
 about what you intend to do next. Never write one while work is still in flight.
 
+It also decides what happens to your working tree. Declare an ending AND leave
+nothing on a branch no remote has, and the session is finished: the worktrees
+are torn down and their services stopped. Anything else — no marker, or commits
+that exist only here — keeps the whole run directory AND its running services
+for a day, so the run can be picked back up exactly where it stopped. That is
+the right outcome when you really were cut off mid-task, and pure waste when you
+simply forgot to say you were done: it holds a full checkout and a live database
+per repo, on a machine running several of these at once. Push what you finished,
+and say how you ended.
+
 ## Blocking is for NEW blockers — a human's move is an answer, not an anomaly
 
 `BLOCKED:` exists for something that genuinely stops you: an unanswered business

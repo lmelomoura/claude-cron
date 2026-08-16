@@ -17,6 +17,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The run-ending contract now tells the agent what its marker decides.** It
+  said the marker classifies the run, which was the whole truth until the
+  worktree started belonging to the session. Now the same sentence decides
+  whether the working tree is torn down or kept for a day with its services
+  still running — so an agent that simply forgot to say it was done was holding
+  a full checkout and a live database per repo, on a machine running several at
+  once, and had no way to know. The contract says so, and says the cheap way out
+  is to push what you finished and declare how you ended.
+
 ### Added
 
 - **A whole run is now tested end to end** (`test/e2e.test.sh`, run by
