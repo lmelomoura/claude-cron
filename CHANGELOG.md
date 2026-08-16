@@ -17,6 +17,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **A whole run is now tested end to end** (`test/e2e.test.sh`, run by
+  `claude-cron selftest`). Every suite before it was unit-level: it called
+  `wt_setup`, the classifier and the sweep directly, and never drove a run
+  through the engine. That gap is where the expensive defects lived — a marker
+  written before the status was final, a resume that could not find the
+  directory its own session was bound to, an upgrade that reaped what the
+  previous version had been preserving. None of those is visible to a test that
+  never runs a run. Thirteen checks now cover a clean ending, a run cut short,
+  a resume reattaching to the same tree, work on no remote being reported, an
+  open session expiring, a pre-upgrade directory surviving the first tick, and
+  a slot from an earlier boot protecting nothing.
+
+  It stays offline and free: `test/fake-claude` stands in for the CLI and emits
+  the same `stream-json` shape, so no session is ever spent. It redirects
+  `CLAUDE_CRON_CONFIG` and `CLAUDE_CRON_DATA` into a sandbox it deletes on the
+  way out, so an operator's jobs, projects and run history are neither read nor
+  written. Adds roughly 13s to `selftest`.
+
 ### Changed
 
 - **The dashboard tab for kept run directories is now labelled Sessions, not

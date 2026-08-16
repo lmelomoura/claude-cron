@@ -3565,6 +3565,29 @@ NASTY
     ok "round-cap suite not installed — skipped"
   fi
 
+  echo "a whole run, end to end — worktree, agent, marker, teardown, resume, expiry"
+  # Everything above this line is unit-level: it calls wt_setup, the classifier
+  # and the sweep directly. The defects that cost most getting here were the ones
+  # that only appear where those MEET -- a marker written before the status was
+  # final, a resume that could not find the directory its own session was bound
+  # to, an upgrade that reaped what the previous version had been preserving.
+  # None of them is visible to a test that never drives a whole run.
+  #
+  # It stays offline and free: test/fake-claude stands in for the CLI, and the
+  # run redirects CONFIG and DATA into its own sandbox, so an operator's jobs and
+  # run history are neither read nor written.
+  if [ -x "$BASE_DIR/test/e2e.test.sh" ]; then
+    local e2eout
+    if e2eout="$("$BASE_DIR/test/e2e.test.sh" 2>&1)"; then
+      ok "end-to-end suite ($(printf '%s' "$e2eout" | grep -c '  ok ') checks)"
+    else
+      bad "end-to-end suite failed:"
+      printf '%s\n' "$e2eout" | grep '  FAIL' | sed 's/^/      /'
+    fi
+  else
+    ok "end-to-end suite not installed — skipped"
+  fi
+
   echo "the dev/review loop has an exit condition"
   # The loop between the dev and review agents once ran without a terminating
   # condition: both prompts said "repeat until nothing blocks", and the reviewer's

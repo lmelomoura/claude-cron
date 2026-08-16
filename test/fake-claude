@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# A stand-in for the Claude Code CLI, emitting the stream-json shape the engine
+# parses. It exists so the session lifecycle can be driven end to end without
+# spending a real session on it — everything here is ours except the model.
+#
+# Behaviour is steered by two env vars the harness sets:
+#   FAKE_SESSION  the session id to report in the init event
+#   FAKE_MODE     complete | undeclared | dirty | hang
+set -u
+
+sid="${FAKE_SESSION:-sess-fake-0001}"
+mode="${FAKE_MODE:-complete}"
+
+# The init event, deliberately fat: a real one carries the whole tool roster,
+# which is what used to overflow an 8 KB read on both sides.
+{
+  printf '{"type":"system","subtype":"init","session_id":"%s","tools":[' "$sid"
+  i=0
+  while [ "$i" -lt 400 ]; do
+    [ "$i" -gt 0 ] && printf ','
+    printf '"a-tool-with-a-fairly-long-name-%s"' "$i"
+    i=$((i + 1))
+  done
+  printf ']}\n'
+}
+
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}\n'
+
+case "$mode" in
+  dirty)
+    # Leave work in the tree that exists on no remote, and still declare a
+    # clean ending — the shape that used to be filed away in a folder.
+    echo "the agent was here" > agent-left-this.txt
+    result="RUN COMPLETE: made a change and did not push it."
+    ;;
+  undeclared)
+    # Stop without saying how it ended: the signature of a run cut off.
+    result="I did some work."
+    ;;
+  hang)
+    sleep 600
+    result="never reached"
+    ;;
+  *)
+    result="RUN COMPLETE: nothing needed doing."
+    ;;
+esac
+
+printf '{"type":"result","subtype":"success","is_error":false,"num_turns":2,"session_id":"%s","total_cost_usd":0,"result":"%s"}\n' \
+  "$sid" "$result"
