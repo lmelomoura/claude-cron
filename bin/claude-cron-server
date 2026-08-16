@@ -56,6 +56,14 @@ CLAUDE_CRON = str(BIN_DIR / "claude-cron")
 PORT = int(os.environ.get("CLAUDE_CRON_PORT", "8787"))
 PLIST_LABEL = "com.claude-cron.tick"
 SERVER_LABEL = "com.claude-cron.server"
+# WORKTREE_SESSION_TTL, not SESSION_TTL: this module already has a SESSION_TTL,
+# and it is the HTTP sign-in idle timeout (12h). Two module-level assignments of
+# one name do not collide loudly — the later one silently wins at import, and
+# the dashboard would have counted every kept directory down against an auth
+# constant that has nothing to do with the sweep. Kept in step with the engine's
+# own default (bin/worktree-lib.sh, wt_prune_orphans): the dashboard must never
+# promise a directory more time than the sweep will give it.
+WORKTREE_SESSION_TTL = int(os.environ.get("CLAUDE_CRON_SESSION_TTL") or 86400)
 
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1015,10 +1023,18 @@ class journal_lock:
     such run". Same mkdir lock the engine takes, by the same name — so the two
     sides must also agree on when a lock may be BROKEN.
 
-    They now do: the holder writes its pid, and the lock is stolen only when
-    that pid is gone. Breaking on elapsed time (what both sides used to do)
-    robs the slowest legitimate holder first, and the slowest holder here is a
-    rewrite of a long journal — precisely the case the lock exists for.
+    They now do: the holder writes its pid AND the boot it was taken in, and
+    the lock is stolen only when that pid is gone OR belongs to an earlier
+    boot. Breaking on elapsed time (what both sides used to do) robs the
+    slowest legitimate holder first, and the slowest holder here is a rewrite
+    of a long journal — precisely the case the lock exists for. Breaking on
+    pid alone (what this class used to do after that) reopens the same defect
+    Task 1 removed from the run slots: pids are reissued from 1 on every boot,
+    so a `.journal.lock` left behind across a reboot can find its recorded pid
+    reused by an unrelated live process, and a bare `os.kill` cannot tell the
+    difference. `lock_take`, the engine's own mkdir lock, already checks
+    `slot_alive` for exactly this reason; this is the same fix on the other
+    side of the same lock, using the same `boot_id()`.
 
     A live holder is waited for, but NOT for ever: this runs inside an HTTP
     handler, so a wedged holder has to surface as a failed request rather than
@@ -1040,8 +1056,27 @@ class journal_lock:
         except (OSError, ValueError):
             return None
 
+    def _owner_boot(self):
+        """The boot the current holder took the lock in: str, or "" when it
+        cannot be read (predates this field, or races a concurrent _break)."""
+        try:
+            return (self.path / "boot").read_text().strip()
+        except OSError:
+            return ""
+
     @staticmethod
-    def _alive(pid):
+    def _alive(pid, boot):
+        """Is the process this pid names still the one that took the lock?
+
+        A boot that disagrees with the one this process is running in makes
+        the lock dead however healthy its pid looks — the pid was reissued to
+        someone else across the reboot. A lock with no boot file at all
+        predates this field: fall back to the pid alone, so an upgrade does
+        not treat every lock still held across it as stale.
+        """
+        now = boot_id()
+        if boot and now and boot != now:
+            return False
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -1076,14 +1111,15 @@ class journal_lock:
             else:
                 try:
                     (self.path / "pid").write_text(str(os.getpid()))
+                    (self.path / "boot").write_text(boot_id())
                 except OSError:
                     pass
                 self.held = True
                 return self
 
             owner = self._owner()
-            if owner is not None and not self._alive(owner):
-                self._break()                 # the owner is gone: genuinely stale
+            if owner is not None and not self._alive(owner, self._owner_boot()):
+                self._break()                 # the owner is gone, or from an earlier boot
                 continue
             if owner is None:
                 # The narrow race between mkdir and writing the pid. Only this
@@ -1236,9 +1272,10 @@ def active_runs_for(jid):
     for d in sorted(base.iterdir()):
         if not d.is_dir() or d.name.startswith("."):
             continue
+        if not slot_alive(d):
+            continue
         try:
             pid = int((d / "pid").read_text().strip())
-            os.kill(pid, 0)  # alive?
         except (OSError, ValueError):
             continue
         def _read(name):
@@ -1272,18 +1309,32 @@ def active_runs_for(jid):
 
 
 def _session_from_log(logp):
-    """The session id a live run reported in its transcript's init event."""
+    """The session id a live run reported in its transcript's init event.
+
+    Read by LINES, not by a byte window. The init event carries the run's whole
+    tool roster, and with a few MCP servers attached it passes 8 KB on its own —
+    a byte cap then cuts it mid-object, json.loads raises on the fragment, and
+    this returns "" having found nothing. The transcript is append-only, so
+    those first bytes never change: the miss is permanent, not a transient the
+    next poll recovers from. `session_from_stream` in bin/claude-cron was fixed
+    the same way and for the same reason, and the two sides must not disagree
+    about what they are able to see.
+    """
     if not logp or not logp.endswith(".json"):
         return ""
     sp = Path(logp[:-5] + ".stream.ndjson")
     try:
         if not sp.resolve().is_relative_to(_logs_root()):
             return ""
+        head = []
         with open(sp, "r", errors="replace") as fh:
-            head = fh.read(8192)      # the init event is the first line
+            for line in fh:
+                head.append(line)
+                if len(head) >= 5:    # the same five lines `head -n 5` reads
+                    break
     except OSError:
         return ""
-    for line in head.splitlines():
+    for line in head:
         try:
             ev = json.loads(line)
         except ValueError:
@@ -1294,14 +1345,151 @@ def _session_from_log(logp):
     return ""
 
 
+_BOOT_ID = None
+
+
+def boot_id():
+    """The boot this machine is in, as the engine stamps it onto every slot.
+
+    Reads `kern.bootsessionuuid`, not `kern.boottime`: XNU steps the calendar
+    clock underlying `kern.boottime` on an NTP resync or a wake from sleep, so
+    it can move within a boot that never rebooted. Comparing it exactly would
+    then read a live slot as belonging to another boot. The session uuid is
+    opaque and does not move, so there is nothing here to parse and no shape
+    to get wrong.
+
+    Slots live under data/ and survive a reboot; pids are reissued from 1 on the
+    way up. Without the boot, a recycled pid makes a dead slot look live — and
+    the dashboard then hides a run dir nobody owns from the only list that
+    offers to discard it.
+    """
+    global _BOOT_ID
+    if _BOOT_ID is None:
+        try:
+            out = subprocess.run(["sysctl", "-n", "kern.bootsessionuuid"],
+                                 capture_output=True, text=True,
+                                 timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+        _BOOT_ID = out.strip()
+    return _BOOT_ID
+
+
+def slot_alive(slot):
+    """Is the process this slot names still the process that took it?"""
+    try:
+        pid = int((slot / "pid").read_text().strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        boot = (slot / "boot").read_text().strip()
+    except OSError:
+        boot = ""       # predates the boot id: fall back to the pid alone
+    now = boot_id()
+    if boot and now and boot != now:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+# Throttle for _session_bound_to's own logging, keyed by run dir path (a
+# string, so it survives independently of any Path object identity). Maps a
+# path that currently has a bad condition to WHICH condition was last logged
+# for it. retained_worktrees() runs on every /api/data poll -- every 5
+# seconds -- and without this, one bad `.session` file would write a fresh
+# log line every poll until the TTL reclaims its directory, up to 24h of
+# identical lines for a condition already fully diagnosed the first time.
+#
+# In memory only, on purpose: the server is a long-lived process and this is
+# exactly the kind of thing that does not need to survive a restart (a
+# restart is itself a reasonable moment to re-report a standing condition).
+# Entries are removed the instant the condition clears (the file reads fine,
+# or is gone), so a LATER recurrence -- even the identical condition -- is
+# reported again rather than staying silent forever because of what an
+# earlier, since-resolved problem once logged. retained_worktrees() also
+# prunes it for paths that drop out of the listing entirely (a torn-down run
+# dir), so a path this function never sees again cannot sit here forever.
+_session_bound_logged = {}
+
+
+def _session_bound_to(run_dir):
+    """The session id `.session` names for this run dir, or "" when there is
+    none to resume with.
+
+    Absent, empty and unreadable are not the same claim, and collapsing them
+    into one silent "" would let a value that only exists on some paths be
+    read by something that treats its default as an answer.
+
+    - Absent is the ordinary case. bind_session (bin/claude-cron) writes this
+      file through mktemp + rename, and only once it already has a non-empty
+      id -- so a run dir with no `.session` is one whose agent never got far
+      enough to report one. There was never anything to resume; this is not a
+      fault, and it is not logged.
+    - Present but unreadable (permission denied, `.session` replaced by a
+      directory, a mid-flight filesystem error, ...) is a different claim: a
+      session may well be bound here and this simply could not read it.
+      Logged, so staying silent does not hide it the way a swallowed
+      exception would.
+    - Present but empty is a contract violation: bind_session's own write
+      goes through mktemp + rename and only after confirming the id is
+      non-empty, so an empty file is not a state its writer can produce.
+      Also logged, for the same reason as unreadable.
+
+    All three leave the caller with no usable id -- this only decides what
+    gets logged, never fabricates a placeholder the caller could mistake for
+    a real one.
+
+    The unreadable and empty cases are throttled through _session_bound_logged
+    (see its own comment): logged the first time a directory shows one of
+    them, silent on every repeat of the SAME condition, logged again the
+    moment that directory's condition changes -- including clearing and then
+    recurring.
+
+    Reads bytes and decodes with errors="replace", not .read_text(): a
+    session id is written by a single `printf` and should never be anything
+    but plain ASCII, but .read_text() raises UnicodeDecodeError -- a
+    ValueError, not an OSError -- on a byte that is not valid UTF-8, and that
+    would have gone uncaught here, crashing retained_worktrees() and the
+    /api/data poll it backs for every job's card, not just this one row's.
+    Same fix _load_artifacts already needed for the same reason, elsewhere in
+    this file.
+    """
+    p = run_dir / ".session"
+    key = str(run_dir)
+    try:
+        raw = p.read_bytes()[:4096].decode("utf-8", errors="replace")
+    except FileNotFoundError:
+        _session_bound_logged.pop(key, None)
+        return ""
+    except OSError as exc:
+        condition = f"unreadable: {exc!r}"
+        if _session_bound_logged.get(key) != condition:
+            _log(f"retained_worktrees: {p} exists but could not be read: {exc!r}")
+            _session_bound_logged[key] = condition
+        return ""
+    sid = raw.strip()
+    if not sid:
+        if _session_bound_logged.get(key) != "empty":
+            _log(f"retained_worktrees: {p} exists but is empty")
+            _session_bound_logged[key] = "empty"
+        return ""
+    _session_bound_logged.pop(key, None)
+    return sid
+
+
 def retained_worktrees():
     """Run dirs sitting on disk that no live run is using.
 
-    wt_teardown keeps a run dir whose worktrees hold uncommitted or unpushed
-    work — correct, but permanent: the sweep re-reaches the same verdict every
-    tick and nothing ever lets go. They were also invisible, mentioned only in
-    tick.log, so the first symptom was a full disk. Listing them is what makes
-    the deliberate drop (worktree-drop) something a user can actually reach.
+    wt_teardown keeps a run dir whose session is marked `open` — cut short and
+    waiting on a resume — or not marked at all, since a crash writes no marker
+    either. Correct, but permanent on its own: the sweep re-reaches the same
+    verdict every tick and nothing ever lets go without a resume or an explicit
+    drop. They were also invisible, mentioned only in tick.log, so the first
+    symptom was a full disk. Listing them is what makes the deliberate drop
+    (worktree-drop) something a user can actually reach.
 
     Read straight from the directory tree, the same way active_runs_for reads
     the slots — no fork, cheap enough for the poll.
@@ -1318,10 +1506,7 @@ def retained_worktrees():
             for slot in jobdir.iterdir():
                 if not slot.is_dir() or slot.name.startswith("."):
                     continue
-                try:
-                    pid = int((slot / "pid").read_text().strip())
-                    os.kill(pid, 0)
-                except (OSError, ValueError):
+                if not slot_alive(slot):
                     continue           # dead slot: whatever it named is nobody's
                 try:
                     claimed.add((slot / "worktree").read_text().strip())
@@ -1350,8 +1535,47 @@ def retained_worktrees():
                         bytes_ += os.lstat(os.path.join(dirpath, f)).st_size
                     except OSError:
                         pass
+            # An open session is kept for a resume, and the sweep reclaims it
+            # once its TTL is up. Saying when turns a folder that looks abandoned
+            # into a queue with an end.
+            try:
+                ended = (d / ".ended").read_text().strip()
+            except OSError:
+                ended = ""
+            # Anything the engine has not marked `done` is on the expiry clock,
+            # including a dir with no marker at all — a run killed with -9 never
+            # wrote one, and it is exactly the kind that sits there longest. The
+            # sweep uses the same `!= done` test; these two must not disagree,
+            # or the dashboard promises a reclaim that never comes.
+            expires_in = None if ended == "done" else max(0, WORKTREE_SESSION_TTL - age)
+            # What a resume would need. "" means there is nothing to resume
+            # WITH, for any of three different reasons -- see _session_bound_to.
             out.append({"job": jobdir.name, "stamp": d.name, "path": str(d),
-                        "age": age, "repos": repos, "bytes": bytes_})
+                        "age": age, "repos": repos, "bytes": bytes_,
+                        "ended": ended, "expires_in": expires_in,
+                        "session": _session_bound_to(d)})
+    # This is the one place that sees every path still on disk, so it is the
+    # one place that can tell _session_bound_logged's throttle cache a path
+    # is gone -- a torn-down run dir is never asked about again, and without
+    # this its last bad condition would sit in memory for the rest of the
+    # server process's life.
+    #
+    # dict(...) snapshots the cache before iterating it, and pop(stale, None)
+    # tolerates a key that is already gone -- both load-bearing under the
+    # ThreadingHTTPServer this backs: retained_worktrees() genuinely runs on
+    # more than one thread at once (two tabs polling, or one poll outrunning
+    # the next one's 5s interval), and _session_bound_to (called just above,
+    # for every directory, by every one of those threads) adds and removes
+    # keys in this SAME dict. Iterating the live dict directly and `del`ing a
+    # key by name -- the previous shape -- raises `RuntimeError: dictionary
+    # changed size during iteration` the moment another thread's write lands
+    # mid-iteration, and `KeyError` the moment another thread has already
+    # removed the exact key this thread is about to delete. Either kills the
+    # request: the same failure _session_bound_to's own docstring says the
+    # unreadable branch exists to prevent, reintroduced here.
+    live_paths = {e["path"] for e in out}
+    for stale in [k for k in dict(_session_bound_logged) if k not in live_paths]:
+        _session_bound_logged.pop(stale, None)
     return out
 
 
@@ -2153,8 +2377,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "output": "deleted", "removed": res})
         if op == "worktree_drop":
             # Discarding a retained run dir throws away whatever it holds —
-            # which is the point (it is kept BECAUSE it holds unpushed work),
-            # so the engine owns the refusal rules and this only forwards.
+            # which is the point (it is kept because its SESSION is still
+            # open: cut short, never declared an ending, or holding work on
+            # no remote — not only for unpushed work specifically), so the
+            # engine owns the refusal rules and this only forwards.
             wjid = str(body.get("id", ""))
             stamp = str(body.get("stamp", ""))
             if not wjid or not all(c.isalnum() or c in "-_" for c in wjid):

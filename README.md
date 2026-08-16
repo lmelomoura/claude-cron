@@ -337,9 +337,8 @@ are never modified: they are read to cut worktrees from, nothing more.
 
 `enabled` is `"auto"` (isolate when the cwd is a git repo), `true` or `false`.
 
-A run dir is removed when the run ends — unless a worktree still holds work that
-exists nowhere else (uncommitted changes, or commits on no remote), in which case
-the whole run dir is kept and the tick log says so.
+A run dir is removed when the run ends. A run that was cut short keeps its dir
+until it is resumed or expires — see [Sessions that are still open](#sessions-that-are-still-open).
 
 ### Provisioning: `up` and `down`
 
@@ -362,8 +361,18 @@ worktree and the run described in its environment: `CC_REPO_NAME`,
 A non-zero `up` **aborts the run** — the engine takes down what it provisioned
 and never hands a half-built tree to an agent. A hook that outlives
 `worktree.provision_timeout_seconds` (default 900) is killed. `down` runs once
-per run, even when the run dir is preserved: whatever the hook registered outside
-the directory still has to be released.
+a run's worktrees are actually removed — which a **preserved** run dir's are
+not: an open session keeps its services running so a resume has something to
+continue in, and `down` waits until the session closes (by finishing,
+expiring, or being discarded by hand) before it ever runs.
+
+A `down` hook must never call `claude-cron worktree-drop` itself, directly or
+indirectly: both the automatic sweep and `worktree-drop` hold an internal lock
+across their own call into `down`, and it is the same lock `worktree-drop`
+needs before it can run — so a `down` hook that reaches for it deadlocks
+against its own caller, until `worktree.provision_timeout_seconds` kills the
+hook, wedging every other job's resume and drop behind that same lock for as
+long as it takes to time out.
 
 Every worktree is cut from a freshly fetched base, and that fetch is bounded by
 `worktree.fetch_timeout_seconds` (default 120). It has to be: the fetch happens
@@ -373,14 +382,35 @@ as the network stayed broken — and with `max_parallel: 1` that is the job dead
 until someone notices. On a timeout the base is resolved from the refs already
 on disk and the tick log says so.
 
-#### Worktrees that are kept back
+#### Sessions that are still open
 
-When a run ends with commits or changes that exist on no remote, its worktree is
-**preserved** rather than removed — the work would otherwise be lost. Nothing
-can ever release it on its own, so the dashboard lists every retained run dir
-with its size and age, and **Discard** throws one away once you have salvaged
-what you need (`claude-cron worktree-drop <job-id> <stamp>` from the CLI). A run
-dir a live run is using is never offered, and never dropped.
+A session's worktrees are removed only once the session is **done**: the agent
+declared how its run ended (a `RUN COMPLETE:`, `NOTHING TO DO:` or `BLOCKED:`
+line in its final answer) *and* left nothing behind that exists on no remote.
+Anything short of that keeps the run dir, and keeps its provisioned services
+**up**, because `claude-cron resume <job> <session>` continues in that same
+directory: the agent's conversation remembers the files it edited, and a
+fresh checkout of the base would not have them. Two ways a session ends up
+open:
+
+- A run that was **cut short** — killed, crashed, stopped by a watchdog, or
+  simply never said it was finished — never reaches the declaration a done
+  session needs.
+- A run that ends holding commits or changes that exist on no remote is
+  reported as a `warning` on the card (`UNDELIVERED: unpushed commits in
+  api`) and its tree is kept too, whether or not it declared an ending —
+  pushing is how work is delivered, and a resume is how the ticket gets back
+  to a state where it can be.
+
+Exit code, stderr and a spent budget cap describe how *well* a run went, not
+whether its session has more to do, so none of them decide this.
+
+An open session that nobody resumes expires after **24 hours**
+(`CLAUDE_CRON_SESSION_TTL`, in seconds), at which point the sweep runs its `down`
+hooks and removes it like any other finished run. The dashboard lists every open
+session with its size, its age and the time it has left, and **Discard** ends one
+early (`claude-cron worktree-drop <job-id> <stamp>` from the CLI). A run dir a
+live run is using is never offered, and never dropped.
 
 Anything with a global name must derive it from `$CC_RUN_DIR`, or two concurrent
 runs of the same repo collide:
@@ -629,12 +659,19 @@ Three things to know before splitting jobs across accounts:
 - **Jobs** — one card each: schedule, last check (with the precheck's output),
   checks in the last 24h (proof the loop runs even when idle), last run, today's
   spend vs cap, and **Run now / Enable / Disable / Edit / Delete**. Destructive or
-  wasteful actions confirm first.
+  wasteful actions confirm first. A job holding a session from a run that was
+  cut short says so right on the card — when it expires, and a **Resume**
+  button when there is a session id to continue — rather than only a count on
+  the Sessions tab below.
 - **Recent runs** — full-text **search** across run results, per-turn traces and
   precheck output; **Filters** (job, status, date range) behind a button;
   pagination. The 🔍 on each row opens the run: did the precheck pass, which tools
   were blocked, a **timeline with one line per agent turn**, the final answer, and
   stderr.
+- **Sessions** — every run directory still on disk, kept because its session
+  was cut short or still holds work that exists on no remote; see [Sessions
+  that are still open](#sessions-that-are-still-open). Size, age and time left
+  per row, and **Discard** ends one early.
 - **Theme** — light/dark toggle in the header.
 
 ### Signing in
@@ -692,7 +729,8 @@ claude-cron install | uninstall
 Environment overrides: `CLAUDE_CRON_PORT`, `CLAUDE_CRON_CONFIG`,
 `CLAUDE_CRON_DATA`, `CLAUDE_CRON_CLAUDE_BIN`, `CLAUDE_CRON_CLAUDE_CONFIG_DIR`,
 `CLAUDE_CRON_PYTHON`, `CLAUDE_CRON_JQ`, `CLAUDE_CRON_LOG_MAX` (log rotation
-threshold, default 4 MiB), `CLAUDE_CRON_HOOK_TIMEOUT`, `CLAUDE_CRON_LOCK_GRACE`.
+threshold, default 4 MiB), `CLAUDE_CRON_HOOK_TIMEOUT`, `CLAUDE_CRON_LOCK_GRACE`,
+`CLAUDE_CRON_SESSION_TTL` (open-session expiry, in seconds, default 86400).
 
 ---
 

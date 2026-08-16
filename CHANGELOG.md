@@ -17,7 +17,147 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The dashboard tab for kept run directories is now labelled Sessions, not
+  Worktrees.** Its own blurb already talked about sessions throughout —
+  "Worktrees" was the tab's original name, left behind once this branch gave a
+  cut-short session its own lifecycle. Worktree is the isolation mechanism
+  underneath; session is the thing actually being kept, and the word the
+  README and the rest of the dashboard already use for it. Label only: the
+  tab's id, its `data-tab` value and its pane were left exactly where every
+  other part of the page already looks for them.
+
+- **The filter-picker example names a generic project, not a real one.** A code
+  comment illustrated the control with a live client project name. This is a
+  public repository, so an example is a publication: it now uses the same
+  placeholder the README does.
+
+### Fixed
+
+- **A live run with a large tool roster shows its session again.** The dashboard
+  reads a running row's session id out of the transcript, and it read the first
+  8 KB of it rather than the first lines. The init event carries the run's whole
+  tool roster; with a few MCP servers attached it passes 8 KB on its own, so the
+  window cut it mid-object, the parse failed on the fragment, and the Session
+  column showed a dash. The transcript is append-only, so those first bytes never
+  changed — the dash stayed for the life of the run, on exactly the busiest
+  agents. The engine hit the same thing on its own side of this and was fixed by
+  reading lines; this is the other half, so neither side can now see less than
+  the other. Display only: the resume path never used this value.
+
+- **A run stopped from the dashboard mid-work can now be resumed from the
+  Runs table, not just from its job card.** It never declares an ending, so
+  its worktree and its services are kept exactly the way an error's or a
+  warning's are — but the Resume button only lit up for those two, so the
+  one status whose whole run dir sits there waiting had no way to reach it.
+  `run_record_stopped_early` also used to file every stopped run's session
+  as empty, unconditionally, even when the agent had already reported one —
+  so even widening the button on its own would have left it permanently
+  disabled for a real, resumable session. It now reads the run dir's own
+  `.session` when the agent had actually started (`$slot/child`), and still
+  reports none when it had not, or when the stop landed before that agent's
+  own session was bound — a stale id left over from an earlier resume of the
+  same directory is never claimed for a launch that never got that far.
+
+- **A resume and a fresh run can no longer end up bound to the same port
+  block.** A resume checked `port_base_free` and wrote its claim afterwards
+  with no lock held; a fresh run's `alloc_port_base` — which does hold
+  `$LOCK_DIR/.ports` across its own scan and write — could land in the gap
+  between the two and hand the same block to both. Two live runs then
+  published the same ports, which read as a broken service, not as a
+  scheduling race. `port_base_reclaim` now holds that identical mutex across
+  its own scan and write, the same idiom `alloc_port_base` already used for
+  its side of this.
+
+  A write that failed inside that claim used to be reported as a success
+  anyway (`|| true` swallowed it) — a block found free but never actually
+  written to `$slot/portbase` is invisible to `alloc_port_base`'s own later
+  scan, which reads that file, not what `port_base_reclaim` believes it did.
+  A failed write now drops the lock and refuses the resume, the same as a
+  block that turned out to be held.
+
+- **Two overlapping ticks can no longer run `down` hooks for two different
+  directories at once.** The orphan sweep takes and drops `$LOCK_DIR/.resume`
+  once per directory, not once for the whole sweep, and `cmd_tick` had no
+  mutex against itself — so a second tick starting while the first was still
+  sweeping (a launchd interval firing again before the first returned, or a
+  manual `claude-cron tick`) could interleave with it: each sweep holding
+  `.resume` only briefly, per directory, let tick A run one directory's
+  `down` hook — a `docker compose down -v`, seconds to minutes — at the same
+  moment tick B ran a *different* directory's own, work the sweep's serial,
+  one-directory-at-a-time design never accounted for. `cmd_tick` now takes
+  its own `$LOCK_DIR/.tick` around the whole tick, so a second one simply
+  waits for the first to finish before it starts. Narrowing `.resume` itself
+  to cover only the sweep's decision, not the hook, was considered and
+  rejected: that lock is also what stops a resume claiming a directory the
+  sweep is mid-way through removing (the same reason `cmd_worktree_drop`
+  holds it the identical way for a human's drop), and narrowing it would
+  have reopened a resume claiming a directory between the sweep marking it
+  done and the hook actually finishing — an agent launched into a cwd being
+  deleted under it.
+
+- **An unreadable or empty `.session` file no longer re-logs on every
+  dashboard poll.** `retained_worktrees()` backs `/api/data`, polled every 5
+  seconds, and `_session_bound_to` logged on both of those conditions every
+  time — one bad file wrote a fresh line every 5 seconds until the TTL
+  reclaimed its directory, up to 24 hours of an already-diagnosed condition.
+  It now logs once per standing condition and stays quiet on repeats, kept
+  in memory (the server is long-lived; nothing here needs to survive a
+  restart) and cleared the moment a directory's condition changes or
+  resolves, so a later recurrence — even the identical condition — is still
+  reported.
+
+  The throttle's own prune loop was not thread-safe: the dashboard is served
+  by `ThreadingHTTPServer`, so two tabs polling at once — or one poll simply
+  outrunning the next one's 5-second interval — genuinely ran
+  `retained_worktrees()` on more than one thread at the same time, and the
+  loop iterated its cache directly while another thread could be adding to
+  or removing from that same cache underneath it. That raised
+  `RuntimeError: dictionary changed size during iteration` or `KeyError`,
+  killing the request — the exact failure this whole throttle exists to
+  prevent, reintroduced by the throttle itself. It now snapshots the cache
+  before iterating it and tolerates a key another thread already removed.
+
 ### Added
+
+- **A job whose last run is being held for a resume now says so on its own
+  card**, with a Resume button whenever there is a session to continue. Until
+  now the only sign a run dir was being kept was a count on the Sessions tab —
+  something an operator had to already suspect before they would go looking
+  for it, then match back to the job by hand. The card reads the same
+  `retained_worktrees()` list the Sessions tab does, filtered to that job, and
+  the button is the Runs table's own Resume op, not a second one: it shares
+  the same in-flight guard (a resume already running for that session), so
+  the two cannot fall out of agreement about when the button is safe to press.
+  A run dir held with no `.session` at all — the run died before its agent
+  ever got far enough to report one — says so honestly instead of offering a
+  button that could only ever be refused.
+
+  The id is read as bytes and decoded with `errors="replace"`, not
+  `Path.read_text()`: a session id is written by a single `printf` and should
+  always be plain ASCII, but `.read_text()` raises `UnicodeDecodeError` — a
+  `ValueError`, not an `OSError` — on a byte that is not valid UTF-8, which the
+  unreadable-file handling above did not catch. Uncaught, that would have
+  crashed `retained_worktrees()` and blanked the whole dashboard poll over one
+  corrupted file, not just its own row — the same fix `_load_artifacts`
+  already needed, elsewhere in this file, for the same reason.
+
+- **A run directory now records the session working in it** (`.session`). The id
+  arrives in the transcript's first event and is bound to the run directory as
+  soon as the watchdog notices it, plus a final pass right after the run exits —
+  so a run that crashes inside the watchdog's first 30-second poll window still
+  ends up bound instead of being lost for good, with the id sitting unread in a
+  transcript nothing ever looks at again. The write goes through a temp file and
+  rename, since a resume will look run directories up by this file while runs
+  are still live. That temp file is now named by `mktemp`, not `$$` — bash 3.2
+  never reseeds `$$` inside a subshell, so the watchdog's write and the
+  post-wait write were silently computing the identical path, correct only
+  because both always resolved to the same id. `selftest` also now checks
+  structurally that both binding call sites remain in `run_job`, since a
+  behavioural test of `bind_session` alone cannot see which callers still reach
+  it. Nothing reads the file yet; it is what the resume and the teardown below
+  are built on.
 
 - **A precheck can tell "no work" apart from "I cannot see the work"**
   (`bin/board-probe.sh`). Both used to end the same way — zero keys and the line
@@ -234,6 +374,480 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cheap on one and a quarter of the screen on the other.
 
 ### Fixed
+
+- **Five comments and a README section that described behaviour this branch
+  had already revoked.** `down` was documented as running "even when the run
+  dir is preserved" — exactly backwards: a preserved run dir is the one case
+  where `down` does *not* run, on purpose, so the resume it is being kept
+  for finds its services still up. "Sessions that are still open" said
+  undelivered work was the one thing that did *not* keep a directory; since
+  Task 6 it has been the opposite. `cmd_tick`'s own comment, the server's
+  `worktree_drop` handler and `wt_remove_all`'s header all still explained
+  keep/remove in terms of the pre-Task-6 "unpushed work" rule, superseded
+  first by the status-based one and now by declared-ending-and-delivered.
+  Two comments in `worktree-lib.sh` named a container-orchestration tool and
+  a local-dev-environment tool by name — the one file in this codebase whose
+  own header says it must never couple to a specific tool or language, since
+  every project-specific detail belongs in `projects.json` instead. Reworded
+  to describe what a project's own hooks start, generically, the way the
+  rest of the file already does.
+
+### Changed
+
+- **A broken `.git` pointer is reported, not read as a clean tree.**
+  `wt_dirt_sha` hashes `git status --porcelain`'s output, and that command
+  prints nothing both for a clean worktree and for one it cannot read at
+  all — so hashing the silence gave the exact same fingerprint either way
+  (measured: `da39a3ee5e6b4b0d3255bfef95601890afd80709` for a clean repo, a
+  missing path, and a non-repo alike). Reachable when an operator moves or
+  renames a canonical checkout, which breaks every one of its linked
+  worktrees' `.git` pointers at once. Survivable while the answer only
+  decided a note on a card; since 9.3 made `.ended` depend on it, the same
+  collision authorised `git worktree remove --force` on a tree holding real,
+  uncommitted work. `wt_dirt_sha` now returns non-zero, and prints nothing,
+  when git cannot answer, and `wt_undelivered_work` reports "cannot read
+  git" as undelivered rather than comparing a hash it never got. The same
+  reasoning closes the adjacent `[ -n "$head" ] || continue`: a `rev-parse`
+  that fails is "could not look", not "no commits", and is now reported too
+  — the two blind spots share one cause, a worktree git cannot read, and are
+  now closed together. Proved against a real worktree holding real
+  uncommitted work with its `.git` file broken: without the fix
+  `wt_undelivered_work` reports nothing; with it, the note names both the
+  unreadable status and the unreadable history.
+
+- **A reattach's second dirt_sha refresh no longer discards a stale-but-valid
+  snapshot when the fresh reading itself fails.** Found reviewing the
+  `wt_dirt_sha` fix above, not in the original finding: 9.10 taught the
+  reattach branch's dirt_sha merge to fall back to a repo's EXISTING
+  snapshot when a fresh reading is missing, specifically so an unreadable
+  one would not be misread as "nothing recorded" and fall into
+  `wt_undelivered_work`'s strict, no-snapshot check — which would then flag
+  ordinary provisioning residue as the agent's own work. That fallback
+  relied on jq's `//`, which only falls through on `null` — but a repo whose
+  `wt_dirt_sha` now fails during the re-up pass still gets a line in the
+  merge's tsv, just with an empty value, which is present, not absent. The
+  merge kept that `""` and silently discarded the good, stale value it was
+  supposed to fall back to. The merge now treats an empty fresh reading the
+  same as a missing one before falling back.
+
+- **The control server's journal lock is boot-aware too, matching the
+  engine's own lock.** `journal_lock` and `lock_take` are the same mkdir
+  lock, taken on `.journal.lock` by the same name, and 9.6 made `lock_take`
+  refuse to wait forever on a pid recycled across a reboot — but the
+  server's own `_alive` stayed a bare `os.kill`, unable to tell the
+  difference. A `.journal.lock` left behind by the server across a reboot
+  falls into `lock_take`'s deliberate no-boot-file fallback, sees a
+  live-looking recycled pid, and waits forever inside `record_run`, before
+  `run_cleanup` ever runs — the run's slot is never released and its record
+  never written, the exact silent stall Task 1 was chartered to remove. The
+  server now writes a `boot` file alongside its `pid` on take, and checks it
+  in `_alive` the same way `slot_alive` already does. Proved against a lock
+  naming this test process's own (genuinely alive) pid but a boot id from a
+  different boot: taken at once with the fix; without it, waits the full
+  30s timeout and raises.
+
+- **A resume that cannot find its own tree refuses, instead of quietly
+  starting a fresh one.** Widening the dashboard's Resume button to
+  `error`-or-`warning` (9.7) lit it up for `NOTHING TO DO:` runs too — but
+  those end `warning` *and* `.ended=done` (9.3), so `run_cleanup` has
+  already removed the tree before the dashboard's next poll. Clicking
+  Resume reached `wt_find_by_session`, found nothing, and fell straight
+  through to the fresh-worktree branch: a whole new agent session spent on
+  a task that had already said there was nothing to do, with nothing
+  telling the operator that is what happened. `run_job` now refuses a
+  resume whose session directory cannot be found, the same way it already
+  refuses an already-claimed tree or a missing primary worktree — logging
+  why, and leaving nothing half-started, since the refusal sits before
+  either branch has written to the run's slot. This also closes the case,
+  previously open, of a resume whose directory was deleted by hand.
+
+- **A run's second ending restarts its ttl clock too, not just a resume's
+  first claim.** The first time `.ended` is written, creating the file
+  bumps its run dir's own mtime for free. Overwriting an EXISTING
+  `.ended` — a resumed run ending a second time — only touches the file's
+  content, not the directory entry, so the clock stayed wherever the
+  reattach's own claim-time touch (9.4) left it: `ttl` minus however long
+  the resumed run took, not a fresh window. A session resumed near the end
+  of its first ttl that then ran long enough on its own could read as
+  already expired the moment it stopped, with the very next sweep
+  reclaiming it while the operator was still reading a card that promised
+  a full day. The classifier now touches the run dir alongside every
+  `.ended` write, so a first ending and any later one measure the same
+  event.
+
+- **A reattach's second provisioning pass no longer frames its own residue
+  as the resumed agent's work.** `wt_undelivered_work` tells a hook's
+  leftovers from the agent's own changes by comparing the worktree's current
+  `dirt_sha` against the snapshot taken right after provisioning — but a
+  reattach re-runs `up` (to put a stack back that a reboot took down) without
+  ever refreshing that snapshot. A second pass can legitimately leave
+  different residue than the first (a regenerated `.env`, a compose lockfile
+  or temp dir named after its own pid), and every byte of that difference was
+  attributed to the agent and reported `UNDELIVERED` on a run that may not
+  have touched the repo at all. The reattach branch now recomputes and
+  records `dirt_sha` after its own `up` pass, exactly the way `wt_setup`'s
+  first pass already does.
+
+- **Two single-line deletions that used to revert whole tasks silently now
+  fail the suite.** Deleting the line that computes `reattached` from
+  `wt_find_by_session` (leaving `local reattached=""`, which alone satisfies
+  `set -u`) turns the entire reattach branch into dead code — every resume
+  falls through to a fresh worktree — while the existing ordering assertion
+  for that branch stays green, because it only checks the order of lines
+  *inside* a branch that has quietly become unreachable. Deleting `cmd_tick`'s
+  own call to `wt_prune_canonicals` reverts the stale-registration cleanup
+  the same way, while its behavioural test — which calls the function
+  directly, the way a test has to — keeps passing for the same reason. Two
+  new structural assertions close both, the same way an existing one already
+  protects `bind_session`'s two call sites: not by testing the function
+  (already covered elsewhere), but by testing that something still calls it.
+
+- **The dashboard's Resume button lights up for a `warning` run, not just
+  `error`.** `UNDELIVERED`, `UNDECLARED ENDING` and `BUDGET LIMITED` all end a
+  run `warning`, and every one of their own notes tells the operator to pick
+  the run back up — UNDECLARED ENDING and BUDGET LIMITED both say "resume
+  this run to continue with its context", UNDELIVERED says "resume this run
+  to finish it" — while the engine keeps that run's worktree and its
+  services up specifically so a resume has something to continue in. The
+  button read only `error`, so the far more common case showed a dead icon
+  with "Only a failed run can be resumed" next to a note telling the operator
+  to do exactly that. `success` and `stopped` stay off. The already-resumed
+  guard (grey the button out once another run has picked the session back
+  up, so a second click cannot duplicate the work) now also applies to a
+  `warning` run's Resume button, not only an `error` one's — it reads the
+  same `resumeTarget` lookup, just no longer gated to one status. The
+  `error`-or-`warning` test itself is now a single `resumable` value read at
+  all three sites that need to agree, not three separate copies of the same
+  comparison — three places to keep in sync is exactly how this went from
+  `error`-only to `error`-or-`warning` in the first place.
+
+- **A retained run dir cannot be dropped out from under a resume that just
+  claimed it.** `worktree-drop` checked `wt_is_claimed`, then ran
+  `wt_down_all` — a provisioning `down` hook, seconds to minutes — and only
+  then removed the directory, without ever taking the lock a reattach claims
+  its tree under. A resume claiming the same directory inside that window
+  could start its agent with a valid cwd and then have the drop's removal
+  delete that cwd out from under the now-running agent. `worktree-drop` now
+  takes `$LOCK_DIR/.resume` before checking the claim and holds it through
+  the removal — the same lock, so whichever side gets there first completes
+  its whole check-then-act sequence before the other can even look.
+
+  The identical race existed on the *automatic* side too, found in this same
+  task's self-review: `wt_prune_orphans` — the sweep every tick runs — read
+  `wt_is_claimed` unsynchronized, so it could see "not claimed yet" in the
+  same narrow window a reattach is inside its own lock but has not yet
+  written its claim, age-check the directory, and remove it out from under
+  a reattach that was mid-way through claiming it. `wt_prune_orphans` now
+  takes the same `$LOCK_DIR/.resume` lock too, per directory rather than
+  once for the whole sweep — a global lock held for the entire sweep would
+  serialize every job's resume behind however many directories that tick
+  happens to expire, combined, rather than behind just the one it actually
+  contends with.
+
+- **A resume restarts its session's ttl clock.** The expiry sweep reads a
+  kept-open run dir's age from the directory's own mtime, and rewriting
+  `.ended` on exit does not touch a directory entry — so without this, the
+  second cycle's window was `ttl − (age when the resume started)`. A session
+  resumed near the end of its first TTL window that then ran for a few more
+  hours was already past the ttl the moment it stopped, and the very next
+  sweep deleted it while the operator was looking at a card that said "resume
+  this run to continue with its context". The claim now touches the run dir
+  the moment it succeeds, giving every resume a full, fresh window — but only
+  the moment it succeeds: a refused claim (another live run already holds the
+  tree) returns before reaching it, so a run that never gets to keep the
+  directory never resets a clock for it either.
+
+- **A session is done when the agent says so and delivers everything — not
+  when the run merely looks good.** `.ended` used to come from the run's
+  quality verdict: only `success` wrote `done`. But `warning` fires for
+  `NOTHING TO DO:`, an undeclared ending, a spent budget cap, a stray byte of
+  stderr, an empty result, and now `UNDELIVERED`; `stopped` and `error` also
+  land `warning`-adjacent as far as this was concerned. Every one of those
+  kept its worktrees **and left its services running** for a full TTL window,
+  and `alloc_port_base` only skips port blocks held by a *live slot* — a
+  retained session has none — so the next run was routinely handed the port
+  block of a stack that was still up and listening. On one real install this
+  was roughly a quarter of all runs.
+
+  `.ended` now asks two questions instead: did the agent declare how its run
+  ended (`RUN COMPLETE:` / `NOTHING TO DO:` / `BLOCKED:`), and did it leave
+  anything undelivered? Both true is `done`; anything else is `open`. Exit
+  code, stderr and the budget cap say how *well* a run went, not whether the
+  session still has work to pick back up, so none of them feed this anymore.
+  The declaration check itself now runs unconditionally rather than only
+  while the status is still `success` — a run this classifier calls
+  `warning` for an unrelated reason (stray stderr, say) can still have said
+  exactly how it ended, and the old gating silently discarded that fact for
+  precisely the runs where `.ended` most needed it.
+
+  The other half of the question — did it leave anything undelivered — is
+  now unconditional too, caught in this same task's own self-review (three
+  independent passes converged on it) rather than in the original finding:
+  `wt_undelivered_work` was still only called inside a
+  `case "$status" in success|warning)` arm the note it feeds has always been
+  scoped to, which left `undelivered` at its default empty value for `error`
+  or `stopped` — read by the `.ended` gate as "nothing undelivered" without
+  ever having been asked. An agent run that trips one denied tool call
+  (`status=error`, unrelated to whether anything got pushed) but still
+  finishes and says `RUN COMPLETE:` would have satisfied the gate and had
+  its uncommitted work force-removed on the next tick, unreported. The check
+  is now unconditional; only the note it can add and the bump to `warning`
+  stay scoped to success/warning, so a `stopped` or `error` record is still
+  never overwritten with a less informative one.
+
+- **`lock_take` no longer waits forever for a recycled pid.** `.state.lock`,
+  `.journal.lock`, `.ports` and the resume lock all live under `data/`, so
+  they survive a reboot exactly like a run slot — and the kernel reissues
+  pids from 1 on the way up, so a live-looking pid in one of these lock
+  directories can belong to an entirely different process than the one that
+  took the lock. The bare `kill -0` this function used to check a holder with
+  cannot tell the difference, and a *live* holder is waited for indefinitely
+  by design (that is the fix for the lock-broken-purely-on-elapsed-time bug),
+  so a false positive here wedges the scheduler on every write these locks
+  serialize — state, the journal, port allocation, a resume — with no escape.
+  This is the identical defect Task 1 removed from the run slots, reopened
+  here on a different kind of directory. `lock_take` now checks `slot_alive`
+  instead, which also refuses a pid from an earlier boot, and writes its own
+  `boot` file when it takes the lock, the same way a slot does. Proved by
+  reverting to the bare `kill -0` and watching `lock_take` spin forever on a
+  lock whose pid file names the calling process's own (genuinely alive, but
+  from a fabricated earlier boot) pid — confirmed hung via `ps`, not inferred.
+
+- **Upgrading onto a directory this branch never created does not delete
+  it.** A run directory the OLD teardown had kept — because git said it held
+  commits or changes that exist on no remote — has no `.ended` and no
+  `.session`; neither file existed before this branch. `wt_prune_orphans` read
+  such a directory's age from its mtime, which is whenever that old run last
+  touched it, found it past the TTL on the very first post-upgrade tick,
+  wrote `done`, and `wt_teardown` ran `git worktree remove --force` —
+  discarding, unreported, exactly the work the old code was keeping the
+  directory alive to protect. A directory this engine never bound to a
+  session now has no age it can trust: the first sweep that finds one with
+  neither file **adopts** it instead of judging it — marks it `open`,
+  restarts its clock, and lets it stand for a full TTL window, so it shows up
+  on the dashboard with a countdown instead of vanishing silently on upgrade.
+  Proved against a fixture shaped exactly like a pre-upgrade install: a real
+  git worktree holding a real commit on no remote, no marker files, an mtime
+  set weeks in the past. Without this fix the commit is gone after one sweep;
+  with it, the directory and the commit both survive.
+
+  The tick log for an adopted directory names the *condition* it was adopted
+  on ("no `.ended`, no `.session` found"), not a cause it never verified: the
+  shape is a strong signal a directory predates this branch, but nothing
+  here actually checks that, and a future log line claiming "from before
+  this version" for a directory that reached the same shape some other way
+  would misdirect whoever reads it.
+
+- **A run killed with `-9` is resumable again.** `wt_find_by_session` alone
+  demanded the literal string `open` in `.ended`, while every other reader of
+  that file — `wt_teardown`, `wt_prune_orphans`, `run_cleanup`, `wt_setup`'s
+  own rollback, the server's `expires_in` — already reads an absent marker as
+  open, which is what a SIGKILL, an OOM kill or a reboot leaves behind: no
+  exit path runs, so no marker is ever written. The mismatch meant the one
+  session a resume most needs back — one nothing had the chance to close —
+  was refused by the one function whose job is to find it. `run_job` fell
+  through to a fresh worktree with no error at all: the tick log said
+  `isolated in …` instead of `resumed … in its own tree`, so nothing anywhere
+  recorded that a session had been dropped and the agent's next turn carried a
+  conversation remembering edits its checkout did not have. Found in the final
+  whole-branch review, not by any single task's own tests: `.session` is
+  already written by the time a SIGKILL lands (the watchdog binds it on its
+  first pass), so this was reachable on the very first crash after Task 7
+  shipped.
+
+- **An open session expires instead of waiting for a human.** Keeping a cut-short
+  run's tree so a resume can use it would have swapped one permanent directory
+  for another: a session nobody ever resumes is exactly as immortal as the
+  unpushed work it replaced. Open sessions now expire after 24 hours
+  (`CLAUDE_CRON_SESSION_TTL`), and expiring closes the session so the ordinary
+  path runs its `down` hooks and removes the tree like any other finished run.
+  The dashboard shows how long each has left, so the list reads as a queue with
+  an end rather than a pile.
+
+  The dashboard's countdown reads `WORKTREE_SESSION_TTL`, not `SESSION_TTL`:
+  the control server already used that name for the HTTP sign-in idle timeout
+  (12h), and a second module-level assignment of one name does not fail — it
+  just wins silently at import, with the first one gone. `retained_worktrees()`
+  would have computed every `expires_in` against that unrelated 12-hour
+  constant instead of the sweep's real one, so the Expires column would have
+  read "due now" up to twelve hours before the sweep was ever going to reclaim
+  anything. A test asserting only `expires_in > 0` cannot see that; the fix
+  pins the actual number.
+
+- **A resume continues in the tree its session was working in.** `run_job`
+  computed a fresh timestamp and cut new worktrees from the base with no special
+  case for a resume at all — so `claude-cron resume` handed the agent a
+  conversation that remembered editing files and a checkout that had none of
+  them, while the crashed run's directory sat preserved on disk for nobody. The
+  resume now finds the directory by the session id recorded in it, takes back the
+  same port block (and refuses outright if a live run holds it, rather than
+  pointing the agent's config at ports nothing is listening on), and re-runs the
+  provisioning hooks so a stack a reboot took down comes back.
+
+  It reads the run's manifest and never re-derives the repo set from
+  `projects.json`, which fixes that set for the session's life: editing a
+  project's `repos` no longer changes what an already-open session is working on.
+  Provisioning hooks must therefore tolerate being run twice on the same tree —
+  `cc_copy_ignored`, `cc_env_ports`, `herd link` and `compose up -d` all do.
+
+  Two `claude-cron resume` calls for the same session — a double click, a
+  retried automation — used to both reach this point and both launch an agent
+  into the same tree: nothing stopped them, and `max_parallel` does not help
+  since it defaults to 3. A resume now claims its tree under a lock, checking
+  whether another live run already holds it *before* writing its own slot's
+  breadcrumb (checking after would make it see its own claim and refuse
+  itself) — a second, concurrent resume is refused instead, cleanly, with
+  nothing written for it to clash with, and with its own start time and status
+  recorded rather than the previous attempt's left in place. The lock itself
+  is dropped on both exits from that check — a refusal releases it
+  immediately rather than holding it until the run's own cleanup gets there.
+
+  A manifest whose `primary` field is empty — missing, unparseable, or from
+  before this field existed — used to pass the worktree-exists check anyway:
+  an empty name turns it into `-d "$run_dir/"`, and the run dir itself always
+  exists. The resume would then launch its agent with its cwd set to the
+  folder holding the worktrees, not to a checkout. An empty primary is now
+  refused explicitly, the same way a missing directory already was.
+
+  A freshly allocated port block — the manifest predates this field, or could
+  not be read — is now written back into the manifest, not just handed to the
+  environment: the orphan sweep's `down` reads the block from there first,
+  with no ambient `CC_PORT_BASE` to fall back on, and a block that was only
+  ever in the environment would leave it releasing ports this run never took.
+
+- **Teardown asks whether the session is done, not whether the tree looks
+  precious.** A run directory was kept when git said it held work that existed
+  nowhere else — a verdict the sweep re-reached every tick, so nothing ever
+  released it, and one only a human could end. Directories are now marked with
+  how their run ended: a finished session is torn down and removed
+  unconditionally, and a run cut short is kept **with its services still up**,
+  because the resume continues in that same directory and would otherwise get a
+  provisioned tree with nothing running behind it.
+
+  A run that died before marking anything counts as **open**, not finished. The
+  tidier default would delete it, and it would delete work: a SIGKILL, an OOM
+  kill or a reboot runs no exit path, so no marker is written and the classifier
+  never fires — which means the `UNDELIVERED` report that justifies removing a
+  tree never runs either. The first tick after a reboot would have reclaimed
+  every run that was in flight, silently, with nothing anywhere saying what was
+  in them. The leak that default was avoiding is closed by the expiry instead.
+
+  A failed provisioning hook still leaves nothing behind, which "no marker
+  means open" would otherwise have quietly undone: `wt_setup`'s own rollback
+  reuses `wt_teardown` for removal, and a setup that never got as far as
+  launching an agent has no session to be open FOR. Its five rollback paths now
+  mark the directory done, themselves, before handing it to teardown — a setup
+  failure is a known, finished outcome, not an uncertain one waiting on a
+  resume.
+
+  Stopping a run from the dashboard closes it only when no agent had started
+  yet. `claude-cron stop` signals the run wrapper whenever the agent pid is not
+  *alive* — which includes an agent that has already finished — so a Stop
+  clicked during the seconds of post-agent bookkeeping used to look identical to
+  a Stop clicked before the agent ever existed. Telling them apart takes the
+  presence of the spawned agent, not the stop.
+
+  The record that same Stop leaves behind used to lie about it: whatever
+  ended the run early, `run_record_stopped_early` always filed "no work was
+  done and nothing was spent" — so a Stop clicked mid-classifier now correctly
+  kept the tree, while the only surviving record of that run denied there was
+  anything in it, on a dashboard whose one remaining exit is Discard. It reads
+  the presence of a spawned agent the same way teardown does, and says instead
+  that the run's outcome was never classified and its directory is being kept.
+
+  Discarding a kept directory now runs its `down` hooks first. An open session
+  deliberately never reaches them in teardown, so the drop is the only chance
+  its compose stack and its ports have to be released — and the manifest naming
+  them leaves with the directory. It resolves which project's hook to run from
+  the manifest itself, falling back to the live job only if that is missing:
+  a kept-open directory is exactly the kind a job can outlive, and resolving
+  its project from a job that may no longer exist would run no hook at all,
+  silently, for the directories most likely to be dropped by hand.
+
+- **A run that ends with work on no remote is reported, not filed away.**
+  `wt_unsafe_to_remove` is now `wt_undelivered_work`: it asks the same question —
+  are there commits or changes here that exist nowhere else? — but its answer no
+  longer decides what stays on disk. It decides the run's status. Keeping the
+  directory preserved the work for nobody: a resume cuts a fresh worktree from
+  the base, so the folder was never handed back to anyone, and only a human
+  clicking Discard ever ended it. The run now finishes `warning` with
+  `UNDELIVERED: unpushed commits in api` on the card. Push is the delivery
+  channel, and not pushing is a run that did not deliver.
+
+  The check runs LAST among the classifier's rules, and appends rather than
+  replaces. `UNDECLARED ENDING` and `BUDGET LIMITED` both only fire while the
+  status is still `success`, so setting `warning` any earlier would have
+  silently disabled both the moment this one found something — a run that
+  spent its whole cap AND pushed nothing would have reported only whichever
+  rule ran last, hiding the other half of the story. It also never overrides a
+  run the operator stopped on purpose: a `STOPPED` record already says the run
+  did not finish, and replacing it with a generic "you did not push" would be
+  less information, not more. Both the ordering and the stopped-exclusion are
+  guarded by a structural selftest assertion, comparing the guard's status
+  list for exact equality rather than a pattern it could still match with
+  `stopped` slipped back in — `run_job` cannot be exercised behaviourally here
+  without mocking the agent CLI itself.
+
+### Fixed
+
+- **A run directory removed by hand no longer wedges its canonical checkout.**
+  `git worktree remove` was only ever reached through the engine's own teardown,
+  so a run dir deleted with `rm -rf` — which the dashboard invites, by listing
+  each one with its size — left the registration in `.git/worktrees/`. Git went
+  on believing the branch was checked out somewhere, and the canonical checkout
+  could not have it back: `git checkout <branch>` failed with "already checked
+  out" against a directory that no longer existed. The tick now prunes every
+  canonical checkout the projects declare. The de-duplication that shipped with
+  it was itself broken on this platform: it matched seen paths with a glob over
+  a space-joined string, so a canonical checkout under a home directory with a
+  space in it — routine on macOS — matched *inside* a longer path that started
+  the same way, and was silently skipped, every tick, forever. A single
+  malformed `repos` entry had the same silent-drop shape: jq exits mid-stream on
+  it, and every project declared after it stopped being pruned. Both are now
+  `sort -u` over whole lines, filtered by jq type, so one bad entry cannot take
+  its neighbours down and a path is a path no matter what character it
+  contains. Verified end to end against two real canonical checkouts shaped
+  exactly like the failure case — one path a literal, space-truncated prefix
+  of the other — not only against the de-duplication logic in isolation.
+
+- **A crashed run's `down` hook knows which ports it bound.** `wt_provision`
+  read `CC_PORT_BASE` from the environment, but `down` also runs from the orphan
+  sweep — which fires from the tick, and a run dir is an orphan precisely because
+  its slot is gone. So the one path that exists to clean up after a crash ran the
+  hook with no port block at all, and a hook computing what to release with
+  `cc_port` released numbers it had never bound: the compose stack from the
+  crashed run stayed up, holding the ports the next run wanted. The block is now
+  recorded in `.run.json` next to `fork_sha`, and the hook reads it from there.
+  Teardown is reconstructible from the disk alone, which is the whole point of
+  having a sweep.
+
+- **A stop can no longer be aimed at a whole process group.** `claude-cron
+  stop` reads the agent's pid from the slot's `child` file and checked only
+  that it was non-empty before handing it to `kill -0` and `kill -TERM` —
+  never that it was actually a pid. Both treat pid `0` as *every process in
+  the caller's own group*, not as "no such process," so a `child` file that
+  ever held a literal `0` would have sent a real stop signal to `claude-cron`
+  itself and everything sharing its group, not to the one agent being
+  stopped. A slot's own claim pid gets the same refusal, closing the same gap
+  in the other place `stop` reads a pid from a file.
+
+- **A run slot is a lease pinned to a boot, not a bare pid.** `data/locks` lives
+  under `data/`, so slots survive a reboot — and the kernel reissues pids from 1
+  on the way up, so a recycled pid made a dead slot answer `kill -0`. One false
+  positive leaked three ways at once: the phantom counted against `max_parallel`
+  and the job silently stopped running with nothing on the card saying why; the
+  sweep read the orphaned worktree as claimed and never reaped it; and the port
+  block it named was never handed back. Every slot now records the boot it was
+  taken in — the kernel's own opaque per-boot session id, not a boot timestamp,
+  because a boot timestamp moves under a slot whenever the calendar clock is
+  stepped (NTP resync, wake from sleep), which would read a live run's slot as
+  belonging to another boot — and a slot from an earlier boot is dead however
+  healthy its pid looks. Slots written before this change carry no boot and
+  still fall back to the pid, so an upgrade does not reap the runs it finds in
+  flight. A pid of literal `0` gets the same refusal as an empty or
+  non-numeric one: `kill -TERM 0` does not name a process, it names the
+  caller's whole process group, not a value a lease can afford to pass
+  through unchecked.
 
 - **A run's transcript is no longer deleted when nothing was stored.** A
   37-minute, $7.27 reviewer run had no timeline, no answer and no terminal, and
