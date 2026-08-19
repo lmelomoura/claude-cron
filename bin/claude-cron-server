@@ -637,6 +637,38 @@ def _model_id_from_stream(stream):
     return ""
 
 
+def _api_retries(stream):
+    """What the API is doing to this run, from the stream's `system/api_retry`
+    events. The CLI retries a refused turn with backoff and says so on the
+    stream; nothing downstream read it, so a run whose every turn was being
+    bounced looked identical to one that was merely slow to start — an empty
+    Terminal under the word "live", with the reason sitting unread in the file
+    the panel was already tailing. Returns None when the run has never been
+    refused, so callers can treat "no retries" as "nothing to say"."""
+    if not stream or "api_retry" not in stream:
+        return None
+    seen, last = 0, None
+    for line in stream.splitlines():
+        line = line.strip()
+        if not line or "api_retry" not in line:
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        if ev.get("type") == "system" and ev.get("subtype") == "api_retry":
+            seen += 1
+            last = ev
+    if not last:
+        return None
+    return {"count": seen,
+            "attempt": last.get("attempt"),
+            "max_retries": last.get("max_retries"),
+            "status": last.get("error_status"),
+            "error": last.get("error") or "",
+            "delay_ms": last.get("retry_delay_ms")}
+
+
 def _salvage_from_stream(stream):
     """(last agent text, assistant turn count, session id) recovered from a run's
     stream. Used when a run was killed and left no final result event, so the log
@@ -1786,6 +1818,7 @@ def load_live_detail(jid, start_i):
     except Exception:  # noqa: BLE001
         pass
     return {"record": rec, "live": True, "interactive": interactive,
+            "api_retries": _api_retries(stream),
             "agent": {"result": last_text, "num_turns": turns, "session": sess,
                       "stop_reason": "still running"},
             "precheck": (pc.get("output") if isinstance(pc, dict) else "") or "",
@@ -1842,6 +1875,11 @@ def load_run_detail(jid, start):
                 "session": data.get("session_id"),
                 "permission_denials": data.get("permission_denials"),
                 "stop_reason": data.get("stop_reason") or data.get("terminal_reason"),
+                # What the API answered, when it is the API that ended the run.
+                # The CLI reports this alongside a stop_reason describing the
+                # last GOOD turn, so without it the page can only read the
+                # innocent field. See the run modal's own note.
+                "api_error_status": data.get("api_error_status"),
                 "usage": data.get("usage"),
             }
     except Exception as e:  # noqa: BLE001
@@ -1867,6 +1905,10 @@ def load_run_detail(jid, start):
             }
     detail["turns"] = parse_turns_text(stream)
     detail["conversation"] = parse_conversation(stream)
+    # A finished run that was refused all the way to the retry ceiling needs this
+    # just as much as a live one: it is the only record of WHY there is no
+    # transcript under a run that cost $0.00 and lasted three minutes.
+    detail["api_retries"] = _api_retries(stream)
     return detail
 
 
