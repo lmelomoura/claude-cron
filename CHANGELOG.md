@@ -66,6 +66,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Opening a run no longer drops the sidebar down the page.** The modal scroll
+  lock put `overflow:hidden` on `<html>` *and* on `<body>`. Only the one on
+  `<html>` does the locking — it is what propagates to the viewport — while the
+  one on `<body>` turned the body into a scroll container, and a scroll
+  container is the nearest scrollport for every `position:sticky` inside it. The
+  sidebar and the topbar were then sticking to a box scrolled to 0 while the
+  page behind them sat at the reader's scroll offset, so opening a run from
+  halfway down the Runs table pushed the sidebar that many pixels down and out
+  of view. The lock now names `<html>` alone: the page behind is still just as
+  inert — the scrollbar still goes away, the wheel still does nothing — and the
+  rail stays where the reader left it.
+
 - **A live run with a large tool roster shows its session again.** The dashboard
   reads a running row's session id out of the transcript, and it read the first
   8 KB of it rather than the first lines. The init event carries the run's whole
