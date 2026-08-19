@@ -165,10 +165,15 @@ def test_the_band_totals_every_outcome(clean_data):
         f"{_stamp(500)} alpha: precheck found nothing to do (exit 1)",
         f"{_stamp(400)} alpha: PRECHECK FAILED (exit 7) — the probe could not run",
         f"{_stamp(300)} beta: daily cap reached ($9 / $5) — skipping",
+        # A spent usage window is its own outcome, not a `capped`: the operator
+        # can raise a dollar cap they set, but a window they can only wait for.
+        f"{_stamp(250)} beta: usage limit reached — the seven_day window is 98% "
+        f"used and overage is off, so the ceiling is a dead stop — it resets in "
+        f"42 min — skipping",
         f"{_stamp(200)} beta: already at max_parallel=3 run(s), not launching another",
     ])
     assert _totals(_band(srv)) == {"woke": 1, "idle": 1, "failed": 1,
-                                  "capped": 1, "blocked": 1}
+                                  "capped": 1, "rate_limited": 1, "blocked": 1}
 
 
 def test_a_job_gets_an_hourly_series_the_card_can_draw(clean_data):

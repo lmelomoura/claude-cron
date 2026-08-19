@@ -38,6 +38,13 @@ LOG_DIR="$DATA_DIR/logs"
 LOCK_DIR="$DATA_DIR/locks"
 WORKTREES_DIR="$DATA_DIR/worktrees"   # one isolated git worktree per run lives here
 TICK_LOG="$DATA_DIR/tick.log"
+RATE_LIMIT_FILE="$DATA_DIR/rate-limits.json"   # last usage window the API reported
+# Stop launching SCHEDULED runs once a window is this full. The CLI only puts a
+# number on the stream once it has decided to warn (at 0.75 utilisation), so
+# anything quieter than that is invisible and this floor is the only figure that
+# can act. 0.95 leaves room for a short run to finish instead of dying at the
+# ceiling with its work uncommitted.
+RL_STOP_AT="${CLAUDE_CRON_RATE_LIMIT_STOP_AT:-0.95}"
 
 PLIST_LABEL="com.claude-cron.tick"
 PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
@@ -956,6 +963,88 @@ spent_today() { _spend_since_midnight "$1"; }
 
 # Total cost of EVERY job's runs since local midnight — powers the global cap.
 spent_today_all() { _spend_since_midnight ""; }
+
+# ------------------------------------------------------------- rate limits
+# The dollar caps below are the only ceiling this scheduler used to know, and on
+# a subscription they are not the ceiling that stops you: the 5-hour and 7-day
+# usage windows are. The API has been reporting them on the stream all along --
+# 59 of the last 60 runs carry a `rate_limit_event` -- and nothing read it. On
+# 2026-07-30 the seven-day window sat at 98% while the loop kept waking runs
+# into it; on 2026-08-19 a 100-minute run died at the ceiling with ten commits
+# unpushed. Both were visible in a file already on disk.
+#
+# What the event actually carries, verified across 127 of them:
+#   rateLimitType: five_hour | seven_day
+#   status:        allowed | allowed_warning   (a refusal has not been observed;
+#                  anything not starting with `allowed` is treated as one)
+#   utilization:   0..1, present ONLY on a warning (the CLI warns at 0.75)
+#   resetsAt:      epoch seconds -- when this window starts over
+#   overageStatus: rejected, with overageDisabledReason: org_level_disabled
+#
+# `overageStatus: rejected` is what makes this worth gating on rather than
+# merely showing: with no overage to fall through to, hitting the ceiling is a
+# dead stop mid-run, not a slowdown.
+
+# Fold every rate_limit_event in a finished run's stream into the shared file,
+# newest per window wins. Never fails a run: this is bookkeeping, and a run that
+# worked must not be reported as broken because a status file could not be
+# written.
+rl_capture() { # rl_capture <streamfile>
+  local sf="${1:-}" tmp lock
+  [ -s "$sf" ] || return 0
+  grep -q rate_limit_event "$sf" 2>/dev/null || return 0
+  lock="$LOCK_DIR/.ratelimit"
+  lock_take "$lock" || return 0
+  [ -s "$RATE_LIMIT_FILE" ] || echo '{}' > "$RATE_LIMIT_FILE" 2>/dev/null || { lock_drop "$lock"; return 0; }
+  tmp="$(mktemp "$DATA_DIR/.rl.XXXXXX")" || { lock_drop "$lock"; return 0; }
+  # `-R` with `fromjson?` for the same reason every other reader of a stream
+  # uses it: a killed run is cut off mid-write and one truncated line must not
+  # cost us the other 300.
+  "$JQ" -n -R --slurpfile prev "$RATE_LIMIT_FILE" --argjson now "$(now_epoch)" '
+    ($prev[0] // {}) as $was
+    | [inputs | fromjson? | select(.type == "rate_limit_event") | .rate_limit_info // empty]
+    | map(select(.rateLimitType != null))
+    | reduce .[] as $e ($was;
+        .[$e.rateLimitType] = {
+          status:      ($e.status // "unknown"),
+          utilization: ($e.utilization // null),
+          resets_at:   ($e.resetsAt // null),
+          overage:     ($e.overageStatus // null),
+          seen_at:     $now
+        })
+  ' "$sf" > "$tmp" 2>/dev/null && mv "$tmp" "$RATE_LIMIT_FILE" 2>/dev/null
+  rm -f "$tmp" 2>/dev/null
+  lock_drop "$lock"
+  return 0
+}
+
+# Should a SCHEDULED run be held back? Prints one operator-readable sentence and
+# returns 0 when it should. Silence and 1 mean go.
+#
+# A window only speaks while it is still the window that was measured: once
+# `resets_at` has passed, the count started over and the reading says nothing
+# about now. That is what keeps a single bad afternoon from wedging the fleet
+# for ever -- the gate expires by itself, with no operator action and no clock
+# of our own.
+rl_gate() { # rl_gate -> 0 = hold this run back (reason on stdout)
+  [ -s "$RATE_LIMIT_FILE" ] || return 1
+  "$JQ" -e -r --argjson now "$(now_epoch)" --argjson stop "$RL_STOP_AT" '
+    to_entries
+    | map(select(.value.resets_at != null and .value.resets_at > $now))
+    | map(. + {mins: (((.value.resets_at - $now) / 60) | floor)})
+    # A refusal outranks a number: if the API has stopped saying `allowed`, the
+    # window is spent whatever the last utilisation reading was.
+    | ( [ .[] | select((.value.status // "") | startswith("allowed") | not) ]
+        | map("the \(.key) window is spent (API says \(.value.status)) -- it resets in \(.mins) min")
+      ) + (
+        [ .[] | select((.value.utilization // 0) >= $stop) ]
+        | map("the \(.key) window is \((.value.utilization * 100) | floor)% used"
+              + (if .value.overage == "rejected" then " and overage is off, so the ceiling is a dead stop" else "" end)
+              + " -- it resets in \(.mins) min")
+      )
+    | first // empty
+  ' "$RATE_LIMIT_FILE" 2>/dev/null
+}
 
 # The daily ceiling that applies to a job: its own, else its project's, else
 # none. It used to be read from the job ALONE, so a `daily_budget_usd` set on a
@@ -2843,6 +2932,61 @@ NASTY
   got="$( PROJECTS_FILE="$tmp/proj/projects.json"; global_daily_cap )"
   [ -z "$got" ] && ok "and is absent unless declared" || bad "undeclared global -> '$got'"
 
+  echo "rate limits — the usage window the API reports, read and acted on"
+  # The dollar caps above are not what stops a subscription; these windows are,
+  # and the engine was throwing the readings away. Both fixtures below are real
+  # events lifted off runs on disk, not invented shapes.
+  mkdir -p "$tmp/rl/locks"
+  # Fields, not a JSON literal: `\"` inside "$( ... )" is a quoting corner that
+  # differs between shells, and this suite has to read the same everywhere.
+  rl_probe() { # rl_probe <window> <status> <utilization|null> <resets_at> <overage>
+    ( DATA_DIR="$tmp/rl"; LOCK_DIR="$tmp/rl/locks"
+      RATE_LIMIT_FILE="$tmp/rl/rate-limits.json"
+      "$JQ" -n --arg w "$1" --arg s "$2" --argjson u "$3" --argjson r "$4" --arg o "$5" \
+        '{($w): {status:$s, utilization:$u, resets_at:$r, overage:$o, seen_at:0}}' \
+        > "$RATE_LIMIT_FILE"
+      rl_gate ) 2>/dev/null
+  }
+  soon="$(( $(now_epoch) + 3600 ))"
+  gone="$(( $(now_epoch) - 3600 ))"
+
+  # Capture: the real seven-day warning that sat at 98% while the loop kept
+  # waking runs into it, plus a truncated tail — a killed run is always cut off
+  # mid-write, and one bad line must not cost us the reading.
+  printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1785427200,"rateLimitType":"seven_day","utilization":0.98,"surpassedThreshold":0.75}}' > "$tmp/rl/s.ndjson"
+  printf '%s' '{"type":"rate_limit_ev' >> "$tmp/rl/s.ndjson"
+  ( DATA_DIR="$tmp/rl"; LOCK_DIR="$tmp/rl/locks"; RATE_LIMIT_FILE="$tmp/rl/cap.json"
+    rl_capture "$tmp/rl/s.ndjson"
+    "$JQ" -e '.seven_day.utilization == 0.98 and .seven_day.status == "allowed_warning"' "$RATE_LIMIT_FILE" >/dev/null ) \
+    && ok "a window reading is lifted off the stream, truncated tail and all" \
+    || bad "rl_capture did not record the reading"
+  ( DATA_DIR="$tmp/rl"; LOCK_DIR="$tmp/rl/locks"; RATE_LIMIT_FILE="$tmp/rl/none.json"
+    printf 'not json at all\n' > "$tmp/rl/junk.ndjson"; rl_capture "$tmp/rl/junk.ndjson" ) \
+    && ok "a stream with no events is not an error" || bad "rl_capture failed on a clean stream"
+
+  # The gate itself.
+  printf '%s' '{}' > "$tmp/rl/rate-limits.json"
+  got="$( DATA_DIR="$tmp/rl"; RATE_LIMIT_FILE="$tmp/rl/rate-limits.json"; rl_gate 2>/dev/null )"
+  [ -z "$got" ] && ok "no reading, no gate" || bad "gated with no data: $got"
+
+  got="$(rl_probe five_hour allowed null "$soon" rejected)"
+  [ -z "$got" ] && ok "a healthy window does not hold anything back" || bad "gated on a healthy window: $got"
+
+  got="$(rl_probe seven_day allowed_warning 0.98 "$soon" rejected)"
+  [ -n "$got" ] && ok "98% of a live window holds the next run back" || bad "did not gate at 98%"
+
+  got="$(rl_probe seven_day allowed_warning 0.80 "$soon" rejected)"
+  [ -z "$got" ] && ok "80% is under the floor and runs carry on" || bad "gated below the floor: $got"
+
+  # The one that keeps a bad afternoon from wedging the fleet for ever: a reading
+  # is only about the window it was taken in, and that window is over.
+  got="$(rl_probe seven_day allowed_warning 0.98 "$gone" rejected)"
+  [ -z "$got" ] && ok "a reading whose window has already reset says nothing" || bad "a stale reading still gated: $got"
+
+  # A refusal outranks any number, including no number at all.
+  got="$(rl_probe five_hour rejected null "$soon" rejected)"
+  [ -n "$got" ] && ok "an API refusal gates even with no utilisation reported" || bad "a refusal did not gate"
+
   echo "the Claude account comes from the setting, never from the environment"
   # cmd_install refuses an ambient CLAUDE_CONFIG_DIR, and for a while the runtime
   # did not: `claude-cron run <job>` typed inside a Claude Code session inherited
@@ -3939,6 +4083,21 @@ $(run_ending_contract)" ;;
   local forced="false"
   [ "$force" = "--force" ] && forced="true"
 
+  # Usage-window gate, before the dollar caps because it is the ceiling a
+  # subscription actually hits, and because reading one small file is cheaper
+  # than summing a day of runs. Scheduled runs only — Run now is a deliberate
+  # override, exactly as it is for the budget and the precheck.
+  if [ "$forced" != "true" ]; then
+    local rl_reason
+    if rl_reason="$(rl_gate)" && [ -n "$rl_reason" ]; then
+      state_set "$id" last_status '"rate_limited"'
+      state_set "$id" last_rate_limit "$("$JQ" -nc --arg r "$rl_reason" '{reason:$r}')"
+      log_tick "$id: usage limit reached — $rl_reason — skipping"
+      release_slot "$slot"; trap - EXIT
+      return 0
+    fi
+  fi
+
   # Daily budget gate: a per-job ceiling on today's spend. Empty = no cap.
   # Scheduled runs only — Run now is a deliberate override, like the precheck.
   if [ "$forced" != "true" ]; then
@@ -4466,6 +4625,12 @@ If the work turns out to be already finished, or it can no longer be done at all
     "$JQ" -e 'type == "object"' "$logfile" >/dev/null 2>&1 \
       || printf '{"is_error":true,"subtype":"no_result_event","result":"","stop_reason":"%s"}\n' "${wdreason:-killed or crashed}" > "$logfile"
   fi
+
+  # Whatever the API said about the usage windows while this run worked. Read
+  # here because the stream is open in front of us and this is the only place it
+  # is ever parsed in full — and recorded even for a failed run, since a run
+  # killed AT the ceiling is exactly the one whose reading matters most.
+  rl_capture "$streamfile"
 
   end="$(now_epoch)"
   cost="$("$JQ" -r '.total_cost_usd // 0' "$logfile" 2>/dev/null || echo 0)"

@@ -30,6 +30,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The scheduler now knows about the usage window, and holds runs back when it
+  is spent.** The only ceiling it understood was money — `daily_budget_usd` and
+  `max_budget_usd` — and on a subscription that is not the ceiling that stops
+  you: the 5-hour and 7-day usage windows are. The API had been reporting them
+  on the stream all along (59 of the last 60 runs carry a `rate_limit_event`)
+  and nothing read it. On 2026-07-30 the seven-day window sat at 98% while the
+  loop kept waking runs into it; on 2026-08-19 a 100-minute run died at the
+  ceiling with ten commits unpushed. Both were legible in a file already on
+  disk.
+
+  `rl_capture` folds every window reading out of a finished run's stream into
+  `data/rate-limits.json` (newest per window wins, and a killed run's truncated
+  last line costs nothing). `rl_gate` reads it before a **scheduled** run is
+  launched and holds it back when the API has stopped saying `allowed`, or when
+  utilisation is at or past `CLAUDE_CRON_RATE_LIMIT_STOP_AT` (0.95 by default).
+  `overageStatus: rejected` is what makes it worth gating rather than merely
+  showing: with no overage to fall through to, reaching the ceiling is a dead
+  stop mid-run, not a slowdown.
+
+  A reading only speaks for the window it was taken in — once `resets_at` has
+  passed it is ignored — so the gate lets go by itself, with no operator action
+  and no clock of its own. `Run now` overrides it, exactly as it overrides the
+  budget and the precheck. The tick band gained its own `rate_limited` outcome
+  rather than folding into `capped`, because the next move differs: a dollar cap
+  is a number you chose and can raise, a spent window is a wait.
+
+  Known gap: the CLI only puts a number on the stream once it has decided to
+  warn (at 0.75 utilisation), so a quieter window is invisible and only the
+  refusal path can act on it. Reading `rate_limits` off the Claude Code
+  statusline would give the figure on every turn, for free — see
+  `docs/superpowers/plans/2026-08-19-rate-limit-gate.md`.
+
 - **A whole run is now tested end to end** (`test/e2e.test.sh`, run by
   `claude-cron selftest`). Every suite before it was unit-level: it called
   `wt_setup`, the classifier and the sweep directly, and never drove a run

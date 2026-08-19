@@ -942,6 +942,11 @@ def classify_tick(msg):
         return "failed"
     if "daily cap reached" in msg:          # covers the per-job and GLOBAL lines
         return "capped"
+    # Held back by a usage window, not by money. Its own outcome because the
+    # operator's next move differs: a dollar cap is a decision they made and can
+    # raise, a spent window is a wait.
+    if "usage limit reached" in msg:
+        return "rate_limited"
     if "max_parallel" in msg:
         return "blocked"
     # A tick that could not even get as far as the probe: no prompt, a cwd that
@@ -957,7 +962,7 @@ def classify_tick(msg):
 
 # Outcomes that mean "the loop looked at this job", in the order the band
 # stacks them. `woke` is the signal; the rest are degrees of quiet.
-TICK_OUTCOMES = ("woke", "idle", "capped", "blocked", "failed")
+TICK_OUTCOMES = ("woke", "idle", "capped", "rate_limited", "blocked", "failed")
 
 
 def checks_24h(now=None):
