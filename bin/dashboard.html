@@ -789,8 +789,15 @@ footer{margin-top:30px;color:var(--muted);font-size:11px;text-align:center}
 /* While any modal is open the page behind must be inert: a native <dialog>
    blocks clicks but NOT the wheel, so scrolling over it used to scroll the page
    underneath. Lock the page, and contain scrolling inside each scrollable area
-   so reaching its end never chains outwards. */
-html.modal-open, html.modal-open body{overflow:hidden!important}
+   so reaching its end never chains outwards.
+   The lock goes on <html> ALONE. Its overflow is what propagates to the
+   viewport, so this is already the whole lock — and adding <body> to it does
+   real damage: a body with its own overflow is a scroll container, which makes
+   it the nearest scrollport for every `position:sticky` descendant. The sidebar
+   and the topbar would then stick to a box scrolled to 0 while the page behind
+   sits at scrollY, so opening a modal on a scrolled list dropped the sidebar
+   scrollY pixels down the page. */
+html.modal-open{overflow:hidden!important}
 dialog .dlg-b, dialog .tabpanes, dialog .term, dialog .combo-list,
 dialog .fs-list, dialog textarea, dialog pre{overscroll-behavior:contain}
 dialog{overscroll-behavior:contain}
