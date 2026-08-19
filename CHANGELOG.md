@@ -66,6 +66,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A resume that died young can be resumed again.** A resumed run carries the
+  session it continued in `resumed_from` AND in `session` — it is the same
+  conversation — and the Runs table's "has this task been continued already?"
+  check matched on `resumed_from` without a "later than this run" guard. So a
+  resume found ITSELF among its own continuations, and the table greyed out its
+  Resume button under "this task was already resumed", pointing at the row the
+  operator was looking at. The one row it locked was the one most worth firing
+  again: an API overload killed a resume at 3m37s and $0.00 without the agent
+  taking a single turn, and from then on neither that row nor the run it
+  continued would offer the button — the task was unreachable from the
+  dashboard, with its worktree and its ten unpushed commits sitting there. Both
+  clauses are now guarded by `start > after`. A run that really was continued
+  still says so, and still points at what continued it.
+
 - **Opening a run no longer drops the sidebar down the page.** The modal scroll
   lock put `overflow:hidden` on `<html>` *and* on `<body>`. Only the one on
   `<html>` does the locking — it is what propagates to the viewport — while the

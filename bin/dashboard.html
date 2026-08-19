@@ -3750,8 +3750,16 @@ function markResumed(id,start){
 // what identifies a continuation whose own session id came out different.
 function continuationsOf(sid, after){
   if(!sid) return [];
+  // `r.start>after` guards BOTH clauses, and the resumed_from one needs it most:
+  // a resumed run carries the session it continued in `resumed_from` AND in
+  // `session` — they are the same conversation — so without the guard a resume
+  // matched itself, counted as its own continuation, and greyed out its own
+  // Resume button under "This task was already resumed". A resume that dies
+  // young is exactly the one an operator needs to fire again (the 529 that
+  // killed one at three minutes and $0.00 was still killing them on retry), and
+  // it was the one row the dashboard would not let them touch.
   return (DATA.runs||[])
-    .filter(r=>r.resumed_from===sid || (r.session===sid && r.start>after))
+    .filter(r=>r.start>after && (r.resumed_from===sid || r.session===sid))
     .sort((a,b)=>a.start-b.start);
 }
 // The run this one continued, if any — the other side of the same link. The
