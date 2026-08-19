@@ -379,6 +379,9 @@ td .projtag .ic{width:12px;height:12px;color:var(--accent)}
 .k-woke{background:var(--accent)}
 .k-idle{background:color-mix(in srgb,var(--muted) 32%,transparent)}
 .k-capped{background:var(--warn)}
+/* A spent usage window is a wait, not a decision the operator made — warmer
+   than `capped` so the two do not read as the same thing at a glance. */
+.k-rate_limited{background:color-mix(in srgb,var(--warn) 70%,var(--err))}
 .k-blocked{background:color-mix(in srgb,var(--warn) 42%,transparent)}
 .k-failed{background:var(--err)}
 /* A day with no ticks at all is the normal state of a fresh install. Draw the
@@ -3394,6 +3397,10 @@ const TICK_KINDS=[
   ["woke",   "started a run"],
   ["idle",   "nothing to do"],
   ["capped", "daily cap reached"],
+  // Money and usage are different ceilings with different next moves: a daily
+  // cap is a number the operator chose and can raise, a spent window is a wait
+  // for the clock. Folding them together hid which one was holding the fleet.
+  ["rate_limited", "usage window spent"],
   // Not "at its parallel limit": with max_parallel=1 — the common case — that
   // reads as a ceiling the operator should consider raising, when all it means
   // is that the previous run had not finished. "Already running" is true at
