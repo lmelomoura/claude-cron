@@ -439,3 +439,34 @@ def test_the_server_hands_the_page_what_the_api_did(srv):
     assert srv._api_retries("") is None
     server_src = (REPO / "bin" / "claude-cron-server").read_text()
     assert '"api_error_status": data.get("api_error_status")' in server_src
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_a_resume_is_not_its_own_continuation(srv, tmp_path):
+    """A resumed run carries the session it continued in BOTH `resumed_from` and
+    `session` -- it is the same conversation. continuationsOf matched on
+    resumed_from with no `start>after` guard, so a resume found ITSELF in its own
+    continuations, and the Runs table greyed out its Resume button saying "this
+    task was already resumed" while pointing at the very row you were looking at.
+    A resume that dies young is the one most worth firing again: an API overload
+    killed one at 3m37s and $0.00, and that row was the only one the dashboard
+    would not let its operator touch."""
+    js = _js(srv)
+    script = tmp_path / "cont.js"
+    script.write_text("""
+    let DATA = {runs: [
+      {id:"j", start:100, session:"s1", resumed_from:""},    // the original, failed
+      {id:"j", start:200, session:"s1", resumed_from:"s1"},  // its resume, also failed
+    ]};
+    """ + _plainfn(js, "continuationsOf") + """
+    console.log(JSON.stringify({
+      original: continuationsOf("s1", 100).map(r=>r.start),
+      resume:   continuationsOf("s1", 200).map(r=>r.start),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    # The first run really was continued, and still says so.
+    assert out["original"] == [200], f"the real continuation was lost: {out['original']}"
+    # The resume has nothing after it, so it stays resumable.
+    assert out["resume"] == [], f"the resume counted itself: {out['resume']}"
