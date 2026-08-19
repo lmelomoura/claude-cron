@@ -78,6 +78,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   inert — the scrollbar still goes away, the wheel still does nothing — and the
   rail stays where the reader left it.
 
+- **A run the API killed now says so, instead of blaming the model.** A 529
+  ended a 100-minute run mid-work, and the CLI reported it with
+  `stop_reason: "stop_sequence"`, `subtype: "success"` and `terminal_reason:
+  "completed"` — every field the run modal reads agreeing that nothing had gone
+  wrong. So the one line whose whole job is to say why a run stopped said "Stop
+  sequence — the model hit a configured stop sequence": a sentence about a
+  choice the agent made, for a fault on the API's side, with the $32 and the
+  unpushed branch left unexplained. The CLI does report the truth, in
+  `api_error_status`; the server was forwarding a fixed list of fields that did
+  not include it. It does now, and the modal reads it FIRST, before the
+  protocol's own stop reason — "API error 529 — the API was overloaded on its
+  own side… resume it to carry on where it stopped". Runs recorded before this
+  still get it, read back out of the error text. A run that really did hit a
+  stop sequence reads exactly as it did.
+
+- **A run the API is bouncing no longer looks like a run that is merely slow.**
+  Resuming that session hit the same overload: ten `api_retry` events, HTTP 529
+  every time, then the CLI gave up at its retry ceiling. On screen that was a
+  black rectangle under the word "live" and the words "Waiting for the first
+  turn…" — indistinguishable from a healthy run still loading, for three
+  minutes, and then a finished run with no transcript and no reason. The retry
+  events were in the stream the panel was already tailing; nothing read them.
+  The Terminal now names what is happening while it happens ("The API is
+  refusing this run's turns — 3 retries so far, the last one HTTP 529… Attempt
+  3 of 10"), and afterwards says the ceiling is why there is no transcript.
+
 - **A live run with a large tool roster shows its session again.** The dashboard
   reads a running row's session id out of the transcript, and it read the first
   8 KB of it rather than the first lines. The init event carries the run's whole

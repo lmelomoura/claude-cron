@@ -331,3 +331,111 @@ def test_the_disabled_resume_tooltip_names_every_resumable_status(srv):
     js = _js(srv)
     assert "Only a failed, warning or stopped run can be resumed" in js
     assert "Only a failed or warning run can be resumed" not in js
+
+
+# ---- the run modal saying WHY a run ended, when the API is what ended it.
+
+def _reason_harness(js):
+    """stopReasonText and its two tables, standing on their own. The page reads
+    these off a run's stored result_json, so the fixtures below are the shape
+    the CLI actually writes."""
+    tables = ""
+    for name in ("API_ERRORS", "STOP_REASONS", "REASON_PREFIX"):
+        i = js.index(f"const {name}={{")
+        d, j = 0, js.index("{", i)
+        for k in range(j, len(js)):
+            d += (js[k] == "{") - (js[k] == "}")
+            if d == 0:
+                tables += js[i:k + 1] + ";\n"
+                break
+    fns = "\n".join(_plainfn(js, n) for n in
+                    ("apiErrorParts", "reasonBadge", "reasonParts", "stopReasonText", "retryNote"))
+    return """
+    const esc = (s) => String(s ?? "").replace(/[&<>"]/g,
+      c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+    """ + tables + fns
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_an_api_failure_outranks_the_protocol_stop_reason(srv, tmp_path):
+    """A 529 ended a 100-minute run, and the CLI reported it as
+    `stop_reason: "stop_sequence"`, `subtype: "success"`, `terminal_reason:
+    "completed"` -- every innocent-looking field agreeing that nothing had
+    gone wrong. The modal read the innocent one and told its operator the
+    model had hit a configured stop sequence: a sentence about the agent's own
+    choice, on the one line whose job is to say why the run stopped, for a
+    fault on the API's side. `api_error_status` is where the CLI puts the
+    truth, and it has to be read FIRST."""
+    script = tmp_path / "reason.js"
+    script.write_text(_reason_harness(_js(srv)) + """
+    const api  = {api_error_status:529, stop_reason:"stop_sequence",
+                  result:"API Error: 529 Overloaded. This is a server-side issue"};
+    // Recorded before the page read the field: the code survives only in the text.
+    const old  = {stop_reason:"stop_sequence", result:"API Error: 529 Overloaded."};
+    console.log(JSON.stringify({
+      api:  stopReasonText(api, {}),
+      old:  stopReasonText(old, {}),
+      turn: stopReasonText({stop_reason:"end_turn"}, {}),
+      seq:  stopReasonText({stop_reason:"stop_sequence"}, {}),
+      note: stopReasonText({}, {note:"STOPPED: ended on purpose from the dashboard"}),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    for key in ("api", "old"):
+        assert "API error 529" in out[key], f"{key}: the API's own verdict was not shown"
+        assert "stop sequence" not in out[key], f"{key}: still blaming a configured stop sequence"
+        assert "overloaded" in out[key], f"{key}: never says the API was overloaded"
+    # A run with no API failure must be untouched -- including one that really
+    # DID hit a stop sequence, which is the reading this fix could have broken.
+    assert "Normal end" in out["turn"]
+    assert "Stop sequence" in out["seq"] and "API error" not in out["seq"]
+    assert "Stopped by you" in out["note"]
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_terminal_says_the_api_is_bouncing_it_rather_than_showing_nothing(srv, tmp_path):
+    """A resume whose every turn was refused sat there live with an empty
+    Terminal and the words "Waiting for the first turn", which is what a run
+    that is merely slow to start looks like -- while the stream the panel was
+    already tailing held ten `api_retry` events naming the status. It ran for
+    three minutes, cost $0.00 and died at the retry ceiling with the operator
+    never told why."""
+    script = tmp_path / "retry.js"
+    script.write_text(_reason_harness(_js(srv)) + """
+    const r = {count:10, attempt:10, max_retries:10, status:529, error:"overloaded"};
+    console.log(JSON.stringify({
+      live: retryNote({live:true, api_retries:{...r, count:3, attempt:3}}),
+      dead: retryNote({api_retries:r}),
+      none: retryNote({live:true, api_retries:null}),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert "529" in out["live"] and "3 of 10" in out["live"]
+    assert "nothing is wrong with the run itself" in out["live"]
+    assert "529" in out["dead"] and "retry ceiling" in out["dead"]
+    # No retries means nothing to say -- the note must not appear over a healthy run.
+    assert out["none"] == ""
+
+
+def test_the_server_hands_the_page_what_the_api_did(srv):
+    """Both halves above read fields the server has to actually send. It used to
+    forward a fixed list that included `stop_reason` and not `api_error_status`,
+    and to drop the retry events on the floor -- so the page could not have told
+    the truth even if it had wanted to."""
+    stream = "\n".join(json.dumps(e) for e in [
+        {"type": "system", "subtype": "init", "session_id": "s1", "model": "claude-opus-5"},
+        {"type": "system", "subtype": "api_retry", "attempt": 1, "max_retries": 10,
+         "error_status": 529, "error": "overloaded"},
+        {"type": "system", "subtype": "api_retry", "attempt": 2, "max_retries": 10,
+         "error_status": 529, "error": "overloaded"},
+    ])
+    assert srv._api_retries(stream) == {
+        "count": 2, "attempt": 2, "max_retries": 10,
+        "status": 529, "error": "overloaded", "delay_ms": None}
+    # A run the API never refused has nothing to report, so the page shows nothing.
+    assert srv._api_retries('{"type":"assistant","message":{}}') is None
+    assert srv._api_retries("") is None
+    server_src = (REPO / "bin" / "claude-cron-server").read_text()
+    assert '"api_error_status": data.get("api_error_status")' in server_src

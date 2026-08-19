@@ -4625,17 +4625,69 @@ function reasonParts(s){
   }
   return {label:s, help:""};
 }
-function stopReasonText(raw, rec){
-  // No reason of its own → the run's note, which for anything the scheduler
-  // decided IS the reason. Only a record carrying neither shows a dash.
-  const s=String(raw||"").trim() || String((rec&&rec.note)||"").trim();
-  if(!s) return "—";
-  const p=reasonParts(s);
-  // The badge carries the HUMAN label, not the protocol token. Showing both put
-  // the same fact on screen twice, once in a word nobody outside the API knows.
-  // The token stays on the tooltip for whoever is matching this against a log.
+/* An API failure is not a stop reason, and it arrives wearing the last GOOD
+   turn's clothes: the 529 that killed a 100-minute run was reported with
+   `stop_reason: "stop_sequence"`, `subtype: "success"` and
+   `terminal_reason: "completed"`. Read literally, the modal then told its
+   operator the model had hit a configured stop sequence — a sentence about a
+   choice the agent made, on the one line whose whole job is to say why the run
+   stopped, for a fault that was neither the agent's nor this machine's. The CLI
+   does report the truth, in `api_error_status`; it just has to be read FIRST. */
+const API_ERRORS={
+  400:"the API refused the request as invalid — most often a conversation that has outgrown the context window",
+  401:"the API rejected this run's credentials",
+  403:"the API refused this key access to what the run asked for",
+  429:"the account is over its rate or usage limit",
+  500:"the API failed on its own side",
+  502:"the API could not be reached through its gateway",
+  503:"the API was unavailable",
+  529:"the API was overloaded on its own side — temporary, and nothing to do with this run",
+};
+function apiErrorParts(a){
+  // `api_error_status` is the CLI's own field. The regex is the fallback for
+  // runs recorded before this page read it, whose only trace of the code is the
+  // error text the CLI left in `result`.
+  const code=Number((a&&a.api_error_status)||0)
+    || Number((/API Error:?\s*(\d{3})\b/.exec(String((a&&a.result)||""))||[])[1]||0);
+  if(!code) return null;
+  return {label:"API error "+code,
+    help:(API_ERRORS[code]||"the API refused the turn")
+      +". The run was cut off mid-work, not ended by the agent — resume it to carry on where it stopped.",
+    code:"api_error_status "+code+((a&&a.stop_reason)?" · stop_reason "+a.stop_reason:"")};
+}
+// The badge carries the HUMAN label, not the protocol token. Showing both put
+// the same fact on screen twice, once in a word nobody outside the API knows.
+// The token stays on the tooltip for whoever is matching this against a log.
+function reasonBadge(p){
   return '<code'+(p.code?' title="'+esc(p.code)+'"':"")+'>'+esc(p.label)+'</code>'
     + (p.help ? ' <span class="muted">— '+esc(p.help)+'</span>' : "");
+}
+function stopReasonText(a, rec){
+  // The API's own verdict outranks the protocol's, because the protocol field
+  // describes the last turn that WORKED and the API field describes the one
+  // that ended the run.
+  const api=apiErrorParts(a);
+  if(api) return reasonBadge(api);
+  // No reason of its own → the run's note, which for anything the scheduler
+  // decided IS the reason. Only a record carrying neither shows a dash.
+  const s=String((a&&a.stop_reason)||"").trim() || String((rec&&rec.note)||"").trim();
+  if(!s) return "—";
+  return reasonBadge(reasonParts(s));
+}
+
+/* The API refusing this run's turns, in one line. `api_retry` events carry the
+   HTTP status and the attempt count, and the CLI gives up at max_retries — so
+   this is the difference between "starting up" and "has been failing for three
+   minutes and is about to die", which the panel could not otherwise tell. */
+function retryNote(d){
+  const r=d&&d.api_retries;
+  if(!r||!r.count) return "";
+  const code=r.status?(" "+r.status):"", what=API_ERRORS[r.status]||"the API refused the turn";
+  const attempt=(r.attempt&&r.max_retries)?(" Attempt "+r.attempt+" of "+r.max_retries+"."):"";
+  return "The API is refusing this run's turns — "+r.count+" retr"+(r.count===1?"y":"ies")
+    + " so far, the last one HTTP"+code+" ("+what.replace(/ —.*$/,"")+")."+attempt
+    + (d.live ? " The agent has not been able to start; nothing is wrong with the run itself."
+              : " The run gave up at the retry ceiling, which is why there is no transcript.");
 }
 
 function renderLog(d){
@@ -4653,7 +4705,7 @@ function renderLog(d){
     // resolution step rendered for a job that never took one.
     ["Model", modelCell(rec)],
     ["Session", esc(a.session||rec.session||"—")],
-    ["Stop reason", stopReasonText(a.stop_reason, rec)],
+    ["Stop reason", stopReasonText(a, rec)],
   ];
   // While the run is live, say so and state the refresh cadence, so a still
   // screen reads as "nothing new yet" rather than "this page is stale".
@@ -4696,17 +4748,26 @@ function renderLog(d){
       + (you ? "&gt; " : "") + esc(t.text) + '</span>';
     return line ? '<div class="row">'+line+'</div>' : "";
   }).join("");
+  // The API bouncing every turn looks EXACTLY like a slow start: no rows, under
+  // the word "live". The stream says which it is — the panel is already tailing
+  // the file that holds the answer — so say it rather than leaving the operator
+  // watching a black rectangle wondering whether their resume did anything.
+  const retryLine = retryNote(d);
   const termPane = '<div class="termwrap">'
     + '<div class="term" id="term-body">'
     +   (termRows || '<span class="t-sys">'
           // A finished run with no rows has nothing to wait for. Saying "waiting"
           // reads as "still going" and hides a real failure: the transcript was
           // lost, not delayed.
-          + (d.live ? 'Waiting for the first turn…'
+          + (retryLine ? esc(retryLine)
+             : d.live ? 'Waiting for the first turn…'
                     : 'No transcript was captured for this run. It finished, and its cost '
                       + 'and turn count were recorded, but the log could not be read back — '
                       + 'so there is nothing to replay here.')
           + '</span>')
+    // With rows present the note still belongs on screen, at the bottom, where
+    // the next turn would have gone.
+    +   ((termRows && retryLine) ? '<div class="row"><span class="t-sys">'+esc(retryLine)+'</span></div>' : '')
     +   (d.live?'<div class="row"><span class="t-sys">▍</span></div>':'')
     + '</div>'
     + (d.live && d.interactive
