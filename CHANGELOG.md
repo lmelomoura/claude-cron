@@ -17,6 +17,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Projects can now carry a `security` block.** It is what a security analysis
+  is configured by — which model and account it runs as, its spending cap, the
+  profile it defaults to. Without it there was no way to say which Claude an
+  analysis should sign in as, and it would have run as whatever the scheduler's
+  default happened to be.
+
 ### Changed
 
 - **A provider outage no longer slows a job down for the rest of the day.**

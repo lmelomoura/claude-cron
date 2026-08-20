@@ -170,6 +170,28 @@ project_get() { # project_get <name> <jq-path> [default]
      | if type == "array" then join(",") else tostring end'
 }
 
+# ---------------------------------------------------------------- security
+# The per-project security block. Kept separate from `resolve` on purpose: a
+# job's fields inherit from its project, but a security setting has no job to
+# inherit from -- the derived job IS built out of these values.
+security_get() { # security_get <project> <jq-path> [default]
+  local project="$1" path="$2" def="${3:-}" v
+  v="$(project_get "$project" ".security${path}" '')"
+  case "$v" in ''|null) echo "$def" ;; *) echo "$v" ;; esac
+}
+
+security_enabled() { # security_enabled <project> -> rc 0 when analysis is on
+  [ "$(security_get "$1" '.enabled' 'false')" = "true" ]
+}
+
+# The project name becomes part of a job id, which only allows [A-Za-z0-9_-].
+security_slug() { # security_slug <project>
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]\{1,\}/-/g; s/^-//; s/-$//'
+}
+
+SECURITY_JOB_PREFIX="security-"
+security_job_id() { printf '%s%s' "$SECURITY_JOB_PREFIX" "$(security_slug "$1")"; }
+
 write_projects() { # write_projects <jq-filter> [jq-args...]
   local tmp; tmp="$(mktemp "$CONFIG_DIR/.projects.XXXXXX")"
   "$JQ" "$@" "$PROJECTS_FILE" > "$tmp" && mv "$tmp" "$PROJECTS_FILE"
@@ -4246,6 +4268,36 @@ NASTY
       bad "the containment rule is missing from $(( dev_n - dev_ok )) of $dev_n dev prompts"
     fi
   fi
+
+  # ---- security configuration ------------------------------------------
+  mkdir -p "$tmp/sec"
+  cat > "$tmp/sec/projects.json" <<'JSON'
+{"projects":[
+ {"name":"Quality Gate","cwd":"/tmp/qg","base":"develop",
+  "security":{"enabled":true,"model":"claude-opus-5","max_budget_usd":5}},
+ {"name":"Off","cwd":"/tmp/off","security":{"enabled":false}},
+ {"name":"Bare","cwd":"/tmp/bare"}]}
+JSON
+  ( PROJECTS_FILE="$tmp/sec/projects.json"
+    [ "$(security_get "Quality Gate" '.model' '')" = "claude-opus-5" ] ) \
+    && ok "security_get reads a project's security block" \
+    || bad "security_get reads a project's security block"
+  ( PROJECTS_FILE="$tmp/sec/projects.json"
+    [ "$(security_get "Bare" '.model' 'opus')" = "opus" ] ) \
+    && ok "security_get falls back when there is no security block" \
+    || bad "security_get falls back when there is no security block"
+  ( PROJECTS_FILE="$tmp/sec/projects.json"; security_enabled "Quality Gate" ) \
+    && ok "security_enabled is true for an enabled project" \
+    || bad "security_enabled is true for an enabled project"
+  ( PROJECTS_FILE="$tmp/sec/projects.json"; ! security_enabled "Off" ) \
+    && ok "security_enabled is false when the block says so" \
+    || bad "security_enabled is false when the block says so"
+  ( PROJECTS_FILE="$tmp/sec/projects.json"; ! security_enabled "Bare" ) \
+    && ok "security_enabled is false when there is no block at all" \
+    || bad "security_enabled is false when there is no block at all"
+  [ "$(security_slug "Quality Gate")" = "quality-gate" ] \
+    && ok "security_slug lowercases and dashes a project name" \
+    || bad "security_slug lowercases and dashes a project name"
 
   rm -rf "$tmp"
   echo
