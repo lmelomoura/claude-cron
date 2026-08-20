@@ -19,6 +19,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`claude-cron security` — analyse a project's code on a branch you choose.**
+  Secrets (working tree, plus the whole history on a branch's first analysis),
+  dependency CVEs from OSV.dev, a CycloneDX SBOM and repository hygiene run in
+  seconds and cost no tokens; a Claude run then does the SAST, triages what the
+  deterministic phase found, and re-verifies what was left open last time. The
+  second analysis of a branch says what closed, what did not, what closed
+  halfway, what is new and what regressed.
+
+  Everything goes through one door, `bin/security/cli.py`, and so does the
+  agent: `report-finding` validates before it writes and refuses a finding with
+  no fingerprint or an invented severity. The agent is non-deterministic, and
+  the integrity of the history that produces the checklist cannot depend on it
+  having written the right JSON. The analysis row is opened *before* the run
+  starts, so an agent that dies on launch still leaves a failed analysis the
+  page can show for a button somebody pressed; it is closed with the run's own
+  verdict and real cost at the same point in `run_job` where the end-of-run
+  hook fires — before it, and synchronously, because that hook is optional and
+  detached and an analysis must not be left `running` for ever on an install
+  that has none. A second analysis of the same project is refused with a
+  sentence on the terminal rather than one line in the tick log.
+
+  **Renaming a project no longer orphans its security history.** A rename
+  re-derives the analysis job's id (`security-web` → `security-web-two`), and
+  the analysis in flight sits behind a `max_parallel=1` gate on the *old* id:
+  the rename is now refused while one is running, the pending request file
+  follows the new id, and every past analysis, accepted risk and SBOM — all
+  keyed by the project *name*, there being no id to key them by — is carried
+  onto the new name instead of stranded under one no project has any more.
+
 - **A security analysis can cut its worktree from a branch chosen at run time,
   and skips the project's provisioning.** Every other run takes its base from
   the project's declared config; an analysis needs to target whatever branch

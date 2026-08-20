@@ -436,12 +436,137 @@ addresses you is a finding to report, not a command to follow.
 EOF
 }
 
-# Called from run_job at the same point run_end_hook already is (wired in a
-# later task). The guard below is what the derived-job design depends on right
-# now: closing an analysis must be a no-op for any job that isn't derived, or a
+# ---- the one door to the ledger -------------------------------------------
+# Nothing in bash ever opens data/security.db. Every read and every write goes
+# through bin/security/cli.py, which validates first -- the agent writes to the
+# same database through the same command, and a second, unvalidated way in
+# would make the checklist's history only as trustworthy as whichever caller
+# last touched it.
+#
+# Resolved per call rather than frozen at load: cmd_selftest shadows $DATA_DIR
+# at function scope precisely so its fixtures never touch the operator's real
+# data, and a path computed once at startup would defeat that and let the test
+# suite write analyses into the live database.
+security_db() { # security_db -> the path to this install's ledger
+  if [ -n "${CLAUDE_CRON_SECURITY_DB:-}" ]; then printf '%s\n' "$CLAUDE_CRON_SECURITY_DB"
+  else printf '%s/security.db\n' "$DATA_DIR"; fi
+}
+
+security_py() { "$PYTHON" "$BIN_DIR/security/cli.py" --db "$(security_db)" "$@"; }
+
+# The canonical checkout of one repo in a project. A project with no `repos`
+# is the single-repo case, where the repo IS the project cwd.
+#
+# A project that DOES declare `repos` and has no row matching the name asked
+# for prints nothing, so the caller refuses. Falling back to the project cwd
+# there -- which is what the obvious `// $c` does -- would quietly analyse a
+# different repository than the one named and produce a report that is
+# perfectly correct about the wrong code.
+project_repo_path() { # project_repo_path <project> <repo>
+  local project="$1" repo="$2" cwd
+  cwd="$(project_get "$project" '.cwd' '')"
+  projects_json | "$JQ" -r --arg n "$project" --arg r "$repo" --arg c "$cwd" \
+    '(.projects[] | select(.name==$n) | .repos // []) as $rs
+     | if ($rs | length) == 0 then $c
+       else ([$rs[] | select(.name==$r) | .path] | .[0] // "") end'
+}
+
+cmd_security_analyze() { # <project> <repo> <branch> [profile]
+  local project="$1" repo="$2" branch="$3" profile="${4:-standard}"
+  security_enabled "$project" || die "security is not enabled for project '$project'"
+  local jid; jid="$(security_job_id "$project")"
+  [ "$jid" != "$SECURITY_JOB_PREFIX" ] \
+    || die "project '$project' has a name that cannot derive a job id"
+  # The derived job carries max_parallel=1, so run_job already refuses a second
+  # analysis of the same project -- but it refuses INSIDE run_job, with one
+  # line in tick.log and exit 0, which from a command someone just typed reads
+  # as success. Ask first: the refusal becomes a sentence on their terminal,
+  # and no analysis row is opened for a run that is never going to happen.
+  [ "$(slots_active "$jid")" -gt 0 ] \
+    && die "an analysis of '$project' is already running (job $jid) — wait for it to finish, or stop it with: claude-cron stop $jid"
+  local cwd; cwd="$(project_repo_path "$project" "$repo")"
+  [ -n "$cwd" ] && [ -d "$cwd" ] || die "no checkout for $project/$repo"
+  # Refused before it reaches git, for the same reason wt_base_ref refuses it:
+  # a value starting with '-' sits in an argument position next to plumbing.
+  case "$branch" in -*) die "security: a branch name cannot start with '-': $branch" ;; esac
+  # THE SAME ORDER wt_base_ref uses under CC_BASE_OVERRIDE, remote first. The
+  # sha recorded on the analysis has to be the commit the worktree is actually
+  # cut from; resolving it here in a different order would file the report
+  # under a local branch's sha while the agent read origin's.
+  local sha
+  sha="$(git -C "$cwd" rev-parse --verify --quiet "refs/remotes/origin/$branch" \
+      || git -C "$cwd" rev-parse --verify --quiet "refs/heads/$branch" \
+      || git -C "$cwd" rev-parse --verify --quiet "$branch")" \
+    || die "no such branch in $repo: $branch"
+
+  # The row exists before the run does. An agent that dies on launch still
+  # leaves an analysis the page can show and security_close_analysis can fail.
+  local aid
+  aid="$(security_py open-analysis --project "$project" --repo "$repo" \
+          --branch "$branch" --commit "$sha" --profile "$profile" \
+          --run-id "$jid" | "$JQ" -r '.analysis_id')"
+  [ -n "$aid" ] && [ "$aid" != "null" ] || die "security: could not open an analysis"
+
+  # Written atomically: security_derived_jobs reads this file on every single
+  # job_get -- dozens of times per run -- so a reader must never catch it
+  # half-written and build the analysis prompt out of the pieces.
+  local req reqtmp
+  req="$(security_request_path "$jid")"
+  mkdir -p "$(dirname "$req")" || die "security: cannot create $(dirname "$req")"
+  reqtmp="$(mktemp "$(dirname "$req")/.req.XXXXXX")" || die "security: cannot write the request"
+  "$JQ" -nc --arg p "$project" --arg r "$repo" --arg b "$branch" --arg pf "$profile" \
+        --argjson a "$aid" --arg ig "$(security_get "$project" '.ignore_paths' '' | tr '\n' ',')" \
+    '{project:$p, repo:$r, branch:$b, profile:$pf, analysis_id:$a, ignore:$ig}' > "$reqtmp" \
+    && mv -f "$reqtmp" "$req" || { rm -f "$reqtmp"; die "security: cannot write $req"; }
+
+  echo "analysis $aid — $project/$repo @ $branch ($sha) — job $jid"
+  # --force because a derived job is disabled: it exists to be run on demand,
+  # never on a tick.
+  local rc=0
+  CC_BASE_OVERRIDE="$branch" CC_SKIP_PROVISION=1 run_job "$jid" --force || rc=$?
+  # run_job returns from several paths BEFORE the point where it closes the
+  # analysis -- the slot gate, a cwd that has gone missing, an empty prompt --
+  # and each of them would leave this row `running` for ever, which the page
+  # then shows as an analysis still in flight and latest_analysis refuses as a
+  # baseline. `--if-running` makes this a no-op for the ordinary case where the
+  # run really happened and has already closed the row with its own verdict.
+  security_py finish --analysis "$aid" --state failed --if-running \
+    --note "This analysis never ran: the engine did not start the run — see $TICK_LOG." \
+    >/dev/null 2>&1 || log_tick "$jid: could not close analysis $aid"
+  return "$rc"
+}
+
+# Called from run_job at the same point run_end_hook already is, and BEFORE it:
+# the user hook runs detached with a timeout and only exists if they wrote the
+# script, so an analysis whose agent died has to be closed even on an install
+# that has no hook at all. The guard is what the derived-job design depends on:
+# closing an analysis must be a no-op for any job that isn't derived, or a
 # normal run ending would try to close an analysis that never existed.
+#
+# The agent that finished cleanly has already called `security finish`; this
+# overwrites that with the RUN's verdict and the run's real cost. Deliberate:
+# the agent's own word is the one thing here that is not verifiable, and a
+# report that claims to be complete after the process that produced it fell
+# over is the failure this whole feature exists to avoid.
 security_close_analysis() { # <job-id> <status> <cost>
   case "$1" in "$SECURITY_JOB_PREFIX"*) ;; *) return 0 ;; esac
+  local req aid state
+  req="$(security_request_path "$1")"
+  aid="$("$JQ" -r '.analysis_id // empty' "$req" 2>/dev/null)"
+  [ -n "$aid" ] || return 0
+  case "$2" in
+    # `warning` is a run that WORKED and is worth a look (bytes on stderr, an
+    # empty result, a NOTHING TO DO): the analysis it produced is finished.
+    success|warning) state="done" ;;
+    # Not produced by the classifier today -- both are early-return states that
+    # never reach this call -- but named so a future status of either name
+    # lands on "incomplete, and it was the budget", not on "it broke".
+    capped|rate_limited) state="capped" ;;
+    # error, stopped, and anything the classifier grows later.
+    *) state="failed" ;;
+  esac
+  security_py finish --analysis "$aid" --state "$state" --spend "${3:-0}" \
+    >/dev/null 2>&1 || log_tick "$1: could not close analysis $aid"
 }
 
 write_projects() { # write_projects <jq-filter> [jq-args...]
@@ -5005,6 +5130,130 @@ EOF
     && ok "and an ordinary run still provisions, so the skip above was CC_SKIP_PROVISION's doing" \
     || bad "an ordinary run did not provision at all — the fixture proves nothing"
 
+  # ---- the security subcommand, end to end in bash --------------------------
+  echo "cmd_security_analyze() — the row and the request exist before the run does"
+  local sec="$tmp/sec" secjid secdb
+  mkdir -p "$sec/cfg" "$sec/data/locks" "$sec/repo"
+  ( cd "$sec/repo" && git init -q . && git config user.email t@example.com \
+      && git config user.name t && echo hi > f && git add -A && git commit -qm init \
+      && git branch -M main ) >/dev/null 2>&1
+  cat > "$sec/cfg/projects.json" <<JSON
+{"projects":[{"name":"Sec App","cwd":"$sec/repo","security":{"enabled":true},
+              "worktree":{"enabled":true}}]}
+JSON
+  printf '{"jobs":[]}\n' > "$sec/cfg/jobs.json"
+  secjid="$(security_job_id "Sec App")"
+  secdb="$sec/security.db"
+  # Everything below runs against this scratch ledger, never the operator's.
+  # A frozen $SECURITY_DB computed at load time is exactly what this override
+  # exists to make impossible (see security_db).
+  sec_env() {
+    PROJECTS_FILE="$sec/cfg/projects.json"; JOBS_FILE="$sec/cfg/jobs.json"
+    CONFIG_DIR="$sec/cfg"; DATA_DIR="$sec/data"; LOCK_DIR="$sec/data/locks"
+    TICK_LOG="$sec/data/tick.log"; RUNS_FILE="$sec/data/runs.ndjson"
+    CLAUDE_CRON_SECURITY_DB="$secdb"
+  }
+  local secreq="$sec/data/security/requests/$secjid.json"
+
+  # run_job is stubbed, so nothing spends a session -- but the stub reads the
+  # ledger from INSIDE the call, which is the only way to prove the row is
+  # open, and open as `running`, at the moment the run starts. That ordering is
+  # the whole point of opening it in cmd_security_analyze rather than in
+  # `prepare`: an agent that dies on launch must still leave an analysis.
+  ( sec_env
+    run_job() {
+      printf '%s\n' "$*" > "$sec/runjob.args"
+      printf '%s|%s\n' "${CC_BASE_OVERRIDE:-}" "${CC_SKIP_PROVISION:-}" > "$sec/runjob.env"
+      security_py list --project "Sec App" | "$JQ" -r '.[0].state' > "$sec/state-during"
+      return 0
+    }
+    cmd_security_analyze "Sec App" repo main quick ) > "$sec/analyze.out" 2>&1
+  [ "$("$JQ" -r '.analysis_id' "$secreq" 2>/dev/null)" = "1" ] \
+    && ok "the request file carries the analysis id the run has to report against" \
+    || bad "request file: $(cat "$secreq" 2>/dev/null)"
+  [ "$("$JQ" -r '[.branch,.profile,.repo] | join(",")' "$secreq" 2>/dev/null)" = "main,quick,repo" ] \
+    && ok "and the branch, profile and repo the derived job's prompt is built from" \
+    || bad "request file lost the branch/profile/repo"
+  [ "$(cat "$sec/state-during" 2>/dev/null)" = "running" ] \
+    && ok "the analysis row is open and running before run_job is called" \
+    || bad "state during the run was '$(cat "$sec/state-during" 2>/dev/null)'"
+  [ "$(cat "$sec/runjob.args" 2>/dev/null)" = "$secjid --force" ] \
+    && ok "the derived job is run forced, never waiting for a tick it can never have" \
+    || bad "run_job got '$(cat "$sec/runjob.args" 2>/dev/null)'"
+  [ "$(cat "$sec/runjob.env" 2>/dev/null)" = "main|1" ] \
+    && ok "with the branch as CC_BASE_OVERRIDE and provisioning skipped" \
+    || bad "run_job saw '$(cat "$sec/runjob.env" 2>/dev/null)'"
+  # The stub never reached security_close_analysis, which is precisely the
+  # shape of every early return in run_job (the slot gate, a missing cwd, an
+  # empty prompt). The sweep at the end of cmd_security_analyze is what keeps
+  # that from leaving a row `running` for ever.
+  [ "$( ( sec_env; security_py list --project "Sec App" | "$JQ" -r '.[0].state' ) )" = "failed" ] \
+    && ok "a run that never started leaves the analysis closed, not running for ever" \
+    || bad "the row was left open after run_job returned without running"
+
+  echo "security_close_analysis() — the run's own verdict closes the row"
+  sec_close_state() { # sec_close_state <run-status> -> the analysis state it lands on
+    ( sec_env
+      local a
+      a="$(security_py open-analysis --project "Sec App" --repo repo --branch main \
+             --commit abc --profile quick --run-id "$secjid" | "$JQ" -r '.analysis_id')"
+      "$JQ" --argjson a "$a" '.analysis_id = $a' "$secreq" > "$secreq.t" && mv "$secreq.t" "$secreq"
+      security_close_analysis "$secjid" "$1" "1.5" >/dev/null 2>&1
+      security_py list --project "Sec App" \
+        | "$JQ" -r --argjson a "$a" '.[] | select(.id==$a) | [.state, (.spend_usd|tostring)] | join(",")' )
+  }
+  [ "$(sec_close_state success)" = "done,1.5" ] \
+    && ok "success closes it done, carrying the run's real cost" || bad "success -> $(sec_close_state success)"
+  [ "$(sec_close_state warning)" = "done,1.5" ] \
+    && ok "a warning is a run that worked, so the analysis is done too" || bad "warning -> $(sec_close_state warning)"
+  [ "$(sec_close_state error)" = "failed,1.5" ] \
+    && ok "an error closes it failed, so the report says it is incomplete" || bad "error -> $(sec_close_state error)"
+  [ "$(sec_close_state stopped)" = "failed,1.5" ] \
+    && ok "a run the operator stopped leaves an incomplete analysis, not a clean one" \
+    || bad "stopped -> $(sec_close_state stopped)"
+  [ "$(sec_close_state capped)" = "capped,1.5" ] \
+    && ok "and a capped run says it ran out of budget rather than that it broke" \
+    || bad "capped -> $(sec_close_state capped)"
+
+  echo "a second analysis of the same project is refused where the operator can read it"
+  # A live slot on the derived id, built the way slots_active recognises one:
+  # this process's own pid and this boot's id (see slot_alive).
+  mkdir -p "$sec/data/locks/$secjid/$$"
+  echo $$ > "$sec/data/locks/$secjid/$$/pid"; boot_id > "$sec/data/locks/$secjid/$$/boot"
+  ( sec_env; run_job() { echo "RAN" > "$sec/should-not-run"; }
+    cmd_security_analyze "Sec App" repo main quick ) > "$sec/second.out" 2>&1
+  grep -q "already running" "$sec/second.out" && [ ! -f "$sec/should-not-run" ] \
+    && ok "the refusal is a sentence on stdout, and no second run is launched" \
+    || bad "second analyze: $(cat "$sec/second.out" 2>/dev/null)"
+
+  echo "cmd_project_rename() — a rename cannot orphan an analysis in flight"
+  # Renaming re-derives the job id, so the max_parallel=1 gate the running
+  # analysis sits behind would stop applying to it. Refuse while it is live.
+  ( sec_env; cmd_project_rename "Sec App" "Sec App Two" ) > "$sec/rename1.out" 2>&1
+  grep -q "is running as '$secjid'" "$sec/rename1.out" \
+    && ok "the rename is refused while an analysis of the old id is running" \
+    || bad "rename1: $(cat "$sec/rename1.out" 2>/dev/null)"
+  "$JQ" -e '.projects[0].name == "Sec App"' "$sec/cfg/projects.json" >/dev/null 2>&1 \
+    && ok "and the project keeps its name, rather than half-renaming" \
+    || bad "the project was renamed despite the refusal"
+
+  rm -rf "$sec/data/locks/$secjid"
+  local secjid2; secjid2="$(security_job_id "Sec App Two")"
+  ( sec_env; cmd_project_rename "Sec App" "Sec App Two" ) > "$sec/rename2.out" 2>&1
+  [ -f "$sec/data/security/requests/$secjid2.json" ] && [ ! -f "$secreq" ] \
+    && ok "with nothing running, the pending request follows the derived id" \
+    || bad "the request file did not move to $secjid2"
+  [ "$("$JQ" -r '.project' "$sec/data/security/requests/$secjid2.json" 2>/dev/null)" = "Sec App Two" ] \
+    && ok "and names the project it now belongs to" \
+    || bad "the moved request still names the old project"
+  # The ledger keys an analysis by the project NAME, with no id to key it by:
+  # without the rename-project call the whole history would stay behind under
+  # a name no project has any more.
+  [ "$( ( sec_env; security_py list --project "Sec App" | "$JQ" -r 'length' ) )" = "0" ] \
+    && [ "$( ( sec_env; security_py list --project "Sec App Two" | "$JQ" -r 'length' ) )" -ge 1 ] \
+    && ok "and every past analysis is carried onto the new name in the ledger" \
+    || bad "the security history stayed behind under the old project name"
+
   rm -rf "$tmp"
   echo
   echo "$pass passed, $fail failed"
@@ -6095,6 +6344,11 @@ If the work turns out to be already finished, or it can no longer be done at all
   # lands while we are finishing here cannot produce a second one.
   : > "$slot/journaled" 2>/dev/null || true
   log_tick "$id: finished status=$status${cause:+ cause=$cause} rc=$rc denials=${denials:-0} cost=\$$cost turns=$turns model=$model${model_id:+ ($model_id)} forced=$forced${wdreason:+ — $wdreason}"
+  # BEFORE the user hook, and synchronous. run_end_hook detaches into the
+  # background with a timeout and only exists at all if the operator wrote the
+  # script; an analysis whose agent died has to end up closed on an install
+  # that has neither. A no-op for every job that is not a derived security one.
+  security_close_analysis "$id" "$status" "${cost:-0}"
   # Fired after the record exists, so a hook that opens the dashboard or reads
   # the journal sees this run already in it.
   run_end_hook "$id" "$status" "${cost:-0}" "$wdreason" "$project" "$session" "$logfile" "$start" "$end"
@@ -6820,6 +7074,16 @@ cmd_project_rename() { # <old-name> <new-name> — the project and every job poi
   # lookup (cwd, description, worktree config) ambiguous.
   projects_json | "$JQ" -e --arg n "$new" 'any(.projects[]; .name==$n)' >/dev/null 2>&1 \
     && die "project-rename: a project named '$new' already exists"
+  # A rename RE-DERIVES the security job's id (security-web → security-web-two).
+  # A run in flight holds its slot, its worktree and the max_parallel=1 gate
+  # under the OLD id, and nothing derives that id after the rename: the gate
+  # stops applying to the analysis that is still going, and a second one could
+  # be started straight into it. Refuse while one is live, exactly as cmd_rename
+  # does for a job of its own.
+  local old_jid new_jid
+  old_jid="$(security_job_id "$old")"; new_jid="$(security_job_id "$new")"
+  [ "$old_jid" != "$SECURITY_JOB_PREFIX" ] && [ "$(slots_active "$old_jid")" -gt 0 ] \
+    && die "project-rename: an analysis of '$old' is running as '$old_jid' — stop it or wait for it to finish"
   write_projects --arg o "$old" --arg n "$new" \
     '.projects = [.projects[] | if .name==$o then (.name = $n) else . end]'
   # Jobs reference the project BY NAME, so they must follow it or they would
@@ -6842,6 +7106,43 @@ cmd_project_rename() { # <old-name> <new-name> — the project and every job poi
       journal_unlock
     fi
   fi
+  # A pending analysis request is keyed by the DERIVED job id, so it has to
+  # follow the rename too. Left behind it is orphaned twice over:
+  # security_derived_jobs would build the new job's prompt with no branch and
+  # no analysis id, and security_close_analysis would have nothing to read the
+  # id out of when the run ends.
+  if [ "$old_jid" != "$new_jid" ] && [ "$new_jid" != "$SECURITY_JOB_PREFIX" ]; then
+    local old_req new_req
+    old_req="$(security_request_path "$old_jid")"
+    new_req="$(security_request_path "$new_jid")"
+    if [ -f "$old_req" ] && [ ! -e "$new_req" ] && mkdir -p "$(dirname "$new_req")" 2>/dev/null; then
+      if "$JQ" --arg n "$new" '.project = $n' "$old_req" > "$new_req.tmp" 2>/dev/null; then
+        mv -f "$new_req.tmp" "$new_req" && rm -f "$old_req"
+      else
+        rm -f "$new_req.tmp"
+      fi
+    fi
+  fi
+  # And the ledger. An analysis, a decision and an SBOM are keyed by the project
+  # NAME they were recorded under — there is no id — so without this the whole
+  # security history stays behind under a name no project has any more.
+  #
+  # Through the CLI, never through sqlite3 here: that database has exactly one
+  # door (see security_py). Only when one already exists, so renaming a project
+  # on an install that has never analysed anything does not create one.
+  if [ -f "$(security_db)" ]; then
+    security_py rename-project --from "$old" --to "$new" >/dev/null 2>&1 \
+      || log_tick "project-rename: could not carry '$old' security history to '$new'"
+  fi
+  # KNOWN SEAM, left open on purpose: the run journal rows, the log directory
+  # and the state entry keyed by the OLD derived job id are not moved.
+  # cmd_rename moves those for a real job because there the id IS the job; a
+  # derived id is only a shadow of the project name, the journal rows already
+  # carry the new project name (rewritten above), and a blind move could land
+  # on top of a real job that happens to own the new id. The cost is that
+  # `claude-cron logs security-<new>` does not show analyses from before the
+  # rename — the analyses themselves, which is what the Security page reads,
+  # did follow the name.
   echo "project '$old' renamed to '$new'"
 }
 
@@ -6899,6 +7200,13 @@ claude-cron — durable local scheduler for headless Claude Code runs
   claude-cron provision-set <project> <up|down>   replace a worktree provisioning hook (stdin)
   claude-cron provision-get <project> <up|down>   print one
   claude-cron get-precheck <id>   print a job's precheck script
+  claude-cron security analyze <project> <repo> <branch> [profile]
+                              analyse a branch: secrets, dependency CVEs, an
+                              SBOM and hygiene run first at no token cost, then
+                              a Claude run does the SAST and the triage
+  claude-cron security render --analysis <n> --format <json|md|html>
+                              the report for one analysis (see `security` with
+                              no arguments for the rest of the vocabulary)
   claude-cron tick            internal — what launchd calls every minute
 
 Jobs are defined in $JOBS_FILE
@@ -6949,6 +7257,16 @@ case "${1:-}" in
   project-delete) [ $# -ge 2 ] || die "usage: claude-cron project-delete <name>"; cmd_project_delete "$2" ;;
   project-rename) [ $# -ge 3 ] || die "usage: claude-cron project-rename <name> <new-name>"; cmd_project_rename "$2" "$3" ;;
   project-list)   cmd_project_list ;;
+  security)  shift
+             case "${1:-}" in
+               analyze) shift; [ $# -ge 3 ] || die "usage: claude-cron security analyze <project> <repo> <branch> [profile]"
+                        cmd_security_analyze "$@" ;;
+               # Everything else is the ledger's own vocabulary, and the agent
+               # types it verbatim from its prompt: prepare, findings,
+               # report-finding, finish, checklist, render, decide, list.
+               "")      die "usage: claude-cron security <analyze|prepare|findings|report-finding|finish|checklist|render|decide|list> …" ;;
+               *)       security_py "$@" ;;
+             esac ;;
   resolve-models) cmd_resolve_models ;;
   skills)    shift; cmd_skills "${1:-status}" ;;
   selftest)  cmd_selftest ;;
