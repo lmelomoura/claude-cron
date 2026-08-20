@@ -548,6 +548,29 @@ wt_down_all() { # <id> <project> <run dir>
   [ -f "$mf" ] || return 0
   [ -f "$run_dir/.down" ] && return 0
   : > "$run_dir/.down"
+  # A DERIVED SECURITY JOB NEVER RAN `up`, SO IT MUST NEVER RUN `down`. The
+  # analysis is launched with CC_SKIP_PROVISION=1 precisely so it does not run
+  # the project's .env writing, container and service hooks over a tree it is
+  # only ever going to read. Teardown had no such guard, so the ONE half of
+  # provisioning an analysis was promised not to touch ran anyway: `down` on a
+  # stack this run never brought up stops the containers, releases the ports
+  # and unlinks the services of whatever IS up on that project -- the
+  # developer's own environment, torn down by a read-only code review.
+  #
+  # Checked by IDENTITY, not by environment, for the same reason the reattach
+  # path is (see run_job): CC_SKIP_PROVISION is an env var on the original
+  # invocation, and teardown can happen from a later process entirely -- the
+  # orphan sweep, an explicit worktree drop -- where it is long gone. The id is
+  # the one thing that survives. `${...:-security-}` because this file declares
+  # itself sourceable on its own and runs under `set -u`; the prefix's home is
+  # bin/claude-cron.
+  case "$id" in
+    "${SECURITY_JOB_PREFIX:-security-}"*)
+      # `.down` is still written above: the marker means "teardown has decided
+      # about this run", and an analysis that decided to run nothing must not
+      # be reconsidered by the next sweep.
+      return 0 ;;
+  esac
   while IFS="$(printf '\t')" read -r name repo wt base; do
     [ -n "$wt" ] && [ -d "$wt" ] || continue
     wt_provision down "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base" || true

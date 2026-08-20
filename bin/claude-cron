@@ -5375,6 +5375,43 @@ EOF
     && ok "and an ordinary run still provisions, so the skip above was CC_SKIP_PROVISION's doing" \
     || bad "an ordinary run did not provision at all — the fixture proves nothing"
 
+  # ---- ...and teardown must not run `down` over a stack it never brought up -
+  # THE BUG THIS PINS. `up` was skipped for an analysis and `down` was not, so
+  # the one half of provisioning the analysis promised not to touch ran anyway
+  # at teardown: containers stopped, ports released and services unlinked for
+  # whatever IS up on that project -- the developer's own environment, torn
+  # down by a read-only code review. The guard is by IDENTITY, not by
+  # environment: CC_SKIP_PROVISION was a variable on the original invocation
+  # and teardown can happen from a later process entirely (the orphan sweep, an
+  # explicit drop) where it is long gone.
+  mkdir -p "$tmp/brov/data"
+  printf '%s\n' '#!/usr/bin/env bash' 'touch "$CC_RUN_DIR/WENT-DOWN"' \
+    > "$tmp/brov/cfg/provision/secskip.down.sh"
+  chmod +x "$tmp/brov/cfg/provision/secskip.down.sh"
+  ( PROJECTS_FILE="$tmp/brov/proj/secskip.json"; CONFIG_DIR="$tmp/brov/cfg"
+    DATA_DIR="$tmp/brov/data"
+    wt_down_all "${SECURITY_JOB_PREFIX}skipproj" secskip "$tmp/brov/wtroot/jsec/stampSkip" ) >/dev/null 2>&1
+  [ ! -f "$tmp/brov/wtroot/jsec/stampSkip/WENT-DOWN" ] \
+    && ok "a derived security job's teardown leaves the project's down hook unrun" \
+    || bad "wt_down_all ran the down hook for a security job that never ran up"
+  ( PROJECTS_FILE="$tmp/brov/proj/secskip.json"; CONFIG_DIR="$tmp/brov/cfg"
+    DATA_DIR="$tmp/brov/data"
+    wt_down_all jsec secskip "$tmp/brov/wtroot/jsec/stampNoSkip" ) >/dev/null 2>&1
+  [ -f "$tmp/brov/wtroot/jsec/stampNoSkip/WENT-DOWN" ] \
+    && ok "and an ordinary job's teardown still runs it, so the skip above was the guard's doing" \
+    || bad "an ordinary teardown did not run the down hook at all — the fixture proves nothing"
+  # Structural too, the same way the reattach `up` call site is checked: the
+  # behavioural pair above would stay green if a refactor moved the call
+  # somewhere the guard no longer covers.
+  local downbody
+  downbody="$(sed -n '/^wt_down_all() {/,/^}/p' "$BIN_DIR/worktree-lib.sh")"
+  case "$downbody" in
+    *'SECURITY_JOB_PREFIX'*'wt_provision down'*)
+      ok "the wt_provision down call site sits behind a SECURITY_JOB_PREFIX guard" ;;
+    *)
+      bad "wt_down_all's wt_provision down call has no SECURITY_JOB_PREFIX guard before it" ;;
+  esac
+
   # ---- the security subcommand, end to end in bash --------------------------
   echo "cmd_security_analyze() — the row and the request exist before the run does"
   local sec="$tmp/sec" secjid secdb
@@ -5661,6 +5698,43 @@ JSON
     && ok "a success-close of an analysis whose deterministic phases never ran lands capped, and says so" \
     || bad "engine close of an unprepared analysis -> $secnoprep (want capped,true)"
 
+  echo "claude_config_dir — an analysis signs in as the account its security block names"
+  # The derived job is the ONLY place an analysis can carry a config dir: there
+  # is no jobs.json row to edit, so security_derived_jobs puts the security
+  # block's value on the job it builds. run_job read only the PROJECT's, so the
+  # setting was inert -- an operator who pointed the analysis at a different
+  # Claude account (a client login for client code) got no error and no effect,
+  # and the analysis quietly signed in as the project's account instead.
+  local ccd="$tmp/ccd" ccdjid ccdbody
+  mkdir -p "$ccd/cfg" "$ccd/data" "$ccd/proj-account" "$ccd/sec-account"
+  cat > "$ccd/cfg/projects.json" <<JSON
+{"projects":[{"name":"Ccd App","cwd":"$ccd","claude_config_dir":"$ccd/proj-account",
+              "security":{"enabled":true,"claude_config_dir":"$ccd/sec-account"}}]}
+JSON
+  cat > "$ccd/cfg/jobs.json" <<JSON
+{"jobs":[{"id":"ccd-plain","project":"Ccd App","prompt":"x","enabled":false}]}
+JSON
+  ccd_env() {
+    PROJECTS_FILE="$ccd/cfg/projects.json"; JOBS_FILE="$ccd/cfg/jobs.json"
+    DATA_DIR="$ccd/data"
+  }
+  ccdjid="$(security_job_id "Ccd App")"
+  [ "$( ( ccd_env; resolve "$ccdjid" claude_config_dir '' ) )" = "$ccd/sec-account" ] \
+    && ok "the derived job resolves the config dir its security block names" \
+    || bad "derived cfgdir -> '$( ( ccd_env; resolve "$ccdjid" claude_config_dir '' ) )' (want $ccd/sec-account)"
+  [ "$( ( ccd_env; resolve ccd-plain claude_config_dir '' ) )" = "$ccd/proj-account" ] \
+    && ok "and a plain job of the same project still inherits the project's" \
+    || bad "plain cfgdir -> '$( ( ccd_env; resolve ccd-plain claude_config_dir '' ) )' (want $ccd/proj-account)"
+  # Structural, because the two assertions above exercise `resolve` and run_job
+  # is what has to CALL it: reverting that one line would leave both green.
+  ccdbody="$(sed -n '/^run_job() { # run_job <id>/,/^}/p' "$BIN_DIR/claude-cron")"
+  case "$ccdbody" in
+    *'run_cfgdir="$(resolve "$id" claude_config_dir'*)
+      ok "run_job reads the config dir through resolve, so the job's own value wins" ;;
+    *)
+      bad "run_job no longer resolves claude_config_dir through resolve() — a derived job's value is inert again" ;;
+  esac
+
   # The close used to overwrite the row unconditionally, which turned the one
   # honest thing an agent can say about its own run -- "I ran out of room" --
   # into `done`, because the PROCESS exited cleanly.
@@ -5938,7 +6012,21 @@ run_job() { # run_job <id> [--force] [resume-session-id]
   # billing: the config dir holds that account's settings, plugins, MCP servers
   # AND its past sessions, so it must stay stable for a job or `--resume` below
   # would go looking for the session in the other account's directory.
-  run_cfgdir="$(project_get "$project" '.claude_config_dir' '')"
+  #
+  # THE JOB'S OWN VALUE FIRST, through the same `resolve` every other inherited
+  # field uses. Only the PROJECT's was read, which made the security block's
+  # `claude_config_dir` inert: `security_derived_jobs` puts it on the derived
+  # job (the job is the only place a derived analysis has to carry it — there
+  # is no jobs.json row to edit), and run_job then read straight past it and
+  # signed the analysis in as the project's account. An operator who set it
+  # precisely so the analysis would sign in as somebody else got no error and
+  # no effect.
+  #
+  # Nothing changes for a real job: `claude_config_dir` is not a field one can
+  # have. It is absent from config/jobs.example.json, it is not in
+  # `cmd_set_field`'s allowlist, and the dashboard's job editor never writes it
+  # — only the project editor and the project's security block do.
+  run_cfgdir="$(resolve "$id" claude_config_dir '')"
   case "$run_cfgdir" in null) run_cfgdir="" ;; esac
   run_cfgdir="$(expand_home "$run_cfgdir")"
   # cwd, model, permission, budget and timeout inherit from the project when the

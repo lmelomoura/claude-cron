@@ -339,6 +339,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   silence. Every phase writes into that one note, in phase order, so a run that
   could not sweep the history *and* could not reach OSV.dev reports both.
 
+- **`security.claude_config_dir` actually signs the analysis in as that
+  account.** The derived job is the only place an analysis can carry a config
+  dir — there is no `jobs.json` row to edit — and the derivation put it there
+  correctly, but `run_job` read only the *project's* field and never the job's.
+  Setting it produced no error and no effect: the analysis quietly signed in as
+  the project's account, which for anyone pointing a client's code at a client's
+  login is the whole reason the field exists. The config dir now resolves the
+  way every other inherited field does, job first. Nothing changes for a real
+  job: `claude_config_dir` is not a field a job can have — absent from
+  `config/jobs.example.json`, absent from `set-field`'s allowlist, and never
+  written by the dashboard's job editor.
+
+- **An analysis no longer tears down a stack it never brought up.** The run is
+  launched with provisioning skipped, precisely so a read-only code review does
+  not run the project's `.env`, container and service hooks — but teardown had
+  no such guard, so the `down` hook fired at the end of every analysis. On a
+  project whose hooks stop containers, release ports and unlink services, an
+  analysis took the *developer's own environment* down with it on the way out.
+  The teardown is guarded by the job's identity, not by the environment
+  variable, because teardown can happen from a later process entirely (the
+  orphan sweep, an explicit worktree drop) where that variable is long gone.
+
 - **The Analyse button starts the run and lets go of it, and a crashed run can
   no longer brick it.** The control server gives a CLI call thirty seconds and
   then SIGKILLs the shell it started; an analysis is minutes of work. So the

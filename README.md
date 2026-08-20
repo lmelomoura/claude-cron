@@ -938,10 +938,12 @@ The engine reads `enabled`, `model`, `effort`, `claude_config_dir`,
 first, and a display floor — and no part of the engine looks at either.
 
 `model` left empty means the `opus` family; `effort` left empty leaves the
-decision to the CLI, as in a job. `claude_config_dir` empty inherits the
-project's, which inherits the install's — see [Which Claude account a run signs
-in as](#which-claude-account-a-run-signs-in-as); set it here only when the
-analysis itself should sign in as somebody else.
+decision to the CLI, as in a job. `claude_config_dir` is carried on the derived
+job — the only place an analysis has to carry it, there being no jobs.json row
+to edit — and the job's own value is what a run resolves first; left empty it
+inherits the project's, which inherits the install's — see [Which Claude account
+a run signs in as](#which-claude-account-a-run-signs-in-as). Set it here only
+when the analysis itself should sign in as somebody else.
 
 **`ignore_paths` and `min_severity` are two different filters, and confusing
 them is expensive.** `ignore_paths` excludes globs from the **analysis**: the
