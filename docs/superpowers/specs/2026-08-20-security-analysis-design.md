@@ -76,12 +76,38 @@ ligada a `~/.claude/skills` por `claude-cron skills install` como as outras
 três. Isto segue a regra do repositório: uma regra que o código exige viaja com
 o código, nunca só em `config/`, que é git-ignorado.
 
-### A peça nova no engine
+### Como a análise corre sem ser um job
 
-Hoje todo o run é indexado por `job id` — slots, locks, ficheiros de log,
-sessões e o watchdog. Um run de análise não tem job. Precisa de uma identidade
-alternativa que atravesse essas estruturas sem as partir. É o trabalho de motor
-mais delicado da fase 1, e é o que torna a fase 2 barata.
+Todo o run é indexado por `job id` — slots, locks, ficheiros de log, sessões e o
+watchdog. Uma análise não tem job, e dar a `run_job` um segundo modo de
+identidade tocaria nas suas mil e tal linhas, cujos comentários documentam bugs
+antigos causados por variáveis a vazar entre chamadas.
+
+O código oferece um caminho muito mais barato. **`jobs_json` é uma função de
+cinco linhas e é o único ponto por onde `job_get`, `resolve`, `job_exists` e
+`run_job` leem os jobs** — nove chamadas, todas de leitura. Quem não passa por
+lá é exactamente quem não deve ver a análise: o **tick** lê `$JOBS_FILE`
+directamente com `jq`, o **servidor** lê-o directamente em Python, e
+`write_jobs` escreve directamente no ficheiro.
+
+Portanto `jobs_json` passa a emitir os jobs reais **mais um job derivado por
+projecto com segurança activa**, com o id `security-<slug do projecto>`. As
+consequências saem por construção, não por disciplina: o tick nunca o agenda, a
+área de Jobs nunca o mostra, `config/jobs.json` nunca o contém, e `run_job`
+corre-o sem uma linha alterada.
+
+Isto **não** é o "job interno oculto" que foi descartado no brainstorm. Aquele
+escrevia em `config/jobs.json` entradas que o utilizador não criou. Aqui esse
+ficheiro não é tocado: a entrada é derivada da configuração de segurança que o
+utilizador criou no projecto e materializada em memória no momento da leitura.
+Apagar essa configuração faz o job desaparecer.
+
+O prefixo `security-` fica **reservado**: `cmd_create` e `cmd_rename` recusam-no,
+para que um job real nunca colida com um derivado.
+
+Os parâmetros que variam por corrida — branch e perfil — vivem num pedido em
+disco, `data/security/requests/<job-id>.json`, escrito antes do arranque e lido
+pelo gerador do prompt e pela criação da worktree.
 
 ### As seis fases de uma análise
 
