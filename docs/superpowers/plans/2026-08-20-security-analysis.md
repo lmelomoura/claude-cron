@@ -52,7 +52,7 @@
 
 **Interfaces:**
 - Consumes: nada.
-- Produces: `fingerprint(category: str, rule: str, path: str, snippet: str) -> str` e `secret_fingerprint(secret_type: str, path: str, ordinal: int) -> str`, ambos devolvendo 64 hex chars.
+- Produces: `fingerprint(category: str, rule: str, path: str, snippet: str) -> str` e `secret_fingerprint(secret_type: str, path: str) -> str`, ambos devolvendo 64 hex chars. **Sem ordinal e sem linha**: a identidade de um segredo é o tipo + o ficheiro, porque qualquer componente posicional muda quando linhas alheias mudam, e um fingerprint instável faz a checklist mentir.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -90,11 +90,20 @@ def test_the_path_is_part_of_the_identity():
 
 
 def test_a_secret_fingerprint_never_contains_the_value():
-    """The value is not an argument at all — it cannot leak through this door."""
-    a = secret_fingerprint("aws_access_key", "config/prod.env", 0)
-    b = secret_fingerprint("aws_access_key", "config/prod.env", 1)
-    assert a != b
+    """The value is not an argument at all -- it cannot leak through this door."""
+    a = secret_fingerprint("aws_access_key", "config/prod.env")
     assert len(a) == 64
+
+
+def test_a_secret_fingerprint_varies_with_the_path():
+    a = secret_fingerprint("aws_access_key", "config/prod.env")
+    b = secret_fingerprint("aws_access_key", "config/staging.env")
+    assert a != b
+
+
+def test_a_secret_fingerprint_is_stable_for_the_same_type_and_path():
+    assert (secret_fingerprint("aws_access_key", "config/prod.env")
+            == secret_fingerprint("aws_access_key", "config/prod.env"))
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -138,14 +147,21 @@ def fingerprint(category: str, rule: str, path: str, snippet: str) -> str:
     return _digest(category, rule, path, _normalise(snippet))
 
 
-def secret_fingerprint(secret_type: str, path: str, ordinal: int) -> str:
+def secret_fingerprint(secret_type: str, path: str) -> str:
     """Identity of a secret finding.
 
     The secret's value is not a parameter. Hashing it would put an oracle for
-    the secret in the ledger -- weak, but real -- so identity comes from where
-    it is and which occurrence in that file it is, never from what it says.
+    the secret in the ledger -- weak, but real -- so identity comes from the
+    credential's TYPE and the FILE it lives in, never from what it says and
+    never from a position within that file. A position -- an ordinal, a line
+    number -- moves whenever an unrelated line is added or removed above it,
+    which would make an untouched, already-triaged secret look "fixed" (its
+    old fingerprint vanishes) and "new" (a fresh one appears) on the very
+    next analysis. Several matches of the same type in the same file are one
+    finding with several occurrences, not several findings -- see
+    `bin/security/secrets.py`.
     """
-    return _digest("secret", secret_type, path, str(ordinal))
+    return _digest("secret", secret_type, path)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -650,7 +666,7 @@ and not the route, and 'new' hides exactly that."
 - Test: `tests/security/test_secrets.py`
 
 **Interfaces:**
-- Consumes: `secret_fingerprint` (Task 1).
+- Consumes: `secret_fingerprint(secret_type, path)` (Task 1).
 - Produces: `scan_tree(root: Path, ignore: list[str]) -> list[dict]` e `scan_history(root: Path, since_sha: str | None) -> list[dict]`. Cada achado tem `fingerprint`, `category="secret"`, `rule` (o tipo de segredo), `severity`, `title`, `rationale`, `remediation`, `occurrences`, e `historical: bool`. **Nunca** o valor.
 
 - [ ] **Step 1: Write the failing test**
@@ -744,7 +760,8 @@ _RULES = [
     ("openai_key", "critical", re.compile(r"\b(sk-[A-Za-z0-9]{32,})\b"), 0.0),
     ("private_key", "critical", re.compile(r"(-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----)"), 0.0),
     ("google_api_key", "high", re.compile(r"\b(AIza[0-9A-Za-z_-]{35})\b"), 0.0),
-    # The one generic rule, and the only one that needs the entropy gate.
+    # The one generic rule, and the only one that needs the entropy gate and
+    # the placeholder gate below.
     ("generic_secret", "medium",
      re.compile(r"(?i)(?:password|passwd|secret|token|api_?key)\s*[:=]\s*['\"]?([A-Za-z0-9/+_-]{20,})['\"]?"),
      3.5),
@@ -753,12 +770,40 @@ _RULES = [
 _SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", "build"}
 _MAX_BYTES = 2 * 1024 * 1024
 
+# The generic rule matches on shape alone (password/token/secret = <blob>),
+# and a real credential's entropy margin over a bad placeholder is thin (see
+# _entropy). Placeholders are instead rejected by what they say -- an
+# explicit, small list of giveaways -- which is complementary to, not a
+# replacement for, the entropy gate.
+_PLACEHOLDER_MARKERS = (
+    "changeme", "password", "example", "placeholder", "your_", "yourkey",
+    "dummy", "insertkey", "xxxx", "redacted", "notarealkey", "s3cret", "secret",
+)
+
 
 def _entropy(s: str) -> float:
     if not s:
         return 0.0
     return -sum((n / len(s)) * math.log2(n / len(s))
                 for n in (s.count(c) for c in set(s)))
+
+
+def _is_placeholder(value: str) -> bool:
+    """True for an obvious stand-in value, never a real credential.
+
+    Catches the literal giveaways ("changeme", "your_key", ...) and the
+    single-character-class case: a value that is all digits, or is one
+    character repeated, is a template a human typed, not a generator's
+    output.
+    """
+    lowered = value.lower()
+    if any(marker in lowered for marker in _PLACEHOLDER_MARKERS):
+        return True
+    if value.isdigit():
+        return True
+    if len(set(value)) == 1:
+        return True
+    return False
 
 
 def _ignored(rel: str, patterns) -> bool:
@@ -771,23 +816,47 @@ def _hits(text: str):
     for lineno, line in enumerate(text.splitlines(), start=1):
         for name, severity, pattern, min_entropy in _RULES:
             for m in pattern.finditer(line):
-                if min_entropy and _entropy(m.group(1)) < min_entropy:
+                candidate = m.group(1)
+                if name == "generic_secret" and _is_placeholder(candidate):
+                    continue
+                if min_entropy and _entropy(candidate) < min_entropy:
                     continue
                 yield name, severity, lineno
 
 
-def _finding(rule, severity, path, ordinal, line, historical):
+def _finding(rule, severity, path, lines, historical, commit_count=None):
+    """Build one finding for `rule` found at `path`.
+
+    `lines` is every line where this (rule, path) pair was matched -- it
+    becomes the finding's occurrences, so two hits of the same credential
+    type in one file are ONE finding with two occurrences, not two findings.
+    The fingerprint identifies a finding by (rule, path) alone -- never by a
+    position within the file, which would shift whenever an unrelated line
+    moved and falsely resurrect an untouched, already-triaged secret as
+    "new" while its old fingerprint vanished as "fixed".
+
+    `commit_count`, when given, is the number of distinct commits a history
+    finding was seen in: a credential committed, rotated to a different
+    value, and committed again at the same path is still one (rule, path)
+    pair -- the value is deliberately never inspected, so "same value
+    re-added" cannot be told apart from "a second, different credential" --
+    but the reader still needs to know there were two exposures, not one
+    silently swallowed by dedup.
+    """
     where = "in the git history" if historical else "in the working tree"
+    rationale = (f"A credential of type {rule} was found {where}. Its value is "
+                 "deliberately not recorded anywhere in this report.")
+    if commit_count is not None and commit_count > 1:
+        rationale += f" Seen in {commit_count} commits in the history."
     return {
-        "fingerprint": secret_fingerprint(rule, path, ordinal),
+        "fingerprint": secret_fingerprint(rule, path),
         "category": "secret", "rule": rule, "severity": severity,
         "title": f"{rule.replace('_', ' ')} committed to the repository",
-        "rationale": f"A credential of type {rule} was found {where}. Its value is "
-                     "deliberately not recorded anywhere in this report.",
+        "rationale": rationale,
         "remediation": ("Rotate the credential at the provider first -- it must be "
                         "assumed compromised. Removing it from the file is not enough "
                         "while it remains reachable in the history."),
-        "occurrences": [{"file": path, "line": line, "snippet_hash": ""}],
+        "occurrences": [{"file": path, "line": line, "snippet_hash": ""} for line in lines],
         "historical": historical,
     }
 
@@ -807,9 +876,60 @@ def scan_tree(root, ignore):
             text = p.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        for ordinal, (rule, severity, line) in enumerate(_hits(text)):
-            out.append(_finding(rule, severity, rel, ordinal, line, False))
+        # One finding per credential TYPE per file -- not per match. The
+        # fingerprint (type + path) cannot depend on a position, so several
+        # matches of one type collapse into one finding with several
+        # occurrences (dict preserves first-seen order, so output stays
+        # deterministic).
+        by_rule = {}
+        for rule, severity, line in _hits(text):
+            group = by_rule.setdefault(rule, {"severity": severity, "lines": []})
+            group["lines"].append(line)
+        for rule, group in by_rule.items():
+            out.append(_finding(rule, group["severity"], rel, group["lines"], False))
     return out
+
+
+_DIFF_HEADER_PREFIX = "diff --git a/"
+
+
+def _path_from_diff_header(line: str):
+    """Return the b-side path from a `diff --git a/X b/X` header, or None.
+
+    This line is never prefixed with `+`/`-`/` ` -- unlike every content
+    line in the patch, so it cannot be confused with the file's own content,
+    even content that happens to read like a diff header. That is what
+    replaces the old `line.startswith("+++ b/")` path tracking: a committed
+    file whose own content has a line starting `++ b/decoy` is emitted by
+    git as the patch line `+++ b/decoy` (one more `+` for the diff, on top
+    of the two already in the content) -- indistinguishable from a real
+    `+++ b/<path>` file header to a scanner that tracks path that way, and
+    that is exactly what let a real finding get mislabelled with a bogus
+    path parsed out of the file's own content.
+
+    For the add/modify case this module scans (--diff-filter=AM excludes
+    renames), the a-side and b-side paths are identical, which is what
+    makes recovering a path containing spaces possible without a full
+    diff-header parser: find a " b/" splitting the remainder into two equal
+    halves.
+    """
+    if not line.startswith(_DIFF_HEADER_PREFIX):
+        return None
+    rest = line[len(_DIFF_HEADER_PREFIX):]
+    marker = " b/"
+    idx = rest.find(marker)
+    while idx != -1:
+        candidate = rest[:idx]
+        if rest[idx + len(marker):] == candidate:
+            return candidate
+        idx = rest.find(marker, idx + 1)
+    # No exact a/b split found (unusual quoting, or a genuine rename slipping
+    # through) -- fall back to the last " b/" as a best effort.
+    idx = rest.rfind(marker)
+    return rest[idx + len(marker):] if idx != -1 else rest
+
+
+_COMMIT_HEADER = re.compile(r"^commit ([0-9a-f]{7,40})")
 
 
 def scan_history(root, since_sha):
@@ -828,19 +948,39 @@ def scan_history(root, since_sha):
     except (OSError, subprocess.TimeoutExpired):
         return []
 
-    out, path, seen = [], "", set()
+    # (rule, path) -> {"severity": ..., "commits": set-of-sha}. Keyed the
+    # same way as the finding itself, with the set of commits the pair was
+    # seen in standing in for "how many times": the value is never
+    # inspected, so "same value re-added" cannot be told apart from "a
+    # second, different credential" -- but the exposures can still be
+    # counted. `git log`'s default format indents the commit message body
+    # by four spaces, so a message that happens to start with the word
+    # "commit" can never be mistaken for this header, which always starts
+    # at column zero.
+    groups = {}
+    path = ""
+    commit_sha = None
     for line in blob.splitlines():
-        if line.startswith("+++ b/"):
-            path = line[6:]
+        commit_match = _COMMIT_HEADER.match(line)
+        if commit_match is not None:
+            commit_sha = commit_match.group(1)
+            continue
+        header_path = _path_from_diff_header(line)
+        if header_path is not None:
+            path = header_path
             continue
         if not line.startswith("+") or line.startswith("+++"):
             continue
         for rule, severity, _ in _hits(line[1:]):
             key = (rule, path)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(_finding(rule, severity, path, len(seen), 0, True))
+            group = groups.setdefault(key, {"severity": severity, "commits": set()})
+            if commit_sha is not None:
+                group["commits"].add(commit_sha)
+
+    out = []
+    for (rule, path), group in groups.items():
+        out.append(_finding(rule, group["severity"], path, [0], True,
+                             commit_count=len(group["commits"])))
     return out
 ```
 
