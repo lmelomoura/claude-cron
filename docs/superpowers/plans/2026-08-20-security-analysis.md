@@ -1981,11 +1981,27 @@ SEVERITIES = ("critical", "high", "medium", "low")
 def _summary(findings):
     by_state = {s: 0 for s in STATES}
     by_severity = {s: 0 for s in SEVERITIES}
+    accepted_in_severity = 0
     for f in findings:
         by_state[f["state"]] = by_state.get(f["state"], 0) + 1
         if f["state"] not in ("fixed", "false_positive"):
             by_severity[f["severity"]] = by_severity.get(f["severity"], 0) + 1
-    return {"by_state": by_state, "by_severity": by_severity, "total": len(findings)}
+            if f["state"] == "accepted":
+                accepted_in_severity += 1
+    return {"by_state": by_state, "by_severity": by_severity, "total": len(findings),
+            "accepted_in_severity": accepted_in_severity}
+
+
+def _unknown_states(by_state):
+    """States present in the data but outside the STATES contract.
+
+    `_summary` counts these into `by_state` unconditionally (dict.get with a
+    default), so they are never lost from the JSON report. The MD and HTML
+    checklists iterate the fixed STATES tuple instead of by_state's keys, so
+    without this they would silently drop any such count from the two formats
+    a human actually reads.
+    """
+    return [s for s in by_state if s not in STATES]
 
 
 def _coverage(analysis, coverage_note):
@@ -2023,8 +2039,12 @@ def as_markdown(analysis, findings, coverage_note):
         out += [f"> **{note}**", ""]
     out += ["## Checklist", ""]
     out += [f"- {state}: {s['by_state'][state]}" for state in STATES]
+    out += [f"- {state}: {s['by_state'][state]}" for state in _unknown_states(s["by_state"])]
     out += ["", "## Open findings by severity", ""]
     out += [f"- {sev}: {s['by_severity'][sev]}" for sev in SEVERITIES]
+    if s["accepted_in_severity"]:
+        n = s["accepted_in_severity"]
+        out += ["", f"_(includes {n} accepted risk{'s' if n != 1 else ''})_"]
     out += ["", "## Findings", ""]
     for f in findings:
         out += [f"### [{f['severity']}] {f['title']} — `{f['state']}`", "",
@@ -2059,12 +2079,17 @@ def as_html(analysis, findings, coverage_note):
         parts.append(f'<p class="note">{e(note)}</p>')
     parts.append("<h2>Checklist</h2><ul>")
     parts += [f"<li>{st}: {s['by_state'][st]}</li>" for st in STATES]
+    parts += [f"<li>{e(st)}: {s['by_state'][st]}</li>" for st in _unknown_states(s["by_state"])]
     parts.append("</ul><h2>Open findings by severity</h2><ul>")
     parts += [f"<li>{sev}: {s['by_severity'][sev]}</li>" for sev in SEVERITIES]
-    parts.append("</ul><h2>Findings</h2>")
+    parts.append("</ul>")
+    if s["accepted_in_severity"]:
+        n = s["accepted_in_severity"]
+        parts.append(f'<p class="note">Includes {n} accepted risk{"s" if n != 1 else ""}.</p>')
+    parts.append("<h2>Findings</h2>")
     for f in findings:
         locs = "".join(
-            f"<li><code>{e(o['file'])}{':' + str(o['line']) if o['line'] else ''}</code></li>"
+            f"<li><code>{e(o['file'])}{':' + e(str(o['line'])) if o['line'] else ''}</code></li>"
             for o in f["occurrences"])
         parts.append(
             f'<div class="f {e(f["severity"])}">'
@@ -2078,7 +2103,7 @@ def as_html(analysis, findings, coverage_note):
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/security/test_report.py -v`
-Expected: 5 passed
+Expected: 13 passed
 
 - [ ] **Step 5: Commit**
 
