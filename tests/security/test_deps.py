@@ -115,6 +115,43 @@ def test_a_malformed_composer_lockfile_is_skipped_not_fatal(tmp_path):
                     "source": "requirements.txt"}]
 
 
+def test_a_non_dict_composer_package_is_skipped_not_the_whole_file(tmp_path):
+    """A single non-dict element inside "packages" used to cost the whole
+    file: _composer's loop called pkg.get(...) unconditionally, so a string
+    element raised AttributeError, and list(reader(path)) is all-or-nothing
+    -- the exception discards every row already yielded, not just the bad
+    one. The per-element isinstance guard means a stray non-dict element
+    now costs only itself; its well-formed sibling survives."""
+    (tmp_path / "composer.lock").write_text(json.dumps({
+        "packages": [
+            {"name": "monolog/monolog", "version": "3.0.2"},
+            "not-a-dict",
+        ],
+    }))
+    got = inventory(tmp_path)
+    assert got == [{"ecosystem": "Packagist", "name": "monolog/monolog",
+                    "version": "3.0.2", "source": "composer.lock"}]
+
+
+def test_a_non_dict_top_level_lockfile_is_caught_by_the_systemic_except(tmp_path):
+    """The other two malformed-lockfile tests above never actually reach
+    inventory()'s except: "packages" being the wrong shape is absorbed by a
+    point-of-use isinstance guard inside _npm/_composer before any exception
+    fires -- a regression that narrowed the except back to
+    (ValueError, OSError) would pass both of them unnoticed. A
+    package-lock.json whose top-level JSON is an array has no such guard:
+    data.get("packages") assumes data itself is a dict, and a list has no
+    .get(), so this raises AttributeError from a point no per-field check
+    covers, reaching the except itself: narrowing it back to
+    (ValueError, OSError) makes this specific test fail, unlike the two
+    above."""
+    (tmp_path / "package-lock.json").write_text("[]")
+    (tmp_path / "requirements.txt").write_text("requests==2.31.0\n")
+    got = inventory(tmp_path)
+    assert got == [{"ecosystem": "PyPI", "name": "requests", "version": "2.31.0",
+                    "source": "requirements.txt"}]
+
+
 def test_vendored_trees_are_never_walked(tmp_path):
     (tmp_path / "node_modules" / "x").mkdir(parents=True)
     (tmp_path / "node_modules" / "x" / "requirements.txt").write_text("evil==1.0\n")
@@ -127,6 +164,25 @@ def test_a_scoped_npm_name_percent_encodes_the_scope_in_the_purl(tmp_path):
     doc = sbom([{"ecosystem": "npm", "name": "@types/node", "version": "20.1.0",
                  "source": "package-lock.json"}])
     assert doc["components"][0]["purl"] == "pkg:npm/%40types/node@20.1.0"
+
+
+def test_a_build_metadata_plus_sign_is_percent_encoded_in_the_purl(tmp_path):
+    """"+" is not in purl's unreserved set (letters, digits, "-._~"), so a
+    semver build-metadata suffix like "+build.1" must come out as "%2B" in
+    the version segment, not ride along unencoded."""
+    doc = sbom([{"ecosystem": "npm", "name": "example", "version": "1.0.0+build.1",
+                 "source": "package-lock.json"}])
+    assert doc["components"][0]["purl"].endswith("@1.0.0%2Bbuild.1")
+
+
+def test_a_composer_purl_keeps_the_slash_as_a_separator(tmp_path):
+    """monolog/monolog's "/" separates vendor from package in both Packagist's
+    own naming and purl's composer namespace -- quote(..., safe="/") must
+    leave it alone while still being ready to encode anything that isn't,
+    so the purl comes out exactly pkg:composer/monolog/monolog@3.0.2."""
+    doc = sbom([{"ecosystem": "Packagist", "name": "monolog/monolog",
+                 "version": "3.0.2", "source": "composer.lock"}])
+    assert doc["components"][0]["purl"] == "pkg:composer/monolog/monolog@3.0.2"
 
 
 def test_the_sbom_is_valid_cyclonedx(tmp_path):

@@ -64,6 +64,8 @@ def _composer(path: Path):
     packages_dev = data.get("packages-dev")
     packages_dev = packages_dev if isinstance(packages_dev, list) else []
     for pkg in packages + packages_dev:
+        if not isinstance(pkg, dict):
+            continue
         if pkg.get("name") and pkg.get("version"):
             yield "Packagist", pkg["name"], pkg["version"].lstrip("v")
 
