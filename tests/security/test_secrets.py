@@ -83,3 +83,45 @@ def test_two_hits_of_the_same_type_in_one_file_are_one_finding_with_two_occurren
     assert len(found) == 1
     assert found[0]["rule"] == "aws_access_key"
     assert [o["line"] for o in found[0]["occurrences"]] == [1, 2]
+
+
+def test_history_attributes_the_correct_file_despite_a_decoy_diff_header_in_content(tmp_path):
+    """A file whose own content has a line starting `++ b/decoy` is emitted
+    by git as a patch line `+++ b/decoy` -- indistinguishable from a real
+    `+++ b/<path>` file header to a scanner that tracks path that way. A
+    secret elsewhere in that same file must still be attributed to the
+    file's real path (`decoy.txt`), not to the bogus path (`decoy`) parsed
+    out of its own content."""
+    run = lambda *a: subprocess.run(a, cwd=tmp_path, check=True,
+                                    capture_output=True)
+    run("git", "init", "-q")
+    run("git", "config", "user.email", "t@example.com")
+    run("git", "config", "user.name", "t")
+    (tmp_path / "decoy.txt").write_text(f"++ b/decoy\nAWS_ACCESS_KEY_ID={AWS}\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "add")
+
+    hist = scan_history(tmp_path, None)
+    assert len(hist) == 1
+    assert hist[0]["occurrences"][0]["file"] == "decoy.txt"
+
+
+def test_history_attributes_a_path_containing_a_space(tmp_path):
+    """The diff-header parser splits `a/X b/X` into two equal halves to
+    recover X -- this is the control for that rewrite: a path with a space
+    in it (a real, common case, unlike the decoy above) must still come out
+    whole and correct, not truncated at the space."""
+    run = lambda *a: subprocess.run(a, cwd=tmp_path, check=True,
+                                    capture_output=True)
+    run("git", "init", "-q")
+    run("git", "config", "user.email", "t@example.com")
+    run("git", "config", "user.name", "t")
+    (tmp_path / "my dir").mkdir()
+    (tmp_path / "my dir" / "secret file.env").write_text(
+        f"AWS_ACCESS_KEY_ID={AWS}\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "add")
+
+    hist = scan_history(tmp_path, None)
+    assert len(hist) == 1
+    assert hist[0]["occurrences"][0]["file"] == "my dir/secret file.env"

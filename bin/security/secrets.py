@@ -111,6 +111,45 @@ def scan_tree(root, ignore):
     return out
 
 
+_DIFF_HEADER_PREFIX = "diff --git a/"
+
+
+def _path_from_diff_header(line: str):
+    """Return the b-side path from a `diff --git a/X b/X` header, or None.
+
+    This line is never prefixed with `+`/`-`/` ` -- unlike every content
+    line in the patch, so it cannot be confused with the file's own content,
+    even content that happens to read like a diff header. That is what
+    replaces the old `line.startswith("+++ b/")` path tracking: a committed
+    file whose own content has a line starting `++ b/decoy` is emitted by
+    git as the patch line `+++ b/decoy` (one more `+` for the diff, on top
+    of the two already in the content) -- indistinguishable from a real
+    `+++ b/<path>` file header to a scanner that tracks path that way, and
+    that is exactly what let a real finding get mislabelled with a bogus
+    path parsed out of the file's own content.
+
+    For the add/modify case this module scans (--diff-filter=AM excludes
+    renames), the a-side and b-side paths are identical, which is what
+    makes recovering a path containing spaces possible without a full
+    diff-header parser: find a " b/" splitting the remainder into two equal
+    halves.
+    """
+    if not line.startswith(_DIFF_HEADER_PREFIX):
+        return None
+    rest = line[len(_DIFF_HEADER_PREFIX):]
+    marker = " b/"
+    idx = rest.find(marker)
+    while idx != -1:
+        candidate = rest[:idx]
+        if rest[idx + len(marker):] == candidate:
+            return candidate
+        idx = rest.find(marker, idx + 1)
+    # No exact a/b split found (unusual quoting, or a genuine rename slipping
+    # through) -- fall back to the last " b/" as a best effort.
+    idx = rest.rfind(marker)
+    return rest[idx + len(marker):] if idx != -1 else rest
+
+
 def scan_history(root, since_sha):
     """Every secret ever committed, even if the file no longer has it.
 
@@ -129,8 +168,9 @@ def scan_history(root, since_sha):
 
     out, path, seen = [], "", set()
     for line in blob.splitlines():
-        if line.startswith("+++ b/"):
-            path = line[6:]
+        header_path = _path_from_diff_header(line)
+        if header_path is not None:
+            path = header_path
             continue
         if not line.startswith("+") or line.startswith("+++"):
             continue
