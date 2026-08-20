@@ -17,11 +17,15 @@ _PURL = {"npm": "npm", "PyPI": "pypi", "Packagist": "composer",
 
 def _npm(path: Path):
     data = json.loads(path.read_text())
-    for name, meta in (data.get("packages") or {}).items():
+    packages = data.get("packages")
+    packages = packages if isinstance(packages, dict) else {}
+    for name, meta in packages.items():
         if not name or not isinstance(meta, dict) or not meta.get("version"):
             continue
         yield "npm", name.split("node_modules/")[-1], meta["version"]
-    for name, meta in (data.get("dependencies") or {}).items():
+    dependencies = data.get("dependencies")
+    dependencies = dependencies if isinstance(dependencies, dict) else {}
+    for name, meta in dependencies.items():
         if isinstance(meta, dict) and meta.get("version"):
             yield "npm", name, meta["version"]
 
@@ -52,7 +56,11 @@ def _poetry(path: Path):
 
 def _composer(path: Path):
     data = json.loads(path.read_text())
-    for pkg in (data.get("packages") or []) + (data.get("packages-dev") or []):
+    packages = data.get("packages")
+    packages = packages if isinstance(packages, list) else []
+    packages_dev = data.get("packages-dev")
+    packages_dev = packages_dev if isinstance(packages_dev, list) else []
+    for pkg in packages + packages_dev:
         if pkg.get("name") and pkg.get("version"):
             yield "Packagist", pkg["name"], pkg["version"].lstrip("v")
 
@@ -87,8 +95,19 @@ def inventory(root):
         source = str(path.relative_to(root))
         try:
             rows = list(reader(path))
-        except (ValueError, OSError):
-            continue  # a malformed lockfile is not a reason to fail the analysis
+        except (ValueError, OSError, TypeError, AttributeError, KeyError):
+            # Every reader assumes the shape its format normally has (dicts
+            # where the tool always writes a dict, lists where it always
+            # writes a list). A crafted or merely corrupted lockfile can
+            # violate that assumption in more ways than any single reader
+            # guards against -- TypeError from concatenating the wrong
+            # shapes, AttributeError from calling a dict/list method on
+            # something else, KeyError from a key the format always has,
+            # ValueError from malformed JSON, OSError from a file that can't
+            # be read. Whichever one a parser trips on, it must cost only
+            # this one file: a malformed lockfile is not a reason to fail
+            # the whole analysis.
+            continue
         for ecosystem, name, version in rows:
             key = (ecosystem, name, version)
             if key in seen:
