@@ -1,0 +1,59 @@
+import pytest
+from security import ledger
+
+
+@pytest.fixture
+def conn(tmp_path):
+    return ledger.connect(tmp_path / "security.db")
+
+
+def _finding(**over):
+    base = {
+        "fingerprint": "a" * 64, "category": "sast", "rule": "sql-injection",
+        "severity": "high", "title": "String-built SQL", "rationale": "why",
+        "remediation": "use parameters",
+        "occurrences": [{"file": "app/db.py", "line": 12, "snippet_hash": "h1"}],
+    }
+    base.update(over)
+    return base
+
+
+def test_a_finding_round_trips_with_its_occurrences(conn):
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc123", "standard", "run-1")
+    ledger.record_finding(conn, aid, _finding())
+    ledger.finish_analysis(conn, aid, "done", 1.25)
+
+    got = ledger.findings_of(conn, aid)
+    assert len(got) == 1
+    assert got[0]["rule"] == "sql-injection"
+    assert got[0]["occurrences"][0]["file"] == "app/db.py"
+
+
+def test_a_decision_belongs_to_the_project_not_the_branch(conn):
+    ledger.set_decision(conn, "web", "a" * 64, "false_positive", "test fixture", "luiz")
+    assert ledger.decisions_for(conn, "web")["a" * 64]["state"] == "false_positive"
+    assert ledger.decisions_for(conn, "other") == {}
+
+
+def test_a_decision_requires_a_reason(conn):
+    with pytest.raises(ValueError):
+        ledger.set_decision(conn, "web", "a" * 64, "accepted", "   ", "luiz")
+
+
+def test_latest_analysis_is_scoped_to_repo_and_branch(conn):
+    a1 = ledger.start_analysis(conn, "web", "web", "main", "c1", "standard", "r1")
+    ledger.finish_analysis(conn, a1, "done")
+    a2 = ledger.start_analysis(conn, "web", "web", "develop", "c2", "standard", "r2")
+    ledger.finish_analysis(conn, a2, "done")
+
+    assert ledger.latest_analysis(conn, "web", "web", "main")["id"] == a1
+    assert ledger.latest_analysis(conn, "web", "web", "develop")["id"] == a2
+    assert ledger.latest_analysis(conn, "web", "web", "nope") is None
+
+
+def test_a_running_analysis_is_not_the_baseline_for_the_next_one(conn):
+    """Only a finished analysis is something to compare against."""
+    a1 = ledger.start_analysis(conn, "web", "web", "main", "c1", "standard", "r1")
+    ledger.finish_analysis(conn, a1, "done")
+    ledger.start_analysis(conn, "web", "web", "main", "c2", "standard", "r2")
+    assert ledger.latest_analysis(conn, "web", "web", "main")["id"] == a1
