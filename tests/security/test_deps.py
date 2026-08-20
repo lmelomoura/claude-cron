@@ -27,6 +27,25 @@ def test_an_unpinned_requirement_is_skipped(tmp_path):
     assert inventory(tmp_path) == []
 
 
+def test_a_pep508_marker_does_not_corrupt_the_version(tmp_path):
+    """name was already split on "[;", but version was not -- an environment
+    marker used to ride along and never match anything OSV knows about."""
+    (tmp_path / "requirements.txt").write_text(
+        'requests==2.31.0 ; python_version < "3.12"\n')
+    got = inventory(tmp_path)
+    assert got == [{"ecosystem": "PyPI", "name": "requests", "version": "2.31.0",
+                    "source": "requirements.txt"}]
+
+
+def test_arbitrary_equality_does_not_leave_a_leading_equals_sign(tmp_path):
+    """pkg===1.2.3 uses PEP 440's arbitrary-equality operator; partitioning on
+    the first "==" leaves a leading "=" on the version half."""
+    (tmp_path / "requirements.txt").write_text("pkg===1.2.3\n")
+    got = inventory(tmp_path)
+    assert got == [{"ecosystem": "PyPI", "name": "pkg", "version": "1.2.3",
+                    "source": "requirements.txt"}]
+
+
 def test_a_malformed_npm_lockfile_is_skipped_not_fatal(tmp_path):
     """"packages" as a list is never real npm output, but it is not
     impossible for a crafted or corrupted file -- and it used to raise

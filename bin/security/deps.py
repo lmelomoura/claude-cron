@@ -37,8 +37,10 @@ def _requirements(path: Path):
             continue  # unpinned: there is nothing to ask OSV about
         name, _, version = line.partition("==")
         name = re.split(r"[\[;]", name)[0].strip()
-        if name and version.strip():
-            yield "PyPI", name, version.strip()
+        version = version.split(";", 1)[0].strip()  # drop a PEP 508 environment marker
+        version = version.lstrip("=")  # "===" is PEP 440 arbitrary equality
+        if name and version:
+            yield "PyPI", name, version
 
 
 def _poetry(path: Path):
