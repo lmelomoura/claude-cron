@@ -288,6 +288,7 @@ CREATE TABLE IF NOT EXISTS finding (
   severity TEXT NOT NULL, title TEXT NOT NULL,
   rationale TEXT NOT NULL DEFAULT '', remediation TEXT NOT NULL DEFAULT '',
   partial_note TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS analysis_by_scope ON analysis(project, repo, branch);
 CREATE INDEX IF NOT EXISTS finding_by_analysis ON finding(analysis_id);
 CREATE INDEX IF NOT EXISTS finding_by_fp ON finding(fingerprint);
 
@@ -346,18 +347,27 @@ def finish_analysis(conn, analysis_id, state, spend_usd=0.0, coverage_note="") -
 
 
 def record_finding(conn, analysis_id, finding: dict) -> None:
-    cur = conn.execute(
-        "INSERT INTO finding (analysis_id, fingerprint, category, rule, severity,"
-        " title, rationale, remediation, partial_note) VALUES (?,?,?,?,?,?,?,?,?)",
-        (analysis_id, finding["fingerprint"], finding["category"], finding["rule"],
-         finding["severity"], finding["title"], finding.get("rationale", ""),
-         finding.get("remediation", ""), finding.get("partial_note", "")))
-    fid = cur.lastrowid
-    for occ in finding.get("occurrences", []):
-        conn.execute(
-            "INSERT INTO occurrence (finding_id, file, line, snippet_hash) VALUES (?,?,?,?)",
-            (fid, occ.get("file", ""), int(occ.get("line", 0)), occ.get("snippet_hash", "")))
-    conn.commit()
+    """A finding and its occurrences, or neither.
+
+    `with conn:` rather than a trailing commit: a bad occurrence (a non-numeric
+    line is the realistic one) would otherwise leave the finding row inserted
+    but uncommitted, and the next successful commit anywhere on this connection
+    would persist a checklist entry with no evidence behind it.
+    """
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO finding (analysis_id, fingerprint, category, rule, severity,"
+            " title, rationale, remediation, partial_note) VALUES (?,?,?,?,?,?,?,?,?)",
+            (analysis_id, finding["fingerprint"], finding["category"], finding["rule"],
+             finding["severity"], finding["title"], finding.get("rationale", ""),
+             finding.get("remediation", ""), finding.get("partial_note", "")))
+        fid = cur.lastrowid
+        for occ in finding.get("occurrences", []):
+            conn.execute(
+                "INSERT INTO occurrence (finding_id, file, line, snippet_hash)"
+                " VALUES (?,?,?,?)",
+                (fid, occ.get("file", ""), int(occ.get("line", 0)),
+                 occ.get("snippet_hash", "")))
 
 
 def findings_of(conn, analysis_id) -> list:
@@ -424,7 +434,7 @@ def store_sbom(conn, project, repo, branch, analysis_id, document: dict) -> None
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/security/test_ledger.py -v`
-Expected: 5 passed
+Expected: 9 passed
 
 - [ ] **Step 5: Commit**
 
