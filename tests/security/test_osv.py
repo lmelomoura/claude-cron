@@ -344,6 +344,62 @@ def test_a_malformed_component_is_skipped_not_crashed(monkeypatch):
     assert "2 malformed inventory entries" in note
 
 
+def test_a_batch_exception_partway_keeps_the_findings_already_collected(monkeypatch):
+    """Two components, chunked one at a time (_BATCH patched to 1): the
+    first chunk's request succeeds and produces a real finding, the second
+    chunk's request raises. Every other early return in query() keeps what
+    it already found and states the gap -- before the fix, this was the one
+    exception, discarding the first component's real finding and claiming
+    nothing had been checked at all."""
+    monkeypatch.setattr(osv, "_BATCH", 1)
+    batch = (FIXTURES / "osv-querybatch.json").read_text()
+    detail = (FIXTURES / "osv-vuln-detail.json").read_text()
+    other = {"ecosystem": "npm", "name": "other-pkg", "version": "2.0.0",
+             "source": "package-lock.json"}
+    calls = {"batches": 0}
+
+    def fake(url, body=None, timeout=30):
+        if url.endswith("/querybatch"):
+            calls["batches"] += 1
+            if calls["batches"] == 1:
+                return batch
+            raise urllib.error.URLError("no route to host")
+        return detail
+
+    monkeypatch.setattr(osv, "_http", fake)
+    findings, note = osv.query([COMPONENT, other])
+    assert findings  # the first chunk's findings survive
+    assert findings[0]["occurrences"][0]["file"] == "package-lock.json"
+    assert "1 of 2" in note
+    assert "NOT checked" in note
+
+
+def test_a_batch_shape_failure_partway_keeps_the_findings_already_collected(monkeypatch):
+    """Same setup as above, but the second chunk's response parses cleanly
+    as JSON and is the wrong shape (`"[]"` instead of an object) rather than
+    raising. The same properties must hold: the first chunk's finding
+    survives, and the note names the unchecked remainder."""
+    monkeypatch.setattr(osv, "_BATCH", 1)
+    batch = (FIXTURES / "osv-querybatch.json").read_text()
+    detail = (FIXTURES / "osv-vuln-detail.json").read_text()
+    other = {"ecosystem": "npm", "name": "other-pkg", "version": "2.0.0",
+             "source": "package-lock.json"}
+    calls = {"batches": 0}
+
+    def fake(url, body=None, timeout=30):
+        if url.endswith("/querybatch"):
+            calls["batches"] += 1
+            return batch if calls["batches"] == 1 else "[]"
+        return detail
+
+    monkeypatch.setattr(osv, "_http", fake)
+    findings, note = osv.query([COMPONENT, other])
+    assert findings
+    assert findings[0]["occurrences"][0]["file"] == "package-lock.json"
+    assert "1 of 2" in note
+    assert "NOT checked" in note
+
+
 def test_a_component_missing_source_defaults_to_empty_not_a_crash(monkeypatch):
     """`source` is the one field allowed to be filled in by a `.get`
     default -- every real component from deps.inventory() has it, but the

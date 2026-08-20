@@ -144,6 +144,49 @@ def _clean_components(components):
     return clean, len(components) - len(clean)
 
 
+def _notes(skip_note, gap, unchecked, total, undetailed):
+    """Assemble the coverage note from its parts, in a fixed order.
+
+    `gap` is the one part that varies by caller: empty on the normal
+    completion path, or a stated reason for stopping early when a batch
+    request to OSV.dev failed outright.
+    """
+    return " ".join(n for n in (
+        skip_note,
+        gap,
+        (f"{unchecked} of {total} components did not answer usably and "
+         "were not checked.") if unchecked else "",
+        (f"{len(undetailed)} vulnerabilit"
+         f"{'y' if len(undetailed) == 1 else 'ies'} could not be described: "
+         "OSV.dev answered the batch query but not the detail lookup, so "
+         f"severity fell back to {DEFAULT_SEVERITY}.") if undetailed else "",
+    ) if n)
+
+
+def _batch_stopped(findings, unchecked, undetailed, skip_note, checked, total,
+                    reason):
+    """A batch request to OSV.dev failed outright -- an exception, or a
+    response that parsed but was the wrong shape -- partway through
+    `query()`'s chunk loop.
+
+    Every other early return in this function keeps whatever findings it
+    already collected and states the gap; this was the one exception,
+    discarding real findings from earlier successful chunks and claiming
+    nothing at all had been checked. `checked` counts the components from
+    chunks that got a usable response before this one failed; whatever is
+    left (this chunk onward) was not checked.
+    """
+    if findings:
+        gap = (f"OSV.dev stopped answering partway ({reason}): {checked} of "
+               f"{total} components were checked and their findings are "
+               f"included; the remaining {total - checked} were NOT checked.")
+    else:
+        gap = (f"Dependency CVEs were NOT checked: the OSV.dev lookup did "
+               f"not complete ({reason}). Everything else in this report "
+               "is complete.")
+    return findings, _notes(skip_note, gap, unchecked, total, undetailed)
+
+
 def query(components, detail_cache=None, timeout=30):
     if not components:
         return [], ""
@@ -169,18 +212,19 @@ def query(components, detail_cache=None, timeout=30):
         except (urllib.error.URLError, OSError, ValueError, TimeoutError,
                 AttributeError, TypeError, KeyError) as exc:
             # Broad on purpose: any confusion over the response must become
-            # this stated gap, never an uncaught crash.
-            failure = ("Dependency CVEs were NOT checked: the OSV.dev lookup did "
-                       f"not complete ({type(exc).__name__}). Everything else in "
-                       "this report is complete.")
-            return [], " ".join(n for n in (skip_note, failure) if n)
+            # this stated gap, never an uncaught crash. Earlier chunks in
+            # this same call may already have produced real findings --
+            # those are returned too, not discarded just because a later
+            # chunk stopped answering.
+            return _batch_stopped(findings, unchecked, undetailed, skip_note,
+                                   start, total, type(exc).__name__)
         if not isinstance(parsed, dict):
             # Valid JSON, wrong container ([] instead of {...}, a bare
-            # string, a number) -- the same declared gap as a parse failure.
-            failure = ("Dependency CVEs were NOT checked: the OSV.dev lookup did "
-                       f"not complete ({type(parsed).__name__} instead of an "
-                       "object). Everything else in this report is complete.")
-            return [], " ".join(n for n in (skip_note, failure) if n)
+            # string, a number) -- the same declared gap as a parse failure,
+            # and it keeps earlier chunks' findings the same way.
+            return _batch_stopped(
+                findings, unchecked, undetailed, skip_note, start, total,
+                f"{type(parsed).__name__} instead of an object")
         results = parsed.get("results", [])
         if not isinstance(results, list):
             results = []
@@ -219,13 +263,4 @@ def query(components, detail_cache=None, timeout=30):
                     undetailed.append(failed)
                 findings.append(_finding(component, vuln_id, detail))
 
-    notes = [n for n in (
-        skip_note,
-        (f"{unchecked} of {total} components did not answer usably and "
-         "were not checked.") if unchecked else "",
-        (f"{len(undetailed)} vulnerabilit"
-         f"{'y' if len(undetailed) == 1 else 'ies'} could not be described: "
-         "OSV.dev answered the batch query but not the detail lookup, so "
-         f"severity fell back to {DEFAULT_SEVERITY}.") if undetailed else "",
-    ) if n]
-    return findings, " ".join(notes)
+    return findings, _notes(skip_note, "", unchecked, total, undetailed)
