@@ -19,7 +19,15 @@ That is the deterministic phase, and it prints a `coverage_note`. **If that note
 
 ## The three jobs, in this order
 
-**1. Re-verify what was left open.** Run `claude-cron security findings --analysis <id>` and, for each finding it lists, look at the code and decide: still open, fixed, or partially fixed. Partial means the main route is closed but an adjacent one is not, or the input is sanitised while the sink stays raw. Report a partial with `partial_note` saying exactly what remains — "3 of 5 call sites" is not a partial note, the occurrence count already says that; "the escaping helper is applied on the read path but not the write path" is.
+**1. Re-verify what was left open.** Run `claude-cron security checklist --analysis <id>` right after `prepare` — not `findings`. `findings` returns only THIS analysis's own rows, and right after `prepare` that is just the fresh deterministic findings (secret/dependency/hygiene); a previous analysis's SAST findings are never in it, so `findings` never shows them to you, you never re-report them, and a live vulnerability silently disappears from the report as `fixed`. `checklist` is the verb that surfaces the carried-over set: it diffs this analysis against the last finished baseline of the same branch. At this point in the run — before you have re-reported anything — every finding it lists with state `fixed` (and `partial`/`open`) is really a previous analysis's finding that has not been re-confirmed this run, not yet a fact about the current code.
+
+For each of those whose category is `sast` (deterministic categories need no re-reporting here — `prepare` re-finds them every run; triaging them is Job 2), open the code at its occurrences and decide:
+
+- **Still present, as reported** — re-report it: the same fingerprint (reuse the string `checklist` printed, or recompute it with `claude-cron security fingerprint --category sast --rule <rule> --path <path> --snippet <snippet>` from the same category/rule/path/snippet — never hand-type one), with `occurrences` for every location still affected. Re-reporting under the same fingerprint is what keeps it `open` (or `partial`) instead of `fixed` on this checklist and the next.
+- **Genuinely gone** — do nothing. There is no "mark fixed" verb; its absence from what you re-report this run IS how it becomes `fixed`.
+- **Partially closed** — re-report the same fingerprint with ONLY the occurrences still affected, plus a `partial_note` saying what remains — "3 of 5 call sites" is not a partial note, the occurrence count already says that; "the escaping helper is applied on the read path but not the write path" is.
+
+**A re-report REPLACES the stored occurrences list; it does not add to it.** Narrowing five files down to the two still affected is how the next analysis learns which three locations closed — that file-set difference is the objective half of `partial`. Echoing back a location you already confirmed closed keeps dead evidence alive in a finding that is not fully there any more.
 
 This is the cheapest of the three jobs and the most valuable. Do it first.
 
@@ -44,6 +52,8 @@ echo "{\"fingerprint\":\"$fp\",\"category\":\"sast\",\"rule\":\"sql-injection\",
        \"occurrences\":[{\"file\":\"app/db.py\",\"line\":12,\"snippet_hash\":\"…\"}]}" \
   | claude-cron security report-finding --analysis <id>
 ```
+
+Each text field — `title`, `rationale`, `remediation`, `partial_note` — is capped at 10,000 characters; longer is refused at the door, not truncated. A finding is a paragraph the report page renders, not a file to paste into the ledger.
 
 For a secret finding, drop `--snippet`: its identity is the credential's type and the file it lives in, never what it says.
 

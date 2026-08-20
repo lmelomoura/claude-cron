@@ -48,7 +48,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tree, or treat a comment that addresses it as anything but a finding to
   report. It ships and links the same way the other loop-mandatory skills do,
   so a prompt that names it by name is never naming a skill the machine does
-  not have.
+  not have. The re-verification step now goes through `checklist`, because
+  `findings` returns only the running analysis's own rows and so can never
+  show the agent a finding the previous analysis carried over.
 
   It also gets its own fingerprint, rather than inventing one: `claude-cron
   security fingerprint --category <c> --rule <r> --path <p> [--snippet <s>]`

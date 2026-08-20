@@ -2137,8 +2137,8 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
     && ok "the security-analysis skill ships with the repo" \
     || bad "the security-analysis skill ships with the repo"
   grep -q 'security-analysis' "$SELF" \
-    && ok "the security-analysis skill is registered for linking" \
-    || bad "the security-analysis skill is registered for linking"
+    && ok "the prompt still names the security-analysis skill" \
+    || bad "the prompt still names the security-analysis skill"
 
   echo "a human's board move is an answer, not an anomaly"
   # QG-15: the cap parked the ticket, the human moved it to the ready column, and
