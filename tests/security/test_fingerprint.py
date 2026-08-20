@@ -21,7 +21,19 @@ def test_the_path_is_part_of_the_identity():
 
 def test_a_secret_fingerprint_never_contains_the_value():
     """The value is not an argument at all — it cannot leak through this door."""
-    a = secret_fingerprint("aws_access_key", "config/prod.env", 0)
-    b = secret_fingerprint("aws_access_key", "config/prod.env", 1)
-    assert a != b
+    a = secret_fingerprint("aws_access_key", "config/prod.env")
     assert len(a) == 64
+
+
+def test_a_secret_fingerprint_varies_with_the_path():
+    a = secret_fingerprint("aws_access_key", "config/prod.env")
+    b = secret_fingerprint("aws_access_key", "config/staging.env")
+    assert a != b
+
+
+def test_a_secret_fingerprint_is_stable_for_the_same_type_and_path():
+    """No ordinal, no position: the same (type, path) always hashes the same,
+    regardless of how many times it is called or what else is in the file."""
+    a = secret_fingerprint("aws_access_key", "config/prod.env")
+    b = secret_fingerprint("aws_access_key", "config/prod.env")
+    assert a == b

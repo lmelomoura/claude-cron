@@ -26,11 +26,18 @@ def fingerprint(category: str, rule: str, path: str, snippet: str) -> str:
     return _digest(category, rule, path, _normalise(snippet))
 
 
-def secret_fingerprint(secret_type: str, path: str, ordinal: int) -> str:
+def secret_fingerprint(secret_type: str, path: str) -> str:
     """Identity of a secret finding.
 
     The secret's value is not a parameter. Hashing it would put an oracle for
-    the secret in the ledger -- weak, but real -- so identity comes from where
-    it is and which occurrence in that file it is, never from what it says.
+    the secret in the ledger -- weak, but real -- so identity comes from the
+    credential's TYPE and the FILE it lives in, never from what it says and
+    never from a position within that file. A position -- an ordinal, a line
+    number -- moves whenever an unrelated line is added or removed above it,
+    which would make an untouched, already-triaged secret look "fixed" (its
+    old fingerprint vanishes) and "new" (a fresh one appears) on the very
+    next analysis. Several matches of the same type in the same file are one
+    finding with several occurrences, not several findings -- see
+    `bin/security/secrets.py`.
     """
-    return _digest("secret", secret_type, path, str(ordinal))
+    return _digest("secret", secret_type, path)

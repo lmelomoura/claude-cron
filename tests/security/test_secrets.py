@@ -2,6 +2,7 @@ import subprocess
 from security.secrets import scan_tree, scan_history
 
 AWS = "AKIA" + "IOSFODNN7EXAMPLE"
+GITHUB = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
 
 
 def test_it_finds_an_aws_key(tmp_path):
@@ -48,3 +49,37 @@ def test_history_finds_a_key_that_was_deleted(tmp_path):
     assert len(hist) == 1
     assert hist[0]["historical"] is True
     assert AWS not in repr(hist)
+
+
+def test_fingerprint_is_stable_when_an_unrelated_secret_is_inserted_above(tmp_path):
+    """The central premise of the fingerprint: a credential that never moved
+    and never changed must keep the SAME fingerprint even after an unrelated
+    secret is discovered above it in the same file. A fingerprint computed
+    from match POSITION (an ordinal over all matches in the file) would shift
+    here -- the GitHub token's old fingerprint would vanish (reported
+    "fixed") and a new one would appear (reported "new"), even though nobody
+    touched the token. That is the failure the fingerprint exists to
+    prevent."""
+    (tmp_path / "a.env").write_text(f"GITHUB_TOKEN={GITHUB}\n")
+    before = scan_tree(tmp_path, [])
+    github_before = next(f for f in before if f["rule"] == "github_token")
+
+    (tmp_path / "a.env").write_text(
+        f"AWS_ACCESS_KEY_ID={AWS}\nGITHUB_TOKEN={GITHUB}\n")
+    after = scan_tree(tmp_path, [])
+    github_after = next(f for f in after if f["rule"] == "github_token")
+
+    assert github_before["fingerprint"] == github_after["fingerprint"]
+
+
+def test_two_hits_of_the_same_type_in_one_file_are_one_finding_with_two_occurrences(tmp_path):
+    """The data model already has the right place for "the same problem in
+    several spots": occurrences. Two AWS keys in one file must be one
+    finding, not two -- this is also what makes a partial "fixed one of two"
+    state expressible later."""
+    second_key = "AKIA" + "B" * 16
+    (tmp_path / "a.env").write_text(f"A={AWS}\nB={second_key}\n")
+    found = scan_tree(tmp_path, [])
+    assert len(found) == 1
+    assert found[0]["rule"] == "aws_access_key"
+    assert [o["line"] for o in found[0]["occurrences"]] == [1, 2]

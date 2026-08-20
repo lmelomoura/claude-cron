@@ -56,10 +56,20 @@ def _hits(text: str):
                 yield name, severity, lineno
 
 
-def _finding(rule, severity, path, ordinal, line, historical):
+def _finding(rule, severity, path, lines, historical):
+    """Build one finding for `rule` found at `path`.
+
+    `lines` is every line where this (rule, path) pair was matched -- it
+    becomes the finding's occurrences, so two hits of the same credential
+    type in one file are ONE finding with two occurrences, not two findings.
+    The fingerprint identifies a finding by (rule, path) alone -- never by a
+    position within the file, which would shift whenever an unrelated line
+    moved and falsely resurrect an untouched, already-triaged secret as
+    "new" while its old fingerprint vanished as "fixed".
+    """
     where = "in the git history" if historical else "in the working tree"
     return {
-        "fingerprint": secret_fingerprint(rule, path, ordinal),
+        "fingerprint": secret_fingerprint(rule, path),
         "category": "secret", "rule": rule, "severity": severity,
         "title": f"{rule.replace('_', ' ')} committed to the repository",
         "rationale": f"A credential of type {rule} was found {where}. Its value is "
@@ -67,7 +77,7 @@ def _finding(rule, severity, path, ordinal, line, historical):
         "remediation": ("Rotate the credential at the provider first -- it must be "
                         "assumed compromised. Removing it from the file is not enough "
                         "while it remains reachable in the history."),
-        "occurrences": [{"file": path, "line": line, "snippet_hash": ""}],
+        "occurrences": [{"file": path, "line": line, "snippet_hash": ""} for line in lines],
         "historical": historical,
     }
 
@@ -87,8 +97,17 @@ def scan_tree(root, ignore):
             text = p.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        for ordinal, (rule, severity, line) in enumerate(_hits(text)):
-            out.append(_finding(rule, severity, rel, ordinal, line, False))
+        # One finding per credential TYPE per file -- not per match. The
+        # fingerprint (type + path) cannot depend on a position, so several
+        # matches of one type collapse into one finding with several
+        # occurrences (dict preserves first-seen order, so output stays
+        # deterministic).
+        by_rule = {}
+        for rule, severity, line in _hits(text):
+            group = by_rule.setdefault(rule, {"severity": severity, "lines": []})
+            group["lines"].append(line)
+        for rule, group in by_rule.items():
+            out.append(_finding(rule, group["severity"], rel, group["lines"], False))
     return out
 
 
@@ -120,5 +139,5 @@ def scan_history(root, since_sha):
             if key in seen:
                 continue
             seen.add(key)
-            out.append(_finding(rule, severity, path, len(seen), 0, True))
+            out.append(_finding(rule, severity, path, [0], True))
     return out
