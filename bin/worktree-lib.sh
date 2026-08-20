@@ -103,6 +103,19 @@ wt_isolation_enabled() { # <project> <canonical_cwd>
 # what is already local and say so in the tick log.
 wt_base_ref() { # <canonical> <base> [fetch-timeout] -> prints a ref; non-zero if nothing resolves
   local repo="${1:-}" base="${2:-}" ref
+  # A security analysis picks its branch at run time, not from the project's
+  # declared base. Refuse a branch that does not resolve rather than fall
+  # through to the base: silently analysing `main` when the user asked for
+  # `release/2.1` produces a report that is correct about the wrong code.
+  if [ -n "${CC_BASE_OVERRIDE:-}" ]; then
+    local ov
+    for ov in "refs/remotes/origin/$CC_BASE_OVERRIDE" "refs/heads/$CC_BASE_OVERRIDE" "$CC_BASE_OVERRIDE"; do
+      if git -C "$1" rev-parse --verify --quiet "$ov" >/dev/null 2>&1; then
+        printf '%s\n' "$ov"; return 0
+      fi
+    done
+    return 1
+  fi
   # A remote that accepts the TCP connection and then goes quiet does not fail —
   # it hangs, and this runs before the watchdog exists, so it would hold the
   # run's slot for as long as the network stayed broken. Bound it: a stale base
@@ -368,11 +381,15 @@ wt_setup() { # <id> <project> <canonical_cwd> <stamp> [port_base]
   : > "$tsv"
   while IFS="$(printf '\t')" read -r name repo wt base; do
     [ -n "$name" ] || continue
-    if ! wt_provision up "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base"; then
-      log_tick "$id: provisioning failed for $name — aborting the run"
-      rm -f "$tsv"; printf 'done\n' > "$run_dir/.ended" 2>/dev/null || true
-      wt_teardown "$id" "$project" "$run_dir"
-      return 1
+    # Reading code needs no .env and no containers, and a security analysis must
+    # not pay for -- or be blocked by -- a project's provisioning.
+    if [ "${CC_SKIP_PROVISION:-}" != "1" ]; then
+      if ! wt_provision up "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base"; then
+        log_tick "$id: provisioning failed for $name — aborting the run"
+        rm -f "$tsv"; printf 'done\n' > "$run_dir/.ended" 2>/dev/null || true
+        wt_teardown "$id" "$project" "$run_dir"
+        return 1
+      fi
     fi
     # A failed wt_dirt_sha here (git could not read the tree moments after
     # provisioning just succeeded in it) records an empty snapshot, same as

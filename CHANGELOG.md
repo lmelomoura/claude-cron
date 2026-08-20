@@ -19,6 +19,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A security analysis can cut its worktree from a branch chosen at run time,
+  and skips the project's provisioning.** Every other run takes its base from
+  the project's declared config; an analysis needs to target whatever branch
+  is under review — `main`, `develop`, a PR's `release/2.1` — and that is
+  decided per run, not written into the project ahead of time. `CC_BASE_OVERRIDE`
+  now wins over the declared base in `wt_base_ref`, and a branch that does not
+  resolve is refused outright rather than silently falling back to the base:
+  analysing `main` when the user asked for `release/2.1` would produce a report
+  that reads as correct while being about the wrong code entirely.
+
+  `CC_SKIP_PROVISION=1` skips the project's `up` hook in `wt_setup`. Reading
+  code needs no `.env` and no containers, and an analysis must neither pay for
+  a project's provisioning nor be blocked by it failing.
+
 - **Projects can now carry a `security` block.** It is what a security analysis
   is configured by — which model and account it runs as, its spending cap, the
   profile it defaults to. Without it there was no way to say which Claude an

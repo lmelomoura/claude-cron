@@ -4854,6 +4854,25 @@ EOF
     && ok "every by-id job mutation ($guard_sites found) refuses a derived id before writing" \
     || bad "cmd_* guard rail: $guard_sites by-id mutation site(s), $guard_missing missing security_refuse_derived ($guard_bad_names) -- expected 8 sites, 0 missing"
 
+  # ---- analysing a chosen branch ---------------------------------------
+  mkdir -p "$tmp/brov/repo" && ( cd "$tmp/brov/repo"
+    git init -q . && git config user.email t@example.com && git config user.name t
+    echo one > a.txt && git add -A && git commit -qm one
+    git checkout -qb feature/x && echo two > a.txt && git commit -qam two
+    git checkout -q - ) >/dev/null 2>&1
+
+  got="$( CC_BASE_OVERRIDE="feature/x" wt_base_ref "$tmp/brov/repo" "main" 5 )"
+  case "$got" in *feature/x*) ok "CC_BASE_OVERRIDE wins over the declared base" ;;
+                 *) bad "CC_BASE_OVERRIDE wins over the declared base" ;; esac
+
+  got="$( wt_base_ref "$tmp/brov/repo" "main" 5 )"
+  case "$got" in *feature/x*) bad "an unset override leaves the declared base alone" ;;
+                 *) ok "an unset override leaves the declared base alone" ;; esac
+
+  ( CC_BASE_OVERRIDE="no/such/branch" wt_base_ref "$tmp/brov/repo" "main" 5 >/dev/null 2>&1 ) \
+    && bad "a branch that does not exist is refused, not silently replaced" \
+    || ok "a branch that does not exist is refused, not silently replaced"
+
   rm -rf "$tmp"
   echo
   echo "$pass passed, $fail failed"
