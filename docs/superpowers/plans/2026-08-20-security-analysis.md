@@ -2327,14 +2327,52 @@ security_request_path() { printf '%s/security/requests/%s.json\n' "$DATA_DIR" "$
 # That is why a derived job cannot be scheduled, cannot be edited, and cannot
 # be persisted: not by discipline, but because those paths never meet it.
 security_derived_jobs() {
-  local names project jid req branch profile repo prompt
+  local names project jid req branch profile repo prompt seen existing
+  # `jobs_json` is on the path of job_get/resolve/job_exists, so this function
+  # runs some twenty times per run and on every dashboard poll. When no project
+  # has security on -- the state of nearly every install -- settle it with ONE
+  # jq and nothing else: the loop below costs a jq per project per call, which
+  # made job_get several times slower for people who never asked for any of it.
+  # A missing or unreadable projects.json fails the test and lands here too,
+  # which is the same answer by a shorter road: no projects, no derived jobs.
+  # `objects` keeps a project whose `security` is not an object (see
+  # security_get) from erroring the test out and taking the healthy projects
+  # in the same file down with it.
+  local SECURITY_WARNINGS=""
+  if ! "$JQ" -e 'any(.projects[]?; ((.security? | objects | .enabled) == true))' \
+       "$PROJECTS_FILE" >/dev/null 2>&1; then
+    security_warnings_flush ""
+    printf '[]'
+    return 0
+  fi
   names="$(projects_json | "$JQ" -r '.projects[]?.name')"
+  # Ids a real job already owns. A real job predating the reservation of an id
+  # wins over the derived one -- it is what the user actually created.
+  existing="$("$JQ" -r '.jobs[]?.id' "$JOBS_FILE" 2>/dev/null | tr '\n' ' ')"
+  seen=""
   printf '['
   local first=1
   while IFS= read -r project; do
     [ -n "$project" ] || continue
     security_enabled "$project" || continue
     jid="$(security_job_id "$project")"
+    # A name that slugs to nothing (e.g. "!!!") would derive the bare prefix --
+    # not a usable id, and not any project's job. Skip it rather than emit it.
+    if [ "$jid" = "$SECURITY_JOB_PREFIX" ]; then
+      security_warn "security: project '$project' has a name that cannot derive a job id -- skipped"
+      continue
+    fi
+    # Two names can slug to the same id ("My App" and "my-app"). Whichever is
+    # seen first keeps it; the rest are skipped rather than silently colliding.
+    case " $seen " in *" $jid "*)
+      security_warn "security: project '$project' derives '$jid', already used by another project -- skipped"
+      continue ;;
+    esac
+    case " $existing " in *" $jid "*)
+      security_warn "security: a job named '$jid' already exists in $JOBS_FILE -- the real job wins, derived skipped"
+      continue ;;
+    esac
+    seen="$seen $jid"
     req="$(security_request_path "$jid")"
     branch="$("$JQ" -r '.branch // ""' "$req" 2>/dev/null)"
     repo="$("$JQ" -r '.repo // ""' "$req" 2>/dev/null)"
@@ -2344,27 +2382,204 @@ security_derived_jobs() {
     ignore="$("$JQ" -r '.ignore // ""' "$req" 2>/dev/null)"
     [ -n "$branch" ] || branch="$(project_get "$project" '.base' 'main')"
     prompt="$(security_prompt "$project" "$repo" "$branch" "$profile" "$aid" "$ignore")"
-    [ $first -eq 1 ] || printf ','
-    first=0
-    "$JQ" -nc \
+    local budget daily elem
+    budget="$(security_get "$project" '.max_budget_usd' '')"
+    daily="$(security_get "$project" '.daily_budget_usd' '')"
+    # max_budget_usd cannot just be dropped the way a bad daily_budget_usd can:
+    # the derived job always runs --force, which skips the rate-limit gate,
+    # the daily cap and the global cap below -- max_budget_usd is the ONLY
+    # spend gate left for it, so "declared but unusable" must fail SAFE (the
+    # conservative fallback), not fail OPEN (no cap at all). daily_budget_usd
+    # gates nothing for a forced run either way, so it keeps the old
+    # behaviour: dropped, with a warning, same as if it were never set.
+    security_check_number "$project" max_budget_usd "$budget" "$SECURITY_FALLBACK_BUDGET_USD" \
+      || budget="$SECURITY_FALLBACK_BUDGET_USD"
+    security_check_number "$project" daily_budget_usd "$daily" || daily=""
+    # Build the element FIRST and only then commit to it. The separator used to
+    # be printed before this jq ran, so anything that made jq exit without
+    # stdout -- a `tonumber` on a budget the user typed as "abc" was enough --
+    # left a hole in the array (`[,{...}]`). That is not one broken project:
+    # jobs_json then dies on EVERY call, so job_get, resolve and job_exists
+    # fail for every job on the machine, run_job reads an empty prompt, and the
+    # fleet stops with a reason `fleet_stall_reason` does not recognise. A
+    # failed element is now one project missing, which is what it always was.
+    elem="$("$JQ" -nc \
       --arg id "$jid" --arg project "$project" --arg prompt "$prompt" \
       --arg model "$(security_get "$project" '.model' 'opus')" \
       --arg effort "$(security_get "$project" '.effort' '')" \
-      --arg budget "$(security_get "$project" '.max_budget_usd' '')" \
-      --arg daily "$(security_get "$project" '.daily_budget_usd' '')" \
+      --arg budget "$budget" \
+      --arg daily "$daily" \
       --arg cfgdir "$(security_get "$project" '.claude_config_dir' '')" \
       '{id:$id, project:$project, prompt:$prompt, model:$model,
         description:"Security analysis (derived from the project, not a job you created).",
         enabled:false, precheck:"", permission_mode:"dontAsk",
         interactive:false, max_parallel:1, stall_timeout_seconds:1800}
        + (if $effort == "" then {} else {effort:$effort} end)
-       + (if $budget == "" then {} else {max_budget_usd:($budget|tonumber)} end)
-       + (if $daily  == "" then {} else {daily_budget_usd:($daily|tonumber)} end)
-       + (if $cfgdir == "" then {} else {claude_config_dir:$cfgdir} end)'
+       # NOT `{max_budget_usd: ($budget|tonumber? // empty)}`: an empty value
+       # inside object construction makes the WHOLE object empty, which would
+       # drop the job rather than the field. Collect first, then decide.
+       + ([$budget | tonumber?] | if length == 0 then {} else {max_budget_usd: .[0]} end)
+       + ([$daily  | tonumber?] | if length == 0 then {} else {daily_budget_usd: .[0]} end)
+       + (if $cfgdir == "" then {} else {claude_config_dir:$cfgdir} end)' 2>/dev/null)" || elem=""
+    [ -n "$elem" ] || continue
+    [ $first -eq 1 ] || printf ','
+    first=0
+    printf '%s' "$elem"
   done <<EOF
 $names
 EOF
   printf ']'
+  security_warnings_flush "$SECURITY_WARNINGS"
+}
+
+security_check_number() { # security_check_number <project> <field> <value> [fallback] -> rc 1 when unusable
+  [ -n "$3" ] || return 0
+  "$JQ" -e -n --arg v "$3" '($v|tonumber?) != null' >/dev/null 2>&1 && return 0
+  # A fallback means the caller has somewhere safe to land: say so, by name,
+  # so the operator sees the declared (bad) value AND what replaced it, not
+  # just that something was dropped. No fallback means the field is simply
+  # unusable and gets left off, same as it always has.
+  if [ -n "${4:-}" ]; then
+    security_warn "security: project '$1' has a non-numeric $2 ('$3') -- a derived run is forced past every other spend gate, so the derived job falls back to the conservative default of \$$4 instead of running with no cap at all"
+  else
+    security_warn "security: project '$1' has a non-numeric $2 ('$3') -- left off the derived job"
+  fi
+  return 1
+}
+
+security_warnings_flush() { # security_warnings_flush <warnings-text>
+  local now="$1" marker prev tmp line
+  marker="$DATA_DIR/security/derivation-warnings.txt"
+  # The healthy case -- nothing to say, nothing said last time -- must not cost
+  # a fork, because it is on the path of every job_get.
+  [ -n "$now" ] || [ -s "$marker" ] || return 0
+  prev="$(cat "$marker" 2>/dev/null || true)"
+  # Both sides through the same stripping so a trailing newline is not a change.
+  [ "$(printf '%s' "$now")" = "$prev" ] && return 0
+  mkdir -p "$DATA_DIR/security" 2>/dev/null || return 0
+  # Written before the logging, and atomically: two derivations racing here can
+  # at worst log the same change twice, never flood.
+  tmp="$(mktemp "$DATA_DIR/security/.warn.XXXXXX" 2>/dev/null)" || return 0
+  printf '%s' "$now" > "$tmp" 2>/dev/null && mv -f "$tmp" "$marker" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  [ -n "$now" ] || return 0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    log_tick "$line"
+  done <<EOF
+$now
+EOF
+}
+
+# Every job a RUN can see: the user's, plus one derived per security-enabled
+# project. Deliberately only here. The tick reads $JOBS_FILE directly with jq,
+# the server reads it directly in Python, and write_jobs writes it directly --
+# so none of them sees a derived job, and none of them has to remember not to.
+# That is why a derived job cannot be scheduled, cannot be edited, and cannot
+# be persisted: not by discipline, but because those paths never meet it.
+security_derived_jobs() {
+  local names project jid req branch profile repo prompt seen existing
+  # `jobs_json` is on the path of job_get/resolve/job_exists, so this function
+  # runs some twenty times per run and on every dashboard poll. When no project
+  # has security on -- the state of nearly every install -- settle it with ONE
+  # jq and nothing else: the loop below costs a jq per project per call, which
+  # made job_get several times slower for people who never asked for any of it.
+  # A missing or unreadable projects.json fails the test and lands here too,
+  # which is the same answer by a shorter road: no projects, no derived jobs.
+  # `objects` keeps a project whose `security` is not an object (see
+  # security_get) from erroring the test out and taking the healthy projects
+  # in the same file down with it.
+  local SECURITY_WARNINGS=""
+  if ! "$JQ" -e 'any(.projects[]?; ((.security? | objects | .enabled) == true))' \
+       "$PROJECTS_FILE" >/dev/null 2>&1; then
+    security_warnings_flush ""
+    printf '[]'
+    return 0
+  fi
+  names="$(projects_json | "$JQ" -r '.projects[]?.name')"
+  # Ids a real job already owns. A real job predating the reservation of an id
+  # wins over the derived one -- it is what the user actually created.
+  existing="$("$JQ" -r '.jobs[]?.id' "$JOBS_FILE" 2>/dev/null | tr '\n' ' ')"
+  seen=""
+  printf '['
+  local first=1
+  while IFS= read -r project; do
+    [ -n "$project" ] || continue
+    security_enabled "$project" || continue
+    jid="$(security_job_id "$project")"
+    # A name that slugs to nothing (e.g. "!!!") would derive the bare prefix --
+    # not a usable id, and not any project's job. Skip it rather than emit it.
+    if [ "$jid" = "$SECURITY_JOB_PREFIX" ]; then
+      security_warn "security: project '$project' has a name that cannot derive a job id -- skipped"
+      continue
+    fi
+    # Two names can slug to the same id ("My App" and "my-app"). Whichever is
+    # seen first keeps it; the rest are skipped rather than silently colliding.
+    case " $seen " in *" $jid "*)
+      security_warn "security: project '$project' derives '$jid', already used by another project -- skipped"
+      continue ;;
+    esac
+    case " $existing " in *" $jid "*)
+      security_warn "security: a job named '$jid' already exists in $JOBS_FILE -- the real job wins, derived skipped"
+      continue ;;
+    esac
+    seen="$seen $jid"
+    req="$(security_request_path "$jid")"
+    branch="$("$JQ" -r '.branch // ""' "$req" 2>/dev/null)"
+    repo="$("$JQ" -r '.repo // ""' "$req" 2>/dev/null)"
+    profile="$("$JQ" -r '.profile // "standard"' "$req" 2>/dev/null)"
+    local aid ignore
+    aid="$("$JQ" -r '.analysis_id // ""' "$req" 2>/dev/null)"
+    ignore="$("$JQ" -r '.ignore // ""' "$req" 2>/dev/null)"
+    [ -n "$branch" ] || branch="$(project_get "$project" '.base' 'main')"
+    prompt="$(security_prompt "$project" "$repo" "$branch" "$profile" "$aid" "$ignore")"
+    local budget daily elem
+    budget="$(security_get "$project" '.max_budget_usd' '')"
+    daily="$(security_get "$project" '.daily_budget_usd' '')"
+    # max_budget_usd cannot just be dropped the way a bad daily_budget_usd can:
+    # the derived job always runs --force, which skips the rate-limit gate,
+    # the daily cap and the global cap below -- max_budget_usd is the ONLY
+    # spend gate left for it, so "declared but unusable" must fail SAFE (the
+    # conservative fallback), not fail OPEN (no cap at all). daily_budget_usd
+    # gates nothing for a forced run either way, so it keeps the old
+    # behaviour: dropped, with a warning, same as if it were never set.
+    security_check_number "$project" max_budget_usd "$budget" "$SECURITY_FALLBACK_BUDGET_USD" \
+      || budget="$SECURITY_FALLBACK_BUDGET_USD"
+    security_check_number "$project" daily_budget_usd "$daily" || daily=""
+    # Build the element FIRST and only then commit to it. The separator used to
+    # be printed before this jq ran, so anything that made jq exit without
+    # stdout -- a `tonumber` on a budget the user typed as "abc" was enough --
+    # left a hole in the array (`[,{...}]`). That is not one broken project:
+    # jobs_json then dies on EVERY call, so job_get, resolve and job_exists
+    # fail for every job on the machine, run_job reads an empty prompt, and the
+    # fleet stops with a reason `fleet_stall_reason` does not recognise. A
+    # failed element is now one project missing, which is what it always was.
+    elem="$("$JQ" -nc \
+      --arg id "$jid" --arg project "$project" --arg prompt "$prompt" \
+      --arg model "$(security_get "$project" '.model' 'opus')" \
+      --arg effort "$(security_get "$project" '.effort' '')" \
+      --arg budget "$budget" \
+      --arg daily "$daily" \
+      --arg cfgdir "$(security_get "$project" '.claude_config_dir' '')" \
+      '{id:$id, project:$project, prompt:$prompt, model:$model,
+        description:"Security analysis (derived from the project, not a job you created).",
+        enabled:false, precheck:"", permission_mode:"dontAsk",
+        interactive:false, max_parallel:1, stall_timeout_seconds:1800}
+       + (if $effort == "" then {} else {effort:$effort} end)
+       # NOT `{max_budget_usd: ($budget|tonumber? // empty)}`: an empty value
+       # inside object construction makes the WHOLE object empty, which would
+       # drop the job rather than the field. Collect first, then decide.
+       + ([$budget | tonumber?] | if length == 0 then {} else {max_budget_usd: .[0]} end)
+       + ([$daily  | tonumber?] | if length == 0 then {} else {daily_budget_usd: .[0]} end)
+       + (if $cfgdir == "" then {} else {claude_config_dir:$cfgdir} end)' 2>/dev/null)" || elem=""
+    [ -n "$elem" ] || continue
+    [ $first -eq 1 ] || printf ','
+    first=0
+    printf '%s' "$elem"
+  done <<EOF
+$names
+EOF
+  printf ']'
+  security_warnings_flush "$SECURITY_WARNINGS"
 }
 
 jobs_json() {
