@@ -471,6 +471,26 @@ project_repo_path() { # project_repo_path <project> <repo>
        else ([$rs[] | select(.name==$r) | .path] | .[0] // "") end'
 }
 
+cmd_security_branches() { # cmd_security_branches <project> <repo> -> every
+                           # branch of the canonical checkout, one per line
+  local cwd; cwd="$(project_repo_path "$1" "$2")"
+  [ -n "$cwd" ] && [ -d "$cwd" ] || die "no checkout for $1/$2"
+  # Local heads and origin's remote-tracking branches, so the picker offers a
+  # branch that only exists upstream (never checked out locally) as well as
+  # one that only exists locally (never pushed). The FULL refname, not
+  # `%(refname:short)`: git's short form of `refs/remotes/origin/HEAD` -- the
+  # symbolic ref some remotes carry to say which branch is "the" branch -- is
+  # the bare string "origin", not "origin/HEAD", so stripping an `origin/`
+  # prefix and matching literal "HEAD" would both silently miss it and it
+  # would be offered as a branch named "origin". Stripped by hand instead,
+  # `refs/remotes/origin/HEAD` becomes plain "HEAD" and is dropped below like
+  # any other; sort -u dedupes a name that is both local and pushed.
+  git -C "$cwd" for-each-ref --format='%(refname)' \
+    refs/heads refs/remotes/origin 2>/dev/null \
+    | sed -e 's|^refs/heads/||' -e 's|^refs/remotes/origin/||' \
+    | grep -v '^HEAD$' | sort -u
+}
+
 cmd_security_analyze() { # <project> <repo> <branch> [profile]
   local project="$1" repo="$2" branch="$3" profile="${4:-standard}"
   security_enabled "$project" || die "security is not enabled for project '$project'"
@@ -5268,6 +5288,30 @@ JSON
     && ok "a run that never started leaves the analysis closed, not running for ever" \
     || bad "the row was left open after run_job returned without running"
 
+  echo "cmd_security_branches() — local and origin branches, HEAD excluded, deduped"
+  # A real checkout with an origin, not faked refs: local-only never leaves the
+  # repo, shared exists on both sides (the dedup this proves), and origin's
+  # HEAD is the symbolic ref for-each-ref would otherwise surface as a branch
+  # named "HEAD" once the "origin/" prefix is stripped from it.
+  git init -q --bare "$sec/origin.git" >/dev/null 2>&1
+  ( cd "$sec/repo" && git remote add origin "$sec/origin.git" \
+      && git push -q -u origin main \
+      && git branch local-only && git branch shared && git push -q origin shared \
+      && git remote set-head origin main ) >/dev/null 2>&1
+  local secbr
+  secbr="$( ( sec_env; cmd_security_branches "Sec App" repo ) )"
+  [ "$secbr" = "$(printf 'local-only\nmain\nshared')" ] \
+    && ok "local-only (never pushed), main and shared (both local and origin) are each listed once" \
+    || bad "branches: '$secbr'"
+  printf '%s\n' "$secbr" | grep -qx 'HEAD' \
+    && bad "origin/HEAD leaked into the branch list as 'HEAD': '$secbr'" \
+    || ok "origin/HEAD is stripped and excluded, not offered as a branch to analyse"
+  local secbrrc=0
+  ( sec_env; cmd_security_branches "No Such Project" repo ) >/dev/null 2>&1 || secbrrc=$?
+  [ "$secbrrc" -ne 0 ] \
+    && ok "a project with no checkout is refused rather than silently listing nothing" \
+    || bad "an unknown project/repo did not refuse (rc=$secbrrc)"
+
   echo "security_close_analysis() — the run's own verdict closes the row"
   sec_close_state() { # sec_close_state <run-status> [wdreason] -> the state it lands on
     ( sec_env
@@ -7379,6 +7423,9 @@ claude-cron — durable local scheduler for headless Claude Code runs
   claude-cron security render --analysis <n> --format <json|md|html>
                               the report for one analysis (see `security` with
                               no arguments for the rest of the vocabulary)
+  claude-cron security-branches <project> <repo>
+                              list the branches of a project's canonical
+                              checkout, local and origin's, for a branch picker
   claude-cron tick            internal — what launchd calls every minute
 
 Jobs are defined in $JOBS_FILE
@@ -7440,6 +7487,8 @@ case "${1:-}" in
                "")      die "usage: claude-cron security <analyze|prepare|findings|fingerprint|report-finding|finish|checklist|render|decide|list> …" ;;
                *)       security_py "$@" ;;
              esac ;;
+  security-branches) [ $# -ge 3 ] || die "usage: claude-cron security-branches <project> <repo>"
+                     cmd_security_branches "$2" "$3" ;;
   resolve-models) cmd_resolve_models ;;
   skills)    shift; cmd_skills "${1:-status}" ;;
   selftest)  cmd_selftest ;;

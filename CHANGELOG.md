@@ -157,6 +157,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   dir and state onto an id nothing will ever derive again. `run`, `resume`,
   `stop` and `say` are untouched: a derived job is meant to run.
 
+  **The control server can now drive a security analysis.** `GET /api/security`
+  lists a project's analyses, `/checklist` and `/report` return one of them (the
+  latter as a download — `Content-Disposition: attachment`, with a filename
+  built only from the validated int id and format, never a string the caller
+  typed), and `/branches` lists a checkout's branches for a picker (a new
+  `claude-cron security-branches <project> <repo>`, since the server never
+  runs `git` itself). `POST /api/action` gained `security_analyze` and
+  `security_decide`. A branch name is checked against an allowlist at this
+  edge rather than quoted somewhere downstream and hoped about — and a
+  leading `-` and a `..` are refused explicitly even though both characters
+  are in the allowed set, the first because it sits in an option position
+  next to plumbing and the second for the traversal it can smuggle into a
+  ref. A decision with a blank reason or a state the ledger does not know is
+  refused here too, mirroring `security/ledger.py`, so the page gets a
+  sentence instead of a 500 from a CLI that exited non-zero; `decide`'s `by`
+  always comes from the signed-in operator's own profile, never from the
+  request body, so nothing typed into the page can sign a decision as anyone
+  else.
+
 ### Changed
 
 - **A provider outage no longer slows a job down for the rest of the day.**
