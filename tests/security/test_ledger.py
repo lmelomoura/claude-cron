@@ -57,3 +57,44 @@ def test_a_running_analysis_is_not_the_baseline_for_the_next_one(conn):
     ledger.finish_analysis(conn, a1, "done")
     ledger.start_analysis(conn, "web", "web", "main", "c2", "standard", "r2")
     assert ledger.latest_analysis(conn, "web", "web", "main")["id"] == a1
+
+
+def test_before_returns_the_analysis_strictly_before_it_not_the_latest(conn):
+    a1 = ledger.start_analysis(conn, "web", "web", "main", "c1", "standard", "r1")
+    ledger.finish_analysis(conn, a1, "done")
+    a2 = ledger.start_analysis(conn, "web", "web", "main", "c2", "standard", "r2")
+    ledger.finish_analysis(conn, a2, "done")
+    a3 = ledger.start_analysis(conn, "web", "web", "main", "c3", "standard", "r3")
+    ledger.finish_analysis(conn, a3, "done")
+
+    assert ledger.latest_analysis(conn, "web", "web", "main", before=a2)["id"] == a1
+    # A regression to `<=` would let the middle one see itself as its own
+    # baseline instead of the one before it.
+    assert ledger.latest_analysis(conn, "web", "web", "main", before=a2)["id"] != a2
+
+
+def test_finish_analysis_rejects_an_invalid_state(conn):
+    aid = ledger.start_analysis(conn, "web", "web", "main", "c1", "standard", "r1")
+    with pytest.raises(ValueError):
+        ledger.finish_analysis(conn, aid, "bogus")
+
+
+def test_set_decision_rejects_an_invalid_state(conn):
+    with pytest.raises(ValueError):
+        ledger.set_decision(conn, "web", "a" * 64, "bogus", "a real reason", "luiz")
+
+
+def test_record_finding_is_atomic_a_bad_occurrence_leaves_no_finding_row(conn):
+    aid = ledger.start_analysis(conn, "web", "web", "main", "c1", "standard", "r1")
+    finding = _finding(occurrences=[{"file": "app/db.py", "line": "not-a-number",
+                                      "snippet_hash": "h1"}])
+
+    with pytest.raises(ValueError):
+        ledger.record_finding(conn, aid, finding)
+
+    # A later, unrelated commit on the same connection must not resurrect
+    # the finding row that was left uncommitted by the failed insert above.
+    conn.commit()
+
+    rows = conn.execute("SELECT * FROM finding").fetchall()
+    assert rows == []

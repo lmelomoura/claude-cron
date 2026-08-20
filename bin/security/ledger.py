@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS analysis (
   run_id TEXT NOT NULL DEFAULT '',
   coverage_note TEXT NOT NULL DEFAULT '');
 
+CREATE INDEX IF NOT EXISTS analysis_by_scope ON analysis(project, repo, branch);
+
 CREATE TABLE IF NOT EXISTS finding (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   analysis_id INTEGER NOT NULL REFERENCES analysis(id),
@@ -85,18 +87,23 @@ def finish_analysis(conn, analysis_id, state, spend_usd=0.0, coverage_note="") -
 
 
 def record_finding(conn, analysis_id, finding: dict) -> None:
-    cur = conn.execute(
-        "INSERT INTO finding (analysis_id, fingerprint, category, rule, severity,"
-        " title, rationale, remediation, partial_note) VALUES (?,?,?,?,?,?,?,?,?)",
-        (analysis_id, finding["fingerprint"], finding["category"], finding["rule"],
-         finding["severity"], finding["title"], finding.get("rationale", ""),
-         finding.get("remediation", ""), finding.get("partial_note", "")))
-    fid = cur.lastrowid
-    for occ in finding.get("occurrences", []):
-        conn.execute(
-            "INSERT INTO occurrence (finding_id, file, line, snippet_hash) VALUES (?,?,?,?)",
-            (fid, occ.get("file", ""), int(occ.get("line", 0)), occ.get("snippet_hash", "")))
-    conn.commit()
+    # A finding and its occurrences are one unit: without this transaction
+    # boundary, an occurrence that fails to insert midway (a non-numeric
+    # line, say) would leave the finding row committed by whatever later
+    # commit() happens on this connection -- a checklist entry with no
+    # evidence for why it was flagged.
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO finding (analysis_id, fingerprint, category, rule, severity,"
+            " title, rationale, remediation, partial_note) VALUES (?,?,?,?,?,?,?,?,?)",
+            (analysis_id, finding["fingerprint"], finding["category"], finding["rule"],
+             finding["severity"], finding["title"], finding.get("rationale", ""),
+             finding.get("remediation", ""), finding.get("partial_note", "")))
+        fid = cur.lastrowid
+        for occ in finding.get("occurrences", []):
+            conn.execute(
+                "INSERT INTO occurrence (finding_id, file, line, snippet_hash) VALUES (?,?,?,?)",
+                (fid, occ.get("file", ""), int(occ.get("line", 0)), occ.get("snippet_hash", "")))
 
 
 def findings_of(conn, analysis_id) -> list:
