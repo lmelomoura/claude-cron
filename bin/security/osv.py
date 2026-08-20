@@ -61,7 +61,14 @@ def _detail(vuln_id, cache, timeout):
         return cache[vuln_id], ""
     try:
         detail = json.loads(_http(_VULN_URL + vuln_id, timeout=timeout))
-    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError,
+            AttributeError, TypeError, KeyError):
+        # Broad on purpose: any confusion over the response must cost only
+        # this vulnerability's prose, never crash the whole query.
+        return None, vuln_id
+    if not isinstance(detail, dict):
+        # Valid JSON, wrong container (e.g. a bare list) -- treated exactly
+        # like a failed lookup: the finding survives, only its prose is lost.
         return None, vuln_id
     if cache is not None:
         cache[vuln_id] = detail
@@ -102,13 +109,32 @@ def query(components, detail_cache=None, timeout=30):
             {"package": {"name": c["name"], "ecosystem": c["ecosystem"]},
              "version": c["version"]} for c in chunk]})
         try:
-            results = json.loads(_http(_BATCH_URL, body, timeout)).get("results", [])
-        except (urllib.error.URLError, OSError, ValueError, TimeoutError) as exc:
+            parsed = json.loads(_http(_BATCH_URL, body, timeout))
+        except (urllib.error.URLError, OSError, ValueError, TimeoutError,
+                AttributeError, TypeError, KeyError) as exc:
+            # Broad on purpose: any confusion over the response must become
+            # this stated gap, never an uncaught crash.
             return [], ("Dependency CVEs were NOT checked: the OSV.dev lookup did "
                         f"not complete ({type(exc).__name__}). Everything else in "
                         "this report is complete.")
+        if not isinstance(parsed, dict):
+            # Valid JSON, wrong container ([] instead of {...}, a bare
+            # string, a number) -- the same declared gap as a parse failure.
+            return [], ("Dependency CVEs were NOT checked: the OSV.dev lookup did "
+                        f"not complete ({type(parsed).__name__} instead of an "
+                        "object). Everything else in this report is complete.")
+        results = parsed.get("results", [])
+        if not isinstance(results, list):
+            results = []
         for component, result in zip(chunk, results):
-            for vuln in (result or {}).get("vulns", []):
+            if not isinstance(result, dict):
+                continue  # a non-dict entry is skipped, not fatal to the batch
+            vulns = result.get("vulns", [])
+            if not isinstance(vulns, list):
+                continue
+            for vuln in vulns:
+                if not isinstance(vuln, dict):
+                    continue
                 vuln_id = vuln.get("id")
                 if not vuln_id:
                     continue

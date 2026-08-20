@@ -1,5 +1,4 @@
 # tests/security/test_osv.py
-import json
 import urllib.error
 from pathlib import Path
 
@@ -99,3 +98,44 @@ def test_a_malformed_batch_response_is_a_declared_gap_not_a_crash(monkeypatch):
     findings, note = osv.query([COMPONENT])
     assert findings == []
     assert note
+
+
+def test_a_wrongly_shaped_batch_response_is_a_declared_gap_not_a_crash(monkeypatch):
+    """`"[]"` is valid JSON -- it parses cleanly, unlike "not json" above.
+    Before the fix, `.get("results", [])` was called on whatever json.loads
+    returned with no type check, so a top-level list raised AttributeError
+    straight out of query(), uncaught by the surrounding except."""
+    monkeypatch.setattr(osv, "_http", lambda url, body=None, timeout=30: "[]")
+    findings, note = osv.query([COMPONENT])
+    assert findings == []
+    assert note
+
+
+def test_a_truthy_non_dict_detail_is_treated_as_a_failed_lookup(monkeypatch):
+    """`'["x"]'` also parses cleanly. Before the fix, _finding's `if detail:`
+    check is True for a non-empty list (only a FALSY non-dict degraded
+    gracefully by accident), so _severity_of(detail) called .get() on the
+    list and raised AttributeError, uncaught anywhere in the call chain."""
+    batch = (FIXTURES / "osv-querybatch.json").read_text()
+
+    def truthy_non_dict(url, body=None, timeout=30):
+        return batch if url.endswith("/querybatch") else '["x"]'
+
+    monkeypatch.setattr(osv, "_http", truthy_non_dict)
+    findings, note = osv.query([COMPONENT])
+    assert findings
+    assert all(f["severity"] == osv.DEFAULT_SEVERITY for f in findings)
+    assert str(len(findings)) in note
+
+
+def test_a_non_dict_results_entry_is_skipped_not_crashed(monkeypatch):
+    """A results entry that is a bare string instead of an object. Before
+    the fix, `(result or {}).get("vulns", [])` only guarded FALSY non-dict
+    values -- a truthy string bypassed the `or {}` and raised AttributeError
+    from calling .get() on a str."""
+    monkeypatch.setattr(
+        osv, "_http",
+        lambda url, body=None, timeout=30: '{"results": ["oops"]}')
+    findings, note = osv.query([COMPONENT])
+    assert findings == []
+    assert note == ""
