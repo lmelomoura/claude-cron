@@ -2715,12 +2715,32 @@ Expected: três `FAIL`
 No topo de `wt_base_ref`, antes de qualquer resolução:
 
 ```bash
+  # (excerpt of wt_base_ref as shipped)
+wt_base_ref() { # <canonical> <base> [fetch-timeout] -> prints a ref; non-zero if nothing resolves
+  local repo="${1:-}" base="${2:-}" ref
   # A security analysis picks its branch at run time, not from the project's
   # declared base. Refuse a branch that does not resolve rather than fall
   # through to the base: silently analysing `main` when the user asked for
   # `release/2.1` produces a report that is correct about the wrong code.
+  #
+  # No fetch here, unlike the declared-base path below: the caller already
+  # knows the branch resolves before it ever sets CC_BASE_OVERRIDE (a security
+  # analysis pre-validates the branch it was asked to analyse), so there is
+  # nothing for this block to fetch on its own behalf -- it only has to find a
+  # ref that is already on disk, remote-tracking refs included.
   if [ -n "${CC_BASE_OVERRIDE:-}" ]; then
+    # Refuse anything shaped like a flag before it ever reaches rev-parse. The
+    # bare candidate below (unlike the two refs/... ones) is CC_BASE_OVERRIDE
+    # verbatim, so a value starting with `-` would sit in an argument position
+    # next to git plumbing -- empirically safe today, since `rev-parse
+    # --verify --quiet` does not treat it specially, but defence in depth
+    # against whatever this call site looks like after its next refactor.
+    case "$CC_BASE_OVERRIDE" in -*) return 1 ;; esac
     local ov
+    # Remote first: a security analysis targets whatever was just pushed, and
+    # the remote is the source of truth for that -- a local branch of the same
+    # name that has since diverged (an operator's own stale checkout) must
+    # lose to it, not win by coming first in the list.
     for ov in "refs/remotes/origin/$CC_BASE_OVERRIDE" "refs/heads/$CC_BASE_OVERRIDE" "$CC_BASE_OVERRIDE"; do
       if git -C "$1" rev-parse --verify --quiet "$ov" >/dev/null 2>&1; then
         printf '%s\n' "$ov"; return 0
@@ -2728,6 +2748,10 @@ No topo de `wt_base_ref`, antes de qualquer resolução:
     done
     return 1
   fi
+  # A remote that accepts the TCP connection and then goes quiet does not fail —
+  # it hangs, and this runs before the watchdog exists, so it would hold the
+  # run's slot for as long as the network stayed broken. Bound it: a stale base
+  # resolved from local refs is worth far more than a wedged job.
 ```
 
 Em `wt_setup`, à volta da chamada a `wt_provision up`:
