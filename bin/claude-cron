@@ -522,8 +522,29 @@ cmd_security_analyze() { # <project> <repo> <branch> [profile]
   echo "analysis $aid — $project/$repo @ $branch ($sha) — job $jid"
   # --force because a derived job is disabled: it exists to be run on demand,
   # never on a tick.
+  #
+  # CC_SECURITY_AGENT marks the whole run as "this is the agent under review".
+  # `claude-cron security` is one command with one door, and the agent types it
+  # from its own tool shell inside the worktree: without a marker, `security
+  # decide --state false_positive` permanently suppresses a finding the agent
+  # itself just reported, and `security rename-project` moves the ledger out
+  # from under the project. bin/security/cli.py refuses those three verbs when
+  # it sees this. It is deliberately NOT limited to the agent's own process:
+  # security_close_analysis runs inside run_job, still under this assignment,
+  # and `finish` stays allowed precisely so that close keeps working.
+  #
+  # CC_SECURITY_ANALYSIS_ID is what the close-out reads the row id from. The
+  # request file is shared and mutable -- the next analysis of this project
+  # rewrites it -- so a close that reads it can land on another analysis's row.
+  #
+  # A prefix assignment on a FUNCTION call, not an `export`: bash puts both in
+  # the environment of everything the call reaches (run_job -> env -> claude ->
+  # the agent's Bash tool) and takes them back out when it returns, so the
+  # sweep below and everything after it run unmarked.
   local rc=0
-  CC_BASE_OVERRIDE="$branch" CC_SKIP_PROVISION=1 run_job "$jid" --force || rc=$?
+  CC_BASE_OVERRIDE="$branch" CC_SKIP_PROVISION=1 \
+  CC_SECURITY_AGENT=1 CC_SECURITY_ANALYSIS_ID="$aid" \
+    run_job "$jid" --force || rc=$?
   # run_job returns from several paths BEFORE the point where it closes the
   # analysis -- the slot gate, a cwd that has gone missing, an empty prompt --
   # and each of them would leave this row `running` for ever, which the page
@@ -544,20 +565,46 @@ cmd_security_analyze() { # <project> <repo> <branch> [profile]
 # normal run ending would try to close an analysis that never existed.
 #
 # The agent that finished cleanly has already called `security finish`; this
-# overwrites that with the RUN's verdict and the run's real cost. Deliberate:
-# the agent's own word is the one thing here that is not verifiable, and a
-# report that claims to be complete after the process that produced it fell
-# over is the failure this whole feature exists to avoid.
-security_close_analysis() { # <job-id> <status> <cost>
+# closes the row again with the RUN's verdict and the run's real cost.
+# Deliberate: the agent's own word is the one thing here that is not
+# verifiable, and a report that claims to be complete after the process that
+# produced it fell over is the failure this whole feature exists to avoid. The
+# close can only ever LOWER the verdict -- `finish` refuses to turn a stored
+# `capped` or `failed` back into `done` -- so an agent that honestly said it
+# ran out of room keeps saying so.
+security_close_analysis() { # <job-id> <status> <cost> <wdreason>
   case "$1" in "$SECURITY_JOB_PREFIX"*) ;; *) return 0 ;; esac
   local req aid state
-  req="$(security_request_path "$1")"
-  aid="$("$JQ" -r '.analysis_id // empty' "$req" 2>/dev/null)"
+  # The env var first, the request file only as a fallback. The file is shared
+  # and mutable: it is rewritten by the NEXT `security analyze` of the same
+  # project, and a close that reads it after that lands on the wrong row --
+  # closing an analysis still in flight while leaving this one running for
+  # ever. cmd_security_analyze exports the id into the run itself, and this
+  # runs inside that run.
+  aid="${CC_SECURITY_ANALYSIS_ID:-}"
+  if [ -z "$aid" ]; then
+    req="$(security_request_path "$1")"
+    aid="$("$JQ" -r '.analysis_id // empty' "$req" 2>/dev/null)"
+  fi
   [ -n "$aid" ] || return 0
   case "$2" in
-    # `warning` is a run that WORKED and is worth a look (bytes on stderr, an
-    # empty result, a NOTHING TO DO): the analysis it produced is finished.
-    success|warning) state="done" ;;
+    success) state="done" ;;
+    # `warning` is TWO different runs wearing one word. Stray bytes on stderr
+    # or an empty result is a run that WORKED and is worth a glance -- the
+    # analysis it produced is finished. But the classifier also files an agent
+    # that stopped mid-task (UNDECLARED ENDING), one that spent ~all of its
+    # cap (BUDGET LIMITED) and one that left work undelivered as `warning`,
+    # and those are TRUNCATED analyses: the agent never reached the rest of
+    # the code. Closing those `done` makes a half-read repository the baseline
+    # the next analysis is diffed against, which reports everything the agent
+    # never got to as `fixed` this run and `regressed` the next -- with no
+    # banner anywhere saying the report was cut short. The note the classifier
+    # already wrote is the only thing that tells the two apart.
+    warning)
+      case "${4:-}" in
+        *"BUDGET LIMITED"*|*"UNDECLARED ENDING"*|*"UNDELIVERED"*) state="capped" ;;
+        *) state="done" ;;
+      esac ;;
     # Not produced by the classifier today -- both are early-return states that
     # never reach this call -- but named so a future status of either name
     # lands on "incomplete, and it was the budget", not on "it broke".
@@ -5164,10 +5211,17 @@ JSON
     run_job() {
       printf '%s\n' "$*" > "$sec/runjob.args"
       printf '%s|%s\n' "${CC_BASE_OVERRIDE:-}" "${CC_SKIP_PROVISION:-}" > "$sec/runjob.env"
+      # A CHILD PROCESS, not this shell: what matters is that the two markers
+      # are EXPORTED all the way down to the agent's own tool shell, not that
+      # run_job can see them as shell variables.
+      sh -c 'printf "%s|%s\n" "${CC_SECURITY_AGENT:-}" "${CC_SECURITY_ANALYSIS_ID:-}"' \
+        > "$sec/runjob.childenv"
       security_py list --project "Sec App" | "$JQ" -r '.[0].state' > "$sec/state-during"
       return 0
     }
-    cmd_security_analyze "Sec App" repo main quick ) > "$sec/analyze.out" 2>&1
+    cmd_security_analyze "Sec App" repo main quick
+    printf '%s|%s\n' "${CC_SECURITY_AGENT:-unset}" "${CC_SECURITY_ANALYSIS_ID:-unset}" \
+      > "$sec/after-analyze.env" ) > "$sec/analyze.out" 2>&1
   [ "$("$JQ" -r '.analysis_id' "$secreq" 2>/dev/null)" = "1" ] \
     && ok "the request file carries the analysis id the run has to report against" \
     || bad "request file: $(cat "$secreq" 2>/dev/null)"
@@ -5183,6 +5237,16 @@ JSON
   [ "$(cat "$sec/runjob.env" 2>/dev/null)" = "main|1" ] \
     && ok "with the branch as CC_BASE_OVERRIDE and provisioning skipped" \
     || bad "run_job saw '$(cat "$sec/runjob.env" 2>/dev/null)'"
+  # The agent reaches `security decide` and `security rename-project` through
+  # the very same command the operator does; the marker is what tells the door
+  # who is knocking, and it is worth nothing unless it reaches the agent's own
+  # process rather than only run_job's shell.
+  [ "$(cat "$sec/runjob.childenv" 2>/dev/null)" = "1|1" ] \
+    && ok "and CC_SECURITY_AGENT=1 plus the analysis id exported into every process the run starts" \
+    || bad "a child of run_job saw '$(cat "$sec/runjob.childenv" 2>/dev/null)'"
+  [ "$(cat "$sec/after-analyze.env" 2>/dev/null)" = "unset|unset" ] \
+    && ok "and gone again the moment run_job returns, so the sweep after it is not marked as the agent" \
+    || bad "the markers outlived the run: '$(cat "$sec/after-analyze.env" 2>/dev/null)'"
   # The stub never reached security_close_analysis, which is precisely the
   # shape of every early return in run_job (the slot gate, a missing cwd, an
   # empty prompt). The sweep at the end of cmd_security_analyze is what keeps
@@ -5192,13 +5256,13 @@ JSON
     || bad "the row was left open after run_job returned without running"
 
   echo "security_close_analysis() — the run's own verdict closes the row"
-  sec_close_state() { # sec_close_state <run-status> -> the analysis state it lands on
+  sec_close_state() { # sec_close_state <run-status> [wdreason] -> the state it lands on
     ( sec_env
       local a
       a="$(security_py open-analysis --project "Sec App" --repo repo --branch main \
              --commit abc --profile quick --run-id "$secjid" | "$JQ" -r '.analysis_id')"
       "$JQ" --argjson a "$a" '.analysis_id = $a' "$secreq" > "$secreq.t" && mv "$secreq.t" "$secreq"
-      security_close_analysis "$secjid" "$1" "1.5" >/dev/null 2>&1
+      security_close_analysis "$secjid" "$1" "1.5" "${2:-}" >/dev/null 2>&1
       security_py list --project "Sec App" \
         | "$JQ" -r --argjson a "$a" '.[] | select(.id==$a) | [.state, (.spend_usd|tostring)] | join(",")' )
   }
@@ -5206,6 +5270,22 @@ JSON
     && ok "success closes it done, carrying the run's real cost" || bad "success -> $(sec_close_state success)"
   [ "$(sec_close_state warning)" = "done,1.5" ] \
     && ok "a warning is a run that worked, so the analysis is done too" || bad "warning -> $(sec_close_state warning)"
+  [ "$(sec_close_state warning "the agent put 3 lines on stderr")" = "done,1.5" ] \
+    && ok "and a warning about stderr noise is still a finished analysis" \
+    || bad "warning+stderr -> $(sec_close_state warning "the agent put 3 lines on stderr")"
+  # The half of `warning` that is NOT a finished run. Closing these `done` is
+  # what made a truncated analysis the baseline: the code the agent never
+  # reached read as `fixed` that run and `regressed` the next, with no banner
+  # anywhere saying the report was cut short.
+  [ "$(sec_close_state warning "UNDECLARED ENDING: the agent stopped without saying its run was finished")" = "capped,1.5" ] \
+    && ok "a warning that says the agent stopped mid-task closes it capped, not done" \
+    || bad "warning+UNDECLARED -> $(sec_close_state warning "UNDECLARED ENDING: the agent stopped without saying its run was finished")"
+  [ "$(sec_close_state warning "BUDGET LIMITED: spent \$4.80 of a \$5 cap")" = "capped,1.5" ] \
+    && ok "and so does one that spent its whole budget — the agent wrapped up early" \
+    || bad "warning+BUDGET -> $(sec_close_state warning "BUDGET LIMITED: spent \$4.80 of a \$5 cap")"
+  [ "$(sec_close_state warning "UNDELIVERED: unpushed commits in repo.")" = "capped,1.5" ] \
+    && ok "and one that left work undelivered" \
+    || bad "warning+UNDELIVERED -> $(sec_close_state warning "UNDELIVERED: unpushed commits in repo.")"
   [ "$(sec_close_state error)" = "failed,1.5" ] \
     && ok "an error closes it failed, so the report says it is incomplete" || bad "error -> $(sec_close_state error)"
   [ "$(sec_close_state stopped)" = "failed,1.5" ] \
@@ -5214,6 +5294,71 @@ JSON
   [ "$(sec_close_state capped)" = "capped,1.5" ] \
     && ok "and a capped run says it ran out of budget rather than that it broke" \
     || bad "capped -> $(sec_close_state capped)"
+
+  # The close used to overwrite the row unconditionally, which turned the one
+  # honest thing an agent can say about its own run -- "I ran out of room" --
+  # into `done`, because the PROCESS exited cleanly.
+  local secupg
+  secupg="$( ( sec_env
+    a="$(security_py open-analysis --project "Sec App" --repo repo --branch main \
+           --commit abc --profile quick --run-id "$secjid" | "$JQ" -r '.analysis_id')"
+    security_py finish --analysis "$a" --state capped \
+      --note "I stopped before the SAST phase" >/dev/null 2>&1
+    CC_SECURITY_ANALYSIS_ID="$a" security_close_analysis "$secjid" success "2.5" "" >/dev/null 2>&1
+    security_py list --project "Sec App" \
+      | "$JQ" -r --argjson a "$a" '.[] | select(.id==$a) | [.state, (.spend_usd|tostring)] | join(",")' ) )"
+  [ "$secupg" = "capped,2.5" ] \
+    && ok "an agent's own 'capped' survives a success-close, which still records the run's real cost" \
+    || bad "agent capped then engine success -> $secupg"
+
+  # The id used to travel only through the request file, which the NEXT
+  # analysis of the same project rewrites: the close then landed on that other
+  # analysis's row and left its own running for ever.
+  local seccross
+  seccross="$( ( sec_env
+    mine="$(security_py open-analysis --project "Sec App" --repo repo --branch main \
+              --commit abc --profile quick --run-id "$secjid" | "$JQ" -r '.analysis_id')"
+    other="$(security_py open-analysis --project "Sec App" --repo repo --branch main \
+              --commit def --profile quick --run-id "$secjid" | "$JQ" -r '.analysis_id')"
+    # exactly what a second `security analyze` does to the shared file while
+    # the first run is still going
+    "$JQ" --argjson a "$other" '.analysis_id = $a' "$secreq" > "$secreq.t" && mv "$secreq.t" "$secreq"
+    CC_SECURITY_ANALYSIS_ID="$mine" security_close_analysis "$secjid" success "0.5" "" >/dev/null 2>&1
+    security_py list --project "Sec App" | "$JQ" -r --argjson m "$mine" --argjson o "$other" \
+      '[(.[] | select(.id==$m) | .state), (.[] | select(.id==$o) | .state)] | join(",")' ) )"
+  [ "$seccross" = "done,running" ] \
+    && ok "the close lands on the id its own run was started with, not on whatever rewrote the request file" \
+    || bad "close with a rewritten request file -> $seccross (mine,other)"
+
+  echo "the agent cannot vote on its own findings"
+  # The marker the run carries (CC_SECURITY_AGENT) reaching the same door the
+  # operator uses. `finish` must stay allowed: security_close_analysis runs
+  # inside run_job, after the agent, under this very variable.
+  local secfp="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  local secrc=0
+  ( sec_env; CC_SECURITY_AGENT=1 security_py decide --project "Sec App" \
+      --fingerprint "$secfp" --state false_positive \
+      --reason "I looked at it myself" --by "security team" ) > "$sec/agent-decide.out" 2>&1 || secrc=$?
+  [ "$secrc" -ne 0 ] && grep -q "CC_SECURITY_AGENT" "$sec/agent-decide.out" \
+    && ok "'decide' is refused inside an analysis, with a sentence saying why" \
+    || bad "agent decide: rc=$secrc $(cat "$sec/agent-decide.out" 2>/dev/null)"
+  secrc=0
+  ( sec_env; CC_SECURITY_AGENT=1 security_py rename-project --from "Sec App" --to "Mine" ) \
+    > "$sec/agent-rename.out" 2>&1 || secrc=$?
+  [ "$secrc" -ne 0 ] && [ "$( ( sec_env; security_py list --project "Mine" | "$JQ" -r 'length' ) )" = "0" ] \
+    && ok "and so is moving the ledger out from under the project being analysed" \
+    || bad "agent rename-project: rc=$secrc $(cat "$sec/agent-rename.out" 2>/dev/null)"
+  local secfin
+  secfin="$( ( sec_env
+    a="$(security_py open-analysis --project "Sec App" --repo repo --branch main \
+           --commit abc --profile quick --run-id "$secjid" | "$JQ" -r '.analysis_id')"
+    CC_SECURITY_AGENT=1 CC_SECURITY_ANALYSIS_ID="$a" \
+      security_close_analysis "$secjid" success "0.25" "" >/dev/null 2>&1
+    security_py list --project "Sec App" \
+      | "$JQ" -r --argjson a "$a" '.[] | select(.id==$a) | .state' ) )"
+  [ "$secfin" = "done" ] \
+    && ok "while the engine's own close still works under the same flag, which is why finish is not refused" \
+    || bad "close under CC_SECURITY_AGENT -> $secfin"
 
   echo "a second analysis of the same project is refused where the operator can read it"
   # A live slot on the derived id, built the way slots_active recognises one:
@@ -6348,7 +6493,10 @@ If the work turns out to be already finished, or it can no longer be done at all
   # background with a timeout and only exists at all if the operator wrote the
   # script; an analysis whose agent died has to end up closed on an install
   # that has neither. A no-op for every job that is not a derived security one.
-  security_close_analysis "$id" "$status" "${cost:-0}"
+  # $wdreason, the same note run_end_hook is about to be handed: it is what
+  # separates a `warning` that is stderr noise from one that means the agent
+  # stopped mid-analysis (see security_close_analysis).
+  security_close_analysis "$id" "$status" "${cost:-0}" "$wdreason"
   # Fired after the record exists, so a hook that opens the dashboard or reads
   # the journal sees this run already in it.
   run_end_hook "$id" "$status" "${cost:-0}" "$wdreason" "$project" "$session" "$logfile" "$start" "$end"
@@ -7115,11 +7263,22 @@ cmd_project_rename() { # <old-name> <new-name> — the project and every job poi
     local old_req new_req
     old_req="$(security_request_path "$old_jid")"
     new_req="$(security_request_path "$new_jid")"
-    if [ -f "$old_req" ] && [ ! -e "$new_req" ] && mkdir -p "$(dirname "$new_req")" 2>/dev/null; then
-      if "$JQ" --arg n "$new" '.project = $n' "$old_req" > "$new_req.tmp" 2>/dev/null; then
-        mv -f "$new_req.tmp" "$new_req" && rm -f "$old_req"
+    # Every way this can fail is logged, exactly as the ledger rename three
+    # lines below is. Silence here is the worst of both: the rename reports
+    # success, the request stays under an id nothing derives any more, and the
+    # next run of the new job builds its prompt with no branch and no analysis
+    # id -- with nothing anywhere saying why.
+    if [ -f "$old_req" ]; then
+      if [ -e "$new_req" ]; then
+        log_tick "project-rename: $new_req already exists — the pending analysis request for '$old' was left at $old_req"
+      elif ! mkdir -p "$(dirname "$new_req")" 2>/dev/null; then
+        log_tick "project-rename: cannot create $(dirname "$new_req") — the pending analysis request for '$old' was left at $old_req"
+      elif "$JQ" --arg n "$new" '.project = $n' "$old_req" > "$new_req.tmp" 2>/dev/null \
+           && mv -f "$new_req.tmp" "$new_req"; then
+        rm -f "$old_req"
       else
         rm -f "$new_req.tmp"
+        log_tick "project-rename: could not move the pending analysis request $old_req to $new_req"
       fi
     fi
   fi

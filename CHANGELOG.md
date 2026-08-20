@@ -40,6 +40,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that has none. A second analysis of the same project is refused with a
   sentence on the terminal rather than one line in the tick log.
 
+  **The close tells a truncated analysis from a finished one.** `warning` is
+  two different runs wearing one word: stray bytes on stderr is a run that
+  worked, while `UNDECLARED ENDING`, `BUDGET LIMITED` and undelivered work all
+  mean the agent stopped part-way through the code. Both used to close the
+  analysis `done`, so a half-read repository became the baseline the next
+  analysis was diffed against — a report reading `fixed: 1, critical: 0` with
+  no banner, and everything the agent never reached coming back as `regressed`
+  the run after. Those three now close it `capped`, and a close can only ever
+  lower the verdict: an agent's own `finish --state capped` is never upgraded
+  to `done` by the engine's `success` (which means only that the process
+  exited cleanly), while the engine can still downgrade an agent's `done`.
+  The row id the close writes to travels with the run instead of through the
+  shared request file, which the *next* analysis of the same project rewrites
+  — a close could land on another analysis's row and leave its own running for
+  ever. A failed analysis no longer feeds the history the checklist reads, so
+  the first good analysis after a failed one stops reporting everything the
+  failed attempt happened to reach as `regressed`.
+
+  **The agent cannot vote on its own findings.** It reaches the ledger through
+  the identical command an operator types, and the door validated the shape of
+  what was written, never who was writing: from its own tool shell, `security
+  decide --state false_positive` permanently suppressed a committed AWS key
+  (signed `decided_by: security team`), and `security rename-project` moved the
+  whole ledger out from under the project being analysed. The analysis run now
+  carries `CC_SECURITY_AGENT=1`, and `decide`, `rename-project` and
+  `open-analysis` are refused while it is set, with a sentence saying why;
+  `finish` stays allowed, because the engine's own close-out runs inside that
+  same run. `report-finding` and `prepare` are also refused on an analysis that
+  is already closed — it is the next run's baseline, and writing into it
+  rewrites what the previous run is remembered as having found — a fingerprint
+  must be a real sha256 (one the agent invents is a new identity every run, so
+  the same hole is `new` for ever and no decision ever sticks to it), the text
+  fields are capped at 10k characters, and `prepare --root` refuses `/` and
+  your home directory rather than filing every file you own as a finding of
+  this project.
+
   **Renaming a project no longer orphans its security history.** A rename
   re-derives the analysis job's id (`security-web` → `security-web-two`), and
   the analysis in flight sits behind a `max_parallel=1` gate on the *old* id:
