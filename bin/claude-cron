@@ -4854,24 +4854,156 @@ EOF
     && ok "every by-id job mutation ($guard_sites found) refuses a derived id before writing" \
     || bad "cmd_* guard rail: $guard_sites by-id mutation site(s), $guard_missing missing security_refuse_derived ($guard_bad_names) -- expected 8 sites, 0 missing"
 
+  echo "reattach never re-provisions a security job — the wt_provision up call site sits behind a SECURITY_JOB_PREFIX guard"
+  # A structural assertion, deliberately: exercising the real reattach path
+  # end-to-end needs a live slot, a killed agent and an actual resume, which
+  # this suite has no harness for. What CAN be checked is the SHAPE of the
+  # fix. CC_SKIP_PROVISION is an env var on the ORIGINAL invocation, so by the
+  # time a SIGKILL/OOM/reboot casualty is resumed it is unset again -- the
+  # only thing that still tells a derived security job apart at reattach time
+  # is its ID. Find the reattach path's own wt_provision call, identified by
+  # ITS variable names ($rname/$rrepo/$rwt/$rbase are unique to this call
+  # site -- wt_setup's fresh-provision call uses $name/$repo/$wt/$base, and no
+  # test fixture calls wt_provision with these names), and require a
+  # SECURITY_JOB_PREFIX case guard in the lines immediately above it. Same
+  # "found by shape" reasoning as the cmd_* guard rail above, so a future
+  # refactor that moves this call but drops the guard fails HERE, not against
+  # a live analysis in the field.
+  #
+  # cmd_selftest -- this very function -- is excluded the same way the guard
+  # rail above excludes it: this assertion's OWN source line necessarily
+  # contains the pattern it greps for, and without the exclusion `head`/`tail`
+  # would be picking between this line and the real one by luck of ordering.
+  local selftest_end reattach_line reattach_ctx
+  selftest_end="$(awk '/^cmd_selftest\(\)/{f=1} f && /^}/{print NR; exit}' "$BIN_DIR/claude-cron")"
+  reattach_line="$(grep -n 'wt_provision up .*\$rname.*\$rrepo.*\$rwt.*\$rbase' "$BIN_DIR/claude-cron" \
+                     | awk -F: -v after="${selftest_end:-0}" '$1>after{print $1; exit}')"
+  reattach_ctx=""
+  [ -n "$reattach_line" ] && [ "$reattach_line" -gt 12 ] \
+    && reattach_ctx="$(sed -n "$((reattach_line-12)),${reattach_line}p" "$BIN_DIR/claude-cron")"
+  case "$reattach_ctx" in
+    *'"$SECURITY_JOB_PREFIX"'*)
+      ok "the reattach wt_provision up call site sits behind a SECURITY_JOB_PREFIX guard" ;;
+    *)
+      bad "the reattach wt_provision up call (line ${reattach_line:-not found}) has no SECURITY_JOB_PREFIX guard within 12 lines above it" ;;
+  esac
+
   # ---- analysing a chosen branch ---------------------------------------
-  mkdir -p "$tmp/brov/repo" && ( cd "$tmp/brov/repo"
-    git init -q . && git config user.email t@example.com && git config user.name t
+  mkdir -p "$tmp/brov/origin.git" "$tmp/brov/repo"
+  git init -q --bare "$tmp/brov/origin.git"
+  ( cd "$tmp/brov/repo"
+    # A branch name OTHER than "main" on purpose: the fixture's "main" base
+    # below must stay unresolvable regardless of the host's own
+    # init.defaultBranch, or the "falls back to HEAD" assertion further down
+    # would silently stop meaning anything on a machine defaulting to "main".
+    git -c init.defaultBranch=trunk init -q .
+    git config user.email t@example.com && git config user.name t
     echo one > a.txt && git add -A && git commit -qm one
     git checkout -qb feature/x && echo two > a.txt && git commit -qam two
+    git remote add origin "$tmp/brov/origin.git"
+    git push -q -u origin feature/x
+    # One MORE commit, local only, after the push. feature/x now names two
+    # different commits depending on where you look -- exactly the case none
+    # of the other wt_base_ref fixtures exercises, because none of them
+    # registers an origin at all. The remote is what a security analysis
+    # cares about (whatever was just pushed for review), so it must win over
+    # a same-named local branch that has since diverged (an operator's own
+    # stale checkout, say).
+    echo three > a.txt && git commit -qam three
     git checkout -q - ) >/dev/null 2>&1
 
   got="$( CC_BASE_OVERRIDE="feature/x" wt_base_ref "$tmp/brov/repo" "main" 5 )"
   case "$got" in *feature/x*) ok "CC_BASE_OVERRIDE wins over the declared base" ;;
                  *) bad "CC_BASE_OVERRIDE wins over the declared base" ;; esac
 
+  # The candidate order matters: refs/remotes/origin/<name> is tried BEFORE
+  # refs/heads/<name>. Assert the EXACT ref and its resolved sha, not a
+  # substring -- reordering the three candidates in wt_base_ref would still
+  # print something containing "feature/x" and pass a looser check, while
+  # silently handing the analysis the local branch's extra commit instead of
+  # what was actually pushed.
+  local origin_sha diverged_local_sha got_sha
+  origin_sha="$(git -C "$tmp/brov/repo" rev-parse refs/remotes/origin/feature/x)"
+  diverged_local_sha="$(git -C "$tmp/brov/repo" rev-parse refs/heads/feature/x)"
+  if [ "$origin_sha" = "$diverged_local_sha" ]; then
+    bad "fixture setup: local feature/x never diverged from origin/feature/x"
+  fi
+  got="$( CC_BASE_OVERRIDE="feature/x" wt_base_ref "$tmp/brov/repo" "main" 5 )"
+  got_sha="$(git -C "$tmp/brov/repo" rev-parse --verify --quiet "$got" 2>/dev/null)"
+  [ "$got" = "refs/remotes/origin/feature/x" ] && [ "$got_sha" = "$origin_sha" ] \
+    && ok "CC_BASE_OVERRIDE prefers the remote branch over a diverged local one" \
+    || bad "CC_BASE_OVERRIDE resolved '$got' ($got_sha), want refs/remotes/origin/feature/x ($origin_sha)"
+
+  # Independently confirm neither candidate resolves for "main" in this repo,
+  # so HEAD is the only correct fallback -- not just the ABSENCE of
+  # "feature/x", which a wrongly resolved ref could satisfy just as well.
+  if git -C "$tmp/brov/repo" rev-parse --verify --quiet "origin/main^{commit}" >/dev/null 2>&1 \
+     || git -C "$tmp/brov/repo" rev-parse --verify --quiet "main^{commit}" >/dev/null 2>&1; then
+    bad "fixture setup: 'main' unexpectedly resolves in this repo"
+  fi
   got="$( wt_base_ref "$tmp/brov/repo" "main" 5 )"
-  case "$got" in *feature/x*) bad "an unset override leaves the declared base alone" ;;
-                 *) ok "an unset override leaves the declared base alone" ;; esac
+  [ "$got" = "HEAD" ] \
+    && ok "an unset override falls back to the declared base's own resolution (HEAD, since 'main' does not exist here)" \
+    || bad "an unset override resolved to '$got', want 'HEAD' (the declared base's actual resolution)"
 
   ( CC_BASE_OVERRIDE="no/such/branch" wt_base_ref "$tmp/brov/repo" "main" 5 >/dev/null 2>&1 ) \
     && bad "a branch that does not exist is refused, not silently replaced" \
     || ok "a branch that does not exist is refused, not silently replaced"
+
+  ( CC_BASE_OVERRIDE="-x" wt_base_ref "$tmp/brov/repo" "main" 5 >/dev/null 2>&1 ) \
+    && bad "CC_BASE_OVERRIDE starting with '-' was accepted" \
+    || ok "CC_BASE_OVERRIDE starting with '-' is refused before it reaches rev-parse"
+
+  # The probe above passes today whether or not the guard exists, because
+  # real git already refuses to create a branch named "-x" in the first
+  # place (check-ref-format), so `rev-parse --verify --quiet` fails on it
+  # regardless -- the guard and "no candidate resolved" reach the same
+  # answer by different roads, and a probe that only checks the final rc
+  # cannot tell them apart. Fake `git` into ACCEPTING a flag-shaped ref (as
+  # some future or different git might) and prove the guard refuses before
+  # git is ever asked -- the same PATH-override technique the hung-fetch
+  # test above already uses.
+  mkdir -p "$tmp/brov/fakebin"
+  printf '%s\n' '#!/bin/bash' \
+    'fv=0; last=""' \
+    'for a in "$@"; do [ "$a" = --verify ] && fv=1; last="$a"; done' \
+    'if [ "$fv" = 1 ]; then case "$last" in -*) exit 0 ;; esac; fi' \
+    'exec /usr/bin/git "$@"' > "$tmp/brov/fakebin/git"
+  chmod +x "$tmp/brov/fakebin/git"
+  local rc
+  got="$( PATH="$tmp/brov/fakebin:$PATH"; CC_BASE_OVERRIDE="-x"
+          wt_base_ref "$tmp/brov/repo" "main" 5 2>/dev/null )"
+  rc=$?
+  [ -z "$got" ] && [ "$rc" -ne 0 ] \
+    && ok "even a git that WOULD accept '-x' is never asked -- the guard refuses first" \
+    || bad "CC_BASE_OVERRIDE starting with '-' resolved to '$got' (rc=$rc) once git said yes to it"
+
+  # ---- CC_SKIP_PROVISION really skips wt_provision up (not just by shape) --
+  # A security analysis reads code; it must neither pay for nor be blocked by
+  # a project's provisioning (.env, containers, migrations). The fixture's up
+  # hook writes a marker file precisely so its ABSENCE is what proves the
+  # skip -- a hook that merely "did nothing observable" would pass whether or
+  # not it actually ran at all.
+  mkdir -p "$tmp/brov/skip-repo" "$tmp/brov/cfg/provision" "$tmp/brov/proj"
+  ( cd "$tmp/brov/skip-repo" && git init -q . && git config user.email t@example.com \
+      && git config user.name t && echo hi > f && git add -A && git commit -qm init ) >/dev/null 2>&1
+  printf '%s' '{"projects":[{"name":"secskip","cwd":"'"$tmp"'/brov/skip-repo"}]}' \
+    > "$tmp/brov/proj/secskip.json"
+  printf '%s\n' '#!/usr/bin/env bash' 'touch "$CC_WORKTREE/PROVISIONED"' \
+    > "$tmp/brov/cfg/provision/secskip.up.sh"
+  chmod +x "$tmp/brov/cfg/provision/secskip.up.sh"
+
+  ( PROJECTS_FILE="$tmp/brov/proj/secskip.json"; CONFIG_DIR="$tmp/brov/cfg"; WORKTREES_DIR="$tmp/brov/wtroot"
+    CC_SKIP_PROVISION=1 wt_setup jsec secskip "$tmp/brov/skip-repo" stampSkip ) >/dev/null 2>&1
+  [ ! -f "$tmp/brov/wtroot/jsec/stampSkip/skip-repo/PROVISIONED" ] \
+    && ok "CC_SKIP_PROVISION=1 leaves the project's up hook unrun" \
+    || bad "CC_SKIP_PROVISION=1 still ran the up hook"
+
+  ( PROJECTS_FILE="$tmp/brov/proj/secskip.json"; CONFIG_DIR="$tmp/brov/cfg"; WORKTREES_DIR="$tmp/brov/wtroot"
+    wt_setup jsec secskip "$tmp/brov/skip-repo" stampNoSkip ) >/dev/null 2>&1
+  [ -f "$tmp/brov/wtroot/jsec/stampNoSkip/skip-repo/PROVISIONED" ] \
+    && ok "and an ordinary run still provisions, so the skip above was CC_SKIP_PROVISION's doing" \
+    || bad "an ordinary run did not provision at all — the fixture proves nothing"
 
   rm -rf "$tmp"
   echo
@@ -5378,14 +5510,33 @@ ${prompt}"
       : > "$rdirt" 2>/dev/null || rdirt=""
       while IFS="$(printf '\t')" read -r rname rrepo rwt rbase; do
         [ -n "$rname" ] || continue
-        # `|| true` here, unlike the fresh path which aborts. A reattach finds a
-        # stack that is usually already up, so the common failure is a hook
-        # declining work it has done rather than a tree left half-built — and
-        # refusing the resume would strand a session that is otherwise fine.
-        # It is not silent: wt_provision logs the rc and the repo to the tick
-        # log itself.
-        wt_provision up "$project" "$id" "$run_dir" "$rname" "$rrepo" "$rwt" "$rbase" || true
-        [ -n "$rdirt" ] && printf '%s\t%s\n' "$rname" "$(wt_dirt_sha "$rwt")" >> "$rdirt"
+        # A derived security job never provisioned on the way in -- CC_SKIP_PROVISION
+        # was set on the ORIGINAL invocation, but that is an env var, not a fact
+        # recorded anywhere a resume can see: by the time a SIGKILL/OOM/reboot
+        # casualty gets reattached, the var is unset again, and without this guard
+        # the `up` replay below would run the project's .env and container hooks --
+        # the exact things the analysis promised not to touch. Checked by IDENTITY
+        # (the job id), not by environment, because identity is the one thing that
+        # survives the process dying.
+        case "$id" in
+          "$SECURITY_JOB_PREFIX"*) ;;
+          *)
+            # `|| true` here, unlike the fresh path which aborts. A reattach finds a
+            # stack that is usually already up, so the common failure is a hook
+            # declining work it has done rather than a tree left half-built — and
+            # refusing the resume would strand a session that is otherwise fine.
+            # It is not silent: wt_provision logs the rc and the repo to the tick
+            # log itself.
+            wt_provision up "$project" "$id" "$run_dir" "$rname" "$rrepo" "$rwt" "$rbase" || true
+            # No `up` ran for a security job above, so there is no new residue to
+            # fold in -- leave $rdirt without an entry for this repo and the merge
+            # below falls back to the manifest's existing dirt_sha unchanged. Only
+            # the provisioned path refreshes it, the same reason it needs
+            # refreshing at all: a second `up` can leave different residue than
+            # the first (see below).
+            [ -n "$rdirt" ] && printf '%s\t%s\n' "$rname" "$(wt_dirt_sha "$rwt")" >> "$rdirt"
+            ;;
+        esac
       done < <("$JQ" -r '.repos[] | [.name,.canonical,.worktree,.base] | @tsv' \
                   "$run_dir/.run.json" 2>/dev/null)
       # Falls back to the EXISTING dirt_sha, not to empty, when a repo's fresh

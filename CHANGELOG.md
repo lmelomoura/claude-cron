@@ -31,7 +31,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   `CC_SKIP_PROVISION=1` skips the project's `up` hook in `wt_setup`. Reading
   code needs no `.env` and no containers, and an analysis must neither pay for
-  a project's provisioning nor be blocked by it failing.
+  a project's provisioning nor be blocked by it failing. Resuming a session
+  honours that same opt-out: `CC_SKIP_PROVISION` is an env var on the original
+  invocation and is gone again by the time a killed or rebooted analysis gets
+  reattached, so the reattach path now recognises a derived security job by
+  its ID and skips the `up` replay there too — a resume was re-provisioning
+  the project it had explicitly promised not to touch.
 
 - **Projects can now carry a `security` block.** It is what a security analysis
   is configured by — which model and account it runs as, its spending cap, the
