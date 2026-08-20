@@ -17,8 +17,10 @@ stated is useful; a gap that is silent makes you trust a report that never
 looked at your dependencies.
 """
 
+import http.client
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .fingerprint import fingerprint
@@ -60,11 +62,16 @@ def _detail(vuln_id, cache, timeout):
     if cache is not None and vuln_id in cache:
         return cache[vuln_id], ""
     try:
-        detail = json.loads(_http(_VULN_URL + vuln_id, timeout=timeout))
+        url = _VULN_URL + urllib.parse.quote(vuln_id, safe="")
+        detail = json.loads(_http(url, timeout=timeout))
     except (urllib.error.URLError, OSError, ValueError, TimeoutError,
-            AttributeError, TypeError, KeyError):
+            AttributeError, TypeError, KeyError, http.client.HTTPException):
         # Broad on purpose: any confusion over the response must cost only
-        # this vulnerability's prose, never crash the whole query.
+        # this vulnerability's prose, never crash the whole query. Percent-
+        # encoding the id closes the main route here -- an un-encoded CR/LF
+        # reaches urlopen raw and raises http.client.InvalidURL, entirely
+        # offline, before any socket opens -- and the widened except is the
+        # backstop for whatever the encoding does not anticipate.
         return None, vuln_id
     if not isinstance(detail, dict):
         # Valid JSON, wrong container (e.g. a bare list) -- treated exactly
@@ -76,7 +83,10 @@ def _detail(vuln_id, cache, timeout):
 
 
 def _finding(component, vuln_id, detail):
-    if detail:
+    if detail is not None:
+        # `is not None`, not truthiness: a successful lookup that happens to
+        # return `{}` is falsy too, and must not be reported as though the
+        # fetch had failed.
         summary = (detail.get("summary")
                    or (detail.get("details") or "")[:200] or vuln_id)
         severity = _severity_of(detail)
@@ -98,12 +108,58 @@ def _finding(component, vuln_id, detail):
     }
 
 
+def _clean_components(components):
+    """Keep only components query() can safely act on.
+
+    Every real component comes from deps.inventory(), which always supplies
+    all four keys as non-empty strings -- this is belt-and-braces, not a
+    response to any known caller. But the batch body below reads c["name"]
+    etc. BEFORE the try that guards the network call, and _finding reads
+    component["source"] inside the per-result loop: a missing or
+    wrong-typed key in either spot raises past every safeguard this module
+    otherwise has. The contract is unconditional, so malformed entries are
+    dropped, counted, and named in the coverage note instead of crashing.
+
+    `source` alone may be filled in by a `.get` default rather than being
+    required: it is never sent to OSV.dev (only name/ecosystem/version are),
+    it only labels where a finding was found, and every surviving component
+    is renormalised here so later code can keep using plain ["source"]
+    access without risking a KeyError on the rare one that omits it.
+    """
+    clean = []
+    for c in components:
+        if not isinstance(c, dict):
+            continue
+        if not (isinstance(c.get("name"), str) and c["name"]):
+            continue
+        if not (isinstance(c.get("ecosystem"), str) and c["ecosystem"]):
+            continue
+        if not (isinstance(c.get("version"), str) and c["version"]):
+            continue
+        source = c.get("source", "")
+        if not isinstance(source, str):
+            continue
+        clean.append({"name": c["name"], "ecosystem": c["ecosystem"],
+                      "version": c["version"], "source": source})
+    return clean, len(components) - len(clean)
+
+
 def query(components, detail_cache=None, timeout=30):
     if not components:
         return [], ""
 
+    components, skipped = _clean_components(components)
+    skip_note = ""
+    if skipped:
+        skip_note = (f"{skipped} malformed inventory entr"
+                     f"{'y' if skipped == 1 else 'ies'} "
+                     f"{'was' if skipped == 1 else 'were'} skipped.")
+    if not components:
+        return [], skip_note
+
     findings, undetailed = [], []
-    for start in range(0, len(components), _BATCH):
+    unchecked, total = 0, len(components)
+    for start in range(0, total, _BATCH):
         chunk = components[start:start + _BATCH]
         body = json.dumps({"queries": [
             {"package": {"name": c["name"], "ecosystem": c["ecosystem"]},
@@ -114,29 +170,47 @@ def query(components, detail_cache=None, timeout=30):
                 AttributeError, TypeError, KeyError) as exc:
             # Broad on purpose: any confusion over the response must become
             # this stated gap, never an uncaught crash.
-            return [], ("Dependency CVEs were NOT checked: the OSV.dev lookup did "
-                        f"not complete ({type(exc).__name__}). Everything else in "
-                        "this report is complete.")
+            failure = ("Dependency CVEs were NOT checked: the OSV.dev lookup did "
+                       f"not complete ({type(exc).__name__}). Everything else in "
+                       "this report is complete.")
+            return [], " ".join(n for n in (skip_note, failure) if n)
         if not isinstance(parsed, dict):
             # Valid JSON, wrong container ([] instead of {...}, a bare
             # string, a number) -- the same declared gap as a parse failure.
-            return [], ("Dependency CVEs were NOT checked: the OSV.dev lookup did "
-                        f"not complete ({type(parsed).__name__} instead of an "
-                        "object). Everything else in this report is complete.")
+            failure = ("Dependency CVEs were NOT checked: the OSV.dev lookup did "
+                       f"not complete ({type(parsed).__name__} instead of an "
+                       "object). Everything else in this report is complete.")
+            return [], " ".join(n for n in (skip_note, failure) if n)
         results = parsed.get("results", [])
         if not isinstance(results, list):
             results = []
+        # zip() correctly stops at the shorter sequence -- but a `results`
+        # list shorter than `chunk` means OSV.dev never answered for the
+        # tail components at all, and that gap must be counted, not just
+        # silently dropped by pairing fewer entries.
+        unchecked += max(0, len(chunk) - len(results))
         for component, result in zip(chunk, results):
             if not isinstance(result, dict):
-                continue  # a non-dict entry is skipped, not fatal to the batch
+                # Paired by zip -- OSV.dev did answer for this component --
+                # just not usably. The same gap as truncation above, reached
+                # a different way; it counts the same way too.
+                unchecked += 1
+                continue
             vulns = result.get("vulns", [])
             if not isinstance(vulns, list):
+                unchecked += 1
                 continue
             for vuln in vulns:
                 if not isinstance(vuln, dict):
-                    continue
+                    continue  # a non-dict entry is skipped, not fatal to the batch
                 vuln_id = vuln.get("id")
-                if not vuln_id:
+                if not isinstance(vuln_id, str) or not vuln_id:
+                    # Only a str id can ever be looked up on OSV.dev or
+                    # linked to an advisory page. Anything else (a bare
+                    # number, a list, ...) would otherwise reach
+                    # fingerprint() -- which joins it into a string and
+                    # crashes on anything but a str -- or _detail()'s cache
+                    # probe, which crashes on anything unhashable.
                     continue
                 # A failed detail lookup loses the prose, not the finding:
                 # knowing a CVE applies is most of the value.
@@ -145,10 +219,13 @@ def query(components, detail_cache=None, timeout=30):
                     undetailed.append(failed)
                 findings.append(_finding(component, vuln_id, detail))
 
-    note = ""
-    if undetailed:
-        note = (f"{len(undetailed)} vulnerabilit"
-                f"{'y' if len(undetailed) == 1 else 'ies'} could not be described: "
-                "OSV.dev answered the batch query but not the detail lookup, so "
-                f"severity fell back to {DEFAULT_SEVERITY}.")
-    return findings, note
+    notes = [n for n in (
+        skip_note,
+        (f"{unchecked} of {total} components did not answer usably and "
+         "were not checked.") if unchecked else "",
+        (f"{len(undetailed)} vulnerabilit"
+         f"{'y' if len(undetailed) == 1 else 'ies'} could not be described: "
+         "OSV.dev answered the batch query but not the detail lookup, so "
+         f"severity fell back to {DEFAULT_SEVERITY}.") if undetailed else "",
+    ) if n]
+    return findings, " ".join(notes)
