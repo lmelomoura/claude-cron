@@ -287,8 +287,21 @@ CREATE TABLE IF NOT EXISTS finding (
   fingerprint TEXT NOT NULL, category TEXT NOT NULL, rule TEXT NOT NULL,
   severity TEXT NOT NULL, title TEXT NOT NULL,
   rationale TEXT NOT NULL DEFAULT '', remediation TEXT NOT NULL DEFAULT '',
-  partial_note TEXT NOT NULL DEFAULT '');
-CREATE INDEX IF NOT EXISTS analysis_by_scope ON analysis(project, repo, branch);
+  partial_note TEXT NOT NULL DEFAULT '',
+  -- The deterministic phase (cmd_prepare) and the agent's report-finding
+  -- command can both record the same fingerprint into one analysis -- the
+  -- agent's triage job is explicitly to RE-REPORT a deterministic finding
+  -- with a corrected severity and rationale. Without this constraint that
+  -- produces two rows for one vulnerability, which classify() then reports
+  -- as two contradictory checklist entries. record_finding() upserts on it.
+  --
+  -- NOTE: this whole block runs through executescript() with IF NOT EXISTS,
+  -- which does NOT retrofit a constraint onto a table that already exists --
+  -- it only affects table creation. This is safe today because this feature
+  -- has never shipped and no database exists in the wild. If that stops
+  -- being true, adding this constraint needs an actual migration, not a
+  -- change to this string.
+  UNIQUE(analysis_id, fingerprint));
 CREATE INDEX IF NOT EXISTS finding_by_analysis ON finding(analysis_id);
 CREATE INDEX IF NOT EXISTS finding_by_fp ON finding(fingerprint);
 
@@ -347,28 +360,47 @@ def finish_analysis(conn, analysis_id, state, spend_usd=0.0, coverage_note="") -
 
 
 def record_finding(conn, analysis_id, finding: dict) -> None:
-    """A finding and its occurrences, or neither.
-
-    `with conn:` rather than a trailing commit: a bad occurrence (a non-numeric
-    line is the realistic one) would otherwise leave the finding row inserted
-    but uncommitted, and the next successful commit anywhere on this connection
-    would persist a checklist entry with no evidence behind it.
-    """
+    # A finding and its occurrences are one unit: without this transaction
+    # boundary, an occurrence that fails to insert midway (a non-numeric
+    # line, say) would leave the finding row committed by whatever later
+    # commit() happens on this connection -- a checklist entry with no
+    # evidence for why it was flagged.
+    #
+    # A finding is identified within one analysis by (analysis_id, fingerprint)
+    # -- see the UNIQUE constraint on `finding`. Re-recording the same pair
+    # (the agent re-reporting a deterministic finding with a corrected
+    # severity and rationale) is an UPSERT, not a second row: the finding's
+    # fields are replaced with the new values, and its occurrences are
+    # REPLACED (old ones deleted, new ones inserted), not appended -- an
+    # append would double them on every re-report. This all stays inside the
+    # same `with conn:` block as the insert path, so a failed re-report
+    # (occurrences fail to insert) rolls back the field update and the
+    # deletion too, instead of leaving the finding with half its occurrences.
     with conn:
-        cur = conn.execute(
-            "INSERT INTO finding (analysis_id, fingerprint, category, rule, severity,"
-            " title, rationale, remediation, partial_note) VALUES (?,?,?,?,?,?,?,?,?)",
-            (analysis_id, finding["fingerprint"], finding["category"], finding["rule"],
-             finding["severity"], finding["title"], finding.get("rationale", ""),
-             finding.get("remediation", ""), finding.get("partial_note", "")))
-        fid = cur.lastrowid
+        existing = conn.execute(
+            "SELECT id FROM finding WHERE analysis_id=? AND fingerprint=?",
+            (analysis_id, finding["fingerprint"])).fetchone()
+        if existing is not None:
+            fid = existing["id"]
+            conn.execute(
+                "UPDATE finding SET category=?, rule=?, severity=?, title=?,"
+                " rationale=?, remediation=?, partial_note=? WHERE id=?",
+                (finding["category"], finding["rule"], finding["severity"], finding["title"],
+                 finding.get("rationale", ""), finding.get("remediation", ""),
+                 finding.get("partial_note", ""), fid))
+            conn.execute("DELETE FROM occurrence WHERE finding_id=?", (fid,))
+        else:
+            cur = conn.execute(
+                "INSERT INTO finding (analysis_id, fingerprint, category, rule, severity,"
+                " title, rationale, remediation, partial_note) VALUES (?,?,?,?,?,?,?,?,?)",
+                (analysis_id, finding["fingerprint"], finding["category"], finding["rule"],
+                 finding["severity"], finding["title"], finding.get("rationale", ""),
+                 finding.get("remediation", ""), finding.get("partial_note", "")))
+            fid = cur.lastrowid
         for occ in finding.get("occurrences", []):
             conn.execute(
-                "INSERT INTO occurrence (finding_id, file, line, snippet_hash)"
-                " VALUES (?,?,?,?)",
-                (fid, occ.get("file", ""), int(occ.get("line", 0)),
-                 occ.get("snippet_hash", "")))
-
+                "INSERT INTO occurrence (finding_id, file, line, snippet_hash) VALUES (?,?,?,?)",
+                (fid, occ.get("file", ""), int(occ.get("line", 0)), occ.get("snippet_hash", "")))
 
 def findings_of(conn, analysis_id) -> list:
     rows = conn.execute(
@@ -434,7 +466,7 @@ def store_sbom(conn, project, repo, branch, analysis_id, document: dict) -> None
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/security/test_ledger.py -v`
-Expected: 9 passed
+Expected: 12 passed
 
 - [ ] **Step 5: Commit**
 
@@ -541,6 +573,12 @@ def _is_partial(finding) -> bool:
     The occurrence count is an anchor two runs cannot disagree about. The
     agent's note catches the other half: a fix that made the pattern go away
     without closing the hole.
+
+    Meaningful ONLY for a finding that was already in the previous analysis --
+    "partial" means "this shrank since last time", and there is nothing for a
+    finding absent from `previous` to have shrunk from. Callers must gate on
+    `fp in prev_fps` before calling this; it is not re-checked here so that
+    the one guard in `classify` stays the single place this invariant lives.
     """
     if int(finding.get("closed_occurrences", 0)) > 0:
         return True
@@ -564,10 +602,11 @@ def classify(current, previous, history, decisions):
         if decision:
             row["state"] = decision["state"]
             row["decision_reason"] = decision.get("reason", "")
-        elif _is_partial(f):
-            row["state"] = "partial"
         elif fp in prev_fps:
-            row["state"] = "open"
+            # Only a finding present last time can have "shrunk" since then --
+            # closed_occurrences and partial_note are meaningless for a
+            # fingerprint that was not there to shrink from.
+            row["state"] = "partial" if _is_partial(f) else "open"
         elif fp in history:
             row["state"] = "regressed"
         else:
@@ -587,7 +626,7 @@ def classify(current, previous, history, decisions):
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/security/test_diff.py -v`
-Expected: 7 passed
+Expected: 13 passed
 
 - [ ] **Step 5: Commit**
 
