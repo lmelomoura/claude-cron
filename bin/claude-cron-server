@@ -508,7 +508,7 @@ def db_init(conn):
         duration INTEGER, cost REAL, session TEXT, log TEXT, forced INTEGER,
         precheck_note TEXT, result_json TEXT, stream TEXT, precheck_txt TEXT,
         stderr TEXT, doc TEXT, project TEXT, model TEXT, model_id TEXT,
-        note TEXT, resumed_from TEXT, pruned INTEGER DEFAULT 0)""")
+        note TEXT, resumed_from TEXT, cause TEXT, pruned INTEGER DEFAULT 0)""")
     try:
         conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS runs_fts USING fts5(key UNINDEXED, content)")
         return True
@@ -712,7 +712,7 @@ def _upsert(conn, fts, rec, preserve=None):
     conn.execute(
         "INSERT OR REPLACE INTO runs (key, job, start, status, duration, cost, session,"
         " log, forced, precheck_note, result_json, stream, precheck_txt, stderr, doc, project,"
-        " model, model_id, note, resumed_from, pruned)"
+        " model, model_id, note, resumed_from, cause, pruned)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (key, rec.get("id", ""), rec.get("start", 0), rec.get("status", ""),
          rec.get("duration", 0), rec.get("cost", 0), rec.get("session", ""),
@@ -721,7 +721,8 @@ def _upsert(conn, fts, rec, preserve=None):
          art["result_json"], art["stream"], art["precheck_txt"], art["stderr"], doc,
          rec.get("project") or "", rec.get("model") or "",
          (rec.get("model_id") or _model_id_from_stream(art["stream"])),
-         (rec.get("note") or "")[:500], rec.get("resumed_from") or "", pruned))
+         (rec.get("note") or "")[:500], rec.get("resumed_from") or "",
+         (rec.get("cause") or "")[:40], pruned))
     if fts:
         conn.execute("DELETE FROM runs_fts WHERE key=?", (key,))
         conn.execute("INSERT INTO runs_fts (key, content) VALUES (?,?)", (key, doc))
@@ -776,6 +777,8 @@ def ingest():
                 ("stderr", "TEXT"), ("doc", "TEXT"), ("project", "TEXT"),
                 ("model", "TEXT"), ("model_id", "TEXT"), ("note", "TEXT"),
                 ("resumed_from", "TEXT"),
+                # WHY a failed run failed. Empty for everything that did not.
+                ("cause", "TEXT"),
                 ("pruned", "INTEGER DEFAULT 0"),
             ]
             for name, decl in canon:
@@ -1739,7 +1742,7 @@ def load_data():
         conn = db_conn()
         db_init(conn)
         for row in conn.execute(
-                "SELECT job, start, status, duration, cost, session, log, forced, precheck_note, project, note, resumed_from"
+                "SELECT job, start, status, duration, cost, session, log, forced, precheck_note, project, note, resumed_from, cause"
                 " FROM runs ORDER BY start DESC, rowid DESC LIMIT 1000"):
             runs.append({"id": row["job"], "start": row["start"], "status": row["status"],
                          "duration": row["duration"], "cost": row["cost"],
@@ -1750,7 +1753,8 @@ def load_data():
                          # for a run that succeeded without any work to do.
                          "note": row["note"] or "",
                          # the session this run continued, when it was a resume
-                         "resumed_from": row["resumed_from"] or ""})
+                         "resumed_from": row["resumed_from"] or "",
+                         "cause": row["cause"] or ""})
         conn.close()
     except Exception:
         runs = []
@@ -1865,6 +1869,7 @@ def load_run_detail(jid, start):
            # the agent log carried no stop reason of its own, and showed a dash
            # for a run whose journal entry said exactly why it ended.
            "note": row["note"] or "",
+           "cause": row["cause"] or "",
            "model": row["model"] or "", "model_id": row["model_id"] or ""}
     detail = {"record": rec, "agent": {}, "precheck": row["precheck_txt"] or "",
               "stderr": (row["stderr"] or "")[:8000], "turns": []}

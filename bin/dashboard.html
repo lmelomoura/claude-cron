@@ -378,6 +378,9 @@ td .projtag .ic{width:12px;height:12px;color:var(--accent)}
 .bk:hover{outline:1px solid var(--accent);outline-offset:1px}
 .k-woke{background:var(--accent)}
 .k-idle{background:color-mix(in srgb,var(--muted) 32%,transparent)}
+.causetag{margin-left:5px;font-size:10.5px;font-weight:600;letter-spacing:.02em;
+  color:var(--muted);background:var(--panel2);border:1px solid var(--line);
+  border-radius:20px;padding:0 6px;line-height:16px;cursor:help;vertical-align:1px}
 .k-capped{background:var(--warn)}
 /* A spent usage window is a wait, not a decision the operator made — warmer
    than `capped` so the two do not read as the same thing at a glance. */
@@ -2033,6 +2036,21 @@ const I={
 };
 const STATUS_ICON={success:I.check, warning:I.alert, error:I.xcircle, idle:I.clock,
                    running:I.timer, stopped:I.power};
+/* `error` covered a 529 the API returned and an agent that got its tools taken
+   away, and those want opposite responses from the person reading the table —
+   wait, versus go and look. The cause says which without opening the run. */
+const CAUSE_LABEL={
+  api_error:    ["API",      "the API refused a turn — the provider's fault, not this job's, and it does not count towards the failure backoff"],
+  rate_limited: ["limit",    "the account is over its rate or usage limit — it does not count towards the failure backoff"],
+  tools_denied: ["blocked",  "the agent asked for a tool it is not allowed, so it could not do the work"],
+  killed:       ["killed",   "the run was cut off — a watchdog, a crash, or a kill — and never reported a result"],
+  agent_error:  ["agent",    "the agent itself ended in error"],
+};
+function causeTag(rec){
+  const c=CAUSE_LABEL[(rec&&rec.cause)||""];
+  if(!c) return "";
+  return '<span class="causetag" title="'+esc(c[1])+'">'+esc(c[0])+'</span>';
+}
 
 /* ---------------------------------------------------------------- theme */
 function themePref(){ return localStorage.ccTheme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); }
@@ -3908,7 +3926,7 @@ function renderRuns(){
       +'<td>'+(r.live
           ? '<span class="runningbadge'+(isStopping(r)?" stopping":"")+'"><span class="pulse"></span>'
             +(isStopping(r)?"stopping…":"running…")+'</span>'
-          : '<span class="stat-cell s-'+esc(s)+'">'+(STATUS_ICON[s]||"")+esc(s)+"</span>"
+          : '<span class="stat-cell s-'+esc(s)+'">'+(STATUS_ICON[s]||"")+esc(s)+"</span>"+causeTag(r)
             +((resumable && followUp)
                ? '<span class="tipbadge" data-tip="'+encodeURIComponent(resumeTip(r.id,r.start)).replace(/"/g,"%22")+'">?</span>'
                // A run can end fine having done nothing at all — a resumed task

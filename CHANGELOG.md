@@ -19,6 +19,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A provider outage no longer slows a job down for the rest of the day.**
+  Every failed run was `error`, and the failure backoff counted them all the
+  same — so a 529 the API returned, an agent whose tools were denied, and a run
+  killed by the watchdog each doubled the wait, up to 16x. On 2026-08-19 a 529
+  killed a 100-minute run and the retry straight after it met the same overload;
+  under the old rule that job would have been crawling for hours over something
+  it had no part in, while the work sat waiting.
+
+  Each failed run now carries a `cause` — `api_error`, `rate_limited`,
+  `tools_denied`, `killed` or `agent_error` — and the two that are the
+  provider's leave the streak exactly where it was. Not reset either: a job that
+  is genuinely broken and also meets an outage is still broken. Every other
+  cause counts as it always did, so a failing job still backs off.
+
+  The cause is on the run record, on the `finished` line in `tick.log`, and next
+  to the status in the Runs table, because the reader's next move differs by
+  cause: an API failure is a wait, denied tools are a permission to fix, a kill
+  is a log to open.
+
 - **The run-ending contract now tells the agent what its marker decides.** It
   said the marker classifies the run, which was the whole truth until the
   worktree started belonging to the session. Now the same sentence decides

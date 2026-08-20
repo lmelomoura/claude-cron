@@ -918,12 +918,13 @@ lock_active() { # 0 = a run is currently holding the lock for <id> (single mutex
 journal_lock()   { lock_take "$LOCK_DIR/.journal.lock"; }
 journal_unlock() { lock_drop "$LOCK_DIR/.journal.lock"; }
 
-record_run() { # <id> <status> <start> <end> <cost> <turns> <session> <logfile> <note> <forced> <precheck> <project> <model> <model_id> <resumed_from>
+record_run() { # <id> <status> <start> <end> <cost> <turns> <session> <logfile> <note> <forced> <precheck> <project> <model> <model_id> <resumed_from> <cause>
   "$JQ" -nc \
     --arg id "$1" --arg status "$2" --argjson start "$3" --argjson end "$4" \
     --arg cost "$5" --arg turns "$6" --arg session "$7" --arg logfile "$8" --arg note "$9" \
     --arg forced "${10:-false}" --arg precheck "${11:-}" --arg project "${12:-}" \
     --arg model "${13:-}" --arg model_id "${14:-}" --arg resumed_from "${15:-}" \
+    --arg cause "${16:-}" \
     '{id:$id, status:$status, start:$start, end:$end, duration:($end-$start),
       cost:($cost|tonumber? // 0), turns:($turns|tonumber? // 0),
       session:$session, log:$logfile, note:$note,
@@ -931,7 +932,11 @@ record_run() { # <id> <status> <start> <end> <cost> <turns> <session> <logfile> 
       model:$model, model_id:$model_id,
       # The session this run continued, when it was a resume — this is what
       # makes a resumed task identifiable as already picked up.
-      resumed_from:$resumed_from}' > "$LOCK_DIR/.rec.$$"
+      resumed_from:$resumed_from,
+      # WHY it failed, for a failed run. Empty on anything that did not fail:
+      # a success has no cause, and inventing one would put a word on the page
+      # that means nothing.
+      cause:$cause}' > "$LOCK_DIR/.rec.$$"
   # Append under the journal lock, so a concurrent rewrite cannot drop this
   # record on the floor (build the line first — the lock is held for the append
   # alone, never across the jq run).
@@ -3186,6 +3191,71 @@ NASTY
   got="$( DATA_DIR="$tmp/sl"; RATE_LIMIT_FILE="$tmp/sl/rate-limits.json"; rl_gate 2>/dev/null )"
   [ -z "$got" ] && ok "a reading with no status is not a refusal" || bad "gated on a status-less reading: $got"
 
+  echo "failure causes — an outage is not the job's fault, and must not slow it down"
+  # `error` covered a 529 the API returned and an agent that got its tools taken
+  # away, and the backoff counted them the same: a provider outage would crawl a
+  # perfectly healthy job for the rest of the day. These pin the two halves —
+  # which cause is derived, and which of them the backoff is allowed to count.
+  mkdir -p "$tmp/cause"
+  cause_of() { # cause_of <result-json> <denials> <wdreason> -> the derived cause
+    printf '%s' "$1" > "$tmp/cause/log.json"
+    ( logfile="$tmp/cause/log.json"; status="error"
+      denials="${2:-0}"; wdreason="${3:-}"
+      subtype="$("$JQ" -r '.subtype // "success"' "$logfile")"
+      cause=""
+      # The derivation itself, lifted verbatim from run_job by anchor so this
+      # cannot drift into testing a copy that no longer matches the engine.
+      eval "$(sed -n '/^  cause=""$/,/^  fi$/p' "$BIN_DIR/claude-cron" | head -20)"
+      printf '%s' "$cause" )
+  }
+  [ "$(cause_of '{"api_error_status":529,"subtype":"success"}')" = "api_error" ] \
+    && ok "a 529 is an api_error, whatever the CLI called the subtype" \
+    || bad "529 -> '$(cause_of '{"api_error_status":529,"subtype":"success"}')'"
+  [ "$(cause_of '{"api_error_status":429,"subtype":"success"}')" = "rate_limited" ] \
+    && ok "a 429 is told apart from an overload — different wait, different fix" \
+    || bad "429 -> '$(cause_of '{"api_error_status":429,"subtype":"success"}')'"
+  [ "$(cause_of '{"subtype":"success"}' 2)" = "tools_denied" ] \
+    && ok "denied tools name the agent being blocked, not a vague error" \
+    || bad "denials -> '$(cause_of '{"subtype":"success"}' 2)'"
+  [ "$(cause_of '{"subtype":"no_result_event"}')" = "killed" ] \
+    && ok "a run that never reported a result is killed, not an agent error" \
+    || bad "no_result -> '$(cause_of '{"subtype":"no_result_event"}')'"
+  [ "$(cause_of '{"subtype":"error_during_execution"}')" = "agent_error" ] \
+    && ok "everything else falls back to the agent's own error" \
+    || bad "fallback -> '$(cause_of '{"subtype":"error_during_execution"}')'"
+  # An API failure outranks a denial count: the run died before the denial could
+  # matter, and telling the operator to go fix permissions would send them at
+  # the wrong problem entirely.
+  [ "$(cause_of '{"api_error_status":529,"subtype":"success"}' 3)" = "api_error" ] \
+    && ok "an API failure outranks a denial count on the same run" \
+    || bad "denials masked the API failure"
+
+  # The half that changes behaviour. Read the real rule out of the script: a
+  # copy of it here would pass happily while the engine did something else.
+  rule="$(sed -n '/Nor is an outage/,/^  fi$/p' "$BIN_DIR/claude-cron")"
+  case "$rule" in
+    *"api_error|rate_limited)"*) ok "the backoff rule names both provider-side causes" ;;
+    *) bad "the backoff no longer spares provider-side causes" ;;
+  esac
+  case "$rule" in
+    *'streak_next="$(num "$(state_get "$id" fail_streak 0)")"'*)
+      ok "an outage leaves the streak where it was — neither raised nor reset" ;;
+    *) bad "an outage does not preserve the streak" ;;
+  esac
+  # A job that is genuinely broken must still back off, or this whole change
+  # would just be a way to never slow anything down.
+  case "$rule" in
+    *'*) streak_next="$(( $(num "$(state_get "$id" fail_streak 0)") + 1 ))" ;;'*)
+      ok "every other cause still counts, so a broken job still backs off" ;;
+    *) bad "the ordinary failure path stopped counting" ;;
+  esac
+
+  # And the record has to carry it, or the dashboard has nothing to show.
+  case "$(sed -n '/^record_run()/,/^}/p' "$BIN_DIR/claude-cron")" in
+    *'cause:$cause'*) ok "the cause is written onto the run record" ;;
+    *) bad "record_run does not persist the cause" ;;
+  esac
+
   echo "fleet_stall_reason() — the fleet can stop having runs without any run failing"
   # on-run-end fires when a run ENDS. None of the ways the fleet stops HAVING
   # runs produce one, so the loop can tick for hours, the dashboard can keep
@@ -5014,7 +5084,7 @@ If the work turns out to be already finished, or it can no longer be done at all
   # An interactive run is ENDED BY US once the conversation goes quiet, so its
   # exit status is a signal, not a failure. Treat that as a clean exit.
   if [ -f "$logfile.turnend" ]; then rc=0; rm -f "$logfile.turnend"; fi
-  local denials subtype result_len errbytes
+  local denials subtype result_len errbytes cause
   denials="$("$JQ" -r '.permission_denials // [] | length' "$logfile" 2>/dev/null || echo 0)"
   subtype="$("$JQ" -r '.subtype // "success"' "$logfile" 2>/dev/null || echo success)"
   result_len="$("$JQ" -r '.result // "" | length' "$logfile" 2>/dev/null || echo 0)"
@@ -5028,6 +5098,33 @@ If the work turns out to be already finished, or it can no longer be done at all
     status="warning"
   else
     status="success"
+  fi
+
+  # WHY the run failed, not just that it did. `error` covered everything from a
+  # 529 the API returned to an agent that got its tools denied, and the failure
+  # backoff counted them the same — so the fleet punished a job by slowing it
+  # down for an outage that had nothing to do with it, and the operator read one
+  # word for causes whose next actions are completely different. The cause is
+  # recorded on the run and, for the two that are nobody's fault here, kept out
+  # of the backoff.
+  cause=""
+  if [ "$status" = "error" ]; then
+    if [ "$("$JQ" -r '.api_error_status // "" | tostring' "$logfile" 2>/dev/null)" != "" ] \
+       && [ "$("$JQ" -r '.api_error_status // "" | tostring' "$logfile" 2>/dev/null)" != "null" ]; then
+      case "$("$JQ" -r '.api_error_status' "$logfile" 2>/dev/null)" in
+        429) cause="rate_limited" ;;
+        *)   cause="api_error" ;;
+      esac
+    elif [ "${denials:-0}" -gt 0 ]; then
+      cause="tools_denied"
+    elif [ "$subtype" = "no_result_event" ]; then
+      # Killed, crashed, or stalled out. wdreason carries which, when we know.
+      cause="killed"
+    elif [ -n "$wdreason" ]; then
+      cause="killed"
+    else
+      cause="agent_error"
+    fi
   fi
 
   # A run the OPERATOR ended is not a failure, whatever the exit code says. A
@@ -5186,8 +5283,22 @@ If the work turns out to be already finished, or it can no longer be done at all
   # Consecutive failures drive the backoff (see backoff_multiplier). A warning
   # is NOT a failure: the run worked, it just wants a look — slowing those down
   # would throttle the very jobs that are doing their job.
+  #
+  # Nor is an outage. `api_error` and `rate_limited` are the provider having a
+  # bad day, and backing a job off 16x for them is the exact wrong response: the
+  # job is fine, the work is still waiting, and the punishment outlives the
+  # outage by hours. One 529 killed a 100-minute run on 2026-08-19 and the
+  # retry immediately after it hit the same overload — under the old rule that
+  # job would have been crawling for the rest of the day for something it did
+  # not do. The streak is left exactly where it was: not reset either, because
+  # a genuinely broken job that also meets an outage is still broken.
   local streak_next=0
-  [ "$status" = "error" ] && streak_next="$(( $(num "$(state_get "$id" fail_streak 0)") + 1 ))"
+  if [ "$status" = "error" ]; then
+    case "$cause" in
+      api_error|rate_limited) streak_next="$(num "$(state_get "$id" fail_streak 0)")" ;;
+      *) streak_next="$(( $(num "$(state_get "$id" fail_streak 0)") + 1 ))" ;;
+    esac
+  fi
 
   # One write for the whole outcome. Seven separate ones meant seven turns of
   # the state lock, which every concurrent run had to queue behind.
@@ -5202,11 +5313,11 @@ If the work turns out to be already finished, or it can no longer be done at all
       last_cost:($cost|tonumber? // 0),
       last_session:$session, fail_streak:$streak}')"
   # Record what was CHOSEN (the family, when one was) plus what actually ran.
-  record_run "$id" "$status" "$start" "$end" "${cost:-0}" "${turns:-0}" "$session" "$logfile" "$wdreason" "$forced" "$pc_out" "$project" "${model_family:-$model}" "$model_id" "$resume_sid"
+  record_run "$id" "$status" "$start" "$end" "${cost:-0}" "${turns:-0}" "$session" "$logfile" "$wdreason" "$forced" "$pc_out" "$project" "${model_family:-$model}" "$model_id" "$resume_sid" "$cause"
   # Tells the EXIT path this run has already filed its record, so a stop that
   # lands while we are finishing here cannot produce a second one.
   : > "$slot/journaled" 2>/dev/null || true
-  log_tick "$id: finished status=$status rc=$rc denials=${denials:-0} cost=\$$cost turns=$turns model=$model${model_id:+ ($model_id)} forced=$forced${wdreason:+ — $wdreason}"
+  log_tick "$id: finished status=$status${cause:+ cause=$cause} rc=$rc denials=${denials:-0} cost=\$$cost turns=$turns model=$model${model_id:+ ($model_id)} forced=$forced${wdreason:+ — $wdreason}"
   # Fired after the record exists, so a hook that opens the dashboard or reads
   # the journal sees this run already in it.
   run_end_hook "$id" "$status" "${cost:-0}" "$wdreason" "$project" "$session" "$logfile" "$start" "$end"
