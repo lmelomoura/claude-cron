@@ -31,10 +31,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   turn-by-turn trace for free — and `config/jobs.json` never grows an entry
   nobody created. The tick, the dashboard's Jobs area and every write of the
   jobs file read that file directly, and so never see one. A `security` block
-  the scheduler cannot use — a budget typed as `"abc"`, a name that slugs to
-  nothing, two projects claiming one id — costs that project its derived job
-  and nothing else, and says so in `tick.log` once per change rather than on
-  every read.
+  the scheduler cannot use costs that project according to what's actually
+  wrong with it, and says so in `tick.log` once per change rather than on
+  every read. A name that slugs to nothing, or two projects claiming one id,
+  costs that project its derived job entirely. A `max_budget_usd` typed as
+  `"abc"` costs it neither the job nor the cap: a derived run always carries
+  `--force`, which skips the rate-limit gate, the daily cap and the global
+  cap, so `max_budget_usd` is the one spend gate that actually applies to it —
+  a value that fails to parse falls back to a conservative default ($2)
+  instead of running with no ceiling at all.
 
   A by-id command is the one place a derived id can still be typed — `job_exists`
   answers through `jobs_json`, so it says yes. Each of them now refuses it:

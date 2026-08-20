@@ -207,7 +207,15 @@ security_derived_jobs() {
     local budget daily elem
     budget="$(security_get "$project" '.max_budget_usd' '')"
     daily="$(security_get "$project" '.daily_budget_usd' '')"
-    security_check_number "$project" max_budget_usd "$budget"  || budget=""
+    # max_budget_usd cannot just be dropped the way a bad daily_budget_usd can:
+    # the derived job always runs --force, which skips the rate-limit gate,
+    # the daily cap and the global cap below -- max_budget_usd is the ONLY
+    # spend gate left for it, so "declared but unusable" must fail SAFE (the
+    # conservative fallback), not fail OPEN (no cap at all). daily_budget_usd
+    # gates nothing for a forced run either way, so it keeps the old
+    # behaviour: dropped, with a warning, same as if it were never set.
+    security_check_number "$project" max_budget_usd "$budget" "$SECURITY_FALLBACK_BUDGET_USD" \
+      || budget="$SECURITY_FALLBACK_BUDGET_USD"
     security_check_number "$project" daily_budget_usd "$daily" || daily=""
     # Build the element FIRST and only then commit to it. The separator used to
     # be printed before this jq ran, so anything that made jq exit without
@@ -305,6 +313,15 @@ security_slug() { # security_slug <project>
 SECURITY_JOB_PREFIX="security-"
 security_job_id() { printf '%s%s' "$SECURITY_JOB_PREFIX" "$(security_slug "$1")"; }
 
+# What a derived job's max_budget_usd falls back to when a project DECLARES
+# the field but types something jq cannot read as a number (e.g. "5 USD"). It
+# exists because a derived run always carries --force (see run_job), which
+# skips the rate-limit gate, the daily cap and the global cap -- max_budget_usd
+# is the ONLY spend gate left standing for it. Dropping the field on a parse
+# failure, as an unset field is dropped, would run the analysis with NO
+# ceiling at all: fail-open on the one gate that actually applies.
+SECURITY_FALLBACK_BUDGET_USD=2
+
 # ---- what a bad security block is allowed to cost -------------------------
 # Everything derivation refuses -- a name that slugs to nothing, two projects
 # claiming one id, a real job already holding it, a budget that is not a number
@@ -345,10 +362,18 @@ $now
 EOF
 }
 
-security_check_number() { # security_check_number <project> <field> <value> -> rc 1 when unusable
+security_check_number() { # security_check_number <project> <field> <value> [fallback] -> rc 1 when unusable
   [ -n "$3" ] || return 0
   "$JQ" -e -n --arg v "$3" '($v|tonumber?) != null' >/dev/null 2>&1 && return 0
-  security_warn "security: project '$1' has a non-numeric $2 ('$3') -- left off the derived job"
+  # A fallback means the caller has somewhere safe to land: say so, by name,
+  # so the operator sees the declared (bad) value AND what replaced it, not
+  # just that something was dropped. No fallback means the field is simply
+  # unusable and gets left off, same as it always has.
+  if [ -n "${4:-}" ]; then
+    security_warn "security: project '$1' has a non-numeric $2 ('$3') -- a derived run is forced past every other spend gate, so the derived job falls back to the conservative default of \$$4 instead of running with no cap at all"
+  else
+    security_warn "security: project '$1' has a non-numeric $2 ('$3') -- left off the derived job"
+  fi
   return 1
 }
 
@@ -4631,7 +4656,9 @@ JSON
   # a budget the user wrote as "abc" aborts the element's jq with NO stdout, and
   # the separator had already been printed -- so the array came out `[,{...}]`,
   # jobs_json died on every call, and job_get/resolve/job_exists failed for every
-  # job. The bad field is dropped; the project, and everyone else, survives.
+  # job. The array must still hold every project -- Bad included, now with the
+  # conservative fallback in place of the unusable field (Task 10: it used to
+  # be dropped outright, which ran the analysis with no cap at all).
   mkdir -p "$tmp/derived/data4"
   cat > "$tmp/derived/bad-number-projects.json" <<'JSON'
 {"projects":[
@@ -4641,10 +4668,10 @@ JSON
   ( JOBS_FILE="$tmp/derived/jobs.json"; PROJECTS_FILE="$tmp/derived/bad-number-projects.json"
     DATA_DIR="$tmp/derived/data4"; TICK_LOG="$tmp/derived/data4/tick.log"
     jobs_json | "$JQ" -e '[.jobs[].id] == ["real-job","security-bad","security-healthy"]' >/dev/null \
-    && jobs_json | "$JQ" -e '[.jobs[] | select(.id=="security-bad") | has("max_budget_usd")] == [false]' >/dev/null \
+    && [ "$(job_get security-bad '.max_budget_usd' '')" = "$SECURITY_FALLBACK_BUDGET_USD" ] \
     && [ "$(job_get security-healthy '.max_budget_usd' '')" = "5" ] ) \
-    && ok "a non-numeric budget loses the field, not the array every job is read from" \
-    || bad "a non-numeric budget loses the field, not the array every job is read from"
+    && ok "a non-numeric budget falls back to the conservative default, not the array every job is read from" \
+    || bad "a non-numeric budget falls back to the conservative default, not the array every job is read from"
 
   # The other half of the same bug: the separator must be committed only once an
   # element exists. Force a failure that has nothing to do with numbers -- a jq
@@ -4662,6 +4689,37 @@ EOF
     jobs_json | "$JQ" -e '[.jobs[].id] == ["real-job"]' >/dev/null ) \
     && ok "an element that fails to build drops its project, never the array" \
     || bad "an element that fails to build drops its project, never the array"
+
+  # Task 10 finding: a DECLARED max_budget_usd that fails to parse must not
+  # fail OPEN. A derived run always carries --force, which skips the
+  # rate-limit gate, the daily cap and the global cap (see run_job) --
+  # max_budget_usd is the only spend gate left standing for it, so "declared
+  # but unusable" has to land on the conservative fallback, not on no cap at
+  # all, with one tick.log line naming both the bad value and the fallback.
+  cat > "$tmp/derived/undeclared-vs-bad-projects.json" <<'JSON'
+{"projects":[
+ {"name":"Typo","cwd":"/tmp/typo","security":{"enabled":true,"max_budget_usd":"5 USD"}},
+ {"name":"Unset","cwd":"/tmp/unset","security":{"enabled":true}}]}
+JSON
+  ( JOBS_FILE="$tmp/derived/jobs.json"; PROJECTS_FILE="$tmp/derived/undeclared-vs-bad-projects.json"
+    DATA_DIR="$tmp/derived/data10"; TICK_LOG="$tmp/derived/data10/tick.log"
+    [ "$(job_get security-typo '.max_budget_usd' '')" = "$SECURITY_FALLBACK_BUDGET_USD" ] \
+    && grep -q "5 USD" "$TICK_LOG" \
+    && grep -q "conservative default of \$$SECURITY_FALLBACK_BUDGET_USD" "$TICK_LOG" ) \
+    && ok "a declared-but-unparseable budget falls back to \$$SECURITY_FALLBACK_BUDGET_USD, and the warning names both" \
+    || bad "a declared-but-unparseable budget falls back to \$$SECURITY_FALLBACK_BUDGET_USD, and the warning names both"
+
+  # The control this rests on: a budget that was never declared at all stays
+  # undeclared -- that is a choice (no per-run ceiling beyond whatever the job
+  # would otherwise use), not a typo, and must not be silently handed the
+  # fallback too. Without this control, a fix broad enough to always inject
+  # the fallback would pass the test above while capping every project that
+  # never asked for a cap at all.
+  ( JOBS_FILE="$tmp/derived/jobs.json"; PROJECTS_FILE="$tmp/derived/undeclared-vs-bad-projects.json"
+    DATA_DIR="$tmp/derived/data10"; TICK_LOG="$tmp/derived/data10/tick.log"
+    jobs_json | "$JQ" -e '[.jobs[] | select(.id=="security-unset") | has("max_budget_usd")] == [false]' >/dev/null ) \
+    && ok "an undeclared budget stays undeclared -- no max_budget_usd key, no fallback" \
+    || bad "an undeclared budget stays undeclared -- no max_budget_usd key, no fallback"
 
   # A `security` block that is not an object is unusable, and the project is
   # skipped either way -- but the raw `.security.enabled` path printed jq's
@@ -4750,6 +4808,51 @@ JSON
     && "$JQ" -e '[.jobs[] | {id, enabled}] == [{id:"real-job", enabled:true}]' "$tmp/derived/guard-jobs.json" >/dev/null ) \
     && ok "every other by-id write refuses a derived id, and jobs.json is untouched" \
     || bad "every other by-id write refuses a derived id, and jobs.json is untouched"
+
+  echo "cmd_* guard rail — every by-id job mutation refuses a derived id before writing"
+  # A structural assertion, deliberately, and found by SHAPE rather than kept
+  # as a hand-maintained list of command names: a `write_jobs` filter that
+  # selects on `.id` (`.id ==`, `.id !=`, `.id |`) is a mutation of an
+  # EXISTING job named by id -- precisely what `job_exists` lies about for a
+  # derived job (it answers through jobs_json, which DOES carry one; write_jobs
+  # only ever touches $JOBS_FILE, which never does). Finding these by shape
+  # means a future by-id mutation command that forgets the guard fails HERE,
+  # the moment it is written, instead of the day someone runs it against a
+  # derived id in anger.
+  # `cmd_create` also calls job_exists and write_jobs, but its filter is
+  # `.jobs += [$j]` -- a NEW job, not a selection by id -- and it already
+  # refuses the "$SECURITY_JOB_PREFIX" prefix by name, so it correctly does
+  # not match. `cmd_project_rename` selects on `.project==`, not `.id`, and
+  # correctly does not match either: neither can reach a derived job's
+  # on-disk state, because a derived job never lives in $JOBS_FILE at all.
+  # `cmd_selftest` -- this very function -- is excluded outright: it is the
+  # harness making the assertion, and its few thousand lines of test fixtures
+  # happen to contain every shape below in JSON literals and old assertions.
+  # A filter can also be named rather than inline (`cmd_toggle_many` writes
+  # with $TOGGLE_MANY_FILTER, defined once above it as a shared constant) --
+  # pull any such constant's own definition into the body under test, or its
+  # shape is invisible to the check below.
+  local guard_fn guard_body guard_var guard_sites=0 guard_missing=0 guard_bad_names=""
+  while IFS= read -r guard_fn; do
+    [ "$guard_fn" = "cmd_selftest" ] && continue
+    guard_body="$(sed -n "/^${guard_fn}(/,/^}/p" "$BIN_DIR/claude-cron")"
+    case "$guard_body" in *write_jobs*) ;; *) continue ;; esac
+    for guard_var in $(printf '%s' "$guard_body" | grep -oE '\$[A-Z_]+_FILTER'); do
+      guard_body="$guard_body
+$(grep "^${guard_var#\$}=" "$BIN_DIR/claude-cron")"
+    done
+    case "$guard_body" in *'.id =='*|*'.id !='*|*'.id |'*) ;; *) continue ;; esac
+    guard_sites=$(( guard_sites + 1 ))
+    case "$guard_body" in
+      *security_refuse_derived*) ;;
+      *) guard_missing=$(( guard_missing + 1 )); guard_bad_names="$guard_bad_names $guard_fn" ;;
+    esac
+  done <<EOF
+$(grep -oE '^cmd_[a-zA-Z0-9_]*\(' "$BIN_DIR/claude-cron" | tr -d '(' | sort -u)
+EOF
+  [ "$guard_sites" -eq 8 ] && [ "$guard_missing" -eq 0 ] \
+    && ok "every by-id job mutation ($guard_sites found) refuses a derived id before writing" \
+    || bad "cmd_* guard rail: $guard_sites by-id mutation site(s), $guard_missing missing security_refuse_derived ($guard_bad_names) -- expected 8 sites, 0 missing"
 
   rm -rf "$tmp"
   echo
