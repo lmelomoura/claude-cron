@@ -30,6 +30,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`claude-cron usage` — the gate can now say whether it is switched on.** The
+  usage gate and the statusline that feeds it are both invisible when they work
+  and invisible when they do not, and the only way to tell them apart was a
+  hand-written one-liner over `data/rate-limits.json`. That puts the job of
+  verifying the product on the person using it: a feature that cannot say
+  whether it is on is a feature nobody can trust.
+
+  The command prints how full each window is, how old the reading is and where
+  it came from, whether runs are being held back right now (and that `run` still
+  overrides), and then the wiring: statusLine not configured, configured but
+  pointing at some other script, pointing at a path that does not exist — every
+  session's status line failing in silence, which is what happens if you wire it
+  to a checkout and then change branch — or correctly wired but never fired,
+  because the statusLine is read when a session *starts* and one already open
+  when you wired it will never call it.
+
 - **The usage gate can now see the window before it is nearly full.**
   `rl_gate` shipped armed and blind: the run stream carries a utilisation figure
   ONLY once the CLI has decided to warn (at 0.75), and below that it reports
