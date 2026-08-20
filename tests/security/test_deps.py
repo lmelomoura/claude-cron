@@ -78,6 +78,14 @@ def test_vendored_trees_are_never_walked(tmp_path):
     assert inventory(tmp_path) == []
 
 
+def test_a_scoped_npm_name_percent_encodes_the_scope_in_the_purl(tmp_path):
+    """@types/node must become pkg:npm/%40types/node@20.1.0 -- the purl spec
+    requires the scope's "@" percent-encoded."""
+    doc = sbom([{"ecosystem": "npm", "name": "@types/node", "version": "20.1.0",
+                 "source": "package-lock.json"}])
+    assert doc["components"][0]["purl"] == "pkg:npm/%40types/node@20.1.0"
+
+
 def test_the_sbom_is_valid_cyclonedx(tmp_path):
     doc = sbom([{"ecosystem": "npm", "name": "lodash", "version": "4.17.20",
                  "source": "package-lock.json"}])

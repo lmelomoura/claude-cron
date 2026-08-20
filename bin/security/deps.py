@@ -9,6 +9,7 @@ out could carry text written by someone else.
 import json
 import re
 from pathlib import Path
+from urllib.parse import quote
 
 _SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", "build"}
 _PURL = {"npm": "npm", "PyPI": "pypi", "Packagist": "composer",
@@ -122,16 +123,25 @@ def inventory(root):
 
 def sbom(components):
     """A CycloneDX 1.5 document. Hand-built JSON -- no dependency needed."""
+    components_out = []
+    for c in components:
+        ecosystem = _PURL.get(c["ecosystem"], c["ecosystem"].lower())
+        # purl requires reserved characters percent-encoded -- most notably
+        # the "@" that marks an npm scope (e.g. @types/node). quote(...,
+        # safe="/") does that while still treating "/" as a path separator,
+        # in both the name and the version.
+        name = quote(c["name"], safe="/")
+        version = quote(c["version"], safe="/")
+        components_out.append({
+            "type": "library",
+            "name": c["name"],
+            "version": c["version"],
+            "purl": f"pkg:{ecosystem}/{name}@{version}",
+        })
     return {
         "bomFormat": "CycloneDX",
         "specVersion": "1.5",
         "version": 1,
         "metadata": {"tools": [{"vendor": "claude-cron", "name": "security"}]},
-        "components": [{
-            "type": "library",
-            "name": c["name"],
-            "version": c["version"],
-            "purl": f"pkg:{_PURL.get(c['ecosystem'], c['ecosystem'].lower())}/"
-                    f"{c['name']}@{c['version']}",
-        } for c in components],
+        "components": components_out,
     }
