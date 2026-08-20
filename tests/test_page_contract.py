@@ -141,10 +141,16 @@ ROW = {"name": "web", "path": CWD, "base": "develop"}
 def _run_save(srv, tmp_path, *, multi, name="save.js"):
     """Drive the real saveProject() over a stub DOM and return what it sent."""
     harness = """
+    const SEC_PROFILES = ["quick","standard","deep"];
+    const SEV_ORDER = ["low","medium","high","critical"];
     const sent = [];
     const vals = {"pj-name":"Web","pj-desc":"","pj-cwd":"%s","pj-ccd":"","pj-base":"develop",
-                  "pj-wt":"auto","pj-up":"","pj-down":"already here"};
+                  "pj-wt":"auto","pj-up":"","pj-down":"already here",
+                  "sec-enabled":false,"sec-model":"","sec-effort":"","sec-cfgdir":"",
+                  "sec-profile-default":"standard","sec-max-budget":"","sec-daily-budget":"",
+                  "sec-min-severity":"medium","sec-ignore":""};
     const $ = (id) => ({ get value(){ return vals[id]; }, set value(v){ vals[id]=v; },
+                         get checked(){ return !!vals[id]; }, set checked(v){ vals[id]=v; },
                          style:{}, disabled:false, close(){} });
     let editingProject = "Web";
     let pjMulti = %s;
@@ -195,6 +201,40 @@ def test_a_multi_repo_project_keeps_its_rows_and_leaves_the_project_base_alone(s
     proj = next(e["project"] for op, e in sent if op == "project_set")
     assert proj["repos"] == [ROW], f"the declared rows were not sent whole: {proj['repos']}"
     assert "base" not in proj, "a project-wide base was sent for a multi-repo project"
+
+
+# ---- the project editor's Security tab. A fourth pane, same rules as the
+# other three: every field it owns is always sent, whole, because project-set
+# merges rather than replaces (see cmd_project_set's own selftest).
+
+def test_the_project_editor_has_a_security_pane(srv):
+    page = srv.render_page("boot-authed")
+    assert 'data-pjpane="security"' in page
+    for field in ("sec-enabled", "sec-model", "sec-effort", "sec-cfgdir",
+                  "sec-profile-default", "sec-max-budget", "sec-daily-budget",
+                  "sec-min-severity", "sec-ignore"):
+        assert f'id="{field}"' in page, f"the security pane has no {field} field"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_saving_always_sends_the_whole_security_block_with_a_real_boolean(srv, tmp_path):
+    """`enabled` must be a JSON boolean, never the string "true" — the page and
+    the derived-jobs fast path both also accept a hand-typed string, but this
+    pane is not a hand-edited config and has no reason to ever write one.
+    Every other field it owns rides along too, so an untouched pane on a save
+    that never visited it does not quietly drop half the block — project-set
+    merges, and an omitted key would keep whatever the FIRST save ever wrote,
+    but only a value actually present here can ever clear one."""
+    sent = _run_save(srv, tmp_path, multi=False)
+    proj = next(e["project"] for op, e in sent if op == "project_set")
+    sec = proj["security"]
+    assert sec["enabled"] is False, f"enabled must be a real boolean, got {sec['enabled']!r}"
+    assert set(sec) == {"enabled", "model", "effort", "claude_config_dir",
+                         "default_profile", "max_budget_usd", "daily_budget_usd",
+                         "min_severity", "ignore_paths"}, f"security block: {sec}"
+    assert sec["max_budget_usd"] == "", "an empty budget must clear, not vanish from the payload"
+    assert sec["default_profile"] == "standard"
+    assert sec["min_severity"] == "medium"
 
 
 # ---- the job card's kept-session notice, and the guard it must share with

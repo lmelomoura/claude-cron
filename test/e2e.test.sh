@@ -41,7 +41,8 @@ git -C "$ROOT/work/app" branch -q -M main
 
 cat > "$ROOT/config/projects.json" <<JSON
 {"projects":[{"name":"sandbox","cwd":"$ROOT/work/app","base":"main",
-              "worktree":{"enabled":true}}]}
+              "worktree":{"enabled":true},
+              "security":{"enabled":true,"model":"claude-opus-5","max_budget_usd":5}}]}
 JSON
 
 mkjob() { # mkjob <id> <mode>
@@ -55,6 +56,17 @@ mkjob() { # mkjob <id> <mode>
 
 dirs() { ls -1 "$ROOT/data/worktrees/$1" 2>/dev/null | grep -v '^\.' ; }
 ended() { cat "$ROOT/data/worktrees/$1/$2/.ended" 2>/dev/null; }
+
+# secid <analyze-stdout> -- the analysis id out of whichever shape it came in:
+# bash's own `printf '{"analysis_id":%s}'` (--detach, no space) or Python's
+# `json.dumps` (open-analysis, a space after the colon).
+secid() { printf '%s' "$1" | grep -Eo '"analysis_id" *: *[0-9]+' | tail -1 | grep -Eo '[0-9]+$'; }
+# secstate <project> <analysis-id> -- that one row's state, straight off the
+# ledger `security list` reads, never guessed from the run that carried it.
+secstate() {
+  "$CC" security list --project "$1" 2>/dev/null \
+    | jq -r --argjson a "$2" '.[] | select(.id == $a) | .state // empty'
+}
 
 echo
 echo "1. a run that declares a clean ending is torn down and removed"
@@ -128,6 +140,62 @@ echo "$ROOT/data/worktrees/j5/stamp-stale" > "$ROOT/data/locks/j5/99999/worktree
 sleep 1
 [ -z "$(dirs j5)" ] && ok "a live pid from an earlier boot does not protect it" \
   || bad "the stale claim kept it alive"
+
+# ------------------------------------------------------- security analysis
+# The `sandbox` project's own security block (see the fixture above). Unlike
+# 1-7, these drive `claude-cron security analyze` rather than `run` -- the
+# real path the dashboard's Analyse button takes, over the real run_job and a
+# real (fake) agent, not the stubbed run_job the bash-level selftest uses for
+# the same three shapes.
+
+echo
+echo "8. a detached security analysis returns fast, and the run closes it once it ends"
+t0=$(date +%s)
+out8="$(FAKE_MODE=complete FAKE_SESSION=sess-sec-done "$CC" security analyze --detach sandbox anything main quick)"
+t1=$(date +%s)
+[ "$((t1 - t0))" -lt 5 ] && ok "the command returns in $((t1 - t0))s -- not after the run it started" \
+  || bad "--detach blocked for $((t1 - t0))s"
+aid8="$(secid "$out8")"
+[ -n "$aid8" ] && ok "and prints the analysis id it opened: $aid8" || bad "no analysis id in: $out8"
+w=0
+while [ "$w" -lt 20 ] && [ "$(secstate sandbox "$aid8")" = "running" ]; do sleep 1; w=$((w + 1)); done
+[ "$(secstate sandbox "$aid8")" = "done" ] \
+  && ok "and the row closes done once the detached run actually finishes (waited ${w}s)" \
+  || bad "left '$(secstate sandbox "$aid8")' after ${w}s"
+sleep 1   # let run_job's own teardown release the derived job's slot before the next scenario
+
+echo
+echo "9. an agent that dies on launch still closes its analysis -- failed, not stuck running"
+cat > "$ROOT/dead-claude" <<'SH'
+#!/usr/bin/env bash
+exit 3
+SH
+chmod +x "$ROOT/dead-claude"
+out9="$(CLAUDE_CRON_CLAUDE_BIN="$ROOT/dead-claude" "$CC" security analyze --detach sandbox anything main quick)"
+aid9="$(secid "$out9")"
+w=0
+while [ "$w" -lt 20 ] && [ "$(secstate sandbox "$aid9")" = "running" ]; do sleep 1; w=$((w + 1)); done
+[ "$(secstate sandbox "$aid9")" = "failed" ] \
+  && ok "a claude that exits without a word still closes the row failed (waited ${w}s)" \
+  || bad "left '$(secstate sandbox "$aid9")' after ${w}s"
+sleep 1
+
+echo
+echo "10. a row stuck 'running' with no live run cannot brick the button"
+sha="$(git -C "$ROOT/work/app" rev-parse HEAD)"
+stuck_out="$("$CC" security open-analysis --project sandbox --repo sandbox --branch main \
+  --commit "$sha" --profile quick --run-id security-sandbox)"
+stuck_id="$(secid "$stuck_out")"
+[ "$(secstate sandbox "$stuck_id")" = "running" ] \
+  && ok "the stuck row starts out running, exactly like a real one" \
+  || bad "open-analysis did not open row $stuck_id running"
+# The default grace (120s) would leave a row this young alone -- it may still
+# be on its way to acquire_slot -- so the sweep is forced to fire immediately.
+CLAUDE_CRON_SECURITY_STALE_GRACE=0 FAKE_MODE=complete FAKE_SESSION=sess-sec-fresh \
+  "$CC" security analyze sandbox anything main quick >/dev/null 2>&1
+[ "$(secstate sandbox "$stuck_id")" = "failed" ] \
+  && ok "the next analyse's own preflight sweeps it before opening a fresh one" \
+  || bad "stuck row $stuck_id left '$(secstate sandbox "$stuck_id")'"
 
 echo
 printf '\n  %s passed, %s failed\n' "$pass" "$fail"

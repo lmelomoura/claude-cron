@@ -2055,6 +2055,59 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
     global name — a herd site, a compose project — must derive it from <code>$CC_RUN_DIR</code>, or
     two runs of the same repo collide.</p>
   </div><!-- /pane prov -->
+
+  <div class="tabpane" data-pjpane="security">
+  <p class="sechint">What a security analysis of this project runs as — see the Security area
+    for actually running one. Off by default: a project with nothing here gets no analysis and no
+    derived job at all.</p>
+  <label class="checkline"><input type="checkbox" id="sec-enabled">
+    Enable security analysis</label>
+  <label>Model — empty uses the install's own default</label>
+  <input id="sec-model" type="text" placeholder="opus, or an exact id" autocomplete="off" spellcheck="false">
+  <label>Effort</label>
+  <select id="sec-effort">
+    <option value="">Default</option>
+    <option value="low">low</option>
+    <option value="medium">medium</option>
+    <option value="high">high</option>
+    <option value="xhigh">xhigh</option>
+    <option value="max">max</option>
+  </select>
+  <label>Claude account — which account signs the analysis</label>
+  <input id="sec-cfgdir" type="text" placeholder="inherits the project's" autocomplete="off" spellcheck="false">
+  <p class="fieldhelp">Empty inherits this project's own Claude account above, which inherits the
+    install's. Set here only when the analysis itself should sign in as someone else.</p>
+  <label>Default profile — offered first when you open Analyse for this project</label>
+  <select id="sec-profile-default">
+    <option value="quick">Quick</option>
+    <option value="standard" selected>Standard</option>
+    <option value="deep">Deep</option>
+  </select>
+  <div class="row2">
+    <div><label>Cap per analysis (USD) — empty = no cap</label>
+      <input id="sec-max-budget" type="number" min="0" step="0.5" inputmode="decimal" placeholder="e.g. 2.00"></div>
+    <div><label>Daily cap (USD) — empty = no cap</label>
+      <input id="sec-daily-budget" type="number" min="0" step="1" inputmode="decimal" placeholder="e.g. 10.00"></div>
+  </div>
+  <p class="fieldhelp">A derived analysis always runs <code>--force</code>, which skips the
+    rate-limit gate and the daily cap above — the per-analysis cap is the only spend gate left
+    standing for it, so a value that fails to parse falls back to a conservative default rather
+    than running with none at all.</p>
+  <!-- Two filters that do different things: ignore_paths excludes from the ANALYSIS (you do not
+       pay for it, and it never reaches the ledger); min_severity only filters what is SHOWN, so
+       lowering it later reveals what is already in the ledger from before. -->
+  <label>Minimum severity shown</label>
+  <select id="sec-min-severity">
+    <option value="low">Low</option>
+    <option value="medium" selected>Medium</option>
+    <option value="high">High</option>
+    <option value="critical">Critical</option>
+  </select>
+  <p class="fieldhelp">A fixed finding is always shown regardless of this floor — the checklist's
+    whole job is to say what closed.</p>
+  <label>Paths excluded from analysis — one glob per line</label>
+  <textarea id="sec-ignore" spellcheck="false" placeholder="tests/fixtures/**"></textarea>
+  </div><!-- /pane security -->
   </div><!-- /tabpanes -->
 </div>
 <div class="dlg-f">
@@ -4207,6 +4260,26 @@ function openProjectEditor(name){
       pjWiz.paintNav();
     });
   }
+  // Read straight off the project object, not through secCfg/secEnabled —
+  // those key off a NAME already in DATA.projects, which has nothing for one
+  // not yet created.
+  const sec=(p&&p.security)||{};
+  $("sec-enabled").checked = sec.enabled===true || sec.enabled==="true";
+  $("sec-model").value = sec.model||"";
+  $("sec-effort").value = sec.effort||"";
+  $("sec-cfgdir").value = sec.claude_config_dir||"";
+  $("sec-profile-default").value = SEC_PROFILES.includes(sec.default_profile) ? sec.default_profile : "standard";
+  $("sec-max-budget").value = (sec.max_budget_usd!=null && sec.max_budget_usd!=="") ? sec.max_budget_usd : "";
+  $("sec-daily-budget").value = (sec.daily_budget_usd!=null && sec.daily_budget_usd!=="") ? sec.daily_budget_usd : "";
+  // "medium" only for a project that has never had this pane to touch — a new
+  // one, with nothing saved yet. An EXISTING project with no min_severity of
+  // its own keeps reading as secMinSeverity's own fallback ("low", show
+  // everything), so opening this pane to change something else and saving
+  // never silently hides findings that were showing a moment ago.
+  $("sec-min-severity").value = SEV_ORDER.includes(sec.min_severity) ? sec.min_severity
+                               : (name ? "low" : "medium");
+  $("sec-ignore").value = typeof sec.ignore_paths==="string" ? sec.ignore_paths
+                         : (Array.isArray(sec.ignore_paths) ? sec.ignore_paths.join("\n") : "");
   $("pj-delete").style.display=name?"":"none";
   $("pj-title").textContent=name?("Edit project — "+name):"New project";
   $("pj-sub").textContent=name ? "Change anything, from any step, and save"
@@ -4261,6 +4334,30 @@ async function saveProject(){
     // Only in single-repo mode, where the field is the one that means anything.
     // Left alone otherwise, so switching to several repos and back keeps it.
     if(!pjMulti) proj.base=$("pj-base").value.trim();
+    // Always sent, and always whole -- project-set merges (jq `. * $p`), and
+    // that merge runs recursively even inside `security` itself, so a field
+    // this pane leaves untouched (there is no control for it here) survives.
+    // What a merge cannot do is drop a key that is simply missing from what
+    // is sent -- so every field this pane owns is always present, with "" the
+    // way each of them says "unset" (matching claude_config_dir above).
+    // `enabled` is always a real boolean: security_enabled() and
+    // security_derived_jobs' own fast path both also accept the string
+    // "true", for a hand-edited config, but this pane has no reason to ever
+    // write anything else.
+    const mb=$("sec-max-budget").value.trim(), db=$("sec-daily-budget").value.trim();
+    const mbNum=parseFloat(mb), dbNum=parseFloat(db);
+    const minSev=$("sec-min-severity").value, profDef=$("sec-profile-default").value;
+    proj.security = {
+      enabled: $("sec-enabled").checked,
+      model: $("sec-model").value.trim(),
+      effort: $("sec-effort").value,
+      claude_config_dir: $("sec-cfgdir").value.trim(),
+      default_profile: SEC_PROFILES.includes(profDef) ? profDef : "standard",
+      max_budget_usd: (mb===""||isNaN(mbNum)) ? "" : mbNum,
+      daily_budget_usd: (db===""||isNaN(dbNum)) ? "" : dbNum,
+      min_severity: SEV_ORDER.includes(minSev) ? minSev : "low",
+      ignore_paths: $("sec-ignore").value,
+    };
     if(!await projApi("project_set",{project:proj})) return;
     // Saved after the project, and by name: provision-set refuses a project the
     // engine does not know yet, so a brand-new one has to exist first.
@@ -6131,11 +6228,12 @@ const edWiz=makeWizard({
 });
 
 /* ------------------------------------------------------------ the project wizard
-   Same component, same rules: three steps instead of five. */
+   Same component, same rules: four steps instead of five. */
 const PJ_STEPS=[
-  {k:"project", label:"The project",       next:"Repos and worktrees"},
-  {k:"repos",   label:"Repos and worktrees", next:"Provisioning"},
-  {k:"prov",    label:"Provisioning",      next:null},
+  {k:"project",  label:"The project",       next:"Repos and worktrees"},
+  {k:"repos",    label:"Repos and worktrees", next:"Provisioning"},
+  {k:"prov",     label:"Provisioning",      next:"Security"},
+  {k:"security", label:"Security",          next:null},
 ];
 function validateProjectStep(k){
   if(k==="project"){

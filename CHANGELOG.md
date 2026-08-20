@@ -208,6 +208,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Blob, because a plain link cannot carry the header and would have handed
   somebody a 403 as a file.
 
+- **The project editor has a Security tab.** A fourth pane, alongside Repos and
+  Provisioning: whether analysis is on, the model and effort it runs with,
+  which Claude account signs it, the profile Analyse defaults to, the
+  per-analysis and daily spending caps, the minimum severity the Security page
+  shows, and the globs excluded from analysis. Without it, the only way to turn
+  security on for a project — or to change any of it — was to hand-edit
+  `projects.json`; the Security page's own "turn it on in the project editor,
+  on the Security tab" pointed at a tab that did not exist yet. `ignore_paths`
+  and `min_severity` are two different filters and the pane says so: the first
+  keeps a path out of the analysis itself (no tokens spent on it, and it never
+  reaches the ledger), the second only hides what is already there — lowering
+  it later reveals findings that were recorded all along, never re-runs
+  anything.
+
+  Every field the pane owns is always sent on save, never omitted, matching
+  how `claude_config_dir` and `worktree` already work on the other panes:
+  `project-set` merges (`. * $p`) rather than replaces, and a merge cannot
+  drop a key that is simply missing — so an emptied field has to arrive as an
+  explicit `""` to actually clear, or it would keep whatever was saved before
+  for ever. `enabled` is always sent as a real boolean; the engine (see below)
+  and the page's own `secEnabled` both also accept a hand-typed `"true"`
+  string, but the pane itself has no reason to ever write one.
+
 ### Fixed
 
 - **The Analyse button starts the run and lets go of it, and a crashed run can
@@ -266,6 +289,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`/api/security/branches` no longer answers a checkout with no branches
   yet with a blank error.** An empty repository answers with an empty branch
   list instead.
+
+- **The engine no longer disagrees with itself about `"enabled": "true"`.**
+  `security_enabled()` reads the field through `jq -r`, which prints the
+  boolean `true` and the string `"true"` identically, so it already accepted
+  both — a hand-edited project with the string form passed
+  `cmd_security_analyze`'s own gate. But `security_derived_jobs`' fast path,
+  which decides in ONE jq call whether to run the per-project loop at all,
+  tested `== true`, boolean only: a project with only the string spelling
+  looked like "nobody has security on" there, so the loop that would have
+  derived its job never ran. Both spellings now pass the fast path too, and a
+  project written either way derives its job.
 
 ### Changed
 

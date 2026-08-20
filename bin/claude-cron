@@ -160,8 +160,17 @@ security_derived_jobs() {
   # `objects` keeps a project whose `security` is not an object (see
   # security_get) from erroring the test out and taking the healthy projects
   # in the same file down with it.
+  #
+  # `== true or == "true"`, not `== true` alone: security_enabled() reads this
+  # same field through `jq -r`, which prints the boolean true and the string
+  # "true" identically, so a hand-edited `"enabled": "true"` already passes
+  # security_enabled and cmd_security_analyze's own gate below. A boolean-only
+  # probe here disagreed with both of them -- a project with only the string
+  # spelling looked like "nobody has security on" at this fast path and the
+  # loop that would have found it per-project never ran, so it derived NO job.
   local SECURITY_WARNINGS=""
-  if ! "$JQ" -e 'any(.projects[]?; ((.security? | objects | .enabled) == true))' \
+  if ! "$JQ" -e 'any(.projects[]?;
+       ((.security? | objects | .enabled) as $e | ($e == true or $e == "true")))' \
        "$PROJECTS_FILE" >/dev/null 2>&1; then
     security_warnings_flush ""
     printf '[]'
@@ -4857,6 +4866,38 @@ JSON
     && ok "security_slug lowercases and dashes a project name" \
     || bad "security_slug lowercases and dashes a project name"
 
+  # ---- project-set merges by name ----------------------------------------
+  # cmd_project_set receives whatever pane the dashboard's project editor was
+  # on, not the whole project object -- a REPLACE would let an edit made on
+  # one pane erase every field only some other pane owns. The merge (`. * $p`)
+  # is what keeps them apart, and it merges recursively: a partial `security`
+  # object does not erase the fields of `security` it does not mention either.
+  mkdir -p "$tmp/pset"
+  cat > "$tmp/pset/projects.json" <<'JSON'
+{"projects":[{"name":"Web","cwd":"/tmp/web",
+  "security":{"enabled":true,"model":"claude-opus-5"}}]}
+JSON
+  ( PROJECTS_FILE="$tmp/pset/projects.json"
+    printf '{"name":"Web","cwd":"/tmp/web2"}' | cmd_project_set >/dev/null
+    [ "$("$JQ" -r '.projects[0].security.model' "$tmp/pset/projects.json")" = "claude-opus-5" ] ) \
+    && ok "editing a project's cwd does not wipe its security block" \
+    || bad "editing a project's cwd does not wipe its security block"
+  [ "$("$JQ" -r '.projects[0].cwd' "$tmp/pset/projects.json")" = "/tmp/web2" ] \
+    && ok "and the cwd it was sent to change actually changed" \
+    || bad "and the cwd it was sent to change actually changed"
+
+  cat > "$tmp/pset/projects2.json" <<'JSON'
+{"projects":[{"name":"Api","cwd":"/tmp/api",
+  "repos":[{"name":"api","path":"/tmp/api","base":"main"}]}]}
+JSON
+  ( PROJECTS_FILE="$tmp/pset/projects2.json"
+    printf '{"name":"Api","security":{"enabled":true,"model":"claude-opus-5"}}' \
+      | cmd_project_set >/dev/null
+    [ "$("$JQ" -c '.projects[0].repos' "$tmp/pset/projects2.json")" \
+        = '[{"name":"api","path":"/tmp/api","base":"main"}]' ] ) \
+    && ok "and enabling security on save does not wipe an existing repos list" \
+    || bad "and enabling security on save does not wipe an existing repos list"
+
   # ---- derived security jobs -------------------------------------------
   mkdir -p "$tmp/derived"
   cat > "$tmp/derived/projects.json" <<'JSON'
@@ -5070,6 +5111,29 @@ JSON
     [ "$(security_derived_jobs)" = "[]" ] && [ ! -e "$tmp/derived/no-such-projects.json" ] ) \
     && ok "a missing projects file short-circuits the derivation instead of building one" \
     || bad "a missing projects file short-circuits the derivation instead of building one"
+
+  # The fast-path probe above short-circuits the WHOLE loop the moment it looks
+  # like nobody has security on -- but "looks like" used to mean `== true` in
+  # jq, boolean only, while security_enabled() (and the per-project loop this
+  # probe guards) already treats the string "true" the same as the boolean,
+  # because jq -r prints both of them identically. A hand-edited project with
+  # `"enabled": "true"` passed security_enabled and cmd_security_analyze's own
+  # gate, then derived NO job at all: this probe sent it home before the
+  # per-project check that would have accepted it ever ran. Both spellings are
+  # asserted here, alone, so the fast path cannot be the one that disagrees.
+  cat > "$tmp/derived/stringtrue-projects.json" <<'JSON'
+{"projects":[{"name":"Stringy","cwd":"/tmp/stringy","security":{"enabled":"true"}}]}
+JSON
+  ( JOBS_FILE="$tmp/derived/jobs.json"; PROJECTS_FILE="$tmp/derived/stringtrue-projects.json"
+    DATA_DIR="$tmp/derived/data-stringtrue"; TICK_LOG="$tmp/derived/data-stringtrue/tick.log"
+    jobs_json | "$JQ" -e '[.jobs[].id] == ["real-job","security-stringy"]' >/dev/null ) \
+    && ok "a project with enabled as the STRING \"true\" still derives a job" \
+    || bad "a project with enabled as the STRING \"true\" still derives a job"
+  "$JQ" -e 'any(.projects[]?;
+       ((.security? | objects | .enabled) as $e | ($e == true or $e == "true")))' \
+      "$tmp/derived/stringtrue-projects.json" >/dev/null \
+    && ok "the fast-path probe accepts the string spelling as well as the boolean" \
+    || bad "the fast-path probe accepts the string spelling as well as the boolean"
 
   # ---- a derived id is not a job you can write to -----------------------
   # `job_exists` goes through jobs_json, so it says yes to a derived id -- and
