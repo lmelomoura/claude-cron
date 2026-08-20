@@ -152,3 +152,31 @@ def test_history_attributes_a_path_containing_a_space(tmp_path):
     hist = scan_history(tmp_path, None)
     assert len(hist) == 1
     assert hist[0]["occurrences"][0]["file"] == "my dir/secret file.env"
+
+
+def test_history_counts_distinct_commits_for_a_rotated_credential(tmp_path):
+    """The module deliberately never inspects the value, so it cannot tell
+    "same value re-added" from "a second, different credential" at the same
+    path -- but it can count commits. A credential committed, rotated to a
+    different value, and committed again at the same path must produce ONE
+    finding whose rationale says there were two exposures, not one silently
+    swallowed by dedup."""
+    run = lambda *a: subprocess.run(a, cwd=tmp_path, check=True,
+                                    capture_output=True)
+    run("git", "init", "-q")
+    run("git", "config", "user.email", "t@example.com")
+    run("git", "config", "user.name", "t")
+    first_key = "AKIA" + "A" * 16
+    second_key = "AKIA" + "B" * 16
+    (tmp_path / "prod.env").write_text(f"AWS_ACCESS_KEY_ID={first_key}\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "add")
+    (tmp_path / "prod.env").write_text(f"AWS_ACCESS_KEY_ID={second_key}\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "rotate")
+
+    hist = scan_history(tmp_path, None)
+    assert len(hist) == 1
+    assert "2 commits" in hist[0]["rationale"]
+    assert first_key not in repr(hist)
+    assert second_key not in repr(hist)

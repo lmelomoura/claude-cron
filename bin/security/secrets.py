@@ -88,7 +88,7 @@ def _hits(text: str):
                 yield name, severity, lineno
 
 
-def _finding(rule, severity, path, lines, historical):
+def _finding(rule, severity, path, lines, historical, commit_count=None):
     """Build one finding for `rule` found at `path`.
 
     `lines` is every line where this (rule, path) pair was matched -- it
@@ -98,14 +98,25 @@ def _finding(rule, severity, path, lines, historical):
     position within the file, which would shift whenever an unrelated line
     moved and falsely resurrect an untouched, already-triaged secret as
     "new" while its old fingerprint vanished as "fixed".
+
+    `commit_count`, when given, is the number of distinct commits a history
+    finding was seen in: a credential committed, rotated to a different
+    value, and committed again at the same path is still one (rule, path)
+    pair -- the value is deliberately never inspected, so "same value
+    re-added" cannot be told apart from "a second, different credential" --
+    but the reader still needs to know there were two exposures, not one
+    silently swallowed by dedup.
     """
     where = "in the git history" if historical else "in the working tree"
+    rationale = (f"A credential of type {rule} was found {where}. Its value is "
+                 "deliberately not recorded anywhere in this report.")
+    if commit_count is not None and commit_count > 1:
+        rationale += f" Seen in {commit_count} commits in the history."
     return {
         "fingerprint": secret_fingerprint(rule, path),
         "category": "secret", "rule": rule, "severity": severity,
         "title": f"{rule.replace('_', ' ')} committed to the repository",
-        "rationale": f"A credential of type {rule} was found {where}. Its value is "
-                     "deliberately not recorded anywhere in this report.",
+        "rationale": rationale,
         "remediation": ("Rotate the credential at the provider first -- it must be "
                         "assumed compromised. Removing it from the file is not enough "
                         "while it remains reachable in the history."),
@@ -182,6 +193,9 @@ def _path_from_diff_header(line: str):
     return rest[idx + len(marker):] if idx != -1 else rest
 
 
+_COMMIT_HEADER = re.compile(r"^commit ([0-9a-f]{7,40})")
+
+
 def scan_history(root, since_sha):
     """Every secret ever committed, even if the file no longer has it.
 
@@ -198,8 +212,23 @@ def scan_history(root, since_sha):
     except (OSError, subprocess.TimeoutExpired):
         return []
 
-    out, path, seen = [], "", set()
+    # (rule, path) -> {"severity": ..., "commits": set-of-sha}. Keyed the
+    # same way as the finding itself, with the set of commits the pair was
+    # seen in standing in for "how many times": the value is never
+    # inspected, so "same value re-added" cannot be told apart from "a
+    # second, different credential" -- but the exposures can still be
+    # counted. `git log`'s default format indents the commit message body
+    # by four spaces, so a message that happens to start with the word
+    # "commit" can never be mistaken for this header, which always starts
+    # at column zero.
+    groups = {}
+    path = ""
+    commit_sha = None
     for line in blob.splitlines():
+        commit_match = _COMMIT_HEADER.match(line)
+        if commit_match is not None:
+            commit_sha = commit_match.group(1)
+            continue
         header_path = _path_from_diff_header(line)
         if header_path is not None:
             path = header_path
@@ -208,8 +237,12 @@ def scan_history(root, since_sha):
             continue
         for rule, severity, _ in _hits(line[1:]):
             key = (rule, path)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(_finding(rule, severity, path, [0], True))
+            group = groups.setdefault(key, {"severity": severity, "commits": set()})
+            if commit_sha is not None:
+                group["commits"].add(commit_sha)
+
+    out = []
+    for (rule, path), group in groups.items():
+        out.append(_finding(rule, group["severity"], path, [0], True,
+                             commit_count=len(group["commits"])))
     return out
