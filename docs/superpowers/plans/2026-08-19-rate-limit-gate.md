@@ -97,14 +97,40 @@ Voltar ao estado normal: `rm data/rate-limits.json`.
 
 ## Por fazer
 
-- [ ] **Fase 2 — a percentagem antes de gastar (o maior valor que falta).** Hoje
-      só há número quando o CLI decide avisar (≥ 0.75), e a leitura chega no fim
-      de um run. O Claude Code (≥ 2.1.80) entrega `rate_limits` ao comando de
-      `statusLine` **em cada turno**, boleado nas respostas da Messages API —
-      custo zero, e sem tocar no endpoint de usage (que dá 429 sob polling).
-      Escrever um statusline que despeje o JSON em `data/rate-limits.json` dá ao
-      gate um número fresco de qualquer sessão, incluindo as tuas interactivas.
-      Confirmar a versão instalada do CLI e o formato antes de desenhar.
+- [x] **Fase 2 — a percentagem antes de gastar.** FEITO em 2026-08-20, branch
+      `feat/statusline-rate-limits`. `bin/statusline-rate-limits.sh` lê
+      `rate_limits` do payload do statusLine e alimenta o mesmo
+      `data/rate-limits.json`.
+
+      **Correcção importante ao que estava escrito aqui:** eu tinha assumido que
+      isto podia alimentar-se dos próprios runs. **Não pode.** Medido: o
+      statusLine **não é invocado em modo headless** — nem com
+      `-p --output-format json` nem com `-p --output-format stream-json
+      --verbose`, porque não há linha de estado para desenhar. A fonte são as
+      **sessões interactivas do operador**, na mesma conta. Continua a valer a
+      pena — trabalhas em Claude Code durante o dia e a frota fica a saber quão
+      cheia está a janela sem gastar um token para o descobrir — mas é uma
+      propriedade diferente da que este documento prometia.
+
+      Formato confirmado no binário do CLI (2.1.201):
+      `rate_limits.{five_hour,seven_day}.{used_percentage (0-100), resets_at}`.
+      Guardado normalizado para 0-1, que é o que `rl_gate` lê.
+
+      **Não está activo até tu o ligares.** Em `~/.claude/settings.json`:
+
+      ```json
+      "statusLine": { "type": "command",
+                      "command": "/Users/lfmoura/Projects/claude-cron/bin/statusline-rate-limits.sh" }
+      ```
+
+      Não toquei nas tuas settings. Imprime `5h 62% · 7d 18%`, portanto continua
+      a servir como linha de estado.
+
+- [x] **Bug apanhado por isto:** `rl_gate` lia "status ausente" como recusa da
+      API. O statusline reporta utilização sem status nenhum, por isso instalá-lo
+      teria travado **todos** os runs agendados numa janela saudável. Só um
+      status presente e diferente de `allowed*` conta como esgotado.
+
 - [ ] **Mostrar o estado das janelas no Overview.** Neste momento o operador só
       vê o efeito (a fatia na banda), não a causa. Uma linha com "5h: 62% ·
       reinicia às 17:30 · sem overage" tornava o gate previsível em vez de
