@@ -3143,8 +3143,15 @@ function secEl(tag, cls, text){
 }
 
 const secCfg = (name) => (projById(name) || {}).security || {};
+/* EXACTLY what security_enabled does in the engine, and no wider. It reads the
+   field through `jq -r`, which prints the boolean true and the string "true"
+   identically, and compares the result to "true" — so those two values are on
+   and every other one, `1` included, is off. /api/config serves projects.json
+   through untouched, so the page sees the same raw JSON jq does: a project
+   accepted here but refused there would offer an Analyse button whose only
+   possible outcome is the engine's refusal. */
 const secEnabled = (p) => { const s = (p || {}).security;
-  return !!(s && (s.enabled === true || s.enabled === "true" || s.enabled === 1)); };
+  return !!(s && (s.enabled === true || s.enabled === "true")); };
 const secMinSeverity = (name) => { const v = secCfg(name).min_severity;
   return SEV_ORDER.includes(v) ? v : "low"; };
 const secDefaultProfile = (name) => { const v = secCfg(name).default_profile;
@@ -3217,14 +3224,19 @@ async function secLoadPostures(force){
       const list = await secFetch("/api/security?project=" + encodeURIComponent(name));
       if(gen !== secPostGen) return;
       const done = (list || []).find(a => a.state !== "running") || null;
+      // The FINDINGS are cached, never the counts derived from them: the counts
+      // depend on the project's min_severity, this cache outlives an edit to it,
+      // and a posture computed once would keep painting yesterday's threshold
+      // until something happened to evict the project. Deriving at paint costs
+      // one pass over an array the page already holds.
       const rec = {state:"ok", analyses:list || [], latest:(list || [])[0] || null,
-                   done, counts:null};
+                   done, findings:null};
       secPost[name] = rec;
       secRenderList();
       if(done){
         const ck = await secFetch("/api/security/checklist?analysis=" + encodeURIComponent(done.id));
         if(gen !== secPostGen) return;
-        rec.counts = secPosture(ck.findings || [], secMinSeverity(name));
+        rec.findings = ck.findings || [];
       }
     }catch(e){
       if(gen !== secPostGen) return;
@@ -3282,23 +3294,28 @@ function secProjectRow(p){
   }
   grow.appendChild(meta);
   row.appendChild(grow);
-  if(on) row.appendChild(secPosturePills(secPost[p.name]));
+  if(on) row.appendChild(secPosturePills(secPost[p.name], p.name));
   return row;
 }
 
-function secPosturePills(rec){
+/* The project's name, not just its record: the severity floor is a project
+   setting and the posture is computed here, at paint, from the cached findings
+   — so changing min_severity in the editor repaints correctly instead of
+   showing a count taken against the old threshold. */
+function secPosturePills(rec, name){
   const wrap = secEl("div", "sevpills");
-  if(!rec || rec.state !== "ok" || !rec.counts) return wrap;
-  const total = SEV_ORDER.reduce((n, s) => n + (rec.counts[s] || 0), 0) + (rec.counts.other || 0);
+  if(!rec || rec.state !== "ok" || !rec.findings) return wrap;
+  const counts = secPosture(rec.findings, secMinSeverity(name));
+  const total = SEV_ORDER.reduce((n, s) => n + (counts[s] || 0), 0) + (counts.other || 0);
   if(!total){
     wrap.appendChild(secEl("span", "sevpill clean", "nothing open"));
     return wrap;
   }
   ["critical","high","medium","low"].forEach(sev => {
-    if(!rec.counts[sev]) return;
-    wrap.appendChild(secEl("span", "sevpill " + sev, rec.counts[sev] + " " + sev));
+    if(!counts[sev]) return;
+    wrap.appendChild(secEl("span", "sevpill " + sev, counts[sev] + " " + sev));
   });
-  if(rec.counts.other) wrap.appendChild(secEl("span", "sevpill low", rec.counts.other + " other"));
+  if(counts.other) wrap.appendChild(secEl("span", "sevpill low", counts.other + " other"));
   return wrap;
 }
 
@@ -3308,9 +3325,14 @@ const secState = {project:"", repo:"", branch:"", analyses:[], analysis:null,
 let secTimer = null;
 function secStopPoll(){ if(secTimer){ clearInterval(secTimer); secTimer = null; } }
 function secSyncPoll(){
-  // Polling exists for one reason — an analysis in flight — so it starts and
-  // stops on that single fact rather than on which screen is open.
-  const running = secState.project && secState.analyses.some(a => a.state === "running");
+  // Polling exists for one reason — an analysis in flight — but WHERE the
+  // operator is looking is part of that reason, and leaving the view has to end
+  // it. It used to decide on project+running alone, so a secReload() already in
+  // the air when the view was left re-armed the interval a moment after
+  // secLeave() had cleared it: two subprocess-backed GETs every four seconds,
+  // from the Overview or the Jobs page, for as long as the analysis ran.
+  const running = currentView === "security" && secState.project
+                  && secState.analyses.some(a => a.state === "running");
   if(running && !secTimer) secTimer = setInterval(secReload, SEC_POLL_MS);
   if(!running) secStopPoll();
 }
@@ -3335,6 +3357,12 @@ function secBack(){
 
 async function secOpen(project){
   secStopPoll();
+  // This screen's generation, in the same counter secShowAnalysis uses. Opening
+  // a project is three round trips (its analyses, its branches, its checklist)
+  // and the list is one click away behind Back: without this, a slow answer for
+  // the project somebody left lands on the project they are now looking at and
+  // fills its pickers with another repository's branches.
+  const seq = ++secState.seq;
   secState.project = project;
   secState.analysis = null; secState.findings = []; secState.analyses = [];
   secState.stateFilter = "";
@@ -3361,13 +3389,21 @@ async function secOpen(project){
   $("sec-branch-other").value = "";
 
   try{
-    secState.analyses = await secFetch("/api/security?project=" + encodeURIComponent(project));
-  }catch(e){ secState.analyses = []; secStatus("Could not read its analyses — " + e.message); }
+    const list = await secFetch("/api/security?project=" + encodeURIComponent(project));
+    if(seq !== secState.seq) return;      // a newer screen is up
+    secState.analyses = list;
+  }catch(e){
+    if(seq !== secState.seq) return;
+    secState.analyses = []; secStatus("Could not read its analyses — " + e.message);
+  }
   // Open on what was last analysed: that is the screen somebody came back for.
   const last = secState.analyses[0];
   if(last && repos.includes(last.repo)) $("sec-repo").value = last.repo;
   await secLoadBranches(last ? last.branch : "");
+  if(seq !== secState.seq) return;
   if(last && SEC_PROFILES.includes(last.profile)) $("sec-profile").value = last.profile;
+  // secSyncScope() takes the next generation for itself, so nothing after this
+  // may test `seq` again.
   await secSyncScope();
 }
 
@@ -3384,14 +3420,21 @@ function secFill(select, values, selected){
 }
 
 async function secLoadBranches(want){
+  // Same generation guard as secOpen and secShowAnalysis, for the same reason:
+  // this is a `git for-each-ref` on the server, and the answer for the repo
+  // somebody has already navigated away from must not fill the picker of the
+  // one now on screen.
+  const seq = secState.seq;
   const sel = $("sec-branch");
   secFill(sel, ["…"], "…");
   let branches = [];
   try{
     const j = await secFetch("/api/security/branches?project="
       + encodeURIComponent(secState.project) + "&repo=" + encodeURIComponent($("sec-repo").value));
+    if(seq !== secState.seq) return;
     branches = j.branches || [];
   }catch(e){
+    if(seq !== secState.seq) return;
     secFill(sel, []);
     toast("Could not list branches — " + e.message, true);
     return;
@@ -3440,12 +3483,15 @@ async function secShowAnalysis(id){
 /* Re-read the list and, with it, whatever is on screen. Called by the poll
    while an analysis is running, and once after every action. */
 async function secReload(){
-  if(!secState.project) return;
+  if(!secState.project || currentView !== "security") return;
   try{
     secState.analyses = await secFetch("/api/security?project="
       + encodeURIComponent(secState.project));
   }catch(e){ secStopPoll(); return; }
-  if(!secState.project) return;   // navigated away while the fetch was out
+  // Left the project screen, or the view entirely, while the fetch was out. The
+  // interval is cleared here as well as in secLeave(), because THIS is the call
+  // that would otherwise re-arm it on the way out.
+  if(!secState.project || currentView !== "security"){ secStopPoll(); return; }
   const mine = secState.analyses.filter(a => a.repo === secState.repo
                                           && a.branch === secState.branch);
   // Follow the newest analysis of the branch on screen: one just started is the
@@ -3703,7 +3749,13 @@ $("sr-why").addEventListener("input", () => { $("sr-err").hidden = true; });
 function secRunFor(a){
   if(!a || !a.run_id) return null;
   let best = null, bestd = Infinity;
-  (DATA.runs || []).forEach(r => {
+  // The live runs AND the journal. A run is journaled when it ENDS, so reading
+  // DATA.runs alone left "Open the run" missing for the whole of an analysis in
+  // flight — the minutes anybody most wants to watch it, and the one thing on
+  // this screen that can show what the agent is doing. unjournaledLive() rather
+  // than liveRuns(), for the reason the Runs list uses it: a slot not yet
+  // cleared for a run already in the journal is the same run listed twice.
+  unjournaledLive().concat(DATA.runs || []).forEach(r => {
     if(r.id !== a.run_id) return;
     const d = Math.abs((r.start || 0) - (a.started || 0));
     if(d < bestd){ best = r; bestd = d; }

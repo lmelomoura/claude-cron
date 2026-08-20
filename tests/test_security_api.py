@@ -257,7 +257,7 @@ def test_analyze_defaults_the_profile_to_standard(srv, monkeypatch):
     monkeypatch.setattr(srv, "cc", fake_cc)
     code, payload = srv.security_analyze({"project": "web", "repo": "web", "branch": "main"})
     assert code == 200
-    assert seen["args"] == ["security", "analyze", "web", "web", "main", "standard"]
+    assert seen["args"] == ["security", "analyze", "--detach", "web", "web", "main", "standard"]
 
 
 def test_analyze_passes_a_valid_branch_straight_through(srv, monkeypatch):
@@ -271,7 +271,39 @@ def test_analyze_passes_a_valid_branch_straight_through(srv, monkeypatch):
     code, payload = srv.security_analyze({"project": "web", "repo": "web",
                                           "branch": "release/2.1", "profile": "deep"})
     assert code == 200
-    assert seen["args"] == ["security", "analyze", "web", "web", "release/2.1", "deep"]
+    assert seen["args"] == ["security", "analyze", "--detach", "web", "web", "release/2.1", "deep"]
+
+
+def test_analyze_detaches_the_run_rather_than_holding_the_request(srv, monkeypatch):
+    """`cc()` gives a command 30 seconds and then SIGKILLs it, and an analysis
+    is minutes of work: run inline, this route timed out, the killed shell never
+    reached the close, and the analysis stayed `running` for ever — which is
+    what the page reads to decide that Analyse must stay disabled for that
+    project.
+
+    And it must NOT be backgrounded wholesale (`cc(..., background=True)`):
+    every refusal the CLI makes — security not enabled, no such branch, one
+    already running — is a sentence this page shows, and a fire-and-forget
+    Popen can only ever answer "started". `--detach` is the split that keeps
+    both: the refusals and the analysis row are synchronous, only the run is
+    detached.
+    """
+    seen = {}
+
+    def fake_cc(args, stdin=None, background=False):
+        seen["args"] = args
+        seen["background"] = background
+        return True, ('analysis 7 — web/web @ main (abc1234) — job security-web\n'
+                      '{"analysis_id":7}')
+
+    monkeypatch.setattr(srv, "cc", fake_cc)
+    code, payload = srv.security_analyze({"project": "web", "repo": "web", "branch": "main"})
+    assert code == 200
+    assert "--detach" in seen["args"], "the run is held on the request thread"
+    assert seen["background"] is False, \
+        "the whole call was backgrounded — every refusal the CLI makes is lost"
+    # The page follows the analysis by this id.
+    assert '"analysis_id":7' in payload["output"]
 
 
 def test_analyze_reports_a_cli_failure_as_500(srv, monkeypatch):

@@ -210,6 +210,59 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The Analyse button starts the run and lets go of it, and a crashed run can
+  no longer brick it.** The control server gives a CLI call thirty seconds and
+  then SIGKILLs the shell it started; an analysis is minutes of work. So the
+  button spun for half a minute, showed a timeout, and the killed shell never
+  reached the close — the analysis stayed `running` in the ledger *for ever*,
+  which is exactly what the page reads to decide that Analyse must stay
+  disabled for that project. One click, and that project could never be
+  analysed from the dashboard again, with a Claude process still running that
+  nothing was waiting for.
+
+  `security analyze` now takes `--detach`: every refusal (security not enabled,
+  no such branch, one already running), the analysis row and the request file
+  are still synchronous, so the page keeps getting the engine's own sentence
+  when it asks for something impossible — only the run is handed to a
+  backgrounded subshell, and the command prints `{"analysis_id": n}` and
+  returns. The close travels with the detached half, so a run that ends at one
+  of `run_job`'s early returns still closes its row. Backgrounding the whole
+  call instead would have fixed the timeout and lost every refusal: a
+  fire-and-forget launch can only ever answer "started".
+
+  And the rows already stuck that way are swept. Before it opens anything,
+  `security analyze` closes any analysis of the project that says `running`
+  while the derived job holds no live slot — no live slot means no live run,
+  whatever the ledger says — as `failed`, with `engine: the run behind this
+  analysis is gone` on the row. A row younger than
+  `CLAUDE_CRON_SECURITY_STALE_GRACE` (120s) is left alone: a detached run needs
+  a second or two to reach its slot, and sweeping inside that window would fail
+  the analysis that is about to start.
+
+- **A project with one checkout keeps one security history.** `security analyze
+  <project> <repo> <branch>` ignores `<repo>` when the project declares no
+  `repos` — there is one checkout and the argument names nothing — but the
+  ledger still filed the analysis under whatever was typed. The dashboard files
+  these under the project's own name, so a hand-typed `security analyze web
+  repo main` opened a second, parallel history the page never showed beside the
+  first. The repo argument is now normalised to the project name in that case,
+  for the page and the terminal alike.
+
+- **Leaving the Security view stops the analysis poll.** It started and stopped
+  on "is an analysis running", so a reload already in the air when the view was
+  left re-armed the four-second interval a moment after leaving cleared it —
+  two subprocess-backed GETs every four seconds, from the Overview or the Jobs
+  page, for as long as the analysis ran. "Open the run" also works *while* the
+  analysis runs now: it was reading only the journal, which a run reaches when
+  it ends, so the link was missing for exactly the minutes somebody wants to
+  watch it. The project rows cache the findings rather than the posture
+  computed from them, so changing a project's `min_severity` repaints the right
+  counts; opening a project carries a generation guard, so a slow answer for
+  the project you left cannot fill the pickers of the one you are looking at;
+  and the page now agrees with the engine on what `security.enabled` means
+  (`true` or `"true"`, and nothing else — it used to accept `1`, which the
+  engine reads as off).
+
 - **`/api/security/branches` no longer answers a checkout with no branches
   yet with a blank error.** An empty repository answers with an empty branch
   list instead.

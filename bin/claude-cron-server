@@ -2257,7 +2257,19 @@ def security_analyze(body):
         return 400, {"error": "branch name has characters that are not allowed"}
     if profile not in PROFILES:
         return 400, {"error": f"profile must be one of {PROFILES}"}
-    ok, out = cc(["security", "analyze", project, repo, branch, profile])
+    # --detach, and NOT cc(..., background=True). An analysis is minutes of
+    # work and cc() gives a command 30 seconds before subprocess.run SIGKILLs
+    # it: run inline this route timed out, and the killed shell never reached
+    # the close, so the analysis stayed `running` for ever, the page's Analyse
+    # button stayed disabled for that project and the agent was orphaned.
+    # Backgrounding the WHOLE call would fix the timeout and lose the point of
+    # the route: every refusal the CLI makes — security not enabled, no such
+    # branch, one already running — is a sentence this page shows, and a
+    # fire-and-forget Popen can only ever answer "started". --detach keeps the
+    # synchronous half (the refusals, the analysis row, the request file) and
+    # detaches only the run, so `output` carries the id of a row that really
+    # exists.
+    ok, out = cc(["security", "analyze", "--detach", project, repo, branch, profile])
     return (200, {"ok": True, "output": out}) if ok else (500, {"error": out})
 
 

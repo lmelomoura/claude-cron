@@ -496,7 +496,14 @@ def test_the_security_view_exists_and_is_registered(srv):
     page = srv.render_page("boot-authed")
     assert 'data-view="security"' in page
     assert 'id="view-security"' in page
-    assert '"security"' in page  # the VIEWS array
+    # Against the VIEWS array itself, not against the page. A bare
+    # `'"security"' in page` was satisfied by the nav button's own
+    # `data-view="security"` a few hundred bytes earlier, so it could never
+    # fail: setView() falls back to the overview for a name VIEWS does not
+    # carry, and dropping it from that array would have left the nav item, the
+    # panel and this assertion all in place with the view unreachable.
+    views = re.search(r"const VIEWS\s*=\s*\[(.*?)\];", page).group(1)
+    assert '"security"' in views, f"the Security view is not in VIEWS: {views}"
 
 
 def test_every_sidenav_item_has_a_view(srv):
@@ -506,18 +513,8 @@ def test_every_sidenav_item_has_a_view(srv):
         assert f'id="view-{view}"' in page, f"nav item {view} has no view"
 
 
-def test_the_security_view_never_renders_a_finding_with_innerhtml(srv):
-    """Findings carry file paths and titles from analysed code. Injecting them
-    as HTML would let a repository script the dashboard."""
-    page = srv.render_page("boot-authed")
-    block = page.split('id="view-security"', 1)[1][:20000]
-    assert ".innerHTML = f." not in block
-    assert "innerHTML=f." not in block
-
-
 def test_the_security_block_only_ever_puts_an_icon_through_innerhtml(srv):
-    """The general form of the check above, over the code rather than a window
-    of the markup.
+    """Every `innerHTML =` in the Security block, read from the code itself.
 
     A finding's title, its file paths and — the one nobody expects — the BRANCH
     it was found on are all strings a repository chooses. Git allows '<', '>'
@@ -526,6 +523,12 @@ def test_the_security_block_only_ever_puts_an_icon_through_innerhtml(srv):
     the only thing this block ever assigns to innerHTML is an entry from the
     page's own icon table, optionally followed by a literal label. Everything
     else goes in as text.
+
+    This replaced a check that scanned the first 20 KB of the MARKUP after
+    `id="view-security"`. That window ends long before the script does — the
+    Security JavaScript is a thousand lines further down the page — so the
+    assertion was reading the view's HTML, where no JavaScript exists, and
+    could not have failed whatever the code did.
     """
     block = _security_js(srv)
     found = [r.strip() for r in re.findall(r"\.innerHTML\s*=\s*([^;\n]+)", block)]
@@ -533,6 +536,50 @@ def test_the_security_block_only_ever_puts_an_icon_through_innerhtml(srv):
     allowed = re.compile(r'^I\[name\] \|\| ""$|^I\.[A-Za-z0-9]+(?: \+ "[^"]*")?$')
     bad = [r for r in found if not allowed.match(r)]
     assert not bad, f"innerHTML in the Security view carrying more than an icon: {bad}"
+
+
+# `X.innerHTML = …` is one door into the HTML parser. These are the others, and
+# the scan above sees none of them: an edit that wanted to APPEND an icon rather
+# than replace one, or to set a handler by attribute, would reach for one of
+# these and pass every guard in this file. Each entry is (pattern, what to call
+# it in the failure message).
+HTML_SINKS = [
+    (r"\.innerHTML\s*\+=", "innerHTML +="),
+    (r"insertAdjacentHTML", "insertAdjacentHTML"),
+    (r"outerHTML", "outerHTML"),
+    (r"""\[\s*["']innerHTML["']\s*\]""", 'the ["innerHTML"] spelling'),
+    (r"createContextualFragment", "createContextualFragment"),
+    (r"DOMParser", "DOMParser"),
+    (r"""setAttribute\(\s*["']on""", 'setAttribute("on…", …)'),
+]
+
+
+def _html_sinks(block):
+    return [name for pat, name in HTML_SINKS if re.search(pat, block)]
+
+
+def test_the_security_block_reaches_no_other_html_sink(srv):
+    """The rule is "nothing from an analysis is ever handed to the HTML parser",
+    not "nothing is assigned to .innerHTML". A branch name is a string a
+    repository chooses and git allows '<', '>' and '&' in it, so every one of
+    these is the same hole under a different name."""
+    found = _html_sinks(_security_js(srv))
+    assert not found, f"the Security view reaches an HTML sink: {found}"
+
+
+def test_the_html_sink_denylist_would_catch_one(srv):
+    """The guard above passes today because the block is clean, which is also
+    what a broken guard looks like. Mutate the real block the way an edit
+    actually would and check each shape is seen."""
+    block = _security_js(srv)
+    assert "insertAdjacentHTML" in _html_sinks(
+        block + '\n  row.insertAdjacentHTML("beforeend", "<b>" + f.title + "</b>");\n')
+    assert "innerHTML +=" in _html_sinks(block + "\n  host.innerHTML += f.title;\n")
+    assert "outerHTML" in _html_sinks(block + "\n  row.outerHTML = f.rationale;\n")
+    assert 'the ["innerHTML"] spelling' in _html_sinks(
+        block + '\n  row["innerHTML"] = f.title;\n')
+    assert 'setAttribute("on…", …)' in _html_sinks(
+        block + '\n  b.setAttribute("onclick", "secDecide(" + f.id + ")");\n')
 
 
 def test_the_severity_filter_never_hides_a_fixed_finding(srv):
@@ -600,6 +647,80 @@ def test_the_checklist_offers_every_state_the_engine_can_produce(srv):
         assert f"{state}:" in block or f'"{state}":' in block, f"{state} has no label"
 
 
+def test_the_run_link_finds_a_run_that_is_still_going(srv):
+    """Structural, not behavioural: "Open the run" was reading DATA.runs alone.
+
+    A run reaches the journal when it ENDS, so for the whole of an analysis in
+    flight — the minutes anybody most wants to watch it, and the only place on
+    this screen that shows what the agent is doing — the button was simply
+    absent. The page already has one answer for "the runs going right now that
+    the journal has not caught up with", and the Runs list uses it for the same
+    reason: a slot not yet cleared for a run already journaled is one run
+    listed twice.
+    """
+    fn = _plainfn(_security_js(srv), "secRunFor")
+    assert "unjournaledLive()" in fn, "the run link cannot see a run that is still going"
+
+
+def test_the_project_list_caches_findings_rather_than_a_posture(srv):
+    """`min_severity` is a project setting, and the posture on the project rows
+    is computed from it. Caching the derived counts meant an edit to the
+    threshold repainted the same numbers until something else happened to evict
+    the project from the cache; the findings are what is stable, so they are
+    what is kept."""
+    block = _security_js(srv)
+    assert "rec.findings = ck.findings" in block, "the cache does not hold the findings"
+    assert "rec.counts" not in block, "a derived posture is still being cached"
+    pills = _plainfn(block, "secPosturePills")
+    assert "secPosture(rec.findings, secMinSeverity(name))" in pills, \
+        "the posture is not derived at paint from the project's own floor"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_analysis_poll_cannot_outlive_the_view(srv, tmp_path):
+    """Leaving the Security view has to stop the four-second poll, and stay
+    stopped.
+
+    secLeave() clears the interval, but secSyncPoll() decided on
+    project-and-running alone — so a secReload() that was already in the air
+    when the operator navigated away re-armed it a moment later, and the page
+    went on making two subprocess-backed GETs every four seconds from the
+    Overview, the Jobs page or anywhere else for the whole length of the
+    analysis. The view belongs in the condition.
+    """
+    block = _security_js(srv)
+    src = _plainfn(block, "secStopPoll") + "\n" + _plainfn(block, "secSyncPoll")
+    script = tmp_path / "poll.js"
+    script.write_text("""
+    let live = 0;                       // intervals currently armed
+    const SEC_POLL_MS = 4000;
+    let secTimer = null;
+    const secReload = () => {};
+    globalThis.setInterval = () => { live++; return {}; };
+    globalThis.clearInterval = () => { live--; };
+    let currentView = "security";
+    const secState = {project:"web", analyses:[{state:"running"}]};
+    """ + src + """
+    const out = {};
+    secSyncPoll();                       out.watching = live;
+    currentView = "overview";
+    secSyncPoll();                       out.left = live;
+    secSyncPoll();                       out.lateReload = live;
+    currentView = "security";
+    secSyncPoll();                       out.cameBack = live;
+    secState.analyses = [{state:"done"}];
+    secSyncPoll();                       out.finished = live;
+    console.log(JSON.stringify(out));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["watching"] == 1, "an analysis in flight on screen is not being watched"
+    assert out["left"] == 0, "leaving the view left the poll running"
+    assert out["lateReload"] == 0, "a reload landing after the view was left re-armed the poll"
+    assert out["cameBack"] == 1, "coming back to the view did not resume watching"
+    assert out["finished"] == 0, "the poll outlived the analysis"
+
+
 def test_an_analysis_is_only_ever_started_through_its_own_op(srv):
     """Never a bare `run` of the derived job.
 
@@ -610,7 +731,13 @@ def test_an_analysis_is_only_ever_started_through_its_own_op(srv):
     """
     block = _security_js(srv)
     assert 'api("security_analyze"' in block
-    assert 'api("run"' not in block, "the Security view can start a bare run of the derived job"
+    # Both quotings. The page writes double quotes throughout, but this guard is
+    # here to stop an edit nobody reviews closely, and `api('run', …)` is the
+    # same call — a denylist that only knows one spelling of a string literal is
+    # a denylist with a door in it.
+    for spelling in ('api("run"', "api('run'"):
+        assert spelling not in block, \
+            f"the Security view can start a bare run of the derived job: {spelling}"
 
 
 def test_a_report_download_carries_the_token(srv):

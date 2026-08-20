@@ -322,6 +322,14 @@ security_job_id() { printf '%s%s' "$SECURITY_JOB_PREFIX" "$(security_slug "$1")"
 # ceiling at all: fail-open on the one gate that actually applies.
 SECURITY_FALLBACK_BUDGET_USD=2
 
+# How long an analysis row that says `running` is given the benefit of the doubt
+# when the derived job holds no live slot (see the sweep in cmd_security_analyze).
+# A detached run needs a second or two to reach acquire_slot -- it reads the job,
+# builds the prompt and resolves the model first -- and a row swept inside that
+# window would be the row of a run that is about to start, marked failed while it
+# goes on to produce a perfectly good report nothing will read.
+SECURITY_STALE_GRACE="${CLAUDE_CRON_SECURITY_STALE_GRACE:-120}"
+
 # ---- what a bad security block is allowed to cost -------------------------
 # Everything derivation refuses -- a name that slugs to nothing, two projects
 # claiming one id, a real job already holding it, a budget that is not a number
@@ -500,19 +508,114 @@ cmd_security_branches() { # cmd_security_branches <project> <repo> -> every
     | sort -u
 }
 
-cmd_security_analyze() { # <project> <repo> <branch> [profile]
+# The run behind one analysis, and the close that has to happen whatever the run
+# does. Two callers -- inline for someone at a terminal, and a backgrounded
+# subshell under `--detach` -- and BOTH need the sweep: run_job returns from
+# several paths BEFORE the point where it closes the analysis itself (the slot
+# gate, a cwd that has gone missing, an empty prompt), and each of them would
+# otherwise leave the row `running` for ever.
+#
+# CC_SECURITY_AGENT marks the whole run as "this is the agent under review".
+# `claude-cron security` is one command with one door, and the agent types it
+# from its own tool shell inside the worktree: without a marker, `security
+# decide --state false_positive` permanently suppresses a finding the agent
+# itself just reported, and `security rename-project` moves the ledger out from
+# under the project. bin/security/cli.py refuses those three verbs when it sees
+# this. It is deliberately NOT limited to the agent's own process:
+# security_close_analysis runs inside run_job, still under this assignment, and
+# `finish` stays allowed precisely so that close keeps working.
+#
+# CC_SECURITY_ANALYSIS_ID is what the close-out reads the row id from. The
+# request file is shared and mutable -- the next analysis of this project
+# rewrites it -- so a close that reads it can land on another analysis's row.
+#
+# A prefix assignment on a FUNCTION call, not an `export`: bash puts both in the
+# environment of everything the call reaches (run_job -> env -> claude -> the
+# agent's Bash tool) and takes them back out when it returns, so the sweep below
+# and everything after it run unmarked.
+security_run_analysis() { # security_run_analysis <job-id> <analysis-id> <branch>
+  local jid="$1" aid="$2" branch="$3" rc=0
+  # --force because a derived job is disabled: it exists to be run on demand,
+  # never on a tick.
+  CC_BASE_OVERRIDE="$branch" CC_SKIP_PROVISION=1 \
+  CC_SECURITY_AGENT=1 CC_SECURITY_ANALYSIS_ID="$aid" \
+    run_job "$jid" --force || rc=$?
+  # `--if-running` makes this a no-op for the ordinary case where the run really
+  # happened and has already closed the row with its own verdict.
+  security_py finish --analysis "$aid" --state failed --if-running \
+    --note "This analysis never ran: the engine did not start the run — see $TICK_LOG." \
+    >/dev/null 2>&1 || log_tick "$jid: could not close analysis $aid"
+  return "$rc"
+}
+
+cmd_security_analyze() { # [--detach] <project> <repo> <branch> [profile]
+  # `--detach` opens the analysis and launches its run in the background,
+  # printing the id and returning at once. It is what the dashboard's Analyse
+  # button goes through: the control server gives a CLI call 30 seconds and then
+  # SIGKILLs the bash it started, and an analysis is minutes of work -- so the
+  # button spun for half a minute, reported a timeout, and the killed shell never
+  # reached the close, leaving the row `running` for ever, the Analyse button
+  # disabled for that project for ever, and the agent orphaned. Everything the
+  # caller needs a synchronous answer to -- every refusal below, the row, the
+  # request file -- still happens before this returns, so the page keeps getting
+  # the engine's own sentence when it asks for something impossible.
+  local detach=0
+  if [ "${1:-}" = "--detach" ]; then detach=1; shift; fi
+  [ $# -ge 3 ] \
+    || die "usage: claude-cron security analyze [--detach] <project> <repo> <branch> [profile]"
   local project="$1" repo="$2" branch="$3" profile="${4:-standard}"
   security_enabled "$project" || die "security is not enabled for project '$project'"
   local jid; jid="$(security_job_id "$project")"
   [ "$jid" != "$SECURITY_JOB_PREFIX" ] \
     || die "project '$project' has a name that cannot derive a job id"
+  # Asked ONCE and used by both gates below: slots_active walks (and prunes) the
+  # job's slot directory, and the two questions here are the same question read
+  # in opposite directions.
+  local live; live="$(slots_active "$jid")"
+  # A row that says `running` while nothing is running it is a DEAD analysis: the
+  # run was killed, the machine rebooted, or -- before --detach existed -- the
+  # server's 30s timeout SIGKILLed the shell carrying it before it could close.
+  # The page disables Analyse for as long as any analysis of the project says
+  # `running`, so a single one of these bricks the button for good. Swept before
+  # the already-running refusal below, because it is what makes that refusal
+  # trustworthy: no live slot means no live run, whatever the ledger says.
+  #
+  # $SECURITY_STALE_GRACE keeps the sweep off a row whose own run is still on its
+  # way to acquire_slot.
+  if [ "$live" -eq 0 ]; then
+    local dead
+    while IFS= read -r dead; do
+      [ -n "$dead" ] || continue
+      security_py finish --analysis "$dead" --state failed --if-running \
+        --note "engine: the run behind this analysis is gone" >/dev/null 2>&1 \
+        && log_tick "$jid: closed analysis $dead — it said running, and no run of $jid is alive" \
+        || log_tick "$jid: could not close stale analysis $dead"
+    done <<EOF
+$(security_py list --project "$project" 2>/dev/null \
+    | "$JQ" -r --argjson now "$(now_epoch)" \
+             --argjson grace "$(num "$SECURITY_STALE_GRACE" 120)" \
+      '.[] | select(.state == "running")
+           | select(($now - (.started // 0)) >= $grace) | .id' 2>/dev/null)
+EOF
+  fi
   # The derived job carries max_parallel=1, so run_job already refuses a second
   # analysis of the same project -- but it refuses INSIDE run_job, with one
   # line in tick.log and exit 0, which from a command someone just typed reads
   # as success. Ask first: the refusal becomes a sentence on their terminal,
   # and no analysis row is opened for a run that is never going to happen.
-  [ "$(slots_active "$jid")" -gt 0 ] \
+  [ "$live" -gt 0 ] \
     && die "an analysis of '$project' is already running (job $jid) — wait for it to finish, or stop it with: claude-cron stop $jid"
+  # A project with a single checkout has no `repos` rows, and the argument names
+  # nothing: project_repo_path ignores it and hands back the project cwd either
+  # way. The `repo` column is still what an analysis is filed under, so whatever
+  # was typed would become a second, parallel history the dashboard never shows
+  # beside the first -- the page files these under the project's own name
+  # (secRepos() in bin/dashboard.html). One spelling, decided here, for the page
+  # and the terminal alike.
+  case "$(projects_json | "$JQ" -r --arg n "$project" \
+            '[.projects[] | select(.name == $n) | .repos // []] | .[0] | length')" in
+    0) repo="$project" ;;
+  esac
   local cwd; cwd="$(project_repo_path "$project" "$repo")"
   [ -n "$cwd" ] && [ -d "$cwd" ] || die "no checkout for $project/$repo"
   # Refused before it reaches git, for the same reason wt_base_ref refuses it:
@@ -534,7 +637,10 @@ cmd_security_analyze() { # <project> <repo> <branch> [profile]
   aid="$(security_py open-analysis --project "$project" --repo "$repo" \
           --branch "$branch" --commit "$sha" --profile "$profile" \
           --run-id "$jid" | "$JQ" -r '.analysis_id')"
-  [ -n "$aid" ] && [ "$aid" != "null" ] || die "security: could not open an analysis"
+  # A plain integer or nothing: it is printed straight back as JSON under
+  # --detach, so "null", an error message or an empty line must never get past
+  # here and become a body the page then has to guess at.
+  case "$aid" in ''|*[!0-9]*) die "security: could not open an analysis" ;; esac
 
   # Written atomically: security_derived_jobs reads this file on every single
   # job_get -- dozens of times per run -- so a reader must never catch it
@@ -549,41 +655,27 @@ cmd_security_analyze() { # <project> <repo> <branch> [profile]
     && mv -f "$reqtmp" "$req" || { rm -f "$reqtmp"; die "security: cannot write $req"; }
 
   echo "analysis $aid — $project/$repo @ $branch ($sha) — job $jid"
-  # --force because a derived job is disabled: it exists to be run on demand,
-  # never on a tick.
-  #
-  # CC_SECURITY_AGENT marks the whole run as "this is the agent under review".
-  # `claude-cron security` is one command with one door, and the agent types it
-  # from its own tool shell inside the worktree: without a marker, `security
-  # decide --state false_positive` permanently suppresses a finding the agent
-  # itself just reported, and `security rename-project` moves the ledger out
-  # from under the project. bin/security/cli.py refuses those three verbs when
-  # it sees this. It is deliberately NOT limited to the agent's own process:
-  # security_close_analysis runs inside run_job, still under this assignment,
-  # and `finish` stays allowed precisely so that close keeps working.
-  #
-  # CC_SECURITY_ANALYSIS_ID is what the close-out reads the row id from. The
-  # request file is shared and mutable -- the next analysis of this project
-  # rewrites it -- so a close that reads it can land on another analysis's row.
-  #
-  # A prefix assignment on a FUNCTION call, not an `export`: bash puts both in
-  # the environment of everything the call reaches (run_job -> env -> claude ->
-  # the agent's Bash tool) and takes them back out when it returns, so the
-  # sweep below and everything after it run unmarked.
-  local rc=0
-  CC_BASE_OVERRIDE="$branch" CC_SKIP_PROVISION=1 \
-  CC_SECURITY_AGENT=1 CC_SECURITY_ANALYSIS_ID="$aid" \
-    run_job "$jid" --force || rc=$?
-  # run_job returns from several paths BEFORE the point where it closes the
-  # analysis -- the slot gate, a cwd that has gone missing, an empty prompt --
-  # and each of them would leave this row `running` for ever, which the page
-  # then shows as an analysis still in flight and latest_analysis refuses as a
-  # baseline. `--if-running` makes this a no-op for the ordinary case where the
-  # run really happened and has already closed the row with its own verdict.
-  security_py finish --analysis "$aid" --state failed --if-running \
-    --note "This analysis never ran: the engine did not start the run — see $TICK_LOG." \
-    >/dev/null 2>&1 || log_tick "$jid: could not close analysis $aid"
-  return "$rc"
+  if [ "$detach" -eq 1 ]; then
+    # The repo's detached-run idiom (cmd_tick's `nohup … _exec`) in the one form
+    # that can carry the four run-scoped variables: a backgrounded subshell.
+    #
+    # The stdio redirection is not tidiness. The control server reads this
+    # command's stdout to EOF, so a child left holding the pipe would hang the
+    # HTTP request for as long as the analysis runs -- exactly the 30-second
+    # timeout this flag exists to avoid. `trap '' HUP` is the whole of what
+    # nohup(1) does, and an ignored signal survives exec: the run outlives the
+    # terminal, or the request, that started it.
+    ( trap '' HUP
+      security_run_analysis "$jid" "$aid" "$branch" ) </dev/null >> "$DATA_DIR/exec.log" 2>&1 &
+    local dpid=$!
+    disown "$dpid" 2>/dev/null || true
+    log_tick "$jid: launched detached analysis $aid ($project/$repo @ $branch)"
+    # The one line a caller can parse. The page shows it back as the server's
+    # `output`; anything reading this command reads the id from here.
+    printf '{"analysis_id":%s}\n' "$aid"
+    return 0
+  fi
+  security_run_analysis "$jid" "$aid" "$branch"
 }
 
 # Called from run_job at the same point run_end_hook already is, and BEFORE it:
@@ -5267,9 +5359,16 @@ JSON
   [ "$("$JQ" -r '.analysis_id' "$secreq" 2>/dev/null)" = "1" ] \
     && ok "the request file carries the analysis id the run has to report against" \
     || bad "request file: $(cat "$secreq" 2>/dev/null)"
-  [ "$("$JQ" -r '[.branch,.profile,.repo] | join(",")' "$secreq" 2>/dev/null)" = "main,quick,repo" ] \
+  # "Sec App", not the "repo" that was typed: the project has no `repos` rows,
+  # so the argument names nothing and the analysis is filed under the project's
+  # own name -- the same spelling the dashboard uses (secRepos()), so a
+  # hand-typed analysis and a page-triggered one land in ONE history.
+  [ "$("$JQ" -r '[.branch,.profile,.repo] | join(",")' "$secreq" 2>/dev/null)" = "main,quick,Sec App" ] \
     && ok "and the branch, profile and repo the derived job's prompt is built from" \
-    || bad "request file lost the branch/profile/repo"
+    || bad "request file: $("$JQ" -r '[.branch,.profile,.repo] | join(",")' "$secreq" 2>/dev/null)"
+  [ "$( ( sec_env; security_py list --project "Sec App" | "$JQ" -r '.[0].repo' ) )" = "Sec App" ] \
+    && ok "a single-checkout project files the analysis under its own name, whatever repo argument was typed" \
+    || bad "the ledger filed it under '$( ( sec_env; security_py list --project "Sec App" | "$JQ" -r '.[0].repo' ) )'"
   [ "$(cat "$sec/state-during" 2>/dev/null)" = "running" ] \
     && ok "the analysis row is open and running before run_job is called" \
     || bad "state during the run was '$(cat "$sec/state-during" 2>/dev/null)'"
@@ -5296,6 +5395,89 @@ JSON
   [ "$( ( sec_env; security_py list --project "Sec App" | "$JQ" -r '.[0].state' ) )" = "failed" ] \
     && ok "a run that never started leaves the analysis closed, not running for ever" \
     || bad "the row was left open after run_job returned without running"
+
+  echo "cmd_security_analyze --detach — the caller is not held for the run"
+  # THE BUG THIS PINS. The control server gives a CLI call 30 seconds and then
+  # SIGKILLs it. Run inline, the Analyse button spun for 30s, showed a timeout,
+  # and the killed shell never reached the close -- the row stayed `running` for
+  # ever and the button stayed disabled for that project. So: the command must
+  # come back long before the run does, and the row must still be closed by the
+  # detached half when the run ends without closing it itself.
+  local dt0 dt1 detout
+  dt0="$(now_epoch)"
+  ( sec_env
+    # A run that takes noticeably longer than the assertion below allows, and
+    # never closes the analysis -- the shape of every early return in run_job.
+    run_job() { sleep 6; : > "$sec/detached.ran"; return 0; }
+    cmd_security_analyze --detach "Sec App" repo main quick ) > "$sec/detach.out" 2>&1
+  dt1="$(now_epoch)"
+  [ "$((dt1 - dt0))" -lt 4 ] \
+    && ok "it returns in $((dt1 - dt0))s, while the run it started is still going" \
+    || bad "--detach blocked for $((dt1 - dt0))s — the run was not detached"
+  detout="$(grep -o '{"analysis_id":[0-9]*}' "$sec/detach.out" 2>/dev/null | tail -1)"
+  [ -n "$detout" ] \
+    && ok "and prints the id the page follows the analysis by: $detout" \
+    || bad "no analysis id on stdout: $(cat "$sec/detach.out" 2>/dev/null)"
+  [ "$( ( sec_env; security_py list --project "Sec App" | "$JQ" -r '.[0].state' ) )" = "running" ] \
+    && ok "the row is open and running the moment the command returns" \
+    || bad "the row was already '$( ( sec_env; security_py list --project "Sec App" | "$JQ" -r '.[0].state' ) )'"
+  local detwait=0
+  while [ "$detwait" -lt 25 ] \
+     && [ "$( ( sec_env; security_py list --project "Sec App" | "$JQ" -r '.[0].state' ) )" = "running" ]; do
+    sleep 1; detwait=$((detwait + 1))
+  done
+  [ -f "$sec/detached.ran" ] \
+    && ok "the detached run really ran, after its parent had already exited" \
+    || bad "the detached run never happened (waited ${detwait}s)"
+  [ "$( ( sec_env; security_py list --project "Sec App" | "$JQ" -r '.[0].state' ) )" = "failed" ] \
+    && ok "and the close travels with it: a detached run that ends without closing still closes the row" \
+    || bad "detached row left '$( ( sec_env; security_py list --project "Sec App" | "$JQ" -r '.[0].state' ) )'"
+
+  # The other half: a detached run that DOES close its own row, the way a real
+  # one does from inside run_job. The sweep must not overwrite that verdict.
+  ( sec_env
+    run_job() { security_close_analysis "$1" success "1.25" "" >/dev/null 2>&1; return 0; }
+    cmd_security_analyze --detach "Sec App" repo main quick ) > "$sec/detach2.out" 2>&1
+  detwait=0
+  while [ "$detwait" -lt 20 ] \
+     && [ "$( ( sec_env; security_py list --project "Sec App" | "$JQ" -r '.[0].state' ) )" = "running" ]; do
+    sleep 1; detwait=$((detwait + 1))
+  done
+  [ "$( ( sec_env; security_py list --project "Sec App" \
+            | "$JQ" -r '.[0] | [.state, (.spend_usd|tostring)] | join(",")' ) )" = "done,1.25" ] \
+    && ok "a detached run that closes its own row keeps its verdict — the sweep is a no-op over it" \
+    || bad "detached success -> $( ( sec_env; security_py list --project "Sec App" | "$JQ" -r '.[0] | [.state,(.spend_usd|tostring)] | join(",")' ) )"
+
+  echo "cmd_security_analyze() — a dead row cannot brick the Analyse button"
+  # A row left `running` by a run that is GONE (killed, rebooted, or the 30s
+  # SIGKILL above) disabled Analyse for that project for ever: the page reads
+  # the ledger, and the ledger said an analysis was in flight. With no live slot
+  # on the derived job there is no run behind it, and the preflight says so.
+  local secstuck
+  secstuck="$( ( sec_env; security_py open-analysis --project "Sec App" --repo "Sec App" \
+                   --branch main --commit abc --profile quick --run-id "$secjid" \
+                 | "$JQ" -r '.analysis_id' ) )"
+  # The default grace protects a row whose own run has not reached acquire_slot
+  # yet -- which is exactly what this row looks like, being seconds old.
+  ( sec_env; run_job() { return 0; }
+    cmd_security_analyze "Sec App" repo main quick ) >/dev/null 2>&1
+  [ "$( ( sec_env; security_py list --project "Sec App" \
+            | "$JQ" -r --argjson s "$secstuck" '.[] | select(.id==$s) | .state' ) )" = "running" ] \
+    && ok "a row younger than the grace is left alone — its run may still be starting" \
+    || bad "the sweep took a row that was seconds old"
+  ( sec_env; SECURITY_STALE_GRACE=0; run_job() { return 0; }
+    cmd_security_analyze "Sec App" repo main quick ) > "$sec/stuck.out" 2>&1
+  [ "$( ( sec_env; security_py list --project "Sec App" \
+            | "$JQ" -r --argjson s "$secstuck" '.[] | select(.id==$s) | .state' ) )" = "failed" ] \
+    && ok "once the grace is up it is closed failed, and the button is usable again" \
+    || bad "stale row left '$( ( sec_env; security_py list --project "Sec App" | "$JQ" -r --argjson s "$secstuck" '.[] | select(.id==$s) | .state' ) )'"
+  [ "$( ( sec_env; security_py list --project "Sec App" \
+            | "$JQ" -r --argjson s "$secstuck" '.[] | select(.id==$s) | .coverage_note' ) )" = "engine: the run behind this analysis is gone" ] \
+    && ok "with a note saying it was the engine's doing, not a verdict on the code" \
+    || bad "coverage note: $( ( sec_env; security_py list --project "Sec App" | "$JQ" -r --argjson s "$secstuck" '.[] | select(.id==$s) | .coverage_note' ) )"
+  grep -q "^analysis " "$sec/stuck.out" \
+    && ok "and the analysis that was asked for is opened rather than refused" \
+    || bad "the new analysis did not start: $(cat "$sec/stuck.out" 2>/dev/null)"
 
   echo "cmd_security_branches() — local and origin branches, HEAD excluded, deduped"
   # A real checkout with an origin, not faked refs: local-only never leaves the
@@ -7443,10 +7625,18 @@ claude-cron — durable local scheduler for headless Claude Code runs
   claude-cron provision-set <project> <up|down>   replace a worktree provisioning hook (stdin)
   claude-cron provision-get <project> <up|down>   print one
   claude-cron get-precheck <id>   print a job's precheck script
-  claude-cron security analyze <project> <repo> <branch> [profile]
+  claude-cron security analyze [--detach] <project> <repo> <branch> [profile]
                               analyse a branch: secrets, dependency CVEs, an
                               SBOM and hygiene run first at no token cost, then
-                              a Claude run does the SAST and the triage
+                              a Claude run does the SAST and the triage.
+                              <repo> names one of the project's `repos`; a
+                              project with a single checkout has none, and every
+                              analysis of it is filed under the PROJECT's name
+                              whatever is typed here, so one project always has
+                              one history. --detach starts the run in the
+                              background and prints {"analysis_id": n} at once
+                              (what the dashboard's Analyse button uses);
+                              without it the command stays until the run ends
   claude-cron security render --analysis <n> --format <json|md|html>
                               the report for one analysis (see `security` with
                               no arguments for the rest of the vocabulary)
@@ -7505,7 +7695,7 @@ case "${1:-}" in
   project-list)   cmd_project_list ;;
   security)  shift
              case "${1:-}" in
-               analyze) shift; [ $# -ge 3 ] || die "usage: claude-cron security analyze <project> <repo> <branch> [profile]"
+               analyze) shift; [ $# -ge 3 ] || die "usage: claude-cron security analyze [--detach] <project> <repo> <branch> [profile]"
                         cmd_security_analyze "$@" ;;
                # Everything else is the ledger's own vocabulary, and the agent
                # types it verbatim from its prompt: prepare, findings,
