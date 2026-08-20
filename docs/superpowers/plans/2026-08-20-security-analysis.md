@@ -1027,19 +1027,36 @@ somebody else. The SBOM is hand-built JSON, so it needs no library."
 
 **Files:**
 - Create: `bin/security/osv.py`
-- Test: `tests/security/test_osv.py`, `tests/security/fixtures/osv-querybatch.json`
+- Test: `tests/security/test_osv.py`
+- Fixtures (**já capturadas e commitadas** — ambas são respostas reais da API): `tests/security/fixtures/osv-querybatch.json`, `tests/security/fixtures/osv-vuln-detail.json`
 
 **Interfaces:**
-- Consumes: `inventory` output (Task 5).
-- Produces: `query(components: list[dict], timeout=30) -> tuple[list[dict], str]` — a lista de achados `category="dependency"` e uma **nota de cobertura** (string vazia quando tudo correu bem, uma frase quando não). Nunca levanta excepção.
+- Consumes: `inventory` output (Task 5), `fingerprint` (Task 1).
+- Produces: `query(components: list[dict], detail_cache=None, timeout=30) -> tuple[list[dict], str]` — a lista de achados `category="dependency"` e uma **nota de cobertura** (string vazia quando tudo correu bem). Nunca levanta excepção.
 
-**Fixture:** captura uma resposta **real**:
-```bash
-curl -s -X POST https://api.osv.dev/v1/querybatch \
-  -d '{"queries":[{"package":{"name":"lodash","ecosystem":"npm"},"version":"4.17.20"}]}' \
-  > tests/security/fixtures/osv-querybatch.json
+**O que a API realmente devolve — verificado contra o serviço, não contra a documentação:**
+
+`POST /v1/querybatch` devolve apenas identificadores:
+
+```json
+{"results":[{"vulns":[{"id":"GHSA-29mw-wpgm-hmr9","modified":"2025-09-29T21:12:31.102523Z"}]}]}
 ```
-Se não houver rede no momento, **pára e pede a captura** — não escrevas o JSON à mão.
+
+Sem `summary`, sem severidade, sem detalhes. Estes vêm de um segundo pedido,
+`GET /v1/vulns/<id>`, e **a severidade legível não está onde parece**:
+
+- `severity` no topo é uma **lista de vetores CVSS** — `[{"type":"CVSS_V3","score":"CVSS:3.1/AV:N/..."}]` — nunca a string `"HIGH"`.
+- A string legível está em `database_specific.severity` (`"MODERATE"`, `"HIGH"`, …), e só quando a fonte é o GitHub.
+
+Uma implementação que leia `severity` como string cai sempre no valor por
+omissão sem nunca falhar, e o report classifica tudo como `medium` para
+sempre. É o defeito que estas fixtures existem para tornar impossível.
+
+**Custo dos pedidos:** um por vulnerabilidade distinta. O `detail_cache` é um
+dicionário que o chamador fornece e que dura uma análise — chega para não
+repetir o mesmo identificador quando vários pacotes o partilham, que é o caso
+comum. Um cache entre análises não entra nesta fase: seria uma tabela nova para
+poupar pedidos a um serviço que responde em milissegundos.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1057,35 +1074,91 @@ COMPONENT = {"ecosystem": "npm", "name": "lodash", "version": "4.17.20",
              "source": "package-lock.json"}
 
 
-@pytest.fixture
-def captured():
-    return (FIXTURES / "osv-querybatch.json").read_text()
+def _serve(monkeypatch):
+    """Answer both endpoints from the captured responses."""
+    batch = (FIXTURES / "osv-querybatch.json").read_text()
+    detail = (FIXTURES / "osv-vuln-detail.json").read_text()
+    calls = []
+
+    def fake(url, body=None, timeout=30):
+        calls.append(url)
+        return batch if url.endswith("/querybatch") else detail
+
+    monkeypatch.setattr(osv, "_http", fake)
+    return calls
 
 
-def test_it_turns_a_real_osv_response_into_findings(monkeypatch, captured):
-    monkeypatch.setattr(osv, "_post", lambda url, body, timeout: captured)
+def test_it_turns_a_real_osv_response_into_findings(monkeypatch):
+    _serve(monkeypatch)
     findings, note = osv.query([COMPONENT])
     assert note == ""
-    assert findings and findings[0]["category"] == "dependency"
+    assert findings
+    assert findings[0]["category"] == "dependency"
+    assert findings[0]["rule"].startswith("GHSA-")
     assert findings[0]["occurrences"][0]["file"] == "package-lock.json"
 
 
+def test_the_severity_comes_from_database_specific_not_the_cvss_list(monkeypatch):
+    """The captured detail has database_specific.severity == MODERATE and a
+    top-level `severity` that is a list of CVSS vectors. Reading the list as a
+    string is the silent bug this asserts against."""
+    _serve(monkeypatch)
+    findings, _ = osv.query([COMPONENT])
+    moderate = [f for f in findings if f["rule"] == "GHSA-29mw-wpgm-hmr9"]
+    assert moderate and moderate[0]["severity"] == "medium"
+
+
+def test_the_summary_reaches_the_finding(monkeypatch):
+    _serve(monkeypatch)
+    findings, _ = osv.query([COMPONENT])
+    match = [f for f in findings if f["rule"] == "GHSA-29mw-wpgm-hmr9"][0]
+    assert "ReDoS" in match["rationale"] or "Denial of Service" in match["rationale"]
+
+
+def test_a_cached_detail_is_not_fetched_twice(monkeypatch):
+    calls = _serve(monkeypatch)
+    cache = {}
+    osv.query([COMPONENT], detail_cache=cache)
+    first = len([c for c in calls if "/vulns/" in c])
+    assert first > 0
+    osv.query([COMPONENT], detail_cache=cache)
+    assert len([c for c in calls if "/vulns/" in c]) == first
+
+
 def test_the_network_being_down_never_raises(monkeypatch):
-    def boom(url, body, timeout):
+    def boom(url, body=None, timeout=30):
         raise urllib.error.URLError("no route to host")
-    monkeypatch.setattr(osv, "_post", boom)
+    monkeypatch.setattr(osv, "_http", boom)
     findings, note = osv.query([COMPONENT])
     assert findings == []
-    assert "OSV" in note and "not" in note.lower()
+    assert "OSV" in note
+
+
+def test_a_detail_lookup_failing_still_reports_the_vulnerability(monkeypatch):
+    """Knowing a CVE applies is most of the value. Losing the whole finding
+    because its prose could not be fetched would be the worse trade."""
+    batch = (FIXTURES / "osv-querybatch.json").read_text()
+
+    def half(url, body=None, timeout=30):
+        if url.endswith("/querybatch"):
+            return batch
+        raise urllib.error.URLError("detail unavailable")
+
+    monkeypatch.setattr(osv, "_http", half)
+    findings, note = osv.query([COMPONENT])
+    assert findings
+    assert findings[0]["severity"] == "medium"
+    assert note
 
 
 def test_no_components_means_no_call_and_no_note(monkeypatch):
-    monkeypatch.setattr(osv, "_post", lambda *a, **k: pytest.fail("must not call"))
+    monkeypatch.setattr(osv, "_http",
+                        lambda *a, **k: pytest.fail("must not call"))
     assert osv.query([]) == ([], "")
 
 
-def test_a_malformed_response_is_a_declared_gap_not_a_crash(monkeypatch):
-    monkeypatch.setattr(osv, "_post", lambda url, body, timeout: "not json")
+def test_a_malformed_batch_response_is_a_declared_gap_not_a_crash(monkeypatch):
+    monkeypatch.setattr(osv, "_http", lambda url, body=None, timeout=30: "not json")
     findings, note = osv.query([COMPONENT])
     assert findings == []
     assert note
@@ -1102,9 +1175,16 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'security.osv'`
 # bin/security/osv.py
 """Known vulnerabilities for the inventory, from the OSV.dev public API.
 
-This is the one thing here that cannot be done offline: a vulnerability
-database does not exist unless somebody publishes it. Only package names and
-versions leave the machine; no code does.
+The one thing here that cannot be done offline: a vulnerability database does
+not exist unless somebody publishes it. Only package names and versions leave
+the machine; no code does.
+
+Two endpoints, because one is not enough. /v1/querybatch answers with bare
+identifiers -- no summary, no severity -- so each distinct id needs a
+/v1/vulns/<id> lookup for anything readable. And the readable severity is in
+`database_specific.severity`; the top-level `severity` is a list of CVSS
+vectors, which read as a string matches nothing and silently classifies every
+vulnerability as medium for ever.
 
 Every failure mode returns a COVERAGE NOTE instead of raising. A gap that is
 stated is useful; a gap that is silent makes you trust a report that never
@@ -1117,90 +1197,137 @@ import urllib.request
 
 from .fingerprint import fingerprint
 
-_ENDPOINT = "https://api.osv.dev/v1/querybatch"
+_BATCH_URL = "https://api.osv.dev/v1/querybatch"
+_VULN_URL = "https://api.osv.dev/v1/vulns/"
 _BATCH = 500
 _SEVERITY = {"CRITICAL": "critical", "HIGH": "high",
              "MODERATE": "medium", "MEDIUM": "medium", "LOW": "low"}
+DEFAULT_SEVERITY = "medium"
 
 
-def _post(url, body, timeout):
-    req = urllib.request.Request(
-        url, data=body.encode("utf-8"),
-        headers={"Content-Type": "application/json"}, method="POST")
+def _http(url, body=None, timeout=30):
+    if body is None:
+        req = urllib.request.Request(url, method="GET")
+    else:
+        req = urllib.request.Request(
+            url, data=body.encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read().decode("utf-8")
 
 
-def _severity_of(vuln) -> str:
-    for entry in vuln.get("database_specific", {}), vuln:
-        raw = str(entry.get("severity", "")).upper()
-        if raw in _SEVERITY:
-            return _SEVERITY[raw]
-    return "medium"
+def _severity_of(detail) -> str:
+    """`database_specific.severity` or nothing.
+
+    Deliberately does NOT read the top-level `severity`: that is a list of
+    CVSS vector objects, and treating it as a severity word is the mistake
+    that makes every finding medium without ever failing.
+    """
+    raw = str((detail.get("database_specific") or {}).get("severity", "")).upper()
+    return _SEVERITY.get(raw, DEFAULT_SEVERITY)
 
 
-def _finding(component, vuln):
-    vid = vuln.get("id", "UNKNOWN")
-    summary = vuln.get("summary") or vuln.get("details", "")[:200] or vid
+def _detail(vuln_id, cache, timeout):
+    """The vulnerability's prose and severity. Cached: a published
+    vulnerability does not change, and two projects sharing a dependency
+    should not each pay for the same lookup."""
+    if cache is not None and vuln_id in cache:
+        return cache[vuln_id], ""
+    try:
+        detail = json.loads(_http(_VULN_URL + vuln_id, timeout=timeout))
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        return None, vuln_id
+    if cache is not None:
+        cache[vuln_id] = detail
+    return detail, ""
+
+
+def _finding(component, vuln_id, detail):
+    if detail:
+        summary = (detail.get("summary")
+                   or (detail.get("details") or "")[:200] or vuln_id)
+        severity = _severity_of(detail)
+    else:
+        summary = (f"{vuln_id} affects this version. Details could not be "
+                   "fetched; see the link below.")
+        severity = DEFAULT_SEVERITY
     return {
-        "fingerprint": fingerprint("dependency", vid, component["source"],
+        "fingerprint": fingerprint("dependency", vuln_id, component["source"],
                                    f"{component['name']}@{component['version']}"),
         "category": "dependency",
-        "rule": vid,
-        "severity": _severity_of(vuln),
-        "title": f"{component['name']} {component['version']}: {vid}",
+        "rule": vuln_id,
+        "severity": severity,
+        "title": f"{component['name']} {component['version']}: {vuln_id}",
         "rationale": summary,
         "remediation": (f"Upgrade {component['name']} past {component['version']}. "
-                        f"See https://osv.dev/vulnerability/{vid}"),
+                        f"See https://osv.dev/vulnerability/{vuln_id}"),
         "occurrences": [{"file": component["source"], "line": 0, "snippet_hash": ""}],
     }
 
 
-def query(components, timeout=30):
+def query(components, detail_cache=None, timeout=30):
     if not components:
         return [], ""
 
-    findings = []
+    findings, undetailed = [], []
     for start in range(0, len(components), _BATCH):
         chunk = components[start:start + _BATCH]
         body = json.dumps({"queries": [
             {"package": {"name": c["name"], "ecosystem": c["ecosystem"]},
              "version": c["version"]} for c in chunk]})
         try:
-            raw = _post(_ENDPOINT, body, timeout)
-            results = json.loads(raw).get("results", [])
+            results = json.loads(_http(_BATCH_URL, body, timeout)).get("results", [])
         except (urllib.error.URLError, OSError, ValueError, TimeoutError) as exc:
             return [], ("Dependency CVEs were NOT checked: the OSV.dev lookup did "
                         f"not complete ({type(exc).__name__}). Everything else in "
                         "this report is complete.")
         for component, result in zip(chunk, results):
             for vuln in (result or {}).get("vulns", []):
-                findings.append(_finding(component, vuln))
-    return findings, ""
+                vuln_id = vuln.get("id")
+                if not vuln_id:
+                    continue
+                # A failed detail lookup loses the prose, not the finding:
+                # knowing a CVE applies is most of the value.
+                detail, failed = _detail(vuln_id, detail_cache, timeout)
+                if failed:
+                    undetailed.append(failed)
+                findings.append(_finding(component, vuln_id, detail))
+
+    note = ""
+    if undetailed:
+        note = (f"{len(undetailed)} vulnerabilit"
+                f"{'y' if len(undetailed) == 1 else 'ies'} could not be described: "
+                "OSV.dev answered the batch query but not the detail lookup, so "
+                f"severity fell back to {DEFAULT_SEVERITY}.")
+    return findings, note
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/security/test_osv.py -v`
-Expected: 4 passed
+Expected: 8 passed
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add bin/security/osv.py tests/security/test_osv.py tests/security/fixtures/osv-querybatch.json
+git add bin/security/osv.py tests/security/test_osv.py
 git commit -m "feat(security): look dependency CVEs up on OSV.dev
 
 The only part of the analysis that cannot run offline -- a vulnerability
 database does not exist unless somebody publishes it. Package names and
 versions leave the machine; code never does.
 
-Nothing here raises. Every failure returns a coverage note that the report
-prints instead, because a gap that is stated is useful and a gap that is
-silent makes you trust a report that never looked at your dependencies. The
-fixture is a captured live response, not hand-written JSON."
-```
+Two endpoints, because querybatch answers with bare identifiers: no summary,
+no severity. And the readable severity is in database_specific.severity --
+the top-level `severity` is a list of CVSS vector objects, which read as a
+string matches nothing and would classify every vulnerability as medium for
+ever without once failing. The fixtures are captured live responses, and that
+is how the mistake was found rather than shipped.
 
----
+Nothing here raises. A failed batch declares the gap; a failed detail lookup
+keeps the finding and loses only its prose, because knowing a CVE applies is
+most of the value."
+```
 
 ## Task 7: Repository hygiene
 
