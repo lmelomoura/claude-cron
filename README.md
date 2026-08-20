@@ -957,7 +957,9 @@ filters only what is **shown**: everything found is kept in the ledger whatever
 its severity, so lowering the floor later reveals what was recorded all along
 instead of forcing a re-analysis, and the page says how many findings it is
 holding back. A `fixed` finding is shown whatever the floor — the one job of a
-checklist is to say what closed.
+checklist is to say what closed. **The downloads are not filtered at all**:
+every recorded finding is in the file whatever the floor on screen shows, and
+the page says so next to the buttons.
 
 **The per-analysis cap is the one that actually bites.** An analysis always runs
 forced, the way **Run now** does, so it skips the usage gate, the daily cap and
@@ -1021,10 +1023,31 @@ timeout, and leave the row `running` for ever with the agent orphaned behind it.
 The rest of the vocabulary is the ledger's own and belongs to the agent and the
 page: `prepare`, `findings`, `fingerprint`, `report-finding`, `checklist`,
 `render`, `finish`, `decide`, `list`. `claude-cron security render --analysis
-<id> --format md|json|html` is what the three download buttons call. During an
-analysis run, `decide`, `rename-project` and `open-analysis` are refused
-outright — the agent that reports a finding does not get to dismiss it, rename
-the ledger out from under the project, or open analyses of its own.
+<id> --format md|json|html|sbom` is what the four download buttons call.
+`sbom` is the odd one out: it is not a report over the checklist but the stored
+CycloneDX inventory itself, downloaded as `.cdx.json` — the suffix the tools
+that consume one recognise. It is kept per branch with the most recent
+analysis's document, so asking an older analysis for it hands back the current
+one for that branch rather than a reconstruction of what the tree held that
+day, and a project with no lockfile the inventory can read has none to give and
+says so. During an
+analysis run, `decide`, `rename-project` and `open-analysis` are refused — the
+agent that reports a finding does not get to dismiss it, rename the ledger out
+from under the project, or open analyses of its own.
+
+**That refusal is a guardrail against mistake, not a boundary against malice,
+and it is worth saying which.** It works off `CC_SECURITY_AGENT`, a variable in
+the agent's own environment, and the agent has a shell: `env -u
+CC_SECURITY_AGENT claude-cron security decide …` walks straight past it. What
+it stops is the failure that actually happens — a model deciding, in good
+faith, that retiring the finding it just filed is the helpful thing to do — and
+it stops that cold. Nothing here is load-bearing against an agent that is
+trying. The one check that does not depend on the environment is `decide`'s
+own: **while the project's latest analysis is `running`, a decision is refused
+whoever is asking.** That window is exactly when an agent of that project is
+alive, and it costs a human nothing to wait — the checklist is rebuilt when the
+analysis closes, so a decision taken mid-run would not have changed that run's
+report anyway.
 
 ---
 

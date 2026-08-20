@@ -1209,6 +1209,11 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    (the repo picker on a single-repo project, the coverage note, the download
    row before there is an analysis), and without this they all show up empty. */
 .secfield[hidden],.secdl[hidden],.warnline[hidden]{display:none}
+/* An INCOMPLETE analysis is not a warning about one detail of the report -- it
+   is a warning about the whole of it, so it reads hotter than the coverage
+   note below it. */
+.warnline.bad{border-color:color-mix(in srgb,var(--err) 40%,var(--line));
+  background:var(--err-soft);color:var(--err)}
 .secfield > span{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
 .secfield select,.secfield input{font:inherit;font-size:13px;padding:8px 11px;min-width:160px;
   max-width:280px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);color:var(--ink)}
@@ -1225,7 +1230,8 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secchip.on{background:var(--accent-soft);border-color:transparent;color:var(--accent)}
 .secchip .n{font-variant-numeric:tabular-nums;font-weight:700}
 .secchip.zero{opacity:.5}
-.secdl{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 16px}
+.secdl{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 16px}
+.secdlnote{font-size:12px;color:var(--muted)}
 .secfinding{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--idle);
   border-radius:11px;padding:13px 16px;margin:0 0 9px;box-shadow:var(--shadow)}
 .secfinding.sev-critical,.secfinding.sev-high{border-left-color:var(--err)}
@@ -1618,6 +1624,7 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
         <button class="btn primary" id="sec-run">Analyse</button>
       </div>
       <div class="secstat" id="sec-status"></div>
+      <div class="warnline bad" id="sec-incomplete" hidden></div>
       <div class="warnline" id="sec-coverage" hidden></div>
       <div class="sevpills" id="sec-summary"></div>
       <div class="secchips" id="sec-checklist"></div>
@@ -1625,6 +1632,8 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
         <button class="btn" id="sec-dl-md"></button>
         <button class="btn" id="sec-dl-json"></button>
         <button class="btn" id="sec-dl-html"></button>
+        <button class="btn" id="sec-dl-sbom"></button>
+        <span class="secdlnote" id="sec-dl-note"></span>
       </div>
       <div id="sec-findings"></div>
       <div class="secthead"><h3>Earlier analyses of this branch</h3></div>
@@ -3574,6 +3583,7 @@ function secPaint(){
     box.appendChild(secEl("span", null,
       secState.branch ? "No analysis of this branch yet — press Analyse to make the first one."
                       : "Pick a branch, or type one, and press Analyse."));
+    $("sec-incomplete").hidden = true;
     $("sec-coverage").hidden = true;
     $("sec-summary").textContent = "";
     $("sec-checklist").textContent = "";
@@ -3604,6 +3614,25 @@ function secPaint(){
     b.onclick = () => openLog(run.id, run.start);
     box.appendChild(b);
   }
+
+  // THE SAME NOTICE THE DOWNLOADED REPORT OPENS WITH (bin/security/report.py,
+  // _coverage). A capped or failed analysis is a PARTIAL read of the
+  // repository, and the numbers under it are the numbers of a partial read:
+  // "critical: 0" there means "none found before it stopped", not "none". The
+  // file said so and the page did not, so the screen everybody actually looks
+  // at was the one place that presented a truncated analysis as a finished
+  // one.
+  const inc = $("sec-incomplete");
+  inc.textContent = "";
+  const incomplete = a.state === "capped" ? "This analysis is INCOMPLETE: it stopped before covering the whole scope."
+                   : a.state === "failed" ? "This analysis is INCOMPLETE: it did not finish."
+                   : "";
+  if(incomplete){
+    inc.appendChild(secIcon("alert"));
+    inc.appendChild(secEl("span", "grow", incomplete
+      + " What is below is what it had reached, not what is there."));
+    inc.hidden = false;
+  }else inc.hidden = true;
 
   const note = $("sec-coverage");
   note.textContent = "";
@@ -3899,7 +3928,10 @@ async function secDownload(fmt){
     const url = URL.createObjectURL(await r.blob());
     const link = document.createElement("a");
     link.href = url;
-    link.download = "security-analysis-" + a.id + "." + fmt;
+    // Mirrors REPORT_EXTENSIONS in bin/claude-cron-server: a fetch never turns
+    // the server's Content-Disposition into a download name on its own, so the
+    // two have to agree by hand. `.cdx.json` is what SBOM tooling recognises.
+    link.download = "security-analysis-" + a.id + "." + (fmt === "sbom" ? "cdx.json" : fmt);
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -3924,12 +3956,19 @@ $("sec-reload").innerHTML = I.radar + "Refresh";
 $("sec-dl-md").innerHTML = I.file + "Markdown";
 $("sec-dl-json").innerHTML = I.file + "JSON";
 $("sec-dl-html").innerHTML = I.file + "HTML";
+$("sec-dl-sbom").innerHTML = I.file + "SBOM";
+// The list above this row is filtered by the project's min_severity; these
+// files are not. Said here, next to the buttons, because the gap between what
+// is on screen and what is in the file you hand to somebody else is exactly
+// where a reader assumes they match.
+$("sec-dl-note").textContent = "Downloads always contain every recorded finding, whatever the severity floor shows.";
 $("sec-back").addEventListener("click", secBack);
 $("sec-reload").addEventListener("click", () => { secLoadPostures(true); });
 $("sec-run").addEventListener("click", secAnalyse);
 $("sec-dl-md").addEventListener("click", () => secDownload("md"));
 $("sec-dl-json").addEventListener("click", () => secDownload("json"));
 $("sec-dl-html").addEventListener("click", () => secDownload("html"));
+$("sec-dl-sbom").addEventListener("click", () => secDownload("sbom"));
 $("sec-repo").addEventListener("change", async () => {
   await secLoadBranches("");
   $("sec-branch-other").value = "";

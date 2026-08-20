@@ -414,3 +414,35 @@ def test_a_leading_dash_project_reaches_argparse_as_a_value_not_a_flag(srv):
     assert code == 500
     assert "expected one argument" in payload["error"]
     assert "--project" in payload["error"]
+
+
+def test_the_sbom_is_a_fourth_download_and_is_named_for_its_tooling(srv, monkeypatch):
+    """`.cdx.json` is the conventional CycloneDX suffix and is what the tools
+    that consume one recognise; `security-analysis-7.sbom` is a file nothing
+    will open."""
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, '{"bomFormat":"CycloneDX"}'))
+    code, err = srv.security_report_guard("sbom")
+    assert code == 200 and err is None
+    body, headers = srv.security_report(7, "sbom")
+    assert body == '{"bomFormat":"CycloneDX"}'
+    assert headers["Content-Disposition"] == \
+        'attachment; filename="security-analysis-7.cdx.json"'
+    assert srv.REPORT_FORMATS["sbom"] == "application/json"
+
+
+def test_the_sbom_download_asks_the_cli_for_that_format(srv, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(srv, "cc",
+                        lambda args, stdin=None: (seen.setdefault("args", args), (True, "{}"))[1])
+    srv.security_report(3, "sbom")
+    assert seen["args"] == ["security", "render", "--analysis", "3", "--format", "sbom"]
+
+
+def test_every_report_format_has_a_content_type_and_a_filename(srv):
+    """The route answers with REPORT_FORMATS[fmt] as the content type and
+    builds the filename from REPORT_EXTENSIONS: a format added to one and
+    forgotten in the other is a download with the wrong name or a KeyError
+    mid-response."""
+    for fmt in srv.REPORT_FORMATS:
+        assert srv.REPORT_FORMATS[fmt]
+        assert srv.REPORT_EXTENSIONS.get(fmt, fmt).strip()

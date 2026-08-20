@@ -346,7 +346,9 @@ def test_progress_is_measured_in_files_closed_not_in_hits_counted(tmp_path):
 
 def test_a_decision_is_refused_without_a_reason(tmp_path):
     db = tmp_path / "security.db"
-    open_analysis(db)
+    # Closed first: `decide` refuses outright while an analysis is running (see
+    # cmd_decide), and a test about the REASON must not be answered by that.
+    run(db, "finish", "--analysis", str(open_analysis(db)), "--state", "failed")
     out = fails(db, "decide", "--project", "web", "--fingerprint", "f" * 64,
                 "--state", "accepted", "--reason", "   ", "--by", "me")
     assert out.returncode != 0
@@ -359,10 +361,10 @@ def test_a_decision_wins_over_the_derived_state(tmp_path):
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
         "fingerprint": "a" * 64, "category": "sast", "rule": "r",
         "severity": "high", "title": "t"}))
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
     run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
         "--state", "false_positive", "--reason", "the sink is parameterised",
         "--by", "luiz")
-    run(db, "finish", "--analysis", str(aid), "--state", "done")
     checklist = run(db, "checklist", "--analysis", str(aid))
     assert checklist["findings"][0]["state"] == "false_positive"
 
@@ -392,9 +394,9 @@ def test_renaming_a_project_carries_its_history(tmp_path):
     (root / "requirements.txt").write_text("requests==2.31.0\n")
     aid = open_analysis(db, project="web")
     run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
     run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
         "--state", "accepted", "--reason", "internal only", "--by", "luiz")
-    run(db, "finish", "--analysis", str(aid), "--state", "done")
 
     moved = run(db, "rename-project", "--from", "web", "--to", "web-two")
     assert moved["analyses"] == 1
@@ -1014,3 +1016,108 @@ def test_the_prepared_column_is_added_to_a_database_that_predates_it(tmp_path):
     rows = run(db, "list", "--project", "web")
     assert len(rows) == 1
     assert rows[0]["prepared"] == 0, "a row from before the column is unprepared"
+
+
+# ------------------------------- a decision is not taken while a run is live
+
+def test_decide_is_refused_while_the_projects_latest_analysis_is_running(tmp_path):
+    """The environment guard is a guardrail against MISTAKE: CC_SECURITY_AGENT
+    lives in the agent's own environment and the agent has a shell, so
+    `env -u CC_SECURITY_AGENT ...` walks past it. This check does not depend on
+    the environment at all -- while an analysis of the project is `running`, an
+    agent of that project is alive, and that is exactly the window in which a
+    decision would be one."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+                "--state", "accepted", "--reason", "I checked it", "--by", "luiz")
+    assert out.returncode != 0
+    assert "still running" in out.stderr
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT count(*) FROM decision").fetchone()[0] == 0
+
+    # And it is the ANALYSIS, not the environment, that closed the door.
+    out = fails(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+                "--state", "accepted", "--reason", "I checked it", "--by", "luiz",
+                env={k: v for k, v in os.environ.items() if k != "CC_SECURITY_AGENT"})
+    assert out.returncode != 0
+    assert "still running" in out.stderr
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+        "--state", "accepted", "--reason", "I checked it", "--by", "luiz")
+    assert conn.execute("SELECT count(*) FROM decision").fetchone()[0] == 1
+
+
+def test_a_run_on_another_project_does_not_block_a_decision(tmp_path):
+    """Keyed on the project being decided about. A fleet analysing four
+    projects at once must not freeze everybody's triage."""
+    db = tmp_path / "security.db"
+    open_analysis(db, project="other", repo="other")
+    run(db, "finish", "--analysis", str(open_analysis(db, project="web")),
+        "--state", "done")
+    run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+        "--state", "accepted", "--reason", "unreachable in production", "--by", "luiz")
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT count(*) FROM decision").fetchone()[0] == 1
+
+
+def test_an_older_running_analysis_does_not_block_a_decision(tmp_path):
+    """The LATEST analysis, not any analysis. A row left `running` by a run
+    that died is swept by the engine's own preflight, but until it is, the
+    project's triage must not be frozen by an analysis two runs ago -- only by
+    the one that is plausibly alive right now."""
+    db = tmp_path / "security.db"
+    open_analysis(db)                       # stale, still says running
+    run(db, "finish", "--analysis", str(open_analysis(db, commit="def")),
+        "--state", "done")
+    run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+        "--state", "accepted", "--reason", "reviewed by hand", "--by", "luiz")
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT count(*) FROM decision").fetchone()[0] == 1
+
+
+# --------------------------------------------------- the SBOM is downloadable
+
+def test_render_sbom_hands_back_the_stored_cyclonedx(tmp_path):
+    """`prepare` built an SBOM on every analysis with a lockfile in it and
+    nothing anywhere could read it back -- not the CLI, not the API, not the
+    page. An inventory nobody can download does not exist for the one job an
+    SBOM has, which is being handed to somebody else."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "requirements.txt").write_text("requests==2.31.0\nurllib3==2.0.7\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+
+    doc = json.loads(run_text(db, "render", "--analysis", str(aid), "--format", "sbom"))
+    assert doc["bomFormat"] == "CycloneDX"
+    names = {c["name"]: c["version"] for c in doc["components"]}
+    assert names == {"requests": "2.31.0", "urllib3": "2.0.7"}
+
+
+def test_render_sbom_says_so_when_there_is_none_rather_than_printing_nothing(tmp_path):
+    """A project with no lockfile the inventory can read stores no SBOM. An
+    empty stdout there is a zero-byte download and a puzzle; the refusal names
+    the formats that would have produced one."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text("print('hi')\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    out = fails(db, "render", "--analysis", str(aid), "--format", "sbom")
+    assert out.returncode != 0
+    assert "no SBOM recorded" in out.stderr
+    assert "package-lock.json" in out.stderr
+    assert out.stdout.strip() == ""
+
+
+def test_render_sbom_refuses_an_analysis_that_does_not_exist(tmp_path):
+    db = tmp_path / "security.db"
+    open_analysis(db)
+    out = fails(db, "render", "--analysis", "999", "--format", "sbom")
+    assert out.returncode != 0
+    assert "no such analysis" in out.stderr

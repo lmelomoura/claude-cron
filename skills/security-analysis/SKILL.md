@@ -35,7 +35,7 @@ This is the cheapest of the three jobs and the most valuable. Do it first.
 
 **2. Triage the deterministic findings.** They were found by pattern, not by understanding. For each one ask what a pattern cannot: is this "secret" an example in documentation? Is this CVE on a code path anything actually reaches? Is this hygiene finding about a file that ships? Re-report it with a corrected severity and a rationale that says why, or leave it alone if it stands.
 
-If you believe one is a false positive, say so in its `rationale` — you do not get to dismiss it yourself. `decide` is a human's permanent, project-wide call, and it is refused for the whole duration of your run.
+If you believe one is a false positive, say so in its `rationale` — you do not get to dismiss it yourself. `decide` is a human's permanent, project-wide call, and it is refused for the whole duration of your run: by the marker your run carries, and again by the ledger itself, which refuses any decision on a project whose latest analysis is still `running`. Unsetting the marker does not open that door, and trying to is itself a finding somebody would report about you.
 
 **3. The SAST pass**, scoped by the profile:
 - `quick` — only code that touches external input: HTTP handlers, CLI entry points, queue consumers, deserialisation, SQL, `exec`/`eval`.

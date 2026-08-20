@@ -2144,7 +2144,17 @@ def list_dirs(path):
 # Module-level and testable without an HTTP round trip, like the rest of this
 # file's business logic — see tests/test_security_api.py.
 REPORT_FORMATS = {"json": "application/json", "md": "text/markdown",
-                  "html": "text/html; charset=utf-8"}
+                  "html": "text/html; charset=utf-8",
+                  # The stored CycloneDX inventory, not a report over the
+                  # checklist. It was write-only until now: `prepare` built one
+                  # on every analysis and nothing could read it back, which for
+                  # a document whose only job is to be handed to somebody else
+                  # is the same as not having built it.
+                  "sbom": "application/json"}
+# Where the download's file extension differs from the format's own name.
+# `.cdx.json` is the conventional CycloneDX suffix, and the tools that consume
+# one recognise a file by it; `analysis-7.sbom` is a file nothing will open.
+REPORT_EXTENSIONS = {"sbom": "cdx.json"}
 # A branch name reaches git through `claude-cron security analyze` (bin/claude-cron).
 # Anything outside this set is refused HERE, at the edge, rather than quoted
 # somewhere downstream and hoped about. The charset alone is not enough: '-'
@@ -2195,8 +2205,11 @@ def security_report(analysis_id, fmt):
                   "--format", fmt])
     if not ok:
         raise RuntimeError(out)
+    # From a literal dict keyed by the already-validated format, never from the
+    # caller's string: the same rule the int id above follows.
+    ext = REPORT_EXTENSIONS.get(fmt, fmt)
     return out, {"Content-Disposition":
-                 f'attachment; filename="security-analysis-{int(analysis_id)}.{fmt}"'}
+                 f'attachment; filename="security-analysis-{int(analysis_id)}.{ext}"'}
 
 
 def _json_or_500(ok, out, what):

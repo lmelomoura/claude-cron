@@ -790,3 +790,49 @@ def test_a_report_download_carries_the_token(srv):
     dl = _plainfn(block, "secDownload")
     assert "/api/security/report" in dl
     assert '"X-CC-Token":TOKEN' in dl or '"X-CC-Token": TOKEN' in dl
+
+
+def test_every_download_the_server_offers_has_a_button(srv):
+    """The SBOM was built on every analysis with a lockfile in it and there was
+    no way to get it out. Bound to the server's own map so a format added there
+    and forgotten on the page fails here, rather than shipping an inventory
+    nobody can reach."""
+    page = srv.render_page("boot-authed")
+    block = _security_js(srv)
+    for fmt in srv.REPORT_FORMATS:
+        assert f'id="sec-dl-{fmt}"' in page, f"no download button for {fmt}"
+        assert f'secDownload("{fmt}")' in block, f"nothing calls secDownload for {fmt}"
+
+
+def test_the_sbom_download_is_named_the_way_its_tooling_expects(srv):
+    """A fetch never turns the server's Content-Disposition into a download
+    name, so the page builds the filename itself and the two have to agree by
+    hand — REPORT_EXTENSIONS on one side, this on the other."""
+    dl = _plainfn(_security_js(srv), "secDownload")
+    assert srv.REPORT_EXTENSIONS["sbom"] == "cdx.json"
+    assert "cdx.json" in dl
+
+
+def test_the_downloads_say_they_are_not_filtered_by_the_severity_floor(srv):
+    """`min_severity` hides findings from the LIST; the files contain
+    everything. The gap between what is on screen and what is in the file you
+    hand to somebody else is exactly where a reader assumes they match."""
+    block = _security_js(srv)
+    assert 'id="sec-dl-note"' in srv.render_page("boot-authed")
+    assert "Downloads always contain every recorded finding" in block
+    assert 'sec-dl-note").innerHTML' not in block, "the note is textContent, not markup"
+
+
+def test_an_incomplete_analysis_says_so_on_the_page_and_not_only_in_the_file(srv):
+    """`capped` and `failed` are PARTIAL reads of the repository, and the
+    numbers under them are the numbers of a partial read: `critical: 0` means
+    "none found before it stopped", not "none". The downloaded report opens
+    with that notice (bin/security/report.py, _coverage) and the page — the
+    thing everybody actually looks at — did not."""
+    page = srv.render_page("boot-authed")
+    assert 'id="sec-incomplete"' in page
+    paint = _plainfn(_security_js(srv), "secPaint")
+    assert 'a.state === "capped"' in paint and 'a.state === "failed"' in paint
+    assert "INCOMPLETE" in paint
+    # Same rule as every other line of this view: text, never markup.
+    assert 'sec-incomplete").innerHTML' not in paint

@@ -361,6 +361,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   variable, because teardown can happen from a later process entirely (the
   orphan sweep, an explicit worktree drop) where that variable is long gone.
 
+- **The SBOM can be downloaded.** `prepare` built a CycloneDX inventory on
+  every analysis with a lockfile in it and stored it, and nothing anywhere
+  could read it back — not the CLI, not the API, not the page. An inventory
+  nobody can get out does not exist for the one job an SBOM has, which is being
+  handed to somebody else. `claude-cron security render --analysis <id>
+  --format sbom` prints it, `/api/security/report?format=sbom` serves it, and
+  the Security page has a fourth download button. It comes down as
+  `.cdx.json` — the suffix the tools that consume one recognise.
+
+- **`decide` is refused while the project's latest analysis is running,
+  whoever is asking.** The existing refusal works off `CC_SECURITY_AGENT`, a
+  variable in the agent's own environment, and the agent has a shell —
+  `env -u CC_SECURITY_AGENT …` walks past it. That guard is worth having (the
+  failure that actually happens is a model deciding, in good faith, that
+  retiring the finding it just filed is helpful) but it was being described as
+  though it were a boundary, in the README and in the code. It is now described
+  as what it is, and the ledger has one check that does not depend on the
+  environment at all: no decision on a project whose latest analysis says
+  `running`. It costs a human nothing to wait — the checklist is rebuilt when
+  the analysis closes, so a decision taken mid-run would not have changed that
+  run's report.
+
+- **The page says a truncated analysis is truncated.** A `capped` or `failed`
+  analysis is a partial read of the repository, and the numbers under it are
+  the numbers of a partial read — `critical: 0` there means "none found before
+  it stopped", not "none". Every downloaded report opened with that notice; the
+  screen everybody actually looks at did not, so the one place a truncated
+  analysis was presented as a finished one was the page. It also now says, next
+  to the download buttons, that the files contain every recorded finding
+  whatever `min_severity` is hiding on screen.
+
 - **The Analyse button starts the run and lets go of it, and a crashed run can
   no longer brick it.** The control server gives a CLI call thirty seconds and
   then SIGKILLs the shell it started; an analysis is minutes of work. So the

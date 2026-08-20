@@ -18,6 +18,16 @@ and the operator reach this file through the identical command, so the three
 verbs an agent must never reach -- `decide`, `rename-project`,
 `open-analysis` -- are refused whenever CC_SECURITY_AGENT is set (see
 `_refuse_if_agent`).
+
+BE CLEAR ABOUT WHAT THAT IS WORTH. CC_SECURITY_AGENT is a variable in the
+agent's own environment, and the agent has a shell: `env -u CC_SECURITY_AGENT
+claude-cron security decide ...` walks straight past it. It is a GUARDRAIL
+AGAINST MISTAKE, not a boundary against malice -- it stops a model that
+genuinely believes dismissing its own finding is the helpful thing to do, which
+is the failure that actually happens. It stops nothing that is trying. The one
+check here that does not depend on the environment is in `cmd_decide`, which
+refuses while the project's latest analysis is still `running`, whoever is
+asking.
 """
 
 import argparse
@@ -71,6 +81,16 @@ def _refuse_if_agent(cmd):
     `finish` is deliberately NOT in the list: `security_close_analysis` runs
     inside run_job, AFTER the agent and still under the same exported flag,
     and closing the row is the one thing that must always work.
+
+    A GUARDRAIL, NOT A BOUNDARY. The flag lives in the agent's environment and
+    the agent has a shell, so `env -u CC_SECURITY_AGENT ...` is all it takes to
+    be somebody else here. That is fine for what this is for: the failure that
+    actually happens is a model deciding, in good faith, that retiring the
+    finding it just filed is the helpful thing to do -- and this stops that
+    cold. Nothing here is load-bearing against an agent that is trying, and
+    nothing should be built on the assumption that it is. `cmd_decide`'s
+    running-analysis refusal is the one that does not depend on the
+    environment.
     """
     if os.environ.get("CC_SECURITY_AGENT", "").strip():
         sys.exit(
@@ -447,8 +467,49 @@ def cmd_checklist(args):
     print(json.dumps({"analysis": analysis, "findings": findings}, indent=2))
 
 
+def _sbom_document(conn, analysis_id):
+    """The stored CycloneDX document for this analysis's scope, as text.
+
+    The SBOM was write-only: `prepare` built one on every analysis with a
+    lockfile in it and `store_sbom` kept it, and nothing anywhere could read it
+    back out -- not the CLI, not the API, not the page. An inventory nobody can
+    download is an inventory that does not exist for the one job an SBOM has,
+    which is being handed to somebody else.
+
+    Keyed (project, repo, branch) with the most recent analysis's document, so
+    asking for an OLD analysis's SBOM hands back the current one for that
+    branch rather than a reconstruction of what the tree held that day. Nothing
+    is stored per analysis to reconstruct from, and inventing one by re-reading
+    today's lockfiles would be worse: a document that claims to describe a
+    commit it never saw.
+    """
+    row = _analysis(conn, analysis_id)
+    stored = conn.execute(
+        "SELECT document FROM sbom WHERE project=? AND repo=? AND branch=?",
+        (row["project"], row["repo"], row["branch"])).fetchone()
+    if stored is None:
+        sys.exit(f"render: no SBOM recorded for {row['project']}/{row['repo']} "
+                 f"@ {row['branch']} — one is stored only when the dependency "
+                 "inventory found a lockfile it can read (package-lock.json, "
+                 "requirements.txt, poetry.lock, composer.lock, go.sum).")
+    try:
+        # Re-serialised for a human opening the file, not re-shaped: the
+        # document goes out exactly as it was recorded, only indented. A stored
+        # string that somehow is not JSON is handed over untouched rather than
+        # lost -- the caller asked for what is in the ledger.
+        return json.dumps(json.loads(stored["document"]), indent=2, sort_keys=True)
+    except ValueError:
+        return stored["document"]
+
+
 def cmd_render(args):
     conn = _conn(args)
+    if args.format == "sbom":
+        # Not a report over the checklist at all -- it is the stored document,
+        # byte for byte. It shares this verb because the download route already
+        # speaks `render --format`, and a second verb would mean a second route.
+        print(_sbom_document(conn, args.analysis))
+        return
     analysis, findings = _checklist(conn, args.analysis)
     note = analysis.get("coverage_note", "")
     renderer = {"json": report.as_json, "md": report.as_markdown,
@@ -457,8 +518,34 @@ def cmd_render(args):
 
 
 def cmd_decide(args):
+    """A permanent, project-wide judgement. Refused while an analysis is live.
+
+    The CC_SECURITY_AGENT guard above is a guardrail against mistake -- the
+    variable is in the agent's own environment and the agent has a shell. This
+    check does not depend on the environment at all: while the project's LATEST
+    analysis says `running`, an agent of that project is alive, and this is
+    exactly the window in which a decision would be one. A human decides from
+    the page after the run ends, which is also the only moment the decision has
+    anything to act on: the checklist is rebuilt on close, so a decision
+    recorded mid-run changes nothing about the run it was recorded during.
+
+    Deliberately keyed on the analysis, not on the caller: an operator who
+    really does want to accept a risk during a run is asked to wait the minutes
+    it takes, which costs them nothing, and an agent that unsets the variable
+    finds the door shut anyway.
+    """
+    conn = _conn(args)
+    live = conn.execute(
+        "SELECT id, state FROM analysis WHERE project=? ORDER BY id DESC LIMIT 1",
+        (args.project,)).fetchone()
+    if live is not None and live["state"] == "running":
+        sys.exit(f"decide: analysis {live['id']} of '{args.project}' is still "
+                 "running — a decision taken while the agent that reports the "
+                 "finding is alive is the one decision it must not be able to "
+                 "take. Wait for the run to end; the checklist is rebuilt on "
+                 "close, so nothing is lost by waiting.")
     try:
-        ledger.set_decision(_conn(args), args.project, args.fingerprint,
+        ledger.set_decision(conn, args.project, args.fingerprint,
                             args.state, args.reason, args.by)
     except ValueError as exc:
         sys.exit(f"decide: {exc}")
@@ -545,7 +632,8 @@ def main(argv=None):
 
     rd = sub.add_parser("render", parents=[dbflag]); rd.set_defaults(fn=cmd_render)
     rd.add_argument("--analysis", type=int, required=True)
-    rd.add_argument("--format", required=True, choices=("json", "md", "html"))
+    rd.add_argument("--format", required=True,
+                    choices=("json", "md", "html", "sbom"))
 
     de = sub.add_parser("decide", parents=[dbflag]); de.set_defaults(fn=cmd_decide)
     for flag in ("project", "fingerprint", "reason"):

@@ -140,3 +140,25 @@ def test_html_escapes_rationale_not_just_title():
     htm = report.as_html(ANALYSIS, hostile, "")
     assert "<script>alert(1)</script>" not in htm
     assert "&lt;script&gt;" in htm
+
+
+def test_the_report_names_exactly_the_states_the_engine_can_produce():
+    """A THIRD copy of the vocabulary.
+
+    `diff.DERIVED_STATES` is what classify() attaches, `ledger.DECISION_STATES`
+    is what a human can record, and `report.STATES` is what the Markdown and
+    HTML checklists iterate. The page's own list is already bound to the first
+    two (tests/test_page_contract.py); this binds the third, which is the one
+    that decides whether a state SHOWS UP in a downloaded report at all. A
+    state added to the engine and forgotten here is a bucket of findings the
+    checklist section silently never counts -- _unknown_states() catches it at
+    runtime, but only as an unnamed extra line, and only if somebody reads it.
+
+    Order-insensitive on purpose: STATES is ordered for a reader (worst news
+    first), not to mirror either tuple.
+    """
+    from security import diff, ledger, report
+    assert set(report.STATES) == set(diff.DERIVED_STATES) | set(ledger.DECISION_STATES), (
+        f"report.STATES={sorted(report.STATES)} "
+        f"engine={sorted(set(diff.DERIVED_STATES) | set(ledger.DECISION_STATES))}")
+    assert len(report.STATES) == len(set(report.STATES)), "a state is listed twice"
