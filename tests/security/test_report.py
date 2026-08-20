@@ -57,3 +57,86 @@ def test_no_report_format_can_ever_carry_a_secret_value():
                  report.as_markdown(ANALYSIS, leaky, ""),
                  report.as_html(ANALYSIS, leaky, "")):
         assert AWS not in text
+
+
+def test_an_unknown_state_is_not_dropped_from_the_checklist():
+    """`by_state` accepts any state string; the MD/HTML checklists must not
+    silently drop one that falls outside STATES -- data must never disappear
+    between formats. The known "new" count is asserted alongside it as a
+    control: the fix must not disturb counting of the states it already knew."""
+    findings = [FINDINGS[0], dict(FINDINGS[0], fingerprint="c" * 64,
+                                   state="some_future_state")]
+    md = report.as_markdown(ANALYSIS, findings, "")
+    htm = report.as_html(ANALYSIS, findings, "")
+    assert "new: 1" in md and "some_future_state: 1" in md
+    assert "new: 1" in htm and "some_future_state: 1" in htm
+
+
+def test_accepted_risk_is_disclosed_in_the_severity_block():
+    findings = [dict(FINDINGS[0], state="accepted")]
+    doc = json.loads(report.as_json(ANALYSIS, findings, ""))
+    assert doc["summary"]["accepted_in_severity"] == 1
+    md = report.as_markdown(ANALYSIS, findings, "")
+    htm = report.as_html(ANALYSIS, findings, "")
+    assert "1 accepted risk" in md
+    assert "1 accepted risk" in htm
+
+
+def test_no_accepted_disclosure_when_nothing_is_accepted():
+    """Control for the disclosure above: with no accepted finding, none of the
+    three formats mention accepted risks at all -- the note must not become
+    noise printed unconditionally."""
+    doc = json.loads(report.as_json(ANALYSIS, FINDINGS, ""))
+    assert doc["summary"]["accepted_in_severity"] == 0
+    md = report.as_markdown(ANALYSIS, FINDINGS, "")
+    htm = report.as_html(ANALYSIS, FINDINGS, "")
+    assert "accepted risk" not in md
+    assert "accepted risk" not in htm
+
+
+def test_html_escapes_a_hostile_occurrence_line():
+    """Every current producer coerces `line` to int before it reaches report.py
+    (see ledger.py), so this is not reachable today -- but report.py must not
+    rely on its callers forever."""
+    hostile = [dict(FINDINGS[0], occurrences=[
+        {"file": "prod.env", "line": '12" onmouseover="x', "snippet_hash": ""}])]
+    htm = report.as_html(ANALYSIS, hostile, "")
+    assert 'onmouseover="x' not in htm
+    assert "&quot;" in htm
+
+
+def test_by_severity_excludes_terminal_states_and_counts_open_and_accepted():
+    findings = [
+        dict(FINDINGS[0], fingerprint="c" * 64, state="open", severity="critical"),
+        dict(FINDINGS[0], fingerprint="d" * 64, state="accepted", severity="critical"),
+        dict(FINDINGS[0], fingerprint="e" * 64, state="fixed", severity="critical"),
+        dict(FINDINGS[0], fingerprint="f" * 64, state="false_positive", severity="critical"),
+    ]
+    s = report._summary(findings)
+    assert s["by_severity"]["critical"] == 2  # open + accepted only
+
+
+def test_empty_findings_render_in_every_format_without_crashing():
+    doc = json.loads(report.as_json(ANALYSIS, [], ""))
+    assert doc["summary"]["total"] == 0
+    assert all(v == 0 for v in doc["summary"]["by_state"].values())
+    assert all(v == 0 for v in doc["summary"]["by_severity"].values())
+    assert doc["summary"]["accepted_in_severity"] == 0
+    md = report.as_markdown(ANALYSIS, [], "")
+    htm = report.as_html(ANALYSIS, [], "")
+    assert "## Findings" in md
+    assert "<h2>Findings</h2>" in htm
+
+
+def test_a_finding_with_no_occurrences_renders_without_crashing():
+    findings = [dict(FINDINGS[0], occurrences=[])]
+    report.as_json(ANALYSIS, findings, "")
+    report.as_markdown(ANALYSIS, findings, "")
+    report.as_html(ANALYSIS, findings, "")
+
+
+def test_html_escapes_rationale_not_just_title():
+    hostile = [dict(FINDINGS[0], rationale="<script>alert(1)</script>")]
+    htm = report.as_html(ANALYSIS, hostile, "")
+    assert "<script>alert(1)</script>" not in htm
+    assert "&lt;script&gt;" in htm
