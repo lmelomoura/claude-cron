@@ -55,6 +55,21 @@ def open_analysis(db, project="web", repo="web", branch="main", commit="abc",
                "--run-id", run_id)["analysis_id"]
 
 
+def prepared_analysis(db, tmp_path, **kw):
+    """An analysis whose deterministic phases have actually run.
+
+    `finish --state done` is DOWNGRADED to `capped` for an analysis that never
+    ran `prepare` (see cmd_finish), so a test about what a close does has to
+    start from a prepared row or it is quietly testing that guard instead of
+    the thing it names.
+    """
+    aid = open_analysis(db, **kw)
+    root = tmp_path / f"repo-{aid}"
+    root.mkdir(parents=True, exist_ok=True)
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    return aid
+
+
 def test_prepare_then_report_then_finish(tmp_path):
     root = tmp_path / "repo"
     (root / "sub").mkdir(parents=True)
@@ -211,7 +226,7 @@ def test_finish_if_running_does_not_reopen_a_closed_analysis(tmp_path):
     for the ordinary case where the run really happened and already closed
     the row -- otherwise every analysis would end up `failed`."""
     db = tmp_path / "security.db"
-    aid = open_analysis(db)
+    aid = prepared_analysis(db, tmp_path)
     run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "1.25")
     run(db, "finish", "--analysis", str(aid), "--state", "failed", "--if-running")
     row = run(db, "list", "--project", "web")[0]
@@ -233,7 +248,7 @@ def test_a_malformed_spend_does_not_lose_the_close(tmp_path):
     already treats as untrusted text elsewhere. A row left `running` for
     ever is a far worse outcome than a cost recorded as zero."""
     db = tmp_path / "security.db"
-    aid = open_analysis(db)
+    aid = prepared_analysis(db, tmp_path)
     run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "n/a")
     row = run(db, "list", "--project", "web")[0]
     assert row["state"] == "done"
@@ -522,7 +537,7 @@ def test_a_close_may_still_lower_a_done_analysis(tmp_path):
 def test_a_running_analysis_accepts_any_verdict(tmp_path):
     db = tmp_path / "security.db"
     for state in ("done", "capped", "failed"):
-        aid = open_analysis(db, commit=state)
+        aid = prepared_analysis(db, tmp_path, commit=state)
         run(db, "finish", "--analysis", str(aid), "--state", state)
         rows = {r["id"]: r for r in run(db, "list", "--project", "web")}
         assert rows[aid]["state"] == state
@@ -904,3 +919,98 @@ def test_every_phase_gap_reaches_the_one_coverage_note(tmp_path):
                "--offline")["coverage_note"]
     assert "history sweep did not complete" in note
     assert "OSV.dev" in note
+
+
+# ------------------------------- an analysis that never ran its own phases
+
+def test_finishing_done_without_prepare_is_downgraded_to_capped(tmp_path):
+    """Nothing engine-side runs `prepare`: it is the agent's first command,
+    named in the prompt and in the skill, and an agent that simply skipped it
+    exited cleanly and had its row closed `done`. The result was a report with
+    zero findings, an empty coverage note and no banner anywhere saying the
+    repository had never been scanned -- and that report then became the
+    BASELINE the next analysis is diffed against, so everything the next run
+    legitimately found arrived as `new`."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "finish", "--analysis", str(aid), "--state", "done")
+    assert out.returncode == 0, out.stderr
+    assert "never ran `prepare`" in out.stderr
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "capped"
+    assert "deterministic phases never ran" in row["coverage_note"]
+
+
+def test_the_downgrade_reaches_the_report_as_an_incomplete_banner(tmp_path):
+    """`capped` is what the report already prints its INCOMPLETE banner for,
+    which is the reason the guard downgrades rather than refusing: the reader
+    of the downloaded file learns it from the file itself."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    rendered = run_text(db, "render", "--analysis", str(aid), "--format", "md")
+    assert "INCOMPLETE" in rendered
+    assert "deterministic phases never ran" in rendered
+
+
+def test_an_analysis_that_did_prepare_still_closes_done(tmp_path):
+    """The control. A guard that downgraded every close would be indis-
+    tinguishable, from the page, from one that worked."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert "deterministic phases never ran" not in row["coverage_note"]
+
+
+def test_prepare_marks_the_row_only_after_its_findings_are_stored(tmp_path):
+    """`prepared` has to mean "the deterministic phases ran AND their findings
+    are in the ledger", not "prepare was invoked"."""
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    aid = open_analysis(db)
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    assert conn.execute("SELECT prepared FROM analysis WHERE id=?",
+                        (aid,)).fetchone()["prepared"] == 0
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    assert conn.execute("SELECT prepared FROM analysis WHERE id=?",
+                        (aid,)).fetchone()["prepared"] == 1
+
+
+def test_the_downgrade_note_is_not_stored_twice_when_the_row_closes_twice(tmp_path):
+    """A row is closed twice by design -- the agent, then the engine with the
+    run's real verdict and cost. Both closes hit the guard."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "1.5")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["coverage_note"].count("deterministic phases never ran") == 1
+    assert row["spend_usd"] == 1.5
+
+
+def test_the_prepared_column_is_added_to_a_database_that_predates_it(tmp_path):
+    """The feature has never shipped, so there is no installed base -- but the
+    branch's own dev databases exist, and `CREATE TABLE IF NOT EXISTS` does
+    nothing to a table that is already there. connect() adds the column with
+    ALTER TABLE, guarded by PRAGMA table_info."""
+    db = tmp_path / "security.db"
+    old = sqlite3.connect(str(db))
+    old.executescript(
+        "CREATE TABLE analysis (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " project TEXT NOT NULL, repo TEXT NOT NULL, branch TEXT NOT NULL,"
+        " commit_sha TEXT NOT NULL, profile TEXT NOT NULL,"
+        " started INTEGER NOT NULL, ended INTEGER, state TEXT NOT NULL,"
+        " spend_usd REAL NOT NULL DEFAULT 0, run_id TEXT NOT NULL DEFAULT '',"
+        " coverage_note TEXT NOT NULL DEFAULT '');")
+    old.execute("INSERT INTO analysis (project, repo, branch, commit_sha, profile,"
+                " started, state) VALUES ('web','web','main','abc','quick',1,'done')")
+    old.commit()
+    old.close()
+
+    rows = run(db, "list", "--project", "web")
+    assert len(rows) == 1
+    assert rows[0]["prepared"] == 0, "a row from before the column is unprepared"

@@ -782,9 +782,14 @@ Secrets across the whole tree, and across the branch's whole git history on
 `.env`, a file whose first bytes are a private key, a world-writable file. All
 of it is Python over the files, so it takes seconds and costs nothing.
 
-It is written to the ledger **before the agent starts**, which is why the page
-fills with secrets and CVEs within seconds of the click while the SAST pass is
-still going. That is not a feature of the engine — it is the order of the phases.
+It is written to the ledger **moments after the agent starts** — `prepare` is
+the agent's first command, named in the prompt and in the skill — which is why
+the page fills with secrets and CVEs within seconds of the click while the SAST
+pass is still going. Nothing engine-side runs it, so the engine checks instead
+that it ran: an analysis whose deterministic phases never happened is closed
+**`capped`, never `done`**, with a coverage note saying so. A report with
+nothing behind it must not become the baseline the next analysis is diffed
+against.
 
 The agent's own contract is versioned rather than typed into a prompt
 (`skills/security-analysis/SKILL.md`) and it does three things in this order:

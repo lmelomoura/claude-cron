@@ -20,7 +20,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **`claude-cron security` — analyse a project's code on a branch you choose.**
-  Secrets (working tree, plus the whole history on a branch's first analysis),
+  Secrets (the working tree and the whole git history, every analysis),
   dependency CVEs from OSV.dev, a CycloneDX SBOM and repository hygiene run in
   seconds and cost no tokens; a Claude run then does the SAST, triages what the
   deterministic phase found, and re-verifies what was left open last time. The
@@ -112,9 +112,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `secrets.py` finds credentials by *shaped* patterns with an entropy gate, not
   by entropy alone — entropy alone flags every hash, UUID and minified bundle in
   a repository, which is how a secret scanner becomes something people switch
-  off. It sweeps the git history as well as the working tree on a branch's first
-  analysis, because a key committed on Monday and deleted on Tuesday is still
-  compromised and is the case that actually leaks. The value never leaves the
+  off. It sweeps the git history as well as the working tree on every analysis,
+  because a key committed on Monday and deleted on Tuesday is still compromised
+  and is the case that actually leaks. The value never leaves the
   module: not into a return value, not into a finding, not masked. `deps.py`
   reads names and versions out of `package-lock.json`, `requirements.txt`,
   `poetry.lock`, `composer.lock` and `go.sum` — never a dependency's code, which
@@ -284,6 +284,60 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   string, but the pane itself has no reason to ever write one.
 
 ### Fixed
+
+- **A secret in the git history no longer reads as `fixed` the moment somebody
+  deletes the file.** The history sweep ran only on a branch's *first*
+  analysis, on the reasoning that re-reading commits already read is wasted
+  wall-clock. Nothing re-emitted those findings afterwards, so the checklist
+  compared analysis 2 against analysis 1, did not see them, and reported them
+  `fixed` — congratulating you for the exact act the finding's own remediation
+  calls insufficient — and by analysis 3 they were out of the report
+  altogether:
+
+  ```
+  run 1: aws_access_key=new
+  run 2: aws_access_key=fixed        <- deleting the file "fixed" it
+  run 3: (no findings at all)
+  ```
+
+  The sweep now runs on **every** analysis. It is `git log -p` and plain
+  Python — seconds, and no tokens — and the finding stays `open` run after run
+  until the credential is rotated at the provider and a human closes it with
+  *Accept risk*, which is the only honest close: git history does not shrink.
+  A secret that is in the working tree *and* in the history is still one
+  finding, but the working tree's reading now wins the tie, so a live
+  credential is reported at its real line and in the present tense instead of
+  being overwritten by a line-0 note about the past.
+
+- **An analysis can no longer close `done` without ever having looked at
+  anything.** Nothing engine-side ran the deterministic phases — `prepare` is
+  the agent's first command, named in the prompt and in the skill — so an agent
+  that simply skipped it exited cleanly, the engine closed the row `done` on
+  the run's own `success`, and the result was a report with zero findings, an
+  empty coverage note and no banner anywhere saying the repository had never
+  been scanned. It then became the *baseline* every later analysis is diffed
+  against, so the next run's real findings all arrived as `new`. `prepare` now
+  marks the row, and a `done` close of an unmarked row is downgraded to
+  `capped` with a coverage note saying the deterministic phases never ran —
+  which is what makes the report print its INCOMPLETE banner.
+
+- **`ignore_paths` reaches every deterministic phase, not just one.** The globs
+  lived inside the working-tree secret scan, so the git-history sweep and the
+  hygiene pass never saw them: a fixtures directory full of deliberately fake
+  credentials disappeared from one section of the report and was listed in full
+  in two others. The dependency inventory still ignores them deliberately — a
+  lockfile under an ignored glob declares packages the project ships, and a CVE
+  against one of them is real wherever the file sits.
+
+- **A deterministic phase that fails says so instead of answering "clean".**
+  The history sweep returned an empty list for a timeout, an unrunnable `git`
+  and a non-zero `git` exit — the identical value it returns for a repository
+  with nothing in its history, so the one failure mode that hides the findings
+  it exists to produce read as the best possible news. It now states the gap in
+  the coverage note, alongside the files the working-tree scan never opened
+  (over 2 MB, or not readable as UTF-8), which were also being skipped in
+  silence. Every phase writes into that one note, in phase order, so a run that
+  could not sweep the history *and* could not reach OSV.dev reports both.
 
 - **The Analyse button starts the run and lets go of it, and a crashed run can
   no longer brick it.** The control server gives a CLI call thirty seconds and

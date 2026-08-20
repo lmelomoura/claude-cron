@@ -67,6 +67,12 @@ secstate() {
   "$CC" security list --project "$1" 2>/dev/null \
     | jq -r --argjson a "$2" '.[] | select(.id == $a) | .state // empty'
 }
+# secnote <project> <analysis-id> -- that row's coverage note, the one line a
+# reader has to judge the report's blind spots by.
+secnote() {
+  "$CC" security list --project "$1" 2>/dev/null \
+    | jq -r --argjson a "$2" '.[] | select(.id == $a) | .coverage_note // empty'
+}
 
 echo
 echo "1. a run that declares a clean ending is torn down and removed"
@@ -196,6 +202,27 @@ CLAUDE_CRON_SECURITY_STALE_GRACE=0 FAKE_MODE=complete FAKE_SESSION=sess-sec-fres
 [ "$(secstate sandbox "$stuck_id")" = "failed" ] \
   && ok "the next analyse's own preflight sweeps it before opening a fresh one" \
   || bad "stuck row $stuck_id left '$(secstate sandbox "$stuck_id")'"
+
+echo
+echo "11. an agent that never ran the deterministic phases cannot close done"
+# Nothing engine-side runs `prepare`. An agent that skips its first command
+# exits cleanly, so the engine's own close-out closes the row with `success` --
+# and the result was a `done` analysis with no findings, no coverage note and
+# no banner, which then became the baseline every later analysis is diffed
+# against. The whole path is exercised here, over the real run_job: only the
+# LEDGER can tell the two apart, and only after the run has ended.
+out11="$(FAKE_MODE=complete FAKE_SKIP_PREPARE=1 FAKE_SESSION=sess-sec-noprep \
+  "$CC" security analyze --detach sandbox anything main quick)"
+aid11="$(secid "$out11")"
+w=0
+while [ "$w" -lt 20 ] && [ "$(secstate sandbox "$aid11")" = "running" ]; do sleep 1; w=$((w + 1)); done
+[ "$(secstate sandbox "$aid11")" = "capped" ] \
+  && ok "a run whose agent skipped prepare closes capped, not done (waited ${w}s)" \
+  || bad "left '$(secstate sandbox "$aid11")' after ${w}s -- expected capped"
+case "$(secnote sandbox "$aid11")" in
+  *"deterministic phases never ran"*) ok "and the report says why, in the coverage note" ;;
+  *) bad "no coverage note explaining the downgrade: '$(secnote sandbox "$aid11")'" ;;
+esac
 
 echo
 printf '\n  %s passed, %s failed\n' "$pass" "$fail"

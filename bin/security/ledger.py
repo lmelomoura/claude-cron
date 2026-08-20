@@ -18,7 +18,15 @@ CREATE TABLE IF NOT EXISTS analysis (
   started INTEGER NOT NULL, ended INTEGER,
   state TEXT NOT NULL, spend_usd REAL NOT NULL DEFAULT 0,
   run_id TEXT NOT NULL DEFAULT '',
-  coverage_note TEXT NOT NULL DEFAULT '');
+  coverage_note TEXT NOT NULL DEFAULT '',
+  -- 1 once `prepare` has actually run the deterministic phases over this
+  -- analysis. It is the only thing that can tell an analysis that found
+  -- nothing from one that never looked: nothing engine-side runs `prepare`,
+  -- so an agent that skipped its first command used to close `done` with a
+  -- clean report, an empty coverage note and no banner -- and that report
+  -- became the baseline every later analysis is diffed against. See
+  -- `cmd_finish`, which refuses to record `done` without it.
+  prepared INTEGER NOT NULL DEFAULT 0);
 
 CREATE INDEX IF NOT EXISTS analysis_by_scope ON analysis(project, repo, branch);
 
@@ -71,6 +79,21 @@ DECISION_STATES = ("accepted", "false_positive")
 ANALYSIS_END_STATES = ("done", "failed", "capped")
 
 
+# Columns added to `analysis` after the table's first shape, as
+# (name, DDL fragment). `executescript(_SCHEMA)` runs CREATE TABLE IF NOT
+# EXISTS, which does NOTHING to a table that already exists -- so a column
+# added to the string above reaches a fresh database and no other. This
+# feature has never shipped, so there is no installed base to migrate; what
+# DOES exist is the dev database on the branch's own machines, and an engine
+# that crashed with "no such column" against it would be a bad way to find
+# that out. Handled by ALTER TABLE, guarded by PRAGMA table_info, rather than
+# by a migration framework this repository does not have and does not need for
+# one column.
+_ANALYSIS_COLUMNS = (
+    ("prepared", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
 def connect(path) -> sqlite3.Connection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,8 +101,21 @@ def connect(path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(analysis)")}
+    for name, ddl in _ANALYSIS_COLUMNS:
+        if name not in have:
+            # No user input reaches this string: both halves are literals in
+            # the tuple above, and PRAGMA table_info has already said the
+            # column is absent.
+            conn.execute(f"ALTER TABLE analysis ADD COLUMN {name} {ddl}")
     conn.commit()
     return conn
+
+
+def mark_prepared(conn, analysis_id) -> None:
+    """Record that the deterministic phases ran over this analysis."""
+    conn.execute("UPDATE analysis SET prepared=1 WHERE id=?", (analysis_id,))
+    conn.commit()
 
 
 def start_analysis(conn, project, repo, branch, commit_sha, profile, run_id) -> int:

@@ -5398,6 +5398,20 @@ JSON
     TICK_LOG="$sec/data/tick.log"; RUNS_FILE="$sec/data/runs.ndjson"
     CLAUDE_CRON_SECURITY_DB="$secdb"
   }
+  # An analysis row that is allowed to close `done`. `finish` downgrades a
+  # `done` close to `capped` for a row whose deterministic phases never ran
+  # (bin/security/cli.py, cmd_finish) -- so every fixture below that is about
+  # what a CLOSE does has to prepare its row first, or it silently stops
+  # testing the close and starts testing that guard. The tree is deliberately
+  # empty: what is asserted here is the verdict, not what prepare found.
+  mkdir -p "$sec/tree"
+  sec_open() { # sec_open [commit-sha] -> the id of a prepared, running analysis
+    local a
+    a="$(security_py open-analysis --project "Sec App" --repo repo --branch main \
+           --commit "${1:-abc}" --profile quick --run-id "$secjid" | "$JQ" -r '.analysis_id')"
+    security_py prepare --analysis "$a" --root "$sec/tree" --offline >/dev/null 2>&1
+    printf '%s' "$a"
+  }
   local secreq="$sec/data/security/requests/$secjid.json"
 
   # run_job is stubbed, so nothing spends a session -- but the stub reads the
@@ -5500,7 +5514,13 @@ JSON
   # The other half: a detached run that DOES close its own row, the way a real
   # one does from inside run_job. The sweep must not overwrite that verdict.
   ( sec_env
-    run_job() { security_close_analysis "$1" success "1.25" "" >/dev/null 2>&1; return 0; }
+    # The stub prepares before it closes, exactly as a real run does: the agent
+    # runs the deterministic phases as its first command and `finish` refuses
+    # `done` without them.
+    run_job() {
+      security_py prepare --analysis "$CC_SECURITY_ANALYSIS_ID" --root "$sec/tree" \
+        --offline >/dev/null 2>&1
+      security_close_analysis "$1" success "1.25" "" >/dev/null 2>&1; return 0; }
     cmd_security_analyze --detach "Sec App" repo main quick ) > "$sec/detach2.out" 2>&1
   detwait=0
   while [ "$detwait" -lt 20 ] \
@@ -5589,8 +5609,7 @@ JSON
   sec_close_state() { # sec_close_state <run-status> [wdreason] -> the state it lands on
     ( sec_env
       local a
-      a="$(security_py open-analysis --project "Sec App" --repo repo --branch main \
-             --commit abc --profile quick --run-id "$secjid" | "$JQ" -r '.analysis_id')"
+      a="$(sec_open)"
       "$JQ" --argjson a "$a" '.analysis_id = $a' "$secreq" > "$secreq.t" && mv "$secreq.t" "$secreq"
       security_close_analysis "$secjid" "$1" "1.5" "${2:-}" >/dev/null 2>&1
       security_py list --project "Sec App" \
@@ -5625,6 +5644,23 @@ JSON
     && ok "and a capped run says it ran out of budget rather than that it broke" \
     || bad "capped -> $(sec_close_state capped)"
 
+  # The engine's own close is the path an agent that SKIPPED `prepare` comes
+  # home on: it exits cleanly, the classifier says `success`, and the row used
+  # to close `done` with no findings, no coverage note and no banner -- then
+  # became the baseline the next analysis was diffed against. Same close, same
+  # `success`, the one difference being that nothing prepared this row.
+  local secnoprep
+  secnoprep="$( ( sec_env
+    a="$(security_py open-analysis --project "Sec App" --repo repo --branch main \
+           --commit noprep --profile quick --run-id "$secjid" | "$JQ" -r '.analysis_id')"
+    CC_SECURITY_ANALYSIS_ID="$a" security_close_analysis "$secjid" success "0.75" "" \
+      >/dev/null 2>&1
+    security_py list --project "Sec App" | "$JQ" -r --argjson a "$a" \
+      '.[] | select(.id==$a) | [.state, (.coverage_note | test("deterministic phases never ran") | tostring)] | join(",")' ) )"
+  [ "$secnoprep" = "capped,true" ] \
+    && ok "a success-close of an analysis whose deterministic phases never ran lands capped, and says so" \
+    || bad "engine close of an unprepared analysis -> $secnoprep (want capped,true)"
+
   # The close used to overwrite the row unconditionally, which turned the one
   # honest thing an agent can say about its own run -- "I ran out of room" --
   # into `done`, because the PROCESS exited cleanly.
@@ -5646,10 +5682,8 @@ JSON
   # analysis's row and left its own running for ever.
   local seccross
   seccross="$( ( sec_env
-    mine="$(security_py open-analysis --project "Sec App" --repo repo --branch main \
-              --commit abc --profile quick --run-id "$secjid" | "$JQ" -r '.analysis_id')"
-    other="$(security_py open-analysis --project "Sec App" --repo repo --branch main \
-              --commit def --profile quick --run-id "$secjid" | "$JQ" -r '.analysis_id')"
+    mine="$(sec_open abc)"
+    other="$(sec_open def)"
     # exactly what a second `security analyze` does to the shared file while
     # the first run is still going
     "$JQ" --argjson a "$other" '.analysis_id = $a' "$secreq" > "$secreq.t" && mv "$secreq.t" "$secreq"
@@ -5680,8 +5714,7 @@ JSON
     || bad "agent rename-project: rc=$secrc $(cat "$sec/agent-rename.out" 2>/dev/null)"
   local secfin
   secfin="$( ( sec_env
-    a="$(security_py open-analysis --project "Sec App" --repo repo --branch main \
-           --commit abc --profile quick --run-id "$secjid" | "$JQ" -r '.analysis_id')"
+    a="$(sec_open)"
     CC_SECURITY_AGENT=1 CC_SECURITY_ANALYSIS_ID="$a" \
       security_close_analysis "$secjid" success "0.25" "" >/dev/null 2>&1
     security_py list --project "Sec App" \

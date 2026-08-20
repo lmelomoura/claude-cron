@@ -219,6 +219,11 @@ def cmd_prepare(args):
 
     conn.execute("UPDATE analysis SET coverage_note=? WHERE id=?", (note, aid))
     conn.commit()
+    # LAST, and not before the writes above: `prepared` is what lets `finish`
+    # record `done`, and it must mean "the deterministic phases ran and their
+    # findings are in the ledger", not "prepare was invoked and then fell over
+    # halfway".
+    ledger.mark_prepared(conn, aid)
     print(json.dumps({"coverage_note": note, "findings": len(findings)}))
 
 
@@ -341,6 +346,31 @@ def cmd_finish(args):
               "close never upgrades a truncated or failed analysis to done",
               file=sys.stderr)
         state = row["state"]
+    # `done` REQUIRES that the deterministic phases actually ran. Nothing
+    # engine-side runs `prepare` -- it is the agent's first command, named in
+    # the prompt and in the skill -- so an agent that simply skipped it exited
+    # cleanly, the engine closed the row `done`, and the result was a report
+    # with zero findings, an empty coverage note and no banner anywhere saying
+    # the repository had never been scanned. Worse than useless: that report
+    # becomes the BASELINE the next analysis is diffed against, so everything
+    # the next run legitimately finds arrives as `new` and everything a
+    # previous run had found reads as `fixed`.
+    #
+    # Downgraded to `capped` rather than refused outright, for the same reason
+    # the close-out can only ever lower a verdict: leaving the row `running`
+    # for ever is a worse outcome than an honest "incomplete", and `capped` is
+    # the state the report already prints an INCOMPLETE banner for.
+    unprepared_note = ""
+    if state == "done" and not row["prepared"]:
+        state = "capped"
+        unprepared_note = (
+            "The deterministic phases never ran for this analysis: no secret "
+            "sweep, no dependency inventory, no hygiene pass. Nothing here was "
+            "looked at by them, so an absent finding means nothing was checked.")
+        print(f"finish: analysis {args.analysis} never ran `prepare` — closing "
+              "it capped instead of done; a report with no deterministic "
+              "phase behind it must not become the next analysis's baseline",
+              file=sys.stderr)
     # finish_analysis writes coverage_note unconditionally, and neither caller
     # of `finish` carries the note `prepare` printed: the agent never saw it,
     # and the engine's close-out knows only the run's status and cost. An
@@ -352,12 +382,18 @@ def cmd_finish(args):
     # OSV.dev" are two different blind spots, and the reader needs both. The
     # equality guard keeps a row closed twice with the same sentence from
     # accumulating it twice.
+    #
+    # A THIRD writer, from the guard above: the reason the verdict was lowered
+    # belongs in the report next to every other thing this analysis did not do.
     stored = row["coverage_note"] or ""
-    note = args.note or ""
-    if not note:
-        note = stored
-    elif stored and note != stored:
-        note = f"{stored} {note}"
+    note = ""
+    for part in (stored, args.note or "", unprepared_note):
+        part = part.strip()
+        # `not in`, not `!=`: a row is closed twice (the agent, then the
+        # engine) and each close re-reads the note it already wrote. Without
+        # the containment check the note grows a copy of itself every time.
+        if part and part not in note:
+            note = f"{note} {part}".strip()
     ledger.finish_analysis(conn, args.analysis, state, _spend(args.spend), note)
 
 

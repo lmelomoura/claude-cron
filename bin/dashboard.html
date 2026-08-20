@@ -3593,8 +3593,9 @@ function secPaint(){
   box.appendChild(secEl("span", null, bits.filter(Boolean).join(" · ")));
   if(running){
     box.appendChild(secEl("span", null,
-      "Secrets, dependencies and CVEs are written before the agent starts, so what is "
-      + "below is already real while the code review keeps going."));
+      "Secrets, dependencies and CVEs are written moments after the agent starts — "
+      + "they are its first command — so what is below is already real while the "
+      + "code review keeps going."));
   }
   const run = secRunFor(a);
   if(run){
@@ -3866,7 +3867,7 @@ async function secAnalyse(){
     if(!ok) return;
     toast("Analysis started", false, "shield");
     secState.branch = s.branch; secState.repo = s.repo;
-    // The deterministic phase writes before the agent starts, so polling shows
+    // The deterministic phase writes in the agent's first seconds, so polling shows
     // secrets and CVEs within seconds while the SAST is still running.
     await secReload();
     secSyncPoll();
