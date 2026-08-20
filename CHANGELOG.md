@@ -30,6 +30,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The usage gate can now see the window before it is nearly full.**
+  `rl_gate` shipped armed and blind: the run stream carries a utilisation figure
+  ONLY once the CLI has decided to warn (at 0.75), and below that it reports
+  `status: "allowed"` with no number at all — so through the whole quiet stretch
+  where "should I start a 100-minute run?" is worth asking, there was nothing to
+  answer with. `bin/statusline-rate-limits.sh` reads `rate_limits` off the
+  statusLine payload, where the figure rides along on a response the session had
+  already paid for, and folds it into the same `data/rate-limits.json` the gate
+  reads.
+
+  Measured, not assumed: **the statusLine is not invoked in headless mode** —
+  neither `-p --output-format json` nor `-p --output-format stream-json
+  --verbose` runs it, because there is no status line to draw. So this cannot be
+  fed by the scheduler's own runs. It is fed by the operator's interactive
+  sessions on the same account, which is what makes it worth having: you work in
+  Claude Code during the day and the fleet learns how full the window is without
+  spending a token to find out. Opt-in — it changes nothing until you point
+  `statusLine` at it in `~/.claude/settings.json`.
+
+  It merges rather than overwrites: `status` and `overage` come only from a run
+  stream and describe the window that was measured, so they are carried forward
+  while `resets_at` says it is the same window and dropped the moment it is not.
+  Writes are floored at 15s, because the statusLine fires several times a second
+  while a turn streams.
+
 - **The scheduler now knows about the usage window, and holds runs back when it
   is spent.** The only ceiling it understood was money — `daily_budget_usd` and
   `max_budget_usd` — and on a subscription that is not the ceiling that stops
@@ -97,6 +122,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   placeholder the README does.
 
 ### Fixed
+
+- **A usage reading with no status no longer reads as a refusal.** `rl_gate`
+  treated "does not start with `allowed`" as the API having refused — and an
+  absent status is not a refusal, it is silence. The statusline reports
+  utilisation without any status at all, so installing it would have held back
+  every scheduled run on a perfectly healthy window. Only a status that is
+  present AND not `allowed*` counts as spent.
 
 - **A resume that died young can be resumed again.** A resumed run carries the
   session it continued in `resumed_from` AND in `session` — it is the same

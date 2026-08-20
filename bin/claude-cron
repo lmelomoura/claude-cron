@@ -1033,8 +1033,10 @@ rl_gate() { # rl_gate -> 0 = hold this run back (reason on stdout)
     | map(select(.value.resets_at != null and .value.resets_at > $now))
     | map(. + {mins: (((.value.resets_at - $now) / 60) | floor)})
     # A refusal outranks a number: if the API has stopped saying `allowed`, the
-    # window is spent whatever the last utilisation reading was.
-    | ( [ .[] | select((.value.status // "") | startswith("allowed") | not) ]
+    # window is spent whatever the last utilisation reading was. A reading with
+    # NO status is not a refusal — the statusline reports utilisation without
+    # one, and treating its silence as a refusal would gate every healthy run.
+    | ( [ .[] | select(.value.status != null and ((.value.status | startswith("allowed")) | not)) ]
         | map("the \(.key) window is spent (API says \(.value.status)) -- it resets in \(.mins) min")
       ) + (
         [ .[] | select((.value.utilization // 0) >= $stop) ]
@@ -2986,6 +2988,54 @@ NASTY
   # A refusal outranks any number, including no number at all.
   got="$(rl_probe five_hour rejected null "$soon" rejected)"
   [ -n "$got" ] && ok "an API refusal gates even with no utilisation reported" || bad "a refusal did not gate"
+
+  echo "statusline-rate-limits.sh — the figure the run stream never carries"
+  # The stream only reports utilisation once the CLI has decided to warn (0.75),
+  # so below that the gate is armed and blind. The statusLine payload has the
+  # number on every turn — but ONLY in an interactive session: measured, it is
+  # not invoked under `-p` in either output format. So this is fed by the
+  # operator's own sessions, on the same account, and has to merge with what the
+  # runs recorded rather than overwrite it.
+  sl="$BIN_DIR/statusline-rate-limits.sh"
+  mkdir -p "$tmp/sl"
+  sl_run() { # sl_run <payload-json> -> writes $tmp/sl/rate-limits.json
+    printf '%s' "$1" | CLAUDE_CRON_DATA="$tmp/sl" CLAUDE_CRON_STATUSLINE_MIN_SECONDS=0 sh "$sl" >/dev/null 2>&1
+  }
+  sl_get() { "$JQ" -r "$1" "$tmp/sl/rate-limits.json" 2>/dev/null; }
+
+  sl_run '{"rate_limits":{"five_hour":{"used_percentage":62.5,"resets_at":111},"seven_day":{"used_percentage":18,"resets_at":222}}}'
+  [ "$(sl_get '.five_hour.utilization')" = "0.625" ] \
+    && ok "used_percentage (0-100) is stored as the utilisation the gate reads (0-1)" \
+    || bad "five_hour utilisation -> $(sl_get '.five_hour.utilization')"
+  [ "$(sl_get '.seven_day.resets_at')" = "222" ] \
+    && ok "both windows are recorded, not just the first" || bad "seven_day missing"
+
+  # An API-key account reports no windows at all. That is not a failure, and it
+  # must not leave a file behind that the gate would then read as fact.
+  rm -f "$tmp/sl/rate-limits.json"
+  sl_run '{"model":{"id":"x"},"workspace":{}}'
+  [ ! -f "$tmp/sl/rate-limits.json" ] \
+    && ok "a payload with no windows writes nothing" || bad "wrote a file with no windows in the payload"
+
+  # The merge. `status` and `overage` only ever come from a run's stream, and
+  # they describe the window that was measured.
+  "$JQ" -n '{five_hour:{status:"allowed_warning",utilization:0.9,resets_at:111,overage:"rejected",seen_at:0}}' > "$tmp/sl/rate-limits.json"
+  sl_run '{"rate_limits":{"five_hour":{"used_percentage":93,"resets_at":111}}}'
+  [ "$(sl_get '.five_hour.overage')" = "rejected" ] && [ "$(sl_get '.five_hour.utilization')" = "0.93" ] \
+    && ok "a fresher figure for the SAME window keeps what the stream knew" \
+    || bad "same-window merge lost the stream's fields: $(sl_get '.five_hour|tostring')"
+  # ...and the moment the window rolls over, that knowledge is about a window
+  # that no longer exists. Carrying it would hold the fleet back on a spent fact.
+  sl_run '{"rate_limits":{"five_hour":{"used_percentage":4,"resets_at":999}}}'
+  [ "$(sl_get '.five_hour.overage')" = "null" ] && [ "$(sl_get '.five_hour.status')" = "null" ] \
+    && ok "a NEW window drops the previous one's status and overage" \
+    || bad "stale status survived a window roll: $(sl_get '.five_hour|tostring')"
+
+  # The gate must not read that null status as a refusal — the statusline never
+  # reports one, so treating its silence as "not allowed" would hold back every
+  # healthy run the moment this script was installed.
+  got="$( DATA_DIR="$tmp/sl"; RATE_LIMIT_FILE="$tmp/sl/rate-limits.json"; rl_gate 2>/dev/null )"
+  [ -z "$got" ] && ok "a reading with no status is not a refusal" || bad "gated on a status-less reading: $got"
 
   echo "the Claude account comes from the setting, never from the environment"
   # cmd_install refuses an ambient CLAUDE_CONFIG_DIR, and for a while the runtime
