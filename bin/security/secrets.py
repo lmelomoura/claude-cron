@@ -6,13 +6,13 @@ alone flags every hash, UUID and minified bundle in the repo, which is how a
 secret scanner becomes something people turn off.
 """
 
-import fnmatch
 import math
 import re
 import subprocess
 from pathlib import Path
 
 from .fingerprint import secret_fingerprint
+from .ignores import ignored
 
 # Each rule is (name, severity, compiled pattern, minimum entropy of group 1).
 # Entropy 0 means the shape alone is conclusive.
@@ -70,11 +70,6 @@ def _is_placeholder(value: str) -> bool:
     return False
 
 
-def _ignored(rel: str, patterns) -> bool:
-    return any(fnmatch.fnmatch(rel, p) or fnmatch.fnmatch(rel, p.rstrip("/*") + "/*")
-               for p in patterns)
-
-
 def _hits(text: str):
     """Yield (rule, severity, line_number) for every match. The value stays here."""
     for lineno, line in enumerate(text.splitlines(), start=1):
@@ -125,20 +120,57 @@ def _finding(rule, severity, path, lines, historical, commit_count=None):
     }
 
 
+def _skip_note(too_big, unreadable):
+    """One sentence for the files the tree sweep never opened, or "".
+
+    A file skipped for being 3 MB of minified bundle and a file skipped for
+    being a JPEG are both places this scan cannot claim to have looked. The
+    skips are individually correct and collectively a coverage gap, and the
+    report has exactly one channel for a coverage gap: the note. Counted, not
+    listed -- naming every skipped path would turn one line into a directory
+    listing, and the reader only needs to know the sweep was not total.
+    """
+    parts = []
+    if too_big:
+        parts.append(f"{too_big} larger than {_MAX_BYTES // (1024 * 1024)} MB")
+    if unreadable:
+        parts.append(f"{unreadable} not readable as UTF-8 text")
+    if not parts:
+        return ""
+    total = too_big + unreadable
+    return (f"The secret scan did not read {total} file"
+            f"{'' if total == 1 else 's'} ({', '.join(parts)}).")
+
+
 def scan_tree(root, ignore):
+    """(findings, note) for the working tree.
+
+    The note is the same channel `scan_history` and `osv.query` use: whatever
+    this sweep could not do is stated, never swallowed. An IGNORED file is not
+    in it -- being ignored is a decision the operator made, not a gap.
+    """
     root = Path(root)
     out = []
+    too_big = unreadable = 0
     for p in sorted(root.rglob("*")):
         if not p.is_file() or p.is_symlink():
             continue
         if any(part in _SKIP_DIRS for part in p.relative_to(root).parts):
             continue
         rel = str(p.relative_to(root))
-        if _ignored(rel, ignore) or p.stat().st_size > _MAX_BYTES:
+        if ignored(rel, ignore):
+            continue
+        try:
+            if p.stat().st_size > _MAX_BYTES:
+                too_big += 1
+                continue
+        except OSError:
+            unreadable += 1
             continue
         try:
             text = p.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
+            unreadable += 1
             continue
         # One finding per credential TYPE per file -- not per match. The
         # fingerprint (type + path) cannot depend on a position, so several
@@ -151,7 +183,7 @@ def scan_tree(root, ignore):
             group["lines"].append(line)
         for rule, group in by_rule.items():
             out.append(_finding(rule, group["severity"], rel, group["lines"], False))
-    return out
+    return out, _skip_note(too_big, unreadable)
 
 
 _DIFF_HEADER_PREFIX = "diff --git a/"
@@ -196,21 +228,47 @@ def _path_from_diff_header(line: str):
 _COMMIT_HEADER = re.compile(r"^commit ([0-9a-f]{7,40})")
 
 
-def scan_history(root, since_sha):
-    """Every secret ever committed, even if the file no longer has it.
+_HISTORY_GAP = ("The git history sweep did not complete ({reason}) — history "
+                "findings may be missing: a credential committed and later "
+                "deleted would not appear in this report.")
+
+
+def scan_history(root, since_sha, ignore=()):
+    """(findings, note): every secret ever committed, even if the file no
+    longer has it.
 
     A key deleted in a later commit is still readable by anyone with a clone,
     so it is still compromised. This is git plumbing and plain Python: it costs
-    no tokens, which is why the baseline can afford to do it.
+    no tokens, which is why EVERY analysis can afford to do it.
+
+    The note is the point of the tuple. This used to `return []` on a timeout
+    or an OSError, which is the same value as "this repository's history is
+    clean" -- so the one failure mode that hides the findings this function
+    exists to produce was reported as the best possible news. A gap that is
+    stated is useful; this one was silent.
     """
     rev = f"{since_sha}..HEAD" if since_sha else "HEAD"
     try:
-        blob = subprocess.run(
+        proc = subprocess.run(
             ["git", "-C", str(root), "log", "-p", "--no-color", "--no-merges",
              "--diff-filter=AM", rev],
-            capture_output=True, text=True, timeout=300, check=False).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return []
+            capture_output=True, text=True, timeout=300, check=False)
+    except subprocess.TimeoutExpired:
+        return [], _HISTORY_GAP.format(reason="it timed out after 300s")
+    except OSError as exc:
+        return [], _HISTORY_GAP.format(reason=f"git could not be run: {exc}")
+    if proc.returncode != 0:
+        # A non-zero git is not an exception -- `check=False` -- and it was
+        # swallowed exactly like one. The overwhelmingly common cause is a
+        # root that is not a git checkout at all, which is worth saying: the
+        # analysis then covers the working tree only, and nothing on the page
+        # would otherwise distinguish that from a repository with a clean
+        # history. Only git's FIRST stderr line is quoted; the rest is
+        # advice addressed to a human at a terminal.
+        reason = (proc.stderr or "").strip().splitlines()
+        return [], _HISTORY_GAP.format(
+            reason=reason[0] if reason else f"git exited {proc.returncode}")
+    blob = proc.stdout
 
     # (rule, path) -> {"severity": ..., "commits": set-of-sha}. Keyed the
     # same way as the finding itself, with the set of commits the pair was
@@ -223,6 +281,7 @@ def scan_history(root, since_sha):
     # at column zero.
     groups = {}
     path = ""
+    skip_path = False
     commit_sha = None
     for line in blob.splitlines():
         commit_match = _COMMIT_HEADER.match(line)
@@ -232,6 +291,14 @@ def scan_history(root, since_sha):
         header_path = _path_from_diff_header(line)
         if header_path is not None:
             path = header_path
+            # The same globs the tree sweep obeys, applied to the same
+            # repo-relative paths. Without this, a fixtures directory full of
+            # deliberately fake credentials was excluded from the working-tree
+            # findings and reported in full from the history -- the operator
+            # set `ignore_paths` and got the noise anyway, one report later.
+            skip_path = ignored(path, ignore)
+            continue
+        if skip_path:
             continue
         if not line.startswith("+") or line.startswith("+++"):
             continue
@@ -245,4 +312,4 @@ def scan_history(root, since_sha):
     for (rule, path), group in groups.items():
         out.append(_finding(rule, group["severity"], path, [0], True,
                              commit_count=len(group["commits"])))
-    return out
+    return out, ""

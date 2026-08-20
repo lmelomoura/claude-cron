@@ -161,20 +161,33 @@ def cmd_prepare(args):
     row = _running(conn, aid)
     project, repo, branch = row["project"], row["repo"], row["branch"]
 
-    findings = secrets.scan_tree(root, ignore) + hygiene.scan(root)
-    # The history sweep is a baseline-only cost: on later analyses the earlier
-    # commits have already been read, and re-reading them would find the same
-    # already-recorded secrets at a growing price in wall-clock.
+    # THE WHOLE HISTORY, ON EVERY ANALYSIS. This used to run only on the
+    # baseline, on the reasoning that re-reading commits already read costs
+    # wall-clock for findings already recorded. The wall-clock was right and
+    # the product cost was not: nothing re-emits a history finding on a later
+    # run, so `classify` saw it in the previous analysis and not in this one
+    # and called it `fixed` -- for the exact act (deleting the file) this
+    # module's own remediation says is NOT enough -- and by the third analysis
+    # it was gone from the report altogether. A history finding is not
+    # something an analysis can stop finding: git history does not shrink. It
+    # stays OPEN, run after run, until the credential is rotated and a human
+    # closes it with `decide --state accepted`. That is the honest lifecycle,
+    # and it costs seconds of git plumbing and no tokens.
     #
-    # Appended LAST on purpose. A secret that is both in the working tree and
-    # in the history shares one fingerprint (rule + path, see
+    # Recorded FIRST, before the working tree. A secret that is both in the
+    # tree and in the history shares one fingerprint (rule + path, see
     # secret_fingerprint), so record_finding upserts the two into one row and
-    # the last writer's wording is the one that survives. The history reading
-    # is the one worth keeping: it is what says the credential is compromised
-    # even after the file is cleaned, which is the difference between "delete
-    # the line" and "rotate the key".
-    if ledger.latest_analysis(conn, project, repo, branch, before=aid) is None:
-        findings += secrets.scan_history(root, None)
+    # the LAST writer's wording survives. The tree reading is the one that has
+    # to win: it carries the real line numbers and says "in the working tree",
+    # where the history reading says line 0 and "in the git history" -- a
+    # secret sitting in the file right now, reported at line 0 as a thing of
+    # the past. Both readings share one remediation ("rotate first, deleting
+    # the line is not enough"), so nothing is lost by letting the tree's
+    # wording win.
+    history_findings, history_note = secrets.scan_history(root, None, ignore)
+    tree_findings, tree_note = secrets.scan_tree(root, ignore)
+    findings = history_findings + tree_findings + hygiene.scan(root, ignore)
+    notes = [n for n in (history_note, tree_note) if n]
 
     components = deps.inventory(root)
     if args.offline:
@@ -183,15 +196,21 @@ def cmd_prepare(args):
         # CVEs were not checked" leaves them guessing whether some other
         # source covered them; naming the source that did not answer says
         # exactly which question this report cannot be asked.
-        note = ("Dependency CVEs were NOT checked against OSV.dev: this "
-                "analysis ran with networking disabled.")
+        notes.append("Dependency CVEs were NOT checked against OSV.dev: this "
+                     "analysis ran with networking disabled.")
     else:
         # One cache for the whole call: several components of one project
         # routinely share an advisory, and osv.query never raises -- whatever
         # it could not reach comes back as prose in `note`, not as an
         # exception that would lose the secrets and hygiene findings above.
-        cve_findings, note = osv.query(components, detail_cache={})
+        cve_findings, osv_note = osv.query(components, detail_cache={})
         findings += cve_findings
+        if osv_note:
+            notes.append(osv_note)
+    # Every phase writes into ONE channel, in phase order. The reader gets one
+    # paragraph naming every blind spot this analysis has, rather than
+    # whichever gap the last phase to speak happened to know about.
+    note = " ".join(notes)
 
     if components:
         ledger.store_sbom(conn, project, repo, branch, aid, deps.sbom(components))

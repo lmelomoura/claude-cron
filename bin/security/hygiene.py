@@ -4,6 +4,7 @@ import fnmatch
 from pathlib import Path
 
 from .fingerprint import fingerprint
+from .ignores import ignored
 
 _SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", "build"}
 _KEY_TEXT_SUFFIXES = (".pem", ".key")
@@ -79,7 +80,15 @@ def _is_key_material(path, name):
     return name.endswith(_KEY_BINARY_SUFFIXES)
 
 
-def scan(root):
+def scan(root, ignore=()):
+    """Every hygiene finding in the tree, minus what `ignore_paths` excludes.
+
+    The globs are the same ones the secret sweeps obey, read through the same
+    helper. Before this parameter existed a project could exclude
+    `tests/fixtures/**` from the secret scan and still be told, every single
+    analysis, that `tests/fixtures/id_rsa` "looks like a key file" -- the
+    setting said what it meant and one phase of three ignored it.
+    """
     root = Path(root)
     out = []
     for path in sorted(root.rglob("*")):
@@ -89,6 +98,8 @@ def scan(root):
         if any(part in _SKIP_DIRS for part in rel_path.parts):
             continue
         rel, name = str(rel_path), path.name
+        if ignored(rel, ignore):
+            continue
 
         if (name.startswith(".env") and name not in _ENV_EXCLUDED_NAMES
                 and not any(fnmatch.fnmatch(name, pat) for pat in _ENV_ALLOWED)):

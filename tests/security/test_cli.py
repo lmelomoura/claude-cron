@@ -715,3 +715,192 @@ def test_fingerprint_is_allowed_under_the_agent_environment(tmp_path):
     got = raw(db, "fingerprint", "--category", "sast", "--rule", "r",
               "--path", "p", env=AS_AGENT)
     assert got == compute_fingerprint("sast", "r", "p", "")
+
+
+# --------------------------------------------- the history sweep, every run
+
+def git_repo(root, commits):
+    """A throwaway repo. `commits` is a list of (message, {path: text|None});
+    None deletes the file."""
+    root.mkdir(parents=True, exist_ok=True)
+    run_git = lambda *a: subprocess.run(a, cwd=root, check=True, capture_output=True)
+    run_git("git", "init", "-q")
+    run_git("git", "config", "user.email", "t@example.com")
+    run_git("git", "config", "user.name", "t")
+    for message, files in commits:
+        for rel, text in files.items():
+            target = root / rel
+            if text is None:
+                target.unlink()
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text)
+        run_git("git", "add", "-A")
+        run_git("git", "commit", "-qm", message)
+    return root
+
+
+AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+
+
+def states_by_rule(checklist):
+    return {f["rule"]: f["state"] for f in checklist["findings"]}
+
+
+def test_a_history_secret_survives_the_second_and_third_analysis(tmp_path):
+    """THE scenario the whole history sweep exists for.
+
+    A key was committed on Monday and the file deleted on Tuesday. The value
+    is still readable by anyone with a clone, which is why the finding's own
+    remediation says deleting the file is not enough -- rotate first.
+
+    The sweep used to run only on a branch's FIRST analysis, so nothing
+    re-emitted the finding afterwards: `classify` saw it in the previous
+    analysis and not in this one and reported it `fixed` -- congratulating the
+    operator for the exact act the remediation calls insufficient -- and by
+    the third analysis it had dropped out of the report entirely. It must stay
+    OPEN, run after run, until somebody rotates the credential and DECIDES it.
+    """
+    root = git_repo(tmp_path / "repo", [
+        ("add", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
+        ("remove", {"prod.env": None}),
+    ])
+    db = tmp_path / "security.db"
+
+    first = open_analysis(db)
+    run(db, "prepare", "--analysis", str(first), "--root", str(root), "--offline")
+    run(db, "finish", "--analysis", str(first), "--state", "done")
+    assert states_by_rule(run(db, "checklist", "--analysis", str(first))) == {
+        "aws_access_key": "new"}
+
+    # Nothing changed in the repository between the analyses. The finding is
+    # not new (it was here last time) and it is emphatically not fixed.
+    second = open_analysis(db)
+    run(db, "prepare", "--analysis", str(second), "--root", str(root), "--offline")
+    run(db, "finish", "--analysis", str(second), "--state", "done")
+    assert states_by_rule(run(db, "checklist", "--analysis", str(second))) == {
+        "aws_access_key": "open"}
+
+    # And the third run still knows about it: the old behaviour lost it here
+    # altogether -- neither the previous analysis nor this one carried it, so
+    # it was in no checklist at all.
+    third = open_analysis(db)
+    run(db, "prepare", "--analysis", str(third), "--root", str(root), "--offline")
+    run(db, "finish", "--analysis", str(third), "--state", "done")
+    assert states_by_rule(run(db, "checklist", "--analysis", str(third))) == {
+        "aws_access_key": "open"}
+    carried = run(db, "findings", "--analysis", str(third))
+    assert "git history" in carried[0]["rationale"]
+    assert AWS_KEY not in json.dumps(carried)
+
+
+def test_rotating_and_accepting_is_how_a_history_finding_closes(tmp_path):
+    """The other half of the lifecycle. Because the sweep never stops finding
+    it, a history finding cannot be closed by changing the code -- the only
+    honest close is a human saying the credential was rotated and the exposure
+    accepted. That decision must win over the derived `open`."""
+    root = git_repo(tmp_path / "repo", [
+        ("add", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
+        ("remove", {"prod.env": None}),
+    ])
+    db = tmp_path / "security.db"
+    first = open_analysis(db)
+    run(db, "prepare", "--analysis", str(first), "--root", str(root), "--offline")
+    fp = run(db, "findings", "--analysis", str(first))[0]["fingerprint"]
+    run(db, "finish", "--analysis", str(first), "--state", "done")
+
+    run(db, "decide", "--project", "web", "--fingerprint", fp,
+        "--state", "accepted", "--reason", "rotated at the provider on Tuesday")
+
+    second = open_analysis(db)
+    run(db, "prepare", "--analysis", str(second), "--root", str(root), "--offline")
+    run(db, "finish", "--analysis", str(second), "--state", "done")
+    assert states_by_rule(run(db, "checklist", "--analysis", str(second))) == {
+        "aws_access_key": "accepted"}
+
+
+def test_the_working_tree_reading_wins_over_its_history_twin(tmp_path):
+    """A secret in the tree AND in the history is ONE finding: same rule, same
+    path, therefore one fingerprint, and record_finding upserts.
+
+    The two readings disagree about the wording and the line: the tree knows
+    the real line number and says "in the working tree", the history says line
+    0 and "in the git history". The tree's is the one a reader can act on, so
+    it must be recorded LAST and win the upsert. The history sweep used to be
+    appended after the tree, which overwrote a live, locatable secret with a
+    line-0 report about the past.
+    """
+    root = git_repo(tmp_path / "repo", [
+        ("add", {"prod.env": f"# header\nAWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
+    ])
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    found = run(db, "findings", "--analysis", str(aid))
+    secret = [f for f in found if f["rule"] == "aws_access_key"]
+    assert len(secret) == 1, "the tree and history readings must be one row"
+    assert "in the working tree" in secret[0]["rationale"]
+    assert [o["line"] for o in secret[0]["occurrences"]] == [2]
+
+
+def test_ignore_paths_reach_the_tree_the_history_and_the_hygiene_pass(tmp_path):
+    """`ignore_paths` is a promise about the ANALYSIS, not about one phase.
+
+    A fixtures directory holding a deliberately fake key was excluded from the
+    working-tree sweep and reported in full by the history sweep and by the
+    hygiene pass -- so the operator set the option, saw the noise disappear
+    from one section of the report and stay in two others.
+    """
+    root = git_repo(tmp_path / "repo", [
+        ("fixtures", {"tests/fixtures/fake.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
+                      "tests/fixtures/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nx\n"}),
+        ("delete the env", {"tests/fixtures/fake.env": None}),
+    ])
+    db = tmp_path / "security.db"
+
+    noisy = open_analysis(db)
+    run(db, "prepare", "--analysis", str(noisy), "--root", str(root), "--offline")
+    rules = {f["rule"] for f in run(db, "findings", "--analysis", str(noisy))}
+    assert {"aws_access_key", "private_key", "committed_key_file"} <= rules, (
+        f"the fixture must be noisy without the globs: {sorted(rules)}")
+    run(db, "finish", "--analysis", str(noisy), "--state", "done")
+
+    quiet = open_analysis(db)
+    run(db, "prepare", "--analysis", str(quiet), "--root", str(root), "--offline",
+        "--ignore", "tests/fixtures/**")
+    assert run(db, "findings", "--analysis", str(quiet)) == []
+
+
+def test_a_history_sweep_that_could_not_run_says_so_in_the_coverage_note(tmp_path):
+    """`scan_history` used to answer a failure with `[]` -- the identical
+    value it answers "this history is clean" with. The one failure mode that
+    hides the findings it exists to produce was reported as the best news
+    available. Here the root is not a git checkout at all, which is the
+    commonest way for the sweep to produce nothing."""
+    root = tmp_path / "not-a-repo"
+    root.mkdir()
+    (root / "app.py").write_text("print('hi')\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline")["coverage_note"]
+    assert "history sweep did not complete" in note
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    rendered = run_text(db, "render", "--analysis", str(aid), "--format", "md")
+    assert "history sweep did not complete" in rendered
+
+
+def test_every_phase_gap_reaches_the_one_coverage_note(tmp_path):
+    """The note is a single channel with several writers. A run that could not
+    sweep the history AND could not ask OSV.dev has two blind spots, and a
+    reader who is told about one of them is worse off than one told about
+    both."""
+    root = tmp_path / "not-a-repo"
+    root.mkdir()
+    (root / "requirements.txt").write_text("requests==2.31.0\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline")["coverage_note"]
+    assert "history sweep did not complete" in note
+    assert "OSV.dev" in note

@@ -775,8 +775,8 @@ diff. `quick` is there so you can look before deciding to spend.
 
 ### What is found before the agent is even launched
 
-Secrets across the whole tree — and, on a branch's **first** analysis, across its
-history too. A dependency inventory read from the lockfiles it knows
+Secrets across the whole tree, and across the branch's whole git history on
+**every** analysis. A dependency inventory read from the lockfiles it knows
 (`package-lock.json`, `requirements.txt`, `poetry.lock`, `composer.lock`,
 `go.sum`), a CycloneDX SBOM built from that, and repository hygiene: a committed
 `.env`, a file whose first bytes are a private key, a world-writable file. All
@@ -854,8 +854,11 @@ Surprising the first time it happens; correct.
 
 ### A secret's value is never stored, and never shown
 
-Not in the ledger, not in any of the three report formats, not in the run log.
-Not masked, not truncated, not partially quoted. What you get is the
+Not in the ledger, and not in any of the report formats it renders from it.
+Not masked, not truncated, not partially quoted. (The run's live stream is the
+agent's own output and this engine does not filter it — the contract that the
+agent never prints a value is in `skills/security-analysis/SKILL.md`, not in
+code. What the code owns is the ledger and everything generated from it.) What you get is the
 credential's type, the file, the line and a fingerprint — enough to act on, and
 nothing worth leaking. The identity of a secret finding is deliberately its
 **type and its file**: hashing the value would put a weak but real oracle for
@@ -865,11 +868,27 @@ it.
 
 **Rotating the credential is human work, and the report says so.** Deleting the
 line does not help while the value is still reachable in the history — which is
-why the history is swept on a branch's first analysis. A key committed on
-Monday and deleted on Tuesday is still compromised, it is the case that leaks
-most often, and it is precisely the one a working-tree scan cannot see. Later
-analyses skip the sweep: those commits have already been read, and re-reading
-them costs wall-clock to find what is already recorded.
+why the history is swept on **every** analysis, not only the first. A key
+committed on Monday and deleted on Tuesday is still compromised, it is the case
+that leaks most often, and it is precisely the one a working-tree scan cannot
+see.
+
+**A history finding never becomes `fixed`, because git history does not
+shrink.** It is reported `new` once and `open` on every analysis after it, for
+as long as the commit exists — deleting the file changes nothing about it, and
+a checklist that said `fixed` there would be congratulating you for the exact
+act the remediation calls insufficient. The only honest close is the human one:
+rotate the credential at the provider, then *Accept risk* with that as the
+written reason. (The sweep is `git log -p` and plain Python: seconds, and no
+tokens. The old reasoning — that re-reading commits already read is wasted
+wall-clock — was right about the seconds and wrong about the report: nothing
+re-emitted the finding, so it read as `fixed` on the second analysis and
+vanished from the third.)
+
+A secret that is in the working tree **and** in the history is one finding, not
+two — same rule, same path, therefore one identity. The working-tree reading is
+the one you see, because it carries the real line number; the remediation is
+the history's either way.
 
 ### CVEs need OSV.dev, and an offline analysis declares the gap
 
@@ -921,8 +940,12 @@ analysis itself should sign in as somebody else.
 
 **`ignore_paths` and `min_severity` are two different filters, and confusing
 them is expensive.** `ignore_paths` excludes globs from the **analysis**: the
-secret scan never opens those files, so a fixtures directory full of
-deliberately fake credentials never becomes a finding at all. `min_severity`
+working-tree secret scan, the git-history secret sweep and the hygiene pass all
+obey the same globs, so a fixtures directory full of deliberately fake
+credentials never becomes a finding at all — from any of the three. The one
+deterministic phase it deliberately does **not** filter is the dependency
+inventory: a lockfile under an ignored glob still declares packages this project
+ships, and a CVE against one of them is real wherever the file sits. `min_severity`
 filters only what is **shown**: everything found is kept in the ledger whatever
 its severity, so lowering the floor later reveals what was recorded all along
 instead of forcing a re-analysis, and the page says how many findings it is

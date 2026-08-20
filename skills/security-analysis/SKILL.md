@@ -21,7 +21,7 @@ That is the deterministic phase, and it prints a `coverage_note`. **If that note
 
 **1. Re-verify what was left open.** Run `claude-cron security checklist --analysis <id>` right after `prepare` — not `findings`. `findings` returns only THIS analysis's own rows, and right after `prepare` that is just the fresh deterministic findings (secret/dependency/hygiene); a previous analysis's SAST findings are never in it, so `findings` never shows them to you, you never re-report them, and a live vulnerability silently disappears from the report as `fixed`. `checklist` is the verb that surfaces the carried-over set: it diffs this analysis against the last finished baseline of the same branch. At this point in the run — before you have re-reported anything — every finding it lists with state `fixed` (and `partial`/`open`) is really a previous analysis's finding that has not been re-confirmed this run, not yet a fact about the current code.
 
-For each of those whose category is `sast` (deterministic categories need no re-reporting here — `prepare` re-finds them every run; triaging them is Job 2), open the code at its occurrences and decide:
+For each of those whose category is `sast` (deterministic categories need no re-reporting here — `prepare` re-finds them every run, the git-history sweep included; triaging them is Job 2), open the code at its occurrences and decide:
 
 - **Still present, as reported** — re-report it: the same fingerprint (reuse the string `checklist` printed, or recompute it with `claude-cron security fingerprint --category sast --rule <rule> --path <path> --snippet <snippet>` from the same category/rule/path/snippet — never hand-type one), with `occurrences` for every location still affected. Re-reporting under the same fingerprint is what keeps it `open` (or `partial`) instead of `fixed` on this checklist and the next.
 - **Genuinely gone** — do nothing. There is no "mark fixed" verb; its absence from what you re-report this run IS how it becomes `fixed`.
@@ -30,6 +30,8 @@ For each of those whose category is `sast` (deterministic categories need no re-
 **A re-report REPLACES the stored occurrences list; it does not add to it.** Narrowing five files down to the two still affected is how the next analysis learns which three locations closed — that file-set difference is the objective half of `partial`. Echoing back a location you already confirmed closed keeps dead evidence alive in a finding that is not fully there any more.
 
 This is the cheapest of the three jobs and the most valuable. Do it first.
+
+**A secret found in the git history is a special case, and you cannot close it.** `prepare` re-sweeps the whole history on every analysis, so a credential that was ever committed is reported again for as long as the commit exists — deleting the file does not remove it and never will, which is exactly what its remediation says. It stays `open`, run after run, and the only close is a human's: rotate the credential at the provider and *Accept risk*. Do not report it as fixed, do not suggest deleting the file as the fix, and do not treat its reappearance as a regression.
 
 **2. Triage the deterministic findings.** They were found by pattern, not by understanding. For each one ask what a pattern cannot: is this "secret" an example in documentation? Is this CVE on a code path anything actually reaches? Is this hygiene finding about a file that ships? Re-report it with a corrected severity and a rationale that says why, or leave it alone if it stands.
 

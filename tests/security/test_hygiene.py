@@ -72,3 +72,16 @@ def test_a_p12_file_is_a_finding_regardless_of_content(tmp_path):
     (tmp_path / "bundle.p12").write_bytes(b"\x00\x01\x02not a real pkcs12 container\xff\xfe")
     rules = [f["rule"] for f in scan(tmp_path)]
     assert "committed_key_file" in rules
+
+
+def test_ignored_paths_are_skipped(tmp_path):
+    """`ignore_paths` is a promise about the whole analysis. A fixtures
+    directory excluded from the secret sweeps was still reported here, so the
+    setting removed the noise from one section of the report and left it in
+    another."""
+    fixtures = tmp_path / "tests" / "fixtures"
+    fixtures.mkdir(parents=True)
+    (fixtures / ".env").write_text("DB_HOST=localhost\n")
+    (fixtures / "fake.pem").write_text("-----BEGIN RSA PRIVATE KEY-----\nx\n")
+    assert [f["rule"] for f in scan(tmp_path)] != []
+    assert scan(tmp_path, ["tests/fixtures/**"]) == []
