@@ -25,6 +25,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   analysis should sign in as, and it would have run as whatever the scheduler's
   default happened to be.
 
+- **A security analysis runs as a normal run, with no job behind it.** Projects
+  with security enabled get a job derived in memory by `jobs_json`, so an
+  analysis gets the watchdog, the spending caps, the live stream and the
+  turn-by-turn trace for free — and `config/jobs.json` never grows an entry
+  nobody created. The tick, the dashboard's Jobs area and every write path read
+  the jobs file directly and so never see one.
+
 ### Changed
 
 - **A provider outage no longer slows a job down for the rest of the day.**
