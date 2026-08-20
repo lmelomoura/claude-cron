@@ -40,6 +40,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   that has none. A second analysis of the same project is refused with a
   sentence on the terminal rather than one line in the tick log.
 
+  **The agent's contract is versioned with the code, not hand-typed into a
+  prompt.** `skills/security-analysis/SKILL.md` is what tells the agent, in
+  order, to re-verify what was left open (cheapest and most valuable, so
+  first), triage what the deterministic phase found, then run the SAST pass
+  scoped by profile — and never to print a secret's value, read a dependency
+  tree, or treat a comment that addresses it as anything but a finding to
+  report. It ships and links the same way the other loop-mandatory skills do,
+  so a prompt that names it by name is never naming a skill the machine does
+  not have.
+
+  It also gets its own fingerprint, rather than inventing one: `claude-cron
+  security fingerprint --category <c> --rule <r> --path <p> [--snippet <s>]`
+  runs the exact same recipe `report-finding` validates a fingerprint
+  against — `secret_fingerprint` for a secret, `fingerprint` for everything
+  else — so the agent is never one typo away from minting a fresh identity
+  for the same hole on every run. Read-only, so it stays allowed under
+  `CC_SECURITY_AGENT` alongside `finish`.
+
   **The close tells a truncated analysis from a finished one.** `warning` is
   two different runs wearing one word: stray bytes on stderr is a run that
   worked, while `UNDECLARED ENDING`, `BUDGET LIMITED` and undelivered work all

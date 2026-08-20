@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from security.fingerprint import fingerprint as compute_fingerprint, secret_fingerprint
+
 REPO = Path(__file__).resolve().parent.parent.parent
 CLI = REPO / "bin" / "security" / "cli.py"
 
@@ -34,6 +36,16 @@ def fails(db, *args, stdin=None, env=None):
     return subprocess.run(
         [sys.executable, str(CLI), *args, "--db", str(db)],
         capture_output=True, text=True, input=stdin, check=False, env=env)
+
+
+def raw(db, *args, env=None):
+    """Like `run`, but for a verb whose stdout is not JSON -- `fingerprint`
+    prints a bare hex string so it can be captured directly in `$(...)`."""
+    out = subprocess.run(
+        [sys.executable, str(CLI), *args, "--db", str(db)],
+        capture_output=True, text=True, check=False, env=env)
+    assert out.returncode == 0, out.stderr
+    return out.stdout.strip()
 
 
 def open_analysis(db, project="web", repo="web", branch="main", commit="abc",
@@ -652,3 +664,54 @@ def test_prepare_refuses_to_scan_the_whole_machine(tmp_path):
         assert out.returncode != 0, root
         assert "--root" in out.stderr
     assert run(db, "findings", "--analysis", str(aid)) == []
+
+
+# ---------------------------------------------------- the fingerprint verb
+
+def test_fingerprint_matches_the_library_for_a_sast_finding(tmp_path):
+    """The agent must never hand-compute a fingerprint (see FINGERPRINT_RE's
+    comment): this verb is the one place it can get a real one instead, so it
+    has to agree with the exact function `report-finding` is validated
+    against, not merely produce something 64 hex characters long."""
+    db = tmp_path / "security.db"
+    got = raw(db, "fingerprint", "--category", "sast", "--rule", "sql-injection",
+              "--path", "app/db.py", "--snippet", "cursor.execute(query)")
+    assert got == compute_fingerprint("sast", "sql-injection", "app/db.py",
+                                      "cursor.execute(query)")
+
+
+def test_fingerprint_defaults_the_snippet_to_empty(tmp_path):
+    db = tmp_path / "security.db"
+    got = raw(db, "fingerprint", "--category", "hygiene", "--rule", "world-writable",
+              "--path", "deploy.sh")
+    assert got == compute_fingerprint("hygiene", "world-writable", "deploy.sh", "")
+
+
+def test_fingerprint_of_a_secret_uses_secret_fingerprint_semantics(tmp_path):
+    """No snippet, no value: a secret's identity is its type and its file,
+    never what it says -- see secret_fingerprint's own docstring."""
+    db = tmp_path / "security.db"
+    got = raw(db, "fingerprint", "--category", "secret", "--rule", "aws_access_key",
+              "--path", "config/prod.env")
+    assert got == secret_fingerprint("aws_access_key", "config/prod.env")
+
+
+def test_fingerprint_of_a_secret_ignores_a_snippet_if_one_is_given(tmp_path):
+    """A caller looping over occurrences uniformly may pass --snippet for
+    every category; a secret's identity must not change because of it."""
+    db = tmp_path / "security.db"
+    with_snippet = raw(db, "fingerprint", "--category", "secret", "--rule", "aws_access_key",
+                       "--path", "config/prod.env", "--snippet", "AKIAIOSFODNN7EXAMPLE")
+    without_snippet = raw(db, "fingerprint", "--category", "secret", "--rule", "aws_access_key",
+                          "--path", "config/prod.env")
+    assert with_snippet == without_snippet == secret_fingerprint("aws_access_key", "config/prod.env")
+
+
+def test_fingerprint_is_allowed_under_the_agent_environment(tmp_path):
+    """It never opens the database -- there is nothing for CC_SECURITY_AGENT
+    to protect here, only a computation the agent would otherwise have to
+    reproduce by hand and get wrong."""
+    db = tmp_path / "security.db"
+    got = raw(db, "fingerprint", "--category", "sast", "--rule", "r",
+              "--path", "p", env=AS_AGENT)
+    assert got == compute_fingerprint("sast", "r", "p", "")

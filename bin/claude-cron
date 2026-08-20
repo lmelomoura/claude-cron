@@ -2127,6 +2127,19 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   fi
   [ -f "$BASE_DIR/CHANGELOG.md" ] && ok "CHANGELOG.md exists" || bad "CHANGELOG.md is missing"
 
+  echo "the security-analysis skill ships with the repo, not only in ~/.claude/skills"
+  # security_prompt() makes this skill MANDATORY ("Invoke the
+  # `security-analysis` skill and follow it exactly") -- a prompt that names a
+  # skill the machine does not have is a prompt whose standards silently do
+  # not apply. See the comment above SKILLS_DIR for why the skills this loop
+  # depends on live here rather than only in the unversioned user directory.
+  [ -f "$SKILLS_DIR/security-analysis/SKILL.md" ] \
+    && ok "the security-analysis skill ships with the repo" \
+    || bad "the security-analysis skill ships with the repo"
+  grep -q 'security-analysis' "$SELF" \
+    && ok "the security-analysis skill is registered for linking" \
+    || bad "the security-analysis skill is registered for linking"
+
   echo "a human's board move is an answer, not an anomaly"
   # QG-15: the cap parked the ticket, the human moved it to the ready column, and
   # the next run read the spent rounds, decided the board was glitched, and put it
@@ -7422,8 +7435,9 @@ case "${1:-}" in
                         cmd_security_analyze "$@" ;;
                # Everything else is the ledger's own vocabulary, and the agent
                # types it verbatim from its prompt: prepare, findings,
-               # report-finding, finish, checklist, render, decide, list.
-               "")      die "usage: claude-cron security <analyze|prepare|findings|report-finding|finish|checklist|render|decide|list> …" ;;
+               # fingerprint, report-finding, finish, checklist, render,
+               # decide, list.
+               "")      die "usage: claude-cron security <analyze|prepare|findings|fingerprint|report-finding|finish|checklist|render|decide|list> …" ;;
                *)       security_py "$@" ;;
              esac ;;
   resolve-models) cmd_resolve_models ;;

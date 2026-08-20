@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from security import deps, diff, hygiene, ledger, osv, report, secrets  # noqa: E402
+from security import deps, diff, fingerprint, hygiene, ledger, osv, report, secrets  # noqa: E402
 
 REQUIRED_FINDING_KEYS = ("fingerprint", "category", "rule", "severity", "title")
 
@@ -207,6 +207,34 @@ def cmd_findings(args):
     conn = _conn(args)
     _analysis(conn, args.analysis)
     print(json.dumps(ledger.findings_of(conn, args.analysis), indent=2))
+
+
+def cmd_fingerprint(args):
+    """Print the 64-hex identity of a finding -- computed, never typed.
+
+    FINGERPRINT_RE checks the SHAPE of what `report-finding` receives, not its
+    RECIPE: a string the agent invents by hand ("aws-key-in-prod-env", or even
+    64 hex characters picked at random) satisfies the shape check and still
+    breaks the diff, because it is a fresh identity on every run -- the same
+    hole is reported `new` for ever, never `open`, never `fixed`, and no
+    decision anyone makes ever sticks to it. This verb runs the actual
+    recipe, so the agent never has to reproduce it by hand.
+
+    Read-only and side-effect free: it never opens the database, so it is
+    allowed under CC_SECURITY_AGENT (see AGENT_FORBIDDEN) even though it
+    still requires --db, like every other subcommand here.
+    """
+    if args.category == "secret":
+        # No snippet, no value: the identity of a secret finding is its TYPE
+        # and its FILE, never what it says. See secret_fingerprint's own
+        # docstring for why hashing the value is not safe either. A --snippet
+        # given alongside --category secret is silently ignored, not refused
+        # -- the caller may be looping over occurrences uniformly and passing
+        # a snippet for all of them regardless of category.
+        print(fingerprint.secret_fingerprint(args.rule, args.path))
+    else:
+        print(fingerprint.fingerprint(args.category, args.rule, args.path,
+                                      args.snippet or ""))
 
 
 def cmd_report_finding(args):
@@ -437,6 +465,15 @@ def main(argv=None):
 
     fi = sub.add_parser("findings", parents=[dbflag]); fi.set_defaults(fn=cmd_findings)
     fi.add_argument("--analysis", type=int, required=True)
+
+    # Deliberately absent from AGENT_FORBIDDEN: it never opens the database,
+    # so there is nothing here for the agent to abuse -- only a computation
+    # it would otherwise be tempted to reproduce by hand and get wrong.
+    fp = sub.add_parser("fingerprint", parents=[dbflag]); fp.set_defaults(fn=cmd_fingerprint)
+    fp.add_argument("--category", required=True)
+    fp.add_argument("--rule", required=True)
+    fp.add_argument("--path", required=True)
+    fp.add_argument("--snippet", default="")
 
     rf = sub.add_parser("report-finding", parents=[dbflag]); rf.set_defaults(fn=cmd_report_finding)
     rf.add_argument("--analysis", type=int, required=True)
