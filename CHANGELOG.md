@@ -176,6 +176,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   request body, so nothing typed into the page can sign a decision as anyone
   else.
 
+  **And the dashboard has a Security area to drive it from.** Its own entry in
+  the sidebar, between Projects and Settings, listing *projects* rather than
+  jobs — a project can be registered for this and have no job at all — each
+  with what is still open on it by severity and when it was last analysed. A
+  project without the security block is still in the list, with one line saying
+  where to switch it on, instead of a row that opens a page that does nothing.
+  Open one and you get the repo (only when there is more than one), the
+  branches the checkout actually has plus a field for one it does not, the
+  profile, and Analyse. While it runs the page follows it: the deterministic
+  phase writes before the agent is launched, so secrets and CVEs land on screen
+  within seconds of pressing the button while the SAST is still going. Then the
+  severity summary, the checklist across all seven states as filters, the
+  findings, the report in Markdown, JSON or HTML, and the earlier analyses of
+  that branch — each linking to the run that produced it.
+  `min_severity` is applied here and only here: everything found is still in
+  the ledger, the page says how many it is holding back, and a *fixed* finding
+  is shown whatever its severity, because the one job of a checklist is to say
+  what closed.
+
+  **Nothing an analysis produced is ever written to the page as markup.** A
+  finding's title and file paths come out of analysed code, and — the one
+  nobody expects — so does a branch name: git allows `<`, `>` and `&` in a ref,
+  so `feature/<svg/onload=…>` is a branch a repository can create and this page
+  will list in a picker. Every string goes in as text; the only `innerHTML` in
+  the whole block puts an icon from the page's own table into a span, and a
+  test pins that so the pattern cannot come back. The branch picker can offer a
+  name the engine will refuse — its allowlist is narrower than git's — so the
+  refusal is shown as the sentence the server sent, not as a generic failure.
+  The report downloads are fetched with the control token and saved from a
+  Blob, because a plain link cannot carry the header and would have handed
+  somebody a 403 as a file.
+
 ### Fixed
 
 - **`/api/security/branches` no longer answers a checkout with no branches

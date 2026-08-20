@@ -470,3 +470,156 @@ def test_a_resume_is_not_its_own_continuation(srv, tmp_path):
     assert out["original"] == [200], f"the real continuation was lost: {out['original']}"
     # The resume has nothing after it, so it stays resumable.
     assert out["resume"] == [], f"the resume counted itself: {out['resume']}"
+
+
+# ---- the Security view. Its own destination in the sidebar, listing projects
+# rather than jobs -- and the one page on this dashboard that renders strings
+# written by analysed code, which is what most of these are about.
+
+SEC_START = "/* ================================================================ security"
+SEC_END = "/* ============================================================ end security */"
+
+
+def _security_js(srv):
+    """Just the Security block's source, between its own two banners.
+
+    The whole-page checks below would pass on a page that renders a finding
+    safely and a branch name unsafely twelve hundred lines away; these have to
+    look at exactly the code that draws this view.
+    """
+    js = _js(srv)
+    i = js.index(SEC_START)
+    return js[i:js.index(SEC_END, i)]
+
+
+def test_the_security_view_exists_and_is_registered(srv):
+    page = srv.render_page("boot-authed")
+    assert 'data-view="security"' in page
+    assert 'id="view-security"' in page
+    assert '"security"' in page  # the VIEWS array
+
+
+def test_every_sidenav_item_has_a_view(srv):
+    """A nav button with no panel behind it is a dead click."""
+    page = srv.render_page("boot-authed")
+    for view in re.findall(r'class="navitem" data-view="([a-z]+)"', page):
+        assert f'id="view-{view}"' in page, f"nav item {view} has no view"
+
+
+def test_the_security_view_never_renders_a_finding_with_innerhtml(srv):
+    """Findings carry file paths and titles from analysed code. Injecting them
+    as HTML would let a repository script the dashboard."""
+    page = srv.render_page("boot-authed")
+    block = page.split('id="view-security"', 1)[1][:20000]
+    assert ".innerHTML = f." not in block
+    assert "innerHTML=f." not in block
+
+
+def test_the_security_block_only_ever_puts_an_icon_through_innerhtml(srv):
+    """The general form of the check above, over the code rather than a window
+    of the markup.
+
+    A finding's title, its file paths and — the one nobody expects — the BRANCH
+    it was found on are all strings a repository chooses. Git allows '<', '>'
+    and '&' in a ref name, so `feature/<img src=x onerror=…>` is a branch this
+    page will list in a picker. The rule that makes that harmless is absolute:
+    the only thing this block ever assigns to innerHTML is an entry from the
+    page's own icon table, optionally followed by a literal label. Everything
+    else goes in as text.
+    """
+    block = _security_js(srv)
+    found = [r.strip() for r in re.findall(r"\.innerHTML\s*=\s*([^;\n]+)", block)]
+    assert found, "no innerHTML at all in the block — this guard is asserting nothing"
+    allowed = re.compile(r'^I\[name\] \|\| ""$|^I\.[A-Za-z0-9]+(?: \+ "[^"]*")?$')
+    bad = [r for r in found if not allowed.match(r)]
+    assert not bad, f"innerHTML in the Security view carrying more than an icon: {bad}"
+
+
+def test_the_severity_filter_never_hides_a_fixed_finding(srv):
+    page = srv.render_page("boot-authed")
+    assert 'f.state === "fixed" ||' in page
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_severity_floor_filters_the_page_and_nothing_else(srv, tmp_path):
+    """`min_severity` is a display setting, and two things fall out of that.
+
+    A finding that CLOSED is shown at every floor: the checklist exists to say
+    what went away, and a low-severity fix disappearing from the page makes a
+    good outcome look like nothing happened. And a severity outside the
+    four-value vocabulary ranks above critical rather than below low — an
+    unrecognised value is not a reason to drop a finding on the floor, and this
+    filter is the one place that could do it without a trace.
+    """
+    block = _security_js(srv)
+    src = (re.search(r"const SEV_ORDER = .*?;", block).group(0) + "\n"
+           + re.search(r"const secSevRank = .*?\};", block, re.S).group(0) + "\n"
+           + _plainfn(block, "secVisible"))
+    script = tmp_path / "sev.js"
+    script.write_text(src + """
+    const findings = [
+      {title:"a", severity:"low",      state:"open"},
+      {title:"b", severity:"medium",   state:"open"},
+      {title:"c", severity:"critical", state:"new"},
+      {title:"d", severity:"low",      state:"fixed"},
+      {title:"e", severity:"nonsense", state:"open"},
+    ];
+    const shown = (min) => secVisible(findings, min).map(f=>f.title).join("");
+    console.log(JSON.stringify({low: shown("low"), medium: shown("medium"),
+                                high: shown("high"), unset: shown("")}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["low"] == "abcde", "the lowest floor must hide nothing"
+    assert out["unset"] == "abcde", "no configured floor must behave like the lowest one"
+    assert out["medium"] == "bcde", f"medium floor: {out['medium']}"
+    assert out["high"] == "cde", f"high floor: {out['high']}"
+
+
+def test_the_checklist_offers_every_state_the_engine_can_produce(srv):
+    """Two lists in two languages, one vocabulary.
+
+    The page cannot show a state it does not name, and a state missing from
+    the chip row is a bucket of findings with no way to reach it. Read from
+    the engine's own tuples so adding a state there fails here rather than
+    quietly shipping a page that cannot display it.
+    """
+    block = _security_js(srv)
+    shown = set(re.findall(
+        r'"([a-z_]+)"', re.search(r"const SEC_STATES = \[(.*?)\];", block, re.S).group(1)))
+    diff_src = (REPO / "bin" / "security" / "diff.py").read_text()
+    ledger_src = (REPO / "bin" / "security" / "ledger.py").read_text()
+    derived = set(re.findall(
+        r'"([a-z_]+)"', re.search(r"DERIVED_STATES = \((.*?)\)", diff_src, re.S).group(1)))
+    decided = set(re.findall(
+        r'"([a-z_]+)"', re.search(r"DECISION_STATES = \((.*?)\)", ledger_src, re.S).group(1)))
+    assert shown == derived | decided, (
+        f"page shows {sorted(shown)}, engine produces {sorted(derived | decided)}")
+    # And every one of them is a word on screen, not a bare enum value.
+    for state in shown:
+        assert f"{state}:" in block or f'"{state}":' in block, f"{state} has no label"
+
+
+def test_an_analysis_is_only_ever_started_through_its_own_op(srv):
+    """Never a bare `run` of the derived job.
+
+    `security_analyze` writes the request file — the branch, the profile and
+    the analysis id — and only then starts the job. Running the job directly
+    would make it re-read whatever request was left behind by the last
+    analysis, and quietly report on the wrong branch.
+    """
+    block = _security_js(srv)
+    assert 'api("security_analyze"' in block
+    assert 'api("run"' not in block, "the Security view can start a bare run of the derived job"
+
+
+def test_a_report_download_carries_the_token(srv):
+    """Every GET on this API is behind the X-CC-Token header, which a plain
+    `<a href="/api/security/report?…">` cannot attach — the browser would send
+    the navigation without it and the operator would get a 401 as a file."""
+    html = srv.render_page("boot-authed").split("<script>")[0]
+    assert 'href="/api/security/report' not in html, "the report is linked, not fetched"
+    block = _security_js(srv)
+    dl = _plainfn(block, "secDownload")
+    assert "/api/security/report" in dl
+    assert '"X-CC-Token":TOKEN' in dl or '"X-CC-Token": TOKEN' in dl

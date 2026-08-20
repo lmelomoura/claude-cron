@@ -1173,6 +1173,88 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 #toast.err{background:var(--err);color:#fff}
 .spacer{flex:1}
+/* ---------------------------------------------------------------- security
+   Its own page, because an analysis is a thing you come here FOR. The list is
+   PROJECTS, not jobs: a project can be registered for this and have no job at
+   all. Everything a finding carries — its title, its file paths, the branch it
+   was found on — is written as text and never as markup, so the meaning markup
+   would have carried has to live here, in the styling. */
+.seclist{display:flex;flex-direction:column;gap:9px}
+.secrow{display:flex;align-items:center;gap:13px;width:100%;text-align:left;font:inherit;
+  color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:13px 16px;box-shadow:var(--shadow)}
+button.secrow{cursor:pointer;transition:border-color .12s,background .12s}
+button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
+/* Every icon on this page arrives inside one of these: the block that draws
+   the page never touches innerHTML except to put an icon in a .secico. */
+.secico{display:inline-flex;align-items:center;flex:none}
+.secrow > .secico .ic{width:17px;height:17px;color:var(--accent)}
+.secrow.off{background:var(--panel2)}
+.secrow.off > .secico .ic{color:var(--muted)}
+.secrow .grow{flex:1 1 auto;min-width:0}
+.secname{font-size:13.5px;font-weight:650}
+.secmeta{color:var(--muted);font-size:11.5px;margin-top:3px;line-height:1.5}
+.sevpills{display:flex;flex-wrap:wrap;gap:6px;align-items:center;flex:none}
+.sevpill{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-size:11px;
+  font-weight:650;border-radius:20px;padding:2px 10px;border:1px solid transparent}
+.sevpill.critical,.sevpill.high{background:var(--err-soft);color:var(--err)}
+.sevpill.critical{border-color:color-mix(in srgb,var(--err) 45%,transparent)}
+.sevpill.medium{background:var(--warn-soft);color:var(--warn)}
+.sevpill.low{background:var(--panel2);color:var(--muted);border-color:var(--line)}
+.sevpill.clean{background:var(--ok-soft);color:var(--ok)}
+.secbar{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;margin:0 0 14px}
+.secfield{display:flex;flex-direction:column;gap:5px;min-width:0}
+/* An author `display` outranks the UA sheet's [hidden] — the same trap the nav
+   items hit. Three things here are hidden until they have something to say
+   (the repo picker on a single-repo project, the coverage note, the download
+   row before there is an analysis), and without this they all show up empty. */
+.secfield[hidden],.secdl[hidden],.warnline[hidden]{display:none}
+.secfield > span{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.secfield select,.secfield input{font:inherit;font-size:13px;padding:8px 11px;min-width:160px;
+  max-width:280px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);color:var(--ink)}
+.secfield select:focus,.secfield input:focus{outline:none;border-color:var(--accent)}
+.secstat{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted);
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 13px;margin:0 0 12px}
+.secstat b{color:var(--ink);font-weight:650}
+.secstat .secico .ic{width:14px;height:14px;color:var(--accent)}
+.secchips{display:flex;flex-wrap:wrap;gap:7px;margin:0 0 14px}
+.secchip{display:inline-flex;align-items:center;gap:7px;font:inherit;font-size:11.5px;font-weight:600;
+  color:var(--muted);background:var(--panel);border:1px solid var(--line);border-radius:20px;
+  padding:4px 12px;cursor:pointer}
+.secchip:hover{border-color:var(--accent);color:var(--ink)}
+.secchip.on{background:var(--accent-soft);border-color:transparent;color:var(--accent)}
+.secchip .n{font-variant-numeric:tabular-nums;font-weight:700}
+.secchip.zero{opacity:.5}
+.secdl{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 16px}
+.secfinding{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--idle);
+  border-radius:11px;padding:13px 16px;margin:0 0 9px;box-shadow:var(--shadow)}
+.secfinding.sev-critical,.secfinding.sev-high{border-left-color:var(--err)}
+.secfinding.sev-medium{border-left-color:var(--warn)}
+.secfinding.state-fixed{border-left-color:var(--ok)}
+.secfinding.state-accepted,.secfinding.state-false_positive{opacity:.72}
+.secfinding h4{margin:0;font-size:13px;display:flex;align-items:center;gap:9px;flex-wrap:wrap;line-height:1.5}
+.secfinding h4 .sectitle{flex:1 1 auto;min-width:0}
+.secstate{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  border-radius:20px;padding:2px 9px;background:var(--panel2);color:var(--muted);
+  border:1px solid var(--line);white-space:nowrap}
+.secstate.new,.secstate.regressed{background:var(--err-soft);color:var(--err);border-color:transparent}
+.secstate.partial{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.secstate.fixed{background:var(--ok-soft);color:var(--ok);border-color:transparent}
+.secwhere{margin:9px 0 0;padding-left:18px;font:11.5px/1.65 ui-monospace,"SF Mono",Menlo,monospace;
+  color:var(--muted);word-break:break-all}
+.secfinding p{margin:8px 0 0;font-size:12.5px;line-height:1.6}
+.secfinding p.secfix,.secfinding p.secwhy{color:var(--muted)}
+.secfp{margin:9px 0 0;font:11px ui-monospace,"SF Mono",Menlo,monospace;color:var(--muted);word-break:break-all}
+.secactions{display:flex;gap:8px;margin-top:11px;flex-wrap:wrap}
+.sechist{display:flex;flex-direction:column;gap:7px}
+.sechrow{display:flex;align-items:center;gap:11px;flex-wrap:wrap;font-size:12px;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 13px}
+.sechrow.on{border-color:var(--accent)}
+.sechrow .grow{flex:1 1 auto;min-width:0;color:var(--muted)}
+@media (max-width:700px){
+  .secfield{flex:1 1 100%}
+  .secfield select,.secfield input{max-width:none;width:100%}
+}
 /* --------------------------------------------------------------- a11y floor
    One ring, everywhere, and only for keyboard users — :focus-visible keeps it
    off a mouse click. The custom widgets (day picker, chips, tabs, steppers,
@@ -1389,6 +1471,7 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
     <button class="navitem" data-view="jobs" id="nav-jobs"></button>
     <button class="navitem" data-view="runs" id="nav-runs"></button>
     <button class="navitem" data-view="projects" id="nav-projects"></button>
+    <button class="navitem" data-view="security" id="nav-security"></button>
     <!-- Hidden until the Settings page is built: the markup and the view stay
          so bringing it back is this attribute and the VIEWS entry. -->
     <button class="navitem" data-view="settings" id="nav-settings" hidden></button>
@@ -1484,6 +1567,70 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
       <thead><tr id="prjhead"></tr></thead>
       <tbody id="prjrows"></tbody></table></div>
   </div><!-- /view-projects -->
+
+  <!-- The list is projects, not jobs: a project can be registered for this and
+       nothing else, without a single job configured. Every project is listed,
+       security-enabled or not — a project without the block gets one line
+       saying where to turn it on rather than a page that does nothing. -->
+  <div class="view" id="view-security" hidden>
+    <section id="sec-projects">
+      <p class="paneblurb">What the last analysis of each project found, and what
+        you decided about it. Findings are kept whole in the ledger: raising or
+        lowering a project's minimum severity changes what this page shows, never
+        what was recorded.</p>
+      <div class="toolbar">
+        <div class="spacer"></div>
+        <button class="btn ghost" id="sec-reload"></button>
+      </div>
+      <div class="seclist" id="sec-list"></div>
+    </section>
+
+    <section id="sec-detail" hidden>
+      <div class="secthead">
+        <h3 id="sec-title"></h3>
+        <button class="btn ghost" id="sec-back"></button>
+      </div>
+      <div class="secbar">
+        <!-- Only shown for a project that declares several repos: with one
+             checkout there is nothing to choose between. -->
+        <label class="secfield" id="sec-repo-field" hidden>
+          <span>Repo</span>
+          <select id="sec-repo"></select>
+        </label>
+        <label class="secfield">
+          <span>Branch</span>
+          <select id="sec-branch"></select>
+        </label>
+        <!-- The picker lists what the checkout has; this is for a branch it
+             does not — one pushed a minute ago, or one only origin knows. -->
+        <label class="secfield">
+          <span>…or type one</span>
+          <input id="sec-branch-other" placeholder="branch name" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="secfield">
+          <span>Profile</span>
+          <select id="sec-profile">
+            <option value="quick">Quick</option>
+            <option value="standard" selected>Standard</option>
+            <option value="deep">Deep</option>
+          </select>
+        </label>
+        <button class="btn primary" id="sec-run">Analyse</button>
+      </div>
+      <div class="secstat" id="sec-status"></div>
+      <div class="warnline" id="sec-coverage" hidden></div>
+      <div class="sevpills" id="sec-summary"></div>
+      <div class="secchips" id="sec-checklist"></div>
+      <div class="secdl" id="sec-dl" hidden>
+        <button class="btn" id="sec-dl-md"></button>
+        <button class="btn" id="sec-dl-json"></button>
+        <button class="btn" id="sec-dl-html"></button>
+      </div>
+      <div id="sec-findings"></div>
+      <div class="secthead"><h3>Earlier analyses of this branch</h3></div>
+      <div class="sechist" id="sec-history"></div>
+    </section>
+  </div><!-- /view-security -->
 
   <div class="view" id="view-settings" hidden>
   <div class="secthead"><h3 id="h-settings"></h3></div>
@@ -1974,6 +2121,29 @@ pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;
   <div class="dlg-f">
     <button type="button" class="btn ghost" id="cf-cancel">Cancel</button>
     <button type="button" class="btn primary" id="cf-ok">Confirm</button>
+  </div>
+</dialog>
+
+<!-- Accepting a risk, or calling a finding not real. Its own dialog rather than
+     the shared confirm, because the one thing it exists to collect is the
+     sentence: the decision outlives every analysis after it, and the API
+     refuses a blank reason too — this asks first so the refusal is not how
+     somebody finds out. -->
+<dialog id="secreason">
+  <div class="dlg-h"><div class="halo b-warn" id="sr-halo"></div>
+    <div class="dlg-ht"><span id="sr-title"></span><span class="dlg-sub" id="sr-sub"></span></div></div>
+  <div class="dlg-b">
+    <label for="sr-why">Why</label>
+    <textarea id="sr-why" class="shorttext" placeholder="What makes this acceptable, or not real?"></textarea>
+    <p class="fieldhelp">Required. It is recorded against the fingerprint and survives every
+      future analysis of this project — in three months it is the only thing that says
+      whether this was a judgement or a slip.</p>
+  </div>
+  <div class="dlg-f">
+    <div class="dlg-err" id="sr-err" hidden></div>
+    <div class="spacer"></div>
+    <button type="button" class="btn ghost" id="sr-cancel">Cancel</button>
+    <button type="button" class="btn primary" id="sr-ok">Record</button>
   </div>
 </dialog>
 
@@ -2917,6 +3087,759 @@ function renderProjects(){
   }).join("");
 }
 
+/* ================================================================ security
+   THE ONE RULE FOR THIS WHOLE BLOCK: nothing that came out of an analysis is
+   ever handed to innerHTML. A finding's title, its file paths, its rationale
+   and the branch it was found on are all strings from analysed code — and a
+   branch name may legally contain '<', '>' and '&', so
+   `feature/<img src=x onerror=…>` is a branch a repository can create and this
+   page will list. Every one of them goes in through textContent or an
+   attribute property. The single innerHTML below is secIcon(), whose argument
+   is a key into the page's own icon table and nothing else; a test in
+   tests/test_page_contract.py pins that so the pattern cannot come back.
+
+   The list is projects rather than jobs on purpose: a project can be
+   registered for security analysis and never have a job at all. */
+const SEC_STATES = ["new","regressed","open","partial","fixed",
+                    "accepted","false_positive"];
+const SEC_STATE_LABEL = {new:"New", regressed:"Regressed", open:"Open", partial:"Partial",
+                         fixed:"Fixed", accepted:"Accepted", false_positive:"False positive"};
+/* Every state earns its own word, and the word alone does not explain it. */
+const SEC_STATE_HELP = {
+  new:        "Not in the previous analysis of this branch.",
+  regressed:  "Was fixed once and is back — usually a fix that closed the symptom, not the route.",
+  open:       "Was here last time too, unchanged.",
+  partial:    "Some of its places are gone, or the agent recorded it as mitigated but not eliminated.",
+  fixed:      "Gone since the previous analysis of this branch.",
+  accepted:   "You accepted the risk. The reason is recorded and outlives every analysis after it.",
+  false_positive: "You said it is not real. If the code around it changes the fingerprint changes "
+                + "and it comes back as new — different code, so a fresh judgement.",
+};
+const SEV_ORDER = ["low","medium","high","critical"];
+const SEC_PROFILES = ["quick","standard","deep"];
+/* The deterministic phase (secrets, dependencies, CVEs, hygiene) writes its
+   findings before the agent is even launched, so a poll this quick shows real
+   results within seconds of pressing Analyse while the SAST is still running. */
+const SEC_POLL_MS = 4000;
+/* An analysis row is opened moments BEFORE the run that carries it starts, so
+   the two stamps are seconds apart and never equal. A project analyses one
+   branch at a time (the derived job is max_parallel 1), so "the run nearest
+   this analysis's start" is unambiguous — but only inside a window, or an
+   analysis whose run never made it to the journal would adopt a stranger. */
+const SEC_RUN_WINDOW = 900;
+
+/* Icons only. See the block comment above. */
+function secIcon(name){
+  const s = document.createElement("span");
+  s.className = "secico";
+  s.innerHTML = I[name] || "";
+  return s;
+}
+function secEl(tag, cls, text){
+  const n = document.createElement(tag);
+  if(cls) n.className = cls;
+  if(text != null) n.textContent = text;
+  return n;
+}
+
+const secCfg = (name) => (projById(name) || {}).security || {};
+const secEnabled = (p) => { const s = (p || {}).security;
+  return !!(s && (s.enabled === true || s.enabled === "true" || s.enabled === 1)); };
+const secMinSeverity = (name) => { const v = secCfg(name).min_severity;
+  return SEV_ORDER.includes(v) ? v : "low"; };
+const secDefaultProfile = (name) => { const v = secCfg(name).default_profile;
+  return SEC_PROFILES.includes(v) ? v : "standard"; };
+/* A severity the four-value vocabulary does not know is ranked ABOVE critical
+   rather than below low: an unrecognised value is not a reason to hide a
+   finding, and the display filter is the one place that could silently do it. */
+const secSevRank = (s) => { const i = SEV_ORDER.indexOf(s);
+  return i < 0 ? SEV_ORDER.length : i; };
+/* Class names, not labels: the label shows whatever the record actually says,
+   the class has to be one of the values the stylesheet knows about. */
+const secSevKey = (f) => SEV_ORDER.includes(f.severity) ? f.severity : "unknown";
+const secStateKey = (f) => SEC_STATES.includes(f.state) ? f.state : "unknown";
+/* A project with one checkout has no repo rows, and `repo` is still the column
+   every analysis is filed under — so its own name is what it is filed as. Read
+   from here by everything, so the history of a single-repo project cannot end
+   up split across two spellings. */
+function secRepos(p){
+  const rows = ((p || {}).repos || []).map(r => r && r.name).filter(Boolean);
+  return rows.length ? rows : [(p || {}).name].filter(Boolean);
+}
+
+function secVisible(findings, minSeverity){
+  const floor = SEV_ORDER.indexOf(minSeverity || "low");
+  // A fixed finding is always shown regardless of severity: the checklist's
+  // whole job is to tell you what closed, and hiding that would make a good
+  // outcome look like nothing happened.
+  return findings.filter(f => f.state === "fixed" ||
+                              secSevRank(f.severity) >= floor);
+}
+/* What is still standing, by severity. Decided and fixed findings are out of
+   it by definition — the posture is what is left for somebody to do. */
+function secPosture(findings, minSeverity){
+  const counts = {critical:0, high:0, medium:0, low:0, other:0};
+  secVisible(findings, minSeverity).forEach(f => {
+    if(["fixed","accepted","false_positive"].includes(f.state)) return;
+    if(counts[f.severity] == null) counts.other++; else counts[f.severity]++;
+  });
+  return counts;
+}
+
+async function secFetch(path){
+  const r = await fetch(path, {headers:{"X-CC-Token":TOKEN}});
+  // Same two codes /api/data treats as "go back to the login card", for the
+  // same reason: a session that ended is a state, not an error to report.
+  if(r.status === 401 || r.status === 428){ sessionLost(); throw new Error("signed out"); }
+  const j = await r.json().catch(() => null);
+  if(!r.ok) throw new Error((j && (j.error || j.output)) || ("HTTP " + r.status));
+  return j;
+}
+
+/* ------------------------------------------------------- the project list
+   One /api/security per enabled project and one checklist for its last
+   finished analysis — each of those is a subprocess on the server, so it
+   happens when the page is opened and when Refresh is pressed, never on the
+   five-second poll. A project already in this cache is skipped, which is what
+   keeps renderSecurity() calling this on every repaint from costing anything. */
+const secPost = {};
+let secPostGen = 0;
+async function secLoadPostures(force){
+  const names = (DATA.projects || []).filter(secEnabled).map(p => p.name);
+  if(force){ secPostGen++; names.forEach(n => { delete secPost[n]; }); }
+  // Read once: a Refresh pressed mid-flight empties the cache, and a reply that
+  // was already in the air would otherwise land on top of the fresh answer.
+  const gen = secPostGen;
+  for(const name of names){
+    if(secPost[name]) continue;
+    secPost[name] = {state:"loading"};
+    try{
+      const list = await secFetch("/api/security?project=" + encodeURIComponent(name));
+      if(gen !== secPostGen) return;
+      const done = (list || []).find(a => a.state !== "running") || null;
+      const rec = {state:"ok", analyses:list || [], latest:(list || [])[0] || null,
+                   done, counts:null};
+      secPost[name] = rec;
+      secRenderList();
+      if(done){
+        const ck = await secFetch("/api/security/checklist?analysis=" + encodeURIComponent(done.id));
+        if(gen !== secPostGen) return;
+        rec.counts = secPosture(ck.findings || [], secMinSeverity(name));
+      }
+    }catch(e){
+      if(gen !== secPostGen) return;
+      secPost[name] = {state:"error", error:e.message};
+    }
+    secRenderList();
+  }
+}
+
+function secRenderList(){
+  const host = $("sec-list");
+  if(!host) return;
+  host.textContent = "";
+  const projects = (DATA.projects || []).slice()
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  if(!projects.length){
+    const e = secEl("div", "tblempty");
+    e.appendChild(secIcon("inbox"));
+    e.appendChild(document.createTextNode(
+      "No projects yet. Security analysis is configured on a project, so there "
+      + "has to be one first."));
+    host.appendChild(e);
+    return;
+  }
+  projects.forEach(p => host.appendChild(secProjectRow(p)));
+}
+
+function secProjectRow(p){
+  const on = secEnabled(p);
+  // A button when there is somewhere to go, a plain div when there is not: a
+  // clickable row that opens a screen with nothing on it is a worse answer
+  // than a sentence saying where to switch it on.
+  const row = document.createElement(on ? "button" : "div");
+  row.className = "secrow" + (on ? "" : " off");
+  if(on){ row.type = "button"; row.onclick = () => secOpen(p.name); }
+  row.appendChild(secIcon("shield"));
+  const grow = secEl("div", "grow");
+  grow.appendChild(secEl("div", "secname", p.name));
+  const meta = secEl("div", "secmeta");
+  if(!on){
+    meta.textContent = "Security analysis is off for this project — turn it on in the "
+      + "project editor, on the Security tab.";
+  }else{
+    const rec = secPost[p.name];
+    if(!rec || rec.state === "loading") meta.textContent = "Loading…";
+    else if(rec.state === "error") meta.textContent = "Could not read its analyses — " + rec.error;
+    else if(!rec.latest) meta.textContent = "Never analysed. Open it to pick a branch and start.";
+    else{
+      const a = rec.latest;
+      meta.textContent = (a.state === "running" ? "Analysing " : "Last analysed ")
+        + a.repo + " @ " + a.branch + " · " + a.profile
+        + " · " + (a.state === "running" ? "started " + fmtAgo(a.started)
+                                         : a.state + " " + fmtAgo(a.ended || a.started));
+    }
+  }
+  grow.appendChild(meta);
+  row.appendChild(grow);
+  if(on) row.appendChild(secPosturePills(secPost[p.name]));
+  return row;
+}
+
+function secPosturePills(rec){
+  const wrap = secEl("div", "sevpills");
+  if(!rec || rec.state !== "ok" || !rec.counts) return wrap;
+  const total = SEV_ORDER.reduce((n, s) => n + (rec.counts[s] || 0), 0) + (rec.counts.other || 0);
+  if(!total){
+    wrap.appendChild(secEl("span", "sevpill clean", "nothing open"));
+    return wrap;
+  }
+  ["critical","high","medium","low"].forEach(sev => {
+    if(!rec.counts[sev]) return;
+    wrap.appendChild(secEl("span", "sevpill " + sev, rec.counts[sev] + " " + sev));
+  });
+  if(rec.counts.other) wrap.appendChild(secEl("span", "sevpill low", rec.counts.other + " other"));
+  return wrap;
+}
+
+/* --------------------------------------------------------- one project */
+const secState = {project:"", repo:"", branch:"", analyses:[], analysis:null,
+                  findings:[], stateFilter:"", seq:0};
+let secTimer = null;
+function secStopPoll(){ if(secTimer){ clearInterval(secTimer); secTimer = null; } }
+function secSyncPoll(){
+  // Polling exists for one reason — an analysis in flight — so it starts and
+  // stops on that single fact rather than on which screen is open.
+  const running = secState.project && secState.analyses.some(a => a.state === "running");
+  if(running && !secTimer) secTimer = setInterval(secReload, SEC_POLL_MS);
+  if(!running) secStopPoll();
+}
+
+/* Coming back to a project screen re-reads it and picks the poll back up: what
+   is on it may be minutes old, and leaving the page stopped the watching. */
+function secEnter(){ if(secState.project) secReload(); else secLoadPostures(false); }
+function secLeave(){ secStopPoll(); }
+
+function secBack(){
+  secStopPoll();
+  // Whatever just happened in there is exactly what the row was showing before,
+  // so the cached posture for this one project is thrown away and re-read.
+  delete secPost[secState.project];
+  secState.project = ""; secState.analysis = null; secState.findings = [];
+  secState.analyses = []; secState.stateFilter = "";
+  $("sec-detail").hidden = true;
+  $("sec-projects").hidden = false;
+  secRenderList();
+  secLoadPostures(false);
+}
+
+async function secOpen(project){
+  secStopPoll();
+  secState.project = project;
+  secState.analysis = null; secState.findings = []; secState.analyses = [];
+  secState.stateFilter = "";
+  $("sec-projects").hidden = true;
+  $("sec-detail").hidden = false;
+  const title = $("sec-title");
+  title.textContent = "";
+  title.appendChild(secIcon("shield"));
+  title.appendChild(document.createTextNode(project));
+  $("sec-findings").textContent = "";
+  $("sec-history").textContent = "";
+  $("sec-summary").textContent = "";
+  $("sec-checklist").textContent = "";
+  $("sec-dl").hidden = true;
+  secStatus("Loading…");
+
+  const p = projById(project) || {};
+  const repos = secRepos(p);
+  secFill($("sec-repo"), repos);
+  // With one checkout there is nothing to choose between, and the row is filed
+  // under the project's own name either way.
+  $("sec-repo-field").hidden = repos.length < 2;
+  $("sec-profile").value = secDefaultProfile(project);
+  $("sec-branch-other").value = "";
+
+  try{
+    secState.analyses = await secFetch("/api/security?project=" + encodeURIComponent(project));
+  }catch(e){ secState.analyses = []; secStatus("Could not read its analyses — " + e.message); }
+  // Open on what was last analysed: that is the screen somebody came back for.
+  const last = secState.analyses[0];
+  if(last && repos.includes(last.repo)) $("sec-repo").value = last.repo;
+  await secLoadBranches(last ? last.branch : "");
+  if(last && SEC_PROFILES.includes(last.profile)) $("sec-profile").value = last.profile;
+  await secSyncScope();
+}
+
+function secFill(select, values, selected){
+  select.textContent = "";
+  values.forEach(v => {
+    const o = document.createElement("option");
+    // .value and .textContent, never markup: a branch name is allowed to
+    // contain '<', '>' and '&', and a repository chooses it.
+    o.value = v; o.textContent = v;
+    select.appendChild(o);
+  });
+  if(selected != null && values.includes(selected)) select.value = selected;
+}
+
+async function secLoadBranches(want){
+  const sel = $("sec-branch");
+  secFill(sel, ["…"], "…");
+  let branches = [];
+  try{
+    const j = await secFetch("/api/security/branches?project="
+      + encodeURIComponent(secState.project) + "&repo=" + encodeURIComponent($("sec-repo").value));
+    branches = j.branches || [];
+  }catch(e){
+    secFill(sel, []);
+    toast("Could not list branches — " + e.message, true);
+    return;
+  }
+  // The branch of the last analysis may be gone from the checkout by now; it is
+  // still the one this screen is about, so it stays in the list.
+  if(want && !branches.includes(want)) branches = [want].concat(branches);
+  secFill(sel, branches, want);
+}
+
+/* What the three controls currently say. The free-text field wins when it has
+   anything in it: it is the one somebody typed. */
+function secScope(){
+  const typed = $("sec-branch-other").value.trim();
+  return {repo: $("sec-repo").value, branch: typed || $("sec-branch").value || ""};
+}
+
+async function secSyncScope(){
+  const s = secScope();
+  secState.repo = s.repo; secState.branch = s.branch;
+  const mine = secState.analyses.filter(a => a.repo === s.repo && a.branch === s.branch);
+  await secShowAnalysis(mine.length ? mine[0].id : null);
+}
+
+async function secShowAnalysis(id){
+  const seq = ++secState.seq;
+  if(id == null){
+    secState.analysis = null; secState.findings = [];
+    secPaint();
+    return;
+  }
+  try{
+    const j = await secFetch("/api/security/checklist?analysis=" + encodeURIComponent(id));
+    if(seq !== secState.seq) return;    // a newer request already answered
+    secState.analysis = j.analysis || null;
+    secState.findings = j.findings || [];
+  }catch(e){
+    if(seq !== secState.seq) return;
+    secState.analysis = null; secState.findings = [];
+    secStatus("Could not read that analysis — " + e.message);
+    return;
+  }
+  secPaint();
+}
+
+/* Re-read the list and, with it, whatever is on screen. Called by the poll
+   while an analysis is running, and once after every action. */
+async function secReload(){
+  if(!secState.project) return;
+  try{
+    secState.analyses = await secFetch("/api/security?project="
+      + encodeURIComponent(secState.project));
+  }catch(e){ secStopPoll(); return; }
+  if(!secState.project) return;   // navigated away while the fetch was out
+  const mine = secState.analyses.filter(a => a.repo === secState.repo
+                                          && a.branch === secState.branch);
+  // Follow the newest analysis of the branch on screen: one just started is the
+  // one worth watching, not the one that was being read a moment ago.
+  const want = mine.length ? mine[0].id : (secState.analysis && secState.analysis.id);
+  await secShowAnalysis(want == null ? null : want);
+  secSyncPoll();
+}
+
+function secStatus(text){
+  const box = $("sec-status");
+  box.textContent = "";
+  box.appendChild(secEl("span", null, text));
+}
+
+function secPaint(){
+  const a = secState.analysis;
+  const running = !!a && a.state === "running";
+  secPaintRunButton();
+  // Here rather than only after pressing Analyse: arriving on a project whose
+  // analysis somebody else started has to start watching it too, or the screen
+  // sits on a running row that never moves.
+  secSyncPoll();
+  const box = $("sec-status");
+  box.textContent = "";
+  if(!a){
+    box.appendChild(secEl("span", null,
+      secState.branch ? "No analysis of this branch yet — press Analyse to make the first one."
+                      : "Pick a branch, or type one, and press Analyse."));
+    $("sec-coverage").hidden = true;
+    $("sec-summary").textContent = "";
+    $("sec-checklist").textContent = "";
+    $("sec-dl").hidden = true;
+    $("sec-findings").textContent = "";
+    secRenderHistory();
+    return;
+  }
+  box.appendChild(secIcon(running ? "timer" : (a.state === "failed" ? "xcircle" : "check")));
+  box.appendChild(secEl("b", null, "Analysis " + a.id));
+  const bits = [a.repo + " @ " + a.branch, String(a.commit_sha || "").slice(0, 12),
+                a.profile, a.state,
+                running ? "started " + fmtAgo(a.started)
+                        : (a.ended ? "ended " + fmtAgo(a.ended) : "started " + fmtAgo(a.started))];
+  if(a.ended && a.started) bits.push(fmtDur(Math.max(0, a.ended - a.started)));
+  bits.push(money(a.spend_usd || 0));
+  box.appendChild(secEl("span", null, bits.filter(Boolean).join(" · ")));
+  if(running){
+    box.appendChild(secEl("span", null,
+      "Secrets, dependencies and CVEs are written before the agent starts, so what is "
+      + "below is already real while the code review keeps going."));
+  }
+  const run = secRunFor(a);
+  if(run){
+    const b = secEl("button", "btn", "Open the run");
+    b.type = "button";
+    b.onclick = () => openLog(run.id, run.start);
+    box.appendChild(b);
+  }
+
+  const note = $("sec-coverage");
+  note.textContent = "";
+  if((a.coverage_note || "").trim()){
+    note.appendChild(secIcon("alert"));
+    note.appendChild(secEl("span", "grow", a.coverage_note));
+    note.hidden = false;
+  }else note.hidden = true;
+
+  secRenderSummary();
+  secRenderChecklist();
+  $("sec-dl").hidden = false;
+  secRenderFindings();
+  secRenderHistory();
+}
+
+function secPaintRunButton(){
+  const btn = $("sec-run");
+  // A project analyses one branch at a time: the derived job carries
+  // max_parallel 1, and `security analyze` refuses a second one outright. The
+  // button says so before it is pressed rather than after — and if one starts
+  // between the repaint and the click, the refusal the server sends back is
+  // what gets shown, because that message is the one that is actually true.
+  const running = secState.analyses.some(a => a.state === "running");
+  btn.disabled = running;
+  btn.title = running
+    ? "An analysis of this project is already running — one at a time."
+    : "Analyse the selected branch";
+  btn.textContent = running ? "Analysing…" : "Analyse";
+}
+
+function secRenderSummary(){
+  const host = $("sec-summary");
+  host.textContent = "";
+  const shown = secVisible(secState.findings, secMinSeverity(secState.project));
+  const counts = secPosture(secState.findings, secMinSeverity(secState.project));
+  const open = SEV_ORDER.reduce((n, s) => n + counts[s], 0) + counts.other;
+  if(!shown.length){
+    host.appendChild(secEl("span", "sevpill clean", "nothing found"));
+  }else if(!open){
+    host.appendChild(secEl("span", "sevpill clean", "nothing open"));
+  }else{
+    ["critical","high","medium","low"].forEach(sev => {
+      if(counts[sev]) host.appendChild(secEl("span", "sevpill " + sev, counts[sev] + " " + sev));
+    });
+    if(counts.other) host.appendChild(secEl("span", "sevpill low", counts.other + " other"));
+  }
+  // What the project's own threshold is keeping off this page. Said out loud,
+  // because the number that is missing is otherwise indistinguishable from a
+  // number that was never found.
+  const hidden = secState.findings.length - shown.length;
+  if(hidden > 0){
+    host.appendChild(secEl("span", "sevpill low", hidden + " below "
+      + secMinSeverity(secState.project) + " — recorded, not shown"));
+  }
+}
+
+function secRenderChecklist(){
+  const host = $("sec-checklist");
+  host.textContent = "";
+  const shown = secVisible(secState.findings, secMinSeverity(secState.project));
+  SEC_STATES.forEach(state => {
+    const n = shown.filter(f => f.state === state).length;
+    const chip = secEl("button", "secchip" + (n ? "" : " zero")
+      + (secState.stateFilter === state ? " on" : ""));
+    chip.type = "button";
+    chip.title = SEC_STATE_HELP[state] || "";
+    chip.appendChild(secEl("span", null, SEC_STATE_LABEL[state]));
+    chip.appendChild(secEl("span", "n", String(n)));
+    chip.onclick = () => {
+      secState.stateFilter = (secState.stateFilter === state) ? "" : state;
+      secRenderChecklist(); secRenderFindings();
+    };
+    host.appendChild(chip);
+  });
+}
+
+function secRenderFindings(){
+  const host = $("sec-findings");
+  host.textContent = "";
+  let list = secVisible(secState.findings, secMinSeverity(secState.project));
+  if(secState.stateFilter) list = list.filter(f => f.state === secState.stateFilter);
+  // Worst first, and inside a severity the ones nobody has judged yet.
+  const stateRank = (f) => SEC_STATES.indexOf(f.state);
+  list = list.slice().sort((x, y) => (secSevRank(y.severity) - secSevRank(x.severity))
+                                  || (stateRank(x) - stateRank(y))
+                                  || String(x.title).localeCompare(String(y.title)));
+  if(!list.length){
+    const e = secEl("div", "empty", secState.stateFilter
+      ? "Nothing in that state." : "This analysis reported nothing to show.");
+    host.appendChild(e);
+    return;
+  }
+  list.forEach(f => host.appendChild(secFindingRow(f)));
+}
+
+function secFindingRow(f){
+  // Titles and paths come out of analysed code. textContent, always: an
+  // innerHTML here would let a repository script this dashboard.
+  const row = document.createElement("div");
+  row.className = "secfinding sev-" + secSevKey(f) + " state-" + secStateKey(f);
+  const h = document.createElement("h4");
+  const title = document.createElement("span");
+  title.className = "sectitle";
+  title.textContent = "[" + f.severity + "] " + f.title;
+  h.appendChild(title);
+  const st = document.createElement("span");
+  st.className = "secstate " + secStateKey(f);
+  st.title = SEC_STATE_HELP[f.state] || "";
+  st.textContent = SEC_STATE_LABEL[f.state] || f.state;
+  h.appendChild(st);
+  row.appendChild(h);
+  const where = document.createElement("ul");
+  where.className = "secwhere";
+  (f.occurrences || []).forEach(o => {
+    const li = document.createElement("li");
+    li.textContent = o.line ? o.file + ":" + o.line : o.file;
+    where.appendChild(li);
+  });
+  if(where.childNodes.length) row.appendChild(where);
+  if((f.rationale || "").trim()) row.appendChild(secEl("p", "secwhy", f.rationale));
+  if((f.remediation || "").trim()) row.appendChild(secEl("p", "secfix", "Remediation: " + f.remediation));
+  if((f.partial_note || "").trim()) row.appendChild(secEl("p", "secwhy", "Partial: " + f.partial_note));
+  if((f.decision_reason || "").trim()){
+    row.appendChild(secEl("p", "secwhy", SEC_STATE_LABEL[f.state] + " — " + f.decision_reason));
+  }
+  row.appendChild(secEl("div", "secfp", (f.category || "") + " · " + (f.rule || "")
+    + " · " + (f.fingerprint || "")));
+  // A fixed finding is gone: there is nothing left to accept or dismiss.
+  if(f.state !== "fixed") row.appendChild(secDecisionControls(f));
+  return row;
+}
+
+function secDecisionControls(f){
+  const wrap = document.createElement("div");
+  wrap.className = "secactions";
+  [["accepted","Accept risk"],["false_positive","False positive"]].forEach(
+    ([state, label]) => {
+      const b = document.createElement("button");
+      b.className = "btn";
+      b.type = "button";
+      b.textContent = label;
+      b.onclick = () => secDecide(f, state, label);
+      wrap.appendChild(b);
+    });
+  return wrap;
+}
+
+async function secDecide(f, state, label){
+  // Required, not optional: this decision outlives every future analysis, and
+  // without a reason it is unreadable in three months. The API refuses a blank
+  // one with a 400 of its own — asked here so that refusal is never the way
+  // somebody discovers the rule.
+  const reason = await secAskReason(label, f.title);
+  if(reason === null) return;
+  const ok = await api("security_decide", {project: secState.project,
+              fingerprint: f.fingerprint, state, reason});
+  if(!ok) return;          // api() has already shown the server's own message
+  toast(label + " recorded", false, "check");
+  await secReload();
+}
+
+/* --------------------------------------------------- the reason dialog */
+let _srResolve = null;
+function secAskReason(label, title){
+  $("sr-title").textContent = label;
+  $("sr-sub").textContent = title || "";
+  $("sr-why").value = "";
+  $("sr-err").hidden = true;
+  $("secreason").showModal();
+  return new Promise(res => { _srResolve = res; });
+}
+function secReasonDone(value){
+  $("secreason").close();
+  if(_srResolve){ _srResolve(value); _srResolve = null; }
+}
+$("sr-cancel").addEventListener("click", () => secReasonDone(null));
+$("secreason").addEventListener("cancel", (e) => { e.preventDefault(); secReasonDone(null); });
+$("sr-ok").addEventListener("click", () => {
+  const v = $("sr-why").value.trim();
+  if(!v){
+    // Beside the field that is empty, not in a toast on the other side of the
+    // screen and not as a 400 after the dialog has already closed.
+    const err = $("sr-err");
+    err.textContent = "";
+    err.appendChild(secIcon("alert"));
+    err.appendChild(secEl("span", null, "A decision needs a reason."));
+    err.hidden = false;
+    $("sr-why").focus();
+    return;
+  }
+  secReasonDone(v);
+});
+$("sr-why").addEventListener("input", () => { $("sr-err").hidden = true; });
+
+/* -------------------------------------------------------------- history */
+function secRunFor(a){
+  if(!a || !a.run_id) return null;
+  let best = null, bestd = Infinity;
+  (DATA.runs || []).forEach(r => {
+    if(r.id !== a.run_id) return;
+    const d = Math.abs((r.start || 0) - (a.started || 0));
+    if(d < bestd){ best = r; bestd = d; }
+  });
+  return bestd <= SEC_RUN_WINDOW ? best : null;
+}
+
+function secRenderHistory(){
+  const host = $("sec-history");
+  host.textContent = "";
+  const mine = secState.analyses.filter(a => a.repo === secState.repo
+                                          && a.branch === secState.branch);
+  if(!mine.length){
+    host.appendChild(secEl("div", "empty", "Nothing analysed on this branch yet."));
+    return;
+  }
+  const current = secState.analysis && secState.analysis.id;
+  mine.forEach(a => {
+    const row = secEl("div", "sechrow" + (a.id === current ? " on" : ""));
+    const open = secEl("button", "btn ghost", "#" + a.id);
+    open.type = "button";
+    open.title = "Show this analysis";
+    open.onclick = () => secShowAnalysis(a.id);
+    row.appendChild(open);
+    row.appendChild(secEl("span", "grow", [a.state, a.profile,
+      String(a.commit_sha || "").slice(0, 12),
+      fmtWhen(a.started), money(a.spend_usd || 0)].filter(Boolean).join(" · ")));
+    const run = secRunFor(a);
+    if(run){
+      const b = secEl("button", "btn ghost", "Run");
+      b.type = "button";
+      b.title = "Open this analysis's run";
+      b.onclick = () => openLog(run.id, run.start);
+      row.appendChild(b);
+    }
+    host.appendChild(row);
+  });
+}
+
+/* --------------------------------------------------------------- actions */
+async function secAnalyse(){
+  const s = secScope();
+  if(!s.branch){ toast("Pick a branch, or type one", true); return; }
+  const btn = $("sec-run");
+  btn.disabled = true;
+  btn.textContent = "Analysing…";
+  try{
+    // ALWAYS this op, never a bare run of the derived job: the request file the
+    // job reads is written here, and running the job on its own would make it
+    // re-read a spent one and analyse the wrong branch. A refusal — a branch
+    // name the engine will not take, an analysis already running — comes back
+    // as the server's own sentence, which api() puts on screen.
+    const ok = await api("security_analyze", {project: secState.project,
+                repo: s.repo, branch: s.branch, profile: $("sec-profile").value});
+    if(!ok) return;
+    toast("Analysis started", false, "shield");
+    secState.branch = s.branch; secState.repo = s.repo;
+    // The deterministic phase writes before the agent starts, so polling shows
+    // secrets and CVEs within seconds while the SAST is still running.
+    await secReload();
+    secSyncPoll();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Analyse";
+    secPaintRunButton();
+  }
+}
+
+async function secDownload(fmt){
+  const a = secState.analysis;
+  if(!a) return;
+  const btn = $("sec-dl-" + fmt);
+  btn.disabled = true;
+  try{
+    // Every GET on this API carries the token header, which a plain
+    // `<a href="/api/security/report?…">` cannot attach — so the report is
+    // fetched, held as a Blob and handed to a link the page clicks itself. The
+    // filename is built here from the same id and format that were asked for:
+    // the server names the file in Content-Disposition, and a fetch never turns
+    // that header into a download name on its own.
+    const r = await fetch("/api/security/report?analysis=" + encodeURIComponent(a.id)
+                          + "&format=" + encodeURIComponent(fmt), {headers:{"X-CC-Token":TOKEN}});
+    if(!r.ok){
+      const j = await r.json().catch(() => null);
+      throw new Error((j && j.error) || ("HTTP " + r.status));
+    }
+    const url = URL.createObjectURL(await r.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "security-analysis-" + a.id + "." + fmt;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    // Revoked late rather than immediately: the click is handed to the browser
+    // asynchronously and a URL revoked in the same tick can lose the race.
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  }catch(e){ toast("Download failed — " + e.message, true); }
+  finally{ btn.disabled = false; }
+}
+
+function renderSecurity(){
+  if(currentView !== "security") return;
+  if(secState.project) return;   // the project screen paints from its own fetches
+  secRenderList();
+  secLoadPostures(false);        // a no-op once every project is in the cache
+}
+
+/* ---------------------------------------------------------------- wiring */
+$("sr-halo").innerHTML = I.shield;
+$("sec-back").innerHTML = I.cleft + "All projects";
+$("sec-reload").innerHTML = I.radar + "Refresh";
+$("sec-dl-md").innerHTML = I.file + "Markdown";
+$("sec-dl-json").innerHTML = I.file + "JSON";
+$("sec-dl-html").innerHTML = I.file + "HTML";
+$("sec-back").addEventListener("click", secBack);
+$("sec-reload").addEventListener("click", () => { secLoadPostures(true); });
+$("sec-run").addEventListener("click", secAnalyse);
+$("sec-dl-md").addEventListener("click", () => secDownload("md"));
+$("sec-dl-json").addEventListener("click", () => secDownload("json"));
+$("sec-dl-html").addEventListener("click", () => secDownload("html"));
+$("sec-repo").addEventListener("change", async () => {
+  await secLoadBranches("");
+  $("sec-branch-other").value = "";
+  secSyncScope();
+});
+// Choosing from the list is a decision; the typed field would otherwise keep
+// overruling it from off screen.
+$("sec-branch").addEventListener("change", () => {
+  $("sec-branch-other").value = "";
+  secSyncScope();
+});
+// `change`, not `input`: a fetch per keystroke would be a subprocess per
+// keystroke on the server.
+$("sec-branch-other").addEventListener("change", () => secSyncScope());
+/* ============================================================ end security */
+
 /* The toolbar's own state: the two triggers, the Clear button and the row of
    chips that says, in words, what is being left out. The pickers alone cannot
    say that — a trigger reading "All projects" next to one reading "Disabled"
@@ -3614,6 +4537,7 @@ function render(){
   paintNav();
   paintUser();
   renderProjects();
+  renderSecurity();
   renderJobs();
   renderRuns();
   $("foot").textContent="claude-cron · control server on 127.0.0.1 · SQLite index.db ("
@@ -5277,14 +6201,14 @@ function initModalScrollLock(){
   syncModalScrollLock();
 }
 
-/* The five destinations in the sidebar. The choice is remembered, and the
+/* The destinations in the sidebar. The choice is remembered, and the
    counters are refreshed with the data so switching pages is never needed just
    to see numbers. Overview owns the 24h band, which used to sit above every
    page — Jobs and Runs are now the whole page they are named for. */
 // "settings" is deliberately absent while the page is unbuilt: dropping it here
 // is what sends anyone whose last view WAS settings back to the overview,
 // instead of restoring them onto a blank pane with no nav item to leave by.
-const VIEWS = ["overview","jobs","runs","projects"];
+const VIEWS = ["overview","jobs","runs","projects","security"];
 // The dashboard shows everything at once — the band and, under it, whichever of
 // the two lists its tabs are on. Jobs and Runs in the menu are the narrowed
 // views: only that list, and Jobs shows it as a table rather than as cards,
@@ -5315,6 +6239,10 @@ function setView(v){
   // arriving somewhere has to repaint. Without this the Jobs page opened empty:
   // the last render had drawn cards into a container this view does not show.
   render();
+  // Security reads its own endpoints, one subprocess per project on the server,
+  // so it fetches on arrival rather than on the five-second poll — and stops
+  // watching a running analysis the moment the page is left.
+  if(currentView === "security") secEnter(); else secLeave();
 }
 /* The dashboard's own tabs. They switch what the dashboard shows and nothing
    else — the sidebar's Jobs and Runs are different pages now, so moving the
@@ -5350,6 +6278,10 @@ function paintNav(){
        live ? '<span class="runningbadge"><span class="pulse"></span>' + live + "</span>" : "");
   item("nav-runs", I.activity, "Runs", runs);
   item("nav-projects", I.folder, "Projects", projects);
+  // No counter: the number that would belong here is how much is still open,
+  // and that costs a round trip per project to know. It is on the page itself,
+  // beside the project it belongs to.
+  item("nav-security", I.shield, "Security", null);
   item("nav-settings", I.gear, "Settings", null);
   // The rail hides labels, so the label has to survive as the tooltip.
   document.querySelectorAll(".navitem").forEach(b =>
