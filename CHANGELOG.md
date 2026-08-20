@@ -176,6 +176,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   request body, so nothing typed into the page can sign a decision as anyone
   else.
 
+### Fixed
+
+- **`/api/security/branches` no longer answers a checkout with no branches
+  yet with a blank error.** An empty repository answers with an empty branch
+  list instead.
+
 ### Changed
 
 - **A provider outage no longer slows a job down for the rest of the day.**

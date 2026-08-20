@@ -2156,7 +2156,12 @@ PROFILES = ("quick", "standard", "deep")
 
 
 def _branch_ok(branch):
-    return bool(BRANCH_OK.match(branch)) and not branch.startswith("-") and ".." not in branch
+    # `fullmatch`, not `match`: with `$`, `re.match` anchors only the start and
+    # `$` itself matches just before a trailing "\n" (not only at the true end
+    # of string), so "main\n" would pass a `.match` check here even though it
+    # is not a valid branch name. `fullmatch` requires the whole string to be
+    # consumed, trailing newline included.
+    return bool(BRANCH_OK.fullmatch(branch)) and not branch.startswith("-") and ".." not in branch
 
 
 def _analysis_id(raw):
@@ -2194,9 +2199,36 @@ def security_report(analysis_id, fmt):
                  f'attachment; filename="security-analysis-{int(analysis_id)}.{fmt}"'}
 
 
+def _json_or_500(ok, out, what):
+    """`out` decoded as JSON, or a 500 that says which call and why.
+
+    `cc()` merges the CLI's stdout and stderr (see `cc`), so a warning printed
+    on an otherwise successful run (rc 0) lands in `out` right alongside the
+    clean JSON the CLI intends as its actual payload. Left unguarded,
+    `json.loads` on that turns into an uncaught `JSONDecodeError` -- a dropped
+    connection instead of a 500, and (for the caller polling for a restart) a
+    stale check that silently never completes. A non-zero exit is already a
+    500 with the CLI's own message; this is the same verdict for the rc-0
+    case where the message just never reaches the page.
+    """
+    if not ok:
+        return 500, {"error": out}
+    try:
+        return 200, json.loads(out)
+    except ValueError:
+        return 500, {"error": f"{what} produced output that was not valid JSON: {out!r}"}
+
+
 def security_list(project):
-    ok, out = cc(["security", "list", "--project", str(project)])
-    return (200, json.loads(out)) if ok else (500, {"error": out})
+    project = str(project or "").strip()
+    if not project:
+        # Mirrors /api/search's own refusal of a blank `q`: a missing project
+        # used to reach the CLI as `--project ''`, which matches no analysis
+        # and comes back a silent `200 []` -- indistinguishable from "this
+        # project genuinely has none" rather than "you forgot the parameter".
+        return 400, {"error": "project required"}
+    ok, out = cc(["security", "list", "--project", project])
+    return _json_or_500(ok, out, "security list")
 
 
 def security_checklist(analysis_raw):
@@ -2204,7 +2236,7 @@ def security_checklist(analysis_raw):
     if aid is None:
         return 400, {"error": "analysis must be an integer"}
     ok, out = cc(["security", "checklist", "--analysis", str(aid)])
-    return (200, json.loads(out)) if ok else (500, {"error": out})
+    return _json_or_500(ok, out, "security checklist")
 
 
 def security_branches(project, repo):

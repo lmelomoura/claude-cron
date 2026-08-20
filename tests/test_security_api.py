@@ -2,12 +2,20 @@
 
 Every function here is module-level and called directly, the same style as
 the rest of this suite (see conftest.py) — no HTTP round trip, `cc()` (the
-shell-out to the CLI) is monkeypatched instead. What matters most is what
+shell-out to the CLI) is monkeypatched with `monkeypatch.setattr` (never a
+bare assignment: `srv` is a session-scoped fixture, and an assignment would
+leak the fake into every test that runs after it). What matters most is what
 gets refused BEFORE `cc` is ever reached: a branch name with shell
-metacharacters, a leading '-', a '..' traversal, a bad profile, a decision
-missing its reason or naming a state the ledger does not know, and a
-non-integer analysis id. Each of those is a 400 at this edge rather than a
-500 built from a CLI that exited non-zero or a traceback from int().
+metacharacters, a leading '-', a '..' traversal or trailing newline, a bad
+profile, a decision missing its reason or naming a state the ledger does not
+know, a non-integer analysis id, and a missing project. Each of those is a
+400 at this edge rather than a 500 built from a CLI that exited non-zero or a
+traceback from int() or json.loads().
+
+One test near the bottom (the leading-dash project invariant) deliberately
+does NOT stub `cc()` — it runs the real CLI to prove argparse itself refuses
+an option-shaped value, which is the whole safety net for passing `project`/
+`repo`/etc. straight through as list elements rather than quoting them.
 """
 import json
 
@@ -38,19 +46,19 @@ def test_a_failed_render_raises_instead_of_returning_broken_bytes(srv, monkeypat
         assert "no such analysis" in str(exc)
 
 
-def test_an_unknown_format_is_refused_before_it_reaches_the_cli(srv):
+def test_an_unknown_format_is_refused_before_it_reaches_the_cli(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    srv.cc = must_not_run
+    monkeypatch.setattr(srv, "cc", must_not_run)
     code, payload = srv.security_report_guard("xml")
     assert code == 400
     assert "format" in payload["error"]
 
 
-def test_a_path_ish_format_is_refused_the_same_way(srv):
+def test_a_path_ish_format_is_refused_the_same_way(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    srv.cc = must_not_run
+    monkeypatch.setattr(srv, "cc", must_not_run)
     code, payload = srv.security_report_guard("../etc/passwd")
     assert code == 400
 
@@ -71,10 +79,10 @@ def test_a_non_integer_analysis_id_parses_to_none(srv):
     assert srv._analysis_id("-3") == -3  # shape-valid; the CLI/ledger own the range check
 
 
-def test_checklist_refuses_a_non_integer_analysis_before_the_cli(srv):
+def test_checklist_refuses_a_non_integer_analysis_before_the_cli(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    srv.cc = must_not_run
+    monkeypatch.setattr(srv, "cc", must_not_run)
     code, payload = srv.security_checklist("../etc/passwd")
     assert code == 400
     assert "integer" in payload["error"]
@@ -101,6 +109,19 @@ def test_checklist_reports_a_cli_failure_as_500_not_a_crash(srv, monkeypatch):
     assert "no such analysis" in payload["error"]
 
 
+def test_checklist_is_a_500_not_an_uncaught_crash_on_rc0_chatter(srv, monkeypatch):
+    """`cc()` merges stdout and stderr (see `cc`), so a CLI that exits 0 but
+    printed a stray warning line alongside its JSON hands `json.loads` a
+    string that is not valid JSON. Unguarded, that raised `JSONDecodeError`
+    straight out of this function — a dropped connection instead of a 500."""
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None:
+                        (True, '{"analysis": {"id": 7}, "findings": []}\n'
+                               'warning: something noisy on stderr'))
+    code, payload = srv.security_checklist("7")
+    assert code == 500
+    assert "error" in payload
+
+
 # ------------------------------------------------------------------- decide
 
 def test_a_decision_without_a_reason_is_refused(srv, monkeypatch):
@@ -114,17 +135,17 @@ def test_a_decision_without_a_reason_is_refused(srv, monkeypatch):
 def test_a_decision_with_an_unknown_state_is_refused(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    srv.cc = must_not_run
+    monkeypatch.setattr(srv, "cc", must_not_run)
     code, payload = srv.security_decide({"project": "web", "fingerprint": "a" * 64,
                                          "state": "ignored", "reason": "looked at it"})
     assert code == 400
     assert "state" in payload["error"]
 
 
-def test_a_decision_with_no_project_or_fingerprint_is_refused(srv):
+def test_a_decision_with_no_project_or_fingerprint_is_refused(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    srv.cc = must_not_run
+    monkeypatch.setattr(srv, "cc", must_not_run)
     code, payload = srv.security_decide({"project": "", "fingerprint": "a" * 64,
                                          "state": "accepted", "reason": "x"})
     assert code == 400
@@ -192,20 +213,32 @@ def test_analyze_refuses_a_branch_with_dot_dot(srv):
     assert code == 400
 
 
-def test_analyze_refuses_an_unknown_profile(srv):
+def test_branch_ok_refuses_a_trailing_newline_standalone(srv):
+    """`BRANCH_OK` is `^[...]{1,255}$`, and Python's `$` matches just before a
+    trailing "\\n" as well as at the true end of string — so `re.match` alone
+    would accept "main\\n" as a valid branch name. `_branch_ok` must refuse it
+    on its own: `security_analyze` happens to `.strip()` the branch before
+    calling it, which would mask the bug at that one call site, but
+    `_branch_ok` is the edge's actual gate and has to be correct by itself for
+    any caller that does not strip first."""
+    assert not srv._branch_ok("main\n")
+    assert srv._branch_ok("main")
+
+
+def test_analyze_refuses_an_unknown_profile(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    srv.cc = must_not_run
+    monkeypatch.setattr(srv, "cc", must_not_run)
     code, payload = srv.security_analyze({"project": "web", "repo": "web",
                                           "branch": "main", "profile": "thorough"})
     assert code == 400
     assert "profile" in payload["error"]
 
 
-def test_analyze_requires_project_and_repo(srv):
+def test_analyze_requires_project_and_repo(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    srv.cc = must_not_run
+    monkeypatch.setattr(srv, "cc", must_not_run)
     code, payload = srv.security_analyze({"project": "", "repo": "web",
                                           "branch": "main"})
     assert code == 400
@@ -265,6 +298,19 @@ def test_branches_reports_a_missing_checkout_as_500(srv, monkeypatch):
     assert "no checkout" in payload["error"]
 
 
+def test_branches_is_an_empty_list_not_an_error_for_a_checkout_with_none(srv, monkeypatch):
+    """A checkout that exists but carries no branches yet (a fresh `git init`
+    with no commits) is `cmd_security_branches` printing nothing — `cc()`
+    still reports that as ok=True with empty output (see the fix in
+    bin/claude-cron, where the old `grep -v '^HEAD$'` on empty input used to
+    make the whole pipeline exit 1 under `set -uo pipefail`). The route must
+    answer an empty picker, not the 500 that empty output used to cause."""
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, ""))
+    code, payload = srv.security_branches("web", "web")
+    assert code == 200
+    assert payload == {"branches": []}
+
+
 # ---------------------------------------------------------------------- list
 
 def test_list_passes_the_project_through_to_the_cli(srv, monkeypatch):
@@ -286,3 +332,53 @@ def test_list_reports_a_cli_failure_as_500(srv, monkeypatch):
     code, payload = srv.security_list("web")
     assert code == 500
     assert payload == {"error": "boom"}
+
+
+def test_list_refuses_a_missing_project_before_the_cli(srv, monkeypatch):
+    """A blank `project` used to reach the CLI as `--project ''`, which
+    matches no analysis and comes back a silent `200 []` — indistinguishable
+    from "this project genuinely has none". `/api/search` already 400s on a
+    blank `q`; this route should refuse the same way instead of quietly
+    answering an empty list for a parameter nobody supplied."""
+    def must_not_run(args, stdin=None):
+        raise AssertionError("the CLI must not be reached")
+    monkeypatch.setattr(srv, "cc", must_not_run)
+    code, payload = srv.security_list("")
+    assert code == 400
+    assert "project" in payload["error"]
+    code, payload = srv.security_list("   ")
+    assert code == 400
+
+
+def test_list_is_a_500_not_an_uncaught_crash_on_rc0_chatter(srv, monkeypatch):
+    """Same failure mode as checklist: `cc()` merges stdout and stderr, so a
+    warning on an rc-0 run lands right next to the JSON the CLI meant to
+    return, and an unguarded `json.loads` turns that into an escaped
+    `JSONDecodeError` instead of a 500."""
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None:
+                        (True, '[{"id": 1, "project": "web"}]\nwarning: noisy'))
+    code, payload = srv.security_list("web")
+    assert code == 500
+    assert "error" in payload
+
+
+# ------------------------------------------------ the leading-dash invariant
+
+def test_a_leading_dash_project_reaches_argparse_as_a_value_not_a_flag(srv):
+    """`cc()` passes `args` as a Python list straight to `subprocess.run` —
+    never a shell string — which is exactly what makes a project name shaped
+    like an option safe to hand through unquoted: argparse itself refuses to
+    consume "-x" as `--project`'s value (it looks like another flag), rather
+    than the CLI's `list` accepting it as `--project` and then some other
+    flag being smuggled in, or a shell somewhere word-splitting it.
+
+    Deliberately NOT stubbed: the whole point is what the real CLI's argparse
+    does with a leading-dash value reaching it through a real argv, and a
+    mocked `cc()` would never notice a refactor that broke this (e.g. one
+    that switched `cc()` to build a shell string, or otherwise re-joined
+    argv). `security list` needs no working ledger to prove this — argparse
+    refuses the value before `cmd_list` ever opens the database."""
+    code, payload = srv.security_list("-x")
+    assert code == 500
+    assert "expected one argument" in payload["error"]
+    assert "--project" in payload["error"]

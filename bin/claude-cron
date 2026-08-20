@@ -485,10 +485,19 @@ cmd_security_branches() { # cmd_security_branches <project> <repo> -> every
   # would be offered as a branch named "origin". Stripped by hand instead,
   # `refs/remotes/origin/HEAD` becomes plain "HEAD" and is dropped below like
   # any other; sort -u dedupes a name that is both local and pushed.
+  #
+  # The HEAD filter is a sed delete, not a trailing `grep -v`: under
+  # `set -uo pipefail` (see top of file) a checkout with no branches yet makes
+  # for-each-ref print nothing, and `grep -v` on empty input exits 1 -- there
+  # is no match to invert -- which would make the whole pipeline's rc 1 with
+  # empty stdout. The caller (the /api/security/branches route) reads that as
+  # a failed `cc()` call and answers a blank error instead of an empty picker.
+  # sed exits 0 whether or not any line matched its address, so folding the
+  # filter into it keeps "no branches" a success with empty output.
   git -C "$cwd" for-each-ref --format='%(refname)' \
     refs/heads refs/remotes/origin 2>/dev/null \
-    | sed -e 's|^refs/heads/||' -e 's|^refs/remotes/origin/||' \
-    | grep -v '^HEAD$' | sort -u
+    | sed -e 's|^refs/heads/||' -e 's|^refs/remotes/origin/||' -e '/^HEAD$/d' \
+    | sort -u
 }
 
 cmd_security_analyze() { # <project> <repo> <branch> [profile]
@@ -5311,6 +5320,24 @@ JSON
   [ "$secbrrc" -ne 0 ] \
     && ok "a project with no checkout is refused rather than silently listing nothing" \
     || bad "an unknown project/repo did not refuse (rc=$secbrrc)"
+
+  # A checkout that exists but has no commits yet -- so for-each-ref prints
+  # nothing at all. That used to pipe empty stdin into `grep -v '^HEAD$'`,
+  # which exits 1 with nothing to invert; under `set -uo pipefail` the whole
+  # pipeline's rc came out 1 with empty output, and the API route read that as
+  # a failed command and answered a blank error instead of an empty picker.
+  local secempty="$sec/empty-repo" secemptycfg="$sec/empty-cfg"
+  mkdir -p "$secempty" "$secemptycfg"
+  ( cd "$secempty" && git init -q . ) >/dev/null 2>&1
+  cat > "$secemptycfg/projects.json" <<JSON
+{"projects":[{"name":"Empty App","cwd":"$secempty"}]}
+JSON
+  local secemptyout secemptyrc=0
+  secemptyout="$( ( PROJECTS_FILE="$secemptycfg/projects.json"
+                     cmd_security_branches "Empty App" repo ) 2>&1 )" || secemptyrc=$?
+  [ "$secemptyrc" -eq 0 ] && [ -z "$secemptyout" ] \
+    && ok "a checkout with no branches yet is rc 0 with empty output, not a pipeline failure" \
+    || bad "empty checkout: rc=$secemptyrc out='$secemptyout'"
 
   echo "security_close_analysis() — the run's own verdict closes the row"
   sec_close_state() { # sec_close_state <run-status> [wdreason] -> the state it lands on
