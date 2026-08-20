@@ -46,3 +46,44 @@ def test_a_decision_wins_over_the_derived_state():
                    {"aa": {"state": "false_positive", "reason": "fixture"}})
     assert out[0]["state"] == "false_positive"
     assert out[0]["decision_reason"] == "fixture"
+
+
+def test_a_decision_wins_over_open():
+    out = classify([f("aa")], [f("aa")], {"aa"},
+                   {"aa": {"state": "false_positive", "reason": "fixture"}})
+    assert out[0]["state"] == "false_positive"
+
+
+def test_a_decision_wins_over_partial():
+    out = classify([f("aa", occ=5, closed=2)], [f("aa", occ=5)], {"aa"},
+                   {"aa": {"state": "false_positive", "reason": "fixture"}})
+    assert out[0]["state"] == "false_positive"
+
+
+def test_a_decision_wins_over_regressed():
+    out = classify([f("aa")], [], {"aa"},
+                   {"aa": {"state": "false_positive", "reason": "fixture"}})
+    assert out[0]["state"] == "false_positive"
+
+
+# `partial` compares occurrence counts against the previous analysis, so it
+# only means something for a fingerprint that WAS in `previous`. A finding
+# absent from `previous` -- whether it is brand new or reappearing from
+# `history` -- must never come out `partial`, no matter what closed_occurrences
+# or partial_note say: there is nothing for it to have shrunk from.
+
+
+def test_a_regressed_finding_with_a_partial_note_is_regressed_not_partial():
+    out = classify([f("aa", partial_note="sanitised but the sink is still raw")],
+                   [], {"aa"}, {})
+    assert out[0]["state"] == "regressed"
+
+
+def test_a_regressed_finding_with_closed_occurrences_is_regressed_not_partial():
+    out = classify([f("aa", occ=5, closed=2)], [], {"aa"}, {})
+    assert out[0]["state"] == "regressed"
+
+
+def test_a_new_finding_with_closed_occurrences_is_new_not_partial():
+    out = classify([f("aa", occ=5, closed=2)], [], set(), {})
+    assert out[0]["state"] == "new"

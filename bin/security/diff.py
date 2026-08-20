@@ -16,6 +16,12 @@ def _is_partial(finding) -> bool:
     The occurrence count is an anchor two runs cannot disagree about. The
     agent's note catches the other half: a fix that made the pattern go away
     without closing the hole.
+
+    Meaningful ONLY for a finding that was already in the previous analysis --
+    "partial" means "this shrank since last time", and there is nothing for a
+    finding absent from `previous` to have shrunk from. Callers must gate on
+    `fp in prev_fps` before calling this; it is not re-checked here so that
+    the one guard in `classify` stays the single place this invariant lives.
     """
     if int(finding.get("closed_occurrences", 0)) > 0:
         return True
@@ -39,10 +45,11 @@ def classify(current, previous, history, decisions):
         if decision:
             row["state"] = decision["state"]
             row["decision_reason"] = decision.get("reason", "")
-        elif _is_partial(f):
-            row["state"] = "partial"
         elif fp in prev_fps:
-            row["state"] = "open"
+            # Only a finding present last time can have "shrunk" since then --
+            # closed_occurrences and partial_note are meaningless for a
+            # fingerprint that was not there to shrink from.
+            row["state"] = "partial" if _is_partial(f) else "open"
         elif fp in history:
             row["state"] = "regressed"
         else:

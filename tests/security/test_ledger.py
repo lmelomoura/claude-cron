@@ -84,6 +84,37 @@ def test_set_decision_rejects_an_invalid_state(conn):
         ledger.set_decision(conn, "web", "a" * 64, "bogus", "a real reason", "luiz")
 
 
+def test_reporting_the_same_fingerprint_twice_upserts_a_single_row(conn):
+    """The deterministic phase records a finding, then the agent re-reports
+    the same fingerprint with a corrected severity and rationale -- that is
+    the designed triage flow, not a bug, and it must not leave two rows for
+    one vulnerability."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc123", "standard", "run-1")
+    ledger.record_finding(conn, aid, _finding(severity="medium", rationale="deterministic guess"))
+    ledger.record_finding(conn, aid, _finding(
+        severity="critical", rationale="agent triage: exploitable via admin API",
+        occurrences=[{"file": "app/db.py", "line": 99, "snippet_hash": "h2"}]))
+
+    got = ledger.findings_of(conn, aid)
+    assert len(got) == 1
+    assert got[0]["severity"] == "critical"
+    assert got[0]["rationale"] == "agent triage: exploitable via admin API"
+    assert [o["line"] for o in got[0]["occurrences"]] == [99]
+
+
+def test_reporting_the_same_fingerprint_in_different_analyses_is_not_a_conflict(conn):
+    """The UNIQUE constraint is scoped to one analysis -- the same
+    vulnerability recorded in two different analyses (two different runs)
+    is two legitimate rows, not a collision."""
+    a1 = ledger.start_analysis(conn, "web", "web", "main", "c1", "standard", "r1")
+    a2 = ledger.start_analysis(conn, "web", "web", "main", "c2", "standard", "r2")
+    ledger.record_finding(conn, a1, _finding())
+    ledger.record_finding(conn, a2, _finding())
+
+    assert len(ledger.findings_of(conn, a1)) == 1
+    assert len(ledger.findings_of(conn, a2)) == 1
+
+
 def test_record_finding_is_atomic_a_bad_occurrence_leaves_no_finding_row(conn):
     aid = ledger.start_analysis(conn, "web", "web", "main", "c1", "standard", "r1")
     finding = _finding(occurrences=[{"file": "app/db.py", "line": "not-a-number",
@@ -98,3 +129,25 @@ def test_record_finding_is_atomic_a_bad_occurrence_leaves_no_finding_row(conn):
 
     rows = conn.execute("SELECT * FROM finding").fetchall()
     assert rows == []
+
+
+def test_a_failed_re_report_does_not_leave_the_finding_with_half_its_occurrences(conn):
+    """The upsert path deletes the old occurrences before inserting the new
+    ones. If that insert then fails partway, the whole re-report -- the field
+    update, the deletion, and the partial insert -- must roll back together,
+    leaving the original finding exactly as it was."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "c1", "standard", "r1")
+    ledger.record_finding(conn, aid, _finding(severity="medium", rationale="original"))
+
+    bad = _finding(severity="critical", rationale="broken re-report",
+                   occurrences=[{"file": "app/db.py", "line": "not-a-number",
+                                 "snippet_hash": "h2"}])
+    with pytest.raises(ValueError):
+        ledger.record_finding(conn, aid, bad)
+    conn.commit()
+
+    got = ledger.findings_of(conn, aid)
+    assert len(got) == 1
+    assert got[0]["severity"] == "medium"
+    assert got[0]["rationale"] == "original"
+    assert [o["line"] for o in got[0]["occurrences"]] == [12]
