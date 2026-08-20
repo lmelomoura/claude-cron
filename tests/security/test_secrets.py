@@ -25,9 +25,36 @@ def test_ignored_paths_are_skipped(tmp_path):
     assert scan_tree(tmp_path, ["tests/**"]) == []
 
 
-def test_high_entropy_alone_is_not_enough(tmp_path):
-    """A random-looking string with no key shape is noise, not a secret."""
-    (tmp_path / "data.txt").write_text("d41d8cd98f00b204e9800998ecf8427e\n")
+def test_generic_rule_rejects_a_low_entropy_password_value(tmp_path):
+    """The entropy gate itself: a `password=` assignment whose value does not
+    look random is rejected, even though it has the right shape. (The old
+    test here, `test_high_entropy_alone_is_not_enough`, fed a hex string that
+    matches no rule's SHAPE at all -- it was rejected before entropy was
+    ever computed, so it asserted nothing about this gate.)"""
+    (tmp_path / "config.py").write_text(
+        'password = "abababababababababab"\n')
+    assert scan_tree(tmp_path, []) == []
+
+
+def test_generic_rule_reports_a_high_entropy_password_value(tmp_path):
+    """The gate's other side: a `password=` assignment whose value DOES look
+    random is reported. Without this, the entropy gate could be rejecting
+    everything and the test suite would not notice."""
+    (tmp_path / "config.py").write_text(
+        'password = "Jk8pVqZ2Xz9LmWrT4hYbNc"\n')
+    found = scan_tree(tmp_path, [])
+    assert len(found) == 1
+    assert found[0]["rule"] == "generic_secret"
+
+
+def test_generic_rule_rejects_an_obvious_placeholder(tmp_path):
+    """`changeme12345678901234` measures ~4.0 bits/char -- well above the 3.5
+    threshold -- so the entropy gate alone lets it through. It must still be
+    rejected because it says, in plain text, that it is not a real secret.
+    Raising the entropy threshold is deliberately not the fix: a real secret
+    measures ~4.3-4.6 bits/char, too close to give the threshold room."""
+    (tmp_path / "config.py").write_text(
+        'password = "changeme12345678901234"\n')
     assert scan_tree(tmp_path, []) == []
 
 

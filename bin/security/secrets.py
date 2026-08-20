@@ -24,7 +24,8 @@ _RULES = [
     ("openai_key", "critical", re.compile(r"\b(sk-[A-Za-z0-9]{32,})\b"), 0.0),
     ("private_key", "critical", re.compile(r"(-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----)"), 0.0),
     ("google_api_key", "high", re.compile(r"\b(AIza[0-9A-Za-z_-]{35})\b"), 0.0),
-    # The one generic rule, and the only one that needs the entropy gate.
+    # The one generic rule, and the only one that needs the entropy gate and
+    # the placeholder gate below.
     ("generic_secret", "medium",
      re.compile(r"(?i)(?:password|passwd|secret|token|api_?key)\s*[:=]\s*['\"]?([A-Za-z0-9/+_-]{20,})['\"]?"),
      3.5),
@@ -33,12 +34,40 @@ _RULES = [
 _SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", "build"}
 _MAX_BYTES = 2 * 1024 * 1024
 
+# The generic rule matches on shape alone (password/token/secret = <blob>),
+# and a real credential's entropy margin over a bad placeholder is thin (see
+# _entropy). Placeholders are instead rejected by what they say -- an
+# explicit, small list of giveaways -- which is complementary to, not a
+# replacement for, the entropy gate.
+_PLACEHOLDER_MARKERS = (
+    "changeme", "password", "example", "placeholder", "your_", "yourkey",
+    "dummy", "insertkey", "xxxx", "redacted", "notarealkey", "s3cret", "secret",
+)
+
 
 def _entropy(s: str) -> float:
     if not s:
         return 0.0
     return -sum((n / len(s)) * math.log2(n / len(s))
                 for n in (s.count(c) for c in set(s)))
+
+
+def _is_placeholder(value: str) -> bool:
+    """True for an obvious stand-in value, never a real credential.
+
+    Catches the literal giveaways ("changeme", "your_key", ...) and the
+    single-character-class case: a value that is all digits, or is one
+    character repeated, is a template a human typed, not a generator's
+    output.
+    """
+    lowered = value.lower()
+    if any(marker in lowered for marker in _PLACEHOLDER_MARKERS):
+        return True
+    if value.isdigit():
+        return True
+    if len(set(value)) == 1:
+        return True
+    return False
 
 
 def _ignored(rel: str, patterns) -> bool:
@@ -51,7 +80,10 @@ def _hits(text: str):
     for lineno, line in enumerate(text.splitlines(), start=1):
         for name, severity, pattern, min_entropy in _RULES:
             for m in pattern.finditer(line):
-                if min_entropy and _entropy(m.group(1)) < min_entropy:
+                candidate = m.group(1)
+                if name == "generic_secret" and _is_placeholder(candidate):
+                    continue
+                if min_entropy and _entropy(candidate) < min_entropy:
                     continue
                 yield name, severity, lineno
 
