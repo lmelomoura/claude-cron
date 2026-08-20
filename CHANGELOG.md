@@ -104,6 +104,58 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   keyed by the project *name*, there being no id to key them by — is carried
   onto the new name instead of stranded under one no project has any more.
 
+- **The engines behind an analysis, and the ledger that remembers them —
+  `bin/security/`.** Eight modules of stdlib Python, no dependency added, behind
+  the single door of `cli.py`. This is the half of an analysis that costs no
+  tokens and the half that makes running a second one worth anything.
+
+  `secrets.py` finds credentials by *shaped* patterns with an entropy gate, not
+  by entropy alone — entropy alone flags every hash, UUID and minified bundle in
+  a repository, which is how a secret scanner becomes something people switch
+  off. It sweeps the git history as well as the working tree on a branch's first
+  analysis, because a key committed on Monday and deleted on Tuesday is still
+  compromised and is the case that actually leaks. The value never leaves the
+  module: not into a return value, not into a finding, not masked. `deps.py`
+  reads names and versions out of `package-lock.json`, `requirements.txt`,
+  `poetry.lock`, `composer.lock` and `go.sum` — never a dependency's code, which
+  is noise and is the only code in a checkout nobody there wrote — and builds a
+  CycloneDX SBOM from them; a lockfile too malformed to parse costs that one
+  file, never the analysis. `osv.py` asks OSV.dev about that inventory and turns
+  every failure mode into a *coverage note* rather than an exception, so a
+  network that is down costs the report a stated gap instead of costing it the
+  secrets and hygiene findings already collected. `hygiene.py` reports the
+  committed `.env`, the file whose first bytes are a PEM private key, and the
+  world-writable file.
+
+  `fingerprint.py` is what makes a second analysis mean anything: identity is a
+  sha256 over category, rule, path and a whitespace-normalised snippet, so
+  reformatting a file does not resurrect the entire report, and the line number
+  is excluded, so an import added above a finding does not either. A secret's
+  identity excludes its value — a hash of it would be an oracle for the secret,
+  weak but real, sitting in a database — and excludes its position, which would
+  move whenever an unrelated line did and make an untouched, already-triaged
+  credential read as `fixed` and `new` on the very next run.
+
+  `ledger.py` is the SQLite store (`data/security.db`): analyses, findings,
+  the places each one was found, and decisions keyed by the **project** rather
+  than the branch, because dismissing a false positive on `develop` and watching
+  it resurrect on `main` would make the whole area unusable. A decision with no
+  written reason is refused at this level, not just in the page. `diff.py`
+  derives the checklist — `new`, `open`, `partial`, `fixed`, `regressed` —
+  against the previous *finished* analysis of the same branch and stores none of
+  it: a stored state is a state that can end up disagreeing with the findings it
+  describes. `partial` is a set difference over the files, never a subtraction
+  of counts, so two hits in one file becoming one is not read as progress while
+  a hole moving from `auth.py` to `admin.py` is not read as nothing.
+  `report.py` renders Markdown, JSON and HTML from the ledger at download time
+  and writes no file at all — a stored report is a frozen document that starts
+  disagreeing with the page the moment somebody accepts a risk.
+
+  Without this layer an analysis had nowhere to put what it found, no way to say
+  "this is the same finding as last time", and therefore no answer to the only
+  question that makes the feature worth having: what did I actually fix since
+  the last one?
+
 - **A security analysis can cut its worktree from a branch chosen at run time,
   and skips the project's provisioning.** Every other run takes its base from
   the project's declared config; an analysis needs to target whatever branch
