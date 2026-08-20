@@ -918,12 +918,13 @@ lock_active() { # 0 = a run is currently holding the lock for <id> (single mutex
 journal_lock()   { lock_take "$LOCK_DIR/.journal.lock"; }
 journal_unlock() { lock_drop "$LOCK_DIR/.journal.lock"; }
 
-record_run() { # <id> <status> <start> <end> <cost> <turns> <session> <logfile> <note> <forced> <precheck> <project> <model> <model_id> <resumed_from>
+record_run() { # <id> <status> <start> <end> <cost> <turns> <session> <logfile> <note> <forced> <precheck> <project> <model> <model_id> <resumed_from> <cause>
   "$JQ" -nc \
     --arg id "$1" --arg status "$2" --argjson start "$3" --argjson end "$4" \
     --arg cost "$5" --arg turns "$6" --arg session "$7" --arg logfile "$8" --arg note "$9" \
     --arg forced "${10:-false}" --arg precheck "${11:-}" --arg project "${12:-}" \
     --arg model "${13:-}" --arg model_id "${14:-}" --arg resumed_from "${15:-}" \
+    --arg cause "${16:-}" \
     '{id:$id, status:$status, start:$start, end:$end, duration:($end-$start),
       cost:($cost|tonumber? // 0), turns:($turns|tonumber? // 0),
       session:$session, log:$logfile, note:$note,
@@ -931,7 +932,11 @@ record_run() { # <id> <status> <start> <end> <cost> <turns> <session> <logfile> 
       model:$model, model_id:$model_id,
       # The session this run continued, when it was a resume — this is what
       # makes a resumed task identifiable as already picked up.
-      resumed_from:$resumed_from}' > "$LOCK_DIR/.rec.$$"
+      resumed_from:$resumed_from,
+      # WHY it failed, for a failed run. Empty on anything that did not fail:
+      # a success has no cause, and inventing one would put a word on the page
+      # that means nothing.
+      cause:$cause}' > "$LOCK_DIR/.rec.$$"
   # Append under the journal lock, so a concurrent rewrite cannot drop this
   # record on the floor (build the line first — the lock is held for the append
   # alone, never across the jq run).
@@ -1046,6 +1051,94 @@ rl_gate() { # rl_gate -> 0 = hold this run back (reason on stdout)
       )
     | first // empty
   ' "$RATE_LIMIT_FILE" 2>/dev/null
+}
+
+# ------------------------------------------------------- the silent stall
+# `on-run-end.sh` fires when a run ENDS, which covers every way a run can go
+# wrong and none of the ways the fleet can stop having runs at all. If the usage
+# gate holds everything back for four hours, or a precheck fails on every tick
+# because the board credentials expired, or a slot left by a dead process blocks
+# a job for ever, then no run ever ends and nothing ever tells anybody. The loop
+# keeps ticking, the dashboard keeps saying it is awake, and the work simply
+# does not happen. That silence is the most expensive failure this scheduler
+# has, and it was the one with no notifier.
+#
+# Deliberately NOT the run-end hook with an extra variable: a hook already on
+# disk was written against that contract, and quietly handing it events it never
+# expected would make it lie about what happened. A new event gets a new file.
+STALL_HOURS="${CLAUDE_CRON_STALL_HOURS:-4}"
+STALL_MARK_FILE="$DATA_DIR/.stalled"
+
+# Why is nothing running? Prints one sentence when the answer is a fault or a
+# ceiling; stays silent when the fleet is merely idle, asleep, or busy.
+#
+# The phrases matched here are the same ones the control server's classify_tick
+# reads, and the two must not drift — `selftest` asserts that every phrase below
+# still appears in the server. Kept in step by hand, like the backoff curve.
+fleet_stall_reason() { # -> 0 with a reason on stdout, 1 when all is well
+  local cutoff recent id live=0
+  [ -s "$TICK_LOG" ] || return 1
+  cutoff="$(date -u -v-"${STALL_HOURS}"H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || return 1
+  # ISO-8601 UTC sorts lexically, which is the whole reason the log is written
+  # in it — no date parsing per line.
+  recent="$(awk -v c="$cutoff" '$1 >= c' "$TICK_LOG" 2>/dev/null)"
+  [ -n "$recent" ] || return 1
+
+  # A run started inside the window: whatever else is in the log, the fleet is
+  # working. Common case and cheapest check, so it goes first.
+  printf '%s\n' "$recent" | grep -q ': starting run' && return 1
+
+  # A long run that began BEFORE the window is not a stall either — it is the
+  # reason there have been no new ones. Ask the slots, not the log.
+  for id in $(jobs_json | "$JQ" -r '.jobs[]?.id // empty' 2>/dev/null); do
+    if [ "$(slots_active "$id")" -gt 0 ]; then live=1; break; fi
+  done
+  [ "$live" = "1" ] && return 1
+
+  # Nothing ran, nothing is running. Now: was that a decision, or a fault?
+  # `precheck found nothing` is deliberately absent from this list — a loop with
+  # nothing to do is the loop working, and paging somebody for it would train
+  # them to ignore the one message that matters.
+  if printf '%s\n' "$recent" | grep -q 'PRECHECK FAILED'; then
+    printf 'no run has started in %sh and prechecks are failing — the fleet cannot SEE its work, which is not the same as having none\n' "$STALL_HOURS"
+  elif printf '%s\n' "$recent" | grep -q 'usage limit reached'; then
+    printf 'no run has started in %sh — every scheduled run is being held back by a spent usage window (`claude-cron usage` says which)\n' "$STALL_HOURS"
+  elif printf '%s\n' "$recent" | grep -q 'daily cap reached'; then
+    printf 'no run has started in %sh — the daily spend cap is holding every run back\n' "$STALL_HOURS"
+  elif printf '%s\n' "$recent" | grep -q 'max_parallel'; then
+    # No live slot, yet jobs are being turned away for being at their limit: the
+    # slots being counted belong to processes that are gone.
+    printf 'no run has started in %sh and jobs are being turned away at max_parallel with nothing actually running — a stale slot is blocking them\n' "$STALL_HOURS"
+  else
+    return 1
+  fi
+  return 0
+}
+
+# Fire config/hooks/on-fleet-stalled.sh, at most once per stall. The mark clears
+# the moment a run starts again, so a fleet that recovers and stalls again next
+# week says so again — and one that stays stuck does not send a notification
+# every minute until somebody screams and turns the whole thing off.
+fleet_stall_check() {
+  local reason script
+  if ! reason="$(fleet_stall_reason)"; then
+    rm -f "$STALL_MARK_FILE" 2>/dev/null      # healthy: re-arm for the next one
+    return 0
+  fi
+  [ -f "$STALL_MARK_FILE" ] && return 0       # this stall has already been announced
+  printf '%s\n' "$reason" > "$STALL_MARK_FILE" 2>/dev/null
+  log_tick "fleet: $reason"
+  script="$CONFIG_DIR/hooks/on-fleet-stalled.sh"
+  [ -f "$script" ] || return 0
+  (
+    _stall_hook() {
+      CC_REASON="$1" CC_STALL_HOURS="$STALL_HOURS" CC_DASHBOARD="http://127.0.0.1:$PORT/" \
+        bash "$script" >>"$DATA_DIR/exec.log" 2>&1
+    }
+    wt_run_limited "$RUN_HOOK_TIMEOUT" _stall_hook "$reason" \
+      || log_tick "fleet: on-fleet-stalled hook failed or timed out — see exec.log"
+  ) >/dev/null 2>&1 &
+  return 0
 }
 
 # What the gate can currently see, and whether the thing that feeds it is
@@ -3098,6 +3191,178 @@ NASTY
   got="$( DATA_DIR="$tmp/sl"; RATE_LIMIT_FILE="$tmp/sl/rate-limits.json"; rl_gate 2>/dev/null )"
   [ -z "$got" ] && ok "a reading with no status is not a refusal" || bad "gated on a status-less reading: $got"
 
+  echo "failure causes — an outage is not the job's fault, and must not slow it down"
+  # `error` covered a 529 the API returned and an agent that got its tools taken
+  # away, and the backoff counted them the same: a provider outage would crawl a
+  # perfectly healthy job for the rest of the day. These pin the two halves —
+  # which cause is derived, and which of them the backoff is allowed to count.
+  mkdir -p "$tmp/cause"
+  cause_of() { # cause_of <result-json> <denials> <wdreason> -> the derived cause
+    printf '%s' "$1" > "$tmp/cause/log.json"
+    ( logfile="$tmp/cause/log.json"; status="error"
+      denials="${2:-0}"; wdreason="${3:-}"
+      subtype="$("$JQ" -r '.subtype // "success"' "$logfile")"
+      cause=""
+      # The derivation itself, lifted verbatim from run_job by anchor so this
+      # cannot drift into testing a copy that no longer matches the engine.
+      eval "$(sed -n '/^  cause=""$/,/^  fi$/p' "$BIN_DIR/claude-cron" | head -20)"
+      printf '%s' "$cause" )
+  }
+  [ "$(cause_of '{"api_error_status":529,"subtype":"success"}')" = "api_error" ] \
+    && ok "a 529 is an api_error, whatever the CLI called the subtype" \
+    || bad "529 -> '$(cause_of '{"api_error_status":529,"subtype":"success"}')'"
+  [ "$(cause_of '{"api_error_status":429,"subtype":"success"}')" = "rate_limited" ] \
+    && ok "a 429 is told apart from an overload — different wait, different fix" \
+    || bad "429 -> '$(cause_of '{"api_error_status":429,"subtype":"success"}')'"
+  [ "$(cause_of '{"subtype":"success"}' 2)" = "tools_denied" ] \
+    && ok "denied tools name the agent being blocked, not a vague error" \
+    || bad "denials -> '$(cause_of '{"subtype":"success"}' 2)'"
+  [ "$(cause_of '{"subtype":"no_result_event"}')" = "killed" ] \
+    && ok "a run that never reported a result is killed, not an agent error" \
+    || bad "no_result -> '$(cause_of '{"subtype":"no_result_event"}')'"
+  [ "$(cause_of '{"subtype":"error_during_execution"}')" = "agent_error" ] \
+    && ok "everything else falls back to the agent's own error" \
+    || bad "fallback -> '$(cause_of '{"subtype":"error_during_execution"}')'"
+  # An API failure outranks a denial count: the run died before the denial could
+  # matter, and telling the operator to go fix permissions would send them at
+  # the wrong problem entirely.
+  [ "$(cause_of '{"api_error_status":529,"subtype":"success"}' 3)" = "api_error" ] \
+    && ok "an API failure outranks a denial count on the same run" \
+    || bad "denials masked the API failure"
+
+  # The half that changes behaviour. Read the real rule out of the script: a
+  # copy of it here would pass happily while the engine did something else.
+  rule="$(sed -n '/Nor is an outage/,/^  fi$/p' "$BIN_DIR/claude-cron")"
+  case "$rule" in
+    *"api_error|rate_limited)"*) ok "the backoff rule names both provider-side causes" ;;
+    *) bad "the backoff no longer spares provider-side causes" ;;
+  esac
+  case "$rule" in
+    *'streak_next="$(num "$(state_get "$id" fail_streak 0)")"'*)
+      ok "an outage leaves the streak where it was — neither raised nor reset" ;;
+    *) bad "an outage does not preserve the streak" ;;
+  esac
+  # A job that is genuinely broken must still back off, or this whole change
+  # would just be a way to never slow anything down.
+  case "$rule" in
+    *'*) streak_next="$(( $(num "$(state_get "$id" fail_streak 0)") + 1 ))" ;;'*)
+      ok "every other cause still counts, so a broken job still backs off" ;;
+    *) bad "the ordinary failure path stopped counting" ;;
+  esac
+
+  # And the record has to carry it, or the dashboard has nothing to show.
+  case "$(sed -n '/^record_run()/,/^}/p' "$BIN_DIR/claude-cron")" in
+    *'cause:$cause'*) ok "the cause is written onto the run record" ;;
+    *) bad "record_run does not persist the cause" ;;
+  esac
+
+  echo "fleet_stall_reason() — the fleet can stop having runs without any run failing"
+  # on-run-end fires when a run ENDS. None of the ways the fleet stops HAVING
+  # runs produce one, so the loop can tick for hours, the dashboard can keep
+  # saying it is awake, and nothing happens and nobody is told. Each case below
+  # is one of those ways.
+  mkdir -p "$tmp/stall"
+  stall_at() { # stall_at <minutes-ago> <line...> -> appends to the fixture log
+    local m="$1"; shift
+    printf '%s %s\n' "$(date -u -v-"${m}"M +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$tmp/stall/tick.log"
+  }
+  stall_ask() { # -> the reason, or empty
+    ( TICK_LOG="$tmp/stall/tick.log"; JOBS_FILE="$tmp/stall/jobs.json"
+      LOCK_DIR="$tmp/stall/locks"; STALL_HOURS=4
+      fleet_stall_reason ) 2>/dev/null
+  }
+  printf '%s' '{"jobs":[{"id":"a"}]}' > "$tmp/stall/jobs.json"
+  mkdir -p "$tmp/stall/locks"
+
+  : > "$tmp/stall/tick.log"
+  [ -z "$(stall_ask)" ] && ok "an empty log is not a stall" || bad "gated on an empty log"
+
+  # The healthy quiet. A loop with nothing to do is the loop WORKING, and paging
+  # somebody for it teaches them to ignore the message that matters.
+  : > "$tmp/stall/tick.log"
+  stall_at 200 "a: precheck found nothing to do (exit 1)"
+  stall_at 100 "a: precheck found nothing to do (exit 1)"
+  [ -z "$(stall_ask)" ] && ok "hours of 'nothing to do' is not a stall" || bad "an idle fleet was called stalled"
+
+  # Blind, not idle: this is the failure board-probe.sh exists to name, and it
+  # looks exactly like the healthy case from the outside.
+  stall_at 90 "a: PRECHECK FAILED (exit 7) — the probe could not run"
+  case "$(stall_ask)" in
+    *"cannot SEE its work"*) ok "prechecks failing for hours is a stall, and says why" ;;
+    *) bad "failing prechecks were not reported: $(stall_ask)" ;;
+  esac
+
+  # A run inside the window clears everything above it, however bad the log looks.
+  stall_at 30 "a: starting run (x)"
+  [ -z "$(stall_ask)" ] && ok "a run inside the window ends the question" || bad "called stalled with a recent run"
+
+  # The gate holding the whole fleet back — the case that made this exist.
+  : > "$tmp/stall/tick.log"
+  stall_at 180 "a: usage limit reached — the seven_day window is 98% used — skipping"
+  stall_at 60 "a: usage limit reached — the seven_day window is 98% used — skipping"
+  case "$(stall_ask)" in
+    *"spent usage window"*) ok "a spent usage window holding every run back is a stall" ;;
+    *) bad "the usage gate holding the fleet was not reported" ;;
+  esac
+
+  : > "$tmp/stall/tick.log"
+  stall_at 90 "a: daily cap reached (\$9 / \$5) — skipping"
+  case "$(stall_ask)" in
+    *"daily spend cap"*) ok "a daily cap holding every run back is a stall" ;;
+    *) bad "the daily cap holding the fleet was not reported" ;;
+  esac
+
+  # max_parallel with nothing actually running means the slots being counted
+  # belong to processes that are gone — a job blocked for ever by a ghost.
+  : > "$tmp/stall/tick.log"
+  stall_at 90 "a: at max_parallel=1 run(s), not launching another"
+  case "$(stall_ask)" in
+    *"stale slot"*) ok "blocked at max_parallel with nothing alive names the stale slot" ;;
+    *) bad "a stale slot was not reported: $(stall_ask)" ;;
+  esac
+  # ...but with a live slot it is not a stall at all: that run IS the reason
+  # there have been no new ones, and this is the false alarm most likely to
+  # happen — any job whose runs outlast the window.
+  mkdir -p "$tmp/stall/locks/a/$$" && echo $$ > "$tmp/stall/locks/a/$$/pid"
+  echo "$(boot_id)" > "$tmp/stall/locks/a/$$/boot" 2>/dev/null || true
+  [ -z "$(stall_ask)" ] && ok "a long run still going is not a stall" || bad "a live run was called a stall"
+  rm -rf "$tmp/stall/locks/a"
+
+  # Announced once, then re-armed by recovery — not once a minute for ever.
+  ( TICK_LOG="$tmp/stall/tick.log"; JOBS_FILE="$tmp/stall/jobs.json"
+    LOCK_DIR="$tmp/stall/locks"; DATA_DIR="$tmp/stall"; CONFIG_DIR="$tmp/stall/cfg"
+    STALL_MARK_FILE="$tmp/stall/.stalled"; STALL_HOURS=4
+    mkdir -p "$tmp/stall/cfg/hooks"
+    printf '#!/usr/bin/env bash\necho "$CC_REASON" >> "%s/fired.txt"\n' "$tmp/stall" > "$tmp/stall/cfg/hooks/on-fleet-stalled.sh"
+    fleet_stall_check; fleet_stall_check; fleet_stall_check
+    wait 2>/dev/null
+    [ -f "$STALL_MARK_FILE" ] || exit 3
+    stall_at 1 "a: starting run (y)"        # recovery
+    fleet_stall_check
+    [ -f "$STALL_MARK_FILE" ] && exit 4
+    exit 0 ) >/dev/null 2>&1
+  case $? in
+    0) ok "announced once per stall, and re-armed the moment a run starts again" ;;
+    3) bad "the stall was never marked" ;;
+    4) bad "recovery did not clear the mark, so the next stall would be silent" ;;
+    *) bad "fleet_stall_check errored" ;;
+  esac
+  fired="$(wc -l < "$tmp/stall/fired.txt" 2>/dev/null | tr -d ' ')"
+  [ "${fired:-0}" = "1" ] \
+    && ok "the hook ran exactly once across three stalled ticks" \
+    || bad "the hook fired ${fired:-0} times, not once"
+
+  # The phrases above are the server's, and a rename there would silently blind
+  # this without breaking anything visible.
+  srv="$BIN_DIR/claude-cron-server"
+  miss=""
+  for phrase in "PRECHECK FAILED" "usage limit reached" "daily cap reached" "max_parallel"; do
+    grep -qF "$phrase" "$srv" || miss="$miss '$phrase'"
+  done
+  [ -z "$miss" ] \
+    && ok "every phrase this reads still exists in the server's classify_tick" \
+    || bad "phrases have drifted from the server:$miss"
+
   echo "claude-cron usage — the feature can say whether it is switched on"
   # A gate nobody can verify is a gate nobody trusts, and the honest answer used
   # to be a hand-written one-liner over the JSON. Each case below is a wiring
@@ -4819,7 +5084,7 @@ If the work turns out to be already finished, or it can no longer be done at all
   # An interactive run is ENDED BY US once the conversation goes quiet, so its
   # exit status is a signal, not a failure. Treat that as a clean exit.
   if [ -f "$logfile.turnend" ]; then rc=0; rm -f "$logfile.turnend"; fi
-  local denials subtype result_len errbytes
+  local denials subtype result_len errbytes cause
   denials="$("$JQ" -r '.permission_denials // [] | length' "$logfile" 2>/dev/null || echo 0)"
   subtype="$("$JQ" -r '.subtype // "success"' "$logfile" 2>/dev/null || echo success)"
   result_len="$("$JQ" -r '.result // "" | length' "$logfile" 2>/dev/null || echo 0)"
@@ -4833,6 +5098,33 @@ If the work turns out to be already finished, or it can no longer be done at all
     status="warning"
   else
     status="success"
+  fi
+
+  # WHY the run failed, not just that it did. `error` covered everything from a
+  # 529 the API returned to an agent that got its tools denied, and the failure
+  # backoff counted them the same — so the fleet punished a job by slowing it
+  # down for an outage that had nothing to do with it, and the operator read one
+  # word for causes whose next actions are completely different. The cause is
+  # recorded on the run and, for the two that are nobody's fault here, kept out
+  # of the backoff.
+  cause=""
+  if [ "$status" = "error" ]; then
+    if [ "$("$JQ" -r '.api_error_status // "" | tostring' "$logfile" 2>/dev/null)" != "" ] \
+       && [ "$("$JQ" -r '.api_error_status // "" | tostring' "$logfile" 2>/dev/null)" != "null" ]; then
+      case "$("$JQ" -r '.api_error_status' "$logfile" 2>/dev/null)" in
+        429) cause="rate_limited" ;;
+        *)   cause="api_error" ;;
+      esac
+    elif [ "${denials:-0}" -gt 0 ]; then
+      cause="tools_denied"
+    elif [ "$subtype" = "no_result_event" ]; then
+      # Killed, crashed, or stalled out. wdreason carries which, when we know.
+      cause="killed"
+    elif [ -n "$wdreason" ]; then
+      cause="killed"
+    else
+      cause="agent_error"
+    fi
   fi
 
   # A run the OPERATOR ended is not a failure, whatever the exit code says. A
@@ -4991,8 +5283,22 @@ If the work turns out to be already finished, or it can no longer be done at all
   # Consecutive failures drive the backoff (see backoff_multiplier). A warning
   # is NOT a failure: the run worked, it just wants a look — slowing those down
   # would throttle the very jobs that are doing their job.
+  #
+  # Nor is an outage. `api_error` and `rate_limited` are the provider having a
+  # bad day, and backing a job off 16x for them is the exact wrong response: the
+  # job is fine, the work is still waiting, and the punishment outlives the
+  # outage by hours. One 529 killed a 100-minute run on 2026-08-19 and the
+  # retry immediately after it hit the same overload — under the old rule that
+  # job would have been crawling for the rest of the day for something it did
+  # not do. The streak is left exactly where it was: not reset either, because
+  # a genuinely broken job that also meets an outage is still broken.
   local streak_next=0
-  [ "$status" = "error" ] && streak_next="$(( $(num "$(state_get "$id" fail_streak 0)") + 1 ))"
+  if [ "$status" = "error" ]; then
+    case "$cause" in
+      api_error|rate_limited) streak_next="$(num "$(state_get "$id" fail_streak 0)")" ;;
+      *) streak_next="$(( $(num "$(state_get "$id" fail_streak 0)") + 1 ))" ;;
+    esac
+  fi
 
   # One write for the whole outcome. Seven separate ones meant seven turns of
   # the state lock, which every concurrent run had to queue behind.
@@ -5007,11 +5313,11 @@ If the work turns out to be already finished, or it can no longer be done at all
       last_cost:($cost|tonumber? // 0),
       last_session:$session, fail_streak:$streak}')"
   # Record what was CHOSEN (the family, when one was) plus what actually ran.
-  record_run "$id" "$status" "$start" "$end" "${cost:-0}" "${turns:-0}" "$session" "$logfile" "$wdreason" "$forced" "$pc_out" "$project" "${model_family:-$model}" "$model_id" "$resume_sid"
+  record_run "$id" "$status" "$start" "$end" "${cost:-0}" "${turns:-0}" "$session" "$logfile" "$wdreason" "$forced" "$pc_out" "$project" "${model_family:-$model}" "$model_id" "$resume_sid" "$cause"
   # Tells the EXIT path this run has already filed its record, so a stop that
   # lands while we are finishing here cannot produce a second one.
   : > "$slot/journaled" 2>/dev/null || true
-  log_tick "$id: finished status=$status rc=$rc denials=${denials:-0} cost=\$$cost turns=$turns model=$model${model_id:+ ($model_id)} forced=$forced${wdreason:+ — $wdreason}"
+  log_tick "$id: finished status=$status${cause:+ cause=$cause} rc=$rc denials=${denials:-0} cost=\$$cost turns=$turns model=$model${model_id:+ ($model_id)} forced=$forced${wdreason:+ — $wdreason}"
   # Fired after the record exists, so a hook that opens the dashboard or reads
   # the journal sees this run already in it.
   run_end_hook "$id" "$status" "${cost:-0}" "$wdreason" "$project" "$session" "$logfile" "$start" "$end"
@@ -5146,6 +5452,11 @@ cmd_tick() {
     nohup /bin/bash "$SELF" _exec "$id" </dev/null >> "$DATA_DIR/exec.log" 2>&1 &
     log_tick "$id: launched detached run"
   done < <(tick_plan)
+  # Last, so it judges the fleet on a tick that has already had its chance to
+  # launch something. A launch here writes `starting run` from the detached
+  # child a moment later, not now — which is why the check reads the LOG rather
+  # than what this tick just decided: by the next tick the evidence has landed.
+  fleet_stall_check
   lock_drop "$LOCK_DIR/.tick"
 }
 
