@@ -565,6 +565,41 @@ It is detached and time-limited (`CLAUDE_CRON_HOOK_TIMEOUT`, default 60s): a
 notifier that hangs must never hold a run's slot open. Its output goes to
 `data/exec.log`.
 
+### When nothing runs at all: `config/hooks/on-fleet-stalled.sh`
+
+The hook above fires when a run **ends**, which covers every way a run can go
+wrong and none of the ways the fleet can stop having runs at all. If the usage
+gate holds everything back for four hours, or a precheck fails on every tick
+because the board credentials expired, or a slot left by a dead process blocks a
+job for ever, then no run ever ends — the loop keeps ticking, the dashboard
+keeps saying it is awake, and the work simply does not happen. That silence is
+the most expensive failure this scheduler has, and it used to have no notifier.
+
+Once per stall, the engine runs `config/hooks/on-fleet-stalled.sh` with:
+
+| Variable | |
+|---|---|
+| `CC_REASON` | one sentence naming which of the four it is |
+| `CC_STALL_HOURS` | the window that had no runs in it (`CLAUDE_CRON_STALL_HOURS`, default 4) |
+| `CC_DASHBOARD` | the dashboard URL |
+
+No dependencies needed — `osascript` ships with macOS:
+
+```bash
+#!/usr/bin/env bash
+osascript -e "display notification \"$CC_REASON\" with title \"claude-cron: nothing is running\""
+```
+
+**A quiet loop is not a stalled one.** `precheck found nothing to do` is
+deliberately not a stall: a loop with nothing to do is the loop working, and
+paging somebody for it trains them to ignore the message that matters. Nor is a
+long run that outlasts the window — the slots are asked, not just the log, so
+the run that is the *reason* there have been no new ones cannot be mistaken for
+their absence.
+
+It fires **once** per stall and re-arms the moment a run starts again, so a
+fleet that stays stuck does not notify every minute until you turn it off.
+
 ### Tests
 
 Two suites, both offline and free:

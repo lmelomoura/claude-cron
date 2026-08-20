@@ -1048,6 +1048,94 @@ rl_gate() { # rl_gate -> 0 = hold this run back (reason on stdout)
   ' "$RATE_LIMIT_FILE" 2>/dev/null
 }
 
+# ------------------------------------------------------- the silent stall
+# `on-run-end.sh` fires when a run ENDS, which covers every way a run can go
+# wrong and none of the ways the fleet can stop having runs at all. If the usage
+# gate holds everything back for four hours, or a precheck fails on every tick
+# because the board credentials expired, or a slot left by a dead process blocks
+# a job for ever, then no run ever ends and nothing ever tells anybody. The loop
+# keeps ticking, the dashboard keeps saying it is awake, and the work simply
+# does not happen. That silence is the most expensive failure this scheduler
+# has, and it was the one with no notifier.
+#
+# Deliberately NOT the run-end hook with an extra variable: a hook already on
+# disk was written against that contract, and quietly handing it events it never
+# expected would make it lie about what happened. A new event gets a new file.
+STALL_HOURS="${CLAUDE_CRON_STALL_HOURS:-4}"
+STALL_MARK_FILE="$DATA_DIR/.stalled"
+
+# Why is nothing running? Prints one sentence when the answer is a fault or a
+# ceiling; stays silent when the fleet is merely idle, asleep, or busy.
+#
+# The phrases matched here are the same ones the control server's classify_tick
+# reads, and the two must not drift — `selftest` asserts that every phrase below
+# still appears in the server. Kept in step by hand, like the backoff curve.
+fleet_stall_reason() { # -> 0 with a reason on stdout, 1 when all is well
+  local cutoff recent id live=0
+  [ -s "$TICK_LOG" ] || return 1
+  cutoff="$(date -u -v-"${STALL_HOURS}"H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || return 1
+  # ISO-8601 UTC sorts lexically, which is the whole reason the log is written
+  # in it — no date parsing per line.
+  recent="$(awk -v c="$cutoff" '$1 >= c' "$TICK_LOG" 2>/dev/null)"
+  [ -n "$recent" ] || return 1
+
+  # A run started inside the window: whatever else is in the log, the fleet is
+  # working. Common case and cheapest check, so it goes first.
+  printf '%s\n' "$recent" | grep -q ': starting run' && return 1
+
+  # A long run that began BEFORE the window is not a stall either — it is the
+  # reason there have been no new ones. Ask the slots, not the log.
+  for id in $(jobs_json | "$JQ" -r '.jobs[]?.id // empty' 2>/dev/null); do
+    if [ "$(slots_active "$id")" -gt 0 ]; then live=1; break; fi
+  done
+  [ "$live" = "1" ] && return 1
+
+  # Nothing ran, nothing is running. Now: was that a decision, or a fault?
+  # `precheck found nothing` is deliberately absent from this list — a loop with
+  # nothing to do is the loop working, and paging somebody for it would train
+  # them to ignore the one message that matters.
+  if printf '%s\n' "$recent" | grep -q 'PRECHECK FAILED'; then
+    printf 'no run has started in %sh and prechecks are failing — the fleet cannot SEE its work, which is not the same as having none\n' "$STALL_HOURS"
+  elif printf '%s\n' "$recent" | grep -q 'usage limit reached'; then
+    printf 'no run has started in %sh — every scheduled run is being held back by a spent usage window (`claude-cron usage` says which)\n' "$STALL_HOURS"
+  elif printf '%s\n' "$recent" | grep -q 'daily cap reached'; then
+    printf 'no run has started in %sh — the daily spend cap is holding every run back\n' "$STALL_HOURS"
+  elif printf '%s\n' "$recent" | grep -q 'max_parallel'; then
+    # No live slot, yet jobs are being turned away for being at their limit: the
+    # slots being counted belong to processes that are gone.
+    printf 'no run has started in %sh and jobs are being turned away at max_parallel with nothing actually running — a stale slot is blocking them\n' "$STALL_HOURS"
+  else
+    return 1
+  fi
+  return 0
+}
+
+# Fire config/hooks/on-fleet-stalled.sh, at most once per stall. The mark clears
+# the moment a run starts again, so a fleet that recovers and stalls again next
+# week says so again — and one that stays stuck does not send a notification
+# every minute until somebody screams and turns the whole thing off.
+fleet_stall_check() {
+  local reason script
+  if ! reason="$(fleet_stall_reason)"; then
+    rm -f "$STALL_MARK_FILE" 2>/dev/null      # healthy: re-arm for the next one
+    return 0
+  fi
+  [ -f "$STALL_MARK_FILE" ] && return 0       # this stall has already been announced
+  printf '%s\n' "$reason" > "$STALL_MARK_FILE" 2>/dev/null
+  log_tick "fleet: $reason"
+  script="$CONFIG_DIR/hooks/on-fleet-stalled.sh"
+  [ -f "$script" ] || return 0
+  (
+    _stall_hook() {
+      CC_REASON="$1" CC_STALL_HOURS="$STALL_HOURS" CC_DASHBOARD="http://127.0.0.1:$PORT/" \
+        bash "$script" >>"$DATA_DIR/exec.log" 2>&1
+    }
+    wt_run_limited "$RUN_HOOK_TIMEOUT" _stall_hook "$reason" \
+      || log_tick "fleet: on-fleet-stalled hook failed or timed out — see exec.log"
+  ) >/dev/null 2>&1 &
+  return 0
+}
+
 # What the gate can currently see, and whether the thing that feeds it is
 # actually wired up. This exists because the honest answer to "is the statusline
 # working?" was a hand-written one-liner over the JSON — which puts the burden of
@@ -3098,6 +3186,113 @@ NASTY
   got="$( DATA_DIR="$tmp/sl"; RATE_LIMIT_FILE="$tmp/sl/rate-limits.json"; rl_gate 2>/dev/null )"
   [ -z "$got" ] && ok "a reading with no status is not a refusal" || bad "gated on a status-less reading: $got"
 
+  echo "fleet_stall_reason() — the fleet can stop having runs without any run failing"
+  # on-run-end fires when a run ENDS. None of the ways the fleet stops HAVING
+  # runs produce one, so the loop can tick for hours, the dashboard can keep
+  # saying it is awake, and nothing happens and nobody is told. Each case below
+  # is one of those ways.
+  mkdir -p "$tmp/stall"
+  stall_at() { # stall_at <minutes-ago> <line...> -> appends to the fixture log
+    local m="$1"; shift
+    printf '%s %s\n' "$(date -u -v-"${m}"M +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$tmp/stall/tick.log"
+  }
+  stall_ask() { # -> the reason, or empty
+    ( TICK_LOG="$tmp/stall/tick.log"; JOBS_FILE="$tmp/stall/jobs.json"
+      LOCK_DIR="$tmp/stall/locks"; STALL_HOURS=4
+      fleet_stall_reason ) 2>/dev/null
+  }
+  printf '%s' '{"jobs":[{"id":"a"}]}' > "$tmp/stall/jobs.json"
+  mkdir -p "$tmp/stall/locks"
+
+  : > "$tmp/stall/tick.log"
+  [ -z "$(stall_ask)" ] && ok "an empty log is not a stall" || bad "gated on an empty log"
+
+  # The healthy quiet. A loop with nothing to do is the loop WORKING, and paging
+  # somebody for it teaches them to ignore the message that matters.
+  : > "$tmp/stall/tick.log"
+  stall_at 200 "a: precheck found nothing to do (exit 1)"
+  stall_at 100 "a: precheck found nothing to do (exit 1)"
+  [ -z "$(stall_ask)" ] && ok "hours of 'nothing to do' is not a stall" || bad "an idle fleet was called stalled"
+
+  # Blind, not idle: this is the failure board-probe.sh exists to name, and it
+  # looks exactly like the healthy case from the outside.
+  stall_at 90 "a: PRECHECK FAILED (exit 7) — the probe could not run"
+  case "$(stall_ask)" in
+    *"cannot SEE its work"*) ok "prechecks failing for hours is a stall, and says why" ;;
+    *) bad "failing prechecks were not reported: $(stall_ask)" ;;
+  esac
+
+  # A run inside the window clears everything above it, however bad the log looks.
+  stall_at 30 "a: starting run (x)"
+  [ -z "$(stall_ask)" ] && ok "a run inside the window ends the question" || bad "called stalled with a recent run"
+
+  # The gate holding the whole fleet back — the case that made this exist.
+  : > "$tmp/stall/tick.log"
+  stall_at 180 "a: usage limit reached — the seven_day window is 98% used — skipping"
+  stall_at 60 "a: usage limit reached — the seven_day window is 98% used — skipping"
+  case "$(stall_ask)" in
+    *"spent usage window"*) ok "a spent usage window holding every run back is a stall" ;;
+    *) bad "the usage gate holding the fleet was not reported" ;;
+  esac
+
+  : > "$tmp/stall/tick.log"
+  stall_at 90 "a: daily cap reached (\$9 / \$5) — skipping"
+  case "$(stall_ask)" in
+    *"daily spend cap"*) ok "a daily cap holding every run back is a stall" ;;
+    *) bad "the daily cap holding the fleet was not reported" ;;
+  esac
+
+  # max_parallel with nothing actually running means the slots being counted
+  # belong to processes that are gone — a job blocked for ever by a ghost.
+  : > "$tmp/stall/tick.log"
+  stall_at 90 "a: at max_parallel=1 run(s), not launching another"
+  case "$(stall_ask)" in
+    *"stale slot"*) ok "blocked at max_parallel with nothing alive names the stale slot" ;;
+    *) bad "a stale slot was not reported: $(stall_ask)" ;;
+  esac
+  # ...but with a live slot it is not a stall at all: that run IS the reason
+  # there have been no new ones, and this is the false alarm most likely to
+  # happen — any job whose runs outlast the window.
+  mkdir -p "$tmp/stall/locks/a/$$" && echo $$ > "$tmp/stall/locks/a/$$/pid"
+  echo "$(boot_id)" > "$tmp/stall/locks/a/$$/boot" 2>/dev/null || true
+  [ -z "$(stall_ask)" ] && ok "a long run still going is not a stall" || bad "a live run was called a stall"
+  rm -rf "$tmp/stall/locks/a"
+
+  # Announced once, then re-armed by recovery — not once a minute for ever.
+  ( TICK_LOG="$tmp/stall/tick.log"; JOBS_FILE="$tmp/stall/jobs.json"
+    LOCK_DIR="$tmp/stall/locks"; DATA_DIR="$tmp/stall"; CONFIG_DIR="$tmp/stall/cfg"
+    STALL_MARK_FILE="$tmp/stall/.stalled"; STALL_HOURS=4
+    mkdir -p "$tmp/stall/cfg/hooks"
+    printf '#!/usr/bin/env bash\necho "$CC_REASON" >> "%s/fired.txt"\n' "$tmp/stall" > "$tmp/stall/cfg/hooks/on-fleet-stalled.sh"
+    fleet_stall_check; fleet_stall_check; fleet_stall_check
+    wait 2>/dev/null
+    [ -f "$STALL_MARK_FILE" ] || exit 3
+    stall_at 1 "a: starting run (y)"        # recovery
+    fleet_stall_check
+    [ -f "$STALL_MARK_FILE" ] && exit 4
+    exit 0 ) >/dev/null 2>&1
+  case $? in
+    0) ok "announced once per stall, and re-armed the moment a run starts again" ;;
+    3) bad "the stall was never marked" ;;
+    4) bad "recovery did not clear the mark, so the next stall would be silent" ;;
+    *) bad "fleet_stall_check errored" ;;
+  esac
+  fired="$(wc -l < "$tmp/stall/fired.txt" 2>/dev/null | tr -d ' ')"
+  [ "${fired:-0}" = "1" ] \
+    && ok "the hook ran exactly once across three stalled ticks" \
+    || bad "the hook fired ${fired:-0} times, not once"
+
+  # The phrases above are the server's, and a rename there would silently blind
+  # this without breaking anything visible.
+  srv="$BIN_DIR/claude-cron-server"
+  miss=""
+  for phrase in "PRECHECK FAILED" "usage limit reached" "daily cap reached" "max_parallel"; do
+    grep -qF "$phrase" "$srv" || miss="$miss '$phrase'"
+  done
+  [ -z "$miss" ] \
+    && ok "every phrase this reads still exists in the server's classify_tick" \
+    || bad "phrases have drifted from the server:$miss"
+
   echo "claude-cron usage — the feature can say whether it is switched on"
   # A gate nobody can verify is a gate nobody trusts, and the honest answer used
   # to be a hand-written one-liner over the JSON. Each case below is a wiring
@@ -5146,6 +5341,11 @@ cmd_tick() {
     nohup /bin/bash "$SELF" _exec "$id" </dev/null >> "$DATA_DIR/exec.log" 2>&1 &
     log_tick "$id: launched detached run"
   done < <(tick_plan)
+  # Last, so it judges the fleet on a tick that has already had its chance to
+  # launch something. A launch here writes `starting run` from the detached
+  # child a moment later, not now — which is why the check reads the LOG rather
+  # than what this tick just decided: by the next tick the evidence has landed.
+  fleet_stall_check
   lock_drop "$LOCK_DIR/.tick"
 }
 

@@ -30,6 +30,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The fleet now says when it has stopped running anything.** `on-run-end.sh`
+  fires when a run *ends*, which covers every way a run can go wrong and none of
+  the ways the fleet can stop having runs at all. If the usage gate holds
+  everything back for four hours, a precheck fails on every tick because the
+  board credentials expired, or a slot left by a dead process blocks a job for
+  ever, then no run ever ends and nothing ever tells anybody: the loop keeps
+  ticking, the dashboard keeps saying it is awake, and the work does not happen.
+  That silence is the most expensive failure this scheduler has, and it was the
+  one with no notifier.
+
+  `fleet_stall_reason` names which of the four it is, and
+  `config/hooks/on-fleet-stalled.sh` is run once per stall with that sentence in
+  `CC_REASON`. A new hook file rather than an extra variable on the existing
+  one: a hook already on disk was written against that contract, and handing it
+  events it never expected would make it lie about what happened.
+
+  Two things it deliberately does not call a stall. `precheck found nothing to
+  do` is the loop *working*, and paging somebody for it trains them to ignore
+  the message that matters. And a long run that outlasts the window is the
+  reason there have been no new ones — so the slots are asked, not just the log.
+  It fires once and re-arms the moment a run starts again, so a fleet that stays
+  stuck does not notify every minute until somebody turns it off.
+
+  The phrases it matches are the control server's own `classify_tick` strings;
+  `selftest` now asserts every one of them still exists there, because a rename
+  on that side would blind this without breaking anything visible.
+
 - **`claude-cron usage` — the gate can now say whether it is switched on.** The
   usage gate and the statusline that feeds it are both invisible when they work
   and invisible when they do not, and the only way to tell them apart was a
