@@ -498,6 +498,44 @@ not an error resets the count, so one good run puts the job straight back on its
 normal cadence. A broken precheck (see above) counts too. The card says so:
 *backing off 4× after 4 failed runs*.
 
+### Is the usage gate awake? `claude-cron usage`
+
+The scheduler holds scheduled runs back when a usage window is spent. That gate
+reads a figure the CLI only volunteers once it has decided to warn (at 0.75), so
+`bin/statusline-rate-limits.sh` keeps it fresh from your own interactive
+sessions. Both halves are invisible when they work and invisible when they do
+not, which is a bad way to run a fleet — so the command says which:
+
+```
+$ claude-cron usage
+five_hour: 62% used, resets in 118 min
+  read 3 min ago from the statusline
+seven_day: 97% used, resets in 2311 min
+  read 3 min ago from the statusline, overage off (the ceiling is a dead stop)
+
+SCHEDULED RUNS ARE BEING HELD BACK: the seven_day window is 97% used and
+overage is off, so the ceiling is a dead stop -- it resets in 2311 min
+  (`claude-cron run <job>` still overrides this, as it does the budget.)
+
+statusline: wired to /path/to/claude-cron/bin/statusline-rate-limits.sh
+  and it has fed the gate — readings above are live.
+```
+
+It names the wiring mistakes rather than leaving you to find them: a statusLine
+that is not configured, one pointing at some other script, one whose path does
+not exist (every session's status line failing in silence), and one that is
+correctly wired but has never fired — the statusLine is read when a session
+*starts*, so a session that was already open when you wired it never calls it.
+
+To wire it, in `~/.claude/settings.json`:
+
+```json
+"statusLine": { "type": "command",
+                "command": "/path/to/claude-cron/bin/statusline-rate-limits.sh" }
+```
+
+It prints `5h 62% · 7d 18%`, so it still earns its place as a status line.
+
 ### Telling someone a run ended: `config/hooks/on-run-end.sh`
 
 A loop that can only be checked by opening a web page is not really unattended.

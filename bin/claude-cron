@@ -1048,6 +1048,67 @@ rl_gate() { # rl_gate -> 0 = hold this run back (reason on stdout)
   ' "$RATE_LIMIT_FILE" 2>/dev/null
 }
 
+# What the gate can currently see, and whether the thing that feeds it is
+# actually wired up. This exists because the honest answer to "is the statusline
+# working?" was a hand-written one-liner over the JSON — which puts the burden of
+# verifying the product on the person using it. A feature that cannot say whether
+# it is on is a feature nobody can trust.
+cmd_usage() {
+  local now settings cmd
+  now="$(now_epoch)"
+
+  if [ ! -s "$RATE_LIMIT_FILE" ]; then
+    echo "No usage window has been recorded yet."
+  else
+    "$JQ" -r --argjson now "$now" --argjson stop "$RL_STOP_AT" '
+      to_entries[]
+      | .value as $v
+      | (if $v.utilization == null then "  ?" else (($v.utilization * 100) | floor | tostring) + "%" end) as $pct
+      | (if $v.resets_at == null then "reset time unknown"
+         elif $v.resets_at <= $now then "that window has already reset — this reading no longer counts"
+         else "resets in " + (((($v.resets_at - $now) / 60) | floor) | tostring) + " min" end) as $when
+      | (((($now - ($v.seen_at // 0)) / 60) | floor) | tostring) as $age
+      | "\(.key): \($pct) used, \($when)"
+        + "\n  read \($age) min ago from the \($v.source // "run stream")"
+        + (if $v.status != null then ", API said \($v.status)" else "" end)
+        + (if $v.overage == "rejected" then ", overage off (the ceiling is a dead stop)" else "" end)
+    ' "$RATE_LIMIT_FILE" 2>/dev/null
+    local reason
+    if reason="$(rl_gate)" && [ -n "$reason" ]; then
+      echo
+      echo "SCHEDULED RUNS ARE BEING HELD BACK: $reason"
+      echo "  (\`claude-cron run <job>\` still overrides this, as it does the budget.)"
+    fi
+  fi
+
+  # The other half: is the figure going to keep arriving? A window whose only
+  # reading came off a run stream is one the gate cannot see below 75%.
+  echo
+  settings="$HOME/.claude/settings.json"
+  cmd=""
+  [ -f "$settings" ] && cmd="$("$JQ" -r '.statusLine.command // ""' "$settings" 2>/dev/null)"
+  if [ -z "$cmd" ]; then
+    echo "statusline: not configured — the gate is blind below 0.75 utilisation."
+    echo "  Point statusLine at $BIN_DIR/statusline-rate-limits.sh in $settings."
+  elif [ "${cmd%statusline-rate-limits.sh}" = "$cmd" ]; then
+    echo "statusline: configured, but not to this script — nothing feeds the gate."
+    echo "  It runs: $cmd"
+  elif [ ! -x "${cmd%% *}" ]; then
+    echo "statusline: configured but NOT RUNNABLE — every session's status line is failing."
+    echo "  Missing or not executable: ${cmd%% *}"
+  else
+    echo "statusline: wired to ${cmd%% *}"
+    if [ -s "$RATE_LIMIT_FILE" ] \
+       && "$JQ" -e 'any(.[]; .source == "statusline")' "$RATE_LIMIT_FILE" >/dev/null 2>&1; then
+      echo "  and it has fed the gate — readings above are live."
+    else
+      echo "  but it has never fed the gate yet. The statusLine is read when a"
+      echo "  session STARTS, so any session already open when you wired it will"
+      echo "  never call it. Open a new interactive session and re-run this."
+    fi
+  fi
+}
+
 # The daily ceiling that applies to a job: its own, else its project's, else
 # none. It used to be read from the job ALONE, so a `daily_budget_usd` set on a
 # project silently did nothing — which is the one place you would naturally put
@@ -3036,6 +3097,59 @@ NASTY
   # healthy run the moment this script was installed.
   got="$( DATA_DIR="$tmp/sl"; RATE_LIMIT_FILE="$tmp/sl/rate-limits.json"; rl_gate 2>/dev/null )"
   [ -z "$got" ] && ok "a reading with no status is not a refusal" || bad "gated on a status-less reading: $got"
+
+  echo "claude-cron usage — the feature can say whether it is switched on"
+  # A gate nobody can verify is a gate nobody trusts, and the honest answer used
+  # to be a hand-written one-liner over the JSON. Each case below is a wiring
+  # mistake an operator can actually make.
+  mkdir -p "$tmp/usg"
+  usg() { # usg <settings-json> [rate-limits-json] -> what the command prints
+    printf '%s' "$1" > "$tmp/usg/settings.json"
+    if [ -n "${2:-}" ]; then printf '%s' "$2" > "$tmp/usg/rate-limits.json"
+    else rm -f "$tmp/usg/rate-limits.json"; fi
+    ( HOME="$tmp/usg_home"; mkdir -p "$HOME/.claude"; cp "$tmp/usg/settings.json" "$HOME/.claude/settings.json"
+      DATA_DIR="$tmp/usg"; RATE_LIMIT_FILE="$tmp/usg/rate-limits.json"; cmd_usage ) 2>/dev/null
+  }
+  soon2="$(( $(now_epoch) + 3600 ))"
+
+  case "$(usg '{}')" in
+    *"No usage window has been recorded yet"*) ok "with no reading it says so, rather than printing nothing" ;;
+    *) bad "empty state did not say it was empty" ;;
+  esac
+  case "$(usg '{}')" in
+    *"statusline: not configured"*) ok "an unconfigured statusline is named as the reason the gate is blind" ;;
+    *) bad "did not report the missing statusline" ;;
+  esac
+  # The mistake that looks like success: something IS configured, just not this.
+  case "$(usg '{"statusLine":{"type":"command","command":"/usr/bin/true"}}')" in
+    *"not to this script"*) ok "a statusline pointing elsewhere is not mistaken for a working one" ;;
+    *) bad "a foreign statusline was accepted" ;;
+  esac
+  # The one that bit during development: the path is right, the file is not there
+  # (wrong branch checked out), and every session's status line fails in silence.
+  case "$(usg '{"statusLine":{"type":"command","command":"/nope/statusline-rate-limits.sh"}}')" in
+    *"NOT RUNNABLE"*) ok "a configured path that does not exist is called out, not assumed fine" ;;
+    *) bad "a missing script passed as wired" ;;
+  esac
+  # Wired, but every reading still came off a run stream: the session that was
+  # already open when it was wired will never call it.
+  wired="{\"statusLine\":{\"type\":\"command\",\"command\":\"$BIN_DIR/statusline-rate-limits.sh\"}}"
+  stream_only="$("$JQ" -nc --argjson r "$soon2" '{five_hour:{status:"allowed",utilization:null,resets_at:$r,overage:"rejected",seen_at:0}}')"
+  case "$(usg "$wired" "$stream_only")" in
+    *"never fed the gate yet"*) ok "wired but never fired is reported as such, not as working" ;;
+    *) bad "claimed the statusline had fed the gate when it had not" ;;
+  esac
+  fed="$("$JQ" -nc --argjson r "$soon2" '{five_hour:{status:null,utilization:0.42,resets_at:$r,overage:null,seen_at:0,source:"statusline"}}')"
+  case "$(usg "$wired" "$fed")" in
+    *"it has fed the gate"*) ok "a live statusline reading is confirmed as live" ;;
+    *) bad "did not confirm a working statusline" ;;
+  esac
+  # And when the gate IS holding runs back, saying so here is the whole point.
+  spent="$("$JQ" -nc --argjson r "$soon2" '{seven_day:{status:null,utilization:0.99,resets_at:$r,overage:"rejected",seen_at:0,source:"statusline"}}')"
+  case "$(usg "$wired" "$spent")" in
+    *"HELD BACK"*) ok "a gate that is holding runs back says so where you look for it" ;;
+    *) bad "the command did not report an active hold" ;;
+  esac
 
   echo "the Claude account comes from the setting, never from the environment"
   # cmd_install refuses an ambient CLAUDE_CONFIG_DIR, and for a while the runtime
@@ -5660,6 +5774,9 @@ claude-cron — durable local scheduler for headless Claude Code runs
   claude-cron serve           run the control server in the foreground (launchd uses this)
   claude-cron run <id>        run one job now, ignoring schedule and precheck
   claude-cron check <id>      run only the precheck and report what it found
+  claude-cron usage           how full the usage windows are, whether runs are
+                              being held back, and whether the statusline that
+                              keeps that figure fresh is actually wired up
   claude-cron logs <id> [n]   print the result of the n-th most recent run
   claude-cron enable <id>     re-enable a job
   claude-cron disable <id>    stop a job without deleting it
@@ -5710,6 +5827,7 @@ case "${1:-}" in
   run)       [ $# -ge 2 ] || die "usage: claude-cron run <job-id>"; run_job "$2" --force ;;
   resume)    [ $# -ge 3 ] || die "usage: claude-cron resume <job-id> <session-id>"; run_job "$2" --force "$3" ;;
   check)     [ $# -ge 2 ] || die "usage: claude-cron check <job-id>"; cmd_check "$2" ;;
+  usage)     cmd_usage ;;
   logs)      shift; cmd_logs "$@" ;;
   enable)    [ $# -ge 2 ] || die "usage: claude-cron enable <job-id>"; cmd_toggle "$2" true ;;
   disable)   [ $# -ge 2 ] || die "usage: claude-cron disable <job-id>"; cmd_toggle "$2" false ;;
