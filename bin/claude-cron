@@ -150,6 +150,23 @@ security_request_path() { printf '%s/security/requests/%s.json\n' "$DATA_DIR" "$
 # be persisted: not by discipline, but because those paths never meet it.
 security_derived_jobs() {
   local names project jid req branch profile repo prompt seen existing
+  # `jobs_json` is on the path of job_get/resolve/job_exists, so this function
+  # runs some twenty times per run and on every dashboard poll. When no project
+  # has security on -- the state of nearly every install -- settle it with ONE
+  # jq and nothing else: the loop below costs a jq per project per call, which
+  # made job_get several times slower for people who never asked for any of it.
+  # A missing or unreadable projects.json fails the test and lands here too,
+  # which is the same answer by a shorter road: no projects, no derived jobs.
+  # `objects` keeps a project whose `security` is not an object (see
+  # security_get) from erroring the test out and taking the healthy projects
+  # in the same file down with it.
+  local SECURITY_WARNINGS=""
+  if ! "$JQ" -e 'any(.projects[]?; ((.security? | objects | .enabled) == true))' \
+       "$PROJECTS_FILE" >/dev/null 2>&1; then
+    security_warnings_flush ""
+    printf '[]'
+    return 0
+  fi
   names="$(projects_json | "$JQ" -r '.projects[]?.name')"
   # Ids a real job already owns. A real job predating the reservation of an id
   # wins over the derived one -- it is what the user actually created.
@@ -164,17 +181,17 @@ security_derived_jobs() {
     # A name that slugs to nothing (e.g. "!!!") would derive the bare prefix --
     # not a usable id, and not any project's job. Skip it rather than emit it.
     if [ "$jid" = "$SECURITY_JOB_PREFIX" ]; then
-      log_tick "security: project '$project' has a name that cannot derive a job id -- skipped"
+      security_warn "security: project '$project' has a name that cannot derive a job id -- skipped"
       continue
     fi
     # Two names can slug to the same id ("My App" and "my-app"). Whichever is
     # seen first keeps it; the rest are skipped rather than silently colliding.
     case " $seen " in *" $jid "*)
-      log_tick "security: project '$project' derives '$jid', already used by another project -- skipped"
+      security_warn "security: project '$project' derives '$jid', already used by another project -- skipped"
       continue ;;
     esac
     case " $existing " in *" $jid "*)
-      log_tick "security: a job named '$jid' already exists in $JOBS_FILE -- the real job wins, derived skipped"
+      security_warn "security: a job named '$jid' already exists in $JOBS_FILE -- the real job wins, derived skipped"
       continue ;;
     esac
     seen="$seen $jid"
@@ -187,27 +204,46 @@ security_derived_jobs() {
     ignore="$("$JQ" -r '.ignore // ""' "$req" 2>/dev/null)"
     [ -n "$branch" ] || branch="$(project_get "$project" '.base' 'main')"
     prompt="$(security_prompt "$project" "$repo" "$branch" "$profile" "$aid" "$ignore")"
-    [ $first -eq 1 ] || printf ','
-    first=0
-    "$JQ" -nc \
+    local budget daily elem
+    budget="$(security_get "$project" '.max_budget_usd' '')"
+    daily="$(security_get "$project" '.daily_budget_usd' '')"
+    security_check_number "$project" max_budget_usd "$budget"  || budget=""
+    security_check_number "$project" daily_budget_usd "$daily" || daily=""
+    # Build the element FIRST and only then commit to it. The separator used to
+    # be printed before this jq ran, so anything that made jq exit without
+    # stdout -- a `tonumber` on a budget the user typed as "abc" was enough --
+    # left a hole in the array (`[,{...}]`). That is not one broken project:
+    # jobs_json then dies on EVERY call, so job_get, resolve and job_exists
+    # fail for every job on the machine, run_job reads an empty prompt, and the
+    # fleet stops with a reason `fleet_stall_reason` does not recognise. A
+    # failed element is now one project missing, which is what it always was.
+    elem="$("$JQ" -nc \
       --arg id "$jid" --arg project "$project" --arg prompt "$prompt" \
       --arg model "$(security_get "$project" '.model' 'opus')" \
       --arg effort "$(security_get "$project" '.effort' '')" \
-      --arg budget "$(security_get "$project" '.max_budget_usd' '')" \
-      --arg daily "$(security_get "$project" '.daily_budget_usd' '')" \
+      --arg budget "$budget" \
+      --arg daily "$daily" \
       --arg cfgdir "$(security_get "$project" '.claude_config_dir' '')" \
       '{id:$id, project:$project, prompt:$prompt, model:$model,
         description:"Security analysis (derived from the project, not a job you created).",
         enabled:false, precheck:"", permission_mode:"dontAsk",
         interactive:false, max_parallel:1, stall_timeout_seconds:1800}
        + (if $effort == "" then {} else {effort:$effort} end)
-       + (if $budget == "" then {} else {max_budget_usd:($budget|tonumber)} end)
-       + (if $daily  == "" then {} else {daily_budget_usd:($daily|tonumber)} end)
-       + (if $cfgdir == "" then {} else {claude_config_dir:$cfgdir} end)'
+       # NOT `{max_budget_usd: ($budget|tonumber? // empty)}`: an empty value
+       # inside object construction makes the WHOLE object empty, which would
+       # drop the job rather than the field. Collect first, then decide.
+       + ([$budget | tonumber?] | if length == 0 then {} else {max_budget_usd: .[0]} end)
+       + ([$daily  | tonumber?] | if length == 0 then {} else {daily_budget_usd: .[0]} end)
+       + (if $cfgdir == "" then {} else {claude_config_dir:$cfgdir} end)' 2>/dev/null)" || elem=""
+    [ -n "$elem" ] || continue
+    [ $first -eq 1 ] || printf ','
+    first=0
+    printf '%s' "$elem"
   done <<EOF
 $names
 EOF
   printf ']'
+  security_warnings_flush "$SECURITY_WARNINGS"
 }
 
 jobs_json() {
@@ -249,7 +285,11 @@ project_get() { # project_get <name> <jq-path> [default]
 # inherit from -- the derived job IS built out of these values.
 security_get() { # security_get <project> <jq-path> [default]
   local project="$1" path="$2" def="${3:-}" v
-  v="$(project_get "$project" ".security${path}" '')"
+  # `objects`, not `.security${path}`: a project that says `"security":"yes"`
+  # made jq print "Cannot index string with ..." to stderr on every single
+  # job_get. The block is unusable either way and the project is skipped either
+  # way -- the only thing the raw path added was noise on the operator's screen.
+  v="$(project_get "$project" "(.security? | objects)${path}" '')"
   case "$v" in ''|null) echo "$def" ;; *) echo "$v" ;; esac
 }
 
@@ -264,6 +304,81 @@ security_slug() { # security_slug <project>
 
 SECURITY_JOB_PREFIX="security-"
 security_job_id() { printf '%s%s' "$SECURITY_JOB_PREFIX" "$(security_slug "$1")"; }
+
+# ---- what a bad security block is allowed to cost -------------------------
+# Everything derivation refuses -- a name that slugs to nothing, two projects
+# claiming one id, a real job already holding it, a budget that is not a number
+# -- is a PERMANENT state of the config, not an event. Reported with log_tick it
+# was reported again on every jobs_json call: dozens per run, ~1440 lines a day
+# for a single typo, in the file the dashboard re-reads WHOLE every 5s. Collect
+# them per derivation instead and write the set to a marker; only a CHANGE to
+# that set reaches tick.log. One line when the typo appears, one when it is
+# fixed and comes back.
+# Appends to the `local SECURITY_WARNINGS` of the derivation that called it
+# (bash is dynamically scoped). `:-` because this file runs under `set -u`: a
+# future caller from outside a derivation must get a no-op, not a dead script.
+security_warn() { # security_warn <message> -- collected by security_derived_jobs
+  SECURITY_WARNINGS="${SECURITY_WARNINGS:-}$1
+"
+}
+
+security_warnings_flush() { # security_warnings_flush <warnings-text>
+  local now="$1" marker prev tmp line
+  marker="$DATA_DIR/security/derivation-warnings.txt"
+  # The healthy case -- nothing to say, nothing said last time -- must not cost
+  # a fork, because it is on the path of every job_get.
+  [ -n "$now" ] || [ -s "$marker" ] || return 0
+  prev="$(cat "$marker" 2>/dev/null || true)"
+  # Both sides through the same stripping so a trailing newline is not a change.
+  [ "$(printf '%s' "$now")" = "$prev" ] && return 0
+  mkdir -p "$DATA_DIR/security" 2>/dev/null || return 0
+  # Written before the logging, and atomically: two derivations racing here can
+  # at worst log the same change twice, never flood.
+  tmp="$(mktemp "$DATA_DIR/security/.warn.XXXXXX" 2>/dev/null)" || return 0
+  printf '%s' "$now" > "$tmp" 2>/dev/null && mv -f "$tmp" "$marker" 2>/dev/null || { rm -f "$tmp"; return 0; }
+  [ -n "$now" ] || return 0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    log_tick "$line"
+  done <<EOF
+$now
+EOF
+}
+
+security_check_number() { # security_check_number <project> <field> <value> -> rc 1 when unusable
+  [ -n "$3" ] || return 0
+  "$JQ" -e -n --arg v "$3" '($v|tonumber?) != null' >/dev/null 2>&1 && return 0
+  security_warn "security: project '$1' has a non-numeric $2 ('$3') -- left off the derived job"
+  return 1
+}
+
+# A derived job exists only inside jobs_json, so `job_exists` answers yes for it
+# -- and every by-id WRITE used to go ahead on that answer. `delete security-web`
+# reported success, left jobs.json untouched (there was nothing in it to remove),
+# and still rm -rf'd the job's lock dir -- releasing the max_parallel=1 gate of an
+# analysis in flight -- and dropped its state entry. `rename` moved runs.ndjson,
+# the state entry and the log dir onto an id nothing will ever derive again:
+# history lost, with a success message. Refuse the id at the top of each of them.
+# The EXECUTION paths (run, resume, stop, say, worktree-drop) deliberately do NOT
+# call this: a derived job is meant to run.
+security_refuse_derived() { # security_refuse_derived <id>
+  case "$1" in
+    "$SECURITY_JOB_PREFIX"*)
+      die "'$1' is a derived security job — configure it on its project, not on the job" ;;
+  esac
+}
+
+security_refuse_derived_list() { # security_refuse_derived_list <json-array-of-ids>
+  local _id
+  # A heredoc, not a pipe: `die` inside a pipeline only kills the subshell, and
+  # the batch would carry straight on to the write it was supposed to refuse.
+  while IFS= read -r _id; do
+    [ -n "$_id" ] || continue
+    security_refuse_derived "$_id"
+  done <<EOF
+$(printf '%s' "$1" | "$JQ" -r '.[]' 2>/dev/null)
+EOF
+}
 
 security_prompt() { # security_prompt <project> <repo> <branch> <profile> <analysis-id> <ignore>
   cat <<EOF
@@ -4512,6 +4627,130 @@ JSON
     && ok "a real job that already owns the derived id wins over the derived one" \
     || bad "a real job that already owns the derived id wins over the derived one"
 
+  # One project's typo used to take every job on the machine down. `tonumber` on
+  # a budget the user wrote as "abc" aborts the element's jq with NO stdout, and
+  # the separator had already been printed -- so the array came out `[,{...}]`,
+  # jobs_json died on every call, and job_get/resolve/job_exists failed for every
+  # job. The bad field is dropped; the project, and everyone else, survives.
+  mkdir -p "$tmp/derived/data4"
+  cat > "$tmp/derived/bad-number-projects.json" <<'JSON'
+{"projects":[
+ {"name":"Bad","cwd":"/tmp/bad","security":{"enabled":true,"max_budget_usd":"abc"}},
+ {"name":"Healthy","cwd":"/tmp/h","security":{"enabled":true,"max_budget_usd":5}}]}
+JSON
+  ( JOBS_FILE="$tmp/derived/jobs.json"; PROJECTS_FILE="$tmp/derived/bad-number-projects.json"
+    DATA_DIR="$tmp/derived/data4"; TICK_LOG="$tmp/derived/data4/tick.log"
+    jobs_json | "$JQ" -e '[.jobs[].id] == ["real-job","security-bad","security-healthy"]' >/dev/null \
+    && jobs_json | "$JQ" -e '[.jobs[] | select(.id=="security-bad") | has("max_budget_usd")] == [false]' >/dev/null \
+    && [ "$(job_get security-healthy '.max_budget_usd' '')" = "5" ] ) \
+    && ok "a non-numeric budget loses the field, not the array every job is read from" \
+    || bad "a non-numeric budget loses the field, not the array every job is read from"
+
+  # The other half of the same bug: the separator must be committed only once an
+  # element exists. Force a failure that has nothing to do with numbers -- a jq
+  # that refuses exactly the `-nc` call the element is built with -- and the
+  # array must still be one jobs_json can read.
+  cat > "$tmp/derived/jq-no-nc" <<EOF
+#!/bin/sh
+for a in "\$@"; do [ "\$a" = "-nc" ] && exit 1; done
+exec "$JQ" "\$@"
+EOF
+  chmod +x "$tmp/derived/jq-no-nc"
+  ( JOBS_FILE="$tmp/derived/jobs.json"; PROJECTS_FILE="$tmp/derived/bad-number-projects.json"
+    DATA_DIR="$tmp/derived/data4b"; TICK_LOG="$tmp/derived/data4b/tick.log"
+    JQ="$tmp/derived/jq-no-nc"
+    jobs_json | "$JQ" -e '[.jobs[].id] == ["real-job"]' >/dev/null ) \
+    && ok "an element that fails to build drops its project, never the array" \
+    || bad "an element that fails to build drops its project, never the array"
+
+  # A `security` block that is not an object is unusable, and the project is
+  # skipped either way -- but the raw `.security.enabled` path printed jq's
+  # "Cannot index string" to stderr on every single job_get.
+  cat > "$tmp/derived/nonobject-projects.json" <<'JSON'
+{"projects":[{"name":"Sloppy","cwd":"/tmp/s","security":"yes"},
+             {"name":"Web","cwd":"/tmp/web","security":{"enabled":true}}]}
+JSON
+  ( JOBS_FILE="$tmp/derived/jobs.json"; PROJECTS_FILE="$tmp/derived/nonobject-projects.json"
+    DATA_DIR="$tmp/derived/data6"; TICK_LOG="$tmp/derived/data6/tick.log"
+    err="$(jobs_json 2>&1 >/dev/null)"
+    [ -z "$err" ] && jobs_json 2>/dev/null | "$JQ" -e '[.jobs[].id] == ["real-job","security-web"]' >/dev/null ) \
+    && ok "a security block that is not an object is skipped in silence" \
+    || bad "a security block that is not an object is skipped in silence"
+
+  # Every guard here describes a PERMANENT state of the config. Logged per call
+  # it was logged dozens of times per run -- ~1440 lines a day for one typo, in
+  # the file the dashboard re-reads whole every 5s. One line per CHANGE.
+  mkdir -p "$tmp/derived/data7"
+  ( JOBS_FILE="$tmp/derived/jobs.json"; PROJECTS_FILE="$tmp/derived/dup-slug-projects.json"
+    DATA_DIR="$tmp/derived/data7"; TICK_LOG="$tmp/derived/data7/tick.log"
+    jobs_json >/dev/null; jobs_json >/dev/null; jobs_json >/dev/null
+    [ "$(num "$(grep -c 'already used by another project' "$TICK_LOG" 2>/dev/null)")" = "1" ] ) \
+    && ok "a permanent derivation warning is logged once, not once per jobs_json call" \
+    || bad "a permanent derivation warning is logged once, not once per jobs_json call"
+
+  # Nobody who has never enabled security should pay for the derivation. With no
+  # security block anywhere the whole loop is skipped after one jq, and the file
+  # a missing projects.json would have been created by is never even opened.
+  cat > "$tmp/derived/nosec-projects.json" <<'JSON'
+{"projects":[{"name":"Plain","cwd":"/tmp/plain"}]}
+JSON
+  ( JOBS_FILE="$tmp/derived/jobs.json"; PROJECTS_FILE="$tmp/derived/nosec-projects.json"
+    DATA_DIR="$tmp/derived/data8"; TICK_LOG="$tmp/derived/data8/tick.log"
+    [ "$(security_derived_jobs)" = "[]" ] \
+    && [ "$(jobs_json | "$JQ" -Sc .)" = "$("$JQ" -Sc . "$JOBS_FILE")" ] ) \
+    && ok "with no security block anywhere, jobs_json is exactly the jobs file" \
+    || bad "with no security block anywhere, jobs_json is exactly the jobs file"
+
+  ( JOBS_FILE="$tmp/derived/jobs.json"; PROJECTS_FILE="$tmp/derived/no-such-projects.json"
+    DATA_DIR="$tmp/derived/data8"; TICK_LOG="$tmp/derived/data8/tick.log"
+    [ "$(security_derived_jobs)" = "[]" ] && [ ! -e "$tmp/derived/no-such-projects.json" ] ) \
+    && ok "a missing projects file short-circuits the derivation instead of building one" \
+    || bad "a missing projects file short-circuits the derivation instead of building one"
+
+  # ---- a derived id is not a job you can write to -----------------------
+  # `job_exists` goes through jobs_json, so it says yes to a derived id -- and
+  # every by-id write went ahead on that answer. `delete security-web` found
+  # nothing to remove from jobs.json, said "deleted", and still rm -rf'd the lock
+  # dir holding the max_parallel=1 gate of an analysis in flight.
+  mkdir -p "$tmp/derived/data9/locks/security-web/slot-1" "$tmp/derived/data9/logs/security-web"
+  printf '{}\n' > "$tmp/derived/data9/state.json"
+  # Its own jobs file: the write tests above deliberately edited the shared one.
+  printf '{"jobs":[{"id":"real-job","enabled":true,"prompt":"x"}]}\n' > "$tmp/derived/guard-jobs.json"
+  # `die` writes to stderr and exits 1, and this script runs with `set -o
+  # pipefail` -- so a `| grep -q` on the far side would inherit that 1 and read
+  # as "did not refuse". Capture the output and match it.
+  refuses_derived() { case "$1" in *"derived security job"*) return 0 ;; *) return 1 ;; esac; }
+  ( JOBS_FILE="$tmp/derived/guard-jobs.json"; PROJECTS_FILE="$tmp/derived/projects.json"
+    DATA_DIR="$tmp/derived/data9"; CONFIG_DIR="$tmp/derived"
+    LOCK_DIR="$tmp/derived/data9/locks"; LOG_DIR="$tmp/derived/data9/logs"
+    STATE_FILE="$tmp/derived/data9/state.json"; TICK_LOG="$tmp/derived/data9/tick.log"
+    refuses_derived "$(cmd_delete security-web 2>&1)" ) \
+    && [ -d "$tmp/derived/data9/locks/security-web/slot-1" ] \
+    && ok "delete refuses a derived id, so a running analysis keeps its lock" \
+    || bad "delete refuses a derived id, so a running analysis keeps its lock"
+
+  ( JOBS_FILE="$tmp/derived/guard-jobs.json"; PROJECTS_FILE="$tmp/derived/projects.json"
+    DATA_DIR="$tmp/derived/data9"; CONFIG_DIR="$tmp/derived"
+    LOCK_DIR="$tmp/derived/data9/locks"; LOG_DIR="$tmp/derived/data9/logs"
+    STATE_FILE="$tmp/derived/data9/state.json"; TICK_LOG="$tmp/derived/data9/tick.log"
+    refuses_derived "$(cmd_rename security-web stolen 2>&1)" ) \
+    && [ -d "$tmp/derived/data9/logs/security-web" ] && [ ! -e "$tmp/derived/data9/logs/stolen" ] \
+    && ok "rename refuses a derived id, so its history is not moved onto a dead one" \
+    || bad "rename refuses a derived id, so its history is not moved onto a dead one"
+
+  ( JOBS_FILE="$tmp/derived/guard-jobs.json"; PROJECTS_FILE="$tmp/derived/projects.json"
+    DATA_DIR="$tmp/derived/data9"; CONFIG_DIR="$tmp/derived"
+    STATE_FILE="$tmp/derived/data9/state.json"; TICK_LOG="$tmp/derived/data9/tick.log"
+    refuses_derived "$(cmd_toggle security-web true 2>&1)" \
+    && refuses_derived "$(printf '%s\n' real-job security-web | cmd_toggle_many false 2>&1)" \
+    && refuses_derived "$(printf 'x' | cmd_set_prompt security-web 2>&1)" \
+    && refuses_derived "$(printf '9' | cmd_set_field security-web max_budget_usd 2>&1)" \
+    && refuses_derived "$(printf 'exit 0' | cmd_set_precheck security-web 2>&1)" \
+    && refuses_derived "$(printf '%s\n' security-web real-job | cmd_reorder 2>&1)" \
+    && "$JQ" -e '[.jobs[] | {id, enabled}] == [{id:"real-job", enabled:true}]' "$tmp/derived/guard-jobs.json" >/dev/null ) \
+    && ok "every other by-id write refuses a derived id, and jobs.json is untouched" \
+    || bad "every other by-id write refuses a derived id, and jobs.json is untouched"
+
   rm -rf "$tmp"
   echo
   echo "$pass passed, $fail failed"
@@ -5909,6 +6148,7 @@ write_jobs() { # write_jobs <jq-filter> [jq-args...]
 
 cmd_toggle() {
   local id="$1" val="$2"
+  security_refuse_derived "$id"
   job_exists "$id" || die "no such job: $id"
   write_jobs --arg id "$id" --argjson v "$val" \
     '.jobs = [.jobs[] | if .id == $id then .enabled = $v else . end]'
@@ -5938,6 +6178,9 @@ cmd_toggle_many() { # cmd_toggle_many <true|false> — ids on stdin (JSON array 
   ids="$(printf '%s' "$raw" | "$JQ" -c -R -s '. as $t | ($t | fromjson?) // ($t | split("\n") | map(select(length > 0)))')"
   printf '%s' "$ids" | "$JQ" -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1 \
     || die "toggle-many: expected a non-empty list of job ids"
+  # Refused the same way a single toggle is, and BEFORE the write: one derived
+  # id in the list refuses the whole batch, exactly like one unknown id does.
+  security_refuse_derived_list "$ids"
   # Resolve every id BEFORE writing: one unknown id refuses the whole batch,
   # rather than applying the part that happened to match.
   missing="$(jobs_json | "$JQ" -r --argjson want "$ids" '. as $doc | ($doc.jobs | map(.id)) as $have | [$want[] | . as $w | select(($have | index($w)) == null)] | join(", ")')"
@@ -5949,6 +6192,7 @@ cmd_toggle_many() { # cmd_toggle_many <true|false> — ids on stdin (JSON array 
 
 cmd_rename() { # cmd_rename <old-id> <new-id> — id + everything keyed by it
   local old="$1" new="$2" tmp path newpath
+  security_refuse_derived "$old"
   job_exists "$old" || die "no such job: $old"
   # Validate the NEW id exactly as creation does, so a rename can never produce
   # an id that `create` would have refused.
@@ -6006,6 +6250,10 @@ cmd_reorder() { # new order of ids on stdin (one per line, or a JSON array)
   ids="$(printf '%s' "$raw" | "$JQ" -c -R -s '. as $t | ($t | fromjson?) // ($t | split("\n") | map(select(length > 0)))')"
   printf '%s' "$ids" | "$JQ" -e 'type == "array" and length > 0 and all(.[]; type == "string")' >/dev/null 2>&1 \
     || die "reorder: expected a non-empty list of job ids"
+  # A derived id here reached write_jobs, which produced no document and died
+  # with "refusing to write a malformed jobs file" -- safe, but it named the
+  # wrong problem. Say what is actually wrong with the request.
+  security_refuse_derived_list "$ids"
   local missing
   # `. as $doc` first: inside `$want[]` the dot is the id, not the document.
   missing="$(jobs_json | "$JQ" -r --argjson want "$ids" '. as $doc | ($doc.jobs | map(.id)) as $have | [$want[] | . as $w | select(($have | index($w)) == null)] | join(", ")')"
@@ -6022,6 +6270,7 @@ cmd_reorder() { # new order of ids on stdin (one per line, or a JSON array)
 
 cmd_delete() {
   local id="$1" tmp
+  security_refuse_derived "$id"
   job_exists "$id" || die "no such job: $id"
   write_jobs --arg id "$id" '.jobs = [.jobs[] | select(.id != $id)]'
   tmp="$(mktemp "$DATA_DIR/.state.XXXXXX")"
@@ -6032,6 +6281,7 @@ cmd_delete() {
 
 cmd_set_prompt() { # reads the new prompt from stdin
   local id="$1" prompt
+  security_refuse_derived "$id"
   job_exists "$id" || die "no such job: $id"
   prompt="$(cat)"
   [ -n "$prompt" ] || die "empty prompt"
@@ -6042,6 +6292,7 @@ cmd_set_prompt() { # reads the new prompt from stdin
 
 cmd_set_field() { # cmd_set_field <id> <field> ; value on stdin
   local id="$1" field="$2" value
+  security_refuse_derived "$id"
   job_exists "$id" || die "no such job: $id"
   value="$(cat)"
   case "$field" in
@@ -6192,6 +6443,7 @@ exit 0
 
 cmd_set_precheck() { # reads the precheck script from stdin
   local id="$1" script path
+  security_refuse_derived "$id"
   job_exists "$id" || die "no such job: $id"
   script="$(cat)"
   [ -n "$script" ] || die "empty precheck script"

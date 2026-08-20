@@ -29,8 +29,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with security enabled get a job derived in memory by `jobs_json`, so an
   analysis gets the watchdog, the spending caps, the live stream and the
   turn-by-turn trace for free — and `config/jobs.json` never grows an entry
-  nobody created. The tick, the dashboard's Jobs area and every write path read
-  the jobs file directly and so never see one.
+  nobody created. The tick, the dashboard's Jobs area and every write of the
+  jobs file read that file directly, and so never see one. A `security` block
+  the scheduler cannot use — a budget typed as `"abc"`, a name that slugs to
+  nothing, two projects claiming one id — costs that project its derived job
+  and nothing else, and says so in `tick.log` once per change rather than on
+  every read.
+
+  A by-id command is the one place a derived id can still be typed — `job_exists`
+  answers through `jobs_json`, so it says yes. Each of them now refuses it:
+  `delete`, `rename`, `enable`/`disable`, `toggle-many`, `reorder`, `set-prompt`,
+  `set-field` and `set-precheck` answer `'security-web' is a derived security job
+  — configure it on its project, not on the job`. Without that, `delete
+  security-web` printed "deleted", left jobs.json alone as there was nothing in
+  it to remove, and still deleted the job's state entry and `rm -rf`'d its lock
+  dir — the lock dir being what holds the `max_parallel=1` gate of an analysis
+  in flight. `rename` was worse: it moved that job's `runs.ndjson` history, log
+  dir and state onto an id nothing will ever derive again. `run`, `resume`,
+  `stop` and `say` are untouched: a derived job is meant to run.
 
 ### Changed
 
