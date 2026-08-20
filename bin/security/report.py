@@ -41,11 +41,24 @@ def _unknown_states(by_state):
 
 
 def _coverage(analysis, coverage_note):
-    """What this report did NOT look at. Printed before anything else."""
+    """What this report did NOT look at. Printed before anything else.
+
+    `capped` no longer means only "it reached its spending cap" -- since the
+    `prepared` guard in `cmd_finish` (bin/security/cli.py), it also covers a
+    `done` close downgraded because the deterministic phases never ran at
+    all. Naming a spending cap here would be a flat lie for that second case,
+    and this line cannot tell the two apart -- the wording therefore says
+    only what is true of BOTH: the analysis is incomplete and stopped short
+    of the whole scope. The specific cause belongs to `coverage_note`, printed
+    right after, which is where `cmd_finish` puts it ("The deterministic
+    phases never ran for this analysis: ..."). Kept word-for-word identical to
+    the sentence `bin/dashboard.html` prints for the same state, so the
+    downloaded file and the screen never disagree.
+    """
     parts = []
     if analysis["state"] == "capped":
-        parts.append("This analysis is INCOMPLETE: it reached its spending cap "
-                     "and stopped before covering the whole scope.")
+        parts.append("This analysis is INCOMPLETE: it stopped before "
+                     "covering the whole scope.")
     elif analysis["state"] == "failed":
         parts.append("This analysis is INCOMPLETE: it did not finish.")
     if coverage_note:

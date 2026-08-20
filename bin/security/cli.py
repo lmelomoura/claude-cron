@@ -26,8 +26,8 @@ AGAINST MISTAKE, not a boundary against malice -- it stops a model that
 genuinely believes dismissing its own finding is the helpful thing to do, which
 is the failure that actually happens. It stops nothing that is trying. The one
 check here that does not depend on the environment is in `cmd_decide`, which
-refuses while the project's latest analysis is still `running`, whoever is
-asking.
+refuses while ANY analysis of the project is still `running` -- not only the
+newest one -- whoever is asking.
 """
 
 import argparse
@@ -90,7 +90,12 @@ def _refuse_if_agent(cmd):
     cold. Nothing here is load-bearing against an agent that is trying, and
     nothing should be built on the assumption that it is. `cmd_decide`'s
     running-analysis refusal is the one that does not depend on the
-    environment.
+    environment -- and even that one is protection against a mistake, not a
+    lock nothing can pick: it refuses while ANY analysis of the project is
+    `running`, so opening a second analysis and closing IT does not make the
+    door look shut while the first is still live, but an agent with direct
+    access to the ledger file could still write a decision without going
+    through this door at all.
     """
     if os.environ.get("CC_SECURITY_AGENT", "").strip():
         sys.exit(
@@ -158,6 +163,41 @@ def cmd_open_analysis(args):
     print(json.dumps({"analysis_id": aid}))
 
 
+def _refuse_root_outside_run(root):
+    """`--root` is typed by the agent, from inside a worktree it did not
+    choose -- but "not choose" used to only mean "cannot point above a
+    checkout" (the filesystem-root/home guard below). It said nothing about
+    pointing at some OTHER valid checkout on the machine: an agent could
+    `prepare --root ~/some-other-project`, get a clean scan of code nobody
+    asked about, and the analysis closes `done` with clean findings having
+    never looked at its own scope at all.
+
+    When the run is isolated, `bin/claude-cron`'s `run_job` (see
+    `bin/worktree-lib.sh:wt_setup`) exports `CC_RUN_MANIFEST` as the path to
+    that run's own `.run.json`, written into the run's own directory before
+    the agent ever starts. The directory holding that file -- not anything
+    read out of its contents, which is more than this needs -- IS the run's
+    own worktree. `--root` has no reason to name anywhere else, so when both
+    markers are present it is required to resolve inside that directory.
+
+    Deliberately conditioned on CC_SECURITY_AGENT too, not on the manifest
+    variable alone: a human running `prepare` by hand, outside any run,
+    carries neither, and must see the same behaviour as before this guard --
+    this is the agent's own run being anchored to the checkout the engine
+    built for it, not a new restriction on manual use.
+    """
+    manifest = os.environ.get("CC_RUN_MANIFEST", "").strip()
+    if not (os.environ.get("CC_SECURITY_AGENT", "").strip() and manifest):
+        return
+    run_dir = Path(manifest).expanduser().resolve().parent
+    try:
+        root.relative_to(run_dir)
+    except ValueError:
+        sys.exit(f"prepare: --root {root} is outside this run's own worktree "
+                 f"({run_dir}) -- an analysis can only prepare the checkout "
+                 "its own run created, not any other checkout on the machine.")
+
+
 def cmd_prepare(args):
     """The deterministic phases, run inside the worktree by the agent's first
     command. Seconds, and no tokens."""
@@ -165,6 +205,7 @@ def cmd_prepare(args):
     # Resolved before it is judged: `--root ~/..` and `--root /srv/../..` both
     # reach the filesystem root while looking like a checkout.
     root = Path(args.root).expanduser().resolve()
+    _refuse_root_outside_run(root)
     # The agent types this path itself, from inside a worktree it did not
     # choose. Pointed at `/` or at $HOME the deterministic phases walk every
     # file the operator owns -- ssh keys, browser profiles, other people's
@@ -522,23 +563,41 @@ def cmd_decide(args):
 
     The CC_SECURITY_AGENT guard above is a guardrail against mistake -- the
     variable is in the agent's own environment and the agent has a shell. This
-    check does not depend on the environment at all: while the project's LATEST
-    analysis says `running`, an agent of that project is alive, and this is
-    exactly the window in which a decision would be one. A human decides from
-    the page after the run ends, which is also the only moment the decision has
-    anything to act on: the checklist is rebuilt on close, so a decision
-    recorded mid-run changes nothing about the run it was recorded during.
+    check does not depend on the environment at all: while ANY analysis of the
+    project says `running` -- not only the latest one -- an agent of that
+    project is alive, and this is exactly the window in which a decision would
+    be one. A human decides from the page after the run ends, which is also
+    the only moment the decision has anything to act on: the checklist is
+    rebuilt on close, so a decision recorded mid-run changes nothing about the
+    run it was recorded during.
 
-    Deliberately keyed on the analysis, not on the caller: an operator who
-    really does want to accept a risk during a run is asked to wait the minutes
-    it takes, which costs them nothing, and an agent that unsets the variable
-    finds the door shut anyway.
+    NOT keyed on the latest row alone. That used to be the whole check, and it
+    had a two-command bypass: `open-analysis` a second analysis of the same
+    project (allowed once CC_SECURITY_AGENT is unset, same shell as always),
+    `finish` it immediately, and the project's LATEST analysis now reads
+    `done` while the original one an agent is still working inside of sits
+    `running`, unseen by a query that only ever looked at the newest row.
+    Querying for any `running` row closes that: the original analysis is still
+    among them.
+
+    This is protection against a MISTAKE, still not a boundary against a
+    determined bypass -- an agent with direct filesystem access to the ledger
+    could write a decision without going through this door at all. What it
+    does stop is the ordinary case: a decision taken while the agent that
+    reported the finding is alive, whether or not the operator or the agent
+    has stopped to think about which analysis is "the" running one. An
+    operator who really does want to accept a risk during a run is asked to
+    wait the minutes it takes, which costs them nothing; a `running` row left
+    behind by a run that died is not a permanent lock -- the engine's own
+    preflight sweep closes those before it opens the next analysis of that
+    project (see `cmd_security_analyze` in `bin/claude-cron`), so this cannot
+    wedge a project's triage for ever.
     """
     conn = _conn(args)
     live = conn.execute(
-        "SELECT id, state FROM analysis WHERE project=? ORDER BY id DESC LIMIT 1",
-        (args.project,)).fetchone()
-    if live is not None and live["state"] == "running":
+        "SELECT id FROM analysis WHERE project=? AND state='running' "
+        "ORDER BY id ASC LIMIT 1", (args.project,)).fetchone()
+    if live is not None:
         sys.exit(f"decide: analysis {live['id']} of '{args.project}' is still "
                  "running — a decision taken while the agent that reports the "
                  "finding is alive is the one decision it must not be able to "

@@ -42,6 +42,26 @@ def test_a_capped_analysis_says_so_in_every_format():
     assert "incomplete" in report.as_html(capped, FINDINGS, "").lower()
 
 
+def test_a_capped_report_does_not_claim_a_spending_cap_when_it_never_ran():
+    """Since the `prepared` guard in `cmd_finish` (bin/security/cli.py),
+    `capped` also covers a `done` close downgraded because the deterministic
+    phases never ran at all -- and for THAT case, `coverage_note` carries "The
+    deterministic phases never ran for this analysis: ...". The old wording
+    said, unconditionally, that the analysis "reached its spending cap", which
+    is simply false for this cause and produced two adjacent, contradicting
+    lines in the same report. The fixed wording must say only what is true of
+    every `capped` report, whatever the cause -- the cause itself is the
+    coverage note's job, not this line's."""
+    capped = dict(ANALYSIS, state="capped")
+    note = ("The deterministic phases never ran for this analysis: no secret "
+            "sweep, no dependency inventory, no hygiene pass.")
+    for text in (report.as_markdown(capped, FINDINGS, note),
+                 report.as_html(capped, FINDINGS, note)):
+        assert "spending cap" not in text.lower()
+        assert "incomplete" in text.lower()
+        assert note in text
+
+
 def test_html_escapes_a_finding_title():
     hostile = [dict(FINDINGS[0], title="<script>alert(1)</script>")]
     html = report.as_html(ANALYSIS, hostile, "")

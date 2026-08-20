@@ -1043,11 +1043,13 @@ it stops is the failure that actually happens — a model deciding, in good
 faith, that retiring the finding it just filed is the helpful thing to do — and
 it stops that cold. Nothing here is load-bearing against an agent that is
 trying. The one check that does not depend on the environment is `decide`'s
-own: **while the project's latest analysis is `running`, a decision is refused
-whoever is asking.** That window is exactly when an agent of that project is
-alive, and it costs a human nothing to wait — the checklist is rebuilt when the
-analysis closes, so a decision taken mid-run would not have changed that run's
-report anyway.
+own: **while any analysis of the project is `running` — not only the newest
+one — a decision is refused whoever is asking.** That window is exactly when
+an agent of that project is alive, and it costs a human nothing to wait — the
+checklist is rebuilt when the analysis closes, so a decision taken mid-run
+would not have changed that run's report anyway. Still a guardrail, not a
+lock nothing can pick: an agent with direct access to the ledger file could
+write a decision without going through this door at all.
 
 ---
 

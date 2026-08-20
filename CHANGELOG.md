@@ -370,7 +370,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the Security page has a fourth download button. It comes down as
   `.cdx.json` — the suffix the tools that consume one recognise.
 
-- **`decide` is refused while the project's latest analysis is running,
+- **`decide` is refused while any analysis of the project is running,
   whoever is asking.** The existing refusal works off `CC_SECURITY_AGENT`, a
   variable in the agent's own environment, and the agent has a shell —
   `env -u CC_SECURITY_AGENT …` walks past it. That guard is worth having (the
@@ -378,10 +378,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   retiring the finding it just filed is helpful) but it was being described as
   though it were a boundary, in the README and in the code. It is now described
   as what it is, and the ledger has one check that does not depend on the
-  environment at all: no decision on a project whose latest analysis says
+  environment at all: no decision on a project with any analysis still
   `running`. It costs a human nothing to wait — the checklist is rebuilt when
   the analysis closes, so a decision taken mid-run would not have changed that
   run's report.
+
+- **Three loose ends from that same finding, closed together.** The
+  `running`-analysis check above queried the project's *latest* analysis only,
+  which had a two-command bypass: open a second analysis of the same project
+  and close it, and the latest reads `done` while the original — the one an
+  agent is still working inside of — sits `running`, unseen. It now checks for
+  *any* analysis of the project still `running`; a row left behind by a run
+  that genuinely died is still swept before the project's next analysis opens,
+  so this cannot wedge triage. `prepare --root` was not bound to the analysis's
+  own worktree either — pointed at any other valid checkout on the machine, it
+  scanned that instead and the analysis closed `done` having never looked at
+  its own scope; it is now required to resolve inside the run's own directory
+  whenever the run is isolated (`CC_RUN_MANIFEST` names it), unchanged for a
+  human running `prepare` by hand. And the downloaded report's `capped`
+  banner unconditionally claimed "it reached its spending cap", which became
+  a second, contradicting cause once a `done` close could be downgraded for
+  never having run `prepare` at all — the banner now says only what is true of
+  every `capped` cause; the specific one is the coverage note right after it.
 
 - **The page says a truncated analysis is truncated.** A `capped` or `failed`
   analysis is a partial read of the repository, and the numbers under it are

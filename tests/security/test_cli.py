@@ -683,6 +683,104 @@ def test_prepare_refuses_to_scan_the_whole_machine(tmp_path):
     assert run(db, "findings", "--analysis", str(aid)) == []
 
 
+# ---------------------------------- --root is anchored to the run's own worktree
+
+def _isolated_env(manifest_path):
+    """What `run_job` exports into an isolated run (see bin/claude-cron and
+    bin/worktree-lib.sh:wt_setup) -- CC_SECURITY_AGENT marks the whole run as
+    the agent under review, and CC_RUN_MANIFEST names that run's own
+    `.run.json`, written into the run's own directory before the agent ever
+    starts."""
+    return {**os.environ, "CC_SECURITY_AGENT": "1",
+            "CC_RUN_MANIFEST": str(manifest_path)}
+
+
+def test_prepare_root_outside_the_runs_worktree_is_refused_when_isolated(tmp_path):
+    """Reproduced before the guard: an agent pointing `--root` at ANY other
+    valid checkout on the machine got a clean scan of code nobody asked about,
+    `prepare` marked the row `prepared=1`, and the analysis closed `done` with
+    clean findings having never looked at its own scope at all."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run_dir = tmp_path / "run-dir"
+    run_dir.mkdir()
+    manifest = run_dir / ".run.json"
+    manifest.write_text("{}")
+    elsewhere = tmp_path / "some-other-checkout"
+    elsewhere.mkdir()
+    out = fails(db, "prepare", "--analysis", str(aid), "--root", str(elsewhere),
+                "--offline", env=_isolated_env(manifest))
+    assert out.returncode != 0
+    assert "own worktree" in out.stderr
+    assert run(db, "findings", "--analysis", str(aid)) == []
+
+
+def test_prepare_root_prefix_collision_with_the_run_dir_is_still_refused(tmp_path):
+    """The nearest neighbour to the boundary just closed: a SIBLING directory
+    whose name merely starts with the run dir's own name (`run-dir-evil`
+    starts with `run-dir`). A check written as a string prefix comparison
+    would wrongly accept it; path containment must be exact."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run_dir = tmp_path / "run-dir"
+    run_dir.mkdir()
+    manifest = run_dir / ".run.json"
+    manifest.write_text("{}")
+    sibling = tmp_path / "run-dir-evil"
+    sibling.mkdir()
+    out = fails(db, "prepare", "--analysis", str(aid), "--root", str(sibling),
+                "--offline", env=_isolated_env(manifest))
+    assert out.returncode != 0
+    assert "own worktree" in out.stderr
+
+
+def test_prepare_root_inside_the_runs_worktree_is_accepted(tmp_path):
+    """The control: the genuine case -- `--root` naming the checkout the
+    engine actually built for this run -- must still work."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run_dir = tmp_path / "run-dir"
+    checkout = run_dir / "web"
+    checkout.mkdir(parents=True)
+    manifest = run_dir / ".run.json"
+    manifest.write_text("{}")
+    out = run(db, "prepare", "--analysis", str(aid), "--root", str(checkout),
+              "--offline", env=_isolated_env(manifest))
+    assert out["findings"] == 0
+
+
+def test_prepare_root_check_is_unchanged_without_the_run_manifest(tmp_path):
+    """A human running `prepare` by hand, outside any run, carries neither
+    CC_SECURITY_AGENT nor CC_RUN_MANIFEST -- the anchor must refuse nothing
+    new for that case."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    anywhere = tmp_path / "any-checkout-at-all"
+    anywhere.mkdir()
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("CC_SECURITY_AGENT", "CC_RUN_MANIFEST")}
+    out = run(db, "prepare", "--analysis", str(aid), "--root", str(anywhere),
+              "--offline", env=env)
+    assert out["findings"] == 0
+
+
+def test_prepare_root_check_is_unchanged_when_agent_flag_is_set_without_a_manifest(tmp_path):
+    """CC_SECURITY_AGENT alone (no CC_RUN_MANIFEST) is what
+    `test_the_work_the_agent_is_there_to_do_still_works_under_the_flag`
+    already exercises for a normal analysis; this pins the same for an
+    arbitrary root, so the new guard is provably keyed on BOTH variables, not
+    either one alone."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    anywhere = tmp_path / "any-checkout-at-all"
+    anywhere.mkdir()
+    env = {k: v for k, v in os.environ.items() if k != "CC_RUN_MANIFEST"}
+    env["CC_SECURITY_AGENT"] = "1"
+    out = run(db, "prepare", "--analysis", str(aid), "--root", str(anywhere),
+              "--offline", env=env)
+    assert out["findings"] == 0
+
+
 # ---------------------------------------------------- the fingerprint verb
 
 def test_fingerprint_matches_the_library_for_a_sast_finding(tmp_path):
@@ -1062,19 +1160,60 @@ def test_a_run_on_another_project_does_not_block_a_decision(tmp_path):
     assert conn.execute("SELECT count(*) FROM decision").fetchone()[0] == 1
 
 
-def test_an_older_running_analysis_does_not_block_a_decision(tmp_path):
-    """The LATEST analysis, not any analysis. A row left `running` by a run
-    that died is swept by the engine's own preflight, but until it is, the
-    project's triage must not be frozen by an analysis two runs ago -- only by
-    the one that is plausibly alive right now."""
+def test_an_older_running_analysis_still_blocks_a_decision(tmp_path):
+    """ANY analysis of the project, not only the latest one.
+
+    This used to be keyed on the project's latest analysis alone, which had a
+    two-command bypass: open a SECOND analysis of the same project and close
+    it, and the latest analysis reads `done` while an older one -- the one an
+    agent might still be alive inside of -- sits `running`, unseen by a query
+    that only ever looked at the newest row. See
+    `test_the_agent_cannot_dismiss_its_finding_via_a_second_analysis` for the
+    exact bypass reproduced end to end. A row left `running` by a run that
+    genuinely died is not a permanent lock either: the engine's own preflight
+    sweep (`cmd_security_analyze` in bin/claude-cron) closes those before the
+    project's next analysis opens."""
     db = tmp_path / "security.db"
-    open_analysis(db)                       # stale, still says running
+    open_analysis(db)                       # older, still says running
     run(db, "finish", "--analysis", str(open_analysis(db, commit="def")),
         "--state", "done")
-    run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
-        "--state", "accepted", "--reason", "reviewed by hand", "--by", "luiz")
+    out = fails(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+                "--state", "accepted", "--reason", "reviewed by hand", "--by", "luiz")
+    assert out.returncode != 0
+    assert "still running" in out.stderr
     conn = sqlite3.connect(str(db))
-    assert conn.execute("SELECT count(*) FROM decision").fetchone()[0] == 1
+    assert conn.execute("SELECT count(*) FROM decision").fetchone()[0] == 0
+
+
+def test_the_agent_cannot_dismiss_its_finding_via_a_second_analysis(tmp_path):
+    """The merge-verification pass's exact bypass of the running-analysis
+    refusal above. `decide`'s check used to look only at the project's LATEST
+    analysis: from its own shell (the CC_SECURITY_AGENT flag only ever guards
+    `decide`, `rename-project` and `open-analysis`, never `finish` or a second
+    `open-analysis` run once the flag is off -- see `_refuse_if_agent`), the
+    agent could `open-analysis` a second analysis of the SAME project and
+    `finish` it right away. The project's latest analysis then read `done`
+    while the ORIGINAL analysis -- the one whose finding it wants to dismiss --
+    was still `running`, and the old latest-row-only query never saw it."""
+    db = tmp_path / "security.db"
+    original = open_analysis(db, project="web", commit="orig", run_id="r1")
+    second = open_analysis(db, project="web", commit="def", run_id="r2")
+    run(db, "finish", "--analysis", str(second), "--state", "done")
+    # The bypass's premise: the project's LATEST analysis is now closed --
+    # `done` if it had run `prepare`, `capped` here since it did not (see
+    # cmd_finish's own `prepared` guard), either way NOT `running`, which is
+    # all the old latest-row-only check ever looked at.
+    assert run(db, "list", "--project", "web")[0]["state"] != "running"
+    out = fails(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+                "--state", "false_positive", "--reason", "I checked it myself",
+                "--by", "the agent")
+    assert out.returncode != 0
+    assert "still running" in out.stderr
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT count(*) FROM decision").fetchone()[0] == 0
+    # The original, still-running analysis is the one that must be named --
+    # not the closed second one that made the latest row look clear.
+    assert f"analysis {original} of 'web'" in out.stderr
 
 
 # --------------------------------------------------- the SBOM is downloadable
