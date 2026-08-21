@@ -103,6 +103,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The Security area records what happened.** Analyses started and finished,
+  decisions with the reason behind them, settings changed, reports exported —
+  the history a security posture needs to be auditable at all. Without a user
+  column or an IP: this install has one operator, and a column that can only
+  hold one value teaches nothing.
+
 - **An analysis records how much code it read.** Counted during the walk the
   deterministic phase already does, with the same files skipped, so the number
   says what was analysed rather than what happens to be in the directory.

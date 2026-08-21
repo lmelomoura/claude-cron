@@ -146,6 +146,41 @@ def test_lines_of_code_defaults_to_zero_for_an_older_analysis(conn):
     assert row["lines_of_code"] == 0
 
 
+def test_an_event_round_trips(conn):
+    ledger.record_event(conn, "web", "analysis_started", "quick on main", "3")
+    rows = ledger.events_for(conn, project="web")
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "analysis_started"
+    assert rows[0]["detail"] == "quick on main"
+    assert rows[0]["related"] == "3"
+    assert rows[0]["at"] > 0
+
+
+def test_an_unknown_kind_is_refused(conn):
+    """The kinds are a closed set: a typo must fail loudly rather than file an
+    event no filter will ever match."""
+    with pytest.raises(ValueError):
+        ledger.record_event(conn, "web", "findings_viewed", "no")
+
+
+def test_events_come_back_newest_first_and_scoped_to_their_project(conn):
+    ledger.record_event(conn, "web", "analysis_started", "one")
+    ledger.record_event(conn, "web", "analysis_finished", "two")
+    ledger.record_event(conn, "other", "analysis_started", "elsewhere")
+    kinds = [e["kind"] for e in ledger.events_for(conn, project="web")]
+    assert kinds == ["analysis_finished", "analysis_started"]
+    assert len(ledger.events_for(conn)) == 3
+
+
+def test_events_filter_by_kind_and_paginate(conn):
+    for i in range(5):
+        ledger.record_event(conn, "web", "analysis_started", f"n{i}")
+    ledger.record_event(conn, "web", "decision_made", "accepted something")
+    assert len(ledger.events_for(conn, project="web", kinds=("decision_made",))) == 1
+    page = ledger.events_for(conn, project="web", limit=2, offset=2)
+    assert len(page) == 2
+
+
 def test_a_failed_re_report_does_not_leave_the_finding_with_half_its_occurrences(conn):
     """The upsert path deletes the old occurrences before inserting the new
     ones. If that insert then fails partway, the whole re-report -- the field

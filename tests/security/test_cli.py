@@ -1281,3 +1281,29 @@ def test_the_door_accepts_info_as_a_severity(tmp_path):
         "fingerprint": "c" * 64, "category": "sast", "rule": "observation",
         "severity": "info", "title": "worth knowing", "rationale": "r",
         "remediation": "none needed", "occurrences": []}))
+
+
+# ------------------------------------------------------------ the event log
+
+def test_opening_and_finishing_an_analysis_files_events(tmp_path):
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    aid = run(db, "open-analysis", "--project", "web", "--repo", "web",
+              "--branch", "main", "--commit", "a", "--profile", "quick",
+              "--run-id", "r")["analysis_id"]
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    kinds = [e["kind"] for e in run(db, "events", "--project", "web")]
+    assert "analysis_started" in kinds
+    assert "analysis_finished" in kinds
+
+
+def test_a_decision_files_an_event_carrying_its_reason(tmp_path):
+    db = tmp_path / "security.db"
+    run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+        "--state", "accepted", "--reason", "reviewed with the team")
+    ev = [e for e in run(db, "events", "--project", "web")
+          if e["kind"] == "decision_made"]
+    assert len(ev) == 1
+    assert "reviewed with the team" in ev[0]["detail"]

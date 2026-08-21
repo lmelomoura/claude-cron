@@ -73,10 +73,25 @@ CREATE TABLE IF NOT EXISTS sbom (
   project TEXT NOT NULL, repo TEXT NOT NULL, branch TEXT NOT NULL,
   analysis_id INTEGER NOT NULL, document TEXT NOT NULL,
   PRIMARY KEY (project, repo, branch));
+
+-- What happened, in order. No user column and no IP: this install has one
+-- operator, enforced by app.db's own CHECK (id = 1), and a column that can
+-- only ever hold one value teaches nothing.
+CREATE TABLE IF NOT EXISTS event (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project TEXT NOT NULL, kind TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '', related TEXT NOT NULL DEFAULT '',
+  at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS event_by_project_time ON event(project, at DESC);
 """
 
 DECISION_STATES = ("accepted", "false_positive")
 ANALYSIS_END_STATES = ("done", "failed", "capped")
+
+# A closed set. A typo must fail loudly rather than file an event that no
+# filter will ever match and no screen will ever show.
+EVENT_KINDS = ("analysis_started", "analysis_finished", "decision_made",
+               "settings_changed", "report_exported")
 
 
 # Columns added to `analysis` after the table's first shape, as
@@ -250,3 +265,28 @@ def store_sbom(conn, project, repo, branch, analysis_id, document: dict) -> None
         " analysis_id=excluded.analysis_id, document=excluded.document",
         (project, repo, branch, analysis_id, json.dumps(document)))
     conn.commit()
+
+
+def record_event(conn, project, kind, detail="", related="") -> None:
+    if kind not in EVENT_KINDS:
+        raise ValueError(f"unknown event kind: {kind}")
+    with conn:
+        conn.execute(
+            "INSERT INTO event (project, kind, detail, related, at)"
+            " VALUES (?,?,?,?,?)",
+            (project, kind, str(detail)[:500], str(related)[:120],
+             int(time.time())))
+
+
+def events_for(conn, project=None, kinds=(), since=0, limit=100, offset=0):
+    sql = "SELECT * FROM event WHERE at >= ?"
+    args = [int(since)]
+    if project:
+        sql += " AND project = ?"
+        args.append(project)
+    if kinds:
+        sql += " AND kind IN (" + ",".join("?" * len(kinds)) + ")"
+        args.extend(kinds)
+    sql += " ORDER BY at DESC, id DESC LIMIT ? OFFSET ?"
+    args.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
+    return [dict(r) for r in conn.execute(sql, args)]

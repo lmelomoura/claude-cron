@@ -7790,6 +7790,12 @@ cmd_project_set() { # reads a partial project object (JSON) from stdin; merges b
   else
     write_projects --argjson p "$partial" '.projects += [$p]'
   fi
+  # Best effort, and never the reason a save fails: the event is a record of
+  # what happened, not a gate on whether it is allowed to happen.
+  if security_enabled "$name"; then
+    security_py event --project "$name" --kind settings_changed \
+      --detail "project settings saved" >/dev/null 2>&1 || true
+  fi
   echo "project '$name' saved"
 }
 
@@ -8021,8 +8027,8 @@ case "${1:-}" in
                # Everything else is the ledger's own vocabulary, and the agent
                # types it verbatim from its prompt: prepare, findings,
                # fingerprint, report-finding, finish, checklist, render,
-               # decide, list.
-               "")      die "usage: claude-cron security <analyze|prepare|findings|fingerprint|report-finding|finish|checklist|render|decide|list> …" ;;
+               # decide, list, event, events.
+               "")      die "usage: claude-cron security <analyze|prepare|findings|fingerprint|report-finding|finish|checklist|render|decide|list|event|events> …" ;;
                *)       security_py "$@" ;;
              esac ;;
   security-branches) [ $# -ge 3 ] || die "usage: claude-cron security-branches <project> <repo>"

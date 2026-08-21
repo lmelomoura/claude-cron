@@ -160,6 +160,8 @@ def cmd_open_analysis(args):
     conn = _conn(args)
     aid = ledger.start_analysis(conn, args.project, args.repo, args.branch,
                                 args.commit, args.profile, args.run_id)
+    ledger.record_event(conn, args.project, "analysis_started",
+                        f"{args.profile} on {args.branch}", str(aid))
     print(json.dumps({"analysis_id": aid}))
 
 
@@ -457,6 +459,12 @@ def cmd_finish(args):
         if part and part not in note:
             note = f"{note} {part}".strip()
     ledger.finish_analysis(conn, args.analysis, state, _spend(args.spend), note)
+    # `row`'s own project and branch, never a flag the caller passed: `finish`
+    # has two callers and neither one necessarily agrees with the row about
+    # what it is closing, so the event has to come from the row itself.
+    ledger.record_event(conn, row["project"], "analysis_finished",
+                        f"{state} · {row['profile']} on {row['branch']}",
+                        str(args.analysis))
 
 
 def _checklist(conn, analysis_id):
@@ -614,6 +622,8 @@ def cmd_decide(args):
                             args.state, args.reason, args.by)
     except ValueError as exc:
         sys.exit(f"decide: {exc}")
+    ledger.record_event(conn, args.project, "decision_made",
+                        f"{args.state}: {args.reason}", args.fingerprint[:12])
 
 
 def cmd_rename_project(args):
@@ -646,6 +656,20 @@ def cmd_list(args):
         "SELECT * FROM analysis WHERE project=? ORDER BY id DESC LIMIT 100",
         (args.project,)).fetchall()
     print(json.dumps([dict(r) for r in rows], indent=2))
+
+
+def cmd_event(args):
+    try:
+        ledger.record_event(_conn(args), args.project, args.kind,
+                            args.detail, args.related)
+    except ValueError as exc:
+        sys.exit(f"event: {exc}")
+
+
+def cmd_events(args):
+    print(json.dumps(ledger.events_for(
+        _conn(args), project=args.project or None, kinds=tuple(args.kind),
+        since=args.since, limit=args.limit, offset=args.offset), indent=2))
 
 
 def main(argv=None):
@@ -712,6 +736,22 @@ def main(argv=None):
 
     ls = sub.add_parser("list", parents=[dbflag]); ls.set_defaults(fn=cmd_list)
     ls.add_argument("--project", required=True)
+
+    # Deliberately absent from AGENT_FORBIDDEN: the agent recording that it
+    # started an analysis is not a human-authority act like `decide` or
+    # `open-analysis` is.
+    ev = sub.add_parser("event", parents=[dbflag]); ev.set_defaults(fn=cmd_event)
+    for flag in ("project", "kind"):
+        ev.add_argument(f"--{flag}", required=True)
+    ev.add_argument("--detail", default="")
+    ev.add_argument("--related", default="")
+
+    es = sub.add_parser("events", parents=[dbflag]); es.set_defaults(fn=cmd_events)
+    es.add_argument("--project", default="")
+    es.add_argument("--kind", action="append", default=[])
+    es.add_argument("--since", type=int, default=0)
+    es.add_argument("--limit", type=int, default=100)
+    es.add_argument("--offset", type=int, default=0)
 
     args = p.parse_args(argv)
     if not getattr(args, "db", None):

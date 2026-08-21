@@ -2230,6 +2230,27 @@ def security_report(analysis_id, fmt):
     # From a literal dict keyed by the already-validated format, never from the
     # caller's string: the same rule the int id above follows.
     ext = REPORT_EXTENSIONS.get(fmt, fmt)
+    # The route (see `/api/security/report`) only ever receives the id and the
+    # format the page's own fetch call sends (dashboard.html's `secDownload`)
+    # -- never the project name -- so the export event this download earns is
+    # filed under a project read back out of the ledger, via `checklist`, the
+    # verb that already answers with the analysis's own row. Best effort: a
+    # project the CLI could not name (a stray warning on stdout, a row gone
+    # between the render above and this lookup) must not turn an otherwise
+    # successful download into a 500 -- the file the caller asked for has
+    # already been rendered by the time this runs.
+    ok2, meta = cc(["security", "checklist", "--analysis", str(int(analysis_id))])
+    project = None
+    if ok2:
+        try:
+            project = json.loads(meta)["analysis"]["project"]
+        except (ValueError, KeyError, TypeError):
+            project = None
+    if project:
+        cc(["security", "event", "--project", project,
+            "--kind", "report_exported",
+            "--detail", f"{fmt} report for analysis {int(analysis_id)}",
+            "--related", str(int(analysis_id))])
     return out, {"Content-Disposition":
                  f'attachment; filename="security-analysis-{int(analysis_id)}.{ext}"'}
 
