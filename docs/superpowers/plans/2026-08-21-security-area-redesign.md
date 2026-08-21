@@ -1390,16 +1390,31 @@ from cache. Anything the modules need from the page (`api`, `toast`, `$`,
 the page defines before the tag — an interface, rather than the modules reaching
 into globals.
 
-`bin/claude-cron` selftest:
+`bin/claude-cron` selftest — a CONTENT fingerprint, not mtimes:
 
 ```bash
   # The bundle is committed, so it can be stale, and a stale bundle is a page
-  # that silently runs last week's code. Structural: mtime, not content.
-  newest_src="$(find "$SCRIPT_DIR/../ui" -name '*.js' -newer "$SCRIPT_DIR/static/security.js" 2>/dev/null | head -1)"
-  [ -z "$newest_src" ] \
-    && ok "the committed UI bundle is newer than every source it was built from" \
-    || bad "bin/static/security.js is older than $newest_src — run build/build-ui.sh"
+  # silently running last week's code. NOT `find -newer`: git records no
+  # mtimes, and a fresh clone writes bin/ before ui/, so every source comes
+  # out newer than the bundle and the assertion fails on a clean checkout.
+  # build/ui-digest.sh stamps a sha256 of the sources into the bundle; both
+  # the build and this check read that one definition.
+  want="$(bash "$SCRIPT_DIR/../build/ui-digest.sh")"
+  have="$(grep -o 'UI_DIGEST:[0-9a-f]\{64\}' "$SCRIPT_DIR/static/security.js" 2>/dev/null | head -1)"
+  [ "$have" = "UI_DIGEST:$want" ] \
+    && ok "the committed UI bundle was built from the sources in the tree" \
+    || bad "bin/static/security.js does not match ui/ -- run build/build-ui.sh"
 ```
+
+**Load order.** The tag goes BEFORE the page's own script, not after it: the
+page's `initViews()` runs synchronously and reaches `renderSecurity()`, so a
+bundle loaded afterwards is a `ReferenceError` at boot. The bundle only
+defines; the page then calls `CCSecurity.init(CC)` at the exact line the moved
+code used to begin, so every statement still runs in its original order.
+
+**`_build_id()` must also hash `bin/static/*.js`.** Derived from the page
+alone it would stop changing when Security code changed, breaking both the
+`?v=` cache-bust and the open-tab auto-reload.
 
 `.gitignore` gains `node_modules/`. `bin/static/` must NOT be ignored.
 
