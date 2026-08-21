@@ -696,3 +696,291 @@ def test_active_runs_carries_derived_security_jobs(srv, clean_data):
     data = srv.load_data()
     assert "security-web" in data["active_runs"]
     assert "real-job" in data["active_runs"]
+
+
+# ------------------------------------------------------------- findings GET
+#
+# `security_findings` validates BEFORE it shells out -- sort/direction/
+# severity/state/category are refused at this edge exactly like `security_
+# decide`'s reason/state and `security_analyze`'s branch/profile already are,
+# so a bad value reaching the page is a 400 with a sentence, never a 500 built
+# from a CLI that exited non-zero (or, for a sort column, a raw SQL fragment
+# that never even reached the query -- see queries.finding_rows's own
+# docstring on why that column specifically cannot be a parameter).
+#
+# `params` mirrors what `parse_qs()` on a real query string hands the route:
+# most values arrive as a list (a repeated query parameter, or this page's own
+# comma-joined checkbox filters split apart below), but several tests below
+# pass a bare string for a single-value field -- both shapes must work, since
+# a real GET and a simplified test call must behave identically.
+
+def test_the_findings_route_refuses_an_unknown_sort_at_the_edge(srv):
+    """The CLI refuses it too. Refusing here as well means the page gets a 400
+    with a sentence instead of a 500 carrying a stack trace."""
+    code, _ = srv.security_findings({"project": "web", "sort": "; DROP TABLE"})
+    assert code == 400
+
+
+def test_the_findings_route_refuses_an_unknown_direction(srv, monkeypatch):
+    def must_not_run(args, stdin=None):
+        raise AssertionError("the CLI must not be reached")
+    monkeypatch.setattr(srv, "cc", must_not_run)
+    code, payload = srv.security_findings({"project": "web", "dir": "sideways"})
+    assert code == 400
+    assert "dir" in payload["error"]
+
+
+def test_the_findings_route_refuses_a_blank_project(srv, monkeypatch):
+    def must_not_run(args, stdin=None):
+        raise AssertionError("the CLI must not be reached")
+    monkeypatch.setattr(srv, "cc", must_not_run)
+    code, payload = srv.security_findings({"project": "  "})
+    assert code == 400
+    assert "project" in payload["error"]
+
+
+def test_the_findings_route_refuses_an_unknown_severity(srv, monkeypatch):
+    def must_not_run(args, stdin=None):
+        raise AssertionError("the CLI must not be reached")
+    monkeypatch.setattr(srv, "cc", must_not_run)
+    code, payload = srv.security_findings({"project": "web", "severity": "extreme"})
+    assert code == 400
+    assert "severity" in payload["error"]
+
+
+def test_the_findings_route_refuses_an_unknown_state(srv, monkeypatch):
+    def must_not_run(args, stdin=None):
+        raise AssertionError("the CLI must not be reached")
+    monkeypatch.setattr(srv, "cc", must_not_run)
+    code, payload = srv.security_findings({"project": "web", "state": "ignored"})
+    assert code == 400
+    assert "state" in payload["error"]
+
+
+def test_the_findings_route_refuses_an_unknown_category(srv, monkeypatch):
+    def must_not_run(args, stdin=None):
+        raise AssertionError("the CLI must not be reached")
+    monkeypatch.setattr(srv, "cc", must_not_run)
+    code, payload = srv.security_findings({"project": "web", "category": "network"})
+    assert code == 400
+    assert "category" in payload["error"]
+
+
+def test_the_findings_route_refuses_a_non_integer_analysis_id(srv, monkeypatch):
+    def must_not_run(args, stdin=None):
+        raise AssertionError("the CLI must not be reached")
+    monkeypatch.setattr(srv, "cc", must_not_run)
+    code, payload = srv.security_findings({"project": "web", "analysis": "seven"})
+    assert code == 400
+    assert "analysis" in payload["error"]
+
+
+def test_the_findings_route_caps_page_size(srv, monkeypatch):
+    seen = {}
+
+    def fake(args, stdin=None):
+        seen["args"] = args
+        return True, json.dumps({"rows": [], "total": 0, "unique": 0,
+                                 "by_severity": {}, "page": 1, "per_page": 100})
+    monkeypatch.setattr(srv, "cc", fake)
+    srv.security_findings({"project": "web", "per_page": "99999"})
+    assert "99999" not in seen["args"]
+    assert seen["args"][seen["args"].index("--per-page") + 1] == "100"
+
+
+def test_the_findings_route_treats_page_zero_as_page_one(srv, monkeypatch):
+    """Clamped, not refused -- the same treatment `queries.finding_rows`
+    itself gives an out-of-range page (see its own docstring): a page number
+    is a request for a slice, and 0/negative slides to the first one rather
+    than failing a query that a non-numeric value still refuses."""
+    seen = {}
+
+    def fake(args, stdin=None):
+        seen["args"] = args
+        return True, json.dumps({"rows": [], "total": 0, "unique": 0,
+                                 "by_severity": {}, "page": 1, "per_page": 25})
+    monkeypatch.setattr(srv, "cc", fake)
+    srv.security_findings({"project": "web", "page": "0"})
+    assert seen["args"][seen["args"].index("--page") + 1] == "1"
+
+
+def test_the_findings_route_refuses_a_non_integer_page(srv, monkeypatch):
+    def must_not_run(args, stdin=None):
+        raise AssertionError("the CLI must not be reached")
+    monkeypatch.setattr(srv, "cc", must_not_run)
+    code, payload = srv.security_findings({"project": "web", "page": "abc"})
+    assert code == 400
+    assert "page" in payload["error"]
+
+
+def test_the_findings_route_passes_every_filter_through_as_repeated_flags(srv, monkeypatch):
+    """Comma-joined checkbox values (the shape this page's own filter bar
+    sends) are split into repeated flags -- `queries.finding_rows`'s own
+    `filters` dict takes a LIST per key, and a CLI flag collected with
+    `action="append"` is how that list crosses the process boundary."""
+    seen = {}
+
+    def fake(args, stdin=None):
+        seen["args"] = args
+        return True, json.dumps({"rows": [], "total": 0, "unique": 0,
+                                 "by_severity": {}, "page": 2, "per_page": 10})
+    monkeypatch.setattr(srv, "cc", fake)
+    srv.security_findings({
+        "project": "web", "sort": "title", "dir": "asc", "page": "2", "per_page": "10",
+        "severity": "critical,high", "state": "open", "category": "sast",
+        "branch": "release/2.1", "path": "src/auth", "q": "token",
+        "analysis": "3,4", "show_resolved": "1"})
+    args = seen["args"]
+    assert args[:2] == ["security", "findings-page"]
+    assert args[args.index("--project") + 1] == "web"
+    assert args[args.index("--sort") + 1] == "title"
+    assert args[args.index("--dir") + 1] == "asc"
+    assert args[args.index("--page") + 1] == "2"
+    assert args[args.index("--per-page") + 1] == "10"
+    assert args.count("--severity") == 2
+    assert "critical" in args and "high" in args
+    assert args[args.index("--state") + 1] == "open"
+    assert args[args.index("--category") + 1] == "sast"
+    assert args[args.index("--branch") + 1] == "release/2.1"
+    assert args[args.index("--path") + 1] == "src/auth"
+    assert args[args.index("--q") + 1] == "token"
+    assert args.count("--analysis") == 2
+    assert "3" in args and "4" in args
+    assert "--show-resolved" in args
+
+
+def test_the_findings_route_accepts_repeated_query_values_the_same_way(srv, monkeypatch):
+    """The shape a real `?severity=critical&severity=high` produces through
+    `parse_qs()` -- a list, not a comma-joined string -- must work exactly
+    like the comma-joined form the test above drives."""
+    seen = {}
+
+    def fake(args, stdin=None):
+        seen["args"] = args
+        return True, json.dumps({"rows": [], "total": 0, "unique": 0,
+                                 "by_severity": {}, "page": 1, "per_page": 25})
+    monkeypatch.setattr(srv, "cc", fake)
+    srv.security_findings({"project": ["web"], "severity": ["critical", "high"]})
+    args = seen["args"]
+    assert args.count("--severity") == 2
+    assert "critical" in args and "high" in args
+
+
+def test_the_findings_route_reports_a_cli_failure_as_500(srv, monkeypatch):
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (False, "boom"))
+    code, payload = srv.security_findings({"project": "web"})
+    assert code == 500
+    assert "boom" in payload["error"]
+
+
+def test_the_findings_route_is_a_500_on_rc0_chatter_not_json(srv, monkeypatch):
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None:
+                        (True, '{"rows": []}\nwarning: noisy'))
+    code, payload = srv.security_findings({"project": "web"})
+    assert code == 500
+    assert "not valid JSON" in payload["error"]
+
+
+def test_the_findings_route_answers_with_the_full_shape(srv, monkeypatch):
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, json.dumps({
+        "rows": [{"fingerprint": "a" * 64, "severity": "critical"}],
+        "total": 1, "unique": 1,
+        "by_severity": {"critical": 1, "high": 0, "medium": 0, "low": 0, "info": 0},
+        "page": 1, "per_page": 25,
+        "filters": [{"project": "web", "name": "mine", "query": {}, "saved_at": 1}]})))
+    code, payload = srv.security_findings({"project": "web"})
+    assert code == 200
+    assert set(payload) == {"rows", "total", "unique", "by_severity", "page",
+                            "per_page", "filters"}
+    assert payload["filters"][0]["name"] == "mine"
+
+
+# ------------------------------------------------------------ saved filters
+
+def test_saving_a_filter_without_a_name_is_refused(srv):
+    code, payload = srv.security_filter_save({"project": "web", "name": "  "})
+    assert code == 400
+    assert "name" in payload["error"]
+
+
+def test_saving_a_filter_without_a_project_is_refused(srv, monkeypatch):
+    def must_not_run(args, stdin=None):
+        raise AssertionError("the CLI must not be reached")
+    monkeypatch.setattr(srv, "cc", must_not_run)
+    code, payload = srv.security_filter_save({"project": "  ", "name": "mine"})
+    assert code == 400
+    assert "project" in payload["error"]
+
+
+def test_saving_a_filter_sends_the_query_on_stdin(srv, monkeypatch):
+    seen = {}
+
+    def fake(args, stdin=None):
+        seen["args"] = args
+        seen["stdin"] = stdin
+        return True, ""
+    monkeypatch.setattr(srv, "cc", fake)
+    code, payload = srv.security_filter_save(
+        {"project": "web", "name": "mine", "query": {"severity": ["critical"]}})
+    assert code == 200
+    assert payload == {"ok": True}
+    args = seen["args"]
+    assert args[:2] == ["security", "filters"]
+    assert "save" in args
+    assert args[args.index("--project") + 1] == "web"
+    assert args[args.index("--name") + 1] == "mine"
+    assert json.loads(seen["stdin"]) == {"severity": ["critical"]}
+
+
+def test_saving_a_filter_with_no_query_sends_an_empty_object(srv, monkeypatch):
+    """A caller that forgot the current filter set, or sent something that is
+    not an object, must not crash the save -- it saves an empty query rather
+    than reject the whole request over a field the ledger itself accepts."""
+    seen = {}
+
+    def fake(args, stdin=None):
+        seen["stdin"] = stdin
+        return True, ""
+    monkeypatch.setattr(srv, "cc", fake)
+    srv.security_filter_save({"project": "web", "name": "mine"})
+    assert json.loads(seen["stdin"]) == {}
+
+
+def test_saving_a_filter_reports_a_cli_failure_as_500(srv, monkeypatch):
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None:
+                        (False, "filters save: a saved filter needs a name"))
+    code, payload = srv.security_filter_save({"project": "web", "name": "mine"})
+    assert code == 500
+
+
+def test_deleting_a_filter_requires_a_project_and_a_name(srv, monkeypatch):
+    def must_not_run(args, stdin=None):
+        raise AssertionError("the CLI must not be reached")
+    monkeypatch.setattr(srv, "cc", must_not_run)
+    code, payload = srv.security_filter_delete({"project": "", "name": "mine"})
+    assert code == 400
+    code, payload = srv.security_filter_delete({"project": "web", "name": ""})
+    assert code == 400
+
+
+def test_deleting_a_filter_passes_through_and_reports_what_the_cli_says(srv, monkeypatch):
+    seen = {}
+
+    def fake(args, stdin=None):
+        seen["args"] = args
+        return True, json.dumps({"deleted": True})
+    monkeypatch.setattr(srv, "cc", fake)
+    code, payload = srv.security_filter_delete({"project": "web", "name": "mine"})
+    assert code == 200
+    assert payload == {"deleted": True}
+    args = seen["args"]
+    assert args[:2] == ["security", "filters"]
+    assert "delete" in args
+    assert args[args.index("--project") + 1] == "web"
+    assert args[args.index("--name") + 1] == "mine"
+
+
+def test_deleting_a_filter_reports_a_cli_failure_as_500(srv, monkeypatch):
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (False, "boom"))
+    code, payload = srv.security_filter_delete({"project": "web", "name": "mine"})
+    assert code == 500

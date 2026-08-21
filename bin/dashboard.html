@@ -1685,6 +1685,7 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
             <button class="viewtab" data-tab="overview" id="secpjt-overview"></button>
             <button class="viewtab" data-tab="runs" id="secpjt-runs"></button>
             <button class="viewtab" data-tab="branches" id="secpjt-branches"></button>
+            <button class="viewtab" data-tab="findings" id="secpjt-findings"></button>
             <button class="viewtab" data-tab="reports" id="secpjt-reports"></button>
           </nav>
 
@@ -1746,6 +1747,16 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
             <!-- One row per branch ever analysed — last analysis, open
                  findings by severity, analysis count, 30-day trend. Built by
                  ui/security/branches-tab.js. -->
+          </div>
+
+          <div class="pane" id="sec-pj-findings" hidden>
+            <!-- Every finding of this project in one filterable, paginated
+                 table -- its own fetch (GET /api/security/findings), not part
+                 of the project-data payload the other tabs share, since it is
+                 sorted, filtered and paged on the server. Built by
+                 ui/security/findings-screen.js's renderFindings(), which is
+                 the SAME function a future standalone caller mounts
+                 elsewhere -- see that module's own file comment. -->
           </div>
 
           <div class="pane" id="sec-pj-reports" hidden>

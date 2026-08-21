@@ -19,6 +19,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The Security area has a findings browser.** Every finding of a project in
+  one filterable, paginated table — severity, state, category, branch,
+  analysis and path filters, plus free-text search across title/rule/
+  rationale/file, all resolved server-side by `queries.finding_rows` behind a
+  new endpoint, `GET /api/security/findings`, backed by a new CLI verb,
+  `security findings-page`. A row's state is the state its OWN branch's
+  latest finished analysis gives it — a list that crosses branches has to say
+  which analysis it is speaking about, so Branch and First seen sit beside
+  State rather than a bare severity/title pair. The strip above the table
+  shows `total` and `unique` as two separately labelled numbers (189 findings
+  can be 93 problems, the same distinction the index screen's donut already
+  draws) alongside the five severities. `min_severity` stays a display-only
+  floor living entirely in the page: it says how many rows it is hiding —
+  counted from the whole filtered set `by_severity` describes, not just the
+  page on screen, so the count is exact regardless of which page is open —
+  and a caption beside it says downloads always carry every recorded finding
+  regardless of what the floor shows. Accept risk/False positive act through
+  the existing `security_decide` op and are refused while an analysis of the
+  project is running, exactly as the CLI already refuses it. Saved filters (a
+  named set of criteria per project) get a picker plus save/delete, backed by
+  two new ops, `security_filter_save`/`security_filter_delete`, and the
+  existing `ledger.saved_filters`. Sort column, direction, page size and the
+  severity/state/category vocabularies are all validated at the route before
+  a subprocess is ever spawned — a bad value is a 400 with a sentence, never
+  a 500 built from a CLI that exited non-zero or a raw SQL fragment that
+  never even reached the query. The screen is one module exporting one mount
+  function, `renderFindings(host, project)`: the project screen's new fifth
+  tab mounts it today, written so a future caller does not mean a second copy
+  of a filterable table to drift the way a duplicated download function, and
+  a duplicated state machine before it, already have.
+
 - **The Security area has an index screen.** Five KPI cards (projects, total
   analyses, critical, high, success rate), a table of every security-enabled
   project with its default branch's current posture, a fleet-wide feed of

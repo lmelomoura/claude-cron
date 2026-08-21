@@ -958,6 +958,62 @@ def cmd_project_data(args):
                    "branch_count": queries.analysed_branch_count(conn, args.project)}}))
 
 
+def cmd_findings_page(args):
+    """Every row the findings browser draws, for one project, plus that
+    project's saved filters in the same payload -- the page that draws the
+    filter bar's own picker needs both in one round trip, the same reasoning
+    `index-data`/`project-data` already bundle a whole screen's panels into
+    one call rather than one subprocess per panel.
+
+    Filters travel as repeated flags, not a JSON body: `queries.finding_rows`'s
+    own `filters` dict has a small, fixed set of keys (show_resolved,
+    severity, state, category, branch, analysis, path, q) -- unlike a SAVED
+    filter (see `cmd_filters`'s own docstring), which is arbitrary,
+    human-curated criteria this door must not have to keep in step with by
+    hand as the page grows more of them.
+
+    `sort`/`direction` are validated twice over by the time a bad value could
+    reach here -- the server's own route (`security_findings` in
+    bin/claude-cron-server) already refuses one before ever shelling out --
+    but `queries.finding_rows` raises on an out-of-band value regardless of
+    who calls this verb (a human at the command line has no such route in
+    front of them), and that raise is caught here and turned into the same
+    sentence-on-stderr every other verb in this file gives a bad argument,
+    rather than a stack trace.
+
+    Read-only, via `queries.read_only`, deliberately NOT `ledger.connect` --
+    same reasoning as `index-data`/`project-data`: a screen that only LOOKS
+    must not conjure the ledger file it is asking about into existence.
+    """
+    conn = queries.read_only(args.db)
+    if conn is None:
+        print(json.dumps({
+            "rows": [], "total": 0, "unique": 0,
+            "by_severity": {s: 0 for s in report.SEVERITIES},
+            "page": max(1, args.page),
+            "per_page": max(1, min(args.per_page, queries.MAX_PER_PAGE)),
+            "filters": []}))
+        return
+    filters = {
+        "show_resolved": args.show_resolved,
+        "severity": args.severity or [],
+        "state": args.state or [],
+        "category": args.category or [],
+        "branch": args.branch or [],
+        "analysis": args.analysis or [],
+        "path": args.path,
+        "q": args.q,
+    }
+    try:
+        result = queries.finding_rows(conn, args.project, filters,
+                                      sort=args.sort, direction=args.direction,
+                                      page=args.page, per_page=args.per_page)
+    except ValueError as exc:
+        sys.exit(f"findings-page: {exc}")
+    result["filters"] = ledger.saved_filters(conn, args.project)
+    print(json.dumps(result))
+
+
 def cmd_event(args):
     try:
         ledger.record_event(_conn(args), args.project, args.kind,
@@ -1095,6 +1151,26 @@ def main(argv=None):
     pd.add_argument("--project", required=True)
     pd.add_argument("--base", default="")
     pd.add_argument("--default-profile", default="", dest="default_profile")
+
+    # Deliberately absent from AGENT_FORBIDDEN: same reasoning as
+    # `index-data`/`project-data` above -- it opens the ledger through
+    # `queries.read_only` and writes nothing.
+    fpg = sub.add_parser("findings-page", parents=[dbflag]); fpg.set_defaults(fn=cmd_findings_page)
+    fpg.add_argument("--project", required=True)
+    fpg.add_argument("--sort", default="severity", choices=queries.SORTABLE)
+    fpg.add_argument("--dir", default="desc", choices=("asc", "desc"), dest="direction")
+    fpg.add_argument("--page", type=int, default=1)
+    fpg.add_argument("--per-page", type=int, default=25, dest="per_page")
+    fpg.add_argument("--severity", action="append", default=None, choices=report.SEVERITIES)
+    fpg.add_argument("--state", action="append", default=None,
+                     choices=diff.DERIVED_STATES + ledger.DECISION_STATES)
+    fpg.add_argument("--category", action="append", default=None,
+                     choices=diff.DETERMINISTIC_CATEGORIES + ("sast",))
+    fpg.add_argument("--branch", action="append", default=None)
+    fpg.add_argument("--analysis", action="append", type=int, default=None)
+    fpg.add_argument("--q", default="")
+    fpg.add_argument("--path", default="")
+    fpg.add_argument("--show-resolved", action="store_true", dest="show_resolved")
 
     # Deliberately absent from AGENT_FORBIDDEN: it prints one row and writes
     # nothing, the same reasoning as `fingerprint` and `findings` above.

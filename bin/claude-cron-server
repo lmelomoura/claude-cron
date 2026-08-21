@@ -2447,6 +2447,187 @@ def security_analyze(body):
     return (200, {"ok": True, "output": out}) if ok else (500, {"error": out})
 
 
+FINDINGS_SORT = ("severity", "title", "category", "branch", "first_seen", "state")
+# Every value below mirrors a closed set defined in bin/security/ — duplicated
+# here, not imported, for the same reason PROFILES/BRANCH_OK/the literal
+# state list in security_decide already are: this file shells out to the CLI
+# rather than importing security/queries.py, so a bad value is refused at
+# this edge BEFORE a subprocess is ever spawned, independently of whatever the
+# CLI would have done with it. See security.queries.SORTABLE,
+# security.report.SEVERITIES, security.diff.DERIVED_STATES +
+# security.ledger.DECISION_STATES, and security.diff.DETERMINISTIC_CATEGORIES
+# + ("sast",) — the design spec's own finding shape names all four.
+FINDING_SEVERITIES = ("critical", "high", "medium", "low", "info")
+FINDING_STATES = ("new", "open", "partial", "pending", "fixed", "regressed",
+                  "accepted", "false_positive")
+FINDING_CATEGORIES = ("secret", "dependency", "sast", "hygiene")
+MAX_FINDINGS_PER_PAGE = 100
+
+
+def _param(params, key, default=""):
+    """One value for `key`, whether `params` holds it as a bare string (every
+    test in this file that calls a route function directly) or as a list
+    (what `parse_qs()` on a real query string hands the route) -- the first
+    element wins for a list, exactly like `(q.get(...) or [""])[0]` already
+    does at every other GET route in this file."""
+    raw = params.get(key, default)
+    if isinstance(raw, list):
+        return raw[0] if raw else default
+    return raw
+
+
+def _param_list(params, key):
+    """Every value for `key`, comma-split and flattened. Covers three shapes
+    with the one pass: a raw `parse_qs()` list from repeated query params
+    (`?severity=critical&severity=high`), a single comma-joined value (this
+    page's own checkbox filters, joined client-side before the request goes
+    out), and a bare string a test hands in directly, skipping the query
+    string layer entirely. An absent key is an empty list, not `[""]`."""
+    raw = params.get(key)
+    if raw is None:
+        return []
+    items = raw if isinstance(raw, list) else [raw]
+    out = []
+    for item in items:
+        out.extend(v.strip() for v in str(item).split(",") if v.strip())
+    return out
+
+
+def _checked_list(params, key, known):
+    """`_param_list`'s values, refused as a whole the moment one of them is
+    not in `known` -- severity/state/category are closed vocabularies, and a
+    value outside them is not a filter that matches nothing, it is a typo (or
+    an injection attempt) that deserves a sentence, not a silently empty
+    result."""
+    values = _param_list(params, key)
+    bad = [v for v in values if v not in known]
+    if bad:
+        return None, {"error": f"{key} must be one of {sorted(known)}, got {bad[0]!r}"}
+    return values, None
+
+
+def security_findings(params):
+    """`GET /api/security/findings` — every row `queries.finding_rows` (Task
+    6) draws for one project, plus that project's saved filters
+    (`ledger.saved_filters`, Task 4) in the same payload; see
+    `bin/security/cli.py`'s `findings-page`, which bundles both the same way
+    `index-data`/`project-data` already bundle a whole screen's panels into
+    one call.
+
+    `sort`/`direction` are an allowlist refused here, at the edge, before a
+    subprocess is ever spawned -- `sort` is interpolated by nature inside
+    `queries.finding_rows`'s own ORDER-adjacent logic (see that function's
+    docstring), the one thing a query parameter cannot protect on its own.
+    `page`/`per_page` are shape-checked (a non-integer is a 400) and then
+    CLAMPED, not refused for being out of range -- exactly the treatment
+    `queries.finding_rows` itself gives them, so a value this route would
+    clamp anyway never reaches argv, where it is one more thing visible to
+    anyone reading the process list. `severity`/`state`/`category` are
+    checked against their closed vocabularies; `branch`/`path`/`q` are free
+    text and travel as a single argv element each, never as shell -- `cc()`
+    always calls `subprocess.run` with a list, never a shell string, so
+    nothing about their CONTENT needs escaping, only their shape (a list of
+    strings) needs to stay a list.
+    """
+    project = str(_param(params, "project")).strip()
+    if not project:
+        return 400, {"error": "project required"}
+
+    sort = str(_param(params, "sort", "severity") or "severity").strip()
+    if sort not in FINDINGS_SORT:
+        return 400, {"error": f"sort must be one of {FINDINGS_SORT}"}
+    direction = str(_param(params, "dir", "desc") or "desc").strip()
+    if direction not in ("asc", "desc"):
+        return 400, {"error": "dir must be asc or desc"}
+
+    try:
+        page = int(_param(params, "page", "1") or 1)
+    except (TypeError, ValueError):
+        return 400, {"error": "page must be an integer"}
+    page = max(1, page)
+    try:
+        per_page = int(_param(params, "per_page", "25") or 25)
+    except (TypeError, ValueError):
+        return 400, {"error": "per_page must be an integer"}
+    per_page = max(1, min(per_page, MAX_FINDINGS_PER_PAGE))
+
+    severity, err = _checked_list(params, "severity", FINDING_SEVERITIES)
+    if err:
+        return 400, err
+    state, err = _checked_list(params, "state", FINDING_STATES)
+    if err:
+        return 400, err
+    category, err = _checked_list(params, "category", FINDING_CATEGORIES)
+    if err:
+        return 400, err
+
+    branch = str(_param(params, "branch")).strip()
+    path = str(_param(params, "path")).strip()
+    q = str(_param(params, "q")).strip()
+    show_resolved = str(_param(params, "show_resolved")).strip().lower() in ("1", "true", "yes")
+
+    analysis_ids = []
+    for raw in _param_list(params, "analysis"):
+        try:
+            analysis_ids.append(int(raw))
+        except ValueError:
+            return 400, {"error": f"analysis must be a list of integers, got {raw!r}"}
+
+    args = ["security", "findings-page", "--project", project,
+           "--sort", sort, "--dir", direction,
+           "--page", str(page), "--per-page", str(per_page)]
+    for s in severity:
+        args += ["--severity", s]
+    for s in state:
+        args += ["--state", s]
+    for s in category:
+        args += ["--category", s]
+    if branch:
+        args += ["--branch", branch]
+    for a in analysis_ids:
+        args += ["--analysis", str(a)]
+    if path:
+        args += ["--path", path]
+    if q:
+        args += ["--q", q]
+    if show_resolved:
+        args.append("--show-resolved")
+
+    ok, out = cc(args)
+    return _json_or_500(ok, out, "findings page")
+
+
+def security_filter_save(body):
+    project = str(body.get("project", "")).strip()
+    name = str(body.get("name", "")).strip()
+    if not project:
+        return 400, {"error": "project required"}
+    if not name:
+        # Mirrors ledger.save_filter's own refusal (bin/security/ledger.py),
+        # checked here too so the page gets a usable message instead of a 500
+        # from a CLI that exited non-zero.
+        return 400, {"error": "a saved filter needs a name"}
+    query = body.get("query")
+    if not isinstance(query, dict):
+        # Same shape check report-finding/filters-save already make on their
+        # own JSON body: a caller that forgot the current filter set, or sent
+        # something that is not an object, saves an empty query rather than
+        # failing the whole request over one field.
+        query = {}
+    ok, out = cc(["security", "filters", "save", "--project", project, "--name", name],
+                stdin=json.dumps(query))
+    return (200, {"ok": True}) if ok else (500, {"error": out})
+
+
+def security_filter_delete(body):
+    project = str(body.get("project", "")).strip()
+    name = str(body.get("name", "")).strip()
+    if not project or not name:
+        return 400, {"error": "project and name are required"}
+    ok, out = cc(["security", "filters", "delete", "--project", project, "--name", name])
+    return _json_or_500(ok, out, "filters delete")
+
+
 def security_decide(body):
     project = str(body.get("project", "")).strip()
     fingerprint = str(body.get("fingerprint", "")).strip()
@@ -2646,6 +2827,10 @@ class Handler(BaseHTTPRequestHandler):
             q = parse_qs(urlparse(self.path).query)
             code, payload = security_project((q.get("project") or [""])[0])
             return self._send(code, payload)
+        if path == "/api/security/findings":
+            q = parse_qs(urlparse(self.path).query)
+            code, payload = security_findings(q)
+            return self._send(code, payload)
         if path == "/api/security/checklist":
             q = parse_qs(urlparse(self.path).query)
             code, payload = security_checklist((q.get("analysis") or [""])[0])
@@ -2833,6 +3018,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(*security_analyze(body))
         if op == "security_decide":
             return self._send(*security_decide(body))
+        if op == "security_filter_save":
+            return self._send(*security_filter_save(body))
+        if op == "security_filter_delete":
+            return self._send(*security_filter_delete(body))
 
         # Reorder carries a LIST of ids rather than one — handle it before the
         # single-id check below. Jobs outside the list keep their positions, so

@@ -17,8 +17,10 @@
    under the Runs tab now instead of sitting directly under the repo bar --
    clicking a row in the new analyses table below calls the same
    secShowAnalysis() the old "#7" buttons in "Earlier analyses of this
-   branch" always did. Findings-with-decisions gets its own screen later
-   (the findings browser); this task is the header and the tabs around it. */
+   branch" always did. Findings-with-decisions has its own screen now (the
+   findings browser, ui/security/findings-screen.js) mounted under the
+   Findings tab -- this module still only owns the header, the tabs and the
+   sidebar, never the table itself. */
 import { $, fmtAgo, fmtDur, fmtWhen, openProjectEditor } from "./page.js";
 import { secIcon, secEl, secFetch } from "./dom.js";
 import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP } from "./vocabulary.js";
@@ -27,6 +29,7 @@ import { secIndexPosturePills, secIndexDonut } from "./index-screen.js";
 import { secOpen, secShowAnalysis } from "./analysis.js";
 import { secRenderProjectBranches } from "./branches-tab.js";
 import { secRenderProjectReports } from "./reports-tab.js";
+import { renderFindings } from "./findings-screen.js";
 
 // Every state `analysis.state` can hold (see bin/security/ledger.py's
 // `start_analysis`/`ANALYSIS_END_STATES`) -- the Runs tab's own filter row,
@@ -104,8 +107,16 @@ function secRenderProjectError(msg){
 }
 
 export function secSwitchProjectTab(tab){
-  secProjectTab = ["overview", "runs", "branches", "reports"].includes(tab) ? tab : "overview";
+  secProjectTab = ["overview", "runs", "branches", "findings", "reports"].includes(tab)
+    ? tab : "overview";
   secRenderTabs();
+  // Findings is fetched on its own (GET /api/security/findings, sorted/
+  // filtered/paged server-side) rather than riding the single project-data
+  // payload every other tab shares -- so switching TO it is what triggers its
+  // first fetch, and secRenderProject below re-fetches it on every later poll
+  // tick ONLY while it stays the active tab, never while some other tab is
+  // on screen.
+  if(secProjectTab === "findings") renderFindings($("sec-pj-findings"), secState.project);
 }
 
 function secRenderProject(){
@@ -117,20 +128,24 @@ function secRenderProject(){
   secRenderProjectBranches(secProjectCache);
   secRenderProjectReports(secProjectCache);
   secRenderProjectSidebar(secProjectCache);
+  if(secProjectTab === "findings") renderFindings($("sec-pj-findings"), secState.project);
 }
 
 function secRenderTabs(){
   const ov = $("secpjt-overview"), rn = $("secpjt-runs"),
-        br = $("secpjt-branches"), rp = $("secpjt-reports");
+        br = $("secpjt-branches"), fd = $("secpjt-findings"), rp = $("secpjt-reports");
   if(ov) ov.classList.toggle("active", secProjectTab === "overview");
   if(rn) rn.classList.toggle("active", secProjectTab === "runs");
   if(br) br.classList.toggle("active", secProjectTab === "branches");
+  if(fd) fd.classList.toggle("active", secProjectTab === "findings");
   if(rp) rp.classList.toggle("active", secProjectTab === "reports");
   const ovPane = $("sec-pj-overview"), rnPane = $("sec-pj-runs"),
-        brPane = $("sec-pj-branches"), rpPane = $("sec-pj-reports");
+        brPane = $("sec-pj-branches"), fdPane = $("sec-pj-findings"),
+        rpPane = $("sec-pj-reports");
   if(ovPane) ovPane.hidden = secProjectTab !== "overview";
   if(rnPane) rnPane.hidden = secProjectTab !== "runs";
   if(brPane) brPane.hidden = secProjectTab !== "branches";
+  if(fdPane) fdPane.hidden = secProjectTab !== "findings";
   if(rpPane) rpPane.hidden = secProjectTab !== "reports";
 }
 

@@ -49,10 +49,12 @@ function init(cc){
   iconLabel($("secpjt-overview"), "grid", "Overview");
   iconLabel($("secpjt-runs"), "activity", "Runs");
   iconLabel($("secpjt-branches"), "layers", "Branches");
+  iconLabel($("secpjt-findings"), "search", "Findings");
   iconLabel($("secpjt-reports"), "file", "Reports");
   $("secpjt-overview").addEventListener("click", () => secSwitchProjectTab("overview"));
   $("secpjt-runs").addEventListener("click", () => secSwitchProjectTab("runs"));
   $("secpjt-branches").addEventListener("click", () => secSwitchProjectTab("branches"));
+  $("secpjt-findings").addEventListener("click", () => secSwitchProjectTab("findings"));
   $("secpjt-reports").addEventListener("click", () => secSwitchProjectTab("reports"));
   // The list above this row is filtered by the project's min_severity; these
   // files are not. Said here, next to the buttons, because the gap between what

@@ -1809,3 +1809,264 @@ def test_the_runs_table_observes_but_never_manages_a_security_run(srv):
     assert 'String(r.id||"").startsWith("security-")' in page
     assert "A security analysis is never resumed" in page
     assert "the Security area owns its lifecycle" in page
+
+
+# ---- Task 11: the findings browser (ui/security/findings-screen.js). Same
+# reasoning as the project screen's and the Branches/Reports tabs' own
+# Node-driven tests above -- the JSON contract in tests/test_security_api.py
+# never paints anything, so a regression in the total-vs-unique labelling, the
+# severity-floor note, the fixed-finding exemption, the sort-header click
+# logic or the pager math would pass every test in that file.
+#
+# secSevRank/secSevKey/secStateKey and secMinSeverity are `const NAME = (...)
+# => ...` arrow functions in vocabulary.js, not `function NAME(...)`
+# declarations -- `_plainfn`/`_anyfn` cannot extract them (both look for the
+# literal substring "function NAME("), and `_const` cannot either (it only
+# handles a `[`/`{`-opening value, not `(`). secSevRank is extracted the same
+# ad hoc way test_the_severity_floor_filters_the_page_and_nothing_else already
+# extracts it a few hundred lines above -- a non-greedy regex up to the
+# arrow's own closing "};" -- and secMinSeverity is stubbed outright: these
+# tests are about THIS module's floor-handling, not about how a project's
+# configured min_severity is read, the same deliberately-trivial-stub
+# reasoning _INDEX_DOM_HARNESS already applies to fmtAgo/fmtDur.
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_findings_row_renders_analysed_strings_as_text_never_markup(srv, tmp_path):
+    """A finding's title and file path come from analysed code, and a branch
+    name may legally contain '<', '>' and '&' (see vocabulary.js's own file
+    comment -- the one rule this whole area exists to keep). Also proves a
+    non-fixed finding gets both decision buttons."""
+    block = _security_js(srv)
+    consts = (_const(block, "SEC_STATE_LABEL") + _const(block, "SEC_STATE_HELP")
+             + _const(block, "SEV_ORDER") + _const(block, "SEC_STATES"))
+    arrows = (re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
+             + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("secEl", "secFindRow", "secFindDecisionControls"))
+    script = tmp_path / "find-row.js"
+    script.write_text(_INDEX_DOM_HARNESS + """
+    function fmtWhen(t){ return "w" + String(t); }
+    """ + consts + arrows + deps + """
+    const row = secFindRow({title: "<img src=x onerror=alert(1)>", severity: "high",
+      state: "new", category: "sast", branch: "feature/<b>bold</b>", first_seen: 1700000000,
+      occurrences: [{file: "a.py", line: 1}, {file: "b.py", line: 2}], fingerprint: "a".repeat(64)});
+    function countButtons(n, c){
+      (n.childNodes || []).forEach(x => { if(x.tagName === "button") c.n++; countButtons(x, c); });
+      return c;
+    }
+    console.log(JSON.stringify({rows: collectAll(row, []), buttons: countButtons(row, {n: 0}).n}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    joined = " ".join(r["text"] for r in out["rows"])
+    assert "<img src=x onerror=alert(1)>" in joined, \
+        f"the raw markup must reach the page as literal TEXT, unmangled: {joined}"
+    assert "feature/<b>bold</b>" in joined, f"the branch name lost its literal markup: {joined}"
+    assert "a.py:1 (+1 more)" in joined, f"the occurrence summary is missing: {joined}"
+    assert out["buttons"] == 2, f"a non-fixed finding must offer both decision buttons: {out}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_a_fixed_finding_gets_no_decision_controls(srv, tmp_path):
+    """A fixed finding is gone: there is nothing left to accept or dismiss --
+    the same rule analysis.js's own secFindingRow already follows."""
+    block = _security_js(srv)
+    consts = (_const(block, "SEC_STATE_LABEL") + _const(block, "SEC_STATE_HELP")
+             + _const(block, "SEV_ORDER") + _const(block, "SEC_STATES"))
+    arrows = (re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
+             + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("secEl", "secFindRow", "secFindDecisionControls"))
+    script = tmp_path / "find-row-fixed.js"
+    script.write_text(_INDEX_DOM_HARNESS + """
+    function fmtWhen(t){ return "w" + String(t); }
+    """ + consts + arrows + deps + """
+    const row = secFindRow({title: "t", severity: "low", state: "fixed", category: "sast",
+      branch: "main", first_seen: 1, occurrences: [], fingerprint: "a".repeat(64)});
+    function countButtons(n, c){
+      (n.childNodes || []).forEach(x => { if(x.tagName === "button") c.n++; countButtons(x, c); });
+      return c;
+    }
+    console.log(JSON.stringify({buttons: countButtons(row, {n: 0}).n}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["buttons"] == 0, f"a fixed finding must not offer Accept risk / False positive: {out}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_strip_labels_total_and_unique_and_counts_the_floor_from_the_whole_filtered_set(
+        srv, tmp_path):
+    """Total vs unique must both appear, labelled distinctly -- 189 findings
+    can be 93 problems, and collapsing the two into one number silently
+    answers whichever question the reader was not asking. And the count of
+    what the severity floor hides has to come from `by_severity` (every row
+    the current filters match, computed by finding_rows BEFORE pagination),
+    not from whatever slice of rows happens to be on THIS page -- a browser
+    with several pages would otherwise undercount how much the floor hides."""
+    block = _security_js(srv)
+    consts = _const(block, "SEV_ORDER")
+    deps = "\n".join(_plainfn(block, n) for n in ("secEl", "secFindHiddenByFloor", "secFindStrip"))
+    script = tmp_path / "find-strip.js"
+    script.write_text(_INDEX_DOM_HARNESS + """
+    function secMinSeverity(_p){ return "medium"; }
+    let secFindProject = "web";
+    """ + consts + deps + """
+    // by_severity describes EVERY row the current filters match, across every
+    // page -- 3 low + 2 info sit below the "medium" floor, even though this
+    // fabricated payload carries no `rows` at all for secFindStrip to look at.
+    const data = {total: 10, unique: 8,
+      by_severity: {critical: 1, high: 4, medium: 0, low: 3, info: 2}, page: 1, per_page: 25};
+    console.log(JSON.stringify(collectAll(secFindStrip(data), [])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    joined = " ".join(r["text"] for r in out)
+    assert "10 total" in joined and "8 unique issues" in joined, \
+        f"total and unique must both render, distinctly labelled: {joined}"
+    assert "5 findings below medium" in joined, \
+        f"the hidden count must be 3 low + 2 info = 5, read from by_severity: {joined}"
+    assert "every recorded finding" in joined, "the downloads-are-unfiltered sentence is missing"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_table_excludes_rows_below_the_floor_on_this_page(srv, tmp_path):
+    """The display half of the same floor: a row below the configured
+    min_severity must not appear in the table itself, on top of the strip's
+    own count of how many are missing."""
+    block = _security_js(srv)
+    consts = (_const(block, "SEC_STATE_LABEL") + _const(block, "SEC_STATE_HELP")
+             + _const(block, "SEV_ORDER") + _const(block, "SEC_STATES")
+             + _const(block, "FIND_SORT_COLUMNS"))
+    arrows = (re.search(r"const secSevRank = .*?\};", block, re.S).group(0) + "\n"
+             + re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
+             + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("secEl", "secFindRow", "secFindDecisionControls", "secFindTableSection"))
+    script = tmp_path / "find-table-floor.js"
+    script.write_text(_INDEX_DOM_HARNESS + """
+    function fmtWhen(t){ return "w" + String(t); }
+    function secMinSeverity(_p){ return "high"; }
+    let secFindProject = "web", secFindSort = "severity", secFindDir = "desc", secFindPage = 1;
+    """ + consts + arrows + deps + """
+    const data = {rows: [
+      {title: "crit one", severity: "critical", state: "new", category: "sast", branch: "main",
+       first_seen: 1, occurrences: [], fingerprint: "a".repeat(64)},
+      {title: "low one", severity: "low", state: "new", category: "sast", branch: "main",
+       first_seen: 1, occurrences: [], fingerprint: "b".repeat(64)},
+    ], total: 2, unique: 2, page: 1, per_page: 25};
+    console.log(JSON.stringify(collectAll(secFindTableSection(data), [])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    joined = " ".join(r["text"] for r in out)
+    assert "crit one" in joined, f"a row at or above the floor must render: {joined}"
+    assert "low one" not in joined, f"a row below the floor must not appear in the table: {joined}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_clicking_a_sort_header_toggles_direction_then_switching_column_resets_it(
+        srv, tmp_path):
+    """Clicking the ALREADY-active column flips its direction and resets the
+    page (a new sort order makes the old page number meaningless); clicking a
+    DIFFERENT column switches to it with a fresh default direction, also
+    resetting the page."""
+    block = _security_js(srv)
+    consts = (_const(block, "SEC_STATE_LABEL") + _const(block, "SEC_STATE_HELP")
+             + _const(block, "SEV_ORDER") + _const(block, "SEC_STATES")
+             + _const(block, "FIND_SORT_COLUMNS"))
+    arrows = (re.search(r"const secSevRank = .*?\};", block, re.S).group(0) + "\n"
+             + re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
+             + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("secEl", "secFindRow", "secFindDecisionControls", "secFindTableSection"))
+    script = tmp_path / "find-sort-click.js"
+    script.write_text(_INDEX_DOM_HARNESS + """
+    function fmtWhen(t){ return "w" + String(t); }
+    function secMinSeverity(_p){ return "info"; }
+    let secFindProject = "web", secFindSort = "severity", secFindDir = "desc", secFindPage = 3;
+    let refreshCalls = 0;
+    function secFindRefresh(){ refreshCalls++; }
+    """ + consts + arrows + deps + """
+    const data = {rows: [{title: "a", severity: "low", state: "new", category: "sast",
+      branch: "main", first_seen: 1, occurrences: [], fingerprint: "a".repeat(64)}],
+      total: 1, unique: 1, page: 3, per_page: 25};
+    const section = secFindTableSection(data);
+    const headerRow = section.childNodes[0].childNodes[0].childNodes[0];
+    const severityBtn = headerRow.childNodes[0].childNodes[0];
+    const titleBtn = headerRow.childNodes[1].childNodes[0];
+    severityBtn.onclick();
+    const afterToggle = {sort: secFindSort, dir: secFindDir, page: secFindPage, calls: refreshCalls};
+    titleBtn.onclick();
+    const afterSwitch = {sort: secFindSort, dir: secFindDir, page: secFindPage, calls: refreshCalls};
+    console.log(JSON.stringify({afterToggle, afterSwitch}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["afterToggle"] == {"sort": "severity", "dir": "asc", "page": 1, "calls": 1}, \
+        out["afterToggle"]
+    assert out["afterSwitch"] == {"sort": "title", "dir": "asc", "page": 1, "calls": 2}, \
+        out["afterSwitch"]
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_pager_math_and_button_disabling_at_both_edges(srv, tmp_path):
+    block = _security_js(srv)
+    deps = _plainfn(block, "secEl") + "\n" + _plainfn(block, "secFindPager")
+    script = tmp_path / "find-pager.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    function btns(p){
+      return {prevDisabled: p.childNodes[0].disabled, nextDisabled: p.childNodes[2].disabled,
+              text: p.childNodes[1].textContent};
+    }
+    console.log(JSON.stringify({
+      first: btns(secFindPager({total: 47, per_page: 25, page: 1})),
+      last: btns(secFindPager({total: 47, per_page: 25, page: 2})),
+      empty: btns(secFindPager({total: 0, per_page: 25, page: 1})),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["first"]["prevDisabled"] is True and out["first"]["nextDisabled"] is False
+    assert "Page 1 / 2" in out["first"]["text"] and "47 rows" in out["first"]["text"]
+    assert out["last"]["prevDisabled"] is False and out["last"]["nextDisabled"] is True
+    assert out["empty"]["prevDisabled"] is True and out["empty"]["nextDisabled"] is True
+    assert "1 / 1" in out["empty"]["text"] and "0 rows" in out["empty"]["text"]
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_switching_to_findings_hides_the_other_four_panes(srv, tmp_path):
+    """The five-pane version of test_switching_to_branches_or_reports_hides_
+    the_other_three_panes above, extended for the tab this task adds -- a
+    fifth pane added without teaching secRenderTabs about it would leave two
+    panes visible at once instead of failing here. renderFindings is stubbed:
+    this test is about which PANE is hidden, not about what paints inside it
+    (see the tests above for that)."""
+    block = _security_js(srv)
+    deps = _plainfn(block, "secRenderTabs") + "\n" + _plainfn(block, "secSwitchProjectTab")
+    script = tmp_path / "pj-tabs-5.js"
+    script.write_text(_PROJECT_DOM_HARNESS + """
+    let secProjectTab = "overview";
+    function renderFindings(_host, _project){}
+    """ + deps + """
+    function hidden(){
+      return {ov: _els["sec-pj-overview"].hidden, rn: _els["sec-pj-runs"].hidden,
+              br: _els["sec-pj-branches"].hidden, fd: _els["sec-pj-findings"].hidden,
+              rp: _els["sec-pj-reports"].hidden};
+    }
+    secRenderTabs();
+    const initial = hidden();
+    secSwitchProjectTab("findings");
+    const onFindings = hidden();
+    secSwitchProjectTab("reports");
+    const onReports = hidden();
+    secSwitchProjectTab("overview");
+    const backToOverview = hidden();
+    console.log(JSON.stringify({initial, onFindings, onReports, backToOverview}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["initial"] == {"ov": False, "rn": True, "br": True, "fd": True, "rp": True}
+    assert out["onFindings"] == {"ov": True, "rn": True, "br": True, "fd": False, "rp": True}
+    assert out["onReports"] == {"ov": True, "rn": True, "br": True, "fd": True, "rp": False}
+    assert out["backToOverview"] == {"ov": False, "rn": True, "br": True, "fd": True, "rp": True}
