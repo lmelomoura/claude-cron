@@ -83,6 +83,39 @@ def _hits(text: str):
                 yield name, severity, lineno
 
 
+def looks_like_a_secret(text: str):
+    """The rule NAME of the first shaped credential pattern in `text`, or
+    None. This is the door's gate on free text an agent WRITES -- a
+    finding's title, rationale, remediation, partial_note -- not the
+    scanner's own corpus, but the shapes a credential can take do not change
+    depending on who typed the surrounding text.
+
+    Walks `_RULES` -- the same list `_hits` walks, not a second copy of it.
+    This repository has been bitten twice by a second copy of a rule list
+    drifting from the first (see the module docstring), so the patterns have
+    exactly one home and this function is just another reader of it. The
+    same placeholder gate `_is_placeholder` already applies to the generic
+    rule applies here too, so an agent writing `password = "changeme12345"`
+    to describe what it found is not refused for quoting an obvious
+    stand-in.
+
+    Returns the RULE NAME ONLY. It never returns, logs, or stores the
+    matched text itself -- the one property every function in this module
+    guarantees, and the one this function's only caller (the report-finding
+    door) depends on to refuse a finding without ever repeating what it
+    refused.
+    """
+    for name, severity, pattern, min_entropy in _RULES:
+        for m in pattern.finditer(text):
+            candidate = m.group(1)
+            if name == "generic_secret" and _is_placeholder(candidate):
+                continue
+            if min_entropy and _entropy(candidate) < min_entropy:
+                continue
+            return name
+    return None
+
+
 def _finding(rule, severity, path, lines, historical, commit_count=None):
     """Build one finding for `rule` found at `path`.
 

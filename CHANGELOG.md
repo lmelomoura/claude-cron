@@ -56,6 +56,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`report-finding` now refuses a title, rationale, remediation or
+  partial_note that contains something shaped like a live credential.** The
+  deterministic categories cannot leak a secret's value by construction — the
+  `occurrence` table has no column for it, `secrets.py` never returns matched
+  text, `secret_fingerprint` takes no value argument — but a SAST finding's
+  free text was validated for shape only (required keys, severity in the
+  allowlist, length under `MAX_TEXT`), never for content. Nothing stopped an
+  agent from writing a matched AWS key or GitHub token straight into a
+  rationale; the only thing that ever did was a sentence in the skill telling
+  it not to, in exactly the scenario the feature exists for — an agent
+  reading a repository whose contents it does not control. A new
+  `secrets.looks_like_a_secret` reuses the scanner's own `_RULES` (one home
+  for the patterns, not a second copy) and its placeholder gate, so a
+  described placeholder like `password = "changeme..."` still passes; a
+  field that matches is refused before anything is written, naming the field
+  and the rule and never echoing the text back, and the skill now says the
+  fix is to describe the credential, not quote it.
+
 - **A malformed or pathological JSON body on stdin now exits with a sentence
   instead of a traceback.** Both `security report-finding` and `security filters
   save` read JSON from stdin; a deeply nested structure used to raise

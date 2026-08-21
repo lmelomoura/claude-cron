@@ -416,10 +416,35 @@ def cmd_report_finding(args):
         sys.exit(f"report-finding: severity must be one of {report.SEVERITIES}")
     for key in TEXT_KEYS:
         value = payload.get(key)
-        if isinstance(value, str) and len(value) > MAX_TEXT:
+        if not isinstance(value, str):
+            continue
+        if len(value) > MAX_TEXT:
             sys.exit(f"report-finding: {key} is {len(value)} characters and the "
                      f"limit is {MAX_TEXT} — a finding is a paragraph the report "
                      "page renders, not a file to paste into the ledger")
+        # The deterministic categories cannot leak a secret's value by
+        # construction -- the `occurrence` table has no column for it,
+        # `secrets.py` never returns matched text, `secret_fingerprint` takes
+        # no value argument. A SAST finding's free text has no such structural
+        # guarantee: `title`, `rationale`, `remediation` and `partial_note`
+        # are written by the analysis agent, and until this check existed the
+        # only thing stopping a live credential from landing in one was a
+        # sentence in the skill telling the agent not to -- in exactly the
+        # scenario the feature exists for, an agent reading a repository
+        # whose contents it does not control. `looks_like_a_secret` runs the
+        # scanner's own shaped patterns (and its placeholder gate) against
+        # this field; a match is refused here, before `record_finding` ever
+        # sees it. The message names the FIELD and the RULE, never the text
+        # that matched -- echoing the secret back to refuse it would defeat
+        # the refusal.
+        matched_rule = secrets.looks_like_a_secret(value)
+        if matched_rule is not None:
+            sys.exit(f"report-finding: {key} looks like it contains a live "
+                     f"credential (matched rule '{matched_rule}') and was "
+                     "refused before being written anywhere. Describe the "
+                     "credential's type and location instead of quoting it "
+                     "-- e.g. \"an AWS access key is hardcoded here\" -- the "
+                     "way a secret-category finding already does.")
     occurrences = payload.get("occurrences", [])
     if not isinstance(occurrences, list) or any(
             not isinstance(o, dict) for o in occurrences):

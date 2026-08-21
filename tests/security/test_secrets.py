@@ -1,8 +1,30 @@
 import subprocess
-from security.secrets import scan_tree, scan_history
+from security.secrets import scan_tree, scan_history, looks_like_a_secret
 
 AWS = "AKIA" + "IOSFODNN7EXAMPLE"
 GITHUB = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+
+
+def test_looks_like_a_secret_names_the_rule_for_a_shaped_value():
+    """The door's reusable check: given free text an agent wrote (a
+    finding's title, rationale, ...), name which _RULES pattern matched --
+    the SAME list `scan_tree`/`scan_history` walk, not a second copy of it."""
+    assert looks_like_a_secret(f"leaked in prod.env: {AWS}") == "aws_access_key"
+
+
+def test_looks_like_a_secret_returns_none_for_prose_describing_a_credential():
+    """The control that keeps the door usable: a rationale that describes a
+    credential by type and location, without reproducing it, must pass."""
+    assert looks_like_a_secret(
+        "An AWS access key is hardcoded in config/prod.env at line 12.") is None
+
+
+def test_looks_like_a_secret_rejects_an_obvious_placeholder():
+    """Same placeholder gate the generic rule already applies to the
+    scanner's own corpus -- an agent quoting `changeme...` in a rationale
+    must not be refused for it."""
+    assert looks_like_a_secret(
+        'password = "changeme12345678901234"') is None
 
 
 def test_it_finds_an_aws_key(tmp_path):

@@ -149,6 +149,76 @@ def test_the_agent_cannot_report_into_an_analysis_that_does_not_exist(tmp_path):
     assert "999" in out.stderr
 
 
+AWS = "AKIA" + "IOSFODNN7EXAMPLE"
+
+
+def test_a_finding_whose_rationale_contains_a_live_looking_key_is_refused(tmp_path):
+    """The deterministic categories cannot leak a value by construction --
+    no column, no return, no argument for it. A SAST finding's free text used
+    to be validated for shape only (required keys, severity, MAX_TEXT), never
+    for content, so nothing at the door stopped an agent from writing a
+    matched credential straight into a rationale. The refusal must name the
+    field and the rule, and the key's text must appear NOWHERE in stdout or
+    stderr -- a refusal that echoes the secret back would defeat itself."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "e" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "severity": "high", "title": "t",
+        "rationale": f"Found a live credential: {AWS}"}))
+    assert out.returncode != 0
+    assert "rationale" in out.stderr
+    assert "aws_access_key" in out.stderr
+    assert AWS not in out.stdout
+    assert AWS not in out.stderr
+
+
+def test_a_finding_whose_title_contains_a_live_looking_key_is_refused(tmp_path):
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "f" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "severity": "high", "title": f"Key exposed: {AWS}"}))
+    assert out.returncode != 0
+    assert "title" in out.stderr
+    assert AWS not in out.stdout
+    assert AWS not in out.stderr
+
+
+def test_a_finding_whose_remediation_contains_a_live_looking_key_is_refused(tmp_path):
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "1" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "severity": "high", "title": "t", "rationale": "r",
+        "remediation": f"Rotate {AWS} immediately"}))
+    assert out.returncode != 0
+    assert "remediation" in out.stderr
+    assert AWS not in out.stdout
+    assert AWS not in out.stderr
+
+
+def test_a_finding_that_describes_a_credential_instead_of_quoting_it_is_accepted(tmp_path):
+    """The control: the check must not make the tool unusable for the normal
+    case of writing ABOUT a credential without reproducing it."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "2" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "severity": "high", "title": "Hardcoded AWS key",
+        "rationale": "An AWS access key is hardcoded in config/prod.env at line 12."}))
+
+
+def test_a_finding_whose_rationale_names_an_obvious_placeholder_is_accepted(tmp_path):
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "3" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "severity": "high", "title": "t",
+        "rationale": 'Default credential left in place: '
+                     'password = "changeme12345678901234"'}))
+
+
 def test_the_agent_cannot_send_something_that_is_not_json(tmp_path):
     db = tmp_path / "security.db"
     aid = open_analysis(db)
