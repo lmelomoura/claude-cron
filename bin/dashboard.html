@@ -3184,17 +3184,23 @@ function renderProjects(){
 
    The list is projects rather than jobs on purpose: a project can be
    registered for security analysis and never have a job at all. */
-const SEC_STATES = ["new","regressed","open","partial","fixed",
+const SEC_STATES = ["new","regressed","open","partial","pending","fixed",
                     "accepted","false_positive"];
 const SEC_STATE_LABEL = {new:"New", regressed:"Regressed", open:"Open", partial:"Partial",
-                         fixed:"Fixed", accepted:"Accepted", false_positive:"False positive"};
+                         pending:"Not re-checked", fixed:"Fixed",
+                         accepted:"Accepted", false_positive:"False positive"};
 /* Every state earns its own word, and the word alone does not explain it. */
 const SEC_STATE_HELP = {
   new:        "Not in the previous analysis of this branch.",
   regressed:  "Was fixed once and is back — usually a fix that closed the symptom, not the route.",
   open:       "Was here last time too, unchanged.",
   partial:    "Some of its places are gone, or the agent recorded it as mitigated but not eliminated.",
-  fixed:      "Gone since the previous analysis of this branch.",
+  pending:    "In the previous analysis and not re-checked by this one yet — a statement "
+            + "about this analysis, not about the code. Becomes fixed only when its absence "
+            + "is proven: deterministic findings once prepare completes, code-review findings "
+            + "only when the analysis closes with full coverage.",
+  fixed:      "Gone since the previous analysis of this branch — and the phase that would "
+            + "have re-found it DID finish, so the absence is proven, not assumed.",
   accepted:   "You accepted the risk. The reason is recorded and outlives every analysis after it.",
   false_positive: "You said it is not real. If the code around it changes the fingerprint changes "
                 + "and it comes back as new — different code, so a fresh judgement.",
@@ -3645,10 +3651,20 @@ function secPaint(){
   // disagree for longer than a launch could take, say so — a run killed
   // without a journal (a reboot, a group-kill) leaves exactly this state, and
   // the page used to show "Analysing…" over it indefinitely.
-  if(running && !run && (Date.now()/1000 - (a.started||0)) > 180){
-    box.appendChild(secEl("span", "note",
-      "No live run is behind this analysis — it likely died without closing. "
-      + "The next Analyse sweeps it; until then downloads carry what it recorded."));
+  if(running && !run){
+    if((Date.now()/1000 - (a.started||0)) > 180){
+      box.appendChild(secEl("span", "note",
+        "No live run is behind this analysis — it likely died without closing. "
+        + "The next Analyse sweeps it; until then downloads carry what it recorded."));
+    }else{
+      // The pre-agent window: the engine is cutting a worktree from a fresh
+      // fetch of the branch, which on a big repository is most of the wait.
+      // The run trace exists once the agent starts; until then, name the
+      // phase instead of showing a button-less void.
+      box.appendChild(secEl("span", null,
+        "Preparing the run — fetching the branch and cutting a clean worktree. "
+        + "The live trace appears here the moment the agent starts."));
+    }
   }
 
   // THE SAME NOTICE THE DOWNLOADED REPORT OPENS WITH (bin/security/report.py,

@@ -87,3 +87,29 @@ def test_a_regressed_finding_with_closed_occurrences_is_regressed_not_partial():
 def test_a_new_finding_with_closed_occurrences_is_new_not_partial():
     out = classify([f("aa", occ=5, closed=2)], [], set(), {})
     assert out[0]["state"] == "new"
+
+
+def test_absence_mid_run_is_pending_not_fixed():
+    """Nine seconds into a run the whole baseline used to read `fixed` --
+    43 findings "resolved" before prepare had written a byte. Absence is only
+    evidence when the looking finished."""
+    prev = [f("aa"), dict(f("bb"), category="secret")]
+    out = classify([], prev, {"aa", "bb"}, {},
+                   analysis_state="running", prepared=False)
+    assert {o["fingerprint"]: o["state"] for o in out} == {"aa": "pending", "bb": "pending"}
+
+
+def test_a_deterministic_absence_is_fixed_once_prepare_completed():
+    prev = [dict(f("bb"), category="secret")]
+    out = classify([], prev, {"bb"}, {}, analysis_state="running", prepared=True)
+    assert out[0]["state"] == "fixed"
+
+
+def test_a_sast_absence_stays_pending_until_the_analysis_closes_done():
+    prev = [f("aa")]  # category sast
+    out = classify([], prev, {"aa"}, {}, analysis_state="running", prepared=True)
+    assert out[0]["state"] == "pending"
+    out = classify([], prev, {"aa"}, {}, analysis_state="capped", prepared=True)
+    assert out[0]["state"] == "pending", "a capped run never finished looking"
+    out = classify([], prev, {"aa"}, {}, analysis_state="done", prepared=True)
+    assert out[0]["state"] == "fixed"

@@ -10,7 +10,7 @@ import html
 import json
 import time
 
-STATES = ("new", "regressed", "open", "partial", "fixed", "accepted", "false_positive")
+STATES = ("new", "regressed", "open", "partial", "pending", "fixed", "accepted", "false_positive")
 SEVERITIES = ("critical", "high", "medium", "low")
 
 

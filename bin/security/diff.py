@@ -7,7 +7,7 @@ ledger disagree with the findings it holds. The only persisted judgement is the
 human decision, which lives in its own table and wins over all of this.
 """
 
-DERIVED_STATES = ("new", "open", "partial", "fixed", "regressed")
+DERIVED_STATES = ("new", "open", "partial", "pending", "fixed", "regressed")
 
 
 def _is_partial(finding) -> bool:
@@ -28,12 +28,26 @@ def _is_partial(finding) -> bool:
     return bool((finding.get("partial_note") or "").strip())
 
 
-def classify(current, previous, history, decisions):
+DETERMINISTIC_CATEGORIES = ("secret", "dependency", "hygiene")
+
+
+def classify(current, previous, history, decisions,
+             analysis_state="done", prepared=True):
     """Attach a `state` to every finding, plus the ones that disappeared.
 
     `history` is every fingerprint seen in any analysis older than `previous`.
     It is what separates a genuinely new finding from one that was fixed and
     came back -- which is worse news, and which `new` would hide.
+
+    `analysis_state` and `prepared` exist because ABSENCE IS ONLY EVIDENCE
+    WHEN THE LOOKING FINISHED. A checklist rendered nine seconds into a run
+    used to mark the whole baseline `fixed` -- 43 findings "resolved" before
+    prepare had written a byte -- and a capped run's unreached SAST findings
+    got the same lie. A baseline finding missing from `current` is `fixed`
+    only when its absence is proven: deterministic categories once `prepare`
+    completed, everything else only when the analysis closed `done` (full
+    scope declared). Anything short of that is `pending` -- not re-checked
+    yet, which is a statement about this analysis, never about the code.
     """
     prev_fps = {f["fingerprint"] for f in previous}
     out = []
@@ -60,7 +74,11 @@ def classify(current, previous, history, decisions):
     for f in previous:
         if f["fingerprint"] not in seen_now:
             row = dict(f)
-            row["state"] = "fixed"
+            if f.get("category") in DETERMINISTIC_CATEGORIES:
+                proven = bool(prepared)
+            else:
+                proven = analysis_state == "done"
+            row["state"] = "fixed" if proven else "pending"
             out.append(row)
 
     return out

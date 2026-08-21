@@ -19,6 +19,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The checklist no longer declares the whole baseline `fixed` nine seconds
+  into a run.** A running analysis has written nothing yet, and the diff read
+  that absence as 43 findings resolved; a capped run's unreached code-review
+  findings told the same lie at the end. Absence is only evidence when the
+  looking finished: a baseline finding missing from the current analysis is
+  `fixed` only once its absence is proven — deterministic categories after
+  `prepare` completes, code-review findings only when the analysis closes
+  `done` — and until then it is `pending`, "not re-checked yet", counted with
+  the open exposure, never with the resolved. The page also names the
+  pre-agent phase (fetching the branch, cutting the worktree) instead of
+  showing a button-less void until the run's trace exists.
+
 - **A detached security analysis survives the control server restarting.** The
   server exits whenever its own file changes on disk — routine on every code
   update — and its launchd plist, unlike the tick's, did not carry

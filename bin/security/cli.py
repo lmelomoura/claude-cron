@@ -499,7 +499,12 @@ def _checklist(conn, analysis_id):
         (analysis["project"], analysis["repo"], analysis["branch"],
          prev["id"] if prev else analysis_id))}
     decisions = ledger.decisions_for(conn, analysis["project"])
-    return analysis, diff.classify(current, previous, history, decisions)
+    # Absence is only evidence when the looking finished: mid-run (or capped)
+    # a baseline finding missing from `current` is `pending`, never `fixed`.
+    return analysis, diff.classify(
+        current, previous, history, decisions,
+        analysis_state=analysis.get("state", "done"),
+        prepared=bool(analysis.get("prepared", 0)))
 
 
 def cmd_checklist(args):
