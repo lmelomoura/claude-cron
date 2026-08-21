@@ -235,3 +235,73 @@ def test_deleting_reports_whether_it_existed(conn):
 def test_a_blank_name_is_refused(conn):
     with pytest.raises(ValueError):
         ledger.save_filter(conn, "web", "   ", {})
+
+
+def test_a_name_of_exactly_80_characters_is_accepted(conn):
+    """The boundary itself: 80 is the limit, not the first refused length."""
+    name = "x" * 80
+    ledger.save_filter(conn, "web", name, {})
+    got = ledger.saved_filters(conn, "web")
+    assert len(got) == 1
+    assert got[0]["name"] == name
+
+
+def test_a_name_of_81_characters_is_refused_naming_the_limit(conn):
+    """The fix for the root cause: a name over the limit used to be silently
+    truncated to `name[:80]` before the primary key ever saw it. Refusing
+    instead means the stored key is always exactly what was typed, so
+    `delete_filter` -- which was never touched -- is correct by construction."""
+    with pytest.raises(ValueError, match="80"):
+        ledger.save_filter(conn, "web", "x" * 81, {})
+    assert ledger.saved_filters(conn, "web") == []
+
+
+def test_two_names_sharing_their_first_80_characters_no_longer_collide(conn):
+    """Before the fix, truncation ran before `(project, name)` could tell two
+    over-limit names apart, so the second save silently overwrote the first
+    under the same truncated key. Now both are refused outright rather than
+    one winning."""
+    with pytest.raises(ValueError):
+        ledger.save_filter(conn, "web", "x" * 80 + "a", {"which": "first"})
+    with pytest.raises(ValueError):
+        ledger.save_filter(conn, "web", "x" * 80 + "b", {"which": "second"})
+    assert ledger.saved_filters(conn, "web") == []
+
+
+def test_a_name_of_80_spaces_plus_one_character_is_a_one_character_name(conn):
+    """The `.strip()` happens BEFORE the length check, so padding a name with
+    leading/trailing whitespace cannot itself trigger the length refusal --
+    only the meaningful content counts."""
+    ledger.save_filter(conn, "web", " " * 80 + "x", {})
+    got = ledger.saved_filters(conn, "web")
+    assert len(got) == 1
+    assert got[0]["name"] == "x"
+
+
+def test_a_saved_name_round_trips_through_delete_unchanged(conn):
+    """The exact bug the truncation caused: a name saved under its full text
+    must be deletable by that same full text, with nothing silently shortened
+    along the way."""
+    name = "x" * 80
+    ledger.save_filter(conn, "web", name, {})
+    assert ledger.delete_filter(conn, "web", name) is True
+    assert ledger.saved_filters(conn, "web") == []
+
+
+def test_an_unparseable_saved_filter_stays_visible_and_deletable(conn):
+    """`saved_filters` catches the `ValueError` `json.loads` raises on a
+    malformed `query` column and returns the row with an empty query instead
+    of letting one bad row take the whole list down -- a filter nobody can
+    parse is a filter nobody can apply, but it must still be visible enough
+    to delete. Written directly into the table because `save_filter` now
+    validates its input and could never produce a row like this itself."""
+    conn.execute(
+        "INSERT INTO saved_filter (project, name, query, saved_at)"
+        " VALUES (?,?,?,?)", ("web", "corrupted", "{not valid json", 0))
+    conn.commit()
+    got = ledger.saved_filters(conn, "web")
+    assert len(got) == 1
+    assert got[0]["name"] == "corrupted"
+    assert got[0]["query"] == {}
+    assert ledger.delete_filter(conn, "web", "corrupted") is True
+    assert ledger.saved_filters(conn, "web") == []

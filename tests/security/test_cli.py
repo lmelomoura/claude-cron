@@ -12,6 +12,7 @@ subprocess boundary cannot see, so it imports `security.cli` directly and
 calls `main()` in-process instead.
 """
 
+import inspect
 import json
 import os
 import sqlite3
@@ -1510,6 +1511,43 @@ def test_filters_save_refuses_stdin_that_is_not_json(tmp_path):
     assert "JSON" in out.stderr
 
 
+def test_filters_save_accepts_a_name_of_exactly_80_characters(tmp_path):
+    db = tmp_path / "security.db"
+    name = "x" * 80
+    run(db, "filters", "save", "--project", "web", "--name", name,
+        stdin=json.dumps({}))
+    got = run(db, "filters", "list", "--project", "web")
+    assert got[0]["name"] == name
+
+
+def test_filters_save_refuses_a_name_over_80_characters(tmp_path):
+    """The root-cause fix: `save_filter` used to truncate a name over 80
+    characters to `name[:80]` before the primary key ever saw it, so a name
+    this long could be saved but never deleted by what the user actually
+    typed. It is now refused outright, naming the limit."""
+    db = tmp_path / "security.db"
+    out = fails(db, "filters", "save", "--project", "web", "--name", "x" * 81,
+                stdin=json.dumps({}))
+    assert out.returncode != 0
+    assert "80" in out.stderr
+    assert run(db, "filters", "list", "--project", "web") == []
+
+
+def test_filters_save_refuses_json_that_is_not_an_object(tmp_path):
+    """`cmd_filters` used to catch only a parse error, never the shape --
+    unlike `report-finding`'s `isinstance(payload, dict)` check. A number, a
+    bare list, `null` and a string all parse as valid JSON and would have
+    been stored as `query` untouched, which the page's filter-spreading logic
+    would then choke on."""
+    db = tmp_path / "security.db"
+    for bad in ("5", "null", "[1, 2]", '"just a string"'):
+        out = fails(db, "filters", "save", "--project", "web", "--name", "mine",
+                    stdin=bad)
+        assert out.returncode != 0, bad
+        assert "JSON object" in out.stderr, bad
+    assert run(db, "filters", "list", "--project", "web") == []
+
+
 # ------------------------ the agent works from its own view, never edits it
 
 def test_the_agent_cannot_save_a_filter(tmp_path):
@@ -1544,3 +1582,19 @@ def test_the_agent_can_still_list_filters(tmp_path):
         stdin=json.dumps({"severity": "high"}))
     got = run(db, "filters", "list", "--project", "web", env=AS_AGENT)
     assert got[0]["name"] == "mine"
+
+
+# ------------------------------------------------ the dispatch generalises
+
+def test_main_computes_the_agent_key_with_no_hardcoded_special_case():
+    """The whole point of moving `filters` to `dest="action"` (see
+    AGENT_FORBIDDEN's docstring and `main`'s dispatch key) is that the NEXT
+    nested verb following the same convention needs no code change here --
+    only a tuple entry. A structural assertion, not a behavioural one: it is
+    what stops a future edit from reintroducing `if key == "filters"` (or any
+    other verb) as a one-off special case that the next nested verb then
+    silently fails to get, exactly the failure mode the reviewer named.
+    """
+    src = inspect.getsource(security_cli.main)
+    assert 'if key == "' not in src
+    assert "args.filters_action" not in src

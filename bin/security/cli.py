@@ -61,16 +61,21 @@ TEXT_KEYS = ("title", "rationale", "remediation", "partial_note")
 # What the agent under review may NOT do, even though it reaches this file
 # through the same command the operator does. See `_refuse_if_agent`.
 #
-# Two entries, "filters save" and "filters delete", are not subcommand names
-# at all -- `filters` is ONE subcommand with a nested action (list/save/
-# delete), so `args.cmd` is always "filters" no matter which action was
-# typed, and a plain `args.cmd in AGENT_FORBIDDEN` could only refuse (or
-# allow) `filters` as a whole. `main()` builds the same "verb action" key
-# used here (`f"{args.cmd} {args.filters_action}"`) before checking
-# membership, so `filters list` -- a query, not a write, the same read-only
-# case as `findings` or `events` -- stays out of this tuple and reachable,
-# while the two writes that mutate a human's saved working set are refused
-# by name, same as every other entry.
+# A bare verb is keyed by its plain name ("decide", "event", ...). A verb
+# with a nested action -- `filters`, whose subparser uses `dest="action"`
+# (see `fl_sub` below) -- is keyed by its TWO-WORD form, "verb action",
+# exactly as written here ("filters save", "filters delete"). `main()`
+# computes that key the same way for every subcommand, unconditionally, from
+# `args.cmd` and `getattr(args, "action", "")` -- there is no
+# `if args.cmd == "filters"` or any other per-verb special case in that
+# computation, and none should be added. `filters list` -- a query, not a
+# write, the same read-only case as `findings` or `events` -- stays out of
+# this tuple and reachable, while the two writes that mutate a human's saved
+# working set are refused by name, same as every other entry.
+#
+# The rule for the NEXT nested verb: give its subparser `dest="action"`, and
+# if a two-word form of it needs refusing, add that string to this tuple.
+# Nothing else changes -- see `main()`'s dispatch key below.
 AGENT_FORBIDDEN = ("decide", "rename-project", "open-analysis", "event",
                    "filters save", "filters delete")
 
@@ -764,14 +769,20 @@ def cmd_filters(args):
     ever grows.
     """
     conn = _conn(args)
-    if args.filters_action == "list":
+    if args.action == "list":
         print(json.dumps(ledger.saved_filters(conn, args.project), indent=2))
         return
-    if args.filters_action == "save":
+    if args.action == "save":
         try:
             query = json.load(sys.stdin)
         except ValueError as exc:
             sys.exit(f"filters save: stdin is not valid JSON: {exc}")
+        if not isinstance(query, dict):
+            # Same shape check `report-finding` makes on its own JSON body:
+            # a bare number, `null`, a list or a string all parse cleanly and
+            # are all not a query -- the page spreads this into a filter set,
+            # and a non-object here reaches it unrefused.
+            sys.exit("filters save: expected the query as a JSON object")
         try:
             ledger.save_filter(conn, args.project, args.name, query)
         except ValueError as exc:
@@ -880,9 +891,13 @@ def main(argv=None):
     # filter, scoped by project. `--db` is on every level (parents=[dbflag]),
     # the same reason it is on every other subparser here: it has to work
     # wherever the caller puts it, and `run()` in the tests puts it after
-    # every other flag, past the innermost parser.
+    # every other flag, past the innermost parser. `dest="action"` is the
+    # convention every nested subparser in this file must use (see
+    # AGENT_FORBIDDEN and `main`'s dispatch key below): it is what lets the
+    # agent-refusal key generalise to "verb action" for any future nested
+    # verb without `main()` ever naming `filters` by string.
     fl = sub.add_parser("filters", parents=[dbflag]); fl.set_defaults(fn=cmd_filters)
-    fl_sub = fl.add_subparsers(dest="filters_action", required=True)
+    fl_sub = fl.add_subparsers(dest="action", required=True)
 
     fl_list = fl_sub.add_parser("list", parents=[dbflag])
     fl_list.add_argument("--project", required=True)
@@ -899,21 +914,21 @@ def main(argv=None):
     if not getattr(args, "db", None):
         p.error("--db is required")
     # Before the database is opened, and in ONE place rather than in each of
-    # the three commands: a verb added later is refused by being added to
+    # the commands: a verb added later is refused by being added to
     # AGENT_FORBIDDEN, not by remembering to copy a guard into its function.
     #
-    # `filters` is the one subcommand AGENT_FORBIDDEN cannot match by
-    # `args.cmd` alone: `list`, `save` and `delete` all arrive with
-    # `args.cmd == "filters"`, and only `args.filters_action` (set by the
-    # nested subparser above) tells them apart. The key checked here is
-    # "filters <action>" for that one case and the bare command name for
-    # every other -- matching the two-word entries in AGENT_FORBIDDEN -- so
-    # `filters list` (a query) stays reachable while `filters save` and
-    # `filters delete` (writes to a human's working set) are refused, without
-    # `filters` as a whole ever appearing in the tuple.
-    key = args.cmd
-    if key == "filters":
-        key = f"filters {args.filters_action}"
+    # The key is computed the SAME way for every subcommand, with no
+    # per-verb special case anywhere in this computation. A bare command has
+    # no `action` attribute (every subparser except `filters`'s own nested
+    # one leaves it unset), so `getattr(args, "action", "")` is "" and the
+    # key is just `args.cmd`. A subcommand with a nested action -- the
+    # `dest="action"` convention set on `fl_sub` above -- gets the two-word
+    # "cmd action" key that AGENT_FORBIDDEN's "filters save" and
+    # "filters delete" entries match, so `filters list` (a query) stays
+    # reachable while the two writes are refused. Extending this to the next
+    # nested verb needs NOTHING here: give its subparser `dest="action"` and
+    # put its two-word form in the tuple.
+    key = f"{args.cmd} {getattr(args, 'action', '')}".strip()
     if key in AGENT_FORBIDDEN:
         _refuse_if_agent(key)
     args.fn(args)

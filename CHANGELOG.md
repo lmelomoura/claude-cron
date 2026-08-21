@@ -146,7 +146,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `decide`, `rename-project`, `open-analysis` and `event` in the set
   `CC_SECURITY_AGENT` refuses -- a working set is a human's, not something
   an analysis decides -- while `filters list` stays open, the same
-  reasoning that keeps `events` and `findings` open.
+  reasoning that keeps `events` and `findings` open. A name over 80
+  characters is refused, naming the limit, rather than silently truncated
+  to `name[:80]` -- the truncation used to make a long name undeletable by
+  what was actually typed, and let two names sharing their first 80
+  characters silently overwrite each other before the primary key ever saw
+  the difference.
 
 - **The Security area records what happened.** Analyses started and finished,
   decisions with the reason behind them, settings changed, reports exported —

@@ -302,6 +302,9 @@ def events_for(conn, project=None, kinds=(), since=0, limit=100, offset=0):
     return [dict(r) for r in conn.execute(sql, args)]
 
 
+MAX_FILTER_NAME = 80
+
+
 def save_filter(conn, project, name, query) -> None:
     """Save (or replace) a named filter for a project.
 
@@ -309,18 +312,34 @@ def save_filter(conn, project, name, query) -> None:
     UPSERT, not a second row -- re-saving "mine" after tweaking it updates
     the filter in place, the same way `set_decision` replaces rather than
     accumulates.
+
+    A name over MAX_FILTER_NAME characters is REFUSED, not truncated. This
+    used to truncate to `name[:80]` before the primary key ever saw it, which
+    produced two separate bugs from one root cause: a name over the limit
+    could never be deleted by what the user actually typed (`delete_filter`
+    matches the full string, so it always missed the truncated row that sat
+    in its place), and two different names sharing their first 80 characters
+    silently overwrote each other, because truncation ran before `(project,
+    name)` had a chance to tell them apart. Refusing instead of truncating
+    fixes both: the key stored is always exactly what was asked for, so
+    `delete_filter` is correct without itself being touched, and no two
+    distinct inputs can ever collide into one row.
     """
     name = (name or "").strip()
     if not name:
         # A filter with no name is one nobody could ever pick back out of the
         # list -- the same reasoning `set_decision` refuses a blank reason.
         raise ValueError("a saved filter needs a name")
+    if len(name) > MAX_FILTER_NAME:
+        raise ValueError(
+            f"a saved filter name is limited to {MAX_FILTER_NAME} characters, "
+            f"got {len(name)}")
     with conn:
         conn.execute(
             "INSERT INTO saved_filter (project, name, query, saved_at)"
             " VALUES (?,?,?,?) ON CONFLICT(project, name) DO UPDATE SET"
             " query=excluded.query, saved_at=excluded.saved_at",
-            (project, name[:80], json.dumps(query), int(time.time())))
+            (project, name, json.dumps(query), int(time.time())))
 
 
 def saved_filters(conn, project):
