@@ -53,6 +53,15 @@ REQUIRED_FINDING_KEYS = ("fingerprint", "category", "rule", "severity", "title")
 # it. The recipe is not enforceable here -- only the shape is.
 FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 
+# `findings-page --fingerprint`'s own shape: a PREFIX, not the full 64-hex
+# identity FINGERPRINT_RE enforces above -- see that flag's own comment for
+# why (the Activity screen's deep link only ever has the first 12). Mirrors
+# `security_findings`'s regex in bin/claude-cron-server exactly, so a value
+# typed at the command line is held to the identical shape one arriving over
+# HTTP already is -- this verb has no route in front of it refusing a typo
+# before it ever reaches here (a human, or the agent, can call it directly).
+FINGERPRINT_PREFIX_RE = re.compile(r"^[0-9a-f]{1,64}$")
+
 # A finding is a paragraph, not a document. Without a cap the agent can paste
 # a whole file into `rationale`, and every later analysis pays to read it back
 # out of the ledger and renders it into the report page.
@@ -981,12 +990,27 @@ def cmd_findings_page(args):
     who calls this verb (a human at the command line has no such route in
     front of them), and that raise is caught here and turned into the same
     sentence-on-stderr every other verb in this file gives a bad argument,
-    rather than a stack trace.
+    rather than a stack trace. `severity`/`state`/`category` get the same
+    treatment from argparse's own `choices=`; `fingerprint` cannot (it is a
+    prefix, not a closed set of values), so it gets its own shape check
+    against FINGERPRINT_PREFIX_RE, refusing a mistyped value with a sentence
+    rather than silently returning zero rows -- a human at the command line
+    has no route in front of them doing this either.
 
     Read-only, via `queries.read_only`, deliberately NOT `ledger.connect` --
     same reasoning as `index-data`/`project-data`: a screen that only LOOKS
     must not conjure the ledger file it is asking about into existence.
     """
+    # Shape-checked here, before the database is even opened -- the same
+    # moment `--severity`/`--state`/`--category` are refused, by argparse's
+    # own `choices=`, for a value it does not recognise. `--fingerprint`
+    # cannot use `choices=` (it is a prefix, not a closed set), so this is
+    # its equivalent: a value that does not match FINGERPRINT_PREFIX_RE is a
+    # mistake worth a sentence, not a filter the query below would silently
+    # match zero rows against.
+    if args.fingerprint and not FINGERPRINT_PREFIX_RE.match(args.fingerprint):
+        sys.exit(f"findings-page: fingerprint must be lowercase hex, got {args.fingerprint!r}")
+
     conn = queries.read_only(args.db)
     if conn is None:
         print(json.dumps({
@@ -1255,7 +1279,9 @@ def main(argv=None):
     fpg.add_argument("--show-resolved", action="store_true", dest="show_resolved")
     # A prefix, not the full 64-character shape `report-finding` enforces --
     # the Activity screen's own deep link only ever has the first 12 (see
-    # `queries.finding_rows`'s own comment on this key).
+    # `queries.finding_rows`'s own comment on this key). No `choices=` (it is
+    # a prefix, not a closed set) -- shape-checked instead, at the top of
+    # `cmd_findings_page`, against FINGERPRINT_PREFIX_RE.
     fpg.add_argument("--fingerprint", default="")
 
     # Deliberately absent from AGENT_FORBIDDEN: same reasoning as

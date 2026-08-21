@@ -2632,12 +2632,23 @@ def security_activity(params):
     treatment `security_findings` gives severity/state/category: a typo is
     not a filter that matches nothing, it is a mistake worth a sentence.
 
-    `since` defaults to `ACTIVITY_DEFAULT_WINDOW_DAYS` ago rather than 0
-    (`ledger.events_for`'s own "no lower bound") so a caller that never asks
-    for a period still gets a legible, bounded one -- the same window
-    `queries.activity_summary`'s own default describes, so the table and the
-    sidebar's per-kind counts agree on what period they are both showing
-    unless the caller deliberately widens it. `page`/`per_page` are
+    `since` ABSENT (the key missing from `params` entirely) defaults to
+    `ACTIVITY_DEFAULT_WINDOW_DAYS` ago rather than `ledger.events_for`'s own
+    "no lower bound" -- so a caller that never asks for a period still gets a
+    legible, bounded one, the same window `queries.activity_summary`'s own
+    default describes, so the table and the sidebar's per-kind counts agree
+    on what period they are both showing unless the caller deliberately
+    widens it.
+
+    `since` EXPLICIT, including `0` or any negative value, is passed straight
+    through as "no lower bound" -- `ledger.events_for`'s own contract. This is
+    the only way the client can ask for everything: the screen's "All time"
+    period (`secActSince()`, ui/security/activity-screen.js) always sends a
+    `since` parameter, and for "All time" that value is `0`, on purpose, to
+    reach exactly this branch. Collapsing "absent" and "explicit 0" into one
+    case (as this route used to) makes "All time" silently mean "30 days"
+    instead -- the request is present on the wire, it is simply never told
+    apart from a caller who asked for nothing. `page`/`per_page` are
     shape-checked then clamped, exactly like `security_findings`'s own.
     """
     project = str(_param(params, "project")).strip()
@@ -2646,12 +2657,16 @@ def security_activity(params):
     if err:
         return 400, err
 
-    try:
-        since = int(_param(params, "since", "0") or 0)
-    except (TypeError, ValueError):
-        return 400, {"error": "since must be an integer"}
-    if since <= 0:
+    raw_since = _param(params, "since", None)
+    if raw_since is None:
         since = int(time.time()) - ACTIVITY_DEFAULT_WINDOW_DAYS * 86400
+    else:
+        try:
+            since = int(raw_since or 0)
+        except (TypeError, ValueError):
+            return 400, {"error": "since must be an integer"}
+        if since < 0:
+            since = 0
 
     try:
         page = int(_param(params, "page", "1") or 1)

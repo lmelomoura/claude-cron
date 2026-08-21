@@ -1016,6 +1016,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   derived its job never ran. Both spellings now pass the fast path too, and a
   project written either way derives its job.
 
+- **The Activity screen's "All time" period actually returns everything.**
+  `secActSince()` sends `since=0` on the wire for "All time" — the client's
+  only way to ask for no lower bound — but `security_activity` read an
+  absent `since` and an explicit `since=0` as the identical case, and
+  rewrote both to the same 30-day window meant for a caller who asked for
+  nothing. "All time" therefore returned exactly what "30 days" returns,
+  silently, with no error — an audit reaching back further than a month got
+  a partial answer that looked complete. An absent `since` still defaults
+  to 30 days; an explicit one, including `0` or any negative value, now
+  reaches `ledger.events_for` unmodified, which is what "no lower bound"
+  already means there.
+
+- **`security findings-page --fingerprint` refuses a malformed value
+  instead of silently matching nothing.** Its sibling filters — `--severity`,
+  `--state`, `--category` — get `invalid choice: ...` from argparse the
+  moment a typo reaches them; `--fingerprint` cannot use the same mechanism
+  (it is a prefix match, not a closed set of values) and had no validation
+  at all, so a mistyped value returned zero rows exactly as fast as a
+  fingerprint that is simply not open right now, indistinguishable from
+  each other. It is now checked against the same shape the server's own
+  route already enforces (1 to 64 lowercase hex characters) and refused
+  with a sentence on a mismatch, before the database is even opened.
+
 ### Changed
 
 - **A provider outage no longer slows a job down for the rest of the day.**

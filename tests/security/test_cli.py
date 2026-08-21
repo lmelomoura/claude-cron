@@ -1560,6 +1560,47 @@ def test_activity_data_refuses_an_unknown_kind_at_the_cli_edge(tmp_path):
     assert "invalid choice" in out.stderr
 
 
+# --------------------------------------- findings-page's own --fingerprint
+#
+# Its siblings -- --severity, --state, --category -- get shape validation for
+# free from argparse's own `choices=`: a closed set, refused with "invalid
+# choice" the instant a typo reaches it. --fingerprint cannot use `choices=`
+# (it is a PREFIX -- 1 to 64 lowercase hex characters, not one value out of a
+# fixed set), so before this it accepted anything at all: a mistyped value
+# silently matched zero rows instead of refusing with a sentence, the exact
+# failure this module's own docstring says every verb here exists to avoid.
+# The server's own route (`security_findings`, bin/claude-cron-server) already
+# validates this shape at its edge -- these two tests are the CLI's own,
+# independent copy of that guard, the same relationship
+# test_activity_data_refuses_an_unknown_kind_at_the_cli_edge above has to
+# `security_activity`'s.
+
+def test_findings_page_refuses_a_malformed_fingerprint_at_the_cli_edge(tmp_path):
+    db = tmp_path / "security.db"
+    out = fails(db, "findings-page", "--project", "web", "--fingerprint", "not-hex!")
+    assert out.returncode != 0
+    assert "fingerprint" in out.stderr
+    assert "lowercase hex" in out.stderr
+
+
+def test_findings_page_refuses_a_fingerprint_over_64_characters(tmp_path):
+    db = tmp_path / "security.db"
+    out = fails(db, "findings-page", "--project", "web", "--fingerprint", "a" * 65)
+    assert out.returncode != 0
+    assert "fingerprint" in out.stderr
+
+
+def test_findings_page_accepts_a_genuine_fingerprint_prefix(tmp_path):
+    """Containment probe: a real prefix -- lowercase hex, any length from 1
+    to 64 -- must still be accepted. Exactly what the Activity screen's own
+    deep link sends: the first 12 characters of a decision's fingerprint
+    (see ui/security/activity-screen.js's own file comment)."""
+    db = tmp_path / "security.db"
+    out = run(db, "findings-page", "--project", "web", "--fingerprint", "abc123def456")
+    assert out["rows"] == []
+    assert out["total"] == 0
+
+
 def test_activity_data_paginates_with_page_and_per_page(tmp_path):
     db = tmp_path / "security.db"
     for i in range(3):

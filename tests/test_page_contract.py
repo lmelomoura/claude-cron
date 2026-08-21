@@ -162,12 +162,21 @@ def _const(js, name):
     """The verbatim source of `const NAME = [...]` or `const NAME = {...}`,
     open/close matched the same way _fn/_plainfn match braces -- so a value
     is captured whole regardless of what punctuation it contains, rather
-    than a regex that stops at the first `]`/`}`/`;` inside it."""
+    than a regex that stops at the first `]`/`}`/`;` inside it.
+
+    A bare scalar (`const NAME = 25;`) has no bracket to match, so it is
+    captured up to its own terminating `;` instead -- ACT_PER_PAGE is the
+    first caller that needed this, sourcing the real page size a test drives
+    rather than a hand-typed number beside it that could silently drift from
+    the source."""
     i = js.index(f"const {name} =")
     j = js.index("=", i) + 1
     while js[j] in " \n\t":
         j += 1
     opener = js[j]
+    if opener not in ("[", "{"):
+        k = js.index(";", j)
+        return js[i:k + 1] + "\n"
     closer = {"[": "]", "{": "}"}[opener]
     d = 0
     for k in range(j, len(js)):
@@ -2531,3 +2540,65 @@ def test_switching_the_kind_tab_marks_only_that_tab_active(srv, tmp_path):
                                     capture_output=True, text=True, check=True).stdout)
     assert out == ["secactt-findings"], \
         f"switching to 'findings' must mark only its own tab active: {out}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_activity_query_requests_the_exact_kinds_for_each_tab(srv, tmp_path):
+    """`ACT_TABS` -> `kind` query parameters, via the real `secActQuery()` --
+    the screen's whole filtering mechanism, and nothing before this ever
+    called it. The test above (`test_switching_the_kind_tab_marks_only_that_
+    tab_active`) only checks which BUTTON gets the `active` class; it stubs
+    `secActLoad` to a no-op specifically so the fetch never happens, which
+    means it never looks at what `secActQuery()` would have sent. Swapping
+    two tabs' `kinds` lists, or renaming a kind in one list but not the
+    other, would have passed all twenty-six existing tests and every tab
+    would filter the wrong rows -- this is the one test that would have
+    caught it."""
+    block = _security_js(srv)
+    consts = _const(block, "ACT_TABS") + _const(block, "ACT_PER_PAGE")
+    deps = _activity_deps(block, "secActSince", "secActQuery")
+    script = tmp_path / "act-query-tabs.js"
+    script.write_text(consts + deps + """
+    let secActState = {tab: "", project: "", days: 30, page: 1};
+    function kindsFor(tabKey){
+      secActState.tab = tabKey;
+      return Array.from(new URLSearchParams(secActQuery()).getAll("kind"));
+    }
+    const result = {};
+    for(const t of ACT_TABS) result[t.key || "all"] = kindsFor(t.key);
+    console.log(JSON.stringify(result));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["all"] == [], \
+        f"'All activity' must send no kind filter -- empty means every kind: {out['all']}"
+    assert out["analyses"] == ["analysis_started", "analysis_finished"], out["analyses"]
+    assert out["findings"] == ["decision_made"], out["findings"]
+    assert out["settings"] == ["settings_changed", "report_exported"], out["settings"]
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_every_event_kind_belongs_to_exactly_one_activity_tab(srv, tmp_path):
+    """Pins the completeness rule the test above cannot: every kind in
+    `EVENT_KINDS` (vocabulary.js) must appear in exactly one of the named
+    tabs' `kinds` lists (the "All activity" tab is deliberately excluded --
+    its empty list means "every kind", not "no kind", see ACT_TABS's own
+    comment). A future sixth event kind that nobody remembers to place in a
+    tab would otherwise sit in NONE of them, filtered out of every tab
+    forever, unnoticed -- exactly the silent-hole shape this file's fixes
+    keep closing."""
+    block = _security_js(srv)
+    consts = _const(block, "ACT_TABS") + _const(block, "EVENT_KINDS")
+    script = tmp_path / "act-tab-completeness.js"
+    script.write_text(consts + """
+    const named = ACT_TABS.filter(t => t.key !== "");
+    const counts = {};
+    EVENT_KINDS.forEach(k => { counts[k] = named.filter(t => t.kinds.includes(k)).length; });
+    console.log(JSON.stringify(counts));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    missing = [k for k, c in out.items() if c == 0]
+    duplicated = [k for k, c in out.items() if c > 1]
+    assert not missing, f"kind(s) placed in no tab at all: {missing} ({out})"
+    assert not duplicated, f"kind(s) placed in more than one tab: {duplicated} ({out})"

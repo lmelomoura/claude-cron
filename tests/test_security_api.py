@@ -12,12 +12,20 @@ know, a non-integer analysis id, and a missing project. Each of those is a
 400 at this edge rather than a 500 built from a CLI that exited non-zero or a
 traceback from int() or json.loads().
 
-One test near the bottom (the leading-dash project invariant) deliberately
-does NOT stub `cc()` — it runs the real CLI to prove argparse itself refuses
-an option-shaped value, which is the whole safety net for passing `project`/
-`repo`/etc. straight through as list elements rather than quoting them.
+Two tests deliberately do NOT stub `cc()`: the leading-dash project
+invariant near the bottom of this file, which runs the real CLI to prove
+argparse itself refuses an option-shaped value; and
+`test_activity_all_time_reaches_the_real_route_past_the_thirty_day_default`
+in the activity section, which drives a real subprocess against a real
+ledger to prove the "All time" fix at the layer the bug actually lived in --
+one a mocked `cc()` cannot see, because a mock has no timestamps of its own
+to get wrong.
 """
 import json
+import os
+import sqlite3
+import time
+from pathlib import Path
 
 
 # --------------------------------------------------------------- report GET
@@ -1068,6 +1076,75 @@ def test_activity_defaults_since_to_a_30_day_window(srv, monkeypatch):
     srv.security_activity({})
     since = int(seen["args"][seen["args"].index("--since") + 1])
     assert 29 * 86400 <= before - since <= 30 * 86400 + 5
+
+
+def test_activity_an_explicit_since_zero_is_not_rewritten_to_the_default(srv, monkeypatch):
+    """The CRITICAL fix. `since=0` present on the wire is the screen's own
+    "All time" period (`secActSince()`, ui/security/activity-screen.js) --
+    deliberately distinct from `since` being ABSENT (the test above), which
+    is the only case that still gets the 30-day rewrite. Before the fix,
+    `since <= 0` was the rewrite condition regardless of whether the key was
+    present at all, so this exact request -- explicit, on the wire, asking
+    for everything -- silently got the same 30-day window as a caller who
+    never asked for a period, with no error to say so."""
+    seen = {}
+
+    def fake(args, stdin=None):
+        seen["args"] = args
+        return True, json.dumps({"events": [], "summary": {}, "projects": [],
+                                 "page": 1, "per_page": 25})
+    monkeypatch.setattr(srv, "cc", fake)
+    srv.security_activity({"since": "0"})
+    assert seen["args"][seen["args"].index("--since") + 1] == "0", \
+        "an explicit since=0 ('All time') must reach the CLI as 0, not a rewritten 30-day timestamp"
+
+
+def test_activity_all_time_reaches_the_real_route_past_the_thirty_day_default(srv):
+    """The same fix proved at the ROUTE, through a real subprocess and a
+    real ledger -- not `cc()` mocked away like every other test in this
+    file. This is deliberate, the same reasoning as the leading-dash test
+    near the bottom of this file: the finding this closes was originally
+    verified by a manual check that drove `bin/security/cli.py
+    activity-data` directly, which was never wrong (`cmd_activity_data`'s
+    own `since=0` already means "no lower bound", `ledger.events_for`'s own
+    contract) -- so that check passed while the real bug sat one layer up,
+    in `security_activity`'s OWN rewrite of `since <= 0`, a layer a mocked
+    `cc()` has no timestamps of its own to get wrong about either. Only a
+    real round trip through the actual route can catch a regression here.
+    """
+    project = "route-alltime-probe"
+    old_ts = int(time.time()) - 200 * 86400  # far past every period the screen offers
+    ok, out = srv.cc(["security", "event", "--project", project,
+                      "--kind", "analysis_started", "--detail", "ancient run"])
+    assert ok, f"setup: could not record the ancient event: {out}"
+    ok, out = srv.cc(["security", "event", "--project", project,
+                      "--kind", "analysis_finished", "--detail", "recent run"])
+    assert ok, f"setup: could not record the recent event: {out}"
+
+    db_path = Path(os.environ["CLAUDE_CRON_DATA"]) / "security.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("UPDATE event SET at=? WHERE project=? AND kind='analysis_started'",
+                (old_ts, project))
+    conn.commit()
+    conn.close()
+
+    # An explicit all-time request must reach back past the 30-day default
+    # and return the ancient event.
+    code, payload = srv.security_activity({"project": project, "since": "0"})
+    assert code == 200, payload
+    all_time_kinds = {e["kind"] for e in payload["events"]}
+    assert "analysis_started" in all_time_kinds, \
+        f"an explicit all-time request did not return an event older than 30 days: {payload}"
+    assert "analysis_finished" in all_time_kinds
+
+    # An ABSENT `since` (this is the only case that should still default)
+    # must exclude that same ancient event.
+    code, payload = srv.security_activity({"project": project})
+    assert code == 200, payload
+    default_kinds = {e["kind"] for e in payload["events"]}
+    assert "analysis_started" not in default_kinds, \
+        f"an absent `since` must still default to 30 days, excluding the older event: {payload}"
+    assert "analysis_finished" in default_kinds
 
 
 def test_activity_passes_project_and_kind_through(srv, monkeypatch):
