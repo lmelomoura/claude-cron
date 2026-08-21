@@ -337,11 +337,11 @@ def test_trend_query_carries_the_id_tiebreak_in_its_order_by(conn):
         "the tiebreak belongs in the SQL text, not in however the engine breaks a tie"
 
 
-def test_project_rows_reports_branch_posture_and_trend(conn):
+def test_project_rows_reports_branch_posture(conn):
     """A project with two branches, one of them the declared base. The row
-    must reflect the base branch's own posture and trend, not either
-    branch's blindly, and `analyses` counts the whole project."""
-    aid_main = _analysis(conn, "main", findings=[("critical", "secret")])
+    must reflect the base branch's own posture, not either branch's blindly,
+    and `analyses` counts the whole project."""
+    _analysis(conn, "main", findings=[("critical", "secret")])
     _analysis(conn, "feature-x", findings=[("low", "hygiene")])
 
     rows = queries.project_rows(
@@ -354,10 +354,12 @@ def test_project_rows_reports_branch_posture_and_trend(conn):
     assert row["branch_fell_back"] is False
     assert row["posture"]["critical"] == 1
     assert row["analyses"] == 2, "both branches count toward the project total"
-    assert [t["analysis_id"] for t in row["trend"]] == [aid_main], \
-        "trend must be the base branch's own history"
-    assert row["trend"][0]["open"] == 1
     assert row["last_state"] == "done", "the row must carry the state posture was computed from"
+    # No `trend` key at all: the index screen's table never reads one (see
+    # `project_rows`'s own docstring), and a per-project `trend()` call would
+    # be a `checklist()` per analysis in the 30-day window, computed and
+    # thrown away on every index-screen load.
+    assert "trend" not in row
 
 
 def test_project_rows_carries_the_capped_state_for_an_incomplete_analysis(conn):

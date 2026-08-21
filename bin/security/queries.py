@@ -345,7 +345,15 @@ def index_summary(conn, projects):
 
 def project_rows(conn, projects):
     """One row per project. `projects` carries name, base and description,
-    read from projects.json by the caller -- the ledger does not know them."""
+    read from projects.json by the caller -- the ledger does not know them.
+
+    Deliberately does NOT carry `trend`: ui/security/index-screen.js's table
+    header is fixed at Project/Branch/Posture/Last analysis/Analyses and no
+    cell of it ever reads a row's trend, so computing one here paid for a
+    `checklist()` call per analysis in each project's 30-day window and threw
+    the result away on every index-screen load. `trend()` itself stays --
+    `branch_rows` (below) calls it legitimately, for the Branches tab that
+    actually renders it."""
     out = []
     for proj in projects:
         name = proj["name"]
@@ -373,8 +381,7 @@ def project_rows(conn, projects):
             "last_state": (last or {}).get("state", ""),
             "analyses": conn.execute(
                 "SELECT COUNT(*) c FROM analysis WHERE project=?", (name,)
-            ).fetchone()["c"],
-            "trend": trend(conn, name, branch) if branch else []})
+            ).fetchone()["c"]})
     return out
 
 

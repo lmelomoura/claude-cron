@@ -1973,7 +1973,7 @@ def test_index_data_survives_a_ledger_that_does_not_exist_yet(tmp_path):
         "posture": {"critical": 0, "high": 0, "medium": 0, "low": 0,
                     "info": 0, "total": 0},
         "profile": "", "last_started": 0, "last_duration": 0, "last_state": "",
-        "analyses": 0, "trend": []}]
+        "analyses": 0}]
     assert out["recent"] == []
     assert out["donut"] == {"critical": 0, "high": 0, "medium": 0, "low": 0,
                             "info": 0, "total": 0}

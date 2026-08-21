@@ -849,7 +849,7 @@ def cmd_index_data(args):
                 "branch": p.get("base", "") or "", "branch_fell_back": False,
                 "posture": queries._empty_posture(), "profile": "",
                 "last_started": 0, "last_duration": 0, "last_state": "",
-                "analyses": 0, "trend": [],
+                "analyses": 0,
             } for p in projects],
             "recent": [], "donut": queries._empty_posture(), "categories": []}))
         return
