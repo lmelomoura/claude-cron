@@ -376,40 +376,87 @@ def _analysed_scopes(conn, project=None):
     return list(conn.execute(sql, args))
 
 
-def severity_totals(conn, project=None, days=30):
-    """Open findings by severity across the latest analysis of every branch.
-
-    `project` may be a single name, an iterable of names, or `None` for the
-    whole ledger (see `_analysed_scopes`). Summing per project this way is
-    safe against double-counting: each project's own branches are already
-    merged correctly within `posture`, and no fingerprint is shared across
-    two different projects, so folding several projects' totals together
-    here adds nothing that was not already independently correct."""
-    out = _empty_posture()
-    for r in _analysed_scopes(conn, project):
-        p = posture(conn, r["project"], r["branch"])
-        for k in out:
-            out[k] += p[k]
-    return out
+_SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
 
-def top_categories(conn, project=None, days=30, limit=5):
-    """The rules producing the most open findings, ranked across every scope
-    `_analysed_scopes` returns for `project` -- a single name, an iterable of
-    names, or `None` for the whole ledger. Counts are accumulated across all
-    of those scopes before ranking, so `limit` slices the TRUE top rules for
-    the given projects together, not each project's own top `limit` merged
-    afterwards -- which could drop a rule that only ranks highly once
-    several projects' counts are combined."""
-    counts = {}
+def _open_findings_by_fingerprint(conn, project):
+    """The open findings across every scope `_analysed_scopes` returns for
+    `project`, collapsed from one entry per (branch, fingerprint) to one
+    entry per FINGERPRINT -- shared by `severity_totals` and
+    `top_categories`, which both used to sum a project's branches by adding
+    each branch's own posture/rule counts together.
+
+    A fingerprint never includes the branch, so the same committed secret
+    reachable on `main` and `develop` is ONE problem needing one rotation,
+    not two -- `finding_rows` already draws exactly this line between
+    `total` (rows) and `unique` (fingerprints), in the spec's own words 189
+    findings can be 93 problems. Summing per-branch postures, which is what
+    this repository's own two callers used to do, counted that one problem
+    twice -- on the donut AND the category rollup fed from the same numbers
+    -- so the index screen's "critical" meant something different from
+    `finding_rows`'s `unique`, one screen away, using the same word.
+
+    Only OPEN occurrences are collected. A finding resolved (fixed, accepted,
+    false_positive) on one branch but still open on another is exposure that
+    has not actually gone away, so it still counts, using the still-open
+    branch's own record of it; a fingerprint with no open occurrence in any
+    scope is absent from the result entirely, exactly like `posture` already
+    treats a finding resolved everywhere.
+
+    When a fingerprint is open on more than one branch and the two analyses
+    disagree about its severity -- possible, since the agent can re-triage a
+    finding's severity between runs -- the MORE severe occurrence wins. A
+    posture summary that under-reports the worst assessment ever made of a
+    finding is the wrong way to be wrong: an operator seeing "medium" while
+    one branch's own analysis called it "critical" is worse served than one
+    seeing "critical" for a finding a later run downgraded.
+    """
+    by_fingerprint = {}
     for r in _analysed_scopes(conn, project):
         a = _latest_finished(conn, r["project"], r["branch"])
         if not a:
             continue
         _an, findings = checklist(conn, a["id"])
         for f in findings:
-            if is_open(f["state"]):
-                counts[f["rule"]] = counts.get(f["rule"], 0) + 1
+            if not is_open(f["state"]):
+                continue
+            fp = f["fingerprint"]
+            current = by_fingerprint.get(fp)
+            if current is None or (_SEV_RANK.get(f["severity"], 9)
+                                    < _SEV_RANK.get(current["severity"], 9)):
+                by_fingerprint[fp] = f
+    return by_fingerprint
+
+
+def severity_totals(conn, project=None, days=30):
+    """Open findings by severity across every scope `_analysed_scopes`
+    returns for `project` -- a single name, an iterable of names, or `None`
+    for the whole ledger. Counted by DISTINCT FINGERPRINT (see
+    `_open_findings_by_fingerprint`'s own docstring for why): the same
+    finding open on two branches of one project is one problem, not two, so
+    it must contribute to this total exactly once."""
+    out = _empty_posture()
+    for f in _open_findings_by_fingerprint(conn, project).values():
+        if f["severity"] in out:
+            out[f["severity"]] += 1
+        out["total"] += 1
+    return out
+
+
+def top_categories(conn, project=None, days=30, limit=5):
+    """The rules producing the most open findings, ranked across every scope
+    `_analysed_scopes` returns for `project` -- a single name, an iterable of
+    names, or `None` for the whole ledger. Counted by DISTINCT FINGERPRINT
+    (see `_open_findings_by_fingerprint`), so a rule's count is how many
+    distinct problems it produced, not how many branches happen to still
+    carry one of them. Counts are accumulated across all scopes before
+    ranking, so `limit` slices the TRUE top rules for the given projects
+    together, not each project's own top `limit` merged afterwards -- which
+    could drop a rule that only ranks highly once several projects' counts
+    are combined."""
+    counts = {}
+    for f in _open_findings_by_fingerprint(conn, project).values():
+        counts[f["rule"]] = counts.get(f["rule"], 0) + 1
     ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     return [{"rule": k, "count": v} for k, v in ranked[:limit]]
 
@@ -434,7 +481,6 @@ def branch_rows(conn, project):
 
 SORTABLE = ("severity", "title", "category", "branch", "first_seen", "state")
 MAX_PER_PAGE = 100
-_SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
 
 def finding_rows(conn, project, filters=None, sort="severity",

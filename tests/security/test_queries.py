@@ -380,6 +380,125 @@ def test_severity_totals_with_no_project_argument_stays_fleet_wide(conn):
     assert totals["critical"] == 1
 
 
+def test_severity_totals_and_top_categories_count_one_fingerprint_once_across_branches(conn):
+    """The reviewer's exact reproduction. A fingerprint never includes the
+    branch, so the same committed secret open on `main` AND `develop` is ONE
+    problem needing one rotation -- exactly what `finding_rows`'s own
+    total/unique split already says elsewhere on this same screen (189
+    findings can be 93 problems). Summing each branch's posture -- what both
+    functions used to do -- counted it twice, on both the donut and the
+    category rollup that feeds off the same numbers."""
+    fp = "e" * 64
+    for br in ("main", "develop"):
+        aid = ledger.start_analysis(conn, "web", "web", br, "s", "quick", "r")
+        ledger.record_finding(conn, aid, {
+            "fingerprint": fp, "category": "secret", "rule": "aws_access_key",
+            "severity": "critical", "title": "t", "occurrences": []})
+        ledger.mark_prepared(conn, aid)
+        ledger.finish_analysis(conn, aid, "done")
+
+    totals = queries.severity_totals(conn, "web")
+    assert totals["critical"] == 1, "one secret on two branches is one critical, not two"
+    assert totals["total"] == 1
+
+    cats = queries.top_categories(conn, "web")
+    assert cats == [{"rule": "aws_access_key", "count": 1}]
+
+
+def test_severity_totals_and_top_categories_do_not_collapse_distinct_fingerprints(conn):
+    """The containment probe for the fix above. Two DIFFERENT secrets, each
+    open on its own branch, sharing the SAME rule -- the nearest case a
+    fingerprint-based fix could wrongly sweep up if it deduped by rule or
+    category instead of by fingerprint. Two genuinely distinct problems must
+    still be reported as two; a fix that made this one collapse to one would
+    be broken the other way."""
+    for br, fp in (("main", "a" * 64), ("develop", "b" * 64)):
+        aid = ledger.start_analysis(conn, "web", "web", br, "s", "quick", "r")
+        ledger.record_finding(conn, aid, {
+            "fingerprint": fp, "category": "secret", "rule": "aws_access_key",
+            "severity": "critical", "title": "t", "occurrences": []})
+        ledger.mark_prepared(conn, aid)
+        ledger.finish_analysis(conn, aid, "done")
+
+    totals = queries.severity_totals(conn, "web")
+    assert totals["critical"] == 2, "two distinct secrets must not collapse into one"
+
+    cats = queries.top_categories(conn, "web")
+    assert cats == [{"rule": "aws_access_key", "count": 2}]
+
+
+def test_severity_totals_keeps_the_more_severe_of_two_branches(conn):
+    """The agent can re-triage a finding's severity between runs, so the same
+    fingerprint can legitimately carry a different severity on two branches'
+    latest analyses. The MORE severe one must win: a posture summary that
+    under-reports the worst assessment ever made of a finding is the wrong
+    way to be wrong -- an operator reading "high" while one branch's own
+    analysis called it "critical" is worse served than one reading
+    "critical" for a finding a later run downgraded."""
+    fp = "c" * 64
+    for br, sev in (("main", "high"), ("develop", "critical")):
+        aid = ledger.start_analysis(conn, "web", "web", br, "s", "quick", "r")
+        ledger.record_finding(conn, aid, {
+            "fingerprint": fp, "category": "secret", "rule": "aws_access_key",
+            "severity": sev, "title": "t", "occurrences": []})
+        ledger.mark_prepared(conn, aid)
+        ledger.finish_analysis(conn, aid, "done")
+
+    totals = queries.severity_totals(conn, "web")
+    assert totals["critical"] == 1, "the more severe assessment must win"
+    assert totals["high"] == 0, "must not also be counted a second time as the lesser severity"
+    assert totals["total"] == 1
+
+
+def test_a_fingerprint_resolved_on_one_branch_and_open_on_another_counts_once_as_open(conn):
+    """The choice made explicit: OPEN wins over RESOLVED. Same fingerprint,
+    fixed on `main` (it dropped out of main's own latest scan) but still open
+    critical on both `develop` and `hotfix`. The resolved branch must not
+    make the finding disappear from the rollup.
+
+    TWO open branches are used rather than one, deliberately: a lone
+    resolved/open PAIR already sums to 1 on the pre-fix code by coincidence
+    -- `posture()` already excludes a resolved finding from its OWN branch's
+    count, so with only one branch left open, "sum every branch's posture"
+    and "dedupe by fingerprint" agree by accident, and a test built from just
+    that pair would pass before this fix too, proving nothing. Adding the
+    third, also-open branch is what actually exercises the double-counting
+    bug this fix closes, while still keeping one branch genuinely resolved
+    to prove that resolved-elsewhere does not suppress the still-open
+    finding."""
+    fp = "d" * 64
+    aid_main1 = ledger.start_analysis(conn, "web", "web", "main", "s1", "quick", "r")
+    ledger.record_finding(conn, aid_main1, {
+        "fingerprint": fp, "category": "secret", "rule": "aws_access_key",
+        "severity": "critical", "title": "t", "occurrences": []})
+    ledger.mark_prepared(conn, aid_main1)
+    ledger.finish_analysis(conn, aid_main1, "done")
+    # A second, later analysis of `main` records nothing -> the fingerprint
+    # is gone from main's own latest scan, so `checklist` marks it "fixed".
+    aid_main2 = ledger.start_analysis(conn, "web", "web", "main", "s2", "quick", "r")
+    ledger.mark_prepared(conn, aid_main2)
+    ledger.finish_analysis(conn, aid_main2, "done")
+
+    for br in ("develop", "hotfix"):
+        aid = ledger.start_analysis(conn, "web", "web", br, "s", "quick", "r")
+        ledger.record_finding(conn, aid, {
+            "fingerprint": fp, "category": "secret", "rule": "aws_access_key",
+            "severity": "critical", "title": "t", "occurrences": []})
+        ledger.mark_prepared(conn, aid)
+        ledger.finish_analysis(conn, aid, "done")
+
+    _an, main_findings = queries.checklist(conn, aid_main2)
+    assert main_findings[0]["state"] == "fixed", "the setup must actually resolve it on main"
+
+    totals = queries.severity_totals(conn, "web")
+    assert totals["critical"] == 1, \
+        "resolved-on-main must not hide it, and open-on-two-branches must still be one"
+    assert totals["total"] == 1
+
+    cats = queries.top_categories(conn, "web")
+    assert cats == [{"rule": "aws_access_key", "count": 1}]
+
+
 def test_activity_summary_counts_per_kind_seeded_from_event_kinds(conn):
     """Counts per kind, seeded from EVENT_KINDS -- an absent kind reads 0
     rather than being missing from the dict entirely."""

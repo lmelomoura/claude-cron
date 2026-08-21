@@ -54,7 +54,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ledger regardless of `--projects`, so a project disabled or removed from
   projects.json still contributed to them even though the summary and
   project table already said it did not exist; all five panels are now
-  scoped to exactly the given projects.
+  scoped to exactly the given projects. A later review found the donut and
+  its category rollup still double-counted: both summed each branch's own
+  posture/rule totals, and a fingerprint never includes the branch, so the
+  same committed secret reachable on `main` and `develop` showed as two
+  criticals and its rule as two occurrences — on a screen whose own findings
+  browser, just below, already draws the opposite line (`total` vs `unique`:
+  189 findings can be 93 problems). Both now count DISTINCT FINGERPRINTS
+  across every scoped branch instead: a finding open on several branches
+  contributes once, using the more severe of two conflicting per-branch
+  severities (the agent can re-triage a finding's severity between runs),
+  and a finding resolved on one branch but still open on another still
+  counts, as open.
 
 - **The findings browser has a query.** `queries.finding_rows` unions one
   checklist per branch — the latest finished analysis of each — which is what
