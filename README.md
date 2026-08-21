@@ -791,9 +791,13 @@ deleted by what you had actually typed.
 
 Not a running total of everything ever found — that only grows, and a number
 that only grows says nothing about whether you are winning. Every count is read
-off the **latest finished analysis** of the scope it describes. The one stated
-exception is the index's *Analyses* card, which is an honest all-time total and
-says so on the card.
+off the **latest finished analysis** of the scope it describes, with three
+stated exceptions, all honest all-time totals: the index's *Analyses* card
+(which says so on the card itself), the *Analyses* column of the index's
+project table (`queries.project_rows`, a `COUNT(*)` over every analysis of the
+project regardless of state), and the *Analyses* column of the Branches tab
+(`queries.branch_rows`, a `COUNT(*)` over every finished analysis of that
+branch, ever — not just the latest).
 
 **Open** means every state that is not `fixed`, `accepted` or `false_positive` —
 so `new`, `open`, `partial`, `regressed` **and `pending`**. A finding nobody
@@ -1015,7 +1019,7 @@ two — same rule, same path, therefore one identity. The working-tree reading i
 the one you see, because it carries the real line number; the remediation is
 the history's either way.
 
-### CVEs need OSV.dev, and an offline analysis declares the gap
+### CVEs need OSV.dev, and every way of missing it says so
 
 Everything else here runs on your machine. A vulnerability database does not
 exist unless somebody publishes it, so the inventory is queried against the
@@ -1024,13 +1028,27 @@ does.** No dependency's source is read at all — not `node_modules/`, not
 `vendor/` — it is noise, and it is the only code in a checkout that nobody there
 wrote.
 
-When OSV cannot be reached the CVE phase fails, **the analysis carries on**, and
-the report opens with the gap in writing: *"Dependency CVEs were NOT checked
-against OSV.dev …"*, naming the source that did not answer rather than leaving
-you to guess which question the report cannot be asked. A stated gap is useful;
-a silent one makes you trust a report that never looked at your dependencies.
-The same line carries every other kind of incompleteness — an analysis that hits
-its ceiling closes as `capped` and says what it did not reach, instead of
+Whichever way OSV.dev goes unconsulted, **the analysis carries on** rather than
+failing outright, and the report opens with the gap in writing — three distinct
+wordings for three distinct cases, never one generic warning standing in for
+all of them:
+
+- **Deliberately offline** (`prepare --offline`, networking disabled on
+  purpose): *"Dependency CVEs were NOT checked against OSV.dev: this analysis
+  ran with networking disabled."*
+- **Unreachable outright** — no chunk of the inventory got a usable answer:
+  *"Dependency CVEs were NOT checked: the OSV.dev lookup did not complete
+  (`{reason}`). Everything else in this report is complete."*
+- **Stopped partway** — some chunks answered before one failed, and their
+  findings are kept, not discarded: *"OSV.dev stopped answering partway
+  (`{reason}`): `{checked}` of `{total}` components were checked and their
+  findings are included; the remaining `{total - checked}` were NOT checked."*
+
+Each names the source that did not answer rather than leaving you to guess
+which question the report cannot be asked. A stated gap is useful; a silent one
+makes you trust a report that never looked at your dependencies. The same
+channel carries every other kind of incompleteness — an analysis that hits its
+ceiling closes as `capped` and says what it did not reach, instead of
 presenting a partial read as coverage.
 
 ### The `security` block on a project
@@ -1040,6 +1058,7 @@ presenting a partial read as coverage.
   "enabled": true,
   "model": "opus",
   "effort": "",
+  "permission_mode": "bypassPermissions",
   "claude_config_dir": "",
   "default_profile": "standard",
   "max_budget_usd": 5,
@@ -1052,10 +1071,13 @@ presenting a partial read as coverage.
 The **Security** tab of the project editor writes all of it. A project with no
 block gets no analysis, and no derived job either.
 
-The engine reads `enabled`, `model`, `effort`, `claude_config_dir`,
-`max_budget_usd`, `daily_budget_usd` and `ignore_paths`. `default_profile` and
-`min_severity` belong to the **dashboard** alone — the profile Analyse offers
-first, and a display floor — and no part of the engine looks at either.
+The engine reads `enabled`, `model`, `effort`, `permission_mode`,
+`claude_config_dir`, `max_budget_usd`, `daily_budget_usd` and `ignore_paths` —
+`permission_mode` defaults to `bypassPermissions` when absent (an unrecognised
+value falls back to it too, with a warning) and is carried onto the derived
+job the same way. `default_profile` and `min_severity` belong to the
+**dashboard** alone — the profile Analyse offers first, and a display floor —
+and no part of the engine looks at either.
 
 `model` left empty means the `opus` family; `effort` left empty leaves the
 decision to the CLI, as in a job. `claude_config_dir` is carried on the derived
@@ -1159,9 +1181,11 @@ page. The agent's half is `prepare`, `findings`, `fingerprint`,
 operator's are `open-analysis`, `decide`, `rename-project`, `list` and `event`.
 Each of the four screens has one read verb behind it — `index-data`,
 `project-data`, `findings-page`, `activity-data` — answering that whole screen in
-a single call, plus `analysis`, `events` and `filters list|save|delete` for the
-smaller reads. `claude-cron security render --analysis <id> --format
-md|json|html|sbom` is what the four download buttons call.
+a single call, plus `analysis`, `events` and `filters list` for the smaller
+reads. `filters save` and `filters delete` are writes, not reads — they are in
+`AGENT_FORBIDDEN` for exactly that reason. `claude-cron security render
+--analysis <id> --format md|json|html|sbom` is what the four download buttons
+call.
 `sbom` is the odd one out: it is not a report over the checklist but the stored
 CycloneDX inventory itself, downloaded as `.cdx.json` — the suffix the tools
 that consume one recognise. It is kept per branch with the most recent
@@ -1369,9 +1393,14 @@ are rejected and a custom header forces a CORS preflight the server refuses — 
 no web page open in your browser can drive your agents. Every mutation shells out
 to the `claude-cron` CLI, so the bash engine stays the single source of truth.
 
-On top of that the page requires a **signed-in operator**: every endpoint but
-`/api/session` and `/api/login` refuses until there is one, and the sign-in and
-first-run screens are what you get instead. Passwords are PBKDF2-HMAC-SHA256 at
+On top of that the page requires a **signed-in operator**: every `/api/*`
+endpoint but `/api/session` and `/api/login` refuses until there is one, and the
+sign-in and first-run screens are what you get instead. Two routes answer
+before that gate is even checked: `/health` always has, and `/static/*` does
+too, deliberately — the bundle it serves is not secret (it ships in git, in
+every install) and it is the same page that draws the login screen, so gating
+it would leave a signed-out browser holding a page whose own code it is not
+allowed to fetch. Passwords are PBKDF2-HMAC-SHA256 at
 600k rounds; the session cookie is `HttpOnly` and `SameSite=Strict`, and the table
 stores only its SHA-256 digest, so reading `app.db` hands over no live session.
 None of this defends against someone who can already run commands as you — they
