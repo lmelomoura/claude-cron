@@ -21,7 +21,23 @@
    numbers. */
 import { $, fmtAgo } from "./page.js";
 import { secEl } from "./dom.js";
+import { SEC_NEVER } from "./vocabulary.js";
 import { secIndexPosturePills } from "./index-screen.js";
+
+/* The cue Task 8 established for a PARTIAL read, in the same class and the
+   same words the index screen's own project row uses (secIndexProjectRow's
+   `secidx-capped` badge) and the Overview panel's banner repeats: a `capped`
+   analysis stopped before covering the whole scope, so "critical: 0" beside
+   it means "none found before it stopped," not "none."
+
+   This tab could not say it at all. `branch_rows` admitted `done` and
+   `capped` alike and returned no state, and the table had no column for one
+   -- so the single screen whose entire purpose is per-branch posture was the
+   only posture surface in the area that presented a truncated read as a
+   finished one. */
+const BRANCH_CAPPED_TITLE = "This analysis is INCOMPLETE: it stopped before "
+  + "covering the whole scope. The posture beside this badge is what it had "
+  + "reached, not what is there.";
 
 function secBranchesCaption(){
   return secEl("div", "secpj-caption",
@@ -58,14 +74,27 @@ function secBranchesCaption(){
 function secBranchTrendText(trend){
   const pts = trend || [];
   if(!pts.length) return "No analyses of this branch in the last 30 days.";
+  // A `capped` point is a PARTIAL read: its `open` count is what that run had
+  // found before it stopped, not what was there. A direction word read across
+  // one is a claim about the CODE made from a fact about the RUN -- "falling"
+  // off an analysis that simply ran out of room before finding anything. So
+  // the numbers still get shown (they are what was recorded, and hiding them
+  // would be its own lie) and the direction is withheld, the same way this
+  // function already withholds one from a series that went both ways.
+  const partial = pts.some(p => p.state === "capped");
   if(pts.length === 1){
     return pts[0].open + " open — only one analysis in the last 30 days, "
-      + "nothing yet to compare it against.";
+      + "nothing yet to compare it against."
+      + (partial ? " It stopped early, so that count is what it reached." : "");
   }
   const opens = pts.map(p => p.open);
   const first = opens[0], last = opens[opens.length - 1];
   const base = first + " → " + last + " open across " + pts.length
     + " analyses in the last 30 days";
+  if(partial){
+    return base + ", but at least one of them stopped before covering the "
+      + "whole scope — no direction is claimed across a partial read";
+  }
 
   let direction = "flat";
   for(let i = 1; i < opens.length; i++){
@@ -99,7 +128,17 @@ function secBranchRow(r){
 
   const tdOpen = document.createElement("td");
   tdOpen.appendChild(secIndexPosturePills(r.open || {}));
+  if(r.state === "capped"){
+    const badge = secEl("span", "secidx-capped", "incomplete");
+    badge.title = BRANCH_CAPPED_TITLE;
+    tdOpen.appendChild(badge);
+  }
   tr.appendChild(tdOpen);
+
+  // The state the row's posture was actually read from, in its own column --
+  // not only as a badge, so a reader scanning the table can see at a glance
+  // which branches were read whole and which were not.
+  tr.appendChild(cell(r.state || "—"));
 
   tr.appendChild(cell(secBranchTrendText(r.trend)));
   return tr;
@@ -113,17 +152,21 @@ function secBranchesTable(rows, attempted){
     // sentence: a project whose every analysis failed must not read exactly
     // like one that has never been touched, or this tab contradicts the
     // Overview tab one click away over the identical project.
-    return secEl("div", "tblempty", attempted
-      ? "No analysis of this project has finished yet — see Runs for what was attempted."
-      : "Never analysed. Switch to Runs to pick a branch and start.");
+    return secEl("div", "tblempty",
+      attempted ? SEC_NEVER.attempted : SEC_NEVER.next);
   }
   const wrap = secEl("div", "tablewrap");
   const table = document.createElement("table");
   const thead = document.createElement("thead");
   const htr = document.createElement("tr");
-  ["Branch", "Last analysis", "Analyses", "Open", "Trend (30d)"].forEach(h => {
+  ["Branch", "Last analysis", "Analyses", "Open", "Last state", "Trend (30d)"].forEach(h => {
     const th = document.createElement("th");
     th.textContent = h;
+    if(h === "Last state"){
+      th.title = "The state of the analysis this row's Open posture was read "
+        + "from. `capped` means it stopped before covering the whole scope, "
+        + "so those counts are what it reached, not what is there.";
+    }
     htr.appendChild(th);
   });
   thead.appendChild(htr);

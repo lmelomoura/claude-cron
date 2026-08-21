@@ -342,7 +342,11 @@ async function secActOpenAnalysis(project, relatedId){
   secBackFromActivity();
   await secOpenProject(project);
   secSwitchProjectTab("runs");
-  await secShowAnalysis(id);
+  // `pinned`: this link names ONE analysis, and it is routinely on a branch
+  // the project screen's picker did not resolve to. Without it the poll
+  // replaced it with that picker's newest analysis within four seconds, so a
+  // deep link into a `develop` run landed on `main`'s latest instead.
+  await secShowAnalysis(id, true);
 }
 
 /* A fingerprint prefix opens a SECOND, independent mount of
@@ -353,7 +357,14 @@ async function secActOpenAnalysis(project, relatedId){
    escapes to the project's whole findings list without leaving the dialog. */
 function secActOpenFinding(project, fingerprintPrefix){
   const titleEl = $("sec-act-finding-title");
-  if(titleEl) titleEl.textContent = "Finding " + fingerprintPrefix + "… in " + project;
+  // The PROJECT, not the fingerprint. The dialog's title is set once, here,
+  // and never hears about what happens inside it -- so a title naming the
+  // fingerprint went on naming it after "Clear filters" had dropped that
+  // filter, and read "Finding a3f9c2… in minerva" over that project's whole
+  // list. The fingerprint scope belongs where it can disappear with the
+  // filter it describes, and it already lives there: secFindStrip renders
+  // "Filtered to fingerprint …" from `fs.filters` on every paint.
+  if(titleEl) titleEl.textContent = "Findings in " + project;
   const halo = $("sec-act-finding-halo");
   if(halo){ halo.textContent = ""; halo.appendChild(secIcon("search")); }
   const dlg = $("sec-act-finding");

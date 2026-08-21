@@ -2,8 +2,8 @@
 import { $, CC, api, toast, openLog, projById, fmtAgo, fmtDur, money } from "./page.js";
 import { secIcon, secEl, secFill, secFetch } from "./dom.js";
 import { SEC_POLL_MS, SEC_PROFILES, SEC_STATES, SEC_STATE_HELP, SEC_STATE_LABEL,
-         SEV_ORDER, secDefaultProfile, secMinSeverity, secPosture, secRepos,
-         secSevKey, secSevRank, secStateKey, secVisible } from "./vocabulary.js";
+         SEV_ORDER, SEC_NEVER, secDefaultProfile, secMinSeverity, secPosture,
+         secRepos, secSevKey, secSevRank, secStateKey, secVisible } from "./vocabulary.js";
 import { secState } from "./state.js";
 import { secInvalidateIndex, secRenderIndex, secLoadIndex } from "./index-screen.js";
 import { secRunFor, secRenderHistory } from "./history.js";
@@ -43,7 +43,7 @@ export function secBack(){
   secInvalidateIndex();
   secInvalidateProject();
   secState.project = ""; secState.analysis = null; secState.findings = [];
-  secState.analyses = []; secState.stateFilter = "";
+  secState.analyses = []; secState.stateFilter = ""; secState.pinned = false;
   $("sec-detail").hidden = true;
   $("sec-projects").hidden = false;
   secRenderIndex();
@@ -60,7 +60,7 @@ export async function secOpen(project){
   const seq = ++secState.seq;
   secState.project = project;
   secState.analysis = null; secState.findings = []; secState.analyses = [];
-  secState.stateFilter = "";
+  secState.stateFilter = ""; secState.pinned = false;
   // A fresh project starts the running/not-running comparison over: the
   // value from whatever project was open before (or none) must never make
   // this project's own first poll tick look unchanged by coincidence.
@@ -146,8 +146,22 @@ export async function secSyncScope(){
   await secShowAnalysis(mine.length ? mine[0].id : null);
 }
 
-export async function secShowAnalysis(id){
+/* `pinned` marks a DELIBERATE open -- a row clicked in the Runs table, an
+   "#N" in the history list, the Activity screen's deep link into one exact
+   analysis. Without it the 4-second poll took the branch's newest analysis
+   every tick and painted that instead, so a historical run opened on purpose
+   was swapped out from under the reader within four seconds of arriving. The
+   poll still REFRESHES a pinned analysis (same id, re-fetched, so a live one
+   keeps moving) -- it just stops choosing a different one.
+
+   Cleared by everything that is not a deliberate open: `secSyncScope` (the
+   picker changed, so following the newest is exactly right again), `secOpen`
+   and `secBack`. It is a property of the SCREEN, not of the id, which is why
+   it lives in secState beside the analysis it applies to rather than in a
+   variable this module alone can see. */
+export async function secShowAnalysis(id, pinned){
   const seq = ++secState.seq;
+  secState.pinned = !!pinned;
   if(id == null){
     secState.analysis = null; secState.findings = [];
     secPaint();
@@ -192,8 +206,17 @@ export async function secReload(forceProject = true){
                                           && a.branch === secState.branch);
   // Follow the newest analysis of the branch on screen: one just started is the
   // one worth watching, not the one that was being read a moment ago.
-  const want = mine.length ? mine[0].id : (secState.analysis && secState.analysis.id);
-  await secShowAnalysis(want == null ? null : want);
+  //
+  // UNLESS somebody deliberately opened a particular one (a Runs row, an "#N"
+  // in the history, the Activity screen's deep link). That analysis is what
+  // the reader asked for, and replacing it with the branch's newest -- which
+  // this did unconditionally, on every 4-second tick -- meant a deep-linked
+  // run vanished within four seconds of being opened. It is still re-fetched
+  // here, by its own id, so a pinned RUNNING analysis keeps updating.
+  const pinnedId = (secState.pinned && secState.analysis) ? secState.analysis.id : null;
+  const want = pinnedId != null ? pinnedId
+             : (mine.length ? mine[0].id : (secState.analysis && secState.analysis.id));
+  await secShowAnalysis(want == null ? null : want, secState.pinned);
   secSyncPoll();
   // The same poll tick (and the same post-Analyse reload) that refreshes the
   // old detail pane above also keeps the header/tabs/sidebar in step --
@@ -237,8 +260,7 @@ export function secPaint(){
   box.textContent = "";
   if(!a){
     box.appendChild(secEl("span", null,
-      secState.branch ? "No analysis of this branch yet — press Analyse to make the first one."
-                      : "Pick a branch, or type one, and press Analyse."));
+      secState.branch ? SEC_NEVER.branch : SEC_NEVER.pickBranch));
     $("sec-incomplete").hidden = true;
     $("sec-coverage").hidden = true;
     $("sec-summary").textContent = "";

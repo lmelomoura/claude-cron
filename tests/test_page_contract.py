@@ -1199,7 +1199,8 @@ def test_the_index_kpis_render_a_dash_not_zero_percent_when_nothing_finished(srv
     the JSON-contract tests in tests/security/test_cli.py and
     tests/test_security_api.py, neither of which ever paints anything."""
     block = _security_js(srv)
-    deps = _index_screen_deps(block, "secEl", "secIcon", "secIndexCard", "secIndexCards")
+    deps = _index_screen_deps(block, "secEl", "secIcon", "secIndexCard",
+                              "secCappedScopeNote", "secIndexCards")
     script = tmp_path / "kpi-dash.js"
     script.write_text(_INDEX_DOM_HARNESS + deps + """
     const cards = secIndexCards({projects: 1, analyses: 0, critical: 0, high: 0,
@@ -1304,7 +1305,8 @@ def test_the_critical_and_high_kpi_cards_flag_incomplete_contributors(srv, tmp_p
     capped, the Critical/High KPI cards must say how many, instead of
     presenting a fleet-wide total that looks complete."""
     block = _security_js(srv)
-    deps = _index_screen_deps(block, "secEl", "secIcon", "secIndexCard", "secIndexCards")
+    deps = _index_screen_deps(block, "secEl", "secIcon", "secIndexCard",
+                              "secCappedScopeNote", "secIndexCards")
     script = tmp_path / "kpi-capped.js"
     script.write_text(_INDEX_DOM_HARNESS + deps + """
     const cards = secIndexCards({projects: 2, analyses: 3, critical: 1, high: 2,
@@ -1359,8 +1361,8 @@ def test_the_project_header_renders_a_dash_not_zero_for_lines_of_code(srv, tmp_p
     column existed, or a project never analysed) -- rendering a bare `0`
     would read as an empty repository instead."""
     block = _security_js(srv)
-    deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secIcon", "secHeaderBit", "secRenderProjectHeader"))
+    deps = (_const(block, "SEC_NEVER") + "\n".join(_plainfn(block, n) for n in
+            ("secEl", "secIcon", "secHeaderBit", "secRenderProjectHeader")))
     script = tmp_path / "pj-loc.js"
     script.write_text(_PROJECT_DOM_HARNESS + deps + """
     secRenderProjectHeader({header: {profile: "standard", branch: "main",
@@ -1438,6 +1440,7 @@ def test_the_two_scope_captions_name_the_branch_and_the_branch_count(srv, tmp_pa
     block = _security_js(srv)
     deps = "\n".join(_plainfn(block, n) for n in
                      ("secEl", "secOverviewCaption", "secSidebarCaption"))
+    deps = _const(block, "SEC_NEVER") + _const(block, "SEC_FLOOR_SCOPE_NOTE") + deps
     script = tmp_path / "pj-captions.js"
     script.write_text(_INDEX_DOM_HARNESS + deps + """
     const fellBack = secOverviewCaption({branch: "develop", branch_fell_back: true});
@@ -1475,6 +1478,7 @@ def test_the_overview_tells_never_analysed_apart_from_never_finished(srv, tmp_pa
     block = _security_js(srv)
     deps = "\n".join(_plainfn(block, n) for n in
                      ("secEl", "secIcon", "secOverviewCaption", "secRenderProjectOverview"))
+    deps = _const(block, "SEC_NEVER") + deps
     script = tmp_path / "pj-attempted.js"
     script.write_text(_PROJECT_DOM_HARNESS + deps + """
     secRenderProjectOverview({header: {}, tabs: {overview: {state: "", attempted: false}}});
@@ -1720,6 +1724,7 @@ def test_the_branches_tab_tells_never_analysed_apart_from_every_attempt_failed(s
                      ("secEl", "secIndexPosturePills", "secBranchesCaption",
                       "secBranchTrendText", "secBranchRow", "secBranchesTable",
                       "secRenderProjectBranches"))
+    deps = _const(block, "SEC_NEVER") + deps
     script = tmp_path / "pj-branches-empty.js"
     script.write_text(_PROJECT_DOM_HARNESS + deps + """
     secRenderProjectBranches({tabs: {overview: {attempted: false}, branches: []}});
@@ -1916,8 +1921,9 @@ def test_the_strip_labels_total_and_unique_and_counts_the_floor_from_the_whole_f
     not from whatever slice of rows happens to be on THIS page -- a browser
     with several pages would otherwise undercount how much the floor hides."""
     block = _security_js(srv)
-    consts = _const(block, "SEV_ORDER")
-    deps = "\n".join(_plainfn(block, n) for n in ("secEl", "secFindHiddenByFloor", "secFindStrip"))
+    consts = _const(block, "SEV_ORDER") + _const(block, "ROW_PILL_TITLE")
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("secEl", "secIcon", "secFindHiddenByFloor", "secFindStrip"))
     script = tmp_path / "find-strip.js"
     script.write_text(_INDEX_DOM_HARNESS + """
     function secMinSeverity(_p){ return "medium"; }
@@ -2003,9 +2009,11 @@ def test_a_fixed_finding_stays_visible_and_uncounted_below_the_floor(srv, tmp_pa
     arrows = (re.search(r"const secSevRank = .*?\};", block, re.S).group(0) + "\n"
              + re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
              + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
+    consts = consts + _const(block, "ROW_PILL_TITLE")
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secFindHiddenByFloor", "secFindStrip", "secFindRow",
-                      "secFindDecisionControls", "secFindTableSection", "secVisible"))
+                     ("secEl", "secIcon", "secFindHiddenByFloor", "secFindStrip",
+                      "secFindRow", "secFindDecisionControls", "secFindTableSection",
+                      "secVisible"))
     script = tmp_path / "find-fixed-floor.js"
     script.write_text(_INDEX_DOM_HARNESS + """
     function fmtWhen(t){ return "w" + String(t); }
@@ -2602,3 +2610,532 @@ def test_every_event_kind_belongs_to_exactly_one_activity_tab(srv, tmp_path):
     duplicated = [k for k, c in out.items() if c > 1]
     assert not missing, f"kind(s) placed in no tab at all: {missing} ({out})"
     assert not duplicated, f"kind(s) placed in more than one tab: {duplicated} ({out})"
+
+
+# ---- final whole-branch review: the rendering half of the four Critical
+# findings and the screen-level Importants/Minors beside them. Each of these
+# fails against the code before its own fix.
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_kpi_cards_say_when_a_total_was_read_off_an_undeclared_branch(srv, tmp_path):
+    """CRITICAL 1's other half. The project table names a fallback branch per
+    row; the cards, summing exactly those postures, said nothing at all --
+    and this area's standing rule is that postures of different branches are
+    never confused in silence. `fell_back_projects` is the count and this is
+    the sentence."""
+    block = _security_js(srv)
+    deps = _index_screen_deps(block, "secEl", "secIcon", "secIndexCard",
+                              "secCappedScopeNote", "secIndexCards")
+    script = tmp_path / "kpi-fellback.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    const cards = secIndexCards({projects: 3, analyses: 4, critical: 2, high: 1,
+      capped_projects: 0, fell_back_projects: 1, success_rate: 1.0});
+    const clean = secIndexCards({projects: 3, analyses: 4, critical: 2, high: 1,
+      capped_projects: 0, fell_back_projects: 0, success_rate: 1.0});
+    console.log(JSON.stringify({
+      notes: collectAll(cards, []).filter(r => r.cls.indexOf("secidx-note") === 0)
+                                  .map(r => r.text),
+      cleanNotes: collectAll(clean, []).filter(r => r.cls.indexOf("secidx-note") === 0)
+                                       .map(r => r.text),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert any("declared base" in n for n in out["notes"]), \
+        f"the cards say nothing about a fallback branch: {out['notes']}"
+    assert not any(n == "Open now, in every project's latest analysis"
+                   for n in out["notes"]), \
+        "the plain 'this is the latest analysis' note still shows over a fallback total"
+    # Containment: a fleet with no fallbacks keeps the plain note.
+    assert any(n == "Open now, in every project's latest analysis"
+               for n in out["cleanNotes"]), out["cleanNotes"]
+    assert not any("declared base" in n for n in out["cleanNotes"]), \
+        "the fallback caveat fires over a fleet that has none"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_success_rate_card_labels_its_all_time_scope(srv, tmp_path):
+    """IMPORTANT 5(b). "Success rate" is an all-time ratio sitting BETWEEN two
+    cards that say "open now", and beside one ("Analyses") that is explicitly
+    labelled "All time — a historical total". The fifth and sixth instances
+    of an unlabelled scope clash on this branch; this is the sixth."""
+    block = _security_js(srv)
+    deps = _index_screen_deps(block, "secEl", "secIcon", "secIndexCard",
+                              "secCappedScopeNote", "secIndexCards")
+    script = tmp_path / "kpi-scope.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    const cards = secIndexCards({projects: 2, analyses: 5, critical: 0, high: 0,
+      capped_projects: 0, fell_back_projects: 0, success_rate: 0.8});
+    console.log(JSON.stringify(collectAll(cards, []).map(r => r.text)));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    rate_note = next((t for t in out if "completed clean" in t), None)
+    assert rate_note is not None, f"no success-rate note rendered at all: {out}"
+    assert "All time" in rate_note, \
+        f"the all-time ratio is not labelled the way its neighbour is: {rate_note!r}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_index_donut_carries_the_same_capped_cue_the_cards_do(srv, tmp_path):
+    """IMPORTANT 8. The donut is the whole fleet's posture in one figure, so
+    it has no row to hang the `incomplete` badge off -- and it carried no
+    cue at all while the cards and the table rows beside it both did."""
+    block = _security_js(srv)
+    deps = _index_screen_deps(block, "secEl", "secIcon", "secCappedScopeNote",
+                              "secIndexDonutSvg", "secIndexDonutLegend",
+                              "secIndexCategories", "secIndexDonut")
+    consts = (_const(block, "SEV_ORDER5") + _const(block, "SEV_STROKE")
+              + _const(block, "DONUT_PILL_TITLE"))
+    script = tmp_path / "idx-donut-capped.js"
+    script.write_text(_INDEX_DOM_HARNESS + consts + deps + """
+    const donut = {critical: 1, high: 0, medium: 0, low: 0, info: 0, total: 1};
+    const withCue = secIndexDonut(donut, [], secCappedScopeNote(1, 2, "project"));
+    const without = secIndexDonut(donut, [], "");
+    console.log(JSON.stringify({
+      withCue: collectAll(withCue, []).map(r => r.text).join(" "),
+      without: collectAll(without, []).map(r => r.text).join(" "),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert "stopped before covering" in out["withCue"], \
+        f"the donut presents a partial read as a complete one: {out['withCue']}"
+    assert "stopped before covering" not in out["without"], \
+        "the cue fires with nothing capped behind it"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_donut_paints_info_in_a_colour_that_is_not_the_empty_track(srv, tmp_path):
+    """MINOR 2. `info` was `var(--line)` -- the same token the empty track is
+    painted with -- so an info segment was invisible against the ring it sat
+    on while the legend went on listing its count. `.sevpill.info` and
+    `.sevpill.low` are both `var(--muted)` in the stylesheet, which is the
+    grouping this table exists to mirror."""
+    block = _security_js(srv)
+    consts = _const(block, "SEV_ORDER5") + _const(block, "SEV_STROKE")
+    deps = _index_screen_deps(block, "secIndexDonutSvg")
+    script = tmp_path / "donut-info-colour.js"
+    script.write_text(_INDEX_DOM_HARNESS + consts + deps + """
+    const svg = secIndexDonutSvg({critical: 0, high: 0, medium: 0, low: 0, info: 3});
+    const track = svg.childNodes[0].style.stroke;
+    const segs = svg.childNodes.slice(1).map(n => n.style && n.style.stroke).filter(Boolean);
+    console.log(JSON.stringify({track, segs, info: SEV_STROKE.info}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["info"] != out["track"], \
+        f"the info segment is painted the same colour as the empty track: {out}"
+    assert out["segs"] and out["segs"][0] != out["track"], out
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_branches_tab_marks_a_branch_whose_last_analysis_stopped_early(srv, tmp_path):
+    """CRITICAL 3's rendering half. `branch_rows` now carries the state its
+    posture was read from; this is the Branches tab saying so, with the cue
+    Task 8 established (`secidx-capped`, "incomplete", the same explanatory
+    title) plus a column of its own so a reader can scan for it."""
+    block = _security_js(srv)
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("secEl", "secIndexPosturePills", "secBranchesCaption",
+                      "secBranchTrendText", "secBranchRow", "secBranchesTable",
+                      "secRenderProjectBranches"))
+    deps = _const(block, "SEC_NEVER") + _const(block, "BRANCH_CAPPED_TITLE") + deps
+    script = tmp_path / "pj-branches-capped.js"
+    script.write_text(_PROJECT_DOM_HARNESS + deps + """
+    secRenderProjectBranches({tabs: {overview: {attempted: true}, branches: [
+      {branch: "main", last_analysis: 1700000000, analyses: 2, state: "capped",
+       open: {critical: 0, high: 0, medium: 0, low: 0, info: 0, total: 0},
+       trend: [{open: 0, state: "capped"}]},
+      {branch: "develop", last_analysis: 1700000100, analyses: 1, state: "done",
+       open: {critical: 1, high: 0, medium: 0, low: 0, info: 0, total: 1},
+       trend: [{open: 2, state: "done"}, {open: 1, state: "done"}]},
+    ]}});
+    console.log(JSON.stringify(collectAll(_els["sec-pj-branches"], [])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    joined = " ".join(r["text"] for r in out)
+    badges = [r for r in out if r["cls"] == "secidx-capped"]
+    assert badges, f"a capped branch got no incomplete cue at all: {joined}"
+    assert badges[0]["text"] == "incomplete", badges[0]
+    assert "stopped before covering" in badges[0]["title"].lower(), badges[0]
+    assert "capped" in joined and "done" in joined, \
+        f"the state column did not render: {joined}"
+    # Containment: exactly one badge -- the done branch must not get one.
+    assert len(badges) == 1, f"the cue fired over a finished branch too: {out}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_branch_trend_refuses_a_direction_across_a_partial_read(srv, tmp_path):
+    """CRITICAL 3, the other half: a `capped` point's `open` count is what
+    that run reached before it stopped, not what was there -- so "falling"
+    read across one is a claim about the CODE made from a fact about the RUN.
+    The numbers still show (they were recorded); the direction word does
+    not, the same way this function already withholds one from a series that
+    went both ways."""
+    block = _security_js(srv)
+    fn = _plainfn(block, "secBranchTrendText")
+    script = tmp_path / "trend-capped.js"
+    script.write_text(fn + """
+    console.log(JSON.stringify({
+      cappedEnd: secBranchTrendText([{open: 5, state: "done"}, {open: 1, state: "capped"}]),
+      cappedStart: secBranchTrendText([{open: 5, state: "capped"}, {open: 1, state: "done"}]),
+      allDone: secBranchTrendText([{open: 5, state: "done"}, {open: 1, state: "done"}]),
+      oneCapped: secBranchTrendText([{open: 3, state: "capped"}]),
+      oneDone: secBranchTrendText([{open: 3, state: "done"}]),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert "falling" not in out["cappedEnd"], \
+        f"a direction is claimed across a run that simply stopped: {out['cappedEnd']}"
+    assert "5 → 1" in out["cappedEnd"], \
+        f"the recorded numbers must still show: {out['cappedEnd']}"
+    assert "stopped before covering" in out["cappedEnd"], out["cappedEnd"]
+    assert "falling" not in out["cappedStart"], out["cappedStart"]
+    # Containment: a series with no partial point keeps its direction word.
+    assert "falling" in out["allDone"], out["allDone"]
+    assert "stopped early" in out["oneCapped"], out["oneCapped"]
+    assert "stopped early" not in out["oneDone"], out["oneDone"]
+
+
+def test_every_never_analysed_sentence_comes_from_one_place(srv):
+    """MINOR 1. Six near-variants of "never analysed" lived across four
+    modules, three of them telling the reader what to do next and three not,
+    twice on the same screen. They are one constant now (SEC_NEVER in
+    vocabulary.js) rendered at two densities, and this is what stops a
+    seventh being typed inline next time."""
+    block = _security_js(srv)
+    for literal in ('"Never analysed. Switch to Runs to pick a branch and start."',
+                    '"No analysis of this project has finished yet — see Runs for what was attempted."',
+                    '"No finished analysis yet."',
+                    '"No analysis of this branch yet — press Analyse to make the first one."',
+                    '"Pick a branch, or type one, and press Analyse."'):
+        assert block.count(literal) <= 1, \
+            f"this sentence is typed inline somewhere as well as in SEC_NEVER: {literal}"
+    # ...and every one of them is reachable from the one constant.
+    assert "export const SEC_NEVER" in block
+    for key in ("short:", "next:", "attempted:", "branch:", "pickBranch:"):
+        assert key in block, f"SEC_NEVER lost its {key} member"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_findings_strip_never_paints_a_green_all_clear_over_an_unread_project(
+        srv, tmp_path):
+    """CRITICAL 2. `findings-page` carried no never-analysed signal, so a
+    project nobody has ever analysed rendered "nothing matches" in the
+    ok-green `.sevpill.clean` beside "0 total", with the table below blaming
+    filters the reader never set. Overview and Branches both draw the
+    distinction one module away, from the same two facts, in the same
+    words."""
+    block = _security_js(srv)
+    consts = (_const(block, "SEV_ORDER") + _const(block, "SEC_NEVER")
+              + _const(block, "ROW_PILL_TITLE"))
+    # `secVisible` is deliberately absent: every payload below carries an
+    # empty `rows`, and secFindTableSection answers that before it ever
+    # reaches the floor -- which is the case under test.
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("secEl", "secIcon", "secFindHiddenByFloor", "secFindStrip",
+                      "secFindTableSection"))
+    script = tmp_path / "find-never.js"
+    script.write_text(_INDEX_DOM_HARNESS + """
+    function secMinSeverity(_p){ return "low"; }
+    const fs = {project: "web", filters: {}};
+    """ + consts + deps + """
+    const empty = {critical:0, high:0, medium:0, low:0, info:0};
+    function payload(extra){
+      return Object.assign({rows: [], total: 0, unique: 0, by_severity: empty,
+        fixed_by_severity: empty, page: 1, per_page: 25}, extra);
+    }
+    const never = payload({attempted: false, analysed: false});
+    const failed = payload({attempted: true, analysed: false});
+    const clean = payload({attempted: true, analysed: true});
+    function shot(data){
+      return {strip: collectAll(secFindStrip(fs, data), []),
+              table: collectAll(secFindTableSection(fs, data), [])
+                       .map(r => r.text).join(" ")};
+    }
+    console.log(JSON.stringify({never: shot(never), failed: shot(failed),
+                                clean: shot(clean)}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+
+    def cleanpills(shot):
+        return [r for r in shot["strip"] if "clean" in r["cls"]]
+
+    assert not cleanpills(out["never"]), \
+        f"an ok-green all-clear over a project nobody analysed: {out['never']['strip']}"
+    assert not cleanpills(out["failed"]), \
+        f"an ok-green all-clear over a project whose analyses all failed: {out['failed']['strip']}"
+    assert cleanpills(out["clean"]), \
+        "a genuinely empty result on an analysed project lost its clean pill"
+
+    never_strip = " ".join(r["text"] for r in out["never"]["strip"])
+    failed_strip = " ".join(r["text"] for r in out["failed"]["strip"])
+    assert "Never analysed" in never_strip, never_strip
+    assert "finished yet" in failed_strip, failed_strip
+    assert never_strip != failed_strip, \
+        "never-analysed and every-attempt-failed render identically"
+
+    assert "Never analysed" in out["never"]["table"], out["never"]["table"]
+    assert "match these filters" not in out["never"]["table"], \
+        f"the table still blames filters the reader never set: {out['never']['table']}"
+    assert "match these filters" in out["clean"]["table"], \
+        "an analysed project's genuinely empty table lost its filter explanation"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_findings_strip_says_when_a_branch_behind_it_stopped_early(srv, tmp_path):
+    """IMPORTANT 8, the strip's half. These rows are unioned across branches;
+    if one of those branches' latest analysis stopped short, the counts above
+    them are what was reached, not what is there."""
+    block = _security_js(srv)
+    consts = (_const(block, "SEV_ORDER") + _const(block, "SEC_NEVER")
+              + _const(block, "ROW_PILL_TITLE"))
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("secEl", "secIcon", "secFindHiddenByFloor", "secFindStrip"))
+    script = tmp_path / "find-capped.js"
+    script.write_text(_INDEX_DOM_HARNESS + """
+    function secMinSeverity(_p){ return "low"; }
+    const fs = {project: "web", filters: {}};
+    """ + consts + deps + """
+    const sev = {critical:1, high:0, medium:0, low:0, info:0};
+    const base = {rows: [], total: 1, unique: 1, by_severity: sev,
+      fixed_by_severity: {critical:0,high:0,medium:0,low:0,info:0},
+      page: 1, per_page: 25, attempted: true, analysed: true};
+    console.log(JSON.stringify({
+      capped: collectAll(secFindStrip(fs, Object.assign({}, base,
+        {capped_branches: 1})), []).map(r => r.text).join(" "),
+      whole: collectAll(secFindStrip(fs, Object.assign({}, base,
+        {capped_branches: 0})), []).map(r => r.text).join(" "),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert "stopped before covering" in out["capped"], \
+        f"the strip presents a partial read as a complete one: {out['capped']}"
+    assert "stopped before covering" not in out["whole"], \
+        "the cue fires with nothing capped behind it"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_two_kinds_of_severity_pill_each_say_what_they_count(srv, tmp_path):
+    """IMPORTANT 5(a). The sidebar donut is a flex sibling of the tab panes,
+    so it is on screen DURING the Findings tab: the strip's per-severity
+    pills are ROW counts and the donut's are DISTINCT FINGERPRINTS, four
+    inches apart, in identical markup. The strip labelled `total` vs `unique`
+    and left both sets of per-severity pills bare."""
+    block = _security_js(srv)
+    strip_consts = (_const(block, "SEV_ORDER") + _const(block, "SEC_NEVER")
+                    + _const(block, "ROW_PILL_TITLE"))
+    strip_deps = "\n".join(_plainfn(block, n) for n in
+                           ("secEl", "secIcon", "secFindHiddenByFloor", "secFindStrip"))
+    donut_consts = _const(block, "SEV_ORDER5") + _const(block, "DONUT_PILL_TITLE")
+    donut_deps = _plainfn(block, "secIndexDonutLegend")
+    script = tmp_path / "pill-scopes.js"
+    script.write_text(_INDEX_DOM_HARNESS + """
+    function secMinSeverity(_p){ return "low"; }
+    const fs = {project: "web", filters: {}};
+    """ + strip_consts + strip_deps + donut_consts + donut_deps + """
+    const sev = {critical: 2, high: 0, medium: 0, low: 0, info: 0};
+    const strip = collectAll(secFindStrip(fs, {rows: [], total: 2, unique: 1,
+      by_severity: sev, fixed_by_severity: {critical:0,high:0,medium:0,low:0,info:0},
+      page: 1, per_page: 25, attempted: true, analysed: true}), []);
+    const legend = collectAll(secIndexDonutLegend({critical: 1}), []);
+    const pill = (rows) => rows.filter(r => r.cls === "sevpill critical")[0] || {};
+    console.log(JSON.stringify({strip: pill(strip), legend: pill(legend)}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["strip"].get("text") == "2 critical", out["strip"]
+    assert out["legend"].get("text") == "1 critical", out["legend"]
+    assert "Rows" in out["strip"].get("title", ""), \
+        f"the strip's severity pill does not say it counts rows: {out['strip']}"
+    assert "counts twice" in out["strip"].get("title", ""), out["strip"]
+    assert "fingerprint" in out["legend"].get("title", "").lower(), \
+        f"the donut's severity pill does not say it counts problems: {out['legend']}"
+    assert "counts once" in out["legend"].get("title", ""), out["legend"]
+    assert out["strip"]["title"] != out["legend"]["title"], \
+        "two numbers answering different questions still carry the same explanation"
+
+
+def test_the_severity_floors_scope_is_stated_where_the_unfloored_numbers_are(srv):
+    """IMPORTANT 6. The floor was applied on two surfaces (the single-analysis
+    checklist and the findings table) and ignored on six (Overview chips,
+    index KPIs and posture pills, Branches "Open", both donuts) -- and only
+    the two that applied it said so. The decision written down in
+    vocabulary.js is that the floor is a DRILL-DOWN reading aid and never
+    narrows a posture total; this pins that it is said once on each screen
+    that carries an unfloored number."""
+    block = _security_js(srv)
+    assert "export const SEC_FLOOR_SCOPE_NOTE" in block, \
+        "the decision is not written down anywhere"
+    # Said on the index screen (its KPI cards, posture pills and donut are all
+    # unfloored) and on the project screen (the sidebar is a flex sibling of
+    # every tab pane, so one line there is readable from all five).
+    for fn in ("secRenderIndex", "secSidebarCaption"):
+        assert "SEC_FLOOR_SCOPE_NOTE" in _plainfn(block, fn), \
+            f"{fn} shows unfloored numbers and does not say so"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_project_header_says_a_dash_means_not_counted(srv, tmp_path):
+    """MINOR 4. "Lines of code: —" never said that the dash means "not
+    counted" rather than zero, so a reader had no way to tell it from this
+    screen claiming the repository is empty."""
+    block = _security_js(srv)
+    deps = (_const(block, "SEC_NEVER") + "\n".join(_plainfn(block, n) for n in
+            ("secEl", "secIcon", "secHeaderBit", "secRenderProjectHeader")))
+    script = tmp_path / "pj-loc-title.js"
+    script.write_text(_PROJECT_DOM_HARNESS + deps + """
+    secRenderProjectHeader({header: {profile: "standard", branch: "main",
+      branch_fell_back: false, lines_of_code: 0, last_analysis: 0}});
+    const dashed = collectAll(_els["sec-pj-head"], []);
+    _els["sec-pj-head"] = new FakeElement("div");
+    secRenderProjectHeader({header: {profile: "standard", branch: "main",
+      branch_fell_back: false, lines_of_code: 1200, last_analysis: 5}});
+    const counted = collectAll(_els["sec-pj-head"], []);
+    console.log(JSON.stringify({dashed, counted}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    titles = " ".join(r["title"] for r in out["dashed"] if r["title"])
+    assert "Not counted" in titles, \
+        f"the dash never says it means 'not counted': {titles!r}"
+    assert "not a claim that the repository is empty" in titles.lower(), titles
+    # ...and the never-analysed cell beside it carries the one wording's own
+    # next step rather than being a dead end.
+    assert "switch to Runs" in titles, titles
+    counted_titles = " ".join(r["title"] for r in out["counted"] if r["title"])
+    assert "Not counted" not in counted_titles, \
+        "the explanation shows over a real line count"
+
+
+def test_the_activity_fingerprint_dialog_titles_the_project_not_the_filter(srv):
+    """MINOR 3. The dialog's title was set once, when it opened, and never
+    heard about what happened inside it -- so a title naming the fingerprint
+    survived "Clear filters" and read "Finding a3f9c2… in minerva" over that
+    project's whole list. The fingerprint scope belongs where it disappears
+    with the filter it describes, and it already lives there: secFindStrip
+    renders "Filtered to fingerprint …" from `fs.filters` on every paint."""
+    block = _security_js(srv)
+    opener = _plainfn(block, "secActOpenFinding")
+    assert '"Finding " + fingerprintPrefix' not in opener, \
+        "the dialog title still names a filter that Clear filters can drop"
+    assert '"Findings in " + project' in opener, opener
+    # The fact itself is not lost -- it is rendered from live filter state.
+    assert "Filtered to fingerprint " in _plainfn(block, "secFindStrip")
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_history_list_follows_the_analysis_on_screen_not_the_picker(srv, tmp_path):
+    """CRITICAL 4. "Earlier analyses of this branch" filtered on
+    `secState.branch` -- the PICKER's value -- not the branch of the analysis
+    being shown. Open a `develop` run from the Runs table (or from the
+    Activity screen's deep link) while the picker still says `main`, and the
+    status line reads `develop` while the list under it is `main`'s."""
+    block = _security_js(srv)
+    fn = _plainfn(block, "secEl") + _plainfn(block, "secRenderHistory")
+    script = tmp_path / "history-scope.js"
+    script.write_text(_INDEX_DOM_HARNESS + """
+    const _els = {};
+    function $(id){ if(!_els[id]) _els[id] = new FakeElement("div"); return _els[id]; }
+    function fmtWhen(t){ return "w" + t; }
+    function money(n){ return "$" + n; }
+    function secRunFor(_a){ return null; }
+    function secShowAnalysis(){}
+    const secState = {
+      repo: "web", branch: "main",              // the PICKER still says main
+      analysis: {id: 9, repo: "web", branch: "develop"},   // ...the pane shows develop
+      analyses: [
+        {id: 9, repo: "web", branch: "develop", state: "done", profile: "quick",
+         commit_sha: "dddddddddddddddd", started: 2, spend_usd: 0},
+        {id: 4, repo: "web", branch: "develop", state: "done", profile: "quick",
+         commit_sha: "eeeeeeeeeeeeeeee", started: 1, spend_usd: 0},
+        {id: 7, repo: "web", branch: "main", state: "done", profile: "quick",
+         commit_sha: "aaaaaaaaaaaaaaaa", started: 3, spend_usd: 0},
+      ],
+    };
+    """ + fn + """
+    secRenderHistory();
+    const listed = collectAll(_els["sec-history"], [])
+      .filter(r => r.cls === "btn ghost").map(r => r.text);
+    // ...and with nothing open, the picker is the only scope there is.
+    secState.analysis = null;
+    _els["sec-history"] = new FakeElement("div");
+    secRenderHistory();
+    const fromPicker = collectAll(_els["sec-history"], [])
+      .filter(r => r.cls === "btn ghost").map(r => r.text);
+    console.log(JSON.stringify({listed, fromPicker}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["listed"] == ["#9", "#4"], \
+        f"the history followed the picker, not the analysis on screen: {out['listed']}"
+    assert "#7" not in out["listed"], \
+        "another branch's analysis is listed under 'Earlier analyses of this branch'"
+    assert out["fromPicker"] == ["#7"], \
+        f"with no analysis open the picker must still scope the list: {out['fromPicker']}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_poll_does_not_replace_a_deliberately_opened_analysis(srv, tmp_path):
+    """CRITICAL 4's other half. secReload recomputed the analysis to show
+    from the picker on every 4-second tick, so an analysis opened on purpose
+    -- a Runs row, an "#N" in the history, the Activity screen's deep link --
+    was swapped out from under the reader within four seconds. It must still
+    be RE-FETCHED (a pinned running analysis has to keep moving); it must
+    just not be replaced by a different one."""
+    block = _security_js(srv)
+    src = _anyfn(block, "secReload")
+    script = tmp_path / "poll-pinned.js"
+    script.write_text("""
+    let secProjectPollWasRunning = null;
+    const CC = {currentView: "security"};
+    const shown = [];
+    const secState = {project: "web", repo: "web", branch: "main",
+                      analysis: {id: 4, repo: "web", branch: "develop"},
+                      analyses: [], pinned: true};
+    function secRefreshProject(){}
+    function secSyncPoll(){}
+    function secStopPoll(){}
+    async function secShowAnalysis(id, pinned){ shown.push([id, !!pinned]); }
+    const listing = [{id: 9, repo: "web", branch: "main", state: "done"}];
+    async function secFetch(_path){ return listing; }
+    """ + src + """
+    (async () => {
+      await secReload(false);            // a poll tick over a pinned analysis
+      const pinnedTick = shown.slice();
+      secState.pinned = false;
+      secState.analysis = {id: 4, repo: "web", branch: "develop"};
+      shown.length = 0;
+      await secReload(false);            // ...and one over an unpinned screen
+      console.log(JSON.stringify({pinnedTick, unpinnedTick: shown}));
+    })();
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["pinnedTick"] == [[4, True]], \
+        f"the poll replaced a deliberately opened analysis: {out['pinnedTick']}"
+    assert out["unpinnedTick"] == [[9, False]], \
+        ("an unpinned screen must still follow the branch's newest analysis: "
+         f"{out['unpinnedTick']}")
+
+
+def test_every_deliberate_open_of_one_analysis_pins_it(srv):
+    """The containment half of CRITICAL 4: the fix is only real if every
+    caller that names ONE analysis passes the flag. Three do -- the Runs
+    table's row button, the history list's "#N", and the Activity screen's
+    deep link -- and `secSyncScope`, which resolves from the picker, must
+    NOT, or a picker change could never be followed again."""
+    block = _security_js(srv)
+    for fn in ("secRunRow", "secActOpenAnalysis"):
+        src = _anyfn(block, fn)
+        assert "secShowAnalysis(" in src and ", true)" in src, \
+            f"{fn} opens one analysis without pinning it: {src}"
+    assert "secShowAnalysis(a.id, true)" in _plainfn(block, "secRenderHistory")
+    sync = _anyfn(block, "secSyncScope")
+    assert "secShowAnalysis(mine.length ? mine[0].id : null)" in sync, \
+        f"the picker's own resolution must not pin: {sync}"

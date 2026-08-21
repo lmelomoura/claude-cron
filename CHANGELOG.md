@@ -319,6 +319,76 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The Security index's KPI cards and its own project table no longer
+  describe different branches.** The cards summed each project's posture with
+  no preferred branch handed in, so they *always* took the fallback path —
+  "the latest finished analysis of this project, whatever branch it is on" —
+  while the table three inches below honoured the project's declared base. A
+  project whose base branch (`main`) stopped early holding one high finding,
+  with a later clean analysis on `develop`, read "High 0" on the card and
+  "High 1 · incomplete" in the row underneath it, and the card's own
+  undercount warning never fired because it had resolved a different branch's
+  state. Both halves are now handed the identical project records, so they
+  pick the same branch by construction. The cards also say when a total was
+  read off a branch nobody declared — the table has always named that per
+  row, and a fallback branch is never silent in this area.
+- **The Branches tab can say a branch's last analysis stopped early.** It is
+  the one screen whose entire purpose is per-branch posture, and it was the
+  only posture surface in the product that could not express `capped`: the
+  rows admitted `done` and `capped` alike and then carried no state, so a
+  partial read presented as a finished one, and the 30-day trend line would
+  say "falling" off a run that simply ran out of room before finding
+  anything. Each row now carries a "Last state" column and the same
+  `incomplete` badge the index table uses, and the trend line refuses a
+  direction word across a partial point instead of inventing one — the
+  recorded numbers still show, since they are what was recorded.
+- **The Findings tab no longer shows a green all-clear for a project nobody
+  has ever analysed.** The payload carried no never-analysed signal at all,
+  so an empty result rendered as an ok-green "nothing matches" beside "0
+  total" and the table blamed filters the reader never set — over a project
+  with no analysis behind it whatsoever. It now draws the same three-way
+  distinction the Overview and Branches tabs already draw (never analysed /
+  attempted but nothing finished / genuinely empty), in the same words.
+- **"Earlier analyses of this branch" lists the branch you are looking at.**
+  It filtered on the repo/branch *picker* at the top of the screen rather
+  than on the analysis actually on display, so opening a `develop` run from
+  the Runs table (or following the Activity screen's deep link into one)
+  while the picker still said `main` printed "develop" in the status line
+  over `main`'s history. And the 4-second poll recomputed what to show from
+  that same picker, so a deliberately opened analysis was swapped out from
+  under the reader within four seconds of arriving. The history follows the
+  analysis on screen; the poll refreshes a deliberately opened analysis by its
+  own id instead of replacing it, and still follows the branch's newest one
+  whenever nobody has chosen otherwise.
+- **The severity floor's scope is stated where the unfloored numbers are.** A
+  project's `min_severity` narrowed two surfaces (the single-analysis
+  checklist and the findings table) and was ignored by six (Overview chips,
+  the index KPIs and posture pills, the Branches tab's "Open", both donuts) —
+  and only the two that applied it said anything, so the drill-down of an
+  analysis could show fewer findings than the panel above it with nothing on
+  screen explaining why. The decision, now written down and said once per
+  screen: the floor is a **drill-down reading aid** and never narrows a
+  posture total, because a recorded finding below somebody's triage threshold
+  is still exposure and a security total that quietly dropped it would be
+  under-reporting.
+- **Numbers that answer different questions say which one.** The findings
+  strip's per-severity pills are *rows* and the sidebar donut's are *distinct
+  fingerprints* — identical markup, on screen together (the sidebar is a
+  sibling of the tab panes, not part of them), and only the strip's
+  `total`/`unique` pair was labelled. Both sets now name their own scope. The
+  index's "Success rate" card, an all-time ratio sitting between two cards
+  that say "open now", is labelled "All time" the same way its neighbour
+  "Analyses" already was.
+- **Smaller things on the same screens.** "Never analysed" had six near-
+  variants across four modules, three of which told you what to do next and
+  three of which did not — one wording now, at two densities, so every
+  occurrence names the next step. The donut's `info` segment was painted the
+  same colour as its own empty track, invisible while the legend listed its
+  count. "Lines of code: —" now says the dash means "not counted", not zero.
+  The Activity screen's fingerprint dialog is titled by its project, so the
+  title cannot outlive the filter it used to name after "Clear filters" drops
+  it. And the index donut and the findings strip carry the partial-read
+  caveat the cards and rows beside them already did.
 - **`security decide` refuses a fingerprint that is not a finding's
   identity.** There was no shape check anywhere — not at the CLI, not at the
   route, which only tested for non-empty. A malformed value ("aws-key in

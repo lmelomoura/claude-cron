@@ -84,6 +84,14 @@
     settings_changed: "Settings changed",
     report_exported: "Report exported"
   };
+  var SEC_NEVER = {
+    short: "Never analysed",
+    next: "Never analysed \u2014 switch to Runs to pick a branch and start.",
+    attempted: "No analysis of this project has finished yet \u2014 see Runs for what was attempted.",
+    branch: "Never analysed on this branch \u2014 press Analyse to make the first one.",
+    pickBranch: "Pick a branch, or type one, and press Analyse."
+  };
+  var SEC_FLOOR_SCOPE_NOTE = "Every recorded finding is counted here. A project's severity floor only narrows its findings list and the checklist of a single analysis, and each of those says how many rows it is holding back \u2014 it never narrows a posture total.";
   var SEC_POLL_MS = 4e3;
   var SEC_RUN_WINDOW = 120;
   var secCfg = (name) => (projById(name) || {}).security || {};
@@ -128,7 +136,8 @@
     analysis: null,
     findings: [],
     stateFilter: "",
-    seq: 0
+    seq: 0,
+    pinned: false
   };
 
   // ui/security/dom.js
@@ -181,18 +190,21 @@
   function secRenderHistory() {
     const host = $("sec-history");
     host.textContent = "";
-    const mine = secState.analyses.filter((a) => a.repo === secState.repo && a.branch === secState.branch);
+    const shown = secState.analysis;
+    const repo = shown ? shown.repo : secState.repo;
+    const branch = shown ? shown.branch : secState.branch;
+    const mine = secState.analyses.filter((x) => x.repo === repo && x.branch === branch);
     if (!mine.length) {
-      host.appendChild(secEl("div", "empty", "Nothing analysed on this branch yet."));
+      host.appendChild(secEl("div", "empty", branch ? "Nothing else analysed on " + branch + " yet." : "Nothing analysed on this branch yet."));
       return;
     }
-    const current = secState.analysis && secState.analysis.id;
+    const current = shown && shown.id;
     mine.forEach((a) => {
       const row = secEl("div", "sechrow" + (a.id === current ? " on" : ""));
       const open = secEl("button", "btn ghost", "#" + a.id);
       open.type = "button";
       open.title = "Show this analysis";
-      open.onclick = () => secShowAnalysis(a.id);
+      open.onclick = () => secShowAnalysis(a.id, true);
       row.appendChild(open);
       row.appendChild(secEl("span", "grow", [
         a.state,
@@ -285,6 +297,7 @@
     secState.findings = [];
     secState.analyses = [];
     secState.stateFilter = "";
+    secState.pinned = false;
     $("sec-detail").hidden = true;
     $("sec-projects").hidden = false;
     secRenderIndex();
@@ -298,6 +311,7 @@
     secState.findings = [];
     secState.analyses = [];
     secState.stateFilter = "";
+    secState.pinned = false;
     secProjectPollWasRunning = null;
     $("sec-projects").hidden = true;
     $("sec-detail").hidden = false;
@@ -362,8 +376,9 @@
     const mine = secState.analyses.filter((a) => a.repo === s.repo && a.branch === s.branch);
     await secShowAnalysis(mine.length ? mine[0].id : null);
   }
-  async function secShowAnalysis(id) {
+  async function secShowAnalysis(id, pinned) {
     const seq = ++secState.seq;
+    secState.pinned = !!pinned;
     if (id == null) {
       secState.analysis = null;
       secState.findings = [];
@@ -398,8 +413,9 @@
       return;
     }
     const mine = secState.analyses.filter((a) => a.repo === secState.repo && a.branch === secState.branch);
-    const want = mine.length ? mine[0].id : secState.analysis && secState.analysis.id;
-    await secShowAnalysis(want == null ? null : want);
+    const pinnedId = secState.pinned && secState.analysis ? secState.analysis.id : null;
+    const want = pinnedId != null ? pinnedId : mine.length ? mine[0].id : secState.analysis && secState.analysis.id;
+    await secShowAnalysis(want == null ? null : want, secState.pinned);
     secSyncPoll();
     const runningNow = secState.analyses.some((a) => a.state === "running");
     const changed = runningNow !== secProjectPollWasRunning;
@@ -422,7 +438,7 @@
       box.appendChild(secEl(
         "span",
         null,
-        secState.branch ? "No analysis of this branch yet \u2014 press Analyse to make the first one." : "Pick a branch, or type one, and press Analyse."
+        secState.branch ? SEC_NEVER.branch : SEC_NEVER.pickBranch
       ));
       $("sec-incomplete").hidden = true;
       $("sec-coverage").hidden = true;
@@ -618,6 +634,7 @@
   }
 
   // ui/security/branches-tab.js
+  var BRANCH_CAPPED_TITLE = "This analysis is INCOMPLETE: it stopped before covering the whole scope. The posture beside this badge is what it had reached, not what is there.";
   function secBranchesCaption() {
     return secEl(
       "div",
@@ -628,12 +645,16 @@
   function secBranchTrendText(trend) {
     const pts = trend || [];
     if (!pts.length) return "No analyses of this branch in the last 30 days.";
+    const partial = pts.some((p) => p.state === "capped");
     if (pts.length === 1) {
-      return pts[0].open + " open \u2014 only one analysis in the last 30 days, nothing yet to compare it against.";
+      return pts[0].open + " open \u2014 only one analysis in the last 30 days, nothing yet to compare it against." + (partial ? " It stopped early, so that count is what it reached." : "");
     }
     const opens = pts.map((p) => p.open);
     const first = opens[0], last = opens[opens.length - 1];
     const base = first + " \u2192 " + last + " open across " + pts.length + " analyses in the last 30 days";
+    if (partial) {
+      return base + ", but at least one of them stopped before covering the whole scope \u2014 no direction is claimed across a partial read";
+    }
     let direction = "flat";
     for (let i = 1; i < opens.length; i++) {
       const step = opens[i] < opens[i - 1] ? "falling" : opens[i] > opens[i - 1] ? "rising" : "flat";
@@ -664,21 +685,34 @@
     tr.appendChild(tdCount);
     const tdOpen = document.createElement("td");
     tdOpen.appendChild(secIndexPosturePills(r.open || {}));
+    if (r.state === "capped") {
+      const badge = secEl("span", "secidx-capped", "incomplete");
+      badge.title = BRANCH_CAPPED_TITLE;
+      tdOpen.appendChild(badge);
+    }
     tr.appendChild(tdOpen);
+    tr.appendChild(cell(r.state || "\u2014"));
     tr.appendChild(cell(secBranchTrendText(r.trend)));
     return tr;
   }
   function secBranchesTable(rows, attempted) {
     if (!rows.length) {
-      return secEl("div", "tblempty", attempted ? "No analysis of this project has finished yet \u2014 see Runs for what was attempted." : "Never analysed. Switch to Runs to pick a branch and start.");
+      return secEl(
+        "div",
+        "tblempty",
+        attempted ? SEC_NEVER.attempted : SEC_NEVER.next
+      );
     }
     const wrap = secEl("div", "tablewrap");
     const table = document.createElement("table");
     const thead = document.createElement("thead");
     const htr = document.createElement("tr");
-    ["Branch", "Last analysis", "Analyses", "Open", "Trend (30d)"].forEach((h) => {
+    ["Branch", "Last analysis", "Analyses", "Open", "Last state", "Trend (30d)"].forEach((h) => {
       const th = document.createElement("th");
       th.textContent = h;
+      if (h === "Last state") {
+        th.title = "The state of the analysis this row's Open posture was read from. `capped` means it stopped before covering the whole scope, so those counts are what it reached, not what is there.";
+      }
       htr.appendChild(th);
     });
     thead.appendChild(htr);
@@ -960,10 +994,11 @@
     });
     return n;
   }
+  var ROW_PILL_TITLE = "Rows matching the current filters \u2014 the same finding open on two branches counts twice here.";
   function secFindStrip(fs, data) {
     const wrap = secEl("div", "sevpills");
     const totalPill = secEl("span", "sevpill", data.total + " total");
-    totalPill.title = "Every row matching the current filters \u2014 the same finding open on two branches counts twice here.";
+    totalPill.title = ROW_PILL_TITLE;
     wrap.appendChild(totalPill);
     const uniquePill = secEl("span", "sevpill", data.unique + " unique issues");
     uniquePill.title = "Distinct problems (fingerprints) \u2014 the same finding open on two branches counts once here.";
@@ -971,12 +1006,15 @@
     const bySev = data.by_severity || {};
     let any = false;
     ["critical", "high", "medium", "low", "info"].forEach((sev) => {
-      if (bySev[sev]) {
-        any = true;
-        wrap.appendChild(secEl("span", "sevpill " + sev, bySev[sev] + " " + sev));
-      }
+      if (!bySev[sev]) return;
+      any = true;
+      const pill = secEl("span", "sevpill " + sev, bySev[sev] + " " + sev);
+      pill.title = ROW_PILL_TITLE;
+      wrap.appendChild(pill);
     });
-    if (!any) wrap.appendChild(secEl("span", "sevpill clean", "nothing matches"));
+    if (!any && data.analysed !== false) {
+      wrap.appendChild(secEl("span", "sevpill clean", "nothing matches"));
+    }
     const minSeverity = secMinSeverity(fs.project);
     const hidden = secFindHiddenByFloor(data, minSeverity);
     const note = secEl("div", "secpj-caption");
@@ -991,6 +1029,25 @@
       "Downloads always contain every recorded finding, whatever the severity floor shows."
     ));
     const box = secEl("div", "secfind-strip");
+    if (data.analysed === false) {
+      const line = secEl("div", "warnline bad");
+      line.appendChild(secIcon("alert"));
+      line.appendChild(secEl(
+        "span",
+        "grow",
+        data.attempted ? SEC_NEVER.attempted : SEC_NEVER.next
+      ));
+      box.appendChild(line);
+    } else if (data.capped_branches) {
+      const line = secEl("div", "warnline bad");
+      line.appendChild(secIcon("alert"));
+      line.appendChild(secEl(
+        "span",
+        "grow",
+        data.capped_branches + " of these branches had a latest analysis that stopped before covering its whole scope \u2014 what is below is what it had reached, not what is there."
+      ));
+      box.appendChild(line);
+    }
     const fingerprintFilter = ((fs.filters || {}).fingerprint || "").trim();
     if (fingerprintFilter) {
       box.appendChild(secEl(
@@ -1299,7 +1356,16 @@
   }
   function secFindTableSection(fs, data) {
     const rows = data.rows || [];
-    if (!rows.length) return secEl("div", "tblempty", "No findings match these filters.");
+    if (!rows.length) {
+      if (data.analysed === false) {
+        return secEl(
+          "div",
+          "tblempty",
+          data.attempted ? SEC_NEVER.attempted : SEC_NEVER.next
+        );
+      }
+      return secEl("div", "tblempty", "No findings match these filters.");
+    }
     const minSeverity = secMinSeverity(fs.project);
     const visible = secVisible(rows, minSeverity);
     if (!visible.length) {
@@ -1610,11 +1676,11 @@
     secBackFromActivity();
     await secOpenProject(project);
     secSwitchProjectTab("runs");
-    await secShowAnalysis(id);
+    await secShowAnalysis(id, true);
   }
   function secActOpenFinding(project, fingerprintPrefix) {
     const titleEl = $("sec-act-finding-title");
-    if (titleEl) titleEl.textContent = "Finding " + fingerprintPrefix + "\u2026 in " + project;
+    if (titleEl) titleEl.textContent = "Findings in " + project;
     const halo = $("sec-act-finding-halo");
     if (halo) {
       halo.textContent = "";
@@ -1802,11 +1868,13 @@
     meta.appendChild(branch);
     meta.appendChild(secHeaderBit(
       "Lines of code",
-      h.lines_of_code ? h.lines_of_code.toLocaleString() : "\u2014"
+      h.lines_of_code ? h.lines_of_code.toLocaleString() : "\u2014",
+      h.lines_of_code ? "" : "Not counted \u2014 this analysis predates the line count, or nothing has been analysed yet. It is not a claim that the repository is empty."
     ));
     meta.appendChild(secHeaderBit(
       "Last analysis",
-      h.last_analysis ? fmtAgo(h.last_analysis) : "Never analysed"
+      h.last_analysis ? fmtAgo(h.last_analysis) : SEC_NEVER.short,
+      h.last_analysis ? "" : SEC_NEVER.next
     ));
     host.appendChild(meta);
     const settings = secEl("button", "btn ghost");
@@ -1817,9 +1885,10 @@
     settings.appendChild(document.createTextNode("Project settings"));
     host.appendChild(settings);
   }
-  function secHeaderBit(label, value) {
+  function secHeaderBit(label, value, title) {
     const span = secEl("span", null, label + ": ");
     span.appendChild(secEl("b", null, value));
+    if ((title || "").trim()) span.title = title;
     return span;
   }
   function secOverviewCaption(header) {
@@ -1833,10 +1902,22 @@
     }
     return cap;
   }
-  function secSidebarCaption(branchCount) {
-    if (!branchCount) return secEl("div", "secpj-caption", "No finished analysis yet.");
+  function secSidebarCaption(branchCount, attempted) {
+    if (!branchCount) {
+      return secEl(
+        "div",
+        "secpj-caption",
+        attempted ? SEC_NEVER.attempted : SEC_NEVER.next
+      );
+    }
     const scope = branchCount === 1 ? "this project's only analysed branch" : "all " + branchCount + " analysed branches";
-    return secEl("div", "secpj-caption", "Posture and categories below span " + scope + ".");
+    const cap = secEl(
+      "div",
+      "secpj-caption",
+      "Posture and categories below span " + scope + ". "
+    );
+    cap.appendChild(secEl("span", null, SEC_FLOOR_SCOPE_NOTE));
+    return cap;
   }
   function secRenderProjectOverview(payload) {
     const host = $("sec-pj-overview");
@@ -1844,7 +1925,11 @@
     host.textContent = "";
     const ov = (payload.tabs || {}).overview || {};
     if (!ov.state) {
-      host.appendChild(secEl("div", "empty", ov.attempted ? "No analysis of this project has finished yet \u2014 see Runs for what was attempted." : "Never analysed. Switch to Runs to pick a branch and start."));
+      host.appendChild(secEl(
+        "div",
+        "empty",
+        ov.attempted ? SEC_NEVER.attempted : SEC_NEVER.next
+      ));
       return;
     }
     host.appendChild(secOverviewCaption(payload.header || {}));
@@ -1946,7 +2031,7 @@
     btn.className = "btn ghost";
     btn.textContent = "#" + r.id;
     btn.title = "Show this analysis below";
-    btn.onclick = () => secShowAnalysis(r.id);
+    btn.onclick = () => secShowAnalysis(r.id, true);
     tdId.appendChild(btn);
     tr.appendChild(tdId);
     tr.appendChild(cell(r.profile || ""));
@@ -1963,8 +2048,13 @@
     if (!host) return;
     host.textContent = "";
     const sb = payload.sidebar || {};
-    host.appendChild(secSidebarCaption(sb.branch_count || 0));
-    host.appendChild(secIndexDonut(sb.donut || {}, sb.categories || []));
+    const attempted = !!((payload.tabs || {}).overview || {}).attempted;
+    host.appendChild(secSidebarCaption(sb.branch_count || 0, attempted));
+    host.appendChild(secIndexDonut(
+      sb.donut || {},
+      sb.categories || [],
+      secCappedScopeNote(sb.capped_branches || 0, sb.branch_count || 0, "branch")
+    ));
     host.appendChild(secProjectActivity(sb.activity || []));
   }
   function secProjectActivity(events) {
@@ -2043,6 +2133,7 @@
     host.textContent = "";
     const data = secIndexCache;
     host.appendChild(secIndexCards(data.summary || {}));
+    host.appendChild(secEl("div", "secpj-caption", SEC_FLOOR_SCOPE_NOTE));
     host.appendChild(secIndexSection(
       "Projects",
       secIndexProjectsTable(data.projects || [])
@@ -2053,8 +2144,28 @@
     ));
     host.appendChild(secIndexSection(
       "Findings by severity",
-      secIndexDonut(data.donut || {}, data.categories || [])
+      // The donut is the fleet's whole posture rolled into one figure, so it
+      // cannot carry the per-row `incomplete` badge the table beside it uses --
+      // it gets the same caveat the Critical/High cards get, from the same
+      // count, or it is the one number on this screen that still presents a
+      // partial read as a complete one.
+      secIndexDonut(
+        data.donut || {},
+        data.categories || [],
+        secCappedNote(data.summary || {})
+      )
     ));
+  }
+  function secCappedScopeNote(n, of, noun) {
+    if (!n) return "";
+    return n + " of " + of + " " + noun + (of === 1 ? "" : "s") + " had a latest analysis that stopped before covering its whole scope \u2014 this total may be an undercount";
+  }
+  function secCappedNote(summary) {
+    return secCappedScopeNote(
+      summary.capped_projects || 0,
+      summary.projects || 0,
+      "project"
+    );
   }
   function secIndexSection(title, body) {
     const sec = secEl("div", "secidx-section");
@@ -2088,27 +2199,34 @@
       "All time \u2014 a historical total, not current posture"
     ));
     const capped = s.capped_projects || 0;
-    const cappedNote = capped ? capped + " of " + (s.projects || 0) + " project" + ((s.projects || 0) === 1 ? "" : "s") + " had a latest analysis that stopped before covering its whole scope \u2014 this total may be an undercount" : "Open now, in every project's latest analysis";
+    const fellBack = s.fell_back_projects || 0;
+    const total = s.projects || 0;
+    const caveats = [];
+    if (capped) caveats.push(secCappedScopeNote(capped, total, "project"));
+    if (fellBack) {
+      caveats.push(fellBack + " of " + total + " project" + (total === 1 ? "" : "s") + " is counted from a branch other than its declared base, because that base has never been analysed");
+    }
+    const cappedNote = caveats.length ? caveats.join(" \xB7 ") : "Open now, in every project's latest analysis";
     wrap.appendChild(secIndexCard(
       "alert",
       "Critical",
       String(s.critical || 0),
       cappedNote,
-      !!capped
+      !!caveats.length
     ));
     wrap.appendChild(secIndexCard(
       "zap",
       "High",
       String(s.high || 0),
       cappedNote,
-      !!capped
+      !!caveats.length
     ));
     const rate = s.success_rate;
     wrap.appendChild(secIndexCard(
       "check",
       "Success rate",
       rate == null ? "\u2014" : Math.round(rate * 100) + "%",
-      rate == null ? "No finished analysis yet" : "Finished analyses that completed clean, not capped or failed"
+      rate == null ? "No finished analysis yet" : "All time \u2014 a historical total, not current posture: finished analyses that completed clean, not capped or failed"
     ));
     return wrap;
   }
@@ -2157,7 +2275,8 @@
     tr.appendChild(tdPosture);
     const tdLast = document.createElement("td");
     if (!p.analyses) {
-      tdLast.textContent = "Never analysed";
+      tdLast.textContent = SEC_NEVER.short;
+      tdLast.title = SEC_NEVER.next;
     } else {
       const bits = [p.profile, fmtAgo(p.last_started)];
       if (p.last_duration) bits.push(fmtDur(p.last_duration));
@@ -2233,7 +2352,7 @@
     high: "var(--err)",
     medium: "var(--warn)",
     low: "var(--muted)",
-    info: "var(--line)"
+    info: "var(--muted)"
   };
   function secIndexDonutSvg(donut) {
     const total = SEV_ORDER5.reduce((n, s) => n + (donut[s] || 0), 0);
@@ -2279,6 +2398,7 @@
     svg.appendChild(label);
     return svg;
   }
+  var DONUT_PILL_TITLE = "Distinct problems (fingerprints) \u2014 the same finding open on two branches counts once here.";
   function secIndexDonutLegend(donut) {
     const wrap = secEl("div", "sevpills");
     const total = SEV_ORDER5.reduce((n, s) => n + (donut[s] || 0), 0);
@@ -2287,7 +2407,10 @@
       return wrap;
     }
     SEV_ORDER5.forEach((sev) => {
-      if (donut[sev]) wrap.appendChild(secEl("span", "sevpill " + sev, donut[sev] + " " + sev));
+      if (!donut[sev]) return;
+      const pill = secEl("span", "sevpill " + sev, donut[sev] + " " + sev);
+      pill.title = DONUT_PILL_TITLE;
+      wrap.appendChild(pill);
     });
     return wrap;
   }
@@ -2310,11 +2433,17 @@
     });
     return wrap;
   }
-  function secIndexDonut(donut, categories) {
+  function secIndexDonut(donut, categories, cappedNote) {
     const wrap = secEl("div", "secidx-donutwrap");
     const left = secEl("div", "secidx-donutcol");
     left.appendChild(secIndexDonutSvg(donut));
     left.appendChild(secIndexDonutLegend(donut));
+    if ((cappedNote || "").trim()) {
+      const warn = secEl("div", "warnline bad");
+      warn.appendChild(secIcon("alert"));
+      warn.appendChild(secEl("span", "grow", cappedNote));
+      left.appendChild(warn);
+    }
     wrap.appendChild(left);
     const right = secEl("div", "secidx-catcol");
     right.appendChild(secEl(
@@ -2401,4 +2530,4 @@
     SEC_PROFILES
   };
 })();
-// ui-sources: 324b4a0ca51e3057202c7d979ee935b5ed05427540562965804cabaae1c20b39
+// ui-sources: 9a76e5c9543c79fc28a7590c49e4d48db0fc74721cc65a0385753fb6508b3622

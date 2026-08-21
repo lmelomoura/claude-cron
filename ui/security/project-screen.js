@@ -23,10 +23,11 @@
    sidebar, never the table itself. */
 import { $, fmtAgo, fmtDur, fmtWhen, openProjectEditor } from "./page.js";
 import { secIcon, secEl, secFetch } from "./dom.js";
-import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP,
-         EVENT_KIND_LABEL } from "./vocabulary.js";
+import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP, SEC_NEVER,
+         SEC_FLOOR_SCOPE_NOTE, EVENT_KIND_LABEL } from "./vocabulary.js";
 import { secState } from "./state.js";
-import { secIndexPosturePills, secIndexDonut } from "./index-screen.js";
+import { secIndexPosturePills, secIndexDonut,
+         secCappedScopeNote } from "./index-screen.js";
 import { secOpen, secShowAnalysis } from "./analysis.js";
 import { secRenderProjectBranches } from "./branches-tab.js";
 import { secRenderProjectReports } from "./reports-tab.js";
@@ -165,11 +166,18 @@ function secRenderProjectHeader(payload){
   meta.appendChild(branch);
   // 0 is "not counted" -- every analysis before the lines_of_code column
   // existed, or a project never analysed at all -- and a dash keeps that
-  // from reading as an empty repository.
+  // from reading as an empty repository. The dash alone still does not SAY
+  // that, though: a reader has no way to tell "not counted" from a repository
+  // this screen is claiming is empty, so the title spells it out, the same
+  // compact-density device the "Never analysed" cell beside it uses.
   meta.appendChild(secHeaderBit("Lines of code",
-    h.lines_of_code ? h.lines_of_code.toLocaleString() : "—"));
+    h.lines_of_code ? h.lines_of_code.toLocaleString() : "—",
+    h.lines_of_code ? "" : "Not counted — this analysis predates the line "
+      + "count, or nothing has been analysed yet. It is not a claim that the "
+      + "repository is empty."));
   meta.appendChild(secHeaderBit("Last analysis",
-    h.last_analysis ? fmtAgo(h.last_analysis) : "Never analysed"));
+    h.last_analysis ? fmtAgo(h.last_analysis) : SEC_NEVER.short,
+    h.last_analysis ? "" : SEC_NEVER.next));
   host.appendChild(meta);
 
   const settings = secEl("button", "btn ghost");
@@ -181,9 +189,12 @@ function secRenderProjectHeader(payload){
   host.appendChild(settings);
 }
 
-function secHeaderBit(label, value){
+function secHeaderBit(label, value, title){
   const span = secEl("span", null, label + ": ");
   span.appendChild(secEl("b", null, value));
+  // Only when there is something to explain -- a bare `title=""` on every
+  // header bit would be noise in the markup and a no-op on screen.
+  if((title || "").trim()) span.title = title;
   return span;
 }
 
@@ -209,11 +220,27 @@ function secOverviewCaption(header){
    a different scope from the Overview panel right above, which is one
    branch only. A project with exactly one analysed branch says so plainly
    rather than a phrase that could be read as implying more than one. */
-function secSidebarCaption(branchCount){
-  if(!branchCount) return secEl("div", "secpj-caption", "No finished analysis yet.");
+function secSidebarCaption(branchCount, attempted){
+  if(!branchCount){
+    // The SAME two sentences every other empty state in this area uses (see
+    // SEC_NEVER in vocabulary.js) -- this one used to be a seventh variant,
+    // "No finished analysis yet.", which told the reader nothing about which
+    // of the two situations they were in or what to do about either.
+    return secEl("div", "secpj-caption",
+      attempted ? SEC_NEVER.attempted : SEC_NEVER.next);
+  }
   const scope = branchCount === 1 ? "this project's only analysed branch"
                                   : "all " + branchCount + " analysed branches";
-  return secEl("div", "secpj-caption", "Posture and categories below span " + scope + ".");
+  const cap = secEl("div", "secpj-caption",
+    "Posture and categories below span " + scope + ". ");
+  // The sidebar is a flex SIBLING of the tab panes -- it is on screen during
+  // Overview, Runs, Branches, Findings and Reports alike -- so this is the
+  // one place on the project screen that can say what the floor does and be
+  // read from every tab. The Overview chips, the Branches tab's "Open" and
+  // the donut right below are all unfloored; the findings table one tab over
+  // is floored and says so itself. See SEC_FLOOR_SCOPE_NOTE.
+  cap.appendChild(secEl("span", null, SEC_FLOOR_SCOPE_NOTE));
+  return cap;
 }
 
 /* -------------------------------------------------------------- overview */
@@ -228,9 +255,8 @@ function secRenderProjectOverview(payload){
     // finished yet" -- a project whose every analysis failed used to read
     // exactly like one that had never been touched, even though its own
     // Runs tab plainly lists the attempts.
-    host.appendChild(secEl("div", "empty", ov.attempted
-      ? "No analysis of this project has finished yet — see Runs for what was attempted."
-      : "Never analysed. Switch to Runs to pick a branch and start."));
+    host.appendChild(secEl("div", "empty",
+      ov.attempted ? SEC_NEVER.attempted : SEC_NEVER.next));
     return;
   }
   // Which branch this posture is FOR -- default_branch_posture's own choice
@@ -356,7 +382,10 @@ function secRunRow(r){
   btn.title = "Show this analysis below";
   // The existing single-analysis drill-down, unchanged: the same function
   // "Earlier analyses of this branch" already calls for its own "#N" rows.
-  btn.onclick = () => secShowAnalysis(r.id);
+  // `pinned`, for the same reason it does: this row is a deliberate choice of
+  // ONE analysis, and the 4-second poll must not replace it with the picker's
+  // branch's newest four seconds later.
+  btn.onclick = () => secShowAnalysis(r.id, true);
   tdId.appendChild(btn);
   tr.appendChild(tdId);
 
@@ -377,8 +406,13 @@ function secRenderProjectSidebar(payload){
   if(!host) return;
   host.textContent = "";
   const sb = payload.sidebar || {};
-  host.appendChild(secSidebarCaption(sb.branch_count || 0));
-  host.appendChild(secIndexDonut(sb.donut || {}, sb.categories || []));
+  const attempted = !!(((payload.tabs || {}).overview) || {}).attempted;
+  host.appendChild(secSidebarCaption(sb.branch_count || 0, attempted));
+  // The donut collapses every analysed branch into one figure, so it has no
+  // row to hang the `incomplete` badge off the way the Overview panel and the
+  // index table do -- it gets the same caveat as a sentence instead.
+  host.appendChild(secIndexDonut(sb.donut || {}, sb.categories || [],
+    secCappedScopeNote(sb.capped_branches || 0, sb.branch_count || 0, "branch")));
   host.appendChild(secProjectActivity(sb.activity || []));
 }
 

@@ -23,22 +23,46 @@ export function secRunFor(a){
   return bestd <= SEC_RUN_WINDOW ? best : null;
 }
 
+/* "Earlier analyses of THIS branch" -- this branch being the one belonging to
+   the analysis ON SCREEN, not the one the picker at the top happens to be
+   pointing at.
+
+   Those are usually the same and are not always: open a `develop` run from
+   the Runs table (or follow the Activity screen's deep link into one) while
+   the picker still reads `main`, and the status line above says `develop`
+   while the list below it is `main`'s history. Nothing on screen said which
+   branch the list was for, so it read as this analysis's history and was
+   another branch's. The analysis is the subject of this whole pane; the
+   picker is a control for STARTING one, and it is not the subject of
+   anything below it. */
 export function secRenderHistory(){
   const host = $("sec-history");
   host.textContent = "";
-  const mine = secState.analyses.filter(a => a.repo === secState.repo
-                                          && a.branch === secState.branch);
+  const shown = secState.analysis;
+  // No analysis on screen yet (a branch nothing has ever analysed) is the one
+  // case with no subject to follow -- the picker is then the only statement
+  // of scope there is, and it is the right one.
+  const repo = shown ? shown.repo : secState.repo;
+  const branch = shown ? shown.branch : secState.branch;
+  const mine = secState.analyses.filter(x => x.repo === repo && x.branch === branch);
   if(!mine.length){
-    host.appendChild(secEl("div", "empty", "Nothing analysed on this branch yet."));
+    // Names the branch: with the list no longer following the picker, a
+    // reader has to be able to tell WHICH branch has nothing behind it.
+    host.appendChild(secEl("div", "empty", branch
+      ? "Nothing else analysed on " + branch + " yet."
+      : "Nothing analysed on this branch yet."));
     return;
   }
-  const current = secState.analysis && secState.analysis.id;
+  const current = shown && shown.id;
   mine.forEach(a => {
     const row = secEl("div", "sechrow" + (a.id === current ? " on" : ""));
     const open = secEl("button", "btn ghost", "#" + a.id);
     open.type = "button";
     open.title = "Show this analysis";
-    open.onclick = () => secShowAnalysis(a.id);
+    // `pinned`: a deliberate open. The 4-second poll must not swap this out
+    // from under the reader for the branch's newest analysis -- see
+    // secShowAnalysis's own comment in analysis.js.
+    open.onclick = () => secShowAnalysis(a.id, true);
     row.appendChild(open);
     row.appendChild(secEl("span", "grow", [a.state, a.profile,
       String(a.commit_sha || "").slice(0, 12),

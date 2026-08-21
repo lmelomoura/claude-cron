@@ -61,6 +61,57 @@ export const EVENT_KIND_LABEL = {
   decision_made: "Decision made", settings_changed: "Settings changed",
   report_exported: "Report exported",
 };
+/* ONE wording for "nothing has ever been read here", used by every screen in
+   the area that has to say it. There were six near-variants of this sentence
+   across four modules -- three of them told the reader what to do next and
+   three did not, twice on the same screen -- so the same fact read as
+   different facts depending on which panel you happened to be looking at.
+
+   The two DENSITIES are deliberate and are not two wordings: a table cell or
+   a header bit has room for the label alone, so it renders `.short` and
+   carries `.next` as its title, and every occurrence still tells the reader
+   where to go. `.attempted` is the other half of the distinction the area
+   already draws everywhere it draws this one at all -- a project whose every
+   analysis failed is not a project nobody ever touched, and collapsing the
+   two is what made the Overview tab contradict the Branches tab one click
+   away over the identical project. `.branch`/`.pickBranch` are the
+   single-analysis pane's own scope: one BRANCH, not the project, which is a
+   genuinely different fact and keeps its own sentence rather than being
+   forced into the project one. */
+export const SEC_NEVER = {
+  short: "Never analysed",
+  next: "Never analysed — switch to Runs to pick a branch and start.",
+  attempted: "No analysis of this project has finished yet — see Runs for what was attempted.",
+  branch: "Never analysed on this branch — press Analyse to make the first one.",
+  pickBranch: "Pick a branch, or type one, and press Analyse.",
+};
+
+/* WHAT THE SEVERITY FLOOR IS, said once on every screen that shows a number
+   it does not apply to.
+
+   `min_severity` (a project's own setting) is a DRILL-DOWN READING AID and
+   nothing else. It narrows two surfaces -- the single-analysis checklist
+   (analysis.js) and the findings browser's table (findings-screen.js) -- and
+   both of those say out loud how many rows they are holding back. It narrows
+   NOTHING else: not the Overview chips, not the index KPIs or posture pills,
+   not the Branches tab's "Open", not either donut. Those are POSTURE numbers,
+   and a posture number is a statement about exposure: a recorded finding
+   below somebody's triage threshold is still exposure, and a fleet total that
+   quietly dropped it would be under-reporting, which is the wrong way for a
+   security screen to be wrong. The floor's job is to declutter a working
+   list; it is not a claim that anything went away.
+
+   That is the decision, and this constant is it being said rather than
+   assumed. It was previously neither: the floor was applied on two surfaces
+   and ignored on six, only the two that applied it mentioned it, and a reader
+   comparing "3 open" on the Overview with two rows in the drill-down of the
+   same analysis had nothing on screen to explain the difference. */
+export const SEC_FLOOR_SCOPE_NOTE =
+  "Every recorded finding is counted here. A project's severity floor only "
+  + "narrows its findings list and the checklist of a single analysis, and "
+  + "each of those says how many rows it is holding back — it never narrows "
+  + "a posture total.";
+
 /* The deterministic phase (secrets, dependencies, CVEs, hygiene) writes its
    findings before the agent is even launched, so a poll this quick shows real
    results within seconds of pressing Analyse while the SAST is still running. */

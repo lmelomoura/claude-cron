@@ -79,7 +79,7 @@
    tab on this screen. */
 import { api, toast, fmtWhen } from "./page.js";
 import { secEl, secIcon, secFetch } from "./dom.js";
-import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP, SEV_ORDER,
+import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP, SEV_ORDER, SEC_NEVER,
          secMinSeverity, secSevKey, secStateKey, secVisible } from "./vocabulary.js";
 import { secAskReason } from "./reason.js";
 import { secInvalidateProject } from "./project-screen.js";
@@ -231,11 +231,22 @@ function secFindHiddenByFloor(data, minSeverity){
   return n;
 }
 
+// What the strip's per-severity pills COUNT. The strip labels its own
+// `total`/`unique` pair, and then drew five per-severity pills that are ROWS
+// with no label at all -- in markup identical to the sidebar donut's legend,
+// which on the project screen is a flex sibling of the tab panes and so is on
+// screen AT THE SAME TIME, four inches away, showing per-severity pills that
+// are distinct FINGERPRINTS. Two numbers answering different questions, side
+// by side, in the same shape, with only one of the two pairs labelled. Both
+// sides now say which question they answer (see DONUT_PILL_TITLE in
+// index-screen.js for the other half).
+const ROW_PILL_TITLE = "Rows matching the current filters — the same finding "
+  + "open on two branches counts twice here.";
+
 function secFindStrip(fs, data){
   const wrap = secEl("div", "sevpills");
   const totalPill = secEl("span", "sevpill", data.total + " total");
-  totalPill.title = "Every row matching the current filters — the same finding "
-    + "open on two branches counts twice here.";
+  totalPill.title = ROW_PILL_TITLE;
   wrap.appendChild(totalPill);
   const uniquePill = secEl("span", "sevpill", data.unique + " unique issues");
   uniquePill.title = "Distinct problems (fingerprints) — the same finding open "
@@ -244,9 +255,21 @@ function secFindStrip(fs, data){
   const bySev = data.by_severity || {};
   let any = false;
   ["critical", "high", "medium", "low", "info"].forEach(sev => {
-    if(bySev[sev]){ any = true; wrap.appendChild(secEl("span", "sevpill " + sev, bySev[sev] + " " + sev)); }
+    if(!bySev[sev]) return;
+    any = true;
+    const pill = secEl("span", "sevpill " + sev, bySev[sev] + " " + sev);
+    pill.title = ROW_PILL_TITLE;
+    wrap.appendChild(pill);
   });
-  if(!any) wrap.appendChild(secEl("span", "sevpill clean", "nothing matches"));
+  // The ok-green `clean` pill is a VERDICT -- "we looked and there is nothing
+  // matching" -- so it may only be drawn over a project something has
+  // actually read. `analysed` false means nothing ever finished here, and
+  // painting that green (beside "0 total", with the table below blaming
+  // filters the reader never set) is the one wrong answer this strip can
+  // give. See queries.finding_rows's own docstring for the two flags.
+  if(!any && data.analysed !== false){
+    wrap.appendChild(secEl("span", "sevpill clean", "nothing matches"));
+  }
 
   const minSeverity = secMinSeverity(fs.project);
   const hidden = secFindHiddenByFloor(data, minSeverity);
@@ -261,6 +284,28 @@ function secFindStrip(fs, data){
     "Downloads always contain every recorded finding, whatever the severity floor shows."));
 
   const box = secEl("div", "secfind-strip");
+  // FIRST, above everything else the strip says: this project has never been
+  // read, or has been attempted and never finished. In the SAME two sentences
+  // the Overview and Branches tabs already use for the identical fact (see
+  // SEC_NEVER in vocabulary.js) rather than a third phrasing invented here.
+  if(data.analysed === false){
+    const line = secEl("div", "warnline bad");
+    line.appendChild(secIcon("alert"));
+    line.appendChild(secEl("span", "grow",
+      data.attempted ? SEC_NEVER.attempted : SEC_NEVER.next));
+    box.appendChild(line);
+  }else if(data.capped_branches){
+    // A partial read, the same caveat the index table's `incomplete` badge
+    // and the sidebar donut's own note already give: these rows are what was
+    // found before at least one branch's analysis stopped, not what is there.
+    const line = secEl("div", "warnline bad");
+    line.appendChild(secIcon("alert"));
+    line.appendChild(secEl("span", "grow",
+      data.capped_branches + " of these branches had a latest analysis that "
+      + "stopped before covering its whole scope — what is below is what it "
+      + "had reached, not what is there."));
+    box.appendChild(line);
+  }
   // The Activity screen's own deep link (Task 12): the table below is
   // narrowed to one fingerprint prefix, not this project's whole list --
   // said out loud, since a filtered table with no visible filter chip set
@@ -584,7 +629,17 @@ async function secFindDecide(fs, f, state, label){
 
 function secFindTableSection(fs, data){
   const rows = data.rows || [];
-  if(!rows.length) return secEl("div", "tblempty", "No findings match these filters.");
+  if(!rows.length){
+    // "No findings match these filters" blames the reader's own controls, and
+    // over a project nothing has ever read that is simply false -- there are
+    // no findings because nobody looked, not because a chip is set. Same two
+    // sentences as the strip above and as Overview/Branches.
+    if(data.analysed === false){
+      return secEl("div", "tblempty",
+        data.attempted ? SEC_NEVER.attempted : SEC_NEVER.next);
+    }
+    return secEl("div", "tblempty", "No findings match these filters.");
+  }
 
   const minSeverity = secMinSeverity(fs.project);
   // `secVisible`, not a bare rank comparison: the exact exemption
