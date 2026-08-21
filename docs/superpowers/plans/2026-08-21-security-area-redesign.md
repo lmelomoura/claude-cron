@@ -674,7 +674,7 @@ analysis decides."
   - `checklist(conn, analysis_id) -> (analysis: dict, findings: list[dict])` — moved from `cli.py`, unchanged behaviour
   - `is_open(state) -> bool`
   - `posture(conn, project, branch) -> dict` — `{critical, high, medium, low, info, total}` of OPEN findings in that branch's latest finished analysis
-  - `default_branch_posture(conn, project, preferred) -> (branch: str, posture: dict, fell_back: bool)`
+  - `default_branch_posture(conn, project, preferred) -> (branch: str, posture: dict, fell_back: bool, latest_row: dict | None)` — the fourth element is the analysis row already fetched, threaded out so callers do not re-query the same row (Task 5's review found it fetched three times)
   - `index_summary(conn, project_names) -> dict` — `{projects, analyses, critical, high, success_rate}`
   - `project_rows(conn, projects) -> list[dict]`
   - `trend(conn, project, branch, days=30) -> list[dict]` — `{analysis_id, started, open}` oldest first
