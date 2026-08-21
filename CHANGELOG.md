@@ -19,6 +19,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Filing a security event could fail the thing it was filing.** `record_event`
+  ran unguarded at its three literal-kind call sites, and `security.db` is
+  shared across every project with the default 5s busy timeout — a lock
+  contention hiccup writing `analysis_started` used to propagate as an
+  unhandled traceback with no stdout, *after* the `running` row was already
+  committed. `cmd_security_analyze`'s `| jq -r '.analysis_id'` then read empty
+  and died with "could not open an analysis", leaving the ledger holding a
+  row for an analysis that, in fact, had opened. The three sites now catch
+  `sqlite3.Error` only — a genuine programming error (an unknown kind) still
+  raises.
+
+- **The agent could write its own entry into the audit trail.** `security
+  event` — the standalone verb that writes into the ledger's record of what
+  happened — was reachable by the agent under review. Nothing in its skill
+  ever told it to call it, and both audit-worthy things the agent causes were
+  already filed as side effects (`analysis_started` by `open-analysis`, which
+  it cannot call; `analysis_finished` by `finish`, which files the event
+  itself) — so a forged `settings_changed` or `decision_made` had nothing
+  legitimate behind it and would have corrupted the one artifact whose whole
+  purpose is to say what actually happened. `event` now joins `decide`,
+  `rename-project` and `open-analysis` in the set CC_SECURITY_AGENT refuses;
+  `events` (read-only) stays open.
+
+- **A report download's audit event no longer pays for a full checklist.**
+  Filing `report_exported` under the right project used to call `security
+  checklist` purely to read `analysis.project` — which runs two
+  `findings_of` calls, a `latest_analysis` query, a history query across
+  every prior analysis and `decisions_for`, all to answer one string. A new
+  read-only verb, `security analysis --id N`, prints just the row.
+
 - **A detached analysis is a real process, so the engine can tell it is alive.**
   It ran inside a `( subshell )`, where bash 3.2 freezes `$$` at the parent's
   pid and offers no `BASHPID` — so the run's own slot recorded a process that

@@ -14,9 +14,9 @@ contract and a body that is not JSON at all are all refused before a
 connection is used for anything.
 
 The door also checks WHO is knocking, not only what they brought. The agent
-and the operator reach this file through the identical command, so the three
+and the operator reach this file through the identical command, so the four
 verbs an agent must never reach -- `decide`, `rename-project`,
-`open-analysis` -- are refused whenever CC_SECURITY_AGENT is set (see
+`open-analysis`, `event` -- are refused whenever CC_SECURITY_AGENT is set (see
 `_refuse_if_agent`).
 
 BE CLEAR ABOUT WHAT THAT IS WORTH. CC_SECURITY_AGENT is a variable in the
@@ -60,7 +60,7 @@ TEXT_KEYS = ("title", "rationale", "remediation", "partial_note")
 
 # What the agent under review may NOT do, even though it reaches this file
 # through the same command the operator does. See `_refuse_if_agent`.
-AGENT_FORBIDDEN = ("decide", "rename-project", "open-analysis")
+AGENT_FORBIDDEN = ("decide", "rename-project", "open-analysis", "event")
 
 
 def _refuse_if_agent(cmd):
@@ -68,7 +68,7 @@ def _refuse_if_agent(cmd):
 
     `cmd_security_analyze` exports CC_SECURITY_AGENT=1 into the analysis run,
     so every `claude-cron security ...` the agent types -- from its own tool
-    shell, inside the worktree -- arrives here with that flag set. Three verbs
+    shell, inside the worktree -- arrives here with that flag set. Four verbs
     have to be refused there:
 
       decide          a permanent, project-wide suppression. An agent that can
@@ -77,6 +77,18 @@ def _refuse_if_agent(cmd):
       rename-project  moves the whole history onto another name, out from
                       under the project being analysed.
       open-analysis   mints rows the engine never opened and will never close.
+      event           the standalone write into the audit trail. Both
+                      audit-worthy things the agent causes are already filed
+                      as side effects -- `analysis_started` by
+                      `open-analysis` (which it cannot call) and
+                      `analysis_finished` by `finish` (which it can, and
+                      which files the event itself) -- so the agent has no
+                      legitimate use for this verb, while a forged
+                      `settings_changed` or `decision_made` corrupts the one
+                      artifact whose whole purpose is to say what actually
+                      happened. `events` (read-only) is deliberately NOT in
+                      this list -- there is nothing here for the flag to
+                      protect, only a query the agent may legitimately want.
 
     `finish` is deliberately NOT in the list: `security_close_analysis` runs
     inside run_job, AFTER the agent and still under the same exported flag,
@@ -101,8 +113,9 @@ def _refuse_if_agent(cmd):
         sys.exit(
             f"security {cmd}: refused inside a security analysis "
             "(CC_SECURITY_AGENT is set) — the agent that reports a finding "
-            "does not get to dismiss it, rename the ledger out from under it "
-            "or open analyses of its own; ask a human to run this.")
+            "does not get to dismiss it, rename the ledger out from under it, "
+            "open analyses of its own, or write an event by hand into the "
+            "one record of what actually happened; ask a human to run this.")
 
 
 def _conn(args):
@@ -160,8 +173,21 @@ def cmd_open_analysis(args):
     conn = _conn(args)
     aid = ledger.start_analysis(conn, args.project, args.repo, args.branch,
                                 args.commit, args.profile, args.run_id)
-    ledger.record_event(conn, args.project, "analysis_started",
-                        f"{args.profile} on {args.branch}", str(aid))
+    try:
+        ledger.record_event(conn, args.project, "analysis_started",
+                            f"{args.profile} on {args.branch}", str(aid))
+    except sqlite3.Error:
+        # Best-effort: the row above is already committed, and the audit
+        # trail is not the thing being audited. A busy `security.db` (shared
+        # across every project, default 5s busy timeout) must never turn
+        # into a missing `analysis_id` here -- that is what left an orphaned
+        # `running` row AND made `cmd_security_analyze`'s
+        # `| jq -r '.analysis_id'` read empty, dying with "could not open an
+        # analysis" over an analysis that, in fact, had opened. Only
+        # `sqlite3.Error`: "analysis_started" is a literal above, so
+        # `ValueError` (an unknown kind) cannot fire here -- if it somehow
+        # did, that is a programming error and must still raise.
+        pass
     print(json.dumps({"analysis_id": aid}))
 
 
@@ -462,9 +488,18 @@ def cmd_finish(args):
     # `row`'s own project and branch, never a flag the caller passed: `finish`
     # has two callers and neither one necessarily agrees with the row about
     # what it is closing, so the event has to come from the row itself.
-    ledger.record_event(conn, row["project"], "analysis_finished",
-                        f"{state} · {row['profile']} on {row['branch']}",
-                        str(args.analysis))
+    try:
+        ledger.record_event(conn, row["project"], "analysis_finished",
+                            f"{state} · {row['profile']} on {row['branch']}",
+                            str(args.analysis))
+    except sqlite3.Error:
+        # Best-effort, same reasoning as cmd_open_analysis: finish_analysis
+        # above already closed the row with its real verdict and spend, and
+        # this function has no stdout of its own to lose -- but a busy
+        # ledger must not turn a successful close into an unhandled
+        # traceback either. "analysis_finished" is a literal, so this cannot
+        # hide a typo'd kind.
+        pass
 
 
 def _checklist(conn, analysis_id):
@@ -622,8 +657,15 @@ def cmd_decide(args):
                             args.state, args.reason, args.by)
     except ValueError as exc:
         sys.exit(f"decide: {exc}")
-    ledger.record_event(conn, args.project, "decision_made",
-                        f"{args.state}: {args.reason}", args.fingerprint[:12])
+    try:
+        ledger.record_event(conn, args.project, "decision_made",
+                            f"{args.state}: {args.reason}", args.fingerprint[:12])
+    except sqlite3.Error:
+        # Best-effort, same reasoning as cmd_open_analysis and cmd_finish:
+        # the decision above is already recorded; a ledger hiccup filing its
+        # event must not turn a successful decision into a traceback.
+        # "decision_made" is a literal, so this cannot hide a typo'd kind.
+        pass
 
 
 def cmd_rename_project(args):
@@ -656,6 +698,23 @@ def cmd_list(args):
         "SELECT * FROM analysis WHERE project=? ORDER BY id DESC LIMIT 100",
         (args.project,)).fetchall()
     print(json.dumps([dict(r) for r in rows], indent=2))
+
+
+def cmd_analysis(args):
+    """The analysis row alone, as JSON, and nothing computed from it.
+
+    `security_report`'s `report_exported` lookup used to read the whole
+    `checklist` verb purely to reach `analysis.project` -- which runs two
+    `findings_of` calls, a `latest_analysis` query, a history query across
+    every prior analysis of the branch, and `decisions_for`, all to read one
+    string. This verb is the row and only the row.
+
+    Read-only, so it is allowed under CC_SECURITY_AGENT (see AGENT_FORBIDDEN)
+    exactly like `findings`, `list` and `checklist` itself.
+    """
+    conn = _conn(args)
+    row = _analysis(conn, args.id)
+    print(json.dumps(dict(row)))
 
 
 def cmd_event(args):
@@ -737,15 +796,26 @@ def main(argv=None):
     ls = sub.add_parser("list", parents=[dbflag]); ls.set_defaults(fn=cmd_list)
     ls.add_argument("--project", required=True)
 
-    # Deliberately absent from AGENT_FORBIDDEN: the agent recording that it
-    # started an analysis is not a human-authority act like `decide` or
-    # `open-analysis` is.
+    # Deliberately absent from AGENT_FORBIDDEN: it prints one row and writes
+    # nothing, the same reasoning as `fingerprint` and `findings` above.
+    an = sub.add_parser("analysis", parents=[dbflag]); an.set_defaults(fn=cmd_analysis)
+    an.add_argument("--id", type=int, required=True)
+
+    # IN AGENT_FORBIDDEN (see the tuple and `_refuse_if_agent`'s docstring):
+    # both audit-worthy things the agent causes are already filed as side
+    # effects -- `analysis_started` by `open-analysis` (which it cannot
+    # call) and `analysis_finished` by `finish` (which files the event
+    # itself) -- so the agent has no legitimate reason to reach this
+    # standalone write verb, while a forged entry would corrupt the one
+    # record of what actually happened.
     ev = sub.add_parser("event", parents=[dbflag]); ev.set_defaults(fn=cmd_event)
     for flag in ("project", "kind"):
         ev.add_argument(f"--{flag}", required=True)
     ev.add_argument("--detail", default="")
     ev.add_argument("--related", default="")
 
+    # `events` (read-only) stays OUT of AGENT_FORBIDDEN: nothing here for the
+    # flag to protect, only a query the agent may legitimately want to see.
     es = sub.add_parser("events", parents=[dbflag]); es.set_defaults(fn=cmd_events)
     es.add_argument("--project", default="")
     es.add_argument("--kind", action="append", default=[])

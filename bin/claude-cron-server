@@ -2233,17 +2233,20 @@ def security_report(analysis_id, fmt):
     # The route (see `/api/security/report`) only ever receives the id and the
     # format the page's own fetch call sends (dashboard.html's `secDownload`)
     # -- never the project name -- so the export event this download earns is
-    # filed under a project read back out of the ledger, via `checklist`, the
-    # verb that already answers with the analysis's own row. Best effort: a
-    # project the CLI could not name (a stray warning on stdout, a row gone
-    # between the render above and this lookup) must not turn an otherwise
-    # successful download into a 500 -- the file the caller asked for has
-    # already been rendered by the time this runs.
-    ok2, meta = cc(["security", "checklist", "--analysis", str(int(analysis_id))])
+    # filed under a project read back out of the ledger. `analysis --id` is a
+    # lightweight verb that prints only the row: `checklist` used to be asked
+    # here for the same single string, and it pays for a full diff/classify
+    # pass (two `findings_of` calls, a `latest_analysis` query, a history
+    # query across every prior analysis, `decisions_for`) to answer it. Best
+    # effort: a project the CLI could not name (a stray warning on stdout, a
+    # row gone between the render above and this lookup) must not turn an
+    # otherwise successful download into a 500 -- the file the caller asked
+    # for has already been rendered by the time this runs.
+    ok2, meta = cc(["security", "analysis", "--id", str(int(analysis_id))])
     project = None
     if ok2:
         try:
-            project = json.loads(meta)["analysis"]["project"]
+            project = json.loads(meta)["project"]
         except (ValueError, KeyError, TypeError):
             project = None
     if project:

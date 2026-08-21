@@ -5920,6 +5920,22 @@ JSON
     && ok "while the engine's own close still works under the same flag, which is why finish is not refused" \
     || bad "close under CC_SECURITY_AGENT -> $secfin"
 
+  echo "cmd_project_set() — a settings save files settings_changed only when security is on"
+  # No test asserted this event's kind or gate anywhere: a wrong kind string
+  # or an inverted security_enabled check would pass every other suite.
+  ( sec_env; printf '{"name":"Sec App","note":"resaved"}' | cmd_project_set >/dev/null ) \
+    > "$sec/project-set-on.out" 2>&1
+  [ "$( ( sec_env; security_py events --project "Sec App" --kind settings_changed \
+           | "$JQ" -r 'length' ) )" = "1" ] \
+    && ok "a save on a security-enabled project files settings_changed" \
+    || bad "settings_changed did not land for a security-enabled save"
+  ( sec_env; printf '{"name":"Sec Disabled","security":{"enabled":false}}' \
+      | cmd_project_set >/dev/null ) > "$sec/project-set-off.out" 2>&1
+  [ "$( ( sec_env; security_py events --project "Sec Disabled" --kind settings_changed \
+           | "$JQ" -r 'length' ) )" = "0" ] \
+    && ok "and a save on a project with security disabled files none" \
+    || bad "settings_changed was filed for a security-disabled save"
+
   echo "a second analysis of the same project is refused where the operator can read it"
   # A live slot on the derived id, built the way slots_active recognises one:
   # this process's own pid and this boot's id (see slot_alive).
@@ -8027,8 +8043,8 @@ case "${1:-}" in
                # Everything else is the ledger's own vocabulary, and the agent
                # types it verbatim from its prompt: prepare, findings,
                # fingerprint, report-finding, finish, checklist, render,
-               # decide, list, event, events.
-               "")      die "usage: claude-cron security <analyze|prepare|findings|fingerprint|report-finding|finish|checklist|render|decide|list|event|events> …" ;;
+               # decide, list, analysis, event, events.
+               "")      die "usage: claude-cron security <analyze|prepare|findings|fingerprint|report-finding|finish|checklist|render|decide|list|analysis|event|events> …" ;;
                *)       security_py "$@" ;;
              esac ;;
   security-branches) [ $# -ge 3 ] || die "usage: claude-cron security-branches <project> <repo>"

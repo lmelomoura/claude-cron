@@ -5,6 +5,11 @@ agent's own findings, closing it, the checklist, the reports -- goes through
 `bin/security/cli.py`. These tests drive it as a subprocess, the same way the
 agent and bash do, because the process boundary IS the contract: an exit code
 and a line of JSON on stdout.
+
+One test group near the bottom (the ledger-write-failure tests) is the
+exception: it needs to monkeypatch `ledger.record_event` mid-call, which a
+subprocess boundary cannot see, so it imports `security.cli` directly and
+calls `main()` in-process instead.
 """
 
 import json
@@ -15,6 +20,8 @@ import sys
 from pathlib import Path
 
 from security.fingerprint import fingerprint as compute_fingerprint, secret_fingerprint
+from security import cli as security_cli
+from security import ledger as security_ledger
 
 REPO = Path(__file__).resolve().parent.parent.parent
 CLI = REPO / "bin" / "security" / "cli.py"
@@ -1307,3 +1314,141 @@ def test_a_decision_files_an_event_carrying_its_reason(tmp_path):
           if e["kind"] == "decision_made"]
     assert len(ev) == 1
     assert "reviewed with the team" in ev[0]["detail"]
+
+
+# -------------------------------------------- a ledger hiccup is never fatal
+
+def test_open_analysis_survives_a_ledger_write_failure(tmp_path, monkeypatch, capsys):
+    """Reproduced before the guard: `record_event` used to run unguarded in
+    `cmd_open_analysis`. The kind passed there is a literal, so `ValueError`
+    can never fire -- but the INSERT can still raise `sqlite3.OperationalError`
+    (`security.db` is shared across every project, and `connect()` takes the
+    default 5s busy timeout), and `main()` has no top-level guard, so that
+    propagated as a traceback with NO stdout. The `running` row above is
+    already committed by the time it happens, so the worst case was real:
+    `cmd_security_analyze`'s `| jq -r '.analysis_id'` read empty, `aid` became
+    "", and `security analyze` died with "could not open an analysis" while
+    the ledger held an orphaned `running` row for an analysis that, in fact,
+    had opened.
+
+    Driven in-process (not via the `run`/`fails` subprocess helpers) because
+    the point is to monkeypatch `record_event` mid-call, which a subprocess
+    boundary cannot see."""
+    db = tmp_path / "security.db"
+
+    def boom(*_a, **_kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(security_ledger, "record_event", boom)
+    security_cli.main([
+        "open-analysis", "--project", "web", "--repo", "web", "--branch", "main",
+        "--commit", "a", "--profile", "quick", "--run-id", "r", "--db", str(db)])
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["analysis_id"] == 1
+    # Not merely the printed id: the row itself is real, checked over a fresh
+    # subprocess so the still-broken monkeypatch above cannot mask a failure.
+    row = run(db, "list", "--project", "web")[0]
+    assert row["id"] == 1
+    assert row["state"] == "running"
+
+
+def test_finish_survives_a_ledger_write_failure(tmp_path, monkeypatch):
+    """Same failure, second call site: `finish_analysis` above already closed
+    the row with its real verdict and spend when `record_event` raises, and
+    that close must not be undone by a hiccup recording it happened."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+
+    def boom(*_a, **_kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(security_ledger, "record_event", boom)
+    security_cli.main(["finish", "--analysis", str(aid), "--state", "done",
+                       "--spend", "1.5", "--db", str(db)])
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert row["spend_usd"] == 1.5
+
+
+def test_decide_survives_a_ledger_write_failure(tmp_path, monkeypatch):
+    """Third call site: the decision itself is the thing that must survive a
+    ledger hiccup recording it -- a suppression that silently failed to save
+    because its OWN audit trail could not be written would be worse than one
+    that saved and went unrecorded."""
+    db = tmp_path / "security.db"
+    run(db, "finish", "--analysis", str(open_analysis(db)), "--state", "done")
+
+    def boom(*_a, **_kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(security_ledger, "record_event", boom)
+    security_cli.main(["decide", "--project", "web", "--fingerprint", "a" * 64,
+                       "--state", "accepted", "--reason", "reviewed",
+                       "--by", "luiz", "--db", str(db)])
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT state FROM decision WHERE fingerprint=?",
+                        ("a" * 64,)).fetchone()[0] == "accepted"
+
+
+# ------------------------------------------- the agent cannot forge an event
+
+def test_the_agent_cannot_write_an_event_by_hand(tmp_path):
+    """`event` is the standalone write into the one record of what actually
+    happened. Both audit-worthy things the agent causes are already filed as
+    side effects -- `analysis_started` by `open-analysis` (which it cannot
+    call) and `analysis_finished` by `finish` (which files the event itself)
+    -- so the agent has no legitimate use for this verb, while a forged
+    `settings_changed` or `decision_made` would corrupt the ledger's own
+    audit trail."""
+    db = tmp_path / "security.db"
+    # open_analysis's own analysis_started already puts one row in `event`,
+    # so the assertion below is a before/after count, not "the table is
+    # empty" -- otherwise this test would fail for a reason that has nothing
+    # to do with the refusal it names.
+    open_analysis(db)
+    conn = sqlite3.connect(str(db))
+    before = conn.execute("SELECT count(*) FROM event").fetchone()[0]
+    out = fails(db, "event", "--project", "web", "--kind", "settings_changed",
+                "--detail", "forged", env=AS_AGENT)
+    assert out.returncode != 0
+    assert "CC_SECURITY_AGENT" in out.stderr
+    assert conn.execute("SELECT count(*) FROM event").fetchone()[0] == before
+
+
+def test_the_agent_can_still_read_events(tmp_path):
+    """`events` is read-only and stays allowed under the flag -- the control
+    for the refusal above: there is nothing here for CC_SECURITY_AGENT to
+    protect, only a query the agent may legitimately want to see."""
+    db = tmp_path / "security.db"
+    run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+        "--state", "accepted", "--reason", "reviewed")
+    out = run(db, "events", "--project", "web", env=AS_AGENT)
+    assert any(e["kind"] == "decision_made" for e in out)
+
+
+# --------------------------------------------- the analysis verb: one row only
+
+def test_analysis_prints_the_row_and_nothing_else(tmp_path):
+    db = tmp_path / "security.db"
+    aid = open_analysis(db, project="web", commit="a", run_id="r")
+    row = run(db, "analysis", "--id", str(aid))
+    assert row["id"] == aid
+    assert row["project"] == "web"
+    assert row["state"] == "running"
+
+
+def test_analysis_refuses_an_unknown_id(tmp_path):
+    db = tmp_path / "security.db"
+    open_analysis(db)
+    out = fails(db, "analysis", "--id", "999")
+    assert out.returncode != 0
+    assert "999" in out.stderr
+
+
+def test_analysis_is_allowed_under_the_agent_environment(tmp_path):
+    """Read-only, like `findings`, `list` and `checklist`: nothing here for
+    CC_SECURITY_AGENT to protect."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    row = run(db, "analysis", "--id", str(aid), env=AS_AGENT)
+    assert row["id"] == aid

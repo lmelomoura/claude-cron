@@ -46,6 +46,73 @@ def test_a_failed_render_raises_instead_of_returning_broken_bytes(srv, monkeypat
         assert "no such analysis" in str(exc)
 
 
+def test_a_successful_download_fires_report_exported(srv, monkeypatch):
+    """Nothing asserted `report_exported`'s kind, its project source or its
+    analysis id anywhere before this -- a wrong kind string, a wrong project
+    source or an inverted lookup would have passed every existing suite."""
+    calls = []
+
+    def fake_cc(args, stdin=None):
+        calls.append(args)
+        if args[1] == "render":
+            return True, "# report"
+        if args[1] == "analysis":
+            return True, json.dumps({"id": 7, "project": "web"})
+        if args[1] == "event":
+            return True, ""
+        raise AssertionError(f"unexpected cc call: {args}")
+
+    monkeypatch.setattr(srv, "cc", fake_cc)
+    body, _ = srv.security_report(7, "md")
+    assert body == "# report"
+
+    event_calls = [c for c in calls if c[1] == "event"]
+    assert len(event_calls) == 1
+    args = event_calls[0]
+    assert args[args.index("--project") + 1] == "web"
+    assert args[args.index("--kind") + 1] == "report_exported"
+    assert args[args.index("--related") + 1] == "7"
+
+
+def test_the_project_lookup_uses_the_lightweight_analysis_verb(srv, monkeypatch):
+    """The lookup exists only to read one string (`analysis.project`) and
+    must go through the lightweight `analysis --id` verb, not `checklist`'s
+    full diff/classify pass, to get it."""
+    seen = []
+
+    def fake_cc(args, stdin=None):
+        seen.append(args)
+        if args[1] == "render":
+            return True, "# report"
+        return True, json.dumps({"id": 7, "project": "web"})
+
+    monkeypatch.setattr(srv, "cc", fake_cc)
+    srv.security_report(7, "md")
+    assert ["security", "analysis", "--id", "7"] in seen
+    assert not any(c[1] == "checklist" for c in seen)
+
+
+def test_a_download_with_no_resolvable_project_files_no_event(srv, monkeypatch):
+    """Best-effort, and never the reason a download fails: a project the CLI
+    could not name (a stray warning, a row gone between the render above and
+    this lookup) must not turn a successful download into anything worse
+    than a quiet skip of the audit event."""
+    calls = []
+
+    def fake_cc(args, stdin=None):
+        calls.append(args)
+        if args[1] == "render":
+            return True, "# report"
+        if args[1] == "analysis":
+            return False, "no such analysis: 7"
+        raise AssertionError(f"unexpected cc call: {args}")
+
+    monkeypatch.setattr(srv, "cc", fake_cc)
+    body, _ = srv.security_report(7, "md")
+    assert body == "# report"
+    assert not any(c[1] == "event" for c in calls)
+
+
 def test_an_unknown_format_is_refused_before_it_reaches_the_cli(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
