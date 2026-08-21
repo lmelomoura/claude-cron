@@ -19,6 +19,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The page can finally see a live security run.** `active_runs` was built
+  from the jobs file, which by design never contains a derived job — so a
+  running analysis had no "Open the run" button for its whole life, and the
+  Security page's dead-run warning fired against every healthy run after
+  three minutes. The derived ids are now unioned in from the lock directory.
+  On the Runs page a `security-*` row is observed, never managed: the eye and
+  Stop stay live, resume and delete are disabled with the reason on the
+  tooltip — a resume would rerun a consumed request, and a delete would erase
+  the transcript the analysis links to.
+
 - **The checklist no longer declares the whole baseline `fixed` nine seconds
   into a run.** A running analysis has written nothing yet, and the diff read
   that absence as 43 findings resolved; a capped run's unreached code-review

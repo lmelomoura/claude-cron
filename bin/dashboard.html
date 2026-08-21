@@ -5067,6 +5067,12 @@ function renderRuns(){
     // that landed before the agent ever started recorded none, and this is
     // the one row shape where that is the ordinary case, not a fault.
     const resumable = s==="error"||s==="warning"||s==="stopped";
+    // A derived security run is OBSERVED here, never managed here: resume
+    // cannot work (the analysis request it ran on was consumed, and its
+    // ledger row is closed), and deleting it erases the transcript the
+    // Security page's "Open the run" points at. Watch it, stop it — the
+    // rest belongs to the Security area.
+    const isSec = String(r.id||"").startsWith("security-");
     // For a resumable run: has the job run again since? (drives the
     // disabled Resume button and the "?" badge, and is true regardless of
     // which browser resumed it)
@@ -5148,6 +5154,8 @@ function renderRuns(){
         // more common case.
         +(r.live
            ? '<button class="iconbtn retry" disabled title="This run is still going">'+I.play+'</button>'
+           : isSec
+             ? '<button class="iconbtn retry" disabled title="A security analysis is never resumed — its request was consumed when it ran. Launch a fresh one from the Security area">'+I.play+'</button>'
            : resumable
              ? (!r.session
                 ? '<button class="iconbtn retry" disabled title="This run recorded no session id, so it cannot be resumed">'+I.play+'</button>'
@@ -5164,6 +5172,8 @@ function renderRuns(){
         // in the search database. Never offered while it is still running.
         +(r.live
            ? '<button class="iconbtn" disabled title="A running run cannot be deleted — stop it first">'+I.trash+'</button>'
+           : isSec
+             ? '<button class="iconbtn" disabled title="This run is a security analysis\'s evidence — the Security area owns its lifecycle">'+I.trash+'</button>'
            : '<button class="iconbtn danger" title="Delete this run and everything it left behind"'
              +' data-del-id="'+esc(r.id)+'" data-del-start="'+esc(r.start)+'">'+I.trash+'</button>')
       +'</td></tr>';

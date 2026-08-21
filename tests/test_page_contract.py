@@ -859,3 +859,13 @@ def test_an_incomplete_analysis_says_so_on_the_page_and_not_only_in_the_file(srv
     assert "INCOMPLETE" in paint
     # Same rule as every other line of this view: text, never markup.
     assert 'sec-incomplete").innerHTML' not in paint
+
+
+def test_the_runs_table_observes_but_never_manages_a_security_run(srv):
+    """On a security-* row only the eye and Stop stay live: resume ran on a
+    consumed request, and delete erases the transcript the Security page's
+    "Open the run" points at."""
+    page = srv.render_page("boot-authed")
+    assert 'String(r.id||"").startsWith("security-")' in page
+    assert "A security analysis is never resumed" in page
+    assert "the Security area owns its lifecycle" in page

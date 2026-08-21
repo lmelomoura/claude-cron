@@ -1783,7 +1783,18 @@ def load_data():
     return {"generated": now, "launchd_loaded": launchd_loaded(), "build": BUILD,
             "config_sig": config_sig(),
             "state": state, "runs": runs,
-            "active_runs": {j.get("id"): active_runs_for(j.get("id")) for j in jobs},
+            # Job ids PLUS the derived security jobs. Those never appear in
+            # jobs.json -- that is the isolation property doing its job -- but
+            # their runs are as real as any other, and this map is the only way
+            # the page sees a LIVE run: without the union, a running analysis
+            # had no "Open the run" button and the Security page's dead-run
+            # warning fired against every healthy run after three minutes.
+            "active_runs": {i: active_runs_for(i) for i in
+                            ([j.get("id") for j in jobs]
+                             + sorted(d.name for d in (DATA_DIR / "locks").iterdir()
+                                      if d.is_dir() and d.name.startswith("security-"))
+                             if (DATA_DIR / "locks").is_dir()
+                             else [j.get("id") for j in jobs])},
             "retained_worktrees": retained_worktrees(),
             "db_bytes": db_bytes, "checks": checks, "ticks": ticks}
 

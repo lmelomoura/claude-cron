@@ -446,3 +446,15 @@ def test_every_report_format_has_a_content_type_and_a_filename(srv):
     for fmt in srv.REPORT_FORMATS:
         assert srv.REPORT_FORMATS[fmt]
         assert srv.REPORT_EXTENSIONS.get(fmt, fmt).strip()
+
+
+def test_active_runs_carries_derived_security_jobs(srv, clean_data):
+    """The isolation property keeps derived jobs out of jobs.json, but their
+    RUNS are as real as any other, and active_runs is the only way the page
+    sees a live one. Without the union, a running analysis had no "Open the
+    run" button and the dead-run warning fired against every healthy run."""
+    (srv.DATA_DIR / "locks" / "security-web").mkdir(parents=True)
+    srv.JOBS_FILE.write_text('{"jobs":[{"id":"real-job"}]}')
+    data = srv.load_data()
+    assert "security-web" in data["active_runs"]
+    assert "real-job" in data["active_runs"]
