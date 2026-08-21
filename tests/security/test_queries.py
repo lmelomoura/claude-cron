@@ -1,3 +1,5 @@
+import time
+
 import pytest
 from security import ledger, queries
 
@@ -562,6 +564,45 @@ def test_severity_totals_and_top_categories_do_not_collapse_distinct_fingerprint
 
     cats = queries.top_categories(conn, "web")
     assert cats == [{"rule": "aws_access_key", "count": 2}]
+
+
+def test_posture_rollups_take_no_time_window(conn):
+    """Both of these used to accept a `days=30` they never read, and neither
+    caller ever passed it -- a signature promising a filter the body does not
+    apply. Whoever eventually wrote `days=7` would have got an all-time answer
+    that looked like a weekly one, with nothing failing to say so.
+
+    The parameter is gone rather than implemented, because a POSTURE number is
+    as-of-now by construction: it is read off each branch's LATEST finished
+    analysis, and a critical finding does not stop being open because nobody
+    re-analysed that branch this month. A window here would not narrow the
+    answer, it would drop quiet branches out of it and report them clean.
+
+    Pinned as a probe, not as trivia: re-adding an ignored `days` is exactly
+    the kind of change that reads as harmless in a diff. Proved below by an
+    analysis that is far older than any window anybody would pick -- it must
+    still be counted."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "sha", "quick", "r")
+    ledger.record_finding(conn, aid, {
+        "fingerprint": "a" * 64, "category": "secret", "rule": "aws_access_key",
+        "severity": "critical", "title": "t", "occurrences": []})
+    ledger.mark_prepared(conn, aid)
+    ledger.finish_analysis(conn, aid, "done")
+    # A year ago -- older than 30 days, older than any period the Activity
+    # screen offers, and still open.
+    long_ago = int(time.time()) - 365 * 86400
+    conn.execute("UPDATE analysis SET started=?, ended=? WHERE id=?",
+                 (long_ago, long_ago, aid))
+    conn.commit()
+
+    assert queries.severity_totals(conn, "web")["critical"] == 1
+    assert queries.top_categories(conn, "web") == [
+        {"rule": "aws_access_key", "count": 1}]
+
+    with pytest.raises(TypeError):
+        queries.severity_totals(conn, "web", days=7)
+    with pytest.raises(TypeError):
+        queries.top_categories(conn, "web", days=7)
 
 
 def test_severity_totals_keeps_the_more_severe_of_two_branches(conn):

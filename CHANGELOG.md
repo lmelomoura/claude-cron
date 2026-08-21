@@ -319,6 +319,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The two posture rollups no longer accept a time window they never
+  applied.** `queries.severity_totals` and `queries.top_categories` took a
+  `days=30` parameter, ignored it completely, and were never passed one by
+  either caller — a signature promising a filter the body does not apply,
+  which is worse than no parameter at all: the first person to write
+  `days=7` would have got an all-time answer that looked like a weekly one,
+  with nothing failing to say so. It came from a mockup panel captioned
+  "Findings overview (30 days)", and that caption was the mistake, not the
+  missing code. A **posture** number answers "what is open right now" and is
+  as-of-now by construction — it is read off each branch's *latest finished*
+  analysis, whether that ran an hour ago or last spring, and a critical
+  finding does not stop being open because nobody re-analysed the branch this
+  month. Windowing it would not narrow the answer, it would drop quiet
+  branches out of it and report them clean. The parameter is gone rather than
+  implemented, pinned by a test that fails if it comes back, and no caption on
+  any of the four screens ever claimed a window for these panels — the ones
+  that do have windows (`trend`'s 30-day series, `activity_summary`'s period
+  chips) keep their `days`, because both of them use it.
+
 - **`report-finding` now refuses a title, rationale, remediation or
   partial_note that contains something shaped like a live credential.** The
   deterministic categories cannot leak a secret's value by construction — the
@@ -435,6 +454,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   also names itself in server.log instead of hiding behind the fallback.
 
 ### Changed
+
+- **The README documents the Security area that now exists, not the one it
+  shipped with.** The section described a single project list and a single
+  analysis; it now covers the four screens and what each answers, that every
+  number on them is *current posture* rather than an all-time sum, and the two
+  definitions a reader cannot guess: **open** is every state that is not
+  `fixed`/`accepted`/`false_positive`, so it includes `pending` — a finding
+  nobody re-checked is exposure nobody closed — and **success rate** is `done`
+  over finished (`done` + `capped` + `failed`), with a dash rather than `0%`
+  when nothing has finished. Also newly written down: the `info` severity and
+  the one deterministic rule that emits it (a repository with no `.gitignore`),
+  and that it sits below every floor the editor resolves to on its own until
+  you lower `min_severity` to **Info**; lines of code, counted as a by-product
+  of the deterministic walk and shown as a dash when an analysis never counted;
+  the event log's five kinds and why it has **no user column and no IP column**
+  (one operator, enforced by `app.db`'s `CHECK (id = 1)`, and a loopback-only
+  server); saved filters; and **the build** — `ui/` is the source,
+  `bin/static/security.js` is the committed bundle, `bash build/build-ui.sh`
+  must run in the same change as any UI edit, and `claude-cron selftest` is the
+  enforcer, named in the README by the assertion it prints. Two things the
+  section had gone stale on are corrected rather than left: the checklist table
+  listed seven states and omitted `pending` entirely, and the list of verbs an
+  analysis run refuses to the agent had not grown with `event`, `filters save`
+  and `filters delete`. Documentation drift of that kind is not cosmetic here —
+  the README is the only description of this area anybody outside the
+  repository reads.
 
 - **The Security area moved out of `dashboard.html` into `ui/security/`, and
   nothing it does changed.** The page was 7,323 lines with the whole app in one

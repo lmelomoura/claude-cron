@@ -497,13 +497,30 @@ def _open_findings_by_fingerprint(conn, project):
     return by_fingerprint
 
 
-def severity_totals(conn, project=None, days=30):
+def severity_totals(conn, project=None):
     """Open findings by severity across every scope `_analysed_scopes`
     returns for `project` -- a single name, an iterable of names, or `None`
     for the whole ledger. Counted by DISTINCT FINGERPRINT (see
     `_open_findings_by_fingerprint`'s own docstring for why): the same
     finding open on two branches of one project is one problem, not two, so
-    it must contribute to this total exactly once."""
+    it must contribute to this total exactly once.
+
+    THERE IS NO TIME WINDOW HERE, and there used to be a `days=30` parameter
+    saying otherwise. It was accepted, never read, and never passed by either
+    caller -- a signature promising a filter the body does not apply, which
+    is worse than no parameter at all: the first person to pass `days=7`
+    would get a 30-day-looking answer that is really an all-time one, with
+    nothing failing. It was a leftover from a mockup panel captioned
+    "Findings overview (30 days)", and that caption was the actual mistake.
+    A POSTURE number answers "what is open RIGHT NOW", which is as-of-now by
+    construction: it is read off each branch's LATEST finished analysis
+    (`_latest_finished`), whether that ran an hour ago or last spring, and a
+    critical finding does not stop being open because nobody re-analysed the
+    branch this month. Windowing it would not narrow the answer, it would
+    DELETE branches from it -- reporting a quiet repository as clean. What
+    genuinely does have a window is a series over time (`trend`) or a count
+    of events in a period (`activity_summary`), and both of those keep their
+    `days` because both of them use it."""
     out = _empty_posture()
     for f in _open_findings_by_fingerprint(conn, project).values():
         if f["severity"] in out:
@@ -512,7 +529,7 @@ def severity_totals(conn, project=None, days=30):
     return out
 
 
-def top_categories(conn, project=None, days=30, limit=5):
+def top_categories(conn, project=None, limit=5):
     """The rules producing the most open findings, ranked across every scope
     `_analysed_scopes` returns for `project` -- a single name, an iterable of
     names, or `None` for the whole ledger. Counted by DISTINCT FINGERPRINT
@@ -522,7 +539,12 @@ def top_categories(conn, project=None, days=30, limit=5):
     ranking, so `limit` slices the TRUE top rules for the given projects
     together, not each project's own top `limit` merged afterwards -- which
     could drop a rule that only ranks highly once several projects' counts
-    are combined."""
+    are combined.
+
+    No time window, for the reason `severity_totals` states at length: this
+    ranks what is OPEN, read off each branch's latest finished analysis, and
+    "open" has no period. The `days=30` this used to accept and ignore is
+    gone with its sibling's."""
     counts = {}
     for f in _open_findings_by_fingerprint(conn, project).values():
         counts[f["rule"]] = counts.get(f["rule"], 0) + 1
