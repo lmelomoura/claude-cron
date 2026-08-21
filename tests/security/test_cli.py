@@ -1350,6 +1350,34 @@ def test_render_sbom_refuses_an_analysis_that_does_not_exist(tmp_path):
     assert "no such analysis" in out.stderr
 
 
+def test_checklist_of_an_analysis_that_does_not_exist_exits_with_the_old_sentence(tmp_path):
+    """`queries.checklist` now raises `AnalysisNotFound` instead of calling
+    `sys.exit` itself (a library must not exit the process -- a future
+    server route needs to catch this and answer 404, not go down with it).
+    `cmd_checklist` catches it and must still exit non-zero with the exact
+    sentence the command line always printed, byte for byte -- driven as a
+    subprocess, the same way the agent and bash call this command."""
+    db = tmp_path / "security.db"
+    open_analysis(db)
+    out = fails(db, "checklist", "--analysis", "999")
+    assert out.returncode != 0
+    assert out.stderr.strip() == "no such analysis: 999"
+    assert out.stdout.strip() == ""
+
+
+def test_render_of_an_analysis_that_does_not_exist_exits_with_the_old_sentence(tmp_path):
+    """Same guarantee as `checklist` above, for `render`'s non-sbom path
+    (which also calls `queries.checklist`) -- `render --format sbom` has its
+    own refusal (tested above) that never goes through `queries.checklist`
+    at all, so it needed no change and is untouched by this fix."""
+    db = tmp_path / "security.db"
+    open_analysis(db)
+    out = fails(db, "render", "--analysis", "999", "--format", "md")
+    assert out.returncode != 0
+    assert out.stderr.strip() == "no such analysis: 999"
+    assert out.stdout.strip() == ""
+
+
 def test_the_door_accepts_info_as_a_severity(tmp_path):
     db = tmp_path / "security.db"
     root = tmp_path / "repo"

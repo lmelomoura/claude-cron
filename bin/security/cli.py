@@ -544,7 +544,10 @@ def cmd_finish(args):
 
 def cmd_checklist(args):
     conn = _conn(args)
-    analysis, findings = queries.checklist(conn, args.analysis)
+    try:
+        analysis, findings = queries.checklist(conn, args.analysis)
+    except queries.AnalysisNotFound as e:
+        sys.exit(str(e))
     print(json.dumps({"analysis": analysis, "findings": findings}, indent=2))
 
 
@@ -591,7 +594,10 @@ def cmd_render(args):
         # speaks `render --format`, and a second verb would mean a second route.
         print(_sbom_document(conn, args.analysis))
         return
-    analysis, findings = queries.checklist(conn, args.analysis)
+    try:
+        analysis, findings = queries.checklist(conn, args.analysis)
+    except queries.AnalysisNotFound as e:
+        sys.exit(str(e))
     note = analysis.get("coverage_note", "")
     renderer = {"json": report.as_json, "md": report.as_markdown,
                 "html": report.as_html}[args.format]

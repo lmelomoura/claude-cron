@@ -36,6 +36,61 @@ def test_read_only_on_a_database_that_does_not_exist_is_none(tmp_path):
     assert queries.read_only(tmp_path / "nope.db") is None
 
 
+def test_checklist_is_memoised_per_analysis_id_on_a_read_only_connection(tmp_path):
+    """`branch_rows` calls `posture` and `trend` for every branch, and `trend`
+    itself calls `checklist` once per analysis in its window -- the SAME
+    analysis id (a branch's own latest finished one) is asked for more than
+    once inside one project-detail payload. A `read_only` connection must
+    answer the second ask from its own cache rather than recomputing it --
+    checked here by identity, not just equality, so a genuine recomputation
+    (which would build a new tuple) cannot pass by accident."""
+    db = tmp_path / "security.db"
+    conn = ledger.connect(db)
+    aid = _analysis(conn, "main", findings=[("high", "sast")])
+    conn.close()
+
+    ro = queries.read_only(db)
+    first = queries.checklist(ro, aid)
+    second = queries.checklist(ro, aid)
+    assert second is first, "the second call must be the cached result"
+    ro.close()
+
+
+def test_two_read_only_connections_do_not_share_a_checklist_cache(tmp_path):
+    """The cache lives on the connection object itself -- an ordinary
+    instance attribute, not a module-level dict some other request's
+    connection could reach into. It must not leak between two separate
+    `read_only()` connections (two separate requests), and `close()` must
+    drop it eagerly rather than leaving it to whenever GC gets around to the
+    object."""
+    db = tmp_path / "security.db"
+    conn = ledger.connect(db)
+    aid = _analysis(conn, "main", findings=[("high", "sast")])
+    conn.close()
+
+    ro1 = queries.read_only(db)
+    ro2 = queries.read_only(db)
+    assert ro1._checklist_cache is not ro2._checklist_cache
+
+    queries.checklist(ro1, aid)
+    assert aid in ro1._checklist_cache
+    assert aid not in ro2._checklist_cache, \
+        "one connection's cache must not be visible through another"
+
+    ro1.close()
+    assert ro1._checklist_cache is None, "close() must drop the cache eagerly"
+    ro2.close()
+
+
+def test_checklist_raises_analysisnotfound_instead_of_exiting(conn):
+    """`queries.py` is a library the dashboard server calls with an id that
+    comes straight from a URL -- `sys.exit()` on a bad id would take the
+    whole control server down with it instead of answering 404. This must
+    be a catchable exception, not a process exit."""
+    with pytest.raises(queries.AnalysisNotFound, match="999"):
+        queries.checklist(conn, 999)
+
+
 def test_posture_counts_open_findings_of_the_latest_finished_analysis(conn):
     _analysis(conn, "main", findings=[("critical", "secret"), ("low", "hygiene")])
     _analysis(conn, "main", findings=[("critical", "secret")])
@@ -131,20 +186,31 @@ def test_branch_rows_one_per_branch_newest_first(conn):
     assert rows[0]["open"]["critical"] == 1
 
 
-def test_trend_orders_by_id_when_two_analyses_tie_on_started(conn):
-    """`started` has 1-second resolution; the engine can open a row and fail
-    it moments later, so two analyses of ONE branch sharing a `started` value
-    is not a corner case, it is routine. Force the tie explicitly rather than
-    trust wall-clock luck, then check the tiebreak actually orders them."""
-    aid1 = _analysis(conn, "main", findings=[("high", "sast")])
-    aid2 = _analysis(conn, "main", findings=[("low", "hygiene")])
-    conn.execute(
-        "UPDATE analysis SET started=(SELECT started FROM analysis WHERE id=?)"
-        " WHERE id=?", (aid1, aid2))
-    conn.commit()
-    out = queries.trend(conn, "web", "main")
-    assert [t["analysis_id"] for t in out] == [aid1, aid2], \
-        "oldest first must mean id order when started ties, not engine luck"
+def test_trend_query_carries_the_id_tiebreak_in_its_order_by(conn):
+    """Replaces `test_trend_orders_by_id_when_two_analyses_tie_on_started`,
+    which forced a real tie on `started` and asserted the resulting order --
+    but that order held with or without `, id` in the `ORDER BY`. Removing
+    the tiebreak from the source and re-running that test at row counts from
+    2 up to 5000 never made it fail: SQLite's own tie resolution happened to
+    put the older row first regardless. A test that passes either way proves
+    nothing and reads as if it does -- the same false-coverage trap the SQL
+    itself was already bitten by.
+
+    Assert the SQL text carries the guarantee instead of the outcome,
+    captured via `sqlite3.Connection.set_trace_callback` -- the same
+    technique used for this task's cost measurement. This fails immediately
+    if `, id` is removed from `trend`'s `ORDER BY`, independent of how
+    SQLite happens to resolve ties on any given build or row count."""
+    _analysis(conn, "main", findings=[("high", "sast")])
+    statements = []
+    conn.set_trace_callback(statements.append)
+    try:
+        queries.trend(conn, "web", "main")
+    finally:
+        conn.set_trace_callback(None)
+    select = next(s for s in statements if s.startswith("SELECT id, started FROM analysis"))
+    assert "ORDER BY started, id" in select, \
+        "the tiebreak belongs in the SQL text, not in however the engine breaks a tie"
 
 
 def test_project_rows_reports_branch_posture_and_trend(conn):

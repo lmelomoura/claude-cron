@@ -12,7 +12,6 @@ a CASE expression would drift from it the first time either one changed.
 """
 
 import sqlite3
-import sys
 import time
 from pathlib import Path
 
@@ -29,12 +28,56 @@ def is_open(state) -> bool:
     return state not in RESOLVED_STATES
 
 
+class AnalysisNotFound(LookupError):
+    """Raised by `_analysis_row` when the id is not in the ledger.
+
+    A library must not exit the process -- and this docstring's own opening
+    line calls `queries.py` "the read layer the dashboard serves". A
+    `sys.exit()` here was harmless while only `cli.py` called it (the process
+    leaving IS the right answer to a typo on the command line), but the
+    plan's later tasks wire server routes to `checklist()` with ids that
+    come straight from a URL. A bad id must 404, not take the whole control
+    server down with it. `cli.py` catches this at its two call sites
+    (`cmd_checklist`, `cmd_render`) and turns it back into the identical
+    `sys.exit(...)` sentence the command line always printed, so nothing
+    about `security checklist` / `security render` on the command line
+    changes.
+    """
+
+
+class _CachingConnection(sqlite3.Connection):
+    """A read-only connection that memoises `checklist()` for its own
+    lifetime, and only its own lifetime.
+
+    `_checklist_cache` is an ordinary instance attribute, not a module-level
+    dict keyed by `id(conn)`. The latter would need clearing by hand on
+    close to stop a LATER, unrelated connection from reusing the same
+    (recycled) id and inheriting a stranger's cached findings -- a real risk
+    since CPython ids are just recycled memory addresses. An instance
+    attribute needs none of that bookkeeping: it lives and dies with the
+    connection object itself, so it cannot outlive the request that opened
+    this connection through `read_only()`. `close()` also drops it eagerly
+    rather than waiting on GC, so a connection held open a moment longer
+    than expected cannot go on serving a stale entry once the caller has
+    said it is done with it.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._checklist_cache = {}
+
+    def close(self):
+        self._checklist_cache = None
+        super().close()
+
+
 def read_only(path):
     """A read-only handle, or None when no analysis has ever run."""
     path = Path(path)
     if not path.exists():
         return None
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True,
+                           factory=_CachingConnection)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -46,12 +89,26 @@ def _analysis_row(conn, analysis_id):
     command line becomes a report with no findings and no explanation."""
     row = conn.execute("SELECT * FROM analysis WHERE id=?", (analysis_id,)).fetchone()
     if row is None:
-        sys.exit(f"no such analysis: {analysis_id}")
+        raise AnalysisNotFound(f"no such analysis: {analysis_id}")
     return row
 
 
 def checklist(conn, analysis_id):
-    """MOVED FROM cli.py, unchanged. The single owner of finding states."""
+    """MOVED FROM cli.py, at heart unchanged: still the single owner of
+    finding states. Memoised per analysis id for the life of one connection
+    -- see `_CachingConnection` -- because `branch_rows` calls both
+    `posture` and `trend` for every branch, and `trend` itself calls this
+    once per analysis in its window, so one project-detail payload asks for
+    the SAME analysis id (a branch's latest finished one) two or more times
+    over. Measured in `.superpowers/sdd/task-5-report.md`. A plain writable
+    connection (what `cli.py` opens via `ledger.connect`) carries no such
+    cache and is never memoised against -- `getattr(..., None)` reads that
+    absence as "no caching here", not as an error.
+    """
+    cache = getattr(conn, "_checklist_cache", None)
+    if cache is not None and analysis_id in cache:
+        return cache[analysis_id]
+
     row = _analysis_row(conn, analysis_id)
     analysis = dict(row)
     current = ledger.findings_of(conn, analysis_id)
@@ -94,10 +151,13 @@ def checklist(conn, analysis_id):
     decisions = ledger.decisions_for(conn, analysis["project"])
     # Absence is only evidence when the looking finished: mid-run (or capped)
     # a baseline finding missing from `current` is `pending`, never `fixed`.
-    return analysis, diff.classify(
+    result = analysis, diff.classify(
         current, previous, history, decisions,
         analysis_state=analysis.get("state", "done"),
         prepared=bool(analysis.get("prepared", 0)))
+    if cache is not None:
+        cache[analysis_id] = result
+    return result
 
 
 def _latest_finished(conn, project, branch):
