@@ -693,10 +693,20 @@ EOF
     # timeout this flag exists to avoid. `trap '' HUP` is the whole of what
     # nohup(1) does, and an ignored signal survives exec: the run outlives the
     # terminal, or the request, that started it.
+    # `set -m` gives the background job its OWN process group. That is the
+    # half `trap '' HUP` cannot cover: when the parent is a launchd service
+    # whose plist lacks AbandonProcessGroup, a service restart has launchd
+    # SIGKILL the service's whole group -- untrappable, so the run died with
+    # no journal, no teardown, and a `running` ledger row nobody would close
+    # until the next Analyse swept it. The server's own restart-on-file-change
+    # did exactly that to a live analysis mid-SAST. The plist now carries the
+    # key too; this survives a parent that does not.
+    set -m
     ( trap '' HUP
       security_run_analysis "$jid" "$aid" "$branch" ) </dev/null >> "$DATA_DIR/exec.log" 2>&1 &
     local dpid=$!
     disown "$dpid" 2>/dev/null || true
+    set +m
     log_tick "$jid: launched detached analysis $aid ($project/$repo @ $branch)"
     # The one line a caller can parse. The page shows it back as the server's
     # `output`; anything reading this command reads the id from here.
@@ -7210,6 +7220,13 @@ PLIST
   </array>
   <key>KeepAlive</key><true/>
   <key>RunAtLoad</key><true/>
+  <!-- The dashboard's Analyse button detaches a security run and the server
+       then EXITS WHENEVER ITS OWN FILE CHANGES on disk (the self-watch that
+       picks new code up). Without this, that routine restart had launchd reap
+       the server's whole process group -- killing a detached analysis mid-run
+       with no journal, no teardown, and a ledger row stuck on `running`. The
+       tick's plist has carried the same key for the same reason all along. -->
+  <key>AbandonProcessGroup</key><true/>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>$PLIST_PATH_ENV</string>

@@ -3210,7 +3210,12 @@ const SEC_POLL_MS = 4000;
    branch at a time (the derived job is max_parallel 1), so "the run nearest
    this analysis's start" is unambiguous — but only inside a window, or an
    analysis whose run never made it to the journal would adopt a stranger. */
-const SEC_RUN_WINDOW = 900;
+// analyze opens the ledger row and detaches the run within seconds of each
+// other, so the right run starts within moments of the analysis. 900s once
+// linked a RUNNING analysis to the previous attempt's failed run -- 8 minutes
+// apart, same job id, nearest by start -- and "Open the run" showed a dead
+// run's BLOCKED transcript over a live analysis.
+const SEC_RUN_WINDOW = 120;
 
 /* Icons only. See the block comment above. */
 function secIcon(name){
@@ -3636,6 +3641,15 @@ function secPaint(){
     b.onclick = () => openLog(run.id, run.start);
     box.appendChild(b);
   }
+  // `running` in the ledger is a claim; a live slot is the fact. When the two
+  // disagree for longer than a launch could take, say so — a run killed
+  // without a journal (a reboot, a group-kill) leaves exactly this state, and
+  // the page used to show "Analysing…" over it indefinitely.
+  if(running && !run && (Date.now()/1000 - (a.started||0)) > 180){
+    box.appendChild(secEl("span", "note",
+      "No live run is behind this analysis — it likely died without closing. "
+      + "The next Analyse sweeps it; until then downloads carry what it recorded."));
+  }
 
   // THE SAME NOTICE THE DOWNLOADED REPORT OPENS WITH (bin/security/report.py,
   // _coverage). A capped or failed analysis is a PARTIAL read of the
@@ -3853,14 +3867,15 @@ $("sr-why").addEventListener("input", () => { $("sr-err").hidden = true; });
 /* -------------------------------------------------------------- history */
 function secRunFor(a){
   if(!a || !a.run_id) return null;
+  // A RUNNING analysis only ever links a LIVE run: matching it against the
+  // journal is how a dead previous attempt got its transcript shown over a
+  // live analysis. A finished analysis searches both pools — its run is
+  // usually journaled, but the journal lags the end of the run by a poll.
+  const running = a.state === "running";
+  const pool = running ? unjournaledLive()
+                       : unjournaledLive().concat(DATA.runs || []);
   let best = null, bestd = Infinity;
-  // The live runs AND the journal. A run is journaled when it ENDS, so reading
-  // DATA.runs alone left "Open the run" missing for the whole of an analysis in
-  // flight — the minutes anybody most wants to watch it, and the one thing on
-  // this screen that can show what the agent is doing. unjournaledLive() rather
-  // than liveRuns(), for the reason the Runs list uses it: a slot not yet
-  // cleared for a run already in the journal is the same run listed twice.
-  unjournaledLive().concat(DATA.runs || []).forEach(r => {
+  pool.forEach(r => {
     if(r.id !== a.run_id) return;
     const d = Math.abs((r.start || 0) - (a.started || 0));
     if(d < bestd){ best = r; bestd = d; }

@@ -19,6 +19,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A detached security analysis survives the control server restarting.** The
+  server exits whenever its own file changes on disk — routine on every code
+  update — and its launchd plist, unlike the tick's, did not carry
+  `AbandonProcessGroup`, so that restart had launchd SIGKILL the server's whole
+  process group: a live analysis died mid-SAST with no journal, no teardown and
+  a ledger row stuck on `running`. The plist now carries the key (re-run
+  `bash install.sh` to apply it), and the detach itself takes its own process
+  group (`set -m`) so it also survives a parent that lacks it.
+- **"Open the run" on a running analysis can no longer open a dead previous
+  attempt.** The link matched by nearest start within 15 minutes across the
+  journal too, so a running analysis whose run had just died showed the
+  PREVIOUS attempt's BLOCKED transcript as if it were live. A running analysis
+  now only links a live run, the window is 120 s, and when a running analysis
+  has had no live run behind it for three minutes the page says so instead of
+  showing "Analysing…" indefinitely.
+
 - **The dashboard no longer empties itself the first time the new server
   ingests a run.** The `cause` column arrived in the journal INSERT without
   its placeholder — 22 columns, 21 `?` — so nothing broke until the first
