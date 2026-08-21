@@ -378,6 +378,39 @@ def test_finding_counts_by_analysis_counts_a_running_analysiss_partial_findings_
     assert counts[aid] == 1
 
 
+def test_the_runs_row_count_and_the_checklist_total_legitimately_disagree(conn):
+    """Reproduction for the Runs table's own review finding (IMPORTANT): a row
+    can say "Findings: 1" while that same analysis's checklist chips total 2,
+    and BOTH are right.
+
+    Analysis #1 records two findings on `main`. Analysis #2 re-reports only
+    one of them (the "secret" fingerprint repeats; the "hygiene" one is not
+    recorded again). `finding_counts_by_analysis` answers "how many did THIS
+    run record" -- 1, a fact about analysis #2 alone. `checklist()` answers
+    "what is open right now" for #2 -- it also carries the missing "hygiene"
+    finding forward as `fixed` (a deterministic category, proven the moment
+    `prepare` completed), so its own total is 2.
+
+    This is not a bug to reconcile -- see finding_counts_by_analysis's own
+    docstring and the Runs table header's title -- it is pinned here so a
+    later "fix" does not quietly make one number swallow the other."""
+    _analysis(conn, "main", findings=[("high", "secret"), ("low", "hygiene")])
+    aid2 = _analysis(conn, "main", findings=[("high", "secret")])
+
+    row_count = queries.finding_counts_by_analysis(conn, "web")[aid2]
+    _analysis_row, checklist_findings = queries.checklist(conn, aid2)
+
+    assert row_count == 1, f"the Runs row should report what #2 itself recorded: {row_count}"
+    assert len(checklist_findings) == 2, \
+        f"the checklist must still carry the missing finding forward: {checklist_findings}"
+    assert row_count != len(checklist_findings), \
+        "the row count and the checklist total must be free to disagree"
+    states = {f["fingerprint"]: f["state"] for f in checklist_findings}
+    assert len(states) == 2
+    fixed = [fp for fp, s in states.items() if s == "fixed"]
+    assert len(fixed) == 1, f"the carried-forward finding must show as fixed: {states}"
+
+
 # ---- review fix (IMPORTANT): two different "posture" numbers on one screen.
 # analysed_branch_count is the number the project screen's sidebar caption
 # names, so a two-branch project and a one-branch project never look alike.

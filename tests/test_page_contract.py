@@ -1533,6 +1533,44 @@ def test_the_project_poll_tick_skips_a_refresh_when_nothing_could_have_changed(s
     assert out["forcedCall"] == 3, "a forced (non-poll) call must always refresh"
 
 
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_project_runs_header_names_what_its_own_column_recorded(srv, tmp_path):
+    """Review finding (IMPORTANT): the Runs table's own FINDINGS column is
+    `finding_counts_by_analysis`'s plain per-analysis COUNT(*), but clicking
+    a row renders that same analysis's checklist chips from `checklist()`,
+    which also carries forward findings that disappeared since the branch's
+    previous analysis, marked `fixed` or `pending` -- a row's own two numbers
+    can legitimately differ (see tests/security/test_queries.py's
+    reproduction, and finding_counts_by_analysis's docstring). The bare,
+    ambiguous "Findings" header is renamed to name the fact it counts, with
+    a `title` explaining the distinction, rather than either number being
+    changed to match the other."""
+    block = _security_js(srv)
+    deps = "\n".join(_plainfn(block, n) for n in ("secEl", "secRunRow", "secRunsTable"))
+    script = tmp_path / "pj-runs-header.js"
+    script.write_text(_PROJECT_DOM_HARNESS + """
+    let secRunsFilter = "";
+    """ + deps + """
+    const wrap = secRunsTable([{id: 2, profile: "quick", repo: "web", branch: "main",
+      commit_sha: "abc123def456", started: 100, ended: 110, findings: 1, state: "done"}]);
+    const thead = wrap.childNodes[0].childNodes[0];
+    const htr = thead.childNodes[0];
+    const headers = htr.childNodes.map(th => ({text: th.textContent, title: th.title}));
+    console.log(JSON.stringify(headers));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    texts = [h["text"] for h in out]
+    assert "Findings" not in texts, \
+        f"the bare, ambiguous header must be gone, not merely supplemented: {texts}"
+    findings_header = next((h for h in out if "findings" in h["text"].lower()), None)
+    assert findings_header is not None, f"no findings-shaped header rendered at all: {texts}"
+    assert findings_header["text"] == "Findings recorded", \
+        f"the column must be renamed to say what it counts: {texts}"
+    title = findings_header["title"].lower()
+    assert "checklist" in title and "previous analysis" in title, \
+        f"the header's title must explain why the checklist below can total more: {title!r}"
+
 
 def test_the_runs_table_observes_but_never_manages_a_security_run(srv):
     """On a security-* row only the eye and Stop stay live: resume ran on a

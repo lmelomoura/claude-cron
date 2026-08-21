@@ -280,6 +280,17 @@ function secRunsFilters(runs){
   return wrap;
 }
 
+/* This column and the checklist chips one click below it (secRenderChecklist,
+   fed by the same finding's-worth of data through queries.checklist()) can
+   legitimately total different numbers for the SAME row. This column is
+   finding_counts_by_analysis's plain per-analysis COUNT(*) -- how many
+   findings THAT RUN recorded, a fact a later run or decision can never
+   change (see that function's own docstring). checklist() answers a
+   different question, "what is open right now": it also carries forward
+   findings that disappeared since the branch's previous analysis, marked
+   fixed or pending, so its own total can run higher. Same resolution as
+   secOverviewCaption/secSidebarCaption above -- name what each number
+   counts rather than force one to match the other. */
 function secRunsTable(runs){
   const filtered = secRunsFilter ? runs.filter(r => r.state === secRunsFilter) : runs;
   if(!filtered.length){
@@ -290,9 +301,17 @@ function secRunsTable(runs){
   const table = document.createElement("table");
   const thead = document.createElement("thead");
   const htr = document.createElement("tr");
-  ["Run", "Profile", "Branch", "Commit", "Duration", "Findings", "State", "Date"].forEach(h => {
+  ["Run", "Profile", "Branch", "Commit", "Duration", "Findings recorded", "State", "Date"].forEach(h => {
     const th = document.createElement("th");
     th.textContent = h;
+    if(h === "Findings recorded"){
+      // The one-sentence version of the comment above, for whoever is
+      // looking at the rendered table rather than this source.
+      th.title = "How many findings this run recorded — the checklist chips "
+        + "below can total more, since they also carry forward findings "
+        + "that disappeared since the previous analysis of this branch, "
+        + "marked fixed or pending.";
+    }
     htr.appendChild(th);
   });
   thead.appendChild(htr);

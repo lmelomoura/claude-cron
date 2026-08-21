@@ -809,9 +809,12 @@
     const table = document.createElement("table");
     const thead = document.createElement("thead");
     const htr = document.createElement("tr");
-    ["Run", "Profile", "Branch", "Commit", "Duration", "Findings", "State", "Date"].forEach((h) => {
+    ["Run", "Profile", "Branch", "Commit", "Duration", "Findings recorded", "State", "Date"].forEach((h) => {
       const th = document.createElement("th");
       th.textContent = h;
+      if (h === "Findings recorded") {
+        th.title = "How many findings this run recorded \u2014 the checklist chips below can total more, since they also carry forward findings that disappeared since the previous analysis of this branch, marked fixed or pending.";
+      }
       htr.appendChild(th);
     });
     thead.appendChild(htr);
@@ -1316,4 +1319,4 @@
     SEC_PROFILES
   };
 })();
-// ui-sources: 5aafe7cf5bc8ad28ddf9acf5413eb483fcf752d4281b069517a2d7b0b2214690
+// ui-sources: b0a887804eb1346672e9370b63a9d57eb6d0d402680a5b56594caff5a0f64799

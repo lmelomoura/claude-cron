@@ -82,7 +82,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it stopped," not "none." **Runs** is the analyses table — run id, profile,
   branch, commit, duration, findings, state, date — filterable by state, and
   checked to list exactly what `security list --project <name>` lists: same
-  rows, same order, an `open` findings count folded in. `Run new analysis`
+  rows, same order, each row's own findings-recorded count folded in — how
+  many findings that analysis recorded, not how many are open now. `Run new
+  analysis`
   is the same button calling the same `security_analyze` op as before —
   never a bare run of the derived job, whose request file a second run would
   re-use. Lines of code shows a dash for `0`, not a number: every analysis
@@ -130,6 +132,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   recent attempt of any state and say when it happened, and the index
   screen's project table (which had the identical gap) gets the same
   one-line fix.
+
+  A later review found the Runs table disagreeing with itself: its FINDINGS
+  column is `finding_counts_by_analysis`'s plain per-run `COUNT(*)`, but
+  clicking a row renders that same analysis's checklist chips from
+  `checklist()`, which also carries forward findings that disappeared since
+  the branch's previous analysis, marked `fixed` or `pending` — so a row
+  reporting "1" could sit above chips totalling two. Both numbers are
+  correct; they answer different questions, exactly like the Overview/
+  sidebar split two paragraphs up. The column is renamed to FINDINGS
+  RECORDED, with a title spelling out why its own chips can total more,
+  rather than changing either number to match the other.
 
 - **The findings browser has a query.** `queries.finding_rows` unions one
   checklist per branch — the latest finished analysis of each — which is what
