@@ -232,6 +232,14 @@ def index_summary(conn, project_names):
     rather than left to however SQLite happens to treat `WHERE project IN
     ()`; relying on that would make the "no projects" case correct by
     accident of the engine, not by the code saying what it means.
+
+    `capped_projects` counts, among `project_names`, how many have their
+    latest finished analysis in `capped` state -- a PARTIAL read of the
+    repository, whose contribution to `critical`/`high` above means "none
+    found before it stopped," not "none" (the identical notice `secPaint`
+    already gives on the analysis screen). The index screen's KPI cards use
+    this count to say the fleet total may be an undercount, rather than
+    presenting it as complete.
     """
     project_names = list(project_names)
     counts = {s: 0 for s in FINISHED_STATES}
@@ -248,13 +256,15 @@ def index_summary(conn, project_names):
             if r["state"] in counts:
                 counts[r["state"]] = r["c"]
     finished = sum(counts.values())
-    crit = high = 0
+    crit = high = capped = 0
     for name in project_names:
-        _br, p, _fb, _last = default_branch_posture(conn, name, None)
+        _br, p, _fb, last = default_branch_posture(conn, name, None)
         crit += p["critical"]
         high += p["high"]
+        if last and last["state"] == "capped":
+            capped += 1
     return {"projects": len(project_names), "analyses": total,
-            "critical": crit, "high": high,
+            "critical": crit, "high": high, "capped_projects": capped,
             # None, not 0.0: no finished analysis is not a zero-percent success
             # rate, and the card shows a dash for it.
             "success_rate": (counts["done"] / finished) if finished else None}
@@ -274,6 +284,13 @@ def project_rows(conn, projects):
             "last_started": (last or {}).get("started", 0),
             "last_duration": (max(0, (last["ended"] or 0) - (last["started"] or 0))
                               if last else 0),
+            # The state `posture` was computed from -- "" when nothing has ever
+            # been analysed. `capped` is a PARTIAL read (see `index_summary`'s
+            # own docstring and `secPaint`'s identical notice on the analysis
+            # screen): the row's counts mean "none found before it stopped,"
+            # not "none," and the screen has to say so rather than render them
+            # as if the analysis had finished.
+            "last_state": (last or {}).get("state", ""),
             "analyses": conn.execute(
                 "SELECT COUNT(*) c FROM analysis WHERE project=?", (name,)
             ).fetchone()["c"],
@@ -300,11 +317,33 @@ def trend(conn, project, branch, days=30):
     return out
 
 
-def recent_analyses(conn, limit=5):
+def recent_analyses(conn, limit=5, projects=None):
+    """The most recent analyses, newest first.
+
+    `projects`, when given, is an iterable of names to scope to -- the index
+    screen's `summary` and `projects` panels have always been scoped to
+    exactly the fleet as configured (see `index_summary`'s own docstring),
+    and this feed used to be the one panel left reading the whole ledger: a
+    project disabled or removed from projects.json still surfaced here, on a
+    screen whose other panels say it does not exist. `None` keeps the old
+    fleet-wide behaviour for any other caller; an empty iterable is an
+    explicit "nothing to show," the same reasoning `index_summary` and
+    `_analysed_scopes` apply to an empty project list, rather than whatever
+    `WHERE project IN ()` happens to do.
+    """
+    sql = "SELECT * FROM analysis"
+    args = []
+    if projects is not None:
+        names = list(projects)
+        if not names:
+            return []
+        placeholders = ",".join("?" * len(names))
+        sql += f" WHERE project IN ({placeholders})"
+        args.extend(names)
+    sql += " ORDER BY started DESC, id DESC LIMIT ?"
+    args.append(max(1, min(int(limit), 50)))
     rows = []
-    for a in conn.execute(
-            "SELECT * FROM analysis ORDER BY started DESC, id DESC LIMIT ?",
-            (max(1, min(int(limit), 50)),)):
+    for a in conn.execute(sql, args):
         d = dict(a)
         if a["state"] in ("done", "capped"):
             _an, findings = checklist(conn, a["id"])
@@ -316,17 +355,36 @@ def recent_analyses(conn, limit=5):
 
 
 def _analysed_scopes(conn, project=None):
+    """`project` is either a single name, an iterable of names, or `None` for
+    the whole ledger. A given iterable that is empty means "no projects" --
+    made explicit rather than left to `WHERE project IN ()`, the same
+    reasoning `index_summary` already applies to an empty `project_names`."""
     sql = ("SELECT DISTINCT project, branch FROM analysis"
            " WHERE state IN ('done','capped')")
     args = []
-    if project:
-        sql += " AND project = ?"
-        args.append(project)
+    if isinstance(project, str):
+        if project:
+            sql += " AND project = ?"
+            args.append(project)
+    elif project is not None:
+        names = list(project)
+        if not names:
+            return []
+        placeholders = ",".join("?" * len(names))
+        sql += f" AND project IN ({placeholders})"
+        args.extend(names)
     return list(conn.execute(sql, args))
 
 
 def severity_totals(conn, project=None, days=30):
-    """Open findings by severity across the latest analysis of every branch."""
+    """Open findings by severity across the latest analysis of every branch.
+
+    `project` may be a single name, an iterable of names, or `None` for the
+    whole ledger (see `_analysed_scopes`). Summing per project this way is
+    safe against double-counting: each project's own branches are already
+    merged correctly within `posture`, and no fingerprint is shared across
+    two different projects, so folding several projects' totals together
+    here adds nothing that was not already independently correct."""
     out = _empty_posture()
     for r in _analysed_scopes(conn, project):
         p = posture(conn, r["project"], r["branch"])
@@ -336,6 +394,13 @@ def severity_totals(conn, project=None, days=30):
 
 
 def top_categories(conn, project=None, days=30, limit=5):
+    """The rules producing the most open findings, ranked across every scope
+    `_analysed_scopes` returns for `project` -- a single name, an iterable of
+    names, or `None` for the whole ledger. Counts are accumulated across all
+    of those scopes before ranking, so `limit` slices the TRUE top rules for
+    the given projects together, not each project's own top `limit` merged
+    afterwards -- which could drop a rule that only ranks highly once
+    several projects' counts are combined."""
     counts = {}
     for r in _analysed_scopes(conn, project):
         a = _latest_finished(conn, r["project"], r["branch"])

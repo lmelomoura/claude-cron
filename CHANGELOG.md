@@ -41,6 +41,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   through `queries.read_only`, never `ledger.connect`, so asking for the
   index before anyone has ever run an analysis answers an empty screen with
   a sentence rather than conjuring the ledger file into existence or a 500.
+  A follow-up review caught two more issues before this shipped. A capped
+  analysis — a PARTIAL read of the repository, whose "critical: 0" means
+  "none found before it stopped," not "none" (the identical distinction the
+  analysis screen's own notice already makes) — used to feed these numbers
+  with no cue at all, not even the state word; the project row now carries a
+  small "incomplete" badge when its latest analysis stopped short, with a
+  `title` explaining why, and the Critical/High cards say how many
+  contributing projects are in that state instead of presenting a fleet
+  total that looks complete. And three of the five panels — the severity
+  donut, its categories, and the recent-analyses feed — read the WHOLE
+  ledger regardless of `--projects`, so a project disabled or removed from
+  projects.json still contributed to them even though the summary and
+  project table already said it did not exist; all five panels are now
+  scoped to exactly the given projects.
 
 - **The findings browser has a query.** `queries.finding_rows` unions one
   checklist per branch — the latest finished analysis of each — which is what

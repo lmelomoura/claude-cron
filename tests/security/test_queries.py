@@ -167,7 +167,27 @@ def test_index_summary_of_no_projects_is_an_explicit_empty_summary(conn):
               findings=[("critical", "secret")])
     s = queries.index_summary(conn, [])
     assert s == {"projects": 0, "analyses": 0, "critical": 0, "high": 0,
-                 "success_rate": None}
+                 "capped_projects": 0, "success_rate": None}
+
+
+def test_index_summary_counts_projects_whose_latest_analysis_is_capped(conn):
+    """A `capped` analysis is a PARTIAL read of the repository -- its
+    contribution to `critical`/`high` above means "none found before it
+    stopped," not "none" (the identical notice `secPaint` gives on the
+    analysis screen). `capped_projects` is what lets the KPI cards say the
+    fleet total may be an undercount instead of presenting it as complete."""
+    _analysis(conn, "main", project="capped-proj", state="capped",
+              findings=[("critical", "secret")])
+    _analysis(conn, "main", project="done-proj", state="done",
+              findings=[("high", "sast")])
+
+    s = queries.index_summary(conn, ["capped-proj", "done-proj"])
+    assert s["capped_projects"] == 1, "only capped-proj's latest analysis is capped"
+
+    # A project not in project_names must not count, exactly like every other
+    # field index_summary already scopes.
+    s_scoped = queries.index_summary(conn, ["done-proj"])
+    assert s_scoped["capped_projects"] == 0
 
 
 def test_top_categories_group_by_rule(conn):
@@ -176,6 +196,30 @@ def test_top_categories_group_by_rule(conn):
     cats = queries.top_categories(conn, "web")
     assert cats[0]["rule"] == "sast-rule"
     assert cats[0]["count"] == 2
+
+
+def test_top_categories_accepts_a_list_of_projects_and_excludes_others(conn):
+    """`categories` used to read the whole ledger regardless of `--projects`
+    -- the same gap `recent_analyses`/`severity_totals` had. Ranking must
+    happen across the given projects TOGETHER (not each project's own top
+    `limit` merged afterwards), which is exactly what summing all of them
+    into one `counts` dict before ranking already does."""
+    _analysis(conn, "main", project="web", findings=[("high", "sast")])
+    _analysis(conn, "main", project="gone", findings=[("critical", "secret")])
+
+    cats = queries.top_categories(conn, project=["web"])
+
+    assert [c["rule"] for c in cats] == ["sast-rule"], \
+        "gone's rule leaked into the rollup: " + repr(cats)
+
+
+def test_top_categories_with_no_project_argument_stays_fleet_wide(conn):
+    """Containment probe: the default must still rank across the whole
+    ledger, which every other caller of this function relies on."""
+    _analysis(conn, "main", project="web", findings=[("high", "sast")])
+    _analysis(conn, "main", project="gone", findings=[("critical", "secret")])
+    cats = queries.top_categories(conn)
+    assert {c["rule"] for c in cats} == {"sast-rule", "secret-rule"}
 
 
 def test_branch_rows_one_per_branch_newest_first(conn):
@@ -233,6 +277,24 @@ def test_project_rows_reports_branch_posture_and_trend(conn):
     assert [t["analysis_id"] for t in row["trend"]] == [aid_main], \
         "trend must be the base branch's own history"
     assert row["trend"][0]["open"] == 1
+    assert row["last_state"] == "done", "the row must carry the state posture was computed from"
+
+
+def test_project_rows_carries_the_capped_state_for_an_incomplete_analysis(conn):
+    """A `capped` analysis is a PARTIAL read of the repository -- the same
+    notice `secPaint` gives on the analysis screen. `last_state` is what
+    lets the index screen's project row say so instead of rendering the
+    posture as if the analysis had finished."""
+    _analysis(conn, "main", state="capped", findings=[("critical", "secret")])
+    rows = queries.project_rows(
+        conn, [{"name": "web", "base": "main", "description": ""}])
+    assert rows[0]["last_state"] == "capped"
+
+
+def test_project_rows_of_a_never_analysed_project_carries_no_state(conn):
+    rows = queries.project_rows(
+        conn, [{"name": "nothing-yet", "base": "main", "description": ""}])
+    assert rows[0]["last_state"] == ""
 
 
 def test_recent_analyses_newest_first_open_only_for_finished(conn):
@@ -244,6 +306,38 @@ def test_recent_analyses_newest_first_open_only_for_finished(conn):
     assert [r["id"] for r in rows] == [aid_running, aid_old], "newest first"
     assert rows[0]["open"] is None, "a running analysis has no posture yet"
     assert rows[1]["open"] == 1, "a finished analysis reports its open count"
+
+
+def test_recent_analyses_scoped_to_a_project_list_excludes_others(conn):
+    """The index screen's `recent` feed used to read the whole ledger while
+    `summary`/`projects` were already scoped to `--projects` -- a project
+    disabled or removed from projects.json still surfaced here. `projects=`
+    is the fix: given a list, only analyses of those projects come back."""
+    aid_web = _analysis(conn, "main", project="web", findings=[("high", "sast")])
+    _analysis(conn, "main", project="gone", findings=[("critical", "secret")])
+
+    rows = queries.recent_analyses(conn, projects=["web"])
+
+    assert [r["id"] for r in rows] == [aid_web]
+
+
+def test_recent_analyses_of_an_empty_project_list_is_explicitly_empty(conn):
+    """An empty list must mean "no projects", not "no filter" -- the same
+    explicit-empty reasoning `index_summary` already applies. Left to
+    however `WHERE project IN ()` behaves, this would silently fall back to
+    the OLD unscoped behaviour finding 2 exists to close."""
+    _analysis(conn, "main", project="web", findings=[("high", "sast")])
+    assert queries.recent_analyses(conn, projects=[]) == []
+
+
+def test_recent_analyses_with_no_projects_argument_stays_fleet_wide(conn):
+    """The default (`projects=None`) must keep its old unscoped behaviour --
+    the containment probe for the fix above: scoping `index-data`'s call
+    must not quietly narrow every OTHER caller of this function too."""
+    aid_web = _analysis(conn, "main", project="web", findings=[("high", "sast")])
+    aid_gone = _analysis(conn, "main", project="gone", findings=[("critical", "secret")])
+    ids = {r["id"] for r in queries.recent_analyses(conn, limit=10)}
+    assert {aid_web, aid_gone} <= ids
 
 
 def test_severity_totals_sums_branches_and_excludes_resolved(conn):
@@ -259,6 +353,31 @@ def test_severity_totals_sums_branches_and_excludes_resolved(conn):
     assert totals["critical"] == 1, "main's only"
     assert totals["high"] == 1, "main's high counts; develop's high is resolved"
     assert totals["total"] == 2
+
+
+def test_severity_totals_accepts_a_list_of_projects_and_excludes_others(conn):
+    """`donut` used to read the whole ledger regardless of `--projects` --
+    the same gap `recent_analyses` had. A list of names sums each named
+    project's own totals (already correctly merged across ITS branches by
+    `posture`) without folding in a project that was never asked for."""
+    _analysis(conn, "main", project="web", findings=[("high", "sast")])
+    _analysis(conn, "main", project="gone", findings=[("critical", "secret")])
+
+    totals = queries.severity_totals(conn, project=["web"])
+
+    assert totals["high"] == 1
+    assert totals["critical"] == 0, "gone's critical finding must not leak in"
+    assert totals["total"] == 1
+
+
+def test_severity_totals_with_no_project_argument_stays_fleet_wide(conn):
+    """Containment probe: the default must still answer for the whole
+    ledger, the behaviour every other caller of this function relies on."""
+    _analysis(conn, "main", project="web", findings=[("high", "sast")])
+    _analysis(conn, "main", project="gone", findings=[("critical", "secret")])
+    totals = queries.severity_totals(conn)
+    assert totals["high"] == 1
+    assert totals["critical"] == 1
 
 
 def test_activity_summary_counts_per_kind_seeded_from_event_kinds(conn):

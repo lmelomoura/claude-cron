@@ -658,14 +658,14 @@
     sec.appendChild(body);
     return sec;
   }
-  function secIndexCard(iconName, label, valueText, note) {
+  function secIndexCard(iconName, label, valueText, note, warn) {
     const card = secEl("div", "card secidx-card");
     const head = secEl("div", "secidx-card-h");
     head.appendChild(secIcon(iconName));
     head.appendChild(secEl("span", null, label));
     card.appendChild(head);
     card.appendChild(secEl("div", "secidx-num", valueText));
-    if (note) card.appendChild(secEl("div", "secidx-note", note));
+    if (note) card.appendChild(secEl("div", "secidx-note" + (warn ? " warn" : ""), note));
     return card;
   }
   function secIndexCards(summary) {
@@ -683,17 +683,21 @@
       String(s.analyses || 0),
       "All time \u2014 a historical total, not current posture"
     ));
+    const capped = s.capped_projects || 0;
+    const cappedNote = capped ? capped + " of " + (s.projects || 0) + " project" + ((s.projects || 0) === 1 ? "" : "s") + " had a latest analysis that stopped before covering its whole scope \u2014 this total may be an undercount" : "Open now, in every project's latest analysis";
     wrap.appendChild(secIndexCard(
       "alert",
       "Critical",
       String(s.critical || 0),
-      "Open now, in every project's latest analysis"
+      cappedNote,
+      !!capped
     ));
     wrap.appendChild(secIndexCard(
       "zap",
       "High",
       String(s.high || 0),
-      "Open now, in every project's latest analysis"
+      cappedNote,
+      !!capped
     ));
     const rate = s.success_rate;
     wrap.appendChild(secIndexCard(
@@ -741,6 +745,11 @@
     tr.appendChild(tdBranch);
     const tdPosture = document.createElement("td");
     tdPosture.appendChild(secIndexPosturePills(p.posture));
+    if (p.last_state === "capped") {
+      const badge = secEl("span", "secidx-capped", "incomplete");
+      badge.title = "This analysis is INCOMPLETE: it stopped before covering the whole scope. The posture above is what it had reached, not what is there.";
+      tdPosture.appendChild(badge);
+    }
     tr.appendChild(tdPosture);
     const tdLast = document.createElement("td");
     if (!p.analyses) {
@@ -1016,4 +1025,4 @@
     SEC_PROFILES
   };
 })();
-// ui-sources: c36d95d96d910ef5c4566cff4c8afe0b9c1b77d0907dad12d3ef0331a94ae531
+// ui-sources: c26f36ff23c071f9a48b6a9b9164c836e956490899ba16e78d85c018b01fbdfd

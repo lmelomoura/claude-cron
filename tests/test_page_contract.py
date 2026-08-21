@@ -1077,6 +1077,196 @@ def test_an_incomplete_analysis_says_so_on_the_page_and_not_only_in_the_file(srv
     assert 'sec-incomplete").innerHTML' not in paint
 
 
+# ---- the index screen's own renderer. Everything above this point drives
+# the JSON contract (tests/security/test_cli.py, tests/test_security_api.py)
+# but never the DOM the JSON is painted into -- so a regression in, say, the
+# dash-versus-percent ternary or a fallback-branch note would have passed
+# every one of those tests. This stub stands in for the DOM the real browser
+# gives ui/security/index-screen.js: plain objects, no jsdom dependency,
+# just enough of Element/Text/Node for secEl/secIcon (dom.js) and the
+# createElement/createElementNS calls the screen's own functions make.
+
+_INDEX_DOM_HARNESS = """
+class FakeNode {
+  constructor(){ this.childNodes = []; }
+  appendChild(c){ this.childNodes.push(c); return c; }
+  get textContent(){
+    if(this.childNodes.length) return this.childNodes.map(c => c.textContent).join("");
+    return this._text || "";
+  }
+  set textContent(v){ this.childNodes = []; this._text = String(v); }
+}
+class FakeElement extends FakeNode {
+  constructor(tag){
+    super();
+    this.tagName = tag; this.className = ""; this.title = ""; this.style = {};
+    this.hidden = false; this.disabled = false; this._attrs = {};
+  }
+  setAttribute(k, v){ this._attrs[k] = String(v); }
+}
+class FakeText extends FakeNode {
+  constructor(t){ super(); this._text = String(t); }
+}
+const document = {
+  createElement: (tag) => new FakeElement(tag),
+  createElementNS: (_ns, tag) => new FakeElement(tag),
+  createTextNode: (t) => new FakeText(t),
+};
+// dom.js's secIcon is a thin pass to the page's own icon() -- stubbed here
+// rather than pulled in whole, since the page's icon table is not what these
+// tests are about. fmtAgo/fmtDur are page.js bindings filled in at runtime by
+// bindPage() (see its own comment) -- not functions this block can extract,
+// so they are stubbed the same way, deliberately trivial: these tests are
+// about the branch name, the badge and the note, not the relative-time text.
+function icon(_name){ return document.createElement("span"); }
+function fmtAgo(t){ return "t" + String(t); }
+function fmtDur(s){ return "d" + String(s); }
+// Flattens a rendered node into a list of {cls, title, text} records, one per
+// element in the tree -- `text` is each element's own aggregated
+// textContent, so a search for a rendered word does not need to know which
+// exact element it landed on.
+function collectAll(n, out){
+  out.push({cls: n.className || "", title: n.title || "", text: n.textContent || ""});
+  (n.childNodes || []).forEach(c => collectAll(c, out));
+  return out;
+}
+"""
+
+
+def _index_screen_deps(block, *names):
+    return "\n".join(_plainfn(block, n) for n in names)
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_index_kpis_render_a_dash_not_zero_percent_when_nothing_finished(srv, tmp_path):
+    """`success_rate: null` means "no finished analysis yet", not a
+    zero-percent success rate -- two different facts (see the comment beside
+    secIndexCards). Drives the real renderer under Node so a regression in
+    the dash-versus-percent ternary actually fails a test, rather than only
+    the JSON-contract tests in tests/security/test_cli.py and
+    tests/test_security_api.py, neither of which ever paints anything."""
+    block = _security_js(srv)
+    deps = _index_screen_deps(block, "secEl", "secIcon", "secIndexCard", "secIndexCards")
+    script = tmp_path / "kpi-dash.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    const cards = secIndexCards({projects: 1, analyses: 0, critical: 0, high: 0,
+                                  capped_projects: 0, success_rate: null});
+    console.log(JSON.stringify(collectAll(cards, [])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    nums = [r["text"] for r in out if r["cls"] == "secidx-num"]
+    assert "—" in nums, f"no dash rendered for a null success rate: {nums}"
+    assert "0%" not in nums, f"a zero-percent rendered where a dash belongs: {nums}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_a_fallen_back_branch_is_rendered_with_its_name_visible(srv, tmp_path):
+    """Postures of different branches must never be confused in silence --
+    the branch a posture actually belongs to has to stay on the page, not
+    just a bare "(fell back)" note with nothing named (see the comment on
+    secIndexProjectRow's own tdBranch). Drives secIndexProjectsTable end to
+    end rather than the JSON contract alone."""
+    block = _security_js(srv)
+    deps = _index_screen_deps(block, "secEl", "secIcon",
+                              "secIndexPosturePills", "secIndexProjectRow",
+                              "secIndexProjectsTable")
+    script = tmp_path / "branch-fellback.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    const table = secIndexProjectsTable([{
+      name: "web", description: "", branch: "develop", branch_fell_back: true,
+      posture: {critical:0,high:0,medium:0,low:0,info:0,total:0},
+      profile: "quick", last_started: 0, last_duration: 0, last_state: "done",
+      analyses: 1}]);
+    console.log(JSON.stringify(collectAll(table, [])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    joined = " ".join(r["text"] for r in out)
+    assert "develop" in joined, f"the fallen-back branch's own name is not on the page: {joined}"
+    assert "fell back" in joined
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_a_capped_analysis_marks_its_project_row_with_an_incomplete_cue(srv, tmp_path):
+    """The rendering half of finding 1: `default_branch_posture` hands the
+    row's own state back as its fourth element (see queries.py), and a
+    project whose latest finished analysis is `capped` is a PARTIAL read of
+    the repository -- the identical notice secPaint already gives on the
+    analysis screen ("critical: 0" there means "none found before it
+    stopped," not "none"). The index screen used to render that posture
+    with no cue at all -- not even the state word. This must fail against
+    the code before finding 1's fix (no `last_state` branch existed in
+    secIndexProjectRow) and pass after it."""
+    block = _security_js(srv)
+    deps = _index_screen_deps(block, "secEl", "secIcon",
+                              "secIndexPosturePills", "secIndexProjectRow",
+                              "secIndexProjectsTable")
+    script = tmp_path / "capped-row.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    const table = secIndexProjectsTable([{
+      name: "web", description: "", branch: "main", branch_fell_back: false,
+      posture: {critical:0,high:0,medium:0,low:0,info:0,total:0},
+      profile: "quick", last_started: 0, last_duration: 0, last_state: "capped",
+      analyses: 1}]);
+    console.log(JSON.stringify(collectAll(table, [])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    joined = " ".join(r["text"] for r in out).lower()
+    assert "incomplete" in joined, f"no cue rendered for a capped analysis's row: {out}"
+    titled = " ".join(r["title"] for r in out if r["title"]).lower()
+    assert "stopped" in titled and "incomplete" in titled, \
+        f"no explanatory title on the capped cue: {out}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_a_row_with_a_finished_latest_analysis_gets_no_capped_cue(srv, tmp_path):
+    """Containment probe for the fix above: a project whose latest analysis
+    actually finished (`done`) must NOT show the incomplete badge -- a cue
+    that fires regardless of state would be worse than the missing one, a
+    caution shown over posture that is not in doubt."""
+    block = _security_js(srv)
+    deps = _index_screen_deps(block, "secEl", "secIcon",
+                              "secIndexPosturePills", "secIndexProjectRow",
+                              "secIndexProjectsTable")
+    script = tmp_path / "capped-row-control.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    const table = secIndexProjectsTable([{
+      name: "web", description: "", branch: "main", branch_fell_back: false,
+      posture: {critical:0,high:0,medium:0,low:0,info:0,total:0},
+      profile: "quick", last_started: 0, last_duration: 0, last_state: "done",
+      analyses: 1}]);
+    console.log(JSON.stringify(collectAll(table, [])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    joined = " ".join(r["text"] for r in out).lower()
+    assert "incomplete" not in joined, f"a finished analysis got the capped cue: {out}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_critical_and_high_kpi_cards_flag_incomplete_contributors(srv, tmp_path):
+    """The other half of finding 1: when any project's latest analysis is
+    capped, the Critical/High KPI cards must say how many, instead of
+    presenting a fleet-wide total that looks complete."""
+    block = _security_js(srv)
+    deps = _index_screen_deps(block, "secEl", "secIcon", "secIndexCard", "secIndexCards")
+    script = tmp_path / "kpi-capped.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    const cards = secIndexCards({projects: 2, analyses: 3, critical: 1, high: 2,
+                                  capped_projects: 1, success_rate: 1.0});
+    console.log(JSON.stringify(collectAll(cards, [])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    notes = [r["text"] for r in out if r["cls"].startswith("secidx-note")]
+    assert any("1" in n and "stopped" in n for n in notes), \
+        f"no note names the incomplete contributor: {notes}"
+    assert not any(n == "Open now, in every project's latest analysis" for n in notes), \
+        "the plain note still shows even though a project's latest analysis is capped"
+
+
 def test_the_runs_table_observes_but_never_manages_a_security_run(srv):
     """On a security-* row only the eye and Stop stay live: resume ran on a
     consumed request, and delete erases the transcript the Security page's

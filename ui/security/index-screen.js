@@ -86,16 +86,19 @@ function secIndexSection(title, body){
 }
 
 /* ------------------------------------------------------------------ cards
-   Exactly the five fields `index_summary` computes -- no sixth number
-   invented here, and none of these five dropped. */
-function secIndexCard(iconName, label, valueText, note){
+   Five cards for the five COUNTS `index_summary` computes -- `projects`,
+   `analyses`, `critical`, `high`, `success_rate` -- no sixth number invented
+   here, and none of these five dropped. `capped_projects` is not a card of
+   its own: it qualifies the Critical/High cards' own note when the fleet
+   total they show might be an undercount (see the comment below). */
+function secIndexCard(iconName, label, valueText, note, warn){
   const card = secEl("div", "card secidx-card");
   const head = secEl("div", "secidx-card-h");
   head.appendChild(secIcon(iconName));
   head.appendChild(secEl("span", null, label));
   card.appendChild(head);
   card.appendChild(secEl("div", "secidx-num", valueText));
-  if(note) card.appendChild(secEl("div", "secidx-note", note));
+  if(note) card.appendChild(secEl("div", "secidx-note" + (warn ? " warn" : ""), note));
   return card;
 }
 
@@ -106,10 +109,22 @@ function secIndexCards(summary){
     "Security analysis is on"));
   wrap.appendChild(secIndexCard("activity", "Analyses", String(s.analyses || 0),
     "All time — a historical total, not current posture"));
+  // A capped analysis is a PARTIAL read of the repository (see secPaint's own
+  // notice on the analysis screen): its "critical: 0"/"high: 0" means "none
+  // found before it stopped," not "none." Folding one into these totals with
+  // no cue would present a total that looks complete when it might not be --
+  // so when index_summary says any project's LATEST analysis stopped short,
+  // the cards say how many, instead of just the number.
+  const capped = s.capped_projects || 0;
+  const cappedNote = capped
+    ? capped + " of " + (s.projects || 0) + " project" + ((s.projects || 0) === 1 ? "" : "s")
+      + " had a latest analysis that stopped before covering its whole scope "
+      + "— this total may be an undercount"
+    : "Open now, in every project's latest analysis";
   wrap.appendChild(secIndexCard("alert", "Critical", String(s.critical || 0),
-    "Open now, in every project's latest analysis"));
+    cappedNote, !!capped));
   wrap.appendChild(secIndexCard("zap", "High", String(s.high || 0),
-    "Open now, in every project's latest analysis"));
+    cappedNote, !!capped));
   const rate = s.success_rate;
   // A dash, not 0%: no finished analysis is not a zero-percent success rate --
   // those are different facts, and the number below has to say which one it is.
@@ -162,6 +177,18 @@ function secIndexProjectRow(p){
 
   const tdPosture = document.createElement("td");
   tdPosture.appendChild(secIndexPosturePills(p.posture));
+  if(p.last_state === "capped"){
+    // THE SAME NOTICE secPaint gives on the analysis screen itself: a capped
+    // analysis is a PARTIAL read of the repository, and the counts beside
+    // this badge are the counts of a partial read -- "critical: 0" means
+    // "none found before it stopped," not "none." Without this, the index
+    // was the one place a truncated analysis still read as a finished one.
+    const badge = secEl("span", "secidx-capped", "incomplete");
+    badge.title = "This analysis is INCOMPLETE: it stopped before covering "
+      + "the whole scope. The posture above is what it had reached, not "
+      + "what is there.";
+    tdPosture.appendChild(badge);
+  }
   tr.appendChild(tdPosture);
 
   const tdLast = document.createElement("td");

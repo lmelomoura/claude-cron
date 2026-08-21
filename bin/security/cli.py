@@ -755,12 +755,13 @@ def cmd_index_data(args):
     ledger with nothing in it would produce, never a crash and never a
     partially-written database file as a side effect of a page load.
 
-    `recent`, `donut` and `categories` are deliberately NOT scoped to
-    `--projects` the way `summary` and `projects` are: `index_summary` and
-    `project_rows` answer "the fleet as configured right now", but the
-    recent-analyses feed and the severity rollup are activity views over
-    the whole ledger, the same one `security list`/`security checklist`
-    already read without a project filter of their own.
+    `recent`, `donut` and `categories` are scoped to `--projects` exactly as
+    `summary` and `projects` are: a project disabled or removed from
+    projects.json used to still surface in these three panels even though
+    `summary`/`projects` already say it does not exist -- the same ledger
+    `security list`/`security checklist` read without a project filter of
+    their own, but this is a screen about the fleet AS CONFIGURED, not an
+    unscoped activity log.
     """
     try:
         projects = json.loads(args.projects)
@@ -773,12 +774,13 @@ def cmd_index_data(args):
     if conn is None:
         print(json.dumps({
             "summary": {"projects": len(projects), "analyses": 0, "critical": 0,
-                       "high": 0, "success_rate": None},
+                       "high": 0, "capped_projects": 0, "success_rate": None},
             "projects": [{
                 "name": p.get("name", ""), "description": p.get("description", ""),
                 "branch": p.get("base", "") or "", "branch_fell_back": False,
                 "posture": queries._empty_posture(), "profile": "",
-                "last_started": 0, "last_duration": 0, "analyses": 0, "trend": [],
+                "last_started": 0, "last_duration": 0, "last_state": "",
+                "analyses": 0, "trend": [],
             } for p in projects],
             "recent": [], "donut": queries._empty_posture(), "categories": []}))
         return
@@ -787,9 +789,9 @@ def cmd_index_data(args):
     print(json.dumps({
         "summary": queries.index_summary(conn, names),
         "projects": queries.project_rows(conn, projects),
-        "recent": queries.recent_analyses(conn),
-        "donut": queries.severity_totals(conn),
-        "categories": queries.top_categories(conn),
+        "recent": queries.recent_analyses(conn, projects=names),
+        "donut": queries.severity_totals(conn, project=names),
+        "categories": queries.top_categories(conn, project=names),
     }))
 
 

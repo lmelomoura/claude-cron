@@ -1787,6 +1787,23 @@ def finished_analysis(db, tmp_path, project, branch, severity="high", rule="r"):
     return aid
 
 
+def capped_analysis(db, tmp_path, project, branch, severity="high", rule="r"):
+    """A `capped` analysis of `project`/`branch` -- it stopped before covering
+    its whole scope, carrying one reported finding from before it stopped.
+
+    Uses `prepared_analysis` for the same reason `finished_analysis` does --
+    `finish --state capped` is the agent's own honest statement that it ran
+    out of room, not a downgrade `cmd_finish` applies on its behalf, and a
+    test about how the index screen treats this state has to start from a
+    row that really carries it."""
+    aid = prepared_analysis(db, tmp_path, project=project, repo=project, branch=branch)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": fingerprint_for(project, branch, rule), "category": "sast",
+        "rule": rule, "severity": severity, "title": "t", "rationale": "r"}))
+    run(db, "finish", "--analysis", str(aid), "--state", "capped", "--spend", "0.3")
+    return aid
+
+
 def fingerprint_for(*parts):
     return compute_fingerprint("sast", "-".join(parts), "app.py", "")
 
@@ -1801,13 +1818,13 @@ def test_index_data_survives_a_ledger_that_does_not_exist_yet(tmp_path):
         [{"name": "web", "base": "main", "description": "d"}]))
     assert not db.exists()
     assert out["summary"] == {"projects": 1, "analyses": 0, "critical": 0,
-                              "high": 0, "success_rate": None}
+                              "high": 0, "capped_projects": 0, "success_rate": None}
     assert out["projects"] == [{
         "name": "web", "description": "d", "branch": "main",
         "branch_fell_back": False,
         "posture": {"critical": 0, "high": 0, "medium": 0, "low": 0,
                     "info": 0, "total": 0},
-        "profile": "", "last_started": 0, "last_duration": 0,
+        "profile": "", "last_started": 0, "last_duration": 0, "last_state": "",
         "analyses": 0, "trend": []}]
     assert out["recent"] == []
     assert out["donut"] == {"critical": 0, "high": 0, "medium": 0, "low": 0,
@@ -1823,7 +1840,7 @@ def test_index_data_reports_current_posture_for_the_projects_given(tmp_path):
         [{"name": "web", "base": "main", "description": "d"}]))
 
     assert out["summary"] == {"projects": 1, "analyses": 1, "critical": 0,
-                              "high": 1, "success_rate": 1.0}
+                              "high": 1, "capped_projects": 0, "success_rate": 1.0}
     row = out["projects"][0]
     assert row["name"] == "web"
     assert row["branch"] == "main"
@@ -1854,13 +1871,42 @@ def test_index_data_shows_the_branch_it_fell_back_to(tmp_path):
     assert row["posture"]["critical"] == 1
 
 
+def test_index_data_marks_a_project_row_whose_latest_analysis_is_capped(tmp_path):
+    """A capped analysis is a PARTIAL read of the repository -- the identical
+    notice `secPaint` already gives on the analysis screen ("critical: 0"
+    there means "none found before it stopped," not "none"). The index
+    screen used to render that posture with no cue at all, because the row
+    data it painted from never carried the state to begin with -- this is
+    that data-layer half; the rendering half lives in
+    tests/test_page_contract.py."""
+    db = tmp_path / "security.db"
+    capped_analysis(db, tmp_path, "web", "main", severity="critical")
+
+    out = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]))
+
+    row = out["projects"][0]
+    assert row["last_state"] == "capped", f"row does not carry the capped state: {row}"
+    assert row["posture"]["critical"] == 1
+    assert out["summary"]["capped_projects"] == 1, \
+        "the KPI cards' contributing-project count did not see the capped analysis"
+
+
 def test_index_data_summary_is_scoped_to_the_projects_given(tmp_path):
     """Two projects have analyses in the ledger, but only one is passed in
-    `--projects` -- the summary must count only that one, not everything the
-    ledger has ever recorded (see queries.index_summary's own docstring)."""
+    `--projects` -- every panel must count only that one, not everything the
+    ledger has ever recorded (see queries.index_summary's own docstring).
+
+    `donut`, `categories` and `recent` used to be the three panels left
+    reading the WHOLE ledger while `summary`/`projects` were already scoped:
+    `gone`'s critical finding, on a distinct rule, surfaced in all three even
+    though the other half of this very screen already says `gone` does not
+    exist. This fixture was already exactly the one that would catch that --
+    it only ever asserted on `summary`."""
     db = tmp_path / "security.db"
     finished_analysis(db, tmp_path, "web", "main", severity="high")
-    finished_analysis(db, tmp_path, "gone", "main", severity="critical")
+    aid_gone = finished_analysis(db, tmp_path, "gone", "main", severity="critical",
+                                 rule="hardcoded-secret")
 
     out = run(db, "index-data", "--projects", json.dumps(
         [{"name": "web", "base": "main", "description": ""}]))
@@ -1870,6 +1916,12 @@ def test_index_data_summary_is_scoped_to_the_projects_given(tmp_path):
     assert out["summary"]["critical"] == 0
     assert out["summary"]["high"] == 1
     assert [p["name"] for p in out["projects"]] == ["web"]
+    assert out["donut"]["critical"] == 0, "gone's critical finding leaked into the donut"
+    assert out["donut"]["high"] == 1
+    assert [c["rule"] for c in out["categories"]] == ["r"], \
+        "gone's rule leaked into the category rollup: " + repr(out["categories"])
+    assert aid_gone not in [a["id"] for a in out["recent"]], \
+        "gone's analysis leaked into the recent-analyses feed"
 
 
 def test_index_data_refuses_projects_that_is_not_json(tmp_path):

@@ -549,11 +549,26 @@ def test_the_index_is_a_500_when_the_cli_fails(srv, monkeypatch):
 def test_the_index_is_a_500_on_output_that_is_not_json(srv, monkeypatch):
     """`cc()` merges stdout and stderr (see the identical guard on
     `security_list`/`security_checklist`), so a stray warning on an
-    otherwise-clean run must not become an uncaught `JSONDecodeError`."""
+    otherwise-clean run must not become an uncaught `JSONDecodeError`.
+    `security_index` shares `_json_or_500` with those two now instead of
+    carrying its own copy of the same try/except (see its own docstring)."""
     monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, "not json"))
     code, payload = srv.security_index()
     assert code == 500
-    assert "index data was not readable" in payload["error"]
+    assert "not valid JSON" in payload["error"]
+
+
+def test_the_index_uses_the_shared_json_or_500_helper_not_a_second_copy(srv):
+    """`security_list` and `security_checklist` already share `_json_or_500`
+    for exactly this (a non-zero exit, or rc-0 output that is not valid
+    JSON). `security_index` used to re-derive the identical try/except by
+    hand; a structural check, not just the two behavioural tests above, so a
+    future edit cannot quietly reintroduce a second copy that then drifts
+    from the shared one."""
+    import inspect
+    src = inspect.getsource(srv.security_index)
+    assert "_json_or_500(" in src, "security_index must call the shared helper"
+    assert "json.loads(" not in src, "security_index still parses the CLI's JSON itself"
 
 
 def test_the_index_asks_the_cli_for_only_the_security_enabled_projects(srv, monkeypatch, tmp_path):

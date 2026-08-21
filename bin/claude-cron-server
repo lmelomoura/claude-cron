@@ -2384,15 +2384,15 @@ def security_index():
     on top. `index-data` computes the same ground (and more: the fleet-wide
     summary, recent analyses, the severity donut and its categories) as a
     single subprocess, however many projects are configured.
+
+    `_json_or_500` is the same guard `security_list`/`security_checklist`
+    already use for a non-zero exit AND for rc-0 chatter that is not valid
+    JSON (`cc()` merges stdout and stderr) -- this used to be a second copy
+    of that exact try/except.
     """
     ok, out = cc(["security", "index-data",
                  "--projects", json.dumps(_security_projects())])
-    if not ok:
-        return 500, {"error": out}
-    try:
-        return 200, json.loads(out)
-    except ValueError as exc:
-        return 500, {"error": f"index data was not readable: {exc}"}
+    return _json_or_500(ok, out, "index data")
 
 
 def security_analyze(body):

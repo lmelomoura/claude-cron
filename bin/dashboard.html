@@ -1273,10 +1273,18 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secidx-card-h .ic{width:14px;height:14px;color:var(--accent)}
 .secidx-num{font-size:26px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
 .secidx-note{font-size:11px;color:var(--muted);line-height:1.5}
+.secidx-note.warn{color:var(--warn);font-weight:600}
 .secidx-section{display:flex;flex-direction:column;gap:9px}
 .secidx-section h3{margin:0;font-size:13px}
 .secidx-desc{font-size:11.5px;color:var(--muted);margin-top:2px;font-weight:400}
 .secidx-fellback{color:var(--warn);font-size:11.5px;margin-left:6px}
+/* A capped analysis is a PARTIAL read (see secIndexProjectRow) -- flagged the
+   same register as .sevpill.medium (warn tokens, not a new colour) so the
+   badge reads as a caution beside the pills it sits next to, not decoration. */
+.secidx-capped{display:inline-flex;align-items:center;margin-left:6px;padding:2px 7px;
+  border-radius:999px;font-size:10.5px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.03em;background:var(--warn-soft);color:var(--warn);
+  border:1px solid color-mix(in srgb,var(--warn) 45%,transparent)}
 .secidx-recentrow{width:100%}
 .secidx-donutwrap{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start;
   background:var(--panel);border:1px solid var(--line);border-radius:12px;
