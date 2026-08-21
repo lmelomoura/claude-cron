@@ -61,14 +61,15 @@ def test_a_running_analysis_is_never_the_posture(conn):
 
 
 def test_the_default_branch_falls_back_and_says_so(conn):
-    _analysis(conn, "develop", findings=[("critical", "secret")])
-    branch, posture, fell_back = queries.default_branch_posture(conn, "web", "main")
+    aid = _analysis(conn, "develop", findings=[("critical", "secret")])
+    branch, posture, fell_back, latest = queries.default_branch_posture(conn, "web", "main")
     assert branch == "develop"
     assert fell_back is True
     assert posture["critical"] == 1
+    assert latest["id"] == aid, "the row posture was computed from, handed back"
 
     _analysis(conn, "main", findings=[("low", "hygiene")])
-    branch, posture, fell_back = queries.default_branch_posture(conn, "web", "main")
+    branch, posture, fell_back, _latest = queries.default_branch_posture(conn, "web", "main")
     assert branch == "main"
     assert fell_back is False
 
@@ -81,6 +82,37 @@ def test_success_rate_counts_finished_analyses_only(conn):
     s = queries.index_summary(conn, ["web"])
     assert s["analyses"] == 4, "the total is every analysis"
     assert s["success_rate"] == pytest.approx(1 / 3), "done over done+capped+failed"
+
+
+def test_index_summary_ignores_analyses_of_untracked_projects(conn):
+    """Nothing prunes the ledger when a project is renamed or removed from
+    projects.json -- its old analyses stay in the table forever. Scoping only
+    `critical`/`high` and not `analyses`/`success_rate` would let a project no
+    longer on screen keep inflating both."""
+    _analysis(conn, "main", project="web", state="done",
+              findings=[("critical", "secret")])
+    _analysis(conn, "main", project="web", state="failed")
+    # "gone" is not in project_names below -- a renamed or deleted project.
+    _analysis(conn, "main", project="gone", state="done")
+    _analysis(conn, "main", project="gone", state="done")
+    _analysis(conn, "main", project="gone", state="done")
+
+    s = queries.index_summary(conn, ["web"])
+    assert s["analyses"] == 2, "only web's own two analyses, not gone's three"
+    assert s["success_rate"] == pytest.approx(1 / 2), \
+        "1 done of 2 finished for web -- gone's 3 done must not count"
+    assert s["critical"] == 1
+
+
+def test_index_summary_of_no_projects_is_an_explicit_empty_summary(conn):
+    """Not `WHERE project IN ()` happening to mean nothing -- an empty
+    `project_names` must read as an empty summary regardless of how many
+    analyses exist for projects nobody asked about."""
+    _analysis(conn, "main", project="web", state="done",
+              findings=[("critical", "secret")])
+    s = queries.index_summary(conn, [])
+    assert s == {"projects": 0, "analyses": 0, "critical": 0, "high": 0,
+                 "success_rate": None}
 
 
 def test_top_categories_group_by_rule(conn):
@@ -97,3 +129,83 @@ def test_branch_rows_one_per_branch_newest_first(conn):
     rows = queries.branch_rows(conn, "web")
     assert [r["branch"] for r in rows] == ["develop", "main"]
     assert rows[0]["open"]["critical"] == 1
+
+
+def test_trend_orders_by_id_when_two_analyses_tie_on_started(conn):
+    """`started` has 1-second resolution; the engine can open a row and fail
+    it moments later, so two analyses of ONE branch sharing a `started` value
+    is not a corner case, it is routine. Force the tie explicitly rather than
+    trust wall-clock luck, then check the tiebreak actually orders them."""
+    aid1 = _analysis(conn, "main", findings=[("high", "sast")])
+    aid2 = _analysis(conn, "main", findings=[("low", "hygiene")])
+    conn.execute(
+        "UPDATE analysis SET started=(SELECT started FROM analysis WHERE id=?)"
+        " WHERE id=?", (aid1, aid2))
+    conn.commit()
+    out = queries.trend(conn, "web", "main")
+    assert [t["analysis_id"] for t in out] == [aid1, aid2], \
+        "oldest first must mean id order when started ties, not engine luck"
+
+
+def test_project_rows_reports_branch_posture_and_trend(conn):
+    """A project with two branches, one of them the declared base. The row
+    must reflect the base branch's own posture and trend, not either
+    branch's blindly, and `analyses` counts the whole project."""
+    aid_main = _analysis(conn, "main", findings=[("critical", "secret")])
+    _analysis(conn, "feature-x", findings=[("low", "hygiene")])
+
+    rows = queries.project_rows(
+        conn, [{"name": "web", "base": "main", "description": "Web app"}])
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["name"] == "web"
+    assert row["branch"] == "main", "the declared base, not the other branch"
+    assert row["branch_fell_back"] is False
+    assert row["posture"]["critical"] == 1
+    assert row["analyses"] == 2, "both branches count toward the project total"
+    assert [t["analysis_id"] for t in row["trend"]] == [aid_main], \
+        "trend must be the base branch's own history"
+    assert row["trend"][0]["open"] == 1
+
+
+def test_recent_analyses_newest_first_open_only_for_finished(conn):
+    aid_old = _analysis(conn, "main", findings=[("high", "sast")])
+    aid_running = _analysis(conn, "main", state="running", findings=[])
+
+    rows = queries.recent_analyses(conn, limit=5)
+
+    assert [r["id"] for r in rows] == [aid_running, aid_old], "newest first"
+    assert rows[0]["open"] is None, "a running analysis has no posture yet"
+    assert rows[1]["open"] == 1, "a finished analysis reports its open count"
+
+
+def test_severity_totals_sums_branches_and_excludes_resolved(conn):
+    """Open findings by severity across the latest analysis of every branch --
+    summed, and a resolved (accepted/false_positive) finding does not count."""
+    _analysis(conn, "main", findings=[("critical", "secret"), ("high", "sast")])
+    aid_dev = _analysis(conn, "develop", findings=[("high", "sast")])
+    fp = ledger.findings_of(conn, aid_dev)[0]["fingerprint"]
+    ledger.set_decision(conn, "web", fp, "accepted", "known risk, tracked", "tester")
+
+    totals = queries.severity_totals(conn, "web")
+
+    assert totals["critical"] == 1, "main's only"
+    assert totals["high"] == 1, "main's high counts; develop's high is resolved"
+    assert totals["total"] == 2
+
+
+def test_activity_summary_counts_per_kind_seeded_from_event_kinds(conn):
+    """Counts per kind, seeded from EVENT_KINDS -- an absent kind reads 0
+    rather than being missing from the dict entirely."""
+    ledger.record_event(conn, "web", "analysis_started")
+    ledger.record_event(conn, "web", "analysis_started")
+    ledger.record_event(conn, "web", "decision_made")
+
+    summary = queries.activity_summary(conn, "web")
+
+    assert set(summary) == set(ledger.EVENT_KINDS)
+    assert summary["analysis_started"] == 2
+    assert summary["decision_made"] == 1
+    assert summary["settings_changed"] == 0
+    assert summary["report_exported"] == 0

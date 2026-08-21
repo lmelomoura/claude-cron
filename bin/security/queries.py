@@ -112,8 +112,11 @@ def _empty_posture():
     return {s: 0 for s in ("critical", "high", "medium", "low", "info")} | {"total": 0}
 
 
-def posture(conn, project, branch):
-    a = _latest_finished(conn, project, branch)
+def posture(conn, project, branch, latest=None):
+    """`latest`, when given, is the already-fetched `_latest_finished` row --
+    callers that have one (`default_branch_posture` does) pass it through
+    instead of making this re-run the same query for the same row."""
+    a = latest if latest is not None else _latest_finished(conn, project, branch)
     if not a:
         return _empty_posture()
     _analysis, findings = checklist(conn, a["id"])
@@ -130,27 +133,64 @@ def posture(conn, project, branch):
 def default_branch_posture(conn, project, preferred):
     """The project's own branch when it has been analysed; otherwise the most
     recently analysed one, and a flag saying so -- postures of different
-    branches must never be confused in silence."""
-    if preferred and _latest_finished(conn, project, preferred):
-        return preferred, posture(conn, project, preferred), False
+    branches must never be confused in silence.
+
+    Returns (branch, posture, fell_back, latest) -- `latest` is the same
+    analysis row `posture` was computed from, handed back so a caller like
+    `project_rows` (which also wants its `started`/`ended`/`profile`) does not
+    have to fetch the identical row a second time."""
+    if preferred:
+        a = _latest_finished(conn, project, preferred)
+        if a:
+            return preferred, posture(conn, project, preferred, latest=a), False, a
+    # The single latest finished analysis of the project, whatever branch it
+    # is on. Its own branch column IS that branch's latest finished analysis
+    # too -- nothing with a higher id and the same branch can exist, since
+    # this row already has the highest id project-wide -- so one query gets
+    # both the fallback branch and the row `posture` needs, instead of a
+    # second round trip through `_latest_finished` for the same thing.
     row = conn.execute(
-        "SELECT branch FROM analysis WHERE project=? AND state IN ('done','capped')"
+        "SELECT * FROM analysis WHERE project=? AND state IN ('done','capped')"
         " ORDER BY id DESC LIMIT 1", (project,)).fetchone()
     if not row:
-        return (preferred or ""), _empty_posture(), False
-    return row["branch"], posture(conn, project, row["branch"]), True
+        return (preferred or ""), _empty_posture(), False, None
+    a = dict(row)
+    return a["branch"], posture(conn, project, a["branch"], latest=a), True, a
 
 
 def index_summary(conn, project_names):
+    """Header stats for the index screen, scoped to exactly `project_names`.
+
+    Nothing prunes `analysis` when a project is renamed or removed from
+    projects.json -- the ledger keeps every row forever. `critical`/`high`
+    were always scoped (via `default_branch_posture`, called once per name
+    below); `total`/`counts` were NOT, so the moment the ledger held even one
+    analysis for a project no longer in `project_names`, "analyses" and
+    `success_rate` silently counted work that belongs to nothing on screen.
+
+    An empty `project_names` is an empty summary -- made explicit below
+    rather than left to however SQLite happens to treat `WHERE project IN
+    ()`; relying on that would make the "no projects" case correct by
+    accident of the engine, not by the code saying what it means.
+    """
+    project_names = list(project_names)
     counts = {s: 0 for s in FINISHED_STATES}
-    total = conn.execute("SELECT COUNT(*) c FROM analysis").fetchone()["c"]
-    for r in conn.execute("SELECT state, COUNT(*) c FROM analysis GROUP BY state"):
-        if r["state"] in counts:
-            counts[r["state"]] = r["c"]
+    total = 0
+    if project_names:
+        placeholders = ",".join("?" * len(project_names))
+        total = conn.execute(
+            f"SELECT COUNT(*) c FROM analysis WHERE project IN ({placeholders})",
+            project_names).fetchone()["c"]
+        for r in conn.execute(
+                f"SELECT state, COUNT(*) c FROM analysis"
+                f" WHERE project IN ({placeholders}) GROUP BY state",
+                project_names):
+            if r["state"] in counts:
+                counts[r["state"]] = r["c"]
     finished = sum(counts.values())
     crit = high = 0
     for name in project_names:
-        _br, p, _fb = default_branch_posture(conn, name, None)
+        _br, p, _fb, _last = default_branch_posture(conn, name, None)
         crit += p["critical"]
         high += p["high"]
     return {"projects": len(project_names), "analyses": total,
@@ -166,8 +206,7 @@ def project_rows(conn, projects):
     out = []
     for proj in projects:
         name = proj["name"]
-        branch, p, fell_back = default_branch_posture(conn, name, proj.get("base"))
-        last = _latest_finished(conn, name, branch) if branch else None
+        branch, p, fell_back, last = default_branch_posture(conn, name, proj.get("base"))
         out.append({
             "name": name, "description": proj.get("description", ""),
             "branch": branch, "branch_fell_back": fell_back, "posture": p,
@@ -188,7 +227,13 @@ def trend(conn, project, branch, days=30):
     for a in conn.execute(
             "SELECT id, started FROM analysis WHERE project=? AND branch=?"
             " AND state IN ('done','capped') AND started >= ?"
-            " ORDER BY started", (project, branch, since)):
+            # `id` as the tiebreak: `started` has 1-second resolution, and two
+            # analyses of the SAME branch routinely land in the same second
+            # (the engine can open a row and fail it moments later) -- the
+            # exact ambiguity `branch_rows` was already fixed for. Without
+            # this, "oldest first" is not guaranteed for a tied pair, and the
+            # trend line can silently plot them out of order.
+            " ORDER BY started, id", (project, branch, since)):
         _an, findings = checklist(conn, a["id"])
         out.append({"analysis_id": a["id"], "started": a["started"],
                     "open": sum(1 for f in findings if is_open(f["state"]))})

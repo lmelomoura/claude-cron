@@ -166,7 +166,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `recent_analyses` already used, makes "newest first" mean what it says.
   Measured against the real `data/security.db` (4 analyses, 108 findings),
   every query answers in under 3 ms, so no index was added beyond the
-  existing `analysis_by_scope(project, repo, branch)`.
+  existing `analysis_by_scope(project, repo, branch)`. A follow-up review
+  caught two more of the same shape before either screen shipped. `critical`
+  and `high` in `index_summary` were already scoped to the project list they
+  were given, but `analyses` and `success_rate` were computed over the WHOLE
+  `analysis` table — nothing prunes the ledger when a project is renamed or
+  removed, so one stale project's analyses were enough to quietly inflate
+  both numbers on the index screen forever; all four are now scoped the same
+  way, and an empty project list reads as an explicit empty summary rather
+  than whatever SQLite happens to do with `WHERE project IN ()`. `trend()`
+  had the identical ordering gap `branch_rows` was fixed for — `ORDER BY
+  started` alone, no `id` to break a tie — and gets the same `ORDER BY
+  started, id` fix, so a trend line's "oldest first" is guaranteed rather
+  than incidental.
 
 - **A named set of filters per project.** Rebuilding the view somebody works
   from every day -- severity, category, state, whatever the day calls for --
