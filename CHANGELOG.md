@@ -319,6 +319,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The UI bundle's freshness guard can now detect a MODIFIED bundle, not
+  only a stale one.** `bin/static/security.js` is a build output committed to
+  git — the price of never needing Node to install claude-cron — and
+  `claude-cron selftest` is what is supposed to stop a bad one shipping.
+  Nothing hashed the committed bytes: code injected straight into the bundle,
+  with every source and every toolchain file untouched, passed the check
+  without a word. And the stamp saying what it was built from was read with
+  `tail -1`, so appending a second `// ui-sources:` line carrying a freshly
+  computed digest satisfied the check while the real stamp sat ignored one
+  line above it. The honest-mistake case (edit `ui/`, forget to rebuild) was
+  always caught; the case the guard's own sentence claims to prevent — a
+  committed artifact that does not match anything anybody wrote, which is what
+  a mangled merge conflict inside a 90 KB generated file looks like — was not.
+  The bundle now carries a hash of its own body alongside the source
+  fingerprint, the selftest recomputes both, and a stamp that appears more
+  than once is refused rather than resolved by picking one.
+- **The source fingerprint covers what the build actually reads.** It hashed
+  `ui/**/*.js` only, while esbuild follows whatever `ui/security/index.js`
+  imports and resolves `.ts`, `.tsx`, `.jsx`, `.json` and `.css` just as
+  readily — so a shared `.json` or a stylesheet could change the committed
+  bytes without changing the digest describing them. It now covers every file
+  under `ui/`. It also streamed each file as `path` + raw bytes with no
+  boundary between them, so a file whose last byte is not a newline ran
+  straight into the next file's path line and two genuinely different trees
+  could fingerprint identically; each file contributes a fixed-width digest
+  now, which no content can imitate.
+- **A file git is ignoring no longer reddens the selftest.** A stray
+  untracked, ignored file under `ui/` — a scratch script, an editor backup, a
+  `.DS_Store` — is not an input to anything and is in nobody else's checkout,
+  yet it changed the fingerprint: the selftest failed over a tree `git status`
+  called clean, and the only way out was to find and delete a file nothing had
+  named. Untracked-and-ignored paths are now skipped; a *tracked* file can
+  never be dropped, whatever an over-broad ignore pattern says about it.
 - **The Security index's KPI cards and its own project table no longer
   describe different branches.** The cards summed each project's posture with
   no preferred branch handed in, so they *always* took the fallback path —

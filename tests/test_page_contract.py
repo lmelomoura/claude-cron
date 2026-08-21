@@ -683,6 +683,29 @@ def test_a_nested_security_module_still_reaches_the_sink_scan(tmp_path):
         "a module nested beside ui/security/ was not picked up by the scan"
 
 
+def _seed_digest_tree(root):
+    """A scratch copy of exactly the tree build/ui-digest.sh reads.
+
+    The script's own `cd "$(dirname "$0")/.."` is what makes this possible:
+    given an absolute path to a copied ui-digest.sh it resolves its "repo
+    root" relative to itself, so a copy with the same relative layout is
+    indistinguishable from the real tree -- and nothing here can leave the
+    tracked directory dirty, even on an interrupted run.
+    """
+    shutil.copytree(REPO / "ui", root / "ui")
+    (root / "build").mkdir(parents=True, exist_ok=True)
+    for name in ("ui-digest.sh", "build-ui.sh", "ui-bundle-digest.sh"):
+        shutil.copy(REPO / "build" / name, root / "build" / name)
+    shutil.copy(REPO / "package.json", root / "package.json")
+
+
+def _run_digest(root):
+    p = subprocess.run(["bash", str(root / "build" / "ui-digest.sh")],
+                       capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    return p.stdout.strip()
+
+
 def test_the_freshness_digest_covers_the_build_toolchain_not_just_ui_sources(tmp_path):
     """build/ui-digest.sh is the fingerprint `claude-cron selftest` recomputes
     to prove the committed bundle was built from the committed sources -- and
@@ -703,18 +726,7 @@ def test_the_freshness_digest_covers_the_build_toolchain_not_just_ui_sources(tmp
     build/ui-digest.sh, package.json) is indistinguishable from the real
     tree to the script.
     """
-    def _seed(root):
-        shutil.copytree(REPO / "ui", root / "ui")
-        (root / "build").mkdir()
-        shutil.copy(REPO / "build" / "ui-digest.sh", root / "build" / "ui-digest.sh")
-        shutil.copy(REPO / "build" / "build-ui.sh", root / "build" / "build-ui.sh")
-        shutil.copy(REPO / "package.json", root / "package.json")
-
-    def _digest(root):
-        p = subprocess.run(["bash", str(root / "build" / "ui-digest.sh")],
-                            capture_output=True, text=True)
-        assert p.returncode == 0, p.stderr
-        return p.stdout.strip()
+    _seed, _digest = _seed_digest_tree, _run_digest
 
     baseline_root = tmp_path / "baseline"
     _seed(baseline_root)
@@ -735,6 +747,17 @@ def test_the_freshness_digest_covers_the_build_toolchain_not_just_ui_sources(tmp
     f.write_text(f.read_text().replace('"0.25.0"', '"0.25.1"'))
     assert _digest(package_json_root) != baseline, \
         "the digest did not change when package.json changed"
+
+    # ui-bundle-digest.sh decides what the OTHER stamp in the bundle means, so
+    # a change to it has to surface as "stale, rebuild" -- true and actionable
+    # -- rather than one command later as "this bundle has been modified",
+    # which would be neither.
+    checker_root = tmp_path / "changed_checker"
+    _seed(checker_root)
+    f = checker_root / "build" / "ui-bundle-digest.sh"
+    f.write_text(f.read_text() + "\n# a change to how the bundle is checked\n")
+    assert _digest(checker_root) != baseline, \
+        "the digest did not change when build/ui-bundle-digest.sh changed"
 
 
 def test_the_security_view_exists_and_is_registered(srv):
@@ -3139,3 +3162,167 @@ def test_every_deliberate_open_of_one_analysis_pins_it(srv):
     sync = _anyfn(block, "secSyncScope")
     assert "secShowAnalysis(mine.length ? mine[0].id : null)" in sync, \
         f"the picker's own resolution must not pin: {sync}"
+
+
+# ---- final whole-branch review, IMPORTANT 3 and MINORS 6/7: the freshness
+# guard over the COMMITTED bundle. `bin/static/security.js` is a build output
+# in git, which is the price of never needing Node to install claude-cron --
+# and the selftest's own sentence claims this guard is what stops a stale or
+# mangled one shipping. It could not detect a modified bundle at all.
+
+def _bundle_digest(script, bundle):
+    return subprocess.run(["bash", str(script), str(bundle)],
+                          capture_output=True, text=True)
+
+
+def test_the_bundles_own_body_is_hashed_not_only_its_sources(tmp_path):
+    """IMPORTANT 3, reproduction one: inject code straight into
+    bin/static/security.js with every source and every toolchain file left
+    untouched. Nothing hashed the committed bytes, so the guard said "ok".
+    The honest-mistake case (edit ui/, forget to rebuild) was always caught;
+    a mangled merge conflict inside a 90 KB generated file -- which nobody
+    reads to find -- was not."""
+    script = REPO / "build" / "ui-bundle-digest.sh"
+    real = (REPO / "bin" / "static" / "security.js").read_text()
+    assert "// ui-bundle: " in real, \
+        "the committed bundle carries no body stamp at all"
+    stamped = re.search(r"^// ui-bundle: ([0-9a-f]{64})$", real, re.M).group(1)
+
+    clean = tmp_path / "clean.js"
+    clean.write_text(real)
+    p = _bundle_digest(script, clean)
+    assert p.returncode == 0, p.stderr
+    assert p.stdout.strip() == stamped, \
+        "the committed bundle does not hash to its own stamp — rebuild it"
+
+    # ...and the same file with one line of injected code in its body does not.
+    lines = real.splitlines(True)
+    lines.insert(len(lines) - 2, "window.__pwned = 1;\n")
+    tampered = tmp_path / "tampered.js"
+    tampered.write_text("".join(lines))
+    p = _bundle_digest(script, tampered)
+    assert p.returncode == 0, p.stderr
+    assert p.stdout.strip() != stamped, \
+        "a bundle with injected code still hashes to the stamp it carries"
+
+
+def test_a_second_stamp_line_is_refused_rather_than_silently_preferred(tmp_path):
+    """IMPORTANT 3, reproduction two: the selftest read the source stamp with
+    `sed ... | tail -1`, so appending a SECOND `// ui-sources:` line carrying
+    a freshly computed digest satisfied it while the real stamp -- the one
+    describing the bytes above it -- sat ignored one line up. A trailing
+    comment is the cheapest thing in the world to append to a file, so an
+    ambiguous stamp has to be refused, not resolved by picking one."""
+    script = REPO / "build" / "ui-bundle-digest.sh"
+    real = (REPO / "bin" / "static" / "security.js").read_text()
+    for kind in ("ui-sources", "ui-bundle"):
+        doubled = tmp_path / f"doubled-{kind}.js"
+        doubled.write_text(real + f"// {kind}: {'0' * 64}\n")
+        p = _bundle_digest(script, doubled)
+        assert p.returncode != 0, \
+            f"a second // {kind}: stamp was accepted: {p.stdout!r}"
+        assert "exactly" in p.stderr and kind in p.stderr, p.stderr
+
+
+def test_the_selftest_reads_both_stamps_and_refuses_an_ambiguous_one():
+    """Structural: the engine's own check has to ask BOTH questions and read
+    each stamp with an exactly-one rule. `tail -1` on a stamp line is the
+    exact shape of reproduction two above and must not come back."""
+    engine = ENGINE.read_text()
+    block = engine[engine.index("the committed UI bundle"):]
+    block = block[:block.index("\n  rm -rf ")]
+    # Comment lines stripped: this block EXPLAINS the `tail -1` it replaced,
+    # and a guard that cannot tell an explanation from the thing it warns
+    # against fails on its own documentation.
+    code = "\n".join(line for line in block.splitlines()
+                     if not line.strip().startswith("#"))
+    assert "ui-bundle-digest.sh" in code, \
+        "the selftest never recomputes the bundle's own body hash"
+    assert "tail -1" not in code, \
+        "a stamp is still read with tail -1, which a second stamp line defeats"
+    assert "grep -c '^// ui-sources: '" in code and "grep -c '^// ui-bundle: '" in code, \
+        "the selftest does not count the stamps before trusting them"
+    assert "MODIFIED" in code, \
+        "a modified bundle and a stale one get the same message"
+
+
+def test_the_digest_cannot_confuse_one_files_content_for_the_next_files_path(tmp_path):
+    """MINOR 6, first half. The digest streamed `path\\n` + raw bytes with no
+    boundary between one file's content and the next file's path line, so a
+    file whose last byte is not a newline runs straight into it. These two
+    trees are genuinely different and streamed IDENTICALLY under the old
+    scheme -- `{a.js: "", b.js: "Z\\n"}` and `{a.js: "ui/b.js\\nZ\\n"}` both
+    come out as "ui/a.js\\nui/b.js\\nZ\\n"."""
+    def build(root, files):
+        (root / "ui").mkdir(parents=True)
+        (root / "build").mkdir(parents=True)
+        for name in ("ui-digest.sh", "build-ui.sh", "ui-bundle-digest.sh"):
+            shutil.copy(REPO / "build" / name, root / "build" / name)
+        shutil.copy(REPO / "package.json", root / "package.json")
+        for name, body in files.items():
+            (root / "ui" / name).write_text(body)
+        return _run_digest(root)
+
+    two_files = build(tmp_path / "two", {"a.js": "", "b.js": "Z\n"})
+    one_file = build(tmp_path / "one", {"a.js": "ui/b.js\nZ\n"})
+    assert two_files != one_file, \
+        "two different trees produce the same fingerprint — one file's content is being read as the next one's path"
+
+
+def test_the_digest_covers_every_file_under_ui_not_only_dot_js(tmp_path):
+    """MINOR 6, second half. esbuild bundles whatever ui/security/index.js
+    reaches by import, and its own default resolution reaches .ts, .tsx,
+    .jsx, .json and .css as readily as .js -- so a `-name '*.js'` glob
+    fingerprinted a subset of what the build actually consumes, and any other
+    input could change the committed bytes without changing the digest that
+    is supposed to describe them."""
+    root = tmp_path / "tree"
+    _seed_digest_tree(root)
+    baseline = _run_digest(root)
+    for name in ("shared.json", "theme.css", "helper.ts"):
+        (root / "ui" / name).write_text("x\n")
+        assert _run_digest(root) != baseline, \
+            f"a {name} under ui/ is bundleable and does not change the digest"
+        (root / "ui" / name).unlink()
+    assert _run_digest(root) == baseline, "removing them again must restore it"
+
+
+def test_an_ignored_file_under_ui_does_not_redden_the_selftest(tmp_path):
+    """MINOR 7. A stray untracked, ignored file under ui/ -- a scratch .js, an
+    editor backup, a .DS_Store -- is not an input to anything and is in
+    nobody else's checkout, yet it changed the digest: the selftest went red
+    over a tree `git status` called clean, and the only way out was to find
+    and delete a file nothing had mentioned.
+
+    Driven against a real scratch `git init` (never the tracked tree), since
+    the filter is `git ls-files --others --ignored --exclude-standard` and
+    there is nothing honest to test without a git checkout to ask."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    _seed_digest_tree(root)
+    (root / ".gitignore").write_text("*.local.js\nscratch/\n")
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "seed"], cwd=root, check=True,
+                   capture_output=True)
+    baseline = _run_digest(root)
+
+    (root / "ui" / "notes.local.js").write_text("let scratch = 1;\n")
+    (root / "ui" / "scratch").mkdir()
+    (root / "ui" / "scratch" / "x.js").write_text("let y = 2;\n")
+    dirty = subprocess.run(["git", "status", "--porcelain"], cwd=root,
+                           capture_output=True, text=True, check=True).stdout
+    assert dirty.strip() == "", f"the probe files were not actually ignored: {dirty!r}"
+    assert _run_digest(root) == baseline, \
+        "an ignored, untracked file under ui/ still changes the fingerprint"
+
+    # Containment: a TRACKED file must never be dropped from the fingerprint,
+    # whatever an over-broad ignore pattern says about it. `--others` is what
+    # guarantees that, and it is the whole reason this is not `check-ignore`.
+    tracked = root / "ui" / "real.local.js"
+    tracked.write_text("export const real = 1;\n")
+    subprocess.run(["git", "add", "-f", str(tracked)], cwd=root, check=True,
+                   capture_output=True)
+    assert _run_digest(root) != baseline, \
+        "a tracked file was dropped from the fingerprint by an ignore pattern"

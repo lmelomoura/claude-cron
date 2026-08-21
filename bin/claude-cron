@@ -5980,18 +5980,39 @@ JSON
   # python3 and curl, never Node. The price of that is a build output in git,
   # which can be forgotten — and a stale bundle is a dashboard silently running
   # last week's code, with nothing on screen to say so.
-  local _bundle="$BIN_DIR/static/security.js" _stamp _want
+  # TWO questions, and only the first of them used to be asked. `ui-sources`
+  # answers "was this built from the sources sitting next to it" -- the
+  # forgot-to-rebuild case. `ui-bundle` answers "and is this still what that
+  # build produced" -- nothing hashed the committed bytes, so code injected
+  # straight into bin/static/security.js, with every source and every
+  # toolchain file untouched, passed this check without a word. A mangled
+  # merge conflict inside a 90 KB generated file is that same shape, and
+  # nobody reads a generated file to find one.
+  #
+  # Both stamps are read with an EXACTLY-ONE rule rather than `tail -1`. That
+  # was the second hole: appending a second `// ui-sources:` line carrying a
+  # freshly computed digest satisfied the old reader while the real stamp, the
+  # one describing the bytes above it, sat ignored one line up.
+  local _bundle="$BIN_DIR/static/security.js" _stamp _want _bstamp _bwant _ns _nb
   if [ ! -f "$_bundle" ]; then
     bad "bin/static/security.js is missing — run build/build-ui.sh"
   else
-    _stamp="$(sed -n 's|^// ui-sources: ||p' "$_bundle" | tail -1)"
+    _ns="$(grep -c '^// ui-sources: ' "$_bundle" || true)"
+    _nb="$(grep -c '^// ui-bundle: ' "$_bundle" || true)"
+    _stamp="$(sed -n 's|^// ui-sources: ||p' "$_bundle")"
+    _bstamp="$(sed -n 's|^// ui-bundle: ||p' "$_bundle")"
     _want="$(bash "$BASE_DIR/build/ui-digest.sh" 2>/dev/null)"
-    if [ -z "$_want" ]; then
-      bad "could not fingerprint ui/ — is shasum on PATH?"
-    elif [ "$_stamp" = "$_want" ]; then
-      ok "the committed UI bundle matches the sources it was built from"
-    else
+    _bwant="$(bash "$BASE_DIR/build/ui-bundle-digest.sh" "$_bundle" 2>/dev/null)"
+    if [ "${_ns:-0}" != "1" ] || [ "${_nb:-0}" != "1" ]; then
+      bad "bin/static/security.js carries ${_ns:-0} ui-sources and ${_nb:-0} ui-bundle stamps — exactly one of each is expected; run build/build-ui.sh"
+    elif [ -z "$_want" ] || [ -z "$_bwant" ]; then
+      bad "could not fingerprint ui/ or the bundle — is shasum on PATH?"
+    elif [ "$_stamp" != "$_want" ]; then
       bad "bin/static/security.js is stale — run build/build-ui.sh"
+    elif [ "$_bstamp" != "$_bwant" ]; then
+      bad "bin/static/security.js has been MODIFIED since it was built — its body no longer hashes to its own stamp; rebuild with build/build-ui.sh and check what changed"
+    else
+      ok "the committed UI bundle matches the sources it was built from, and has not been touched since"
     fi
   fi
 
