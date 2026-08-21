@@ -990,6 +990,7 @@ def cmd_findings_page(args):
         print(json.dumps({
             "rows": [], "total": 0, "unique": 0,
             "by_severity": {s: 0 for s in report.SEVERITIES},
+            "fixed_by_severity": {s: 0 for s in report.SEVERITIES},
             "page": max(1, args.page),
             "per_page": max(1, min(args.per_page, queries.MAX_PER_PAGE)),
             "filters": []}))

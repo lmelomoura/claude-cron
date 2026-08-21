@@ -844,40 +844,38 @@
       show_resolved: false
     };
   }
-  var secFindHost = null;
-  var secFindProject = "";
-  var secFindGen = 0;
-  var secFindData = null;
-  var secFindError = "";
-  var secFindFilters = _defaultFilters();
-  var secFindSort = "severity";
-  var secFindDir = "desc";
-  var secFindPage = 1;
-  var secFindSavedName = "";
-  var secFindNewName = "";
-  async function renderFindings(host, project) {
-    if (secFindProject !== project) {
-      secFindProject = project;
-      secFindFilters = _defaultFilters();
-      secFindSort = "severity";
-      secFindDir = "desc";
-      secFindPage = 1;
-      secFindSavedName = "";
-      secFindNewName = "";
-      secFindData = null;
-      secFindError = "";
-    }
-    secFindHost = host;
-    await secFindLoad();
+  function _newFindState(host, project) {
+    return {
+      host,
+      project,
+      gen: 0,
+      data: null,
+      error: "",
+      filters: _defaultFilters(),
+      sort: "severity",
+      dir: "desc",
+      page: 1,
+      savedName: "",
+      newName: ""
+    };
   }
-  function secFindQuery() {
+  var secFindStates = /* @__PURE__ */ new WeakMap();
+  async function renderFindings(host, project) {
+    let fs = secFindStates.get(host);
+    if (!fs || fs.project !== project) {
+      fs = _newFindState(host, project);
+      secFindStates.set(host, fs);
+    }
+    await secFindLoad(fs);
+  }
+  function secFindQuery(fs) {
     const p = new URLSearchParams();
-    p.set("project", secFindProject);
-    p.set("sort", secFindSort);
-    p.set("dir", secFindDir);
-    p.set("page", String(secFindPage));
+    p.set("project", fs.project);
+    p.set("sort", fs.sort);
+    p.set("dir", fs.dir);
+    p.set("page", String(fs.page));
     p.set("per_page", String(FIND_PER_PAGE));
-    const f = secFindFilters;
+    const f = fs.filters;
     if (f.severity.length) p.set("severity", f.severity.join(","));
     if (f.state.length) p.set("state", f.state.join(","));
     if (f.category.length) p.set("category", f.category.join(","));
@@ -888,60 +886,61 @@
     if (f.show_resolved) p.set("show_resolved", "1");
     return p.toString();
   }
-  async function secFindLoad() {
-    const host = secFindHost, project = secFindProject;
+  async function secFindLoad(fs) {
+    const host = fs.host, project = fs.project;
     if (!host || !project) return;
-    const gen = ++secFindGen;
-    if (!secFindData) {
+    const gen = ++fs.gen;
+    if (!fs.data) {
       host.textContent = "";
       host.appendChild(secEl("div", "tblempty", "Loading\u2026"));
     }
     let data;
     try {
-      data = await secFetch("/api/security/findings?" + secFindQuery());
+      data = await secFetch("/api/security/findings?" + secFindQuery(fs));
     } catch (e) {
-      if (gen !== secFindGen || secFindHost !== host || secFindProject !== project) return;
-      secFindError = e.message;
-      secFindData = null;
-      secFindPaint();
+      if (gen !== fs.gen || secFindStates.get(host) !== fs) return;
+      fs.error = e.message;
+      fs.data = null;
+      secFindPaint(fs);
       return;
     }
-    if (gen !== secFindGen || secFindHost !== host || secFindProject !== project) return;
-    secFindError = "";
-    secFindData = data;
-    secFindPage = data.page || 1;
-    secFindPaint();
+    if (gen !== fs.gen || secFindStates.get(host) !== fs) return;
+    fs.error = "";
+    fs.data = data;
+    fs.page = data.page || 1;
+    secFindPaint(fs);
   }
-  async function secFindRefresh() {
-    await secFindLoad();
+  async function secFindRefresh(fs) {
+    await secFindLoad(fs);
   }
-  function secFindPaint() {
-    const host = secFindHost;
+  function secFindPaint(fs) {
+    const host = fs.host;
     if (!host) return;
     host.textContent = "";
-    if (secFindError) {
+    if (fs.error) {
       const box = secEl("div", "tblempty");
       box.appendChild(secIcon("alert"));
-      box.appendChild(document.createTextNode("Could not read findings \u2014 " + secFindError));
+      box.appendChild(document.createTextNode("Could not read findings \u2014 " + fs.error));
       host.appendChild(box);
       return;
     }
-    const data = secFindData;
+    const data = fs.data;
     if (!data) return;
-    host.appendChild(secFindStrip(data));
-    host.appendChild(secFindFilterBar(data));
-    host.appendChild(secFindTableSection(data));
-    host.appendChild(secFindPager(data));
+    host.appendChild(secFindStrip(fs, data));
+    host.appendChild(secFindFilterBar(fs, data));
+    host.appendChild(secFindTableSection(fs, data));
+    host.appendChild(secFindPager(fs, data));
   }
   function secFindHiddenByFloor(data, minSeverity) {
     const floor = SEV_ORDER.indexOf(minSeverity);
+    const bySev = data.by_severity || {}, fixedBySev = data.fixed_by_severity || {};
     let n = 0;
     SEV_ORDER.forEach((sev, i) => {
-      if (i < floor) n += (data.by_severity || {})[sev] || 0;
+      if (i < floor) n += (bySev[sev] || 0) - (fixedBySev[sev] || 0);
     });
     return n;
   }
-  function secFindStrip(data) {
+  function secFindStrip(fs, data) {
     const wrap = secEl("div", "sevpills");
     const totalPill = secEl("span", "sevpill", data.total + " total");
     totalPill.title = "Every row matching the current filters \u2014 the same finding open on two branches counts twice here.";
@@ -958,7 +957,7 @@
       }
     });
     if (!any) wrap.appendChild(secEl("span", "sevpill clean", "nothing matches"));
-    const minSeverity = secMinSeverity(secFindProject);
+    const minSeverity = secMinSeverity(fs.project);
     const hidden = secFindHiddenByFloor(data, minSeverity);
     const note = secEl("div", "secpj-caption");
     if (hidden > 0) {
@@ -998,38 +997,38 @@
     if (i >= 0) list.splice(i, 1);
     else list.push(value);
   }
-  function secFindSeverityField() {
+  function secFindSeverityField(fs) {
     return secFindChipField("Severity", secFindChips(
       ["critical", "high", "medium", "low", "info"],
-      secFindFilters.severity,
+      fs.filters.severity,
       (sev) => {
-        secFindToggleIn(secFindFilters.severity, sev);
-        secFindPage = 1;
-        secFindRefresh();
+        secFindToggleIn(fs.filters.severity, sev);
+        fs.page = 1;
+        secFindRefresh(fs);
       }
     ));
   }
-  function secFindCategoryField() {
+  function secFindCategoryField(fs) {
     return secFindChipField("Category", secFindChips(
       FIND_CATEGORIES,
-      secFindFilters.category,
+      fs.filters.category,
       (cat) => {
-        secFindToggleIn(secFindFilters.category, cat);
-        secFindPage = 1;
-        secFindRefresh();
+        secFindToggleIn(fs.filters.category, cat);
+        fs.page = 1;
+        secFindRefresh(fs);
       }
     ));
   }
-  function secFindStateField() {
+  function secFindStateField(fs) {
     const row = secFindChips(
       SEC_STATES,
-      secFindFilters.state,
-      (state) => {
-        secFindToggleIn(secFindFilters.state, state);
-        secFindPage = 1;
-        secFindRefresh();
+      fs.filters.state,
+      (st) => {
+        secFindToggleIn(fs.filters.state, st);
+        fs.page = 1;
+        secFindRefresh(fs);
       },
-      (state) => SEC_STATE_LABEL[state] || state
+      (st) => SEC_STATE_LABEL[st] || st
     );
     Array.from(row.childNodes).forEach((chip, i) => {
       chip.title = SEC_STATE_HELP[SEC_STATES[i]] || "";
@@ -1048,35 +1047,35 @@
     field.appendChild(inp);
     return field;
   }
-  function secFindShowResolvedField() {
+  function secFindShowResolvedField(fs) {
     const field = secEl("div", "secfield");
     field.appendChild(secEl("span", null, "Resolved"));
     const label = document.createElement("label");
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.checked = secFindFilters.show_resolved;
+    cb.checked = fs.filters.show_resolved;
     cb.addEventListener("change", () => {
-      secFindFilters.show_resolved = cb.checked;
-      secFindPage = 1;
-      secFindRefresh();
+      fs.filters.show_resolved = cb.checked;
+      fs.page = 1;
+      secFindRefresh(fs);
     });
     label.appendChild(cb);
     label.appendChild(document.createTextNode(" Show resolved"));
     field.appendChild(label);
     return field;
   }
-  function secFindClearButton() {
+  function secFindClearButton(fs) {
     const btn = secEl("button", "btn ghost", "Clear filters");
     btn.type = "button";
     btn.onclick = () => {
-      secFindFilters = _defaultFilters();
-      secFindPage = 1;
-      secFindRefresh();
+      fs.filters = _defaultFilters();
+      fs.page = 1;
+      secFindRefresh(fs);
     };
     return btn;
   }
-  function secFindCurrentQuery() {
-    const f = secFindFilters;
+  function secFindCurrentQuery(fs) {
+    const f = fs.filters;
     return {
       severity: f.severity,
       state: f.state,
@@ -1086,13 +1085,13 @@
       q: f.q,
       analysis: f.analysis,
       show_resolved: f.show_resolved,
-      sort: secFindSort,
-      dir: secFindDir
+      sort: fs.sort,
+      dir: fs.dir
     };
   }
-  function secFindApplyQuery(q) {
+  function secFindApplyQuery(fs, q) {
     const query = q || {};
-    secFindFilters = {
+    fs.filters = {
       severity: Array.isArray(query.severity) ? query.severity.slice() : [],
       state: Array.isArray(query.state) ? query.state.slice() : [],
       category: Array.isArray(query.category) ? query.category.slice() : [],
@@ -1102,12 +1101,12 @@
       analysis: typeof query.analysis === "string" ? query.analysis : "",
       show_resolved: !!query.show_resolved
     };
-    secFindSort = FIND_SORT_COLUMNS.some(([key]) => key === query.sort) ? query.sort : "severity";
-    secFindDir = query.dir === "asc" ? "asc" : "desc";
-    secFindPage = 1;
-    secFindRefresh();
+    fs.sort = FIND_SORT_COLUMNS.some(([key]) => key === query.sort) ? query.sort : "severity";
+    fs.dir = query.dir === "asc" ? "asc" : "desc";
+    fs.page = 1;
+    secFindRefresh(fs);
   }
-  async function secFindSaveCurrent(name) {
+  async function secFindSaveCurrent(fs, name) {
     const trimmed = (name || "").trim();
     if (!trimmed) {
       toast("Name this filter set before saving", true);
@@ -1115,23 +1114,23 @@
     }
     const ok = await api(
       "security_filter_save",
-      { project: secFindProject, name: trimmed, query: secFindCurrentQuery() }
+      { project: fs.project, name: trimmed, query: secFindCurrentQuery(fs) }
     );
     if (!ok) return;
     toast("Filter saved", false, "check");
-    secFindSavedName = trimmed;
-    secFindNewName = "";
-    await secFindRefresh();
+    fs.savedName = trimmed;
+    fs.newName = "";
+    await secFindRefresh(fs);
   }
-  async function secFindDeleteSaved(name) {
+  async function secFindDeleteSaved(fs, name) {
     if (!name) return;
-    const ok = await api("security_filter_delete", { project: secFindProject, name });
+    const ok = await api("security_filter_delete", { project: fs.project, name });
     if (!ok) return;
     toast("Filter deleted", false, "check");
-    secFindSavedName = "";
-    await secFindRefresh();
+    fs.savedName = "";
+    await secFindRefresh(fs);
   }
-  function secFindSavedFilters(data) {
+  function secFindSavedFilters(fs, data) {
     const bar = secEl("div", "secbar");
     const pickField = secEl("div", "secfield");
     pickField.appendChild(secEl("span", null, "Saved filters"));
@@ -1146,12 +1145,12 @@
       o.textContent = f.name;
       sel.appendChild(o);
     });
-    if ((data.filters || []).some((f) => f.name === secFindSavedName)) sel.value = secFindSavedName;
-    else secFindSavedName = "";
+    if ((data.filters || []).some((f) => f.name === fs.savedName)) sel.value = fs.savedName;
+    else fs.savedName = "";
     sel.addEventListener("change", () => {
-      secFindSavedName = sel.value;
+      fs.savedName = sel.value;
       const found = (data.filters || []).find((f) => f.name === sel.value);
-      if (found) secFindApplyQuery(found.query);
+      if (found) secFindApplyQuery(fs, found.query);
     });
     pickField.appendChild(sel);
     bar.appendChild(pickField);
@@ -1160,61 +1159,61 @@
     const nameInput = document.createElement("input");
     nameInput.type = "text";
     nameInput.placeholder = "name this view";
-    nameInput.value = secFindNewName;
+    nameInput.value = fs.newName;
     nameInput.addEventListener("change", () => {
-      secFindNewName = nameInput.value;
+      fs.newName = nameInput.value;
     });
     nameField.appendChild(nameInput);
     bar.appendChild(nameField);
     const saveBtn = secEl("button", "btn ghost", "Save");
     saveBtn.type = "button";
-    saveBtn.onclick = () => secFindSaveCurrent(nameInput.value);
+    saveBtn.onclick = () => secFindSaveCurrent(fs, nameInput.value);
     bar.appendChild(saveBtn);
     const delBtn = secEl("button", "btn ghost", "Delete");
     delBtn.type = "button";
-    delBtn.disabled = !secFindSavedName;
-    delBtn.onclick = () => secFindDeleteSaved(secFindSavedName);
+    delBtn.disabled = !fs.savedName;
+    delBtn.onclick = () => secFindDeleteSaved(fs, fs.savedName);
     bar.appendChild(delBtn);
     return bar;
   }
-  function secFindFilterBar(data) {
+  function secFindFilterBar(fs, data) {
     const wrap = document.createElement("div");
-    wrap.appendChild(secFindSeverityField());
-    wrap.appendChild(secFindStateField());
+    wrap.appendChild(secFindSeverityField(fs));
+    wrap.appendChild(secFindStateField(fs));
     wrap.appendChild(secEl(
       "div",
       "secpj-caption",
       "Fixed, accepted and false-positive rows are excluded unless \u201CShow resolved\u201D is checked."
     ));
-    wrap.appendChild(secFindCategoryField());
+    wrap.appendChild(secFindCategoryField(fs));
     const bar = secEl("div", "secbar");
-    bar.appendChild(secFindTextField("Branch", secFindFilters.branch, (v) => {
-      secFindFilters.branch = v;
-      secFindPage = 1;
-      secFindRefresh();
+    bar.appendChild(secFindTextField("Branch", fs.filters.branch, (v) => {
+      fs.filters.branch = v;
+      fs.page = 1;
+      secFindRefresh(fs);
     }));
-    bar.appendChild(secFindTextField("Path contains", secFindFilters.path, (v) => {
-      secFindFilters.path = v;
-      secFindPage = 1;
-      secFindRefresh();
+    bar.appendChild(secFindTextField("Path contains", fs.filters.path, (v) => {
+      fs.filters.path = v;
+      fs.page = 1;
+      secFindRefresh(fs);
     }));
-    bar.appendChild(secFindTextField("Analysis #", secFindFilters.analysis, (v) => {
-      secFindFilters.analysis = v;
-      secFindPage = 1;
-      secFindRefresh();
+    bar.appendChild(secFindTextField("Analysis #", fs.filters.analysis, (v) => {
+      fs.filters.analysis = v;
+      fs.page = 1;
+      secFindRefresh(fs);
     }));
-    bar.appendChild(secFindTextField("Search title / rule / CVE / file", secFindFilters.q, (v) => {
-      secFindFilters.q = v;
-      secFindPage = 1;
-      secFindRefresh();
+    bar.appendChild(secFindTextField("Search title / rule / rationale / file", fs.filters.q, (v) => {
+      fs.filters.q = v;
+      fs.page = 1;
+      secFindRefresh(fs);
     }));
-    bar.appendChild(secFindShowResolvedField());
-    bar.appendChild(secFindClearButton());
+    bar.appendChild(secFindShowResolvedField(fs));
+    bar.appendChild(secFindClearButton(fs));
     wrap.appendChild(bar);
-    wrap.appendChild(secFindSavedFilters(data));
+    wrap.appendChild(secFindSavedFilters(fs, data));
     return wrap;
   }
-  function secFindRow(f) {
+  function secFindRow(fs, f) {
     const tr = document.createElement("tr");
     tr.className = "sev-" + secSevKey(f) + " state-" + secStateKey(f);
     const cell = (text) => {
@@ -1242,38 +1241,37 @@
     tr.appendChild(tdState);
     tr.appendChild(cell(f.first_seen ? fmtWhen(f.first_seen) : "\u2014"));
     const tdAct = document.createElement("td");
-    if (f.state !== "fixed") tdAct.appendChild(secFindDecisionControls(f));
+    if (f.state !== "fixed") tdAct.appendChild(secFindDecisionControls(fs, f));
     tr.appendChild(tdAct);
     return tr;
   }
-  function secFindDecisionControls(f) {
+  function secFindDecisionControls(fs, f) {
     const wrap = secEl("div", "secactions");
     [["accepted", "Accept risk"], ["false_positive", "False positive"]].forEach(([state, label]) => {
       const b = secEl("button", "btn", label);
       b.type = "button";
-      b.onclick = () => secFindDecide(f, state, label);
+      b.onclick = () => secFindDecide(fs, f, state, label);
       wrap.appendChild(b);
     });
     return wrap;
   }
-  async function secFindDecide(f, state, label) {
+  async function secFindDecide(fs, f, state, label) {
     const reason = await secAskReason(label, f.title);
     if (reason === null) return;
     const ok = await api(
       "security_decide",
-      { project: secFindProject, fingerprint: f.fingerprint, state, reason }
+      { project: fs.project, fingerprint: f.fingerprint, state, reason }
     );
     if (!ok) return;
     toast(label + " recorded", false, "check");
     secInvalidateProject();
-    await secFindRefresh();
+    await secFindRefresh(fs);
   }
-  function secFindTableSection(data) {
+  function secFindTableSection(fs, data) {
     const rows = data.rows || [];
     if (!rows.length) return secEl("div", "tblempty", "No findings match these filters.");
-    const minSeverity = secMinSeverity(secFindProject);
-    const floor = SEV_ORDER.indexOf(minSeverity);
-    const visible = rows.filter((f) => secSevRank(f.severity) >= floor);
+    const minSeverity = secMinSeverity(fs.project);
+    const visible = secVisible(rows, minSeverity);
     if (!visible.length) {
       return secEl(
         "div",
@@ -1289,16 +1287,16 @@
       const th = document.createElement("th");
       const btn = secEl("button", "btn ghost");
       btn.type = "button";
-      const active = secFindSort === key;
-      btn.appendChild(secEl("span", null, label + (active ? secFindDir === "asc" ? " \u25B2" : " \u25BC" : "")));
+      const active = fs.sort === key;
+      btn.appendChild(secEl("span", null, label + (active ? fs.dir === "asc" ? " \u25B2" : " \u25BC" : "")));
       btn.onclick = () => {
-        if (secFindSort === key) secFindDir = secFindDir === "asc" ? "desc" : "asc";
+        if (fs.sort === key) fs.dir = fs.dir === "asc" ? "desc" : "asc";
         else {
-          secFindSort = key;
-          secFindDir = key === "severity" ? "desc" : "asc";
+          fs.sort = key;
+          fs.dir = key === "severity" ? "desc" : "asc";
         }
-        secFindPage = 1;
-        secFindRefresh();
+        fs.page = 1;
+        secFindRefresh(fs);
       };
       th.appendChild(btn);
       htr.appendChild(th);
@@ -1309,12 +1307,12 @@
     thead.appendChild(htr);
     table.appendChild(thead);
     const tbody = document.createElement("tbody");
-    visible.forEach((f) => tbody.appendChild(secFindRow(f)));
+    visible.forEach((f) => tbody.appendChild(secFindRow(fs, f)));
     table.appendChild(tbody);
     wrap.appendChild(table);
     return wrap;
   }
-  function secFindPager(data) {
+  function secFindPager(fs, data) {
     const wrap = secEl("div", "pager");
     const total = data.total || 0;
     const perPage = data.per_page || FIND_PER_PAGE;
@@ -1324,8 +1322,8 @@
     prev.type = "button";
     prev.disabled = page <= 1;
     prev.onclick = () => {
-      secFindPage = Math.max(1, page - 1);
-      secFindRefresh();
+      fs.page = Math.max(1, page - 1);
+      secFindRefresh(fs);
     };
     wrap.appendChild(prev);
     wrap.appendChild(secEl(
@@ -1337,8 +1335,8 @@
     next.type = "button";
     next.disabled = page >= pages;
     next.onclick = () => {
-      secFindPage = Math.min(pages, page + 1);
-      secFindRefresh();
+      fs.page = Math.min(pages, page + 1);
+      secFindRefresh(fs);
     };
     wrap.appendChild(next);
     return wrap;
@@ -2021,4 +2019,4 @@
     SEC_PROFILES
   };
 })();
-// ui-sources: f4f9259a9d6807959f0fd9af129e7d4599c2db5a7fa34e515bece8ac06dfb6dc
+// ui-sources: 7c2eb23a2c001f00d5acf6dc518a0916def929b1dfe5938dced8027b4b33642a

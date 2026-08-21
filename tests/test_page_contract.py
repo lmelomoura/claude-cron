@@ -1846,8 +1846,9 @@ def test_findings_row_renders_analysed_strings_as_text_never_markup(srv, tmp_pat
     script = tmp_path / "find-row.js"
     script.write_text(_INDEX_DOM_HARNESS + """
     function fmtWhen(t){ return "w" + String(t); }
+    const fs = {project: "web"};
     """ + consts + arrows + deps + """
-    const row = secFindRow({title: "<img src=x onerror=alert(1)>", severity: "high",
+    const row = secFindRow(fs, {title: "<img src=x onerror=alert(1)>", severity: "high",
       state: "new", category: "sast", branch: "feature/<b>bold</b>", first_seen: 1700000000,
       occurrences: [{file: "a.py", line: 1}, {file: "b.py", line: 2}], fingerprint: "a".repeat(64)});
     function countButtons(n, c){
@@ -1880,8 +1881,9 @@ def test_a_fixed_finding_gets_no_decision_controls(srv, tmp_path):
     script = tmp_path / "find-row-fixed.js"
     script.write_text(_INDEX_DOM_HARNESS + """
     function fmtWhen(t){ return "w" + String(t); }
+    const fs = {project: "web"};
     """ + consts + arrows + deps + """
-    const row = secFindRow({title: "t", severity: "low", state: "fixed", category: "sast",
+    const row = secFindRow(fs, {title: "t", severity: "low", state: "fixed", category: "sast",
       branch: "main", first_seen: 1, occurrences: [], fingerprint: "a".repeat(64)});
     function countButtons(n, c){
       (n.childNodes || []).forEach(x => { if(x.tagName === "button") c.n++; countButtons(x, c); });
@@ -1910,14 +1912,14 @@ def test_the_strip_labels_total_and_unique_and_counts_the_floor_from_the_whole_f
     script = tmp_path / "find-strip.js"
     script.write_text(_INDEX_DOM_HARNESS + """
     function secMinSeverity(_p){ return "medium"; }
-    let secFindProject = "web";
+    const fs = {project: "web"};
     """ + consts + deps + """
     // by_severity describes EVERY row the current filters match, across every
     // page -- 3 low + 2 info sit below the "medium" floor, even though this
     // fabricated payload carries no `rows` at all for secFindStrip to look at.
     const data = {total: 10, unique: 8,
       by_severity: {critical: 1, high: 4, medium: 0, low: 3, info: 2}, page: 1, per_page: 25};
-    console.log(JSON.stringify(collectAll(secFindStrip(data), [])));
+    console.log(JSON.stringify(collectAll(secFindStrip(fs, data), [])));
     """)
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
@@ -1942,12 +1944,13 @@ def test_the_table_excludes_rows_below_the_floor_on_this_page(srv, tmp_path):
              + re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
              + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secFindRow", "secFindDecisionControls", "secFindTableSection"))
+                     ("secEl", "secFindRow", "secFindDecisionControls", "secFindTableSection",
+                      "secVisible"))
     script = tmp_path / "find-table-floor.js"
     script.write_text(_INDEX_DOM_HARNESS + """
     function fmtWhen(t){ return "w" + String(t); }
     function secMinSeverity(_p){ return "high"; }
-    let secFindProject = "web", secFindSort = "severity", secFindDir = "desc", secFindPage = 1;
+    const fs = {project: "web", sort: "severity", dir: "desc", page: 1};
     """ + consts + arrows + deps + """
     const data = {rows: [
       {title: "crit one", severity: "critical", state: "new", category: "sast", branch: "main",
@@ -1955,13 +1958,82 @@ def test_the_table_excludes_rows_below_the_floor_on_this_page(srv, tmp_path):
       {title: "low one", severity: "low", state: "new", category: "sast", branch: "main",
        first_seen: 1, occurrences: [], fingerprint: "b".repeat(64)},
     ], total: 2, unique: 2, page: 1, per_page: 25};
-    console.log(JSON.stringify(collectAll(secFindTableSection(data), [])));
+    console.log(JSON.stringify(collectAll(secFindTableSection(fs, data), [])));
     """)
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
     joined = " ".join(r["text"] for r in out)
     assert "crit one" in joined, f"a row at or above the floor must render: {joined}"
     assert "low one" not in joined, f"a row below the floor must not appear in the table: {joined}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_a_fixed_finding_stays_visible_and_uncounted_below_the_floor(srv, tmp_path):
+    """Review finding 3: the browser used to apply the severity floor
+    uniformly, with no per-state exception -- so with "Show resolved" on, a
+    low-severity finding that had just been marked FIXED disappeared under a
+    medium floor exactly like an open one would, hiding the one thing this
+    view exists to confirm: that the fix actually landed.
+    vocabulary.js's own `secVisible` already exempts a fixed finding from
+    the checklist's floor for exactly this reason (see its own comment) --
+    this pins that the findings browser now shares the exemption (calling
+    `secVisible` itself, not re-deriving it), and that the strip's own
+    "N hidden" count (`fixed_by_severity`, queries.finding_rows's new field)
+    agrees with what the table shows.
+
+    An OPEN low-severity finding is both hidden from the table AND counted,
+    the containment probe proving the fix does not blanket-exempt an entire
+    severity -- only a fixed row. Must fail on the code before this fix (a
+    bare severity-rank filter hid the fixed row too, and the hidden count
+    read `by_severity` alone, counting BOTH low findings as hidden) and pass
+    after it."""
+    block = _security_js(srv)
+    consts = (_const(block, "SEC_STATE_LABEL") + _const(block, "SEC_STATE_HELP")
+             + _const(block, "SEV_ORDER") + _const(block, "SEC_STATES")
+             + _const(block, "FIND_SORT_COLUMNS"))
+    arrows = (re.search(r"const secSevRank = .*?\};", block, re.S).group(0) + "\n"
+             + re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
+             + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("secEl", "secFindHiddenByFloor", "secFindStrip", "secFindRow",
+                      "secFindDecisionControls", "secFindTableSection", "secVisible"))
+    script = tmp_path / "find-fixed-floor.js"
+    script.write_text(_INDEX_DOM_HARNESS + """
+    function fmtWhen(t){ return "w" + String(t); }
+    function secMinSeverity(_p){ return "medium"; }
+    const fs = {project: "web", sort: "severity", dir: "desc", page: 1};
+    """ + consts + arrows + deps + """
+    const data = {
+      rows: [
+        {title: "fixed low", severity: "low", state: "fixed", category: "sast",
+         branch: "main", first_seen: 1, occurrences: [], fingerprint: "a".repeat(64)},
+        {title: "open low", severity: "low", state: "open", category: "sast",
+         branch: "main", first_seen: 1, occurrences: [], fingerprint: "b".repeat(64)},
+        {title: "open medium", severity: "medium", state: "open", category: "sast",
+         branch: "main", first_seen: 1, occurrences: [], fingerprint: "c".repeat(64)},
+      ],
+      total: 3, unique: 3,
+      by_severity: {critical: 0, high: 0, medium: 1, low: 2, info: 0},
+      fixed_by_severity: {critical: 0, high: 0, medium: 0, low: 1, info: 0},
+      page: 1, per_page: 25,
+    };
+    const strip = collectAll(secFindStrip(fs, data), []);
+    const table = collectAll(secFindTableSection(fs, data), []);
+    console.log(JSON.stringify({strip, table}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    stripText = " ".join(r["text"] for r in out["strip"])
+    tableText = " ".join(r["text"] for r in out["table"])
+    assert "1 finding below medium" in stripText, \
+        f"exactly one finding (the OPEN low one) must count as hidden: {stripText}"
+    assert "2 findings below medium" not in stripText, \
+        f"the fixed row must not inflate the hidden count: {stripText}"
+    assert "fixed low" in tableText, \
+        f"a FIXED finding must stay visible below the floor: {tableText}"
+    assert "open medium" in tableText, f"a finding at or above the floor must render: {tableText}"
+    assert "open low" not in tableText, \
+        f"an OPEN finding below the floor must still be hidden -- the exemption is fixed-only: {tableText}"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -1979,26 +2051,27 @@ def test_clicking_a_sort_header_toggles_direction_then_switching_column_resets_i
              + re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
              + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secFindRow", "secFindDecisionControls", "secFindTableSection"))
+                     ("secEl", "secFindRow", "secFindDecisionControls", "secFindTableSection",
+                      "secVisible"))
     script = tmp_path / "find-sort-click.js"
     script.write_text(_INDEX_DOM_HARNESS + """
     function fmtWhen(t){ return "w" + String(t); }
     function secMinSeverity(_p){ return "info"; }
-    let secFindProject = "web", secFindSort = "severity", secFindDir = "desc", secFindPage = 3;
+    const fs = {project: "web", sort: "severity", dir: "desc", page: 3};
     let refreshCalls = 0;
-    function secFindRefresh(){ refreshCalls++; }
+    function secFindRefresh(_fs){ refreshCalls++; }
     """ + consts + arrows + deps + """
     const data = {rows: [{title: "a", severity: "low", state: "new", category: "sast",
       branch: "main", first_seen: 1, occurrences: [], fingerprint: "a".repeat(64)}],
       total: 1, unique: 1, page: 3, per_page: 25};
-    const section = secFindTableSection(data);
+    const section = secFindTableSection(fs, data);
     const headerRow = section.childNodes[0].childNodes[0].childNodes[0];
     const severityBtn = headerRow.childNodes[0].childNodes[0];
     const titleBtn = headerRow.childNodes[1].childNodes[0];
     severityBtn.onclick();
-    const afterToggle = {sort: secFindSort, dir: secFindDir, page: secFindPage, calls: refreshCalls};
+    const afterToggle = {sort: fs.sort, dir: fs.dir, page: fs.page, calls: refreshCalls};
     titleBtn.onclick();
-    const afterSwitch = {sort: secFindSort, dir: secFindDir, page: secFindPage, calls: refreshCalls};
+    const afterSwitch = {sort: fs.sort, dir: fs.dir, page: fs.page, calls: refreshCalls};
     console.log(JSON.stringify({afterToggle, afterSwitch}));
     """)
     out = json.loads(subprocess.run(["node", str(script)],
@@ -2014,15 +2087,18 @@ def test_the_pager_math_and_button_disabling_at_both_edges(srv, tmp_path):
     block = _security_js(srv)
     deps = _plainfn(block, "secEl") + "\n" + _plainfn(block, "secFindPager")
     script = tmp_path / "find-pager.js"
-    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    script.write_text(_INDEX_DOM_HARNESS + """
+    function secFindRefresh(_fs){}
+    const fs = {page: 1};
+    """ + deps + """
     function btns(p){
       return {prevDisabled: p.childNodes[0].disabled, nextDisabled: p.childNodes[2].disabled,
               text: p.childNodes[1].textContent};
     }
     console.log(JSON.stringify({
-      first: btns(secFindPager({total: 47, per_page: 25, page: 1})),
-      last: btns(secFindPager({total: 47, per_page: 25, page: 2})),
-      empty: btns(secFindPager({total: 0, per_page: 25, page: 1})),
+      first: btns(secFindPager(fs, {total: 47, per_page: 25, page: 1})),
+      last: btns(secFindPager(fs, {total: 47, per_page: 25, page: 2})),
+      empty: btns(secFindPager(fs, {total: 0, per_page: 25, page: 1})),
     }));
     """)
     out = json.loads(subprocess.run(["node", str(script)],
@@ -2070,3 +2146,182 @@ def test_switching_to_findings_hides_the_other_four_panes(srv, tmp_path):
     assert out["onFindings"] == {"ov": True, "rn": True, "br": True, "fd": False, "rp": True}
     assert out["onReports"] == {"ov": True, "rn": True, "br": True, "fd": True, "rp": False}
     assert out["backToOverview"] == {"ov": False, "rn": True, "br": True, "fd": True, "rp": True}
+
+
+def test_the_search_field_names_what_it_actually_searches(srv):
+    """Review finding 2 on Task 11: `queries.finding_rows`'s own `q` filter
+    searches `title`, `rule`, `rationale` and every occurrence's file path
+    (see its own code) -- but the field was labelled "Search title / rule /
+    CVE / file", which both promises a "CVE" field that does not exist (for
+    a dependency finding it is folded into `rule`) and never mentions
+    `rationale`, the one place someone searching for remembered text is most
+    likely to find it. The label must name what the filter actually reaches,
+    not what a reader would guess it does."""
+    block = _security_js(srv)
+    assert "Search title / rule / rationale / file" in block, \
+        "the search field must name rationale, the field it actually searches"
+    assert "Search title / rule / CVE / file" not in block, \
+        "the old label still promises a field ('CVE') that finding_rows does not search"
+
+
+# ---- Review finding 1 on Task 11: the browser's own header comment claimed
+# it made "no assumption about who else is on screen beside it", but every
+# piece of state (host, project, filters, sort, page, the fetch generation)
+# was a single module-level variable -- so two simultaneous mounts of the
+# SAME project into different hosts (today: only project-screen.js's
+# Findings tab mounts this; Task 12's own plan is to link a fingerprint
+# straight into this browser from the Activity screen, open BESIDE it) would
+# stomp each other's state, and whichever fetch answered second would fail
+# its own staleness guard against a "current host" that had moved on to the
+# other mount, leaving that pane frozen on "Loading…" forever. The fix keys
+# every mount's state by its host in a WeakMap (`secFindStates`); the tests
+# below drive the real renderFindings/secFindLoad/secFindPaint under Node,
+# stubbing only the four child painters (secFindStrip/secFindFilterBar/
+# secFindTableSection/secFindPager) that the other Task 11 tests above
+# already exercise on their own -- these are about which HOST a fetch's
+# result reaches, not what gets drawn inside it.
+
+_FIND_MOUNT_DEPS = ("_defaultFilters", "_newFindState", "secFindQuery", "secEl", "secIcon",
+                    "secFindPaint")
+
+
+def _find_mount_harness(block, extra=""):
+    weakmap_decl = re.search(r"const secFindStates = new WeakMap\(\);", block)
+    assert weakmap_decl, "secFindStates must be declared as a WeakMap -- see the test below"
+    per_page = re.search(r"const FIND_PER_PAGE = \d+;", block)
+    assert per_page, "FIND_PER_PAGE not found -- secFindQuery needs it"
+    deps = "\n".join(_plainfn(block, n) for n in _FIND_MOUNT_DEPS)
+    render_findings = _anyfn(block, "renderFindings")
+    find_load = _anyfn(block, "secFindLoad")
+    return (_INDEX_DOM_HARNESS + extra + weakmap_decl.group(0) + "\n" + per_page.group(0) + "\n"
+            + deps + "\n" + render_findings + "\n" + find_load)
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_two_mounts_of_the_same_project_never_share_state_or_steal_each_others_paint(
+        srv, tmp_path):
+    """The adversarial case the finding names: mount host A, mount host B
+    (same project) before A's fetch has answered, then resolve B's fetch
+    FIRST and A's SECOND -- the exact interleaving that starves whichever
+    mount answers later under the old, module-level code. Must fail before
+    the fix (host A's own late-arriving fetch reads a module `secFindHost`
+    that by then points at host B, fails its staleness guard, and A's pane
+    never repaints) and pass after it (each host's own state, looked up by
+    identity in the WeakMap, is untouched by the other mount)."""
+    block = _security_js(srv)
+    script = tmp_path / "two-mounts.js"
+    script.write_text(_find_mount_harness(block, """
+    // Trivial stand-ins: this test is about which host/state a fetch's
+    // result reaches, not what secFindStrip/secFindFilterBar/
+    // secFindTableSection/secFindPager actually draw (see the tests above
+    // for that) -- each just marks the host with the data it received.
+    function secFindStrip(_fs, data){ return secEl("div", "marker", "strip:" + data.marker); }
+    function secFindFilterBar(_fs, _data){ return secEl("div", "fb", ""); }
+    function secFindTableSection(_fs, _data){ return secEl("div", "ts", ""); }
+    function secFindPager(_fs, _data){ return secEl("div", "pg", ""); }
+    """) + """
+    // A controllable secFetch: each call returns its own independently
+    // resolvable promise, queued in call order -- so the test can resolve
+    // the SECOND call before the FIRST.
+    const resolvers = [];
+    function secFetch(_path){
+      return new Promise((resolve) => { resolvers.push(resolve); });
+    }
+
+    (async () => {
+      const hostA = new FakeElement("div");
+      const hostB = new FakeElement("div");
+      const pA = renderFindings(hostA, "web");   // fetch #0
+      const pB = renderFindings(hostB, "web");   // fetch #1
+      const loadingA = hostA.textContent, loadingB = hostB.textContent;
+
+      // B, mounted SECOND, answers FIRST.
+      resolvers[1]({marker: "B", total: 1, unique: 1, by_severity: {}, page: 1, per_page: 25});
+      await pB;
+      const afterB = {a: hostA.textContent, b: hostB.textContent};
+
+      // A, mounted FIRST, answers LAST -- the case that used to starve it.
+      resolvers[0]({marker: "A", total: 1, unique: 1, by_severity: {}, page: 1, per_page: 25});
+      await pA;
+      const afterA = {a: hostA.textContent, b: hostB.textContent};
+
+      console.log(JSON.stringify({loadingA, loadingB, afterB, afterA}));
+    })();
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert "Loading" in out["loadingA"] and "Loading" in out["loadingB"], \
+        f"both hosts must show the loading state before either fetch answers: {out}"
+    assert "strip:B" in out["afterB"]["b"], f"host B must paint its own data: {out['afterB']}"
+    assert "Loading" in out["afterB"]["a"], \
+        f"host A must still be waiting on its OWN fetch, untouched by B's: {out['afterB']}"
+    assert "strip:A" in out["afterA"]["a"], \
+        f"host A's own, later-resolving fetch must still paint it -- this is finding 1's bug: {out['afterA']}"
+    assert "strip:B" in out["afterA"]["b"], \
+        f"host A's late paint must not overwrite host B's own pane: {out['afterA']}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_remounting_a_host_keeps_state_for_the_same_project_and_resets_for_a_different_one(
+        srv, tmp_path):
+    """Keying state by host must not lose the behaviour a tab switch already
+    relied on: a re-mount of the SAME host for the SAME project (switching
+    away from Findings and back) keeps its filters/page, and a re-mount of
+    that SAME host for a DIFFERENT project resets them -- the same reset a
+    project change has always done, now proven at the per-host state object
+    rather than at module-level variables that no longer exist."""
+    block = _security_js(srv)
+    script = tmp_path / "remount.js"
+    script.write_text(_find_mount_harness(block, """
+    function secFindStrip(_fs, _data){ return secEl("div", "s", ""); }
+    function secFindFilterBar(_fs, _data){ return secEl("div", "fb", ""); }
+    function secFindTableSection(_fs, _data){ return secEl("div", "ts", ""); }
+    function secFindPager(_fs, _data){ return secEl("div", "pg", ""); }
+    """) + """
+    // Echoes back the page it was actually asked for, the same way the real
+    // endpoint does (queries.finding_rows never re-clamps `page` against the
+    // total row count, only against a minimum of 1) -- a stub that always
+    // answered "page 1" would silently overwrite the manually-set page below
+    // the moment the SAME-project re-mount refetches, defeating this test.
+    async function secFetch(path){
+      const qs = new URLSearchParams(path.split("?")[1] || "");
+      return {total: 0, unique: 0, by_severity: {}, page: Number(qs.get("page")) || 1, per_page: 25};
+    }
+
+    (async () => {
+      const host = new FakeElement("div");
+      await renderFindings(host, "web");
+      const fs1 = secFindStates.get(host);
+      fs1.filters.branch = "release/2.1";
+      fs1.page = 3;
+
+      await renderFindings(host, "web");            // same host, same project
+      const fs2 = secFindStates.get(host);
+      const keptSamePage = fs2 === fs1 && fs2.page === 3 && fs2.filters.branch === "release/2.1";
+
+      await renderFindings(host, "other-project");   // same host, different project
+      const fs3 = secFindStates.get(host);
+      const resetOnSwitch = fs3.page === 1 && fs3.filters.branch === "" && fs3.project === "other-project";
+
+      console.log(JSON.stringify({keptSamePage, resetOnSwitch}));
+    })();
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["keptSamePage"], "a re-mount of the same host/project must keep its filters and page"
+    assert out["resetOnSwitch"], "a re-mount of the same host for a DIFFERENT project must reset"
+
+
+def test_findings_state_is_keyed_by_a_weakmap_not_a_plain_map(srv):
+    """A plain Map keyed by host would hold every host this screen was EVER
+    mounted into -- and everything it fetched -- alive forever, the first
+    time a caller mounts into a fresh element and discards the old one
+    (exactly the shape the Activity screen's planned fingerprint link will
+    have). A WeakMap entry is exactly as long-lived as its host, so a
+    discarded host cannot outlive it here. Pinned structurally rather than by
+    forcing and observing a real GC pass: a finalisation-timing test is
+    flaky by construction (V8 gives no promised deadline for it), while this
+    assertion fails the instant the mechanism is swapped back to a Map."""
+    block = _security_js(srv)
+    assert "const secFindStates = new WeakMap();" in block, \
+        "the findings browser's per-host state must live in a WeakMap, not a Map"

@@ -18,7 +18,13 @@
    owns, without a second copy of a filterable table to drift the way a
    duplicated download function, and a duplicated state machine before it,
    already have (see reports-tab.js's own comment on secDownloadReport, and
-   queries.py's on checklist()).
+   queries.py's on checklist()). Two mounts open AT ONCE -- the Findings tab
+   and that future link, on screen together -- are not hypothetical enough to
+   leave unhandled: every piece of state below (filters, sort, page, the fetch
+   generation) is keyed by `host` in `secFindStates`, so two hosts showing the
+   SAME project never share a filter, and whichever of two overlapping
+   fetches answers last still paints its OWN pane rather than losing a
+   staleness race to the other one's (see `secFindStates`'s own comment).
 
    `total` vs `unique`: the strip shows both, labelled, because they answer
    different questions -- the same finding open on two branches is one row
@@ -30,25 +36,40 @@
    this file -- the server's `by_severity`/`total`/`unique` describe every row
    the current FILTERS match, never narrowed by the floor, so the count of
    what the floor hides is exact across every page, not just the one on
-   screen. Two things this screen says out loud, per the brief: how many rows
-   the floor is hiding and why (a missing number is otherwise indistinguishable
-   from one that was never found), and that downloads always carry every
-   recorded finding regardless of what the floor shows here -- the identical
-   sentence index.js's `#sec-dl-note` and reports-tab.js's own caption already
-   give, so a reader moving between screens learns it once.
+   screen. A FIXED finding is exempted from the floor entirely (`secVisible`,
+   the same rule vocabulary.js's checklist already applies): the floor's job
+   is to declutter what still needs attention, and a fix that closed is not
+   that, so it stays visible and out of the "hidden" count regardless of its
+   severity (`fixed_by_severity` is what lets that count still add up exactly
+   -- see its own comment on `secFindHiddenByFloor`). Two things this screen
+   says out loud, per the brief: how many rows the floor is hiding and why (a
+   missing number is otherwise indistinguishable from one that was never
+   found), and that downloads always carry every recorded finding regardless
+   of what the floor shows here -- the identical sentence index.js's
+   `#sec-dl-note` and reports-tab.js's own caption already give, so a reader
+   moving between screens learns it once.
 
-   Module-level state, like project-screen.js's own secProjectCache/
-   secProjectTab -- a deliberate simplification, not an oversight: nothing in
-   this codebase mounts two instances of one screen at once, so a single set
-   of module-level variables (rather than state keyed by `host`) is the same
-   choice every sibling screen in this area already makes. Switching to a
+   Per-host state, not module-level. `secFindStates` is a WeakMap from host to
+   {project, filters, sort, dir, page, gen, data, error, savedName, newName}
+   -- a Map would work for lookups too, but would also hold every host this
+   ever mounted into, and everything it fetched, alive forever; a WeakMap
+   entry is exactly as long-lived as its host, so a discarded host (and its
+   payload) stops being kept alive here without anything having to notice or
+   clean it up. `secFindLoad`'s own staleness guard checks
+   `secFindStates.get(host) !== state` -- object identity against whatever is
+   CURRENTLY registered for that host -- rather than a single shared "current
+   host" variable, so a second mount into a DIFFERENT host can never
+   invalidate this one's in-flight fetch, and a re-mount of THIS host (a
+   project switch, or a fresh caller) always installs a brand new state
+   object the old fetch's own closure no longer matches. Switching to a
    DIFFERENT project resets every transient control (filters, sort, page, the
    saved-filter picker); switching away and back to the SAME project's
-   Findings tab keeps them, the same as every other tab on this screen. */
+   Findings tab -- on the SAME host -- keeps them, the same as every other
+   tab on this screen. */
 import { api, toast, fmtWhen } from "./page.js";
 import { secEl, secIcon, secFetch } from "./dom.js";
 import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP, SEV_ORDER,
-         secMinSeverity, secSevRank, secSevKey, secStateKey } from "./vocabulary.js";
+         secMinSeverity, secSevKey, secStateKey, secVisible } from "./vocabulary.js";
 import { secAskReason } from "./reason.js";
 import { secInvalidateProject } from "./project-screen.js";
 
@@ -71,39 +92,40 @@ function _defaultFilters(){
           analysis: "", show_resolved: false};
 }
 
-let secFindHost = null;
-let secFindProject = "";
-let secFindGen = 0;
-let secFindData = null;
-let secFindError = "";
-let secFindFilters = _defaultFilters();
-let secFindSort = "severity";
-let secFindDir = "desc";
-let secFindPage = 1;
-let secFindSavedName = "";
-let secFindNewName = "";
-
-/* The one exported entry point -- see this file's own comment. */
-export async function renderFindings(host, project){
-  if(secFindProject !== project){
-    secFindProject = project;
-    secFindFilters = _defaultFilters();
-    secFindSort = "severity"; secFindDir = "desc"; secFindPage = 1;
-    secFindSavedName = ""; secFindNewName = "";
-    secFindData = null; secFindError = "";
-  }
-  secFindHost = host;
-  await secFindLoad();
+function _newFindState(host, project){
+  return {
+    host, project, gen: 0, data: null, error: "",
+    filters: _defaultFilters(), sort: "severity", dir: "desc", page: 1,
+    savedName: "", newName: "",
+  };
 }
 
-function secFindQuery(){
+// One entry per host this has ever been mounted into -- see this file's own
+// comment for why a WeakMap and not a Map.
+const secFindStates = new WeakMap();
+
+/* The one exported entry point -- see this file's own comment. An existing
+   mount into the SAME host for the SAME project keeps its state (a tab
+   switch away and back); anything else -- a brand new host, or the same host
+   handed a different project -- starts from a fresh one, the same reset a
+   project change has always done. */
+export async function renderFindings(host, project){
+  let fs = secFindStates.get(host);
+  if(!fs || fs.project !== project){
+    fs = _newFindState(host, project);
+    secFindStates.set(host, fs);
+  }
+  await secFindLoad(fs);
+}
+
+function secFindQuery(fs){
   const p = new URLSearchParams();
-  p.set("project", secFindProject);
-  p.set("sort", secFindSort);
-  p.set("dir", secFindDir);
-  p.set("page", String(secFindPage));
+  p.set("project", fs.project);
+  p.set("sort", fs.sort);
+  p.set("dir", fs.dir);
+  p.set("page", String(fs.page));
   p.set("per_page", String(FIND_PER_PAGE));
-  const f = secFindFilters;
+  const f = fs.filters;
   if(f.severity.length) p.set("severity", f.severity.join(","));
   if(f.state.length) p.set("state", f.state.join(","));
   if(f.category.length) p.set("category", f.category.join(","));
@@ -115,55 +137,61 @@ function secFindQuery(){
   return p.toString();
 }
 
-async function secFindLoad(){
-  const host = secFindHost, project = secFindProject;
+async function secFindLoad(fs){
+  const host = fs.host, project = fs.project;
   if(!host || !project) return;
-  const gen = ++secFindGen;
+  const gen = ++fs.gen;
   // No "Loading…" flash on a filter/sort/page change or a poll-driven
   // refresh -- only on the very first fetch for this project, the same
   // no-flicker rule secLoadIndex already follows for its own cache.
-  if(!secFindData){
+  if(!fs.data){
     host.textContent = "";
     host.appendChild(secEl("div", "tblempty", "Loading…"));
   }
   let data;
   try{
-    data = await secFetch("/api/security/findings?" + secFindQuery());
+    data = await secFetch("/api/security/findings?" + secFindQuery(fs));
   }catch(e){
-    if(gen !== secFindGen || secFindHost !== host || secFindProject !== project) return;
-    secFindError = e.message; secFindData = null;
-    secFindPaint();
+    // `secFindStates.get(host) !== fs`, not a host/project comparison: a
+    // second mount into a DIFFERENT host can never invalidate this one (its
+    // own entry is untouched), and a re-mount of THIS host (a project
+    // switch, or a fresh caller) always installs a NEW state object, so
+    // object identity catches every way this fetch could now be stale in
+    // one guard -- see this file's own header comment.
+    if(gen !== fs.gen || secFindStates.get(host) !== fs) return;
+    fs.error = e.message; fs.data = null;
+    secFindPaint(fs);
     return;
   }
-  if(gen !== secFindGen || secFindHost !== host || secFindProject !== project) return;
-  secFindError = "";
-  secFindData = data;
+  if(gen !== fs.gen || secFindStates.get(host) !== fs) return;
+  fs.error = "";
+  fs.data = data;
   // A filter change can move the requested page past the end; follow what
   // the server actually served (finding_rows clamps, never invents rows)
   // rather than keep the control pointed at a page whose rows never answer.
-  secFindPage = data.page || 1;
-  secFindPaint();
+  fs.page = data.page || 1;
+  secFindPaint(fs);
 }
 
-async function secFindRefresh(){ await secFindLoad(); }
+async function secFindRefresh(fs){ await secFindLoad(fs); }
 
-function secFindPaint(){
-  const host = secFindHost;
+function secFindPaint(fs){
+  const host = fs.host;
   if(!host) return;
   host.textContent = "";
-  if(secFindError){
+  if(fs.error){
     const box = secEl("div", "tblempty");
     box.appendChild(secIcon("alert"));
-    box.appendChild(document.createTextNode("Could not read findings — " + secFindError));
+    box.appendChild(document.createTextNode("Could not read findings — " + fs.error));
     host.appendChild(box);
     return;
   }
-  const data = secFindData;
+  const data = fs.data;
   if(!data) return;
-  host.appendChild(secFindStrip(data));
-  host.appendChild(secFindFilterBar(data));
-  host.appendChild(secFindTableSection(data));
-  host.appendChild(secFindPager(data));
+  host.appendChild(secFindStrip(fs, data));
+  host.appendChild(secFindFilterBar(fs, data));
+  host.appendChild(secFindTableSection(fs, data));
+  host.appendChild(secFindPager(fs, data));
 }
 
 /* ------------------------------------------------------------------ strip
@@ -172,12 +200,20 @@ function secFindPaint(){
    collapsed into one number. */
 function secFindHiddenByFloor(data, minSeverity){
   const floor = SEV_ORDER.indexOf(minSeverity);
+  const bySev = data.by_severity || {}, fixedBySev = data.fixed_by_severity || {};
   let n = 0;
-  SEV_ORDER.forEach((sev, i) => { if(i < floor) n += (data.by_severity || {})[sev] || 0; });
+  SEV_ORDER.forEach((sev, i) => {
+    // A fixed finding below the floor is exempted the same way `secVisible`
+    // exempts it from the checklist's own floor (see this file's header
+    // comment) -- shown regardless of severity, so it must not be counted
+    // as hidden either, or this number and the table beneath it would openly
+    // disagree about the very same row.
+    if(i < floor) n += (bySev[sev] || 0) - (fixedBySev[sev] || 0);
+  });
   return n;
 }
 
-function secFindStrip(data){
+function secFindStrip(fs, data){
   const wrap = secEl("div", "sevpills");
   const totalPill = secEl("span", "sevpill", data.total + " total");
   totalPill.title = "Every row matching the current filters — the same finding "
@@ -194,7 +230,7 @@ function secFindStrip(data){
   });
   if(!any) wrap.appendChild(secEl("span", "sevpill clean", "nothing matches"));
 
-  const minSeverity = secMinSeverity(secFindProject);
+  const minSeverity = secMinSeverity(fs.project);
   const hidden = secFindHiddenByFloor(data, minSeverity);
   const note = secEl("div", "secpj-caption");
   if(hidden > 0){
@@ -243,22 +279,22 @@ function secFindToggleIn(list, value){
   if(i >= 0) list.splice(i, 1); else list.push(value);
 }
 
-function secFindSeverityField(){
+function secFindSeverityField(fs){
   return secFindChipField("Severity", secFindChips(
-    ["critical", "high", "medium", "low", "info"], secFindFilters.severity,
-    (sev) => { secFindToggleIn(secFindFilters.severity, sev); secFindPage = 1; secFindRefresh(); }));
+    ["critical", "high", "medium", "low", "info"], fs.filters.severity,
+    (sev) => { secFindToggleIn(fs.filters.severity, sev); fs.page = 1; secFindRefresh(fs); }));
 }
 
-function secFindCategoryField(){
+function secFindCategoryField(fs){
   return secFindChipField("Category", secFindChips(
-    FIND_CATEGORIES, secFindFilters.category,
-    (cat) => { secFindToggleIn(secFindFilters.category, cat); secFindPage = 1; secFindRefresh(); }));
+    FIND_CATEGORIES, fs.filters.category,
+    (cat) => { secFindToggleIn(fs.filters.category, cat); fs.page = 1; secFindRefresh(fs); }));
 }
 
-function secFindStateField(){
-  const row = secFindChips(SEC_STATES, secFindFilters.state,
-    (state) => { secFindToggleIn(secFindFilters.state, state); secFindPage = 1; secFindRefresh(); },
-    (state) => SEC_STATE_LABEL[state] || state);
+function secFindStateField(fs){
+  const row = secFindChips(SEC_STATES, fs.filters.state,
+    (st) => { secFindToggleIn(fs.filters.state, st); fs.page = 1; secFindRefresh(fs); },
+    (st) => SEC_STATE_LABEL[st] || st);
   // secFindChips has no notion of a per-option title -- threaded on
   // afterwards, same as every chip helper on this screen sets .title once
   // the element already exists (see secRenderChecklist's identical pattern).
@@ -282,17 +318,17 @@ function secFindTextField(label, value, onChange){
   return field;
 }
 
-function secFindShowResolvedField(){
+function secFindShowResolvedField(fs){
   const field = secEl("div", "secfield");
   field.appendChild(secEl("span", null, "Resolved"));
   const label = document.createElement("label");
   const cb = document.createElement("input");
   cb.type = "checkbox";
-  cb.checked = secFindFilters.show_resolved;
+  cb.checked = fs.filters.show_resolved;
   cb.addEventListener("change", () => {
-    secFindFilters.show_resolved = cb.checked;
-    secFindPage = 1;
-    secFindRefresh();
+    fs.filters.show_resolved = cb.checked;
+    fs.page = 1;
+    secFindRefresh(fs);
   });
   label.appendChild(cb);
   label.appendChild(document.createTextNode(" Show resolved"));
@@ -300,23 +336,23 @@ function secFindShowResolvedField(){
   return field;
 }
 
-function secFindClearButton(){
+function secFindClearButton(fs){
   const btn = secEl("button", "btn ghost", "Clear filters");
   btn.type = "button";
-  btn.onclick = () => { secFindFilters = _defaultFilters(); secFindPage = 1; secFindRefresh(); };
+  btn.onclick = () => { fs.filters = _defaultFilters(); fs.page = 1; secFindRefresh(fs); };
   return btn;
 }
 
-function secFindCurrentQuery(){
-  const f = secFindFilters;
+function secFindCurrentQuery(fs){
+  const f = fs.filters;
   return {severity: f.severity, state: f.state, category: f.category,
           branch: f.branch, path: f.path, q: f.q, analysis: f.analysis,
-          show_resolved: f.show_resolved, sort: secFindSort, dir: secFindDir};
+          show_resolved: f.show_resolved, sort: fs.sort, dir: fs.dir};
 }
 
-function secFindApplyQuery(q){
+function secFindApplyQuery(fs, q){
   const query = q || {};
-  secFindFilters = {
+  fs.filters = {
     severity: Array.isArray(query.severity) ? query.severity.slice() : [],
     state: Array.isArray(query.state) ? query.state.slice() : [],
     category: Array.isArray(query.category) ? query.category.slice() : [],
@@ -326,34 +362,34 @@ function secFindApplyQuery(q){
     analysis: typeof query.analysis === "string" ? query.analysis : "",
     show_resolved: !!query.show_resolved,
   };
-  secFindSort = FIND_SORT_COLUMNS.some(([key]) => key === query.sort) ? query.sort : "severity";
-  secFindDir = query.dir === "asc" ? "asc" : "desc";
-  secFindPage = 1;
-  secFindRefresh();
+  fs.sort = FIND_SORT_COLUMNS.some(([key]) => key === query.sort) ? query.sort : "severity";
+  fs.dir = query.dir === "asc" ? "asc" : "desc";
+  fs.page = 1;
+  secFindRefresh(fs);
 }
 
-async function secFindSaveCurrent(name){
+async function secFindSaveCurrent(fs, name){
   const trimmed = (name || "").trim();
   if(!trimmed){ toast("Name this filter set before saving", true); return; }
   const ok = await api("security_filter_save",
-    {project: secFindProject, name: trimmed, query: secFindCurrentQuery()});
+    {project: fs.project, name: trimmed, query: secFindCurrentQuery(fs)});
   if(!ok) return;           // api() has already shown the server's own message
   toast("Filter saved", false, "check");
-  secFindSavedName = trimmed;
-  secFindNewName = "";
-  await secFindRefresh();
+  fs.savedName = trimmed;
+  fs.newName = "";
+  await secFindRefresh(fs);
 }
 
-async function secFindDeleteSaved(name){
+async function secFindDeleteSaved(fs, name){
   if(!name) return;
-  const ok = await api("security_filter_delete", {project: secFindProject, name});
+  const ok = await api("security_filter_delete", {project: fs.project, name});
   if(!ok) return;
   toast("Filter deleted", false, "check");
-  secFindSavedName = "";
-  await secFindRefresh();
+  fs.savedName = "";
+  await secFindRefresh(fs);
 }
 
-function secFindSavedFilters(data){
+function secFindSavedFilters(fs, data){
   const bar = secEl("div", "secbar");
   const pickField = secEl("div", "secfield");
   pickField.appendChild(secEl("span", null, "Saved filters"));
@@ -369,12 +405,12 @@ function secFindSavedFilters(data){
     o.value = f.name; o.textContent = f.name;
     sel.appendChild(o);
   });
-  if((data.filters || []).some(f => f.name === secFindSavedName)) sel.value = secFindSavedName;
-  else secFindSavedName = "";
+  if((data.filters || []).some(f => f.name === fs.savedName)) sel.value = fs.savedName;
+  else fs.savedName = "";
   sel.addEventListener("change", () => {
-    secFindSavedName = sel.value;
+    fs.savedName = sel.value;
     const found = (data.filters || []).find(f => f.name === sel.value);
-    if(found) secFindApplyQuery(found.query);
+    if(found) secFindApplyQuery(fs, found.query);
   });
   pickField.appendChild(sel);
   bar.appendChild(pickField);
@@ -384,51 +420,56 @@ function secFindSavedFilters(data){
   const nameInput = document.createElement("input");
   nameInput.type = "text";
   nameInput.placeholder = "name this view";
-  nameInput.value = secFindNewName;
-  nameInput.addEventListener("change", () => { secFindNewName = nameInput.value; });
+  nameInput.value = fs.newName;
+  nameInput.addEventListener("change", () => { fs.newName = nameInput.value; });
   nameField.appendChild(nameInput);
   bar.appendChild(nameField);
 
   const saveBtn = secEl("button", "btn ghost", "Save");
   saveBtn.type = "button";
-  saveBtn.onclick = () => secFindSaveCurrent(nameInput.value);
+  saveBtn.onclick = () => secFindSaveCurrent(fs, nameInput.value);
   bar.appendChild(saveBtn);
 
   const delBtn = secEl("button", "btn ghost", "Delete");
   delBtn.type = "button";
-  delBtn.disabled = !secFindSavedName;
-  delBtn.onclick = () => secFindDeleteSaved(secFindSavedName);
+  delBtn.disabled = !fs.savedName;
+  delBtn.onclick = () => secFindDeleteSaved(fs, fs.savedName);
   bar.appendChild(delBtn);
 
   return bar;
 }
 
-function secFindFilterBar(data){
+function secFindFilterBar(fs, data){
   const wrap = document.createElement("div");
-  wrap.appendChild(secFindSeverityField());
-  wrap.appendChild(secFindStateField());
+  wrap.appendChild(secFindSeverityField(fs));
+  wrap.appendChild(secFindStateField(fs));
   wrap.appendChild(secEl("div", "secpj-caption",
     "Fixed, accepted and false-positive rows are excluded unless “Show resolved” is checked."));
-  wrap.appendChild(secFindCategoryField());
+  wrap.appendChild(secFindCategoryField(fs));
 
   const bar = secEl("div", "secbar");
-  bar.appendChild(secFindTextField("Branch", secFindFilters.branch, (v) => {
-    secFindFilters.branch = v; secFindPage = 1; secFindRefresh();
+  bar.appendChild(secFindTextField("Branch", fs.filters.branch, (v) => {
+    fs.filters.branch = v; fs.page = 1; secFindRefresh(fs);
   }));
-  bar.appendChild(secFindTextField("Path contains", secFindFilters.path, (v) => {
-    secFindFilters.path = v; secFindPage = 1; secFindRefresh();
+  bar.appendChild(secFindTextField("Path contains", fs.filters.path, (v) => {
+    fs.filters.path = v; fs.page = 1; secFindRefresh(fs);
   }));
-  bar.appendChild(secFindTextField("Analysis #", secFindFilters.analysis, (v) => {
-    secFindFilters.analysis = v; secFindPage = 1; secFindRefresh();
+  bar.appendChild(secFindTextField("Analysis #", fs.filters.analysis, (v) => {
+    fs.filters.analysis = v; fs.page = 1; secFindRefresh(fs);
   }));
-  bar.appendChild(secFindTextField("Search title / rule / CVE / file", secFindFilters.q, (v) => {
-    secFindFilters.q = v; secFindPage = 1; secFindRefresh();
+  // Matches what queries.finding_rows's own `q` filter actually searches --
+  // title, rule, rationale and every occurrence's file path. "CVE" is not a
+  // field of its own: for a dependency finding it is folded into `rule`, so
+  // naming `rule` here is what makes that searchable text discoverable at
+  // all, rather than implying a fifth, nonexistent column.
+  bar.appendChild(secFindTextField("Search title / rule / rationale / file", fs.filters.q, (v) => {
+    fs.filters.q = v; fs.page = 1; secFindRefresh(fs);
   }));
-  bar.appendChild(secFindShowResolvedField());
-  bar.appendChild(secFindClearButton());
+  bar.appendChild(secFindShowResolvedField(fs));
+  bar.appendChild(secFindClearButton(fs));
   wrap.appendChild(bar);
 
-  wrap.appendChild(secFindSavedFilters(data));
+  wrap.appendChild(secFindSavedFilters(fs, data));
   return wrap;
 }
 
@@ -437,7 +478,7 @@ function secFindFilterBar(data){
    analysis gives it -- a list that crosses branches (and so crosses
    analyses) has to say which one it is speaking about, hence the Branch and
    First seen columns beside State rather than a bare severity/title pair. */
-function secFindRow(f){
+function secFindRow(fs, f){
   const tr = document.createElement("tr");
   tr.className = "sev-" + secSevKey(f) + " state-" + secStateKey(f);
   const cell = (text) => { const td = document.createElement("td"); td.textContent = text; return td; };
@@ -472,30 +513,30 @@ function secFindRow(f){
   const tdAct = document.createElement("td");
   // A fixed finding is gone: there is nothing left to accept or dismiss --
   // the same rule secFindingRow in analysis.js already follows.
-  if(f.state !== "fixed") tdAct.appendChild(secFindDecisionControls(f));
+  if(f.state !== "fixed") tdAct.appendChild(secFindDecisionControls(fs, f));
   tr.appendChild(tdAct);
   return tr;
 }
 
-function secFindDecisionControls(f){
+function secFindDecisionControls(fs, f){
   const wrap = secEl("div", "secactions");
   [["accepted", "Accept risk"], ["false_positive", "False positive"]].forEach(([state, label]) => {
     const b = secEl("button", "btn", label);
     b.type = "button";
-    b.onclick = () => secFindDecide(f, state, label);
+    b.onclick = () => secFindDecide(fs, f, state, label);
     wrap.appendChild(b);
   });
   return wrap;
 }
 
-async function secFindDecide(f, state, label){
+async function secFindDecide(fs, f, state, label){
   // Required, not optional: the API refuses a blank reason with a 400 of its
   // own -- asked here so that refusal is never how somebody discovers the
   // rule (see analysis.js's identical secDecide).
   const reason = await secAskReason(label, f.title);
   if(reason === null) return;
   const ok = await api("security_decide",
-    {project: secFindProject, fingerprint: f.fingerprint, state, reason});
+    {project: fs.project, fingerprint: f.fingerprint, state, reason});
   // api() has already put the server's own sentence on screen when this is
   // false -- including the one this page must never swallow: a decision
   // refused because an analysis of this project is still running.
@@ -506,16 +547,19 @@ async function secFindDecide(f, state, label){
   // way secDecide in analysis.js does for the old single-analysis view, so
   // neither shows a stale count without a real reload.
   secInvalidateProject();
-  await secFindRefresh();
+  await secFindRefresh(fs);
 }
 
-function secFindTableSection(data){
+function secFindTableSection(fs, data){
   const rows = data.rows || [];
   if(!rows.length) return secEl("div", "tblempty", "No findings match these filters.");
 
-  const minSeverity = secMinSeverity(secFindProject);
-  const floor = SEV_ORDER.indexOf(minSeverity);
-  const visible = rows.filter(f => secSevRank(f.severity) >= floor);
+  const minSeverity = secMinSeverity(fs.project);
+  // `secVisible`, not a bare rank comparison: the exact exemption
+  // vocabulary.js's checklist already gives a FIXED finding (shown
+  // regardless of severity) -- see this file's own header comment for why
+  // the two floors have to agree with each other.
+  const visible = secVisible(rows, minSeverity);
   if(!visible.length){
     return secEl("div", "tblempty",
       "Every finding on this page is below the " + minSeverity
@@ -530,13 +574,13 @@ function secFindTableSection(data){
     const th = document.createElement("th");
     const btn = secEl("button", "btn ghost");
     btn.type = "button";
-    const active = secFindSort === key;
-    btn.appendChild(secEl("span", null, label + (active ? (secFindDir === "asc" ? " ▲" : " ▼") : "")));
+    const active = fs.sort === key;
+    btn.appendChild(secEl("span", null, label + (active ? (fs.dir === "asc" ? " ▲" : " ▼") : "")));
     btn.onclick = () => {
-      if(secFindSort === key) secFindDir = secFindDir === "asc" ? "desc" : "asc";
-      else { secFindSort = key; secFindDir = key === "severity" ? "desc" : "asc"; }
-      secFindPage = 1;
-      secFindRefresh();
+      if(fs.sort === key) fs.dir = fs.dir === "asc" ? "desc" : "asc";
+      else { fs.sort = key; fs.dir = key === "severity" ? "desc" : "asc"; }
+      fs.page = 1;
+      secFindRefresh(fs);
     };
     th.appendChild(btn);
     htr.appendChild(th);
@@ -548,14 +592,14 @@ function secFindTableSection(data){
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
-  visible.forEach(f => tbody.appendChild(secFindRow(f)));
+  visible.forEach(f => tbody.appendChild(secFindRow(fs, f)));
   table.appendChild(tbody);
   wrap.appendChild(table);
   return wrap;
 }
 
 /* ------------------------------------------------------------------ pager */
-function secFindPager(data){
+function secFindPager(fs, data){
   const wrap = secEl("div", "pager");
   const total = data.total || 0;
   const perPage = data.per_page || FIND_PER_PAGE;
@@ -565,7 +609,7 @@ function secFindPager(data){
   const prev = secEl("button", "btn ghost", "Prev");
   prev.type = "button";
   prev.disabled = page <= 1;
-  prev.onclick = () => { secFindPage = Math.max(1, page - 1); secFindRefresh(); };
+  prev.onclick = () => { fs.page = Math.max(1, page - 1); secFindRefresh(fs); };
   wrap.appendChild(prev);
 
   wrap.appendChild(secEl("span", null,
@@ -574,7 +618,7 @@ function secFindPager(data){
   const next = secEl("button", "btn ghost", "Next");
   next.type = "button";
   next.disabled = page >= pages;
-  next.onclick = () => { secFindPage = Math.min(pages, page + 1); secFindRefresh(); };
+  next.onclick = () => { fs.page = Math.min(pages, page + 1); secFindRefresh(fs); };
   wrap.appendChild(next);
 
   return wrap;

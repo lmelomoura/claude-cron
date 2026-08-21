@@ -668,6 +668,25 @@ def test_resolved_findings_are_hidden_unless_asked_for(conn):
     assert [r["state"] for r in shown["rows"]] == ["fixed"]
 
 
+def test_fixed_by_severity_lets_the_hidden_count_exempt_a_fixed_finding(conn):
+    """The findings browser (ui/security/findings-screen.js) exempts a FIXED
+    finding from its severity floor, the same exemption `secVisible` already
+    gives the single-analysis checklist -- and its own "N hidden" count needs
+    this field to keep agreeing with that: `by_severity` alone cannot tell a
+    fixed low-severity finding apart from an OPEN one sitting in the very
+    same bucket, which is exactly what a floor-hidden count that just
+    subtracted the wrong thing would do."""
+    # "high sast" sits at index 0 in both calls -> same fingerprint, stays
+    # open. "low secret" only exists in the first call -> gone from the
+    # second -> checklist marks it fixed.
+    _analysis(conn, "main", findings=[("high", "sast"), ("low", "secret")])
+    _analysis(conn, "main", findings=[("high", "sast")])
+    got = queries.finding_rows(conn, "web", {"show_resolved": True})
+    assert got["by_severity"]["low"] == 1
+    assert got["fixed_by_severity"]["low"] == 1, "the closed low finding must count as fixed"
+    assert got["fixed_by_severity"]["high"] == 0, "the still-open high finding must not"
+
+
 def test_unique_counts_fingerprints_not_rows(conn):
     """189 findings across branches can be 93 problems. The two numbers answer
     different questions and the screen shows both."""

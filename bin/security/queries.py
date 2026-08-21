@@ -575,6 +575,14 @@ def finding_rows(conn, project, filters=None, sort="severity",
     nature -- it is the one route parameters cannot protect -- so an
     unrecognised column raises rather than silently falling back to
     `severity`.
+
+    The returned `by_severity` counts EVERY row the current filters match
+    (before pagination), and `fixed_by_severity` is the same count restricted
+    to `state == "fixed"` -- so the browser can say "N findings below the
+    floor are hidden" while still exempting a fixed one from that count, the
+    same exemption `secVisible` (ui/security/vocabulary.js) already gives the
+    single-analysis checklist. Both are counted from the whole filtered set,
+    not the page on screen, for the reason `by_severity` alone always was.
     """
     if sort not in SORTABLE:
         raise ValueError(f"sort must be one of {SORTABLE}")
@@ -646,9 +654,22 @@ def finding_rows(conn, project, filters=None, sort="severity",
             " ".join(o["file"] for o in r.get("occurrences", []))]).lower()]
 
     by_severity = {s: 0 for s in _SEV_RANK}
+    # A FIXED finding below the floor is exempted from being hidden by
+    # `secVisible` (ui/security/vocabulary.js) in the single-analysis
+    # checklist, and the findings browser now carries the same exemption
+    # (ui/security/findings-screen.js's own `secFindTableSection`) -- so the
+    # browser's own "N findings below the floor are hidden" count has to
+    # subtract exactly the fixed ones out of each severity bucket, or that
+    # count and the table underneath it would openly disagree about the same
+    # row. Counted here, from the whole filtered set before pagination, for
+    # the same reason `by_severity` itself is: the browser may be showing
+    # page 2 of 5, and the count has to be exact regardless.
+    fixed_by_severity = {s: 0 for s in _SEV_RANK}
     for r in rows:
         if r["severity"] in by_severity:
             by_severity[r["severity"]] += 1
+            if r["state"] == "fixed":
+                fixed_by_severity[r["severity"]] += 1
 
     if sort == "severity":
         keyf = lambda r: _SEV_RANK.get(r["severity"], 9)
@@ -672,6 +693,7 @@ def finding_rows(conn, project, filters=None, sort="severity",
     start = (page - 1) * per_page
     return {"rows": rows[start:start + per_page], "total": total,
             "unique": unique, "by_severity": by_severity,
+            "fixed_by_severity": fixed_by_severity,
             "page": page, "per_page": per_page}
 
 

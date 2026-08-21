@@ -50,6 +50,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   of a filterable table to drift the way a duplicated download function, and
   a duplicated state machine before it, already have.
 
+  A follow-up review closed three more issues before this shipped. The
+  severity floor used to apply uniformly, with no exception for a finding
+  that had just been marked FIXED — so with "Show resolved" checked, a
+  low-severity fix disappeared under a medium floor exactly like an open
+  finding would, hiding the one thing this view exists to confirm: that the
+  fix actually landed. It now shares the same exemption `secVisible` already
+  gives the single-analysis checklist (a fixed row is shown regardless of
+  severity), and the strip's own "N hidden" count excludes it too, via a new
+  `fixed_by_severity` field on `queries.finding_rows`, so the two numbers
+  stay consistent with each other. The search field's label promised less
+  than the search does — it read "Search title / rule / CVE / file", but the
+  filter searches `title`/`rule`/`rationale`/every occurrence's file path,
+  and "CVE" is not a field of its own (it is folded into `rule` for a
+  dependency finding); the label now names what is actually searched. And
+  every piece of this screen's state (filters, sort, page, the fetch
+  generation) is now keyed by the mounted host in a `WeakMap`, not held in
+  module-level variables — a real gap once the Activity screen's planned
+  fingerprint link opens a second mount of this same browser beside the
+  Findings tab's own one, where the older of two overlapping fetches used to
+  fail its own staleness guard and leave that pane frozen on "Loading…"
+  forever.
+
 - **The Security area has an index screen.** Five KPI cards (projects, total
   analyses, critical, high, success rate), a table of every security-enabled
   project with its default branch's current posture, a fleet-wide feed of
