@@ -571,8 +571,15 @@ UI_SECURITY = REPO / "ui" / "security"
 
 def _security_sources():
     """Every module of the Security area, sorted, so a scan of "the area" keeps
-    meaning the whole area as it grows a file."""
-    return sorted(UI_SECURITY.glob("*.js"))
+    meaning the whole area as it grows a file.
+
+    rglob, not glob: a module landing at ui/security/sub/ or any other nested
+    directory is still bundled (build/ui-digest.sh walks all of ui/) and would
+    otherwise be fingerprinted but never sink-scanned -- the one guard here
+    that would actually catch an innerHTML regression silently skipping the
+    new file. The two guards over "the area" have to agree on what the area
+    is."""
+    return sorted(UI_SECURITY.rglob("*.js"))
 
 
 def _security_js(srv):
@@ -592,6 +599,26 @@ def _security_js(srv):
     files = _security_sources()
     assert files, f"no Security modules under {UI_SECURITY} -- this guard is reading nothing"
     return "\n".join(f.read_text() for f in files)
+
+
+def test_a_nested_security_module_still_reaches_the_sink_scan():
+    """The digest (build/ui-digest.sh) walks all of ui/ when it fingerprints
+    what the bundle was built from; a scan that only globbed the top level of
+    ui/security/ would bundle and fingerprint a module dropped one directory
+    deeper without ever sink-scanning it -- exactly the shape four upcoming
+    screens are about to add. A real file placed at
+    ui/security/<subdir>/nested.js has to come back from `_security_sources()`,
+    proving the scan is rglob, not glob."""
+    probe_dir = UI_SECURITY / "adversarial_probe"
+    probe_dir.mkdir(exist_ok=True)
+    probe = probe_dir / "nested.js"
+    probe.write_text("el.innerHTML = x;\n")
+    try:
+        assert probe in _security_sources(), \
+            "a module nested under ui/security/ was not picked up by the scan"
+    finally:
+        probe.unlink()
+        probe_dir.rmdir()
 
 
 def test_the_security_view_exists_and_is_registered(srv):

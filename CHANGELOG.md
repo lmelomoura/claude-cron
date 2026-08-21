@@ -176,7 +176,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The Security area moved out of `dashboard.html` into `ui/security/`, and
   nothing it does changed.** The page was 7,323 lines with the whole app in one
   `<script>`; the Security area was 874 of them and has four more screens
-  coming. It is now nine ES modules bundled by a pinned esbuild into
+  coming. It is now ten ES modules bundled by a pinned esbuild into
   `bin/static/security.js` and served by a new `/static/*` route. **The bundle
   is committed**, so installing claude-cron still needs only jq, python3 and
   curl — Node is a developer dependency, and the day it becomes an install

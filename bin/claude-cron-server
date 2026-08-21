@@ -68,16 +68,30 @@ def static_asset(name):
     The name arrives exactly as it came off the wire, undecoded: decoding is
     what turns `..%2F` into a directory to climb, and there is nothing in this
     directory whose name needs it.
+
+    Everything past the extension check runs inside the try, including
+    `is_file()`: a pathologically long name makes stat() raise OSError
+    (ENAMETOOLONG is not one of the errnos pathlib swallows on its own), and a
+    file that is there but not valid UTF-8 makes `read_text()` raise
+    UnicodeDecodeError -- a ValueError. Either one used to be a crash this
+    route had no answer for instead of a plain miss.
     """
     if "/" in name or "\\" in name or name.startswith(".") or ".." in name:
         return None, None
     path = STATIC_DIR / name
     ctype = STATIC_TYPES.get(path.suffix)
-    if not ctype or not path.is_file():
+    if not ctype:
         return None, None
     try:
+        # Resolved and re-anchored under STATIC_DIR: a symlink sitting in the
+        # directory (x.js -> /etc/passwd) would otherwise be followed and
+        # handed back with whatever Content-Type its own extension claims.
+        # Requiring the resolved parent to still be the resolved STATIC_DIR
+        # keeps this route inside the one directory it was ever meant to read.
+        if path.resolve().parent != STATIC_DIR.resolve() or not path.is_file():
+            return None, None
         return path.read_text(), ctype
-    except OSError:
+    except (OSError, ValueError):
         return None, None
 
 PORT = int(os.environ.get("CLAUDE_CRON_PORT", "8787"))
