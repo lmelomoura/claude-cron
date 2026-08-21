@@ -19,6 +19,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A detached analysis is a real process, so the engine can tell it is alive.**
+  It ran inside a `( subshell )`, where bash 3.2 freezes `$$` at the parent's
+  pid and offers no `BASHPID` — so the run's own slot recorded a process that
+  exited seconds after launching it. Everything downstream then read the run
+  as dead: `max_parallel` stopped gating (two analyses of one project could
+  overlap), the dashboard never saw a live run, and the Security page called a
+  healthy analysis dead after three minutes. The detached half now re-execs the
+  script as a new process, where `$$` is honest, and a structural assertion
+  keeps it from being folded back into a subshell.
+
 - **The page can finally see a live security run.** `active_runs` was built
   from the jobs file, which by design never contains a derived job — so a
   running analysis had no "Open the run" button for its whole life, and the

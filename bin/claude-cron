@@ -701,9 +701,17 @@ EOF
     # until the next Analyse swept it. The server's own restart-on-file-change
     # did exactly that to a live analysis mid-SAST. The plist now carries the
     # key too; this survives a parent that does not.
+    # A NEW BASH PROCESS, not a ( subshell ): inside a subshell bash 3.2 keeps
+    # $$ at the parent's pid and has no BASHPID, so the run's own slot named a
+    # process that exited seconds later -- the engine then read every detached
+    # analysis as dead. A fresh process has a true $$, and the internal
+    # subcommand keeps the entry point out of the public dispatch.
+    # `set -m` gives it its own process group, so a launchd service restart
+    # cannot group-kill it; `trap '' HUP` is what nohup(1) does.
     set -m
     ( trap '' HUP
-      security_run_analysis "$jid" "$aid" "$branch" ) </dev/null >> "$DATA_DIR/exec.log" 2>&1 &
+      exec "$SELF" __run-analysis "$jid" "$aid" "$branch"
+    ) </dev/null >> "$DATA_DIR/exec.log" 2>&1 &
     local dpid=$!
     disown "$dpid" 2>/dev/null || true
     set +m
@@ -1265,7 +1273,20 @@ acquire_slot() { # <id> <max> -> prints the slot dir; non-zero when at capacity
   lock_take "$L"
   n="$(slots_active "$id")"              # also prunes dead slots
   if [ "$max" -gt 0 ] && [ "$n" -ge "$max" ]; then lock_drop "$L"; return 1; fi
-  slot="$base/$$"                        # unique per _exec process
+  # NOT $$: inside a ( subshell ) bash keeps $$ frozen at the ORIGINAL
+  # shell's pid by design, and bash 3.2 has no BASHPID. A detached security
+  # analysis runs run_job in-process inside exactly such a subshell, so the
+  # slot recorded the pid of a parent that exited seconds after launching --
+  # the engine then judged every such slot dead: max_parallel stopped
+  # gating, active_runs never showed the live run, and the page's dead-run
+  # warning fired against a healthy analysis. The kernel knows who we are
+  # even when $$ does not: a child's $PPID is this very process.
+  # $$ is honest here because every run owns a real PROCESS: the tick's
+  # runner is one, and a detached analysis re-execs this script rather than
+  # forking a ( subshell ), where bash 3.2 freezes $$ at the parent's pid and
+  # offers no BASHPID. A slot naming a parent that exits seconds later reads
+  # as dead: max_parallel stops gating and the page calls a healthy run dead.
+  slot="$base/$$"                        # unique per run process
   mkdir -p "$slot"; echo $$ > "$slot/pid"; boot_id > "$slot/boot"
   lock_drop "$L"
   printf '%s\n' "$slot"
@@ -4981,6 +5002,24 @@ JSON
     && ok "a permission_mode the CLI does not know falls back instead of dying later" \
     || bad "a permission_mode the CLI does not know falls back instead of dying later"
 
+  # A slot must name the process that HOLDS it. $$ inside a ( subshell ) is
+  # the parent's pid -- frozen by bash design -- and the detached analysis
+  # runs run_job in exactly such a subshell: the recorded holder exited
+  # seconds later, the engine judged the slot dead, max_parallel stopped
+  # gating and the page called a healthy run dead. current_pid asks the
+  # kernel instead.
+  # The detached analysis must re-exec a NEW PROCESS. A ( subshell ) inherits
+  # a frozen $$ on bash 3.2 (no BASHPID), so its slot would name a parent that
+  # exits seconds later: the engine reads the slot as dead, max_parallel stops
+  # gating, and the page calls a healthy analysis dead. Structural, because the
+  # regression is a one-word edit back to calling the function inline.
+  grep -q 'exec "$SELF" __run-analysis' "$SELF" \
+    && ok "a detached analysis re-execs a new process, never a subshell" \
+    || bad "a detached analysis re-execs a new process, never a subshell"
+  grep -q '^  __run-analysis)' "$SELF" \
+    && ok "the detached entry point is reachable from the dispatch" \
+    || bad "the detached entry point is reachable from the dispatch"
+
   # The property the whole design rests on: the tick must never schedule it.
   ( JOBS_FILE="$tmp/derived/jobs.json"; PROJECTS_FILE="$tmp/derived/projects.json"
     DATA_DIR="$tmp/derived/data"
@@ -5574,15 +5613,27 @@ JSON
   # THE BUG THIS PINS. The control server gives a CLI call 30 seconds and then
   # SIGKILLs it. Run inline, the Analyse button spun for 30s, showed a timeout,
   # and the killed shell never reached the close -- the row stayed `running` for
-  # ever and the button stayed disabled for that project. So: the command must
-  # come back long before the run does, and the row must still be closed by the
-  # detached half when the run ends without closing it itself.
+  # ever and the button stayed disabled for that project.
+  #
+  # Two halves, tested apart because they fail apart. Here: the DETACH itself,
+  # driven through a stand-in $SELF. It has to be a stand-in -- the detached
+  # half is a NEW PROCESS now (a ( subshell ) inherits a frozen $$ on bash 3.2,
+  # so its slot named a parent that exits seconds later and the engine read
+  # every detached run as dead), and a new process cannot see a shell function
+  # this suite defined. Testing it with an in-process stub would have meant
+  # testing a subshell the shipped code no longer uses.
   local dt0 dt1 detout
+  cat > "$sec/fake-self" <<'FAKESELF'
+#!/bin/bash
+# Stands in for the script the detached half re-execs. Records how it was
+# called, then outlives its parent to prove the parent did not wait.
+echo "$@" > "$(dirname "$0")/detached.argv"
+sleep 6
+: > "$(dirname "$0")/detached.ran"
+FAKESELF
+  chmod +x "$sec/fake-self"
   dt0="$(now_epoch)"
-  ( sec_env
-    # A run that takes noticeably longer than the assertion below allows, and
-    # never closes the analysis -- the shape of every early return in run_job.
-    run_job() { sleep 6; : > "$sec/detached.ran"; return 0; }
+  ( sec_env; SELF="$sec/fake-self"
     cmd_security_analyze --detach "Sec App" repo main quick ) > "$sec/detach.out" 2>&1
   dt1="$(now_epoch)"
   [ "$((dt1 - dt0))" -lt 4 ] \
@@ -5596,37 +5647,50 @@ JSON
     && ok "the row is open and running the moment the command returns" \
     || bad "the row was already '$( ( sec_env; security_py list --project "Sec App" | "$JQ" -r '.[0].state' ) )'"
   local detwait=0
-  while [ "$detwait" -lt 25 ] \
-     && [ "$( ( sec_env; security_py list --project "Sec App" | "$JQ" -r '.[0].state' ) )" = "running" ]; do
+  while [ "$detwait" -lt 25 ] && [ ! -f "$sec/detached.ran" ]; do
     sleep 1; detwait=$((detwait + 1))
   done
   [ -f "$sec/detached.ran" ] \
-    && ok "the detached run really ran, after its parent had already exited" \
-    || bad "the detached run never happened (waited ${detwait}s)"
-  [ "$( ( sec_env; security_py list --project "Sec App" | "$JQ" -r '.[0].state' ) )" = "failed" ] \
-    && ok "and the close travels with it: a detached run that ends without closing still closes the row" \
-    || bad "detached row left '$( ( sec_env; security_py list --project "Sec App" | "$JQ" -r '.[0].state' ) )'"
+    && ok "the detached process really ran, after its parent had already exited" \
+    || bad "the detached process never ran (waited ${detwait}s)"
+  case "$(cat "$sec/detached.argv" 2>/dev/null)" in
+    "__run-analysis Sec-App-"*" main"|"__run-analysis "*" main")
+      ok "and it was re-execed as __run-analysis <job> <analysis> <branch>" ;;
+    *) bad "the detached process got '$(cat "$sec/detached.argv" 2>/dev/null)'" ;;
+  esac
 
-  # The other half: a detached run that DOES close its own row, the way a real
-  # one does from inside run_job. The sweep must not overwrite that verdict.
+  # The other half: what the detached process DOES once it is running. This is
+  # security_run_analysis, called directly -- the same function the new process
+  # re-execs into -- so run_job can be stubbed the way the rest of this suite
+  # stubs it.
   ( sec_env
-    # The stub prepares before it closes, exactly as a real run does: the agent
-    # runs the deterministic phases as its first command and `finish` refuses
-    # `done` without them.
+    run_job() { return 0; }   # ends without ever closing the row, like an early return
+    aid="$(security_py open-analysis --project "Sec App" --repo repo --branch nc \
+             --commit c --profile quick --run-id jid | "$JQ" -r '.analysis_id')"
+    security_run_analysis "security-sec-app" "$aid" nc >/dev/null 2>&1
+    security_py list --project "Sec App" | "$JQ" -r --arg a "$aid" \
+      '.[] | select(.id == ($a|tonumber)) | .state' ) > "$sec/nc.state" 2>/dev/null
+  [ "$(cat "$sec/nc.state" 2>/dev/null)" = "failed" ] \
+    && ok "and the close travels with it: a run that ends without closing still closes the row" \
+    || bad "row left '$(cat "$sec/nc.state" 2>/dev/null)' after a run that never closed"
+
+  # A run that DOES close its own row keeps its verdict: the sweep is a no-op.
+  ( sec_env
+    # It prepares before it closes, exactly as a real run does: the agent runs
+    # the deterministic phases first and `finish` refuses `done` without them.
     run_job() {
       security_py prepare --analysis "$CC_SECURITY_ANALYSIS_ID" --root "$sec/tree" \
         --offline >/dev/null 2>&1
       security_close_analysis "$1" success "1.25" "" >/dev/null 2>&1; return 0; }
-    cmd_security_analyze --detach "Sec App" repo main quick ) > "$sec/detach2.out" 2>&1
-  detwait=0
-  while [ "$detwait" -lt 20 ] \
-     && [ "$( ( sec_env; security_py list --project "Sec App" | "$JQ" -r '.[0].state' ) )" = "running" ]; do
-    sleep 1; detwait=$((detwait + 1))
-  done
-  [ "$( ( sec_env; security_py list --project "Sec App" \
-            | "$JQ" -r '.[0] | [.state, (.spend_usd|tostring)] | join(",")' ) )" = "done,1.25" ] \
-    && ok "a detached run that closes its own row keeps its verdict — the sweep is a no-op over it" \
-    || bad "detached success -> $( ( sec_env; security_py list --project "Sec App" | "$JQ" -r '.[0] | [.state,(.spend_usd|tostring)] | join(",")' ) )"
+    aid="$(security_py open-analysis --project "Sec App" --repo repo --branch sc \
+             --commit c --profile quick --run-id jid | "$JQ" -r '.analysis_id')"
+    security_run_analysis "security-sec-app" "$aid" sc >/dev/null 2>&1
+    security_py list --project "Sec App" | "$JQ" -r --arg a "$aid" \
+      '.[] | select(.id == ($a|tonumber)) | [.state,(.spend_usd|tostring)] | join(",")' \
+    ) > "$sec/sc.state" 2>/dev/null
+  [ "$(cat "$sec/sc.state" 2>/dev/null)" = "done,1.25" ] \
+    && ok "a run that closes its own row keeps its verdict — the sweep is a no-op over it" \
+    || bad "self-closing run -> $(cat "$sec/sc.state" 2>/dev/null)"
 
   echo "cmd_security_analyze() — a dead row cannot brick the Analyse button"
   # A row left `running` by a run that is GONE (killed, rebooted, or the 30s
@@ -7944,6 +8008,12 @@ case "${1:-}" in
   project-delete) [ $# -ge 2 ] || die "usage: claude-cron project-delete <name>"; cmd_project_delete "$2" ;;
   project-rename) [ $# -ge 3 ] || die "usage: claude-cron project-rename <name> <new-name>"; cmd_project_rename "$2" "$3" ;;
   project-list)   cmd_project_list ;;
+  # Internal, and deliberately undocumented in usage: the entry point the
+  # detached analysis re-execs into. A real process, so its slot records a pid
+  # that is actually alive for the run's duration.
+  __run-analysis)
+             [ $# -ge 4 ] || die "usage: claude-cron __run-analysis <job-id> <analysis-id> <branch>"
+             security_run_analysis "$2" "$3" "$4" ;;
   security)  shift
              case "${1:-}" in
                analyze) shift; [ $# -ge 3 ] || die "usage: claude-cron security analyze [--detach] <project> <repo> <branch> [profile]"
