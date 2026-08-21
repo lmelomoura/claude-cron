@@ -46,15 +46,21 @@ schema, em vez de espalhado por um servidor de 2 900 linhas.
 
 ### Interface: fontes, bundle, entrega
 
-- Fontes em `ui/security/`, um módulo por ecrã, mais `api.js` (chamadas) e
-  `render.js` (construtores de DOM partilhados).
+- Fontes em `ui/security/`, um módulo por ecrã. **Aterrou como `dom.js`**, que
+  faz os dois papéis previstos (construtores de DOM e o `fetch` com o token),
+  mais `page.js`, que recebe da página o que os módulos precisam dela, e
+  `vocabulary.js`, dono das severidades e dos estados — o sítio que impede uma
+  quinta cópia de uma lista.
 - `esbuild` (dependência de desenvolvimento, versão fixada) agrupa em
   **`bin/static/security.js`**. Não `dist/`, que o `.gitignore` já apaga.
 - **O bundle é commitado.** Quem desenvolve a interface precisa de Node; quem
   instala não precisa de nada de novo, e a promessa de instalação do produto
   (jq, python3, curl) mantém-se intacta.
-- Rota estática nova no servidor para `/static/*`, com o mesmo cache-por-mtime
-  que a página já usa.
+- Rota estática nova no servidor para `/static/*`. **Aterrou sem cache**: relê do
+  disco a cada pedido e responde `no-store`; o cache-busting faz-se pela
+  impressão digital de conteúdo no `?v=`. Responde **antes** do gate de
+  autenticação, de propósito — a página de login precisa do próprio código para
+  se desenhar, e o bundle não é secreto.
 - `dashboard.html` deixa de conter o JavaScript da área e passa a carregá-lo. O
   CSS fica onde está: os componentes são os do Overview e nenhum muda.
 
@@ -103,8 +109,10 @@ mutações. Uma exportação é rara; o custo de um subprocesso aí é irrelevan
 
 ### Filtros guardados
 
-Tabela por projecto — nome e a combinação de filtros — com criar, renomear e
-apagar pelo CLI.
+Tabela por projecto — nome e a combinação de filtros — com listar, guardar e
+apagar pelo CLI. **Não há verbo de renomear**: guardar é um upsert sobre o nome,
+o que cobre o caso sem uma primitiva nova. Guardar e apagar são recusados ao
+agente; listar não.
 
 ---
 
@@ -133,8 +141,12 @@ A tabela de projectos mostra a postura da **branch por omissão** do projecto;
 quando essa nunca foi analisada, a mais recente que houver, **com o nome à
 vista** — posturas de branches diferentes não se confundem em silêncio.
 
-A tendência de 30 dias é o número de achados **em aberto** por análise, pela
-mesma definição acima. Com poucas análises fica esparsa, e é honesto que fique.
+**A coluna de tendência não aterrou no índice** — a tabela ficou com projecto,
+branch, postura, última análise e número de análises, e a tendência vive no
+separador Branches, onde é por branch e tem espaço para dizer alguma coisa. Lá é
+o número de achados **em aberto** por análise, pela mesma definição acima, numa
+janela real de 30 dias. Com poucas análises fica esparsa, e é honesto que
+fique.
 
 Por baixo: análises recentes, e o donut por severidade com as categorias mais
 frequentes (agrupadas por `rule`).
@@ -160,16 +172,31 @@ Faixa com total, as cinco severidades e *unique issues* (fingerprints distintos
 — a contagem que diz quantos problemas há, contra quantas linhas há).
 
 Filtros por severidade, estado, análise, branch, caminho e categoria, com
-pesquisa em mensagem/ficheiro/CVE. Tudo em SQL, com paginação no servidor.
+pesquisa em mensagem/ficheiro/CVE.
+
+**Correcção à spec, feita na implementação e mantida:** isto não é tudo em SQL.
+O estado de um achado **não é uma coluna** — é o resultado de comparar duas
+análises através do `checklist()`, a máquina de estados que já existe e já é
+testada. Filtrar por estado em SQL exigiria uma segunda cópia dessa máquina
+escrita como um `CASE`, que é exactamente a duplicação que este projecto já
+pagou três vezes. Portanto: as análises certas escolhem-se em SQL, o
+`checklist()` produz as linhas, e a filtragem, a ordenação e a paginação fazem-se
+em Python sobre esse conjunto. Com centenas de achados é instantâneo; se algum
+dia forem milhares, isso é um problema medido, não presumido.
 
 **O estado de um achado nesta tabela é o que ele tem na análise mais recente da
 sua branch.** A checklist compara duas análises; uma lista que atravessa
-análises tem de dizer contra qual está a falar. *First seen* é a análise mais
-antiga onde o fingerprint aparece.
+análises tem de dizer contra qual está a falar. *First seen* é o **instante** da análise mais
+antiga **terminada** onde o fingerprint aparece — uma análise que morreu a meio
+não faz um achado parecer mais velho do que alguma análise bem-sucedida
+confirmou.
 
 ### Activity
 
-Separadores por tipo (análises, achados, configuração), sem *Users*. Tabela com
+Separadores por tipo, sem *Users*: **All activity**, Análises, Achados e
+Configuração — quatro, não três. O `report_exported` ficou em Configuração por
+falta de melhor casa; uma exportação não é bem configuração, e é a costura mais
+fraca desta divisão. Tabela com
 hora, evento, detalhe, projecto e o que lhe está relacionado. À direita, o
 resumo do período e os projectos mais activos — sem *top users*, que com um
 operador seria uma lista de um.
@@ -198,7 +225,11 @@ operador seria uma lista de um.
   atravessa análises, e a contagem de únicos contra a de linhas.
 - **Contrato de página** para os ecrãs novos e para a regra do `textContent`.
 - **`selftest`** para os verbos novos do CLI (eventos, filtros guardados).
-- **Índices novos medidos, não presumidos.**
+- **Índices medidos, não presumidos** — e a medição concluiu que quase nenhum era
+  preciso: aterrou um só, `event_by_project_time`. O resto do custo resolveu-se a
+  não recomputar (memo do `checklist()` por ligação, e uma consulta agrupada onde
+  havia um ciclo), que é a correcção certa quando o problema é trabalho repetido
+  e não uma varredura de tabela.
 
 ### A armadilha do bundle
 
@@ -206,9 +237,17 @@ Existe hoje um teste que varre o bloco Security **dentro do `dashboard.html`** �
 procura de `innerHTML`. O código passa a viver em `ui/security/*.js`: esse teste
 deixaria de ver o que existe para vigiar **e continuaria a passar**.
 
-Passa a varrer as fontes em `ui/` e o bundle construído. E uma asserção nova
-recusa um bundle mais velho do que qualquer uma das suas fontes, para que
-"reconstruir na mesma alteração" seja imposto e não lembrado.
+Passa a varrer **todas** as fontes em `ui/` — não só `ui/security/`, porque o
+bundle pode conter qualquer coisa que a árvore alcance. O bundle construído fica
+deliberadamente **de fora**: uma guarda que lê a saída gerada está a uma
+reconstrução de deixar de guardar a fonte.
+
+**Correcção à spec, provada na implementação:** a asserção de frescura **não pode
+ser por mtime**. O git não guarda mtimes e um clone novo escreve `bin/` antes de
+`ui/`, portanto todas as fontes saem mais novas que o bundle e a asserção
+falharia a toda a gente que não mudou nada. É uma **impressão digital de
+conteúdo** — de `ui/**/*.js`, do `build/build-ui.sh` e do `package.json` —
+carimbada no bundle e recomputada pelo selftest.
 
 ---
 
