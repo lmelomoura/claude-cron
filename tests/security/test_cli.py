@@ -1488,6 +1488,112 @@ def test_a_decision_files_an_event_carrying_its_reason(tmp_path):
     assert "reviewed with the team" in ev[0]["detail"]
 
 
+# ---------------------------------------- activity-data, the Activity screen
+
+def test_activity_data_does_not_create_a_ledger_that_does_not_exist(tmp_path):
+    """Read-only, via `queries.read_only` -- same reasoning `index-data`/
+    `project-data`/`findings-page` already follow: a screen that only LOOKS
+    must not conjure the ledger file it is asking about into existence."""
+    db = tmp_path / "security.db"
+    out = run(db, "activity-data")
+    assert out == {"events": [], "summary": {k: 0 for k in security_ledger.EVENT_KINDS},
+                   "projects": [], "page": 1, "per_page": 25}
+    assert not db.exists()
+
+
+def test_activity_data_bundles_events_summary_and_projects(tmp_path):
+    db = tmp_path / "security.db"
+    run(db, "event", "--project", "web", "--kind", "analysis_started",
+        "--detail", "quick on main", "--related", "1")
+    run(db, "event", "--project", "web", "--kind", "decision_made",
+        "--detail", "accepted: reviewed", "--related", "abc123def456")
+    run(db, "event", "--project", "api", "--kind", "settings_changed")
+
+    out = run(db, "activity-data", "--since", "0")
+    kinds = [e["kind"] for e in out["events"]]
+    assert set(kinds) == {"analysis_started", "decision_made", "settings_changed"}
+    assert out["summary"]["analysis_started"] == 1
+    assert out["summary"]["decision_made"] == 1
+    assert out["summary"]["settings_changed"] == 1
+    assert out["summary"]["report_exported"] == 0
+    assert {p["project"]: p["count"] for p in out["projects"]} == {"web": 2, "api": 1}
+
+
+def test_activity_data_kind_narrows_the_events_only(tmp_path):
+    """The sidebar's per-kind counts and the most-active-projects list both
+    describe the WHOLE period, regardless of which kind the table is
+    filtered to -- narrowing the table to one tab must not also zero out
+    the sidebar's other counts (see cmd_activity_data's own docstring)."""
+    db = tmp_path / "security.db"
+    run(db, "event", "--project", "web", "--kind", "analysis_started")
+    run(db, "event", "--project", "web", "--kind", "decision_made")
+
+    out = run(db, "activity-data", "--since", "0", "--kind", "decision_made")
+    assert [e["kind"] for e in out["events"]] == ["decision_made"]
+    # The summary is NOT narrowed to the same kind -- both counts are real.
+    assert out["summary"]["analysis_started"] == 1
+    assert out["summary"]["decision_made"] == 1
+    assert {p["project"] for p in out["projects"]} == {"web"}
+
+
+def test_activity_data_project_narrows_every_panel(tmp_path):
+    """Unlike `kind`, `project` is a real scope change and narrows the
+    events, the summary AND the projects list alike."""
+    db = tmp_path / "security.db"
+    run(db, "event", "--project", "web", "--kind", "analysis_started")
+    run(db, "event", "--project", "api", "--kind", "decision_made")
+
+    out = run(db, "activity-data", "--since", "0", "--project", "web")
+    assert [e["project"] for e in out["events"]] == ["web"]
+    assert out["summary"]["analysis_started"] == 1
+    assert out["summary"]["decision_made"] == 0
+    assert [p["project"] for p in out["projects"]] == ["web"]
+
+
+def test_activity_data_refuses_an_unknown_kind_at_the_cli_edge(tmp_path):
+    """`--kind` carries `choices=` for the same reason `findings-page`'s own
+    severity/state/category do: CLI-direct use gets the identical validation
+    the server's own route independently performs."""
+    db = tmp_path / "security.db"
+    out = fails(db, "activity-data", "--kind", "findings_viewed")
+    assert out.returncode != 0
+    assert "invalid choice" in out.stderr
+
+
+def test_activity_data_paginates_with_page_and_per_page(tmp_path):
+    db = tmp_path / "security.db"
+    for i in range(3):
+        run(db, "event", "--project", "web", "--kind", "analysis_started",
+            "--detail", f"run {i}")
+    page1 = run(db, "activity-data", "--since", "0", "--page", "1", "--per-page", "2")
+    page2 = run(db, "activity-data", "--since", "0", "--page", "2", "--per-page", "2")
+    assert len(page1["events"]) == 2
+    assert len(page2["events"]) == 1
+    assert page1["page"] == 1 and page2["page"] == 2
+    ids = {e["detail"] for e in page1["events"]} | {e["detail"] for e in page2["events"]}
+    assert ids == {"run 0", "run 1", "run 2"}
+
+
+def test_activity_data_since_zero_summarises_the_whole_history(tmp_path):
+    """A bare `--since 0` (no lower bound, `ledger.events_for`'s own default)
+    only reaches this verb from a direct command-line call -- the server
+    always resolves a real timestamp first. The summary must still answer
+    with a real count rather than a day window that excludes an event
+    recorded a moment ago."""
+    db = tmp_path / "security.db"
+    run(db, "event", "--project", "web", "--kind", "report_exported")
+    out = run(db, "activity-data", "--since", "0")
+    assert out["summary"]["report_exported"] == 1
+
+
+def test_activity_data_events_carry_no_user_or_ip_field(tmp_path):
+    db = tmp_path / "security.db"
+    run(db, "event", "--project", "web", "--kind", "settings_changed")
+    out = run(db, "activity-data", "--since", "0")
+    assert "user" not in out["events"][0]
+    assert "ip" not in out["events"][0]
+
+
 # -------------------------------------------- a ledger hiccup is never fatal
 
 def test_open_analysis_survives_a_ledger_write_failure(tmp_path, monkeypatch, capsys):

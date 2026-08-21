@@ -23,25 +23,21 @@
    sidebar, never the table itself. */
 import { $, fmtAgo, fmtDur, fmtWhen, openProjectEditor } from "./page.js";
 import { secIcon, secEl, secFetch } from "./dom.js";
-import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP } from "./vocabulary.js";
+import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP,
+         EVENT_KIND_LABEL } from "./vocabulary.js";
 import { secState } from "./state.js";
 import { secIndexPosturePills, secIndexDonut } from "./index-screen.js";
 import { secOpen, secShowAnalysis } from "./analysis.js";
 import { secRenderProjectBranches } from "./branches-tab.js";
 import { secRenderProjectReports } from "./reports-tab.js";
 import { renderFindings } from "./findings-screen.js";
+import { secOpenActivity } from "./activity-screen.js";
 
 // Every state `analysis.state` can hold (see bin/security/ledger.py's
 // `start_analysis`/`ANALYSIS_END_STATES`) -- the Runs tab's own filter row,
 // a different vocabulary from SEC_STATES above (that one is a FINDING's
 // state; this one is an ANALYSIS's).
 const RUN_STATES = ["running", "done", "capped", "failed"];
-
-const EVENT_KIND_LABEL = {
-  analysis_started: "Analysis started", analysis_finished: "Analysis finished",
-  decision_made: "Decision made", settings_changed: "Settings changed",
-  report_exported: "Report exported",
-};
 
 let secProjectCache = null;
 let secProjectGen = 0;
@@ -388,7 +384,16 @@ function secRenderProjectSidebar(payload){
 
 function secProjectActivity(events){
   const box = secEl("div", "card");
-  box.appendChild(secEl("h3", null, "Recent activity"));
+  const head = secEl("div", "secpj-cardhead");
+  head.appendChild(secEl("h3", null, "Recent activity"));
+  // The Activity screen's own entry point from here: this feed is the last
+  // five events (see cmd_project_data's own `ledger.events_for(..., limit=5)`),
+  // the full screen is every event, filterable by kind, for this project.
+  const viewAll = secEl("button", "btn ghost", "View all");
+  viewAll.type = "button";
+  viewAll.onclick = () => secOpenActivity(secState.project);
+  head.appendChild(viewAll);
+  box.appendChild(head);
   if(!events.length){
     box.appendChild(secEl("div", "tblempty", "No activity recorded yet."));
     return box;
@@ -405,8 +410,5 @@ function secProjectActivity(events){
     list.appendChild(row);
   });
   box.appendChild(list);
-  // No link to the Activity screen yet — it does not exist until a later
-  // task, and a link to nowhere is worse than no link at all. This feed
-  // becomes that screen's entry point once it lands.
   return box;
 }

@@ -8,23 +8,34 @@
    filtering and paging all happen on the server; this module never re-derives
    any of it client-side.
 
-   ONE MODULE, TWO HOMES. `renderFindings(host, project)` is the whole surface:
-   `project-screen.js` mounts it into its Findings tab pane
+   ONE MODULE, TWO HOMES. `renderFindings(host, project, initialFilters)` is
+   the whole surface: `project-screen.js` mounts it into its Findings tab pane
    (`#sec-pj-findings`), and it is written to make no assumption about WHERE
    `host` lives or who else is on screen beside it -- no read of `secState`,
-   no reach into `secProjectCache`. A future caller (the Activity screen's own
-   plan is to link a fingerprint prefix straight into "the findings browser
-   filtered to it") mounts the identical function into whatever container it
-   owns, without a second copy of a filterable table to drift the way a
-   duplicated download function, and a duplicated state machine before it,
-   already have (see reports-tab.js's own comment on secDownloadReport, and
-   queries.py's on checklist()). Two mounts open AT ONCE -- the Findings tab
-   and that future link, on screen together -- are not hypothetical enough to
-   leave unhandled: every piece of state below (filters, sort, page, the fetch
+   no reach into `secProjectCache`. Task 12's Activity screen is the second
+   caller anticipated when this module was rebuilt host-keyed (Task 11): it
+   mounts the identical function into its own fingerprint dialog, `initialFilters`
+   set to `{fingerprint: "<prefix>"}`, without a second copy of a filterable
+   table to drift the way a duplicated download function, and a duplicated
+   state machine before it, already have (see reports-tab.js's own comment on
+   secDownloadReport, and queries.py's on checklist()). Two mounts open AT
+   ONCE -- the Findings tab and that dialog, on screen together -- are not
+   hypothetical: every piece of state below (filters, sort, page, the fetch
    generation) is keyed by `host` in `secFindStates`, so two hosts showing the
    SAME project never share a filter, and whichever of two overlapping
    fetches answers last still paints its OWN pane rather than losing a
    staleness race to the other one's (see `secFindStates`'s own comment).
+
+   `initialFilters` (optional, a partial filters object) is applied ON TOP OF
+   `_defaultFilters()` -- never merged with whatever the host's own state
+   already held -- every time it is passed, even on a re-mount of the SAME
+   host/project: a caller that hands one in is making a deliberate "show me
+   THIS, filtered to THIS" request (the Activity screen mounting a fresh
+   fingerprint each time a different decision's row is clicked), not asking
+   to resume wherever a previous visit left off. Omitting the argument keeps
+   the existing behaviour byte-for-byte: `project-screen.js`'s two call sites
+   never pass it, so a tab switch away from and back to Findings still keeps
+   its filters/sort/page exactly as before this task.
 
    `total` vs `unique`: the strip shows both, labelled, because they answer
    different questions -- the same finding open on two branches is one row
@@ -89,7 +100,7 @@ const FIND_PER_PAGE = 25;
 
 function _defaultFilters(){
   return {severity: [], state: [], category: [], branch: "", path: "", q: "",
-          analysis: "", show_resolved: false};
+          analysis: "", show_resolved: false, fingerprint: ""};
 }
 
 function _newFindState(host, project){
@@ -108,12 +119,18 @@ const secFindStates = new WeakMap();
    mount into the SAME host for the SAME project keeps its state (a tab
    switch away and back); anything else -- a brand new host, or the same host
    handed a different project -- starts from a fresh one, the same reset a
-   project change has always done. */
-export async function renderFindings(host, project){
+   project change has always done. `initialFilters`, when given, always
+   overrides whatever filters the host's state currently holds (see this
+   file's own header comment on why that is deliberate, not a bug). */
+export async function renderFindings(host, project, initialFilters){
   let fs = secFindStates.get(host);
   if(!fs || fs.project !== project){
     fs = _newFindState(host, project);
     secFindStates.set(host, fs);
+  }
+  if(initialFilters){
+    fs.filters = Object.assign(_defaultFilters(), initialFilters);
+    fs.page = 1;
   }
   await secFindLoad(fs);
 }
@@ -134,6 +151,7 @@ function secFindQuery(fs){
   if(f.q.trim()) p.set("q", f.q.trim());
   if(f.analysis.trim()) p.set("analysis", f.analysis.trim());
   if(f.show_resolved) p.set("show_resolved", "1");
+  if(f.fingerprint.trim()) p.set("fingerprint", f.fingerprint.trim());
   return p.toString();
 }
 
@@ -243,6 +261,18 @@ function secFindStrip(fs, data){
     "Downloads always contain every recorded finding, whatever the severity floor shows."));
 
   const box = secEl("div", "secfind-strip");
+  // The Activity screen's own deep link (Task 12): the table below is
+  // narrowed to one fingerprint prefix, not this project's whole list --
+  // said out loud, since a filtered table with no visible filter chip set
+  // (this one travels through `initialFilters`, not a chip a reader
+  // clicked) would otherwise read as the WHOLE list for this severity/
+  // state/category selection.
+  const fingerprintFilter = ((fs.filters || {}).fingerprint || "").trim();
+  if(fingerprintFilter){
+    box.appendChild(secEl("div", "secpj-caption",
+      "Filtered to fingerprint " + fingerprintFilter + "… — "
+      + "“Clear filters” below shows this project's whole list."));
+  }
   box.appendChild(wrap);
   box.appendChild(note);
   return box;
@@ -347,7 +377,8 @@ function secFindCurrentQuery(fs){
   const f = fs.filters;
   return {severity: f.severity, state: f.state, category: f.category,
           branch: f.branch, path: f.path, q: f.q, analysis: f.analysis,
-          show_resolved: f.show_resolved, sort: fs.sort, dir: fs.dir};
+          show_resolved: f.show_resolved, fingerprint: f.fingerprint,
+          sort: fs.sort, dir: fs.dir};
 }
 
 function secFindApplyQuery(fs, q){
@@ -361,6 +392,7 @@ function secFindApplyQuery(fs, q){
     q: typeof query.q === "string" ? query.q : "",
     analysis: typeof query.analysis === "string" ? query.analysis : "",
     show_resolved: !!query.show_resolved,
+    fingerprint: typeof query.fingerprint === "string" ? query.fingerprint : "",
   };
   fs.sort = FIND_SORT_COLUMNS.some(([key]) => key === query.sort) ? query.sort : "severity";
   fs.dir = query.dir === "asc" ? "asc" : "desc";

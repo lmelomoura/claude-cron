@@ -27,9 +27,12 @@ import { secBack, secEnter, secLeave, secLoadBranches, secSyncScope } from "./an
 import { secAnalyse, secDownload } from "./actions.js";
 import { wireReasonDialog } from "./reason.js";
 import { secSwitchProjectTab } from "./project-screen.js";
+import { secOpenActivity, secBackFromActivity, secActReload, secActSwitchTab,
+         secActProjectChanged, secIsActivityOpen, wireActivityFindingDialog } from "./activity-screen.js";
 
 function renderSecurity(){
   if(CC.currentView !== "security") return;
+  if(secIsActivityOpen()) return;   // the Activity screen paints from its own fetch
   if(secState.project) return;   // the project screen paints from its own fetches
   secRenderIndex();
   secLoadIndex(false);           // a no-op once the index has already answered once
@@ -56,6 +59,30 @@ function init(cc){
   $("secpjt-branches").addEventListener("click", () => secSwitchProjectTab("branches"));
   $("secpjt-findings").addEventListener("click", () => secSwitchProjectTab("findings"));
   $("secpjt-reports").addEventListener("click", () => secSwitchProjectTab("reports"));
+
+  // The Activity screen: entry point from the index, its own back/reload,
+  // its four kind tabs, its free-text project scope, and the fingerprint
+  // dialog a decision's own row opens. See ui/security/activity-screen.js.
+  iconLabel($("sec-view-activity"), "activity", "Activity");
+  iconLabel($("sec-act-back"), "cleft", "All projects");
+  iconLabel($("sec-act-reload"), "radar", "Refresh");
+  iconLabel($("secactt-all"), "activity", "All activity");
+  iconLabel($("secactt-analyses"), "shield", "Analyses");
+  iconLabel($("secactt-findings"), "search", "Findings");
+  iconLabel($("secactt-settings"), "gear", "Settings");
+  $("sec-view-activity").addEventListener("click", () => secOpenActivity(""));
+  $("sec-act-back").addEventListener("click", secBackFromActivity);
+  $("sec-act-reload").addEventListener("click", secActReload);
+  $("secactt-all").addEventListener("click", () => secActSwitchTab(""));
+  $("secactt-analyses").addEventListener("click", () => secActSwitchTab("analyses"));
+  $("secactt-findings").addEventListener("click", () => secActSwitchTab("findings"));
+  $("secactt-settings").addEventListener("click", () => secActSwitchTab("settings"));
+  // `change`, not `input`: a fetch per keystroke would be a subprocess per
+  // keystroke on the server, the same reasoning `#sec-branch-other` below
+  // already follows.
+  $("sec-act-project").addEventListener("change", () =>
+    secActProjectChanged($("sec-act-project").value));
+  wireActivityFindingDialog();
   // The list above this row is filtered by the project's min_severity; these
   // files are not. Said here, next to the buttons, because the gap between what
   // is on screen and what is in the file you hand to somebody else is exactly

@@ -70,6 +70,20 @@
   };
   var SEV_ORDER = ["info", "low", "medium", "high", "critical"];
   var SEC_PROFILES = ["quick", "standard", "deep"];
+  var EVENT_KINDS = [
+    "analysis_started",
+    "analysis_finished",
+    "decision_made",
+    "settings_changed",
+    "report_exported"
+  ];
+  var EVENT_KIND_LABEL = {
+    analysis_started: "Analysis started",
+    analysis_finished: "Analysis finished",
+    decision_made: "Decision made",
+    settings_changed: "Settings changed",
+    report_exported: "Report exported"
+  };
   var SEC_POLL_MS = 4e3;
   var SEC_RUN_WINDOW = 120;
   var secCfg = (name) => (projById(name) || {}).security || {};
@@ -841,7 +855,8 @@
       path: "",
       q: "",
       analysis: "",
-      show_resolved: false
+      show_resolved: false,
+      fingerprint: ""
     };
   }
   function _newFindState(host, project) {
@@ -860,11 +875,15 @@
     };
   }
   var secFindStates = /* @__PURE__ */ new WeakMap();
-  async function renderFindings(host, project) {
+  async function renderFindings(host, project, initialFilters) {
     let fs = secFindStates.get(host);
     if (!fs || fs.project !== project) {
       fs = _newFindState(host, project);
       secFindStates.set(host, fs);
+    }
+    if (initialFilters) {
+      fs.filters = Object.assign(_defaultFilters(), initialFilters);
+      fs.page = 1;
     }
     await secFindLoad(fs);
   }
@@ -884,6 +903,7 @@
     if (f.q.trim()) p.set("q", f.q.trim());
     if (f.analysis.trim()) p.set("analysis", f.analysis.trim());
     if (f.show_resolved) p.set("show_resolved", "1");
+    if (f.fingerprint.trim()) p.set("fingerprint", f.fingerprint.trim());
     return p.toString();
   }
   async function secFindLoad(fs) {
@@ -971,6 +991,14 @@
       "Downloads always contain every recorded finding, whatever the severity floor shows."
     ));
     const box = secEl("div", "secfind-strip");
+    const fingerprintFilter = ((fs.filters || {}).fingerprint || "").trim();
+    if (fingerprintFilter) {
+      box.appendChild(secEl(
+        "div",
+        "secpj-caption",
+        "Filtered to fingerprint " + fingerprintFilter + "\u2026 \u2014 \u201CClear filters\u201D below shows this project's whole list."
+      ));
+    }
     box.appendChild(wrap);
     box.appendChild(note);
     return box;
@@ -1085,6 +1113,7 @@
       q: f.q,
       analysis: f.analysis,
       show_resolved: f.show_resolved,
+      fingerprint: f.fingerprint,
       sort: fs.sort,
       dir: fs.dir
     };
@@ -1099,7 +1128,8 @@
       path: typeof query.path === "string" ? query.path : "",
       q: typeof query.q === "string" ? query.q : "",
       analysis: typeof query.analysis === "string" ? query.analysis : "",
-      show_resolved: !!query.show_resolved
+      show_resolved: !!query.show_resolved,
+      fingerprint: typeof query.fingerprint === "string" ? query.fingerprint : ""
     };
     fs.sort = FIND_SORT_COLUMNS.some(([key]) => key === query.sort) ? query.sort : "severity";
     fs.dir = query.dir === "asc" ? "asc" : "desc";
@@ -1342,15 +1372,344 @@
     return wrap;
   }
 
+  // ui/security/activity-screen.js
+  var ACT_TABS = [
+    { key: "", label: "All activity", kinds: [] },
+    { key: "analyses", label: "Analyses", kinds: ["analysis_started", "analysis_finished"] },
+    { key: "findings", label: "Findings", kinds: ["decision_made"] },
+    { key: "settings", label: "Settings", kinds: ["settings_changed", "report_exported"] }
+  ];
+  var ACT_TAB_BUTTON_ID = {
+    "": "secactt-all",
+    analyses: "secactt-analyses",
+    findings: "secactt-findings",
+    settings: "secactt-settings"
+  };
+  var ACT_PERIODS = [[7, "7 days"], [30, "30 days"], [90, "90 days"], [0, "All time"]];
+  var ACT_PER_PAGE = 25;
+  var secActOpen = false;
+  var secActGen = 0;
+  var secActState = null;
+  function _freshState(project) {
+    return { project: project || "", tab: "", days: 30, page: 1, data: null, error: "" };
+  }
+  function secIsActivityOpen() {
+    return secActOpen;
+  }
+  async function secOpenActivity(project) {
+    secBack();
+    secActOpen = true;
+    secActState = _freshState(project);
+    $("sec-projects").hidden = true;
+    $("sec-activity").hidden = false;
+    secActRenderShell();
+    await secActLoad();
+  }
+  function secBackFromActivity() {
+    secActOpen = false;
+    $("sec-activity").hidden = true;
+    $("sec-projects").hidden = false;
+  }
+  async function secActReload() {
+    if (!secActOpen) return;
+    await secActLoad();
+  }
+  function secActSwitchTab(key) {
+    if (!secActState) return;
+    secActState.tab = ACT_TABS.some((t) => t.key === key) ? key : "";
+    secActState.page = 1;
+    secActRenderTabs();
+    secActLoad();
+  }
+  function secActProjectChanged(value) {
+    if (!secActState) return;
+    secActState.project = (value || "").trim();
+    secActState.page = 1;
+    secActLoad();
+  }
+  function _scopeToProject(project) {
+    secActState.project = project;
+    secActState.page = 1;
+    const input = $("sec-act-project");
+    if (input) input.value = project;
+    secActLoad();
+  }
+  function secActSince() {
+    if (secActState.days <= 0) return 0;
+    return Math.floor(Date.now() / 1e3) - secActState.days * 86400;
+  }
+  function secActQuery() {
+    const p = new URLSearchParams();
+    const tab = ACT_TABS.find((t) => t.key === secActState.tab) || ACT_TABS[0];
+    tab.kinds.forEach((k) => p.append("kind", k));
+    if (secActState.project) p.set("project", secActState.project);
+    p.set("since", String(secActSince()));
+    p.set("page", String(secActState.page));
+    p.set("per_page", String(ACT_PER_PAGE));
+    return p.toString();
+  }
+  async function secActLoad() {
+    if (!secActState || !secActOpen) return;
+    const gen = ++secActGen;
+    if (!secActState.data) {
+      const host = $("sec-act-table");
+      if (host) {
+        host.textContent = "";
+        host.appendChild(secEl("div", "tblempty", "Loading\u2026"));
+      }
+    }
+    let data;
+    try {
+      data = await secFetch("/api/security/activity?" + secActQuery());
+    } catch (e) {
+      if (gen !== secActGen || !secActOpen) return;
+      secActState.error = e.message;
+      secActState.data = null;
+      secActPaint();
+      return;
+    }
+    if (gen !== secActGen || !secActOpen) return;
+    secActState.error = "";
+    secActState.data = data;
+    secActState.page = data.page || 1;
+    secActPaint();
+  }
+  function secActRenderShell() {
+    const title = $("sec-act-title");
+    if (title) {
+      title.textContent = "";
+      title.appendChild(secIcon("activity"));
+      title.appendChild(document.createTextNode(
+        secActState.project ? "Activity \u2014 " + secActState.project : "Activity"
+      ));
+    }
+    const input = $("sec-act-project");
+    if (input) input.value = secActState.project;
+    secActRenderTabs();
+    secActRenderPeriod();
+  }
+  function secActRenderTabs() {
+    ACT_TABS.forEach((t) => {
+      const btn = $(ACT_TAB_BUTTON_ID[t.key]);
+      if (btn) btn.classList.toggle("active", secActState.tab === t.key);
+    });
+  }
+  function secActPeriodChips() {
+    const wrap = secEl("div", "secchips");
+    ACT_PERIODS.forEach(([days, label]) => {
+      const chip = secEl("button", "secchip" + (secActState.days === days ? " on" : ""));
+      chip.type = "button";
+      chip.appendChild(secEl("span", null, label));
+      chip.onclick = () => {
+        secActState.days = days;
+        secActState.page = 1;
+        secActRenderPeriod();
+        secActLoad();
+      };
+      wrap.appendChild(chip);
+    });
+    return wrap;
+  }
+  function secActRenderPeriod() {
+    const host = $("sec-act-period");
+    if (!host) return;
+    host.textContent = "";
+    host.appendChild(secActPeriodChips());
+  }
+  function secActPaint() {
+    if (!secActOpen) return;
+    const host = $("sec-act-table"), pager = $("sec-act-pager"), side = $("sec-act-side");
+    if (host) host.textContent = "";
+    if (pager) pager.textContent = "";
+    if (side) side.textContent = "";
+    if (!host) return;
+    if (secActState.error) {
+      const box = secEl("div", "tblempty");
+      box.appendChild(secIcon("alert"));
+      box.appendChild(document.createTextNode("Could not read activity \u2014 " + secActState.error));
+      host.appendChild(box);
+      return;
+    }
+    const data = secActState.data;
+    if (!data) return;
+    host.appendChild(secActTable(data));
+    if (pager) pager.appendChild(secActPager(data));
+    if (side) side.appendChild(secActSidebar(data));
+  }
+  function secActPeriodPhrase() {
+    return secActState.days <= 0 ? "at any time" : "in the last " + secActState.days + " days";
+  }
+  function secActEmptyMessage() {
+    const scope = secActState.project ? "for " + secActState.project + " " : "";
+    return "No activity recorded " + scope + secActPeriodPhrase() + ".";
+  }
+  function secActTable(data) {
+    const events = data.events || [];
+    if (!events.length) return secEl("div", "tblempty", secActEmptyMessage());
+    const wrap = secEl("div", "tablewrap");
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    const htr = document.createElement("tr");
+    ["Time", "Event", "Detail", "Project", "Related"].forEach((h) => {
+      const th = document.createElement("th");
+      th.textContent = h;
+      htr.appendChild(th);
+    });
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    events.forEach((e) => tbody.appendChild(secActRow(e)));
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    return wrap;
+  }
+  function secActRow(e) {
+    const tr = document.createElement("tr");
+    const cell = (text) => {
+      const td = document.createElement("td");
+      td.textContent = text;
+      return td;
+    };
+    tr.appendChild(cell(fmtWhen(e.at)));
+    tr.appendChild(cell(EVENT_KIND_LABEL[e.kind] || e.kind));
+    tr.appendChild(cell(e.detail || ""));
+    tr.appendChild(cell(e.project || ""));
+    tr.appendChild(secActRelatedCell(e));
+    return tr;
+  }
+  var ACT_ANALYSIS_KINDS = ["analysis_started", "analysis_finished", "report_exported"];
+  function secActRelatedCell(e) {
+    const td = document.createElement("td");
+    const related = (e.related || "").trim();
+    if (!related) {
+      td.textContent = "\u2014";
+      return td;
+    }
+    if (e.kind === "decision_made") {
+      const b = secEl("button", "btn ghost", "Finding " + related + "\u2026");
+      b.type = "button";
+      b.title = "Open the findings browser filtered to this fingerprint";
+      b.onclick = () => secActOpenFinding(e.project, related);
+      td.appendChild(b);
+      return td;
+    }
+    if (ACT_ANALYSIS_KINDS.includes(e.kind)) {
+      const b = secEl("button", "btn ghost", "Analysis #" + related);
+      b.type = "button";
+      b.title = "Open this analysis";
+      b.onclick = () => secActOpenAnalysis(e.project, related);
+      td.appendChild(b);
+      return td;
+    }
+    td.textContent = related;
+    return td;
+  }
+  async function secActOpenAnalysis(project, relatedId) {
+    const id = Number(relatedId);
+    if (!project || !Number.isFinite(id)) return;
+    secBackFromActivity();
+    await secOpenProject(project);
+    secSwitchProjectTab("runs");
+    await secShowAnalysis(id);
+  }
+  function secActOpenFinding(project, fingerprintPrefix) {
+    const titleEl = $("sec-act-finding-title");
+    if (titleEl) titleEl.textContent = "Finding " + fingerprintPrefix + "\u2026 in " + project;
+    const halo = $("sec-act-finding-halo");
+    if (halo) {
+      halo.textContent = "";
+      halo.appendChild(secIcon("search"));
+    }
+    const dlg = $("sec-act-finding");
+    if (dlg && dlg.showModal) dlg.showModal();
+    renderFindings($("sec-act-finding-body"), project, { fingerprint: fingerprintPrefix });
+  }
+  function wireActivityFindingDialog() {
+    const dlg = $("sec-act-finding");
+    const close = $("sec-act-finding-close");
+    if (close && dlg) close.addEventListener("click", () => dlg.close());
+  }
+  function secActPager(data) {
+    const wrap = secEl("div", "pager");
+    const page = data.page || 1;
+    const perPage = data.per_page || ACT_PER_PAGE;
+    const hasMore = (data.events || []).length >= perPage;
+    const prev = secEl("button", "btn ghost", "Prev");
+    prev.type = "button";
+    prev.disabled = page <= 1;
+    prev.onclick = () => {
+      secActState.page = Math.max(1, page - 1);
+      secActLoad();
+    };
+    wrap.appendChild(prev);
+    wrap.appendChild(secEl("span", null, "Page " + page));
+    const next = secEl("button", "btn ghost", "Next");
+    next.type = "button";
+    next.disabled = !hasMore;
+    next.onclick = () => {
+      secActState.page = page + 1;
+      secActLoad();
+    };
+    wrap.appendChild(next);
+    return wrap;
+  }
+  function secActSidebar(data) {
+    const wrap = document.createElement("div");
+    wrap.appendChild(secActSummaryCard(data.summary || {}));
+    wrap.appendChild(secActProjectsCard(data.projects || []));
+    return wrap;
+  }
+  function secActSummaryCard(summary) {
+    const box = secEl("div", "card");
+    const head = secEl("div", "secpj-cardhead");
+    head.appendChild(secEl("h3", null, "This period"));
+    box.appendChild(head);
+    box.appendChild(secEl(
+      "div",
+      "secpj-caption",
+      "Every kind, regardless of which tab is selected above."
+    ));
+    const chips = secEl("div", "secchips");
+    EVENT_KINDS.forEach((kind) => {
+      const n = summary[kind] || 0;
+      const chip = secEl("span", "secpj-statchip" + (n ? "" : " zero"));
+      chip.appendChild(secEl("span", null, EVENT_KIND_LABEL[kind] || kind));
+      chip.appendChild(secEl("span", "n", String(n)));
+      chips.appendChild(chip);
+    });
+    box.appendChild(chips);
+    return box;
+  }
+  function secActProjectsCard(projects) {
+    const box = secEl("div", "card");
+    box.appendChild(secEl("h3", null, "Most active projects"));
+    if (secActState.project) {
+      box.appendChild(secEl("div", "tblempty", "Scoped to one project."));
+      return box;
+    }
+    if (!projects.length) {
+      box.appendChild(secEl("div", "tblempty", secActEmptyMessage()));
+      return box;
+    }
+    const list = secEl("div", "seclist");
+    projects.forEach((p) => {
+      const row = secEl("button", "secrow secidx-recentrow");
+      row.type = "button";
+      row.title = "Filter this screen to " + p.project;
+      row.onclick = () => _scopeToProject(p.project);
+      row.appendChild(secIcon("activity"));
+      const grow = secEl("div", "grow");
+      grow.appendChild(secEl("div", "secname", p.project));
+      grow.appendChild(secEl("div", "secmeta", p.count + " event" + (p.count === 1 ? "" : "s")));
+      row.appendChild(grow);
+      list.appendChild(row);
+    });
+    box.appendChild(list);
+    return box;
+  }
+
   // ui/security/project-screen.js
   var RUN_STATES = ["running", "done", "capped", "failed"];
-  var EVENT_KIND_LABEL = {
-    analysis_started: "Analysis started",
-    analysis_finished: "Analysis finished",
-    decision_made: "Decision made",
-    settings_changed: "Settings changed",
-    report_exported: "Report exported"
-  };
   var secProjectCache = null;
   var secProjectGen = 0;
   var secProjectTab = "overview";
@@ -1610,7 +1969,13 @@
   }
   function secProjectActivity(events) {
     const box = secEl("div", "card");
-    box.appendChild(secEl("h3", null, "Recent activity"));
+    const head = secEl("div", "secpj-cardhead");
+    head.appendChild(secEl("h3", null, "Recent activity"));
+    const viewAll = secEl("button", "btn ghost", "View all");
+    viewAll.type = "button";
+    viewAll.onclick = () => secOpenActivity(secState.project);
+    head.appendChild(viewAll);
+    box.appendChild(head);
     if (!events.length) {
       box.appendChild(secEl("div", "tblempty", "No activity recorded yet."));
       return box;
@@ -1965,6 +2330,7 @@
   // ui/security/index.js
   function renderSecurity() {
     if (CC.currentView !== "security") return;
+    if (secIsActivityOpen()) return;
     if (secState.project) return;
     secRenderIndex();
     secLoadIndex(false);
@@ -1989,6 +2355,22 @@
     $("secpjt-branches").addEventListener("click", () => secSwitchProjectTab("branches"));
     $("secpjt-findings").addEventListener("click", () => secSwitchProjectTab("findings"));
     $("secpjt-reports").addEventListener("click", () => secSwitchProjectTab("reports"));
+    iconLabel($("sec-view-activity"), "activity", "Activity");
+    iconLabel($("sec-act-back"), "cleft", "All projects");
+    iconLabel($("sec-act-reload"), "radar", "Refresh");
+    iconLabel($("secactt-all"), "activity", "All activity");
+    iconLabel($("secactt-analyses"), "shield", "Analyses");
+    iconLabel($("secactt-findings"), "search", "Findings");
+    iconLabel($("secactt-settings"), "gear", "Settings");
+    $("sec-view-activity").addEventListener("click", () => secOpenActivity(""));
+    $("sec-act-back").addEventListener("click", secBackFromActivity);
+    $("sec-act-reload").addEventListener("click", secActReload);
+    $("secactt-all").addEventListener("click", () => secActSwitchTab(""));
+    $("secactt-analyses").addEventListener("click", () => secActSwitchTab("analyses"));
+    $("secactt-findings").addEventListener("click", () => secActSwitchTab("findings"));
+    $("secactt-settings").addEventListener("click", () => secActSwitchTab("settings"));
+    $("sec-act-project").addEventListener("change", () => secActProjectChanged($("sec-act-project").value));
+    wireActivityFindingDialog();
     $("sec-dl-note").textContent = "Downloads always contain every recorded finding, whatever the severity floor shows.";
     $("sec-back").addEventListener("click", secBack);
     $("sec-reload").addEventListener("click", () => {
@@ -2019,4 +2401,4 @@
     SEC_PROFILES
   };
 })();
-// ui-sources: 7c2eb23a2c001f00d5acf6dc518a0916def929b1dfe5938dced8027b4b33642a
+// ui-sources: 324b4a0ca51e3057202c7d979ee935b5ed05427540562965804cabaae1c20b39

@@ -576,6 +576,12 @@ def finding_rows(conn, project, filters=None, sort="severity",
     unrecognised column raises rather than silently falling back to
     `severity`.
 
+    `filters["fingerprint"]`, when present, is a PREFIX match (added for
+    Task 12's Activity screen, which links a fingerprint straight into this
+    browser): an event's `related` only ever carries the first 12 characters
+    of a fingerprint (`cmd_decide` truncates it before recording), so exact
+    equality could never match anything a real caller would ask for.
+
     The returned `by_severity` counts EVERY row the current filters match
     (before pagination), and `fixed_by_severity` is the same count restricted
     to `state == "fixed"` -- so the browser can say "N findings below the
@@ -641,6 +647,14 @@ def finding_rows(conn, project, filters=None, sort="severity",
     for key in ("severity", "state", "category", "branch"):
         if f.get(key):
             rows = [r for r in rows if r.get(key) in f[key]]
+    if f.get("fingerprint"):
+        # A PREFIX match, not equality: the Activity screen's own deep link
+        # (Task 12) only ever has the first 12 characters of a fingerprint --
+        # `related` on a `decision_made` event is truncated by `cmd_decide` --
+        # so the one caller of this filter could never match on the full
+        # 64-character string.
+        needle = f["fingerprint"]
+        rows = [r for r in rows if r["fingerprint"].startswith(needle)]
     if f.get("analysis"):
         rows = [r for r in rows if r["analysis_id"] in f["analysis"]]
     if f.get("path"):

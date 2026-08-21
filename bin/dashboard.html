@@ -1079,6 +1079,12 @@ textarea:focus,.dlg-b input:focus,.dlg-b select:focus{outline:none;border-color:
 #fsmodal[open]{display:flex;flex-direction:column;height:min(78vh,600px)}
 #fsmodal .dlg-h,#fsmodal .fs-cur,#fsmodal .dlg-f{flex:none}
 #fsmodal .dlg-b{flex:1 1 auto;min-height:0;overflow-y:auto;padding:8px 0}
+/* A full findings-browser table, not a form: wide like #logmodal, tall and
+   scrollable like #fsmodal/#editor -- see ui/security/activity-screen.js. */
+#sec-act-finding{max-width:min(1000px,95vw);width:1000px}
+#sec-act-finding[open]{display:flex;flex-direction:column;height:min(88vh,760px)}
+#sec-act-finding .dlg-h,#sec-act-finding .dlg-f{flex:none}
+#sec-act-finding .dlg-b{flex:1 1 auto;min-height:0;overflow-y:auto}
 .fs-cur{margin:9px 20px 2px;padding:8px 11px;font:12px ui-monospace,"SF Mono",Menlo,monospace;
   background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--muted);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1288,6 +1294,13 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    for, and how many branches the donut/categories below span. Same register
    as .secidx-note: a small, muted line, not a warning. */
 .secpj-caption{font-size:11px;color:var(--muted);line-height:1.5;margin:0 0 8px}
+/* A card's own h3 plus one action, right-aligned -- the project sidebar's
+   "Recent activity" -> "View all" link into the Activity screen, and that
+   screen's own sidebar cards. Same look as .secthead (flex, space-between)
+   without its page-level top margin, which reads as a gap bug on a header
+   that opens a .card rather than a whole pane. */
+.secpj-cardhead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 9px}
+.secpj-cardhead h3{margin:0}
 @media (max-width:900px){
   .secpjside{flex:1 1 100%}
 }
@@ -1658,6 +1671,7 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
         what was recorded.</p>
       <div class="toolbar">
         <div class="spacer"></div>
+        <button class="btn ghost" id="sec-view-activity"></button>
         <button class="btn ghost" id="sec-reload"></button>
       </div>
       <div class="seclist" id="sec-list"></div>
@@ -1768,6 +1782,53 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
         <!-- The donut, the categories, and the last few activity events —
              built by project-screen.js. -->
         <aside class="secpjside" id="sec-pj-side"></aside>
+      </div>
+    </section>
+
+    <!-- What happened and when, filterable by kind, every project unless
+         scoped to one -- the entry points are the toolbar button above
+         (#sec-view-activity) and the "View all" link on a project's own
+         "Recent activity" card. Built entirely by
+         ui/security/activity-screen.js. -->
+    <section id="sec-activity" hidden>
+      <div class="secthead">
+        <h3 id="sec-act-title"></h3>
+        <button class="btn ghost" id="sec-act-back"></button>
+      </div>
+      <p class="paneblurb">What happened and when. An analysis links to that
+        analysis; a decision links into the findings browser filtered to the
+        one fingerprint it decided about.</p>
+
+      <nav class="viewtabs" id="sec-act-tabs">
+        <button class="viewtab" data-kind="" id="secactt-all"></button>
+        <button class="viewtab" data-kind="analyses" id="secactt-analyses"></button>
+        <button class="viewtab" data-kind="findings" id="secactt-findings"></button>
+        <button class="viewtab" data-kind="settings" id="secactt-settings"></button>
+      </nav>
+
+      <div class="secbar">
+        <!-- Built by activity-screen.js: 7/30/90-day and All-time chips,
+             the same .secchip furniture the Runs tab's own state filter
+             (secRunsFilters) and the findings browser's severity/state/
+             category rows already use. -->
+        <div class="secchips" id="sec-act-period"></div>
+        <label class="secfield">
+          <span>Project</span>
+          <input id="sec-act-project" placeholder="all projects" autocomplete="off" spellcheck="false">
+        </label>
+        <button class="btn ghost" id="sec-act-reload"></button>
+      </div>
+
+      <div class="secpjbody">
+        <div class="secpjmain">
+          <div id="sec-act-table"></div>
+          <div class="pager" id="sec-act-pager"></div>
+        </div>
+        <!-- The period's counts per kind, and the most active projects --
+             built by activity-screen.js. No "top active users": with one
+             operator (app.db's own CHECK (id = 1)) that is a list of one,
+             which is not an insight. -->
+        <aside class="secpjside" id="sec-act-side"></aside>
       </div>
     </section>
   </div><!-- /view-security -->
@@ -2360,6 +2421,22 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
     <div class="spacer"></div>
     <button type="button" class="btn ghost" id="sr-cancel">Cancel</button>
     <button type="button" class="btn primary" id="sr-ok">Record</button>
+  </div>
+</dialog>
+
+<!-- The Activity screen's "a fingerprint prefix links into the findings
+     browser filtered to it": a SECOND mount of renderFindings(), open beside
+     whatever the project screen's own Findings tab may be showing (see
+     ui/security/findings-screen.js's own header comment on being
+     host-keyed, and its "two homes" note) -- never the same host, so a
+     decision followed from Activity does not fight the tab for its filters. -->
+<dialog id="sec-act-finding">
+  <div class="dlg-h"><div class="halo b-accent" id="sec-act-finding-halo"></div>
+    <div class="dlg-ht"><span id="sec-act-finding-title"></span></div></div>
+  <div class="dlg-b"><div id="sec-act-finding-body"></div></div>
+  <div class="dlg-f">
+    <div class="spacer"></div>
+    <button type="button" class="btn ghost" id="sec-act-finding-close">Close</button>
   </div>
 </dialog>
 

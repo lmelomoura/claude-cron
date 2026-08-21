@@ -44,6 +44,23 @@ export const SEC_STATE_HELP = {
 // not for a legitimate value the vocabulary simply forgot.
 export const SEV_ORDER = ["info","low","medium","high","critical"];
 export const SEC_PROFILES = ["quick","standard","deep"];
+/* Mirrors bin/security/ledger.py's own EVENT_KINDS -- a closed set, not
+   fetched: the sidebar's per-kind counts (project-screen.js's recent-activity
+   card, and the Activity screen's own summary card) have to draw their own
+   labels before any request has ever answered, the same reasoning
+   FIND_CATEGORIES in findings-screen.js is duplicated rather than read off a
+   response. Kept in ONE place (here) rather than two, after the Activity
+   screen needed the identical label table project-screen.js already had --
+   a duplicate the moment a second reader showed up is exactly the drift this
+   file's own opening paragraph warns every OTHER vocabulary in this area
+   against. */
+export const EVENT_KINDS = ["analysis_started", "analysis_finished", "decision_made",
+                    "settings_changed", "report_exported"];
+export const EVENT_KIND_LABEL = {
+  analysis_started: "Analysis started", analysis_finished: "Analysis finished",
+  decision_made: "Decision made", settings_changed: "Settings changed",
+  report_exported: "Report exported",
+};
 /* The deterministic phase (secrets, dependencies, CVEs, hygiene) writes its
    findings before the agent is even launched, so a poll this quick shows real
    results within seconds of pressing Analyse while the SAST is still running. */

@@ -2566,6 +2566,17 @@ def security_findings(params):
     q = str(_param(params, "q")).strip()
     show_resolved = str(_param(params, "show_resolved")).strip().lower() in ("1", "true", "yes")
 
+    # A PREFIX, not the full 64-character shape `security_report`-adjacent
+    # code enforces on a written fingerprint -- this is Task 12's Activity
+    # screen linking a decision's `related` (only ever 12 characters) into
+    # this browser, "filtered to it". Shape-checked here, at the edge, the
+    # same reasoning severity/state/category already get: a value that is
+    # not lowercase hex is a typo, not a filter that legitimately matches
+    # nothing.
+    fingerprint = str(_param(params, "fingerprint")).strip().lower()
+    if fingerprint and not re.fullmatch(r"[0-9a-f]{1,64}", fingerprint):
+        return 400, {"error": "fingerprint must be lowercase hex"}
+
     analysis_ids = []
     for raw in _param_list(params, "analysis"):
         try:
@@ -2592,9 +2603,76 @@ def security_findings(params):
         args += ["--q", q]
     if show_resolved:
         args.append("--show-resolved")
+    if fingerprint:
+        args += ["--fingerprint", fingerprint]
 
     ok, out = cc(args)
     return _json_or_500(ok, out, "findings page")
+
+
+# Duplicated from `security.ledger.EVENT_KINDS`, not imported -- same
+# reasoning as FINDING_SEVERITIES/FINDING_STATES/FINDING_CATEGORIES above:
+# this file shells out to the CLI rather than importing security/ledger.py,
+# so a typo'd kind is refused at THIS edge, before a subprocess is ever
+# spawned, independently of whatever the CLI's own `choices=` would have
+# done with it.
+ACTIVITY_KINDS = ("analysis_started", "analysis_finished", "decision_made",
+                  "settings_changed", "report_exported")
+ACTIVITY_MAX_PER_PAGE = 500  # mirrors ledger.events_for's own ceiling
+ACTIVITY_DEFAULT_WINDOW_DAYS = 30
+
+
+def security_activity(params):
+    """`GET /api/security/activity` -- every event `ledger.events_for` (Task
+    3) returns for the period and kind(s) asked, the per-kind counts
+    `queries.activity_summary` (Task 5) gives the SAME period, and which
+    projects were busiest in it. See `bin/security/cli.py`'s `activity-data`.
+
+    `kind` is validated against the closed vocabulary above, the same
+    treatment `security_findings` gives severity/state/category: a typo is
+    not a filter that matches nothing, it is a mistake worth a sentence.
+
+    `since` defaults to `ACTIVITY_DEFAULT_WINDOW_DAYS` ago rather than 0
+    (`ledger.events_for`'s own "no lower bound") so a caller that never asks
+    for a period still gets a legible, bounded one -- the same window
+    `queries.activity_summary`'s own default describes, so the table and the
+    sidebar's per-kind counts agree on what period they are both showing
+    unless the caller deliberately widens it. `page`/`per_page` are
+    shape-checked then clamped, exactly like `security_findings`'s own.
+    """
+    project = str(_param(params, "project")).strip()
+
+    kinds, err = _checked_list(params, "kind", ACTIVITY_KINDS)
+    if err:
+        return 400, err
+
+    try:
+        since = int(_param(params, "since", "0") or 0)
+    except (TypeError, ValueError):
+        return 400, {"error": "since must be an integer"}
+    if since <= 0:
+        since = int(time.time()) - ACTIVITY_DEFAULT_WINDOW_DAYS * 86400
+
+    try:
+        page = int(_param(params, "page", "1") or 1)
+    except (TypeError, ValueError):
+        return 400, {"error": "page must be an integer"}
+    page = max(1, page)
+    try:
+        per_page = int(_param(params, "per_page", "25") or 25)
+    except (TypeError, ValueError):
+        return 400, {"error": "per_page must be an integer"}
+    per_page = max(1, min(per_page, ACTIVITY_MAX_PER_PAGE))
+
+    args = ["security", "activity-data", "--since", str(since),
+           "--page", str(page), "--per-page", str(per_page)]
+    if project:
+        args += ["--project", project]
+    for k in kinds:
+        args += ["--kind", k]
+
+    ok, out = cc(args)
+    return _json_or_500(ok, out, "activity data")
 
 
 def security_filter_save(body):
@@ -2830,6 +2908,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/security/findings":
             q = parse_qs(urlparse(self.path).query)
             code, payload = security_findings(q)
+            return self._send(code, payload)
+        if path == "/api/security/activity":
+            q = parse_qs(urlparse(self.path).query)
+            code, payload = security_activity(q)
             return self._send(code, payload)
         if path == "/api/security/checklist":
             q = parse_qs(urlparse(self.path).query)

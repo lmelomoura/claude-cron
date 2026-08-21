@@ -754,6 +754,32 @@ def test_analysis_filter_narrows_to_the_named_analysis_id(conn):
     assert got["rows"][0]["analysis_id"] == a1
 
 
+def test_fingerprint_filter_matches_a_prefix(conn):
+    """The Activity screen's own deep link (Task 12) carries only the first
+    12 characters of a fingerprint -- `related` on a `decision_made` event is
+    truncated by `cmd_decide` -- so this filter has to match a PREFIX, not
+    the exact 64-character string `report-finding` requires at its own door."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "s", "quick", "r")
+    fp_a = "a" * 64
+    fp_b = "b" * 64
+    ledger.record_finding(conn, aid, {
+        "fingerprint": fp_a, "category": "secret", "rule": "r1",
+        "severity": "critical", "title": "one", "occurrences": []})
+    ledger.record_finding(conn, aid, {
+        "fingerprint": fp_b, "category": "secret", "rule": "r2",
+        "severity": "critical", "title": "two", "occurrences": []})
+    ledger.mark_prepared(conn, aid)
+    ledger.finish_analysis(conn, aid, "done")
+
+    got = queries.finding_rows(conn, "web", {"fingerprint": fp_a[:12]})
+    assert got["total"] == 1
+    assert got["rows"][0]["fingerprint"] == fp_a
+
+    assert queries.finding_rows(conn, "web", {"fingerprint": "nope"})["total"] == 0
+    # An empty filter is the same as no filter at all -- narrows nothing.
+    assert queries.finding_rows(conn, "web", {"fingerprint": ""})["total"] == 2
+
+
 def test_state_filter_selects_only_the_named_state(conn):
     _analysis(conn, "main", findings=[("critical", "secret")])
     _analysis(conn, "main", findings=[])            # the secret is now fixed

@@ -36,6 +36,7 @@ import os
 import re
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -967,7 +968,8 @@ def cmd_findings_page(args):
 
     Filters travel as repeated flags, not a JSON body: `queries.finding_rows`'s
     own `filters` dict has a small, fixed set of keys (show_resolved,
-    severity, state, category, branch, analysis, path, q) -- unlike a SAVED
+    severity, state, category, branch, analysis, path, q, fingerprint) --
+    unlike a SAVED
     filter (see `cmd_filters`'s own docstring), which is arbitrary,
     human-curated criteria this door must not have to keep in step with by
     hand as the page grows more of them.
@@ -1004,6 +1006,7 @@ def cmd_findings_page(args):
         "analysis": args.analysis or [],
         "path": args.path,
         "q": args.q,
+        "fingerprint": args.fingerprint,
     }
     try:
         result = queries.finding_rows(conn, args.project, filters,
@@ -1013,6 +1016,84 @@ def cmd_findings_page(args):
         sys.exit(f"findings-page: {exc}")
     result["filters"] = ledger.saved_filters(conn, args.project)
     print(json.dumps(result))
+
+
+# Stands in for "no lower bound" (`--since 0`, `ledger.events_for`'s own
+# default) when it has to be converted into a NUMBER OF DAYS for
+# `queries.activity_summary`, whose signature this verb must call as-is --
+# see cmd_activity_data's own docstring. Large enough that no real ledger
+# (this feature has not shipped long enough for one) predates it.
+_ACTIVITY_ALL_TIME_DAYS = 36500
+
+
+def cmd_activity_data(args):
+    """Every panel the Activity screen draws, in one call: the events
+    `ledger.events_for` (Task 3) returns for the period and kind(s) asked,
+    the per-kind counts `queries.activity_summary` (Task 5) gives the SAME
+    period, and which projects were busiest in it.
+
+    `kind` narrows the EVENTS list only. `project` narrows all three: a
+    filter to one project's own history is a real change of scope, but
+    filtering the table to (say) the Analyses tab must not also zero out
+    the sidebar's Findings/Settings counts -- the sidebar's whole point is
+    "here is the period, every kind", beside a table showing one slice of
+    it. Splitting the two follows this file's own rule for two numbers on
+    one screen that answer different questions (see `finish`'s stored-note
+    handling): label what each one counts rather than force them to agree.
+
+    `--since` follows `ledger.events_for`'s own contract: 0 means no lower
+    bound. The screen itself always sends a resolved timestamp (it defaults
+    to a 30-day window client-side); a bare 0 only reaches this verb from a
+    direct command-line call, and the summary below answers it with
+    `_ACTIVITY_ALL_TIME_DAYS` rather than inventing a day count that does
+    not exist. Otherwise `days` is derived from `since` so the table and the
+    summary describe the identical window without a second, independently
+    supplied parameter that could disagree with it.
+
+    Read-only, via `queries.read_only`, deliberately NOT `ledger.connect` --
+    same reasoning as `index-data`/`project-data`/`findings-page`: a screen
+    that only LOOKS must not conjure the ledger file it is asking about into
+    existence. Minerva's own ledger has recorded no events at all (the event
+    log landed after its analyses ran) -- the branch below is not a
+    hypothetical, it is what every project sees until its next analysis,
+    decision or export.
+    """
+    project = (args.project or "").strip() or None
+    kinds = tuple(args.kind or [])
+    page = max(1, args.page)
+    per_page = max(1, min(args.per_page, 500))  # ledger.events_for's own ceiling
+    since = max(0, args.since)
+
+    conn = queries.read_only(args.db)
+    if conn is None:
+        print(json.dumps({
+            "events": [], "summary": {k: 0 for k in ledger.EVENT_KINDS},
+            "projects": [], "page": page, "per_page": per_page}))
+        return
+
+    events = ledger.events_for(conn, project=project, kinds=kinds, since=since,
+                              limit=per_page, offset=(page - 1) * per_page)
+
+    days = (_ACTIVITY_ALL_TIME_DAYS if since <= 0
+            else max(1, round((int(time.time()) - since) / 86400)))
+    summary = queries.activity_summary(conn, project=project, days=days)
+
+    # Which projects were busiest in the SAME window -- scoped by `project`
+    # (a real filter) but never by `kind` (see this function's own
+    # docstring). Not a `queries.py` helper: this is the one place in the
+    # product that needs it, the same reasoning `cmd_project_data`'s own
+    # `runs` loop gives for reading `analysis` directly rather than adding a
+    # single-caller function to that module.
+    sql = "SELECT project, COUNT(*) c FROM event WHERE at >= ?"
+    sql_args = [since]
+    if project:
+        sql += " AND project = ?"
+        sql_args.append(project)
+    sql += " GROUP BY project ORDER BY c DESC, project ASC"
+    projects = [{"project": r["project"], "count": r["c"]} for r in conn.execute(sql, sql_args)]
+
+    print(json.dumps({"events": events, "summary": summary, "projects": projects,
+                      "page": page, "per_page": per_page}))
 
 
 def cmd_event(args):
@@ -1172,6 +1253,24 @@ def main(argv=None):
     fpg.add_argument("--q", default="")
     fpg.add_argument("--path", default="")
     fpg.add_argument("--show-resolved", action="store_true", dest="show_resolved")
+    # A prefix, not the full 64-character shape `report-finding` enforces --
+    # the Activity screen's own deep link only ever has the first 12 (see
+    # `queries.finding_rows`'s own comment on this key).
+    fpg.add_argument("--fingerprint", default="")
+
+    # Deliberately absent from AGENT_FORBIDDEN: same reasoning as
+    # `index-data`/`project-data`/`findings-page` above -- it opens the
+    # ledger through `queries.read_only` and writes nothing. `--kind` gets
+    # `choices=` for the same reason `findings-page`'s own severity/state/
+    # category do: CLI-direct use gets the identical validation the
+    # server's own route (`security_activity`) already performs
+    # independently.
+    ad = sub.add_parser("activity-data", parents=[dbflag]); ad.set_defaults(fn=cmd_activity_data)
+    ad.add_argument("--project", default="")
+    ad.add_argument("--kind", action="append", default=[], choices=ledger.EVENT_KINDS)
+    ad.add_argument("--since", type=int, default=0)
+    ad.add_argument("--page", type=int, default=1)
+    ad.add_argument("--per-page", type=int, default=25, dest="per_page")
 
     # Deliberately absent from AGENT_FORBIDDEN: it prints one row and writes
     # nothing, the same reasoning as `fingerprint` and `findings` above.

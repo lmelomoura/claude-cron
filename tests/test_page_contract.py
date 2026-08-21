@@ -2325,3 +2325,209 @@ def test_findings_state_is_keyed_by_a_weakmap_not_a_plain_map(srv):
     block = _security_js(srv)
     assert "const secFindStates = new WeakMap();" in block, \
         "the findings browser's per-host state must live in a WeakMap, not a Map"
+
+
+# ---- the Activity screen's own renderer (ui/security/activity-screen.js).
+# Same reasoning as the project screen's own Node-driven block above: the
+# JSON-contract tests (tests/security/test_cli.py, tests/test_security_api.py)
+# never paint anything, so a regression in the empty-state wording, the
+# kind-dependent Related-column link, the per-kind sidebar counts, or the
+# no-total pager heuristic would pass every one of those. `secActState` is a
+# plain module-level object (not a per-host WeakMap like findings-screen.js
+# -- there is exactly one #sec-activity in the page), so these harnesses
+# declare it directly, the same way _PROJECT_DOM_HARNESS declares `secState`
+# for project-screen.js's own module-level reads.
+
+def _activity_deps(block, *names):
+    return "\n".join(_plainfn(block, n) for n in names)
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_empty_state_names_the_period_and_the_project_scope(srv, tmp_path):
+    """'No activity recorded in this period', with the range that was
+    searched -- the brief's own wording for why an empty screen must read as
+    legibly empty rather than possibly broken. Both halves of the range
+    (the day window AND, once scoped, the project) have to be nameable."""
+    block = _security_js(srv)
+    deps = _activity_deps(block, "secActPeriodPhrase", "secActEmptyMessage")
+    script = tmp_path / "act-empty.js"
+    script.write_text(_PROJECT_DOM_HARNESS + """
+    let secActState = {project: "", days: 30};
+    """ + deps + """
+    const unscoped30 = secActEmptyMessage();
+    secActState = {project: "", days: 0};
+    const unscopedAll = secActEmptyMessage();
+    secActState = {project: "web", days: 7};
+    const scoped7 = secActEmptyMessage();
+    console.log(JSON.stringify({unscoped30, unscopedAll, scoped7}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert "30 days" in out["unscoped30"] and "for " not in out["unscoped30"], out["unscoped30"]
+    assert "at any time" in out["unscopedAll"], \
+        f"an all-time window must not render as '0 days': {out['unscopedAll']}"
+    assert "for web" in out["scoped7"] and "7 days" in out["scoped7"], out["scoped7"]
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_table_is_empty_state_when_no_events_match(srv, tmp_path):
+    block = _security_js(srv)
+    deps = _activity_deps(block, "secEl", "secActPeriodPhrase", "secActEmptyMessage",
+                          "secActRow", "secActRelatedCell", "secActTable")
+    consts = _const(block, "EVENT_KIND_LABEL") + _const(block, "ACT_ANALYSIS_KINDS")
+    script = tmp_path / "act-table-empty.js"
+    script.write_text(_PROJECT_DOM_HARNESS + """
+    let secActState = {project: "", days: 30};
+    """ + consts + deps + """
+    console.log(JSON.stringify(collectAll(secActTable({events: []}), [])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    joined = " ".join(r["text"] for r in out)
+    assert "No activity recorded" in joined and "30 days" in joined, joined
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_related_column_links_differently_by_event_kind(srv, tmp_path):
+    """An analysis id (analysis_started/analysis_finished/report_exported)
+    must read as a link to THAT analysis; a decision's fingerprint prefix
+    must read as a link into the findings browser; a kind with no `related`
+    (settings_changed) must show a plain dash rather than an empty cell that
+    could be mistaken for a rendering bug."""
+    block = _security_js(srv)
+    deps = _activity_deps(block, "secEl", "secActRow", "secActRelatedCell")
+    consts = _const(block, "EVENT_KIND_LABEL") + _const(block, "ACT_ANALYSIS_KINDS")
+    script = tmp_path / "act-related.js"
+    script.write_text(_PROJECT_DOM_HARNESS + """
+    let secActState = {project: "", days: 30};
+    """ + consts + deps + """
+    const rows = [
+      {kind: "analysis_started", detail: "standard on main", project: "web",
+       related: "4", at: 1},
+      {kind: "decision_made", detail: "accepted: reviewed", project: "web",
+       related: "abc123def456", at: 2},
+      {kind: "settings_changed", detail: "project settings saved", project: "api",
+       related: "", at: 3},
+    ];
+    console.log(JSON.stringify(rows.map(r => collectAll(secActRow(r), []).map(x => x.text).join(" | "))));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert "Analysis #4" in out[0], f"an analysis id must render as a link to that analysis: {out[0]}"
+    assert "Finding abc123def456…" in out[1], \
+        f"a decision's fingerprint must render as a findings-browser link: {out[1]}"
+    assert "settings changed" in out[2].lower() and out[2].strip().endswith("—"), \
+        f"a kind with no related id must show a plain dash, not an empty cell: {out[2]}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_sidebar_summary_lists_every_kind_even_at_zero(srv, tmp_path):
+    """Seeded from EVENT_KINDS the same way queries.activity_summary itself
+    is seeded (Task 5) -- an absent kind must still read 0, not be missing
+    from the sidebar entirely."""
+    block = _security_js(srv)
+    deps = _activity_deps(block, "secEl", "secIcon", "secActSummaryCard")
+    consts = _const(block, "EVENT_KINDS") + _const(block, "EVENT_KIND_LABEL")
+    script = tmp_path / "act-summary.js"
+    script.write_text(_PROJECT_DOM_HARNESS + consts + deps + """
+    const card = secActSummaryCard({analysis_started: 2});
+    console.log(JSON.stringify(collectAll(card, [])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    joined = " ".join(r["text"] for r in out)
+    for label in ("Analysis started", "Analysis finished", "Decision made",
+                  "Settings changed", "Report exported"):
+        assert label in joined, f"{label!r} is missing from the sidebar summary: {joined}"
+    assert "2" in joined, f"the real count did not render: {joined}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_most_active_projects_is_hidden_behind_one_line_once_scoped(srv, tmp_path):
+    """The one-operator reasoning the brief gives for cutting the mockup's
+    Users tab, applied to this card too: once the screen is already scoped
+    to one project, listing it again as "the most active project" is a
+    list of one, which is not an insight."""
+    block = _security_js(srv)
+    deps = _activity_deps(block, "secEl", "secIcon", "secActPeriodPhrase",
+                          "secActEmptyMessage", "_scopeToProject", "secActProjectsCard")
+    script = tmp_path / "act-projects.js"
+    script.write_text(_PROJECT_DOM_HARNESS + """
+    let secActState = {project: "", days: 30};
+    function secActLoad(){}
+    """ + deps + """
+    const unscoped = collectAll(
+      secActProjectsCard([{project: "web", count: 3}, {project: "api", count: 1}]), []
+    ).map(r => r.text).join(" | ");
+    secActState.project = "web";
+    const scoped = collectAll(secActProjectsCard([{project: "web", count: 3}]), [])
+      .map(r => r.text).join(" | ");
+    console.log(JSON.stringify({unscoped, scoped}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert "web" in out["unscoped"] and "3 events" in out["unscoped"], out["unscoped"]
+    assert "Scoped to one project" in out["scoped"], out["scoped"]
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_pager_infers_a_next_page_from_a_full_page_of_rows(srv, tmp_path):
+    """No `total` travels in the payload (see cmd_activity_data's own
+    docstring) -- "Next" is enabled exactly when this page came back full,
+    disabled the moment it does not, and "Prev" is disabled on page 1."""
+    block = _security_js(srv)
+    deps = _activity_deps(block, "secEl", "secActPager")
+    script = tmp_path / "act-pager.js"
+    script.write_text(_PROJECT_DOM_HARNESS + """
+    let secActState = {page: 1};
+    """ + deps + """
+    function pagerState(data){
+      // secActPager's own, fixed child order: Prev button, the "Page N"
+      // span, Next button -- indexed rather than filtered by tagName, since
+      // FakeElement (unlike a real DOM) does not uppercase what was passed
+      // to document.createElement.
+      const p = secActPager(data);
+      return {prevDisabled: p.childNodes[0].disabled, nextDisabled: p.childNodes[2].disabled};
+    }
+    const full = pagerState({page: 1, per_page: 25, events: new Array(25).fill(0)});
+    const partial = pagerState({page: 1, per_page: 25, events: new Array(10).fill(0)});
+    const page2 = pagerState({page: 2, per_page: 25, events: new Array(25).fill(0)});
+    console.log(JSON.stringify({full, partial, page2}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["full"] == {"prevDisabled": True, "nextDisabled": False}, out["full"]
+    assert out["partial"]["nextDisabled"], "a partial page must disable Next"
+    assert not out["page2"]["prevDisabled"], "Prev must be enabled past page 1"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_switching_the_kind_tab_marks_only_that_tab_active(srv, tmp_path):
+    block = _security_js(srv)
+    consts = _const(block, "ACT_TABS") + _const(block, "ACT_TAB_BUTTON_ID")
+    deps = _activity_deps(block, "secActRenderTabs", "secActSwitchTab")
+    script = tmp_path / "act-tabs.js"
+    script.write_text(_PROJECT_DOM_HARNESS + """
+    let secActState = {tab: "", page: 1};
+    function secActLoad(){}   // this test is about the active class, not the fetch
+    """ + consts + deps + """
+    // _PROJECT_DOM_HARNESS's own classList is a no-op SHARED across every
+    // instance (fine for the tests that only ever call .toggle() and never
+    // read it back) -- this test reads it back per BUTTON, so each instance
+    // needs its own backing Set. A getter lazily attaches one per element,
+    // rather than one shared object every instance would otherwise alias.
+    Object.defineProperty(FakeElement.prototype, "classList", { get(){
+      if(!this._classSet) this._classSet = new Set();
+      const set = this._classSet;
+      return { toggle(name, on){ if(on) set.add(name); else set.delete(name); },
+               contains(name){ return set.has(name); } };
+    }});
+    secActSwitchTab("findings");
+    const active = ["secactt-all", "secactt-analyses", "secactt-findings", "secactt-settings"]
+      .filter(id => $(id).classList.contains("active"));
+    console.log(JSON.stringify(active));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out == ["secactt-findings"], \
+        f"switching to 'findings' must mark only its own tab active: {out}"

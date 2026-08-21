@@ -866,6 +866,32 @@ def test_the_findings_route_accepts_repeated_query_values_the_same_way(srv, monk
     assert "critical" in args and "high" in args
 
 
+def test_the_findings_route_refuses_a_fingerprint_that_is_not_hex(srv, monkeypatch):
+    def must_not_run(args, stdin=None):
+        raise AssertionError("the CLI must not be reached")
+    monkeypatch.setattr(srv, "cc", must_not_run)
+    code, payload = srv.security_findings({"project": "web", "fingerprint": "not-hex!"})
+    assert code == 400
+    assert "fingerprint" in payload["error"]
+
+
+def test_the_findings_route_passes_a_fingerprint_prefix_through(srv, monkeypatch):
+    """The Activity screen's own deep link (Task 12): a fingerprint prefix,
+    lowercased, reaches `findings-page` as `--fingerprint` -- not the full
+    64-character shape `report-finding` enforces on a WRITE, since an
+    event's `related` only ever carries the first 12 characters."""
+    seen = {}
+
+    def fake(args, stdin=None):
+        seen["args"] = args
+        return True, json.dumps({"rows": [], "total": 0, "unique": 0,
+                                 "by_severity": {}, "page": 1, "per_page": 25})
+    monkeypatch.setattr(srv, "cc", fake)
+    srv.security_findings({"project": "web", "fingerprint": "ABC123DEF456"})
+    args = seen["args"]
+    assert args[args.index("--fingerprint") + 1] == "abc123def456"
+
+
 def test_the_findings_route_reports_a_cli_failure_as_500(srv, monkeypatch):
     monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (False, "boom"))
     code, payload = srv.security_findings({"project": "web"})
@@ -984,3 +1010,111 @@ def test_deleting_a_filter_reports_a_cli_failure_as_500(srv, monkeypatch):
     monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (False, "boom"))
     code, payload = srv.security_filter_delete({"project": "web", "name": "mine"})
     assert code == 500
+
+
+# ------------------------------------------------------------- activity GET
+#
+# `security_activity` validates `kind` against the closed vocabulary before
+# ever shelling out, the same treatment `security_findings` gives severity/
+# state/category. No user column, no IP column, anywhere in this section's
+# own tests: this install has one operator (app.db's own `CHECK (id = 1)`),
+# enforced at the ledger's schema (bin/security/ledger.py's `event` table),
+# not at this route -- but a route that started echoing one back would be a
+# regression this file has to catch.
+
+def test_activity_refuses_an_unknown_event_kind(srv):
+    code, payload = srv.security_activity({"kind": ["findings_viewed"]})
+    assert code == 400
+    assert "kind" in payload["error"]
+
+
+def test_activity_carries_events_and_a_summary(srv, monkeypatch):
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, json.dumps({
+        "events": [{"kind": "analysis_started", "detail": "deep on develop",
+                    "project": "web", "related": "4", "at": 1787290000}],
+        "summary": {"analysis_started": 12, "analysis_finished": 11},
+        "projects": [{"project": "web", "count": 23}],
+        "page": 1, "per_page": 25})))
+    code, payload = srv.security_activity({})
+    assert code == 200
+    assert payload["events"][0]["kind"] == "analysis_started"
+    assert payload["summary"]["analysis_started"] == 12
+
+
+def test_the_activity_payload_has_no_user_or_ip_field(srv, monkeypatch):
+    """One operator. A column that can only ever hold one value teaches
+    nothing, and an IP column on a loopback-only server teaches less."""
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, json.dumps({
+        "events": [{"kind": "decision_made", "detail": "accepted: reviewed",
+                    "project": "web", "related": "abc", "at": 1}],
+        "summary": {}, "projects": [], "page": 1, "per_page": 25})))
+    _code, payload = srv.security_activity({})
+    assert "user" not in payload["events"][0]
+    assert "ip" not in payload["events"][0]
+
+
+def test_activity_defaults_since_to_a_30_day_window(srv, monkeypatch):
+    """A caller that asks for nothing still gets a legible, bounded period --
+    not `ledger.events_for`'s own "since the beginning of time" default."""
+    seen = {}
+
+    def fake(args, stdin=None):
+        seen["args"] = args
+        return True, json.dumps({"events": [], "summary": {}, "projects": [],
+                                 "page": 1, "per_page": 25})
+    monkeypatch.setattr(srv, "cc", fake)
+    import time as _time
+    before = int(_time.time())
+    srv.security_activity({})
+    since = int(seen["args"][seen["args"].index("--since") + 1])
+    assert 29 * 86400 <= before - since <= 30 * 86400 + 5
+
+
+def test_activity_passes_project_and_kind_through(srv, monkeypatch):
+    seen = {}
+
+    def fake(args, stdin=None):
+        seen["args"] = args
+        return True, json.dumps({"events": [], "summary": {}, "projects": [],
+                                 "page": 1, "per_page": 25})
+    monkeypatch.setattr(srv, "cc", fake)
+    srv.security_activity({"project": "web",
+                           "kind": "analysis_started,analysis_finished",
+                           "since": "1700000000", "page": "2", "per_page": "10"})
+    args = seen["args"]
+    assert args[:2] == ["security", "activity-data"]
+    assert args[args.index("--project") + 1] == "web"
+    assert args.count("--kind") == 2
+    assert "analysis_started" in args and "analysis_finished" in args
+    assert args[args.index("--since") + 1] == "1700000000"
+    assert args[args.index("--page") + 1] == "2"
+    assert args[args.index("--per-page") + 1] == "10"
+
+
+def test_activity_caps_page_size(srv, monkeypatch):
+    seen = {}
+
+    def fake(args, stdin=None):
+        seen["args"] = args
+        return True, json.dumps({"events": [], "summary": {}, "projects": [],
+                                 "page": 1, "per_page": 500})
+    monkeypatch.setattr(srv, "cc", fake)
+    srv.security_activity({"per_page": "99999"})
+    assert "99999" not in seen["args"]
+    assert seen["args"][seen["args"].index("--per-page") + 1] == "500"
+
+
+def test_activity_refuses_a_non_integer_since(srv, monkeypatch):
+    def must_not_run(args, stdin=None):
+        raise AssertionError("the CLI must not be reached")
+    monkeypatch.setattr(srv, "cc", must_not_run)
+    code, payload = srv.security_activity({"since": "yesterday"})
+    assert code == 400
+    assert "since" in payload["error"]
+
+
+def test_activity_reports_a_cli_failure_as_500(srv, monkeypatch):
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (False, "boom"))
+    code, payload = srv.security_activity({})
+    assert code == 500
+    assert "boom" in payload["error"]

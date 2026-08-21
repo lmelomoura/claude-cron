@@ -19,6 +19,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The Security area has an Activity screen.** What happened and when,
+  every project unless scoped to one, filterable by kind — All activity,
+  Analyses, Findings, Settings — from one new endpoint, `GET
+  /api/security/activity`, backed by a new CLI verb, `security
+  activity-data`, itself just `ledger.events_for` (Task 3) plus
+  `queries.activity_summary` (Task 5) plus which projects were busiest,
+  bundled the same one-call way every sibling screen in this area already
+  answers itself. `kind` narrows the table only; `project` narrows the
+  table, the sidebar's per-kind counts AND its most-active-projects list —
+  a real change of scope, unlike a tab, so filtering to "Analyses" does not
+  also zero out what the Findings/Settings counts say happened. No user
+  column and no IP column, anywhere: this install has one operator (`app.db`'s
+  own `CHECK (id = 1)`), a column that can only ever hold one value teaches
+  nothing, and a loopback-only server has no IP worth logging either. No
+  "top active users" panel for the same reason — a list of one operator is
+  not an insight; "most active projects" earns its place instead, since
+  several projects genuinely can disagree about which is busiest. An
+  analysis id in the table's own "Related" column links straight to that
+  analysis (opens its project, switches to Runs, focuses the row — the
+  existing single-analysis view, reused rather than rebuilt); a decision's
+  fingerprint prefix opens a *second*, independent mount of the findings
+  browser in its own dialog, filtered to that one fingerprint — the exact
+  two-mounts-at-once case `findings-screen.js` was rebuilt host-keyed for
+  in the previous entry below, now with a real second caller.
+  `queries.finding_rows` gained a `fingerprint` filter (a PREFIX match, not
+  the full 64-character shape a written finding is validated against — an
+  event's `related` only ever carries the first 12 characters) to make that
+  link possible without a second copy of a filterable table. The empty
+  state names the period actually searched ("No activity recorded … in the
+  last 30 days") rather than leaving a blank screen that could be mistaken
+  for broken — the case every project sees today, since the event log
+  landed after Minerva's own analyses ran and its ledger has recorded none.
+
 - **The Security area has a findings browser.** Every finding of a project in
   one filterable, paginated table — severity, state, category, branch,
   analysis and path filters, plus free-text search across title/rule/
