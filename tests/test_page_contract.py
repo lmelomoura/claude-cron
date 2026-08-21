@@ -652,14 +652,18 @@ def test_the_severity_filter_never_hides_a_fixed_finding(srv):
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_severity_floor_filters_the_page_and_nothing_else(srv, tmp_path):
-    """`min_severity` is a display setting, and two things fall out of that.
+    """`min_severity` is a display setting, and three things fall out of that.
 
     A finding that CLOSED is shown at every floor: the checklist exists to say
     what went away, and a low-severity fix disappearing from the page makes a
-    good outcome look like nothing happened. And a severity outside the
-    four-value vocabulary ranks above critical rather than below low — an
-    unrecognised value is not a reason to drop a finding on the floor, and this
-    filter is the one place that could do it without a trace.
+    good outcome look like nothing happened. A severity outside the known
+    vocabulary ranks above critical rather than below low — an unrecognised
+    value is not a reason to drop a finding on the floor, and this filter is
+    the one place that could do it without a trace. And `info`, which IS in
+    the known vocabulary, ranks below everything else: it must be filterable
+    like any real severity, not stuck in the above-critical fallback the way
+    it shipped once already, which made it both unhideable and sorted above
+    every critical finding.
     """
     block = _security_js(srv)
     src = (re.search(r"const SEV_ORDER = .*?;", block).group(0) + "\n"
@@ -673,17 +677,67 @@ def test_the_severity_floor_filters_the_page_and_nothing_else(srv, tmp_path):
       {title:"c", severity:"critical", state:"new"},
       {title:"d", severity:"low",      state:"fixed"},
       {title:"e", severity:"nonsense", state:"open"},
+      {title:"f", severity:"info",     state:"open"},
     ];
     const shown = (min) => secVisible(findings, min).map(f=>f.title).join("");
-    console.log(JSON.stringify({low: shown("low"), medium: shown("medium"),
-                                high: shown("high"), unset: shown("")}));
+    console.log(JSON.stringify({info: shown("info"), low: shown("low"),
+                                medium: shown("medium"), high: shown("high"),
+                                unset: shown("")}));
     """)
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
-    assert out["low"] == "abcde", "the lowest floor must hide nothing"
+    assert out["info"] == "abcdef", "the true floor (info) must hide nothing"
+    assert out["low"] == "abcde", "the lowest SELECTABLE floor must hide nothing real -- " \
+        "and must hide info, which ranks below it"
     assert out["unset"] == "abcde", "no configured floor must behave like the lowest one"
     assert out["medium"] == "bcde", f"medium floor: {out['medium']}"
     assert out["high"] == "cde", f"high floor: {out['high']}"
+
+
+def test_sev_order_ranks_info_as_the_lowest_severity(srv):
+    """`info` has to be the FIRST entry in SEV_ORDER, not merely present in it
+    somewhere: secSevRank ranks by array index, so a vocabulary that lists
+    `info` anywhere but the bottom still parses, still passes every
+    behavioural test that does not happen to construct an `info` finding, and
+    still ranks it above whatever comes before it in the array -- which is
+    exactly how this shipped once already, with `info` simply missing from
+    SEV_ORDER and falling into secSevRank's above-critical fallback instead.
+    """
+    block = _security_js(srv)
+    order = re.findall(
+        r'"([a-z]+)"', re.search(r"const SEV_ORDER = \[(.*?)\];", block).group(1))
+    assert order == ["info", "low", "medium", "high", "critical"], order
+
+
+def test_no_severity_list_in_the_security_block_forgets_info(srv):
+    """`info` joined the vocabulary as a legitimate severity, not a corrupted
+    one -- so every hardcoded list of severities in this block (the posture
+    pill loops, the summary pill loop, the counts object secPosture seeds)
+    has to carry it too, or that one spot quietly falls back to treating
+    `info` as unrecognised data. A structural scan rather than one assertion
+    per call site, so the next hardcoded severity list added here is caught
+    the same way the ones that already existed were -- `SEV_ORDER` itself is
+    covered by test_sev_order_ranks_info_as_the_lowest_severity above, so it
+    is excluded here to keep this test about the OTHER lists, not a
+    duplicate of that one.
+    """
+    block = _security_js(srv)
+    sev_order_src = re.search(r"const SEV_ORDER = \[.*?\];", block).group(0)
+    scanned = block.replace(sev_order_src, "")
+    four = {"critical", "high", "medium", "low"}
+    offenders = []
+    # Quoted-string arrays, e.g. ["critical","high","medium","low"].
+    for m in re.finditer(r'\[\s*(?:"[a-z_]+"\s*,\s*)*"[a-z_]+"\s*\]', scanned):
+        items = re.findall(r'"([a-z_]+)"', m.group(0))
+        if four <= set(items) and "info" not in items:
+            offenders.append(m.group(0))
+    # Bare-key numeric objects, e.g. {critical:0, high:0, medium:0, low:0, other:0}.
+    for m in re.finditer(
+            r'\{\s*(?:[a-z_]+\s*:\s*\d+\s*,\s*)*[a-z_]+\s*:\s*\d+\s*\}', scanned):
+        items = re.findall(r'([a-z_]+)\s*:\s*\d+', m.group(0))
+        if four <= set(items) and "info" not in items:
+            offenders.append(m.group(0))
+    assert not offenders, f"severity list(s) in the Security block forget info: {offenders}"
 
 
 def test_the_checklist_offers_every_state_the_engine_can_produce(srv):

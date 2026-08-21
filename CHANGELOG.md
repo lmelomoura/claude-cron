@@ -374,7 +374,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **A fifth severity, `info`, for findings worth recording that need no action.**
   It sits below the default floor, so it files without adding noise, and it
   arrives with producers rather than as an always-zero column: a repository
-  with no `.gitignore`, and the agent's own observations.
+  with no `.gitignore`, and the agent's own observations. The dashboard's own
+  severity vocabulary now ranks it too — below `low`, not above `critical` —
+  since an unextended `SEV_ORDER` fell back to the rank reserved for
+  corrupted data: an `info` finding was unhideable at every `min_severity`
+  floor and sorted above every critical finding on the page.
 
 ### Fixed
 

@@ -30,6 +30,10 @@ _VULN_URL = "https://api.osv.dev/v1/vulns/"
 _BATCH = 500
 _SEVERITY = {"CRITICAL": "critical", "HIGH": "high",
              "MODERATE": "medium", "MEDIUM": "medium", "LOW": "low"}
+# Not `info`: an advisory that arrives with no severity is one nobody has
+# assessed, not one that does not matter. Demoting it to `info` would push a
+# real CVE below the default min_severity floor, where it looks like it was
+# never found at all.
 DEFAULT_SEVERITY = "medium"
 
 

@@ -742,10 +742,6 @@ def test_prepare_root_inside_the_runs_worktree_is_accepted(tmp_path):
     run_dir = tmp_path / "run-dir"
     checkout = run_dir / "web"
     checkout.mkdir(parents=True)
-    # Not what this test is about -- without it, the `missing_gitignore`
-    # advisory (see hygiene.py) would make `findings == 0` false for reasons
-    # unrelated to the worktree-anchoring guard under test here.
-    (checkout / ".gitignore").write_text(".env\n")
     manifest = run_dir / ".run.json"
     manifest.write_text("{}")
     out = run(db, "prepare", "--analysis", str(aid), "--root", str(checkout),
@@ -761,9 +757,6 @@ def test_prepare_root_check_is_unchanged_without_the_run_manifest(tmp_path):
     aid = open_analysis(db)
     anywhere = tmp_path / "any-checkout-at-all"
     anywhere.mkdir()
-    # Not what this test is about -- see the identical comment in
-    # test_prepare_root_inside_the_runs_worktree_is_accepted.
-    (anywhere / ".gitignore").write_text(".env\n")
     env = {k: v for k, v in os.environ.items()
            if k not in ("CC_SECURITY_AGENT", "CC_RUN_MANIFEST")}
     out = run(db, "prepare", "--analysis", str(aid), "--root", str(anywhere),
@@ -781,9 +774,6 @@ def test_prepare_root_check_is_unchanged_when_agent_flag_is_set_without_a_manife
     aid = open_analysis(db)
     anywhere = tmp_path / "any-checkout-at-all"
     anywhere.mkdir()
-    # Not what this test is about -- see the identical comment in
-    # test_prepare_root_inside_the_runs_worktree_is_accepted.
-    (anywhere / ".gitignore").write_text(".env\n")
     env = {k: v for k, v in os.environ.items() if k != "CC_RUN_MANIFEST"}
     env["CC_SECURITY_AGENT"] = "1"
     out = run(db, "prepare", "--analysis", str(aid), "--root", str(anywhere),

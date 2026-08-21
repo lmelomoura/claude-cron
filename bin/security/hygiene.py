@@ -130,7 +130,15 @@ def scan(root, ignore=()):
 
     # Advisory, not a defect: nothing is leaking yet. It is how the next .env
     # gets committed, which is why it is recorded at all -- and why it is info.
-    if not (root / ".gitignore").is_file():
+    #
+    # Gated on `.git` existing at all, not just on scan() being called: the
+    # rule's own rationale is about things being COMMITTED, which only means
+    # something in a repository. `scan()` runs on any directory it is pointed
+    # at, and in production that is always a `git worktree` checkout, where
+    # `.git` is a FILE that points at the real repo, not a directory --
+    # `.exists()` is true for both that file and an ordinary clone's `.git`
+    # directory, where `.is_dir()` would silently miss the worktree case.
+    if (root / ".git").exists() and not (root / ".gitignore").is_file():
         out.append(_finding(
             "missing_gitignore", "info", "This repository has no .gitignore",
             "Without one, the first .env, key or credential file someone adds "

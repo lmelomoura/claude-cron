@@ -1201,6 +1201,7 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .sevpill.critical{border-color:color-mix(in srgb,var(--err) 45%,transparent)}
 .sevpill.medium{background:var(--warn-soft);color:var(--warn)}
 .sevpill.low{background:var(--panel2);color:var(--muted);border-color:var(--line)}
+.sevpill.info{background:var(--panel2);color:var(--muted)}
 .sevpill.clean{background:var(--ok-soft);color:var(--ok)}
 .secbar{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;margin:0 0 14px}
 .secfield{display:flex;flex-direction:column;gap:5px;min-width:0}
@@ -3205,7 +3206,10 @@ const SEC_STATE_HELP = {
   false_positive: "You said it is not real. If the code around it changes the fingerprint changes "
                 + "and it comes back as new — different code, so a fresh judgement.",
 };
-const SEV_ORDER = ["low","medium","high","critical"];
+// Every KNOWN severity must appear here, lowest first, or it inherits
+// secSevRank's above-critical fallback below -- meant for corrupted data,
+// not for a legitimate value the vocabulary simply forgot.
+const SEV_ORDER = ["info","low","medium","high","critical"];
 const SEC_PROFILES = ["quick","standard","deep"];
 /* The deterministic phase (secrets, dependencies, CVEs, hygiene) writes its
    findings before the agent is even launched, so a poll this quick shows real
@@ -3251,9 +3255,14 @@ const secMinSeverity = (name) => { const v = secCfg(name).min_severity;
   return SEV_ORDER.includes(v) ? v : "low"; };
 const secDefaultProfile = (name) => { const v = secCfg(name).default_profile;
   return SEC_PROFILES.includes(v) ? v : "standard"; };
-/* A severity the four-value vocabulary does not know is ranked ABOVE critical
-   rather than below low: an unrecognised value is not a reason to hide a
-   finding, and the display filter is the one place that could silently do it. */
+/* A severity the vocabulary does not know is ranked ABOVE critical rather
+   than below low: an unrecognised value is not a reason to hide a finding,
+   and the display filter is the one place that could silently do it. This
+   fallback is for CORRUPTED data only -- a value nothing in the pipeline
+   ever produces -- and it is a trap, not a feature: every severity the
+   pipeline can legitimately emit (info included) MUST be listed in
+   SEV_ORDER, or it silently falls into this branch and sorts and filters as
+   if it were worse than critical. */
 const secSevRank = (s) => { const i = SEV_ORDER.indexOf(s);
   return i < 0 ? SEV_ORDER.length : i; };
 /* Class names, not labels: the label shows whatever the record actually says,
@@ -3280,7 +3289,7 @@ function secVisible(findings, minSeverity){
 /* What is still standing, by severity. Decided and fixed findings are out of
    it by definition — the posture is what is left for somebody to do. */
 function secPosture(findings, minSeverity){
-  const counts = {critical:0, high:0, medium:0, low:0, other:0};
+  const counts = {critical:0, high:0, medium:0, low:0, info:0, other:0};
   secVisible(findings, minSeverity).forEach(f => {
     if(["fixed","accepted","false_positive"].includes(f.state)) return;
     if(counts[f.severity] == null) counts.other++; else counts[f.severity]++;
@@ -3406,7 +3415,7 @@ function secPosturePills(rec, name){
     wrap.appendChild(secEl("span", "sevpill clean", "nothing open"));
     return wrap;
   }
-  ["critical","high","medium","low"].forEach(sev => {
+  ["critical","high","medium","low","info"].forEach(sev => {
     if(!counts[sev]) return;
     wrap.appendChild(secEl("span", "sevpill " + sev, counts[sev] + " " + sev));
   });
@@ -3727,7 +3736,7 @@ function secRenderSummary(){
   }else if(!open){
     host.appendChild(secEl("span", "sevpill clean", "nothing open"));
   }else{
-    ["critical","high","medium","low"].forEach(sev => {
+    ["critical","high","medium","low","info"].forEach(sev => {
       if(counts[sev]) host.appendChild(secEl("span", "sevpill " + sev, counts[sev] + " " + sev));
     });
     if(counts.other) host.appendChild(secEl("span", "sevpill low", counts.other + " other"));
