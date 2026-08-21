@@ -147,7 +147,7 @@ def _run_save(srv, tmp_path, *, multi, name="save.js"):
     const sent = [];
     const vals = {"pj-name":"Web","pj-desc":"","pj-cwd":"%s","pj-ccd":"","pj-base":"develop",
                   "pj-wt":"auto","pj-up":"","pj-down":"already here",
-                  "sec-enabled":false,"sec-model":"","sec-effort":"0","sec-cfgdir":"",
+                  "sec-enabled":false,"sec-model":"","sec-effort":"0","sec-perm":"bypassPermissions","sec-cfgdir":"",
                   "sec-profile-default":"standard","sec-max-budget":"","sec-daily-budget":"",
                   "sec-min-severity":"medium","sec-ignore":""};
     const $ = (id) => ({ get value(){ return vals[id]; }, set value(v){ vals[id]=v; },
@@ -211,7 +211,7 @@ def test_a_multi_repo_project_keeps_its_rows_and_leaves_the_project_base_alone(s
 def test_the_project_editor_has_a_security_pane(srv):
     page = srv.render_page("boot-authed")
     assert 'data-pjpane="security"' in page
-    for field in ("sec-enabled", "sec-model", "sec-effort", "sec-cfgdir",
+    for field in ("sec-enabled", "sec-model", "sec-effort", "sec-perm", "sec-cfgdir",
                   "sec-profile-default", "sec-max-budget", "sec-daily-budget",
                   "sec-min-severity", "sec-ignore"):
         assert f'id="{field}"' in page, f"the security pane has no {field} field"
@@ -233,6 +233,10 @@ def test_security_model_and_effort_use_the_job_editors_controls(srv):
     # the combo is created and kept in step with /api/models like the job's
     assert 'createCombo({id:"sec-model"' in page
     assert "secModelCombo.set(secModelCombo.get(), MODELS)" in page
+    # and the permission mode is the job editor's combo too, with the headless
+    # default that actually lets a fresh worktree run tools
+    assert 'createCombo({id:"sec-perm"' in page
+    assert 'id="sec-perm-combo"' in page
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -248,7 +252,7 @@ def test_saving_always_sends_the_whole_security_block_with_a_real_boolean(srv, t
     proj = next(e["project"] for op, e in sent if op == "project_set")
     sec = proj["security"]
     assert sec["enabled"] is False, f"enabled must be a real boolean, got {sec['enabled']!r}"
-    assert set(sec) == {"enabled", "model", "effort", "claude_config_dir",
+    assert set(sec) == {"enabled", "model", "effort", "permission_mode", "claude_config_dir",
                          "default_profile", "max_budget_usd", "daily_budget_usd",
                          "min_severity", "ignore_paths"}, f"security block: {sec}"
     assert sec["max_budget_usd"] == "", "an empty budget must clear, not vanish from the payload"

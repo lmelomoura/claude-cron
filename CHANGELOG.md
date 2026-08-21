@@ -19,6 +19,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A security analysis can actually run: the derived job now defaults to
+  `bypassPermissions`, the fleet's own headless default, instead of `dontAsk`.**
+  Headless `dontAsk` denies every tool outside an allowlist, and a fresh
+  worktree has none — the first live analysis spent $0.56 over 18 turns
+  probing the walls, could not run one command, and ended BLOCKED.
+  Containment never came from the permission mode: the worktree is
+  disposable, the ledger only accepts writes through the CLI's validating
+  door, and the human-authority verbs stay shut to the agent's environment.
+  A project that wants a tighter mode sets `security.permission_mode` (now
+  in the project editor's Security tab, same control as the job editor's),
+  and a value the CLI does not know falls back with a warning instead of
+  launching a run that dies at its first tool call.
+
 - **The Security tab picks its model and effort with the job editor's own
   controls.** It shipped with a free-text model field and a bare effort
   dropdown, so the two screens drifted: the job editor offered the resolved

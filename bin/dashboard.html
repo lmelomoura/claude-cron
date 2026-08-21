@@ -2090,6 +2090,20 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
       <div class="effends"><span>Faster</span><span>Smarter</span></div>
     </div>
   </div>
+  <label>Permission mode</label>
+  <div class="combo" id="sec-perm-combo">
+    <button type="button" class="combo-trigger" id="sec-perm-trigger" aria-haspopup="listbox" aria-expanded="false">
+      <span class="combo-val" id="sec-perm-val">bypassPermissions — full autonomy (headless default)</span>
+      <span class="combo-caret"></span>
+    </button>
+    <div class="combo-pop" id="sec-perm-pop" hidden>
+      <input type="text" class="combo-search" id="sec-perm-search" placeholder="Search modes…" autocomplete="off">
+      <ul class="combo-list" id="sec-perm-opts" role="listbox"></ul>
+    </div>
+    <input type="hidden" id="sec-perm">
+  </div>
+  <p class="fieldhelp">How the analysis agent may use tools. dontAsk without an allowlist denies
+    everything in a headless run — the ledger is protected by the CLI's validating door either way.</p>
   <label>Claude account — which account signs the analysis</label>
   <input id="sec-cfgdir" type="text" placeholder="inherits the project's" autocomplete="off" spellcheck="false">
   <p class="fieldhelp">Empty inherits this project's own Claude account above, which inherits the
@@ -4316,6 +4330,8 @@ function openProjectEditor(name){
   if(secModelCombo) secModelCombo.set(sec.model||"", MODELS);
   else $("sec-model").value = sec.model||"";
   effortSet("sec-effort","sec-effort-label", sec.effort||"");
+  if(secPermCombo) secPermCombo.set(sec.permission_mode||"bypassPermissions", PERMS);
+  else $("sec-perm").value = sec.permission_mode||"bypassPermissions";
   $("sec-cfgdir").value = sec.claude_config_dir||"";
   $("sec-profile-default").value = SEC_PROFILES.includes(sec.default_profile) ? sec.default_profile : "standard";
   $("sec-max-budget").value = (sec.max_budget_usd!=null && sec.max_budget_usd!=="") ? sec.max_budget_usd : "";
@@ -4400,6 +4416,7 @@ async function saveProject(){
       enabled: $("sec-enabled").checked,
       model: $("sec-model").value.trim(),
       effort: EFFORTS[+$("sec-effort").value||0]||"",
+      permission_mode: $("sec-perm").value||"bypassPermissions",
       claude_config_dir: $("sec-cfgdir").value.trim(),
       default_profile: SEC_PROFILES.includes(profDef) ? profDef : "standard",
       max_budget_usd: (mb===""||isNaN(mbNum)) ? "" : mbNum,
@@ -5440,7 +5457,7 @@ const PERMS=[
   {v:"plan",label:"plan"},
   {v:"manual",label:"manual"},
 ];
-let projectCombo=null, modelCombo=null, permCombo=null, wtCombo=null, secModelCombo=null;
+let projectCombo=null, modelCombo=null, permCombo=null, wtCombo=null, secModelCombo=null, secPermCombo=null;
 function initCombos(){
   projectCombo=createCombo({id:"ed-project", allowNone:true, noneLabel:"— None —", withIcon:true,
     onPick:(v)=>syncCwdField(v)});
@@ -5452,6 +5469,8 @@ function initCombos(){
   secModelCombo=createCombo({id:"sec-model", allowNone:true,
     noneLabel:"— Default (opus) —", allowCustom:true});
   secModelCombo.set("", MODELS);
+  secPermCombo=createCombo({id:"sec-perm", allowNone:false, def:"bypassPermissions"});
+  secPermCombo.set("bypassPermissions", PERMS);
   // The real list is fetched once there is a session — asking for it at boot
   // just 401s on a signed-out page and leaves the editor on the fallback list
   // for the rest of the visit.

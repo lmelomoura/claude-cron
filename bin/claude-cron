@@ -226,6 +226,24 @@ security_derived_jobs() {
     security_check_number "$project" max_budget_usd "$budget" "$SECURITY_FALLBACK_BUDGET_USD" \
       || budget="$SECURITY_FALLBACK_BUDGET_USD"
     security_check_number "$project" daily_budget_usd "$daily" || daily=""
+    # The permission mode the analysis runs under. bypassPermissions by
+    # default -- the same headless default every real job here uses -- and
+    # NOT dontAsk: in a headless run dontAsk DENIES every tool that is not
+    # allowlisted, and a fresh worktree has no allowlist, so the agent could
+    # not run a single command (the first live analysis burnt $0.56 probing
+    # the walls and ended BLOCKED). Containment does not come from the
+    # permission mode: the worktree is disposable, the ledger only accepts
+    # writes through the CLI's validating door, and CC_SECURITY_AGENT keeps
+    # the human-authority verbs shut. A project that wants a tighter mode
+    # sets security.permission_mode, and an unknown value falls back rather
+    # than launching a run that dies at the first tool call.
+    local perm
+    perm="$(security_get "$project" '.permission_mode' 'bypassPermissions')"
+    case "$perm" in
+      acceptEdits|auto|bypassPermissions|manual|dontAsk|plan) : ;;
+      *) security_warn "security: project '$project' has a permission_mode the CLI does not know ('$perm') -- using bypassPermissions"
+         perm="bypassPermissions" ;;
+    esac
     # Build the element FIRST and only then commit to it. The separator used to
     # be printed before this jq ran, so anything that made jq exit without
     # stdout -- a `tonumber` on a budget the user typed as "abc" was enough --
@@ -241,9 +259,10 @@ security_derived_jobs() {
       --arg budget "$budget" \
       --arg daily "$daily" \
       --arg cfgdir "$(security_get "$project" '.claude_config_dir' '')" \
+      --arg perm "$perm" \
       '{id:$id, project:$project, prompt:$prompt, model:$model,
         description:"Security analysis (derived from the project, not a job you created).",
-        enabled:false, precheck:"", permission_mode:"dontAsk",
+        enabled:false, precheck:"", permission_mode:$perm,
         interactive:false, max_parallel:1, stall_timeout_seconds:1800}
        + (if $effort == "" then {} else {effort:$effort} end)
        # NOT `{max_budget_usd: ($budget|tonumber? // empty)}`: an empty value
@@ -4921,6 +4940,36 @@ JSON
     [ "$(job_get security-web '.model' '')" = "claude-opus-5" ] ) \
     && ok "the derived job carries the project's security model" \
     || bad "the derived job carries the project's security model"
+
+  # The mode the analysis runs under. dontAsk looked safer and was the
+  # opposite: headless dontAsk denies every tool outside an allowlist a fresh
+  # worktree does not have, so the first live analysis could not run one
+  # command. The default is the fleet's own headless default; an explicit
+  # security.permission_mode wins; a typo falls back rather than launching a
+  # run that dies at its first tool call.
+  ( JOBS_FILE="$tmp/derived/jobs.json"; PROJECTS_FILE="$tmp/derived/projects.json"
+    DATA_DIR="$tmp/derived/data"
+    [ "$(job_get security-web '.permission_mode' '')" = "bypassPermissions" ] ) \
+    && ok "a derived job defaults to bypassPermissions, not headless-dead dontAsk" \
+    || bad "a derived job defaults to bypassPermissions, not headless-dead dontAsk"
+
+  mkdir -p "$tmp/dperm"
+  cat > "$tmp/dperm/projects.json" <<'JSON'
+{"projects":[
+ {"name":"Strict","cwd":"/tmp/s","security":{"enabled":true,"permission_mode":"dontAsk"}},
+ {"name":"Typo","cwd":"/tmp/t","security":{"enabled":true,"permission_mode":"yolo"}}]}
+JSON
+  printf '{"jobs":[]}\n' > "$tmp/dperm/jobs.json"
+  ( JOBS_FILE="$tmp/dperm/jobs.json"; PROJECTS_FILE="$tmp/dperm/projects.json"
+    DATA_DIR="$tmp/dperm/data"
+    [ "$(job_get security-strict '.permission_mode' '')" = "dontAsk" ] ) \
+    && ok "an explicit security.permission_mode wins over the default" \
+    || bad "an explicit security.permission_mode wins over the default"
+  ( JOBS_FILE="$tmp/dperm/jobs.json"; PROJECTS_FILE="$tmp/dperm/projects.json"
+    DATA_DIR="$tmp/dperm/data"
+    [ "$(job_get security-typo '.permission_mode' '')" = "bypassPermissions" ] ) \
+    && ok "a permission_mode the CLI does not know falls back instead of dying later" \
+    || bad "a permission_mode the CLI does not know falls back instead of dying later"
 
   # The property the whole design rests on: the tick must never schedule it.
   ( JOBS_FILE="$tmp/derived/jobs.json"; PROJECTS_FILE="$tmp/derived/projects.json"
