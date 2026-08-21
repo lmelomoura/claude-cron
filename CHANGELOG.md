@@ -21,7 +21,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **The Security area has an Activity screen.** What happened and when,
   every project unless scoped to one, filterable by kind — All activity,
-  Analyses, Findings, Settings — from one new endpoint, `GET
+  Analyses, Findings, Settings — and by a period selector (7 days, 30 days,
+  90 days, All time; 30 days by default), from one new endpoint, `GET
   /api/security/activity`, backed by a new CLI verb, `security
   activity-data`, itself just `ledger.events_for` (Task 3) plus
   `queries.activity_summary` (Task 5) plus which projects were busiest,
@@ -78,10 +79,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a subprocess is ever spawned — a bad value is a 400 with a sentence, never
   a 500 built from a CLI that exited non-zero or a raw SQL fragment that
   never even reached the query. The screen is one module exporting one mount
-  function, `renderFindings(host, project)`: the project screen's new fifth
-  tab mounts it today, written so a future caller does not mean a second copy
-  of a filterable table to drift the way a duplicated download function, and
-  a duplicated state machine before it, already have.
+  function, `renderFindings(host, project, initialFilters)`: the project
+  screen's new fifth tab mounts it today, written so a future caller does not
+  mean a second copy of a filterable table to drift the way a duplicated
+  download function, and a duplicated state machine before it, already have.
 
   A follow-up review closed three more issues before this shipped. The
   severity floor used to apply uniformly, with no exception for a finding
@@ -156,9 +157,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **The Security area has a project screen.** Opening a project now leads to
   a header — its declared profile, the branch its posture is shown for (with
   the same "fell back" cue the index screen already gives when the project's
-  own base was never analysed), how much code it is, and when it was last
-  analysed — and the run history behind two tabs instead of one long column,
-  all from one new endpoint, `GET /api/security/project?project=<name>`,
+  own base was never analysed), how much code it is, when it was last
+  analysed, and a **Project settings** button that opens this same project's
+  editor on the main dashboard, so a setting does not need a trip back
+  through the index to reach — and the run history behind two tabs instead
+  of one long column, all from one new endpoint,
+  `GET /api/security/project?project=<name>`,
   backed by a new CLI verb, `security project-data`. **Overview** shows the
   current posture and what changed since the previous analysis (the
   checklist's new/open/partial/pending/fixed/regressed/accepted/false-positive
@@ -169,18 +173,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   branch, commit, duration, findings, state, date — filterable by state, and
   checked to list exactly what `security list --project <name>` lists: same
   rows, same order, each row's own findings-recorded count folded in — how
-  many findings that analysis recorded, not how many are open now. `Run new
-  analysis`
+  many findings that analysis recorded, not how many are open now. `Analyse`
   is the same button calling the same `security_analyze` op as before —
   never a bare run of the derived job, whose request file a second run would
   re-use. Lines of code shows a dash for `0`, not a number: every analysis
   before that column existed carries a zero there, and a repository with no
   code must not look the same as a count nobody ever took. The sidebar
   carries the severity donut, the open-findings-by-rule rollup, and the
-  project's last few activity events; there is no link to an Activity screen
-  yet because one does not exist until a later task, and a link to nowhere
-  would be worse than none. The old per-project detail — the repo/branch/
-  profile picker, the live status line, the severity pills, the checklist
+  project's last few activity events, with a "view all" link into the
+  Activity screen (added above, in this same section) scoped to this
+  project. The old per-project detail — the repo/branch/profile picker, the
+  live status line, the severity pills, the checklist
   chips, the downloads, the findings list with its accept/false-positive
   controls — is untouched and still works exactly as it did; it now lives
   nested under the Runs tab, reached by clicking a row in the new table the
@@ -332,9 +335,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   always caught; the case the guard's own sentence claims to prevent — a
   committed artifact that does not match anything anybody wrote, which is what
   a mangled merge conflict inside a 90 KB generated file looks like — was not.
-  The bundle now carries a hash of its own body alongside the source
-  fingerprint, the selftest recomputes both, and a stamp that appears more
-  than once is refused rather than resolved by picking one.
+  The bundle now carries a hash of its own body — computed by a new
+  `build/ui-bundle-digest.sh` and stamped as `// ui-bundle:`, alongside the
+  existing `build/ui-digest.sh` source fingerprint's `// ui-sources:` — the
+  selftest recomputes both, and a stamp that appears more than once is
+  refused rather than resolved by picking one.
 - **The source fingerprint covers what the build actually reads.** It hashed
   `ui/**/*.js` only, while esbuild follows whatever `ui/security/index.js`
   imports and resolves `.ts`, `.tsx`, `.jsx`, `.json` and `.css` just as
@@ -567,6 +572,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a ledger row stuck on `running`. The plist now carries the key (re-run
   `bash install.sh` to apply it), and the detach itself takes its own process
   group (`set -m`) so it also survives a parent that lacks it.
+
 - **"Open the run" on a running analysis can no longer open a dead previous
   attempt.** The link matched by nearest start within 15 minutes across the
   journal too, so a running analysis whose run had just died showed the
@@ -612,16 +618,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   repository reads.
 
 - **The Security area moved out of `dashboard.html` into `ui/security/`, and
-  nothing it does changed.** The page was 7,323 lines with the whole app in one
-  `<script>`; the Security area was 874 of them and has four more screens
-  coming. It is now ten ES modules bundled by a pinned esbuild into
-  `bin/static/security.js` and served by a new `/static/*` route. **The bundle
+  nothing it does changed.** The page was 7,333 lines with the whole app in one
+  `<script>`; the Security area was 874 of them, with four more screens still
+  to come — all of which have since landed, elsewhere in this same section.
+  It is now fifteen ES modules bundled by a pinned esbuild into
+  `bin/static/security.js` and served by a new `/static/*` route, by a new
+  `package.json` (`esbuild` as its one `devDependency`, and a `build` script
+  that is just `bash build/build-ui.sh`) added alongside them — the same
+  script has to run in the same commit as any edit under `ui/`. **The bundle
   is committed**, so installing claude-cron still needs only jq, python3 and
   curl — Node is a developer dependency, and the day it becomes an install
-  dependency is the day this stops being worth it. `claude-cron selftest`
-  refuses a bundle whose sources have moved on: a stale committed bundle is a
-  dashboard silently running last week's code, with nothing on screen to say
-  so. What the area used to read out of the page's scope — `DATA`, `$`,
+  dependency is the day this stops being worth it (`node_modules/`, a build
+  input and nothing else, is a new line in `.gitignore`). `claude-cron
+  selftest` refuses a bundle whose sources have moved on — `package.json`
+  itself counts as one, since it decides what the build produces as much as
+  anything under `ui/` does — a stale committed bundle is a dashboard
+  silently running last week's code, with nothing on screen to say so. What
+  the area used to read out of the page's scope — `DATA`, `$`,
   `toast`, `api` and eleven more — is now one stated interface object the page
   hands in, with `DATA` and `currentView` read through getters because both are
   reassigned while the page runs and a copy of either would freeze the area on
@@ -692,30 +705,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   than incidental.
 
 - **A named set of filters per project.** Rebuilding the view somebody works
-  from every day -- severity, category, state, whatever the day calls for --
+  from every day — severity, category, state, whatever the day calls for —
   used to cost six clicks against the findings browser on every visit. A new
   `saved_filter` table (keyed by project and name) and `security filters
   list|save|delete` let it be saved once and reapplied in one. A filter
-  stores a *query*, never findings -- saving one records only the shape of
+  stores a *query*, never findings — saving one records only the shape of
   the question being asked, nothing about what it turned up. A filter
   nobody can parse (a hand-edited row, a future query shape an older reader
   does not understand) stays visible with an empty query instead of taking
   the whole list down, so it can still be deleted. Saving and deleting join
   `decide`, `rename-project`, `open-analysis` and `event` in the set
-  `CC_SECURITY_AGENT` refuses -- a working set is a human's, not something
-  an analysis decides -- while `filters list` stays open, the same
+  `CC_SECURITY_AGENT` refuses — a working set is a human's, not something
+  an analysis decides — while `filters list` stays open, the same
   reasoning that keeps `events` and `findings` open. A name over 80
   characters is refused, naming the limit, rather than silently truncated
-  to `name[:80]` -- the truncation used to make a long name undeletable by
+  to `name[:80]` — the truncation used to make a long name undeletable by
   what was actually typed, and let two names sharing their first 80
   characters silently overwrite each other before the primary key ever saw
   the difference.
 
-- **The Security area records what happened.** Analyses started and finished,
-  decisions with the reason behind them, settings changed, reports exported —
-  the history a security posture needs to be auditable at all. Without a user
-  column or an IP: this install has one operator, and a column that can only
-  hold one value teaches nothing.
+- **The Security area records what happened, in a new `event` table.**
+  Analyses started and finished, decisions with the reason behind them,
+  settings changed, reports exported — the history a security posture needs
+  to be auditable at all. Written through `ledger.record_event` and read back
+  through two new CLI verbs, `security event` (a standalone write, refused to
+  the agent) and `security events` (the read side, open to everyone). Without
+  a user column or an IP: this install has one operator, and a column that
+  can only hold one value teaches nothing.
+
+  **`claude-cron project-set` — an existing command — is now also a writer
+  to `security.db`.** A settings save on a security-enabled project files a
+  `settings_changed` event, best-effort and never the reason the save itself
+  fails; one on a project with security off files nothing. Nobody who only
+  ever touches `config/projects.json` needs to know `security.db` exists,
+  but a project that has opted in now has both files change on one save.
 
 - **An analysis records how much code it read.** Counted during the walk the
   deterministic phase already does, with the same files skipped, so the number
@@ -807,7 +830,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   onto the new name instead of stranded under one no project has any more.
 
 - **The engines behind an analysis, and the ledger that remembers them —
-  `bin/security/`.** Eight modules of stdlib Python, no dependency added, behind
+  `bin/security/`.** Twelve modules of stdlib Python, no dependency added, behind
   the single door of `cli.py`. This is the half of an analysis that costs no
   tokens and the half that makes running a second one worth anything.
 
@@ -1199,8 +1222,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   nothing. "All time" therefore returned exactly what "30 days" returns,
   silently, with no error — an audit reaching back further than a month got
   a partial answer that looked complete. An absent `since` still defaults
-  to 30 days; an explicit one, including `0` or any negative value, now
-  reaches `ledger.events_for` unmodified, which is what "no lower bound"
+  to 30 days; an explicit `0` no longer gets folded into that window. A
+  negative value never reaches `ledger.events_for` at all — both
+  `security_activity` and `cmd_activity_data` clamp it up to `0` first — so
+  what the store actually sees is always `0`, which is what "no lower bound"
   already means there.
 
 - **`security findings-page --fingerprint` refuses a malformed value
