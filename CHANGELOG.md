@@ -19,6 +19,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A malformed or pathological JSON body on stdin now exits with a sentence
+  instead of a traceback.** Both `security report-finding` and `security filters
+  save` read JSON from stdin; a deeply nested structure used to raise
+  `RecursionError` uncaught, printing a raw Python traceback with exit code 1,
+  while the module's own docstring promises "every failure here exits non-zero
+  with a sentence on stderr". Both verbs now read stdin as text first, refuse
+  bodies over 1MB (far beyond any real finding or filter, but small enough that
+  nothing pathological gets as far as the parser), and catch `RecursionError`
+  alongside `ValueError` when parsing, exiting with a sentence rather than a
+  traceback.
+
 - **Filing a security event could fail the thing it was filing.** `record_event`
   ran unguarded at its three literal-kind call sites, and `security.db` is
   shared across every project with the default 5s busy timeout — a lock

@@ -58,6 +58,11 @@ FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 MAX_TEXT = 10000
 TEXT_KEYS = ("title", "rationale", "remediation", "partial_note")
 
+# A safeguard against pathological JSON on stdin. Both `report-finding` and
+# `filters save` read JSON bodies; a deeply nested structure raises RecursionError
+# and a megabyte-scale body is far beyond any legitimate finding or filter.
+MAX_STDIN_BYTES = 1_000_000
+
 # What the agent under review may NOT do, even though it reaches this file
 # through the same command the operator does. See `_refuse_if_agent`.
 #
@@ -379,8 +384,17 @@ def cmd_fingerprint(args):
 
 def cmd_report_finding(args):
     try:
-        payload = json.load(sys.stdin)
-    except ValueError as exc:
+        stdin_text = sys.stdin.read()
+    except Exception as exc:
+        sys.exit(f"report-finding: could not read stdin: {exc}")
+
+    if len(stdin_text.encode('utf-8')) > MAX_STDIN_BYTES:
+        sys.exit(f"report-finding: stdin is {len(stdin_text.encode('utf-8'))} bytes "
+                 f"and the limit is {MAX_STDIN_BYTES}")
+
+    try:
+        payload = json.loads(stdin_text)
+    except (ValueError, RecursionError) as exc:
         sys.exit(f"report-finding: stdin is not valid JSON: {exc}")
     if not isinstance(payload, dict):
         sys.exit("report-finding: expected one finding as a JSON object")
@@ -774,8 +788,17 @@ def cmd_filters(args):
         return
     if args.action == "save":
         try:
-            query = json.load(sys.stdin)
-        except ValueError as exc:
+            stdin_text = sys.stdin.read()
+        except Exception as exc:
+            sys.exit(f"filters save: could not read stdin: {exc}")
+
+        if len(stdin_text.encode('utf-8')) > MAX_STDIN_BYTES:
+            sys.exit(f"filters save: stdin is {len(stdin_text.encode('utf-8'))} bytes "
+                     f"and the limit is {MAX_STDIN_BYTES}")
+
+        try:
+            query = json.loads(stdin_text)
+        except (ValueError, RecursionError) as exc:
             sys.exit(f"filters save: stdin is not valid JSON: {exc}")
         if not isinstance(query, dict):
             # Same shape check `report-finding` makes on its own JSON body:

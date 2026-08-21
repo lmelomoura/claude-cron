@@ -676,6 +676,79 @@ def test_a_line_number_too_large_to_be_one_is_a_sentence_not_a_traceback(tmp_pat
     assert run(db, "findings", "--analysis", str(aid)) == []
 
 
+def test_deeply_nested_json_on_stdin_gives_a_sentence_not_a_traceback_for_report_finding(tmp_path):
+    """A deeply nested JSON body raises RecursionError; the door must catch it
+    and exit with a sentence rather than a Python traceback."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    # Create a deeply nested structure (~20000 levels) that triggers RecursionError
+    malformed = '{"a":' * 20000 + "1" + "}" * 20000
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=malformed)
+    assert out.returncode != 0
+    assert "Traceback" not in out.stderr
+    assert "report-finding" in out.stderr
+    assert run(db, "findings", "--analysis", str(aid)) == []
+
+
+def test_deeply_nested_json_on_stdin_gives_a_sentence_not_a_traceback_for_filters_save(tmp_path):
+    """Same guard for `filters save`: deeply nested JSON raises RecursionError."""
+    db = tmp_path / "security.db"
+    # Create a deeply nested structure that triggers RecursionError
+    malformed = '{"a":' * 20000 + "1" + "}" * 20000
+    out = fails(db, "filters", "save", "--project", "web", "--name", "test",
+                stdin=malformed)
+    assert out.returncode != 0
+    assert "Traceback" not in out.stderr
+    assert "filters save" in out.stderr
+
+
+def test_report_finding_refuses_stdin_over_the_byte_cap(tmp_path):
+    """A body over MAX_STDIN_BYTES is refused before parsing."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    # Create a body larger than 1MB
+    oversized = "x" * (1_000_001)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=oversized)
+    assert out.returncode != 0
+    assert "1000000" in out.stderr or "1_000_000" in out.stderr.replace("_", "")
+    assert "Traceback" not in out.stderr
+
+
+def test_filters_save_refuses_stdin_over_the_byte_cap(tmp_path):
+    """A body over MAX_STDIN_BYTES is refused before parsing."""
+    db = tmp_path / "security.db"
+    # Create a body larger than 1MB
+    oversized = "x" * (1_000_001)
+    out = fails(db, "filters", "save", "--project", "web", "--name", "test",
+                stdin=oversized)
+    assert out.returncode != 0
+    assert "1000000" in out.stderr or "1_000_000" in out.stderr.replace("_", "")
+    assert "Traceback" not in out.stderr
+
+
+def test_report_finding_with_normal_body_still_works(tmp_path):
+    """The control: small, normal JSON still parses and works."""
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    aid = open_analysis(db)
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "a" * 64, "category": "sast", "rule": "r",
+        "severity": "high", "title": "t"}))
+    found = run(db, "findings", "--analysis", str(aid))
+    assert any(f["rule"] == "r" for f in found)
+
+
+def test_filters_save_with_normal_body_still_works(tmp_path):
+    """The control: small, normal JSON still parses and works."""
+    db = tmp_path / "security.db"
+    run(db, "filters", "save", "--project", "web", "--name", "test",
+        stdin=json.dumps({"category": "sast", "severity": "high"}))
+    saved = run(db, "filters", "list", "--project", "web")
+    assert any(f["name"] == "test" for f in saved)
+
+
 def test_prepare_refuses_to_scan_the_whole_machine(tmp_path):
     """`--root` is typed by the agent, from inside a worktree it did not
     choose. Pointed at `/` or at $HOME, the deterministic phases read every
