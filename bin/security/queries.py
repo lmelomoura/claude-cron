@@ -367,6 +367,101 @@ def branch_rows(conn, project):
     return out
 
 
+SORTABLE = ("severity", "title", "category", "branch", "first_seen", "state")
+MAX_PER_PAGE = 100
+_SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+
+def finding_rows(conn, project, filters=None, sort="severity",
+                 direction="desc", page=1, per_page=25):
+    """The findings browser: one checklist per branch -- the latest finished
+    analysis of each -- unioned. That union is what lets the browser show a
+    state at all: it is the state that branch's newest analysis gives the
+    finding, not a column stored anywhere.
+
+    Filtering happens here in Python, after `checklist()`, rather than as SQL
+    predicates. That is deliberate, not laziness: a finding's state is not a
+    column to filter on, it is computed by comparing an analysis with the
+    previous one of the same branch, and `checklist()` is the one place that
+    comparison happens. Rebuilding it as a SQL CASE expression would be a
+    second copy of a state machine this repository has already been bitten by
+    duplicating twice (see the module docstring and `checklist`'s own). With
+    hundreds of findings this is instant; if it ever becomes thousands, that
+    is a measured problem with a materialised-state answer -- not a presumed
+    one today.
+
+    `sort` and `direction` are an allowlist, not a best-effort default: filter
+    VALUES travel as SQL parameters, but a sort column is interpolated by
+    nature -- it is the one route parameters cannot protect -- so an
+    unrecognised column raises rather than silently falling back to
+    `severity`.
+    """
+    if sort not in SORTABLE:
+        raise ValueError(f"sort must be one of {SORTABLE}")
+    if direction not in ("asc", "desc"):
+        raise ValueError("direction must be asc or desc")
+    f = dict(filters or {})
+    per_page = max(1, min(int(per_page), MAX_PER_PAGE))
+
+    branches = [r["branch"] for r in conn.execute(
+        "SELECT DISTINCT branch FROM analysis WHERE project=?"
+        " AND state IN ('done','capped')", (project,))]
+
+    rows, first_seen = [], {}
+    for br in branches:
+        a = _latest_finished(conn, project, br)
+        if not a:
+            continue
+        _an, findings = checklist(conn, a["id"])
+        for finding in findings:
+            row = dict(finding)
+            row["branch"] = br
+            row["analysis_id"] = a["id"]
+            rows.append(row)
+
+    # The oldest analysis carrying each fingerprint, in one query rather than
+    # one per row.
+    for r in conn.execute(
+            "SELECT f.fingerprint AS fp, MIN(a.started) AS first FROM finding f"
+            " JOIN analysis a ON a.id = f.analysis_id WHERE a.project=?"
+            " GROUP BY f.fingerprint", (project,)):
+        first_seen[r["fp"]] = r["first"]
+    for r in rows:
+        r["first_seen"] = first_seen.get(r["fingerprint"], 0)
+
+    if not f.get("show_resolved"):
+        rows = [r for r in rows if is_open(r["state"])]
+    for key in ("severity", "state", "category", "branch"):
+        if f.get(key):
+            rows = [r for r in rows if r.get(key) in f[key]]
+    if f.get("analysis"):
+        rows = [r for r in rows if r["analysis_id"] in f["analysis"]]
+    if f.get("path"):
+        needle = f["path"].lower()
+        rows = [r for r in rows
+                if any(needle in o["file"].lower() for o in r.get("occurrences", []))]
+    if f.get("q"):
+        needle = f["q"].lower()
+        rows = [r for r in rows if needle in " ".join([
+            r.get("title", ""), r.get("rule", ""), r.get("rationale", ""),
+            " ".join(o["file"] for o in r.get("occurrences", []))]).lower()]
+
+    by_severity = {s: 0 for s in _SEV_RANK}
+    for r in rows:
+        if r["severity"] in by_severity:
+            by_severity[r["severity"]] += 1
+
+    keyf = ((lambda r: _SEV_RANK.get(r["severity"], 9)) if sort == "severity"
+            else (lambda r: r.get(sort) or ""))
+    rows.sort(key=keyf, reverse=(direction == "desc") == (sort != "severity"))
+
+    total, unique = len(rows), len({r["fingerprint"] for r in rows})
+    start = max(0, (int(page) - 1) * per_page)
+    return {"rows": rows[start:start + per_page], "total": total,
+            "unique": unique, "by_severity": by_severity,
+            "page": int(page), "per_page": per_page}
+
+
 def activity_summary(conn, project=None, days=30):
     since = int(time.time()) - days * 86400
     sql = "SELECT kind, COUNT(*) c FROM event WHERE at >= ?"

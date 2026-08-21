@@ -17,6 +17,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **The findings browser has a query.** `queries.finding_rows` unions one
+  checklist per branch — the latest finished analysis of each — which is what
+  lets the browser show a state at all: it is the state that branch's newest
+  analysis gives the finding, not a column stored anywhere. Resolved findings
+  (`fixed`/`accepted`/`false_positive`) are hidden unless `show_resolved` is
+  asked for, `unique` counts distinct fingerprints while `total` counts rows
+  (189 findings across branches can be 93 actual problems, and the screen
+  shows both), and `first_seen` is the oldest analysis carrying the
+  fingerprint, from one grouped query rather than one per row. Filtering
+  (severity, state, category, branch, analysis id, path, free text) runs in
+  Python after `checklist()`, not as SQL — a finding's state is computed by
+  comparing an analysis with the previous one of the same branch, and
+  rebuilding that comparison as a SQL `CASE` would be a third copy of a state
+  machine this repository has already been bitten by duplicating twice.
+  `sort` is checked against an allowlist (`SORTABLE`) and `direction` against
+  `("asc","desc")`, both raising rather than falling back to a default:
+  filter values travel as parameters, but a sort column is interpolated by
+  nature, and it is the one route parameters cannot protect. `per_page` is
+  capped at `MAX_PER_PAGE` so one request cannot ask for the whole table.
+
 ### Fixed
 
 - **A malformed or pathological JSON body on stdin now exits with a sentence

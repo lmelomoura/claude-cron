@@ -275,3 +275,64 @@ def test_activity_summary_counts_per_kind_seeded_from_event_kinds(conn):
     assert summary["decision_made"] == 1
     assert summary["settings_changed"] == 0
     assert summary["report_exported"] == 0
+
+
+def test_the_browser_unions_the_latest_analysis_of_every_branch(conn):
+    _analysis(conn, "main", findings=[("critical", "secret")])
+    _analysis(conn, "develop", findings=[("high", "sast")])
+    got = queries.finding_rows(conn, "web")
+    assert got["total"] == 2
+    assert {r["branch"] for r in got["rows"]} == {"main", "develop"}
+
+
+def test_resolved_findings_are_hidden_unless_asked_for(conn):
+    a1 = _analysis(conn, "main", findings=[("critical", "secret")])
+    _analysis(conn, "main", findings=[])          # the secret is gone -> fixed
+    assert queries.finding_rows(conn, "web")["total"] == 0
+    shown = queries.finding_rows(conn, "web", {"show_resolved": True})
+    assert [r["state"] for r in shown["rows"]] == ["fixed"]
+
+
+def test_unique_counts_fingerprints_not_rows(conn):
+    """189 findings across branches can be 93 problems. The two numbers answer
+    different questions and the screen shows both."""
+    fp = "d" * 64
+    for br in ("main", "develop"):
+        aid = ledger.start_analysis(conn, "web", "web", br, "s", "quick", "r")
+        ledger.record_finding(conn, aid, {
+            "fingerprint": fp, "category": "secret", "rule": "aws_access_key",
+            "severity": "critical", "title": "t", "occurrences": []})
+        ledger.mark_prepared(conn, aid)
+        ledger.finish_analysis(conn, aid, "done")
+    got = queries.finding_rows(conn, "web")
+    assert got["total"] == 2
+    assert got["unique"] == 1
+
+
+def test_first_seen_is_the_oldest_analysis_carrying_the_fingerprint(conn):
+    a1 = _analysis(conn, "main", findings=[("critical", "secret")])
+    _analysis(conn, "main", findings=[("critical", "secret")])
+    row = queries.finding_rows(conn, "web")["rows"][0]
+    first = conn.execute("SELECT started FROM analysis WHERE id=?", (a1,)).fetchone()
+    assert row["first_seen"] == first["started"]
+
+
+def test_filters_narrow_the_set(conn):
+    _analysis(conn, "main", findings=[("critical", "secret"), ("low", "hygiene")])
+    assert queries.finding_rows(conn, "web", {"severity": ["critical"]})["total"] == 1
+    assert queries.finding_rows(conn, "web", {"category": ["hygiene"]})["total"] == 1
+    assert queries.finding_rows(conn, "web", {"q": "hygiene"})["total"] == 1
+
+
+def test_an_unknown_sort_column_is_refused(conn):
+    """The values are parameters; the sort column is interpolated by nature, so
+    it is the one route parameters cannot protect."""
+    _analysis(conn, "main", findings=[("critical", "secret")])
+    with pytest.raises(ValueError):
+        queries.finding_rows(conn, "web", sort="severity; DROP TABLE finding")
+
+
+def test_page_size_is_capped(conn):
+    _analysis(conn, "main", findings=[("low", "hygiene")] * 5)
+    got = queries.finding_rows(conn, "web", per_page=10_000)
+    assert got["per_page"] <= queries.MAX_PER_PAGE
