@@ -1572,6 +1572,152 @@ def test_the_project_runs_header_names_what_its_own_column_recorded(srv, tmp_pat
         f"the header's title must explain why the checklist below can total more: {title!r}"
 
 
+# ---- Task 10: the Branches and Reports tabs (ui/security/branches-tab.js,
+# ui/security/reports-tab.js). Same reasoning as the project screen's own
+# Node-driven tests above -- the JSON contract in tests/security/test_cli.py
+# never paints anything, so a regression in the caption wording, the trend
+# direction, the pane-hiding or the four download buttons would pass every
+# test in that file.
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_branches_tab_renders_one_row_per_branch_with_its_own_posture(srv, tmp_path):
+    """Two branches, each with its own last-analysis time, analysis count,
+    open posture and 30-day trend -- and the caption naming how a branch's
+    own open count relates to the sidebar's cross-branch, deduplicated
+    total, the same review-fix reasoning project-screen.js's own
+    secOverviewCaption/secSidebarCaption already carry, applied here to a
+    third number on the same screen."""
+    block = _security_js(srv)
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("secEl", "secIndexPosturePills", "secBranchesCaption",
+                      "secBranchTrendText", "secBranchRow", "secBranchesTable",
+                      "secRenderProjectBranches"))
+    script = tmp_path / "pj-branches.js"
+    script.write_text(_PROJECT_DOM_HARNESS + deps + """
+    secRenderProjectBranches({tabs: {branches: [
+      {branch: "develop", last_analysis: 1700000000, analyses: 2,
+       open: {critical: 1, high: 0, medium: 0, low: 0, info: 0, total: 1},
+       trend: [{analysis_id: 1, started: 1, open: 2}, {analysis_id: 2, started: 2, open: 1}]},
+      {branch: "main", last_analysis: 1700000100, analyses: 1,
+       open: {critical: 0, high: 0, medium: 0, low: 0, info: 0, total: 0},
+       trend: []},
+    ]}});
+    console.log(JSON.stringify(collectAll(_els["sec-pj-branches"], [])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    joined = " ".join(r["text"] for r in out)
+    assert "develop" in joined and "main" in joined, f"a branch name is missing: {joined}"
+    assert "1 critical" in joined, f"the open posture pill did not render: {joined}"
+    assert "nothing open" in joined, f"the clean branch's pill did not render: {joined}"
+    assert "falling" in joined, f"the trend direction did not render: {joined}"
+    assert "No analyses of this branch in the last 30 days" in joined, \
+        f"the branch with no recent trend point got no explanation: {joined}"
+    assert "sidebar's donut" in joined, \
+        f"the caption explaining the scope difference from the sidebar is missing: {joined}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_branch_trend_text_names_the_direction_not_just_the_numbers(srv, tmp_path):
+    """Pure and DOM-free, driven directly: 0, 1 and 2+ points each need their
+    own sentence -- a bare number pair with no "rising"/"falling"/"flat"
+    word would force the reader to do the comparison the page exists to do
+    for them."""
+    block = _security_js(srv)
+    fn = _plainfn(block, "secBranchTrendText")
+    script = tmp_path / "trend.js"
+    script.write_text(fn + """
+    console.log(JSON.stringify({
+      none: secBranchTrendText([]),
+      one: secBranchTrendText([{analysis_id: 1, started: 1, open: 3}]),
+      falling: secBranchTrendText([{open: 5}, {open: 1}]),
+      rising: secBranchTrendText([{open: 1}, {open: 5}]),
+      flat: secBranchTrendText([{open: 2}, {open: 2}]),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert "No analyses" in out["none"]
+    assert "3" in out["one"] and "nothing yet to compare" in out["one"]
+    assert "falling" in out["falling"] and "5 → 1" in out["falling"], out["falling"]
+    assert "rising" in out["rising"] and "1 → 5" in out["rising"], out["rising"]
+    assert "flat" in out["flat"], out["flat"]
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_reports_tab_renders_one_row_per_analysis_with_four_downloads(srv, tmp_path):
+    """One row per analysis regardless of state (a running one still gets a
+    row -- see cmd_project_data's own docstring), four download buttons
+    each, and the SBOM caveat spelled out: it hands back the branch's
+    CURRENT document, not a snapshot of the analysis the row is for."""
+    block = _security_js(srv)
+    consts = _const(block, "SEC_REPORT_FORMATS")
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("secEl", "secIcon", "secReportsCaption", "secReportRow",
+                      "secReportsTable", "secRenderProjectReports"))
+    script = tmp_path / "pj-reports.js"
+    script.write_text(_PROJECT_DOM_HARNESS + """
+    function secDownloadAnalysisReport(){}
+    """ + consts + deps + """
+    secRenderProjectReports({tabs: {reports: [
+      {analysis_id: 7, branch: "main", started: 1700000000, state: "done"},
+      {analysis_id: 8, branch: "develop", started: 1700000100, state: "running"},
+    ]}});
+    const host = _els["sec-pj-reports"];
+    function countButtons(n, c){
+      (n.childNodes || []).forEach(x => { if(x.tagName === "button") c.n++; countButtons(x, c); });
+      return c;
+    }
+    console.log(JSON.stringify({
+      rows: collectAll(host, []),
+      buttons: countButtons(host, {n: 0}).n,
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    joined = " ".join(r["text"] for r in out["rows"])
+    assert "#7" in joined and "#8" in joined, f"an analysis id is missing: {joined}"
+    assert "main" in joined and "develop" in joined
+    assert "done" in joined and "running" in joined
+    assert out["buttons"] == 8, f"expected 4 download buttons per row over 2 rows: {out['buttons']}"
+    assert "CURRENT document" in joined, f"the SBOM caveat is missing: {joined}"
+    assert "every recorded finding" in joined, f"the severity-floor note is missing: {joined}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_switching_to_branches_or_reports_hides_the_other_three_panes(srv, tmp_path):
+    """The two-tab version of this guard (test_switching_project_tabs_shows_
+    one_pane_and_hides_the_other) predates these two tabs; this is the same
+    proof extended to all four, so a tab added without updating secRenderTabs
+    would leave two panes visible at once instead of failing here."""
+    block = _security_js(srv)
+    deps = _plainfn(block, "secRenderTabs") + "\n" + _plainfn(block, "secSwitchProjectTab")
+    script = tmp_path / "pj-tabs-4.js"
+    script.write_text(_PROJECT_DOM_HARNESS + """
+    let secProjectTab = "overview";
+    """ + deps + """
+    function hidden(){
+      return {ov: _els["sec-pj-overview"].hidden, rn: _els["sec-pj-runs"].hidden,
+              br: _els["sec-pj-branches"].hidden, rp: _els["sec-pj-reports"].hidden};
+    }
+    secRenderTabs();
+    const initial = hidden();
+    secSwitchProjectTab("branches");
+    const onBranches = hidden();
+    secSwitchProjectTab("reports");
+    const onReports = hidden();
+    secSwitchProjectTab("overview");
+    const backToOverview = hidden();
+    console.log(JSON.stringify({initial, onBranches, onReports, backToOverview}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["initial"] == {"ov": False, "rn": True, "br": True, "rp": True}
+    assert out["onBranches"] == {"ov": True, "rn": True, "br": False, "rp": True}
+    assert out["onReports"] == {"ov": True, "rn": True, "br": True, "rp": False}
+    assert out["backToOverview"] == {"ov": False, "rn": True, "br": True, "rp": True}
+
+
 def test_the_runs_table_observes_but_never_manages_a_security_run(srv):
     """On a security-* row only the eye and Stop stay live: resume ran on a
     consumed request, and delete erases the transcript the Security page's

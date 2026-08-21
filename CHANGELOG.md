@@ -179,6 +179,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   longer turns a legitimate `first_seen` of `0` into `""` and crashes a
   str/int comparison mid-sort.
 
+- **The project screen has Branches and Reports tabs.** Branches answers the
+  question the single-branch Overview cannot: where is this project actually
+  exposed, given `main` and `develop` can have different answers. One row per
+  branch that has ever been analysed — last analysis, open findings by
+  severity, how many analyses, a 30-day trend — from `queries.branch_rows`,
+  which was already written (Task 5) and unused until now; every number comes
+  from the same `checklist()` the rest of this screen uses. A branch's own
+  open count here is not the sidebar donut's question, though: the donut
+  collapses every analysed branch's open findings into one count per
+  fingerprint, project-wide, while a row here counts that branch alone — so
+  these rows can add up to more than the sidebar's own total, and the tab
+  says so in the same voice the Overview/sidebar captions already use for the
+  identical kind of fact. Reports gathers the four downloads (Markdown, JSON,
+  HTML, SBOM) that used to be reachable only from whichever single analysis
+  happened to be open under Runs, one row per analysis whatever its state.
+  It says, plainly, what the README already knows and a reader of the page
+  could not: SBOM is not a report over any one analysis's checklist, it is
+  the stored CycloneDX inventory itself, kept per branch with only the most
+  recent document — so the SBOM button on an older row still downloads that
+  branch's CURRENT document, not a snapshot of what that analysis saw.
+  `project-data` grows two more tab keys to serve this: `branches` is exactly
+  `branch_rows`'s own rows, and `reports` is a thin projection of the `runs`
+  rows already fetched (analysis id, branch, started, state) rather than a
+  second query over `analysis`.
+
 ### Fixed
 
 - **`report-finding` now refuses a title, rationale, remediation or

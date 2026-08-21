@@ -25,6 +25,8 @@ import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP } from "./vocabulary.js";
 import { secState } from "./state.js";
 import { secIndexPosturePills, secIndexDonut } from "./index-screen.js";
 import { secOpen, secShowAnalysis } from "./analysis.js";
+import { secRenderProjectBranches } from "./branches-tab.js";
+import { secRenderProjectReports } from "./reports-tab.js";
 
 // Every state `analysis.state` can hold (see bin/security/ledger.py's
 // `start_analysis`/`ANALYSIS_END_STATES`) -- the Runs tab's own filter row,
@@ -102,7 +104,7 @@ function secRenderProjectError(msg){
 }
 
 export function secSwitchProjectTab(tab){
-  secProjectTab = (tab === "runs") ? "runs" : "overview";
+  secProjectTab = ["overview", "runs", "branches", "reports"].includes(tab) ? tab : "overview";
   secRenderTabs();
 }
 
@@ -112,16 +114,24 @@ function secRenderProject(){
   secRenderTabs();
   secRenderProjectOverview(secProjectCache);
   secRenderProjectRuns(secProjectCache);
+  secRenderProjectBranches(secProjectCache);
+  secRenderProjectReports(secProjectCache);
   secRenderProjectSidebar(secProjectCache);
 }
 
 function secRenderTabs(){
-  const ov = $("secpjt-overview"), rn = $("secpjt-runs");
+  const ov = $("secpjt-overview"), rn = $("secpjt-runs"),
+        br = $("secpjt-branches"), rp = $("secpjt-reports");
   if(ov) ov.classList.toggle("active", secProjectTab === "overview");
   if(rn) rn.classList.toggle("active", secProjectTab === "runs");
-  const ovPane = $("sec-pj-overview"), rnPane = $("sec-pj-runs");
+  if(br) br.classList.toggle("active", secProjectTab === "branches");
+  if(rp) rp.classList.toggle("active", secProjectTab === "reports");
+  const ovPane = $("sec-pj-overview"), rnPane = $("sec-pj-runs"),
+        brPane = $("sec-pj-branches"), rpPane = $("sec-pj-reports");
   if(ovPane) ovPane.hidden = secProjectTab !== "overview";
   if(rnPane) rnPane.hidden = secProjectTab !== "runs";
+  if(brPane) brPane.hidden = secProjectTab !== "branches";
+  if(rpPane) rpPane.hidden = secProjectTab !== "reports";
 }
 
 /* --------------------------------------------------------------- header */

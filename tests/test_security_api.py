@@ -620,6 +620,20 @@ def test_the_project_screen_carries_its_header_and_both_tabs(srv, monkeypatch):
     assert "runs" in payload["tabs"]
 
 
+def test_the_project_payload_carries_branches_and_reports(srv, monkeypatch):
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, json.dumps({
+        "project": "web", "header": {},
+        "tabs": {"overview": {}, "runs": [],
+                 "branches": [{"branch": "main", "open": {"critical": 1},
+                               "last_analysis": 1787290000, "analyses": 3}],
+                 "reports": [{"analysis_id": 7, "branch": "main",
+                              "started": 1787290000, "state": "done"}]},
+        "sidebar": {}})))
+    code, payload = srv.security_project("web")
+    assert payload["tabs"]["branches"][0]["branch"] == "main"
+    assert payload["tabs"]["reports"][0]["analysis_id"] == 7
+
+
 def test_the_project_screen_passes_projects_json_through_to_the_cli(srv, monkeypatch, tmp_path):
     """`_project_meta` is the one place that bridges projects.json (which the
     ledger never reads) into the CLI's `--base`/`--default-profile` flags --

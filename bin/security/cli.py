@@ -864,6 +864,30 @@ def cmd_project_data(args):
     recent analysis of ANY state when there is no finished baseline, so a
     project whose only analyses failed shows when that happened rather than
     reading as if nothing had ever run.
+
+    `tabs.branches` is exactly `queries.branch_rows`'s own rows -- one entry
+    per branch that has EVER been analysed, not only the one `header`/
+    `tabs.overview` show. Each row's `open` is that branch's OWN posture
+    (`queries.posture`, the identical computation `default_branch_posture`
+    ran for the header's one branch above) -- a different scope from
+    `sidebar.donut`, which collapses every analysed branch's open findings
+    into one count per FINGERPRINT project-wide (see
+    `_open_findings_by_fingerprint`'s own docstring). A finding open on both
+    `main` and `develop` is one problem there and two rows here contributing
+    to it -- the Branches tab has to say so itself, the same way the
+    Overview caption and the sidebar caption already name what THEIR two
+    numbers each count.
+
+    `tabs.reports` gathers the four downloads (Markdown, JSON, HTML, SBOM)
+    that used to be reachable only from whichever single analysis happened
+    to be on screen, one row per analysis. It is a plain projection of the
+    `runs` rows already fetched above -- analysis id, branch, started, state
+    -- not a second `SELECT * FROM analysis`, the same reuse-what-is-already-
+    in-hand rule `finding_counts_by_analysis` applied to the Runs tab itself.
+    A running or failed analysis still gets a row: the single-analysis view's
+    own download buttons are shown for any state (see `secPaint`), and this
+    tab is that same door, just gathered into one table instead of scattered
+    one analysis at a time.
     """
     default_profile = args.default_profile or "standard"
     conn = queries.read_only(args.db)
@@ -876,7 +900,7 @@ def cmd_project_data(args):
             "tabs": {"overview": {"posture": queries._empty_posture(),
                                   "checklist": _empty_checklist_counts(),
                                   "state": "", "attempted": False},
-                     "runs": []},
+                     "runs": [], "branches": [], "reports": []},
             "sidebar": {"donut": queries._empty_posture(), "categories": [],
                        "activity": [], "branch_count": 0}}))
         return
@@ -909,6 +933,12 @@ def cmd_project_data(args):
                          if r["state"] in ("done", "capped") else None)
         runs.append(r)
 
+    # A thin projection of the `runs` rows above -- not a second pass over
+    # `analysis` -- into just what the Reports tab's downloads need. See this
+    # function's own docstring for why a row survives for every state.
+    reports = [{"analysis_id": r["id"], "branch": r["branch"],
+               "started": r["started"], "state": r["state"]} for r in runs]
+
     print(json.dumps({
         "project": args.project,
         "header": {"profile": default_profile, "branch": branch,
@@ -919,7 +949,9 @@ def cmd_project_data(args):
         "tabs": {"overview": {"posture": posture, "checklist": checklist_counts,
                               "state": (latest or {}).get("state", ""),
                               "attempted": bool(runs)},
-                 "runs": runs},
+                 "runs": runs,
+                 "branches": queries.branch_rows(conn, args.project),
+                 "reports": reports},
         "sidebar": {"donut": queries.severity_totals(conn, project=args.project),
                    "categories": queries.top_categories(conn, project=args.project),
                    "activity": ledger.events_for(conn, project=args.project, limit=5),

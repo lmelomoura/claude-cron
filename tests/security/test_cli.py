@@ -1969,6 +1969,8 @@ def test_project_data_survives_a_ledger_that_does_not_exist_yet(tmp_path):
     assert out["tabs"]["overview"]["attempted"] is False, \
         "nothing has ever been analysed -- attempted must be false, not just state==''"
     assert out["tabs"]["runs"] == []
+    assert out["tabs"]["branches"] == []
+    assert out["tabs"]["reports"] == []
     assert out["sidebar"]["donut"]["total"] == 0
     assert out["sidebar"]["categories"] == []
     assert out["sidebar"]["activity"] == []
@@ -2216,3 +2218,80 @@ def test_project_data_a_project_with_no_analyses_of_its_own_is_not_marked_attemp
     assert out["tabs"]["overview"]["attempted"] is False
     assert out["header"]["last_analysis"] == 0
     assert out["tabs"]["runs"] == []
+
+
+# ---- Task 10: the Branches and Reports tabs. `tabs.branches` is exactly
+# `queries.branch_rows`'s own rows (already proven against `posture`/`trend`
+# in tests/security/test_queries.py); these two pin the CLI's own JSON
+# contract, since test_security_api.py's own coverage of `security_project`
+# only ever mocks `cc` and never runs this verb for real.
+
+def test_project_data_branches_tab_matches_branch_rows(tmp_path):
+    """Two branches of the same project, each with its own posture and its
+    own analysis count -- `branches` must carry both, newest last-analysed
+    first, with each row's own open counts (not the sidebar's cross-branch,
+    fingerprint-deduplicated total)."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", severity="low", rule="a")
+    finished_analysis(db, tmp_path, "web", "develop", severity="critical", rule="b")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    branches = out["tabs"]["branches"]
+    assert [r["branch"] for r in branches] == ["develop", "main"], \
+        "develop was analysed more recently (higher analysis id) and must sort first"
+    develop = next(r for r in branches if r["branch"] == "develop")
+    main = next(r for r in branches if r["branch"] == "main")
+    assert develop["open"]["critical"] == 1
+    assert main["open"]["low"] == 1
+    assert develop["analyses"] == 1 and main["analyses"] == 1
+    assert develop["last_analysis"] > 0 and main["last_analysis"] > 0
+    assert "trend" in develop and "trend" in main
+
+
+def test_project_data_branches_tab_lists_every_branch_ever_analysed_not_only_the_default(tmp_path):
+    """Containment probe: `branches` is not scoped to the project's declared
+    base the way the Overview posture is -- a branch never declared as the
+    base still gets its own row once it has been analysed."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "feature/x", severity="medium", rule="a")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    assert out["header"]["branch"] == "feature/x", "the header itself falls back to it"
+    assert [r["branch"] for r in out["tabs"]["branches"]] == ["feature/x"]
+
+
+def test_project_data_reports_tab_is_one_row_per_analysis(tmp_path):
+    """`reports` gathers the four downloads that used to be reachable only
+    from whichever single analysis was on screen -- one row per analysis,
+    same set and same order as `runs` (newest first), projected down to just
+    what a download needs: which analysis, which branch, when, and its
+    state (a running or failed analysis still gets a row -- the single
+    analysis view already lets you download over either, see secPaint)."""
+    db = tmp_path / "security.db"
+    done_id = finished_analysis(db, tmp_path, "web", "main", rule="a")
+    running_id = open_analysis(db, project="web", repo="web", branch="develop", run_id="r2")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    assert [r["id"] for r in out["tabs"]["runs"]] == [r["analysis_id"] for r in out["tabs"]["reports"]]
+    by_id = {r["analysis_id"]: r for r in out["tabs"]["reports"]}
+    assert by_id[done_id]["branch"] == "main"
+    assert by_id[done_id]["state"] == "done"
+    assert by_id[done_id]["started"] > 0
+    assert by_id[running_id]["branch"] == "develop"
+    assert by_id[running_id]["state"] == "running"
+
+
+def test_project_data_reports_tab_is_built_from_runs_not_a_second_query(tmp_path):
+    """Structural: `cmd_project_data`'s own source must build `reports` by
+    projecting the `runs` rows it already fetched -- not a second `SELECT *
+    FROM analysis` -- the same reuse `_CachingConnection` gives `checklist()`
+    within one request (see tests/security/test_queries.py), applied here to
+    a plain Python loop instead of a cache."""
+    src = inspect.getsource(security_cli.cmd_project_data)
+    assert src.count("FROM analysis WHERE project=?") == 1, \
+        "reports must not run a second SELECT over the analysis table: " + src
+    assert "for r in runs" in src, \
+        "reports must be derived from the runs rows already in hand, not refetched"

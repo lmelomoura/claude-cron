@@ -1684,6 +1684,8 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
           <nav class="viewtabs" id="sec-pj-tabs">
             <button class="viewtab" data-tab="overview" id="secpjt-overview"></button>
             <button class="viewtab" data-tab="runs" id="secpjt-runs"></button>
+            <button class="viewtab" data-tab="branches" id="secpjt-branches"></button>
+            <button class="viewtab" data-tab="reports" id="secpjt-reports"></button>
           </nav>
 
           <!-- The posture and what changed since the previous analysis (the
@@ -1738,6 +1740,17 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
             <div id="sec-findings"></div>
             <div class="secthead"><h3>Earlier analyses of this branch</h3></div>
             <div class="sechist" id="sec-history"></div>
+          </div>
+
+          <div class="pane" id="sec-pj-branches" hidden>
+            <!-- One row per branch ever analysed — last analysis, open
+                 findings by severity, analysis count, 30-day trend. Built by
+                 ui/security/branches-tab.js. -->
+          </div>
+
+          <div class="pane" id="sec-pj-reports" hidden>
+            <!-- One row per analysis, with its four downloads (Markdown,
+                 JSON, HTML, SBOM). Built by ui/security/reports-tab.js. -->
           </div>
         </div>
 

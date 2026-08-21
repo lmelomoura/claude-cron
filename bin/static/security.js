@@ -603,6 +603,172 @@
     await secReload();
   }
 
+  // ui/security/branches-tab.js
+  function secBranchesCaption() {
+    return secEl(
+      "div",
+      "secpj-caption",
+      "Each row is that branch's own posture \u2014 the same computation the Overview panel above uses for its one branch. The sidebar's donut counts a finding once for the whole project even when it is open on several branches; here it counts once per branch, so these rows can add up to more than the sidebar's own total."
+    );
+  }
+  function secBranchTrendText(trend) {
+    const pts = trend || [];
+    if (!pts.length) return "No analyses of this branch in the last 30 days.";
+    if (pts.length === 1) {
+      return pts[0].open + " open \u2014 only one analysis in the last 30 days, nothing yet to compare it against.";
+    }
+    const first = pts[0].open, last = pts[pts.length - 1].open;
+    const word = last < first ? "falling" : last > first ? "rising" : "flat";
+    return first + " \u2192 " + last + " open over the last 30 days (" + word + ")";
+  }
+  function secBranchRow(r) {
+    const tr = document.createElement("tr");
+    const cell = (text) => {
+      const td = document.createElement("td");
+      td.textContent = text;
+      return td;
+    };
+    tr.appendChild(cell(r.branch || ""));
+    tr.appendChild(cell(r.last_analysis ? fmtAgo(r.last_analysis) : "\u2014"));
+    const tdCount = cell(String(r.analyses || 0));
+    tdCount.className = "num";
+    tr.appendChild(tdCount);
+    const tdOpen = document.createElement("td");
+    tdOpen.appendChild(secIndexPosturePills(r.open || {}));
+    tr.appendChild(tdOpen);
+    tr.appendChild(cell(secBranchTrendText(r.trend)));
+    return tr;
+  }
+  function secBranchesTable(rows) {
+    if (!rows.length) {
+      return secEl("div", "tblempty", "No branch of this project has been analysed yet.");
+    }
+    const wrap = secEl("div", "tablewrap");
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    const htr = document.createElement("tr");
+    ["Branch", "Last analysis", "Analyses", "Open", "Trend (30d)"].forEach((h) => {
+      const th = document.createElement("th");
+      th.textContent = h;
+      htr.appendChild(th);
+    });
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    rows.forEach((r) => tbody.appendChild(secBranchRow(r)));
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    return wrap;
+  }
+  function secRenderProjectBranches(payload) {
+    const host = $("sec-pj-branches");
+    if (!host) return;
+    host.textContent = "";
+    const rows = ((payload || {}).tabs || {}).branches || [];
+    host.appendChild(secBranchesCaption());
+    host.appendChild(secBranchesTable(rows));
+  }
+
+  // ui/security/reports-tab.js
+  var SEC_REPORT_FORMATS = [
+    ["md", "Markdown"],
+    ["json", "JSON"],
+    ["html", "HTML"],
+    ["sbom", "SBOM"]
+  ];
+  async function secDownloadAnalysisReport(id, fmt, btn) {
+    btn.disabled = true;
+    try {
+      const r = await fetch("/api/security/report?analysis=" + encodeURIComponent(id) + "&format=" + encodeURIComponent(fmt), { headers: { "X-CC-Token": TOKEN } });
+      if (!r.ok) {
+        const j = await r.json().catch(() => null);
+        throw new Error(j && j.error || "HTTP " + r.status);
+      }
+      const url = URL.createObjectURL(await r.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "security-analysis-" + id + "." + (fmt === "sbom" ? "cdx.json" : fmt);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 3e4);
+    } catch (e) {
+      toast("Download failed \u2014 " + e.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  function secReportsCaption() {
+    const cap = secEl("div", "secpj-caption");
+    cap.appendChild(document.createTextNode(
+      "Markdown, JSON and HTML are generated from each analysis's own checklist at the moment you download one. "
+    ));
+    cap.appendChild(secEl("b", null, "SBOM is different: "));
+    cap.appendChild(document.createTextNode(
+      "it is not a report over any analysis's checklist but the stored CycloneDX inventory itself, kept per branch with only the most recent document \u2014 so the SBOM button on an older row still downloads that branch's CURRENT document, not a snapshot of what that analysis saw."
+    ));
+    return cap;
+  }
+  function secReportRow(r) {
+    const tr = document.createElement("tr");
+    const cell = (text) => {
+      const td = document.createElement("td");
+      td.textContent = text;
+      return td;
+    };
+    tr.appendChild(cell("#" + r.analysis_id));
+    tr.appendChild(cell(r.branch || ""));
+    tr.appendChild(cell(r.started ? fmtWhen(r.started) : "\u2014"));
+    tr.appendChild(cell(r.state || ""));
+    const tdDl = document.createElement("td");
+    const row = secEl("div", "secdl");
+    SEC_REPORT_FORMATS.forEach(([fmt, label]) => {
+      const btn = secEl("button", "btn ghost");
+      btn.type = "button";
+      btn.appendChild(secIcon("file"));
+      btn.appendChild(document.createTextNode(label));
+      btn.onclick = () => secDownloadAnalysisReport(r.analysis_id, fmt, btn);
+      row.appendChild(btn);
+    });
+    tdDl.appendChild(row);
+    tr.appendChild(tdDl);
+    return tr;
+  }
+  function secReportsTable(rows) {
+    if (!rows.length) {
+      return secEl("div", "tblempty", "No analyses of this project yet.");
+    }
+    const wrap = secEl("div", "tablewrap");
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    const htr = document.createElement("tr");
+    ["Analysis", "Branch", "Started", "State", "Downloads"].forEach((h) => {
+      const th = document.createElement("th");
+      th.textContent = h;
+      htr.appendChild(th);
+    });
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    rows.forEach((r) => tbody.appendChild(secReportRow(r)));
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    return wrap;
+  }
+  function secRenderProjectReports(payload) {
+    const host = $("sec-pj-reports");
+    if (!host) return;
+    host.textContent = "";
+    const rows = ((payload || {}).tabs || {}).reports || [];
+    host.appendChild(secReportsCaption());
+    host.appendChild(secReportsTable(rows));
+    host.appendChild(secEl(
+      "div",
+      "secdlnote",
+      "Downloads always contain every recorded finding, whatever the severity floor shows."
+    ));
+  }
+
   // ui/security/project-screen.js
   var RUN_STATES = ["running", "done", "capped", "failed"];
   var EVENT_KIND_LABEL = {
@@ -657,7 +823,7 @@
     host.appendChild(secEl("span", "grow", "Could not read this project \u2014 " + msg));
   }
   function secSwitchProjectTab(tab) {
-    secProjectTab = tab === "runs" ? "runs" : "overview";
+    secProjectTab = ["overview", "runs", "branches", "reports"].includes(tab) ? tab : "overview";
     secRenderTabs();
   }
   function secRenderProject() {
@@ -666,15 +832,21 @@
     secRenderTabs();
     secRenderProjectOverview(secProjectCache);
     secRenderProjectRuns(secProjectCache);
+    secRenderProjectBranches(secProjectCache);
+    secRenderProjectReports(secProjectCache);
     secRenderProjectSidebar(secProjectCache);
   }
   function secRenderTabs() {
-    const ov = $("secpjt-overview"), rn = $("secpjt-runs");
+    const ov = $("secpjt-overview"), rn = $("secpjt-runs"), br = $("secpjt-branches"), rp = $("secpjt-reports");
     if (ov) ov.classList.toggle("active", secProjectTab === "overview");
     if (rn) rn.classList.toggle("active", secProjectTab === "runs");
-    const ovPane = $("sec-pj-overview"), rnPane = $("sec-pj-runs");
+    if (br) br.classList.toggle("active", secProjectTab === "branches");
+    if (rp) rp.classList.toggle("active", secProjectTab === "reports");
+    const ovPane = $("sec-pj-overview"), rnPane = $("sec-pj-runs"), brPane = $("sec-pj-branches"), rpPane = $("sec-pj-reports");
     if (ovPane) ovPane.hidden = secProjectTab !== "overview";
     if (rnPane) rnPane.hidden = secProjectTab !== "runs";
+    if (brPane) brPane.hidden = secProjectTab !== "branches";
+    if (rpPane) rpPane.hidden = secProjectTab !== "reports";
   }
   function secRenderProjectHeader(payload) {
     const host = $("sec-pj-head");
@@ -1287,8 +1459,12 @@
     iconLabel($("sec-dl-sbom"), "file", "SBOM");
     iconLabel($("secpjt-overview"), "grid", "Overview");
     iconLabel($("secpjt-runs"), "activity", "Runs");
+    iconLabel($("secpjt-branches"), "layers", "Branches");
+    iconLabel($("secpjt-reports"), "file", "Reports");
     $("secpjt-overview").addEventListener("click", () => secSwitchProjectTab("overview"));
     $("secpjt-runs").addEventListener("click", () => secSwitchProjectTab("runs"));
+    $("secpjt-branches").addEventListener("click", () => secSwitchProjectTab("branches"));
+    $("secpjt-reports").addEventListener("click", () => secSwitchProjectTab("reports"));
     $("sec-dl-note").textContent = "Downloads always contain every recorded finding, whatever the severity floor shows.";
     $("sec-back").addEventListener("click", secBack);
     $("sec-reload").addEventListener("click", () => {
@@ -1319,4 +1495,4 @@
     SEC_PROFILES
   };
 })();
-// ui-sources: b0a887804eb1346672e9370b63a9d57eb6d0d402680a5b56594caff5a0f64799
+// ui-sources: 51679f70e129876c77a7a16d0c6df40fac61d0cd1ae287558fc8c92ca0e08fa8
