@@ -133,6 +133,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A named set of filters per project.** Rebuilding the view somebody works
+  from every day -- severity, category, state, whatever the day calls for --
+  used to cost six clicks against the findings browser on every visit. A new
+  `saved_filter` table (keyed by project and name) and `security filters
+  list|save|delete` let it be saved once and reapplied in one. A filter
+  stores a *query*, never findings -- saving one records only the shape of
+  the question being asked, nothing about what it turned up. A filter
+  nobody can parse (a hand-edited row, a future query shape an older reader
+  does not understand) stays visible with an empty query instead of taking
+  the whole list down, so it can still be deleted. Saving and deleting join
+  `decide`, `rename-project`, `open-analysis` and `event` in the set
+  `CC_SECURITY_AGENT` refuses -- a working set is a human's, not something
+  an analysis decides -- while `filters list` stays open, the same
+  reasoning that keeps `events` and `findings` open.
+
 - **The Security area records what happened.** Analyses started and finished,
   decisions with the reason behind them, settings changed, reports exported —
   the history a security posture needs to be auditable at all. Without a user

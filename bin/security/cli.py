@@ -14,10 +14,10 @@ contract and a body that is not JSON at all are all refused before a
 connection is used for anything.
 
 The door also checks WHO is knocking, not only what they brought. The agent
-and the operator reach this file through the identical command, so the four
-verbs an agent must never reach -- `decide`, `rename-project`,
-`open-analysis`, `event` -- are refused whenever CC_SECURITY_AGENT is set (see
-`_refuse_if_agent`).
+and the operator reach this file through the identical command, so the
+verbs and actions an agent must never reach -- `decide`, `rename-project`,
+`open-analysis`, `event`, and saving or deleting a saved filter -- are
+refused whenever CC_SECURITY_AGENT is set (see `_refuse_if_agent`).
 
 BE CLEAR ABOUT WHAT THAT IS WORTH. CC_SECURITY_AGENT is a variable in the
 agent's own environment, and the agent has a shell: `env -u CC_SECURITY_AGENT
@@ -60,7 +60,19 @@ TEXT_KEYS = ("title", "rationale", "remediation", "partial_note")
 
 # What the agent under review may NOT do, even though it reaches this file
 # through the same command the operator does. See `_refuse_if_agent`.
-AGENT_FORBIDDEN = ("decide", "rename-project", "open-analysis", "event")
+#
+# Two entries, "filters save" and "filters delete", are not subcommand names
+# at all -- `filters` is ONE subcommand with a nested action (list/save/
+# delete), so `args.cmd` is always "filters" no matter which action was
+# typed, and a plain `args.cmd in AGENT_FORBIDDEN` could only refuse (or
+# allow) `filters` as a whole. `main()` builds the same "verb action" key
+# used here (`f"{args.cmd} {args.filters_action}"`) before checking
+# membership, so `filters list` -- a query, not a write, the same read-only
+# case as `findings` or `events` -- stays out of this tuple and reachable,
+# while the two writes that mutate a human's saved working set are refused
+# by name, same as every other entry.
+AGENT_FORBIDDEN = ("decide", "rename-project", "open-analysis", "event",
+                   "filters save", "filters delete")
 
 
 def _refuse_if_agent(cmd):
@@ -68,8 +80,9 @@ def _refuse_if_agent(cmd):
 
     `cmd_security_analyze` exports CC_SECURITY_AGENT=1 into the analysis run,
     so every `claude-cron security ...` the agent types -- from its own tool
-    shell, inside the worktree -- arrives here with that flag set. Four verbs
-    have to be refused there:
+    shell, inside the worktree -- arrives here with that flag set. These
+    verbs (and, for `filters`, these specific actions) have to be refused
+    there:
 
       decide          a permanent, project-wide suppression. An agent that can
                       call it can retire the finding it just reported (and the
@@ -89,6 +102,12 @@ def _refuse_if_agent(cmd):
                       happened. `events` (read-only) is deliberately NOT in
                       this list -- there is nothing here for the flag to
                       protect, only a query the agent may legitimately want.
+      filters save    a named filter is a human's working set, curated across
+      filters delete  sessions -- not something an analysis decides to leave
+                      behind, or clear out, for whoever opens the page next.
+                      `filters list` is deliberately NOT in this list, for the
+                      same reason `events` is not: it reads, it writes
+                      nothing, and the agent may legitimately want to see it.
 
     `finish` is deliberately NOT in the list: `security_close_analysis` runs
     inside run_job, AFTER the agent and still under the same exported flag,
@@ -114,8 +133,10 @@ def _refuse_if_agent(cmd):
             f"security {cmd}: refused inside a security analysis "
             "(CC_SECURITY_AGENT is set) — the agent that reports a finding "
             "does not get to dismiss it, rename the ledger out from under it, "
-            "open analyses of its own, or write an event by hand into the "
-            "one record of what actually happened; ask a human to run this.")
+            "open analyses of its own, write an event by hand into the one "
+            "record of what actually happened, or save/delete a saved filter "
+            "-- a working set a human curates, not something an analysis "
+            "decides; ask a human to run this.")
 
 
 def _conn(args):
@@ -731,6 +752,36 @@ def cmd_events(args):
         since=args.since, limit=args.limit, offset=args.offset), indent=2))
 
 
+def cmd_filters(args):
+    """A named set of filters per project -- one door, three actions, so the
+    query is validated (and the write actions refused to the agent, see
+    AGENT_FORBIDDEN) the same way everything else here is.
+
+    `save` reads the query as a JSON object on stdin, the same shape
+    `report-finding` reads its payload in -- a filter is arbitrary,
+    open-ended criteria (severity, category, free text...), not a handful of
+    flags this door would have to keep in step with every filter the page
+    ever grows.
+    """
+    conn = _conn(args)
+    if args.filters_action == "list":
+        print(json.dumps(ledger.saved_filters(conn, args.project), indent=2))
+        return
+    if args.filters_action == "save":
+        try:
+            query = json.load(sys.stdin)
+        except ValueError as exc:
+            sys.exit(f"filters save: stdin is not valid JSON: {exc}")
+        try:
+            ledger.save_filter(conn, args.project, args.name, query)
+        except ValueError as exc:
+            sys.exit(f"filters save: {exc}")
+        return
+    # delete
+    deleted = ledger.delete_filter(conn, args.project, args.name)
+    print(json.dumps({"deleted": deleted}))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="claude-cron security")
     p.add_argument("--db")
@@ -823,14 +874,48 @@ def main(argv=None):
     es.add_argument("--limit", type=int, default=100)
     es.add_argument("--offset", type=int, default=0)
 
+    # ONE subcommand, `filters`, with a nested action -- `security filters
+    # list|save|delete --project ...` -- rather than three top-level verbs,
+    # because they share the one thing that makes them one feature: a saved
+    # filter, scoped by project. `--db` is on every level (parents=[dbflag]),
+    # the same reason it is on every other subparser here: it has to work
+    # wherever the caller puts it, and `run()` in the tests puts it after
+    # every other flag, past the innermost parser.
+    fl = sub.add_parser("filters", parents=[dbflag]); fl.set_defaults(fn=cmd_filters)
+    fl_sub = fl.add_subparsers(dest="filters_action", required=True)
+
+    fl_list = fl_sub.add_parser("list", parents=[dbflag])
+    fl_list.add_argument("--project", required=True)
+
+    fl_save = fl_sub.add_parser("save", parents=[dbflag])
+    fl_save.add_argument("--project", required=True)
+    fl_save.add_argument("--name", required=True)
+
+    fl_delete = fl_sub.add_parser("delete", parents=[dbflag])
+    fl_delete.add_argument("--project", required=True)
+    fl_delete.add_argument("--name", required=True)
+
     args = p.parse_args(argv)
     if not getattr(args, "db", None):
         p.error("--db is required")
     # Before the database is opened, and in ONE place rather than in each of
     # the three commands: a verb added later is refused by being added to
     # AGENT_FORBIDDEN, not by remembering to copy a guard into its function.
-    if args.cmd in AGENT_FORBIDDEN:
-        _refuse_if_agent(args.cmd)
+    #
+    # `filters` is the one subcommand AGENT_FORBIDDEN cannot match by
+    # `args.cmd` alone: `list`, `save` and `delete` all arrive with
+    # `args.cmd == "filters"`, and only `args.filters_action` (set by the
+    # nested subparser above) tells them apart. The key checked here is
+    # "filters <action>" for that one case and the bare command name for
+    # every other -- matching the two-word entries in AGENT_FORBIDDEN -- so
+    # `filters list` (a query) stays reachable while `filters save` and
+    # `filters delete` (writes to a human's working set) are refused, without
+    # `filters` as a whole ever appearing in the tuple.
+    key = args.cmd
+    if key == "filters":
+        key = f"filters {args.filters_action}"
+    if key in AGENT_FORBIDDEN:
+        _refuse_if_agent(key)
     args.fn(args)
 
 

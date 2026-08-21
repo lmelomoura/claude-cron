@@ -201,3 +201,37 @@ def test_a_failed_re_report_does_not_leave_the_finding_with_half_its_occurrences
     assert got[0]["severity"] == "medium"
     assert got[0]["rationale"] == "original"
     assert [o["line"] for o in got[0]["occurrences"]] == [12]
+
+
+# ------------------------------------------------------------ saved filters
+
+def test_a_saved_filter_round_trips(conn):
+    ledger.save_filter(conn, "web", "criticals only", {"severity": "critical"})
+    got = ledger.saved_filters(conn, "web")
+    assert len(got) == 1
+    assert got[0]["name"] == "criticals only"
+    assert got[0]["query"] == {"severity": "critical"}
+
+
+def test_saving_the_same_name_twice_replaces_it(conn):
+    ledger.save_filter(conn, "web", "mine", {"severity": "critical"})
+    ledger.save_filter(conn, "web", "mine", {"severity": "high"})
+    got = ledger.saved_filters(conn, "web")
+    assert len(got) == 1
+    assert got[0]["query"] == {"severity": "high"}
+
+
+def test_filters_are_scoped_to_their_project(conn):
+    ledger.save_filter(conn, "web", "mine", {"severity": "critical"})
+    assert ledger.saved_filters(conn, "other") == []
+
+
+def test_deleting_reports_whether_it_existed(conn):
+    ledger.save_filter(conn, "web", "mine", {})
+    assert ledger.delete_filter(conn, "web", "mine") is True
+    assert ledger.delete_filter(conn, "web", "mine") is False
+
+
+def test_a_blank_name_is_refused(conn):
+    with pytest.raises(ValueError):
+        ledger.save_filter(conn, "web", "   ", {})

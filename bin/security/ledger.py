@@ -83,6 +83,16 @@ CREATE TABLE IF NOT EXISTS event (
   detail TEXT NOT NULL DEFAULT '', related TEXT NOT NULL DEFAULT '',
   at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS event_by_project_time ON event(project, at DESC);
+
+-- A named set of filters per project -- the view somebody works from every
+-- day, one click instead of six. Keyed (project, name): saving under a name
+-- that already exists is a REPLACE, not a second row, so re-saving "mine"
+-- after tweaking it updates the filter in place rather than leaving the old
+-- version behind under the same name.
+CREATE TABLE IF NOT EXISTS saved_filter (
+  project TEXT NOT NULL, name TEXT NOT NULL,
+  query TEXT NOT NULL, saved_at INTEGER NOT NULL,
+  PRIMARY KEY (project, name));
 """
 
 DECISION_STATES = ("accepted", "false_positive")
@@ -290,3 +300,48 @@ def events_for(conn, project=None, kinds=(), since=0, limit=100, offset=0):
     sql += " ORDER BY at DESC, id DESC LIMIT ? OFFSET ?"
     args.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
     return [dict(r) for r in conn.execute(sql, args)]
+
+
+def save_filter(conn, project, name, query) -> None:
+    """Save (or replace) a named filter for a project.
+
+    Keyed (project, name): saving under a name that already exists is an
+    UPSERT, not a second row -- re-saving "mine" after tweaking it updates
+    the filter in place, the same way `set_decision` replaces rather than
+    accumulates.
+    """
+    name = (name or "").strip()
+    if not name:
+        # A filter with no name is one nobody could ever pick back out of the
+        # list -- the same reasoning `set_decision` refuses a blank reason.
+        raise ValueError("a saved filter needs a name")
+    with conn:
+        conn.execute(
+            "INSERT INTO saved_filter (project, name, query, saved_at)"
+            " VALUES (?,?,?,?) ON CONFLICT(project, name) DO UPDATE SET"
+            " query=excluded.query, saved_at=excluded.saved_at",
+            (project, name[:80], json.dumps(query), int(time.time())))
+
+
+def saved_filters(conn, project):
+    out = []
+    for r in conn.execute(
+            "SELECT * FROM saved_filter WHERE project=? ORDER BY name",
+            (project,)):
+        d = dict(r)
+        try:
+            d["query"] = json.loads(d["query"])
+        except ValueError:
+            # A filter nobody can parse is a filter nobody can apply. Keep the
+            # row visible so it can be deleted, with an empty query rather than
+            # a crash that takes the whole list with it.
+            d["query"] = {}
+        out.append(d)
+    return out
+
+
+def delete_filter(conn, project, name) -> bool:
+    with conn:
+        cur = conn.execute("DELETE FROM saved_filter WHERE project=? AND name=?",
+                           (project, name))
+    return cur.rowcount > 0

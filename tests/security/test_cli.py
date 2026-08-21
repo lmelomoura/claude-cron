@@ -1452,3 +1452,95 @@ def test_analysis_is_allowed_under_the_agent_environment(tmp_path):
     aid = open_analysis(db)
     row = run(db, "analysis", "--id", str(aid), env=AS_AGENT)
     assert row["id"] == aid
+
+
+# ------------------------------------------------------------ saved filters
+
+def test_filters_save_then_list_round_trips(tmp_path):
+    db = tmp_path / "security.db"
+    run(db, "filters", "save", "--project", "web", "--name", "criticals only",
+        stdin=json.dumps({"severity": "critical"}))
+    got = run(db, "filters", "list", "--project", "web")
+    assert len(got) == 1
+    assert got[0]["name"] == "criticals only"
+    assert got[0]["query"] == {"severity": "critical"}
+
+
+def test_filters_save_replaces_a_filter_of_the_same_name(tmp_path):
+    db = tmp_path / "security.db"
+    run(db, "filters", "save", "--project", "web", "--name", "mine",
+        stdin=json.dumps({"severity": "critical"}))
+    run(db, "filters", "save", "--project", "web", "--name", "mine",
+        stdin=json.dumps({"severity": "high"}))
+    got = run(db, "filters", "list", "--project", "web")
+    assert len(got) == 1
+    assert got[0]["query"] == {"severity": "high"}
+
+
+def test_filters_list_is_scoped_to_its_project(tmp_path):
+    db = tmp_path / "security.db"
+    run(db, "filters", "save", "--project", "web", "--name", "mine",
+        stdin=json.dumps({"severity": "critical"}))
+    assert run(db, "filters", "list", "--project", "other") == []
+
+
+def test_filters_delete_reports_whether_it_existed(tmp_path):
+    db = tmp_path / "security.db"
+    run(db, "filters", "save", "--project", "web", "--name", "mine",
+        stdin=json.dumps({}))
+    assert run(db, "filters", "delete", "--project", "web",
+              "--name", "mine")["deleted"] is True
+    assert run(db, "filters", "delete", "--project", "web",
+              "--name", "mine")["deleted"] is False
+
+
+def test_filters_save_refuses_a_blank_name(tmp_path):
+    db = tmp_path / "security.db"
+    out = fails(db, "filters", "save", "--project", "web", "--name", "   ",
+                stdin=json.dumps({}))
+    assert out.returncode != 0
+    assert "name" in out.stderr
+
+
+def test_filters_save_refuses_stdin_that_is_not_json(tmp_path):
+    db = tmp_path / "security.db"
+    out = fails(db, "filters", "save", "--project", "web", "--name", "mine",
+                stdin="not json")
+    assert out.returncode != 0
+    assert "JSON" in out.stderr
+
+
+# ------------------------ the agent works from its own view, never edits it
+
+def test_the_agent_cannot_save_a_filter(tmp_path):
+    """A saved filter is a working set a human curates -- not something an
+    analysis decides to leave behind for whoever opens the page next."""
+    db = tmp_path / "security.db"
+    out = fails(db, "filters", "save", "--project", "web", "--name", "mine",
+                stdin=json.dumps({"severity": "critical"}), env=AS_AGENT)
+    assert out.returncode != 0
+    assert "CC_SECURITY_AGENT" in out.stderr
+    assert run(db, "filters", "list", "--project", "web") == []
+
+
+def test_the_agent_cannot_delete_a_filter(tmp_path):
+    db = tmp_path / "security.db"
+    run(db, "filters", "save", "--project", "web", "--name", "mine",
+        stdin=json.dumps({}))
+    out = fails(db, "filters", "delete", "--project", "web", "--name", "mine",
+                env=AS_AGENT)
+    assert out.returncode != 0
+    assert "CC_SECURITY_AGENT" in out.stderr
+    assert len(run(db, "filters", "list", "--project", "web")) == 1
+
+
+def test_the_agent_can_still_list_filters(tmp_path):
+    """`filters list` is read-only, the same reasoning that keeps `findings`,
+    `events` and `analysis` open under the flag -- there is nothing here for
+    CC_SECURITY_AGENT to protect, only a view the agent may legitimately
+    want."""
+    db = tmp_path / "security.db"
+    run(db, "filters", "save", "--project", "web", "--name", "mine",
+        stdin=json.dumps({"severity": "high"}))
+    got = run(db, "filters", "list", "--project", "web", env=AS_AGENT)
+    assert got[0]["name"] == "mine"
