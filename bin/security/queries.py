@@ -263,53 +263,81 @@ def default_branch_posture(conn, project, preferred):
     return a["branch"], posture(conn, project, a["branch"], latest=a), True, a
 
 
-def index_summary(conn, project_names):
-    """Header stats for the index screen, scoped to exactly `project_names`.
+def index_summary(conn, projects):
+    """Header stats for the index screen, scoped to exactly `projects`.
+
+    `projects` is the SAME list of `{name, base, description}` dicts
+    `project_rows` is handed, NOT a list of names. That is the whole point of
+    this signature: the cards above the table and the table itself have to
+    resolve the same branch for the same project, and the branch is chosen by
+    `default_branch_posture(conn, name, preferred)` -- so a caller that
+    strips `base` out on the way in here makes the cards ALWAYS take the
+    fallback path while the table honours the declared base. The two halves
+    of one screen then quietly describe different branches: "High 0" on the
+    cards over "High 1" on `main` three inches below, and a `capped_projects`
+    count resolved from a branch that is not the one the table flagged
+    `incomplete`. Nothing about the SQL below needs `base`, but everything
+    about the loop does, and one shape for both callers is what stops the
+    two from drifting again.
 
     Nothing prunes `analysis` when a project is renamed or removed from
     projects.json -- the ledger keeps every row forever. `critical`/`high`
-    were always scoped (via `default_branch_posture`, called once per name
+    were always scoped (via `default_branch_posture`, called once per project
     below); `total`/`counts` were NOT, so the moment the ledger held even one
-    analysis for a project no longer in `project_names`, "analyses" and
+    analysis for a project no longer configured, "analyses" and
     `success_rate` silently counted work that belongs to nothing on screen.
 
-    An empty `project_names` is an empty summary -- made explicit below
-    rather than left to however SQLite happens to treat `WHERE project IN
-    ()`; relying on that would make the "no projects" case correct by
-    accident of the engine, not by the code saying what it means.
+    An empty `projects` is an empty summary -- made explicit below rather
+    than left to however SQLite happens to treat `WHERE project IN ()`;
+    relying on that would make the "no projects" case correct by accident of
+    the engine, not by the code saying what it means.
 
-    `capped_projects` counts, among `project_names`, how many have their
-    latest finished analysis in `capped` state -- a PARTIAL read of the
-    repository, whose contribution to `critical`/`high` above means "none
-    found before it stopped," not "none" (the identical notice `secPaint`
-    already gives on the analysis screen). The index screen's KPI cards use
-    this count to say the fleet total may be an undercount, rather than
-    presenting it as complete.
+    `capped_projects` counts, among `projects`, how many have their latest
+    finished analysis in `capped` state -- a PARTIAL read of the repository,
+    whose contribution to `critical`/`high` above means "none found before it
+    stopped," not "none" (the identical notice `secPaint` already gives on
+    the analysis screen). The index screen's KPI cards use this count to say
+    the fleet total may be an undercount, rather than presenting it as
+    complete.
+
+    `fell_back_projects` is the same idea for the OTHER way these totals can
+    mislead: how many of them were read off a branch nobody declared, because
+    the declared base has never been analysed. The project table already
+    names that per row (`branch_fell_back`, rendered beside the branch's own
+    name); the cards summed those postures and said nothing, and this area's
+    standing rule is that a fallback branch is never silent.
     """
-    project_names = list(project_names)
+    projects = [dict(p) for p in projects]
+    names = [p.get("name", "") for p in projects]
     counts = {s: 0 for s in FINISHED_STATES}
     total = 0
-    if project_names:
-        placeholders = ",".join("?" * len(project_names))
+    if names:
+        placeholders = ",".join("?" * len(names))
         total = conn.execute(
             f"SELECT COUNT(*) c FROM analysis WHERE project IN ({placeholders})",
-            project_names).fetchone()["c"]
+            names).fetchone()["c"]
         for r in conn.execute(
                 f"SELECT state, COUNT(*) c FROM analysis"
                 f" WHERE project IN ({placeholders}) GROUP BY state",
-                project_names):
+                names):
             if r["state"] in counts:
                 counts[r["state"]] = r["c"]
     finished = sum(counts.values())
-    crit = high = capped = 0
-    for name in project_names:
-        _br, p, _fb, last = default_branch_posture(conn, name, None)
+    crit = high = capped = fell_back = 0
+    for proj in projects:
+        # `proj.get("base")`, exactly as `project_rows` passes it -- see this
+        # function's own docstring for what stripping it costs.
+        _br, p, fb, last = default_branch_posture(
+            conn, proj.get("name", ""), proj.get("base"))
         crit += p["critical"]
         high += p["high"]
         if last and last["state"] == "capped":
             capped += 1
-    return {"projects": len(project_names), "analyses": total,
+        if fb:
+            fell_back += 1
+    return {"projects": len(projects), "analyses": total,
             "critical": crit, "high": high, "capped_projects": capped,
+            "fell_back_projects": fell_back,
             # None, not 0.0: no finished analysis is not a zero-percent success
             # rate, and the card shows a dash for it.
             "success_rate": (counts["done"] / finished) if finished else None}
@@ -351,10 +379,18 @@ def project_rows(conn, projects):
 
 
 def trend(conn, project, branch, days=30):
+    """Each point carries the STATE its `open` count was read from, not just
+    the count. A `capped` analysis stopped before covering the whole scope,
+    so its "3 open" means "3 found before it stopped" -- and a trend line
+    that reads a direction across such a point can say "falling" off a run
+    that simply ran out of room. The renderer needs the state to refuse that
+    (ui/security/branches-tab.js's `secBranchTrendText`); it cannot infer it
+    from a number.
+    """
     since = int(time.time()) - days * 86400
     out = []
     for a in conn.execute(
-            "SELECT id, started FROM analysis WHERE project=? AND branch=?"
+            "SELECT id, started, state FROM analysis WHERE project=? AND branch=?"
             " AND state IN ('done','capped') AND started >= ?"
             # `id` as the tiebreak: `started` has 1-second resolution, and two
             # analyses of the SAME branch routinely land in the same second
@@ -365,6 +401,7 @@ def trend(conn, project, branch, days=30):
             " ORDER BY started, id", (project, branch, since)):
         _an, findings = checklist(conn, a["id"])
         out.append({"analysis_id": a["id"], "started": a["started"],
+                    "state": a["state"],
                     "open": sum(1 for f in findings if is_open(f["state"]))})
     return out
 
@@ -553,6 +590,20 @@ def top_categories(conn, project=None, limit=5):
 
 
 def branch_rows(conn, project):
+    """One row per branch that has ever finished an analysis.
+
+    `state` is the state of the analysis each row's `open` posture was
+    actually read from -- `done` or `capped`, the two this function's own
+    `WHERE` already admits. It used to be dropped on the floor: the rows said
+    `state IN ('done','capped')` and then returned no state at all, so a
+    branch whose last analysis stopped early presented its PARTIAL posture as
+    a finished one. That is worse here than anywhere else in the area,
+    because the Branches tab is the ONE screen whose entire purpose is
+    per-branch posture -- every other surface that shows a capped read
+    (`project_rows`'s `last_state`, `index_summary`'s `capped_projects`,
+    `secPaint`'s own banner) already says so, and this was the only posture
+    surface that could not.
+    """
     out = []
     # `MAX(id) DESC` as the tiebreak, not just `last DESC`: two branches of the
     # same project routinely get analysed within the same wall-clock second
@@ -563,11 +614,36 @@ def branch_rows(conn, project):
             "SELECT branch, MAX(started) last, COUNT(*) n FROM analysis"
             " WHERE project=? AND state IN ('done','capped')"
             " GROUP BY branch ORDER BY last DESC, MAX(id) DESC", (project,)):
+        # Fetched once and handed to `posture`, rather than letting it run the
+        # identical `_latest_finished` query a second time for the same row --
+        # exactly what `default_branch_posture` already does with its own.
+        latest = _latest_finished(conn, project, r["branch"])
         out.append({"branch": r["branch"], "last_analysis": r["last"],
                     "analyses": r["n"],
-                    "open": posture(conn, project, r["branch"]),
+                    "state": (latest or {}).get("state", ""),
+                    "open": posture(conn, project, r["branch"], latest=latest),
                     "trend": trend(conn, project, r["branch"])})
     return out
+
+
+def capped_branch_count(conn, project):
+    """How many of `project`'s analysed branches have their LATEST finished
+    analysis in `capped` state -- the per-project twin of `index_summary`'s
+    own `capped_projects`, for the two surfaces that roll every branch up
+    into one number and so cannot use a per-row badge: the sidebar donut
+    (`severity_totals`) and the findings browser's strip (`finding_rows`).
+
+    Both of those read exactly the scopes `_analysed_scopes` returns and
+    exactly the analysis `_latest_finished` picks per scope, which is what
+    this counts -- so the cue and the numbers it qualifies are computed from
+    the same rows, not from two independently-chosen sets of analyses.
+    """
+    n = 0
+    for r in _analysed_scopes(conn, project):
+        a = _latest_finished(conn, r["project"], r["branch"])
+        if a and a["state"] == "capped":
+            n += 1
+    return n
 
 
 SORTABLE = ("severity", "title", "category", "branch", "first_seen", "state")
@@ -611,6 +687,26 @@ def finding_rows(conn, project, filters=None, sort="severity",
     same exemption `secVisible` (ui/security/vocabulary.js) already gives the
     single-analysis checklist. Both are counted from the whole filtered set,
     not the page on screen, for the reason `by_severity` alone always was.
+
+    `attempted`/`analysed` are the never-analysed signal this payload used to
+    lack entirely, and the reason it mattered: with no way to tell "no rows
+    because nothing was ever read" from "no rows because the filters exclude
+    them", the browser rendered a project that has never been analysed as an
+    ok-green "nothing matches" beside `0 total`, and blamed filters the
+    reader never set. `attempted` is true the moment ANY analysis of this
+    project exists in any state; `analysed` is true only once one has reached
+    `done` or `capped`. Exactly the two-way distinction
+    `cmd_project_data`'s `tabs.overview.attempted` already gives the Overview
+    and Branches tabs -- computed here rather than passed in, because this
+    verb answers a screen that also mounts outside the project screen (the
+    Activity screen's fingerprint dialog) and cannot borrow another payload's
+    flag.
+
+    `capped_branches` is the same cue `project_rows`/`index_summary` already
+    give a partial read, for the one number here that rolls every branch into
+    one: how many of the branches these rows were unioned from had their
+    latest finished analysis stop early. "0 critical" over such a branch
+    means "none found before it stopped," not "none."
     """
     if sort not in SORTABLE:
         raise ValueError(f"sort must be one of {SORTABLE}")
@@ -630,11 +726,13 @@ def finding_rows(conn, project, filters=None, sort="severity",
         "SELECT DISTINCT branch FROM analysis WHERE project=?"
         " AND state IN ('done','capped')", (project,))]
 
-    rows, first_seen = [], {}
+    rows, first_seen, capped_branches = [], {}, 0
     for br in branches:
         a = _latest_finished(conn, project, br)
         if not a:
             continue
+        if a["state"] == "capped":
+            capped_branches += 1
         _an, findings = checklist(conn, a["id"])
         for finding in findings:
             row = dict(finding)
@@ -727,9 +825,16 @@ def finding_rows(conn, project, filters=None, sort="severity",
 
     total, unique = len(rows), len({r["fingerprint"] for r in rows})
     start = (page - 1) * per_page
+    # `branches` above is already "every branch with a finished analysis", so
+    # `analysed` costs nothing extra; `attempted` is the one fact this
+    # function did not already have in hand, and it is a single EXISTS.
+    attempted = conn.execute(
+        "SELECT 1 FROM analysis WHERE project=? LIMIT 1", (project,)).fetchone()
     return {"rows": rows[start:start + per_page], "total": total,
             "unique": unique, "by_severity": by_severity,
             "fixed_by_severity": fixed_by_severity,
+            "attempted": attempted is not None, "analysed": bool(branches),
+            "capped_branches": capped_branches,
             "page": page, "per_page": per_page}
 
 

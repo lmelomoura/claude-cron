@@ -136,7 +136,7 @@ def test_success_rate_counts_finished_analyses_only(conn):
     _analysis(conn, "main", state="capped")
     _analysis(conn, "main", state="failed")
     _analysis(conn, "main", state="running")
-    s = queries.index_summary(conn, ["web"])
+    s = queries.index_summary(conn, [{"name": "web", "base": "main"}])
     assert s["analyses"] == 4, "the total is every analysis"
     assert s["success_rate"] == pytest.approx(1 / 3), "done over done+capped+failed"
 
@@ -154,7 +154,7 @@ def test_index_summary_ignores_analyses_of_untracked_projects(conn):
     _analysis(conn, "main", project="gone", state="done")
     _analysis(conn, "main", project="gone", state="done")
 
-    s = queries.index_summary(conn, ["web"])
+    s = queries.index_summary(conn, [{"name": "web", "base": "main"}])
     assert s["analyses"] == 2, "only web's own two analyses, not gone's three"
     assert s["success_rate"] == pytest.approx(1 / 2), \
         "1 done of 2 finished for web -- gone's 3 done must not count"
@@ -169,7 +169,8 @@ def test_index_summary_of_no_projects_is_an_explicit_empty_summary(conn):
               findings=[("critical", "secret")])
     s = queries.index_summary(conn, [])
     assert s == {"projects": 0, "analyses": 0, "critical": 0, "high": 0,
-                 "capped_projects": 0, "success_rate": None}
+                 "capped_projects": 0, "fell_back_projects": 0,
+                 "success_rate": None}
 
 
 def test_index_summary_counts_projects_whose_latest_analysis_is_capped(conn):
@@ -183,13 +184,54 @@ def test_index_summary_counts_projects_whose_latest_analysis_is_capped(conn):
     _analysis(conn, "main", project="done-proj", state="done",
               findings=[("high", "sast")])
 
-    s = queries.index_summary(conn, ["capped-proj", "done-proj"])
+    s = queries.index_summary(conn, [{"name": "capped-proj", "base": "main"},
+                                 {"name": "done-proj", "base": "main"}])
     assert s["capped_projects"] == 1, "only capped-proj's latest analysis is capped"
 
     # A project not in project_names must not count, exactly like every other
     # field index_summary already scopes.
-    s_scoped = queries.index_summary(conn, ["done-proj"])
+    s_scoped = queries.index_summary(conn, [{"name": "done-proj", "base": "main"}])
     assert s_scoped["capped_projects"] == 0
+
+
+def test_index_summary_and_project_rows_resolve_the_same_branch(conn):
+    """Final whole-branch review, CRITICAL 1. `index_summary` takes the SAME
+    project dicts `project_rows` does, so both halves of the index screen
+    pick a project's branch the same way. Given only names it could never
+    honour a declared base, and `default_branch_posture(conn, name, None)`
+    ALWAYS took the fallback path -- the cards summing one branch while the
+    table three inches below described another.
+
+    Deliberately MULTI-BRANCH: every other `index_summary` fixture here has
+    one branch, which is exactly why nothing caught this. `main` is the
+    declared base and stopped early holding a high finding; `develop` was
+    analysed afterwards (so it wins the fallback) and is clean."""
+    projects = [{"name": "web", "base": "main", "description": ""}]
+    _analysis(conn, "main", state="capped", findings=[("high", "sast")])
+    _analysis(conn, "develop", state="done")
+
+    s = queries.index_summary(conn, projects)
+    row = queries.project_rows(conn, projects)[0]
+
+    assert row["branch"] == "main"
+    assert s["high"] == row["posture"]["high"] == 1, \
+        f"the cards and the table describe different branches: {s} vs {row}"
+    assert s["capped_projects"] == 1, \
+        "the base branch's latest analysis is capped and the cards did not notice"
+
+
+def test_index_summary_counts_projects_read_off_a_branch_nobody_declared(conn):
+    """The table names a fallback branch out loud per row; the cards, summing
+    those same postures, said nothing at all -- and a fallback branch is
+    never silent in this area."""
+    projects = [{"name": "web", "base": "main", "description": ""}]
+    _analysis(conn, "develop", findings=[("critical", "secret")])
+
+    s = queries.index_summary(conn, projects)
+
+    assert queries.project_rows(conn, projects)[0]["branch_fell_back"] is True
+    assert s["fell_back_projects"] == 1, f"the cards say nothing: {s}"
+    assert s["critical"] == 1
 
 
 def test_top_categories_group_by_rule(conn):
@@ -232,6 +274,41 @@ def test_branch_rows_one_per_branch_newest_first(conn):
     assert rows[0]["open"]["critical"] == 1
 
 
+def test_branch_rows_carry_the_state_their_posture_was_read_from(conn):
+    """Final whole-branch review, CRITICAL 3. `branch_rows` selected
+    `state IN ('done','capped')` and returned no state, so the one screen
+    whose entire purpose is per-branch posture was the only posture surface
+    in the area that could not say a read was partial. The trend points
+    carry it too, or the trend line asserts a direction across a run that
+    simply stopped before finding anything."""
+    _analysis(conn, "main", state="capped", findings=[("high", "sast")])
+    _analysis(conn, "develop", findings=[("low", "hygiene")])
+
+    rows = {r["branch"]: r for r in queries.branch_rows(conn, "web")}
+
+    assert rows["main"]["state"] == "capped", \
+        f"a partial read presents as a finished one: {rows['main']}"
+    assert rows["develop"]["state"] == "done"
+    assert [p["state"] for p in rows["main"]["trend"]] == ["capped"]
+    assert [p["state"] for p in rows["develop"]["trend"]] == ["done"]
+
+
+def test_capped_branch_count_is_the_rollup_cue_for_every_analysed_branch(conn):
+    """The sidebar donut and the findings strip roll every analysed branch
+    into one number, so neither can carry the per-row `incomplete` badge the
+    index table and the Overview panel already use. This is that cue as a
+    count -- and it reads exactly the analyses those two rollups read, the
+    latest finished one per analysed scope."""
+    _analysis(conn, "main", state="capped", findings=[("high", "sast")])
+    _analysis(conn, "develop", findings=[("low", "hygiene")])
+    assert queries.capped_branch_count(conn, "web") == 1
+
+    # A LATER done analysis of the same branch replaces the capped one as
+    # what the rollup reads, so the cue has to go away with it.
+    _analysis(conn, "main", findings=[("high", "sast")])
+    assert queries.capped_branch_count(conn, "web") == 0
+
+
 def test_trend_query_carries_the_id_tiebreak_in_its_order_by(conn):
     """Replaces `test_trend_orders_by_id_when_two_analyses_tie_on_started`,
     which forced a real tie on `started` and asserted the resulting order --
@@ -254,7 +331,8 @@ def test_trend_query_carries_the_id_tiebreak_in_its_order_by(conn):
         queries.trend(conn, "web", "main")
     finally:
         conn.set_trace_callback(None)
-    select = next(s for s in statements if s.startswith("SELECT id, started FROM analysis"))
+    select = next(s for s in statements
+                  if s.startswith("SELECT id, started, state FROM analysis"))
     assert "ORDER BY started, id" in select, \
         "the tiebreak belongs in the SQL text, not in however the engine breaks a tie"
 

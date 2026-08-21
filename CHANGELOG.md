@@ -319,6 +319,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`security decide` refuses a fingerprint that is not a finding's
+  identity.** There was no shape check anywhere — not at the CLI, not at the
+  route, which only tested for non-empty. A malformed value ("aws-key in
+  prod.env") wrote a decision row *and* a `decision_made` event, so the
+  Activity screen told the operator the risk had been accepted while the
+  finding stayed open on every other screen, because nothing can ever match
+  that identity. Both doors now enforce the 64-hex shape `report-finding`
+  has always enforced on a written fingerprint.
+- **`security finish --note` is held to the same credential check the rest of
+  an analysis's free text is.** `--note` lands in `coverage_note`, reaches all
+  four report formats and the analysis page, and is deliberately reachable by
+  the agent — closing the row is the one thing that must always work — yet it
+  was the only agent-writable free-text channel with no `looks_like_a_secret`
+  gate on it, while its near-identical twin `partial_note` had one. A live
+  AWS key written there travelled straight to the report you hand someone
+  else. It is now refused before anything is written, with the same message
+  that names the field and the rule and never echoes the text back.
+- **The audit trail prints the state word a reader sees.** A decision's event
+  detail was built from the raw token, so Activity showed
+  `false_positive: duplicate…` where every other screen in the area shows
+  "False positive".
+- **The security skill lists all six verbs the door refuses mid-run.** The
+  README had been updated to the full set; the skill — which is what the
+  *agent* reads — still named three, so an agent reaching for `event`,
+  `filters save` or `filters delete` met a hard exit its own instructions
+  said could not happen. A test now pins the skill against the refusal tuple
+  itself, in both directions, so the two cannot drift again.
 - **The two posture rollups no longer accept a time window they never
   applied.** `queries.severity_totals` and `queries.top_categories` took a
   `days=30` parameter, ignored it completely, and were never passed one by

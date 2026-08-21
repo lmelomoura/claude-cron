@@ -68,6 +68,16 @@ FINGERPRINT_PREFIX_RE = re.compile(r"^[0-9a-f]{1,64}$")
 MAX_TEXT = 10000
 TEXT_KEYS = ("title", "rationale", "remediation", "partial_note")
 
+# The word a reader sees for a decision state, mirroring
+# `SEC_STATE_LABEL` in ui/security/vocabulary.js -- the vocabulary every
+# screen in the area renders. Written INTO the event detail rather than
+# translated when the Activity screen paints it, because `detail` is one free
+# text column shared by five event kinds: a decision's detail is
+# "<state>: <reason>", and a renderer cannot split that back apart to
+# translate half of it without parsing a human's reason for a colon. So the
+# one place that knows the state is a state is the place that writes it.
+DECISION_LABEL = {"accepted": "Accepted", "false_positive": "False positive"}
+
 # A safeguard against pathological JSON on stdin. Both `report-finding` and
 # `filters save` read JSON bodies; a deeply nested structure raises RecursionError
 # and a megabyte-scale body is far beyond any legitimate finding or filter.
@@ -191,6 +201,45 @@ def _running(conn, analysis_id):
                  "baseline the next analysis is compared against, and writing "
                  "into it now would change what that comparison means.")
     return row
+
+
+def _refuse_if_secret(field, value):
+    """Refuse free text the agent wrote if it carries a live credential.
+
+    ONE implementation, two doors. `report-finding` gates `title`,
+    `rationale`, `remediation` and `partial_note` with this; `finish --note`
+    -- which lands in `coverage_note`, reaches all four report formats and
+    the analysis page, and is deliberately reachable by the agent (see
+    `_refuse_if_agent`: closing the row is the one thing that must always
+    work) -- had no gate at all, even though it is the near-identical twin of
+    the `partial_note` already covered. An agent describing what it could not
+    scan is exactly as likely to quote the credential it found as one
+    describing what it did.
+
+    The deterministic categories cannot leak a secret's value by
+    construction -- the `occurrence` table has no column for it,
+    `secrets.py` never returns matched text, `secret_fingerprint` takes no
+    value argument. Agent-written free text has no such structural
+    guarantee, and until this check existed the only thing stopping a live
+    credential from landing in one was a sentence in the skill telling the
+    agent not to -- in exactly the scenario the feature exists for, an agent
+    reading a repository whose contents it does not control.
+
+    The message names the FIELD and the RULE, never the text that matched:
+    echoing the secret back to refuse it would defeat the refusal. Refusing
+    is safe on both doors because neither has written anything yet -- the
+    caller re-runs with a description instead of a quotation.
+    """
+    if not isinstance(value, str) or not value:
+        return
+    matched_rule = secrets.looks_like_a_secret(value)
+    if matched_rule is not None:
+        sys.exit(f"{field} looks like it contains a live credential (matched "
+                 f"rule '{matched_rule}') and was refused before being written "
+                 "anywhere. Describe the credential's type and location "
+                 "instead of quoting it -- e.g. \"an AWS access key is "
+                 "hardcoded here\" -- the way a secret-category finding "
+                 "already does.")
 
 
 def _spend(value):
@@ -432,29 +481,13 @@ def cmd_report_finding(args):
             sys.exit(f"report-finding: {key} is {len(value)} characters and the "
                      f"limit is {MAX_TEXT} — a finding is a paragraph the report "
                      "page renders, not a file to paste into the ledger")
-        # The deterministic categories cannot leak a secret's value by
-        # construction -- the `occurrence` table has no column for it,
-        # `secrets.py` never returns matched text, `secret_fingerprint` takes
-        # no value argument. A SAST finding's free text has no such structural
-        # guarantee: `title`, `rationale`, `remediation` and `partial_note`
-        # are written by the analysis agent, and until this check existed the
-        # only thing stopping a live credential from landing in one was a
-        # sentence in the skill telling the agent not to -- in exactly the
-        # scenario the feature exists for, an agent reading a repository
-        # whose contents it does not control. `looks_like_a_secret` runs the
-        # scanner's own shaped patterns (and its placeholder gate) against
-        # this field; a match is refused here, before `record_finding` ever
-        # sees it. The message names the FIELD and the RULE, never the text
-        # that matched -- echoing the secret back to refuse it would defeat
-        # the refusal.
-        matched_rule = secrets.looks_like_a_secret(value)
-        if matched_rule is not None:
-            sys.exit(f"report-finding: {key} looks like it contains a live "
-                     f"credential (matched rule '{matched_rule}') and was "
-                     "refused before being written anywhere. Describe the "
-                     "credential's type and location instead of quoting it "
-                     "-- e.g. \"an AWS access key is hardcoded here\" -- the "
-                     "way a secret-category finding already does.")
+        # `looks_like_a_secret` runs the scanner's own shaped patterns (and
+        # its placeholder gate) against this field; a match is refused here,
+        # before `record_finding` ever sees it. Shared with `finish --note`,
+        # the twin channel that had no such gate -- see `_refuse_if_secret`'s
+        # own docstring for why the guard belongs to both doors and not to
+        # this one alone.
+        _refuse_if_secret(f"report-finding: {key}", value)
     occurrences = payload.get("occurrences", [])
     if not isinstance(occurrences, list) or any(
             not isinstance(o, dict) for o in occurrences):
@@ -501,6 +534,14 @@ def cmd_finish(args):
     Whatever the state ends up being, the SPEND and the note are still
     written: the run's real cost is a fact even when its verdict is refused.
     """
+    # Before the ledger is even opened, the same moment `report-finding`
+    # refuses its own four free-text fields: `--note` is written verbatim
+    # into `coverage_note`, which reaches all four report formats
+    # (`report.py`'s `_coverage`) and the analysis page's own notice, and it
+    # is agent-writable -- `finish` is deliberately NOT in AGENT_FORBIDDEN.
+    # It was the one such channel with no gate on it while its near-twin
+    # `partial_note` had one. See `_refuse_if_secret`.
+    _refuse_if_secret("finish: --note", args.note)
     conn = _conn(args)
     row = _analysis(conn, args.analysis)
     if args.if_running and row["state"] != "running":
@@ -674,6 +715,22 @@ def cmd_decide(args):
     project (see `cmd_security_analyze` in `bin/claude-cron`), so this cannot
     wedge a project's triage for ever.
     """
+    # The SAME shape check `report-finding` enforces on a written
+    # fingerprint, and for the same reason -- this is the identity a decision
+    # is keyed to, and a value that no finding can ever carry is a decision
+    # that can never apply to anything. Refused BEFORE the ledger is opened,
+    # because the damage is not the useless decision row: `record_event`
+    # below files a `decision_made` reading "Accepted: risk accepted for Q3"
+    # into the one artifact whose whole job is to say what actually happened,
+    # so Activity tells the operator the risk was accepted while the finding
+    # stays open on every screen. The server's own route checked non-empty
+    # and nothing else; it now applies the identical regex, but a human (or
+    # the agent) reaching this verb directly has no route in front of them.
+    if not FINGERPRINT_RE.match(args.fingerprint or ""):
+        sys.exit("decide: fingerprint must be 64 lowercase hex characters "
+                 "(sha256) — it is the identity a finding is matched on, and "
+                 "a decision recorded against anything else applies to no "
+                 "finding while the audit trail says it was decided")
     conn = _conn(args)
     live = conn.execute(
         "SELECT id FROM analysis WHERE project=? AND state='running' "
@@ -691,7 +748,8 @@ def cmd_decide(args):
         sys.exit(f"decide: {exc}")
     try:
         ledger.record_event(conn, args.project, "decision_made",
-                            f"{args.state}: {args.reason}", args.fingerprint[:12])
+                            f"{DECISION_LABEL.get(args.state, args.state)}: "
+                            f"{args.reason}", args.fingerprint[:12])
     except sqlite3.Error:
         # Best-effort, same reasoning as cmd_open_analysis and cmd_finish:
         # the decision above is already recorded; a ledger hiccup filing its
@@ -784,7 +842,8 @@ def cmd_index_data(args):
     if conn is None:
         print(json.dumps({
             "summary": {"projects": len(projects), "analyses": 0, "critical": 0,
-                       "high": 0, "capped_projects": 0, "success_rate": None},
+                       "high": 0, "capped_projects": 0, "fell_back_projects": 0,
+                       "success_rate": None},
             "projects": [{
                 "name": p.get("name", ""), "description": p.get("description", ""),
                 "branch": p.get("base", "") or "", "branch_fell_back": False,
@@ -797,7 +856,14 @@ def cmd_index_data(args):
 
     names = [p.get("name", "") for p in projects]
     print(json.dumps({
-        "summary": queries.index_summary(conn, names),
+        # `projects`, NOT `names`. `index_summary` and `project_rows` both
+        # pick a project's branch through `default_branch_posture`, which
+        # needs the declared base to pick it -- handing one half of the
+        # screen the dicts and the other half only the names made the cards
+        # ALWAYS fall back while the table honoured the base, so the two read
+        # different branches for the same project and disagreed in public.
+        # See `queries.index_summary`'s own docstring.
+        "summary": queries.index_summary(conn, projects),
         "projects": queries.project_rows(conn, projects),
         "recent": queries.recent_analyses(conn, projects=names),
         "donut": queries.severity_totals(conn, project=names),
@@ -912,7 +978,8 @@ def cmd_project_data(args):
                                   "state": "", "attempted": False},
                      "runs": [], "branches": [], "reports": []},
             "sidebar": {"donut": queries._empty_posture(), "categories": [],
-                       "activity": [], "branch_count": 0}}))
+                       "activity": [], "branch_count": 0,
+                       "capped_branches": 0}}))
         return
 
     branch, posture, fell_back, latest = queries.default_branch_posture(
@@ -965,7 +1032,13 @@ def cmd_project_data(args):
         "sidebar": {"donut": queries.severity_totals(conn, project=args.project),
                    "categories": queries.top_categories(conn, project=args.project),
                    "activity": ledger.events_for(conn, project=args.project, limit=5),
-                   "branch_count": queries.analysed_branch_count(conn, args.project)}}))
+                   "branch_count": queries.analysed_branch_count(conn, args.project),
+                   # The donut rolls every analysed branch into one number,
+                   # so it cannot carry the per-row `incomplete` badge the
+                   # Overview panel and the index table already use. This is
+                   # that same cue as a count: how many of the branches
+                   # behind it were only read partially.
+                   "capped_branches": queries.capped_branch_count(conn, args.project)}}))
 
 
 def cmd_findings_page(args):
@@ -1017,6 +1090,10 @@ def cmd_findings_page(args):
             "rows": [], "total": 0, "unique": 0,
             "by_severity": {s: 0 for s in report.SEVERITIES},
             "fixed_by_severity": {s: 0 for s in report.SEVERITIES},
+            # No ledger file at all is the strongest possible "never
+            # analysed": the browser must draw that, not the ok-green
+            # "nothing matches" it used to (see `finding_rows`'s docstring).
+            "attempted": False, "analysed": False, "capped_branches": 0,
             "page": max(1, args.page),
             "per_page": max(1, min(args.per_page, queries.MAX_PER_PAGE)),
             "filters": []}))

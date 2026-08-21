@@ -229,6 +229,37 @@ def test_a_decision_with_no_project_or_fingerprint_is_refused(srv, monkeypatch):
     assert code == 400
 
 
+def test_a_decision_with_a_malformed_fingerprint_is_refused(srv, monkeypatch):
+    """Final whole-branch review, IMPORTANT 2. The route checked non-empty
+    and nothing else, so a fingerprint of the agent's own invention ("aws-key
+    in prod.env") wrote a decision row AND a `decision_made` event -- the
+    Activity screen telling the operator the risk had been accepted while the
+    finding stayed open on every other screen, because no finding can ever
+    carry that identity. The shape `report-finding` already enforces
+    (bin/security/cli.py's FINGERPRINT_RE) is enforced here too; the CLI
+    refuses it as well, because neither door is the only one."""
+    def must_not_run(args, stdin=None):
+        raise AssertionError("the CLI must not be reached")
+    monkeypatch.setattr(srv, "cc", must_not_run)
+    for bad in ("aws-key in prod.env", "A" * 64, "a" * 63, "a" * 65, "a1b2"):
+        code, payload = srv.security_decide(
+            {"project": "web", "fingerprint": bad,
+             "state": "accepted", "reason": "risk accepted for Q3"})
+        assert code == 400, f"{bad!r} was accepted"
+        assert "fingerprint" in payload["error"]
+
+
+def test_a_decision_with_a_real_fingerprint_still_reaches_the_cli(srv, monkeypatch):
+    """Containment probe for the shape check above."""
+    seen = {}
+    monkeypatch.setattr(srv, "cc",
+                        lambda args, stdin=None: (seen.setdefault("args", args), (True, ""))[1])
+    code, _payload = srv.security_decide({"project": "web", "fingerprint": "0f" * 32,
+                                          "state": "accepted", "reason": "x"})
+    assert code == 200
+    assert seen["args"][seen["args"].index("--fingerprint") + 1] == "0f" * 32
+
+
 def test_decide_by_comes_from_load_user_never_the_request_body(srv, monkeypatch):
     """A body can claim to be anyone; the decided_by that lands in the ledger
     must be the signed-in operator, not whatever string the page (or a forged

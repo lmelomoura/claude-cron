@@ -1965,7 +1965,8 @@ def test_index_data_survives_a_ledger_that_does_not_exist_yet(tmp_path):
         [{"name": "web", "base": "main", "description": "d"}]))
     assert not db.exists()
     assert out["summary"] == {"projects": 1, "analyses": 0, "critical": 0,
-                              "high": 0, "capped_projects": 0, "success_rate": None}
+                              "high": 0, "capped_projects": 0,
+                              "fell_back_projects": 0, "success_rate": None}
     assert out["projects"] == [{
         "name": "web", "description": "d", "branch": "main",
         "branch_fell_back": False,
@@ -1987,7 +1988,8 @@ def test_index_data_reports_current_posture_for_the_projects_given(tmp_path):
         [{"name": "web", "base": "main", "description": "d"}]))
 
     assert out["summary"] == {"projects": 1, "analyses": 1, "critical": 0,
-                              "high": 1, "capped_projects": 0, "success_rate": 1.0}
+                              "high": 1, "capped_projects": 0,
+                              "fell_back_projects": 0, "success_rate": 1.0}
     row = out["projects"][0]
     assert row["name"] == "web"
     assert row["branch"] == "main"
@@ -2442,3 +2444,298 @@ def test_project_data_reports_tab_is_built_from_runs_not_a_second_query(tmp_path
         "reports must not run a second SELECT over the analysis table: " + src
     assert "for r in runs" in src, \
         "reports must be derived from the runs rows already in hand, not refetched"
+
+
+# ---- final whole-branch review, CRITICAL 1: the index screen's two halves
+# resolved DIFFERENT branches. `cmd_index_data` stripped `base` out of the
+# project dicts before calling `index_summary`, so the cards' own
+# `default_branch_posture(conn, name, None)` ALWAYS took the fallback path
+# while `project_rows`, handed the dicts whole, honoured the declared base.
+# Every existing `index_summary` fixture is single-branch, which is exactly
+# why nothing here caught it -- this one is deliberately not.
+
+def test_index_data_cards_and_table_resolve_the_same_branch(tmp_path):
+    """`web` declares `main` as its base. `main`'s latest analysis is
+    `capped` and carries a high finding; `develop` was analysed later and
+    found nothing. The cards used to read "High 0" (develop, the fallback)
+    while the table three inches below read "High 1" on `main` with an
+    `incomplete` badge -- and `capped_projects` resolved develop too, so the
+    undercount warning never fired even though the base branch's latest
+    analysis IS capped."""
+    db = tmp_path / "security.db"
+    capped_analysis(db, tmp_path, "web", "main", severity="high", rule="a")
+    finished_analysis(db, tmp_path, "web", "develop", severity="low", rule="b")
+
+    out = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]))
+
+    row = out["projects"][0]
+    assert row["branch"] == "main", "the table honours the declared base"
+    assert row["posture"]["high"] == 1
+    assert out["summary"]["high"] == row["posture"]["high"], (
+        "the cards and the table disagree about the same project: "
+        f"summary={out['summary']} row={row}")
+    assert out["summary"]["capped_projects"] == 1, (
+        "the base branch's latest analysis is capped and the undercount "
+        f"warning would not fire: {out['summary']}")
+
+
+def test_index_data_summary_says_when_it_had_to_fall_back(tmp_path):
+    """The table names a fallback branch out loud (`branch_fell_back`); the
+    cards, summing the same postures, said nothing -- and the spec requires
+    a fallback branch never be silent. `fell_back_projects` is that count."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "develop", severity="critical", rule="a")
+
+    out = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]))
+
+    assert out["projects"][0]["branch_fell_back"] is True
+    assert out["summary"]["fell_back_projects"] == 1, (
+        "the cards sum a branch nobody declared and say nothing: "
+        f"{out['summary']}")
+    assert out["summary"]["critical"] == 1
+
+
+def test_index_data_summary_reports_no_fallback_when_the_base_was_analysed(tmp_path):
+    """Containment probe for the counter above: a project whose declared base
+    really was analysed must not be reported as fallen back."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", severity="high", rule="a")
+
+    out = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]))
+
+    assert out["summary"]["fell_back_projects"] == 0
+    assert out["projects"][0]["branch_fell_back"] is False
+
+
+# ---- final whole-branch review, CRITICAL 3: the Branches tab could not
+# express `capped` at all. `branch_rows` selected `state IN ('done','capped')`
+# and returned no state, so a branch whose last analysis stopped early showed
+# its PARTIAL posture as a finished one -- on the single screen whose whole
+# purpose is per-branch posture.
+
+def test_project_data_branches_tab_carries_the_state_its_posture_came_from(tmp_path):
+    db = tmp_path / "security.db"
+    capped_analysis(db, tmp_path, "web", "main", severity="high", rule="a")
+    finished_analysis(db, tmp_path, "web", "develop", severity="low", rule="b")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main",
+              "--default-profile", "")
+
+    by_branch = {r["branch"]: r for r in out["tabs"]["branches"]}
+    assert by_branch["main"]["state"] == "capped", (
+        "a branch whose last analysis stopped early presents as finished: "
+        f"{by_branch['main']}")
+    assert by_branch["develop"]["state"] == "done"
+    assert [p.get("state") for p in by_branch["main"]["trend"]] == ["capped"], (
+        "the trend points carry no state, so the trend line cannot refuse a "
+        f"direction across a capped endpoint: {by_branch['main']['trend']}")
+
+
+# ---- final whole-branch review, CRITICAL 2: the Findings tab showed a green
+# all-clear for a project never analysed. `findings-page` carried no
+# never-analysed signal at all, so the strip rendered "nothing matches" in
+# the ok-green clean pill beside `0 total` and the table blamed filters the
+# reader never set. Overview and Branches both draw the distinction from
+# `tabs.overview.attempted`, one module away.
+
+def test_findings_page_says_a_project_was_never_analysed(tmp_path):
+    db = tmp_path / "security.db"
+    out = run(db, "findings-page", "--project", "web")
+    assert out["attempted"] is False, f"no never-analysed signal in the payload: {out}"
+    assert out["analysed"] is False
+    assert out["total"] == 0
+
+
+def test_findings_page_tells_attempted_apart_from_never_analysed(tmp_path):
+    """The same two-way distinction Overview and Branches already draw: a
+    project whose every analysis failed is not a project nobody ever
+    touched."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db, project="web", repo="web", branch="main", run_id="r1")
+    run(db, "finish", "--analysis", str(aid), "--state", "failed")
+
+    out = run(db, "findings-page", "--project", "web")
+
+    assert out["attempted"] is True, f"a failed attempt is still an attempt: {out}"
+    assert out["analysed"] is False, "nothing has finished, so nothing was read"
+
+
+def test_findings_page_of_an_analysed_project_is_analysed(tmp_path):
+    """Containment probe: a project with a finished analysis must report
+    both flags true, or the screens above would draw a never-analysed
+    notice over a real, genuinely empty result."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", severity="high", rule="a")
+    out = run(db, "findings-page", "--project", "web")
+    assert out["attempted"] is True and out["analysed"] is True
+    assert out["total"] == 1
+
+
+def test_findings_page_of_a_ledger_that_does_not_exist_is_never_analysed(tmp_path):
+    """The `read_only is None` branch has to answer the same shape, or the
+    screen falls back to the green all-clear on the very install where
+    nothing has ever run."""
+    db = tmp_path / "security.db"
+    out = run(db, "findings-page", "--project", "web")
+    assert not db.exists()
+    assert out["attempted"] is False and out["analysed"] is False
+
+
+# ---- final whole-branch review, IMPORTANT 8: the findings strip carried no
+# capped cue, unlike the rows and cards beside it.
+
+def test_findings_page_counts_branches_whose_latest_analysis_is_capped(tmp_path):
+    db = tmp_path / "security.db"
+    capped_analysis(db, tmp_path, "web", "main", severity="high", rule="a")
+    finished_analysis(db, tmp_path, "web", "develop", severity="low", rule="b")
+
+    out = run(db, "findings-page", "--project", "web")
+
+    assert out["capped_branches"] == 1, (
+        "the strip has no way to say one of these branches was read only "
+        f"partially: {out}")
+
+
+def test_project_data_sidebar_counts_branches_whose_latest_analysis_is_capped(tmp_path):
+    """The sidebar donut spans every analysed branch, so it needs the same
+    cue the Overview panel already gives its one branch."""
+    db = tmp_path / "security.db"
+    capped_analysis(db, tmp_path, "web", "main", severity="high", rule="a")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main",
+              "--default-profile", "")
+
+    assert out["sidebar"]["capped_branches"] == 1, (
+        f"the sidebar cannot say its donut is a partial read: {out['sidebar']}")
+
+
+# ---- final whole-branch review, IMPORTANT 7: Activity printed raw state
+# tokens. `cmd_decide` built the event detail as f"{state}: {reason}", so the
+# Activity screen showed `false_positive: duplicate...` where every other
+# screen in the area shows `False positive`.
+
+def test_decide_files_its_event_with_the_state_word_a_reader_sees(tmp_path):
+    db = tmp_path / "security.db"
+    fp = "d" * 64
+    run(db, "decide", "--project", "web", "--fingerprint", fp,
+        "--state", "false_positive", "--reason", "duplicate of the other one")
+
+    events = run(db, "events", "--project", "web")
+    detail = events[0]["detail"]
+    assert "false_positive" not in detail, (
+        f"the raw state token reached the audit trail: {detail!r}")
+    assert detail.startswith("False positive: "), detail
+    assert "duplicate of the other one" in detail
+
+
+def test_decide_files_an_accepted_event_with_the_same_vocabulary(tmp_path):
+    db = tmp_path / "security.db"
+    fp = "e" * 64
+    run(db, "decide", "--project", "web", "--fingerprint", fp,
+        "--state", "accepted", "--reason", "risk accepted for Q3")
+    events = run(db, "events", "--project", "web")
+    assert events[0]["detail"].startswith("Accepted: "), events[0]["detail"]
+
+
+# ---- final whole-branch review, IMPORTANT 2: `decide --fingerprint` had no
+# shape validation at all, so a malformed fingerprint wrote BOTH a decision
+# row and a `decision_made` event reading "accepted: risk accepted for Q3" --
+# Activity telling the operator the risk was accepted while the finding stays
+# open, since nothing will ever match that identity.
+
+def test_decide_refuses_a_fingerprint_that_is_not_the_identity_shape(tmp_path):
+    db = tmp_path / "security.db"
+    for bad in ("aws-key in prod.env", "ABC123", "a" * 63, "a" * 65, "", "  "):
+        out = fails(db, "decide", "--project", "web", "--fingerprint", bad,
+                    "--state", "accepted", "--reason", "risk accepted for Q3")
+        assert out.returncode != 0, f"{bad!r} was accepted: {out.stdout}"
+        assert "64 lowercase hex" in out.stderr, out.stderr
+    # ...and neither the decision nor its event was written.
+    assert run(db, "events", "--project", "web") == []
+
+
+def test_decide_still_accepts_a_real_fingerprint(tmp_path):
+    """Containment probe: the shape check must not refuse the identity
+    `report-finding` actually mints."""
+    db = tmp_path / "security.db"
+    fp = compute_fingerprint("sast", "r", "app.py", "")
+    run(db, "decide", "--project", "web", "--fingerprint", fp,
+        "--state", "accepted", "--reason", "known and accepted")
+    assert len(run(db, "events", "--project", "web")) == 1
+
+
+# ---- final whole-branch review, IMPORTANT 1: `finish --note` was the one
+# agent-writable free-text channel with no `looks_like_a_secret` guard on it,
+# even though the near-identically-named `partial_note` is covered and
+# `finish` is deliberately allowed to the agent. A credential written there
+# reaches all four report formats and the page.
+
+def test_finish_refuses_a_note_that_looks_like_a_live_credential(tmp_path):
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main")
+    out = fails(db, "finish", "--analysis", str(aid), "--state", "done",
+                "--note", "could not scan with AKIAIOSFODNN7EXAMPLE in the env",
+                env=AS_AGENT)
+    assert out.returncode != 0, "the note was accepted"
+    assert "live credential" in out.stderr, out.stderr
+    assert "AKIAIOSFODNN7EXAMPLE" not in out.stderr, \
+        "the refusal echoed the secret back, defeating itself"
+    assert "AKIAIOSFODNN7EXAMPLE" not in out.stdout
+
+
+def test_a_refused_note_leaves_the_analysis_open_rather_than_half_closed(tmp_path):
+    """The refusal happens BEFORE `finish_analysis`, so nothing is written --
+    the agent can close again with a note that says the same thing without
+    quoting the credential."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main")
+    fails(db, "finish", "--analysis", str(aid), "--state", "done",
+          "--note", "leaked AKIAIOSFODNN7EXAMPLE", env=AS_AGENT)
+    rows = run(db, "list", "--project", "web")
+    assert rows[0]["state"] == "running", rows[0]
+    assert "AKIAIOSFODNN7EXAMPLE" not in (rows[0]["coverage_note"] or "")
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done",
+        "--note", "an AWS access key is hardcoded in the env file")
+    rows = run(db, "list", "--project", "web")
+    assert rows[0]["state"] == "done"
+
+
+def test_finish_still_accepts_an_ordinary_coverage_note(tmp_path):
+    """Containment probe: the guard must not refuse the notes the engine and
+    the agent legitimately write."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main")
+    run(db, "finish", "--analysis", str(aid), "--state", "capped",
+        "--note", "I stopped before the SAST phase")
+    rows = run(db, "list", "--project", "web")
+    assert "I stopped before the SAST phase" in rows[0]["coverage_note"]
+
+
+# ---- final whole-branch review, IMPORTANT 4: the skill -- which is what the
+# AGENT reads -- still listed three of the six refused verbs. The README had
+# been updated to all six and the skill had not, so an agent meeting `event`,
+# `filters save` or `filters delete` met a hard mid-run exit its own
+# instructions told it could not happen. Pinned against the tuple itself so
+# the two cannot drift apart again in either direction.
+
+def test_the_skill_names_every_verb_the_door_refuses_the_agent(tmp_path):
+    skill = (REPO / "skills" / "security-analysis" / "SKILL.md").read_text()
+    for verb in security_cli.AGENT_FORBIDDEN:
+        assert f"`{verb}`" in skill, (
+            f"the agent's own instructions never mention `{verb}`, which the "
+            "door refuses it mid-run")
+
+
+def test_the_skill_does_not_claim_a_read_verb_is_refused(tmp_path):
+    """Containment probe: `events` and `filters list` are deliberately NOT in
+    AGENT_FORBIDDEN, and telling the agent otherwise costs it a query it may
+    legitimately want."""
+    skill = (REPO / "skills" / "security-analysis" / "SKILL.md").read_text()
+    for verb in ("events", "filters list"):
+        assert verb not in security_cli.AGENT_FORBIDDEN
+        assert f"`{verb}`" in skill, \
+            f"the skill does not say `{verb}` stays reachable"
