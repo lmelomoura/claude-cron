@@ -1047,11 +1047,17 @@ def test_an_analysis_is_only_ever_started_through_its_own_op(srv):
 def test_a_report_download_carries_the_token(srv):
     """Every GET on this API is behind the X-CC-Token header, which a plain
     `<a href="/api/security/report?…">` cannot attach — the browser would send
-    the navigation without it and the operator would get a 401 as a file."""
+    the navigation without it and the operator would get a 401 as a file.
+
+    Pinned to `secDownloadReport`, the fetch+Blob mechanism actions.js's
+    secDownload and reports-tab.js's per-row buttons both now share (see its
+    own comment for why this used to be two near-verbatim copies) — this
+    property is about the shared helper's behaviour, not about which of its
+    two callers happens to be named `secDownload`."""
     html = srv.render_page("boot-authed").split("<script>")[0]
     assert 'href="/api/security/report' not in html, "the report is linked, not fetched"
     block = _security_js(srv)
-    dl = _plainfn(block, "secDownload")
+    dl = _plainfn(block, "secDownloadReport")
     assert "/api/security/report" in dl
     assert '"X-CC-Token":TOKEN' in dl or '"X-CC-Token": TOKEN' in dl
 
@@ -1071,8 +1077,12 @@ def test_every_download_the_server_offers_has_a_button(srv):
 def test_the_sbom_download_is_named_the_way_its_tooling_expects(srv):
     """A fetch never turns the server's Content-Disposition into a download
     name, so the page builds the filename itself and the two have to agree by
-    hand — REPORT_EXTENSIONS on one side, this on the other."""
-    dl = _plainfn(_security_js(srv), "secDownload")
+    hand — REPORT_EXTENSIONS on one side, this on the other.
+
+    Pinned to `secDownloadReport`, the same shared helper the test above
+    targets — this filename rule applies to every caller (secDownload and
+    the Reports tab's own buttons alike), not to one function's name."""
+    dl = _plainfn(_security_js(srv), "secDownloadReport")
     assert srv.REPORT_EXTENSIONS["sbom"] == "cdx.json"
     assert "cdx.json" in dl
 
@@ -1645,6 +1655,79 @@ def test_branch_trend_text_names_the_direction_not_just_the_numbers(srv, tmp_pat
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_branch_trend_text_refuses_a_direction_the_whole_series_does_not_support(srv, tmp_path):
+    """Review finding 1's own reproduction. `secBranchTrendText` used to read
+    only the first and last point, so a branch that spiked to 40 open
+    findings and was almost entirely fixed (5, 40, 6) rendered "5 → 6 ...
+    (rising)" -- the opposite of what happened -- and a branch that dipped to
+    5 and climbed back to 45 from a start of 50 (50, 5, 45) rendered
+    "falling". Neither direction word is true for the WHOLE three-point
+    series, so neither may appear; the peak/trough the endpoints alone hide
+    is what the line says instead. A three-or-more-point series that IS
+    monotonic (or entirely flat) still gets its direction word, since it is
+    then true for the whole series, not just its ends."""
+    block = _security_js(srv)
+    fn = _plainfn(block, "secBranchTrendText")
+    script = tmp_path / "trend3.js"
+    script.write_text(fn + """
+    console.log(JSON.stringify({
+      spikeThenFixed: secBranchTrendText([{open: 5}, {open: 40}, {open: 6}]),
+      dipThenClimbed: secBranchTrendText([{open: 50}, {open: 5}, {open: 45}]),
+      flatThree: secBranchTrendText([{open: 9}, {open: 9}, {open: 9}]),
+      monotoneThree: secBranchTrendText([{open: 1}, {open: 2}, {open: 3}]),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert "5 → 6" in out["spikeThenFixed"], out["spikeThenFixed"]
+    assert "rising" not in out["spikeThenFixed"], \
+        f"a spike that was fixed still claims to be rising: {out['spikeThenFixed']}"
+    assert "peaked at 40" in out["spikeThenFixed"], \
+        f"the peak the endpoints hide is not named: {out['spikeThenFixed']}"
+
+    assert "50 → 45" in out["dipThenClimbed"], out["dipThenClimbed"]
+    assert "falling" not in out["dipThenClimbed"], \
+        f"a branch that dipped and climbed back still claims to be falling: {out['dipThenClimbed']}"
+    assert "dipped to 5" in out["dipThenClimbed"], \
+        f"the dip the endpoints hide is not named: {out['dipThenClimbed']}"
+
+    assert "flat" in out["flatThree"], out["flatThree"]
+    assert "rising" in out["monotoneThree"] and "falling" not in out["monotoneThree"], \
+        f"a genuinely monotonic three-point series lost its direction word: {out['monotoneThree']}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_branches_tab_tells_never_analysed_apart_from_every_attempt_failed(srv, tmp_path):
+    """Review finding 3. `secBranchesTable`'s empty state used to say "No
+    branch of this project has been analysed yet" whether nothing was ever
+    attempted or every attempt failed, even though `secRenderProjectBranches`
+    already receives `tabs.overview.attempted` in the same payload --
+    the identical flag `secRenderProjectOverview` already uses (see
+    project-screen.js's own comment on `ov.attempted`) to draw exactly this
+    distinction one tab over. A project whose every analysis failed used to
+    show two sibling tabs contradicting each other."""
+    block = _security_js(srv)
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("secEl", "secIndexPosturePills", "secBranchesCaption",
+                      "secBranchTrendText", "secBranchRow", "secBranchesTable",
+                      "secRenderProjectBranches"))
+    script = tmp_path / "pj-branches-empty.js"
+    script.write_text(_PROJECT_DOM_HARNESS + deps + """
+    secRenderProjectBranches({tabs: {overview: {attempted: false}, branches: []}});
+    const neverAttempted = _els["sec-pj-branches"].textContent;
+    secRenderProjectBranches({tabs: {overview: {attempted: true}, branches: []}});
+    const attemptedNoneFinished = _els["sec-pj-branches"].textContent;
+    console.log(JSON.stringify({neverAttempted, attemptedNoneFinished}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert "Never analysed" in out["neverAttempted"], out["neverAttempted"]
+    assert "finished yet" in out["attemptedNoneFinished"], out["attemptedNoneFinished"]
+    assert out["neverAttempted"] != out["attemptedNoneFinished"], \
+        "never-attempted and attempted-but-failed render identically"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_reports_tab_renders_one_row_per_analysis_with_four_downloads(srv, tmp_path):
     """One row per analysis regardless of state (a running one still gets a
     row -- see cmd_project_data's own docstring), four download buttons
@@ -1657,7 +1740,7 @@ def test_the_reports_tab_renders_one_row_per_analysis_with_four_downloads(srv, t
                       "secReportsTable", "secRenderProjectReports"))
     script = tmp_path / "pj-reports.js"
     script.write_text(_PROJECT_DOM_HARNESS + """
-    function secDownloadAnalysisReport(){}
+    function secDownloadReport(){}
     """ + consts + deps + """
     secRenderProjectReports({tabs: {reports: [
       {analysis_id: 7, branch: "main", started: 1700000000, state: "done"},

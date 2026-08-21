@@ -13,9 +13,12 @@
    cannot just CALL secDownload, though: that one is wired to the currently
    loaded secState.analysis and to four fixed button ids (sec-dl-md, ...),
    neither of which fits a table with one button per (row, format) pair.
-   secDownloadAnalysisReport below is the same fetch+Blob mechanism,
-   parameterised by an explicit analysis id and its own button element
-   instead of a global and a lookup by fixed id.
+   Both call actions.js's secDownloadReport, the shared fetch+Blob mechanism
+   parameterised by an explicit analysis id, format and button element
+   instead of a global and a lookup by fixed id -- this tab used to keep its
+   own near-verbatim copy of that function under the name
+   secDownloadAnalysisReport; see secDownloadReport's own comment for why
+   that stopped being two functions.
 
    The one fact this tab has to say out loud, in the README's own words: SBOM
    is not a report over any one analysis's checklist. It is the stored
@@ -25,35 +28,12 @@
    CURRENT document, not a reconstruction of what the tree held that day.
    secReportsCaption says so; a reader who has not opened the README must not
    be left to assume otherwise. */
-import { $, TOKEN, fmtWhen, toast } from "./page.js";
+import { $, fmtWhen } from "./page.js";
 import { secEl, secIcon } from "./dom.js";
+import { secDownloadReport } from "./actions.js";
 
 const SEC_REPORT_FORMATS = [["md", "Markdown"], ["json", "JSON"],
                             ["html", "HTML"], ["sbom", "SBOM"]];
-
-export async function secDownloadAnalysisReport(id, fmt, btn){
-  btn.disabled = true;
-  try{
-    const r = await fetch("/api/security/report?analysis=" + encodeURIComponent(id)
-                          + "&format=" + encodeURIComponent(fmt), {headers:{"X-CC-Token":TOKEN}});
-    if(!r.ok){
-      const j = await r.json().catch(() => null);
-      throw new Error((j && j.error) || ("HTTP " + r.status));
-    }
-    const url = URL.createObjectURL(await r.blob());
-    const link = document.createElement("a");
-    link.href = url;
-    // Mirrors REPORT_EXTENSIONS in bin/claude-cron-server, exactly like
-    // actions.js's secDownload: a fetch never turns Content-Disposition into
-    // a download name on its own, so the two have to agree by hand.
-    link.download = "security-analysis-" + id + "." + (fmt === "sbom" ? "cdx.json" : fmt);
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
-  }catch(e){ toast("Download failed — " + e.message, true); }
-  finally{ btn.disabled = false; }
-}
 
 function secReportsCaption(){
   const cap = secEl("div", "secpj-caption");
@@ -85,7 +65,7 @@ function secReportRow(r){
     btn.type = "button";
     btn.appendChild(secIcon("file"));
     btn.appendChild(document.createTextNode(label));
-    btn.onclick = () => secDownloadAnalysisReport(r.analysis_id, fmt, btn);
+    btn.onclick = () => secDownloadReport(r.analysis_id, fmt, btn);
     row.appendChild(btn);
   });
   tdDl.appendChild(row);

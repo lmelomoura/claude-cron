@@ -204,6 +204,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rows already fetched (analysis id, branch, started, state) rather than a
   second query over `analysis`.
 
+  A follow-up review closed four more issues before this shipped. The trend
+  text used to read only the first and last of a branch's 30-day points, so a
+  branch that spiked to forty open findings and got mostly fixed (5, 40, 6)
+  rendered "5 → 6 ... (rising)" — the opposite of what happened, and untested
+  because nothing in the diff ever drove it with three points. A direction
+  word is now kept only when it holds for every step of the series, not just
+  its ends; when the points disagree, the line names the peak or trough the
+  endpoints alone would hide ("peaked at 40", "dipped to 5") instead of
+  forcing a false direction on data that went both ways. The Branches tab's
+  empty state used to say "no branch has been analysed yet" whether nothing
+  was ever attempted or every attempt failed, even though the identical
+  `tabs.overview.attempted` flag the Overview panel already uses for this
+  exact distinction was sitting unused in the same payload — it is now
+  threaded through, so a project whose every analysis failed no longer shows
+  two sibling tabs contradicting each other. And `secDownloadAnalysisReport`
+  in reports-tab.js, a near-verbatim copy of actions.js's `secDownload` kept
+  apart only because two tests extracted `secDownload`'s literal source and
+  asserted substrings inside it, is now one shared `secDownloadReport` both
+  callers use — the two tests were re-pointed at the shared function, since
+  neither property they guard ("downloads carry the token", "the SBOM
+  filename matches REPORT_EXTENSIONS") was ever about a function's name.
+  Finally, the Branches caption explained why a branch's own count differs
+  from the sidebar donut but never that a branch only gets a row once one of
+  its analyses reaches `done` or `capped` — the exact confusion the real
+  Minerva ledger produces (Branches shows one row where Reports shows four
+  analyses across two branches); the caption now says so.
+
 ### Fixed
 
 - **`report-finding` now refuses a title, rationale, remediation or

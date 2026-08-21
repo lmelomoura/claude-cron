@@ -608,7 +608,7 @@
     return secEl(
       "div",
       "secpj-caption",
-      "Each row is that branch's own posture \u2014 the same computation the Overview panel above uses for its one branch. The sidebar's donut counts a finding once for the whole project even when it is open on several branches; here it counts once per branch, so these rows can add up to more than the sidebar's own total."
+      "Each row is that branch's own posture \u2014 the same computation the Overview panel above uses for its one branch. A branch appears here only once one of its analyses has reached done or capped; a branch whose only analyses so far are still running or have failed already shows up in Runs and Reports but will not have a row here yet. The sidebar's donut counts a finding once for the whole project even when it is open on several branches; here it counts once per branch, so these rows can add up to more than the sidebar's own total."
     );
   }
   function secBranchTrendText(trend) {
@@ -617,9 +617,24 @@
     if (pts.length === 1) {
       return pts[0].open + " open \u2014 only one analysis in the last 30 days, nothing yet to compare it against.";
     }
-    const first = pts[0].open, last = pts[pts.length - 1].open;
-    const word = last < first ? "falling" : last > first ? "rising" : "flat";
-    return first + " \u2192 " + last + " open over the last 30 days (" + word + ")";
+    const opens = pts.map((p) => p.open);
+    const first = opens[0], last = opens[opens.length - 1];
+    const base = first + " \u2192 " + last + " open across " + pts.length + " analyses in the last 30 days";
+    let direction = "flat";
+    for (let i = 1; i < opens.length; i++) {
+      const step = opens[i] < opens[i - 1] ? "falling" : opens[i] > opens[i - 1] ? "rising" : "flat";
+      if (step === "flat") continue;
+      if (direction === "flat") direction = step;
+      else if (direction !== step) {
+        direction = null;
+        break;
+      }
+    }
+    if (direction) return base + " (" + direction + ")";
+    const peak = Math.max(...opens), trough = Math.min(...opens);
+    if (peak > first && peak > last) return base + ", peaked at " + peak;
+    if (trough < first && trough < last) return base + ", dipped to " + trough;
+    return base;
   }
   function secBranchRow(r) {
     const tr = document.createElement("tr");
@@ -639,9 +654,9 @@
     tr.appendChild(cell(secBranchTrendText(r.trend)));
     return tr;
   }
-  function secBranchesTable(rows) {
+  function secBranchesTable(rows, attempted) {
     if (!rows.length) {
-      return secEl("div", "tblempty", "No branch of this project has been analysed yet.");
+      return secEl("div", "tblempty", attempted ? "No analysis of this project has finished yet \u2014 see Runs for what was attempted." : "Never analysed. Switch to Runs to pick a branch and start.");
     }
     const wrap = secEl("div", "tablewrap");
     const table = document.createElement("table");
@@ -664,19 +679,43 @@
     const host = $("sec-pj-branches");
     if (!host) return;
     host.textContent = "";
-    const rows = ((payload || {}).tabs || {}).branches || [];
+    const tabs = (payload || {}).tabs || {};
+    const rows = tabs.branches || [];
+    const attempted = !!(tabs.overview || {}).attempted;
     host.appendChild(secBranchesCaption());
-    host.appendChild(secBranchesTable(rows));
+    host.appendChild(secBranchesTable(rows, attempted));
   }
 
-  // ui/security/reports-tab.js
-  var SEC_REPORT_FORMATS = [
-    ["md", "Markdown"],
-    ["json", "JSON"],
-    ["html", "HTML"],
-    ["sbom", "SBOM"]
-  ];
-  async function secDownloadAnalysisReport(id, fmt, btn) {
+  // ui/security/actions.js
+  async function secAnalyse() {
+    const s = secScope();
+    if (!s.branch) {
+      toast("Pick a branch, or type one", true);
+      return;
+    }
+    const btn = $("sec-run");
+    btn.disabled = true;
+    btn.textContent = "Analysing\u2026";
+    try {
+      const ok = await api("security_analyze", {
+        project: secState.project,
+        repo: s.repo,
+        branch: s.branch,
+        profile: $("sec-profile").value
+      });
+      if (!ok) return;
+      toast("Analysis started", false, "shield");
+      secState.branch = s.branch;
+      secState.repo = s.repo;
+      await secReload();
+      secSyncPoll();
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Analyse";
+      secPaintRunButton();
+    }
+  }
+  async function secDownloadReport(id, fmt, btn) {
     btn.disabled = true;
     try {
       const r = await fetch("/api/security/report?analysis=" + encodeURIComponent(id) + "&format=" + encodeURIComponent(fmt), { headers: { "X-CC-Token": TOKEN } });
@@ -698,6 +737,19 @@
       btn.disabled = false;
     }
   }
+  async function secDownload(fmt) {
+    const a = secState.analysis;
+    if (!a) return;
+    await secDownloadReport(a.id, fmt, $("sec-dl-" + fmt));
+  }
+
+  // ui/security/reports-tab.js
+  var SEC_REPORT_FORMATS = [
+    ["md", "Markdown"],
+    ["json", "JSON"],
+    ["html", "HTML"],
+    ["sbom", "SBOM"]
+  ];
   function secReportsCaption() {
     const cap = secEl("div", "secpj-caption");
     cap.appendChild(document.createTextNode(
@@ -727,7 +779,7 @@
       btn.type = "button";
       btn.appendChild(secIcon("file"));
       btn.appendChild(document.createTextNode(label));
-      btn.onclick = () => secDownloadAnalysisReport(r.analysis_id, fmt, btn);
+      btn.onclick = () => secDownloadReport(r.analysis_id, fmt, btn);
       row.appendChild(btn);
     });
     tdDl.appendChild(row);
@@ -1385,61 +1437,6 @@
     return wrap;
   }
 
-  // ui/security/actions.js
-  async function secAnalyse() {
-    const s = secScope();
-    if (!s.branch) {
-      toast("Pick a branch, or type one", true);
-      return;
-    }
-    const btn = $("sec-run");
-    btn.disabled = true;
-    btn.textContent = "Analysing\u2026";
-    try {
-      const ok = await api("security_analyze", {
-        project: secState.project,
-        repo: s.repo,
-        branch: s.branch,
-        profile: $("sec-profile").value
-      });
-      if (!ok) return;
-      toast("Analysis started", false, "shield");
-      secState.branch = s.branch;
-      secState.repo = s.repo;
-      await secReload();
-      secSyncPoll();
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Analyse";
-      secPaintRunButton();
-    }
-  }
-  async function secDownload(fmt) {
-    const a = secState.analysis;
-    if (!a) return;
-    const btn = $("sec-dl-" + fmt);
-    btn.disabled = true;
-    try {
-      const r = await fetch("/api/security/report?analysis=" + encodeURIComponent(a.id) + "&format=" + encodeURIComponent(fmt), { headers: { "X-CC-Token": TOKEN } });
-      if (!r.ok) {
-        const j = await r.json().catch(() => null);
-        throw new Error(j && j.error || "HTTP " + r.status);
-      }
-      const url = URL.createObjectURL(await r.blob());
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = "security-analysis-" + a.id + "." + (fmt === "sbom" ? "cdx.json" : fmt);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 3e4);
-    } catch (e) {
-      toast("Download failed \u2014 " + e.message, true);
-    } finally {
-      btn.disabled = false;
-    }
-  }
-
   // ui/security/index.js
   function renderSecurity() {
     if (CC.currentView !== "security") return;
@@ -1495,4 +1492,4 @@
     SEC_PROFILES
   };
 })();
-// ui-sources: 51679f70e129876c77a7a16d0c6df40fac61d0cd1ae287558fc8c92ca0e08fa8
+// ui-sources: 83d899021238ca7e6a468b16edd2048b16eab2aa469638b7b48a6aeb02a899b4

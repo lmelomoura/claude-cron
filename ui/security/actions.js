@@ -31,10 +31,20 @@ export async function secAnalyse(){
   }
 }
 
-export async function secDownload(fmt){
-  const a = secState.analysis;
-  if(!a) return;
-  const btn = $("sec-dl-" + fmt);
+// Shared by secDownload below and reports-tab.js's per-row download
+// buttons -- the identical fetch + Blob + anchor + revoke mechanics,
+// parameterised by an explicit analysis id, format and button element
+// instead of a global and a lookup by fixed DOM id. This used to be two
+// near-verbatim copies, kept apart only because two tests in
+// tests/test_page_contract.py (test_a_report_download_carries_the_token,
+// test_the_sbom_download_is_named_the_way_its_tooling_expects) extracted
+// secDownload's own literal source and asserted substrings inside it.
+// Neither property they guard -- "downloads carry the token", "the SBOM
+// filename matches REPORT_EXTENSIONS" -- is about a function's NAME, so
+// both tests now extract THIS function instead, and secDownload/
+// reports-tab.js's per-row buttons both call it rather than each keeping
+// their own copy that would drift the first time one of them was fixed.
+export async function secDownloadReport(id, fmt, btn){
   btn.disabled = true;
   try{
     // Every GET on this API carries the token header, which a plain
@@ -43,7 +53,7 @@ export async function secDownload(fmt){
     // filename is built here from the same id and format that were asked for:
     // the server names the file in Content-Disposition, and a fetch never turns
     // that header into a download name on its own.
-    const r = await fetch("/api/security/report?analysis=" + encodeURIComponent(a.id)
+    const r = await fetch("/api/security/report?analysis=" + encodeURIComponent(id)
                           + "&format=" + encodeURIComponent(fmt), {headers:{"X-CC-Token":TOKEN}});
     if(!r.ok){
       const j = await r.json().catch(() => null);
@@ -55,7 +65,7 @@ export async function secDownload(fmt){
     // Mirrors REPORT_EXTENSIONS in bin/claude-cron-server: a fetch never turns
     // the server's Content-Disposition into a download name on its own, so the
     // two have to agree by hand. `.cdx.json` is what SBOM tooling recognises.
-    link.download = "security-analysis-" + a.id + "." + (fmt === "sbom" ? "cdx.json" : fmt);
+    link.download = "security-analysis-" + id + "." + (fmt === "sbom" ? "cdx.json" : fmt);
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -64,4 +74,10 @@ export async function secDownload(fmt){
     setTimeout(() => URL.revokeObjectURL(url), 30000);
   }catch(e){ toast("Download failed — " + e.message, true); }
   finally{ btn.disabled = false; }
+}
+
+export async function secDownload(fmt){
+  const a = secState.analysis;
+  if(!a) return;
+  await secDownloadReport(a.id, fmt, $("sec-dl-" + fmt));
 }

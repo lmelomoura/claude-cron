@@ -26,17 +26,35 @@ import { secIndexPosturePills } from "./index-screen.js";
 function secBranchesCaption(){
   return secEl("div", "secpj-caption",
     "Each row is that branch's own posture — the same computation the "
-    + "Overview panel above uses for its one branch. The sidebar's donut "
-    + "counts a finding once for the whole project even when it is open on "
-    + "several branches; here it counts once per branch, so these rows can "
-    + "add up to more than the sidebar's own total.");
+    + "Overview panel above uses for its one branch. A branch appears here "
+    + "only once one of its analyses has reached done or capped; a branch "
+    + "whose only analyses so far are still running or have failed already "
+    + "shows up in Runs and Reports but will not have a row here yet. The "
+    + "sidebar's donut counts a finding once for the whole project even "
+    + "when it is open on several branches; here it counts once per branch, "
+    + "so these rows can add up to more than the sidebar's own total.");
 }
 
 /* Pure and DOM-free on purpose, so a Node script can drive it with a plain
    array literal -- no fake document required, unlike the row/table builders
    below. `trend` is queries.trend()'s own shape: analyses of this branch
    within the last 30 days, oldest first, each carrying how many findings
-   were open at that point. */
+   were open at that point.
+
+   Only the FIRST and LAST point used to reach this text, with "rising"/
+   "falling" read off the two of them alone -- so a branch that spiked to
+   forty open findings and got mostly fixed (5, 40, 6) rendered as
+   "5 → 6 ... (rising)", the opposite of what happened, and nothing in the
+   diff that shipped this ever drove it with three points to notice (see
+   tests/test_page_contract.py's
+   test_branch_trend_text_refuses_a_direction_the_whole_series_does_not_support).
+   A direction word is kept only when it holds for the WHOLE series, not
+   just its ends: every step between consecutive points has to agree (a tie
+   does not break it). When the points disagree about direction, this names
+   the peak or trough the endpoints alone would hide instead of forcing a
+   false "rising"/"falling" on data that went both ways -- a spike that was
+   fixed, or a dip that crept back up, is the single most useful thing this
+   line can say. */
 function secBranchTrendText(trend){
   const pts = trend || [];
   if(!pts.length) return "No analyses of this branch in the last 30 days.";
@@ -44,9 +62,28 @@ function secBranchTrendText(trend){
     return pts[0].open + " open — only one analysis in the last 30 days, "
       + "nothing yet to compare it against.";
   }
-  const first = pts[0].open, last = pts[pts.length - 1].open;
-  const word = last < first ? "falling" : last > first ? "rising" : "flat";
-  return first + " → " + last + " open over the last 30 days (" + word + ")";
+  const opens = pts.map(p => p.open);
+  const first = opens[0], last = opens[opens.length - 1];
+  const base = first + " → " + last + " open across " + pts.length
+    + " analyses in the last 30 days";
+
+  let direction = "flat";
+  for(let i = 1; i < opens.length; i++){
+    const step = opens[i] < opens[i - 1] ? "falling"
+               : opens[i] > opens[i - 1] ? "rising" : "flat";
+    if(step === "flat") continue;
+    if(direction === "flat") direction = step;
+    else if(direction !== step){ direction = null; break; }
+  }
+  if(direction) return base + " (" + direction + ")";
+
+  // Not monotonic: the endpoints alone would misdescribe what happened in
+  // between. Name whichever of the peak/trough goes further than BOTH
+  // endpoints -- the fact the direction word cannot say.
+  const peak = Math.max(...opens), trough = Math.min(...opens);
+  if(peak > first && peak > last) return base + ", peaked at " + peak;
+  if(trough < first && trough < last) return base + ", dipped to " + trough;
+  return base;
 }
 
 function secBranchRow(r){
@@ -68,9 +105,17 @@ function secBranchRow(r){
   return tr;
 }
 
-function secBranchesTable(rows){
+function secBranchesTable(rows, attempted){
   if(!rows.length){
-    return secEl("div", "tblempty", "No branch of this project has been analysed yet.");
+    // The same distinction secRenderProjectOverview already draws for this
+    // project's one default branch (see its own `ov.attempted` comment in
+    // project-screen.js), applied here instead of collapsing back into one
+    // sentence: a project whose every analysis failed must not read exactly
+    // like one that has never been touched, or this tab contradicts the
+    // Overview tab one click away over the identical project.
+    return secEl("div", "tblempty", attempted
+      ? "No analysis of this project has finished yet — see Runs for what was attempted."
+      : "Never analysed. Switch to Runs to pick a branch and start.");
   }
   const wrap = secEl("div", "tablewrap");
   const table = document.createElement("table");
@@ -94,7 +139,14 @@ export function secRenderProjectBranches(payload){
   const host = $("sec-pj-branches");
   if(!host) return;
   host.textContent = "";
-  const rows = ((payload || {}).tabs || {}).branches || [];
+  const tabs = (payload || {}).tabs || {};
+  const rows = tabs.branches || [];
+  // `tabs.overview.attempted` is the identical flag secRenderProjectOverview
+  // already receives in the SAME payload -- true the moment any analysis of
+  // this project exists, in any state. Threaded through here so the empty
+  // state below can draw the same never-vs-attempted distinction instead of
+  // inventing a third, weaker sentence of its own.
+  const attempted = !!(tabs.overview || {}).attempted;
   host.appendChild(secBranchesCaption());
-  host.appendChild(secBranchesTable(rows));
+  host.appendChild(secBranchesTable(rows, attempted));
 }
