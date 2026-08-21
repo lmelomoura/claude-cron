@@ -144,6 +144,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A read-only query layer for the Security dashboard.** `security/queries.py`
+  opens `data/security.db` with `mode=ro` in the connection URI, so a `SELECT`
+  with a typo cannot write to the ledger even by accident — every write stays
+  behind `cli.py`'s validating door. It holds every aggregation the four new
+  screens need: posture by branch (falling back to the most recently analysed
+  branch when the project's own has none, and saying so), a project index
+  summary with a success rate that excludes running analyses from both sides
+  (`None`, not `0.0`, when nothing has finished), trend lines, the top open
+  categories, and per-kind event activity. `_checklist` — the one state
+  machine that turns a finding's history into `new`/`open`/`partial`/
+  `pending`/`fixed`/`regressed` — moves out of `cli.py` into `queries.py` as
+  `checklist()` unchanged, so both `cli.py`'s callers and every new
+  aggregation share the one implementation instead of a `CASE` expression
+  reimplementing it in SQL, which is exactly how `report.STATES` became a
+  third copy of a list nobody kept in step. `branch_rows`' grouped query
+  needed a real fix along the way: ordering by `MAX(started) DESC` alone ties
+  whenever two branches are analysed within the same wall-clock second
+  (`started` has 1-second resolution), and the tie broke the wrong way on this
+  branch's own test — `MAX(id) DESC` as the secondary key, the same tiebreak
+  `recent_analyses` already used, makes "newest first" mean what it says.
+  Measured against the real `data/security.db` (4 analyses, 108 findings),
+  every query answers in under 3 ms, so no index was added beyond the
+  existing `analysis_by_scope(project, repo, branch)`.
+
 - **A named set of filters per project.** Rebuilding the view somebody works
   from every day -- severity, category, state, whatever the day calls for --
   used to cost six clicks against the findings browser on every visit. A new

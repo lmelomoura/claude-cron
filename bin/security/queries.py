@@ -1,0 +1,276 @@
+# bin/security/queries.py
+"""Every read of the ledger the dashboard serves.
+
+The connection is opened READ-ONLY -- `mode=ro` in the URI, so a SELECT with a
+typo cannot write to the ledger even by accident. Writes stay behind cli.py:
+that door exists to protect the ledger from a non-deterministic agent, and the
+agent never reaches the server.
+
+Findings' states are NOT recomputed here in SQL. `checklist()` is the one state
+machine, moved out of cli.py so both callers share it; a second copy written as
+a CASE expression would drift from it the first time either one changed.
+"""
+
+import sqlite3
+import sys
+import time
+from pathlib import Path
+
+from . import diff, ledger
+
+# Everything that is not resolved. `pending` is open: a finding nobody has
+# re-checked is exposure nobody has closed, and filing it with the resolved
+# would be the same lie as a premature `fixed`.
+RESOLVED_STATES = ("fixed", "accepted", "false_positive")
+FINISHED_STATES = ("done", "capped", "failed")
+
+
+def is_open(state) -> bool:
+    return state not in RESOLVED_STATES
+
+
+def read_only(path):
+    """A read-only handle, or None when no analysis has ever run."""
+    path = Path(path)
+    if not path.exists():
+        return None
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _analysis_row(conn, analysis_id):
+    """The row, or a refusal. Every command that names an analysis goes
+    through this: `UPDATE ... WHERE id=?` on an id that does not exist
+    changes nothing and reports success, which is how a typo in the agent's
+    command line becomes a report with no findings and no explanation."""
+    row = conn.execute("SELECT * FROM analysis WHERE id=?", (analysis_id,)).fetchone()
+    if row is None:
+        sys.exit(f"no such analysis: {analysis_id}")
+    return row
+
+
+def checklist(conn, analysis_id):
+    """MOVED FROM cli.py, unchanged. The single owner of finding states."""
+    row = _analysis_row(conn, analysis_id)
+    analysis = dict(row)
+    current = ledger.findings_of(conn, analysis_id)
+    prev = ledger.latest_analysis(conn, analysis["project"], analysis["repo"],
+                                  analysis["branch"], before=analysis_id)
+    previous = ledger.findings_of(conn, prev["id"]) if prev else []
+
+    # The objective half of the `partial` signal (see diff._is_partial): how
+    # many of a finding's places are gone since last time. Nothing persists
+    # it -- it is a property of a PAIR of analyses, not of a finding -- and
+    # this is the only place the two ever meet, so it is computed here or
+    # `partial` can only ever come from the agent's own note.
+    #
+    # A set difference over the FILES, not a subtraction of two counts. Counts
+    # answer the wrong question in both directions: three hits in one file
+    # dropping to two is the same file still holding the same hole (someone
+    # deleted a duplicate line), while one hit in `auth.py` moving to one hit
+    # in `admin.py` is a place genuinely closed and a new one opened -- and
+    # `before - now` calls the first of those partial progress and the second
+    # nothing at all.
+    prev_occurrences = {f["fingerprint"]: {o["file"] for o in f["occurrences"]}
+                        for f in previous}
+    for f in current:
+        before = prev_occurrences.get(f["fingerprint"])
+        if before is not None:
+            f["closed_occurrences"] = len(before - {o["file"] for o in f["occurrences"]})
+
+    # done/capped only, exactly as `latest_analysis` requires of a baseline. A
+    # FAILED analysis is a run that fell over holding a partial set of
+    # findings; letting its fingerprints into `history` means the first
+    # successful analysis after a failed one reports everything the failed
+    # attempt happened to reach as `regressed` -- "this was fixed and came
+    # back" -- about findings that were never fixed and never left.
+    history = {r["fingerprint"] for r in conn.execute(
+        "SELECT DISTINCT f.fingerprint FROM finding f JOIN analysis a ON a.id=f.analysis_id"
+        " WHERE a.project=? AND a.repo=? AND a.branch=? AND a.id < ?"
+        " AND a.state IN ('done','capped')",
+        (analysis["project"], analysis["repo"], analysis["branch"],
+         prev["id"] if prev else analysis_id))}
+    decisions = ledger.decisions_for(conn, analysis["project"])
+    # Absence is only evidence when the looking finished: mid-run (or capped)
+    # a baseline finding missing from `current` is `pending`, never `fixed`.
+    return analysis, diff.classify(
+        current, previous, history, decisions,
+        analysis_state=analysis.get("state", "done"),
+        prepared=bool(analysis.get("prepared", 0)))
+
+
+def _latest_finished(conn, project, branch):
+    row = conn.execute(
+        "SELECT * FROM analysis WHERE project=? AND branch=?"
+        " AND state IN ('done','capped') ORDER BY id DESC LIMIT 1",
+        (project, branch)).fetchone()
+    return dict(row) if row else None
+
+
+def _empty_posture():
+    return {s: 0 for s in ("critical", "high", "medium", "low", "info")} | {"total": 0}
+
+
+def posture(conn, project, branch):
+    a = _latest_finished(conn, project, branch)
+    if not a:
+        return _empty_posture()
+    _analysis, findings = checklist(conn, a["id"])
+    out = _empty_posture()
+    for f in findings:
+        if not is_open(f["state"]):
+            continue
+        if f["severity"] in out:
+            out[f["severity"]] += 1
+        out["total"] += 1
+    return out
+
+
+def default_branch_posture(conn, project, preferred):
+    """The project's own branch when it has been analysed; otherwise the most
+    recently analysed one, and a flag saying so -- postures of different
+    branches must never be confused in silence."""
+    if preferred and _latest_finished(conn, project, preferred):
+        return preferred, posture(conn, project, preferred), False
+    row = conn.execute(
+        "SELECT branch FROM analysis WHERE project=? AND state IN ('done','capped')"
+        " ORDER BY id DESC LIMIT 1", (project,)).fetchone()
+    if not row:
+        return (preferred or ""), _empty_posture(), False
+    return row["branch"], posture(conn, project, row["branch"]), True
+
+
+def index_summary(conn, project_names):
+    counts = {s: 0 for s in FINISHED_STATES}
+    total = conn.execute("SELECT COUNT(*) c FROM analysis").fetchone()["c"]
+    for r in conn.execute("SELECT state, COUNT(*) c FROM analysis GROUP BY state"):
+        if r["state"] in counts:
+            counts[r["state"]] = r["c"]
+    finished = sum(counts.values())
+    crit = high = 0
+    for name in project_names:
+        _br, p, _fb = default_branch_posture(conn, name, None)
+        crit += p["critical"]
+        high += p["high"]
+    return {"projects": len(project_names), "analyses": total,
+            "critical": crit, "high": high,
+            # None, not 0.0: no finished analysis is not a zero-percent success
+            # rate, and the card shows a dash for it.
+            "success_rate": (counts["done"] / finished) if finished else None}
+
+
+def project_rows(conn, projects):
+    """One row per project. `projects` carries name, base and description,
+    read from projects.json by the caller -- the ledger does not know them."""
+    out = []
+    for proj in projects:
+        name = proj["name"]
+        branch, p, fell_back = default_branch_posture(conn, name, proj.get("base"))
+        last = _latest_finished(conn, name, branch) if branch else None
+        out.append({
+            "name": name, "description": proj.get("description", ""),
+            "branch": branch, "branch_fell_back": fell_back, "posture": p,
+            "profile": (last or {}).get("profile", ""),
+            "last_started": (last or {}).get("started", 0),
+            "last_duration": (max(0, (last["ended"] or 0) - (last["started"] or 0))
+                              if last else 0),
+            "analyses": conn.execute(
+                "SELECT COUNT(*) c FROM analysis WHERE project=?", (name,)
+            ).fetchone()["c"],
+            "trend": trend(conn, name, branch) if branch else []})
+    return out
+
+
+def trend(conn, project, branch, days=30):
+    since = int(time.time()) - days * 86400
+    out = []
+    for a in conn.execute(
+            "SELECT id, started FROM analysis WHERE project=? AND branch=?"
+            " AND state IN ('done','capped') AND started >= ?"
+            " ORDER BY started", (project, branch, since)):
+        _an, findings = checklist(conn, a["id"])
+        out.append({"analysis_id": a["id"], "started": a["started"],
+                    "open": sum(1 for f in findings if is_open(f["state"]))})
+    return out
+
+
+def recent_analyses(conn, limit=5):
+    rows = []
+    for a in conn.execute(
+            "SELECT * FROM analysis ORDER BY started DESC, id DESC LIMIT ?",
+            (max(1, min(int(limit), 50)),)):
+        d = dict(a)
+        if a["state"] in ("done", "capped"):
+            _an, findings = checklist(conn, a["id"])
+            d["open"] = sum(1 for f in findings if is_open(f["state"]))
+        else:
+            d["open"] = None      # a running analysis has no posture yet
+        rows.append(d)
+    return rows
+
+
+def _analysed_scopes(conn, project=None):
+    sql = ("SELECT DISTINCT project, branch FROM analysis"
+           " WHERE state IN ('done','capped')")
+    args = []
+    if project:
+        sql += " AND project = ?"
+        args.append(project)
+    return list(conn.execute(sql, args))
+
+
+def severity_totals(conn, project=None, days=30):
+    """Open findings by severity across the latest analysis of every branch."""
+    out = _empty_posture()
+    for r in _analysed_scopes(conn, project):
+        p = posture(conn, r["project"], r["branch"])
+        for k in out:
+            out[k] += p[k]
+    return out
+
+
+def top_categories(conn, project=None, days=30, limit=5):
+    counts = {}
+    for r in _analysed_scopes(conn, project):
+        a = _latest_finished(conn, r["project"], r["branch"])
+        if not a:
+            continue
+        _an, findings = checklist(conn, a["id"])
+        for f in findings:
+            if is_open(f["state"]):
+                counts[f["rule"]] = counts.get(f["rule"], 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [{"rule": k, "count": v} for k, v in ranked[:limit]]
+
+
+def branch_rows(conn, project):
+    out = []
+    # `MAX(id) DESC` as the tiebreak, not just `last DESC`: two branches of the
+    # same project routinely get analysed within the same wall-clock second
+    # (`started` has 1-second resolution), and without a tiebreak the newer
+    # branch can sort BEHIND the older one -- the same reason `recent_analyses`
+    # orders `started DESC, id DESC` rather than `started DESC` alone.
+    for r in conn.execute(
+            "SELECT branch, MAX(started) last, COUNT(*) n FROM analysis"
+            " WHERE project=? AND state IN ('done','capped')"
+            " GROUP BY branch ORDER BY last DESC, MAX(id) DESC", (project,)):
+        out.append({"branch": r["branch"], "last_analysis": r["last"],
+                    "analyses": r["n"],
+                    "open": posture(conn, project, r["branch"]),
+                    "trend": trend(conn, project, r["branch"])})
+    return out
+
+
+def activity_summary(conn, project=None, days=30):
+    since = int(time.time()) - days * 86400
+    sql = "SELECT kind, COUNT(*) c FROM event WHERE at >= ?"
+    args = [since]
+    if project:
+        sql += " AND project = ?"
+        args.append(project)
+    sql += " GROUP BY kind"
+    out = {k: 0 for k in ledger.EVENT_KINDS}
+    for r in conn.execute(sql, args):
+        out[r["kind"]] = r["c"]
+    return out

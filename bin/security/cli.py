@@ -40,7 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from security import deps, diff, fingerprint, hygiene, ledger, osv, report, secrets  # noqa: E402
+from security import deps, fingerprint, hygiene, ledger, osv, queries, report, secrets  # noqa: E402
 
 REQUIRED_FINDING_KEYS = ("fingerprint", "category", "rule", "severity", "title")
 
@@ -542,58 +542,9 @@ def cmd_finish(args):
         pass
 
 
-def _checklist(conn, analysis_id):
-    row = _analysis(conn, analysis_id)
-    analysis = dict(row)
-    current = ledger.findings_of(conn, analysis_id)
-    prev = ledger.latest_analysis(conn, analysis["project"], analysis["repo"],
-                                  analysis["branch"], before=analysis_id)
-    previous = ledger.findings_of(conn, prev["id"]) if prev else []
-
-    # The objective half of the `partial` signal (see diff._is_partial): how
-    # many of a finding's places are gone since last time. Nothing persists
-    # it -- it is a property of a PAIR of analyses, not of a finding -- and
-    # this is the only place the two ever meet, so it is computed here or
-    # `partial` can only ever come from the agent's own note.
-    #
-    # A set difference over the FILES, not a subtraction of two counts. Counts
-    # answer the wrong question in both directions: three hits in one file
-    # dropping to two is the same file still holding the same hole (someone
-    # deleted a duplicate line), while one hit in `auth.py` moving to one hit
-    # in `admin.py` is a place genuinely closed and a new one opened -- and
-    # `before - now` calls the first of those partial progress and the second
-    # nothing at all.
-    prev_occurrences = {f["fingerprint"]: {o["file"] for o in f["occurrences"]}
-                        for f in previous}
-    for f in current:
-        before = prev_occurrences.get(f["fingerprint"])
-        if before is not None:
-            f["closed_occurrences"] = len(before - {o["file"] for o in f["occurrences"]})
-
-    # done/capped only, exactly as `latest_analysis` requires of a baseline. A
-    # FAILED analysis is a run that fell over holding a partial set of
-    # findings; letting its fingerprints into `history` means the first
-    # successful analysis after a failed one reports everything the failed
-    # attempt happened to reach as `regressed` -- "this was fixed and came
-    # back" -- about findings that were never fixed and never left.
-    history = {r["fingerprint"] for r in conn.execute(
-        "SELECT DISTINCT f.fingerprint FROM finding f JOIN analysis a ON a.id=f.analysis_id"
-        " WHERE a.project=? AND a.repo=? AND a.branch=? AND a.id < ?"
-        " AND a.state IN ('done','capped')",
-        (analysis["project"], analysis["repo"], analysis["branch"],
-         prev["id"] if prev else analysis_id))}
-    decisions = ledger.decisions_for(conn, analysis["project"])
-    # Absence is only evidence when the looking finished: mid-run (or capped)
-    # a baseline finding missing from `current` is `pending`, never `fixed`.
-    return analysis, diff.classify(
-        current, previous, history, decisions,
-        analysis_state=analysis.get("state", "done"),
-        prepared=bool(analysis.get("prepared", 0)))
-
-
 def cmd_checklist(args):
     conn = _conn(args)
-    analysis, findings = _checklist(conn, args.analysis)
+    analysis, findings = queries.checklist(conn, args.analysis)
     print(json.dumps({"analysis": analysis, "findings": findings}, indent=2))
 
 
@@ -640,7 +591,7 @@ def cmd_render(args):
         # speaks `render --format`, and a second verb would mean a second route.
         print(_sbom_document(conn, args.analysis))
         return
-    analysis, findings = _checklist(conn, args.analysis)
+    analysis, findings = queries.checklist(conn, args.analysis)
     note = analysis.get("coverage_note", "")
     renderer = {"json": report.as_json, "md": report.as_markdown,
                 "html": report.as_html}[args.format]
