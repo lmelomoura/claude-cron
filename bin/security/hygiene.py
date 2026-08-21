@@ -127,4 +127,14 @@ def scan(root, ignore=()):
                 "world_writable_file", "medium", f"{rel} is world-writable",
                 "Any local user can rewrite this file, including before it runs.",
                 f"chmod o-w {rel}", rel))
+
+    # Advisory, not a defect: nothing is leaking yet. It is how the next .env
+    # gets committed, which is why it is recorded at all -- and why it is info.
+    if not (root / ".gitignore").is_file():
+        out.append(_finding(
+            "missing_gitignore", "info", "This repository has no .gitignore",
+            "Without one, the first .env, key or credential file someone adds "
+            "is committed by default.",
+            "Add a .gitignore covering .env files, key material and local "
+            "build output.", ".gitignore"))
     return out

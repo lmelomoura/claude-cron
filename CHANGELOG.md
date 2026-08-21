@@ -371,6 +371,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the page's own `secEnabled` both also accept a hand-typed `"true"`
   string, but the pane itself has no reason to ever write one.
 
+- **A fifth severity, `info`, for findings worth recording that need no action.**
+  It sits below the default floor, so it files without adding noise, and it
+  arrives with producers rather than as an always-zero column: a repository
+  with no `.gitignore`, and the agent's own observations.
+
 ### Fixed
 
 - **A secret in the git history no longer reads as `fixed` the moment somebody

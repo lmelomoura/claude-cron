@@ -9,6 +9,10 @@ def test_a_committed_env_file_is_a_finding(tmp_path):
 
 def test_an_env_example_is_not(tmp_path):
     (tmp_path / ".env.example").write_text("DB_HOST=\n")
+    # Not what this test is about -- without it the `missing_gitignore`
+    # advisory (below) would make the blanket `== []` false for an unrelated
+    # reason.
+    (tmp_path / ".gitignore").write_text(".env\n")
     assert scan(tmp_path) == []
 
 
@@ -42,11 +46,15 @@ def test_an_env_file_inside_a_skipped_dir_is_not_a_finding(tmp_path):
     nested = tmp_path / "node_modules" / "x"
     nested.mkdir(parents=True)
     (nested / ".env").write_text("DB_HOST=localhost\n")
+    # See test_an_env_example_is_not: unrelated to what this test checks.
+    (tmp_path / ".gitignore").write_text(".env\n")
     assert scan(tmp_path) == []
 
 
 def test_an_envrc_file_is_not_a_finding(tmp_path):
     (tmp_path / ".envrc").write_text("export DB_HOST=localhost\n")
+    # See test_an_env_example_is_not: unrelated to what this test checks.
+    (tmp_path / ".gitignore").write_text(".env\n")
     assert scan(tmp_path) == []
 
 
@@ -55,6 +63,8 @@ def test_a_cert_only_pem_is_not_a_finding(tmp_path):
         "-----BEGIN CERTIFICATE-----\n"
         "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...\n"
         "-----END CERTIFICATE-----\n")
+    # See test_an_env_example_is_not: unrelated to what this test checks.
+    (tmp_path / ".gitignore").write_text(".env\n")
     assert scan(tmp_path) == []
 
 
@@ -83,5 +93,21 @@ def test_ignored_paths_are_skipped(tmp_path):
     fixtures.mkdir(parents=True)
     (fixtures / ".env").write_text("DB_HOST=localhost\n")
     (fixtures / "fake.pem").write_text("-----BEGIN RSA PRIVATE KEY-----\nx\n")
+    # See test_an_env_example_is_not: unrelated to what this test checks.
+    (tmp_path / ".gitignore").write_text(".env\n")
     assert [f["rule"] for f in scan(tmp_path)] != []
     assert scan(tmp_path, ["tests/fixtures/**"]) == []
+
+
+def test_a_repository_with_no_gitignore_gets_an_advisory_finding(tmp_path):
+    """Nothing is wrong yet -- which is why it is info, not a warning. It is
+    how the next .env gets committed."""
+    (tmp_path / "app.py").write_text("x = 1\n")
+    found = [f for f in scan(tmp_path) if f["rule"] == "missing_gitignore"]
+    assert len(found) == 1
+    assert found[0]["severity"] == "info"
+
+
+def test_a_repository_with_a_gitignore_gets_none(tmp_path):
+    (tmp_path / ".gitignore").write_text(".env\n")
+    assert [f for f in scan(tmp_path) if f["rule"] == "missing_gitignore"] == []

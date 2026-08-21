@@ -182,3 +182,8 @@ def test_the_report_names_exactly_the_states_the_engine_can_produce():
         f"report.STATES={sorted(report.STATES)} "
         f"engine={sorted(set(diff.DERIVED_STATES) | set(ledger.DECISION_STATES))}")
     assert len(report.STATES) == len(set(report.STATES)), "a state is listed twice"
+
+
+def test_info_is_a_severity_and_sorts_below_low():
+    assert "info" in report.SEVERITIES
+    assert report.SEVERITIES.index("info") > report.SEVERITIES.index("low")

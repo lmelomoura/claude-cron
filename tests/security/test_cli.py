@@ -742,6 +742,10 @@ def test_prepare_root_inside_the_runs_worktree_is_accepted(tmp_path):
     run_dir = tmp_path / "run-dir"
     checkout = run_dir / "web"
     checkout.mkdir(parents=True)
+    # Not what this test is about -- without it, the `missing_gitignore`
+    # advisory (see hygiene.py) would make `findings == 0` false for reasons
+    # unrelated to the worktree-anchoring guard under test here.
+    (checkout / ".gitignore").write_text(".env\n")
     manifest = run_dir / ".run.json"
     manifest.write_text("{}")
     out = run(db, "prepare", "--analysis", str(aid), "--root", str(checkout),
@@ -757,6 +761,9 @@ def test_prepare_root_check_is_unchanged_without_the_run_manifest(tmp_path):
     aid = open_analysis(db)
     anywhere = tmp_path / "any-checkout-at-all"
     anywhere.mkdir()
+    # Not what this test is about -- see the identical comment in
+    # test_prepare_root_inside_the_runs_worktree_is_accepted.
+    (anywhere / ".gitignore").write_text(".env\n")
     env = {k: v for k, v in os.environ.items()
            if k not in ("CC_SECURITY_AGENT", "CC_RUN_MANIFEST")}
     out = run(db, "prepare", "--analysis", str(aid), "--root", str(anywhere),
@@ -774,6 +781,9 @@ def test_prepare_root_check_is_unchanged_when_agent_flag_is_set_without_a_manife
     aid = open_analysis(db)
     anywhere = tmp_path / "any-checkout-at-all"
     anywhere.mkdir()
+    # Not what this test is about -- see the identical comment in
+    # test_prepare_root_inside_the_runs_worktree_is_accepted.
+    (anywhere / ".gitignore").write_text(".env\n")
     env = {k: v for k, v in os.environ.items() if k != "CC_RUN_MANIFEST"}
     env["CC_SECURITY_AGENT"] = "1"
     out = run(db, "prepare", "--analysis", str(aid), "--root", str(anywhere),
@@ -836,8 +846,15 @@ def test_fingerprint_is_allowed_under_the_agent_environment(tmp_path):
 
 def git_repo(root, commits):
     """A throwaway repo. `commits` is a list of (message, {path: text|None});
-    None deletes the file."""
+    None deletes the file.
+
+    Carries its own `.gitignore` from the start -- these fixtures are not
+    about the `missing_gitignore` advisory (see hygiene.py), and without one
+    every one of them would trip it, adding an unrelated finding to tests
+    that assert exact finding counts or exact checklist state maps.
+    """
     root.mkdir(parents=True, exist_ok=True)
+    (root / ".gitignore").write_text(".env\n")
     run_git = lambda *a: subprocess.run(a, cwd=root, check=True, capture_output=True)
     run_git("git", "init", "-q")
     run_git("git", "config", "user.email", "t@example.com")
@@ -1260,3 +1277,17 @@ def test_render_sbom_refuses_an_analysis_that_does_not_exist(tmp_path):
     out = fails(db, "render", "--analysis", "999", "--format", "sbom")
     assert out.returncode != 0
     assert "no such analysis" in out.stderr
+
+
+def test_the_door_accepts_info_as_a_severity(tmp_path):
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    aid = run(db, "open-analysis", "--project", "web", "--repo", "web",
+              "--branch", "main", "--commit", "a", "--profile", "quick",
+              "--run-id", "r")["analysis_id"]
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "c" * 64, "category": "sast", "rule": "observation",
+        "severity": "info", "title": "worth knowing", "rationale": "r",
+        "remediation": "none needed", "occurrences": []}))

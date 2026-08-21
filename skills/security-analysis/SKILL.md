@@ -57,6 +57,8 @@ echo "{\"fingerprint\":\"$fp\",\"category\":\"sast\",\"rule\":\"sql-injection\",
 
 Each text field — `title`, `rationale`, `remediation`, `partial_note` — is capped at 10,000 characters; longer is refused at the door, not truncated. A finding is a paragraph the report page renders, not a file to paste into the ledger.
 
+`info` is for something worth recording that needs no action — a defensive gap that is not reachable, a pattern worth knowing about before the code grows. It sits below the default severity floor, so it is filed without adding noise. Do not use it to soften a finding you are unsure about: an unsure finding is a finding, at the severity you would give it if it were real, with your doubt written in the rationale.
+
 For a secret finding, drop `--snippet`: its identity is the credential's type and the file it lives in, never what it says.
 
 ```bash

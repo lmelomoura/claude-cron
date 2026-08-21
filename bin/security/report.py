@@ -11,7 +11,10 @@ import json
 import time
 
 STATES = ("new", "regressed", "open", "partial", "pending", "fixed", "accepted", "false_positive")
-SEVERITIES = ("critical", "high", "medium", "low")
+# Ordered most severe first. `info` is last on purpose: it is below the default
+# min_severity floor, so an informational finding is recorded and stays out of
+# the way until somebody lowers the floor to look for it.
+SEVERITIES = ("critical", "high", "medium", "low", "info")
 
 
 def _summary(findings):
