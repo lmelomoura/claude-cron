@@ -378,7 +378,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   severity vocabulary now ranks it too — below `low`, not above `critical` —
   since an unextended `SEV_ORDER` fell back to the rank reserved for
   corrupted data: an `info` finding was unhideable at every `min_severity`
-  floor and sorted above every critical finding on the page.
+  floor and sorted above every critical finding on the page. The "Minimum severity
+  shown" dropdown in the project editor now offers `Info` as the lowest option, so
+  the floor can be lowered to it through the UI.
 
 ### Fixed
 

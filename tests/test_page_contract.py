@@ -217,6 +217,27 @@ def test_the_project_editor_has_a_security_pane(srv):
         assert f'id="{field}"' in page, f"the security pane has no {field} field"
 
 
+def test_the_min_severity_dropdown_offers_info_as_the_lowest_option(srv):
+    """The info severity sits below the default display floor, recorded but hidden,
+    until somebody lowers the floor to look at it. The dropdown must offer info as
+    the lowest option to make it reachable through the UI."""
+    page = srv.render_page("boot-authed")
+    # Extract the sec-min-severity select options
+    select_match = re.search(r'<select id="sec-min-severity">(.*?)</select>', page, re.S)
+    assert select_match, "sec-min-severity select not found"
+    select_html = select_match.group(1)
+    # Verify info option exists
+    assert '<option value="info">Info</option>' in select_html, \
+        "the info option is not offered in the severity dropdown"
+    # Verify it is the first option (lowest)
+    first_option = re.search(r'<option value="([^"]+)">', select_html)
+    assert first_option.group(1) == "info", \
+        f"info must be the first (lowest) option, not {first_option.group(1)}"
+    # Verify medium is still the selected default
+    assert 'selected>Medium</option>' in select_html or '<option value="medium" selected>Medium</option>' in select_html, \
+        "medium is no longer the selected default"
+
+
 def test_security_model_and_effort_use_the_job_editors_controls(srv):
     """The Security tab's model and effort are the SAME controls the job editor
     uses — a searchable combo fed by /api/models and the Faster-Smarter slider —
