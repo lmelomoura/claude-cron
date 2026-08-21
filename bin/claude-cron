@@ -5975,6 +5975,26 @@ JSON
     && ok "and every past analysis is carried onto the new name in the ledger" \
     || bad "the security history stayed behind under the old project name"
 
+  echo "the committed UI bundle — built from the sources sitting next to it"
+  # bin/static/security.js is COMMITTED: installing claude-cron needs jq,
+  # python3 and curl, never Node. The price of that is a build output in git,
+  # which can be forgotten — and a stale bundle is a dashboard silently running
+  # last week's code, with nothing on screen to say so.
+  local _bundle="$BIN_DIR/static/security.js" _stamp _want
+  if [ ! -f "$_bundle" ]; then
+    bad "bin/static/security.js is missing — run build/build-ui.sh"
+  else
+    _stamp="$(sed -n 's|^// ui-sources: ||p' "$_bundle" | tail -1)"
+    _want="$(bash "$BASE_DIR/build/ui-digest.sh" 2>/dev/null)"
+    if [ -z "$_want" ]; then
+      bad "could not fingerprint ui/ — is shasum on PATH?"
+    elif [ "$_stamp" = "$_want" ]; then
+      ok "the committed UI bundle matches the sources it was built from"
+    else
+      bad "bin/static/security.js is stale — run build/build-ui.sh"
+    fi
+  fi
+
   rm -rf "$tmp"
   echo
   echo "$pass passed, $fail failed"

@@ -52,6 +52,33 @@ RUNS_FILE = DATA_DIR / "runs.ndjson"
 TOKEN_FILE = CONFIG_DIR / "control.token"
 DB_FILE = DATA_DIR / "index.db"
 CLAUDE_CRON = str(BIN_DIR / "claude-cron")
+# Built from ui/ by build/build-ui.sh and COMMITTED. Installing claude-cron
+# needs jq, python3 and curl; Node is a developer dependency and never a
+# runtime one, which only works if the output ships in git.
+STATIC_DIR = BIN_DIR / "static"
+STATIC_TYPES = {".js": "application/javascript; charset=utf-8",
+                ".css": "text/css; charset=utf-8"}
+
+
+def static_asset(name):
+    """One flat directory, one segment, known extensions. No traversal, no
+    subdirectories, nothing clever -- a static route is not the place to be
+    clever.
+
+    The name arrives exactly as it came off the wire, undecoded: decoding is
+    what turns `..%2F` into a directory to climb, and there is nothing in this
+    directory whose name needs it.
+    """
+    if "/" in name or "\\" in name or name.startswith(".") or ".." in name:
+        return None, None
+    path = STATIC_DIR / name
+    ctype = STATIC_TYPES.get(path.suffix)
+    if not ctype or not path.is_file():
+        return None, None
+    try:
+        return path.read_text(), ctype
+    except OSError:
+        return None, None
 
 PORT = int(os.environ.get("CLAUDE_CRON_PORT", "8787"))
 PLIST_LABEL = "com.claude-cron.tick"
@@ -91,7 +118,12 @@ ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
 # because the 5s poll refreshes DATA and never the code.
 def _build_id() -> str:
     h = hashlib.sha256()
-    for f in (PAGE_FILE, Path(__file__)):
+    # The bundles too, not just the page: the Security area's JavaScript moved
+    # out of dashboard.html, and a build id derived from the page alone would
+    # have stopped changing when that code changed -- which is the whole job of
+    # this id. An open tab would keep last week's bundle and never learn, and
+    # the `?v=` on the script tag would keep asking for the same cached URL.
+    for f in (PAGE_FILE, Path(__file__), *sorted(STATIC_DIR.glob("*.js"))):
         try:
             h.update(f.read_bytes())
         except OSError:
@@ -2478,6 +2510,15 @@ class Handler(BaseHTTPRequestHandler):
                                     "authenticated": bool(sess),
                                     "keep": bool(sess and sess["keep"]),
                                     "user": load_user() if sess else None})
+        # Before the gate on purpose. The bundle is not secret -- it ships in
+        # git, in every install -- and the page that draws the LOGIN card is the
+        # same page the dashboard is, so gating this would leave a signed-out
+        # browser holding a page whose code it is not allowed to fetch.
+        if path.startswith("/static/"):
+            body, ctype = static_asset(path[len("/static/"):])
+            if body is None:
+                return self._send(404, {"error": "not found"})
+            return self._send(200, body, ctype)
         # One gate for every remaining endpoint, rather than a check per route
         # that a new route can forget to copy.
         if path.startswith("/api/"):

@@ -80,7 +80,11 @@ def test_every_element_the_script_reaches_for_exists(srv):
     ids = set(re.findall(r'id="([a-zA-Z0-9_-]+)"', html))
     # ids created at runtime by innerHTML rather than present in the skeleton
     dynamic = set(re.findall(r'id="([a-zA-Z0-9_-]+)"', page.split("<script>", 1)[1]))
-    referenced = set(re.findall(r'\$\("([a-zA-Z0-9_-]+)"\)', _js(srv)))
+    # The page's own script AND the Security area's modules. The area moved out
+    # of the page; a check that kept reading only the inline script would have
+    # stopped watching a thousand lines of `$("sec-…")` without failing once.
+    reads = _js(srv) + "\n" + _security_js(srv)
+    referenced = set(re.findall(r'\$\("([a-zA-Z0-9_-]+)"\)', reads))
     missing = referenced - ids - dynamic
     assert not missing, f"script reaches for ids that no markup defines: {sorted(missing)}"
 
@@ -141,8 +145,10 @@ ROW = {"name": "web", "path": CWD, "base": "develop"}
 def _run_save(srv, tmp_path, *, multi, name="save.js"):
     """Drive the real saveProject() over a stub DOM and return what it sent."""
     harness = """
-    const SEC_PROFILES = ["quick","standard","deep"];
-    const SEV_ORDER = ["low","medium","high","critical"];
+    // The two vocabularies moved out with the Security area; the project editor
+    // reads them back off its interface, so the stub is that interface.
+    const CCSecurity = { SEC_PROFILES: ["quick","standard","deep"],
+                         SEV_ORDER: ["low","medium","high","critical"] };
     const EFFORTS = ["","low","medium","high","xhigh","max"];
     const sent = [];
     const vals = {"pj-name":"Web","pj-desc":"","pj-cwd":"%s","pj-ccd":"","pj-base":"develop",
@@ -560,20 +566,32 @@ def test_a_resume_is_not_its_own_continuation(srv, tmp_path):
 # rather than jobs -- and the one page on this dashboard that renders strings
 # written by analysed code, which is what most of these are about.
 
-SEC_START = "/* ================================================================ security"
-SEC_END = "/* ============================================================ end security */"
+UI_SECURITY = REPO / "ui" / "security"
+
+
+def _security_sources():
+    """Every module of the Security area, sorted, so a scan of "the area" keeps
+    meaning the whole area as it grows a file."""
+    return sorted(UI_SECURITY.glob("*.js"))
 
 
 def _security_js(srv):
-    """Just the Security block's source, between its own two banners.
+    """The Security area's own source.
 
     The whole-page checks below would pass on a page that renders a finding
     safely and a branch name unsafely twelve hundred lines away; these have to
     look at exactly the code that draws this view.
+
+    This used to read a block of dashboard.html between two banner comments.
+    The area now lives in ui/security/, and a reader left pointing at the old
+    place would have gone on passing while watching nothing -- so it follows
+    the code. The COMMITTED BUNDLE is deliberately not what is read: it is
+    generated, and a guard that reads generated output is one build away from
+    being a guard on a build artefact rather than on what anybody writes.
     """
-    js = _js(srv)
-    i = js.index(SEC_START)
-    return js[i:js.index(SEC_END, i)]
+    files = _security_sources()
+    assert files, f"no Security modules under {UI_SECURITY} -- this guard is reading nothing"
+    return "\n".join(f.read_text() for f in files)
 
 
 def test_the_security_view_exists_and_is_registered(srv):
@@ -597,29 +615,54 @@ def test_every_sidenav_item_has_a_view(srv):
         assert f'id="view-{view}"' in page, f"nav item {view} has no view"
 
 
-def test_the_security_block_only_ever_puts_an_icon_through_innerhtml(srv):
-    """Every `innerHTML =` in the Security block, read from the code itself.
+def test_the_security_ui_never_builds_dom_from_html_strings():
+    """The scan follows the code. It used to read a block of dashboard.html;
+    the area now lives in ui/security/, and a scan left pointing at the old
+    place would have kept passing while watching nothing.
 
     A finding's title, its file paths and — the one nobody expects — the BRANCH
     it was found on are all strings a repository chooses. Git allows '<', '>'
     and '&' in a ref name, so `feature/<img src=x onerror=…>` is a branch this
-    page will list in a picker. The rule that makes that harmless is absolute:
-    the only thing this block ever assigns to innerHTML is an entry from the
-    page's own icon table, optionally followed by a literal label. Everything
-    else goes in as text.
+    page will list in a picker.
 
-    This replaced a check that scanned the first 20 KB of the MARKUP after
-    `id="view-security"`. That window ends long before the script does — the
-    Security JavaScript is a thousand lines further down the page — so the
-    assertion was reading the view's HTML, where no JavaScript exists, and
-    could not have failed whatever the code did.
+    The rule used to be "the only thing this block hands to innerHTML is an
+    entry from the page's own icon table". Moving the area out sharpened it to
+    "this area hands the HTML parser nothing at all": the icon table is the
+    PAGE's, so the two helpers that inject its markup stayed in the page beside
+    it (see test_the_pages_icon_helpers_only_ever_inject_an_icon), and what
+    moved out has no reason to reach a sink of any kind.
     """
-    block = _security_js(srv)
+    sinks = ("innerHTML", "insertAdjacentHTML", "outerHTML",
+             "createContextualFragment", "DOMParser", 'setAttribute("on')
+    files = _security_sources()
+    assert files, f"no Security modules under {UI_SECURITY} -- this guard is reading nothing"
+    for src in files:
+        text = src.read_text()
+        for sink in sinks:
+            assert sink not in text, f"{src.name} reaches the DOM through {sink}"
+
+
+def test_the_pages_icon_helpers_only_ever_inject_an_icon(srv):
+    """Where the innerHTML the Security area used to do actually went.
+
+    The area draws icons, the icon table is the page's, and the injection stayed
+    with the table rather than travelling with the code — so `CC.icon()` and
+    `CC.iconLabel()` are now the only route from the Security area to the HTML
+    parser, and this is the guard the old block-scan was. Anything they are
+    handed beyond an entry in `I` goes in as a TEXT NODE, which is what keeps a
+    branch called `feature/<img src=x onerror=…>` inert.
+    """
+    js = _js(srv)
+    i = js.index("const CC = {")
+    block = js[i:js.index("\n};", i)]
     found = [r.strip() for r in re.findall(r"\.innerHTML\s*=\s*([^;\n]+)", block)]
-    assert found, "no innerHTML at all in the block — this guard is asserting nothing"
-    allowed = re.compile(r'^I\[name\] \|\| ""$|^I\.[A-Za-z0-9]+(?: \+ "[^"]*")?$')
-    bad = [r for r in found if not allowed.match(r)]
-    assert not bad, f"innerHTML in the Security view carrying more than an icon: {bad}"
+    assert len(found) == 2, \
+        f"expected exactly the two icon helpers to inject markup, found: {found}"
+    for expr in found:
+        assert expr == 'I[name] || ""', \
+            f"the page's Security interface injects more than an icon: {expr}"
+    assert "createTextNode(label)" in block, \
+        "a label beside an icon must go in as text, not as markup"
 
 
 # `X.innerHTML = …` is one door into the HTML parser. These are the others, and
@@ -667,8 +710,7 @@ def test_the_html_sink_denylist_would_catch_one(srv):
 
 
 def test_the_severity_filter_never_hides_a_fixed_finding(srv):
-    page = srv.render_page("boot-authed")
-    assert 'f.state === "fixed" ||' in page
+    assert 'f.state === "fixed" ||' in _security_js(srv)
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -836,15 +878,19 @@ def test_the_analysis_poll_cannot_outlive_the_view(srv, tmp_path):
     const secReload = () => {};
     globalThis.setInterval = () => { live++; return {}; };
     globalThis.clearInterval = () => { live--; };
-    let currentView = "security";
+    // The view is the page's and it changes under this area, so the area reads
+    // it live off the interface rather than through a copy taken at startup.
+    // That is what the stub has to be, or this harness proves nothing about
+    // the code that actually ships.
+    const CC = {currentView: "security"};
     const secState = {project:"web", analyses:[{state:"running"}]};
     """ + src + """
     const out = {};
     secSyncPoll();                       out.watching = live;
-    currentView = "overview";
+    CC.currentView = "overview";
     secSyncPoll();                       out.left = live;
     secSyncPoll();                       out.lateReload = live;
-    currentView = "security";
+    CC.currentView = "security";
     secSyncPoll();                       out.cameBack = live;
     secState.analyses = [{state:"done"}];
     secSyncPoll();                       out.finished = live;
