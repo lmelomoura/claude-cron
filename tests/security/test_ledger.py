@@ -131,6 +131,21 @@ def test_record_finding_is_atomic_a_bad_occurrence_leaves_no_finding_row(conn):
     assert rows == []
 
 
+def test_lines_of_code_round_trips(conn):
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "quick", "r1")
+    ledger.set_lines_of_code(conn, aid, 1234)
+    row = conn.execute("SELECT lines_of_code FROM analysis WHERE id=?", (aid,)).fetchone()
+    assert row["lines_of_code"] == 1234
+
+
+def test_lines_of_code_defaults_to_zero_for_an_older_analysis(conn):
+    """The column arrives by additive migration; rows written before it exist
+    read as 0, and the page shows a dash rather than inventing a number."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "quick", "r1")
+    row = conn.execute("SELECT lines_of_code FROM analysis WHERE id=?", (aid,)).fetchone()
+    assert row["lines_of_code"] == 0
+
+
 def test_a_failed_re_report_does_not_leave_the_finding_with_half_its_occurrences(conn):
     """The upsert path deletes the old occurrences before inserting the new
     ones. If that insert then fails partway, the whole re-report -- the field

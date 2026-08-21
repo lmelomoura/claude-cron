@@ -91,6 +91,10 @@ ANALYSIS_END_STATES = ("done", "failed", "capped")
 # one column.
 _ANALYSIS_COLUMNS = (
     ("prepared", "INTEGER NOT NULL DEFAULT 0"),
+    # The size of what was analysed. 0 means "not counted" -- every analysis
+    # written before this column existed -- and the page shows a dash for it
+    # rather than a zero that reads as an empty repository.
+    ("lines_of_code", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -116,6 +120,13 @@ def mark_prepared(conn, analysis_id) -> None:
     """Record that the deterministic phases ran over this analysis."""
     conn.execute("UPDATE analysis SET prepared=1 WHERE id=?", (analysis_id,))
     conn.commit()
+
+
+def set_lines_of_code(conn, analysis_id, lines) -> None:
+    """Record the size of what was actually analysed, in lines."""
+    with conn:
+        conn.execute("UPDATE analysis SET lines_of_code=? WHERE id=?",
+                     (int(lines), analysis_id))
 
 
 def start_analysis(conn, project, repo, branch, commit_sha, profile, run_id) -> int:

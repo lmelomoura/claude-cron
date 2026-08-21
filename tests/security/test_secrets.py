@@ -7,11 +7,12 @@ GITHUB = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
 
 def test_it_finds_an_aws_key(tmp_path):
     (tmp_path / "prod.env").write_text(f"AWS_ACCESS_KEY_ID={AWS}\n")
-    found, note = scan_tree(tmp_path, [])
+    found, note, lines = scan_tree(tmp_path, [])
     assert note == ""
     assert len(found) == 1
     assert found[0]["rule"] == "aws_access_key"
     assert found[0]["occurrences"][0]["file"] == "prod.env"
+    assert lines == 1
 
 
 def test_the_value_appears_nowhere_in_the_finding(tmp_path):
@@ -23,7 +24,7 @@ def test_the_value_appears_nowhere_in_the_finding(tmp_path):
 def test_ignored_paths_are_skipped(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "fixture.env").write_text(f"KEY={AWS}\n")
-    assert scan_tree(tmp_path, ["tests/**"]) == ([], "")
+    assert scan_tree(tmp_path, ["tests/**"]) == ([], "", 0)
 
 
 def test_generic_rule_rejects_a_low_entropy_password_value(tmp_path):
@@ -34,7 +35,7 @@ def test_generic_rule_rejects_a_low_entropy_password_value(tmp_path):
     ever computed, so it asserted nothing about this gate.)"""
     (tmp_path / "config.py").write_text(
         'password = "abababababababababab"\n')
-    assert scan_tree(tmp_path, []) == ([], "")
+    assert scan_tree(tmp_path, []) == ([], "", 1)
 
 
 def test_generic_rule_reports_a_high_entropy_password_value(tmp_path):
@@ -43,7 +44,7 @@ def test_generic_rule_reports_a_high_entropy_password_value(tmp_path):
     everything and the test suite would not notice."""
     (tmp_path / "config.py").write_text(
         'password = "Jk8pVqZ2Xz9LmWrT4hYbNc"\n')
-    found, _ = scan_tree(tmp_path, [])
+    found, _, _ = scan_tree(tmp_path, [])
     assert len(found) == 1
     assert found[0]["rule"] == "generic_secret"
 
@@ -56,7 +57,7 @@ def test_generic_rule_rejects_an_obvious_placeholder(tmp_path):
     measures ~4.3-4.6 bits/char, too close to give the threshold room."""
     (tmp_path / "config.py").write_text(
         'password = "changeme12345678901234"\n')
-    assert scan_tree(tmp_path, []) == ([], "")
+    assert scan_tree(tmp_path, []) == ([], "", 1)
 
 
 def test_history_finds_a_key_that_was_deleted(tmp_path):
@@ -72,7 +73,7 @@ def test_history_finds_a_key_that_was_deleted(tmp_path):
     run("git", "add", "-A")
     run("git", "commit", "-qm", "remove")
 
-    assert scan_tree(tmp_path, []) == ([], "")
+    assert scan_tree(tmp_path, []) == ([], "", 0)
     hist, note = scan_history(tmp_path, None)
     assert note == ""
     assert len(hist) == 1
@@ -90,12 +91,12 @@ def test_fingerprint_is_stable_when_an_unrelated_secret_is_inserted_above(tmp_pa
     touched the token. That is the failure the fingerprint exists to
     prevent."""
     (tmp_path / "a.env").write_text(f"GITHUB_TOKEN={GITHUB}\n")
-    before, _ = scan_tree(tmp_path, [])
+    before, _, _ = scan_tree(tmp_path, [])
     github_before = next(f for f in before if f["rule"] == "github_token")
 
     (tmp_path / "a.env").write_text(
         f"AWS_ACCESS_KEY_ID={AWS}\nGITHUB_TOKEN={GITHUB}\n")
-    after, _ = scan_tree(tmp_path, [])
+    after, _, _ = scan_tree(tmp_path, [])
     github_after = next(f for f in after if f["rule"] == "github_token")
 
     assert github_before["fingerprint"] == github_after["fingerprint"]
@@ -108,7 +109,7 @@ def test_two_hits_of_the_same_type_in_one_file_are_one_finding_with_two_occurren
     state expressible later."""
     second_key = "AKIA" + "B" * 16
     (tmp_path / "a.env").write_text(f"A={AWS}\nB={second_key}\n")
-    found, _ = scan_tree(tmp_path, [])
+    found, _, _ = scan_tree(tmp_path, [])
     assert len(found) == 1
     assert found[0]["rule"] == "aws_access_key"
     assert [o["line"] for o in found[0]["occurrences"]] == [1, 2]
@@ -191,18 +192,20 @@ def test_a_file_too_large_to_read_is_counted_in_the_coverage_note(tmp_path, monk
     monkeypatch.setattr("security.secrets._MAX_BYTES", 64)
     (tmp_path / "bundle.js").write_text("x" * 200)
     (tmp_path / "small.env").write_text(f"AWS_ACCESS_KEY_ID={AWS}\n")
-    found, note = scan_tree(tmp_path, [])
+    found, note, lines = scan_tree(tmp_path, [])
     assert len(found) == 1, "the small file is still scanned"
     assert "did not read 1 file" in note
     assert "larger than" in note
+    assert lines == 1, "the skipped bundle must not contribute to the count"
 
 
 def test_a_file_that_is_not_utf8_is_counted_in_the_coverage_note(tmp_path):
     (tmp_path / "photo.bin").write_bytes(b"\xff\xfe\x00\x01not text at all")
-    found, note = scan_tree(tmp_path, [])
+    found, note, lines = scan_tree(tmp_path, [])
     assert found == []
     assert "did not read 1 file" in note
     assert "UTF-8" in note
+    assert lines == 0, "an unreadable file must not contribute to the count"
 
 
 def test_an_ignored_file_is_not_a_coverage_gap(tmp_path):
@@ -211,7 +214,7 @@ def test_an_ignored_file_is_not_a_coverage_gap(tmp_path):
     every project that uses `ignore_paths` as intended."""
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "fixture.env").write_text(f"KEY={AWS}\n")
-    assert scan_tree(tmp_path, ["tests/**"]) == ([], "")
+    assert scan_tree(tmp_path, ["tests/**"]) == ([], "", 0)
 
 
 def test_the_history_sweep_obeys_the_same_ignore_globs(tmp_path):
@@ -262,3 +265,21 @@ def test_a_root_that_is_not_a_git_checkout_is_a_stated_gap(tmp_path):
     findings, note = scan_history(tmp_path, None)
     assert findings == []
     assert "did not complete" in note
+
+
+def test_scan_tree_counts_the_lines_it_already_read(tmp_path):
+    """The deterministic phase opens every versioned text file anyway; the
+    count is a by-product, not a second walk."""
+    (tmp_path / "a.py").write_text("one\ntwo\nthree\n")
+    (tmp_path / "b.js").write_text("only one\n")
+    _findings, _note, lines = scan_tree(tmp_path, [])
+    assert lines == 4
+
+
+def test_the_line_count_skips_what_the_scan_skips(tmp_path):
+    (tmp_path / "keep.py").write_text("a\nb\n")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "vendored.js").write_text("x\ny\nz\n")
+    (tmp_path / "ignored.py").write_text("1\n2\n3\n4\n")
+    _f, _n, lines = scan_tree(tmp_path, ["ignored.py"])
+    assert lines == 2

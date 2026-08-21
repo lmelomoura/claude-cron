@@ -103,6 +103,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **An analysis records how much code it read.** Counted during the walk the
+  deterministic phase already does, with the same files skipped, so the number
+  says what was analysed rather than what happens to be in the directory.
+
 - **`claude-cron security` — analyse a project's code on a branch you choose.**
   Secrets (the working tree and the whole git history, every analysis),
   dependency CVEs from OSV.dev, a CycloneDX SBOM and repository hygiene run in

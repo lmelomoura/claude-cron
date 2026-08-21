@@ -143,14 +143,21 @@ def _skip_note(too_big, unreadable):
 
 
 def scan_tree(root, ignore):
-    """(findings, note) for the working tree.
+    """(findings, note, lines) for the working tree.
 
     The note is the same channel `scan_history` and `osv.query` use: whatever
     this sweep could not do is stated, never swallowed. An IGNORED file is not
     in it -- being ignored is a decision the operator made, not a gap.
+
+    `lines` is the number of lines in every file this sweep actually opened --
+    a by-product of the read already happening here, not a second walk. A file
+    that is skipped (too big, unreadable, ignored) contributes nothing to it,
+    so the count describes what was analysed, not what exists on disk. It is
+    a count, never the text itself: nothing about it can put a file's
+    contents into the ledger, a report or a log.
     """
     root = Path(root)
-    out = []
+    out, lines = [], 0
     too_big = unreadable = 0
     for p in sorted(root.rglob("*")):
         if not p.is_file() or p.is_symlink():
@@ -172,6 +179,7 @@ def scan_tree(root, ignore):
         except (UnicodeDecodeError, OSError):
             unreadable += 1
             continue
+        lines += text.count("\n") + (0 if text.endswith("\n") or not text else 1)
         # One finding per credential TYPE per file -- not per match. The
         # fingerprint (type + path) cannot depend on a position, so several
         # matches of one type collapse into one finding with several
@@ -183,7 +191,7 @@ def scan_tree(root, ignore):
             group["lines"].append(line)
         for rule, group in by_rule.items():
             out.append(_finding(rule, group["severity"], rel, group["lines"], False))
-    return out, _skip_note(too_big, unreadable)
+    return out, _skip_note(too_big, unreadable), lines
 
 
 _DIFF_HEADER_PREFIX = "diff --git a/"

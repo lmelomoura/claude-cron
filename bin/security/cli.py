@@ -246,7 +246,7 @@ def cmd_prepare(args):
     # the line is not enough"), so nothing is lost by letting the tree's
     # wording win.
     history_findings, history_note = secrets.scan_history(root, None, ignore)
-    tree_findings, tree_note = secrets.scan_tree(root, ignore)
+    tree_findings, tree_note, tree_lines = secrets.scan_tree(root, ignore)
     findings = history_findings + tree_findings + hygiene.scan(root, ignore)
     notes = [n for n in (history_note, tree_note) if n]
 
@@ -277,6 +277,7 @@ def cmd_prepare(args):
         ledger.store_sbom(conn, project, repo, branch, aid, deps.sbom(components))
     for f in findings:
         ledger.record_finding(conn, aid, f)
+    ledger.set_lines_of_code(conn, aid, tree_lines)
 
     conn.execute("UPDATE analysis SET coverage_note=? WHERE id=?", (note, aid))
     conn.commit()
