@@ -17,6 +17,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The Security tab picks its model and effort with the job editor's own
+  controls.** It shipped with a free-text model field and a bare effort
+  dropdown, so the two screens drifted: the job editor offered the resolved
+  model list grouped by family and the Faster–Smarter slider, while the
+  security block asked you to remember an exact id and pick an effort word
+  from a list. Same combo (fed by the same `/api/models` refresh, with the
+  same hand-typed escape hatch for an id the CLI does not list yet), same
+  slider, one difference kept on purpose: empty stays a real choice here,
+  because an unset model means "the engine's default", not "opus now and
+  whatever the field remembers later".
+
 ### Added
 
 - **`claude-cron security` — analyse a project's code on a branch you choose.**

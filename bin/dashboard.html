@@ -2071,17 +2071,25 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
     derived job at all.</p>
   <label class="checkline"><input type="checkbox" id="sec-enabled">
     Enable security analysis</label>
-  <label>Model — empty uses the install's own default</label>
-  <input id="sec-model" type="text" placeholder="opus, or an exact id" autocomplete="off" spellcheck="false">
-  <label>Effort</label>
-  <select id="sec-effort">
-    <option value="">Default</option>
-    <option value="low">low</option>
-    <option value="medium">medium</option>
-    <option value="high">high</option>
-    <option value="xhigh">xhigh</option>
-    <option value="max">max</option>
-  </select>
+  <div class="row2">
+    <div><label>Model</label>
+      <div class="combo" id="sec-model-combo">
+        <button type="button" class="combo-trigger" id="sec-model-trigger" aria-haspopup="listbox" aria-expanded="false">
+          <span class="combo-val" id="sec-model-val">— Default (opus) —</span>
+          <span class="combo-caret"></span>
+        </button>
+        <div class="combo-pop" id="sec-model-pop" hidden>
+          <input type="text" class="combo-search" id="sec-model-search" placeholder="Search models…" autocomplete="off">
+          <ul class="combo-list" id="sec-model-opts" role="listbox"></ul>
+        </div>
+        <input type="hidden" id="sec-model">
+      </div>
+      <p class="fieldhelp">The model the analysis runs as. Default follows the opus family.</p></div>
+    <div><label>Effort <span class="efflabel" id="sec-effort-label">—</span></label>
+      <input type="range" id="sec-effort" class="effslider" min="0" max="5" step="1" value="0">
+      <div class="effends"><span>Faster</span><span>Smarter</span></div>
+    </div>
+  </div>
   <label>Claude account — which account signs the analysis</label>
   <input id="sec-cfgdir" type="text" placeholder="inherits the project's" autocomplete="off" spellcheck="false">
   <p class="fieldhelp">Empty inherits this project's own Claude account above, which inherits the
@@ -4305,8 +4313,9 @@ function openProjectEditor(name){
   // not yet created.
   const sec=(p&&p.security)||{};
   $("sec-enabled").checked = sec.enabled===true || sec.enabled==="true";
-  $("sec-model").value = sec.model||"";
-  $("sec-effort").value = sec.effort||"";
+  if(secModelCombo) secModelCombo.set(sec.model||"", MODELS);
+  else $("sec-model").value = sec.model||"";
+  effortSet("sec-effort","sec-effort-label", sec.effort||"");
   $("sec-cfgdir").value = sec.claude_config_dir||"";
   $("sec-profile-default").value = SEC_PROFILES.includes(sec.default_profile) ? sec.default_profile : "standard";
   $("sec-max-budget").value = (sec.max_budget_usd!=null && sec.max_budget_usd!=="") ? sec.max_budget_usd : "";
@@ -4390,7 +4399,7 @@ async function saveProject(){
     proj.security = {
       enabled: $("sec-enabled").checked,
       model: $("sec-model").value.trim(),
-      effort: $("sec-effort").value,
+      effort: EFFORTS[+$("sec-effort").value||0]||"",
       claude_config_dir: $("sec-cfgdir").value.trim(),
       default_profile: SEC_PROFILES.includes(profDef) ? profDef : "standard",
       max_budget_usd: (mb===""||isNaN(mbNum)) ? "" : mbNum,
@@ -5401,18 +5410,23 @@ async function loadModels(){
     if(!d.models||!d.models.length) return;
     MODELS=groupModels(d.models);
     if(modelCombo) modelCombo.set(modelCombo.get(), MODELS);
+    if(secModelCombo) secModelCombo.set(secModelCombo.get(), MODELS);
   }catch(e){ /* keep the built-in fallback list */ }
 }
 
 // Effort: slider position ↔ CLI value. 0 leaves it unset (the CLI decides).
 // slider stops, in order; labels come from the shared EFFORT_LABELS map
 const EFFORTS=["","low","medium","high","xhigh","max"];
-function setEffort(v){
+// One slider, two homes: the job editor and the project editor's Security tab
+// share the exact control, so the same value reads the same everywhere.
+function effortSet(id,labelId,v){
   const i=Math.max(0, EFFORTS.indexOf(v||""));
-  $("ed-effort").value=String(i);
-  $("ed-effort-label").textContent=(EFFORTS[i]===""?"Default (CLI decides)":effortLabel(EFFORTS[i]));
+  $(id).value=String(i);
+  $(labelId).textContent=(EFFORTS[i]===""?"Default (CLI decides)":effortLabel(EFFORTS[i]));
 }
-function getEffort(){ return EFFORTS[+$("ed-effort").value||0]; }
+function effortGet(id){ return EFFORTS[+$(id).value||0]||""; }
+function setEffort(v){ effortSet("ed-effort","ed-effort-label",v); }
+function getEffort(){ return effortGet("ed-effort"); }
 const WT_MODES=[
   {v:"auto", label:"Auto — isolate when the cwd is a git repo"},
   {v:"true", label:"Always — never run in the cwd"},
@@ -5426,12 +5440,18 @@ const PERMS=[
   {v:"plan",label:"plan"},
   {v:"manual",label:"manual"},
 ];
-let projectCombo=null, modelCombo=null, permCombo=null, wtCombo=null;
+let projectCombo=null, modelCombo=null, permCombo=null, wtCombo=null, secModelCombo=null;
 function initCombos(){
   projectCombo=createCombo({id:"ed-project", allowNone:true, noneLabel:"— None —", withIcon:true,
     onPick:(v)=>syncCwdField(v)});
   modelCombo=createCombo({id:"ed-model", allowNone:false, def:"opus"});
   modelCombo.set("opus", MODELS);
+  // Same list, same widget, one difference: empty is a real choice here — it
+  // means "the engine's own default" — so the none row stays. allowCustom keeps
+  // what the old free-text field could do: an exact id the CLI does not list yet.
+  secModelCombo=createCombo({id:"sec-model", allowNone:true,
+    noneLabel:"— Default (opus) —", allowCustom:true});
+  secModelCombo.set("", MODELS);
   // The real list is fetched once there is a session — asking for it at boot
   // just 401s on a signed-out page and leaves the editor on the fallback list
   // for the rest of the visit.
@@ -7093,6 +7113,7 @@ $("editor").addEventListener("input", ()=>{ if(!$("ed-err").hidden) edError("");
 $("editor").addEventListener("change", paintEditorDirty);
 $("editor").addEventListener("click",(e)=>{ if(e.target.closest(".day-btn")) setTimeout(paintEditorDirty,0); });
 $("ed-effort").addEventListener("input", ()=>setEffort(getEffort()));
+$("sec-effort").addEventListener("input", ()=>effortSet("sec-effort","sec-effort-label", effortGet("sec-effort")));
 $("ed-budget").addEventListener("blur", fmtBudget);
 ["ed-budget","ed-daily"].forEach(id=>$(id).addEventListener("input", ()=>{
   const el=$(id); el.value=el.value.replace(/[^0-9.]/g,"").replace(/(\..*)\./g,"$1");

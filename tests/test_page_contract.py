@@ -143,10 +143,11 @@ def _run_save(srv, tmp_path, *, multi, name="save.js"):
     harness = """
     const SEC_PROFILES = ["quick","standard","deep"];
     const SEV_ORDER = ["low","medium","high","critical"];
+    const EFFORTS = ["","low","medium","high","xhigh","max"];
     const sent = [];
     const vals = {"pj-name":"Web","pj-desc":"","pj-cwd":"%s","pj-ccd":"","pj-base":"develop",
                   "pj-wt":"auto","pj-up":"","pj-down":"already here",
-                  "sec-enabled":false,"sec-model":"","sec-effort":"","sec-cfgdir":"",
+                  "sec-enabled":false,"sec-model":"","sec-effort":"0","sec-cfgdir":"",
                   "sec-profile-default":"standard","sec-max-budget":"","sec-daily-budget":"",
                   "sec-min-severity":"medium","sec-ignore":""};
     const $ = (id) => ({ get value(){ return vals[id]; }, set value(v){ vals[id]=v; },
@@ -214,6 +215,24 @@ def test_the_project_editor_has_a_security_pane(srv):
                   "sec-profile-default", "sec-max-budget", "sec-daily-budget",
                   "sec-min-severity", "sec-ignore"):
         assert f'id="{field}"' in page, f"the security pane has no {field} field"
+
+
+def test_security_model_and_effort_use_the_job_editors_controls(srv):
+    """The Security tab's model and effort are the SAME controls the job editor
+    uses — a searchable combo fed by /api/models and the Faster-Smarter slider —
+    not a free-text field and a bare select that let the two screens drift."""
+    page = srv.render_page("boot-authed")
+    # the combo: wrapper, trigger, popover with search, and the hidden input
+    for part in ("sec-model-combo", "sec-model-trigger", "sec-model-val",
+                 "sec-model-pop", "sec-model-search", "sec-model-opts"):
+        assert f'id="{part}"' in page, f"the model combo is missing {part}"
+    assert '<input type="hidden" id="sec-model">' in page
+    # the slider: a range with the shared effslider class and the ends legend
+    assert 'id="sec-effort" class="effslider"' in page
+    assert 'id="sec-effort-label"' in page
+    # the combo is created and kept in step with /api/models like the job's
+    assert 'createCombo({id:"sec-model"' in page
+    assert "secModelCombo.set(secModelCombo.get(), MODELS)" in page
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
