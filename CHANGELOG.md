@@ -17,6 +17,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The dashboard no longer empties itself the first time the new server
+  ingests a run.** The `cause` column arrived in the journal INSERT without
+  its placeholder — 22 columns, 21 `?` — so nothing broke until the first
+  NEW journal line reached the new code; then every ingest raised, the
+  page's run list fell back to empty in silence, and the dashboard said
+  "No runs recorded yet" over an intact 223-line journal. The failure now
+  also names itself in server.log instead of hiding behind the fallback.
+
 ### Changed
 
 - **A security analysis can actually run: the derived job now defaults to

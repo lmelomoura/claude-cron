@@ -713,7 +713,12 @@ def _upsert(conn, fts, rec, preserve=None):
         "INSERT OR REPLACE INTO runs (key, job, start, status, duration, cost, session,"
         " log, forced, precheck_note, result_json, stream, precheck_txt, stderr, doc, project,"
         " model, model_id, note, resumed_from, cause, pruned)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        # 22 columns, 22 placeholders. This line shipped with 21 once (the
+        # `cause` column arrived without its `?`), and the failure mode was
+        # vicious: nothing broke until the FIRST new journal line reached this
+        # code, then every ingest raised, load_data's except swallowed it, and
+        # the dashboard said "No runs recorded yet" over an intact journal.
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (key, rec.get("id", ""), rec.get("start", 0), rec.get("status", ""),
          rec.get("duration", 0), rec.get("cost", 0), rec.get("session", ""),
          rec.get("log", ""), 1 if rec.get("forced") else 0,
@@ -1756,7 +1761,13 @@ def load_data():
                          "resumed_from": row["resumed_from"] or "",
                          "cause": row["cause"] or ""})
         conn.close()
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        # Degrade to an empty list so the page still paints — but SAY SO.
+        # This except once hid a broken INSERT for a whole morning: the page
+        # showed "No runs recorded yet" over 223 intact journal lines and
+        # nothing anywhere named the exception.
+        print(f"claude-cron-server: run listing failed, showing none: {exc!r}",
+              flush=True)
         runs = []
     db_bytes = 0
     for p in (DB_FILE, Path(str(DB_FILE) + "-wal"), Path(str(DB_FILE) + "-shm")):
