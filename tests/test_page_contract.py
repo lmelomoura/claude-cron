@@ -937,20 +937,6 @@ def test_the_run_link_finds_a_run_that_is_still_going(srv):
     assert "unjournaledLive()" in fn, "the run link cannot see a run that is still going"
 
 
-def test_the_project_list_caches_findings_rather_than_a_posture(srv):
-    """`min_severity` is a project setting, and the posture on the project rows
-    is computed from it. Caching the derived counts meant an edit to the
-    threshold repainted the same numbers until something else happened to evict
-    the project from the cache; the findings are what is stable, so they are
-    what is kept."""
-    block = _security_js(srv)
-    assert "rec.findings = ck.findings" in block, "the cache does not hold the findings"
-    assert "rec.counts" not in block, "a derived posture is still being cached"
-    pills = _plainfn(block, "secPosturePills")
-    assert "secPosture(rec.findings, secMinSeverity(name))" in pills, \
-        "the posture is not derived at paint from the project's own floor"
-
-
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_analysis_poll_cannot_outlive_the_view(srv, tmp_path):
     """Leaving the Security view has to stop the four-second poll, and stay

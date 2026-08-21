@@ -67,6 +67,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and a finding resolved on one branch but still open on another still
   counts, as open.
 
+- **The Security area has a project screen.** Opening a project now leads to
+  a header — its declared profile, the branch its posture is shown for (with
+  the same "fell back" cue the index screen already gives when the project's
+  own base was never analysed), how much code it is, and when it was last
+  analysed — and the run history behind two tabs instead of one long column,
+  all from one new endpoint, `GET /api/security/project?project=<name>`,
+  backed by a new CLI verb, `security project-data`. **Overview** shows the
+  current posture and what changed since the previous analysis (the
+  checklist's new/open/partial/pending/fixed/regressed/accepted/false-positive
+  counts); a capped latest analysis carries the identical "INCOMPLETE"
+  notice the index screen and the analysis view already give, because a
+  capped run is a partial read and its zero counts mean "none found before
+  it stopped," not "none." **Runs** is the analyses table — run id, profile,
+  branch, commit, duration, findings, state, date — filterable by state, and
+  checked to list exactly what `security list --project <name>` lists: same
+  rows, same order, an `open` findings count folded in. `Run new analysis`
+  is the same button calling the same `security_analyze` op as before —
+  never a bare run of the derived job, whose request file a second run would
+  re-use. Lines of code shows a dash for `0`, not a number: every analysis
+  before that column existed carries a zero there, and a repository with no
+  code must not look the same as a count nobody ever took. The sidebar
+  carries the severity donut, the open-findings-by-rule rollup, and the
+  project's last few activity events; there is no link to an Activity screen
+  yet because one does not exist until a later task, and a link to nowhere
+  would be worse than none. The old per-project detail — the repo/branch/
+  profile picker, the live status line, the severity pills, the checklist
+  chips, the downloads, the findings list with its accept/false-positive
+  controls — is untouched and still works exactly as it did; it now lives
+  nested under the Runs tab, reached by clicking a row in the new table the
+  same way its own "earlier analyses" list already let you drill into one.
+  `ui/security/projects.js`, dead since the index screen replaced it and no
+  longer imported by anything, is removed along with the one test that
+  pinned its internals.
+
 - **The findings browser has a query.** `queries.finding_rows` unions one
   checklist per branch — the latest finished analysis of each — which is what
   lets the browser show a state at all: it is the state that branch's newest

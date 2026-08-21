@@ -8,6 +8,7 @@ import { secState } from "./state.js";
 import { secInvalidateIndex, secRenderIndex, secLoadIndex } from "./index-screen.js";
 import { secRunFor, secRenderHistory } from "./history.js";
 import { secAskReason } from "./reason.js";
+import { secInvalidateProject, secRefreshProject } from "./project-screen.js";
 
 let secTimer = null;
 export function secStopPoll(){ if(secTimer){ clearInterval(secTimer); secTimer = null; } }
@@ -33,8 +34,11 @@ export function secBack(){
   secStopPoll();
   // Whatever just happened in there (a new analysis, a decision) may have
   // changed the fleet's posture, so the index's cached answer is thrown away
-  // and re-read rather than repainting numbers from before.
+  // and re-read rather than repainting numbers from before. The project
+  // screen's own cache gets the identical treatment, for the identical
+  // reason.
   secInvalidateIndex();
+  secInvalidateProject();
   secState.project = ""; secState.analysis = null; secState.findings = [];
   secState.analyses = []; secState.stateFilter = "";
   $("sec-detail").hidden = true;
@@ -175,6 +179,11 @@ export async function secReload(){
   const want = mine.length ? mine[0].id : (secState.analysis && secState.analysis.id);
   await secShowAnalysis(want == null ? null : want);
   secSyncPoll();
+  // The same poll tick (and the same post-Analyse reload) that refreshes the
+  // old detail pane above also keeps the header/tabs/sidebar in step --
+  // one timer driving both, rather than a second interval hitting the
+  // server on its own for numbers this same reload already has fresh.
+  secRefreshProject();
 }
 
 export function secStatus(text){

@@ -26,6 +26,7 @@ import { secRenderIndex, secLoadIndex } from "./index-screen.js";
 import { secBack, secEnter, secLeave, secLoadBranches, secSyncScope } from "./analysis.js";
 import { secAnalyse, secDownload } from "./actions.js";
 import { wireReasonDialog } from "./reason.js";
+import { secSwitchProjectTab } from "./project-screen.js";
 
 function renderSecurity(){
   if(CC.currentView !== "security") return;
@@ -45,6 +46,10 @@ function init(cc){
   iconLabel($("sec-dl-json"), "file", "JSON");
   iconLabel($("sec-dl-html"), "file", "HTML");
   iconLabel($("sec-dl-sbom"), "file", "SBOM");
+  iconLabel($("secpjt-overview"), "grid", "Overview");
+  iconLabel($("secpjt-runs"), "activity", "Runs");
+  $("secpjt-overview").addEventListener("click", () => secSwitchProjectTab("overview"));
+  $("secpjt-runs").addEventListener("click", () => secSwitchProjectTab("runs"));
   // The list above this row is filtered by the project's min_severity; these
   // files are not. Said here, next to the buttons, because the gap between what
   // is on screen and what is in the file you hand to somebody else is exactly

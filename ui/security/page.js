@@ -15,7 +15,8 @@
    executes). Nothing here is readable until init() has been called, and
    nothing in this area runs before that. */
 export let $, TOKEN, api, toast, openLog, projById, sessionLost,
-           unjournaledLive, fmtAgo, fmtWhen, fmtDur, money, icon, iconLabel;
+           unjournaledLive, fmtAgo, fmtWhen, fmtDur, money, icon, iconLabel,
+           openProjectEditor;
 
 /* DATA and currentView are the two the page REASSIGNS as it runs — DATA on
    every five-second poll, currentView on every navigation. Destructured into a
@@ -29,5 +30,5 @@ export let CC = null;
 export function bindPage(cc) {
   CC = cc;
   ({ $, TOKEN, api, toast, openLog, projById, sessionLost, unjournaledLive,
-     fmtAgo, fmtWhen, fmtDur, money, icon, iconLabel } = cc);
+     fmtAgo, fmtWhen, fmtDur, money, icon, iconLabel, openProjectEditor } = cc);
 }

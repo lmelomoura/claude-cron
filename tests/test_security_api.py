@@ -601,6 +601,77 @@ def test_the_index_asks_the_cli_for_only_the_security_enabled_projects(srv, monk
     assert sent == [{"name": "web", "base": "main", "description": "d"}]
 
 
+def test_the_project_screen_refuses_an_unknown_project(srv):
+    code, payload = srv.security_project("")
+    assert code == 400
+    assert "project" in payload["error"]
+
+
+def test_the_project_screen_carries_its_header_and_both_tabs(srv, monkeypatch):
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, json.dumps({
+        "project": "web",
+        "header": {"profile": "deep", "branch": "develop",
+                   "lines_of_code": 1842331, "last_analysis": 1787290000},
+        "tabs": {"overview": {}, "runs": []},
+        "sidebar": {"donut": {}, "categories": [], "activity": []}})))
+    code, payload = srv.security_project("web")
+    assert code == 200
+    assert payload["header"]["lines_of_code"] == 1842331
+    assert "runs" in payload["tabs"]
+
+
+def test_the_project_screen_passes_projects_json_through_to_the_cli(srv, monkeypatch, tmp_path):
+    """`_project_meta` is the one place that bridges projects.json (which the
+    ledger never reads) into the CLI's `--base`/`--default-profile` flags --
+    the same bridge `_security_projects()` already is for the index screen."""
+    projects_file = tmp_path / "projects.json"
+    projects_file.write_text(json.dumps({"projects": [
+        {"name": "web", "base": "develop",
+         "security": {"enabled": True, "default_profile": "deep"}}]}))
+    monkeypatch.setattr(srv, "PROJECTS_FILE", projects_file)
+    seen = []
+
+    def fake_cc(args, stdin=None):
+        seen.append(args)
+        return True, json.dumps({"project": "web", "header": {}, "tabs": {}, "sidebar": {}})
+    monkeypatch.setattr(srv, "cc", fake_cc)
+    code, _ = srv.security_project("web")
+    assert code == 200
+    args = seen[0]
+    assert args[:2] == ["security", "project-data"]
+    assert args[args.index("--project") + 1] == "web"
+    assert args[args.index("--base") + 1] == "develop"
+    assert args[args.index("--default-profile") + 1] == "deep"
+
+
+def test_the_project_screen_defaults_to_blank_meta_for_a_project_projects_json_does_not_have(
+        srv, monkeypatch, tmp_path):
+    """A name projects.json does not carry (renamed away, or never
+    configured) must not 500 -- the CLI already falls back to its own
+    defaults for an empty `--base`/`--default-profile`."""
+    projects_file = tmp_path / "projects.json"
+    projects_file.write_text(json.dumps({"projects": []}))
+    monkeypatch.setattr(srv, "PROJECTS_FILE", projects_file)
+    seen = []
+
+    def fake_cc(args, stdin=None):
+        seen.append(args)
+        return True, json.dumps({"project": "gone", "header": {}, "tabs": {}, "sidebar": {}})
+    monkeypatch.setattr(srv, "cc", fake_cc)
+    code, _ = srv.security_project("gone")
+    assert code == 200
+    args = seen[0]
+    assert args[args.index("--base") + 1] == ""
+    assert args[args.index("--default-profile") + 1] == ""
+
+
+def test_the_project_screen_reports_a_cli_failure_as_500(srv, monkeypatch):
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (False, "boom"))
+    code, payload = srv.security_project("web")
+    assert code == 500
+    assert "boom" in payload["error"]
+
+
 def test_active_runs_carries_derived_security_jobs(srv, clean_data):
     """The isolation property keeps derived jobs out of jobs.json, but their
     RUNS are as real as any other, and active_runs is the only way the page

@@ -2375,6 +2375,31 @@ def _security_projects():
     return out
 
 
+def _project_meta(name):
+    """One project's own configuration the ledger does not know -- its
+    declared base branch and default security profile -- read fresh from
+    projects.json, the same file `_security_projects()` reads for the whole
+    fleet. A name matching nothing (never configured, or renamed) gets the
+    same empty defaults `_security_projects()`'s exclusion already implies:
+    nothing declared, so the CLI falls back to its own defaults."""
+    for p in read_json(PROJECTS_FILE, {}).get("projects", []):
+        if p.get("name") == name:
+            sec = p.get("security") if isinstance(p.get("security"), dict) else {}
+            return {"base": p.get("base", "") or "",
+                   "default_profile": sec.get("default_profile", "") or ""}
+    return {"base": "", "default_profile": ""}
+
+
+def security_project(project):
+    project = str(project or "").strip()
+    if not project:
+        return 400, {"error": "project required"}
+    meta = _project_meta(project)
+    ok, out = cc(["security", "project-data", "--project", project,
+                  "--base", meta["base"], "--default-profile", meta["default_profile"]])
+    return _json_or_500(ok, out, "project data")
+
+
 def security_index():
     """Every panel the Security index screen draws, in ONE call to the CLI.
 
@@ -2616,6 +2641,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(code, payload)
         if path == "/api/security/index":
             code, payload = security_index()
+            return self._send(code, payload)
+        if path == "/api/security/project":
+            q = parse_qs(urlparse(self.path).query)
+            code, payload = security_project((q.get("project") or [""])[0])
             return self._send(code, payload)
         if path == "/api/security/checklist":
             q = parse_qs(urlparse(self.path).query)

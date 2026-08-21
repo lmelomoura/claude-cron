@@ -1946,3 +1946,138 @@ def test_index_data_is_read_only_and_reachable_by_the_agent(tmp_path):
     db = tmp_path / "security.db"
     out = run(db, "index-data", "--projects", "[]", env=AS_AGENT)
     assert out["summary"]["projects"] == 0
+
+
+# ---------------------------------------------------------- project-data
+
+def test_project_data_survives_a_ledger_that_does_not_exist_yet(tmp_path):
+    """Nobody has run an analysis of anything -- `project-data` must not
+    create the ledger file just to answer the project screen, and the screen
+    it hands back is empty with a sentence, not a 500."""
+    db = tmp_path / "security.db"
+    assert not db.exists()
+    out = run(db, "project-data", "--project", "web", "--base", "main",
+             "--default-profile", "deep")
+    assert not db.exists()
+    assert out["project"] == "web"
+    assert out["header"] == {"profile": "deep", "branch": "main",
+                             "branch_fell_back": False, "lines_of_code": 0,
+                             "last_analysis": 0}
+    assert out["tabs"]["overview"]["posture"] == {
+        "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0, "total": 0}
+    assert out["tabs"]["overview"]["state"] == ""
+    assert out["tabs"]["runs"] == []
+    assert out["sidebar"]["donut"]["total"] == 0
+    assert out["sidebar"]["categories"] == []
+    assert out["sidebar"]["activity"] == []
+
+
+def test_project_data_defaults_the_profile_when_none_is_declared(tmp_path):
+    db = tmp_path / "security.db"
+    out = run(db, "project-data", "--project", "web", "--base", "", "--default-profile", "")
+    assert out["header"]["profile"] == "standard"
+    assert out["header"]["branch"] == ""
+
+
+def test_project_data_reports_current_posture_and_checklist_counts(tmp_path):
+    db = tmp_path / "security.db"
+    aid = finished_analysis(db, tmp_path, "web", "main", severity="high", rule="sql-injection")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main",
+             "--default-profile", "standard")
+
+    assert out["header"]["branch"] == "main"
+    assert out["header"]["branch_fell_back"] is False
+    assert out["header"]["last_analysis"] > 0
+    assert out["tabs"]["overview"]["posture"]["high"] == 1
+    assert out["tabs"]["overview"]["state"] == "done"
+    # First analysis of this branch: nothing to compare against, so the one
+    # finding it reported is "new" and every other state is empty.
+    assert out["tabs"]["overview"]["checklist"]["new"] == 1
+    assert sum(out["tabs"]["overview"]["checklist"].values()) == 1
+    assert [r["id"] for r in out["tabs"]["runs"]] == [aid]
+    assert out["tabs"]["runs"][0]["open"] == 1
+    assert out["sidebar"]["donut"]["high"] == 1
+    assert out["sidebar"]["categories"] == [{"rule": "sql-injection", "count": 1}]
+
+
+def test_project_data_lines_of_code_is_a_property_of_the_latest_analysis(tmp_path):
+    """Every analysis before the column existed carries 0 -- the CLI hands
+    that raw number back untouched; the dash for "not counted" is the page's
+    own call (see ui/security/project-screen.js), not this verb's."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main")
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+    assert out["header"]["lines_of_code"] == 0
+
+
+def test_project_data_shows_the_branch_it_fell_back_to(tmp_path):
+    """The project's declared base (`main`) was never analysed -- only
+    `develop` was. The header must carry `develop`, the branch it actually
+    fell back to, and say so."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "develop", severity="critical")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    assert out["header"]["branch"] == "develop"
+    assert out["header"]["branch_fell_back"] is True
+    assert out["tabs"]["overview"]["posture"]["critical"] == 1
+
+
+def test_project_data_marks_the_overview_state_when_latest_analysis_is_capped(tmp_path):
+    """A capped analysis is a PARTIAL read of the repository -- the identical
+    notice the index screen and the old analysis screen already give. The
+    Overview tab has to carry the state so the screen can show the same cue,
+    not silently present a partial posture as a finished one."""
+    db = tmp_path / "security.db"
+    capped_analysis(db, tmp_path, "web", "main", severity="critical")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    assert out["tabs"]["overview"]["state"] == "capped"
+    assert out["tabs"]["overview"]["posture"]["critical"] == 1
+
+
+def test_project_data_runs_tab_matches_the_list_verb(tmp_path):
+    """The Runs tab is `cmd_list`'s own query -- same rows, same order --
+    plus an `open` count folded in, so it can be checked directly against
+    `claude-cron security list --project <name>`."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", rule="a")
+    open_analysis(db, project="web", repo="web", branch="develop", run_id="r2")
+
+    listed = run(db, "list", "--project", "web")
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    assert [r["id"] for r in out["tabs"]["runs"]] == [r["id"] for r in listed]
+    assert [r["state"] for r in out["tabs"]["runs"]] == [r["state"] for r in listed]
+    # The running row (no finished baseline) carries no posture yet.
+    running = next(r for r in out["tabs"]["runs"] if r["state"] == "running")
+    assert running["open"] is None
+
+
+def test_project_data_sidebar_activity_carries_the_projects_own_events(tmp_path):
+    db = tmp_path / "security.db"
+    open_analysis(db, project="web", repo="web", branch="main", run_id="r1")
+    run(db, "event", "--project", "web", "--kind", "decision_made",
+        "--detail", "accepted: reviewed", "--related", "abc")
+    run(db, "event", "--project", "other", "--kind", "decision_made",
+        "--detail", "accepted: unrelated", "--related", "xyz")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    kinds = [e["kind"] for e in out["sidebar"]["activity"]]
+    details = [e["detail"] for e in out["sidebar"]["activity"]]
+    assert "analysis_started" in kinds
+    assert "decision_made" in kinds
+    assert "accepted: unrelated" not in details, "another project's event leaked into the sidebar"
+
+
+def test_project_data_is_read_only_and_reachable_by_the_agent(tmp_path):
+    """Not in AGENT_FORBIDDEN -- the same reasoning as `index-data`: it opens
+    the ledger read-only through `queries.read_only` and writes nothing."""
+    db = tmp_path / "security.db"
+    out = run(db, "project-data", "--project", "web", "--base", "", "--default-profile", "",
+             env=AS_AGENT)
+    assert out["project"] == "web"

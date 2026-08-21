@@ -1262,6 +1262,31 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .secfield{flex:1 1 100%}
   .secfield select,.secfield input{max-width:none;width:100%}
 }
+/* -------------------------------------------------------- project screen
+   The header strip, the Overview/Runs tabs (viewtabs/pane, the same
+   furniture the Overview page's own Jobs/Runs/Worktrees tabs use) and the
+   sidebar -- see ui/security/project-screen.js. */
+.secpjhead{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin:0 0 16px;
+  background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:14px 16px;box-shadow:var(--shadow)}
+.secpjmeta{display:flex;flex-wrap:wrap;gap:14px 20px;font-size:12px;color:var(--muted)}
+.secpjmeta b{color:var(--ink);font-weight:650}
+.secpjbody{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
+.secpjmain{flex:1 1 480px;min-width:0}
+.secpjside{flex:0 0 300px;min-width:260px;display:flex;flex-direction:column;gap:16px}
+/* A read-only stat badge -- same shape as .secchip, deliberately not
+   clickable (no cursor:pointer, no hover state): the Overview tab's
+   checklist counts have nowhere to filter to yet (that is the findings
+   browser, a later screen), so the affordance would promise a click that
+   does nothing. */
+.secpj-statchip{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:600;
+  color:var(--muted);background:var(--panel);border:1px solid var(--line);border-radius:20px;
+  padding:4px 12px}
+.secpj-statchip .n{font-variant-numeric:tabular-nums;font-weight:700;color:var(--ink)}
+.secpj-statchip.zero{opacity:.55}
+@media (max-width:900px){
+  .secpjside{flex:1 1 100%}
+}
 /* --------------------------------------------------------- security index
    The five KPI cards, the project table, the recent-analyses feed and the
    severity donut all paint into the same #sec-list host the flat project
@@ -1639,48 +1664,83 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
         <h3 id="sec-title"></h3>
         <button class="btn ghost" id="sec-back"></button>
       </div>
-      <div class="secbar">
-        <!-- Only shown for a project that declares several repos: with one
-             checkout there is nothing to choose between. -->
-        <label class="secfield" id="sec-repo-field" hidden>
-          <span>Repo</span>
-          <select id="sec-repo"></select>
-        </label>
-        <label class="secfield">
-          <span>Branch</span>
-          <select id="sec-branch"></select>
-        </label>
-        <!-- The picker lists what the checkout has; this is for a branch it
-             does not — one pushed a minute ago, or one only origin knows. -->
-        <label class="secfield">
-          <span>…or type one</span>
-          <input id="sec-branch-other" placeholder="branch name" autocomplete="off" spellcheck="false">
-        </label>
-        <label class="secfield">
-          <span>Profile</span>
-          <select id="sec-profile">
-            <option value="quick">Quick</option>
-            <option value="standard" selected>Standard</option>
-            <option value="deep">Deep</option>
-          </select>
-        </label>
-        <button class="btn primary" id="sec-run">Analyse</button>
+
+      <!-- What this project analyses and how big it is — profile, branch,
+           lines of code, last analysis time — plus a link to the project
+           editor's own Security pane, so the settings form is not duplicated
+           here. Built entirely by ui/security/project-screen.js. -->
+      <div class="secpjhead" id="sec-pj-head"></div>
+
+      <div class="secpjbody">
+        <div class="secpjmain">
+          <!-- Same viewtabs/pane furniture the Overview page's own Jobs/Runs/
+               Worktrees tabs use (see setDashTab above) — a self-contained
+               pair here, switched by ui/security/project-screen.js rather
+               than the page's own dashTab. -->
+          <nav class="viewtabs" id="sec-pj-tabs">
+            <button class="viewtab" data-tab="overview" id="secpjt-overview"></button>
+            <button class="viewtab" data-tab="runs" id="secpjt-runs"></button>
+          </nav>
+
+          <!-- The posture and what changed since the previous analysis (the
+               checklist counts) — built by project-screen.js. -->
+          <div class="pane" id="sec-pj-overview"></div>
+
+          <div class="pane" id="sec-pj-runs" hidden>
+            <!-- The analyses table — run id, profile, branch, commit,
+                 duration, findings, state, date — with its own filters.
+                 Built by project-screen.js. -->
+            <div id="sec-pj-runstable"></div>
+
+            <div class="secbar">
+              <!-- Only shown for a project that declares several repos: with one
+                   checkout there is nothing to choose between. -->
+              <label class="secfield" id="sec-repo-field" hidden>
+                <span>Repo</span>
+                <select id="sec-repo"></select>
+              </label>
+              <label class="secfield">
+                <span>Branch</span>
+                <select id="sec-branch"></select>
+              </label>
+              <!-- The picker lists what the checkout has; this is for a branch it
+                   does not — one pushed a minute ago, or one only origin knows. -->
+              <label class="secfield">
+                <span>…or type one</span>
+                <input id="sec-branch-other" placeholder="branch name" autocomplete="off" spellcheck="false">
+              </label>
+              <label class="secfield">
+                <span>Profile</span>
+                <select id="sec-profile">
+                  <option value="quick">Quick</option>
+                  <option value="standard" selected>Standard</option>
+                  <option value="deep">Deep</option>
+                </select>
+              </label>
+              <button class="btn primary" id="sec-run">Analyse</button>
+            </div>
+            <div class="secstat" id="sec-status"></div>
+            <div class="warnline bad" id="sec-incomplete" hidden></div>
+            <div class="warnline" id="sec-coverage" hidden></div>
+            <div class="sevpills" id="sec-summary"></div>
+            <div class="secchips" id="sec-checklist"></div>
+            <div class="secdl" id="sec-dl" hidden>
+              <button class="btn" id="sec-dl-md"></button>
+              <button class="btn" id="sec-dl-json"></button>
+              <button class="btn" id="sec-dl-html"></button>
+              <button class="btn" id="sec-dl-sbom"></button>
+              <span class="secdlnote" id="sec-dl-note"></span>
+            </div>
+            <div id="sec-findings"></div>
+            <div class="secthead"><h3>Earlier analyses of this branch</h3></div>
+            <div class="sechist" id="sec-history"></div>
+          </div>
+        </div>
+
+        <!-- The donut, the categories, and the last few activity events —
+             built by project-screen.js. -->
+        <aside class="secpjside" id="sec-pj-side"></aside>
       </div>
-      <div class="secstat" id="sec-status"></div>
-      <div class="warnline bad" id="sec-incomplete" hidden></div>
-      <div class="warnline" id="sec-coverage" hidden></div>
-      <div class="sevpills" id="sec-summary"></div>
-      <div class="secchips" id="sec-checklist"></div>
-      <div class="secdl" id="sec-dl" hidden>
-        <button class="btn" id="sec-dl-md"></button>
-        <button class="btn" id="sec-dl-json"></button>
-        <button class="btn" id="sec-dl-html"></button>
-        <button class="btn" id="sec-dl-sbom"></button>
-        <span class="secdlnote" id="sec-dl-note"></span>
-      </div>
-      <div id="sec-findings"></div>
-      <div class="secthead"><h3>Earlier analyses of this branch</h3></div>
-      <div class="sechist" id="sec-history"></div>
     </section>
   </div><!-- /view-security -->
 
@@ -3240,6 +3300,14 @@ function renderProjects(){
 const CC = {
   $, TOKEN, api, toast, openLog, projById, sessionLost, unjournaledLive,
   fmtAgo, fmtWhen, fmtDur, money,
+  // The project screen's "Project settings" link opens the SAME editor the
+  // Projects page already uses -- the form is not duplicated here, only
+  // pointed at. Defined later in this file; safe to read now because
+  // function declarations are hoisted within this one <script>, the same
+  // reliance every other name above already has (projById is the only one
+  // defined before this point; unjournaledLive and sessionLost are both
+  // defined after it too).
+  openProjectEditor,
   // The two the page REASSIGNS while it runs: DATA on every poll, currentView
   // on every navigation. Copied in by value they would freeze at what they held
   // right now -- an empty DATA, the startup view -- so they are read live,

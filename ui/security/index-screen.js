@@ -19,7 +19,7 @@
    leaving a project screen where an analysis may have just finished). */
 import { $, fmtAgo, fmtDur, money } from "./page.js";
 import { secIcon, secEl, secFetch } from "./dom.js";
-import { secOpen } from "./analysis.js";
+import { secOpenProject } from "./project-screen.js";
 
 let secIndexCache = null;
 let secIndexGen = 0;
@@ -135,8 +135,14 @@ function secIndexCards(summary){
   return wrap;
 }
 
-/* ------------------------------------------------------------- the table */
-function secIndexPosturePills(posture){
+/* ------------------------------------------------------------- the table
+   secIndexPosturePills and secIndexDonut (below) are exported too: the
+   project screen's Overview tab needs the identical severity pills, and its
+   sidebar needs the identical donut+categories block -- the same shapes,
+   the same colours, the same "nothing open" wording, so a reader moving
+   between the two screens never has to learn a second rendering of the
+   same numbers. See ui/security/project-screen.js. */
+export function secIndexPosturePills(posture){
   const wrap = secEl("span", "sevpills");
   const p = posture || {};
   if(!p.total){
@@ -157,7 +163,7 @@ function secIndexProjectRow(p){
   btn.type = "button";
   btn.className = "btn ghost";
   btn.textContent = p.name;
-  btn.onclick = () => secOpen(p.name);
+  btn.onclick = () => secOpenProject(p.name);
   tdName.appendChild(btn);
   if((p.description || "").trim()){
     tdName.appendChild(secEl("div", "secidx-desc", p.description));
@@ -245,7 +251,7 @@ function secIndexRecentRow(a){
   row.className = "secrow secidx-recentrow";
   // Opens the project, not this exact historical analysis -- there is no
   // per-analysis screen yet outside the project's own history list.
-  row.onclick = () => secOpen(a.project);
+  row.onclick = () => secOpenProject(a.project);
   row.appendChild(secIcon(a.state === "running" ? "timer"
     : a.state === "failed" ? "xcircle" : "check"));
   const grow = secEl("div", "grow");
@@ -361,7 +367,7 @@ function secIndexCategories(categories){
   return wrap;
 }
 
-function secIndexDonut(donut, categories){
+export function secIndexDonut(donut, categories){
   const wrap = secEl("div", "secidx-donutwrap");
   const left = secEl("div", "secidx-donutcol");
   left.appendChild(secIndexDonutSvg(donut));

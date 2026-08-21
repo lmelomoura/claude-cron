@@ -14,6 +14,7 @@
   var money;
   var icon;
   var iconLabel;
+  var openProjectEditor;
   var CC = null;
   function bindPage(cc) {
     CC = cc;
@@ -31,7 +32,8 @@
       fmtDur,
       money,
       icon,
-      iconLabel
+      iconLabel,
+      openProjectEditor
     } = cc);
   }
 
@@ -263,6 +265,7 @@
   function secBack() {
     secStopPoll();
     secInvalidateIndex();
+    secInvalidateProject();
     secState.project = "";
     secState.analysis = null;
     secState.findings = [];
@@ -382,6 +385,7 @@
     const want = mine.length ? mine[0].id : secState.analysis && secState.analysis.id;
     await secShowAnalysis(want == null ? null : want);
     secSyncPoll();
+    secRefreshProject();
   }
   function secStatus(text) {
     const box = $("sec-status");
@@ -594,6 +598,270 @@
     await secReload();
   }
 
+  // ui/security/project-screen.js
+  var RUN_STATES = ["running", "done", "capped", "failed"];
+  var EVENT_KIND_LABEL = {
+    analysis_started: "Analysis started",
+    analysis_finished: "Analysis finished",
+    decision_made: "Decision made",
+    settings_changed: "Settings changed",
+    report_exported: "Report exported"
+  };
+  var secProjectCache = null;
+  var secProjectGen = 0;
+  var secProjectTab = "overview";
+  var secRunsFilter = "";
+  function secInvalidateProject() {
+    secProjectCache = null;
+  }
+  async function secOpenProject(name) {
+    secProjectTab = "overview";
+    secRunsFilter = "";
+    secOpen(name);
+    await secLoadProject(name, true);
+  }
+  async function secRefreshProject() {
+    if (!secState.project) return;
+    await secLoadProject(secState.project, true);
+  }
+  async function secLoadProject(name, force) {
+    if (secProjectCache && secProjectCache.project === name && !force) {
+      secRenderProject();
+      return;
+    }
+    secProjectGen++;
+    const gen = secProjectGen;
+    let data;
+    try {
+      data = await secFetch("/api/security/project?project=" + encodeURIComponent(name));
+    } catch (e) {
+      if (gen !== secProjectGen || secState.project !== name) return;
+      secProjectCache = null;
+      secRenderProjectError(e.message);
+      return;
+    }
+    if (gen !== secProjectGen || secState.project !== name) return;
+    secProjectCache = data;
+    secRenderProject();
+  }
+  function secRenderProjectError(msg) {
+    const host = $("sec-pj-head");
+    if (!host) return;
+    host.textContent = "";
+    host.appendChild(secIcon("alert"));
+    host.appendChild(secEl("span", "grow", "Could not read this project \u2014 " + msg));
+  }
+  function secSwitchProjectTab(tab) {
+    secProjectTab = tab === "runs" ? "runs" : "overview";
+    secRenderTabs();
+  }
+  function secRenderProject() {
+    if (!secProjectCache) return;
+    secRenderProjectHeader(secProjectCache);
+    secRenderTabs();
+    secRenderProjectOverview(secProjectCache);
+    secRenderProjectRuns(secProjectCache);
+    secRenderProjectSidebar(secProjectCache);
+  }
+  function secRenderTabs() {
+    const ov = $("secpjt-overview"), rn = $("secpjt-runs");
+    if (ov) ov.classList.toggle("active", secProjectTab === "overview");
+    if (rn) rn.classList.toggle("active", secProjectTab === "runs");
+    const ovPane = $("sec-pj-overview"), rnPane = $("sec-pj-runs");
+    if (ovPane) ovPane.hidden = secProjectTab !== "overview";
+    if (rnPane) rnPane.hidden = secProjectTab !== "runs";
+  }
+  function secRenderProjectHeader(payload) {
+    const host = $("sec-pj-head");
+    if (!host) return;
+    host.textContent = "";
+    const h = payload.header || {};
+    const meta = secEl("div", "secpjmeta grow");
+    meta.appendChild(secHeaderBit("Profile", h.profile || "standard"));
+    const branch = secHeaderBit("Branch", h.branch || "\u2014");
+    if (h.branch_fell_back) {
+      branch.appendChild(secEl(
+        "span",
+        "secidx-fellback",
+        " (fell back \u2014 the declared base was never analysed)"
+      ));
+    }
+    meta.appendChild(branch);
+    meta.appendChild(secHeaderBit(
+      "Lines of code",
+      h.lines_of_code ? h.lines_of_code.toLocaleString() : "\u2014"
+    ));
+    meta.appendChild(secHeaderBit(
+      "Last analysis",
+      h.last_analysis ? fmtAgo(h.last_analysis) : "Never analysed"
+    ));
+    host.appendChild(meta);
+    const settings = secEl("button", "btn ghost");
+    settings.type = "button";
+    settings.title = "Open this project's editor";
+    settings.onclick = () => openProjectEditor(secState.project);
+    settings.appendChild(secIcon("gear"));
+    settings.appendChild(document.createTextNode("Project settings"));
+    host.appendChild(settings);
+  }
+  function secHeaderBit(label, value) {
+    const span = secEl("span", null, label + ": ");
+    span.appendChild(secEl("b", null, value));
+    return span;
+  }
+  function secRenderProjectOverview(payload) {
+    const host = $("sec-pj-overview");
+    if (!host) return;
+    host.textContent = "";
+    const ov = (payload.tabs || {}).overview || {};
+    if (!ov.state) {
+      host.appendChild(secEl(
+        "div",
+        "empty",
+        "Never analysed. Switch to Runs to pick a branch and start."
+      ));
+      return;
+    }
+    if (ov.state === "capped") {
+      const warn = secEl("div", "warnline bad");
+      warn.appendChild(secIcon("alert"));
+      warn.appendChild(secEl(
+        "span",
+        "grow",
+        "This analysis is INCOMPLETE: it stopped before covering the whole scope. The posture below is what it had reached, not what is there."
+      ));
+      host.appendChild(warn);
+    }
+    host.appendChild(secIndexPosturePills(ov.posture || {}));
+    const chips = secEl("div", "secchips");
+    const checklist = ov.checklist || {};
+    SEC_STATES.forEach((state) => {
+      const n = checklist[state] || 0;
+      const chip = secEl("span", "secpj-statchip" + (n ? "" : " zero"));
+      chip.title = SEC_STATE_HELP[state] || "";
+      chip.appendChild(secEl("span", null, SEC_STATE_LABEL[state] || state));
+      chip.appendChild(secEl("span", "n", String(n)));
+      chips.appendChild(chip);
+    });
+    host.appendChild(chips);
+  }
+  function secRenderProjectRuns(payload) {
+    const host = $("sec-pj-runstable");
+    if (!host) return;
+    host.textContent = "";
+    const runs = (payload.tabs || {}).runs || [];
+    host.appendChild(secRunsFilters(runs));
+    host.appendChild(secRunsTable(runs));
+  }
+  function secRunsFilters(runs) {
+    const wrap = secEl("div", "secchips");
+    const counts = {};
+    runs.forEach((r) => {
+      counts[r.state] = (counts[r.state] || 0) + 1;
+    });
+    const all = secEl("button", "secchip" + (secRunsFilter ? "" : " on"));
+    all.type = "button";
+    all.appendChild(secEl("span", null, "All"));
+    all.appendChild(secEl("span", "n", String(runs.length)));
+    all.onclick = () => {
+      secRunsFilter = "";
+      secRenderProjectRuns(secProjectCache);
+    };
+    wrap.appendChild(all);
+    RUN_STATES.forEach((state) => {
+      const n = counts[state] || 0;
+      const chip = secEl("button", "secchip" + (n ? "" : " zero") + (secRunsFilter === state ? " on" : ""));
+      chip.type = "button";
+      chip.appendChild(secEl("span", null, state));
+      chip.appendChild(secEl("span", "n", String(n)));
+      chip.onclick = () => {
+        secRunsFilter = state;
+        secRenderProjectRuns(secProjectCache);
+      };
+      wrap.appendChild(chip);
+    });
+    return wrap;
+  }
+  function secRunsTable(runs) {
+    const filtered = secRunsFilter ? runs.filter((r) => r.state === secRunsFilter) : runs;
+    if (!filtered.length) {
+      return secEl("div", "tblempty", runs.length ? "Nothing in that state." : "No analyses of this project yet.");
+    }
+    const wrap = secEl("div", "tablewrap");
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    const htr = document.createElement("tr");
+    ["Run", "Profile", "Branch", "Commit", "Duration", "Findings", "State", "Date"].forEach((h) => {
+      const th = document.createElement("th");
+      th.textContent = h;
+      htr.appendChild(th);
+    });
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    filtered.forEach((r) => tbody.appendChild(secRunRow(r)));
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    return wrap;
+  }
+  function secRunRow(r) {
+    const tr = document.createElement("tr");
+    const cell = (text) => {
+      const td = document.createElement("td");
+      td.textContent = text;
+      return td;
+    };
+    const tdId = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn ghost";
+    btn.textContent = "#" + r.id;
+    btn.title = "Show this analysis below";
+    btn.onclick = () => secShowAnalysis(r.id);
+    tdId.appendChild(btn);
+    tr.appendChild(tdId);
+    tr.appendChild(cell(r.profile || ""));
+    tr.appendChild(cell((r.repo || "") + " @ " + (r.branch || "")));
+    tr.appendChild(cell(String(r.commit_sha || "").slice(0, 12)));
+    tr.appendChild(cell(r.started && r.ended ? fmtDur(Math.max(0, r.ended - r.started)) : r.state === "running" ? "running\u2026" : "\u2014"));
+    tr.appendChild(cell(r.open == null ? "\u2014" : String(r.open)));
+    tr.appendChild(cell(r.state));
+    tr.appendChild(cell(fmtWhen(r.started)));
+    return tr;
+  }
+  function secRenderProjectSidebar(payload) {
+    const host = $("sec-pj-side");
+    if (!host) return;
+    host.textContent = "";
+    const sb = payload.sidebar || {};
+    host.appendChild(secIndexDonut(sb.donut || {}, sb.categories || []));
+    host.appendChild(secProjectActivity(sb.activity || []));
+  }
+  function secProjectActivity(events) {
+    const box = secEl("div", "card");
+    box.appendChild(secEl("h3", null, "Recent activity"));
+    if (!events.length) {
+      box.appendChild(secEl("div", "tblempty", "No activity recorded yet."));
+      return box;
+    }
+    const list = secEl("div", "seclist");
+    events.forEach((e) => {
+      const row = secEl("div", "secrow");
+      row.appendChild(secIcon("activity"));
+      const grow = secEl("div", "grow");
+      grow.appendChild(secEl("div", "secname", EVENT_KIND_LABEL[e.kind] || e.kind));
+      grow.appendChild(secEl(
+        "div",
+        "secmeta",
+        [e.detail, fmtAgo(e.at)].filter(Boolean).join(" \xB7 ")
+      ));
+      row.appendChild(grow);
+      list.appendChild(row);
+    });
+    box.appendChild(list);
+    return box;
+  }
+
   // ui/security/index-screen.js
   var secIndexCache = null;
   var secIndexGen = 0;
@@ -727,7 +995,7 @@
     btn.type = "button";
     btn.className = "btn ghost";
     btn.textContent = p.name;
-    btn.onclick = () => secOpen(p.name);
+    btn.onclick = () => secOpenProject(p.name);
     tdName.appendChild(btn);
     if ((p.description || "").trim()) {
       tdName.appendChild(secEl("div", "secidx-desc", p.description));
@@ -796,7 +1064,7 @@
     const row = document.createElement("button");
     row.type = "button";
     row.className = "secrow secidx-recentrow";
-    row.onclick = () => secOpen(a.project);
+    row.onclick = () => secOpenProject(a.project);
     row.appendChild(secIcon(a.state === "running" ? "timer" : a.state === "failed" ? "xcircle" : "check"));
     const grow = secEl("div", "grow");
     grow.appendChild(secEl(
@@ -995,6 +1263,10 @@
     iconLabel($("sec-dl-json"), "file", "JSON");
     iconLabel($("sec-dl-html"), "file", "HTML");
     iconLabel($("sec-dl-sbom"), "file", "SBOM");
+    iconLabel($("secpjt-overview"), "grid", "Overview");
+    iconLabel($("secpjt-runs"), "activity", "Runs");
+    $("secpjt-overview").addEventListener("click", () => secSwitchProjectTab("overview"));
+    $("secpjt-runs").addEventListener("click", () => secSwitchProjectTab("runs"));
     $("sec-dl-note").textContent = "Downloads always contain every recorded finding, whatever the severity floor shows.";
     $("sec-back").addEventListener("click", secBack);
     $("sec-reload").addEventListener("click", () => {
@@ -1025,4 +1297,4 @@
     SEC_PROFILES
   };
 })();
-// ui-sources: c26f36ff23c071f9a48b6a9b9164c836e956490899ba16e78d85c018b01fbdfd
+// ui-sources: 75817504b3c55406001d1e2ba046dace514098e8c225c2d068673cfabf58824f

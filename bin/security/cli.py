@@ -40,7 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from security import deps, fingerprint, hygiene, ledger, osv, queries, report, secrets  # noqa: E402
+from security import deps, diff, fingerprint, hygiene, ledger, osv, queries, report, secrets  # noqa: E402
 
 REQUIRED_FINDING_KEYS = ("fingerprint", "category", "rule", "severity", "title")
 
@@ -795,6 +795,99 @@ def cmd_index_data(args):
     }))
 
 
+def _empty_checklist_counts():
+    """One zeroed entry per state `checklist()` can ever produce -- the eight
+    values `diff.classify` (DERIVED_STATES) and `ledger.set_decision`
+    (DECISION_STATES) between them, and nothing else, so a state added to
+    either later shows up here too without this function changing."""
+    return {s: 0 for s in diff.DERIVED_STATES + ledger.DECISION_STATES}
+
+
+def cmd_project_data(args):
+    """Every panel the project detail screen draws, in one call.
+
+    `--base` and `--default-profile` are read from projects.json by the server
+    (this file never touches that path) and handed here the same way
+    `index-data`'s `--projects` carries each project's own base and
+    description -- the ledger has no notion of a project's declared
+    configuration, only of what has been recorded under its name.
+
+    Read-only, via `queries.read_only`, deliberately NOT `ledger.connect`, for
+    the same reason `index-data` uses it: a screen that only ever LOOKS must
+    not conjure the ledger file it is asking about into existence.
+
+    The header's `branch`/`lines_of_code`/`last_analysis` and the Overview
+    tab's posture and checklist counts all come from the SAME analysis row --
+    `default_branch_posture`'s own `latest`, the latest FINISHED analysis of
+    the branch actually shown (the project's declared base, or the branch it
+    fell back to) -- so the numbers on this screen never describe two
+    different runs under one label. The second `queries.checklist()` call
+    below, for the same id `posture()` already read through
+    `default_branch_posture`, is a cache hit on the read-only connection (see
+    `_CachingConnection`), not a second pass over the ledger.
+
+    `tabs.runs` is exactly `cmd_list`'s own query -- same table, same
+    ordering, same LIMIT -- so the Runs tab can be checked against
+    `claude-cron security list --project <name>` directly. Each row's `open`
+    count follows `recent_analyses`'s own rule: only a `done` or `capped`
+    analysis has a posture worth counting; a `running` or `failed` one gets
+    `None`, the same "no posture yet" the index's recent-analyses feed
+    already sends.
+    """
+    default_profile = args.default_profile or "standard"
+    conn = queries.read_only(args.db)
+    if conn is None:
+        print(json.dumps({
+            "project": args.project,
+            "header": {"profile": default_profile, "branch": args.base or "",
+                       "branch_fell_back": False, "lines_of_code": 0,
+                       "last_analysis": 0},
+            "tabs": {"overview": {"posture": queries._empty_posture(),
+                                  "checklist": _empty_checklist_counts(), "state": ""},
+                     "runs": []},
+            "sidebar": {"donut": queries._empty_posture(), "categories": [],
+                       "activity": []}}))
+        return
+
+    branch, posture, fell_back, latest = queries.default_branch_posture(
+        conn, args.project, args.base or None)
+
+    checklist_counts = _empty_checklist_counts()
+    if latest is not None:
+        _analysis, findings = queries.checklist(conn, latest["id"])
+        for f in findings:
+            if f["state"] in checklist_counts:
+                checklist_counts[f["state"]] += 1
+
+    runs = []
+    for row in conn.execute(
+            "SELECT * FROM analysis WHERE project=? ORDER BY id DESC LIMIT 100",
+            (args.project,)):
+        r = dict(row)
+        # Exactly `recent_analyses`'s own rule (see its comment): a running or
+        # failed analysis has no posture worth counting, only a done/capped
+        # one does.
+        if r["state"] in ("done", "capped"):
+            _an, row_findings = queries.checklist(conn, r["id"])
+            r["open"] = sum(1 for f in row_findings if queries.is_open(f["state"]))
+        else:
+            r["open"] = None
+        runs.append(r)
+
+    print(json.dumps({
+        "project": args.project,
+        "header": {"profile": default_profile, "branch": branch,
+                   "branch_fell_back": fell_back,
+                   "lines_of_code": (latest or {}).get("lines_of_code", 0),
+                   "last_analysis": (latest or {}).get("started", 0)},
+        "tabs": {"overview": {"posture": posture, "checklist": checklist_counts,
+                              "state": (latest or {}).get("state", "")},
+                 "runs": runs},
+        "sidebar": {"donut": queries.severity_totals(conn, project=args.project),
+                   "categories": queries.top_categories(conn, project=args.project),
+                   "activity": ledger.events_for(conn, project=args.project, limit=5)}}))
+
+
 def cmd_event(args):
     try:
         ledger.record_event(_conn(args), args.project, args.kind,
@@ -924,6 +1017,14 @@ def main(argv=None):
     # ledger through `queries.read_only` and writes nothing.
     ix = sub.add_parser("index-data", parents=[dbflag]); ix.set_defaults(fn=cmd_index_data)
     ix.add_argument("--projects", required=True)
+
+    # Deliberately absent from AGENT_FORBIDDEN: same reasoning as `index-data`
+    # right above -- it opens the ledger through `queries.read_only` and
+    # writes nothing.
+    pd = sub.add_parser("project-data", parents=[dbflag]); pd.set_defaults(fn=cmd_project_data)
+    pd.add_argument("--project", required=True)
+    pd.add_argument("--base", default="")
+    pd.add_argument("--default-profile", default="", dest="default_profile")
 
     # Deliberately absent from AGENT_FORBIDDEN: it prints one row and writes
     # nothing, the same reasoning as `fingerprint` and `findings` above.
