@@ -37,7 +37,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `("asc","desc")`, both raising rather than falling back to a default:
   filter values travel as parameters, but a sort column is interpolated by
   nature, and it is the one route parameters cannot protect. `per_page` is
-  capped at `MAX_PER_PAGE` so one request cannot ask for the whole table.
+  capped at `MAX_PER_PAGE` so one request cannot ask for the whole table. A
+  follow-up review caught three more issues before this shipped. `page` had
+  no floor: `page=0` or a negative page silently served page 1's rows while
+  the returned `page` field echoed the raw invalid number back, so a pager
+  trusting that field showed a number that disagreed with the rows under it —
+  `page` is now clamped to at least 1 and the field always reports the page
+  actually served, while a non-numeric page still raises exactly as an
+  unrecognised `sort` does. `first_seen`'s own grouped query had no `state IN
+  ('done','capped')` filter, unlike every sibling query in this module
+  (`_latest_finished`, this function's own branch query, `checklist`'s
+  `history`) — a crashed or still-running analysis that recorded a finding
+  before dying could set `first_seen` earlier than any analysis ever
+  confirmed the finding held, making it look older than the evidence
+  supports; it is now filtered the same way, and the generic sort key no
+  longer turns a legitimate `first_seen` of `0` into `""` and crashes a
+  str/int comparison mid-sort.
 
 ### Fixed
 

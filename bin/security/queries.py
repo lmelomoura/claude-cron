@@ -402,6 +402,13 @@ def finding_rows(conn, project, filters=None, sort="severity",
         raise ValueError("direction must be asc or desc")
     f = dict(filters or {})
     per_page = max(1, min(int(per_page), MAX_PER_PAGE))
+    # Clamped, not coerced: `int(page)` still raises on non-numeric input --
+    # the same refusal `sort` gets above -- but an out-of-range value (0, a
+    # negative number) used to be silently steered to page 1's rows while the
+    # `page` field below echoed the raw value back, so a pager built on that
+    # field showed a number that disagreed with the rows under it. The value
+    # returned must always describe the rows actually served.
+    page = max(1, int(page))
 
     branches = [r["branch"] for r in conn.execute(
         "SELECT DISTINCT branch FROM analysis WHERE project=?"
@@ -419,14 +426,26 @@ def finding_rows(conn, project, filters=None, sort="severity",
             row["analysis_id"] = a["id"]
             rows.append(row)
 
-    # The oldest analysis carrying each fingerprint, in one query rather than
-    # one per row.
+    # The oldest DONE/CAPPED analysis carrying each fingerprint, in one query
+    # rather than one per row -- filtered exactly like `_latest_finished`,
+    # this function's own `branches` query above, and `checklist`'s own
+    # `history` query (see its comment): a crashed or still-running analysis
+    # can record a finding before dying, and letting that count as "first
+    # seen" would make a finding look older than any successful analysis ever
+    # confirmed it.
     for r in conn.execute(
             "SELECT f.fingerprint AS fp, MIN(a.started) AS first FROM finding f"
             " JOIN analysis a ON a.id = f.analysis_id WHERE a.project=?"
-            " GROUP BY f.fingerprint", (project,)):
+            " AND a.state IN ('done','capped') GROUP BY f.fingerprint", (project,)):
         first_seen[r["fp"]] = r["first"]
     for r in rows:
+        # `rows` itself is only ever built from a done/capped analysis --
+        # `a` above is `_latest_finished`, and `checklist`'s own `previous`
+        # comparison reads through `latest_analysis`, equally filtered -- so
+        # every fingerprint reaching this loop is always in the GROUP BY
+        # above too. The `0` default is a defensive fallback, not an
+        # expression of "seen only in unfinished analyses": that case cannot
+        # reach `rows` at all.
         r["first_seen"] = first_seen.get(r["fingerprint"], 0)
 
     if not f.get("show_resolved"):
@@ -451,15 +470,29 @@ def finding_rows(conn, project, filters=None, sort="severity",
         if r["severity"] in by_severity:
             by_severity[r["severity"]] += 1
 
-    keyf = ((lambda r: _SEV_RANK.get(r["severity"], 9)) if sort == "severity"
-            else (lambda r: r.get(sort) or ""))
-    rows.sort(key=keyf, reverse=(direction == "desc") == (sort != "severity"))
+    if sort == "severity":
+        keyf = lambda r: _SEV_RANK.get(r["severity"], 9)
+        # Rank 0 is "critical", the most severe -- ascending rank order
+        # already puts critical first, which is what `desc` (most severe
+        # first) means for this column. So `desc` maps to reverse=False
+        # here, the opposite of every other sortable column below.
+        reverse = direction != "desc"
+    else:
+        # `.get(sort, "")`, not `.get(sort) or ""`: every SORTABLE column
+        # except `first_seen` is a NOT NULL string, but `first_seen` is an
+        # int that can legitimately be 0 -- `or ""` would silently turn that
+        # 0 into a string and mix str/int keys mid-sort, raising TypeError.
+        # `.get(key, "")` only substitutes when the key is missing outright,
+        # which never happens for a SORTABLE column.
+        keyf = lambda r: r.get(sort, "")
+        reverse = direction == "desc"
+    rows.sort(key=keyf, reverse=reverse)
 
     total, unique = len(rows), len({r["fingerprint"] for r in rows})
-    start = max(0, (int(page) - 1) * per_page)
+    start = (page - 1) * per_page
     return {"rows": rows[start:start + per_page], "total": total,
             "unique": unique, "by_severity": by_severity,
-            "page": int(page), "per_page": per_page}
+            "page": page, "per_page": per_page}
 
 
 def activity_summary(conn, project=None, days=30):

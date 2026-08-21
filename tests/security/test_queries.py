@@ -317,11 +317,89 @@ def test_first_seen_is_the_oldest_analysis_carrying_the_fingerprint(conn):
     assert row["first_seen"] == first["started"]
 
 
+def test_first_seen_ignores_a_failed_analysis_and_uses_the_done_one(conn):
+    """A finding recorded by a FAILED analysis before it fell over, then
+    recorded again by a DONE analysis later, must report the done one's
+    timestamp -- the failed run never proved the finding held, so its earlier
+    sighting must not make the finding look older than any successful
+    analysis ever confirmed. Moving the failed row's own `started` earlier
+    (rather than relying on wall-clock ordering) makes this fail on the
+    current code deterministically: without the `state IN ('done','capped')`
+    filter, MIN(started) picks the failed run's earlier timestamp instead."""
+    a1 = _analysis(conn, "main", state="failed", findings=[("critical", "secret")])
+    conn.execute("UPDATE analysis SET started = started - 1000 WHERE id=?", (a1,))
+    conn.commit()
+    a2 = _analysis(conn, "main", findings=[("critical", "secret")])
+
+    row = queries.finding_rows(conn, "web")["rows"][0]
+    second = conn.execute("SELECT started FROM analysis WHERE id=?", (a2,)).fetchone()
+    assert row["first_seen"] == second["started"], \
+        "the failed analysis's earlier timestamp must not count as first_seen"
+
+
 def test_filters_narrow_the_set(conn):
     _analysis(conn, "main", findings=[("critical", "secret"), ("low", "hygiene")])
     assert queries.finding_rows(conn, "web", {"severity": ["critical"]})["total"] == 1
     assert queries.finding_rows(conn, "web", {"category": ["hygiene"]})["total"] == 1
     assert queries.finding_rows(conn, "web", {"q": "hygiene"})["total"] == 1
+
+
+def test_branch_filter_narrows_to_the_named_branch(conn):
+    _analysis(conn, "main", findings=[("critical", "secret")])
+    _analysis(conn, "develop", findings=[("high", "sast")])
+    got = queries.finding_rows(conn, "web", {"branch": ["develop"]})
+    assert got["total"] == 1
+    assert got["rows"][0]["branch"] == "develop"
+
+
+def test_analysis_filter_narrows_to_the_named_analysis_id(conn):
+    a1 = _analysis(conn, "main", findings=[("critical", "secret")])
+    _analysis(conn, "develop", findings=[("high", "sast")])
+    got = queries.finding_rows(conn, "web", {"analysis": [a1]})
+    assert got["total"] == 1
+    assert got["rows"][0]["analysis_id"] == a1
+
+
+def test_state_filter_selects_only_the_named_state(conn):
+    _analysis(conn, "main", findings=[("critical", "secret")])
+    _analysis(conn, "main", findings=[])            # the secret is now fixed
+    _analysis(conn, "develop", findings=[("high", "sast")])  # still new
+
+    fixed = queries.finding_rows(conn, "web", {"show_resolved": True, "state": ["fixed"]})
+    assert [r["state"] for r in fixed["rows"]] == ["fixed"]
+
+    new_only = queries.finding_rows(conn, "web", {"state": ["new"]})
+    assert [r["state"] for r in new_only["rows"]] == ["new"]
+    assert new_only["rows"][0]["branch"] == "develop"
+
+
+def test_path_filter_matches_case_insensitively_on_both_sides(conn):
+    aid = ledger.start_analysis(conn, "web", "web", "main", "s", "quick", "r")
+    ledger.record_finding(conn, aid, {
+        "fingerprint": "f" * 64, "category": "secret", "rule": "r",
+        "severity": "critical", "title": "t",
+        "occurrences": [{"file": "src/Auth/Login.PY", "line": 1, "snippet_hash": "h"}]})
+    ledger.mark_prepared(conn, aid)
+    ledger.finish_analysis(conn, aid, "done")
+
+    assert queries.finding_rows(conn, "web", {"path": "auth/login"})["total"] == 1, \
+        "a lowercase needle must match a mixed-case path"
+    assert queries.finding_rows(conn, "web", {"path": "AUTH/LOGIN"})["total"] == 1, \
+        "an uppercase needle must match too"
+    assert queries.finding_rows(conn, "web", {"path": "nope"})["total"] == 0
+
+
+def test_q_filter_matches_case_insensitively_on_both_sides(conn):
+    aid = ledger.start_analysis(conn, "web", "web", "main", "s", "quick", "r")
+    ledger.record_finding(conn, aid, {
+        "fingerprint": "g" * 64, "category": "secret", "rule": "aws_KEY",
+        "severity": "critical", "title": "Hardcoded AWS Secret", "occurrences": []})
+    ledger.mark_prepared(conn, aid)
+    ledger.finish_analysis(conn, aid, "done")
+
+    assert queries.finding_rows(conn, "web", {"q": "hardcoded"})["total"] == 1
+    assert queries.finding_rows(conn, "web", {"q": "AWS SECRET"})["total"] == 1
+    assert queries.finding_rows(conn, "web", {"q": "nonexistent"})["total"] == 0
 
 
 def test_an_unknown_sort_column_is_refused(conn):
@@ -332,7 +410,93 @@ def test_an_unknown_sort_column_is_refused(conn):
         queries.finding_rows(conn, "web", sort="severity; DROP TABLE finding")
 
 
+def test_an_unknown_direction_is_refused(conn):
+    _analysis(conn, "main", findings=[("critical", "secret")])
+    with pytest.raises(ValueError):
+        queries.finding_rows(conn, "web", direction="sideways")
+
+
+def test_sort_by_severity_desc_is_critical_first(conn):
+    """`desc` means "most severe first" -- critical, not the alphabetically
+    last severity name. No test asserted actual row order before this one, so
+    an edit flipping the sort's reverse expression would have passed the
+    whole suite while silently inverting triage order for an operator."""
+    _analysis(conn, "main", findings=[("low", "hygiene"), ("critical", "secret"),
+                                      ("medium", "sast")])
+    got = queries.finding_rows(conn, "web", sort="severity", direction="desc")
+    assert [r["severity"] for r in got["rows"]] == ["critical", "medium", "low"]
+
+
+def test_sort_by_severity_asc_is_critical_last(conn):
+    _analysis(conn, "main", findings=[("low", "hygiene"), ("critical", "secret"),
+                                      ("medium", "sast")])
+    got = queries.finding_rows(conn, "web", sort="severity", direction="asc")
+    assert [r["severity"] for r in got["rows"]] == ["low", "medium", "critical"]
+
+
+def test_sort_by_title_ascending_and_descending(conn):
+    _analysis(conn, "main", findings=[("low", "hygiene"), ("critical", "secret"),
+                                      ("medium", "sast")])
+    # titles are "{severity} {category}": "low hygiene", "critical secret",
+    # "medium sast" -- alphabetically "critical..." < "low..." < "medium...".
+    asc = queries.finding_rows(conn, "web", sort="title", direction="asc")
+    assert [r["title"] for r in asc["rows"]] == \
+        ["critical secret", "low hygiene", "medium sast"]
+
+    desc = queries.finding_rows(conn, "web", sort="title", direction="desc")
+    assert [r["title"] for r in desc["rows"]] == \
+        ["medium sast", "low hygiene", "critical secret"]
+
+
+def test_sort_by_first_seen_ascending_and_descending(conn):
+    a_old = _analysis(conn, "old", findings=[("critical", "secret")])
+    a_mid = _analysis(conn, "mid", findings=[("high", "dependency")])
+    a_new = _analysis(conn, "new", findings=[("low", "hygiene")])
+    # Pinned rather than relying on wall-clock spacing: `started` has
+    # 1-second resolution and three analyses opened back-to-back routinely
+    # land in the same second.
+    conn.execute("UPDATE analysis SET started=100 WHERE id=?", (a_old,))
+    conn.execute("UPDATE analysis SET started=200 WHERE id=?", (a_mid,))
+    conn.execute("UPDATE analysis SET started=300 WHERE id=?", (a_new,))
+    conn.commit()
+
+    asc = queries.finding_rows(conn, "web", sort="first_seen", direction="asc")
+    assert [r["branch"] for r in asc["rows"]] == ["old", "mid", "new"]
+
+    desc = queries.finding_rows(conn, "web", sort="first_seen", direction="desc")
+    assert [r["branch"] for r in desc["rows"]] == ["new", "mid", "old"]
+
+
 def test_page_size_is_capped(conn):
     _analysis(conn, "main", findings=[("low", "hygiene")] * 5)
     got = queries.finding_rows(conn, "web", per_page=10_000)
     assert got["per_page"] <= queries.MAX_PER_PAGE
+
+
+def test_page_zero_and_negative_serve_page_one_and_report_it(conn):
+    """An invalid page must not silently serve page 1 while echoing the
+    invalid number back -- a pager trusting the echoed `page` would then show
+    a number that disagrees with the rows under it."""
+    _analysis(conn, "main", findings=[("low", "hygiene")] * 5)
+    baseline = queries.finding_rows(conn, "web", per_page=2, page=1)
+    for bad in (0, -3):
+        got = queries.finding_rows(conn, "web", per_page=2, page=bad)
+        assert got["page"] == 1, f"page={bad} must report the page actually served"
+        assert got["rows"] == baseline["rows"], f"page={bad} must serve page 1's rows"
+
+
+def test_page_two_serves_the_second_slice_and_reports_it(conn):
+    _analysis(conn, "main", findings=[("low", "hygiene")] * 5)
+    page1 = queries.finding_rows(conn, "web", per_page=2, page=1)
+    got = queries.finding_rows(conn, "web", per_page=2, page=2)
+    assert got["page"] == 2
+    assert got["rows"] != page1["rows"]
+    assert len(got["rows"]) == 2
+
+
+def test_non_numeric_page_is_refused(conn):
+    """The same refusal `sort` gets: a bad page must raise, not be coerced
+    into some silent default."""
+    _analysis(conn, "main", findings=[("low", "hygiene")])
+    with pytest.raises(ValueError):
+        queries.finding_rows(conn, "web", page="two")
