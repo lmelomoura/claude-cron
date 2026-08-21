@@ -252,7 +252,7 @@
   }
   function secSyncPoll() {
     const running = CC.currentView === "security" && secState.project && secState.analyses.some((a) => a.state === "running");
-    if (running && !secTimer) secTimer = setInterval(secReload, SEC_POLL_MS);
+    if (running && !secTimer) secTimer = setInterval(() => secReload(false), SEC_POLL_MS);
     if (!running) secStopPoll();
   }
   function secEnter() {
@@ -284,6 +284,7 @@
     secState.findings = [];
     secState.analyses = [];
     secState.stateFilter = "";
+    secProjectPollWasRunning = null;
     $("sec-projects").hidden = true;
     $("sec-detail").hidden = false;
     const title = $("sec-title");
@@ -369,7 +370,8 @@
     }
     secPaint();
   }
-  async function secReload() {
+  var secProjectPollWasRunning = null;
+  async function secReload(forceProject = true) {
     if (!secState.project || CC.currentView !== "security") return;
     try {
       secState.analyses = await secFetch("/api/security?project=" + encodeURIComponent(secState.project));
@@ -385,7 +387,10 @@
     const want = mine.length ? mine[0].id : secState.analysis && secState.analysis.id;
     await secShowAnalysis(want == null ? null : want);
     secSyncPoll();
-    secRefreshProject();
+    const runningNow = secState.analyses.some((a) => a.state === "running");
+    const changed = runningNow !== secProjectPollWasRunning;
+    secProjectPollWasRunning = runningNow;
+    if (forceProject || changed) secRefreshProject();
   }
   function secStatus(text) {
     const box = $("sec-status");
@@ -709,19 +714,32 @@
     span.appendChild(secEl("b", null, value));
     return span;
   }
+  function secOverviewCaption(header) {
+    const cap = secEl("div", "secpj-caption", "Posture of " + (header.branch || "\u2014"));
+    if (header.branch_fell_back) {
+      cap.appendChild(secEl(
+        "span",
+        "secidx-fellback",
+        " (fell back \u2014 the declared base was never analysed)"
+      ));
+    }
+    return cap;
+  }
+  function secSidebarCaption(branchCount) {
+    if (!branchCount) return secEl("div", "secpj-caption", "No finished analysis yet.");
+    const scope = branchCount === 1 ? "this project's only analysed branch" : "all " + branchCount + " analysed branches";
+    return secEl("div", "secpj-caption", "Posture and categories below span " + scope + ".");
+  }
   function secRenderProjectOverview(payload) {
     const host = $("sec-pj-overview");
     if (!host) return;
     host.textContent = "";
     const ov = (payload.tabs || {}).overview || {};
     if (!ov.state) {
-      host.appendChild(secEl(
-        "div",
-        "empty",
-        "Never analysed. Switch to Runs to pick a branch and start."
-      ));
+      host.appendChild(secEl("div", "empty", ov.attempted ? "No analysis of this project has finished yet \u2014 see Runs for what was attempted." : "Never analysed. Switch to Runs to pick a branch and start."));
       return;
     }
+    host.appendChild(secOverviewCaption(payload.header || {}));
     if (ov.state === "capped") {
       const warn = secEl("div", "warnline bad");
       warn.appendChild(secIcon("alert"));
@@ -824,7 +842,7 @@
     tr.appendChild(cell((r.repo || "") + " @ " + (r.branch || "")));
     tr.appendChild(cell(String(r.commit_sha || "").slice(0, 12)));
     tr.appendChild(cell(r.started && r.ended ? fmtDur(Math.max(0, r.ended - r.started)) : r.state === "running" ? "running\u2026" : "\u2014"));
-    tr.appendChild(cell(r.open == null ? "\u2014" : String(r.open)));
+    tr.appendChild(cell(r.findings == null ? "\u2014" : String(r.findings)));
     tr.appendChild(cell(r.state));
     tr.appendChild(cell(fmtWhen(r.started)));
     return tr;
@@ -834,6 +852,7 @@
     if (!host) return;
     host.textContent = "";
     const sb = payload.sidebar || {};
+    host.appendChild(secSidebarCaption(sb.branch_count || 0));
     host.appendChild(secIndexDonut(sb.donut || {}, sb.categories || []));
     host.appendChild(secProjectActivity(sb.activity || []));
   }
@@ -1297,4 +1316,4 @@
     SEC_PROFILES
   };
 })();
-// ui-sources: 75817504b3c55406001d1e2ba046dace514098e8c225c2d068673cfabf58824f
+// ui-sources: 5aafe7cf5bc8ad28ddf9acf5413eb483fcf752d4281b069517a2d7b0b2214690

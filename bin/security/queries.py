@@ -160,12 +160,57 @@ def checklist(conn, analysis_id):
     return result
 
 
+def finding_counts_by_analysis(conn, project):
+    """How many findings each analysis of `project` recorded, keyed by
+    analysis id -- a plain `COUNT(*)`, never `checklist()`'s diff/decision
+    state machine.
+
+    This backs the Runs table's FINDINGS column, which asks a much smaller
+    question than `checklist()` answers: not "how many of this project's
+    findings are open RIGHT NOW" (which needs the previous analysis, the
+    fingerprint history and every recorded decision), only "how many findings
+    did THIS run record" -- a fact about one closed analysis that a later
+    decision or a later run can never change. Before this, the Runs tab called
+    `checklist()` once per done/capped row to get that number and then
+    filtered it down with `is_open` -- so a project's history page recomputed
+    the full diff for every historical analysis on every load, and again on
+    every 4-second poll of a live run (see cmd_project_data's own review
+    fix). One grouped query replaces all of that: O(1) round trips instead of
+    O(analyses), and the result no longer moves when somebody accepts a risk
+    or marks a false positive after the fact -- see
+    `.superpowers/sdd/task-9-report.md` for the measured before/after.
+    """
+    return {r["analysis_id"]: r["c"] for r in conn.execute(
+        "SELECT f.analysis_id, COUNT(*) c FROM finding f"
+        " JOIN analysis a ON a.id = f.analysis_id"
+        " WHERE a.project=? GROUP BY f.analysis_id", (project,))}
+
+
 def _latest_finished(conn, project, branch):
     row = conn.execute(
         "SELECT * FROM analysis WHERE project=? AND branch=?"
         " AND state IN ('done','capped') ORDER BY id DESC LIMIT 1",
         (project, branch)).fetchone()
     return dict(row) if row else None
+
+
+def most_recent_started(conn, project):
+    """The started-at time of `project`'s most recent analysis, ANY branch,
+    ANY state -- unlike `default_branch_posture`'s own `latest`, which only
+    ever looks at `done`/`capped` rows because posture needs a finished
+    baseline. A project whose every analysis is `running` or `failed` has no
+    such baseline, so `latest` comes back `None` and every caller of
+    `default_branch_posture` used to read that as "0", the same falsy value
+    a project that has NEVER been analysed produces -- "Never analysed" shown
+    to a project that plainly has attempts sitting in its Runs tab.
+
+    Callers fall back to this only when they already have nothing (`or
+    most_recent_started(...)`), so it costs a query exactly when there is no
+    finished analysis to report a time from -- never on the common path."""
+    row = conn.execute(
+        "SELECT started FROM analysis WHERE project=? ORDER BY id DESC LIMIT 1",
+        (project,)).fetchone()
+    return row["started"] if row else 0
 
 
 def _empty_posture():
@@ -281,7 +326,14 @@ def project_rows(conn, projects):
             "name": name, "description": proj.get("description", ""),
             "branch": branch, "branch_fell_back": fell_back, "posture": p,
             "profile": (last or {}).get("profile", ""),
-            "last_started": (last or {}).get("started", 0),
+            # Falls back to `most_recent_started` only when there is no
+            # finished baseline (`last` is None) -- a project whose every
+            # analysis is `running` or `failed` used to read `0` here, the
+            # same falsy value a project that has NEVER been analysed
+            # produces, and `secIndexProjectRow`'s "Last analysis" cell
+            # rendered "never" for both alike even though its own `analyses`
+            # count (below) already knew the two apart.
+            "last_started": (last or {}).get("started", 0) or most_recent_started(conn, name),
             "last_duration": (max(0, (last["ended"] or 0) - (last["started"] or 0))
                               if last else 0),
             # The state `posture` was computed from -- "" when nothing has ever
@@ -374,6 +426,23 @@ def _analysed_scopes(conn, project=None):
         sql += f" AND project IN ({placeholders})"
         args.extend(names)
     return list(conn.execute(sql, args))
+
+
+def analysed_branch_count(conn, project):
+    """How many distinct branches of `project` have at least one finished
+    (`done`/`capped`) analysis -- exactly the scopes `_analysed_scopes`
+    returns, and therefore exactly what `severity_totals`/`top_categories`
+    roll their numbers up over. `project` is always a single name here (this
+    backs one project's own screen, not a fleet-wide rollup), unlike
+    `_analysed_scopes`'s own broader signature.
+
+    The project screen's Overview posture describes ONE branch
+    (`default_branch_posture`'s own choice); the sidebar donut and category
+    rollup describe EVERY analysed branch. Two different, equally true
+    answers that used to sit side by side with nothing saying so -- this is
+    the number the sidebar's own caption names, so a project with two
+    analysed branches and one with only one never look alike."""
+    return len(_analysed_scopes(conn, project))
 
 
 _SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}

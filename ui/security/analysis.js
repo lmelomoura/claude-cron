@@ -21,7 +21,10 @@ export function secSyncPoll(){
   // from the Overview or the Jobs page, for as long as the analysis ran.
   const running = CC.currentView === "security" && secState.project
                   && secState.analyses.some(a => a.state === "running");
-  if(running && !secTimer) secTimer = setInterval(secReload, SEC_POLL_MS);
+  // The poll tick itself must not force a full header/tabs/sidebar refetch
+  // (see secReload's own comment) -- every OTHER caller of secReload still
+  // does, by leaving its argument at the default.
+  if(running && !secTimer) secTimer = setInterval(() => secReload(false), SEC_POLL_MS);
   if(!running) secStopPoll();
 }
 
@@ -58,6 +61,10 @@ export async function secOpen(project){
   secState.project = project;
   secState.analysis = null; secState.findings = []; secState.analyses = [];
   secState.stateFilter = "";
+  // A fresh project starts the running/not-running comparison over: the
+  // value from whatever project was open before (or none) must never make
+  // this project's own first poll tick look unchanged by coincidence.
+  secProjectPollWasRunning = null;
   $("sec-projects").hidden = true;
   $("sec-detail").hidden = false;
   const title = $("sec-title");
@@ -160,9 +167,18 @@ export async function secShowAnalysis(id){
   secPaint();
 }
 
+// Whether ANY analysis of the project was `running` as of the last
+// secReload() call -- so a poll tick can tell "still watching the same run"
+// apart from "a run just finished", see secReload's own comment. `null`
+// (not a boolean) until the first reload, so that first call always counts
+// as a change and forces the one-time refresh it would have forced anyway.
+let secProjectPollWasRunning = null;
+
 /* Re-read the list and, with it, whatever is on screen. Called by the poll
-   while an analysis is running, and once after every action. */
-export async function secReload(){
+   while an analysis is running, once after every action, and by secEnter()
+   when the view is opened -- `forceProject` is true for all of those by
+   default; only secSyncPoll's own recurring tick passes `false`. */
+export async function secReload(forceProject = true){
   if(!secState.project || CC.currentView !== "security") return;
   try{
     secState.analyses = await secFetch("/api/security?project="
@@ -183,7 +199,24 @@ export async function secReload(){
   // old detail pane above also keeps the header/tabs/sidebar in step --
   // one timer driving both, rather than a second interval hitting the
   // server on its own for numbers this same reload already has fresh.
-  secRefreshProject();
+  //
+  // BUT the root fix for the cost this used to have (see cmd_project_data's
+  // own docstring) does not, by itself, stop a live run's poll tick from
+  // re-fetching the whole payload every four seconds for nothing: while
+  // every analysis of this project stays `running`, the header/tabs/sidebar
+  // cannot have changed -- Overview and the sidebar both describe the
+  // latest FINISHED analysis, which is not the one still in flight, and the
+  // Runs tab's own findings counts are frozen for any row that already
+  // closed. The only thing a poll tick can ever learn that the LAST poll
+  // tick did not is that a run finished -- so a tick that sees the same
+  // running/not-running shape as last time skips this fetch, and only a
+  // forced caller (opening the project, or right after an action that
+  // really did just change something -- a new analysis started, a decision
+  // recorded) still gets it unconditionally.
+  const runningNow = secState.analyses.some(a => a.state === "running");
+  const changed = runningNow !== secProjectPollWasRunning;
+  secProjectPollWasRunning = runningNow;
+  if(forceProject || changed) secRefreshProject();
 }
 
 export function secStatus(text){

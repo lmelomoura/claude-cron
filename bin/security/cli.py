@@ -826,13 +826,44 @@ def cmd_project_data(args):
     `default_branch_posture`, is a cache hit on the read-only connection (see
     `_CachingConnection`), not a second pass over the ledger.
 
+    That one-branch posture is not the WHOLE story, though: `sidebar.donut`/
+    `categories` roll up EVERY analysed branch (see `severity_totals`'s own
+    docstring), a different, equally true answer to a different question --
+    which is why `sidebar.branch_count` is handed back too, so the page can
+    say how many branches its own numbers span rather than let the two
+    panels' different totals read as a silent disagreement (a two-branch
+    project's Overview and sidebar used to show different postures with
+    nothing on screen saying why).
+
     `tabs.runs` is exactly `cmd_list`'s own query -- same table, same
     ordering, same LIMIT -- so the Runs tab can be checked against
-    `claude-cron security list --project <name>` directly. Each row's `open`
-    count follows `recent_analyses`'s own rule: only a `done` or `capped`
-    analysis has a posture worth counting; a `running` or `failed` one gets
-    `None`, the same "no posture yet" the index's recent-analyses feed
-    already sends.
+    `claude-cron security list --project <name>` directly. Each row's
+    `findings` count is a plain `COUNT(*)` from `finding_counts_by_analysis`
+    -- ONE grouped query for the whole table, not `checklist()`'s diff/
+    decision machinery run once per row. That used to cost one `checklist()`
+    call (`findings_of` twice, a history scan, `decisions_for`) per
+    done/capped analysis -- 169 SQL statements for Minerva's own ledger (two
+    finished analyses, 108 findings total) before this fix, re-run from
+    scratch by the page's own 4-second poll for the whole duration of every
+    live analysis. See `.superpowers/sdd/task-9-report.md` for the measured
+    before/after. `findings` still follows `recent_analyses`'s own gating
+    rule -- only a `done` or `capped` analysis gets a number, a `running` or
+    `failed` one gets `None`, the same "nothing to report yet" the index's
+    recent-analyses feed already sends -- but the number itself is no longer
+    an `is_open` filter over `checklist()`'s output: it is how many findings
+    THIS analysis recorded, a fact that cannot change when a later run's
+    decision resolves one of them (the Overview's `checklist` counts above
+    are still where "currently open" belongs).
+
+    `tabs.overview.attempted` is true the moment ANY analysis of this project
+    exists, in any state -- distinct from `state` (empty unless a done/capped
+    baseline exists), so the page can tell "never attempted" apart from
+    "attempted, nothing has finished yet" instead of showing "Never
+    analysed" over a Runs tab that plainly lists failed or running attempts.
+    `header.last_analysis` gets the same treatment: it falls back to the most
+    recent analysis of ANY state when there is no finished baseline, so a
+    project whose only analyses failed shows when that happened rather than
+    reading as if nothing had ever run.
     """
     default_profile = args.default_profile or "standard"
     conn = queries.read_only(args.db)
@@ -843,10 +874,11 @@ def cmd_project_data(args):
                        "branch_fell_back": False, "lines_of_code": 0,
                        "last_analysis": 0},
             "tabs": {"overview": {"posture": queries._empty_posture(),
-                                  "checklist": _empty_checklist_counts(), "state": ""},
+                                  "checklist": _empty_checklist_counts(),
+                                  "state": "", "attempted": False},
                      "runs": []},
             "sidebar": {"donut": queries._empty_posture(), "categories": [],
-                       "activity": []}}))
+                       "activity": [], "branch_count": 0}}))
         return
 
     branch, posture, fell_back, latest = queries.default_branch_posture(
@@ -859,19 +891,22 @@ def cmd_project_data(args):
             if f["state"] in checklist_counts:
                 checklist_counts[f["state"]] += 1
 
+    # ONE grouped query for the whole Runs tab, replacing what used to be one
+    # checklist() call per done/capped row (see this function's own
+    # docstring, and queries.finding_counts_by_analysis's).
+    finding_counts = queries.finding_counts_by_analysis(conn, args.project)
     runs = []
     for row in conn.execute(
             "SELECT * FROM analysis WHERE project=? ORDER BY id DESC LIMIT 100",
             (args.project,)):
         r = dict(row)
         # Exactly `recent_analyses`'s own rule (see its comment): a running or
-        # failed analysis has no posture worth counting, only a done/capped
-        # one does.
-        if r["state"] in ("done", "capped"):
-            _an, row_findings = queries.checklist(conn, r["id"])
-            r["open"] = sum(1 for f in row_findings if queries.is_open(f["state"]))
-        else:
-            r["open"] = None
+        # failed analysis has nothing to report here yet -- not because
+        # counting its findings would be expensive (a grouped COUNT(*) never
+        # was), but because a run that has not closed cleanly has not
+        # finished recording them.
+        r["findings"] = (finding_counts.get(r["id"], 0)
+                         if r["state"] in ("done", "capped") else None)
         runs.append(r)
 
     print(json.dumps({
@@ -879,13 +914,16 @@ def cmd_project_data(args):
         "header": {"profile": default_profile, "branch": branch,
                    "branch_fell_back": fell_back,
                    "lines_of_code": (latest or {}).get("lines_of_code", 0),
-                   "last_analysis": (latest or {}).get("started", 0)},
+                   "last_analysis": (latest or {}).get("started", 0)
+                                    or (runs[0]["started"] if runs else 0)},
         "tabs": {"overview": {"posture": posture, "checklist": checklist_counts,
-                              "state": (latest or {}).get("state", "")},
+                              "state": (latest or {}).get("state", ""),
+                              "attempted": bool(runs)},
                  "runs": runs},
         "sidebar": {"donut": queries.severity_totals(conn, project=args.project),
                    "categories": queries.top_categories(conn, project=args.project),
-                   "activity": ledger.events_for(conn, project=args.project, limit=5)}}))
+                   "activity": ledger.events_for(conn, project=args.project, limit=5),
+                   "branch_count": queries.analysed_branch_count(conn, args.project)}}))
 
 
 def cmd_event(args):

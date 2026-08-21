@@ -297,6 +297,110 @@ def test_project_rows_of_a_never_analysed_project_carries_no_state(conn):
     assert rows[0]["last_state"] == ""
 
 
+# ---- review fix (MINOR): "Never analysed" was shown to a project whose
+# analyses all failed. `most_recent_started` is the shared fallback that lets
+# `project_rows` (index screen) and `cmd_project_data` (project screen) both
+# tell "never touched" apart from "attempted, never finished" with the same
+# one-line `or most_recent_started(...)`.
+
+def test_most_recent_started_of_a_project_with_no_analyses_is_zero(conn):
+    assert queries.most_recent_started(conn, "nothing-yet") == 0
+
+
+def test_most_recent_started_reads_a_failed_analysis(conn):
+    """`default_branch_posture`'s own `latest` only ever considers
+    done/capped rows, so a project whose every analysis failed reads as
+    though it had never been analysed at all through that alone -- this is
+    the fallback that tells the two apart."""
+    aid = _analysis(conn, "main", state="failed", findings=[])
+    row = conn.execute("SELECT started FROM analysis WHERE id=?", (aid,)).fetchone()
+    assert queries.most_recent_started(conn, "web") == row["started"]
+
+
+def test_most_recent_started_is_scoped_to_the_project(conn):
+    """Containment probe: another project's analysis must not leak in."""
+    _analysis(conn, "main", state="failed", project="other", findings=[])
+    assert queries.most_recent_started(conn, "web") == 0
+
+
+def test_project_rows_last_started_falls_back_to_a_failed_attempt(conn):
+    """The rendering-facing half: `last_started` must carry the failed
+    attempt's own time rather than 0, which secIndexProjectRow's else-branch
+    would otherwise render as `fmtAgo(0)` ("never") right beside the
+    project's own analyses count saying there WAS one."""
+    aid = _analysis(conn, "main", state="failed", findings=[])
+    row = conn.execute("SELECT started FROM analysis WHERE id=?", (aid,)).fetchone()
+
+    rows = queries.project_rows(conn, [{"name": "web", "base": "main", "description": ""}])
+
+    assert rows[0]["last_started"] == row["started"]
+    assert rows[0]["last_state"] == "", "no finished analysis -- last_state stays empty"
+    assert rows[0]["analyses"] == 1
+
+
+# ---- review fix (IMPORTANT): the Runs table's FINDINGS column used to cost
+# one checklist() call per done/capped row. finding_counts_by_analysis is a
+# plain, grouped COUNT(*) -- one query for the whole project, never one per
+# row, and never filtered by state.
+
+def test_finding_counts_by_analysis_is_one_query_for_the_whole_project(conn):
+    """Regression guard for the measured cost: five done analyses on one
+    branch used to mean five separate checklist() calls (findings_of x2, a
+    history scan, decisions_for, EACH) from the Runs-tab loop. This is one
+    grouped query, however many analyses exist."""
+    for _ in range(5):
+        _analysis(conn, "main", findings=[("high", "sast"), ("low", "hygiene")])
+    statements = []
+    conn.set_trace_callback(statements.append)
+    try:
+        counts = queries.finding_counts_by_analysis(conn, "web")
+    finally:
+        conn.set_trace_callback(None)
+    assert len(statements) == 1, \
+        f"expected exactly one grouped query, got {len(statements)}: {statements}"
+    assert len(counts) == 5 and all(c == 2 for c in counts.values()), counts
+
+
+def test_finding_counts_by_analysis_is_scoped_to_the_project(conn):
+    _analysis(conn, "main", project="web", findings=[("high", "sast")])
+    aid_other = _analysis(conn, "main", project="other", findings=[("critical", "secret")] * 3)
+    counts = queries.finding_counts_by_analysis(conn, "web")
+    assert aid_other not in counts, "another project's analysis leaked into the count"
+
+
+def test_finding_counts_by_analysis_counts_a_running_analysiss_partial_findings_too(conn):
+    """The function itself gates on nothing -- `cmd_project_data` is what
+    decides a running/failed row shows no number yet (see its own comment);
+    this is a plain COUNT(*), so it must count whatever is actually in the
+    ledger for an id, regardless of the analysis's own state."""
+    aid = _analysis(conn, "main", state="running", findings=[("high", "sast")])
+    counts = queries.finding_counts_by_analysis(conn, "web")
+    assert counts[aid] == 1
+
+
+# ---- review fix (IMPORTANT): two different "posture" numbers on one screen.
+# analysed_branch_count is the number the project screen's sidebar caption
+# names, so a two-branch project and a one-branch project never look alike.
+
+def test_analysed_branch_count_counts_distinct_finished_branches(conn):
+    _analysis(conn, "main", findings=[("high", "sast")])
+    _analysis(conn, "develop", findings=[("low", "hygiene")])
+    assert queries.analysed_branch_count(conn, "web") == 2
+
+
+def test_analysed_branch_count_ignores_a_branch_with_no_finished_analysis(conn):
+    """Containment probe: a branch that only ever failed must not inflate
+    the count the sidebar caption reports -- `severity_totals`/
+    `top_categories` never roll up anything from it either."""
+    _analysis(conn, "main", findings=[("high", "sast")])
+    _analysis(conn, "develop", state="failed", findings=[])
+    assert queries.analysed_branch_count(conn, "web") == 1
+
+
+def test_analysed_branch_count_of_an_unanalysed_project_is_zero(conn):
+    assert queries.analysed_branch_count(conn, "nothing-yet") == 0
+
+
 def test_recent_analyses_newest_first_open_only_for_finished(conn):
     aid_old = _analysis(conn, "main", findings=[("high", "sast")])
     aid_running = _analysis(conn, "main", state="running", findings=[])

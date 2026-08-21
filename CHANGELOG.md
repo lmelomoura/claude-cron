@@ -101,6 +101,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   longer imported by anything, is removed along with the one test that
   pinned its internals.
 
+  A follow-up review closed four issues before this shipped. The Overview's
+  one-branch posture and the sidebar's every-analysed-branch donut/
+  categories are two different, equally true answers to two different
+  questions — a two-branch project used to show both with nothing saying
+  why they disagreed. The Overview now names which branch its posture
+  describes (with the same fell-back cue the header already carries), and
+  the sidebar says how many analysed branches its own numbers span, never
+  implying more than one when a project has exactly one. The Runs tab's
+  FINDINGS column used to cost one `checklist()` call — two `findings_of`
+  passes, a fingerprint-history scan, `decisions_for` — per done/capped row:
+  169 SQL statements for Minerva's own two finished analyses, growing with
+  every analysis a project ever accumulates (270, for a synthetic 15-analysis
+  history built for this fix), and recomputed from scratch by the page's own
+  4-second poll for the whole length of every live analysis. A single
+  grouped `COUNT(*)` (`finding_counts_by_analysis`) replaces it — 124 and 27
+  SQL statements respectively — and the number it reports is now what an
+  analysis actually recorded, not an `is_open` filter that quietly shrank an
+  already-closed run's own row the moment a later decision resolved one of
+  its findings. The poll itself no longer re-fetches the whole payload every
+  tick either: a tick that finds the same running/not-running shape as the
+  one before it skips the refresh, since nothing in the header, tabs or
+  sidebar can have moved until a run actually finishes; every other caller
+  (opening the project, an action just taken) still forces it. And a project
+  whose every analysis failed used to read "Never analysed" exactly like one
+  that had never been touched, even though its own Runs tab listed the
+  attempts — the header and the Overview pane now fall back to the most
+  recent attempt of any state and say when it happened, and the index
+  screen's project table (which had the identical gap) gets the same
+  one-line fix.
+
 - **The findings browser has a query.** `queries.finding_rows` unions one
   checklist per branch — the latest finished analysis of each — which is what
   lets the browser show a state at all: it is the state that branch's newest

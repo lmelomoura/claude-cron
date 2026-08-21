@@ -1966,10 +1966,13 @@ def test_project_data_survives_a_ledger_that_does_not_exist_yet(tmp_path):
     assert out["tabs"]["overview"]["posture"] == {
         "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0, "total": 0}
     assert out["tabs"]["overview"]["state"] == ""
+    assert out["tabs"]["overview"]["attempted"] is False, \
+        "nothing has ever been analysed -- attempted must be false, not just state==''"
     assert out["tabs"]["runs"] == []
     assert out["sidebar"]["donut"]["total"] == 0
     assert out["sidebar"]["categories"] == []
     assert out["sidebar"]["activity"] == []
+    assert out["sidebar"]["branch_count"] == 0
 
 
 def test_project_data_defaults_the_profile_when_none_is_declared(tmp_path):
@@ -1996,9 +1999,11 @@ def test_project_data_reports_current_posture_and_checklist_counts(tmp_path):
     assert out["tabs"]["overview"]["checklist"]["new"] == 1
     assert sum(out["tabs"]["overview"]["checklist"].values()) == 1
     assert [r["id"] for r in out["tabs"]["runs"]] == [aid]
-    assert out["tabs"]["runs"][0]["open"] == 1
+    assert out["tabs"]["runs"][0]["findings"] == 1
     assert out["sidebar"]["donut"]["high"] == 1
     assert out["sidebar"]["categories"] == [{"rule": "sql-injection", "count": 1}]
+    assert out["sidebar"]["branch_count"] == 1
+    assert out["tabs"]["overview"]["attempted"] is True
 
 
 def test_project_data_lines_of_code_is_a_property_of_the_latest_analysis(tmp_path):
@@ -2041,7 +2046,7 @@ def test_project_data_marks_the_overview_state_when_latest_analysis_is_capped(tm
 
 def test_project_data_runs_tab_matches_the_list_verb(tmp_path):
     """The Runs tab is `cmd_list`'s own query -- same rows, same order --
-    plus an `open` count folded in, so it can be checked directly against
+    plus a `findings` count folded in, so it can be checked directly against
     `claude-cron security list --project <name>`."""
     db = tmp_path / "security.db"
     finished_analysis(db, tmp_path, "web", "main", rule="a")
@@ -2052,9 +2057,9 @@ def test_project_data_runs_tab_matches_the_list_verb(tmp_path):
 
     assert [r["id"] for r in out["tabs"]["runs"]] == [r["id"] for r in listed]
     assert [r["state"] for r in out["tabs"]["runs"]] == [r["state"] for r in listed]
-    # The running row (no finished baseline) carries no posture yet.
+    # The running row (no finished baseline) reports no findings count yet.
     running = next(r for r in out["tabs"]["runs"] if r["state"] == "running")
-    assert running["open"] is None
+    assert running["findings"] is None
 
 
 def test_project_data_sidebar_activity_carries_the_projects_own_events(tmp_path):
@@ -2081,3 +2086,133 @@ def test_project_data_is_read_only_and_reachable_by_the_agent(tmp_path):
     out = run(db, "project-data", "--project", "web", "--base", "", "--default-profile", "",
              env=AS_AGENT)
     assert out["project"] == "web"
+
+
+# ---- review fix: two different "posture" numbers on one screen, with
+# nothing saying why they differ. The Overview posture is ONE branch
+# (default_branch_posture's own choice); the sidebar donut/categories span
+# EVERY analysed branch. `branch_count` is the number the sidebar's own
+# caption names.
+
+def test_project_data_sidebar_names_how_many_branches_it_spans(tmp_path):
+    """A two-branch project: the Overview posture (main) and the sidebar
+    donut (both branches) are DIFFERENT, equally true totals -- this asserts
+    the number that lets the page say so, rather than the two panels
+    disagreeing with nothing on screen explaining why."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", severity="critical", rule="a")
+    finished_analysis(db, tmp_path, "web", "develop", severity="low", rule="b")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    assert out["header"]["branch"] == "main"
+    assert out["tabs"]["overview"]["posture"] == {
+        "critical": 1, "high": 0, "medium": 0, "low": 0, "info": 0, "total": 1}
+    assert out["sidebar"]["donut"] == {
+        "critical": 1, "high": 0, "medium": 0, "low": 1, "info": 0, "total": 2}
+    assert out["sidebar"]["branch_count"] == 2
+
+
+def test_project_data_sidebar_branch_count_is_one_for_a_single_branch_project(tmp_path):
+    """Containment probe: a project with only one analysed branch must not
+    report a count that could be misread as spanning more than it does."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", severity="high", rule="a")
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+    assert out["sidebar"]["branch_count"] == 1
+
+
+# ---- review fix: the Runs table's FINDINGS column used to cost one
+# checklist() call per done/capped row (findings_of x2, a history scan,
+# decisions_for) -- scaling with total findings across every historical
+# analysis. It is now a plain COUNT(*), grouped once for the whole project
+# (queries.finding_counts_by_analysis) -- which also means the number is no
+# longer filtered by is_open, only by what the ledger actually recorded.
+
+def test_project_data_findings_count_is_a_raw_total_not_an_open_filter(tmp_path):
+    """Before this fix, the Runs tab's count came from checklist()'s
+    is_open filter -- so accepting a finding's risk made an already-closed
+    analysis's own historical row silently shrink its findings count, even
+    though nothing about what that run recorded had changed. FAILS before
+    the fix (the old `open` computation drops to 0 once the decision is
+    recorded) and PASSES after (a plain COUNT(*) never moves)."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", severity="high", rule="r")
+
+    before = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+    assert before["tabs"]["runs"][0]["findings"] == 1
+
+    fp = fingerprint_for("web", "main", "r")
+    run(db, "decide", "--project", "web", "--fingerprint", fp,
+        "--state", "accepted", "--reason", "risk accepted")
+
+    after = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+    assert after["tabs"]["runs"][0]["findings"] == 1, \
+        "the run's own findings count must not shrink because a later decision accepted it"
+    # The Overview's checklist counts, by contrast, DO move -- proving this
+    # is a deliberate split (findings vs. current posture), not a broken
+    # decision flow.
+    assert after["tabs"]["overview"]["checklist"]["accepted"] == 1
+
+
+def test_project_data_runs_findings_count_is_per_analysis_not_shared(tmp_path):
+    """Two separate done analyses of the SAME branch, each with its own
+    findings recorded directly against its own row -- `findings` must be
+    each analysis's OWN count, not the grouped query bleeding a later
+    analysis's rows into an earlier one's total."""
+    db = tmp_path / "security.db"
+    a1 = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main", run_id="r1")
+    run(db, "report-finding", "--analysis", str(a1), stdin=json.dumps({
+        "fingerprint": fingerprint_for("web", "main", "r1a"), "category": "sast",
+        "rule": "r1a", "severity": "high", "title": "t"}))
+    run(db, "report-finding", "--analysis", str(a1), stdin=json.dumps({
+        "fingerprint": fingerprint_for("web", "main", "r1b"), "category": "sast",
+        "rule": "r1b", "severity": "low", "title": "t"}))
+    run(db, "finish", "--analysis", str(a1), "--state", "done")
+
+    a2 = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main", run_id="r2")
+    run(db, "report-finding", "--analysis", str(a2), stdin=json.dumps({
+        "fingerprint": fingerprint_for("web", "main", "r1a"), "category": "sast",
+        "rule": "r1a", "severity": "high", "title": "t"}))
+    run(db, "finish", "--analysis", str(a2), "--state", "done")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+    by_id = {r["id"]: r["findings"] for r in out["tabs"]["runs"]}
+    assert by_id[a1] == 2, f"a1 recorded 2 findings: {by_id}"
+    assert by_id[a2] == 1, f"a2 recorded 1 finding (r1b was fixed): {by_id}"
+
+
+# ---- review fix (MINOR): "Never analysed" was shown to a project whose
+# analyses all failed, even though its own Runs tab plainly lists the
+# attempts. `attempted` distinguishes never-attempted from
+# attempted-and-never-finished; `header.last_analysis` falls back to the
+# most recent attempt of any state when there is no finished baseline.
+
+def test_project_data_marks_a_project_as_attempted_when_every_analysis_failed(tmp_path):
+    db = tmp_path / "security.db"
+    aid = open_analysis(db, project="web", repo="web", branch="main", run_id="r1")
+    run(db, "finish", "--analysis", str(aid), "--state", "failed")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    assert out["tabs"]["overview"]["state"] == "", \
+        "no finished analysis exists -- state must stay empty"
+    assert out["tabs"]["overview"]["attempted"] is True, \
+        "a failed analysis is still an attempt, not silence"
+    assert out["header"]["last_analysis"] > 0, \
+        "the header must show WHEN the failed attempt happened, not read as never analysed"
+    assert [r["id"] for r in out["tabs"]["runs"]] == [aid]
+
+
+def test_project_data_a_project_with_no_analyses_of_its_own_is_not_marked_attempted(tmp_path):
+    """Containment probe: a DIFFERENT project having analyses in the same
+    ledger must not make this one look attempted."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db, project="other", repo="other", branch="main", run_id="r1")
+    run(db, "finish", "--analysis", str(aid), "--state", "failed")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    assert out["tabs"]["overview"]["attempted"] is False
+    assert out["header"]["last_analysis"] == 0
+    assert out["tabs"]["runs"] == []

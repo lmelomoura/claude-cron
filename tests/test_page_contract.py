@@ -138,6 +138,45 @@ def _plainfn(js, name):
     raise AssertionError(f"unterminated {name}")
 
 
+def _anyfn(js, name):
+    """Same brace-matching as _plainfn, but keeps a leading `async ` when the
+    declaration has one -- for a function that is both async AND takes
+    arguments, which neither _fn (exact zero-arg `async function NAME()`
+    only) nor _plainfn (finds `function NAME(` and so drops the `async`
+    keyword that precedes it) can extract whole. Extracting `await` inside a
+    function missing its own `async` is a SyntaxError in Node, not a runtime
+    surprise -- so this has to keep the keyword, not merely tolerate its
+    absence."""
+    i = js.index(f"function {name}(")
+    if js[max(0, i - 6):i] == "async ":
+        i -= 6
+    d, j = 0, js.index("{", i)
+    for k in range(j, len(js)):
+        d += (js[k] == "{") - (js[k] == "}")
+        if d == 0:
+            return js[i:k + 1]
+    raise AssertionError(f"unterminated {name}")
+
+
+def _const(js, name):
+    """The verbatim source of `const NAME = [...]` or `const NAME = {...}`,
+    open/close matched the same way _fn/_plainfn match braces -- so a value
+    is captured whole regardless of what punctuation it contains, rather
+    than a regex that stops at the first `]`/`}`/`;` inside it."""
+    i = js.index(f"const {name} =")
+    j = js.index("=", i) + 1
+    while js[j] in " \n\t":
+        j += 1
+    opener = js[j]
+    closer = {"[": "]", "{": "}"}[opener]
+    d = 0
+    for k in range(j, len(js)):
+        d += (js[k] == opener) - (js[k] == closer)
+        if d == 0:
+            return js[i:k + 1] + ";\n"
+    raise AssertionError(f"unterminated {name}")
+
+
 CWD = "/x/web"
 ROW = {"name": "web", "path": CWD, "base": "develop"}
 
@@ -1077,10 +1116,18 @@ class FakeNode {
   constructor(){ this.childNodes = []; }
   appendChild(c){ this.childNodes.push(c); return c; }
   get textContent(){
-    if(this.childNodes.length) return this.childNodes.map(c => c.textContent).join("");
-    return this._text || "";
+    return this.childNodes.map(c => c.textContent).join("");
   }
-  set textContent(v){ this.childNodes = []; this._text = String(v); }
+  // Real DOM: assigning .textContent REPLACES a node's children with a
+  // single new Text node -- it does not just remember a string on the side
+  // that a later appendChild would silently shadow. Getting this wrong (an
+  // earlier version of this stub tracked a separate `_text` fallback, read
+  // only while childNodes stayed empty) made secEl(tag, cls, "some text")
+  // followed by a later .appendChild(...) -- secOverviewCaption's own
+  // "Posture of X" + a conditional fell-back span -- lose "some text"
+  // entirely the moment the second child was appended, which no browser
+  // ever would.
+  set textContent(v){ this.childNodes = [new FakeText(String(v))]; }
 }
 class FakeElement extends FakeNode {
   constructor(tag){
@@ -1092,6 +1139,7 @@ class FakeElement extends FakeNode {
 }
 class FakeText extends FakeNode {
   constructor(t){ super(); this._text = String(t); }
+  get textContent(){ return this._text; }
 }
 const document = {
   createElement: (tag) => new FakeElement(tag),
@@ -1251,6 +1299,239 @@ def test_the_critical_and_high_kpi_cards_flag_incomplete_contributors(srv, tmp_p
         f"no note names the incomplete contributor: {notes}"
     assert not any(n == "Open now, in every project's latest analysis" for n in notes), \
         "the plain note still shows even though a project's latest analysis is capped"
+
+# ---- the project screen's own renderer (ui/security/project-screen.js).
+# index-screen.js has the five Node-driven DOM tests above; this module had
+# none, so a regression in the dash-for-zero check, the capped notice, tab
+# hiding, or the two scope captions would have passed the whole suite. Same
+# harness as _INDEX_DOM_HARNESS, extended with a tiny `$(id)` registry --
+# project-screen.js reaches for real DOM ids (`sec-pj-head`,
+# `sec-pj-overview`, ...) the way the real page's markup provides them,
+# where the index screen's own builder functions only ever return a node to
+# their caller and never look one up themselves.
+
+_PROJECT_DOM_HARNESS = _INDEX_DOM_HARNESS + """
+// classList is untouched by _INDEX_DOM_HARNESS's FakeElement (nothing there
+// needed it) -- secRenderTabs toggles an "active" class on the tab buttons,
+// so .toggle() has to exist and not throw; these tests never inspect it.
+FakeElement.prototype.classList = { toggle(){} };
+// project-screen.js imports $ and these page.js bindings directly (not
+// through dom.js) -- fmtWhen/openProjectEditor are stubbed the same
+// deliberately trivial way _INDEX_DOM_HARNESS already stubs fmtAgo/fmtDur:
+// these tests are about the branch name, the notice text and which pane is
+// hidden, not relative-time formatting or the project editor.
+function fmtWhen(t){ return "w" + String(t); }
+function openProjectEditor(_name){}
+const secState = { project: "web" };
+// A registry standing in for the real page's markup: $(id) in
+// project-screen.js reaches for these ids the way document.getElementById
+// would on the real page.
+const _els = {};
+function $(id){
+  if(!_els[id]) _els[id] = new FakeElement("div");
+  return _els[id];
+}
+"""
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_project_header_renders_a_dash_not_zero_for_lines_of_code(srv, tmp_path):
+    """`lines_of_code: 0` means "not counted" (every analysis before the
+    column existed, or a project never analysed) -- rendering a bare `0`
+    would read as an empty repository instead."""
+    block = _security_js(srv)
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("secEl", "secIcon", "secHeaderBit", "secRenderProjectHeader"))
+    script = tmp_path / "pj-loc.js"
+    script.write_text(_PROJECT_DOM_HARNESS + deps + """
+    secRenderProjectHeader({header: {profile: "standard", branch: "main",
+      branch_fell_back: false, lines_of_code: 0, last_analysis: 0}});
+    console.log(JSON.stringify(collectAll(_els["sec-pj-head"], [])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    texts = [r["text"] for r in out]
+    assert "—" in texts, f"no dash rendered for lines_of_code: 0: {texts}"
+    assert "0" not in texts, f"a bare 0 rendered where a dash belongs: {texts}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_a_capped_latest_analysis_renders_the_incompleteness_notice(srv, tmp_path):
+    """THE SAME notice secPaint gives on the old analysis screen and the
+    index screen gives on a project row -- a capped analysis is a PARTIAL
+    read, so the posture underneath is what it had reached, not what is
+    there."""
+    block = _security_js(srv)
+    consts = (_const(block, "SEC_STATES") + _const(block, "SEC_STATE_LABEL")
+             + _const(block, "SEC_STATE_HELP"))
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("secEl", "secIcon", "secIndexPosturePills", "secOverviewCaption",
+                      "secRenderProjectOverview"))
+    script = tmp_path / "pj-capped.js"
+    script.write_text(_PROJECT_DOM_HARNESS + consts + deps + """
+    secRenderProjectOverview({
+      header: {branch: "main", branch_fell_back: false},
+      tabs: {overview: {state: "capped", attempted: true,
+        posture: {critical: 1, high: 0, medium: 0, low: 0, info: 0, total: 1},
+        checklist: {new: 0, regressed: 0, open: 1, partial: 0, pending: 0,
+                    fixed: 0, accepted: 0, false_positive: 0}}}});
+    console.log(JSON.stringify(collectAll(_els["sec-pj-overview"], [])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    joined = " ".join(r["text"] for r in out)
+    assert "INCOMPLETE" in joined, f"no incompleteness notice rendered: {joined}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_switching_project_tabs_shows_one_pane_and_hides_the_other(srv, tmp_path):
+    block = _security_js(srv)
+    deps = _plainfn(block, "secRenderTabs") + "\n" + _plainfn(block, "secSwitchProjectTab")
+    script = tmp_path / "pj-tabs.js"
+    script.write_text(_PROJECT_DOM_HARNESS + """
+    let secProjectTab = "overview";
+    """ + deps + """
+    secRenderTabs();
+    const initial = {ov: _els["sec-pj-overview"].hidden, rn: _els["sec-pj-runs"].hidden};
+    secSwitchProjectTab("runs");
+    const onRuns = {ov: _els["sec-pj-overview"].hidden, rn: _els["sec-pj-runs"].hidden};
+    secSwitchProjectTab("overview");
+    const backToOverview = {ov: _els["sec-pj-overview"].hidden, rn: _els["sec-pj-runs"].hidden};
+    console.log(JSON.stringify({initial, onRuns, backToOverview}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["initial"] == {"ov": False, "rn": True}, "Overview must be the default pane"
+    assert out["onRuns"] == {"ov": True, "rn": False}, "switching to Runs must hide Overview"
+    assert out["backToOverview"] == {"ov": False, "rn": True}, \
+        "switching back must hide Runs again, not leave both visible"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_two_scope_captions_name_the_branch_and_the_branch_count(srv, tmp_path):
+    """Finding 1's fix: the Overview posture is ONE branch
+    (default_branch_posture's own choice); the sidebar donut/categories span
+    EVERY analysed branch. Both captions have to say so, by name and by
+    count, or a two-branch project's different totals read as a silent
+    disagreement -- and a one-branch project's caption must not imply more
+    branches exist than it has (the containment half, in the same test since
+    both captions come from the same two small functions)."""
+    block = _security_js(srv)
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("secEl", "secOverviewCaption", "secSidebarCaption"))
+    script = tmp_path / "pj-captions.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    const fellBack = secOverviewCaption({branch: "develop", branch_fell_back: true});
+    const plain = secOverviewCaption({branch: "main", branch_fell_back: false});
+    const two = secSidebarCaption(2);
+    const one = secSidebarCaption(1);
+    const none = secSidebarCaption(0);
+    console.log(JSON.stringify({
+      fellBack: collectAll(fellBack, []).map(r => r.text).join(" "),
+      plain: collectAll(plain, []).map(r => r.text).join(" "),
+      two: collectAll(two, []).map(r => r.text).join(" "),
+      one: collectAll(one, []).map(r => r.text).join(" "),
+      none: collectAll(none, []).map(r => r.text).join(" "),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert "develop" in out["fellBack"] and "fell back" in out["fellBack"], out["fellBack"]
+    assert "main" in out["plain"] and "fell back" not in out["plain"], out["plain"]
+    assert "2" in out["two"] and "branches" in out["two"], out["two"]
+    assert "only analysed branch" in out["one"], \
+        f"a single analysed branch must say so plainly: {out['one']}"
+    assert "branches" not in out["one"], \
+        f"a single-branch caption must not read as spanning several: {out['one']}"
+    assert "0" not in out["none"], f"zero branches must not render a bare 0: {out['none']}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_overview_tells_never_analysed_apart_from_never_finished(srv, tmp_path):
+    """Finding 4's fix: a project whose every analysis failed has `state:
+    ""` (no finished baseline) exactly like a project that was never
+    touched, but `attempted: true` -- the Overview pane must show a
+    different sentence for the two, not the same "Never analysed" over a
+    Runs tab that lists real attempts."""
+    block = _security_js(srv)
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("secEl", "secIcon", "secOverviewCaption", "secRenderProjectOverview"))
+    script = tmp_path / "pj-attempted.js"
+    script.write_text(_PROJECT_DOM_HARNESS + deps + """
+    secRenderProjectOverview({header: {}, tabs: {overview: {state: "", attempted: false}}});
+    const untouched = _els["sec-pj-overview"].textContent;
+    _els["sec-pj-overview"] = new FakeElement("div");
+    secRenderProjectOverview({header: {}, tabs: {overview: {state: "", attempted: true}}});
+    const failed = _els["sec-pj-overview"].textContent;
+    console.log(JSON.stringify({untouched, failed}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert "Never analysed" in out["untouched"]
+    assert "Never analysed" not in out["failed"], \
+        f"a project with only failed attempts still says Never analysed: {out['failed']}"
+    assert out["untouched"] != out["failed"]
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_project_poll_tick_skips_a_refresh_when_nothing_could_have_changed(srv, tmp_path):
+    """Finding 2's other half: the root query-count fix (see
+    tests/security/test_cli.py and test_queries.py) made a single
+    project-data fetch cheap, but secReload() still called
+    secRefreshProject() on every 4-second poll tick, unconditionally, for the
+    whole length of a live analysis -- re-fetching a payload that provably
+    had not changed. A poll tick now skips it unless the project's
+    running/not-running shape actually moved since the last tick; every
+    other caller (opening the project, an action) still forces it by leaving
+    the argument at its default."""
+    block = _security_js(srv)
+    src = _anyfn(block, "secReload")
+    script = tmp_path / "pj-poll-narrow.js"
+    script.write_text("""
+    let secProjectPollWasRunning = null;
+    const CC = {currentView: "security"};
+    const secState = {project: "web", repo: "web", branch: "main", analysis: null, analyses: []};
+    let refreshCalls = 0;
+    function secRefreshProject(){ refreshCalls++; }
+    function secSyncPoll(){}
+    function secStopPoll(){}
+    async function secShowAnalysis(_id){}
+    let nextAnalyses = [];
+    async function secFetch(_path){ return nextAnalyses; }
+    """ + src + """
+    (async () => {
+      const out = {};
+      nextAnalyses = [{id: 1, repo: "web", branch: "main", state: "running"}];
+      await secReload(false);                 // first poll tick ever -- must refresh
+      out.firstTick = refreshCalls;
+
+      await secReload(false);                 // still running, nothing changed
+      out.steadyWhileRunning = refreshCalls;
+
+      nextAnalyses = [{id: 1, repo: "web", branch: "main", state: "done"}];
+      await secReload(false);                 // the run just finished -- must refresh
+      out.justFinished = refreshCalls;
+
+      await secReload(false);                 // still done, nothing changed
+      out.steadyAfterFinish = refreshCalls;
+
+      await secReload();                      // an action-triggered call -- always forces
+      out.forcedCall = refreshCalls;
+
+      console.log(JSON.stringify(out));
+    })();
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["firstTick"] == 1, "the first poll tick must still refresh once"
+    assert out["steadyWhileRunning"] == 1, \
+        f"a poll tick with no state change must not re-fetch: {out}"
+    assert out["justFinished"] == 2, \
+        f"the run finishing must trigger exactly one more refresh: {out}"
+    assert out["steadyAfterFinish"] == 2, \
+        f"a poll tick after the run is done, with nothing new, must not re-fetch: {out}"
+    assert out["forcedCall"] == 3, "a forced (non-poll) call must always refresh"
+
 
 
 def test_the_runs_table_observes_but_never_manages_a_security_run(srv):

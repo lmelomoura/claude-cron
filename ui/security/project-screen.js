@@ -166,6 +166,35 @@ function secHeaderBit(label, value){
   return span;
 }
 
+/* The Overview tab's own caption: which ONE branch its posture describes.
+   `default_branch_posture` already knows both halves of this (the branch it
+   picked, and whether it had to fall back) -- this is just the Overview
+   pane saying so out loud, in the same wording the header's own branch bit
+   and secIndexProjectRow's tdBranch already use for a fell-back branch, so a
+   reader moving between the header, this caption and the index screen never
+   has to learn a second phrasing of the same fact. */
+function secOverviewCaption(header){
+  const cap = secEl("div", "secpj-caption", "Posture of " + (header.branch || "—"));
+  if(header.branch_fell_back){
+    cap.appendChild(secEl("span", "secidx-fellback",
+      " (fell back — the declared base was never analysed)"));
+  }
+  return cap;
+}
+
+/* The sidebar's own caption: how many branches the donut/categories below
+   actually span. They are severity_totals/top_categories, rolled up across
+   EVERY analysed branch (see queries.py's _open_findings_by_fingerprint) --
+   a different scope from the Overview panel right above, which is one
+   branch only. A project with exactly one analysed branch says so plainly
+   rather than a phrase that could be read as implying more than one. */
+function secSidebarCaption(branchCount){
+  if(!branchCount) return secEl("div", "secpj-caption", "No finished analysis yet.");
+  const scope = branchCount === 1 ? "this project's only analysed branch"
+                                  : "all " + branchCount + " analysed branches";
+  return secEl("div", "secpj-caption", "Posture and categories below span " + scope + ".");
+}
+
 /* -------------------------------------------------------------- overview */
 function secRenderProjectOverview(payload){
   const host = $("sec-pj-overview");
@@ -174,10 +203,22 @@ function secRenderProjectOverview(payload){
   const ov = (payload.tabs || {}).overview || {};
 
   if(!ov.state){
-    host.appendChild(secEl("div", "empty",
-      "Never analysed. Switch to Runs to pick a branch and start."));
+    // `attempted` tells "never analysed" apart from "analysed, nothing has
+    // finished yet" -- a project whose every analysis failed used to read
+    // exactly like one that had never been touched, even though its own
+    // Runs tab plainly lists the attempts.
+    host.appendChild(secEl("div", "empty", ov.attempted
+      ? "No analysis of this project has finished yet — see Runs for what was attempted."
+      : "Never analysed. Switch to Runs to pick a branch and start."));
     return;
   }
+  // Which branch this posture is FOR -- default_branch_posture's own choice
+  // (the project's declared base, or the branch it fell back to). The
+  // sidebar's own donut/categories describe every analysed branch instead
+  // (see secSidebarCaption); without naming the branch here, a multi-branch
+  // project's two different, equally true totals read as a disagreement
+  // rather than two different questions answered.
+  host.appendChild(secOverviewCaption(payload.header || {}));
   if(ov.state === "capped"){
     // THE SAME NOTICE the index screen and the old analysis screen already
     // give: a capped analysis is a PARTIAL read of the repository, so the
@@ -284,7 +325,7 @@ function secRunRow(r){
   tr.appendChild(cell(String(r.commit_sha || "").slice(0, 12)));
   tr.appendChild(cell(r.started && r.ended ? fmtDur(Math.max(0, r.ended - r.started))
                                             : (r.state === "running" ? "running…" : "—")));
-  tr.appendChild(cell(r.open == null ? "—" : String(r.open)));
+  tr.appendChild(cell(r.findings == null ? "—" : String(r.findings)));
   tr.appendChild(cell(r.state));
   tr.appendChild(cell(fmtWhen(r.started)));
   return tr;
@@ -296,6 +337,7 @@ function secRenderProjectSidebar(payload){
   if(!host) return;
   host.textContent = "";
   const sb = payload.sidebar || {};
+  host.appendChild(secSidebarCaption(sb.branch_count || 0));
   host.appendChild(secIndexDonut(sb.donut || {}, sb.categories || []));
   host.appendChild(secProjectActivity(sb.activity || []));
 }
