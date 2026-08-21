@@ -566,24 +566,37 @@ def test_a_resume_is_not_its_own_continuation(srv, tmp_path):
 # rather than jobs -- and the one page on this dashboard that renders strings
 # written by analysed code, which is what most of these are about.
 
-UI_SECURITY = REPO / "ui" / "security"
+UI_ROOT = REPO / "ui"
 
 
-def _security_sources():
-    """Every module of the Security area, sorted, so a scan of "the area" keeps
-    meaning the whole area as it grows a file.
+def _security_sources(root=UI_ROOT):
+    """Every JS module under `root`, sorted, so a scan of "the code that can
+    reach the bundle" keeps meaning the whole tree as it grows a file.
 
-    rglob, not glob: a module landing at ui/security/sub/ or any other nested
-    directory is still bundled (build/ui-digest.sh walks all of ui/) and would
-    otherwise be fingerprinted but never sink-scanned -- the one guard here
-    that would actually catch an innerHTML regression silently skipping the
-    new file. The two guards over "the area" have to agree on what the area
-    is."""
-    return sorted(UI_SECURITY.rglob("*.js"))
+    Defaults to REPO/"ui" as a WHOLE, not ui/security/ alone: build/ui-digest.sh
+    fingerprints `find ui -name '*.js'` -- every file under ui/, not just
+    ui/security/ -- and build/build-ui.sh bundles whatever ui/security/index.js
+    reaches by import, which is free to pull from anywhere under ui/. A module
+    at ui/shared/x.js is therefore hashed and bundleable while living entirely
+    outside ui/security/; a scan confined to that one directory would
+    fingerprint such a file and ship it without ever sink-scanning it -- the
+    one guard here that would actually catch an innerHTML regression, silently
+    skipping the new file. The two guards over "the code that can reach the
+    bundle" have to agree on what that code is, so this walks the same root
+    the digest does.
+
+    `root` is a parameter rather than a hardcoded constant purely so a test
+    can point this at a fabricated tree under `tmp_path` and prove the same
+    reach without ever writing into the real, tracked ui/ directory.
+    """
+    return sorted(root.rglob("*.js"))
 
 
 def _security_js(srv):
-    """The Security area's own source.
+    """The Security area's own source -- concatenated from every module under
+    ui/ (see _security_sources above), not just ui/security/, for the same
+    reason: a shared module living elsewhere under ui/ is exactly as
+    bundleable and exactly as unscanned otherwise.
 
     The whole-page checks below would pass on a page that renders a finding
     safely and a branch name unsafely twelve hundred lines away; these have to
@@ -597,28 +610,83 @@ def _security_js(srv):
     being a guard on a build artefact rather than on what anybody writes.
     """
     files = _security_sources()
-    assert files, f"no Security modules under {UI_SECURITY} -- this guard is reading nothing"
+    assert files, f"no JS modules under {UI_ROOT} -- this guard is reading nothing"
     return "\n".join(f.read_text() for f in files)
 
 
-def test_a_nested_security_module_still_reaches_the_sink_scan():
-    """The digest (build/ui-digest.sh) walks all of ui/ when it fingerprints
-    what the bundle was built from; a scan that only globbed the top level of
-    ui/security/ would bundle and fingerprint a module dropped one directory
-    deeper without ever sink-scanning it -- exactly the shape four upcoming
-    screens are about to add. A real file placed at
-    ui/security/<subdir>/nested.js has to come back from `_security_sources()`,
-    proving the scan is rglob, not glob."""
-    probe_dir = UI_SECURITY / "adversarial_probe"
-    probe_dir.mkdir(exist_ok=True)
-    probe = probe_dir / "nested.js"
-    probe.write_text("el.innerHTML = x;\n")
-    try:
-        assert probe in _security_sources(), \
-            "a module nested under ui/security/ was not picked up by the scan"
-    finally:
-        probe.unlink()
-        probe_dir.rmdir()
+def test_a_nested_security_module_still_reaches_the_sink_scan(tmp_path):
+    """build/ui-digest.sh walks ALL of ui/ when it fingerprints what the
+    bundle was built from, and build-ui.sh bundles whatever
+    ui/security/index.js reaches by import -- neither is confined to
+    ui/security/ itself. A scan that only rglobbed that one directory would
+    bundle and fingerprint a module living anywhere else under ui/ (a shared
+    module at ui/shared/, say) without ever sink-scanning it -- exactly the
+    shape four upcoming screens are about to add.
+
+    Proves the scan's reach with a fabricated file at <root>/shared/x.js
+    inside a scratch `tmp_path`, never touching the real ui/ tree -- an
+    interrupted run here leaves nothing behind, unlike writing the probe
+    straight into the tracked directory these guards exist to keep clean.
+    """
+    nested = tmp_path / "shared" / "x.js"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("el.innerHTML = x;\n")
+    assert nested in _security_sources(tmp_path), \
+        "a module nested beside ui/security/ was not picked up by the scan"
+
+
+def test_the_freshness_digest_covers_the_build_toolchain_not_just_ui_sources(tmp_path):
+    """build/ui-digest.sh is the fingerprint `claude-cron selftest` recomputes
+    to prove the committed bundle was built from the committed sources -- and
+    it hashes build/build-ui.sh and package.json alongside ui/**/*.js on
+    purpose, because a changed esbuild --target or a bumped esbuild pin
+    changes what the committed bytes should be without touching a single file
+    under ui/. Nothing in this suite ever ran the actual script, though, so a
+    future edit narrowing the hash back to ui/**/*.js alone would pass every
+    other test here and only show up in production as a stale bundle nobody
+    was told about.
+
+    Runs the real script against scratch COPIES of its inputs under
+    `tmp_path` -- never the tracked tree -- so this cannot leave anything
+    dirty even on an interrupted run. The script's own `cd
+    "$(dirname "$0")/.."` makes this possible: given an absolute path to a
+    copied ui-digest.sh, it resolves its "repo root" relative to itself, so a
+    copy with the same relative layout (ui/, build/build-ui.sh,
+    build/ui-digest.sh, package.json) is indistinguishable from the real
+    tree to the script.
+    """
+    def _seed(root):
+        shutil.copytree(REPO / "ui", root / "ui")
+        (root / "build").mkdir()
+        shutil.copy(REPO / "build" / "ui-digest.sh", root / "build" / "ui-digest.sh")
+        shutil.copy(REPO / "build" / "build-ui.sh", root / "build" / "build-ui.sh")
+        shutil.copy(REPO / "package.json", root / "package.json")
+
+    def _digest(root):
+        p = subprocess.run(["bash", str(root / "build" / "ui-digest.sh")],
+                            capture_output=True, text=True)
+        assert p.returncode == 0, p.stderr
+        return p.stdout.strip()
+
+    baseline_root = tmp_path / "baseline"
+    _seed(baseline_root)
+    baseline = _digest(baseline_root)
+    assert re.fullmatch(r"[0-9a-f]{64}", baseline), \
+        f"ui-digest.sh did not produce a sha256 against a clean copy: {baseline!r}"
+
+    build_script_root = tmp_path / "changed_build_script"
+    _seed(build_script_root)
+    f = build_script_root / "build" / "build-ui.sh"
+    f.write_text(f.read_text() + "\n# a toolchain change no ui/ file would show\n")
+    assert _digest(build_script_root) != baseline, \
+        "the digest did not change when build/build-ui.sh changed"
+
+    package_json_root = tmp_path / "changed_package_json"
+    _seed(package_json_root)
+    f = package_json_root / "package.json"
+    f.write_text(f.read_text().replace('"0.25.0"', '"0.25.1"'))
+    assert _digest(package_json_root) != baseline, \
+        "the digest did not change when package.json changed"
 
 
 def test_the_security_view_exists_and_is_registered(srv):
@@ -662,7 +730,7 @@ def test_the_security_ui_never_builds_dom_from_html_strings():
     sinks = ("innerHTML", "insertAdjacentHTML", "outerHTML",
              "createContextualFragment", "DOMParser", 'setAttribute("on')
     files = _security_sources()
-    assert files, f"no Security modules under {UI_SECURITY} -- this guard is reading nothing"
+    assert files, f"no JS modules under {UI_ROOT} -- this guard is reading nothing"
     for src in files:
         text = src.read_text()
         for sink in sinks:
