@@ -739,6 +739,60 @@ def cmd_analysis(args):
     print(json.dumps(dict(row)))
 
 
+def cmd_index_data(args):
+    """Every panel the Security index screen draws, in one call.
+
+    `--projects` is a JSON array of `{name, base, description}` -- read from
+    projects.json by the server (this file never touches that path) and
+    handed here so `project_rows` has the two things the ledger does not
+    know about a project: its declared base branch and its description.
+
+    Read-only, via `queries.read_only`, deliberately NOT `ledger.connect`:
+    the latter creates the ledger's schema on first use, and a screen that
+    is only ever LOOKING must not conjure the file it is asking about into
+    existence. `read_only` returning None is "nobody has ever run an
+    analysis" -- answered here as the same empty-but-shaped document a real
+    ledger with nothing in it would produce, never a crash and never a
+    partially-written database file as a side effect of a page load.
+
+    `recent`, `donut` and `categories` are deliberately NOT scoped to
+    `--projects` the way `summary` and `projects` are: `index_summary` and
+    `project_rows` answer "the fleet as configured right now", but the
+    recent-analyses feed and the severity rollup are activity views over
+    the whole ledger, the same one `security list`/`security checklist`
+    already read without a project filter of their own.
+    """
+    try:
+        projects = json.loads(args.projects)
+    except (ValueError, RecursionError) as exc:
+        sys.exit(f"index-data: --projects is not valid JSON: {exc}")
+    if not isinstance(projects, list) or any(not isinstance(p, dict) for p in projects):
+        sys.exit("index-data: --projects must be a JSON array of objects")
+
+    conn = queries.read_only(args.db)
+    if conn is None:
+        print(json.dumps({
+            "summary": {"projects": len(projects), "analyses": 0, "critical": 0,
+                       "high": 0, "success_rate": None},
+            "projects": [{
+                "name": p.get("name", ""), "description": p.get("description", ""),
+                "branch": p.get("base", "") or "", "branch_fell_back": False,
+                "posture": queries._empty_posture(), "profile": "",
+                "last_started": 0, "last_duration": 0, "analyses": 0, "trend": [],
+            } for p in projects],
+            "recent": [], "donut": queries._empty_posture(), "categories": []}))
+        return
+
+    names = [p.get("name", "") for p in projects]
+    print(json.dumps({
+        "summary": queries.index_summary(conn, names),
+        "projects": queries.project_rows(conn, projects),
+        "recent": queries.recent_analyses(conn),
+        "donut": queries.severity_totals(conn),
+        "categories": queries.top_categories(conn),
+    }))
+
+
 def cmd_event(args):
     try:
         ledger.record_event(_conn(args), args.project, args.kind,
@@ -862,6 +916,12 @@ def main(argv=None):
 
     ls = sub.add_parser("list", parents=[dbflag]); ls.set_defaults(fn=cmd_list)
     ls.add_argument("--project", required=True)
+
+    # Deliberately absent from AGENT_FORBIDDEN: read-only, same reasoning as
+    # `findings`, `fingerprint`, `list` and `analysis` above -- it opens the
+    # ledger through `queries.read_only` and writes nothing.
+    ix = sub.add_parser("index-data", parents=[dbflag]); ix.set_defaults(fn=cmd_index_data)
+    ix.add_argument("--projects", required=True)
 
     # Deliberately absent from AGENT_FORBIDDEN: it prints one row and writes
     # nothing, the same reasoning as `fingerprint` and `findings` above.

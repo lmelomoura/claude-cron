@@ -1769,3 +1769,128 @@ def test_main_computes_the_agent_key_with_no_hardcoded_special_case():
     src = inspect.getsource(security_cli.main)
     assert 'if key == "' not in src
     assert "args.filters_action" not in src
+
+
+# ------------------------------------------------------------ the index screen
+
+def finished_analysis(db, tmp_path, project, branch, severity="high", rule="r"):
+    """A `done` analysis of `project`/`branch` carrying one reported finding.
+
+    Uses `prepared_analysis` so `finish --state done` is not silently
+    downgraded to `capped` (see `cmd_finish`) -- a test about current posture
+    has to start from a row the close actually accepted as done."""
+    aid = prepared_analysis(db, tmp_path, project=project, repo=project, branch=branch)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": fingerprint_for(project, branch, rule), "category": "sast",
+        "rule": rule, "severity": severity, "title": "t", "rationale": "r"}))
+    run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "0.5")
+    return aid
+
+
+def fingerprint_for(*parts):
+    return compute_fingerprint("sast", "-".join(parts), "app.py", "")
+
+
+def test_index_data_survives_a_ledger_that_does_not_exist_yet(tmp_path):
+    """Nobody has run an analysis of anything -- `index-data` must not create
+    the ledger file just to answer the index screen, and the screen it hands
+    back is empty with a sentence, not a 500."""
+    db = tmp_path / "security.db"
+    assert not db.exists()
+    out = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": "d"}]))
+    assert not db.exists()
+    assert out["summary"] == {"projects": 1, "analyses": 0, "critical": 0,
+                              "high": 0, "success_rate": None}
+    assert out["projects"] == [{
+        "name": "web", "description": "d", "branch": "main",
+        "branch_fell_back": False,
+        "posture": {"critical": 0, "high": 0, "medium": 0, "low": 0,
+                    "info": 0, "total": 0},
+        "profile": "", "last_started": 0, "last_duration": 0,
+        "analyses": 0, "trend": []}]
+    assert out["recent"] == []
+    assert out["donut"] == {"critical": 0, "high": 0, "medium": 0, "low": 0,
+                            "info": 0, "total": 0}
+    assert out["categories"] == []
+
+
+def test_index_data_reports_current_posture_for_the_projects_given(tmp_path):
+    db = tmp_path / "security.db"
+    aid = finished_analysis(db, tmp_path, "web", "main", severity="high", rule="sql-injection")
+
+    out = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": "d"}]))
+
+    assert out["summary"] == {"projects": 1, "analyses": 1, "critical": 0,
+                              "high": 1, "success_rate": 1.0}
+    row = out["projects"][0]
+    assert row["name"] == "web"
+    assert row["branch"] == "main"
+    assert row["branch_fell_back"] is False
+    assert row["posture"]["high"] == 1
+    assert row["analyses"] == 1
+    assert [r["id"] for r in out["recent"]] == [aid]
+    assert out["recent"][0]["open"] == 1
+    assert out["donut"]["high"] == 1
+    assert out["donut"]["total"] == 1
+    assert out["categories"] == [{"rule": "sql-injection", "count": 1}]
+
+
+def test_index_data_shows_the_branch_it_fell_back_to(tmp_path):
+    """The project's declared base (`main`) was never analysed -- only
+    `develop` was. The row must carry `develop`, the branch it actually
+    fell back to, and say so, rather than silently showing one branch's
+    posture as if it belonged to another."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "develop", severity="critical")
+
+    out = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]))
+
+    row = out["projects"][0]
+    assert row["branch"] == "develop"
+    assert row["branch_fell_back"] is True
+    assert row["posture"]["critical"] == 1
+
+
+def test_index_data_summary_is_scoped_to_the_projects_given(tmp_path):
+    """Two projects have analyses in the ledger, but only one is passed in
+    `--projects` -- the summary must count only that one, not everything the
+    ledger has ever recorded (see queries.index_summary's own docstring)."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", severity="high")
+    finished_analysis(db, tmp_path, "gone", "main", severity="critical")
+
+    out = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]))
+
+    assert out["summary"]["projects"] == 1
+    assert out["summary"]["analyses"] == 1
+    assert out["summary"]["critical"] == 0
+    assert out["summary"]["high"] == 1
+    assert [p["name"] for p in out["projects"]] == ["web"]
+
+
+def test_index_data_refuses_projects_that_is_not_json(tmp_path):
+    db = tmp_path / "security.db"
+    out = fails(db, "index-data", "--projects", "not json")
+    assert out.returncode != 0
+    assert "JSON" in out.stderr
+
+
+def test_index_data_refuses_projects_that_is_not_a_list_of_objects(tmp_path):
+    db = tmp_path / "security.db"
+    for bad in ("5", "null", '"just a string"', "[1, 2]"):
+        out = fails(db, "index-data", "--projects", bad)
+        assert out.returncode != 0, bad
+        assert "--projects" in out.stderr, bad
+
+
+def test_index_data_is_read_only_and_reachable_by_the_agent(tmp_path):
+    """Not in AGENT_FORBIDDEN -- the same reasoning as `findings`, `list`,
+    `analysis` and `checklist`: it opens the ledger read-only and writes
+    nothing, so there is nothing here for CC_SECURITY_AGENT to guard."""
+    db = tmp_path / "security.db"
+    out = run(db, "index-data", "--projects", "[]", env=AS_AGENT)
+    assert out["summary"]["projects"] == 0

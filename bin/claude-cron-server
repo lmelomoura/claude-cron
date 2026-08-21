@@ -2351,6 +2351,50 @@ def security_branches(project, repo):
     return 200, {"branches": [b for b in out.splitlines() if b.strip()]}
 
 
+def _security_projects():
+    """Every security-enabled project, as the three fields
+    `queries.project_rows` needs -- read fresh from projects.json on every
+    call, the same file `load_config` already serves to the page whole. The
+    ledger has no notion of a project's configuration (name, base branch,
+    description), only of what has been recorded under a project's name, so
+    this is the one place that bridges the two before `index-data` ever runs.
+
+    Filtered to `security.enabled` exactly as `secEnabled` filters the old
+    per-project list client-side (see ui/security/vocabulary.js): a project
+    that has never turned analysis on has no posture to show, only an "off"
+    row nothing on this screen computes for it.
+    """
+    out = []
+    for p in read_json(PROJECTS_FILE, {}).get("projects", []):
+        sec = p.get("security")
+        enabled = isinstance(sec, dict) and sec.get("enabled") in (True, "true")
+        if not enabled:
+            continue
+        out.append({"name": p.get("name", ""), "base": p.get("base", ""),
+                   "description": p.get("description", "")})
+    return out
+
+
+def security_index():
+    """Every panel the Security index screen draws, in ONE call to the CLI.
+
+    The old per-project list (ui/security/projects.js) cost two subprocesses
+    PER PROJECT on every load and every Refresh: one `security list`, and —
+    for whichever project had a finished analysis — one `security checklist`
+    on top. `index-data` computes the same ground (and more: the fleet-wide
+    summary, recent analyses, the severity donut and its categories) as a
+    single subprocess, however many projects are configured.
+    """
+    ok, out = cc(["security", "index-data",
+                 "--projects", json.dumps(_security_projects())])
+    if not ok:
+        return 500, {"error": out}
+    try:
+        return 200, json.loads(out)
+    except ValueError as exc:
+        return 500, {"error": f"index data was not readable: {exc}"}
+
+
 def security_analyze(body):
     project = str(body.get("project", "")).strip()
     repo = str(body.get("repo", "")).strip()
@@ -2569,6 +2613,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/security":
             q = parse_qs(urlparse(self.path).query)
             code, payload = security_list((q.get("project") or [""])[0])
+            return self._send(code, payload)
+        if path == "/api/security/index":
+            code, payload = security_index()
             return self._send(code, payload)
         if path == "/api/security/checklist":
             q = parse_qs(urlparse(self.path).query)

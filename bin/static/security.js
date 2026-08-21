@@ -71,10 +71,6 @@
   var SEC_POLL_MS = 4e3;
   var SEC_RUN_WINDOW = 120;
   var secCfg = (name) => (projById(name) || {}).security || {};
-  var secEnabled = (p) => {
-    const s = (p || {}).security;
-    return !!(s && (s.enabled === true || s.enabled === "true"));
-  };
   var secMinSeverity = (name) => {
     const v = secCfg(name).min_severity;
     return SEV_ORDER.includes(v) ? v : "low";
@@ -259,14 +255,14 @@
   }
   function secEnter() {
     if (secState.project) secReload();
-    else secLoadPostures(false);
+    else secLoadIndex(false);
   }
   function secLeave() {
     secStopPoll();
   }
   function secBack() {
     secStopPoll();
-    delete secPost[secState.project];
+    secInvalidateIndex();
     secState.project = "";
     secState.analysis = null;
     secState.findings = [];
@@ -274,8 +270,8 @@
     secState.stateFilter = "";
     $("sec-detail").hidden = true;
     $("sec-projects").hidden = false;
-    secRenderList();
-    secLoadPostures(false);
+    secRenderIndex();
+    secLoadIndex(false);
   }
   async function secOpen(project) {
     secStopPoll();
@@ -598,105 +594,323 @@
     await secReload();
   }
 
-  // ui/security/projects.js
-  var secPost = {};
-  var secPostGen = 0;
-  async function secLoadPostures(force) {
-    const names = (CC.DATA.projects || []).filter(secEnabled).map((p) => p.name);
-    if (force) {
-      secPostGen++;
-      names.forEach((n) => {
-        delete secPost[n];
-      });
-    }
-    const gen = secPostGen;
-    for (const name of names) {
-      if (secPost[name]) continue;
-      secPost[name] = { state: "loading" };
-      try {
-        const list = await secFetch("/api/security?project=" + encodeURIComponent(name));
-        if (gen !== secPostGen) return;
-        const done = (list || []).find((a) => a.state !== "running") || null;
-        const rec = {
-          state: "ok",
-          analyses: list || [],
-          latest: (list || [])[0] || null,
-          done,
-          findings: null
-        };
-        secPost[name] = rec;
-        secRenderList();
-        if (done) {
-          const ck = await secFetch("/api/security/checklist?analysis=" + encodeURIComponent(done.id));
-          if (gen !== secPostGen) return;
-          rec.findings = ck.findings || [];
-        }
-      } catch (e) {
-        if (gen !== secPostGen) return;
-        secPost[name] = { state: "error", error: e.message };
-      }
-      secRenderList();
-    }
+  // ui/security/index-screen.js
+  var secIndexCache = null;
+  var secIndexGen = 0;
+  function secInvalidateIndex() {
+    secIndexCache = null;
   }
-  function secRenderList() {
-    const host = $("sec-list");
-    if (!host) return;
-    host.textContent = "";
-    const projects = (CC.DATA.projects || []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
-    if (!projects.length) {
-      const e = secEl("div", "tblempty");
-      e.appendChild(secIcon("inbox"));
-      e.appendChild(document.createTextNode(
-        "No projects yet. Security analysis is configured on a project, so there has to be one first."
-      ));
-      host.appendChild(e);
+  async function secLoadIndex(force) {
+    if (secIndexCache && !force) return;
+    if (force) secIndexGen++;
+    const gen = secIndexGen;
+    if (!secIndexCache) {
+      const host = $("sec-list");
+      if (host) {
+        host.textContent = "";
+        host.appendChild(secEl("div", "tblempty", "Loading\u2026"));
+      }
+    }
+    let data;
+    try {
+      data = await secFetch("/api/security/index");
+    } catch (e) {
+      if (gen !== secIndexGen) return;
+      const host = $("sec-list");
+      if (host) {
+        host.textContent = "";
+        const box = secEl("div", "tblempty");
+        box.appendChild(secIcon("alert"));
+        box.appendChild(document.createTextNode(
+          "Could not read the security index \u2014 " + e.message
+        ));
+        host.appendChild(box);
+      }
       return;
     }
-    projects.forEach((p) => host.appendChild(secProjectRow(p)));
+    if (gen !== secIndexGen) return;
+    secIndexCache = data;
+    secRenderIndex();
   }
-  function secProjectRow(p) {
-    const on = secEnabled(p);
-    const row = document.createElement(on ? "button" : "div");
-    row.className = "secrow" + (on ? "" : " off");
-    if (on) {
-      row.type = "button";
-      row.onclick = () => secOpen(p.name);
-    }
-    row.appendChild(secIcon("shield"));
-    const grow = secEl("div", "grow");
-    grow.appendChild(secEl("div", "secname", p.name));
-    const meta = secEl("div", "secmeta");
-    if (!on) {
-      meta.textContent = "Security analysis is off for this project \u2014 turn it on in the project editor, on the Security tab.";
-    } else {
-      const rec = secPost[p.name];
-      if (!rec || rec.state === "loading") meta.textContent = "Loading\u2026";
-      else if (rec.state === "error") meta.textContent = "Could not read its analyses \u2014 " + rec.error;
-      else if (!rec.latest) meta.textContent = "Never analysed. Open it to pick a branch and start.";
-      else {
-        const a = rec.latest;
-        meta.textContent = (a.state === "running" ? "Analysing " : "Last analysed ") + a.repo + " @ " + a.branch + " \xB7 " + a.profile + " \xB7 " + (a.state === "running" ? "started " + fmtAgo(a.started) : a.state + " " + fmtAgo(a.ended || a.started));
-      }
-    }
-    grow.appendChild(meta);
-    row.appendChild(grow);
-    if (on) row.appendChild(secPosturePills(secPost[p.name], p.name));
-    return row;
+  function secRenderIndex() {
+    const host = $("sec-list");
+    if (!host) return;
+    if (!secIndexCache) return;
+    host.textContent = "";
+    const data = secIndexCache;
+    host.appendChild(secIndexCards(data.summary || {}));
+    host.appendChild(secIndexSection(
+      "Projects",
+      secIndexProjectsTable(data.projects || [])
+    ));
+    host.appendChild(secIndexSection(
+      "Recent analyses",
+      secIndexRecent(data.recent || [])
+    ));
+    host.appendChild(secIndexSection(
+      "Findings by severity",
+      secIndexDonut(data.donut || {}, data.categories || [])
+    ));
   }
-  function secPosturePills(rec, name) {
-    const wrap = secEl("div", "sevpills");
-    if (!rec || rec.state !== "ok" || !rec.findings) return wrap;
-    const counts = secPosture(rec.findings, secMinSeverity(name));
-    const total = SEV_ORDER.reduce((n, s) => n + (counts[s] || 0), 0) + (counts.other || 0);
-    if (!total) {
+  function secIndexSection(title, body) {
+    const sec = secEl("div", "secidx-section");
+    sec.appendChild(secEl("h3", null, title));
+    sec.appendChild(body);
+    return sec;
+  }
+  function secIndexCard(iconName, label, valueText, note) {
+    const card = secEl("div", "card secidx-card");
+    const head = secEl("div", "secidx-card-h");
+    head.appendChild(secIcon(iconName));
+    head.appendChild(secEl("span", null, label));
+    card.appendChild(head);
+    card.appendChild(secEl("div", "secidx-num", valueText));
+    if (note) card.appendChild(secEl("div", "secidx-note", note));
+    return card;
+  }
+  function secIndexCards(summary) {
+    const wrap = secEl("div", "secidx-kpis");
+    const s = summary || {};
+    wrap.appendChild(secIndexCard(
+      "shield",
+      "Projects",
+      String(s.projects || 0),
+      "Security analysis is on"
+    ));
+    wrap.appendChild(secIndexCard(
+      "activity",
+      "Analyses",
+      String(s.analyses || 0),
+      "All time \u2014 a historical total, not current posture"
+    ));
+    wrap.appendChild(secIndexCard(
+      "alert",
+      "Critical",
+      String(s.critical || 0),
+      "Open now, in every project's latest analysis"
+    ));
+    wrap.appendChild(secIndexCard(
+      "zap",
+      "High",
+      String(s.high || 0),
+      "Open now, in every project's latest analysis"
+    ));
+    const rate = s.success_rate;
+    wrap.appendChild(secIndexCard(
+      "check",
+      "Success rate",
+      rate == null ? "\u2014" : Math.round(rate * 100) + "%",
+      rate == null ? "No finished analysis yet" : "Finished analyses that completed clean, not capped or failed"
+    ));
+    return wrap;
+  }
+  function secIndexPosturePills(posture) {
+    const wrap = secEl("span", "sevpills");
+    const p = posture || {};
+    if (!p.total) {
       wrap.appendChild(secEl("span", "sevpill clean", "nothing open"));
       return wrap;
     }
     ["critical", "high", "medium", "low", "info"].forEach((sev) => {
-      if (!counts[sev]) return;
-      wrap.appendChild(secEl("span", "sevpill " + sev, counts[sev] + " " + sev));
+      if (p[sev]) wrap.appendChild(secEl("span", "sevpill " + sev, p[sev] + " " + sev));
     });
-    if (counts.other) wrap.appendChild(secEl("span", "sevpill low", counts.other + " other"));
+    return wrap;
+  }
+  function secIndexProjectRow(p) {
+    const tr = document.createElement("tr");
+    const tdName = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn ghost";
+    btn.textContent = p.name;
+    btn.onclick = () => secOpen(p.name);
+    tdName.appendChild(btn);
+    if ((p.description || "").trim()) {
+      tdName.appendChild(secEl("div", "secidx-desc", p.description));
+    }
+    tr.appendChild(tdName);
+    const tdBranch = document.createElement("td");
+    tdBranch.appendChild(document.createTextNode(p.branch || "\u2014"));
+    if (p.branch_fell_back) {
+      tdBranch.appendChild(secEl(
+        "span",
+        "secidx-fellback",
+        " (fell back \u2014 the default branch was never analysed)"
+      ));
+    }
+    tr.appendChild(tdBranch);
+    const tdPosture = document.createElement("td");
+    tdPosture.appendChild(secIndexPosturePills(p.posture));
+    tr.appendChild(tdPosture);
+    const tdLast = document.createElement("td");
+    if (!p.analyses) {
+      tdLast.textContent = "Never analysed";
+    } else {
+      const bits = [p.profile, fmtAgo(p.last_started)];
+      if (p.last_duration) bits.push(fmtDur(p.last_duration));
+      tdLast.textContent = bits.filter(Boolean).join(" \xB7 ");
+    }
+    tr.appendChild(tdLast);
+    const tdCount = document.createElement("td");
+    tdCount.className = "num";
+    tdCount.textContent = String(p.analyses || 0);
+    tr.appendChild(tdCount);
+    return tr;
+  }
+  function secIndexProjectsTable(projects) {
+    if (!projects.length) {
+      const e = secEl("div", "tblempty");
+      e.appendChild(secIcon("inbox"));
+      e.appendChild(document.createTextNode(
+        "No projects have security analysis enabled yet \u2014 turn it on in a project's editor, on the Security tab."
+      ));
+      return e;
+    }
+    const wrap = secEl("div", "tablewrap");
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    const htr = document.createElement("tr");
+    ["Project", "Branch", "Posture", "Last analysis", "Analyses"].forEach((h) => {
+      const th = document.createElement("th");
+      th.textContent = h;
+      htr.appendChild(th);
+    });
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    projects.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))).forEach((p) => tbody.appendChild(secIndexProjectRow(p)));
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    return wrap;
+  }
+  function secIndexRecentRow(a) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "secrow secidx-recentrow";
+    row.onclick = () => secOpen(a.project);
+    row.appendChild(secIcon(a.state === "running" ? "timer" : a.state === "failed" ? "xcircle" : "check"));
+    const grow = secEl("div", "grow");
+    grow.appendChild(secEl(
+      "div",
+      "secname",
+      a.project + " \xB7 " + a.repo + " @ " + a.branch
+    ));
+    const bits = [
+      a.profile,
+      a.state,
+      a.state === "running" ? "started " + fmtAgo(a.started) : "ended " + fmtAgo(a.ended || a.started)
+    ];
+    if (a.open != null) bits.push(a.open + " open");
+    bits.push(money(a.spend_usd || 0));
+    grow.appendChild(secEl("div", "secmeta", bits.filter(Boolean).join(" \xB7 ")));
+    row.appendChild(grow);
+    return row;
+  }
+  function secIndexRecent(recent) {
+    if (!recent.length) {
+      return secEl("div", "tblempty", "No analyses have run yet.");
+    }
+    const host = secEl("div", "seclist");
+    recent.forEach((a) => host.appendChild(secIndexRecentRow(a)));
+    return host;
+  }
+  var SEV_ORDER5 = ["critical", "high", "medium", "low", "info"];
+  var SEV_STROKE = {
+    critical: "var(--err)",
+    high: "var(--err)",
+    medium: "var(--warn)",
+    low: "var(--muted)",
+    info: "var(--line)"
+  };
+  function secIndexDonutSvg(donut) {
+    const total = SEV_ORDER5.reduce((n, s) => n + (donut[s] || 0), 0);
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 120 120");
+    svg.setAttribute("class", "secidx-donut-svg");
+    svg.setAttribute("role", "img");
+    const r = 50, c = 60, circumference = 2 * Math.PI * r;
+    const track = document.createElementNS(ns, "circle");
+    track.setAttribute("cx", String(c));
+    track.setAttribute("cy", String(c));
+    track.setAttribute("r", String(r));
+    track.setAttribute("fill", "none");
+    track.setAttribute("stroke-width", "14");
+    track.style.stroke = "var(--line)";
+    svg.appendChild(track);
+    let offset = 0;
+    SEV_ORDER5.forEach((sev) => {
+      const n = donut[sev] || 0;
+      if (!n || !total) return;
+      const len = n / total * circumference;
+      const seg = document.createElementNS(ns, "circle");
+      seg.setAttribute("cx", String(c));
+      seg.setAttribute("cy", String(c));
+      seg.setAttribute("r", String(r));
+      seg.setAttribute("fill", "none");
+      seg.setAttribute("stroke-width", "14");
+      seg.setAttribute("stroke-dasharray", len + " " + (circumference - len));
+      seg.setAttribute("stroke-dashoffset", String(-offset));
+      seg.setAttribute("transform", "rotate(-90 " + c + " " + c + ")");
+      seg.style.stroke = SEV_STROKE[sev] || "var(--muted)";
+      svg.appendChild(seg);
+      offset += len;
+    });
+    const label = document.createElementNS(ns, "text");
+    label.setAttribute("x", String(c));
+    label.setAttribute("y", String(c));
+    label.setAttribute("text-anchor", "middle");
+    label.setAttribute("dominant-baseline", "central");
+    label.setAttribute("class", "secidx-donut-total");
+    label.textContent = String(total);
+    svg.appendChild(label);
+    return svg;
+  }
+  function secIndexDonutLegend(donut) {
+    const wrap = secEl("div", "sevpills");
+    const total = SEV_ORDER5.reduce((n, s) => n + (donut[s] || 0), 0);
+    if (!total) {
+      wrap.appendChild(secEl("span", "sevpill clean", "nothing open"));
+      return wrap;
+    }
+    SEV_ORDER5.forEach((sev) => {
+      if (donut[sev]) wrap.appendChild(secEl("span", "sevpill " + sev, donut[sev] + " " + sev));
+    });
+    return wrap;
+  }
+  function secIndexCategories(categories) {
+    if (!categories.length) {
+      return secEl("div", "tblempty", "No open findings to categorise.");
+    }
+    const wrap = secEl("div", "secidx-categories");
+    const max = categories.reduce((n, c) => Math.max(n, c.count || 0), 1);
+    categories.forEach((c) => {
+      const row = secEl("div", "secidx-catrow");
+      row.appendChild(secEl("span", "secidx-catname", c.rule));
+      const bar = secEl("span", "secidx-catbar");
+      const fill = secEl("span", "secidx-catfill");
+      fill.style.width = Math.max(6, Math.round((c.count || 0) / max * 100)) + "%";
+      bar.appendChild(fill);
+      row.appendChild(bar);
+      row.appendChild(secEl("span", "secidx-catcount", String(c.count || 0)));
+      wrap.appendChild(row);
+    });
+    return wrap;
+  }
+  function secIndexDonut(donut, categories) {
+    const wrap = secEl("div", "secidx-donutwrap");
+    const left = secEl("div", "secidx-donutcol");
+    left.appendChild(secIndexDonutSvg(donut));
+    left.appendChild(secIndexDonutLegend(donut));
+    wrap.appendChild(left);
+    const right = secEl("div", "secidx-catcol");
+    right.appendChild(secEl(
+      "div",
+      "secidx-cathead",
+      "Rules producing the most open findings"
+    ));
+    right.appendChild(secIndexCategories(categories));
+    wrap.appendChild(right);
     return wrap;
   }
 
@@ -759,8 +973,8 @@
   function renderSecurity() {
     if (CC.currentView !== "security") return;
     if (secState.project) return;
-    secRenderList();
-    secLoadPostures(false);
+    secRenderIndex();
+    secLoadIndex(false);
   }
   function init(cc) {
     bindPage(cc);
@@ -775,7 +989,7 @@
     $("sec-dl-note").textContent = "Downloads always contain every recorded finding, whatever the severity floor shows.";
     $("sec-back").addEventListener("click", secBack);
     $("sec-reload").addEventListener("click", () => {
-      secLoadPostures(true);
+      secLoadIndex(true);
     });
     $("sec-run").addEventListener("click", secAnalyse);
     $("sec-dl-md").addEventListener("click", () => secDownload("md"));
@@ -802,4 +1016,4 @@
     SEC_PROFILES
   };
 })();
-// ui-sources: 38d0d6a93ab7fd4d51d0515f6fc6fa30ad068404c434c8a3ca9bdc9644a613d5
+// ui-sources: c36d95d96d910ef5c4566cff4c8afe0b9c1b77d0907dad12d3ef0331a94ae531

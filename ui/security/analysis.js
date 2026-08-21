@@ -5,7 +5,7 @@ import { SEC_POLL_MS, SEC_PROFILES, SEC_STATES, SEC_STATE_HELP, SEC_STATE_LABEL,
          SEV_ORDER, secDefaultProfile, secMinSeverity, secPosture, secRepos,
          secSevKey, secSevRank, secStateKey, secVisible } from "./vocabulary.js";
 import { secState } from "./state.js";
-import { secPost, secRenderList, secLoadPostures } from "./projects.js";
+import { secInvalidateIndex, secRenderIndex, secLoadIndex } from "./index-screen.js";
 import { secRunFor, secRenderHistory } from "./history.js";
 import { secAskReason } from "./reason.js";
 
@@ -26,20 +26,21 @@ export function secSyncPoll(){
 
 /* Coming back to a project screen re-reads it and picks the poll back up: what
    is on it may be minutes old, and leaving the page stopped the watching. */
-export function secEnter(){ if(secState.project) secReload(); else secLoadPostures(false); }
+export function secEnter(){ if(secState.project) secReload(); else secLoadIndex(false); }
 export function secLeave(){ secStopPoll(); }
 
 export function secBack(){
   secStopPoll();
-  // Whatever just happened in there is exactly what the row was showing before,
-  // so the cached posture for this one project is thrown away and re-read.
-  delete secPost[secState.project];
+  // Whatever just happened in there (a new analysis, a decision) may have
+  // changed the fleet's posture, so the index's cached answer is thrown away
+  // and re-read rather than repainting numbers from before.
+  secInvalidateIndex();
   secState.project = ""; secState.analysis = null; secState.findings = [];
   secState.analyses = []; secState.stateFilter = "";
   $("sec-detail").hidden = true;
   $("sec-projects").hidden = false;
-  secRenderList();
-  secLoadPostures(false);
+  secRenderIndex();
+  secLoadIndex(false);
 }
 
 export async function secOpen(project){

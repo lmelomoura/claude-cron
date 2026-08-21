@@ -22,7 +22,7 @@
 import { bindPage, $, iconLabel, CC } from "./page.js";
 import { SEC_PROFILES, SEV_ORDER } from "./vocabulary.js";
 import { secState } from "./state.js";
-import { secRenderList, secLoadPostures } from "./projects.js";
+import { secRenderIndex, secLoadIndex } from "./index-screen.js";
 import { secBack, secEnter, secLeave, secLoadBranches, secSyncScope } from "./analysis.js";
 import { secAnalyse, secDownload } from "./actions.js";
 import { wireReasonDialog } from "./reason.js";
@@ -30,8 +30,8 @@ import { wireReasonDialog } from "./reason.js";
 function renderSecurity(){
   if(CC.currentView !== "security") return;
   if(secState.project) return;   // the project screen paints from its own fetches
-  secRenderList();
-  secLoadPostures(false);        // a no-op once every project is in the cache
+  secRenderIndex();
+  secLoadIndex(false);           // a no-op once the index has already answered once
 }
 
 /* ---------------------------------------------------------------- wiring */
@@ -51,7 +51,7 @@ function init(cc){
   // where a reader assumes they match.
   $("sec-dl-note").textContent = "Downloads always contain every recorded finding, whatever the severity floor shows.";
   $("sec-back").addEventListener("click", secBack);
-  $("sec-reload").addEventListener("click", () => { secLoadPostures(true); });
+  $("sec-reload").addEventListener("click", () => { secLoadIndex(true); });
   $("sec-run").addEventListener("click", secAnalyse);
   $("sec-dl-md").addEventListener("click", () => secDownload("md"));
   $("sec-dl-json").addEventListener("click", () => secDownload("json"));

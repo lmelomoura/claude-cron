@@ -1262,6 +1262,40 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .secfield{flex:1 1 100%}
   .secfield select,.secfield input{max-width:none;width:100%}
 }
+/* --------------------------------------------------------- security index
+   The five KPI cards, the project table, the recent-analyses feed and the
+   severity donut all paint into the same #sec-list host the flat project
+   list used to fill -- see ui/security/index-screen.js. */
+.secidx-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.secidx-card{gap:8px}
+.secidx-card-h{display:flex;align-items:center;gap:8px;color:var(--muted);
+  font-size:11px;text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+.secidx-card-h .ic{width:14px;height:14px;color:var(--accent)}
+.secidx-num{font-size:26px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.secidx-note{font-size:11px;color:var(--muted);line-height:1.5}
+.secidx-section{display:flex;flex-direction:column;gap:9px}
+.secidx-section h3{margin:0;font-size:13px}
+.secidx-desc{font-size:11.5px;color:var(--muted);margin-top:2px;font-weight:400}
+.secidx-fellback{color:var(--warn);font-size:11.5px;margin-left:6px}
+.secidx-recentrow{width:100%}
+.secidx-donutwrap{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start;
+  background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:16px 18px;box-shadow:var(--shadow)}
+.secidx-donutcol{display:flex;flex-direction:column;align-items:center;gap:12px;flex:none}
+.secidx-donut-svg{width:150px;height:150px}
+.secidx-donut-total{font:700 20px/1 ui-sans-serif,system-ui,sans-serif;fill:var(--ink)}
+.secidx-catcol{flex:1 1 260px;min-width:220px}
+.secidx-cathead{font-size:11px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--muted);font-weight:600;margin:0 0 10px}
+.secidx-catrow{display:flex;align-items:center;gap:10px;margin:0 0 8px;font-size:12px}
+.secidx-catname{flex:0 0 140px;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:11.5px}
+.secidx-catbar{flex:1 1 auto;height:7px;border-radius:4px;background:var(--panel2);overflow:hidden}
+.secidx-catfill{display:block;height:100%;background:var(--accent);border-radius:4px}
+.secidx-catcount{flex:none;font-variant-numeric:tabular-nums;color:var(--muted);min-width:20px;text-align:right}
+@media (max-width:700px){
+  .secidx-donutwrap{flex-direction:column;align-items:center}
+}
 /* --------------------------------------------------------------- a11y floor
    One ring, everywhere, and only for keyboard users — :focus-visible keeps it
    off a mouse click. The custom widgets (day picker, chips, tabs, steppers,

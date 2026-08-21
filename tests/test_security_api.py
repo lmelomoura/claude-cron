@@ -515,6 +515,77 @@ def test_every_report_format_has_a_content_type_and_a_filename(srv):
         assert srv.REPORT_EXTENSIONS.get(fmt, fmt).strip()
 
 
+# --------------------------------------------------------------- index GET
+
+def test_the_index_answers_with_every_panel_the_screen_draws(srv, monkeypatch):
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, json.dumps({
+        "summary": {"projects": 2, "analyses": 12, "critical": 4,
+                    "high": 18, "success_rate": 0.75},
+        "projects": [], "recent": [], "donut": {}, "categories": []})))
+    code, payload = srv.security_index()
+    assert code == 200
+    assert set(payload) == {"summary", "projects", "recent", "donut", "categories"}
+
+
+def test_the_index_survives_a_ledger_that_does_not_exist_yet(srv, monkeypatch):
+    """Nobody has run an analysis. That is an empty screen with a sentence,
+    not a 500."""
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, json.dumps({
+        "summary": {"projects": 0, "analyses": 0, "critical": 0, "high": 0,
+                    "success_rate": None},
+        "projects": [], "recent": [], "donut": {}, "categories": []})))
+    code, payload = srv.security_index()
+    assert code == 200
+    assert payload["summary"]["success_rate"] is None
+
+
+def test_the_index_is_a_500_when_the_cli_fails(srv, monkeypatch):
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (False, "boom"))
+    code, payload = srv.security_index()
+    assert code == 500
+    assert payload == {"error": "boom"}
+
+
+def test_the_index_is_a_500_on_output_that_is_not_json(srv, monkeypatch):
+    """`cc()` merges stdout and stderr (see the identical guard on
+    `security_list`/`security_checklist`), so a stray warning on an
+    otherwise-clean run must not become an uncaught `JSONDecodeError`."""
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, "not json"))
+    code, payload = srv.security_index()
+    assert code == 500
+    assert "index data was not readable" in payload["error"]
+
+
+def test_the_index_asks_the_cli_for_only_the_security_enabled_projects(srv, monkeypatch, tmp_path):
+    """`_security_projects()` is the one place that bridges projects.json
+    (which the ledger never reads) into the CLI's `--projects` JSON. A
+    project with security off, or with no `security` block at all, has
+    nothing here to compute and must not be sent — the same filter the old
+    per-project list applied client-side (see ui/security/vocabulary.js's
+    `secEnabled`)."""
+    projects_file = tmp_path / "projects.json"
+    projects_file.write_text(json.dumps({"projects": [
+        {"name": "web", "base": "main", "description": "d",
+         "security": {"enabled": True}},
+        {"name": "off", "base": "main", "security": {"enabled": False}},
+        {"name": "bare"},
+    ]}))
+    monkeypatch.setattr(srv, "PROJECTS_FILE", projects_file)
+    seen = []
+
+    def fake_cc(args, stdin=None):
+        seen.append(args)
+        return True, json.dumps({"summary": {}, "projects": [], "recent": [],
+                                  "donut": {}, "categories": []})
+    monkeypatch.setattr(srv, "cc", fake_cc)
+    code, _ = srv.security_index()
+    assert code == 200
+    args = seen[0]
+    assert args[:2] == ["security", "index-data"]
+    sent = json.loads(args[args.index("--projects") + 1])
+    assert sent == [{"name": "web", "base": "main", "description": "d"}]
+
+
 def test_active_runs_carries_derived_security_jobs(srv, clean_data):
     """The isolation property keeps derived jobs out of jobs.json, but their
     RUNS are as real as any other, and active_runs is the only way the page

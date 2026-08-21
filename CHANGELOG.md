@@ -19,6 +19,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The Security area has an index screen.** Five KPI cards (projects, total
+  analyses, critical, high, success rate), a table of every security-enabled
+  project with its default branch's current posture, a fleet-wide feed of
+  recent analyses, and a severity donut with the rules producing the open
+  findings behind it — all from one new endpoint, `GET /api/security/index`,
+  backed by a new CLI verb, `security index-data`. The old per-project list
+  cost one subprocess per project on every load and every Refresh (`security
+  list`, plus `security checklist` for whichever project had a finished
+  analysis) — this is the whole screen in a single call, however many
+  projects are configured. The numbers are current posture, never all-time
+  sums: "critical" and "high" are what is open in each project's *latest*
+  analysis, not everything ever found, which only grows and says nothing;
+  "analyses" is named as the one exception, an honest historical total. A
+  project whose default branch was never analysed shows the branch it
+  actually fell back to, with the name visible next to the note — postures
+  of different branches must never be confused in silence. No finished
+  analysis shows a dash on the success-rate card, not `0%`: those are
+  different facts, and a project that has never finished a run is not a
+  project with a zero-percent success rate. `index-data` opens the ledger
+  through `queries.read_only`, never `ledger.connect`, so asking for the
+  index before anyone has ever run an analysis answers an empty screen with
+  a sentence rather than conjuring the ledger file into existence or a 500.
+
 - **The findings browser has a query.** `queries.finding_rows` unions one
   checklist per branch — the latest finished analysis of each — which is what
   lets the browser show a state at all: it is the state that branch's newest
