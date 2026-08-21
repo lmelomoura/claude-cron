@@ -8015,8 +8015,9 @@ claude-cron — durable local scheduler for headless Claude Code runs
                               background and prints {"analysis_id": n} at once
                               (what the dashboard's Analyse button uses);
                               without it the command stays until the run ends
-  claude-cron security render --analysis <n> --format <json|md|html>
-                              the report for one analysis (see `security` with
+  claude-cron security render --analysis <n> --format <json|md|html|sbom>
+                              the report for one analysis, or (`sbom`) the
+                              stored SBOM document itself (see `security` with
                               no arguments for the rest of the vocabulary)
   claude-cron security-branches <project> <repo>
                               list the branches of a project's canonical
@@ -8081,11 +8082,19 @@ case "${1:-}" in
              case "${1:-}" in
                analyze) shift; [ $# -ge 3 ] || die "usage: claude-cron security analyze [--detach] <project> <repo> <branch> [profile]"
                         cmd_security_analyze "$@" ;;
-               # Everything else is the ledger's own vocabulary, and the agent
-               # types it verbatim from its prompt: prepare, findings,
-               # fingerprint, report-finding, finish, checklist, render,
-               # decide, list, analysis, event, events.
-               "")      die "usage: claude-cron security <analyze|prepare|findings|fingerprint|report-finding|finish|checklist|render|decide|list|analysis|event|events> …" ;;
+               # Everything else is the ledger's own vocabulary: prepare,
+               # findings, fingerprint, report-finding, finish, checklist,
+               # render, list, analysis, events are what the agent types
+               # verbatim from its prompt; decide, rename-project,
+               # open-analysis, event and `filters save`/`filters delete` are
+               # the operator's (AGENT_FORBIDDEN refuses all of those to the
+               # agent); and index-data, project-data, findings-page,
+               # activity-data and `filters list` are the dashboard's own
+               # screens fetching through this same door, never typed by a
+               # human at all -- listed here anyway so this message names
+               # every verb the door actually accepts, not just the subset
+               # any one caller uses.
+               "")      die "usage: claude-cron security <analyze|prepare|findings|fingerprint|report-finding|finish|checklist|render|decide|rename-project|open-analysis|list|index-data|project-data|findings-page|activity-data|analysis|event|events|filters> …" ;;
                *)       security_py "$@" ;;
              esac ;;
   security-branches) [ $# -ge 3 ] || die "usage: claude-cron security-branches <project> <repo>"
