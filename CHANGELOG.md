@@ -340,6 +340,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   hash-mismatch branch catches it instead. Said plainly: for one commit, a
   freshness guard whose entire purpose is to catch a modified build
   artifact could itself be defeated by a one-line edit.
+  `build/ui-bundle-digest.sh` is itself one of the files `build/ui-digest.sh`
+  hashes into the bundle's `ui-sources` fingerprint — it decides what the
+  *other* stamp means, so a change to it has to read as "stale, rebuild"
+  rather than surfacing one command later as "this bundle has been
+  modified" — so the committed `bin/static/security.js` is rebuilt in the
+  same change; only its `ui-sources` stamp moves, since no source under
+  `ui/` changed and the bundle's own body is byte-for-byte the same.
 
 - **A changed stylesheet is no longer served out of an open tab's cache
   forever.** Every asset under `bin/static/` is requested with
