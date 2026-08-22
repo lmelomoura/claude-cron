@@ -3476,3 +3476,32 @@ def test_no_css_rule_was_lost_when_the_stylesheet_moved_out(srv):
     want = {ln for ln in baseline.splitlines() if ln}
     have = _selectors(served)
     assert not (want - have), f"rules lost in the move: {sorted(want - have)[:20]}"
+
+
+def test_the_css_baseline_fixture_is_committed_not_just_present():
+    """The test above reads tests/data/css-selectors-before.txt from disk, but
+    a file sitting in a checkout is not the same thing as a file the
+    repository carries. `tests/data/` used to be swallowed by a bare `data/`
+    line in .gitignore -- git applies a bare `dir/` pattern at any depth, not
+    only at the repo root -- so the fixture was untracked, `git add tests/`
+    silently staged nothing for it, and `git status` stayed clean because an
+    ignored, untracked file never shows up there. The baseline test passed on
+    the machine that generated the file and failed with FileNotFoundError
+    everywhere else, including CI and a fresh clone.
+
+    This guards the fixture itself: it must be tracked by git, independent of
+    whether it happens to exist in the current working tree."""
+    fixture = REPO / "tests" / "data" / "css-selectors-before.txt"
+    result = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", str(fixture)],
+        cwd=REPO, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, (
+        f"{fixture} is not tracked by git (git ls-files --error-unmatch "
+        f"exited {result.returncode}): {result.stderr.strip()}\n"
+        "A fixture a test reads from disk must be a file the repository "
+        "actually carries, or every checkout but the one that generated it "
+        "fails with FileNotFoundError. Fix: `git add -f tests/data/"
+        "css-selectors-before.txt` (or confirm .gitignore no longer ignores "
+        "tests/data/), then commit it."
+    )
