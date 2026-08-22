@@ -882,6 +882,80 @@ def test_the_warning_and_error_cards_lead_to_the_runs_they_count(srv, tmp_path):
     assert not none["Errors"]["filter"], "a card with nothing to show still navigates"
 
 
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_a_card_that_is_not_a_door_is_never_a_disabled_button(srv, tmp_path):
+    """Checks, Woke a run and Spent today have no filter and never will --
+    they are not doors into Runs, so a quiet install with every count at
+    zero must not grey all three of them out as if the page were broken.
+    Warnings/Errors ARE doors: a door at a zero count has nothing to
+    navigate to, so THAT is the one case where `disabled` is the correct,
+    meaningful reading. `filter` alone cannot tell the two apart -- it is
+    empty for both a card that never navigates and a door at a zero count --
+    which is why pulseKpis also hands kpiCard a `door` flag, and kpiCard has
+    to act on it: a plain element (never a <button>, never `disabled`) when
+    `door` is false, a real <button> (disabled only when `filter` is empty)
+    when it is true."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "el", "kpiCard", "pulseKpis")
+    script = tmp_path / "doorbuttons.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    function render(k){
+      return pulseKpis(k).map(c => {
+        const node = kpiCard({icon: null, tone: c.tone, value: c.value,
+          label: c.label, sub: c.sub, filter: c.filter, door: c.door});
+        return {label: c.label, tag: node.tagName, disabled: !!node.disabled,
+                statfilter: node.dataset.statfilter || null};
+      });
+    }
+    const quiet = render({checks: 0, per: {}, warn: 0, err: 0,
+      spentToday: 0, spentWeek: 0, runsToday: 0, runsWeek: 0});
+    const active = render({checks: 10, per: {woke: 1}, warn: 3, err: 2,
+      spentToday: 0, spentWeek: 0, runsToday: 0, runsWeek: 0});
+    console.log(JSON.stringify({quiet, active}));
+    """)
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    quiet = {c["label"]: c for c in got["quiet"]}
+    active = {c["label"]: c for c in got["active"]}
+    for label in ("Checks", "Woke a run", "Spent today"):
+        assert quiet[label]["tag"] != "button", f"{label} rendered as a button at zero"
+        assert not quiet[label]["disabled"], f"{label} rendered disabled at zero"
+        assert active[label]["tag"] != "button", f"{label} rendered as a button"
+        assert not active[label]["disabled"], f"{label} rendered disabled"
+    assert quiet["Warnings"]["tag"] == "button" and quiet["Warnings"]["disabled"], \
+        "a door with nothing behind it should be a disabled button"
+    assert quiet["Errors"]["tag"] == "button" and quiet["Errors"]["disabled"], \
+        "a door with nothing behind it should be a disabled button"
+    assert active["Warnings"]["tag"] == "button" and not active["Warnings"]["disabled"]
+    assert active["Warnings"]["statfilter"] == "warning"
+    assert active["Errors"]["tag"] == "button" and not active["Errors"]["disabled"]
+    assert active["Errors"]["statfilter"] == "error"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_spent_today_card_carries_the_week_in_its_sublabel(srv, tmp_path):
+    """The pulse-f strip this project's own history removed used to say
+    "7 days <n> runs <$y>". pulseKpis kept spentWeek as an input but dropped
+    it on the floor -- "Spent today" came back with `sub: null`/`""` and the
+    figure was nowhere on the page. The pinned test above only checks
+    `value`, never `sub`, which is exactly how this shipped broken: the
+    week's spend belongs in this card's own sublabel, not a separate strip
+    -- "one number per label" applied to the pair it was always part of."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "pulseKpis")
+    script = tmp_path / "week.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    console.log(JSON.stringify(pulseKpis({
+      checks: 96, per: {woke: 23}, warn: 3, err: 1,
+      spentToday: 9.34, spentWeek: 41.02, runsToday: 12, runsWeek: 58,
+    })));
+    """)
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    by = {c["label"]: c for c in got}
+    assert by["Spent today"]["sub"] == "$41.02 over 7 days"
+
+
 @pytest.mark.parametrize("jobs,expected", [
     ([], "There are no jobs yet."),
     ([{"enabled": False}], "All 1 jobs are disabled."),
@@ -1567,7 +1641,7 @@ class FakeElement extends FakeNode {
   constructor(tag){
     super();
     this.tagName = tag; this.className = ""; this.title = ""; this.style = {};
-    this.hidden = false; this.disabled = false; this._attrs = {};
+    this.hidden = false; this.disabled = false; this._attrs = {}; this.dataset = {};
   }
   setAttribute(k, v){ this._attrs[k] = String(v); }
 }

@@ -24,12 +24,15 @@
    pageHeader, kpiCard, renderPulse and renderOverviewHead, added below the
    pinned functions, are a different kind of thing: they build the DOM the
    page mounts, so they need $, CC and icon from ./page.js the way every
-   other screen's renderer does (see ui/security/index-screen.js). None of
-   them is pulled out and run standing alone by a test, so the isolation
-   rule above does not bind them -- but tickTotals, pickLine and
+   other screen's renderer does (see ui/security/index-screen.js). Most of
+   them are never pulled out and run standing alone by a test, so the
+   isolation rule above does not bind them -- but tickTotals, pickLine and
    greetingParts, which they call, still are self-contained on purpose:
    nothing stops a future test from extracting one of those three the same
-   way pulseKpis already is. */
+   way pulseKpis already is. kpiCard is the one exception: the door-vs-
+   plain-element characterisation test extracts it (and its own `el`
+   helper) by name, which is why its parameter is a plain `opts` rather
+   than a destructured object -- see its own comment. */
 import { $, CC, icon } from "./page.js";
 
 // A percentage of nothing is not 0%, it is nothing -- pulseHtml's own pct()
@@ -37,43 +40,59 @@ import { $, CC, icon } from "./page.js";
 // sibling so pulseKpis can be extracted whole.
 //
 // The five numbers the loop's last 24 hours and 7 days produced, as plain
-// card descriptors: {label, value, sub, tone, filter}. `filter` is the
+// card descriptors: {label, value, sub, tone, filter, door}. `filter` is the
 // data-statfilter a card still carries into Runs, empty when there is
 // nothing behind it to navigate to -- see pulseHtml's own chip() closure,
-// which this is extracted from. `value` and the currency in "Spent today"
-// are already display-ready strings, not raw numbers, so a caller can drop
-// them straight into a card with no formatting of its own to get wrong.
+// which this is extracted from. `door` says whether the card is a way IN to
+// Runs AT ALL, regardless of the current count: true for Warnings/Errors,
+// false for the other three, always -- see kpiCard's own comment on why
+// `filter` alone (empty both for a card that never navigates and for a door
+// at a zero count) cannot carry that distinction by itself. `value` and the
+// currency in "Spent today" are already display-ready strings, not raw
+// numbers, so a caller can drop them straight into a card with no
+// formatting of its own to get wrong.
 export function pulseKpis(k){
   const checks = k.checks || 0;
   const per = k.per || {};
   const warn = k.warn || 0;
   const err = k.err || 0;
   const spentToday = k.spentToday || 0;
+  const spentWeek = k.spentWeek || 0;
   const pct = (n) => checks ? Math.round(n / checks * 100) + "%" : "—";
   // Mirrors page.js's money() exactly: same style, same 2-vs-4 decimal
   // switch for a sub-10-cent run. Duplicated rather than imported -- see
   // this file's own banner comment.
-  const dollars = new Intl.NumberFormat("en-US", {
+  const money = (n) => new Intl.NumberFormat("en-US", {
     style: "currency", currency: "USD",
     minimumFractionDigits: 2,
-    maximumFractionDigits: (Math.abs(spentToday) < 0.1 ? 4 : 2),
-  }).format(spentToday);
+    maximumFractionDigits: (Math.abs(n) < 0.1 ? 4 : 2),
+  }).format(n);
   return [
     {label: "Checks", value: String(checks),
-     sub: checks ? "in the last 24h" : "nothing yet", tone: "", filter: ""},
+     sub: checks ? "in the last 24h" : "nothing yet", tone: "", filter: "", door: false},
     {label: "Woke a run", value: String(per.woke || 0),
-     sub: pct(per.woke || 0) + " of checks", tone: "", filter: ""},
+     sub: pct(per.woke || 0) + " of checks", tone: "", filter: "", door: false},
     // Warnings and errors are a way IN to the runs they count, and inert
     // when there is nothing to go to -- see pulseHtml's own comment beside
-    // chip() on why a card with nothing to show must not navigate.
+    // chip() on why a card with nothing to show must not navigate. `door`
+    // stays true even then: it is what tells kpiCard this is a button that
+    // happens to have nothing behind it right now, not a card that was
+    // never a button to begin with.
     {label: "Warnings", value: String(warn),
      sub: warn ? "Runs that finished without failing but did not do the work — open them in Runs"
                : "No warnings in the last 7 days",
-     tone: "warn", filter: warn ? "warning" : ""},
+     tone: "warn", filter: warn ? "warning" : "", door: true},
     {label: "Errors", value: String(err),
      sub: err ? "Runs that failed — open them in Runs" : "No errors in the last 7 days",
-     tone: "err", filter: err ? "error" : ""},
-    {label: "Spent today", value: dollars, sub: "", tone: "", filter: ""},
+     tone: "err", filter: err ? "error" : "", door: true},
+    // The pulse-f strip this redesign removed paired "today" with "7 days"
+    // for both runs and spend. The week's spend is that pair's other half --
+    // one card, the total in its own sublabel, not a separate strip ("one
+    // number per label" applied to the pair it was always part of). The
+    // two run counts (runsToday/runsWeek) are deliberately NOT added here or
+    // to any other card -- see task-8-report.md for why.
+    {label: "Spent today", value: money(spentToday),
+     sub: money(spentWeek) + " over 7 days", tone: "", filter: "", door: false},
   ];
 }
 
@@ -368,26 +387,45 @@ function pageHeaderAction(a){
 }
 
 /* ----------------------------------------------------------------- the KPI
-   One card per number pulseKpis hands back. `filter` is rendered as a click
-   target — a real <button>, `data-statfilter` set — only when it is truthy;
-   otherwise the button is `disabled`, same as an empty pulseKpis card always
-   was as a chip. That is the whole contract
-   test_the_warning_and_error_cards_lead_to_the_runs_they_count is written
-   against: it drives pulseKpis, not this function, but the two have to agree
-   on what `filter` means or the door pulseKpis says is open would not be. */
-export function kpiCard({icon: iconName, tone, value, label, sub, filter}){
-  const btn = el("button", "kpi-card" + (tone ? " " + tone : ""));
+   One card per number pulseKpis hands back. The tinted icon square and the
+   NUMBER share the first line -- the number is what the eye should land on
+   beside the icon, not the caption -- then the label, then the muted
+   sublabel.
+
+   `door` says whether this card is a way IN to Runs at all, and decides the
+   element itself: false renders a plain, non-interactive element -- never a
+   <button>, never `disabled` -- for Checks/Woke a run/Spent today, which
+   have nowhere to navigate and never will; true renders a real <button>,
+   `data-statfilter` set when `filter` is truthy, `disabled` when it is not.
+   A door with nothing behind it (its own count at zero) is the one case
+   `disabled` is for -- it is then telling the truth ("nothing to open
+   here"), not making the page look broken. `filter` alone cannot carry this
+   -- it is empty both for a card that never navigates and for a door at a
+   zero count -- which is why `door` is a separate flag pulseKpis sets.
+   test_the_warning_and_error_cards_lead_to_the_runs_they_count pins what
+   `filter` means; the door-vs-plain-element test beside it pins this. */
+export function kpiCard(opts){
+  // `opts` rather than destructuring in the parameter list itself: _plainfn
+  // (tests/test_page_contract.py) extracts a function by name by matching
+  // braces starting from the first opening brace after its name, and a
+  // destructured parameter's own opening brace would be mistaken for the
+  // body's. Destructuring on the next line instead keeps every call site
+  // (`kpiCard({icon, tone, ...})`) exactly as it was.
+  const {icon: iconName, tone, value, label, sub, filter, door} = opts;
+  const card = el(door ? "button" : "div", "kpi-card" + (tone ? " " + tone : ""));
   const head = el("div", "kpi-card-h");
   const icWrap = el("div", "kpi-card-ic");
   if(iconName) icWrap.appendChild(icon(iconName));
   head.appendChild(icWrap);
-  head.appendChild(el("span", null, label));
-  btn.appendChild(head);
-  btn.appendChild(el("div", "kpi-card-num", value));
-  if(sub) btn.appendChild(el("div", "kpi-card-sub", sub));
-  if(filter) btn.dataset.statfilter = filter;
-  else btn.disabled = true;
-  return btn;
+  head.appendChild(el("span", "kpi-card-num", value));
+  card.appendChild(head);
+  card.appendChild(el("div", "kpi-card-label", label));
+  if(sub) card.appendChild(el("div", "kpi-card-sub", sub));
+  if(door){
+    if(filter) card.dataset.statfilter = filter;
+    else card.disabled = true;
+  }
+  return card;
 }
 
 /* ------------------------------------------------------------------ the band
@@ -493,7 +531,7 @@ export function renderOverviewHead(kpis, firstName){
                    "Errors": "xcircle", "Spent today": "dollar"};
     cards.forEach(c => kpiHost.appendChild(kpiCard({
       icon: ICONS[c.label], tone: c.tone, value: c.value,
-      label: c.label, sub: c.sub, filter: c.filter,
+      label: c.label, sub: c.sub, filter: c.filter, door: c.door,
     })));
   }
 

@@ -851,6 +851,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cards had already made once, in an earlier phase of this project, before
   it was written down as a rule rather than a habit.
 
+- **A controller's visual pass on the KPI cards Task 8 shipped caught three
+  things the tests and review could not see.** (1) The card's first line
+  paired the icon with the LABEL, not the number — every card led with its
+  caption instead of the value the eye is meant to land on beside the icon.
+  `kpiCard` now puts the icon square and the number on that first line, the
+  label beneath, the sublabel beneath that; the type scale (27px/700 number,
+  13.5px/600 label, 12.5px muted sublabel) is unchanged. (2) All five cards
+  rendered as `<button disabled>` on a quiet install, greying out Checks/
+  Woke a run/Spent today as if the page were broken — three cards that have
+  no `filter` and never will, and were never doors into Runs. `filter`
+  alone cannot say so: it is empty both for a card that never navigates and
+  for a door (Warnings/Errors) whose own count happens to be zero.
+  `pulseKpis` now hands every card a `door` flag (true only for Warnings/
+  Errors, always, regardless of count) and `kpiCard` renders a non-door card
+  as a plain, always-full-contrast, non-interactive element — never a
+  `<button>`, never `disabled` — reserving `disabled` for the one case it is
+  meant for: a door with nothing behind it. (3) The `pulse-f` strip Task 8
+  removed said "Today `<n>` runs `<$x>` · 7 days `<n>` runs `<$y>`";
+  `pulseKpis` kept `spentWeek` as an input but returned an empty `sub` for
+  "Spent today", so the week's spend was nowhere on the page. It is now that
+  card's own sublabel (`"$41.02 over 7 days"`) — the "one number per label"
+  rule applied to the pair it was always part of. The two run counts
+  (`runsToday`/`runsWeek`) are deliberately left off every card: cramming
+  either onto "Spent today" (a money card) or "Checks" (a probe count, not a
+  run count) would misattribute the number to the wrong card, and every run
+  stays one click away, in full, on the Runs page. Two tests guard this —
+  `test_a_card_that_is_not_a_door_is_never_a_disabled_button` and
+  `test_the_spent_today_card_carries_the_week_in_its_sublabel` — alongside
+  the ten characterisation tests Task 6 pinned, all still passing unedited.
+
 ### Added
 
 - **A read-only query layer for the Security dashboard.** `security/queries.py`

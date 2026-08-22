@@ -157,46 +157,67 @@
     const warn = k.warn || 0;
     const err = k.err || 0;
     const spentToday = k.spentToday || 0;
+    const spentWeek = k.spentWeek || 0;
     const pct = (n) => checks ? Math.round(n / checks * 100) + "%" : "\u2014";
-    const dollars = new Intl.NumberFormat("en-US", {
+    const money2 = (n) => new Intl.NumberFormat("en-US", {
       style: "currency",
       currency: "USD",
       minimumFractionDigits: 2,
-      maximumFractionDigits: Math.abs(spentToday) < 0.1 ? 4 : 2
-    }).format(spentToday);
+      maximumFractionDigits: Math.abs(n) < 0.1 ? 4 : 2
+    }).format(n);
     return [
       {
         label: "Checks",
         value: String(checks),
         sub: checks ? "in the last 24h" : "nothing yet",
         tone: "",
-        filter: ""
+        filter: "",
+        door: false
       },
       {
         label: "Woke a run",
         value: String(per.woke || 0),
         sub: pct(per.woke || 0) + " of checks",
         tone: "",
-        filter: ""
+        filter: "",
+        door: false
       },
       // Warnings and errors are a way IN to the runs they count, and inert
       // when there is nothing to go to -- see pulseHtml's own comment beside
-      // chip() on why a card with nothing to show must not navigate.
+      // chip() on why a card with nothing to show must not navigate. `door`
+      // stays true even then: it is what tells kpiCard this is a button that
+      // happens to have nothing behind it right now, not a card that was
+      // never a button to begin with.
       {
         label: "Warnings",
         value: String(warn),
         sub: warn ? "Runs that finished without failing but did not do the work \u2014 open them in Runs" : "No warnings in the last 7 days",
         tone: "warn",
-        filter: warn ? "warning" : ""
+        filter: warn ? "warning" : "",
+        door: true
       },
       {
         label: "Errors",
         value: String(err),
         sub: err ? "Runs that failed \u2014 open them in Runs" : "No errors in the last 7 days",
         tone: "err",
-        filter: err ? "error" : ""
+        filter: err ? "error" : "",
+        door: true
       },
-      { label: "Spent today", value: dollars, sub: "", tone: "", filter: "" }
+      // The pulse-f strip this redesign removed paired "today" with "7 days"
+      // for both runs and spend. The week's spend is that pair's other half --
+      // one card, the total in its own sublabel, not a separate strip ("one
+      // number per label" applied to the pair it was always part of). The
+      // two run counts (runsToday/runsWeek) are deliberately NOT added here or
+      // to any other card -- see task-8-report.md for why.
+      {
+        label: "Spent today",
+        value: money2(spentToday),
+        sub: money2(spentWeek) + " over 7 days",
+        tone: "",
+        filter: "",
+        door: false
+      }
     ];
   }
   function bandEmptyReason(jobs) {
@@ -407,19 +428,22 @@
     btn.appendChild(document.createTextNode(a.label));
     return btn;
   }
-  function kpiCard({ icon: iconName, tone, value, label, sub, filter }) {
-    const btn = el("button", "kpi-card" + (tone ? " " + tone : ""));
+  function kpiCard(opts) {
+    const { icon: iconName, tone, value, label, sub, filter, door } = opts;
+    const card = el(door ? "button" : "div", "kpi-card" + (tone ? " " + tone : ""));
     const head = el("div", "kpi-card-h");
     const icWrap = el("div", "kpi-card-ic");
     if (iconName) icWrap.appendChild(icon(iconName));
     head.appendChild(icWrap);
-    head.appendChild(el("span", null, label));
-    btn.appendChild(head);
-    btn.appendChild(el("div", "kpi-card-num", value));
-    if (sub) btn.appendChild(el("div", "kpi-card-sub", sub));
-    if (filter) btn.dataset.statfilter = filter;
-    else btn.disabled = true;
-    return btn;
+    head.appendChild(el("span", "kpi-card-num", value));
+    card.appendChild(head);
+    card.appendChild(el("div", "kpi-card-label", label));
+    if (sub) card.appendChild(el("div", "kpi-card-sub", sub));
+    if (door) {
+      if (filter) card.dataset.statfilter = filter;
+      else card.disabled = true;
+    }
+    return card;
   }
   function renderPulse(ticks, jobs) {
     const { per, checks, buckets, kinds, T } = tickTotals(ticks);
@@ -506,7 +530,8 @@
         value: c.value,
         label: c.label,
         sub: c.sub,
-        filter: c.filter
+        filter: c.filter,
+        door: c.door
       })));
     }
     const bandHost = $("stats");
@@ -547,5 +572,5 @@
     renderOverviewHead
   };
 })();
-/* ui-bundle: 41e5794b0a7daf2b5b88ff49db52f96e82bb256d664d2d22eb0b1914fd624da2 */
-/* ui-sources: 122681a7966b019f077dc14c1e1357c0211026f99777c662649bc66e08e1da2d */
+/* ui-bundle: 82609d70a4de3e6987fad0a5d45d8eab9759566eccf23a4833e409bcf3200e05 */
+/* ui-sources: 7bdfa6f824949aca99ec038ec8e374b5aa46795131a4a9d5f3e8ee87e5dae7ab */

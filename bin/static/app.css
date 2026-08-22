@@ -109,38 +109,44 @@ td .projtag .ic{width:12px;height:12px;color:var(--accent)}
 
 /* ------------------------------------------------------------------ KPI card
    Five numbers, one card each: a tinted icon square (the tint carries the
-   tone -- accent by default, warn/err for the two that double as filters),
-   the label beside it, the number below at 27px/700, and a muted sublabel.
-   The second number of a pair belongs in that sublabel, never beside the
-   first -- see pulseKpis's own comment on the rule this design exists to
-   hold, which an earlier phase of this project broke six times.
-   Always a real <button>: kpiCard() disables the ones with nowhere to go
-   (see its own comment), and a disabled button is the one element that is
-   natively unclickable and untabbable without a second attribute to keep in
-   sync. */
+   tone -- accent by default, warn/err for the two that double as filters)
+   and the NUMBER share the first line at 27px/700 -- the number is what the
+   eye should land on beside the icon, not the caption -- then the label at
+   13.5px/600, then a muted sublabel at 12.5px. The second number of a pair
+   belongs in that sublabel, never beside the first -- see pulseKpis's own
+   comment on the rule this design exists to hold, which an earlier phase of
+   this project broke six times.
+   Only a door (Warnings/Errors) is ever a <button>: kpiCard() disables one
+   with nowhere to go (see its own comment), and a disabled button is the
+   one element that is natively unclickable and untabbable without a second
+   attribute to keep in sync. A card that was never a door (Checks/Woke a
+   run/Spent today) is a plain, always-full-contrast element instead --
+   hence `button.` on the hover/cursor rules below, so a <div> (never
+   `:disabled`, so `:not(:disabled)` is always true for one) cannot pick up
+   a hover style that implies it is clickable. */
 .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
   gap:12px;margin:0 0 20px}
 .kpi-card{display:flex;flex-direction:column;gap:8px;text-align:left;font:inherit;
   background:var(--panel);border:1px solid var(--line);border-radius:13px;
   padding:16px 18px;box-shadow:var(--shadow)}
 .kpi-card:disabled{cursor:default}
-.kpi-card:not(:disabled){cursor:pointer}
-.kpi-card:not(:disabled):hover{border-color:color-mix(in srgb,var(--accent) 42%,var(--line))}
+button.kpi-card:not(:disabled){cursor:pointer}
+button.kpi-card:not(:disabled):hover{border-color:color-mix(in srgb,var(--accent) 42%,var(--line))}
 .kpi-card-h{display:flex;align-items:center;gap:10px}
-.kpi-card-h span{font-size:13.5px;font-weight:600}
 .kpi-card-ic{display:flex;align-items:center;justify-content:center;width:30px;height:30px;
   border-radius:9px;background:var(--accent-soft);color:var(--accent);flex:none}
 .kpi-card-ic .ic{width:15px;height:15px}
 .kpi-card.warn .kpi-card-ic{background:var(--warn-soft);color:var(--warn)}
 .kpi-card.err .kpi-card-ic{background:var(--err-soft);color:var(--err)}
-.kpi-card.warn:not(:disabled):hover{border-color:color-mix(in srgb,var(--warn) 42%,var(--line))}
-.kpi-card.err:not(:disabled):hover{border-color:color-mix(in srgb,var(--err) 42%,var(--line))}
+button.kpi-card.warn:not(:disabled):hover{border-color:color-mix(in srgb,var(--warn) 42%,var(--line))}
+button.kpi-card.err:not(:disabled):hover{border-color:color-mix(in srgb,var(--err) 42%,var(--line))}
 /* Zero warnings/errors is nothing to open -- the card fades the same register
    .iconbtn:disabled already uses for "nothing this button can do". The other
-   three cards are ALSO disabled buttons (they never had anywhere to go) but
-   were never doors, so they keep full contrast rather than reading as broken. */
+   three cards are plain elements, never disabled, never dimmed -- they were
+   never doors, so full contrast is the correct and only reading. */
 .kpi-card.warn:disabled,.kpi-card.err:disabled{opacity:.6}
 .kpi-card-num{font-size:27px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.kpi-card-label{font-size:13.5px;font-weight:600}
 .kpi-card-sub{font-size:12.5px;color:var(--muted);line-height:1.4}
 .btn{display:inline-flex;align-items:center;gap:7px;font:inherit;font-size:12.5px;font-weight:560;
   padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);
@@ -1457,5 +1463,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: 11953042f6c3dbc369aeef5086f14e6751ed75a6a6d0ce59d36bd90e8f7dcb06 */
-/* ui-sources: 122681a7966b019f077dc14c1e1357c0211026f99777c662649bc66e08e1da2d */
+/* ui-bundle: 0f5e6473f64f932d2b4cad24c2736cf83c7498f35d0db7a0ffcf2180c1a8ab4b */
+/* ui-sources: 7bdfa6f824949aca99ec038ec8e374b5aa46795131a4a9d5f3e8ee87e5dae7ab */
