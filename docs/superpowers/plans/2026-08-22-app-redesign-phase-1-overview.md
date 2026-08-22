@@ -15,6 +15,8 @@
 - **Behaviour does not change in this phase.** Only where information is read, and where the code that draws it lives. No number changes.
 - **esbuild is pinned at `0.25.0`** and invoked through `npx --yes`.
 - **Every task ends green:** `pytest`, `bash bin/claude-cron selftest`, clean tree.
+- **Every task that touches `bin/`, `skills/` or `test/` writes its own CHANGELOG.md entry, in the same commit.** The selftest compares the last commit touching those paths against the last touching `CHANGELOG.md`; a task that defers the entry leaves the tree red for every task after it. Write the entry the way the file's own header asks: say what behaviour changed and what it cost not to have it.
+- **Run the selftest AFTER committing, not before.** The changelog guard reads `git log`, not the working tree, so a gate run before the commit is reading the previous task's state and will pass on a tree that is about to be red.
 - **Build artifacts are committed in the same commit as the sources they were built from.** A task that edits anything under `ui/` runs `bash build/build-ui.sh` before committing.
 - **Branch:** `feat/security-analysis`. No new branches.
 - **`ui/app/` must never build DOM from HTML strings.** `_security_sources()` in `tests/test_page_contract.py` already walks all of `ui/`, so the sink-scan applies from the moment the directory exists.
@@ -1529,7 +1531,8 @@ Open the dashboard in both themes beside the `Main.dc.html` artboard. Note every
 - [ ] **Step 4: Update the docs**
 
 `README.md`: the build step now produces three artifacts, and `ui/` holds CSS as well as JS.
-`CHANGELOG.md`: one entry for the phase, naming the two bugs fixed along the way.
+
+`CHANGELOG.md` is already written — each task wrote its own entry as it landed, which is what the selftest's changelog guard forces. Read the entries this phase added, end to end, and check they describe one coherent change rather than eleven disconnected ones. Merge or reword where two entries say the same thing twice; do not add a summary entry on top of them.
 
 - [ ] **Step 5: Commit**
 
