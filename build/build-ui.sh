@@ -1,12 +1,16 @@
 #!/bin/bash
-# Builds the Security area into bin/static/. The OUTPUT IS COMMITTED: whoever
-# installs claude-cron needs jq, python3 and curl -- never Node. Run this in
-# the same change as any edit under ui/, or the selftest refuses the tree.
+# Builds the Security and App areas into bin/static/. The OUTPUT IS COMMITTED:
+# whoever installs claude-cron needs jq, python3 and curl -- never Node. Run
+# this in the same change as any edit under ui/, or the selftest refuses the
+# tree.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 npx --yes esbuild@0.25.0 ui/security/index.js \
   --bundle --format=iife --target=safari15 \
   --outfile=bin/static/security.js
+npx --yes esbuild@0.25.0 ui/app/index.js \
+  --bundle --format=iife --target=safari15 \
+  --outfile=bin/static/app.js
 # The stylesheet is CONCATENATED, not bundled: it has no imports and no
 # module graph, so running it through esbuild would buy nothing and add a
 # minifier's opinions to a diff that should stay readable. Order matters --
@@ -28,8 +32,8 @@ cat ui/css/tokens.css ui/css/components.css ui/css/pages.css > bin/static/app.cs
 # in JavaScript AND in CSS, ignored by every browser, and greppable without
 # parsing anything -- and exactly one of each, which build/ui-bundle-digest.sh
 # enforces on the way back in.
-for art in bin/static/security.js bin/static/app.css; do
+for art in bin/static/security.js bin/static/app.js bin/static/app.css; do
   printf '/* ui-bundle: %s */\n' "$(bash build/ui-bundle-digest.sh "$art")" >> "$art"
   printf '/* ui-sources: %s */\n' "$(bash build/ui-digest.sh)" >> "$art"
 done
-echo "built bin/static/security.js, bin/static/app.css"
+echo "built bin/static/security.js, bin/static/app.js, bin/static/app.css"

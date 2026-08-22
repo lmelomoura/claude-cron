@@ -640,6 +640,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The jobs domain moved out of `bin/dashboard.html` into `ui/app/`, bundled
+  into a committed `bin/static/app.js` the same way `ui/security/` becomes
+  `bin/static/security.js`.** `jobFacts` (state, next run, budget cap,
+  backoff) and `visibleJobs` (the toolbar's filtered set) are read by both the
+  Overview's job cards and the Jobs table that a later phase adds as their
+  second consumer — moving only the Overview's screens now would have left
+  that arithmetic duplicated until the table followed, the exact
+  drifting-vocabulary defect this branch has already paid for twice, so the
+  whole domain moves in one piece instead. `bulkOn`, `bulkLabel`,
+  `clearJobFilters`, `jobProjectNames`, `nextCheckAt` and `inWindow` travel
+  with it. The three separate `jobProjectFilter`/`jobStatusFilter`/`jobQuery`
+  module-level bindings become one exported `jobFilters` object — three
+  `let`s can only cross a module boundary as three getters and three setters,
+  where an object is read and written through one reference from either side,
+  which is what the page's toolbar and the moved `visibleJobs` both need. The
+  page states what it hands the module in `ui/app/page.js`, the same
+  interface contract `ui/security/page.js` already keeps: a name missing from
+  that list is a bind-time failure naming itself, not an `undefined is not a
+  function` three screens later. Without this move, the Overview's redesign
+  in the next phase would have had to choose between reading the arithmetic
+  out of a page it no longer draws, or copying it — paying the same
+  duplication cost from the other direction.
+
 - **The dashboard's stylesheet moved out of `bin/dashboard.html` into
   `ui/css/`, and no rule's text changed.** 1415 lines and 789 rules that used
   to sit in a `<style>` block are now three files — `tokens.css` (the two

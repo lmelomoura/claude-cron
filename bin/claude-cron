@@ -2008,11 +2008,11 @@ cmd_skills() { # claude-cron skills [install]
 # artifact copied three times over is three places for the next fix to reach
 # two of.
 #
-# bin/static/security.js and bin/static/app.css are COMMITTED: installing
-# claude-cron needs jq, python3 and curl, never Node. The price of that is a
-# build output in git, which can be forgotten — and a stale artifact is a
-# dashboard silently running last week's code, with nothing on screen to say
-# so.
+# bin/static/security.js, bin/static/app.js and bin/static/app.css are
+# COMMITTED: installing claude-cron needs jq, python3 and curl, never Node.
+# The price of that is a build output in git, which can be forgotten — and a
+# stale artifact is a dashboard silently running last week's code, with
+# nothing on screen to say so.
 # TWO questions, and only the first of them used to be asked. `ui-sources`
 # answers "was this built from the sources sitting next to it" -- the
 # forgot-to-rebuild case. `ui-bundle` answers "and is this still what that
@@ -6035,6 +6035,7 @@ JSON
 
   echo "the committed UI artifacts — built from the sources sitting next to them"
   check_ui_artifact "bin/static/security.js"
+  check_ui_artifact "bin/static/app.js"
   check_ui_artifact "bin/static/app.css"
 
   rm -rf "$tmp"

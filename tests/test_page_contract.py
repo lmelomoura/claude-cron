@@ -120,10 +120,12 @@ def test_every_element_the_script_reaches_for_exists(srv):
     ids = set(re.findall(r'id="([a-zA-Z0-9_-]+)"', html))
     # ids created at runtime by innerHTML rather than present in the skeleton
     dynamic = set(re.findall(r'id="([a-zA-Z0-9_-]+)"', page.split("<script>", 1)[1]))
-    # The page's own script AND the Security area's modules. The area moved out
-    # of the page; a check that kept reading only the inline script would have
-    # stopped watching a thousand lines of `$("sec-…")` without failing once.
-    reads = _js(srv) + "\n" + _security_js(srv)
+    # The page's own script, the Security area's modules, AND the App bundle's
+    # modules. Both areas moved out of the page; a check that kept reading only
+    # the inline script would have stopped watching every `$("sec-…")` and, as
+    # of ui/app/, every `$("jq…")` a moved jobs-domain function reaches for
+    # (clearJobFilters clears the search box) without failing once.
+    reads = _js(srv) + "\n" + _security_js(srv) + "\n" + _app_js(srv)
     referenced = set(re.findall(r'\$\("([a-zA-Z0-9_-]+)"\)', reads))
     missing = referenced - ids - dynamic
     assert not missing, f"script reaches for ids that no markup defines: {sorted(missing)}"
@@ -702,6 +704,91 @@ def _security_js(srv):
     return "\n".join(f.read_text() for f in files)
 
 
+# ---- the App bundle. ui/app/ holds the jobs domain moved out of the page's
+# own script -- jobFacts and visibleJobs, read by both the Overview's cards
+# and the Jobs table, plus the small helpers that go with them. It is bundled
+# into bin/static/app.js by the same build/build-ui.sh call that builds
+# bin/static/security.js, and scanned by the same sink-scan below because
+# _security_sources() already walks all of ui/.
+
+APP_ROOT = REPO / "ui" / "app"
+
+
+def _app_js(srv):
+    """The app bundle's own sources, concatenated. Mirrors _security_js: the
+    tests have to read exactly the code that draws the view, not a block of
+    dashboard.html that may no longer be where the code lives."""
+    return "\n".join(p.read_text() for p in sorted(APP_ROOT.rglob("*.js")))
+
+
+# jobFacts reads the clock directly, so it is pinned first -- "in 4 minutes"
+# has to come out as a number, not a race against whatever moment the test
+# happens to run at.
+#
+# It also reads three names the page hands it through page.js's bindPage()
+# rather than compute them itself: eff() (project-inherited fields),
+# backoffMultiplier() (mirrors the engine's own curve, already proven equal
+# to it by test_the_backoff_curve_matches_the_engine above) and
+# activeRunsOf() (live runs from CC.DATA). Extracting only jobFacts's own
+# text would leave all three undefined and the very first line of the
+# function -- `CC.DATA.state[j.id]` -- throwing before a single case ran, so
+# they are stood up here the same way _harness_globals() above stands up
+# DATA and activeRunsOf for the job-card tests: small, honest stand-ins for
+# what the page would otherwise inject, not a rewrite of what jobFacts does.
+_JOBS_DOMAIN_HARNESS = """
+// jobFacts reads the clock; pinned so "in 4 minutes" is a number, not a race.
+const NOW = 1_800_000_000;
+Date.now = () => NOW * 1000;
+
+const CC = { DATA: { state: {}, checks: {}, runs: [] } };
+function eff(j, field, def){
+  if(j[field] != null && j[field] !== "") return j[field];
+  return def;
+}
+const BACKOFF_AFTER = 3, BACKOFF_MAX = 16;
+function backoffMultiplier(streak){
+  const s = +streak || 0;
+  if(s < BACKOFF_AFTER) return 1;
+  return Math.min(BACKOFF_MAX, Math.pow(2, s - BACKOFF_AFTER + 1));
+}
+function activeRunsOf(id){ return []; }
+"""
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_job_facts_survive_the_move_unchanged(srv, tmp_path):
+    """jobFacts is the arithmetic both the Overview's cards and the Jobs
+    table read -- the state, the next run, the cap, the backoff. Moving it
+    out of the page must not shift a single one of those, so this pins the
+    answers for a job of each shape before the move and holds them after."""
+    block = _app_js(srv)
+    # nextCheckAt and inWindow are jobFacts's own module-mates -- called
+    # nowhere else in ui/app/ -- so they travel with it here the same way
+    # test_a_job_card_shows_every_kept_session_honestly above joins several
+    # _plainfn extractions rather than assume one function is self-contained.
+    deps = "\n".join(_plainfn(block, n) for n in ("nextCheckAt", "inWindow", "jobFacts"))
+    script = tmp_path / "facts.js"
+    script.write_text(_JOBS_DOMAIN_HARNESS + deps + """
+    const cases = {
+      plain:    {id: "a", enabled: true,  interval_minutes: 15},
+      disabled: {id: "b", enabled: false, interval_minutes: 15},
+      backoff:  {id: "c", enabled: true,  interval_minutes: 15},
+    };
+    const out = {};
+    for(const [k, j] of Object.entries(cases)){
+      const f = jobFacts(j);
+      out[k] = {state: f.state, disabled: !!f.disabled, capped: !!f.capped};
+    }
+    console.log(JSON.stringify(out));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True,
+                                    check=True).stdout)
+    assert out["plain"]["state"] == "enabled"
+    assert out["disabled"]["disabled"] is True
+    assert out["plain"]["capped"] is False
+
+
 def test_a_nested_security_module_still_reaches_the_sink_scan(tmp_path):
     """build/ui-digest.sh walks ALL of ui/ when it fingerprints what the
     bundle was built from, and build-ui.sh bundles whatever
@@ -821,10 +908,10 @@ def test_every_sidenav_item_has_a_view(srv):
         assert f'id="view-{view}"' in page, f"nav item {view} has no view"
 
 
-def test_the_security_ui_never_builds_dom_from_html_strings():
-    """The scan follows the code. It used to read a block of dashboard.html;
-    the area now lives in ui/security/, and a scan left pointing at the old
-    place would have kept passing while watching nothing.
+def test_the_built_ui_never_builds_dom_from_html_strings():
+    """The scan follows the code, over every module under ui/. It used to read
+    a block of dashboard.html; the areas now live under ui/, and a scan left
+    pointing at the old place would have kept passing while watching nothing.
 
     A finding's title, its file paths and — the one nobody expects — the BRANCH
     it was found on are all strings a repository chooses. Git allows '<', '>'
