@@ -322,6 +322,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A changed stylesheet is no longer served out of an open tab's cache
+  forever.** Every asset under `bin/static/` is requested with
+  `?v=<build id>`, and the build id is derived from the bytes of the files in
+  that directory — but it globbed `*.js` alone, from when the Security bundle
+  was the only thing there. A stylesheet is about to join it, and one that
+  cannot move the id is one a running dashboard never picks up: no reload
+  clears it, because the URL never changes. The fingerprint now reads
+  `STATIC_TYPES`, the same table that decides what this route may serve at
+  all, so a third asset type added there is covered without anybody
+  remembering to come back.
+
 - **The UI bundle's freshness guard can now detect a MODIFIED bundle, not
   only a stale one.** `bin/static/security.js` is a build output committed to
   git — the price of never needing Node to install claude-cron — and
@@ -590,6 +601,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   also names itself in server.log instead of hiding behind the fallback.
 
 ### Changed
+
+- **Build artifacts carry one stamp form, valid in JavaScript and CSS
+  alike.** The two freshness stamps every committed artifact carries — what
+  it was built from, and what it is — were written as `//` line comments,
+  which CSS has no equivalent of. With a stylesheet about to be built into
+  `bin/static/`, the alternative was a line form for one language and a block
+  form for the other: two spellings for `build/build-ui.sh` to write,
+  `build/ui-bundle-digest.sh` to strip and the selftest to parse, and one of
+  them to forget on the next artifact. Both now use `/* … */`. The
+  exactly-one-of-each rule — what stops a freshly computed stamp being
+  appended below the real one and read instead of it — carries over unchanged.
 
 - **The README documents the Security area that now exists, not the one it
   shipped with.** The section described a single project list and a single
