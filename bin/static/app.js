@@ -387,7 +387,7 @@
     nameSpan.appendChild(icon("bot"));
     nameSpan.appendChild(document.createTextNode(j.id));
     h2.appendChild(nameSpan);
-    const pillCls = disabled ? "off" : idle ? "idle" : "on";
+    const pillCls = disabled ? "disabled" : idle ? "idle" : "on";
     const pill = el("span", "pill " + pillCls, disabled ? "disabled" : idle ? "idle" : "enabled");
     if (idle) pill.title = "Outside its active window \u2014 no runs until the window reopens";
     h2.appendChild(pill);
@@ -845,5 +845,5 @@
     jobCard
   };
 })();
-/* ui-bundle: a74ac894a79988c577d124efbfce32a8572c8c84cdf67e287f7b9c9e1b0c7acb */
-/* ui-sources: 3a0a2e0d4d24746669f0a7cc032b146fb19021d3f9ab86631761a153a989ac28 */
+/* ui-bundle: 5c279524580e0b6403e24c3a8b6887b99f5dd4065d764833df50f31ea1b271e4 */
+/* ui-sources: 5a43e62be160487a5570842d5fd322fef1fe595507059d511836bd73a3cb200f */

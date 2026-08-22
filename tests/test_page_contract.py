@@ -969,6 +969,7 @@ def test_the_spent_today_card_carries_the_week_in_its_sublabel(srv, tmp_path):
     assert by["Spent today"]["sub"] == "$41.02 over 7 days"
 
 
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 @pytest.mark.parametrize("jobs,expected", [
     ([], "There are no jobs yet."),
     ([{"enabled": False}], "All 1 jobs are disabled."),
@@ -1013,6 +1014,7 @@ def test_a_probe_that_could_not_run_says_so(srv, tmp_path, exit_code, expect):
         f"exit {exit_code} did not read as {expect!r}: {[r['text'] for r in got]}"
 
 
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 @pytest.mark.parametrize("spent,cap,expect", [
     (1.00, 5.00, ""), (3.99, 5.00, ""), (4.00, 5.00, "near"),
     (4.90, 5.00, "near"), (5.00, 5.00, "over"), (7.00, 5.00, "over"),
@@ -1186,6 +1188,7 @@ def test_the_job_card_is_built_from_nodes_and_shows_what_it_always_showed(
     assert "qg-dev-agent" in txt, "the card did not name its own job"
 
 
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_a_probe_line_containing_markup_stays_text(srv, tmp_path):
     """The first line of a probe script's stdout, rendered. `esc()` held
     this before by discipline; nodes hold it by construction."""
@@ -4240,4 +4243,52 @@ def test_no_class_the_shipped_ui_uses_lacks_a_css_rule(srv):
         "bin/static/app.css: "
         + "; ".join(f".{cls} (from {', '.join(sources)})"
                     for cls, sources in sorted(missing.items()))
+    )
+
+
+def test_the_job_disabled_pill_and_the_launchd_off_pill_use_different_classes():
+    """A job nobody switched on and a scheduler service that failed to load
+    are not the same fact -- one is a choice, the other is a fault -- and
+    they used to share `.pill.off` (red) regardless, painting every disabled
+    job as a problem. The job card (ui/app/overview.js) and the Jobs table
+    (bin/dashboard.html) now resolve a disabled job to `.pill.disabled`
+    (grey); only the topbar's launchd pill (bin/dashboard.html) still uses
+    `.pill.off` (red), because there it genuinely is a fault.
+
+    This reads the three ternaries straight from source rather than the
+    built bundle, so it catches a regression at the point someone would
+    introduce it -- typing "off" back into either job-state ternary -- not
+    just its downstream effect. A future edit that reunites the job-disabled
+    class with the launchd-off class, the exact simplification the CSS
+    comment in ui/css/components.css warns against, fails this test."""
+    overview_js = (REPO / "ui" / "app" / "overview.js").read_text()
+    dashboard_html = (REPO / "bin" / "dashboard.html").read_text()
+
+    m = re.search(r'const pillCls = disabled \? "([^"]+)" : \(idle \? "([^"]+)" : "([^"]+)"\)',
+                  overview_js)
+    assert m, "the job card's pill-class ternary was not found where expected in overview.js"
+    card_disabled, card_idle, card_on = m.groups()
+
+    m = re.search(r'pill \'\+\(F\.disabled\?"([^"]+)":\(F\.idle\?"([^"]+)":"([^"]+)"\)\)',
+                  dashboard_html)
+    assert m, "the Jobs table's pill-class ternary was not found where expected in dashboard.html"
+    table_disabled, table_idle, table_on = m.groups()
+
+    m = re.search(r'pill \'\+\(DATA\.launchd_loaded\?"([^"]+)":"([^"]+)"\)', dashboard_html)
+    assert m, "the launchd pill-class ternary was not found where expected in dashboard.html"
+    launchd_on, launchd_off = m.groups()
+
+    assert (card_disabled, card_idle, card_on) == (table_disabled, table_idle, table_on), (
+        "the job card and the Jobs table disagree on what a disabled/idle/"
+        f"enabled job's pill class is: {(card_disabled, card_idle, card_on)} "
+        f"vs {(table_disabled, table_idle, table_on)}"
+    )
+    assert card_disabled != launchd_off, (
+        "a disabled job's pill and the launchd fault pill resolve to the "
+        f"same class ({card_disabled!r}) -- a switched-off job would read "
+        "as a problem again"
+    )
+    assert card_idle != launchd_off and card_on != launchd_off, (
+        "a job pill state collides with the launchd fault class "
+        f"({launchd_off!r})"
     )

@@ -27,8 +27,21 @@ body{margin:0;background:var(--bg);color:var(--ink);
   font-size:11px;font-weight:600;letter-spacing:.02em}
 .pill .ic{width:12px;height:12px}
 .pill.on{background:var(--ok-soft);color:var(--ok)}
+/* .pill.off is a FAULT colour, not "the thing is switched off" -- the
+   topbar's launchd pill is its only user, where off genuinely means the
+   scheduler service failed to load and red is correct. A job someone
+   disabled on purpose is not a fault, so it never gets this class; it gets
+   .pill.disabled below, which is grey. Collapsing the two back into one
+   class is exactly the regression this split exists to prevent -- see
+   test_the_job_disabled_pill_and_the_launchd_off_pill_use_different_classes
+   in tests/test_page_contract.py. */
 .pill.off{background:var(--err-soft);color:var(--err)}
 .pill.idle{background:var(--warn-soft);color:var(--warn)}
+/* Neutral, not a warning: a job nobody enabled is not "finished but not
+   done" (that's .idle, amber) and not a fault (that's .off, red). Same
+   grey-on-panel2 treatment .sevpill.low/.sevpill.info already use for "not
+   urgent" elsewhere on this page. */
+.pill.disabled{background:var(--panel2);color:var(--muted)}
 h3{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
   margin:0;display:flex;align-items:center;gap:7px}
 h3 .ic{width:14px;height:14px}

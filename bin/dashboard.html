@@ -1681,7 +1681,7 @@ function renderJobTable(vis){
     const cap=F.cap;
     const stateCell = F.running
       ? '<span class="runningbadge"><span class="pulse"></span>'+F.nLive+' running…</span>'
-      : '<span class="pill '+(F.disabled?"off":(F.idle?"idle":"on"))+'"'
+      : '<span class="pill '+(F.disabled?"disabled":(F.idle?"idle":"on"))+'"'
         +(F.idle?' title="Outside its active window — no runs until the window reopens"':"")
         +'>'+F.state+'</span>';
     const next = F.disabled ? '<span class="muted">disabled</span>'
@@ -2375,6 +2375,9 @@ function renderRetained(){
 function render(){
   const _g=DATA.generated?new Date(DATA.generated):null;
   $("updated").textContent=(_g&&!isNaN(_g))?_g.toLocaleString(undefined,{dateStyle:"medium",timeStyle:"medium"}):"";
+  // Genuinely a fault when "off" -- the scheduler service failed to load --
+  // so this is the one pill that keeps .pill.off (red). Job cards and the
+  // Jobs table use .pill.disabled (grey) instead; see components.css.
   $("pill-launchd").innerHTML='<span class="pill '+(DATA.launchd_loaded?"on":"off")+'">'
     +(DATA.launchd_loaded?I.check+"launchd":I.xcircle+"launchd off")+'</span>';
 

@@ -385,11 +385,13 @@ export function jobCard(j){
   nameSpan.appendChild(icon("bot"));
   nameSpan.appendChild(document.createTextNode(j.id));
   h2.appendChild(nameSpan);
-  // Badge has three states: disabled (red), idle (amber -- enabled but
-  // outside its active window and not currently running), enabled (green).
-  // The pill alone carries this now -- see `card`'s own comment above on why
-  // the left edge does not.
-  const pillCls = disabled ? "off" : (idle ? "idle" : "on");
+  // Badge has three states: disabled (grey -- nobody switched it on, not a
+  // fault), idle (amber -- enabled but outside its active window and not
+  // currently running), enabled (green). The pill alone carries this now --
+  // see `card`'s own comment above on why the left edge does not. `.pill.off`
+  // is reserved for a real fault (see its own comment in components.css), so
+  // "disabled" gets its own class rather than reusing it.
+  const pillCls = disabled ? "disabled" : (idle ? "idle" : "on");
   const pill = el("span", "pill " + pillCls, disabled ? "disabled" : (idle ? "idle" : "enabled"));
   if(idle) pill.title = "Outside its active window — no runs until the window reopens";
   h2.appendChild(pill);

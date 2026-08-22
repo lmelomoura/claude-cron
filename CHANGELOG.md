@@ -653,6 +653,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   "No runs recorded yet" over an intact 223-line journal. The failure now
   also names itself in server.log instead of hiding behind the fallback.
 
+- **A disabled job no longer paints as a failure on the Overview or the Jobs
+  table.** `.pill.off` carried two unrelated meanings at once: "the
+  scheduler service is not loaded" (a real fault, red) on the topbar's
+  launchd pill, and "nobody switched this job on" (a choice, not a fault)
+  on the job card and the Jobs table's state pill. On an install with
+  several jobs disabled, the Overview read as a wall of errors — eight
+  disabled jobs, eight red pills. The job card (`ui/app/overview.js`) and
+  the Jobs table (`bin/dashboard.html`) now resolve a disabled job to a new
+  `.pill.disabled` class, styled grey — the same panel/muted treatment
+  `.sevpill.low`/`.sevpill.info` already use for "not urgent" elsewhere on
+  this page — while `.pill.off` (red) stays reserved for the one place it
+  is genuinely a fault, the launchd pill. `.pill.idle` (amber, enabled but
+  outside its active window) is unchanged. A new test,
+  `test_the_job_disabled_pill_and_the_launchd_off_pill_use_different_classes`,
+  reads all three pill ternaries from source and fails if a future edit
+  ever reunites the job-disabled class with the launchd-fault class.
+
 ### Changed
 
 - **The Overview's own arithmetic — the five KPI numbers, the band's empty
