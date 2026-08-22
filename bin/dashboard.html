@@ -1189,27 +1189,10 @@ const EFFORT_LABELS={"":"default","low":"Low","medium":"Medium","high":"High","x
 const effortLabel=(v)=>EFFORT_LABELS[v||""]||v;
 const fmtBytes=(b)=>{ if(!b) return "0 B"; const u=["B","KB","MB","GB"]; let i=0;
   while(b>=1024 && i<u.length-1){ b/=1024; i++; } return (i?b.toFixed(1):b)+" "+u[i]; };
-const DOW=["","Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-function fmtDays(arr){
-  const a=[...new Set((arr||[]).map(Number))].filter(n=>n>=1&&n<=7).sort((x,y)=>x-y);
-  if(!a.length) return "—";
-  const s=a.join(",");
-  if(s==="1,2,3,4,5,6,7") return "Every day";
-  if(s==="1,2,3,4,5") return "Mon–Fri";
-  if(s==="6,7") return "Sat–Sun";
-  return a.map(n=>DOW[n]).join(", ");
-}
-// The precheck's first output line as a bulleted key:value list on its own row,
-// so it never wraps against the "nothing to do" text.
-function checkList(output){
-  const raw=String(output||"").split("\n")[0];
-  if(!raw) return "";
-  const pairs=[...raw.matchAll(/([A-Za-z_]+)=(\S+)/g)];
-  const rest=raw.replace(/[A-Za-z_]+=\S+/g,"").replace(/->/g,"→").replace(/\s+/g," ").trim();
-  const items=pairs.map(m=>'<li>'+esc(m[1].replace(/_/g," "))+': <span class="ck-v">'+esc(m[2])+'</span></li>');
-  if(rest) items.push('<li>'+esc(rest)+'</li>');
-  return items.length ? '<ul class="checklist">'+items.join("")+'</ul>' : '';
-}
+// fmtDays and checkList moved to ui/app/overview.js with jobCard in Task 9 --
+// the card was their only caller, and checkList in particular is where an
+// arbitrary probe script's stdout used to reach the HTML parser via esc();
+// see overview.js's own banner comment on why that is now built from nodes.
 
 function toast(msg,isErr,iconName){
   const t=$("toast");
@@ -1300,160 +1283,9 @@ function eff(j, field, def){
 // branch is building must not duplicate that arithmetic across the two. See
 // CCApp.init below for what the module reads back from this page.
 
-function jobCard(j){
-  const F=CCApp.jobFacts(j);
-  const {st, chk, disabled, spentToday, cap, capped}=F;
-  const next = CCApp.nextRunNote(j, F).outerHTML;
-  const pc=st.last_precheck||null;
-  let checkStr=st.last_start?("probed "+fmtAgo(st.last_start)):"";
-  // The counts the probe reported get their own panel beside the status lines,
-  // instead of trailing off the end of one of them. They are the densest thing
-  // on the card and the reason you look at it — "8 spec ready, 0 blocked" is the
-  // answer; "probed 7h ago" is only the timestamp on it.
-  let checkItems="";
-  if(pc && typeof pc==="object"){
-    // Three outcomes, not two. A probe that could not run (any exit other than
-    // 0 or 1) once rendered as the calm "nothing to do", so a job whose
-    // credentials had gone missing looked healthy while it silently never ran
-    // again. It now says so, in the error colour. See CCApp.probeVerdict.
-    const verdict = CCApp.probeVerdict(pc).outerHTML;
-    // A probe result with no recorded check time is a probe you ran by hand.
-    // Leading with a bare em-dash then read as though a word had gone missing.
-    checkStr = (checkStr ? checkStr+" — " : "last probe: ")+verdict;
-    checkItems = checkList(pc.output);
-  }
-  // A job may have SEVERAL runs going at once, so say how many rather than one
-  // "running now". The per-run outcome is no longer summarised on the card: each
-  // run is individual and carries its own status in the Runs table.
-  const nLive = F.nLive;
-  const runStr = (nLive
-      ? '<span class="runningbadge"><span class="pulse"></span>'
-        +nLive+' running now'+(nLive===1?'':'')+'…</span>'
-      : "")
-    + (st.last_run_start
-        ? (nLive?' <span class="muted">· last ran ':'<span class="muted">last ran ')+esc(fmtAgo(st.last_run_start))+'</span>'
-        : (nLive?"":'<span class="muted">never ran</span>'));
-  const model=eff(j,"model","opus"), perm=eff(j,"permission_mode","dontAsk"), budg=eff(j,"max_budget_usd",2);
-
-  // ---- the pulse: this job's own 24h, at one bar an hour.
-  const series=Array.isArray(chk.series)?chk.series:[], woke=Array.isArray(chk.woke)?chk.woke:[];
-  const peak=series.reduce((m,n)=>Math.max(m,n),0);
-  // No bars at all when there is nothing to plot. An empty 110px sparkline just
-  // pushed the sentence that explains the emptiness into the middle of the card.
-  const spark = peak
-    ? '<span class="spark" title="'+esc(chk.checks+" checks in the last 24h, one bar an hour")+'">'
-      +series.map((n,i)=>'<i'+(woke[i]?' class="w"':"")+' style="height:'
-        +(n?Math.max(8,n/peak*100).toFixed(0):0)+'%"></i>').join("")+'</span>'
-    : I.activity;
-  const sparkn = chk.checks
-    ? '<b>'+chk.checks+'</b> check'+(chk.checks===1?"":"s")+' · <b>'+chk.runs+'</b> woke a run'
-      +(chk.failed?' · <b class="s-error">'+chk.failed+' failed</b>':"")
-    : (disabled?"no automatic checks — disabled":"no automatic checks in 24h");
-
-  // ---- what the probe last saw. Its own line only when there is something to
-  // say: on a job that has never been checked, three rows of "never" said
-  // nothing three times over.
-  const probeLine = checkStr
-    ? '<div class="cardline top">'+I.radar+'<span class="grow">'+checkStr+'</span></div>' : "";
-
-  // ---- the money. A cap you are close to is worth seeing before you hit it.
-  const pct = (cap!=null && cap>0) ? Math.min(100, spentToday/cap*100) : 0;
-  const tone = CCApp.spendTone(spentToday, cap);
-  const barCls = tone ? " "+tone : "";
-  const spend = '<div class="spend">'
-    +(cap!=null
-      ? '<div class="spendbar'+barCls+'"><i style="width:'+pct.toFixed(1)+'%"></i></div>'
-      : "")
-    +'<div class="spendtxt"><span>'+esc(money(spentToday))+' today'
-      +(cap!=null?' <span class="cap">of '+esc(money(cap))+'</span>':' <span class="muted">· no daily cap</span>')
-      +'</span>'
-      +(capped?'<span class="s-error">capped until midnight</span>':"")
-    +'</div></div>';
-
-  // ---- settings, one line. Only what this job overrides on top of its project
-  // is inked; the rest is inherited and stays quiet. Listing all nine on every
-  // card is what made twenty-one cards look identical.
-  const p=j.project?projById(j.project):null;
-  const own=(field)=>j[field]!=null && j[field]!=="" && p!=null
-                     && String(j[field])!==String(p[field]==null?"":p[field]);
-  const bit=(txt,mine,cls)=>'<span'+(mine?' class="'+(cls||"o")+'"':"")+'>'+esc(txt)+'</span>';
-  // An icon on the three that answer a different question — how often, when,
-  // how much. Five bare phrases in a row read as one long string; the marks are
-  // what let the eye jump to the one it wants.
-  const marked=(icon,inner)=>'<span class="cfgi">'+icon+inner+'</span>';
-  const cfg='<div class="cfgline">'
-    +marked(I.timer, bit("every "+fmtDur(j.interval_seconds||300), own("interval_seconds")))
-    +marked(I.clock, bit((j.active_hours||"24h")+" "+fmtDays(j.active_days||[1,2,3,4,5,6,7]),
-                         own("active_hours")||own("active_days")))
-    +bit(model, own("model"))
-    +(effortLabel(eff(j,"effort",""))!=="default"
-      ? bit(effortLabel(eff(j,"effort","")), own("effort")) : "")
-    +marked(I.dollar, bit(money(budg)+"/run", own("max_budget_usd")))
-    // a permission mode is the one setting worth flagging rather than folding away
-    +bit(perm, perm!=="dontAsk", "warn")
-    +'</div>';
-
-  // Badge has three states: disabled (red), idle (amber — enabled but outside
-  // its active window and not currently running), enabled (green). The same
-  // three drive the card's left edge, which is what makes a board of them
-  // readable without stopping on each pill.
-  const {running, idle}=F;
-  const pillCls=disabled?"off":(idle?"idle":"on");
-  const pillTxt=disabled?"disabled":(idle?"idle":"enabled");
-  const pillTip=idle?' title="Outside its active window — no runs until the window reopens"':"";
-  const stCls=disabled?"st-off":(running?"st-run":(idle?"st-idle":"st-on"));
-  // Cards are draggable so a group can be put in the order the work runs in.
-  // The drag handle is the whole card; buttons and inputs still work normally.
-  return '<div class="card '+stCls+'" draggable="true" data-job-id="'+esc(j.id)+'">'
-    +'<h2><span class="jobname" title="Drag to reorder within the project">'+I.bot+esc(j.id)+'</span>'
-    +'<span class="pill '+pillCls+'"'+pillTip+'>'+pillTxt+'</span></h2>'
-    // Disabling stops FUTURE runs; one already in flight keeps going. Say so,
-    // instead of letting "disabled" sit beside a spinning "running now…".
-    +(disabled&&nLive?'<div class="warnline">'+I.alert+'Disabled — '+nLive+' run'+(nLive===1?'':'s')+' started earlier '+(nLive===1?'is':'are')+' still going. Stop '+(nLive===1?'it':'them')+' from the Runs table.</div>':"")
-    // A kept run dir used to be visible only as a count on the Sessions tab --
-    // findable only by an operator who already suspected one was there. See it
-    // here instead, on the job it belongs to.
-    +sessionLines(j.id)
-    +'<div class="desc">'+esc(j.description||"")+'</div>'
-    // Two columns when there is a probe result to show: the job's own state on
-    // the left, what its precheck counted on the right. `next` sits under both
-    // — it is the conclusion the two of them lead to.
-    +'<div class="cardbody'+(checkItems?" has-checks":"")+'">'
-      +'<div class="cardstat">'
-        +'<div class="cardline">'+spark+'<span class="sparkn grow">'+sparkn+'</span></div>'
-        +'<div class="cardline">'+I.play+'<span class="grow">'+runStr+'</span></div>'
-        +probeLine
-      +'</div>'
-      +(checkItems?'<div class="checkpanel"><div class="cp-h">Pre-checks</div>'+checkItems+'</div>':"")
-    +'</div>'
-    +'<div class="cardline">'+I.cright+'<span class="lbl">next</span><span class="grow">'+next+'</span></div>'
-    +spend
-    +cfg
-    +'<div class="actions">'
-    // Run now always available: several runs of a job may go at once (up to
-    // max_parallel), so a live run no longer replaces this with a stop. Stopping
-    // is per-run, from the Runs table — a job-wide stop would kill them all.
-    //
-    // It carries the accent whether or not the job is enabled, because it WORKS
-    // whether or not the job is enabled — it is a deliberate manual override, and
-    // the primary action on the card. Tying the accent to `enabled` made the one
-    // button that still does something look as inert as the ones that do not.
-    +'<button class="btn primary" data-op="run" data-id="'+esc(j.id)+'">'+I.play+'Run now</button>'
-    +'<button class="btn" data-op="'+(disabled?"enable":"disable")+'" data-id="'+esc(j.id)+'">'+I.power+(disabled?"Enable":"Disable")+'</button>'
-    +'<button class="btn" data-op="edit" data-id="'+esc(j.id)+'">'+I.pencil+'Edit</button>'
-    // Delete sits behind the overflow: it is irreversible, and as a fourth
-    // equal button it was one slip away from Edit on every card.
-    +'<div class="menu">'
-      +'<button class="iconbtn" data-menu="'+esc(j.id)+'" aria-haspopup="menu" aria-expanded="false"'
-      +' title="More actions">'+I.dots+'</button>'
-      +'<div class="menu-pop" role="menu" hidden>'
-        +'<button role="menuitem" data-jobruns="'+esc(j.id)+'">'+I.activity+'Show this job\'s runs</button>'
-        +'<div class="sep"></div>'
-        +'<button role="menuitem" class="danger" data-op="delete" data-id="'+esc(j.id)+'">'+I.trash+'Delete job</button>'
-      +'</div>'
-    +'</div>'
-    +'</div></div>';
-}
+// jobCard moved to ui/app/overview.js in Task 9 -- CCApp.jobCard(j) now
+// returns a real Element instead of an HTML string. See its own comment for
+// why (checkList rendered an arbitrary probe script's own stdout).
 
 /* ---- drag to reorder job cards within their group ---- */
 // Order lives in jobs.json (the engine rewrites only the dragged group's slots),
@@ -1502,12 +1334,18 @@ function initJobDrag(){
   });
 }
 
-function collapsibleGroup(key, headerInner, cards){
+// The group's own chrome only -- header, chevron, collapse state -- built as
+// a string the same as before, since none of it comes from a job's own
+// fields (see renderJobCards's own comment on why that split is safe). The
+// grid it leaves behind is EMPTY: renderJobCards appends each group's real
+// CCApp.jobCard() Elements into it in a second pass, once this shell is on
+// the page and `.projgroup[data-group="…"] .grid` can be found.
+function collapsibleGroup(key, headerInner){
   const collapsed=collapsedGroups.has(key);
   return '<div class="projgroup'+(collapsed?" collapsed":"")+'" data-group="'+esc(key)+'">'
     +'<div class="projgroup-h" data-toggle="'+esc(key)+'">'+headerInner
       +'<span class="pgh-chevron">'+I.cdown+'</span></div>'
-    +'<div class="projgroup-body"><div class="pgb-inner"><div class="grid">'+cards+'</div></div></div>'
+    +'<div class="projgroup-body"><div class="pgb-inner"><div class="grid"></div></div></div>'
   +'</div>';
 }
 
@@ -1698,19 +1536,28 @@ function renderJobs(){
   // Two renderings of one filtered set. Only the visible one is drawn — the
   // other is behind a hidden view and would be work nobody can see.
   if(currentView==="jobs"){ renderJobTable(vis); return; }
-  renderJobCards(vis, allProjects);
-}
 
-function renderJobCards(vis, allProjects){
+  // ---- the job cards. renderJobCards used to build this whole area,
+  // including every card, as one HTML string; now CCApp.jobCard(j) returns a
+  // real Element (see its own file for why), so the cards go in with
+  // appendChild rather than string concatenation. The group CHROME below
+  // (the collapsible header, the star, the bulk button) stays built from
+  // strings, in this file, same as before: it is markup the page composes
+  // from names and counts it already chose, never from a job's own fields or
+  // a probe's stdout, so it carries none of the exposure that moved jobCard
+  // out in the first place.
+  const host=$("jobs");
   const filtering = CCApp.jobFilters.project || CCApp.jobFilters.status || CCApp.jobFilters.query.trim();
   if(!vis.length){
-    $("jobs").innerHTML='<div class="card empty">'+I.inbox+CCApp.jobsEmptyNote(!!filtering)+'</div>';
+    host.innerHTML='<div class="card empty">'+I.inbox+CCApp.jobsEmptyNote(!!filtering)+'</div>';
     return;
   }
 
   // no projects anywhere → flat grid, no group chrome
   if(!allProjects.length){
-    $("jobs").innerHTML='<div class="grid">'+vis.map(jobCard).join("")+'</div>';
+    host.innerHTML='<div class="grid"></div>';
+    const grid=host.querySelector(".grid");
+    vis.forEach(j=>grid.appendChild(CCApp.jobCard(j)));
     return;
   }
 
@@ -1725,6 +1572,17 @@ function renderJobCards(vis, allProjects){
   // its group header instead of reading like an install with no projects
   // anywhere.
   const groups=CCApp.groupJobs(vis, {has:isFav}, allProjects);
+  // groupJobs returns no groups at all when none of `vis` carries a project
+  // (its own "flat grid" case, same shape as the `!allProjects.length` guard
+  // above) -- fall back to the same ungrouped grid rather than the "no jobs"
+  // empty state below, which would otherwise hide a screenful of real jobs
+  // behind a message that says there are none.
+  if(!groups.length){
+    host.innerHTML='<div class="grid"></div>';
+    const grid=host.querySelector(".grid");
+    vis.forEach(j=>grid.appendChild(CCApp.jobCard(j)));
+    return;
+  }
   let html="";
   for(const g of groups){
     if(g.name==="__standalone__"){
@@ -1732,7 +1590,7 @@ function renderJobCards(vis, allProjects){
         +'<span class="pgh-count">'+g.jobs.length+' job'+(g.jobs.length===1?"":"s")+'</span>'
         +'<span class="spacer"></span>'
         +bulkBtn("pgh-bulk", "standalone", "__standalone__", g.jobs);
-      html+=collapsibleGroup("__standalone__", head, g.jobs.map(jobCard).join(""));
+      html+=collapsibleGroup("__standalone__", head);
       continue;
     }
     const p=projById(g.name), fav=isFav(g.name);
@@ -1746,18 +1604,16 @@ function renderJobCards(vis, allProjects){
       +I.star+'</button>'
       +bulkBtn("pgh-bulk", "project", g.name, g.jobs)
       +'<button class="pgh-edit" data-editproj="'+esc(g.name)+'" title="Edit project">'+I.pencil+'</button>';
-    html+=collapsibleGroup(g.name, head, g.jobs.map(jobCard).join(""));
+    html+=collapsibleGroup(g.name, head);
   }
-  // groupJobs returns no groups at all when none of `vis` carries a project
-  // (its own "flat grid" case, same shape as the `!allProjects.length` guard
-  // above) -- fall back to the same ungrouped grid rather than the "no jobs"
-  // empty state below, which would otherwise hide a screenful of real jobs
-  // behind a message that says there are none.
-  if(!groups.length){
-    $("jobs").innerHTML='<div class="grid">'+vis.map(jobCard).join("")+'</div>';
-    return;
+  host.innerHTML = html || '<div class="card empty">'+I.inbox+'No jobs in this view.</div>';
+  // Second pass: each group's shell is on the page now, empty `.grid` and
+  // all -- drop its jobs' real Elements in. collapsibleGroup's own
+  // `data-group` is exactly this handoff's address.
+  for(const g of groups){
+    const grid=host.querySelector('.projgroup[data-group="'+CSS.escape(g.name)+'"] .grid');
+    if(grid) g.jobs.forEach(j=>grid.appendChild(CCApp.jobCard(j)));
   }
-  $("jobs").innerHTML = html || '<div class="card empty">'+I.inbox+'No jobs in this view.</div>';
 }
 
 /* ------------------------------------------------------------- jobs as a table
@@ -1989,19 +1845,27 @@ CCSecurity.init(CC);
    -- is no longer here either. It is ES modules under ui/app/, bundled into
    bin/static/app.js and loaded by the <script> tag above the Security one,
    for the same reason and at the same point in the boot sequence: the page's
-   own screens (jobCard, renderJobTable, the bulk buttons, the filter toolbar)
-   stayed here and call back into the module through CCApp.
+   own screens (renderJobTable, the bulk buttons, the filter toolbar) stayed
+   here and call back into the module through CCApp. jobCard moved into the
+   module itself in Task 9 -- renderJobs below now calls CCApp.jobCard(j).
 
    Everything in ui/app/page.js's export list has to appear in this object --
    a name missing from it is a bind-time failure with that name in the
    message, which is the whole reason the list is stated rather than read off
    window. icon and iconLabel are the SAME functions handed to the Security
    interface above, not a second definition of them: the icon table is this
-   page's, and there is exactly one honest way to inject an entry from it. */
+   page's, and there is exactly one honest way to inject an entry from it.
+   effortLabel is a `const` defined well above this point, so it is already
+   initialised by the time this object is built. fmtExpiresIn and
+   resumeInFlight sit BELOW this call instead, but both are hoisted
+   `function` declarations -- safe for the same reason activeRunsOf and
+   backoffMultiplier already are (see their own comments): the name resolves
+   the moment a card actually reads it, well after boot, not at this line. */
 CCApp.init({ $, TOKEN, api, toast, esc, fmtAgo, fmtWhen, fmtDur, fmtIn, money,
              icon: CC.icon, iconLabel: CC.iconLabel, openLog, openEditor,
              projById, isFav, eff, setView,
              backoffMultiplier, activeRunsOf, renderJobs,
+             effortLabel, fmtExpiresIn, resumeInFlight,
              get DATA(){ return DATA; },
              get currentView(){ return currentView; } });
 /* ================================================================ end app */
@@ -2494,49 +2358,13 @@ function renderRetained(){
   }).join("");
 }
 
-// Every retained run dir this job still owns. Almost always zero or one, but
-// nothing stops a job from having cut two runs short before either was
-// resumed or expired, so this is a filter, not a find. Same source as the
-// Sessions tab (DATA.retained_worktrees) -- no second fetch, no second shape
-// for one server-side list to drift against.
-function keptSessionsOf(jobId){
-  return (DATA.retained_worktrees||[]).filter(w=>w.job===jobId);
-}
-
-/* The Sessions tab is where a kept run dir actually lives, but a count on a
-   tab nobody is looking at is not "surfaced" -- the operator finds out by
-   opening the job whose run went quiet, not by auditing a tab. One line per
-   kept dir (see keptSessionsOf for why there can be more than one), each
-   honest about whether there is a session to resume: a run dir can be kept
-   with NO `.session` at all (the run died before its agent reported one), and
-   that is not the same claim as "a session is here, just busy" -- so it gets
-   different words, not a button that cannot work. */
-function sessionLines(jobId){
-  const kept=keptSessionsOf(jobId);
-  if(!kept.length) return "";
-  return kept.map(w=>{
-    const left=fmtExpiresIn(w.expires_in);
-    const until=left ? " — expires "+left : "";
-    if(!w.session){
-      return '<div class="warnline">'+I.folder+'<span class="grow">Holding a run '
-        +'directory with no session recorded'+esc(until)+' — it never got far enough '
-        +'to report one, so it cannot be resumed.</span></div>';
-    }
-    // Reuses the SAME guard resumeTarget uses for the Runs table -- see
-    // resumeInFlight's own comment for why this must not be a second
-    // `activeRunsOf(...).some(...)` of its own.
-    const inFlight=resumeInFlight(jobId, w.session);
-    return '<div class="warnline">'+I.folder+'<span class="grow">Holding a session '
-      +'that was cut short'+esc(until)+'.</span>'
-      +(inFlight
-        ? '<span class="runningbadge"><span class="pulse"></span>resuming…</span>'
-        : '<button class="btn" data-op="resume" data-id="'+esc(jobId)+'"'
-          +' data-session="'+esc(w.session)+'"'
-          +' title="Resume this task — continue session '+esc(w.session.slice(0,8))
-          +' where it stopped">'+I.play+'Resume</button>')
-      +'</div>';
-  }).join("");
-}
+// keptSessionsOf and sessionLines moved into CCApp.jobCard() (Task 9) as
+// its own sessionNotices() helper, reading CC.DATA.retained_worktrees the
+// same way -- still the Sessions tab's only source, no second fetch, no
+// second shape. fmtExpiresIn and resumeInFlight below stay here: the
+// Sessions tab and resumeTarget's own live-slot branch still call them
+// directly, and the job card now reaches the same two through the CCApp
+// interface (see page.js's own comment) rather than a second copy.
 
 /* --------------------------------------------------------------- loop band
    The page header, the five KPI cards and the 24-hour band itself are all

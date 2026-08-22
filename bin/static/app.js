@@ -21,6 +21,9 @@
   var backoffMultiplier;
   var activeRunsOf;
   var renderJobs;
+  var effortLabel;
+  var fmtExpiresIn;
+  var resumeInFlight;
   var CC = null;
   function bindPage(cc) {
     CC = cc;
@@ -45,7 +48,10 @@
       setView,
       backoffMultiplier,
       activeRunsOf,
-      renderJobs
+      renderJobs,
+      effortLabel,
+      fmtExpiresIn,
+      resumeInFlight
     } = cc);
   }
 
@@ -228,12 +234,12 @@
   function probeVerdict(pc) {
     const span = document.createElement("span");
     if (pc.exit === 0) {
-      span.style.color = "var(--ok)";
+      span.className = "s-success";
       span.textContent = "work found";
     } else if (pc.exit === 1) {
       span.textContent = "nothing to do";
     } else {
-      span.style.color = "var(--err)";
+      span.className = "s-error";
       span.style.fontWeight = "600";
       span.textContent = "probe FAILED (exit " + pc.exit + ")";
     }
@@ -295,7 +301,7 @@
     }
     if (backoff > 1) {
       const back = document.createElement("span");
-      back.style.color = "var(--warn)";
+      back.className = "s-warning";
       back.textContent = " \xB7 backing off " + backoff + "\xD7 after " + streak + " failed runs";
       wrap.appendChild(back);
     }
@@ -306,6 +312,267 @@
     if (cls) n.className = cls;
     if (text != null) n.textContent = text;
     return n;
+  }
+  var DOW = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  function fmtDays(arr) {
+    const a = [...new Set((arr || []).map(Number))].filter((n) => n >= 1 && n <= 7).sort((x, y) => x - y);
+    if (!a.length) return "\u2014";
+    const s = a.join(",");
+    if (s === "1,2,3,4,5,6,7") return "Every day";
+    if (s === "1,2,3,4,5") return "Mon\u2013Fri";
+    if (s === "6,7") return "Sat\u2013Sun";
+    return a.map((n) => DOW[n]).join(", ");
+  }
+  function checkList(output) {
+    const raw = String(output || "").split("\n")[0];
+    if (!raw) return null;
+    const pairs = [...raw.matchAll(/([A-Za-z_]+)=(\S+)/g)];
+    const rest = raw.replace(/[A-Za-z_]+=\S+/g, "").replace(/->/g, "\u2192").replace(/\s+/g, " ").trim();
+    const items = pairs.map((m) => {
+      const li = document.createElement("li");
+      li.appendChild(document.createTextNode(m[1].replace(/_/g, " ") + ": "));
+      li.appendChild(el("span", "ck-v", m[2]));
+      return li;
+    });
+    if (rest) items.push(el("li", null, rest));
+    if (!items.length) return null;
+    const ul = el("ul", "checklist");
+    items.forEach((li) => ul.appendChild(li));
+    return ul;
+  }
+  function sessionNotices(jobId) {
+    const kept = (CC.DATA.retained_worktrees || []).filter((w) => w.job === jobId);
+    return kept.map((w) => {
+      const left = fmtExpiresIn(w.expires_in);
+      const until = left ? " \u2014 expires " + left : "";
+      const line = el("div", "warnline");
+      line.appendChild(icon("folder"));
+      const grow = el("span", "grow");
+      if (!w.session) {
+        grow.textContent = "Holding a run directory with no session recorded" + until + " \u2014 it never got far enough to report one, so it cannot be resumed.";
+        line.appendChild(grow);
+        return line;
+      }
+      grow.textContent = "Holding a session that was cut short" + until + ".";
+      line.appendChild(grow);
+      if (resumeInFlight(jobId, w.session)) {
+        const badge = el("span", "runningbadge");
+        badge.appendChild(el("span", "pulse"));
+        badge.appendChild(document.createTextNode("resuming\u2026"));
+        line.appendChild(badge);
+      } else {
+        const btn = el("button", "btn");
+        btn.dataset.op = "resume";
+        btn.dataset.id = jobId;
+        btn.dataset.session = w.session;
+        btn.title = "Resume this task \u2014 continue session " + w.session.slice(0, 8) + " where it stopped";
+        btn.appendChild(icon("play"));
+        btn.appendChild(document.createTextNode("Resume"));
+        line.appendChild(btn);
+      }
+      return line;
+    });
+  }
+  function jobCard(j) {
+    const F = jobFacts(j);
+    const { st, chk, disabled, spentToday, cap, capped, nLive, idle } = F;
+    const pc = st.last_precheck || null;
+    const hasProbe = pc && typeof pc === "object";
+    const card = el("div", "card" + (disabled ? " st-off" : ""));
+    card.draggable = true;
+    card.dataset.jobId = j.id;
+    const h2 = el("h2");
+    const nameSpan = el("span", "jobname");
+    nameSpan.title = "Drag to reorder within the project";
+    nameSpan.appendChild(icon("bot"));
+    nameSpan.appendChild(document.createTextNode(j.id));
+    h2.appendChild(nameSpan);
+    const pillCls = disabled ? "off" : idle ? "idle" : "on";
+    const pill = el("span", "pill " + pillCls, disabled ? "disabled" : idle ? "idle" : "enabled");
+    if (idle) pill.title = "Outside its active window \u2014 no runs until the window reopens";
+    h2.appendChild(pill);
+    card.appendChild(h2);
+    if (disabled && nLive) {
+      const w = el("div", "warnline");
+      w.appendChild(icon("alert"));
+      w.appendChild(document.createTextNode(
+        "Disabled \u2014 " + nLive + " run" + (nLive === 1 ? "" : "s") + " started earlier " + (nLive === 1 ? "is" : "are") + " still going. Stop " + (nLive === 1 ? "it" : "them") + " from the Runs table."
+      ));
+      card.appendChild(w);
+    }
+    sessionNotices(j.id).forEach((n) => card.appendChild(n));
+    card.appendChild(el("div", "desc", j.description || ""));
+    const series = Array.isArray(chk.series) ? chk.series : [];
+    const woke = Array.isArray(chk.woke) ? chk.woke : [];
+    const peak = series.reduce((m, n) => Math.max(m, n), 0);
+    let spark;
+    if (peak) {
+      spark = el("span", "spark");
+      spark.title = chk.checks + " checks in the last 24h, one bar an hour";
+      series.forEach((n, i) => {
+        const bar = el("i", woke[i] ? "w" : null);
+        bar.style.height = (n ? Math.max(8, n / peak * 100).toFixed(0) : 0) + "%";
+        spark.appendChild(bar);
+      });
+    } else {
+      spark = icon("activity");
+    }
+    const sparkLine = el("div", "cardline");
+    sparkLine.appendChild(spark);
+    const sparkn = el("span", "sparkn grow");
+    if (chk.checks) {
+      sparkn.appendChild(el("b", null, String(chk.checks)));
+      sparkn.appendChild(document.createTextNode(" check" + (chk.checks === 1 ? "" : "s") + " \xB7 "));
+      sparkn.appendChild(el("b", null, String(chk.runs)));
+      sparkn.appendChild(document.createTextNode(" woke a run"));
+      if (chk.failed) {
+        sparkn.appendChild(document.createTextNode(" \xB7 "));
+        sparkn.appendChild(el("b", "s-error", chk.failed + " failed"));
+      }
+    } else {
+      sparkn.textContent = disabled ? "no automatic checks \u2014 disabled" : "no automatic checks in 24h";
+    }
+    sparkLine.appendChild(sparkn);
+    const runLine = el("div", "cardline");
+    runLine.appendChild(icon("play"));
+    const runGrow = el("span", "grow");
+    if (nLive) {
+      const badge = el("span", "runningbadge");
+      badge.appendChild(el("span", "pulse"));
+      badge.appendChild(document.createTextNode(nLive + " running now\u2026"));
+      runGrow.appendChild(badge);
+    }
+    if (st.last_run_start) {
+      runGrow.appendChild(el(
+        "span",
+        "muted",
+        (nLive ? " \xB7 last ran " : "last ran ") + fmtAgo(st.last_run_start)
+      ));
+    } else if (!nLive) {
+      runGrow.appendChild(el("span", "muted", "never ran"));
+    }
+    runLine.appendChild(runGrow);
+    let probeLine = null;
+    let checkItems = null;
+    if (st.last_start || hasProbe) {
+      const line = el("div", "cardline top");
+      line.appendChild(icon("radar"));
+      const grow = el("span", "grow");
+      if (st.last_start) grow.appendChild(document.createTextNode("probed " + fmtAgo(st.last_start)));
+      if (hasProbe) {
+        grow.appendChild(document.createTextNode(st.last_start ? " \u2014 " : "last probe: "));
+        grow.appendChild(probeVerdict(pc));
+        checkItems = checkList(pc.output);
+      }
+      line.appendChild(grow);
+      probeLine = line;
+    }
+    const cardstat = el("div", "cardstat");
+    cardstat.appendChild(sparkLine);
+    cardstat.appendChild(runLine);
+    if (probeLine) cardstat.appendChild(probeLine);
+    const cardbody = el("div", "cardbody" + (checkItems ? " has-checks" : ""));
+    cardbody.appendChild(cardstat);
+    if (checkItems) {
+      const panel = el("div", "checkpanel");
+      panel.appendChild(el("div", "cp-h", "Pre-checks"));
+      panel.appendChild(checkItems);
+      cardbody.appendChild(panel);
+    }
+    card.appendChild(cardbody);
+    const nextLine = el("div", "cardline");
+    nextLine.appendChild(icon("cright"));
+    nextLine.appendChild(el("span", "lbl", "next"));
+    const nextGrow = el("span", "grow");
+    nextGrow.appendChild(nextRunNote(j, F));
+    nextLine.appendChild(nextGrow);
+    card.appendChild(nextLine);
+    const model = eff(j, "model", "opus"), perm = eff(j, "permission_mode", "dontAsk"), budg = eff(j, "max_budget_usd", 2);
+    const pct = cap != null && cap > 0 ? Math.min(100, spentToday / cap * 100) : 0;
+    const tone = spendTone(spentToday, cap);
+    const spend = el("div", "spend");
+    if (cap != null) {
+      const bar = el("div", "spendbar" + (tone ? " " + tone : ""));
+      const fill = el("i");
+      fill.style.width = pct.toFixed(1) + "%";
+      bar.appendChild(fill);
+      spend.appendChild(bar);
+    }
+    const spendtxt = el("div", "spendtxt");
+    const left = el("span");
+    left.appendChild(document.createTextNode(money(spentToday) + " today "));
+    left.appendChild(cap != null ? el("span", "cap", "of " + money(cap)) : el("span", "muted", "\xB7 no daily cap"));
+    spendtxt.appendChild(left);
+    if (capped) spendtxt.appendChild(el("span", "s-error", "capped until midnight"));
+    spend.appendChild(spendtxt);
+    card.appendChild(spend);
+    const p = j.project ? projById(j.project) : null;
+    const own = (field) => j[field] != null && j[field] !== "" && p != null && String(j[field]) !== String(p[field] == null ? "" : p[field]);
+    const bit = (txt, mine, cls) => el("span", mine ? cls || "o" : null, txt);
+    const marked = (iconName, inner) => {
+      const s = el("span", "cfgi");
+      s.appendChild(icon(iconName));
+      s.appendChild(inner);
+      return s;
+    };
+    const cfg = el("div", "cfgline");
+    cfg.appendChild(marked("timer", bit("every " + fmtDur(j.interval_seconds || 300), own("interval_seconds"))));
+    cfg.appendChild(marked("clock", bit((j.active_hours || "24h") + " " + fmtDays(j.active_days || [1, 2, 3, 4, 5, 6, 7]), own("active_hours") || own("active_days"))));
+    cfg.appendChild(bit(model, own("model")));
+    if (effortLabel(eff(j, "effort", "")) !== "default") {
+      cfg.appendChild(bit(effortLabel(eff(j, "effort", "")), own("effort")));
+    }
+    cfg.appendChild(marked("dollar", bit(money(budg) + "/run", own("max_budget_usd"))));
+    cfg.appendChild(bit(perm, perm !== "dontAsk", "warn"));
+    card.appendChild(cfg);
+    const actions = el("div", "actions");
+    const runBtn = el("button", "btn primary");
+    runBtn.dataset.op = "run";
+    runBtn.dataset.id = j.id;
+    runBtn.appendChild(icon("play"));
+    runBtn.appendChild(document.createTextNode("Run now"));
+    actions.appendChild(runBtn);
+    const toggleBtn = el("button", "btn");
+    toggleBtn.dataset.op = disabled ? "enable" : "disable";
+    toggleBtn.dataset.id = j.id;
+    toggleBtn.appendChild(icon("power"));
+    toggleBtn.appendChild(document.createTextNode(disabled ? "Enable" : "Disable"));
+    actions.appendChild(toggleBtn);
+    const editBtn = el("button", "btn");
+    editBtn.dataset.op = "edit";
+    editBtn.dataset.id = j.id;
+    editBtn.appendChild(icon("pencil"));
+    editBtn.appendChild(document.createTextNode("Edit"));
+    actions.appendChild(editBtn);
+    const menu = el("div", "menu");
+    const menuBtn = el("button", "iconbtn");
+    menuBtn.dataset.menu = j.id;
+    menuBtn.setAttribute("aria-haspopup", "menu");
+    menuBtn.setAttribute("aria-expanded", "false");
+    menuBtn.title = "More actions";
+    menuBtn.appendChild(icon("dots"));
+    menu.appendChild(menuBtn);
+    const pop = el("div", "menu-pop");
+    pop.setAttribute("role", "menu");
+    pop.hidden = true;
+    const jobRunsBtn = el("button");
+    jobRunsBtn.setAttribute("role", "menuitem");
+    jobRunsBtn.dataset.jobruns = j.id;
+    jobRunsBtn.appendChild(icon("activity"));
+    jobRunsBtn.appendChild(document.createTextNode("Show this job's runs"));
+    pop.appendChild(jobRunsBtn);
+    pop.appendChild(el("div", "sep"));
+    const delBtn = el("button", "danger");
+    delBtn.setAttribute("role", "menuitem");
+    delBtn.dataset.op = "delete";
+    delBtn.dataset.id = j.id;
+    delBtn.appendChild(icon("trash"));
+    delBtn.appendChild(document.createTextNode("Delete job"));
+    pop.appendChild(delBtn);
+    menu.appendChild(pop);
+    actions.appendChild(menu);
+    card.appendChild(actions);
+    return card;
   }
   var TICK_KINDS = [
     ["woke", "started a run"],
@@ -569,8 +836,14 @@
     pageHeader,
     kpiCard,
     renderPulse,
-    renderOverviewHead
+    renderOverviewHead,
+    // jobCard is Task 9's: renderJobs() in bin/dashboard.html
+    // calls CCApp.jobCard(j) per job instead of building the
+    // card as an HTML string. checkList and the kept-session
+    // notice are internal to jobCard and have no other caller,
+    // so they stay unexported, the same shape as el() above.
+    jobCard
   };
 })();
-/* ui-bundle: 82609d70a4de3e6987fad0a5d45d8eab9759566eccf23a4833e409bcf3200e05 */
-/* ui-sources: 7bdfa6f824949aca99ec038ec8e374b5aa46795131a4a9d5f3e8ee87e5dae7ab */
+/* ui-bundle: a74ac894a79988c577d124efbfce32a8572c8c84cdf67e287f7b9c9e1b0c7acb */
+/* ui-sources: 3a0a2e0d4d24746669f0a7cc032b146fb19021d3f9ab86631761a153a989ac28 */

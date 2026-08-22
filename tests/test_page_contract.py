@@ -444,42 +444,55 @@ def test_a_job_card_shows_every_kept_session_honestly(srv, tmp_path):
     button -- there is nothing valid to resume), a session nobody is touching
     (a working Resume button carrying the real id), and a session already
     being resumed (no second button -- resumeInFlight decides this, not a
-    fresh guess)."""
-    js = _js(srv)
-    deps = "\n".join(_plainfn(js, n) for n in
-                      ("resumeInFlight", "keptSessionsOf", "sessionLines", "fmtExpiresIn"))
+    fresh guess).
+
+    sessionLines/keptSessionsOf (bin/dashboard.html, string-returning) became
+    jobCard's own sessionNotices() in ui/app/overview.js (Task 9), returning
+    real Elements -- this test moved with them rather than staying pinned to
+    a function that no longer exists."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "el", "sessionNotices")
     script = tmp_path / "sess.js"
-    script.write_text(_harness_globals() + """
-    DATA = {
-      retained_worktrees: [
-        {job:"j1", stamp:"s1", session:"",           expires_in:3600},
-        {job:"j1", stamp:"s2", session:"sess-live00", expires_in:7200},
-        {job:"j1", stamp:"s3", session:"sess-busy00", expires_in:100},
-        {job:"j2", stamp:"s4", session:"sess-other",  expires_in:900},
-      ],
-      active_runs: {j1: [{resume_of:"sess-busy00"}]},
-    };
+    script.write_text(_INDEX_DOM_HARNESS + """
+    const CC = { DATA: { retained_worktrees: [
+      {job:"j1", stamp:"s1", session:"",           expires_in:3600},
+      {job:"j1", stamp:"s2", session:"sess-live00", expires_in:7200},
+      {job:"j1", stamp:"s3", session:"sess-busy00", expires_in:100},
+      {job:"j2", stamp:"s4", session:"sess-other",  expires_in:900},
+    ] } };
+    // Small, honest stand-ins for the page's own single implementations --
+    // see page.js's own comment on why sessionNotices reaches for these by
+    // name rather than a second copy.
+    function fmtExpiresIn(n){ return n == null ? null : "in " + n + "s"; }
+    function resumeInFlight(id, sid){ return id === "j1" && sid === "sess-busy00"; }
     """ + deps + """
-    const html = sessionLines("j1");
+    const findButton = (row) => (row.childNodes||[]).find(c => c && c.dataset && c.dataset.op === "resume");
+    const findBadge = (row) => (row.childNodes||[]).find(c => c && c.className === "runningbadge");
+    const rowsJ1 = sessionNotices("j1");
+    const texts = rowsJ1.map(r => r.textContent);
+    const liveBtn = rowsJ1.map(findButton).find(Boolean);
     console.log(JSON.stringify({
-      rowsForJ1: (html.match(/class="warnline"/g)||[]).length,
-      noSessionText: html.indexOf("cannot be resumed") !== -1,
-      resumeButtons: (html.match(/data-op="resume"/g)||[]).length,
-      liveButtonExact: html.indexOf('data-op="resume" data-id="j1" data-session="sess-live00"') !== -1,
-      busyGotAButton: html.indexOf('data-session="sess-busy00"') !== -1,
-      mentionsOtherJob: html.indexOf("sess-other") !== -1,
-      emptyForJobWithNothingKept: sessionLines("no-such-job") === "",
+      rowsForJ1: rowsJ1.length,
+      noSessionText: texts.some(t => t.indexOf("cannot be resumed") !== -1),
+      resumeButtons: rowsJ1.filter(findButton).length,
+      liveButtonExact: !!liveBtn && liveBtn.dataset.id === "j1" && liveBtn.dataset.session === "sess-live00",
+      busyGotAButton: rowsJ1.some(r => { const b = findButton(r); return b && b.dataset.session === "sess-busy00"; }),
+      busyGotBadge: rowsJ1.some(findBadge),
+      mentionsOtherJob: texts.some(t => t.indexOf("sess-other") !== -1)
+        || rowsJ1.some(r => { const b = findButton(r); return b && b.dataset.session === "sess-other"; }),
+      emptyForJobWithNothingKept: sessionNotices("no-such-job").length === 0,
     }));
     """)
     out = subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout
-    got = __import__("json").loads(out)
-    assert got["rowsForJ1"] == 3, "one line per kept run dir, including the sessionless one"
+    got = json.loads(out)
+    assert got["rowsForJ1"] == 3, "one row per kept run dir, including the sessionless one"
     assert got["noSessionText"], "a run dir with no .session must say it cannot be resumed"
     assert got["resumeButtons"] == 1, "only the free session gets a working Resume button"
     assert got["liveButtonExact"], "the button must carry the real job id and real session id"
     assert not got["busyGotAButton"], "a session already being resumed must not get a second button"
-    assert not got["mentionsOtherJob"], "sessionLines(j1) leaked another job's row"
-    assert got["emptyForJobWithNothingKept"], "a job with nothing kept renders nothing"
+    assert got["busyGotBadge"], "a session already being resumed shows the resuming… badge instead"
+    assert not got["mentionsOtherJob"], "sessionNotices('j1') leaked another job's row"
+    assert got["emptyForJobWithNothingKept"], "a job with nothing kept renders no rows"
 
 
 # ---- the Runs table's own Resume button: which statuses it ever lights up
@@ -1126,6 +1139,69 @@ def test_no_window_and_switched_off_are_different_answers(srv, tmp_path, job,
         subprocess.run(["node", str(script)], capture_output=True, text=True,
                        check=True).stdout))
     assert expect in txt, txt
+
+
+# ---- the job card, rebuilt as DOM (Task 9). jobCard and checkList were the
+# last HTML-string builders in the Overview, in bin/dashboard.html --
+# checkList in particular rendered the first line of an ARBITRARY PROBE
+# SCRIPT'S OWN STDOUT, so this is also where that content stops reaching the
+# HTML parser at all: the sink-scan above holds the RULE (no ui/ module may
+# reach innerHTML/outerHTML/etc.), these two hold the CONTENT. jobCard calls
+# jobFacts (jobs-domain.js), fmtDays, sessionNotices, probeVerdict,
+# nextRunNote, spendTone, checkList and el, all by their bare names -- safe
+# here because, unlike the pinned functions above, nothing extracts jobCard
+# alone and runs it standing apart from its module (see overview.js's own
+# banner comment on the isolation rule those pinned functions keep and this
+# one does not need to).
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_job_card_is_built_from_nodes_and_shows_what_it_always_showed(
+        srv, tmp_path):
+    """The card is the densest thing on the page and the last HTML-string
+    builder the Overview had left. Rewritten as nodes it must still show
+    every fact the string version did -- the pinned tests above already hold
+    probeVerdict/nextRunNote/spendTone's own wording, so this pins the one
+    fact that is jobCard's alone to get right: the card names its own job."""
+    block = _app_js(srv)
+    deps = (_const(block, "DOW")
+            + _index_screen_deps(block, "fmtDays", "el", "jobFacts",
+                                  "nextCheckAt", "inWindow", "probeVerdict",
+                                  "nextRunNote", "spendTone", "checkList",
+                                  "sessionNotices", "jobCard"))
+    script = tmp_path / "card.js"
+    script.write_text(_INDEX_DOM_HARNESS + _JOBS_DOMAIN_HARNESS + """
+    // jobCard's remaining reads off the page -- a formatter each, stood up
+    // the same honest, minimal way _JOBS_DOMAIN_HARNESS stands up eff above.
+    function money(n){ return "$" + n; }
+    function effortLabel(v){ return v || "default"; }
+    function projById(_name){ return null; }
+    """ + deps + """
+    const n = jobCard({id: "qg-dev-agent", project: "Quality Gate",
+                       enabled: true, interval_minutes: 15});
+    console.log(JSON.stringify(collectAll(n, [])));
+    """)
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    txt = " ".join(r["text"] for r in got)
+    assert "qg-dev-agent" in txt, "the card did not name its own job"
+
+
+def test_a_probe_line_containing_markup_stays_text(srv, tmp_path):
+    """The first line of a probe script's stdout, rendered. `esc()` held
+    this before by discipline; nodes hold it by construction."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "el", "checkList")
+    script = tmp_path / "probe-markup.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    const n = checkList('ready=<img src=x onerror=alert(1)> blocked=0');
+    console.log(JSON.stringify(collectAll(n, [])));
+    """)
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    txt = " ".join(r["text"] for r in got)
+    assert "<img" in txt, "the markup was not preserved as literal text"
+    assert all("onerror" not in str(r.get("cls", "")) for r in got), \
+        "the markup leaked into a class name somewhere"
 
 
 def test_a_nested_security_module_still_reaches_the_sink_scan(tmp_path):

@@ -881,6 +881,64 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `test_the_spent_today_card_carries_the_week_in_its_sublabel` — alongside
   the ten characterisation tests Task 6 pinned, all still passing unedited.
 
+- **The job card — 164 lines of HTML-string concatenation, the last one left
+  in the Overview — is rebuilt as DOM nodes, in `CCApp.jobCard(j)`.** The
+  exposure this closes was real: `checkList` rendered the FIRST LINE OF AN
+  ARBITRARY PROBE SCRIPT'S OWN STDOUT, and a job's id/description and its
+  project's name all flow through from files an operator edits and Jira
+  ticket titles. `esc()` held that safely before, by discipline; a `<li>`
+  built with `createElement`/`createTextNode` holds it by construction —
+  there is no HTML parser between a probe's output and the screen left for a
+  crafted string to reach. `probeVerdict` and `nextRunNote`, the two DOM
+  builders Task 6 pinned ahead of this exact rewrite, get their first real
+  caller here. Every fact the string version showed still shows: the state
+  pill, the probe verdict and its check-count panel, the 24h sparkline (plain
+  `<i>` bars, the same mechanism `renderPulse`'s own band already draws with
+  — this stylesheet has never had an SVG sparkline), the spend bar against
+  the daily cap, the next-run note with its backoff multiplier, every kept
+  session's own notice (a working Resume button, a "cannot be resumed"
+  notice, or a "resuming…" badge, depending on which of three truths that
+  run directory holds), and the run/enable/edit/delete/show-runs controls —
+  unchanged, since every `data-op`/`data-menu`/`data-jobruns` a card carries
+  is read by `bin/dashboard.html`'s one delegated click listener regardless
+  of whether a real DOM attribute came from `.dataset` or from string
+  concatenation. `renderJobCards`'s own grouping chrome (the collapsible
+  project header, the star, the bulk button) stayed in the page: it builds
+  markup from project names and counts the page already chose, never from a
+  job's own fields, so it carries none of the exposure that moved `jobCard`
+  out in the first place — `renderJobs()` now paints that shell via
+  `innerHTML` as before and appends each group's real `CCApp.jobCard()`
+  Elements into it in a second pass, found by the `data-group` attribute the
+  shell already carried. `sessionLines`/`keptSessionsOf` became `jobCard`'s
+  own `sessionNotices()`; `fmtExpiresIn` and `resumeInFlight` stayed in the
+  page (the Sessions tab and `resumeTarget`'s own live-slot branch still call
+  them directly) and joined `ui/app/page.js`'s stated interface alongside the
+  new `effortLabel`, rather than growing a second copy of either.
+
+  A visual pass caught one piece of drift the tests could not: `jobCard` was
+  still computing `.st-run`/`.st-on`/`.st-idle` on the card's own left edge,
+  three classes with no CSS rule behind them since an earlier commit in this
+  redesign deliberately moved state onto the pill instead ("state is not on
+  this edge any more" — see `.card.st-off`'s own comment in `ui/css/
+  pages.css`). `test_no_class_the_shipped_ui_uses_lacks_a_css_rule`, new in
+  this same change, caught it the moment the code doing this moved from
+  `bin/dashboard.html` (which that scan does not read for dynamic classes)
+  into `ui/app/` (which it does) — `jobCard` now only ever computes `st-off`,
+  the one of the four with a rule still behind it. `probeVerdict` and
+  `nextRunNote` also traded an inline `style.color` each for the matching
+  `.s-success`/`.s-warning`/`.s-error` type-role class already shared by the
+  Runs table's own status cells, rather than a second, unshared spelling of
+  the same colour.
+
+  Two new tests drive the rewrite: `test_the_job_card_is_built_from_nodes_
+  and_shows_what_it_always_showed` builds a real card under Node from the
+  shipped bundle and confirms it names its own job; `test_a_probe_line_
+  containing_markup_stays_text` feeds `checkList` a line carrying
+  `<img src=x onerror=…>` and confirms the markup survives as literal text,
+  never as a tag. A third, pre-existing test — `test_a_job_card_shows_every_
+  kept_session_honestly` — moved with `sessionLines` into this same DOM
+  shape rather than staying pinned to a function that no longer exists.
+
 ### Added
 
 - **A read-only query layer for the Security dashboard.** `security/queries.py`

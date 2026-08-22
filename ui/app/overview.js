@@ -33,7 +33,9 @@
    plain-element characterisation test extracts it (and its own `el`
    helper) by name, which is why its parameter is a plain `opts` rather
    than a destructured object -- see its own comment. */
-import { $, CC, icon } from "./page.js";
+import { $, CC, icon, eff, fmtAgo, fmtDur, money, effortLabel, fmtExpiresIn,
+         resumeInFlight, projById } from "./page.js";
+import { jobFacts } from "./jobs-domain.js";
 
 // A percentage of nothing is not 0%, it is nothing -- pulseHtml's own pct()
 // said so first; this is that rule, nested rather than a module-level
@@ -116,12 +118,15 @@ export function bandEmptyReason(jobs){
 export function probeVerdict(pc){
   const span = document.createElement("span");
   if(pc.exit === 0){
-    span.style.color = "var(--ok)";
+    // .s-success/.s-error are the same six type-role classes the Runs table
+    // colours its own status cells with (components.css) -- an inline
+    // `style.color` here said the same thing in a second, unshared spelling.
+    span.className = "s-success";
     span.textContent = "work found";
   }else if(pc.exit === 1){
     span.textContent = "nothing to do";
   }else{
-    span.style.color = "var(--err)";
+    span.className = "s-error";
     span.style.fontWeight = "600";
     span.textContent = "probe FAILED (exit " + pc.exit + ")";
   }
@@ -213,8 +218,10 @@ export function nextRunNote(job, facts){
   if(backoff > 1){
     // "backing off" alone does not say for how long or why -- the number of
     // failed runs is what tells an operator whether to wait or to look.
+    // .s-warning is the same type-role class the Runs table's own status
+    // cells use, in place of the inline `style.color` this carried before.
     const back = document.createElement("span");
-    back.style.color = "var(--warn)";
+    back.className = "s-warning";
     back.textContent = " · backing off " + backoff + "× after " + streak + " failed runs";
     wrap.appendChild(back);
   }
@@ -233,6 +240,400 @@ function el(tag, cls, text){
   if(cls) n.className = cls;
   if(text != null) n.textContent = text;
   return n;
+}
+
+/* -------------------------------------------------------------- the job card
+   164 lines of HTML-string concatenation (`jobCard`, `renderJobCards`,
+   `checkList`) in the pre-Task-9 `bin/dashboard.html`, rebuilt here as node
+   builders. `renderJobCards`'s own grouping chrome (the collapsible project
+   headers, the star, the bulk button) stayed in the page -- that markup is
+   built from strings the page CHOOSES itself (project names, counts), never
+   from a probe's stdout or a job's own fields, so it carries none of the
+   exposure this move exists to close. `jobCard` is the one that does, and so
+   is `checkList`, the panel inside it: `checkList` renders the FIRST LINE OF
+   AN ARBITRARY PROBE SCRIPT'S STDOUT, and a job's own id/description and its
+   project's name all come from files an operator edits and Jira ticket
+   titles that flow through them -- `esc()` held that safely before, by
+   discipline. A `<li>` built with `createElement`/`createTextNode` holds it
+   by construction: there is no HTML parser between a probe's output and the
+   screen for a crafted string to reach.
+
+   Both call sibling functions in this module by their bare names --
+   `probeVerdict`, `nextRunNote`, `spendTone`, `checkList`, `el` -- getting
+   their first real caller here; jobCard is the reason they were extracted
+   ahead of this task. `jobFacts` (state, next run, cap, backoff) comes from
+   `./jobs-domain.js` -- a normal import, not the isolation the PINNED
+   functions above need, since nothing extracts jobCard on its own and runs
+   it standing alone the way `_plainfn` does for those. */
+
+// Active days as a short label, mirroring the toolbar/engine's own reading of
+// active_days. A small pure formatter kept local rather than folded into
+// jobs-domain.js: nothing else needs it, and TICK_KINDS/clockAt below sit
+// beside the DOM code that reads them for the same reason.
+const DOW = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+function fmtDays(arr){
+  const a = [...new Set((arr || []).map(Number))].filter(n => n >= 1 && n <= 7).sort((x, y) => x - y);
+  if(!a.length) return "—";
+  const s = a.join(",");
+  if(s === "1,2,3,4,5,6,7") return "Every day";
+  if(s === "1,2,3,4,5") return "Mon–Fri";
+  if(s === "6,7") return "Sat–Sun";
+  return a.map(n => DOW[n]).join(", ");
+}
+
+// The precheck's first output line as a bulleted key:value list, one row per
+// "key=value" pair plus whatever text was not part of one -- exactly
+// checkList's old string shape, built from nodes instead: `m[2]`, the value
+// after "=", is an arbitrary probe script's own stdout, appended as a TEXT
+// NODE and never parsed. Returns null rather than an empty string when there
+// is nothing to show -- jobCard tests the return value itself to decide
+// whether to draw the checks panel at all.
+function checkList(output){
+  const raw = String(output || "").split("\n")[0];
+  if(!raw) return null;
+  const pairs = [...raw.matchAll(/([A-Za-z_]+)=(\S+)/g)];
+  const rest = raw.replace(/[A-Za-z_]+=\S+/g, "").replace(/->/g, "→").replace(/\s+/g, " ").trim();
+  const items = pairs.map(m => {
+    const li = document.createElement("li");
+    li.appendChild(document.createTextNode(m[1].replace(/_/g, " ") + ": "));
+    li.appendChild(el("span", "ck-v", m[2]));
+    return li;
+  });
+  if(rest) items.push(el("li", null, rest));
+  if(!items.length) return null;
+  const ul = el("ul", "checklist");
+  items.forEach(li => ul.appendChild(li));
+  return ul;
+}
+
+// Every retained run directory this job still owns, each as its own notice --
+// almost always zero or one, but nothing stops a job from cutting two runs
+// short before either is resumed or expires. Same source as the Sessions tab
+// (CC.DATA.retained_worktrees) -- no second fetch, no second shape for one
+// server-side list to drift against. fmtExpiresIn and resumeInFlight are the
+// page's own single implementations (see page.js's own comment on why they
+// are bound rather than duplicated here).
+function sessionNotices(jobId){
+  const kept = (CC.DATA.retained_worktrees || []).filter(w => w.job === jobId);
+  return kept.map(w => {
+    const left = fmtExpiresIn(w.expires_in);
+    const until = left ? " — expires " + left : "";
+    const line = el("div", "warnline");
+    line.appendChild(icon("folder"));
+    const grow = el("span", "grow");
+    if(!w.session){
+      grow.textContent = "Holding a run directory with no session recorded" + until
+        + " — it never got far enough to report one, so it cannot be resumed.";
+      line.appendChild(grow);
+      return line;
+    }
+    grow.textContent = "Holding a session that was cut short" + until + ".";
+    line.appendChild(grow);
+    // Reuses the SAME guard resumeTarget uses for the Runs table -- see
+    // resumeInFlight's own comment for why this must not be a second,
+    // independently-drifting `activeRunsOf(...).some(...)` of its own.
+    if(resumeInFlight(jobId, w.session)){
+      const badge = el("span", "runningbadge");
+      badge.appendChild(el("span", "pulse"));
+      badge.appendChild(document.createTextNode("resuming…"));
+      line.appendChild(badge);
+    }else{
+      const btn = el("button", "btn");
+      btn.dataset.op = "resume";
+      btn.dataset.id = jobId;
+      btn.dataset.session = w.session;
+      btn.title = "Resume this task — continue session " + w.session.slice(0, 8) + " where it stopped";
+      btn.appendChild(icon("play"));
+      btn.appendChild(document.createTextNode("Resume"));
+      line.appendChild(btn);
+    }
+    return line;
+  });
+}
+
+/* One job, in full: the state pill, what the probe last saw and counted, the
+   24h pulse, the spend against its cap, when it next runs, its own settings
+   where they differ from the project's, and the buttons that act on it.
+   Every `data-op`/`data-menu`/`data-jobruns`/`data-fav` attribute below is
+   read by bin/dashboard.html's ONE delegated click listener -- unchanged by
+   this move, since a real DOM attribute set by `.dataset` is exactly what
+   `e.target.closest("[data-op]")` already looked for. `renderJobs()`'s own
+   guard against redrawing while an overflow `.menu-pop` is open lives in the
+   page, one call above this function, and does not need to move: it decides
+   whether to call this at all, not how this builds one card. */
+export function jobCard(j){
+  const F = jobFacts(j);
+  const {st, chk, disabled, spentToday, cap, capped, nLive, idle} = F;
+  const pc = st.last_precheck || null;
+  const hasProbe = pc && typeof pc === "object";
+
+  // The card's left edge no longer carries state -- .st-run/.st-on/.st-idle
+  // lost their ::before rule when the pill took over saying the word
+  // instead of asking the reader to learn four colours (see pages.css's own
+  // comment on .card.st-off). Only .st-off still does anything (it dims a
+  // disabled card's background and text), so it is the only one still worth
+  // computing.
+  const card = el("div", "card" + (disabled ? " st-off" : ""));
+  // Cards are draggable so a group can be put in the order the work runs in.
+  // The drag handle is the whole card; buttons and inputs still work normally.
+  card.draggable = true;
+  card.dataset.jobId = j.id;
+
+  const h2 = el("h2");
+  const nameSpan = el("span", "jobname");
+  nameSpan.title = "Drag to reorder within the project";
+  nameSpan.appendChild(icon("bot"));
+  nameSpan.appendChild(document.createTextNode(j.id));
+  h2.appendChild(nameSpan);
+  // Badge has three states: disabled (red), idle (amber -- enabled but
+  // outside its active window and not currently running), enabled (green).
+  // The pill alone carries this now -- see `card`'s own comment above on why
+  // the left edge does not.
+  const pillCls = disabled ? "off" : (idle ? "idle" : "on");
+  const pill = el("span", "pill " + pillCls, disabled ? "disabled" : (idle ? "idle" : "enabled"));
+  if(idle) pill.title = "Outside its active window — no runs until the window reopens";
+  h2.appendChild(pill);
+  card.appendChild(h2);
+
+  // Disabling stops FUTURE runs; one already in flight keeps going. Say so,
+  // instead of letting "disabled" sit beside a spinning "running now…".
+  if(disabled && nLive){
+    const w = el("div", "warnline");
+    w.appendChild(icon("alert"));
+    w.appendChild(document.createTextNode(
+      "Disabled — " + nLive + " run" + (nLive === 1 ? "" : "s") + " started earlier "
+      + (nLive === 1 ? "is" : "are") + " still going. Stop " + (nLive === 1 ? "it" : "them")
+      + " from the Runs table."));
+    card.appendChild(w);
+  }
+  // A kept run dir used to be visible only as a count on the Sessions tab --
+  // findable only by an operator who already suspected one was there. See it
+  // here instead, on the job it belongs to.
+  sessionNotices(j.id).forEach(n => card.appendChild(n));
+
+  card.appendChild(el("div", "desc", j.description || ""));
+
+  // ---- the pulse: this job's own 24h, at one bar an hour. Plain div/i bars
+  // (.spark/.spark i in pages.css), the same mechanism renderPulse's own
+  // band draws with above -- there is no SVG sparkline in this stylesheet.
+  const series = Array.isArray(chk.series) ? chk.series : [];
+  const woke = Array.isArray(chk.woke) ? chk.woke : [];
+  const peak = series.reduce((m, n) => Math.max(m, n), 0);
+  let spark;
+  if(peak){
+    // No bars at all when there is nothing to plot -- an empty 110px
+    // sparkline just pushed the sentence explaining the emptiness into the
+    // middle of the card.
+    spark = el("span", "spark");
+    spark.title = chk.checks + " checks in the last 24h, one bar an hour";
+    series.forEach((n, i) => {
+      const bar = el("i", woke[i] ? "w" : null);
+      bar.style.height = (n ? Math.max(8, n / peak * 100).toFixed(0) : 0) + "%";
+      spark.appendChild(bar);
+    });
+  }else{
+    spark = icon("activity");
+  }
+  const sparkLine = el("div", "cardline");
+  sparkLine.appendChild(spark);
+  const sparkn = el("span", "sparkn grow");
+  if(chk.checks){
+    sparkn.appendChild(el("b", null, String(chk.checks)));
+    sparkn.appendChild(document.createTextNode(" check" + (chk.checks === 1 ? "" : "s") + " · "));
+    sparkn.appendChild(el("b", null, String(chk.runs)));
+    sparkn.appendChild(document.createTextNode(" woke a run"));
+    if(chk.failed){
+      sparkn.appendChild(document.createTextNode(" · "));
+      sparkn.appendChild(el("b", "s-error", chk.failed + " failed"));
+    }
+  }else{
+    sparkn.textContent = disabled ? "no automatic checks — disabled" : "no automatic checks in 24h";
+  }
+  sparkLine.appendChild(sparkn);
+
+  // A job may have SEVERAL runs going at once, so say how many rather than
+  // one "running now". The per-run outcome is not summarised on the card:
+  // each run is individual and carries its own status in the Runs table.
+  const runLine = el("div", "cardline");
+  runLine.appendChild(icon("play"));
+  const runGrow = el("span", "grow");
+  if(nLive){
+    const badge = el("span", "runningbadge");
+    badge.appendChild(el("span", "pulse"));
+    badge.appendChild(document.createTextNode(nLive + " running now…"));
+    runGrow.appendChild(badge);
+  }
+  if(st.last_run_start){
+    runGrow.appendChild(el("span", "muted",
+      (nLive ? " · last ran " : "last ran ") + fmtAgo(st.last_run_start)));
+  }else if(!nLive){
+    runGrow.appendChild(el("span", "muted", "never ran"));
+  }
+  runLine.appendChild(runGrow);
+
+  // ---- what the probe last saw. Its own line only when there is something
+  // to say: on a job that has never been checked, three rows of "never" said
+  // nothing three times over.
+  let probeLine = null;
+  let checkItems = null;
+  if(st.last_start || hasProbe){
+    const line = el("div", "cardline top");
+    line.appendChild(icon("radar"));
+    const grow = el("span", "grow");
+    if(st.last_start) grow.appendChild(document.createTextNode("probed " + fmtAgo(st.last_start)));
+    if(hasProbe){
+      // Three outcomes, not two. A probe that could not run (any exit other
+      // than 0 or 1) once rendered as the calm "nothing to do", so a job
+      // whose credentials had gone missing looked healthy while it silently
+      // never ran again. See probeVerdict's own comment.
+      grow.appendChild(document.createTextNode(st.last_start ? " — " : "last probe: "));
+      grow.appendChild(probeVerdict(pc));
+      // The counts the probe reported get their own panel beside the status
+      // lines, instead of trailing off the end of one of them. They are the
+      // densest thing on the card and the reason you look at it.
+      checkItems = checkList(pc.output);
+    }
+    line.appendChild(grow);
+    probeLine = line;
+  }
+
+  const cardstat = el("div", "cardstat");
+  cardstat.appendChild(sparkLine);
+  cardstat.appendChild(runLine);
+  if(probeLine) cardstat.appendChild(probeLine);
+  // Two columns when there is a probe result to show: the job's own state on
+  // the left, what its precheck counted on the right.
+  const cardbody = el("div", "cardbody" + (checkItems ? " has-checks" : ""));
+  cardbody.appendChild(cardstat);
+  if(checkItems){
+    const panel = el("div", "checkpanel");
+    panel.appendChild(el("div", "cp-h", "Pre-checks"));
+    panel.appendChild(checkItems);
+    cardbody.appendChild(panel);
+  }
+  card.appendChild(cardbody);
+
+  // `next` sits under both columns -- it is the conclusion the two of them
+  // lead to.
+  const nextLine = el("div", "cardline");
+  nextLine.appendChild(icon("cright"));
+  nextLine.appendChild(el("span", "lbl", "next"));
+  const nextGrow = el("span", "grow");
+  nextGrow.appendChild(nextRunNote(j, F));
+  nextLine.appendChild(nextGrow);
+  card.appendChild(nextLine);
+
+  // ---- the money. A cap you are close to is worth seeing before you hit it.
+  const model = eff(j, "model", "opus"), perm = eff(j, "permission_mode", "dontAsk"),
+        budg = eff(j, "max_budget_usd", 2);
+  const pct = (cap != null && cap > 0) ? Math.min(100, spentToday / cap * 100) : 0;
+  const tone = spendTone(spentToday, cap);
+  const spend = el("div", "spend");
+  if(cap != null){
+    const bar = el("div", "spendbar" + (tone ? " " + tone : ""));
+    const fill = el("i");
+    fill.style.width = pct.toFixed(1) + "%";
+    bar.appendChild(fill);
+    spend.appendChild(bar);
+  }
+  const spendtxt = el("div", "spendtxt");
+  const left = el("span");
+  left.appendChild(document.createTextNode(money(spentToday) + " today "));
+  left.appendChild(cap != null
+    ? el("span", "cap", "of " + money(cap))
+    : el("span", "muted", "· no daily cap"));
+  spendtxt.appendChild(left);
+  if(capped) spendtxt.appendChild(el("span", "s-error", "capped until midnight"));
+  spend.appendChild(spendtxt);
+  card.appendChild(spend);
+
+  // ---- settings, one line. Only what this job overrides on top of its
+  // project is inked; the rest is inherited and stays quiet. Listing all
+  // nine on every card is what made twenty-one cards look identical.
+  const p = j.project ? projById(j.project) : null;
+  const own = (field) => j[field] != null && j[field] !== "" && p != null
+    && String(j[field]) !== String(p[field] == null ? "" : p[field]);
+  const bit = (txt, mine, cls) => el("span", mine ? (cls || "o") : null, txt);
+  // An icon on the three that answer a different question -- how often,
+  // when, how much. Five bare phrases in a row read as one long string; the
+  // marks are what let the eye jump to the one it wants.
+  const marked = (iconName, inner) => {
+    const s = el("span", "cfgi");
+    s.appendChild(icon(iconName));
+    s.appendChild(inner);
+    return s;
+  };
+  const cfg = el("div", "cfgline");
+  cfg.appendChild(marked("timer", bit("every " + fmtDur(j.interval_seconds || 300), own("interval_seconds"))));
+  cfg.appendChild(marked("clock", bit((j.active_hours || "24h") + " "
+    + fmtDays(j.active_days || [1, 2, 3, 4, 5, 6, 7]), own("active_hours") || own("active_days"))));
+  cfg.appendChild(bit(model, own("model")));
+  if(effortLabel(eff(j, "effort", "")) !== "default"){
+    cfg.appendChild(bit(effortLabel(eff(j, "effort", "")), own("effort")));
+  }
+  cfg.appendChild(marked("dollar", bit(money(budg) + "/run", own("max_budget_usd"))));
+  // a permission mode is the one setting worth flagging rather than folding away
+  cfg.appendChild(bit(perm, perm !== "dontAsk", "warn"));
+  card.appendChild(cfg);
+
+  // Run now always available: several runs of a job may go at once (up to
+  // max_parallel), so a live run no longer replaces this with a stop.
+  // Stopping is per-run, from the Runs table -- a job-wide stop would kill
+  // them all. It carries the accent whether or not the job is enabled,
+  // because it WORKS whether or not the job is enabled -- it is a
+  // deliberate manual override, and the primary action on the card.
+  const actions = el("div", "actions");
+  const runBtn = el("button", "btn primary");
+  runBtn.dataset.op = "run"; runBtn.dataset.id = j.id;
+  runBtn.appendChild(icon("play"));
+  runBtn.appendChild(document.createTextNode("Run now"));
+  actions.appendChild(runBtn);
+
+  const toggleBtn = el("button", "btn");
+  toggleBtn.dataset.op = disabled ? "enable" : "disable";
+  toggleBtn.dataset.id = j.id;
+  toggleBtn.appendChild(icon("power"));
+  toggleBtn.appendChild(document.createTextNode(disabled ? "Enable" : "Disable"));
+  actions.appendChild(toggleBtn);
+
+  const editBtn = el("button", "btn");
+  editBtn.dataset.op = "edit"; editBtn.dataset.id = j.id;
+  editBtn.appendChild(icon("pencil"));
+  editBtn.appendChild(document.createTextNode("Edit"));
+  actions.appendChild(editBtn);
+
+  // Delete sits behind the overflow: it is irreversible, and as a fourth
+  // equal button it was one slip away from Edit on every card.
+  const menu = el("div", "menu");
+  const menuBtn = el("button", "iconbtn");
+  menuBtn.dataset.menu = j.id;
+  menuBtn.setAttribute("aria-haspopup", "menu");
+  menuBtn.setAttribute("aria-expanded", "false");
+  menuBtn.title = "More actions";
+  menuBtn.appendChild(icon("dots"));
+  menu.appendChild(menuBtn);
+
+  const pop = el("div", "menu-pop");
+  pop.setAttribute("role", "menu");
+  pop.hidden = true;
+  const jobRunsBtn = el("button");
+  jobRunsBtn.setAttribute("role", "menuitem");
+  jobRunsBtn.dataset.jobruns = j.id;
+  jobRunsBtn.appendChild(icon("activity"));
+  jobRunsBtn.appendChild(document.createTextNode("Show this job's runs"));
+  pop.appendChild(jobRunsBtn);
+  pop.appendChild(el("div", "sep"));
+  const delBtn = el("button", "danger");
+  delBtn.setAttribute("role", "menuitem");
+  delBtn.dataset.op = "delete"; delBtn.dataset.id = j.id;
+  delBtn.appendChild(icon("trash"));
+  delBtn.appendChild(document.createTextNode("Delete job"));
+  pop.appendChild(delBtn);
+  menu.appendChild(pop);
+  actions.appendChild(menu);
+  card.appendChild(actions);
+
+  return card;
 }
 
 // What each outcome means, in the order the server stacks them, and the

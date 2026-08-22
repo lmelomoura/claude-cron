@@ -17,10 +17,19 @@
    script. Leaving them off this list would not remove the dependency, only
    hide it until the first `ReferenceError` -- and duplicating either helper
    into this module instead is the drifting-vocabulary defect this branch has
-   already paid for twice. */
+   already paid for twice.
+
+   effortLabel, fmtExpiresIn and resumeInFlight join the list for the same
+   reason, added when the job card moved into this module (Task 9): the
+   card's config line reads the first, its kept-session notice the other two,
+   and each already has exactly one implementation in the page's own script
+   -- fmtExpiresIn also feeds the Sessions tab, resumeInFlight also guards
+   resumeTarget's live-slot branch, so a second copy here would be the same
+   drift the paragraph above already paid for. */
 export let $, TOKEN, api, toast, esc, fmtAgo, fmtWhen, fmtDur, fmtIn, money,
            icon, iconLabel, openLog, openEditor, projById, isFav, eff, setView,
-           backoffMultiplier, activeRunsOf, renderJobs;
+           backoffMultiplier, activeRunsOf, renderJobs,
+           effortLabel, fmtExpiresIn, resumeInFlight;
 
 /* DATA and currentView are REASSIGNED by the page -- DATA on every five-second
    poll, currentView on every navigation. Destructured they would freeze at
@@ -32,5 +41,6 @@ export function bindPage(cc){
   CC = cc;
   ({ $, TOKEN, api, toast, esc, fmtAgo, fmtWhen, fmtDur, fmtIn, money,
      icon, iconLabel, openLog, openEditor, projById, isFav, eff,
-     setView, backoffMultiplier, activeRunsOf, renderJobs } = cc);
+     setView, backoffMultiplier, activeRunsOf, renderJobs,
+     effortLabel, fmtExpiresIn, resumeInFlight } = cc);
 }
