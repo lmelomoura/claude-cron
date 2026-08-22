@@ -640,6 +640,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The dashboard's stylesheet moved out of `bin/dashboard.html` into
+  `ui/css/`, and no rule's text changed.** 1415 lines and 789 rules that used
+  to sit in a `<style>` block are now three files — `tokens.css` (the two
+  `:root` blocks), `components.css` (the shared vocabulary: page header, KPI
+  stat line, filter bar, table card, pager, pills, buttons, tabs, the
+  project-screen right rail, plus the generic element rules) and `pages.css`
+  (everything that names one page or one dialog: the shell, the job cards,
+  the pulse panel, every dialog, every `@media`/`@container` query) —
+  concatenated in that order by `build/build-ui.sh` into a committed
+  `bin/static/app.css` and linked from the head with `?v=<build id>`. Not
+  bundled: the stylesheet has no imports, so esbuild would buy nothing and add
+  a minifier's opinions to a diff that should stay readable. The move is
+  proven mechanical by a selector-set comparison against a baseline captured
+  from `dashboard.html` before it moved, checked against the *built* artifact
+  rather than the sources, so a rule that lands in a file the build forgets to
+  concatenate still fails the test. Without this split, later restyling of the
+  dashboard's Overview and any new shared component would have meant editing
+  one 1400-line block that mixed tokens, reusable widgets and one-page layout
+  with no seam between them. The selftest's freshness check — was this artifact
+  built from the sources sitting next to it, and does its own body still hash
+  to its own stamp — is now a `check_ui_artifact` function called once per
+  artifact instead of carried inline for `bin/static/security.js` alone; written
+  out a second time for `app.css` it would have been a second place for the
+  next fix to reach only one of.
+
 - **Build artifacts carry one stamp form, valid in JavaScript and CSS
   alike.** The two freshness stamps every committed artifact carries — what
   it was built from, and what it is — were written as `//` line comments,

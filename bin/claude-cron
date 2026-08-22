@@ -2003,6 +2003,64 @@ cmd_skills() { # claude-cron skills [install]
   fi
 }
 
+# One artifact's two freshness questions, asked the same way for each. This
+# was written out once, inline, for bin/static/security.js; a second and third
+# artifact copied three times over is three places for the next fix to reach
+# two of.
+#
+# bin/static/security.js and bin/static/app.css are COMMITTED: installing
+# claude-cron needs jq, python3 and curl, never Node. The price of that is a
+# build output in git, which can be forgotten — and a stale artifact is a
+# dashboard silently running last week's code, with nothing on screen to say
+# so.
+# TWO questions, and only the first of them used to be asked. `ui-sources`
+# answers "was this built from the sources sitting next to it" -- the
+# forgot-to-rebuild case. `ui-bundle` answers "and is this still what that
+# build produced" -- nothing hashed the committed bytes, so code injected
+# straight into the artifact, with every source and every toolchain file
+# untouched, passed this check without a word. A mangled merge conflict
+# inside a generated file is that same shape, and nobody reads a generated
+# file to find one.
+#
+# Both stamps are read with an EXACTLY-ONE rule rather than `tail -1`. That
+# was the second hole: appending a second `/* ui-sources: ... */` line
+# carrying a freshly computed digest satisfied the old reader while the real
+# stamp, the one describing the bytes above it, sat ignored one line up.
+#
+# The captured value is anchored to `[0-9a-f]\{64\}`, the fixed SHA-256
+# shape, not `.*`. A block comment can be CLOSED AND REOPENED mid-line,
+# which `//` cannot: one physical line shaped
+# `/* ui-bundle: <real hash> */<injected code>/* ui-bundle: <fake hash> */`
+# used to count and extract as a single well-formed stamp while
+# build/ui-bundle-digest.sh's equally greedy strip deleted that whole line
+# -- injected code included -- before hashing, so the tampered bundle
+# hashed identically to the untampered one. A line carrying anything past
+# the 64 hex characters now fails to match at all, so it stays in the body
+# and the ordinary hash-mismatch branch below catches it.
+check_ui_artifact() { # <path relative to BASE_DIR>
+  local _rel="$1" _bundle="$BASE_DIR/$1" _stamp _want _bstamp _bwant _ns _nb
+  if [ ! -f "$_bundle" ]; then
+    bad "$_rel is missing — run build/build-ui.sh"; return
+  fi
+  _ns="$(grep -c '^/\* ui-sources: [0-9a-f]\{64\} \*/$' "$_bundle" || true)"
+  _nb="$(grep -c '^/\* ui-bundle: [0-9a-f]\{64\} \*/$' "$_bundle" || true)"
+  _stamp="$(sed -n 's|^/\* ui-sources: \([0-9a-f]\{64\}\) \*/$|\1|p' "$_bundle")"
+  _bstamp="$(sed -n 's|^/\* ui-bundle: \([0-9a-f]\{64\}\) \*/$|\1|p' "$_bundle")"
+  _want="$(bash "$BASE_DIR/build/ui-digest.sh" 2>/dev/null)"
+  _bwant="$(bash "$BASE_DIR/build/ui-bundle-digest.sh" "$_bundle" 2>/dev/null)"
+  if [ "${_ns:-0}" != "1" ] || [ "${_nb:-0}" != "1" ]; then
+    bad "$_rel carries ${_ns:-0} ui-sources and ${_nb:-0} ui-bundle stamps — exactly one of each is expected; run build/build-ui.sh"
+  elif [ -z "$_want" ] || [ -z "$_bwant" ]; then
+    bad "could not fingerprint ui/ or $_rel — is shasum on PATH?"
+  elif [ "$_stamp" != "$_want" ]; then
+    bad "$_rel is stale — run build/build-ui.sh"
+  elif [ "$_bstamp" != "$_bwant" ]; then
+    bad "$_rel has been MODIFIED since it was built — its body no longer hashes to its own stamp; rebuild with build/build-ui.sh and check what changed"
+  else
+    ok "$_rel matches the sources it was built from, and has not been touched since"
+  fi
+}
+
 cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   local pass=0 fail=0 tmp
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/ccselftest.XXXXXX")"
@@ -5975,57 +6033,9 @@ JSON
     && ok "and every past analysis is carried onto the new name in the ledger" \
     || bad "the security history stayed behind under the old project name"
 
-  echo "the committed UI bundle — built from the sources sitting next to it"
-  # bin/static/security.js is COMMITTED: installing claude-cron needs jq,
-  # python3 and curl, never Node. The price of that is a build output in git,
-  # which can be forgotten — and a stale bundle is a dashboard silently running
-  # last week's code, with nothing on screen to say so.
-  # TWO questions, and only the first of them used to be asked. `ui-sources`
-  # answers "was this built from the sources sitting next to it" -- the
-  # forgot-to-rebuild case. `ui-bundle` answers "and is this still what that
-  # build produced" -- nothing hashed the committed bytes, so code injected
-  # straight into bin/static/security.js, with every source and every
-  # toolchain file untouched, passed this check without a word. A mangled
-  # merge conflict inside a 90 KB generated file is that same shape, and
-  # nobody reads a generated file to find one.
-  #
-  # Both stamps are read with an EXACTLY-ONE rule rather than `tail -1`. That
-  # was the second hole: appending a second `/* ui-sources: ... */` line
-  # carrying a freshly computed digest satisfied the old reader while the real
-  # stamp, the one describing the bytes above it, sat ignored one line up.
-  #
-  # The captured value is anchored to `[0-9a-f]\{64\}`, the fixed SHA-256
-  # shape, not `.*`. A block comment can be CLOSED AND REOPENED mid-line,
-  # which `//` cannot: one physical line shaped
-  # `/* ui-bundle: <real hash> */<injected code>/* ui-bundle: <fake hash> */`
-  # used to count and extract as a single well-formed stamp while
-  # build/ui-bundle-digest.sh's equally greedy strip deleted that whole line
-  # -- injected code included -- before hashing, so the tampered bundle
-  # hashed identically to the untampered one. A line carrying anything past
-  # the 64 hex characters now fails to match at all, so it stays in the body
-  # and the ordinary hash-mismatch branch below catches it.
-  local _bundle="$BIN_DIR/static/security.js" _stamp _want _bstamp _bwant _ns _nb
-  if [ ! -f "$_bundle" ]; then
-    bad "bin/static/security.js is missing — run build/build-ui.sh"
-  else
-    _ns="$(grep -c '^/\* ui-sources: [0-9a-f]\{64\} \*/$' "$_bundle" || true)"
-    _nb="$(grep -c '^/\* ui-bundle: [0-9a-f]\{64\} \*/$' "$_bundle" || true)"
-    _stamp="$(sed -n 's|^/\* ui-sources: \([0-9a-f]\{64\}\) \*/$|\1|p' "$_bundle")"
-    _bstamp="$(sed -n 's|^/\* ui-bundle: \([0-9a-f]\{64\}\) \*/$|\1|p' "$_bundle")"
-    _want="$(bash "$BASE_DIR/build/ui-digest.sh" 2>/dev/null)"
-    _bwant="$(bash "$BASE_DIR/build/ui-bundle-digest.sh" "$_bundle" 2>/dev/null)"
-    if [ "${_ns:-0}" != "1" ] || [ "${_nb:-0}" != "1" ]; then
-      bad "bin/static/security.js carries ${_ns:-0} ui-sources and ${_nb:-0} ui-bundle stamps — exactly one of each is expected; run build/build-ui.sh"
-    elif [ -z "$_want" ] || [ -z "$_bwant" ]; then
-      bad "could not fingerprint ui/ or the bundle — is shasum on PATH?"
-    elif [ "$_stamp" != "$_want" ]; then
-      bad "bin/static/security.js is stale — run build/build-ui.sh"
-    elif [ "$_bstamp" != "$_bwant" ]; then
-      bad "bin/static/security.js has been MODIFIED since it was built — its body no longer hashes to its own stamp; rebuild with build/build-ui.sh and check what changed"
-    else
-      ok "the committed UI bundle matches the sources it was built from, and has not been touched since"
-    fi
-  fi
+  echo "the committed UI artifacts — built from the sources sitting next to them"
+  check_ui_artifact "bin/static/security.js"
+  check_ui_artifact "bin/static/app.css"
 
   rm -rf "$tmp"
   echo

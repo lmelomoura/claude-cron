@@ -122,3 +122,9 @@ def test_every_servable_extension_is_fingerprinted(srv, tmp_path, monkeypatch):
     assert len(ids) == len(srv.STATIC_TYPES), (
         "adding a servable file did not always move the build id"
     )
+
+
+def test_the_stylesheet_is_served_as_css(srv):
+    body, ctype = srv.static_asset("app.css")
+    assert ctype.startswith("text/css")
+    assert ":root" in body, "the stylesheet reached the route without its tokens"

@@ -1,0 +1,23 @@
+/* Design tokens: the two custom-property sets dashboard.html used to carry
+   inline, moved out unchanged. Everything below is `:root` or
+   `:root[data-theme="dark"]` -- variable definitions only, nothing else.
+   No rule here ever styles an element directly, so this file never needs
+   to change when a page or a component does. */
+:root{
+  --bg:#f6f7f9; --panel:#ffffff; --panel2:#fbfbfc; --ink:#16181d; --muted:#697077;
+  --term-bg:#fbfbfd; --term-brd:#d7d9e0; --term-tool:#c2410c; --term-sys:#0f766e;
+  --line:#e4e7ec; --line2:#eef0f4; --accent:#4f46e5; --accent-soft:#eef0ff;
+  --accent-ink:#ffffff; --ok:#0f9d63; --ok-soft:#e6f7ef; --warn:#c77700;
+  --warn-soft:#fdf3e2; --err:#d92d20; --err-soft:#feecea; --idle:#8b919a;
+  --shadow:0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.08);
+  --shadow-lg:0 12px 32px rgba(16,24,40,.16);
+}
+:root[data-theme="dark"]{
+  --bg:#0d1017; --panel:#151a23; --panel2:#11151d; --ink:#e8eaee; --muted:#98a0ab;
+  --term-bg:#0b0e14; --term-brd:#2b3444; --term-tool:#fb923c; --term-sys:#5eead4;
+  --line:#242b37; --line2:#1c222d; --accent:#818cf8; --accent-soft:#232848;
+  --accent-ink:#0d1017; --ok:#34d399; --ok-soft:#0e2b22; --warn:#fbbf24;
+  --warn-soft:#33270e; --err:#f87171; --err-soft:#391716; --idle:#6b7280;
+  --shadow:0 1px 2px rgba(0,0,0,.35);
+  --shadow-lg:0 16px 44px rgba(0,0,0,.55);
+}

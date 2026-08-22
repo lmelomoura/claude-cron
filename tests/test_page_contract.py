@@ -44,9 +44,11 @@ def test_the_page_paints_the_screen_the_session_calls_for(srv):
     signed_out = srv.render_page("boot-login")
     assert 'class="boot-login"' in signed_out
     # The shell must be held back, and the card it holds back for must be up —
-    # both from CSS alone, with no script having run yet.
-    assert ".boot-login .shell,.boot-setup .shell{display:none}" in signed_out
-    assert ".boot-login #login[hidden],.boot-setup #setup[hidden]{display:flex}" in signed_out
+    # both from CSS alone, with no script having run yet. The rules that do
+    # it now live in the served stylesheet rather than inline in the page.
+    css, _ = srv.static_asset("app.css")
+    assert ".boot-login .shell,.boot-setup .shell{display:none}" in css
+    assert ".boot-login #login[hidden],.boot-setup #setup[hidden]{display:flex}" in css
     # ...and the signed-in page must NOT hide its own shell.
     assert 'class="boot-authed"' in srv.render_page("boot-authed")
 
@@ -3337,8 +3339,11 @@ def test_the_selftest_reads_both_stamps_and_refuses_an_ambiguous_one():
     each stamp with an exactly-one rule. `tail -1` on a stamp line is the
     exact shape of reproduction two above and must not come back."""
     engine = ENGINE.read_text()
-    block = engine[engine.index("the committed UI bundle"):]
-    block = block[:block.index("\n  rm -rf ")]
+    # check_ui_artifact() is the one place both questions get asked -- lifted
+    # above cmd_selftest so a second and third artifact call it rather than
+    # copying the block.
+    block = engine[engine.index("check_ui_artifact() {"):]
+    block = block[:block.index("\ncmd_selftest()")]
     # Comment lines stripped: this block EXPLAINS the `tail -1` it replaced,
     # and a guard that cannot tell an explanation from the thing it warns
     # against fails on its own documentation.
@@ -3441,3 +3446,33 @@ def test_an_ignored_file_under_ui_does_not_redden_the_selftest(tmp_path):
                    capture_output=True)
     assert _run_digest(root) != baseline, \
         "a tracked file was dropped from the fingerprint by an ignore pattern"
+
+
+def _selectors(css_text):
+    """Every selector in a stylesheet, as a set. Comments and declaration
+    bodies are dropped; whitespace inside a selector is collapsed so
+    `a , b` and `a, b` compare equal."""
+    body = re.sub(r"/\*.*?\*/", "", css_text, flags=re.S)
+    out = set()
+    for chunk in re.findall(r"([^{}]+)\{[^{}]*\}", body):
+        sel = " ".join(chunk.split())
+        if sel and not sel.startswith("@"):
+            out.add(sel)
+    return out
+
+
+def test_no_css_rule_was_lost_when_the_stylesheet_moved_out(srv):
+    """The move out of dashboard.html is mechanical, and mechanical moves of
+    1400 lines lose things quietly. This is the contract: whatever the page
+    styled before, it styles now.
+
+    Compares SELECTORS rather than bytes -- the three files are allowed to
+    reorder and regroup rules, which is the whole point of splitting them --
+    and it is checked against the built artifact, not the sources, so a rule
+    that lands in a file the build forgets to concatenate still fails."""
+    served, ctype = srv.static_asset("app.css")
+    assert ctype.startswith("text/css")
+    baseline = (REPO / "tests" / "data" / "css-selectors-before.txt").read_text()
+    want = {ln for ln in baseline.splitlines() if ln}
+    have = _selectors(served)
+    assert not (want - have), f"rules lost in the move: {sorted(want - have)[:20]}"
