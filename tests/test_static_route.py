@@ -88,3 +88,37 @@ def test_the_bundle_is_reachable_without_signing_in(srv):
     assert static_at < gate_at, \
         "the /static/ route sits behind the session gate -- the login screen " \
         "cannot load the code that draws it"
+
+
+def test_the_build_id_moves_when_a_served_stylesheet_changes(
+        srv, tmp_path, monkeypatch):
+    """`_build_id` used to glob "*.js" alone. The page asks for every asset
+    with `?v=<build id>` on it, so an id that cannot see a stylesheet serves
+    a changed one out of an open tab's cache indefinitely -- the exact
+    failure the id was added to prevent for the JS bundle.
+
+    Driven through the same table that decides what this directory is
+    allowed to serve: anything servable has to be fingerprinted, or the two
+    disagree and the gap is a cache that never clears."""
+    monkeypatch.setattr(srv, "STATIC_DIR", tmp_path)
+    (tmp_path / "app.css").write_text(":root{--bg:#fff}")
+    before = srv._build_id()
+    (tmp_path / "app.css").write_text(":root{--bg:#000}")
+    assert srv._build_id() != before, (
+        "a changed stylesheet left the build id untouched -- "
+        "browsers will keep serving the old one from cache"
+    )
+
+
+def test_every_servable_extension_is_fingerprinted(srv, tmp_path, monkeypatch):
+    """Not "js and css" spelled out a second time: the fingerprint walks the
+    same STATIC_TYPES table the route reads, so a third type added there is
+    covered without anybody remembering to come back here."""
+    monkeypatch.setattr(srv, "STATIC_DIR", tmp_path)
+    ids = set()
+    for i, suffix in enumerate(sorted(srv.STATIC_TYPES)):
+        (tmp_path / f"a{suffix}").write_text(f"/* {i} */")
+        ids.add(srv._build_id())
+    assert len(ids) == len(srv.STATIC_TYPES), (
+        "adding a servable file did not always move the build id"
+    )

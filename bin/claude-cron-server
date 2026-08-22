@@ -137,7 +137,15 @@ def _build_id() -> str:
     # have stopped changing when that code changed -- which is the whole job of
     # this id. An open tab would keep last week's bundle and never learn, and
     # the `?v=` on the script tag would keep asking for the same cached URL.
-    for f in (PAGE_FILE, Path(__file__), *sorted(STATIC_DIR.glob("*.js"))):
+    # Everything this directory is ALLOWED to serve, not a second list of
+    # extensions kept in step by hand. The page asks for each asset with
+    # `?v=<this id>`, so a servable file the id cannot see is a file an open
+    # tab keeps out of cache forever. This globbed "*.js" while the Security
+    # bundle was the only asset; the stylesheet that joined it in the same
+    # directory would have been invisible.
+    served = sorted(p for p in STATIC_DIR.iterdir()
+                    if p.suffix in STATIC_TYPES) if STATIC_DIR.is_dir() else []
+    for f in (PAGE_FILE, Path(__file__), *served):
         try:
             h.update(f.read_bytes())
         except OSError:
