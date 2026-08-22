@@ -1140,7 +1140,16 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-## Task 7: The pure half moves
+## Task 7: The pure half moves — ABSORBED INTO TASK 6 AND TASK 8
+
+**Do not execute this task.** Task 6 needed these functions extracted in order to test them, so it moved seven of the nine: `pulseKpis`, `bandEmptyReason`, `probeVerdict`, `spendTone`, `groupJobs`, `jobsEmptyNote` and `nextRunNote` are already in `ui/app/overview.js`.
+
+What remained was `tickTotals` and `pickLine`, and both are consumed only by the renderers Task 8 rewrites. Moving them alone would be a commit with no deliverable of its own and two functions with no call site in the bundle, so Task 8 takes them.
+
+The reasoning below is kept because it is why this phase has no "moved unchanged, tests prove it" step at all — that constraint still governs Tasks 8, 9 and 10.
+
+### Original text
+
 
 **Read this before starting — it corrects an assumption the earlier tasks were written under.** This task originally said "move the Overview's renderers, pixel-identical, and let Task 6's tests prove it". That is not possible, and the pre-flight review of this plan caught it.
 
