@@ -3236,7 +3236,7 @@ def test_the_stamp_form_is_a_block_comment_so_css_can_carry_it(tmp_path):
                           check=True).stdout.strip()
     art.write_text(":root{--bg:#fff}\n"
                    f"/* ui-bundle: {body} */\n"
-                   "/* ui-sources: deadbeef */\n")
+                   f"/* ui-sources: {'d' * 64} */\n")
     again = subprocess.run(["bash", str(REPO / "build" / "ui-bundle-digest.sh"),
                             str(art)], capture_output=True, text=True,
                            check=True).stdout.strip()
@@ -3253,12 +3253,45 @@ def test_a_second_block_stamp_is_refused_in_either_language(tmp_path):
     for name in ("app.css", "app.js"):
         art = tmp_path / name
         art.write_text("body{}\n"
-                       "/* ui-sources: aaaa */\n"
-                       "/* ui-sources: bbbb */\n")
+                       f"/* ui-sources: {'a' * 64} */\n"
+                       f"/* ui-sources: {'b' * 64} */\n")
         r = subprocess.run(["bash", str(REPO / "build" / "ui-bundle-digest.sh"),
                             str(art)], capture_output=True, text=True)
         assert r.returncode == 1, f"{name}: a doubled stamp was accepted"
         assert "stamps" in r.stderr, f"{name}: refused without saying why"
+
+
+def test_a_stamp_cannot_be_closed_and_reopened_to_smuggle_code_past_the_hash(tmp_path):
+    """CRITICAL: a block comment, unlike the `//` form it replaced, can be
+    closed and reopened MID-LINE. One physical line --
+    `/* ui-bundle: <real hash> */<injected code>/* ui-bundle: <fake hash> */`
+    -- used to count as exactly one stamp (the "more than one" refusal never
+    fired) and get stripped WHOLE by `grep -v`'s greedy `.*`, so the injected
+    code between the two markers never reached the hash at all: the tampered
+    artifact hashed identically to the untampered body. Anchoring the
+    captured value to the fixed 64-hex-character SHA-256 shape means a line
+    carrying anything extra does not match the stamp pattern at all, so it
+    stays in the body and the hash mismatch catches it."""
+    script = REPO / "build" / "ui-bundle-digest.sh"
+    for name, body in (("app.js", "window.x = 1;\n"), ("app.css", "body{color:red}\n")):
+        plain = tmp_path / name
+        plain.write_text(body)
+        body_hash = _bundle_digest(script, plain).stdout.strip()
+        assert re.fullmatch(r"[0-9a-f]{64}", body_hash), \
+            f"{name}: could not establish the untampered body's own digest"
+
+        crammed = tmp_path / f"crammed-{name}"
+        crammed.write_text(
+            body +
+            f"/* ui-bundle: {body_hash} */window.__pwned = 'HACKED';"
+            f"/* ui-bundle: {'0' * 64} */\n"
+        )
+        tampered_hash = _bundle_digest(script, crammed).stdout.strip()
+        assert tampered_hash != body_hash, (
+            f"{name}: a stamp closed and reopened mid-line hid injected code "
+            f"from the hash — the tampered artifact digests identically to "
+            f"the untampered body"
+        )
 
 
 def test_the_selftest_reads_both_stamps_and_refuses_an_ambiguous_one():
@@ -3277,11 +3310,17 @@ def test_the_selftest_reads_both_stamps_and_refuses_an_ambiguous_one():
         "the selftest never recomputes the bundle's own body hash"
     assert "tail -1" not in code, \
         "a stamp is still read with tail -1, which a second stamp line defeats"
-    assert "grep -c '^/\\* ui-sources: .* \\*/$'" in code \
-        and "grep -c '^/\\* ui-bundle: .* \\*/$'" in code, \
+    assert "grep -c '^/\\* ui-sources: [0-9a-f]\\{64\\} \\*/$'" in code \
+        and "grep -c '^/\\* ui-bundle: [0-9a-f]\\{64\\} \\*/$'" in code, \
         "the selftest does not count the stamps before trusting them"
     assert "MODIFIED" in code, \
         "a modified bundle and a stale one get the same message"
+    assert ".*" not in code, (
+        "a stamp is still captured with a greedy `.*` -- a block comment can "
+        "be closed and reopened mid-line, so anything less than the fixed "
+        "64-hex-character SHA-256 shape lets injected code between two "
+        "markers hide from the hash"
+    )
 
 
 def test_the_digest_cannot_confuse_one_files_content_for_the_next_files_path(tmp_path):

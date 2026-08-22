@@ -322,6 +322,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The UI bundle's modified-body guard can no longer be defeated by a
+  single crafted line.** The previous commit moved both freshness stamps
+  from `//` line comments to `/* … */` block comments so a CSS artifact
+  could carry them too — but a block comment can be closed and reopened
+  mid-line, which `//` cannot. One physical line shaped
+  `/* ui-bundle: <real hash> */<injected code>/* ui-bundle: <fake hash> */`
+  counted as exactly one stamp, so the "more than one is refused" check
+  never fired, and the greedy pattern that stripped stamps before hashing
+  deleted that whole line — injected code included — leaving a tampered
+  `bin/static/security.js` hashing byte-identical to the untampered one and
+  the selftest reporting it clean. `build/ui-bundle-digest.sh` and the
+  selftest's own reads in `bin/claude-cron` now anchor the captured value to
+  the fixed SHA-256 shape, `[0-9a-f]\{64\}`, in place of `.*`: a line
+  carrying anything beyond those 64 hex characters no longer matches the
+  stamp pattern at all, so it stays in the body and the ordinary
+  hash-mismatch branch catches it instead. Said plainly: for one commit, a
+  freshness guard whose entire purpose is to catch a modified build
+  artifact could itself be defeated by a one-line edit.
+
 - **A changed stylesheet is no longer served out of an open tab's cache
   forever.** Every asset under `bin/static/` is requested with
   `?v=<build id>`, and the build id is derived from the bytes of the files in

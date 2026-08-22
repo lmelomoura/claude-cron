@@ -44,7 +44,7 @@ fi
 # selftest, and one of them to forget. `/* ... */` is valid in both languages,
 # so there is exactly one form to write and one to strip.
 for kind in ui-sources ui-bundle; do
-  n="$(grep -c "^/\* $kind: .* \*/\$" "$bundle" || true)"
+  n="$(grep -c "^/\* $kind: [0-9a-f]\{64\} \*/\$" "$bundle" || true)"
   if [ "${n:-0}" -gt 1 ]; then
     echo "ui-bundle-digest: $bundle carries $n '$kind' stamps — exactly" \
          "one is expected, and a second one hides whatever the first says" >&2
@@ -52,5 +52,15 @@ for kind in ui-sources ui-bundle; do
   fi
 done
 
-{ grep -v -e '^/\* ui-sources: .* \*/$' -e '^/\* ui-bundle: .* \*/$' \
+# The captured value is anchored to the SHA-256 shape -- exactly 64 lowercase
+# hex characters -- not `.*`. A block comment, unlike the `//` line form it
+# replaced, can be CLOSED AND REOPENED mid-line: a single physical line like
+# `/* ui-bundle: <real hash> */<injected code>/* ui-bundle: <fake hash> */`
+# used to satisfy the greedy pattern end to end, so `grep -v` deleted the
+# whole line -- injected code included -- and the exactly-one check above
+# never saw more than one stamp because it was one physical line. A line
+# carrying anything beyond the stamp itself now fails to match at all, so it
+# stays in the body and the ordinary hash-mismatch path catches it instead.
+{ grep -v -e '^/\* ui-sources: [0-9a-f]\{64\} \*/$' \
+          -e '^/\* ui-bundle: [0-9a-f]\{64\} \*/$' \
     "$bundle" || true; } | shasum -a 256 | awk '{print $1}'

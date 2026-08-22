@@ -1236,14 +1236,22 @@ node --check bin/static/security.js
 ```
 
 and `claude-cron selftest` refuses a tree where that did not happen. The
-assertion is **"the committed UI bundle matches the sources it was built from"**;
-when it does not, it fails with `bin/static/security.js is stale — run
-build/build-ui.sh`. It works off a content fingerprint that `build/build-ui.sh`
-stamps onto the bundle's last line as a plain comment (`// ui-sources: <sha256>`
-— valid JavaScript, ignored by every browser, greppable without parsing
-anything) and that the selftest recomputes with `build/ui-digest.sh`. One
-definition read from two sides: written twice, the day the two drifted the check
-would be reporting on nothing.
+assertion is **"the committed UI bundle matches the sources it was built from,
+and has not been touched since"**; the first half fails with
+`bin/static/security.js is stale — run build/build-ui.sh`, the second with
+`...has been MODIFIED since it was built`. It works off two content
+fingerprints that `build/build-ui.sh` stamps onto the bundle's last two lines
+as block comments — `/* ui-sources: <sha256> */` and
+`/* ui-bundle: <sha256> */` — block, not `//`, because `bin/static/` holds CSS
+as well as JavaScript and CSS has no line comment; `/* … */` is valid in both,
+ignored by every browser, and greppable without parsing anything. `ui-sources`
+is what the bundle was built **from**, recomputed by the selftest with
+`build/ui-digest.sh`; `ui-bundle` is a hash of the bundle's **own body**, taken
+before either stamp is appended, recomputed with `build/ui-bundle-digest.sh` —
+the one that catches code injected straight into the committed bytes with
+every source left untouched. Two definitions, each read from two sides:
+written twice, the day either drifted from its reader the check would be
+reporting on nothing.
 
 Two details of that fingerprint are load-bearing. It hashes each file's **path as
 well as its bytes**, so a module added, renamed or deleted changes the answer
