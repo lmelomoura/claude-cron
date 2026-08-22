@@ -307,6 +307,40 @@
     }
     return wrap;
   }
+  function worktreesCard(items) {
+    const kept = items || [];
+    if (!kept.length) return null;
+    const mk = (tag, cls, text) => {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text != null) n.textContent = text;
+      return n;
+    };
+    const card = mk("div", "card");
+    card.appendChild(mk("h2", null, "Sessions"));
+    card.appendChild(mk(
+      "div",
+      "desc",
+      "Run directories still on disk, kept because a session was cut short."
+    ));
+    kept.slice(0, 4).forEach((w) => {
+      const row = mk("div", "cardline");
+      row.appendChild(icon("folder"));
+      row.appendChild(mk("span", "grow wtrow-name", w.job));
+      row.appendChild(mk("span", "muted wtrow-size", w.size));
+      card.appendChild(row);
+    });
+    const actions = mk("div", "actions");
+    const btn = mk("button", "btn");
+    btn.id = "ov-wt-view";
+    btn.appendChild(icon("folder"));
+    btn.appendChild(document.createTextNode(
+      kept.length === 1 ? "View kept session" : "View " + kept.length + " kept sessions"
+    ));
+    actions.appendChild(btn);
+    card.appendChild(actions);
+    return card;
+  }
   function el(tag, cls, text) {
     const n = document.createElement(tag);
     if (cls) n.className = cls;
@@ -828,6 +862,7 @@
     groupJobs,
     jobsEmptyNote,
     nextRunNote,
+    worktreesCard,
     // pageHeader/kpiCard/renderPulse are exported for Phases 2
     // and 3, which put a page header and KPI cards on every
     // remaining page -- renderOverviewHead is the only one of
@@ -845,5 +880,5 @@
     jobCard
   };
 })();
-/* ui-bundle: 5c279524580e0b6403e24c3a8b6887b99f5dd4065d764833df50f31ea1b271e4 */
-/* ui-sources: 5a43e62be160487a5570842d5fd322fef1fe595507059d511836bd73a3cb200f */
+/* ui-bundle: aa3bf9756b4c85901749f5c43f8433c8ea8c35a0edfffffbbdf9181409f860d5 */
+/* ui-sources: 74d1f9c5fea7bf3e6f99e68e6b0c2bb78d1a41b96e3257a2d3d400eb56a0f888 */

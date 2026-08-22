@@ -193,59 +193,121 @@ document.documentElement.dataset.theme =
        working even on a day when every check found nothing to do. -->
   <section class="pulsepanel" id="stats"></section>
 
-  <!-- The control centre proper: the two lists the loop produces, on the same
-       page as the band that summarises them. A warning in that band is read and
-       then chased into the runs below it, without leaving the page.
-       These tabs switch what the DASHBOARD shows. They are not the sidebar's
-       Jobs and Runs, which are their own pages with their own presentation. -->
-  <nav class="viewtabs" id="viewtabs">
-    <button class="viewtab" data-tab="jobs" id="vt-jobs"></button>
-    <button class="viewtab" data-tab="runs" id="vt-runs"></button>
-    <button class="viewtab" data-tab="worktrees" id="vt-wt"></button>
-  </nav>
+  <!-- Jobs and Runs are the sidebar's own pages now -- this used to also carry
+       a tab strip reaching the same two lists a second way, the one that could
+       silently disagree with the sidebar about which was selected. The Overview
+       shows only what is not a page of its own: every job, as cards. -->
+  <div id="jobs"></div>
 
-  <div class="pane" id="pane-jobs">
-    <p class="paneblurb">What the scheduler is set up to do. Each card is one job:
-      how often it looks, what its last probe found, and what it has spent today.
-      Nothing here starts on its own unless it is enabled.</p>
-    <div class="slot" id="slot-dash-jobs"></div>
-    <div id="jobs"></div>
-  </div><!-- /pane-jobs -->
-
-  <div class="pane" id="pane-runs" hidden>
-    <p class="paneblurb">Every run the scheduler has taken, newest first — what it
-      cost, how long it took, and how it ended. The search reaches inside the logs,
-      not just the run names.</p>
-    <div class="slot" id="slot-dash-runs"></div>
-  </div><!-- /pane-runs -->
-
-  <!-- Run directories still on disk. Their own tab rather than a banner that
-       appears and vanishes with the sweep: a directory holding the only copy of
-       some work is not a notification, it is a thing you have to deal with, and
-       it has to still be there when you come back to deal with it. -->
-  <div class="pane" id="pane-worktrees" hidden>
-    <p class="paneblurb" id="wt-blurb"></p>
-    <div class="tablewrap"><table>
-      <thead><tr id="wthead"></tr></thead>
-      <tbody id="wtrows"></tbody></table></div>
-  </div><!-- /pane-worktrees -->
+  <!-- Run directories still on disk, kept because a session was cut short and
+       might still be resumed. A card rather than a permanent fixture: an
+       install with nothing kept has no notice to show, and CCApp.worktreesCard
+       says so by returning null -- see ui/app/overview.js. -->
+  <div id="ov-worktrees"></div>
   </div><!-- /view-overview -->
 
   <!-- Jobs as its own page: the same set, as a table. Cards are for the
        dashboard, where you are scanning a handful at a glance; a table is for
-       when jobs are the thing you came for and you want to sort them. -->
+       when jobs are the thing you came for and you want to sort them. The
+       toolbar below used to also do duty on the Overview's own Jobs pane,
+       moved back and forth by relocate() -- it lives only here now that the
+       Overview has no pane of its own to move it to. -->
   <div class="view" id="view-jobs" hidden>
-    <div class="slot" id="slot-page-jobs"></div>
+    <div id="jobs-head"></div>
+    <div id="jobstoolbar">
+      <div class="toolbar">
+        <div class="searchbox" id="jobsearchbox">
+          <input id="jq" placeholder="Search jobs…" autocomplete="off">
+          <button class="clear" id="jq-clear" hidden></button>
+        </div>
+        <div class="picker" id="projpick">
+          <button class="picker-trigger" id="projpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
+          <div class="picker-pop" id="projpick-pop" hidden>
+            <div class="picker-search"><input id="projpick-q" placeholder="Search projects…" autocomplete="off"></div>
+            <div class="picker-list" id="projpick-list" role="listbox"></div>
+            <div class="picker-foot" id="projpick-foot"></div>
+          </div>
+        </div>
+        <div class="picker" id="statpick">
+          <button class="picker-trigger" id="statpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
+          <div class="picker-pop" id="statpick-pop" hidden>
+            <div class="picker-list" id="statpick-list" role="listbox"></div>
+          </div>
+        </div>
+        <button class="btn ghost" id="jf-clear"></button>
+        <div class="spacer"></div>
+        <button class="btn ghost" id="bulk-all" hidden></button>
+        <button class="btn primary" id="new-job"></button>
+      </div>
+      <div class="activefilters" id="jactive" hidden></div>
+    </div>
     <div class="tablewrap"><table>
       <thead><tr id="jobhead"></tr></thead>
       <tbody id="jobrows"></tbody></table></div>
   </div><!-- /view-jobs -->
 
-  <!-- Runs as its own page. The block below is authored once and moved between
-       here and the dashboard pane, so there is one toolbar, one table and one
-       set of listeners rather than two copies drifting apart. -->
+  <!-- Runs as its own page. Same story as the Jobs toolbar above: this used
+       to also render inside the Overview's own Runs pane, moved there and
+       back by relocate(); it lives only on this page now. -->
   <div class="view" id="view-runs" hidden>
-    <div class="slot" id="slot-page-runs"></div>
+    <div id="runs-head"></div>
+    <div id="runsblock">
+      <div class="toolbar">
+        <div class="searchbox" id="searchbox">
+          <input id="q" placeholder="Search runs & log content…" autocomplete="off">
+          <button class="clear" id="q-clear" hidden></button>
+        </div>
+        <div class="picker" id="rprojpick">
+          <button class="picker-trigger" id="rprojpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
+          <div class="picker-pop" id="rprojpick-pop" hidden>
+            <div class="picker-search"><input id="rprojpick-q" placeholder="Search projects…" autocomplete="off"></div>
+            <div class="picker-list" id="rprojpick-list" role="listbox"></div>
+            <div class="picker-foot" id="rprojpick-foot"></div>
+          </div>
+        </div>
+        <div class="picker" id="rjobpick">
+          <button class="picker-trigger" id="rjobpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
+          <div class="picker-pop" id="rjobpick-pop" hidden>
+            <div class="picker-search"><input id="rjobpick-q" placeholder="Search jobs…" autocomplete="off"></div>
+            <div class="picker-list" id="rjobpick-list" role="listbox"></div>
+            <div class="picker-foot" id="rjobpick-foot"></div>
+          </div>
+        </div>
+        <div class="picker" id="rstatpick">
+          <button class="picker-trigger" id="rstatpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
+          <div class="picker-pop" id="rstatpick-pop" hidden>
+            <div class="picker-list" id="rstatpick-list" role="listbox"></div>
+          </div>
+        </div>
+        <!-- The date range keeps its own control rather than disappearing with the
+             old filter panel: presets for the answer you usually want, and the two
+             exact fields underneath for the one time you do not. -->
+        <div class="picker" id="rdatepick">
+          <button class="picker-trigger" id="rdatepick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
+          <div class="picker-pop" id="rdatepick-pop" hidden>
+            <div class="picker-list" id="rdatepick-list" role="listbox"></div>
+            <div class="daterange">
+              <label>From <input type="datetime-local" id="f-from"></label>
+              <label>To <input type="datetime-local" id="f-to"></label>
+            </div>
+          </div>
+        </div>
+        <button class="btn ghost" id="f-clear"></button>
+        <div class="spacer"></div>
+        <label class="perpage">Per page
+          <select id="f-size"><option>10</option><option>25</option><option>50</option><option>100</option></select>
+        </label>
+      </div>
+      <div class="activefilters" id="ractive" hidden></div>
+      <div class="tablewrap"><table>
+        <thead><tr id="runhead"></tr></thead>
+        <tbody id="runs"></tbody></table></div>
+      <div class="pager">
+        <button class="btn ghost" id="pg-prev"></button>
+        <span id="pg-info"></span>
+        <button class="btn ghost" id="pg-next"></button>
+      </div>
+    </div>
   </div><!-- /view-runs -->
 
   <div class="view" id="view-projects" hidden>
@@ -297,10 +359,11 @@ document.documentElement.dataset.theme =
 
       <div class="secpjbody">
         <div class="secpjmain">
-          <!-- Same viewtabs/pane furniture the Overview page's own Jobs/Runs/
-               Worktrees tabs use (see setDashTab above) — a self-contained
-               pair here, switched by ui/security/project-screen.js rather
-               than the page's own dashTab. -->
+          <!-- The same .viewtabs/.pane furniture the Overview's own Jobs/Runs/
+               Worktrees tab strip used to use, before it was removed -- a
+               self-contained pair here, switched by
+               ui/security/project-screen.js and never by the page's own
+               setView(). -->
           <nav class="viewtabs" id="sec-pj-tabs">
             <button class="viewtab" data-tab="overview" id="secpjt-overview"></button>
             <button class="viewtab" data-tab="runs" id="secpjt-runs"></button>
@@ -446,96 +509,6 @@ document.documentElement.dataset.theme =
 
   <footer id="foot"></footer>
 </main>
-
-<!-- ------------------------------------------------------------- movables
-     Two blocks that appear on more than one page. They are relocated by
-     setView() with appendChild — which MOVES a node, keeping its listeners and
-     its state — instead of being duplicated per page under a second set of ids. -->
-<div class="movable" id="jobstoolbar">
-  <div class="toolbar">
-    <div class="searchbox" id="jobsearchbox">
-      <input id="jq" placeholder="Search jobs…" autocomplete="off">
-      <button class="clear" id="jq-clear" hidden></button>
-    </div>
-    <div class="picker" id="projpick">
-      <button class="picker-trigger" id="projpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
-      <div class="picker-pop" id="projpick-pop" hidden>
-        <div class="picker-search"><input id="projpick-q" placeholder="Search projects…" autocomplete="off"></div>
-        <div class="picker-list" id="projpick-list" role="listbox"></div>
-        <div class="picker-foot" id="projpick-foot"></div>
-      </div>
-    </div>
-    <div class="picker" id="statpick">
-      <button class="picker-trigger" id="statpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
-      <div class="picker-pop" id="statpick-pop" hidden>
-        <div class="picker-list" id="statpick-list" role="listbox"></div>
-      </div>
-    </div>
-    <button class="btn ghost" id="jf-clear"></button>
-    <div class="spacer"></div>
-    <button class="btn ghost" id="bulk-all" hidden></button>
-    <button class="btn primary" id="new-job"></button>
-  </div>
-  <div class="activefilters" id="jactive" hidden></div>
-</div>
-
-<div class="movable" id="runsblock">
-  <div class="toolbar">
-    <div class="searchbox" id="searchbox">
-      <input id="q" placeholder="Search runs & log content…" autocomplete="off">
-      <button class="clear" id="q-clear" hidden></button>
-    </div>
-    <div class="picker" id="rprojpick">
-      <button class="picker-trigger" id="rprojpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
-      <div class="picker-pop" id="rprojpick-pop" hidden>
-        <div class="picker-search"><input id="rprojpick-q" placeholder="Search projects…" autocomplete="off"></div>
-        <div class="picker-list" id="rprojpick-list" role="listbox"></div>
-        <div class="picker-foot" id="rprojpick-foot"></div>
-      </div>
-    </div>
-    <div class="picker" id="rjobpick">
-      <button class="picker-trigger" id="rjobpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
-      <div class="picker-pop" id="rjobpick-pop" hidden>
-        <div class="picker-search"><input id="rjobpick-q" placeholder="Search jobs…" autocomplete="off"></div>
-        <div class="picker-list" id="rjobpick-list" role="listbox"></div>
-        <div class="picker-foot" id="rjobpick-foot"></div>
-      </div>
-    </div>
-    <div class="picker" id="rstatpick">
-      <button class="picker-trigger" id="rstatpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
-      <div class="picker-pop" id="rstatpick-pop" hidden>
-        <div class="picker-list" id="rstatpick-list" role="listbox"></div>
-      </div>
-    </div>
-    <!-- The date range keeps its own control rather than disappearing with the
-         old filter panel: presets for the answer you usually want, and the two
-         exact fields underneath for the one time you do not. -->
-    <div class="picker" id="rdatepick">
-      <button class="picker-trigger" id="rdatepick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
-      <div class="picker-pop" id="rdatepick-pop" hidden>
-        <div class="picker-list" id="rdatepick-list" role="listbox"></div>
-        <div class="daterange">
-          <label>From <input type="datetime-local" id="f-from"></label>
-          <label>To <input type="datetime-local" id="f-to"></label>
-        </div>
-      </div>
-    </div>
-    <button class="btn ghost" id="f-clear"></button>
-    <div class="spacer"></div>
-    <label class="perpage">Per page
-      <select id="f-size"><option>10</option><option>25</option><option>50</option><option>100</option></select>
-    </label>
-  </div>
-  <div class="activefilters" id="ractive" hidden></div>
-  <div class="tablewrap"><table>
-    <thead><tr id="runhead"></tr></thead>
-    <tbody id="runs"></tbody></table></div>
-  <div class="pager">
-    <button class="btn ghost" id="pg-prev"></button>
-    <span id="pg-info"></span>
-    <button class="btn ghost" id="pg-next"></button>
-  </div>
-</div><!-- /runsblock -->
 </div><!-- /shell-main -->
 </div><!-- /shell -->
 <div class="side-scrim" id="side-scrim" hidden></div>
@@ -754,6 +727,21 @@ document.documentElement.dataset.theme =
     <span id="lg-live"></span></div>
   <div class="dlg-b" id="lg-body"></div>
   <div class="dlg-f"><button type="button" class="btn ghost" id="lg-close">Close</button></div>
+</dialog>
+
+<!-- The full list behind the Overview's own worktrees card (see
+     CCApp.worktreesCard, ui/app/overview.js) -- a dialog rather than a pane,
+     since it no longer has to also be a whole tab of its own. renderRetained()
+     still targets wt-blurb/wthead/wtrows directly, unchanged by where they sit. -->
+<dialog id="wtmodal">
+  <div class="dlg-h"><div class="halo b-accent" id="wt-halo"></div><span>Sessions</span></div>
+  <div class="dlg-b">
+    <p class="paneblurb" id="wt-blurb"></p>
+    <div class="tablewrap"><table>
+      <thead><tr id="wthead"></tr></thead>
+      <tbody id="wtrows"></tbody></table></div>
+  </div>
+  <div class="dlg-f"><button type="button" class="btn ghost" id="wt-close">Close</button></div>
 </dialog>
 
 <dialog id="projmodal"><form method="dialog">
@@ -2360,9 +2348,9 @@ function renderRetained(){
 
 // keptSessionsOf and sessionLines moved into CCApp.jobCard() (Task 9) as
 // its own sessionNotices() helper, reading CC.DATA.retained_worktrees the
-// same way -- still the Sessions tab's only source, no second fetch, no
+// same way -- still the Sessions dialog's only source, no second fetch, no
 // second shape. fmtExpiresIn and resumeInFlight below stay here: the
-// Sessions tab and resumeTarget's own live-slot branch still call them
+// Sessions dialog and resumeTarget's own live-slot branch still call them
 // directly, and the job card now reaches the same two through the CCApp
 // interface (see page.js's own comment) rather than a second copy.
 
@@ -2382,6 +2370,17 @@ function render(){
     +(DATA.launchd_loaded?I.check+"launchd":I.xcircle+"launchd off")+'</span>';
 
   renderRetained();
+  // The Overview's own summary of the same list renderRetained() just drew
+  // into the Sessions dialog -- CCApp.worktreesCard() returns null on an
+  // empty install, so the host is simply left empty rather than shown with
+  // nothing in it.
+  const wtHost=$("ov-worktrees");
+  if(wtHost){
+    wtHost.textContent="";
+    const wtCard=CCApp.worktreesCard((DATA.retained_worktrees||[])
+      .map(w=>({job:w.job, size:fmtBytes(w.bytes||0)})));
+    if(wtCard) wtHost.appendChild(wtCard);
+  }
 
   const today=new Date(); today.setHours(0,0,0,0);
   const t0=Math.floor(today.getTime()/1000), wk=Math.floor(Date.now()/1000)-7*86400;
@@ -2417,7 +2416,8 @@ let searchKeys=null, snippets={}, searchSeq=0;
 // Built from the run SLOTS, one per live run. The shared state cannot be the
 // source here: it holds a single last_start/last_status per JOB, so when a job
 // has several runs at once they overwrite each other and every run but the most
-// recent disappears — from this table and from the tab's count with it.
+// recent disappears — from this table and from the sidebar's own Runs count
+// with it.
 /* Runs whose stop has already been asked for. A kill is not instant — the
    wrapper has to wind down — so between the click and the row disappearing
    there were several seconds in which the button was live again on every
@@ -4098,29 +4098,11 @@ function initModalScrollLock(){
 // is what sends anyone whose last view WAS settings back to the overview,
 // instead of restoring them onto a blank pane with no nav item to leave by.
 const VIEWS = ["overview","jobs","runs","projects","security"];
-// The dashboard shows everything at once — the band and, under it, whichever of
-// the two lists its tabs are on. Jobs and Runs in the menu are the narrowed
-// views: only that list, and Jobs shows it as a table rather than as cards,
-// because a page you opened FOR the jobs is a page you want to sort.
-// Which list the dashboard is showing. Remembered, so coming back returns you
-// to the one you were last reading.
-let dashTab = ["runs","worktrees"].includes(localStorage.ccDashTab) ? localStorage.ccDashTab : "jobs";
-/* The toolbar and the runs block appear on more than one page. Rather than
-   authoring each twice under a second set of ids — two sets of listeners, two
-   sets of state, one of them always slightly behind — the node itself moves.
-   appendChild relocates rather than copies, so listeners and typed-in values
-   come with it. */
-function relocate(){
-  $(currentView==="jobs" ? "slot-page-jobs" : "slot-dash-jobs").appendChild($("jobstoolbar"));
-  $(currentView==="runs" ? "slot-page-runs" : "slot-dash-runs").appendChild($("runsblock"));
-}
 let currentView = VIEWS.includes(localStorage.ccView) ? localStorage.ccView : "overview";
 function setView(v){
   currentView = VIEWS.includes(v) ? v : "overview";
   localStorage.ccView = currentView;
   VIEWS.forEach(name => { $("view-"+name).hidden = (name !== currentView); });
-  paintDashPanes();
-  relocate();
   document.querySelectorAll(".navitem").forEach(b =>
     b.classList.toggle("active", b.dataset.view === currentView));
   closeDrawer();   // on a phone the menu is over the page it just navigated
@@ -4132,22 +4114,6 @@ function setView(v){
   // so it fetches on arrival rather than on the five-second poll — and stops
   // watching a running analysis the moment the page is left.
   if(currentView === "security") CCSecurity.enter(); else CCSecurity.leave();
-}
-/* The dashboard's own tabs. They switch what the dashboard shows and nothing
-   else — the sidebar's Jobs and Runs are different pages now, so moving the
-   menu highlight from here would claim you had navigated when you had not. */
-const DASH_TABS = ["jobs","runs","worktrees"];
-function setDashTab(t){
-  dashTab = DASH_TABS.includes(t) ? t : "jobs";
-  localStorage.ccDashTab = dashTab;
-  paintDashPanes();
-  document.querySelectorAll(".viewtab").forEach(b =>
-    b.classList.toggle("active", b.dataset.tab === dashTab));
-  relocate();
-  render();
-}
-function paintDashPanes(){
-  DASH_TABS.forEach(t => { $("pane-"+t).hidden = (t !== dashTab); });
 }
 function paintNav(){
   const jobs = (DATA.jobs || []).length;
@@ -4175,18 +4141,6 @@ function paintNav(){
   // The rail hides labels, so the label has to survive as the tooltip.
   document.querySelectorAll(".navitem").forEach(b =>
     b.title = b.querySelector(".navlabel").textContent);
-  // The tab strip counts the same two things the sidebar does, from the same
-  // tallies — a tab reading 88 beside a sidebar item reading 87 is the sort of
-  // thing that makes someone stop trusting both.
-  $("vt-jobs").innerHTML = I.zap + "Jobs" + '<span class="vcount">' + jobs + "</span>"
-    + (live ? '<span class="runningbadge"><span class="pulse"></span>' + live + "</span>" : "");
-  $("vt-runs").innerHTML = I.activity + "Runs" + '<span class="vcount">' + runs + "</span>";
-  // The tab is here whether or not anything is kept: the count going to zero is
-  // information, and a tab that came and went is what made these directories
-  // feel like a glitch rather than a queue.
-  const wt = (DATA.retained_worktrees || []).length;
-  $("vt-wt").innerHTML = I.folder + "Sessions"
-    + '<span class="vcount' + (wt ? " warn" : "") + '">' + wt + "</span>";
 }
 
 /* ------------------------------------------------------------- the sidebar
@@ -4457,19 +4411,34 @@ async function enterDashboard(user){
   startPolling();
 }
 
+// The Jobs and Runs pages' own headers -- static, built once rather than on
+// every render() the way the Overview's own (data-driven, CCApp.
+// renderOverviewHead()) has to be. What each said used to be a `paneblurb`
+// paragraph inside the Overview's own Jobs/Runs pane; with that pane gone,
+// this sentence is the page it belongs to's own header instead.
+function initPageHeaders(){
+  const jh=$("jobs-head");
+  if(jh) jh.appendChild(CCApp.pageHeader({icon:"zap", title:"Jobs",
+    subtitle:"What the scheduler is set up to do — each row is one job: "
+      +"how often it looks, what its last probe found, and what it has "
+      +"spent today."}));
+  const rh=$("runs-head");
+  if(rh) rh.appendChild(CCApp.pageHeader({icon:"activity", title:"Runs",
+    subtitle:"Every run the scheduler has taken, newest first — what it "
+      +"cost, how long it took, and how it ended. The search reaches "
+      +"inside the logs, not just the run names."}));
+}
 function initViews(){
   document.querySelectorAll(".navitem").forEach(b =>
     b.addEventListener("click", () => setView(b.dataset.view)));
-  document.querySelectorAll(".viewtab").forEach(b =>
-    b.addEventListener("click", () => setDashTab(b.dataset.tab)));
-  document.querySelectorAll(".viewtab").forEach(b =>
-    b.classList.toggle("active", b.dataset.tab === dashTab));
   setView(currentView);
 }
 // The warning and error KPI cards are a way IN to the runs they count: click
 // one to show exactly those runs. kpiCard() (ui/app/overview.js) still marks
 // them with the same data-statfilter a chip used to carry, so this listener
-// -- now on the KPI grid rather than the band -- is unchanged.
+// -- now on the KPI grid rather than the band -- is unchanged. It used to
+// switch the Overview's own Runs tab under the band; the band's gone from
+// Runs entirely now, so it takes you to the sidebar's Runs page instead.
 function initStatFilters(){
   const host=$("ov-kpis"); if(!host) return;
   host.addEventListener("click",(e)=>{
@@ -4478,9 +4447,7 @@ function initStatFilters(){
     // from Overview meant silently undoing a selection on a page you had left.
     RF.status = t.dataset.statfilter;
     page=1;
-    // The band and the runs are on this same page: switch the tab under it
-    // rather than navigating away from the thing you were reading.
-    setDashTab("runs");
+    setView("runs");
   });
 }
 
@@ -4624,18 +4591,17 @@ document.addEventListener("click", async (e)=>{
     if(!wasOpen){ pop.hidden=false; mtrig.setAttribute("aria-expanded","true"); }
     return;
   }
-  // from a job straight to its runs — the filter the table already supports
+  // from a job straight to its runs — the filter the table already supports.
+  // Always a real move to the Runs page now: the Overview has no Runs pane of
+  // its own left to switch to underneath the job card. The chip row above the
+  // table says WHY it is short — it used to take opening a collapsed filter
+  // panel to find that out.
   const jr=e.target.closest("[data-jobruns]");
   if(jr){
     closeMenus();
     RF.job=jr.dataset.jobruns; RF.status="";
     page=1;
-    // From the Jobs page this is a real move to the Runs page; from the
-    // dashboard the runs are already here, one tab away. The chip row above the
-    // table says WHY it is short either way — it used to take opening a
-    // collapsed filter panel to find that out.
-    if(currentView==="jobs"){ setView("runs"); render(); }
-    else setDashTab("runs");
+    setView("runs");
     return;
   }
   if(!e.target.closest(".menu-pop")) closeMenus();
@@ -4647,11 +4613,13 @@ document.addEventListener("click", async (e)=>{
   if(e.target.closest("#new-job")){ openCreator(); return; }
   // The page header's own actions -- same targets as the Jobs toolbar's
   // "New job" above, reached from a second button because the header is
-  // built once by CCApp.renderOverviewHead() and cannot share an id with
-  // the "movable" toolbar block (see its own comment on why that block is
-  // one DOM node, not two).
+  // built once by CCApp.renderOverviewHead() and lives in a different DOM
+  // subtree than the Jobs page's own toolbar, so the two cannot share an id.
   if(e.target.closest("#ov-refresh")){ refresh(); return; }
   if(e.target.closest("#ov-new-job")){ openCreator(); return; }
+  // The worktrees card's own footer button, built the same way by
+  // CCApp.worktreesCard() -- opens the full list the card only summarises.
+  if(e.target.closest("#ov-wt-view")){ $("wt-halo").innerHTML=I.folder; $("wtmodal").showModal(); return; }
   const b=e.target.closest("button[data-op]"); if(!b) return;
   const op=b.dataset.op, id=b.dataset.id;
   if(op==="edit"){ openEditor(id); return; }
@@ -4811,6 +4779,7 @@ $("ed-daily").addEventListener("blur", ()=>{ const el=$("ed-daily"), v=el.value.
 $("lg-close").addEventListener("click", ()=>$("logmodal").close());
 // close covers Esc and the backdrop too, so stop the live tail from one place
 $("logmodal").addEventListener("close", stopLogPoll);
+$("wt-close").addEventListener("click", ()=>$("wtmodal").close());
 // tab switching inside the log modal (delegated; #lg-body persists across opens)
 $("lg-body").addEventListener("click",(e)=>{
   const t=e.target.closest(".tab"); if(!t) return;
@@ -4910,6 +4879,7 @@ $("setup-form").addEventListener("submit", submitSetup);
 $("login-form").addEventListener("submit", submitLogin);
 initSidebar();
 initPickers();
+initPageHeaders();
 initViews();
 paintUser();
 $("h-settings").innerHTML=I.gear+"Settings";

@@ -24,8 +24,8 @@ import { bindPage } from "./page.js";
 import { jobFacts, visibleJobs, jobFilters, bulkOn, bulkLabel,
          clearJobFilters, jobProjectNames } from "./jobs-domain.js";
 import { pulseKpis, bandEmptyReason, probeVerdict, spendTone, groupJobs,
-         jobsEmptyNote, nextRunNote, pageHeader, kpiCard, renderPulse,
-         renderOverviewHead, jobCard } from "./overview.js";
+         jobsEmptyNote, nextRunNote, worktreesCard, pageHeader, kpiCard,
+         renderPulse, renderOverviewHead, jobCard } from "./overview.js";
 
 function init(cc){
   bindPage(cc);
@@ -34,7 +34,7 @@ function init(cc){
 window.CCApp = { init, jobFacts, visibleJobs, jobFilters, bulkOn,
                  bulkLabel, clearJobFilters, jobProjectNames,
                  pulseKpis, bandEmptyReason, probeVerdict, spendTone,
-                 groupJobs, jobsEmptyNote, nextRunNote,
+                 groupJobs, jobsEmptyNote, nextRunNote, worktreesCard,
                  // pageHeader/kpiCard/renderPulse are exported for Phases 2
                  // and 3, which put a page header and KPI cards on every
                  // remaining page -- renderOverviewHead is the only one of

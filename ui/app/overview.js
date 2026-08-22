@@ -228,6 +228,57 @@ export function nextRunNote(job, facts){
   return wrap;
 }
 
+// A directory holding the only copy of some work is a thing to deal with; the
+// absence of one is not news. Worktrees used to be a permanent tab reporting
+// exactly that ordinary case, present whether or not anything was kept --
+// this drops the affordance entirely instead: `null` when there is nothing
+// on disk, otherwise a card with a title, one grey line, up to four kept
+// directories (name and size), and a footer button to the full list.
+//
+// `items` is already shaped for display -- `{job, size}`, `size` a formatted
+// string like "184 MB" -- not the server's own retained_worktrees rows: the
+// byte-to-string formatting is the page's fmtBytes, read once per row by the
+// caller (bin/dashboard.html's render()), the same "hand over display-ready
+// strings" rule pulseKpis's own `value`/sub already follow.
+//
+// Self-contained like the pinned functions above -- its own tiny `mk` in
+// place of `el()` below the divider -- because
+// test_the_worktrees_card_appears_only_when_there_is_something_on_disk pulls
+// this out BY NAME and runs it alone under Node: a call to a module-level
+// sibling would work on the real page and throw the moment that test tried
+// to run it standing alone. `icon()` is the one exception, the same way it
+// is for every function below -- the isolation banner's own stub supplies it.
+export function worktreesCard(items){
+  const kept = items || [];
+  if(!kept.length) return null;
+  const mk = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if(cls) n.className = cls;
+    if(text != null) n.textContent = text;
+    return n;
+  };
+  const card = mk("div", "card");
+  card.appendChild(mk("h2", null, "Sessions"));
+  card.appendChild(mk("div", "desc",
+    "Run directories still on disk, kept because a session was cut short."));
+  kept.slice(0, 4).forEach(w => {
+    const row = mk("div", "cardline");
+    row.appendChild(icon("folder"));
+    row.appendChild(mk("span", "grow wtrow-name", w.job));
+    row.appendChild(mk("span", "muted wtrow-size", w.size));
+    card.appendChild(row);
+  });
+  const actions = mk("div", "actions");
+  const btn = mk("button", "btn");
+  btn.id = "ov-wt-view";
+  btn.appendChild(icon("folder"));
+  btn.appendChild(document.createTextNode(
+    kept.length === 1 ? "View kept session" : "View " + kept.length + " kept sessions"));
+  actions.appendChild(btn);
+  card.appendChild(actions);
+  return card;
+}
+
 /* ----------------------------------------------------------------- the DOM
    Everything below builds elements rather than arithmetic. secEl's shape,
    copied rather than imported -- ui/security/dom.js's own secEl reaches for
@@ -308,11 +359,11 @@ function checkList(output){
 
 // Every retained run directory this job still owns, each as its own notice --
 // almost always zero or one, but nothing stops a job from cutting two runs
-// short before either is resumed or expires. Same source as the Sessions tab
-// (CC.DATA.retained_worktrees) -- no second fetch, no second shape for one
-// server-side list to drift against. fmtExpiresIn and resumeInFlight are the
-// page's own single implementations (see page.js's own comment on why they
-// are bound rather than duplicated here).
+// short before either is resumed or expires. Same source as worktreesCard
+// and the Sessions dialog (CC.DATA.retained_worktrees) -- no second fetch,
+// no second shape for one server-side list to drift against. fmtExpiresIn
+// and resumeInFlight are the page's own single implementations (see
+// page.js's own comment on why they are bound rather than duplicated here).
 function sessionNotices(jobId){
   const kept = (CC.DATA.retained_worktrees || []).filter(w => w.job === jobId);
   return kept.map(w => {

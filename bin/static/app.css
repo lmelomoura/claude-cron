@@ -505,10 +505,6 @@ footer{margin-top:30px;color:var(--muted);font-size:11px;text-align:center}
 .wrap{max-width:1560px;margin:0 auto;padding:24px 22px 70px}
 .view[hidden]{display:none}
 .pane[hidden]{display:none}
-/* Slots receive the movable blocks (see relocate()). They must add nothing of
-   their own — a slot with a margin would move the toolbar a few pixels
-   depending on which page it happened to be sitting on. */
-.slot{display:contents}
 /* Fixed layout, so the columns are the widths declared here and nothing else.
    With the default `auto`, the content sets the minimums: a `max-width:300px` on
    the description column was only a hint, the seven other columns added their
@@ -554,10 +550,13 @@ footer{margin-top:30px;color:var(--muted);font-size:11px;text-align:center}
 td .favdot{display:inline-flex;margin-left:5px}
 td .favdot .ic{width:11px;height:11px;fill:var(--warn);stroke:none}
 .view > .secthead:first-child,.view > .pulsepanel:first-child{margin-top:4px}
-/* Jobs and Runs are one screen with two lists, and they are read against each
-   other — a warning in the band sends you to the run that caused it. The strip
-   is a second control on the SAME state the sidebar sets, never its own: both
-   go through setView(), so neither can end up showing what the other is not. */
+/* The Overview once had its own strip of these reaching Jobs and Runs a
+   second way, beside the sidebar that already goes there -- removed along
+   with the pane furniture underneath it (see bin/dashboard.html's own
+   history). What is left is the Security area's own sub-navigation: a
+   project's Overview/Runs/Branches/Findings/Reports tabs and the Activity
+   screen's kind filter, each switched by its own function in
+   ui/security/, never by the page's setView(). */
 .viewtabs{display:flex;gap:4px;margin:22px 0 16px;border-bottom:1px solid var(--line)}
 .viewtabs[hidden]{display:none}
 .viewtab{display:inline-flex;align-items:center;gap:8px;font:inherit;font-size:13px;font-weight:600;
@@ -566,13 +565,6 @@ td .favdot .ic{width:11px;height:11px;fill:var(--warn);stroke:none}
 .viewtab:hover{color:var(--ink)}
 .viewtab.active{color:var(--accent);border-bottom-color:var(--accent)}
 .viewtab .ic{width:15px;height:15px}
-.viewtab .vcount{font-size:11px;font-weight:600;color:var(--muted);background:var(--panel2);
-  border:1px solid var(--line);border-radius:20px;padding:1px 7px;line-height:1.5}
-.viewtab.active .vcount{background:var(--accent-soft);border-color:transparent;color:var(--accent)}
-/* Kept worktrees are somebody's only copy of some work — the count says so from
-   the tab strip, whether or not that tab is the one you are on. */
-.viewtab .vcount.warn{background:var(--warn-soft);border-color:transparent;color:var(--warn)}
-.viewtab.active .vcount.warn{background:var(--warn-soft);color:var(--warn)}
 .projgroup{background:var(--panel);border:1px solid var(--line);border-radius:14px;
   box-shadow:var(--shadow);margin:0 0 14px;overflow:hidden}
 .projgroup-h{display:flex;align-items:center;gap:10px;padding:13px 18px;cursor:pointer;
@@ -751,6 +743,11 @@ td .favdot .ic{width:11px;height:11px;fill:var(--warn);stroke:none}
 .cardline .ic{width:13px;height:13px;flex:none;color:var(--muted)}
 .cardline .grow{flex:1 1 auto;min-width:0}
 .cardline .lbl{color:var(--muted);flex:none}
+/* The worktrees card's own rows (CCApp.worktreesCard, ui/app/overview.js):
+   a job id that can run long beside a size that must not wrap onto its own
+   line -- the id gives way, the size stays put and lines its digits up. */
+.wtrow-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wtrow-size{flex:none;font-variant-numeric:tabular-nums}
 .spark{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:1px;align-items:end;
   height:20px;width:110px;flex:none}
 .spark i{background:color-mix(in srgb,var(--muted) 30%,transparent);border-radius:1px;min-height:1px}
@@ -1476,5 +1473,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: 20fe1761747122158adbbca36bb86328d7d09d7df7acbb65ef3034856b92aa89 */
-/* ui-sources: 5a43e62be160487a5570842d5fd322fef1fe595507059d511836bd73a3cb200f */
+/* ui-bundle: 1758e621ec56cea52aefad3617982a11af916b1ec70c7f365acb34c0adfcb8e6 */
+/* ui-sources: 74d1f9c5fea7bf3e6f99e68e6b0c2bb78d1a41b96e3257a2d3d400eb56a0f888 */

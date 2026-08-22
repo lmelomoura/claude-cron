@@ -956,6 +956,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   kept_session_honestly` — moved with `sessionLines` into this same DOM
   shape rather than staying pinned to a function that no longer exists.
 
+- **The Overview's own tab strip is gone, and Worktrees stops being a tab
+  that is always there to say there is nothing.** Jobs and Runs are already
+  destinations in the sidebar; the three-button `#viewtabs` beneath the KPI
+  cards and the 24-hour band reached the same two lists a second way, and
+  was the one that could silently disagree with the sidebar about which was
+  selected — `dashTab` and `currentView` were two separate pieces of state
+  with nothing keeping them in step. `setDashTab`, `paintDashPanes` and
+  `dashTab` are gone; `#pane-jobs`/`#pane-runs`/`#pane-worktrees` and their
+  `paneblurb` paragraphs go with them — what each said is now that page's
+  own header sentence (`CCApp.pageHeader`, new on the Jobs and Runs pages).
+  The Overview's job cards render straight into `#jobs`. The Warnings and
+  Errors KPI cards, and a job card's own "Show this job's runs" menu item,
+  now call `setView("runs")` — the sidebar's real Runs page — instead of
+  switching a tab that no longer exists. `jobstoolbar` and `runsblock`, the
+  two blocks `relocate()` used to shuttle between a dashboard pane and their
+  own page on every navigation, now live only on their own page; `relocate()`
+  and the `slot-dash-*`/`slot-page-*` indirection are gone with the panes
+  that made the shuttling necessary.
+
+  Worktrees: a directory holding the only copy of some work is a thing to
+  deal with; an install with none kept is not news, so `worktreesCard`
+  (new, `ui/app/overview.js`) returns `null` on an empty list rather than
+  rendering a permanent, usually-empty fixture. With something kept, it is
+  a summary card — up to four directories with their sizes, right-aligned —
+  and a footer button that opens the same table the tab used to show, now a
+  dialog (`#wtmodal`) rather than a pane, since nothing else on the page
+  needed it to be a whole tab away. `renderRetained()` is unchanged: it
+  still targets `wt-blurb`/`wthead`/`wtrows` by id, regardless of which
+  element contains them. Two new tests: `test_the_overview_has_no_tabs_of_
+  its_own` pins the tab strip and its three buttons gone from the page;
+  `test_the_worktrees_card_appears_only_when_there_is_something_on_disk`
+  drives `worktreesCard` under Node, both on an empty list and on one
+  retained directory. A third, pre-existing test —
+  `test_the_sessions_tab_is_labelled_for_what_it_shows` — moved with the
+  label from the tab to the card, the same "moved rather than left behind"
+  treatment task 9's own job-card rewrite already gave
+  `test_a_job_card_shows_every_kept_session_honestly`.
+
 ### Added
 
 - **A read-only query layer for the Security dashboard.** `security/queries.py`

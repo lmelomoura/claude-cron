@@ -23,7 +23,7 @@
    reason, added when the job card moved into this module (Task 9): the
    card's config line reads the first, its kept-session notice the other two,
    and each already has exactly one implementation in the page's own script
-   -- fmtExpiresIn also feeds the Sessions tab, resumeInFlight also guards
+   -- fmtExpiresIn also feeds the Sessions dialog, resumeInFlight also guards
    resumeTarget's live-slot branch, so a second copy here would be the same
    drift the paragraph above already paid for. */
 export let $, TOKEN, api, toast, esc, fmtAgo, fmtWhen, fmtDur, fmtIn, money,

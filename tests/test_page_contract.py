@@ -94,22 +94,61 @@ def test_the_page_javascript_parses(srv, tmp_path):
     assert p.returncode == 0, p.stderr
 
 
-def test_the_sessions_tab_is_labelled_for_what_it_shows(srv):
-    """The tab lists retained run directories, kept because a session was cut
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_sessions_tab_is_labelled_for_what_it_shows(srv, tmp_path):
+    """The card lists retained run directories, kept because a session was cut
     short and might still be resumed -- "Sessions" is the word the README and
-    the rest of the dashboard already use for that. It shipped this branch
-    labelled "Worktrees" instead, the word for the isolation mechanism
-    underneath, not the thing on screen. Pinned so it does not drift back."""
-    js = _js(srv)
-    assert 'I.folder + "Sessions"' in js, "the tab's own label was not renamed"
-    assert '"Worktrees"' not in js, "the old tab label text is still shipping somewhere"
-    # The internal wiring (id, data-tab, and by extension the dashTab value and
-    # localStorage key) is deliberately untouched -- this is a label change,
-    # not a restructure. test_every_element_the_script_reaches_for_exists
-    # covers ids existing at all; this pins that THIS one specifically did not
-    # get renamed along with its visible text.
-    assert '<button class="viewtab" data-tab="worktrees" id="vt-wt">' in _page(srv), \
-        "the tab's internal id/data-tab must stay stable even though its label changed"
+    the rest of the dashboard already use for that, not "Worktrees", the word
+    for the isolation mechanism underneath. Pinned against the tab this label
+    first shipped on, and carried over to worktreesCard (ui/app/overview.js)
+    now that the tab is a card -- see
+    test_the_worktrees_card_appears_only_when_there_is_something_on_disk."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "worktreesCard")
+    script = tmp_path / "wt-label.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    console.log(JSON.stringify(collectAll(
+      worktreesCard([{job: "x", size: "1 KB"}]), [])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    joined = " ".join(r["text"] for r in out)
+    assert "Sessions" in joined, "the card's own label was not carried over"
+    assert "Worktrees" not in joined, "the old tab label text is still shipping somewhere"
+
+
+def test_the_overview_has_no_tabs_of_its_own(srv):
+    """Jobs and Runs are pages in the sidebar. A second set of tabs
+    reaching the same two lists is one navigation too many, and the one that
+    silently disagreed with the sidebar about which was selected."""
+    page = srv.render_page()
+    assert 'id="viewtabs"' not in page
+    for gone in ('id="vt-jobs"', 'id="vt-runs"', 'id="vt-wt"'):
+        assert gone not in page, f"{gone} outlived the tab strip"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_worktrees_card_appears_only_when_there_is_something_on_disk(
+        srv, tmp_path):
+    """A directory holding the only copy of some work is a thing to deal
+    with; the absence of one is not news. As a tab it was always present,
+    saying there was nothing -- a permanent fixture reporting the ordinary
+    case."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "worktreesCard")
+    script = tmp_path / "wt.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    console.log(JSON.stringify({
+      empty: worktreesCard([]) === null,
+      some:  collectAll(worktreesCard([
+        {job: "qg-dev-agent", size: "184 MB"}]), []).some(
+          r => r.text.includes("qg-dev-agent")),
+    }));
+    """)
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert got["empty"], "an empty worktrees card was rendered anyway"
+    assert got["some"], "a retained worktree was not named on the card"
 
 
 def test_every_element_the_script_reaches_for_exists(srv):
