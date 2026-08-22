@@ -969,6 +969,33 @@ def test_favourite_projects_come_first_and_no_projects_means_a_flat_grid(
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_standalone_filter_still_gets_a_group_header(srv, tmp_path):
+    """The project filter's "Standalone" option shows only jobs with no
+    project -- the one filtered view guaranteed to make every visible job
+    project-less. groupJobs must not read that as "this install has no
+    projects anywhere" (its own two-argument "flat grid" rule, pinned
+    above) and drop the group: given the unfiltered project list as a third
+    argument, it still knows the install has projects elsewhere even though
+    none of them are in view, and builds the standalone group instead of
+    returning none at all."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "groupJobs")
+    script = tmp_path / "standalone.js"
+    script.write_text(deps + """
+    const visible = [{id:"c"}, {id:"d"}];
+    const allProjects = ["Alpha", "Zeta"];
+    console.log(JSON.stringify(
+      groupJobs(visible, new Set(), allProjects)
+        .map(g => ({name: g.name, n: g.jobs.length}))
+    ));
+    """)
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert got == [{"name": "__standalone__", "n": 2}], \
+        "a filtered view of only standalone jobs lost its group header"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 @pytest.mark.parametrize("filtering,expect", [
     (False, "No jobs yet"), (True, "No jobs match"),
 ])

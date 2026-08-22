@@ -322,6 +322,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Filtering the Overview down to "Standalone" no longer drops the
+  "Standalone jobs" group header.** `groupJobs(jobs, favSet)`, extracted
+  from `renderJobCards` one commit ago, only ever saw the already-filtered
+  job list, so its "none of these jobs carry a project → no groups" rule
+  fired for the Standalone filter itself — the one view guaranteed to make
+  every visible job project-less — and the header, its folder icon, its
+  count and its per-group bulk-toggle button vanished into a bare grid on
+  any install with more than one project. `groupJobs` now takes the
+  install's unfiltered project list as an optional third argument;
+  `renderJobCards` passes its own `allProjects`, so the standalone group
+  still gets built when the install has projects elsewhere even though the
+  current view does not. Omitted, the third argument leaves the original
+  two-argument behaviour untouched — the three characterisation tests
+  pinning that shape were not changed.
+
 - **A dark-mode user no longer sees a white flash on every load.**
   `applyTheme(themePref())` ran in the script at the end of the body and read
   `localStorage`; until that ran, the CSS sat in its light default. With 6,725
@@ -665,11 +680,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   narrower than what was there before on purpose rather than by accident.
 
   Folded into the same change: `backoffMultiplier` was a `const` arrow
-  referenced by `CCApp.init`'s interface object well above its own
-  definition, working today only because nothing had reordered the file yet
-  — the identical shape `activeRunsOf` was converted away from for the same
-  reason one commit ago. It is now a hoisted `function` declaration too, so
-  the risk is closed rather than merely still dormant.
+  sitting above `CCApp.init`'s interface object rather than below it, so —
+  unlike `activeRunsOf`, converted away from the same shape one commit ago
+  because it genuinely sat below its own use point and threw — this one
+  never had a live temporal-dead-zone error. What it did have: a `const`
+  arrow here worked only because of where it happened to sit in the file,
+  and moving this helper block down, or moving `init` up as boot sequencing
+  gets consolidated in a later phase, would have reintroduced the identical
+  error. It is now a hoisted `function` declaration too, closing that
+  dormant, order-dependent fragility before it could bite rather than
+  fixing a live bug.
 
 - **The jobs domain moved out of `bin/dashboard.html` into `ui/app/`, bundled
   into a committed `bin/static/app.js` the same way `ui/security/` becomes

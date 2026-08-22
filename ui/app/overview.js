@@ -113,14 +113,24 @@ export function spendTone(spent, cap){
 // page can hand this the existing isFav() wrapped in an object rather than
 // building a real Set of every favourited name.
 //
-// No group at all when none of the given jobs carry a project: a jobs list
-// with no project data (or filtered down to none) gets no group chrome to
-// scroll past, the same "flat grid" pulseHtml's caller already special-cases
-// for an install with no projects anywhere.
-export function groupJobs(jobs, favSet){
+// No group at all when none of the given jobs carry a project AND the
+// caller has nothing to say about projects elsewhere: a jobs list with no
+// project data anywhere gets no group chrome to scroll past, the same
+// "flat grid" pulseHtml's caller already special-cases for an install with
+// no projects at all. `allProjects` is the third, optional argument that
+// tells the two cases apart -- the install's own unfiltered project names,
+// not the jobs this call was actually handed. Omitted (or empty), this
+// behaves exactly as it always has: `jobs` is all there is to go on, and no
+// project anywhere in it means no groups. Given a non-empty list, though, a
+// `jobs` with nothing but standalone jobs is read correctly as "the
+// Standalone filter is on", not "this install has no projects", and the
+// loose group below still gets built -- the filtered set the Standalone
+// project filter produces is exactly this: every visible job project-less,
+// on an install that has projects elsewhere.
+export function groupJobs(jobs, favSet, allProjects){
   const names = [...new Set(jobs.map(j => j.project || "").filter(Boolean))]
     .sort((a, b) => (favSet.has(b) - favSet.has(a)) || a.localeCompare(b));
-  if(!names.length) return [];
+  if(!names.length && !(allProjects && allProjects.length)) return [];
   const groups = [];
   for(const name of names){
     const js = jobs.filter(j => j.project === name);

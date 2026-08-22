@@ -1167,11 +1167,15 @@ const normStatus=(s)=>s==="ok"?"success":(s||"—");
 // the wait, doubling again per failure, capped at 16x. Kept in step by hand:
 // if one side changes, the card starts promising checks the tick will not make.
 const BACKOFF_AFTER=3, BACKOFF_MAX=16;
-// A function declaration rather than a const arrow, like activeRunsOf below --
-// CCApp.init's interface object references this by name well above this line,
-// and a const would still be in its temporal dead zone there. It worked today
-// only by textual position; hoisting makes that not matter, the same fix
-// activeRunsOf already needed for the identical reason.
+// A function declaration rather than a const arrow. Unlike activeRunsOf
+// below, CCApp.init's interface object sits well BELOW this declaration, so
+// a const arrow never actually threw here -- this one never had a live
+// temporal-dead-zone error. What it had instead: a const arrow only worked
+// because of where this happened to sit in the file, and moving this helper
+// block down, or moving init up as boot sequencing gets consolidated in a
+// later phase, would have reintroduced the identical error activeRunsOf
+// actually had. Hoisting closes that dormant, order-dependent fragility
+// rather than fixing a live bug.
 function backoffMultiplier(streak){
   const s=+streak||0; if(s<BACKOFF_AFTER) return 1;
   return Math.min(BACKOFF_MAX, Math.pow(2, s-BACKOFF_AFTER+1));
@@ -1711,8 +1715,12 @@ function renderJobCards(vis, allProjects){
   // group at all" case this can still fall through to below. `isFav` wrapped
   // in a `.has()` rather than a real Set: the favourites this reads are the
   // page's own persisted set, and groupJobs only ever asks whether one name
-  // is in it.
-  const groups=CCApp.groupJobs(vis, {has:isFav});
+  // is in it. `allProjects` is passed through as groupJobs's third argument
+  // so the Standalone project filter -- a `vis` where every job is
+  // project-less, on an install that has projects elsewhere -- still gets
+  // its group header instead of reading like an install with no projects
+  // anywhere.
+  const groups=CCApp.groupJobs(vis, {has:isFav}, allProjects);
   let html="";
   for(const g of groups){
     if(g.name==="__standalone__"){

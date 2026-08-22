@@ -223,9 +223,9 @@
     const pct = cap != null && cap > 0 ? Math.min(100, spent / cap * 100) : 0;
     return capped ? "over" : pct >= 80 ? "near" : "";
   }
-  function groupJobs(jobs, favSet) {
+  function groupJobs(jobs, favSet, allProjects) {
     const names = [...new Set(jobs.map((j) => j.project || "").filter(Boolean))].sort((a, b) => favSet.has(b) - favSet.has(a) || a.localeCompare(b));
-    if (!names.length) return [];
+    if (!names.length && !(allProjects && allProjects.length)) return [];
     const groups = [];
     for (const name of names) {
       const js = jobs.filter((j) => j.project === name);
@@ -303,5 +303,5 @@
     nextRunNote
   };
 })();
-/* ui-bundle: 0238b8526341c97df2e22e00c92fb2b4266705bd93a145d883e8f6804b7545a0 */
-/* ui-sources: 5915bdb8e4fe508859f94ec08164682d710d4f0db0072665f869f0982bd9c09d */
+/* ui-bundle: 007c4c1caeaa1177d3451f52a450f3fad4d141b5bb321e900d10254997c586fd */
+/* ui-sources: 12dfe0c96e338f51bdec9882985c0555e4560c68d2ab217b4a9ba1e9b6371e6d */
