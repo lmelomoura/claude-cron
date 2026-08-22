@@ -2,7 +2,8 @@
 
 **Data:** 2026-08-22
 **Branch:** `feat/security-analysis`
-**Estado:** desenho aprovado, por implementar
+**Estado:** implementado; este documento foi corrigido contra o que aterrou —
+ver `CHANGELOG.md` para o detalhe de cada tarefa
 
 ## Porquê
 
@@ -66,13 +67,46 @@ bin/static/app.js        artefacto committado, irmão de security.js
 ```
 
 `bin/dashboard.html` fica com o esqueleto HTML, os diálogos, a tabela de ícones
-e o script de arranque. Perde as 1415 linhas de CSS, as 614 do Overview e as
-funções de domínio de jobs que hoje contam para a área Jobs (`visibleJobs`,
-`paintJobFilters`, `jobFacts`).
+e o script de arranque. Perde as 1415 linhas de CSS e a construção de markup do
+Overview (`pulseHtml`, `helloHtml`, `jobCard`, `renderJobCards`), reescrita
+como DOM em `ui/app/overview.js` em vez de movida.
+
+**Correção ao desenho: nem tudo o que é "domínio de jobs" sai daqui.** Só a
+parte sem DOM — `jobFacts`, `visibleJobs`, `bulkOn`, `bulkLabel`,
+`clearJobFilters`, `jobProjectNames` — se muda para `ui/app/jobs-domain.js`.
+`paintJobFilters`, `renderJobTable`, `initPickers`, `bulkBtn`/`bulkScope` e a
+própria `renderJobs` (o cabeçalho de grupo, a estrela, o botão de bulk) ficam
+em `bin/dashboard.html`, porque desenham a tabela Jobs — a página que a Fase 2
+move — ou constroem markup a partir de nomes de projeto e contagens que a
+própria página escolhe, nunca dos campos de um job; chamam de volta para o
+módulo pelo nome em vez de duplicar o que ele já sabe.
 
 O bloco `<style>` desaparece por completo. No `<head>` ficam duas coisas no seu
 lugar: `<link rel="stylesheet" href="/static/app.css?v=__BUILD__">`, e antes dele
 o script de três linhas que resolve o tema (ver «O tema pisca», mais abaixo).
+
+**Como se prova que a mudança é mecânica.** A primeira ideia foi comparar o
+conjunto de seletores antes e depois, contra um ficheiro de referência
+capturado do `dashboard.html` de hoje — e não sobreviveu ao resto da fase.
+Qualquer tarefa seguinte que apague uma regra a sério (o `.st-run`/`.st-on`/
+`.st-idle` que a reescrita do cartão de job deixa de calcular, por exemplo)
+tem de editar essa referência à mão, e nesse instante uma regressão real e
+uma remoção intencional passam a ser a mesma coisa aos olhos do teste: "a
+referência mudou para bater com o build novo". Aterrou em vez disso um teste
+sem referência guardada: reúne cada classe a que a UI construída realmente
+recorre — `class="..."` estático em `dashboard.html`, e as chamadas a
+`el()`/`secEl()` e as atribuições a `.className` em `ui/app/*.js` e
+`ui/security/*.js` — e verifica cada uma contra o `bin/static/app.css`
+*construído*, não contra as fontes. O que continua por ver é o mesmo: uma
+regra que se perde na concatenação porque um ficheiro ficou de fora do `cat`.
+O que se ganha: nenhum ficheiro para editar à mão a cada tarefa legítima que
+apaga uma regra — só três classes ficam sem regra correspondente, cada uma com
+uma razão registada em vez de silenciada com uma regra vazia. Uma quarta,
+`movable` (a marca do `relocate()` que movia blocos entre o Overview e a sua
+própria página), foi encontrada e registada com a mesma disciplina quando este
+teste nasceu, mas ficou órfã dias depois, quando as tabs do Overview — e
+`relocate()` com elas — saíram (ver «O que sai», abaixo); foi removida ao
+fechar esta fase.
 
 ### O acoplamento que decide o desenho
 
@@ -136,11 +170,56 @@ diretórios em disco — hoje a tab está sempre presente, a dizer que não há 
 
 Nenhum número muda. Muda onde é lido.
 
+### Onde isto diverge do artboard `Main.dc.html`
+
+O mockup aprovado — a origem desta secção, comparado agora contra o que
+aterrou — desenha a Overview como cabeçalho + cinco KPIs + uma linha a duas
+colunas: a banda de 24 horas à esquerda e, à direita, um rail com dois
+cartões, "Spend" (duas barras de progresso, hoje e 7 dias, cada uma contra o
+seu teto) e "Worktrees on disk" (a lista, com um botão "Manage worktrees") —
+seguida de um cartão "Recent runs" com uma tabela paginada. Não há cartão de
+job nenhum nesse desenho.
+
+Três afastamentos, todos deliberados:
+
+1. **A banda fica sozinha, a toda a largura — sem rail ao lado.** É a frase
+   acima, "não tem par a competir por ela": o par que o mockup lhe dava,
+   Spend e Worktrees, não sobrevive a uma Overview com jobs a sério (o
+   mockup tem quatro; uma instalação real tem mais, e a banda precisa da
+   largura inteira para continuar legível).
+2. **Não há tabela "Recent runs" na Overview.** Runs já é uma página do
+   sidebar — repeti-la aqui seria a mesma duplicação de domínio que este
+   documento evita ao levar `jobFacts`/`visibleJobs` inteiros para
+   `ui/app/jobs-domain.js` (ver «O acoplamento que decide o desenho»,
+   acima). O espaço que a tabela ocupa no mockup é, na Overview real, os
+   cartões de job agrupados por projeto — a peça central deste documento,
+   que o mockup não desenhava.
+3. **Worktrees é um cartão entre os cartões de job, não um item de rail.**
+   Sem rail para o alojar, `worktreesCard` (ver acima) fica depois da
+   grelha de jobs, na mesma coluna, e só quando há algo em disco — `null`
+   quando não há.
+
+Uma quarta diferença, pequena e **não deliberada**: o mockup dá a "Woke a
+run" o verde de sucesso (`--ok`) que "Checks" e "Spent today" não têm;
+`kpiCard`, tal como aterrou, não distingue as três — ficam com o mesmo
+quadrado accent/roxo, porque nenhuma é uma porta (`door`) com tom próprio
+como Warnings/Errors. Não é uma decisão de design, é uma diferença que
+ninguém decidiu e que ninguém corrigiu; fica registada para quem for à
+Fase 2.
+
 ## A regra do DOM
 
 A área Security tem uma proibição de construir DOM a partir de strings HTML,
 aplicada por `test_the_security_ui_never_builds_dom_from_html_strings`. Esta fase
 estende-a a `ui/app/`.
+
+**Correção ao desenho: a extensão não pediu lógica nova.** `_security_sources()`,
+a função de que esse teste já depende para encontrar o que examinar, já
+percorria tudo o que está debaixo de `ui/` — `ui/app/` ficou coberto no
+instante em que a pasta passou a existir, antes de qualquer linha de
+`overview.js` ser escrita. O único ficheiro a mudar foi o próprio teste, cujo
+nome dizia "security" a mais: passou a chamar-se
+`test_the_built_ui_never_builds_dom_from_html_strings`.
 
 O Overview tem a mesma exposição que a motivou: `checkList()` renderiza a saída
 de um script de sondagem arbitrário, e os nomes de tickets vêm do Jira. Hoje isso
@@ -151,6 +230,18 @@ O custo aparente é reescrever as 164 linhas de `jobCard`. O custo real é zero:
 `jobCard` vai ser reescrito de qualquer maneira, porque é isso a restilização. É
 a mesma reescrita, feita da forma que elimina a classe de bug em vez de a manter
 viável.
+
+**Isto também fecha a porta a um "mover sem tocar".** A proibição aplica-se a
+*todo* o `ui/`, não só ao que se escreve de novo — por isso `pulseHtml`,
+`helloHtml`, `jobCard`, `renderJobCards` e `renderRetained` acendem vermelho no
+instante em que chegam a `ui/app/`, movidas tal e qual. Não há sequência em que
+o Overview se mude primeiro "pixel a pixel", com os testes da secção seguinte
+como prova, e só depois se reescreva `jobCard` em DOM — essa ordem foi a
+intenção inicial e não podia correr. O que aterrou: só as funções sem sink se
+movem inalteradas; `pulseHtml`, `helloHtml`, `jobCard` e `renderRetained` são
+reescritas como construtores de DOM, nunca movidas em string, e são os dez
+testes da secção seguinte — não uma comparação byte a byte — que garantem que
+nada mudou por baixo da reescrita.
 
 ## Testes
 
@@ -203,8 +294,17 @@ qualquer forma. Um rebuild a mais é barato; um bundle obsoleto a passar a verde
 não é.
 
 **Os stamps em CSS.** CSS não tem comentários `//`.
-`build/ui-bundle-digest.sh` passa a aceitar também a forma de bloco
-`/* ui-sources: … */`, com a mesma regra de exatamente-um-de-cada que já aplica.
+
+**Correção ao desenho: não ficaram duas formas, ficou uma só.** Ensinar
+`build/ui-bundle-digest.sh` a aceitar *também* a forma de bloco ao lado da `//`
+que já tinha teria deixado duas grafias para três leitores concordarem —
+`build/build-ui.sh` a escrever, `build/ui-bundle-digest.sh` a despir antes de
+calcular o hash, e o selftest a ler de volta — e um dos três candidato a
+esquecer a segunda forma no próximo artefacto. Os dois stamps, em `security.js`,
+`app.js` e `app.css` por igual, passam antes para a forma de bloco:
+`/* ui-sources: <sha256> */` e `/* ui-bundle: <sha256> */`, válida em
+JavaScript e em CSS, com a mesma regra de exatamente-um-de-cada que já
+aplicava. Um formato, não dois.
 
 ### Dois bugs latentes que esta mudança ativaria
 

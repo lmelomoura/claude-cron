@@ -743,10 +743,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `bin/static/app.css` and linked from the head with `?v=<build id>`. Not
   bundled: the stylesheet has no imports, so esbuild would buy nothing and add
   a minifier's opinions to a diff that should stay readable. The move is
-  proven mechanical by a selector-set comparison against a baseline captured
-  from `dashboard.html` before it moved, checked against the *built* artifact
-  rather than the sources, so a rule that lands in a file the build forgets to
-  concatenate still fails the test. Without this split, later restyling of the
+  proven mechanical by `test_no_class_the_shipped_ui_uses_lacks_a_css_rule`,
+  checked against the *built* artifact rather than the sources: every class
+  the shipped UI reaches for must have a matching rule in `bin/static/app.css`,
+  so a rule that lands in a file the build forgets to concatenate — or is
+  dropped outright, in this move or a later one — still fails the test.
+  Without this split, later restyling of the
   dashboard's Overview and any new shared component would have meant editing
   one 1400-line block that mixed tokens, reusable widgets and one-page layout
   with no seam between them. The selftest's freshness check — was this artifact

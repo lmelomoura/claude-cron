@@ -4217,12 +4217,6 @@ def _classes_defined_in_css(css_text):
 # their own. Keep this short, and justify every entry: it exists so the
 # guard below can stay strict by default instead of growing exceptions.
 _UNSTYLED_CLASS_ALLOWLIST = {
-    # Marks the two DOM nodes relocate() moves between the dashboard and the
-    # Jobs/Runs pages (see "Slots receive the movable blocks" in
-    # ui/css/pages.css). Nothing selects on the class -- the move is by id
-    # -- and its parent (.slot) is deliberately styleless so the move never
-    # shifts the block by a pixel. A documentation marker, not a style hook.
-    "movable",
     # The one caveat span in secPaint()'s status line (ui/security/
     # analysis.js). Its parent, .secstat, already sets
     # color:var(--muted) for every plain child span; "note" names this one
@@ -4230,9 +4224,8 @@ _UNSTYLED_CLASS_ALLOWLIST = {
     "note",
     # Pure grouping <div>s: every child they hold (.warnline,
     # .secpj-caption, .secidx-catrow, ...) already carries its own full
-    # styling. Matches this codebase's own convention for a wrapper that
-    # must add nothing of its own -- see .slot's comment in
-    # ui/css/pages.css.
+    # styling. A wrapper that adds nothing of its own is deliberately left
+    # unstyled rather than given an empty rule.
     "secfind-strip",
     "secidx-categories",
 }

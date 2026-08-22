@@ -1217,56 +1217,69 @@ would not have changed that run's report anyway. Still a guardrail, not a
 lock nothing can pick: an agent with direct access to the ledger file could
 write a decision without going through this door at all.
 
-### Changing these screens: `ui/` is the source, and the bundle is committed
+### Changing the UI: `ui/` is the source, and the built files are committed
 
-The four screens are ES modules under **`ui/security/`**. What the dashboard
-actually loads is **`bin/static/security.js`**, one bundle built from them by a
-pinned esbuild, and **that bundle is committed to the repository**. That is the
-whole trade: installing claude-cron still needs only **jq, python3 and curl** —
-Node is a developer dependency, and the day it becomes an install dependency is
-the day this stops being worth it.
+`ui/` holds three kinds of source, one per built artifact. The four security
+screens are ES modules under **`ui/security/`**, bundled into
+**`bin/static/security.js`**. The Overview's renderers are ES modules under
+**`ui/app/`**, bundled into **`bin/static/app.js`** — both by the same pinned
+esbuild. The stylesheet itself is plain CSS under **`ui/css/`**
+(`tokens.css`, `components.css`, `pages.css`), and becomes
+**`bin/static/app.css`** by concatenation, not a bundle: CSS has no imports and
+no module graph for esbuild to resolve, so running it through a bundler would
+buy nothing but a minifier's opinions on a diff that should stay readable. The
+three files are concatenated in the order a reader would need them — tokens
+first, since everything below reads them; components before pages, so a page
+rule wins a tie against the component it specialises.
+
+**All three built files are committed to the repository.** That is the whole
+trade: installing claude-cron still needs only **jq, python3 and curl** — Node
+is a developer dependency, and the day it becomes an install dependency is the
+day this stops being worth it.
 
 The price of a build output in git is that it can be forgotten, and a stale
-bundle is a dashboard silently running last week's code with nothing on screen
-to say so. So:
+artifact is a dashboard silently running last week's code — or last week's
+styles — with nothing on screen to say so. So:
 
 ```bash
 bash build/build-ui.sh          # in the SAME change as any edit under ui/
 node --check bin/static/security.js
+node --check bin/static/app.js
 ```
 
-and `claude-cron selftest` refuses a tree where that did not happen. The
-assertion is **"the committed UI bundle matches the sources it was built from,
-and has not been touched since"**; the first half fails with
-`bin/static/security.js is stale — run build/build-ui.sh`, the second with
-`...has been MODIFIED since it was built`. It works off two content
-fingerprints that `build/build-ui.sh` stamps onto the bundle's last two lines
-as block comments — `/* ui-sources: <sha256> */` and
-`/* ui-bundle: <sha256> */` — block, not `//`, because `bin/static/` holds CSS
-as well as JavaScript and CSS has no line comment; `/* … */` is valid in both,
-ignored by every browser, and greppable without parsing anything. `ui-sources`
-is what the bundle was built **from**, recomputed by the selftest with
-`build/ui-digest.sh`; `ui-bundle` is a hash of the bundle's **own body**, taken
-before either stamp is appended, recomputed with `build/ui-bundle-digest.sh` —
-the one that catches code injected straight into the committed bytes with
-every source left untouched. Two definitions, each read from two sides:
-written twice, the day either drifted from its reader the check would be
-reporting on nothing.
+and `claude-cron selftest` refuses a tree where that did not happen, for each
+of the three artifacts in turn. The assertion is **"the committed UI artifact
+matches the sources it was built from, and has not been touched since"**; the
+first half fails with `bin/static/app.css is stale — run build/build-ui.sh` (or
+whichever of the three drifted), the second with `...has been MODIFIED since it
+was built`. It works off two content fingerprints that `build/build-ui.sh`
+stamps onto each artifact's last two lines as block comments — `/* ui-sources:
+<sha256> */` and `/* ui-bundle: <sha256> */` — block, not `//`, because
+`bin/static/` holds CSS as well as JavaScript and CSS has no line comment; `/*
+… */` is valid in both, ignored by every browser, and greppable without parsing
+anything. `ui-sources` is what the artifact was built **from**, recomputed by
+the selftest with `build/ui-digest.sh`; `ui-bundle` is a hash of the artifact's
+**own body**, taken before either stamp is appended, recomputed with
+`build/ui-bundle-digest.sh` — the one that catches code injected straight into
+the committed bytes with every source left untouched. Two definitions, each
+read from two sides: written twice, the day either drifted from its reader the
+check would be reporting on nothing.
 
 Two details of that fingerprint are load-bearing. It hashes each file's **path as
 well as its bytes**, so a module added, renamed or deleted changes the answer
 even when the total content has not. And it hashes `build/build-ui.sh` and
-`package.json` alongside `ui/**/*.js`, because those are inputs to the bundle
-too: a changed `--target`, a changed `--format` or a bumped esbuild pin changes
-what the committed bytes should be without touching a single source file, and
-hashing sources alone would let any of them land under a green "matches its
-sources".
+`package.json` alongside **every file under `ui/`** — not a `*.js` glob, so
+`ui/css/*.css` counts too — because those are inputs to the build too: a
+changed `--target`, a changed `--format` or a bumped esbuild pin changes what
+the committed bytes should be without touching a single source file, and
+hashing only some of the sources would let any of them land under a green
+"matches its sources".
 
 It is **content, never mtime**. Git does not record mtimes, and a checkout writes
 paths in index order — every `bin/…` before every `ui/…` — so on a fresh clone
-the sources are always newer than the bundle built from them. An mtime rule would
-fail for every person who had changed nothing at all, which is the fastest way to
-teach everybody to ignore a selftest.
+the sources are always newer than the artifacts built from them. An mtime rule
+would fail for every person who had changed nothing at all, which is the
+fastest way to teach everybody to ignore a selftest.
 
 ---
 
@@ -1445,16 +1458,17 @@ that reaches `main`:
    an unversioned `~/.claude/skills`. Versioned code, an injected prompt contract,
    or a `selftest` assertion — never prompt prose in a personal config file.
 
-3. **Edit `ui/`, rebuild `bin/static/` in the same commit.** The Security area's
-   bundle is a build output that lives in git so that installing needs no Node —
-   see [Changing these screens](#changing-these-screens-ui-is-the-source-and-the-bundle-is-committed).
-   `claude-cron selftest` names the enforcer out loud: *the committed UI bundle
-   matches the sources it was built from*.
+3. **Edit `ui/`, rebuild `bin/static/` in the same commit.** All three built
+   files — the Security bundle, the Overview bundle and the stylesheet — are
+   build output that lives in git so that installing needs no Node — see
+   [Changing the UI](#changing-the-ui-ui-is-the-source-and-the-built-files-are-committed).
+   `claude-cron selftest` names the enforcer out loud: *the committed UI
+   artifact matches the sources it was built from*.
 
 Run the checks before pushing:
 
 ```bash
-claude-cron selftest        # includes test/round-cap.test.sh and the bundle check
+claude-cron selftest        # includes test/round-cap.test.sh and the artifact check
 python3 -m pytest tests/
 bash build/build-ui.sh      # only if you touched ui/ — then commit bin/static/
 ```
@@ -1477,11 +1491,15 @@ claude-cron/
 ├── bin/security/              # the security analysis engines (python, stdlib): secrets, deps +
 │                              #   SBOM, OSV lookups, hygiene, fingerprints, the ledger, the
 │                              #   checklist diff, the reports — behind cli.py, its one door
-├── bin/dashboard.html         # the dashboard page (Jobs, Runs, Projects, the editors)
-├── bin/static/security.js     # the Security area, BUILT from ui/ and COMMITTED — see
-│                              #   `Changing these screens` above
-├── ui/security/               # the source of that bundle: the four screens, as ES modules
-├── build/build-ui.sh          # rebuilds the bundle (pinned esbuild); run it with any ui/ edit
+├── bin/dashboard.html         # the dashboard page (Overview, Jobs, Runs, Projects, the editors)
+├── bin/static/security.js     # the Security area, BUILT from ui/security/ and COMMITTED — see
+│                              #   `Changing the UI` above
+├── bin/static/app.js          # the Overview's renderers, BUILT from ui/app/ and COMMITTED
+├── bin/static/app.css         # the stylesheet, CONCATENATED from ui/css/ and COMMITTED
+├── ui/security/               # the source of security.js: the four screens, as ES modules
+├── ui/app/                    # the source of app.js: the Overview's renderers, as ES modules
+├── ui/css/                    # the source of app.css: tokens.css, components.css, pages.css
+├── build/build-ui.sh          # rebuilds all three (pinned esbuild); run it with any ui/ edit
 ├── build/ui-digest.sh         # the content fingerprint build and selftest both read
 ├── config/
 │   ├── jobs.json              # your jobs (created from the example on install)
