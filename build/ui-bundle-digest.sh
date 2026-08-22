@@ -15,15 +15,17 @@
 # inside a 90 KB generated file is exactly that shape, and nobody reads a
 # generated file to find one.
 #
-# Together the two answer the two halves: `// ui-sources:` says "these are the
-# sources it came from", `// ui-bundle:` says "and this is still it".
+# Together the two answer the two halves: `/* ui-sources: ... */` says "these
+# are the sources it came from", `/* ui-bundle: ... */` says "and this is
+# still it".
 #
 # EXACTLY ONE STAMP OF EACH KIND, refused otherwise. The selftest used to read
 # the source stamp with `sed ... | tail -1`, so appending a SECOND
-# `// ui-sources:` line carrying a freshly computed digest satisfied it while
-# the real stamp — the one describing the bytes above it — sat ignored one line
-# up. A trailing comment is the cheapest thing in the world to append to a
-# file, so the reader has to refuse an ambiguous stamp rather than pick one.
+# `/* ui-sources: ... */` line carrying a freshly computed digest satisfied it
+# while the real stamp — the one describing the bytes above it — sat ignored
+# one line up. A trailing comment is the cheapest thing in the world to append
+# to a file, so the reader has to refuse an ambiguous stamp rather than pick
+# one.
 set -euo pipefail
 
 bundle="${1:-}"
@@ -36,20 +38,19 @@ if [ ! -f "$bundle" ]; then
   exit 2
 fi
 
+# ONE stamp form for every built artifact. bin/static/ holds JavaScript and
+# CSS, and CSS has no `//` comment -- a line form for one and a block form for
+# the other is two spellings for every reader here, in build-ui.sh and in the
+# selftest, and one of them to forget. `/* ... */` is valid in both languages,
+# so there is exactly one form to write and one to strip.
 for kind in ui-sources ui-bundle; do
-  # `|| true`: grep -c prints 0 and exits 1 when nothing matches, which is the
-  # ordinary case for a bundle esbuild has only just written.
-  n="$(grep -c "^// $kind: " "$bundle" || true)"
+  n="$(grep -c "^/\* $kind: .* \*/\$" "$bundle" || true)"
   if [ "${n:-0}" -gt 1 ]; then
-    echo "ui-bundle-digest: $bundle carries $n '// $kind:' stamps — exactly" \
+    echo "ui-bundle-digest: $bundle carries $n '$kind' stamps — exactly" \
          "one is expected, and a second one hides whatever the first says" >&2
     exit 1
   fi
 done
 
-# The body: the file with both stamp kinds removed. build/build-ui.sh hashes
-# the bundle BEFORE it appends either, so stripping them here reproduces those
-# exact bytes — esbuild's output ends in a newline and every appended line is
-# whole, so nothing else has to be trimmed.
-{ grep -v -e '^// ui-sources: ' -e '^// ui-bundle: ' "$bundle" || true; } \
-  | shasum -a 256 | awk '{print $1}'
+{ grep -v -e '^/\* ui-sources: .* \*/$' -e '^/\* ui-bundle: .* \*/$' \
+    "$bundle" || true; } | shasum -a 256 | awk '{print $1}'

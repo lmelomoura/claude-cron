@@ -14,11 +14,11 @@ npx --yes esbuild@0.25.0 ui/security/index.js \
 # nothing hashed them before, and code injected straight into the committed
 # file passed the check with every source untouched. `ui-sources` is what it
 # was built FROM, so the selftest can tell a current bundle from one somebody
-# forgot to rebuild. Plain comments on the last two lines: valid JavaScript,
-# ignored by every browser, and greppable without parsing anything -- and
-# exactly one of each, which build/ui-bundle-digest.sh enforces on the way back
-# in.
-printf '// ui-bundle: %s\n' "$(bash build/ui-bundle-digest.sh bin/static/security.js)" \
+# forgot to rebuild. Block comments on the last two lines: valid in JavaScript
+# AND in CSS, ignored by every browser, and greppable without parsing anything
+# -- and exactly one of each, which build/ui-bundle-digest.sh enforces on the
+# way back in.
+printf '/* ui-bundle: %s */\n' "$(bash build/ui-bundle-digest.sh bin/static/security.js)" \
   >> bin/static/security.js
-printf '// ui-sources: %s\n' "$(bash build/ui-digest.sh)" >> bin/static/security.js
+printf '/* ui-sources: %s */\n' "$(bash build/ui-digest.sh)" >> bin/static/security.js
 echo "built bin/static/security.js"

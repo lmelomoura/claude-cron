@@ -3184,9 +3184,9 @@ def test_the_bundles_own_body_is_hashed_not_only_its_sources(tmp_path):
     reads to find -- was not."""
     script = REPO / "build" / "ui-bundle-digest.sh"
     real = (REPO / "bin" / "static" / "security.js").read_text()
-    assert "// ui-bundle: " in real, \
+    assert "/* ui-bundle: " in real, \
         "the committed bundle carries no body stamp at all"
-    stamped = re.search(r"^// ui-bundle: ([0-9a-f]{64})$", real, re.M).group(1)
+    stamped = re.search(r"^/\* ui-bundle: ([0-9a-f]{64}) \*/$", real, re.M).group(1)
 
     clean = tmp_path / "clean.js"
     clean.write_text(real)
@@ -3217,11 +3217,48 @@ def test_a_second_stamp_line_is_refused_rather_than_silently_preferred(tmp_path)
     real = (REPO / "bin" / "static" / "security.js").read_text()
     for kind in ("ui-sources", "ui-bundle"):
         doubled = tmp_path / f"doubled-{kind}.js"
-        doubled.write_text(real + f"// {kind}: {'0' * 64}\n")
+        doubled.write_text(real + f"/* {kind}: {'0' * 64} */\n")
         p = _bundle_digest(script, doubled)
         assert p.returncode != 0, \
-            f"a second // {kind}: stamp was accepted: {p.stdout!r}"
+            f"a second /* {kind}: ... */ stamp was accepted: {p.stdout!r}"
         assert "exactly" in p.stderr and kind in p.stderr, p.stderr
+
+
+def test_the_stamp_form_is_a_block_comment_so_css_can_carry_it(tmp_path):
+    """One stamp form across every built artifact. CSS has no `//` comment,
+    and the alternative -- a line form for JS and a block form for CSS -- is
+    two spellings for every reader to accept and one of them to forget. The
+    block form is valid in both languages, so there is only ever one."""
+    art = tmp_path / "app.css"
+    art.write_text(":root{--bg:#fff}\n")
+    body = subprocess.run(["bash", str(REPO / "build" / "ui-bundle-digest.sh"),
+                           str(art)], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    art.write_text(":root{--bg:#fff}\n"
+                   f"/* ui-bundle: {body} */\n"
+                   "/* ui-sources: deadbeef */\n")
+    again = subprocess.run(["bash", str(REPO / "build" / "ui-bundle-digest.sh"),
+                            str(art)], capture_output=True, text=True,
+                           check=True).stdout.strip()
+    assert again == body, (
+        "the stamps were not stripped before hashing -- a stamped artifact "
+        "no longer hashes to what the build recorded for it"
+    )
+
+
+def test_a_second_block_stamp_is_refused_in_either_language(tmp_path):
+    """The exactly-one rule is what stops a freshly computed stamp being
+    appended below the real one and read instead of it. It has to hold for
+    the block form too, or the hole simply moved."""
+    for name in ("app.css", "app.js"):
+        art = tmp_path / name
+        art.write_text("body{}\n"
+                       "/* ui-sources: aaaa */\n"
+                       "/* ui-sources: bbbb */\n")
+        r = subprocess.run(["bash", str(REPO / "build" / "ui-bundle-digest.sh"),
+                            str(art)], capture_output=True, text=True)
+        assert r.returncode == 1, f"{name}: a doubled stamp was accepted"
+        assert "stamps" in r.stderr, f"{name}: refused without saying why"
 
 
 def test_the_selftest_reads_both_stamps_and_refuses_an_ambiguous_one():
@@ -3240,7 +3277,8 @@ def test_the_selftest_reads_both_stamps_and_refuses_an_ambiguous_one():
         "the selftest never recomputes the bundle's own body hash"
     assert "tail -1" not in code, \
         "a stamp is still read with tail -1, which a second stamp line defeats"
-    assert "grep -c '^// ui-sources: '" in code and "grep -c '^// ui-bundle: '" in code, \
+    assert "grep -c '^/\\* ui-sources: .* \\*/$'" in code \
+        and "grep -c '^/\\* ui-bundle: .* \\*/$'" in code, \
         "the selftest does not count the stamps before trusting them"
     assert "MODIFIED" in code, \
         "a modified bundle and a stale one get the same message"

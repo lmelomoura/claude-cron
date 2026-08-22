@@ -5990,17 +5990,17 @@ JSON
   # nobody reads a generated file to find one.
   #
   # Both stamps are read with an EXACTLY-ONE rule rather than `tail -1`. That
-  # was the second hole: appending a second `// ui-sources:` line carrying a
-  # freshly computed digest satisfied the old reader while the real stamp, the
-  # one describing the bytes above it, sat ignored one line up.
+  # was the second hole: appending a second `/* ui-sources: ... */` line
+  # carrying a freshly computed digest satisfied the old reader while the real
+  # stamp, the one describing the bytes above it, sat ignored one line up.
   local _bundle="$BIN_DIR/static/security.js" _stamp _want _bstamp _bwant _ns _nb
   if [ ! -f "$_bundle" ]; then
     bad "bin/static/security.js is missing — run build/build-ui.sh"
   else
-    _ns="$(grep -c '^// ui-sources: ' "$_bundle" || true)"
-    _nb="$(grep -c '^// ui-bundle: ' "$_bundle" || true)"
-    _stamp="$(sed -n 's|^// ui-sources: ||p' "$_bundle")"
-    _bstamp="$(sed -n 's|^// ui-bundle: ||p' "$_bundle")"
+    _ns="$(grep -c '^/\* ui-sources: .* \*/$' "$_bundle" || true)"
+    _nb="$(grep -c '^/\* ui-bundle: .* \*/$' "$_bundle" || true)"
+    _stamp="$(sed -n 's|^/\* ui-sources: \(.*\) \*/$|\1|p' "$_bundle")"
+    _bstamp="$(sed -n 's|^/\* ui-bundle: \(.*\) \*/$|\1|p' "$_bundle")"
     _want="$(bash "$BASE_DIR/build/ui-digest.sh" 2>/dev/null)"
     _bwant="$(bash "$BASE_DIR/build/ui-bundle-digest.sh" "$_bundle" 2>/dev/null)"
     if [ "${_ns:-0}" != "1" ] || [ "${_nb:-0}" != "1" ]; then
