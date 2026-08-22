@@ -1,23 +1,12 @@
 (() => {
   // ui/app/page.js
   var $;
-  var TOKEN;
-  var api;
-  var toast;
-  var esc;
   var fmtAgo;
-  var fmtWhen;
   var fmtDur;
-  var fmtIn;
   var money;
   var icon;
-  var iconLabel;
-  var openLog;
-  var openEditor;
   var projById;
-  var isFav;
   var eff;
-  var setView;
   var backoffMultiplier;
   var activeRunsOf;
   var renderJobs;
@@ -29,23 +18,12 @@
     CC = cc;
     ({
       $,
-      TOKEN,
-      api,
-      toast,
-      esc,
       fmtAgo,
-      fmtWhen,
       fmtDur,
-      fmtIn,
       money,
       icon,
-      iconLabel,
-      openLog,
-      openEditor,
       projById,
-      isFav,
       eff,
-      setView,
       backoffMultiplier,
       activeRunsOf,
       renderJobs,
@@ -180,10 +158,16 @@
         filter: "",
         door: false
       },
+      // A percentage of nothing is not 0%, it is nothing -- checks-gated rather
+      // than n-gated, or a fresh install with checks:0 but a stray per.woke would
+      // print "0% of checks" instead of a dash. pct() already refuses to divide
+      // by zero, but the old code appended " of checks" to its "—" regardless,
+      // which reads as a dash with a dangling preposition rather than the plain
+      // "nothing to report" pulseHtml's own original gave this card.
       {
         label: "Woke a run",
         value: String(per.woke || 0),
-        sub: pct(per.woke || 0) + " of checks",
+        sub: checks ? pct(per.woke || 0) + " of checks" : "\u2014",
         tone: "",
         filter: "",
         door: false
@@ -194,10 +178,19 @@
       // stays true even then: it is what tells kpiCard this is a button that
       // happens to have nothing behind it right now, not a card that was
       // never a button to begin with.
+      //
+      // Both cards name their own window ("in the last 7 days") whether the
+      // count is zero or not. Checks and Woke a run are 24h figures and the
+      // band right below them is titled "Last 24 hours" -- a neighbour this
+      // close means Warnings/Errors have to say "7 days" for themselves, every
+      // time, rather than only when there is nothing to read: naming the
+      // window on the empty sentence and dropping it on the one an operator
+      // actually reads is what let a Monday failure sit between two 24h cards
+      // reading as if it happened today.
       {
         label: "Warnings",
         value: String(warn),
-        sub: warn ? "Runs that finished without failing but did not do the work \u2014 open them in Runs" : "No warnings in the last 7 days",
+        sub: warn ? "Runs that finished without failing but did not do the work in the last 7 days \u2014 open them in Runs" : "No warnings in the last 7 days",
         tone: "warn",
         filter: warn ? "warning" : "",
         door: true
@@ -205,7 +198,7 @@
       {
         label: "Errors",
         value: String(err),
-        sub: err ? "Runs that failed \u2014 open them in Runs" : "No errors in the last 7 days",
+        sub: err ? "Runs that failed in the last 7 days \u2014 open them in Runs" : "No errors in the last 7 days",
         tone: "err",
         filter: err ? "error" : "",
         door: true
@@ -213,9 +206,16 @@
       // The pulse-f strip this redesign removed paired "today" with "7 days"
       // for both runs and spend. The week's spend is that pair's other half --
       // one card, the total in its own sublabel, not a separate strip ("one
-      // number per label" applied to the pair it was always part of). The
-      // two run counts (runsToday/runsWeek) are deliberately NOT added here or
-      // to any other card -- see task-8-report.md for why.
+      // number per label" applied to the pair it was always part of). The two
+      // run counts (runsToday/runsWeek) are deliberately NOT added here or to
+      // any other card: "Woke a run"'s sub is pinned character-for-character by
+      // test_the_kpis_come_from_the_numbers_the_loop_recorded, so nothing can be
+      // appended there without breaking a pinned test; "Checks" counts probe
+      // cycles, a different thing from a run, so a run count there would
+      // misattribute it; and inventing a sixth card was ruled out by the
+      // original brief. runsToday already surfaces, unreliably, through the
+      // greeting sentence above this row; both counts stay one click away on
+      // the Runs page regardless.
       {
         label: "Spent today",
         value: money2(spentToday),
@@ -855,19 +855,21 @@
     bulkLabel,
     clearJobFilters,
     jobProjectNames,
-    pulseKpis,
-    bandEmptyReason,
-    probeVerdict,
-    spendTone,
     groupJobs,
     jobsEmptyNote,
-    nextRunNote,
     worktreesCard,
-    // pageHeader/kpiCard/renderPulse are exported for Phases 2
-    // and 3, which put a page header and KPI cards on every
-    // remaining page -- renderOverviewHead is the only one of
-    // the four this phase's own call site (bin/dashboard.html's
-    // render()) actually calls.
+    // pageHeader already has a second caller today, not a
+    // future one: bin/dashboard.html's initPageHeaders() calls
+    // CCApp.pageHeader() for the Jobs and Runs pages' own
+    // headers, in this same phase. kpiCard and renderPulse are
+    // the two still genuinely waiting -- Jobs and Runs have a
+    // header now but no KPI row and no 24h band of their own,
+    // and CCApp.renderOverviewHead's own two DOM builders are
+    // exactly what the day one of them grows either will reach
+    // for, the same way initPageHeaders reached for pageHeader.
+    // renderOverviewHead remains the only one of the four this
+    // phase's own call site (bin/dashboard.html's render())
+    // actually calls itself.
     pageHeader,
     kpiCard,
     renderPulse,
@@ -880,5 +882,5 @@
     jobCard
   };
 })();
-/* ui-bundle: aa3bf9756b4c85901749f5c43f8433c8ea8c35a0edfffffbbdf9181409f860d5 */
-/* ui-sources: 74d1f9c5fea7bf3e6f99e68e6b0c2bb78d1a41b96e3257a2d3d400eb56a0f888 */
+/* ui-bundle: fc26191d35141266fd756ba875dfa3f8b45dcc631c23f12d36be4b45833cf34b */
+/* ui-sources: 6c79dd90449fc3989bb75ef0d642c6b0c5682912a000f18b698aef5d98f31353 */

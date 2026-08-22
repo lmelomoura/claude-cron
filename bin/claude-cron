@@ -2061,6 +2061,22 @@ check_ui_artifact() { # <path relative to BASE_DIR>
   fi
 }
 
+# check_ui_artifact one file at a time is only as complete as whoever calls
+# it: `bin/static/` is not three fixed names, it is whatever static_asset()
+# will serve and _build_id() will hash -- any .js/.css dropped in there is
+# live and cache-busted whether or not this function was ever told about it.
+# Iterating the directory itself, instead of restating its current contents
+# as a list of literals, is what makes a fourth artifact (Phases 2 and 3 are
+# exactly the phases expected to add one) impossible to add without also
+# making it pass this check.
+check_ui_artifacts() {
+  local _f
+  for _f in "$BASE_DIR"/bin/static/*.js "$BASE_DIR"/bin/static/*.css; do
+    [ -f "$_f" ] || continue
+    check_ui_artifact "bin/static/${_f##*/}"
+  done
+}
+
 cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   local pass=0 fail=0 tmp
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/ccselftest.XXXXXX")"
@@ -6033,10 +6049,51 @@ JSON
     && ok "and every past analysis is carried onto the new name in the ledger" \
     || bad "the security history stayed behind under the old project name"
 
+  echo "check_ui_artifacts() — an untracked file in bin/static/ must go red, not pass unnoticed"
+  # Reproduces, on a throwaway mirror rather than the real bin/static/, what
+  # dropping a fourth built artifact into that directory looks like: a
+  # genuine, correctly-stamped file (control -- it must stay ok) sitting next
+  # to one nothing ever stamped (refusal -- it must go bad). The genuine one
+  # is hand-stamped with the SAME two scripts build/build-ui.sh itself calls
+  # (ui-bundle-digest.sh, then ui-digest.sh), against a one-file ui/ tree of
+  # its own -- so this needs no esbuild and no dependence on the real repo's
+  # current ui/ state, which a selftest step has no business needing anyway.
+  local uidir="$tmp/uicheck"
+  mkdir -p "$uidir/bin/static" "$uidir/build" "$uidir/ui"
+  cp "$BASE_DIR/build/ui-digest.sh" "$BASE_DIR/build/ui-bundle-digest.sh" \
+     "$BASE_DIR/build/build-ui.sh" "$uidir/build/"
+  # ui-digest.sh's own _inputs() fingerprints these three alongside ui/ (see
+  # its own comment on why); `find ... -maxdepth 0` on a path that does not
+  # exist fails the whole pipeline under this script's `set -eo pipefail`,
+  # so a mirror missing package.json would abort ui-digest.sh here, not
+  # merely fingerprint one file short.
+  [ -f "$BASE_DIR/package.json" ] && cp "$BASE_DIR/package.json" "$uidir/package.json"
+  echo 'console.log("fake ui source");' > "$uidir/ui/fake.js"
+  echo 'console.log("built from ui/fake.js");' > "$uidir/bin/static/fake.js"
+  (
+    BASE_DIR="$uidir"
+    printf '/* ui-bundle: %s */\n' \
+      "$(bash "$BASE_DIR/build/ui-bundle-digest.sh" "$BASE_DIR/bin/static/fake.js")" \
+      >> "$BASE_DIR/bin/static/fake.js"
+    printf '/* ui-sources: %s */\n' "$(bash "$BASE_DIR/build/ui-digest.sh")" \
+      >> "$BASE_DIR/bin/static/fake.js"
+  )
+  # Nothing stamped this one -- exactly the fourth artifact the reviewer
+  # dropped in as bin/static/extra.js.
+  echo 'console.log("nobody stamped me");' > "$uidir/bin/static/extra.js"
+  (
+    BASE_DIR="$uidir"; _upass=0; _ufail=0
+    ok()  { _upass=$(( _upass + 1 )); }
+    bad() { _ufail=$(( _ufail + 1 )); echo "BAD: $1"; }
+    check_ui_artifacts
+    echo "RESULT ok=$_upass bad=$_ufail"
+  ) > "$tmp/uicheck.out" 2>&1
+  grep -q "^RESULT ok=1 bad=1$" "$tmp/uicheck.out" \
+    && ok "an untracked bin/static/extra.js fails the check while the genuine artifact beside it still passes" \
+    || bad "check_ui_artifacts did not flag the untracked file the way it should: $(cat "$tmp/uicheck.out")"
+
   echo "the committed UI artifacts — built from the sources sitting next to them"
-  check_ui_artifact "bin/static/security.js"
-  check_ui_artifact "bin/static/app.js"
-  check_ui_artifact "bin/static/app.css"
+  check_ui_artifacts
 
   rm -rf "$tmp"
   echo

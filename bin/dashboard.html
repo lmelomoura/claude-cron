@@ -1324,8 +1324,8 @@ function initJobDrag(){
 
 // The group's own chrome only -- header, chevron, collapse state -- built as
 // a string the same as before, since none of it comes from a job's own
-// fields (see renderJobCards's own comment on why that split is safe). The
-// grid it leaves behind is EMPTY: renderJobCards appends each group's real
+// fields (see renderJobs's own comment on why that split is safe). The
+// grid it leaves behind is EMPTY: renderJobs appends each group's real
 // CCApp.jobCard() Elements into it in a second pass, once this shell is on
 // the page and `.projgroup[data-group="…"] .grid` can be found.
 function collapsibleGroup(key, headerInner){
@@ -1840,18 +1840,28 @@ CCSecurity.init(CC);
    Everything in ui/app/page.js's export list has to appear in this object --
    a name missing from it is a bind-time failure with that name in the
    message, which is the whole reason the list is stated rather than read off
-   window. icon and iconLabel are the SAME functions handed to the Security
-   interface above, not a second definition of them: the icon table is this
-   page's, and there is exactly one honest way to inject an entry from it.
-   effortLabel is a `const` defined well above this point, so it is already
-   initialised by the time this object is built. fmtExpiresIn and
-   resumeInFlight sit BELOW this call instead, but both are hoisted
-   `function` declarations -- safe for the same reason activeRunsOf and
-   backoffMultiplier already are (see their own comments): the name resolves
-   the moment a card actually reads it, well after boot, not at this line. */
-CCApp.init({ $, TOKEN, api, toast, esc, fmtAgo, fmtWhen, fmtDur, fmtIn, money,
-             icon: CC.icon, iconLabel: CC.iconLabel, openLog, openEditor,
-             projById, isFav, eff, setView,
+   window. icon is the SAME function handed to the Security interface above,
+   not a second definition of it: the icon table is this page's, and there is
+   exactly one honest way to inject an entry from it. effortLabel is a
+   `const` defined well above this point, so it is already initialised by the
+   time this object is built. fmtExpiresIn and resumeInFlight sit BELOW this
+   call instead, but both are hoisted `function` declarations -- safe for the
+   same reason activeRunsOf and backoffMultiplier already are (see their own
+   comments): the name resolves the moment a card actually reads it, well
+   after boot, not at this line.
+
+   TOKEN, api, toast, esc, fmtWhen, fmtIn, iconLabel, openLog, openEditor,
+   isFav and setView are NOT in this object: ui/app/page.js does not export
+   them, because neither overview.js nor jobs-domain.js ever calls them --
+   they were copied in from ui/security/page.js's own list, whose every name
+   IS consumed there, and nobody trimmed the copy down to what this page's
+   screens actually read. Every one of the eleven still has exactly one
+   definition, right here in this page's own script, for this page's own
+   use -- removing them from CCApp.init() does not remove them from
+   dashboard.html, only from a bridge nothing was crossing. */
+CCApp.init({ $, fmtAgo, fmtDur, money,
+             icon: CC.icon,
+             projById, eff,
              backoffMultiplier, activeRunsOf, renderJobs,
              effortLabel, fmtExpiresIn, resumeInFlight,
              get DATA(){ return DATA; },

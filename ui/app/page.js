@@ -26,8 +26,8 @@
    -- fmtExpiresIn also feeds the Sessions dialog, resumeInFlight also guards
    resumeTarget's live-slot branch, so a second copy here would be the same
    drift the paragraph above already paid for. */
-export let $, TOKEN, api, toast, esc, fmtAgo, fmtWhen, fmtDur, fmtIn, money,
-           icon, iconLabel, openLog, openEditor, projById, isFav, eff, setView,
+export let $, fmtAgo, fmtDur, money,
+           icon, projById, eff,
            backoffMultiplier, activeRunsOf, renderJobs,
            effortLabel, fmtExpiresIn, resumeInFlight;
 
@@ -39,8 +39,8 @@ export let CC = null;
 
 export function bindPage(cc){
   CC = cc;
-  ({ $, TOKEN, api, toast, esc, fmtAgo, fmtWhen, fmtDur, fmtIn, money,
-     icon, iconLabel, openLog, openEditor, projById, isFav, eff,
-     setView, backoffMultiplier, activeRunsOf, renderJobs,
+  ({ $, fmtAgo, fmtDur, money,
+     icon, projById, eff,
+     backoffMultiplier, activeRunsOf, renderJobs,
      effortLabel, fmtExpiresIn, resumeInFlight } = cc);
 }

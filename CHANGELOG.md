@@ -996,6 +996,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   treatment task 9's own job-card rewrite already gave
   `test_a_job_card_shows_every_kept_session_honestly`.
 
+- **The Warnings and Errors KPI cards name their own time window even when
+  there is something on them to read.** Both count the last 7 days and sit
+  beside two 24-hour cards (Checks, Woke a run), directly above a band
+  titled "Last 24 hours" — and their sub said "in the last 7 days" only in
+  the empty sentence ("No warnings in the last 7 days"), dropping it exactly
+  where an operator was reading a real count ("Runs that finished without
+  failing but did not do the work — open them in Runs"). A run that failed
+  on Monday and nothing since read, on Friday, as though it had happened
+  today: the one neighbouring band that could have supplied the missing
+  context is titled for a different window entirely. Both cards now say "in
+  the last 7 days" at every count, not only at zero.
+  `test_warnings_and_errors_name_their_window_when_there_is_something_to_read`,
+  new in this change, pins it.
+
+- **"Woke a run" no longer reads "— of checks" on a fresh install.**
+  Extracting `pulseKpis` out of `pulseHtml` turned
+  `checks ? pct(per.woke) + " of checks" : "—"` into
+  `pct(per.woke || 0) + " of checks"`, unconditionally appending the
+  " of checks" suffix that `pct()`'s own "—" was never meant to carry — so a
+  quiet install with zero checks read "0 / Woke a run / — of checks", a dash
+  with a dangling preposition, instead of the original's plain "—". The
+  whole sub is a bare "—" again when there are no checks yet.
+  `test_a_percentage_of_nothing_is_a_dash_not_zero_percent` is tightened
+  from a substring check (`"—" in sub`, which the dangling text also
+  satisfied and so never caught this) to an exact match on the card's own
+  sub.
+
 ### Added
 
 - **A read-only query layer for the Security dashboard.** `security/queries.py`

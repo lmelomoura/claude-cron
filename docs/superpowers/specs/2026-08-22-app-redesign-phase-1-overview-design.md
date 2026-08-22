@@ -68,8 +68,12 @@ bin/static/app.js        artefacto committado, irmão de security.js
 
 `bin/dashboard.html` fica com o esqueleto HTML, os diálogos, a tabela de ícones
 e o script de arranque. Perde as 1415 linhas de CSS e a construção de markup do
-Overview (`pulseHtml`, `helloHtml`, `jobCard`, `renderJobCards`), reescrita
-como DOM em `ui/app/overview.js` em vez de movida.
+Overview (`pulseHtml`, `helloHtml`, `jobCard`), reescrita como DOM em
+`ui/app/overview.js` em vez de movida. `renderJobCards` não sobrevive à
+reescrita: é eliminada, com o seu markup por-cartão absorvido pelo `jobCard`
+já reescrito e a sua chrome de agrupamento (cabeçalhos de projeto, estrela,
+botão de bulk) a ficar em `bin/dashboard.html`, ainda construída a partir de
+strings, como `renderJobs`.
 
 **Correção ao desenho: nem tudo o que é "domínio de jobs" sai daqui.** Só a
 parte sem DOM — `jobFacts`, `visibleJobs`, `bulkOn`, `bulkLabel`,

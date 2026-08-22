@@ -891,7 +891,14 @@ def test_the_kpis_come_from_the_numbers_the_loop_recorded(srv, tmp_path):
 def test_a_percentage_of_nothing_is_a_dash_not_zero_percent(srv, tmp_path):
     """"0% error rate" over an empty denominator is a confident claim about
     a day on which the loop never ran. The rule is already in pct(); nothing
-    held it."""
+    held it.
+
+    Tightened from a substring check (`"—" in sub`) to an exact-equality
+    check on "Woke a run"'s own sub: a naive `pct(...) ? ... : "—"` around
+    just the number still leaves a trailing " of checks" appended
+    unconditionally outside the ternary, so the card reads "— of checks" -- a
+    dash with a dangling preposition. That string still CONTAINS "—", so the
+    old substring assertion passed on the very bug it was written to catch."""
     block = _app_js(srv)
     deps = _index_screen_deps(block, "pulseKpis")
     script = tmp_path / "pct.js"
@@ -905,7 +912,10 @@ def test_a_percentage_of_nothing_is_a_dash_not_zero_percent(srv, tmp_path):
                                     text=True, check=True).stdout)
     subs = [c["sub"] for c in got]
     assert not any("0%" in s for s in subs), f"a zero percent was printed: {subs}"
-    assert any("—" in s for s in subs), f"no dash where a percentage cannot exist: {subs}"
+    by = {c["label"]: c for c in got}
+    assert by["Woke a run"]["sub"] == "—", \
+        f"a percentage of nothing must be exactly a dash, not a dash with " \
+        f"trailing text: {by['Woke a run']['sub']!r}"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -932,6 +942,35 @@ def test_the_warning_and_error_cards_lead_to_the_runs_they_count(srv, tmp_path):
     assert some["Errors"]["filter"] == "error"
     assert not none["Warnings"]["filter"], "a card with nothing to show still navigates"
     assert not none["Errors"]["filter"], "a card with nothing to show still navigates"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_warnings_and_errors_name_their_window_when_there_is_something_to_read(srv, tmp_path):
+    """Checks and Woke a run are 24h figures, and the band directly below the
+    KPI row is titled "Last 24 hours". Warnings and Errors are 7-day figures
+    sitting right beside those two 24h cards -- so at a NON-ZERO count, each
+    one's own sub has to say "7 days" for itself, or an error from Monday
+    reads as if it happened today. The old code said the window only in the
+    EMPTY sentence ("No warnings in the last 7 days") and dropped it exactly
+    when there was something to read ("Runs that failed — open them in
+    Runs"), which is backwards: the zero case needs the window least, since
+    there is nothing on the card to misdate."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "pulseKpis")
+    script = tmp_path / "window.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    console.log(JSON.stringify(pulseKpis({
+      checks: 10, per: {woke: 1}, warn: 3, err: 2,
+      spentToday: 0, spentWeek: 0, runsToday: 0, runsWeek: 0,
+    })));
+    """)
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    by = {c["label"]: c for c in got}
+    assert "7 days" in by["Warnings"]["sub"], \
+        f"Warnings at a non-zero count does not name its window: {by['Warnings']['sub']!r}"
+    assert "7 days" in by["Errors"]["sub"], \
+        f"Errors at a non-zero count does not name its window: {by['Errors']['sub']!r}"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")

@@ -89,8 +89,8 @@ export function jobFacts(j){
 }
 
 // The set the Jobs page is showing right now — every filter applied, exactly as
-// renderJobs applies them below, so the top button can never reach a job that
-// the current filter has taken off-screen.
+// renderJobs (bin/dashboard.html) applies them, so the top button can never
+// reach a job that the current filter has taken off-screen.
 export function visibleJobs(){
   let jobs=CC.DATA.jobs||[];
   if(jobFilters.project==="__none__") jobs=jobs.filter(j=>!j.project);
@@ -110,8 +110,8 @@ export function bulkOn(js){ return js.some(j=>j.enabled!==false); }
 
 // Single source for the button phrasing, with or without a trailing count —
 // used by bulkBtn's group buttons (no count; the pgh-count badge already
-// shows one) and by the #bulk-all block below (count, since "all" is
-// ambiguous while a chip filter is on).
+// shows one) and by the #bulk-all block in bin/dashboard.html's renderJobs
+// (count, since "all" is ambiguous while a chip filter is on).
 export function bulkLabel(on, n){ return (on?"Disable all":"Enable all")+(n===undefined?"":" "+n); }
 
 export function clearJobFilters(){

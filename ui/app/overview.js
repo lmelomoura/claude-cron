@@ -15,11 +15,13 @@
    sibling defined elsewhere in this module would work on the real page and
    throw a ReferenceError the moment its own test tried to run it standing
    alone, which is exactly the gap a characterisation test exists to not
-   have. Where that means a formula also lives in ui/app/page.js's bindings
-   (money's currency format, fmtWhen's date format), it is duplicated here
-   on purpose, the same trade `backoffMultiplier`'s BACKOFF_AFTER/BACKOFF_MAX
-   pair already makes against the engine's own bash copy: kept in step by
-   hand, called out here so the next person knows there are two to update.
+   have. Where that means a formula also lives elsewhere -- money's currency
+   format is one of page.js's own bindings; fmtWhen's date format is not (it
+   is bin/dashboard.html's own, and stays off page.js's list because nothing
+   in ui/app/ ever imports it) -- it is duplicated here on purpose, the same
+   trade `backoffMultiplier`'s BACKOFF_AFTER/BACKOFF_MAX pair already makes
+   against the engine's own bash copy: kept in step by hand, called out here
+   so the next person knows there are two to update.
 
    pageHeader, kpiCard, renderPulse and renderOverviewHead, added below the
    pinned functions, are a different kind of thing: they build the DOM the
@@ -72,27 +74,49 @@ export function pulseKpis(k){
   return [
     {label: "Checks", value: String(checks),
      sub: checks ? "in the last 24h" : "nothing yet", tone: "", filter: "", door: false},
+    // A percentage of nothing is not 0%, it is nothing -- checks-gated rather
+    // than n-gated, or a fresh install with checks:0 but a stray per.woke would
+    // print "0% of checks" instead of a dash. pct() already refuses to divide
+    // by zero, but the old code appended " of checks" to its "—" regardless,
+    // which reads as a dash with a dangling preposition rather than the plain
+    // "nothing to report" pulseHtml's own original gave this card.
     {label: "Woke a run", value: String(per.woke || 0),
-     sub: pct(per.woke || 0) + " of checks", tone: "", filter: "", door: false},
+     sub: checks ? pct(per.woke || 0) + " of checks" : "—", tone: "", filter: "", door: false},
     // Warnings and errors are a way IN to the runs they count, and inert
     // when there is nothing to go to -- see pulseHtml's own comment beside
     // chip() on why a card with nothing to show must not navigate. `door`
     // stays true even then: it is what tells kpiCard this is a button that
     // happens to have nothing behind it right now, not a card that was
     // never a button to begin with.
+    //
+    // Both cards name their own window ("in the last 7 days") whether the
+    // count is zero or not. Checks and Woke a run are 24h figures and the
+    // band right below them is titled "Last 24 hours" -- a neighbour this
+    // close means Warnings/Errors have to say "7 days" for themselves, every
+    // time, rather than only when there is nothing to read: naming the
+    // window on the empty sentence and dropping it on the one an operator
+    // actually reads is what let a Monday failure sit between two 24h cards
+    // reading as if it happened today.
     {label: "Warnings", value: String(warn),
-     sub: warn ? "Runs that finished without failing but did not do the work — open them in Runs"
+     sub: warn ? "Runs that finished without failing but did not do the work in the last 7 days — open them in Runs"
                : "No warnings in the last 7 days",
      tone: "warn", filter: warn ? "warning" : "", door: true},
     {label: "Errors", value: String(err),
-     sub: err ? "Runs that failed — open them in Runs" : "No errors in the last 7 days",
+     sub: err ? "Runs that failed in the last 7 days — open them in Runs" : "No errors in the last 7 days",
      tone: "err", filter: err ? "error" : "", door: true},
     // The pulse-f strip this redesign removed paired "today" with "7 days"
     // for both runs and spend. The week's spend is that pair's other half --
     // one card, the total in its own sublabel, not a separate strip ("one
-    // number per label" applied to the pair it was always part of). The
-    // two run counts (runsToday/runsWeek) are deliberately NOT added here or
-    // to any other card -- see task-8-report.md for why.
+    // number per label" applied to the pair it was always part of). The two
+    // run counts (runsToday/runsWeek) are deliberately NOT added here or to
+    // any other card: "Woke a run"'s sub is pinned character-for-character by
+    // test_the_kpis_come_from_the_numbers_the_loop_recorded, so nothing can be
+    // appended there without breaking a pinned test; "Checks" counts probe
+    // cycles, a different thing from a run, so a run count there would
+    // misattribute it; and inventing a sixth card was ruled out by the
+    // original brief. runsToday already surfaces, unreliably, through the
+    // greeting sentence above this row; both counts stay one click away on
+    // the Runs page regardless.
     {label: "Spent today", value: money(spentToday),
      sub: money(spentWeek) + " over 7 days", tone: "", filter: "", door: false},
   ];
@@ -203,9 +227,9 @@ export function nextRunNote(job, facts){
     wrap.appendChild(muted);
     return wrap;
   }
-  // Mirrors page.js's fmtWhen() exactly: explicit parts rather than
-  // dateStyle:"short", which renders a 2-digit year. Duplicated rather than
-  // imported -- see this file's own banner comment.
+  // Mirrors bin/dashboard.html's own fmtWhen() exactly: explicit parts
+  // rather than dateStyle:"short", which renders a 2-digit year. Duplicated
+  // rather than imported -- see this file's own banner comment.
   wrap.appendChild(document.createTextNode(new Date(nextAt * 1000).toLocaleString(undefined,
     {year: "numeric", month: "numeric", day: "numeric",
      hour: "numeric", minute: "2-digit", second: "2-digit"})));
