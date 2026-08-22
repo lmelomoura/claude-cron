@@ -2016,11 +2016,19 @@ cmd_skills() { # claude-cron skills [install]
 # TWO questions, and only the first of them used to be asked. `ui-sources`
 # answers "was this built from the sources sitting next to it" -- the
 # forgot-to-rebuild case. `ui-bundle` answers "and is this still what that
-# build produced" -- nothing hashed the committed bytes, so code injected
-# straight into the artifact, with every source and every toolchain file
-# untouched, passed this check without a word. A mangled merge conflict
-# inside a generated file is that same shape, and nobody reads a generated
-# file to find one.
+# build produced, AS THIS FILE" -- nothing hashed the committed bytes, so
+# code injected straight into the artifact, with every source and every
+# toolchain file untouched, passed this check without a word. A mangled
+# merge conflict inside a generated file is that same shape, and nobody
+# reads a generated file to find one.
+#
+# `ui-bundle` binds the artifact's own name into that hash (build/ui-bundle-
+# digest.sh, called below exactly as build/build-ui.sh calls it) so a
+# stamp only ever verifies against the file it was written for. Without
+# that, `cp bin/static/app.js bin/static/app.css` leaves app.css holding a
+# body that genuinely IS what its stamp describes -- app.js's body, stamp
+# and all -- so a digest blind to which file it was asked about reports it
+# clean while the dashboard would load JavaScript as a stylesheet.
 #
 # Both stamps are read with an EXACTLY-ONE rule rather than `tail -1`. That
 # was the second hole: appending a second `/* ui-sources: ... */` line
@@ -6091,6 +6099,60 @@ JSON
   grep -q "^RESULT ok=1 bad=1$" "$tmp/uicheck.out" \
     && ok "an untracked bin/static/extra.js fails the check while the genuine artifact beside it still passes" \
     || bad "check_ui_artifacts did not flag the untracked file the way it should: $(cat "$tmp/uicheck.out")"
+
+  echo "check_ui_artifacts() — two committed artifacts swapped must be caught by name, not both read ok"
+  # Reproduces "cp bin/static/app.js bin/static/app.css" against a throwaway
+  # mirror of its own: ui-bundle used to hash a file's own body against
+  # itself with no mention anywhere of WHICH artifact that body belonged to,
+  # so overwriting one committed artifact with another's bytes -- stamp
+  # included -- left the stamp matching perfectly, because it was computed
+  # on exactly the bytes now sitting under the wrong name. Two genuinely
+  # built and stamped artifacts, hand-stamped with the same two scripts
+  # build/build-ui.sh itself calls, then one is copied over the other
+  # exactly as a botched rebase or a copy-paste in build/ would leave it.
+  local swapdir="$tmp/uiswap"
+  mkdir -p "$swapdir/bin/static" "$swapdir/build" "$swapdir/ui"
+  cp "$BASE_DIR/build/ui-digest.sh" "$BASE_DIR/build/ui-bundle-digest.sh" \
+     "$BASE_DIR/build/build-ui.sh" "$swapdir/build/"
+  [ -f "$BASE_DIR/package.json" ] && cp "$BASE_DIR/package.json" "$swapdir/package.json"
+  echo 'console.log("fake ui source");' > "$swapdir/ui/fake.js"
+  echo 'console.log("this is app.js");' > "$swapdir/bin/static/app.js"
+  echo 'body { color: red; }' > "$swapdir/bin/static/app.css"
+  (
+    BASE_DIR="$swapdir"
+    for art in bin/static/app.js bin/static/app.css; do
+      printf '/* ui-bundle: %s */\n' \
+        "$(bash "$BASE_DIR/build/ui-bundle-digest.sh" "$BASE_DIR/$art")" \
+        >> "$BASE_DIR/$art"
+      printf '/* ui-sources: %s */\n' "$(bash "$BASE_DIR/build/ui-digest.sh")" \
+        >> "$BASE_DIR/$art"
+    done
+  )
+  (
+    BASE_DIR="$swapdir"; _wpass=0; _wfail=0
+    ok()  { _wpass=$(( _wpass + 1 )); }
+    bad() { _wfail=$(( _wfail + 1 )); echo "BAD: $1"; }
+    check_ui_artifacts
+    echo "RESULT ok=$_wpass bad=$_wfail"
+  ) > "$tmp/uiswap-before.out" 2>&1
+  grep -q "^RESULT ok=2 bad=0$" "$tmp/uiswap-before.out" \
+    && ok "before the swap, both freshly built artifacts genuinely check out" \
+    || bad "setup did not produce two clean artifacts: $(cat "$tmp/uiswap-before.out")"
+  # The swap itself: app.js's committed bytes, stamp included, land verbatim
+  # under app.css's name -- app.css's previous content is gone, exactly as a
+  # plain `cp` would leave it.
+  cp "$swapdir/bin/static/app.js" "$swapdir/bin/static/app.css"
+  (
+    BASE_DIR="$swapdir"; _wpass=0; _wfail=0
+    ok()  { _wpass=$(( _wpass + 1 )); }
+    bad() { _wfail=$(( _wfail + 1 )); echo "BAD: $1"; }
+    check_ui_artifacts
+    echo "RESULT ok=$_wpass bad=$_wfail"
+  ) > "$tmp/uiswap-after.out" 2>&1
+  grep -q "^RESULT ok=1 bad=1$" "$tmp/uiswap-after.out" \
+    && grep -q "BAD: bin/static/app.css" "$tmp/uiswap-after.out" \
+    && ok "app.js's bytes copied onto app.css's name are caught by name, not read as a clean app.css" \
+    || bad "the swap was not caught the way it should: $(cat "$tmp/uiswap-after.out")"
 
   echo "the committed UI artifacts — built from the sources sitting next to them"
   check_ui_artifacts

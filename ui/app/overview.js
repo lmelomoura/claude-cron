@@ -89,20 +89,24 @@ export function pulseKpis(k){
     // happens to have nothing behind it right now, not a card that was
     // never a button to begin with.
     //
-    // Both cards name their own window ("in the last 7 days") whether the
-    // count is zero or not. Checks and Woke a run are 24h figures and the
-    // band right below them is titled "Last 24 hours" -- a neighbour this
-    // close means Warnings/Errors have to say "7 days" for themselves, every
-    // time, rather than only when there is nothing to read: naming the
-    // window on the empty sentence and dropping it on the one an operator
-    // actually reads is what let a Monday failure sit between two 24h cards
-    // reading as if it happened today.
-    {label: "Warnings", value: String(warn),
-     sub: warn ? "Runs that finished without failing but did not do the work in the last 7 days — open them in Runs"
-               : "No warnings in the last 7 days",
+    // The sublabel carries the window and nothing else -- "in the last 7
+    // days", the same string whether the count is zero or not. Checks and
+    // Woke a run are 24h figures and the band right below them is titled
+    // "Last 24 hours" -- a neighbour this close means Warnings/Errors have
+    // to say "7 days" for themselves, every time, or a Monday failure reads
+    // as if it happened today. What a warning or an error actually IS goes
+    // in `title` instead, where a full sentence is free rather than
+    // fighting the three-to-five-word bar every other sublabel holds to --
+    // see kpiCard's own comment on how `title` reaches the card. "open them
+    // in Runs" is dropped rather than moved: the card is already a button,
+    // and a disabled one already says there is nothing behind it. Do not
+    // restate the count in the sublabel ("2 in the last 7 days") -- the
+    // number is already the largest thing on the card.
+    {label: "Warnings", value: String(warn), sub: "in the last 7 days",
+     title: "Runs that finished without failing but did not do the work",
      tone: "warn", filter: warn ? "warning" : "", door: true},
-    {label: "Errors", value: String(err),
-     sub: err ? "Runs that failed in the last 7 days — open them in Runs" : "No errors in the last 7 days",
+    {label: "Errors", value: String(err), sub: "in the last 7 days",
+     title: "Runs that failed",
      tone: "err", filter: err ? "error" : "", door: true},
     // The pulse-f strip this redesign removed paired "today" with "7 days"
     // for both runs and spend. The week's spend is that pair's other half --
@@ -881,7 +885,14 @@ function pageHeaderAction(a){
    -- it is empty both for a card that never navigates and for a door at a
    zero count -- which is why `door` is a separate flag pulseKpis sets.
    test_the_warning_and_error_cards_lead_to_the_runs_they_count pins what
-   `filter` means; the door-vs-plain-element test beside it pins this. */
+   `filter` means; the door-vs-plain-element test beside it pins this.
+
+   `title`, when pulseKpis hands one over, becomes the card's own DOM
+   `.title` -- a native tooltip, not markup, so a full explanatory sentence
+   costs nothing here the way it would in `sub`. It exists because `sub` is
+   held to three to five words (see pulseKpis's own comment beside
+   Warnings/Errors): the definition of what the card is counting lives in
+   the tooltip instead of being spliced into the sublabel. */
 export function kpiCard(opts){
   // `opts` rather than destructuring in the parameter list itself: _plainfn
   // (tests/test_page_contract.py) extracts a function by name by matching
@@ -889,8 +900,9 @@ export function kpiCard(opts){
   // destructured parameter's own opening brace would be mistaken for the
   // body's. Destructuring on the next line instead keeps every call site
   // (`kpiCard({icon, tone, ...})`) exactly as it was.
-  const {icon: iconName, tone, value, label, sub, filter, door} = opts;
+  const {icon: iconName, tone, value, label, sub, title, filter, door} = opts;
   const card = el(door ? "button" : "div", "kpi-card" + (tone ? " " + tone : ""));
+  if(title) card.title = title;
   const head = el("div", "kpi-card-h");
   const icWrap = el("div", "kpi-card-ic");
   if(iconName) icWrap.appendChild(icon(iconName));
@@ -1009,7 +1021,7 @@ export function renderOverviewHead(kpis, firstName){
                    "Errors": "xcircle", "Spent today": "dollar"};
     cards.forEach(c => kpiHost.appendChild(kpiCard({
       icon: ICONS[c.label], tone: c.tone, value: c.value,
-      label: c.label, sub: c.sub, filter: c.filter, door: c.door,
+      label: c.label, sub: c.sub, title: c.title, filter: c.filter, door: c.door,
     })));
   }
 

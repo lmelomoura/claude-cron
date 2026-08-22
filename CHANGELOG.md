@@ -1023,6 +1023,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   satisfied and so never caught this) to an exact match on the card's own
   sub.
 
+- **The Warnings and Errors KPI cards no longer grow taller than their
+  neighbours the moment there is something to read.** The previous fix
+  named the 7-day window at a non-zero count by splicing it into the middle
+  of the cards' existing explanatory sentence — "Runs that finished without
+  failing but did not do the work in the last 7 days — open them in Runs"
+  (96 characters) and "Runs that failed in the last 7 days — open them in
+  Runs" (55 characters) — which measured at 200px and 165px against a
+  normal card's 130px, so the row of five went ragged the instant a
+  warning or error existed. The sublabel now carries the window alone —
+  "in the last 7 days", the same string whether the count is zero or
+  not — and the definition of what a warning or an error IS moves to the
+  card's own `title` attribute (a native tooltip), where a full sentence
+  costs nothing. "open them in Runs" is dropped rather than moved: the card
+  is already a button, and a disabled one already says there is nothing
+  behind it. All five cards now render at the same height regardless of
+  count — measured at 130px in both themes.
+
+- **Swapping two committed UI artifacts used to pass the freshness guard
+  clean.** `ui-bundle` hashed a built file's own body against itself with
+  no mention anywhere of WHICH artifact that body was supposed to be, so
+  `cp bin/static/app.js bin/static/app.css` left `app.css` holding
+  JavaScript, byte for byte, under a stamp that verified perfectly — the
+  digest was blind to the file's own name, and the body it was asked to
+  check was, genuinely, the body that stamp described. A botched rebase or
+  a copy-paste in `build/` swapping two outputs would have shipped a
+  dashboard loading JavaScript as a stylesheet, rendering with no styling
+  at all, while `claude-cron selftest` reported every artifact fine.
+  `build/ui-bundle-digest.sh` now hashes the artifact's own basename ahead
+  of its body, so a stamp only ever verifies against a file of the same
+  name it was written for — `build/build-ui.sh` and `check_ui_artifact` in
+  `bin/claude-cron` both delegate to this one script, so there is exactly
+  one place that decides what "the artifact's own name" means rather than
+  two call sites that could drift apart.
+  `test_a_files_own_stamp_does_not_verify_under_a_different_name`
+  (`tests/test_page_contract.py`) and a new `check_ui_artifacts()` case in
+  `cmd_selftest` (`bin/claude-cron`) both reproduce the swap directly and
+  pin the fix.
+
 ### Added
 
 - **A read-only query layer for the Security dashboard.** `security/queries.py`

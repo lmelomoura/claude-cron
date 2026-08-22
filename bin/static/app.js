@@ -179,18 +179,24 @@
       // happens to have nothing behind it right now, not a card that was
       // never a button to begin with.
       //
-      // Both cards name their own window ("in the last 7 days") whether the
-      // count is zero or not. Checks and Woke a run are 24h figures and the
-      // band right below them is titled "Last 24 hours" -- a neighbour this
-      // close means Warnings/Errors have to say "7 days" for themselves, every
-      // time, rather than only when there is nothing to read: naming the
-      // window on the empty sentence and dropping it on the one an operator
-      // actually reads is what let a Monday failure sit between two 24h cards
-      // reading as if it happened today.
+      // The sublabel carries the window and nothing else -- "in the last 7
+      // days", the same string whether the count is zero or not. Checks and
+      // Woke a run are 24h figures and the band right below them is titled
+      // "Last 24 hours" -- a neighbour this close means Warnings/Errors have
+      // to say "7 days" for themselves, every time, or a Monday failure reads
+      // as if it happened today. What a warning or an error actually IS goes
+      // in `title` instead, where a full sentence is free rather than
+      // fighting the three-to-five-word bar every other sublabel holds to --
+      // see kpiCard's own comment on how `title` reaches the card. "open them
+      // in Runs" is dropped rather than moved: the card is already a button,
+      // and a disabled one already says there is nothing behind it. Do not
+      // restate the count in the sublabel ("2 in the last 7 days") -- the
+      // number is already the largest thing on the card.
       {
         label: "Warnings",
         value: String(warn),
-        sub: warn ? "Runs that finished without failing but did not do the work in the last 7 days \u2014 open them in Runs" : "No warnings in the last 7 days",
+        sub: "in the last 7 days",
+        title: "Runs that finished without failing but did not do the work",
         tone: "warn",
         filter: warn ? "warning" : "",
         door: true
@@ -198,7 +204,8 @@
       {
         label: "Errors",
         value: String(err),
-        sub: err ? "Runs that failed in the last 7 days \u2014 open them in Runs" : "No errors in the last 7 days",
+        sub: "in the last 7 days",
+        title: "Runs that failed",
         tone: "err",
         filter: err ? "error" : "",
         door: true
@@ -730,8 +737,9 @@
     return btn;
   }
   function kpiCard(opts) {
-    const { icon: iconName, tone, value, label, sub, filter, door } = opts;
+    const { icon: iconName, tone, value, label, sub, title, filter, door } = opts;
     const card = el(door ? "button" : "div", "kpi-card" + (tone ? " " + tone : ""));
+    if (title) card.title = title;
     const head = el("div", "kpi-card-h");
     const icWrap = el("div", "kpi-card-ic");
     if (iconName) icWrap.appendChild(icon(iconName));
@@ -831,6 +839,7 @@
         value: c.value,
         label: c.label,
         sub: c.sub,
+        title: c.title,
         filter: c.filter,
         door: c.door
       })));
@@ -882,5 +891,5 @@
     jobCard
   };
 })();
-/* ui-bundle: fc26191d35141266fd756ba875dfa3f8b45dcc631c23f12d36be4b45833cf34b */
-/* ui-sources: 6c79dd90449fc3989bb75ef0d642c6b0c5682912a000f18b698aef5d98f31353 */
+/* ui-bundle: b3a1a77bf483aa4af7a2d0f893021e62dc85515ba8e9801f71605ec4ea6588c5 */
+/* ui-sources: 428a88024f77dcc6641508f28eadfaa0bc31f3a3072737d4e2f709643990311c */

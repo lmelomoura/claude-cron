@@ -3811,22 +3811,57 @@ def test_the_bundles_own_body_is_hashed_not_only_its_sources(tmp_path):
         "the committed bundle carries no body stamp at all"
     stamped = re.search(r"^/\* ui-bundle: ([0-9a-f]{64}) \*/$", real, re.M).group(1)
 
-    clean = tmp_path / "clean.js"
+    # Kept under its OWN basename, security.js, in a throwaway directory of
+    # its own: the stamp now binds the artifact's name as well as its body
+    # (see this test's sibling, test_a_files_own_stamp_does_not_verify_
+    # under_a_different_name, below) so copying this content to a
+    # differently-named file would legitimately produce a different digest
+    # -- that is the fix, not a bug this test should trip over.
+    clean_dir = tmp_path / "clean"; clean_dir.mkdir()
+    clean = clean_dir / "security.js"
     clean.write_text(real)
     p = _bundle_digest(script, clean)
     assert p.returncode == 0, p.stderr
     assert p.stdout.strip() == stamped, \
         "the committed bundle does not hash to its own stamp — rebuild it"
 
-    # ...and the same file with one line of injected code in its body does not.
+    # ...and the same file, same name, with one line of injected code in its
+    # body does not.
     lines = real.splitlines(True)
     lines.insert(len(lines) - 2, "window.__pwned = 1;\n")
-    tampered = tmp_path / "tampered.js"
+    tampered_dir = tmp_path / "tampered"; tampered_dir.mkdir()
+    tampered = tampered_dir / "security.js"
     tampered.write_text("".join(lines))
     p = _bundle_digest(script, tampered)
     assert p.returncode == 0, p.stderr
     assert p.stdout.strip() != stamped, \
         "a bundle with injected code still hashes to the stamp it carries"
+
+
+def test_a_files_own_stamp_does_not_verify_under_a_different_name(tmp_path):
+    """Finding B: `cp bin/static/app.js bin/static/app.css` used to pass the
+    selftest with every artifact reading 'ok' -- ui-bundle hashed a file's
+    own body against itself with no mention anywhere of WHICH artifact that
+    body was supposed to be, so app.js's bytes, stamp included, verified
+    just as cleanly sitting under app.css's name as they did under their
+    own. The fix binds the artifact's basename into the same hash the body
+    goes through, so a digest taken under one name cannot be replayed as
+    proof for a file of another name."""
+    script = REPO / "build" / "ui-bundle-digest.sh"
+    body = "window.x = 1;\n"
+    as_js = tmp_path / "app.js"
+    as_js.write_text(body)
+    as_css = tmp_path / "app.css"
+    as_css.write_text(body)
+    hash_js = _bundle_digest(script, as_js).stdout.strip()
+    hash_css = _bundle_digest(script, as_css).stdout.strip()
+    assert re.fullmatch(r"[0-9a-f]{64}", hash_js), "could not digest app.js"
+    assert re.fullmatch(r"[0-9a-f]{64}", hash_css), "could not digest app.css"
+    assert hash_js != hash_css, (
+        "two files with IDENTICAL bodies but different names hashed the "
+        "same — a stamp computed for one would silently verify for the "
+        "other after a swap"
+    )
 
 
 def test_a_second_stamp_line_is_refused_rather_than_silently_preferred(tmp_path):
