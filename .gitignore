@@ -1,5 +1,5 @@
 # Local runtime state — never shared
-/data/
+data/
 dist/
 
 # Secrets and personal configuration

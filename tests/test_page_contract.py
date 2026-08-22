@@ -3800,60 +3800,294 @@ def test_an_ignored_file_under_ui_does_not_redden_the_selftest(tmp_path):
         "a tracked file was dropped from the fingerprint by an ignore pattern"
 
 
-def _selectors(css_text):
-    """Every selector in a stylesheet, as a set. Comments and declaration
-    bodies are dropped; whitespace inside a selector is collapsed so
-    `a , b` and `a, b` compare equal."""
+_PLACEHOLDER_CLASS = re.compile(r"^__[A-Z]+__$")
+
+
+def _classes_in_static_markup(html_text):
+    """Every literal `class="..."` (or `'...'`) value in `html_text` outside
+    <script> blocks, split into individual class names. `__BOOT__`,
+    `__BUILD__`, `__TOKEN__` and `__FAVICON__` are template placeholders the
+    server substitutes before serving (see
+    test_the_page_renders_with_the_token_and_favicon_substituted) rather than
+    real class names, so tokens matching that shape are excluded."""
+    markup = re.sub(r"<script\b[^>]*>.*?</script>", "", html_text,
+                     flags=re.S | re.I)
+    used = {}
+    for m in re.finditer(r'class=(?:"([^"]*)"|\'([^\']*)\')', markup):
+        value = m.group(1) if m.group(1) is not None else m.group(2)
+        for cls in value.split():
+            if _PLACEHOLDER_CLASS.match(cls):
+                continue
+            used.setdefault(cls, set()).add("bin/dashboard.html")
+    return used
+
+
+class _NotLiteral(Exception):
+    """The class expression is not a plain string, nor a `+` chain of plain
+    strings and ternaries between plain strings, so its value cannot be
+    known without running the page."""
+
+
+def _skip_js_string(s, i):
+    quote = s[i]
+    i += 1
+    while i < len(s) and s[i] != quote:
+        i += 2 if s[i] == "\\" else 1
+    return i + 1
+
+
+def _matching_paren(s, i):
+    depth = 0
+    while i < len(s):
+        c = s[i]
+        if c in "\"'":
+            i = _skip_js_string(s, i)
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    raise _NotLiteral("unbalanced parentheses")
+
+
+def _split_top_level(s, sep):
+    """Split `s` on `sep`, ignoring occurrences inside a string or nested
+    ()/[]."""
+    parts, depth, cur, i = [], 0, [], 0
+    while i < len(s):
+        c = s[i]
+        if c in "\"'":
+            j = _skip_js_string(s, i)
+            cur.append(s[i:j])
+            i = j
+            continue
+        if c in "([":
+            depth += 1
+        elif c in ")]":
+            depth -= 1
+        if depth == 0 and s.startswith(sep, i):
+            parts.append("".join(cur))
+            cur = []
+            i += len(sep)
+            continue
+        cur.append(c)
+        i += 1
+    parts.append("".join(cur))
+    return parts
+
+
+def _literal_values(expr):
+    """The set of strings a JS expression can evaluate to -- IF it is built
+    only from string literals and `+`, plus ternaries whose two branches are
+    themselves such expressions (`"btn " + (a.primary ? "primary" :
+    "ghost")`, `"secchip" + (n ? "" : " zero") + (on ? " on" : "")`, both
+    patterns this codebase actually uses). Anything else -- a bare
+    identifier, a function call, a template literal -- raises _NotLiteral."""
+    expr = expr.strip()
+    if expr == "":
+        return {""}
+    values = {""}
+    for term in _split_top_level(expr, "+"):
+        values = {a + b for a in values for b in _literal_term(term.strip())}
+    return values
+
+
+def _literal_term(term):
+    if not term:
+        raise _NotLiteral("empty term")
+    if term[0] in "\"'":
+        end = _skip_js_string(term, 0)
+        if end != len(term):
+            raise _NotLiteral(f"trailing content after a string: {term!r}")
+        return {term[1:-1]}
+    if term[0] != "(":
+        raise _NotLiteral(f"not a string literal or a ternary: {term!r}")
+    close = _matching_paren(term, 0)
+    if close != len(term) - 1:
+        raise _NotLiteral(f"trailing content after ')': {term!r}")
+    inner = term[1:close]
+    depth, i, qpos = 0, 0, None
+    while i < len(inner):
+        c = inner[i]
+        if c in "\"'":
+            i = _skip_js_string(inner, i)
+            continue
+        if c in "([":
+            depth += 1
+        elif c in ")]":
+            depth -= 1
+        elif c == "?" and depth == 0:
+            qpos = i
+            break
+        i += 1
+    if qpos is None:
+        raise _NotLiteral(f"parenthesised term is not a ternary: {term!r}")
+    depth, nested, cpos, i = 0, 0, None, qpos + 1
+    while i < len(inner):
+        c = inner[i]
+        if c in "\"'":
+            i = _skip_js_string(inner, i)
+            continue
+        if c in "([":
+            depth += 1
+        elif c in ")]":
+            depth -= 1
+        elif c == "?" and depth == 0:
+            nested += 1
+        elif c == ":" and depth == 0:
+            if nested == 0:
+                cpos = i
+                break
+            nested -= 1
+        i += 1
+    if cpos is None:
+        raise _NotLiteral(f"ternary has no matching ':': {term!r}")
+    return _literal_values(inner[qpos + 1:cpos]) | _literal_values(inner[cpos + 1:])
+
+
+_DOM_CALL_RE = re.compile(r"\b(?:el|secEl)\(")
+_CLASSNAME_ASSIGN_RE = re.compile(r"\.className\s*=\s*([^;]+);")
+
+
+def _dom_calls(text):
+    """(line, cls-argument-text) for every `el(tag, cls, ...)` / `secEl(tag,
+    cls, ...)` call in `text`. The two functions' own definitions
+    (`function el(tag, cls, text){` / `export function secEl(tag, cls,
+    text){`) match this pattern too, but their second argument is the bare
+    identifier `cls`, which _literal_values rejects as non-literal -- so
+    they fall out on their own rather than needing a special case here."""
+    for m in _DOM_CALL_RE.finditer(text):
+        i = m.end()
+        depth, args, start = 1, [], i
+        while depth > 0 and i < len(text):
+            c = text[i]
+            if c in "\"'":
+                i = _skip_js_string(text, i)
+                continue
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+                if depth == 0:
+                    args.append(text[start:i])
+                    break
+            elif c == "," and depth == 1:
+                args.append(text[start:i])
+                start = i + 1
+            i += 1
+        else:
+            continue
+        if len(args) >= 2:
+            yield text.count("\n", 0, m.start()) + 1, args[1].strip()
+
+
+def _classes_used_in_js(paths):
+    """Every class name reachable, statically, from an `el()`/`secEl()` call
+    or a `.className =` assignment in `paths`. Expressions _literal_values
+    cannot resolve are silently dropped -- see the caller's docstring for
+    what that misses."""
+    used = {}
+    for path in paths:
+        text = path.read_text()
+        rel = str(path.relative_to(REPO))
+        exprs = list(_dom_calls(text))
+        exprs += [(text.count("\n", 0, m.start()) + 1, m.group(1).strip())
+                  for m in _CLASSNAME_ASSIGN_RE.finditer(text)]
+        for line, expr in exprs:
+            if expr in ("null", ""):
+                continue
+            try:
+                values = _literal_values(expr)
+            except _NotLiteral:
+                continue
+            for value in values:
+                for cls in value.split():
+                    used.setdefault(cls, set()).add(f"{rel}:{line}")
+    return used
+
+
+def _classes_defined_in_css(css_text):
+    """Every class name that appears anywhere in a selector -- not a
+    declaration body -- of a stylesheet."""
     body = re.sub(r"/\*.*?\*/", "", css_text, flags=re.S)
-    out = set()
-    for chunk in re.findall(r"([^{}]+)\{[^{}]*\}", body):
-        sel = " ".join(chunk.split())
-        if sel and not sel.startswith("@"):
-            out.add(sel)
-    return out
+    classes = set()
+    for selector in re.findall(r"([^{}]+)\{[^{}]*\}", body):
+        if selector.strip().startswith("@"):
+            continue
+        classes.update(re.findall(r"\.([A-Za-z_-][A-Za-z0-9_-]*)", selector))
+    return classes
 
 
-def test_no_css_rule_was_lost_when_the_stylesheet_moved_out(srv):
-    """The move out of dashboard.html is mechanical, and mechanical moves of
-    1400 lines lose things quietly. This is the contract: whatever the page
-    styled before, it styles now.
+# Classes the shipped UI reaches for that legitimately carry no CSS rule of
+# their own. Keep this short, and justify every entry: it exists so the
+# guard below can stay strict by default instead of growing exceptions.
+_UNSTYLED_CLASS_ALLOWLIST = {
+    # Marks the two DOM nodes relocate() moves between the dashboard and the
+    # Jobs/Runs pages (see "Slots receive the movable blocks" in
+    # ui/css/pages.css). Nothing selects on the class -- the move is by id
+    # -- and its parent (.slot) is deliberately styleless so the move never
+    # shifts the block by a pixel. A documentation marker, not a style hook.
+    "movable",
+    # The one caveat span in secPaint()'s status line (ui/security/
+    # analysis.js). Its parent, .secstat, already sets
+    # color:var(--muted) for every plain child span; "note" names this one
+    # sentence for the reader of the source, not for the stylesheet.
+    "note",
+    # Pure grouping <div>s: every child they hold (.warnline,
+    # .secpj-caption, .secidx-catrow, ...) already carries its own full
+    # styling. Matches this codebase's own convention for a wrapper that
+    # must add nothing of its own -- see .slot's comment in
+    # ui/css/pages.css.
+    "secfind-strip",
+    "secidx-categories",
+}
 
-    Compares SELECTORS rather than bytes -- the three files are allowed to
-    reorder and regroup rules, which is the whole point of splitting them --
-    and it is checked against the built artifact, not the sources, so a rule
-    that lands in a file the build forgets to concatenate still fails."""
-    served, ctype = srv.static_asset("app.css")
+
+def test_no_class_the_shipped_ui_uses_lacks_a_css_rule(srv):
+    """The test this replaces, test_no_css_rule_was_lost_when_the_stylesheet_
+    moved_out, guarded exactly one mechanical CSS move and nothing since.
+    Every later task that legitimately DELETES a rule as a page gets
+    redrawn had to hand-edit its fixture in the same diff -- and at that
+    point a real regression and an intentional deletion look identical: both
+    are "the fixture changed to match the new build." A reviewer who cannot
+    see the deleted rule's history has no way to tell them apart.
+
+    This test needs no fixture and no per-task editing. It collects every
+    class name the shipped UI actually reaches for -- literal `class="..."`
+    in bin/dashboard.html's static markup, plus the class arguments of every
+    `el()`/`secEl()` call and `.className =` assignment across ui/app/*.js
+    and ui/security/*.js -- and checks each one against the built
+    stylesheet. What it catches is not "did a rule move" but "did an element
+    ship with no styling behind it": a typo'd class, a renamed one whose old
+    name lingers, or a new one nobody wrote a rule for.
+
+    What it cannot see: a class assembled at runtime from anything other
+    than a string literal or a ternary between two string literals --
+    `"sevpill " + sev`, `"k-" + name`, `"secstate " + secStateKey(f)`, all
+    of which occur in ui/app and ui/security -- is invisible to a static
+    scan and is silently skipped, not flagged. Coverage is therefore
+    partial by construction. The concatenation forms it DOES resolve
+    (`"btn " + (a.primary ? "primary" : "ghost")`,
+    `"secchip" + (n ? "" : " zero") + (on ? " on" : "")`) are the ones this
+    codebase is actually built from."""
+    used = _classes_in_static_markup((REPO / "bin" / "dashboard.html").read_text())
+    js_paths = (sorted((REPO / "ui" / "app").glob("*.js"))
+                + sorted((REPO / "ui" / "security").glob("*.js")))
+    for cls, sources in _classes_used_in_js(js_paths).items():
+        used.setdefault(cls, set()).update(sources)
+
+    css, ctype = srv.static_asset("app.css")
     assert ctype.startswith("text/css")
-    baseline = (REPO / "tests" / "data" / "css-selectors-before.txt").read_text()
-    want = {ln for ln in baseline.splitlines() if ln}
-    have = _selectors(served)
-    assert not (want - have), f"rules lost in the move: {sorted(want - have)[:20]}"
+    have = _classes_defined_in_css(css)
 
-
-def test_the_css_baseline_fixture_is_tracked_not_just_present_on_disk():
-    """The test above reads tests/data/css-selectors-before.txt from disk, but
-    a file sitting in a checkout is not the same thing as a file the
-    repository carries. `tests/data/` used to be swallowed by a bare `data/`
-    line in .gitignore -- git applies a bare `dir/` pattern at any depth, not
-    only at the repo root -- so the fixture was untracked, `git add tests/`
-    silently staged nothing for it, and `git status` stayed clean because an
-    ignored, untracked file never shows up there. The baseline test passed on
-    the machine that generated the file and failed with FileNotFoundError
-    everywhere else, including CI and a fresh clone.
-
-    This guards the fixture itself: it must be tracked by git, independent of
-    whether it happens to exist in the current working tree."""
-    fixture = REPO / "tests" / "data" / "css-selectors-before.txt"
-    result = subprocess.run(
-        ["git", "ls-files", "--error-unmatch", str(fixture)],
-        cwd=REPO, capture_output=True, text=True,
-    )
-    assert result.returncode == 0, (
-        f"{fixture} is not tracked by git (git ls-files --error-unmatch "
-        f"exited {result.returncode}): {result.stderr.strip()}\n"
-        "A fixture a test reads from disk must be a file the repository "
-        "actually carries, or every checkout but the one that generated it "
-        "fails with FileNotFoundError. Fix: `git add -f tests/data/"
-        "css-selectors-before.txt` (or confirm .gitignore no longer ignores "
-        "tests/data/), then commit it."
+    missing = {cls: sorted(sources) for cls, sources in used.items()
+               if cls not in have and cls not in _UNSTYLED_CLASS_ALLOWLIST}
+    assert not missing, (
+        "classes the shipped UI uses have no matching rule in "
+        "bin/static/app.css: "
+        + "; ".join(f".{cls} (from {', '.join(sources)})"
+                    for cls, sources in sorted(missing.items()))
     )
