@@ -3,14 +3,14 @@
    footer) that apply everywhere rather than to one screen. Named groups,
    in the order they appear below: generic elements and the .ic icon/.muted
    text utilities; the required-field marker (.req) and pills (.pill); the
-   page-header eyebrow (h3) and paneblurb; the shared table-row furniture
-   (.rowoff, .rowacts, .jobcell, .favstar, .isopill, td .cap/.nowrap/
-   .projtag, .tblempty); the KPI stat line (.kpi, button.kpi); buttons and
-   icon buttons (.btn, .iconbtn); the filter bar (.picker, .activefilters,
-   .perpage, .toolbar, .searchbox); the table card itself (.tablewrap,
-   table/th/td, sortable headers, status cells, .pager, .empty); the tab
-   strip (.tabs, .tab, .tabpanes, .tabpane); and the project-screen /
-   activity-screen right rail (.secpjside).
+   h3 eyebrow and paneblurb; the shared table-row furniture (.rowoff,
+   .rowacts, .jobcell, .favstar, .isopill, td .cap/.nowrap/.projtag,
+   .tblempty); the page header (.page-header) and the KPI card
+   (.kpi-grid, .kpi-card); buttons and icon buttons (.btn, .iconbtn); the
+   filter bar (.picker, .activefilters, .perpage, .toolbar, .searchbox); the
+   table card itself (.tablewrap, table/th/td, sortable headers, status
+   cells, .pager, .empty); the tab strip (.tabs, .tab, .tabpanes, .tabpane);
+   and the project-screen / activity-screen right rail (.secpjside).
    Nothing here names one page or one dialog. A rule that only makes sense
    on a single screen -- the sidebar, a dialog, a job card, the pulse panel,
    any @media/@container query -- belongs in pages.css instead, even where
@@ -70,24 +70,55 @@ td .projtag{white-space:nowrap}
 .secthead{display:flex;align-items:center;justify-content:space-between;margin:26px 0 12px}
 td .projtag{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--muted)}
 td .projtag .ic{width:12px;height:12px;color:var(--accent)}
-.kpi{display:inline-flex;align-items:baseline;gap:7px;font-size:11.5px;color:var(--muted);
-  text-transform:uppercase;letter-spacing:.04em}
-.kpi b{font-size:15px;font-weight:650;color:var(--ink);letter-spacing:-.02em;
-  font-variant-numeric:tabular-nums;text-transform:none}
-.kpi-sep{width:1px;height:18px;background:var(--line);flex:none}
-/* One wrapping unit, so the pair never splits across two lines. */
-.pulse-chips{display:inline-flex;align-items:center;gap:8px;flex:none}
-/* The warning and error counters filter the runs table. They used to be plain
-   tiles with a title attribute, so nothing on screen said they were clickable —
-   now they are shaped like the filter chips they are. */
-button.kpi{font-family:inherit;border:1px solid var(--line);background:var(--panel);
-  border-radius:20px;padding:5px 12px;cursor:pointer;transition:.13s;align-items:center}
-button.kpi .ic{width:13px;height:13px}
-button.kpi.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 38%,var(--line))}
-button.kpi.err{color:var(--err);border-color:color-mix(in srgb,var(--err) 38%,var(--line))}
-button.kpi:hover:not(:disabled){background:var(--panel2)}
-button.kpi:disabled{cursor:default;color:var(--muted);border-color:var(--line2)}
-button.kpi:disabled b{color:var(--muted);font-weight:600}
+/* ------------------------------------------------------------- page header
+   Icon, title, one sentence, actions trailing on the right -- pageHeader()
+   in ui/app/overview.js is the only place that builds one, so every page
+   this redesign touches opens the same way. The icon sits in its own flex
+   item rather than inline with the title text so a 27px glyph and a 27px/700
+   heading line up on their tops, not their (very different) baselines. */
+.page-header{display:flex;align-items:flex-start;gap:14px;margin:4px 0 22px}
+.page-header-ic{display:flex;flex:none;color:var(--accent)}
+.page-header-ic .ic{width:27px;height:27px}
+.page-header-body{flex:1 1 auto;min-width:0}
+.page-header-body h1{margin:0 0 4px;font-size:27px;font-weight:700;letter-spacing:-.02em}
+.page-header-body p{margin:0;font-size:13px;color:var(--muted)}
+.page-header-actions{display:flex;align-items:center;gap:8px;flex:none;margin-top:3px}
+
+/* ------------------------------------------------------------------ KPI card
+   Five numbers, one card each: a tinted icon square (the tint carries the
+   tone -- accent by default, warn/err for the two that double as filters),
+   the label beside it, the number below at 27px/700, and a muted sublabel.
+   The second number of a pair belongs in that sublabel, never beside the
+   first -- see pulseKpis's own comment on the rule this design exists to
+   hold, which an earlier phase of this project broke six times.
+   Always a real <button>: kpiCard() disables the ones with nowhere to go
+   (see its own comment), and a disabled button is the one element that is
+   natively unclickable and untabbable without a second attribute to keep in
+   sync. */
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+  gap:12px;margin:0 0 20px}
+.kpi-card{display:flex;flex-direction:column;gap:8px;text-align:left;font:inherit;
+  background:var(--panel);border:1px solid var(--line);border-radius:13px;
+  padding:16px 18px;box-shadow:var(--shadow)}
+.kpi-card:disabled{cursor:default}
+.kpi-card:not(:disabled){cursor:pointer}
+.kpi-card:not(:disabled):hover{border-color:color-mix(in srgb,var(--accent) 42%,var(--line))}
+.kpi-card-h{display:flex;align-items:center;gap:10px}
+.kpi-card-h span{font-size:13.5px;font-weight:600}
+.kpi-card-ic{display:flex;align-items:center;justify-content:center;width:30px;height:30px;
+  border-radius:9px;background:var(--accent-soft);color:var(--accent);flex:none}
+.kpi-card-ic .ic{width:15px;height:15px}
+.kpi-card.warn .kpi-card-ic{background:var(--warn-soft);color:var(--warn)}
+.kpi-card.err .kpi-card-ic{background:var(--err-soft);color:var(--err)}
+.kpi-card.warn:not(:disabled):hover{border-color:color-mix(in srgb,var(--warn) 42%,var(--line))}
+.kpi-card.err:not(:disabled):hover{border-color:color-mix(in srgb,var(--err) 42%,var(--line))}
+/* Zero warnings/errors is nothing to open -- the card fades the same register
+   .iconbtn:disabled already uses for "nothing this button can do". The other
+   three cards are ALSO disabled buttons (they never had anywhere to go) but
+   were never doors, so they keep full contrast rather than reading as broken. */
+.kpi-card.warn:disabled,.kpi-card.err:disabled{opacity:.6}
+.kpi-card-num{font-size:27px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.kpi-card-sub{font-size:12.5px;color:var(--muted);line-height:1.4}
 .btn{display:inline-flex;align-items:center;gap:7px;font:inherit;font-size:12.5px;font-weight:560;
   padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);
   color:var(--ink);cursor:pointer;transition:.13s;text-decoration:none}

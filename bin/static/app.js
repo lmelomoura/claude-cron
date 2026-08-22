@@ -280,6 +280,241 @@
     }
     return wrap;
   }
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  var TICK_KINDS = [
+    ["woke", "started a run"],
+    ["idle", "nothing to do"],
+    ["capped", "daily cap reached"],
+    // Money and usage are different ceilings with different next moves: a daily
+    // cap is a number the operator chose and can raise, a spent window is a wait
+    // for the clock. Folding them together hid which one was holding the fleet.
+    ["rate_limited", "usage window spent"],
+    // Not "at its parallel limit": with max_parallel=1 — the common case — that
+    // reads as a ceiling the operator should consider raising, when all it means
+    // is that the previous run had not finished. "Already running" is true at
+    // every limit and says the thing the operator actually needs to know.
+    ["blocked", "already running"],
+    ["failed", "could not run"]
+  ];
+  var clockAt = (sec) => new Date(sec * 1e3).toLocaleTimeString(void 0, { hour: "2-digit", minute: "2-digit" });
+  function tickTotals(ticks) {
+    const T = ticks || {}, buckets = Array.isArray(T.buckets) ? T.buckets : [];
+    const kinds = Array.isArray(T.outcomes) ? T.outcomes : TICK_KINDS.map((x) => x[0]);
+    const per = {};
+    TICK_KINDS.forEach(([name]) => {
+      per[name] = 0;
+    });
+    kinds.forEach((name, i) => {
+      per[name] = buckets.reduce((a, b) => a + (b[i] || 0), 0);
+    });
+    return { per, checks: Object.values(per).reduce((a, n) => a + n, 0), buckets, kinds, T };
+  }
+  function pickLine(lines) {
+    return lines[Math.floor(Date.now() / 36e5) % lines.length];
+  }
+  function greetingParts(m, jobs, firstName) {
+    const per = m.per || {};
+    const checks = m.checks || 0;
+    const h = (/* @__PURE__ */ new Date()).getHours();
+    const when = h < 5 ? "Still up" : h < 12 ? "Good morning" : h < 19 ? "Good afternoon" : "Good evening";
+    const js = jobs || [];
+    const off = js.filter((j) => j.enabled === false).length;
+    const runs = m.runsToday || 0;
+    const money2 = (n) => new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: Math.abs(n) < 0.1 ? 4 : 2
+    }).format(n);
+    const spent = money2(m.spentToday || 0);
+    const nOf = (n, word) => n + " " + word + (n === 1 ? "" : "s");
+    let line;
+    if (!js.length) {
+      line = pickLine([
+        "No jobs yet, so nothing has gone wrong. Enjoy the perfect record while it lasts.",
+        "An empty scheduler has never once exceeded its budget.",
+        "Nothing to run. This is the safest this dashboard will ever be."
+      ]);
+    } else if (off === js.length) {
+      line = pickLine([
+        "Every job is switched off \u2014 the quietest kind of correct.",
+        (js.length === 1 ? "Your one job is disabled" : "All " + js.length + " jobs are disabled") + ". Nothing is spending your money, which is one way to stay under budget.",
+        "The loop is awake and has absolutely nothing to do about it."
+      ]);
+    } else if (m.err) {
+      line = pickLine([
+        nOf(m.err, "error") + " in the last 7 days. They are not going to read themselves.",
+        nOf(m.err, "run") + " failed this week \u2014 the logs know why, and they are one click away.",
+        "Something broke " + nOf(m.err, "time") + " this week. Better here than in review."
+      ]);
+    } else if (per.failed) {
+      line = pickLine([
+        nOf(per.failed, "check") + " could not even start today. That is usually a path or a lock.",
+        "The prober failed " + nOf(per.failed, "time") + " \u2014 worth a look before it becomes a habit."
+      ]);
+    } else if (runs && m.spentToday >= 50) {
+      line = pickLine([
+        nOf(runs, "run") + " and " + spent + " today. The agents have been enthusiastic.",
+        spent + " spent today across " + nOf(runs, "run") + ". Money well spent, presumably.",
+        nOf(runs, "run") + " today. Your credit card has been paying attention."
+      ]);
+    } else if (runs) {
+      line = pickLine([
+        nOf(runs, "run") + " today, nothing on fire.",
+        nOf(runs, "run") + " today for " + spent + ", none of which asked permission.",
+        nOf(runs, "run") + " today and zero errors. Suspicious, but I will take it."
+      ]);
+    } else if (checks) {
+      line = pickLine([
+        "Nothing has run today. The loop is awake, just unimpressed by the queue.",
+        nOf(checks, "check") + " today and nothing worth waking a run for. That is the system working.",
+        "Quiet so far \u2014 every precheck looked and found nothing to do."
+      ]);
+    } else {
+      line = pickLine([
+        "The loop has not checked anything in the last 24 hours.",
+        "No ticks today. If that is a surprise, check that launchd is still loaded."
+      ]);
+    }
+    const first = String(firstName || "").trim().split(/\s+/)[0] || "";
+    return { title: when + (first ? ", " + first : "") + ".", subtitle: line };
+  }
+  function pageHeader({ icon: iconName, title, subtitle, actions }) {
+    const head = el("div", "page-header");
+    const icWrap = el("div", "page-header-ic");
+    if (iconName) icWrap.appendChild(icon(iconName));
+    head.appendChild(icWrap);
+    const body = el("div", "page-header-body");
+    body.appendChild(el("h1", null, title));
+    if (subtitle) body.appendChild(el("p", null, subtitle));
+    head.appendChild(body);
+    if (actions && actions.length) {
+      const bar = el("div", "page-header-actions");
+      actions.forEach((a) => bar.appendChild(pageHeaderAction(a)));
+      head.appendChild(bar);
+    }
+    return head;
+  }
+  function pageHeaderAction(a) {
+    const btn = el("button", "btn " + (a.primary ? "primary" : "ghost"));
+    if (a.id) btn.id = a.id;
+    if (a.icon) btn.appendChild(icon(a.icon));
+    btn.appendChild(document.createTextNode(a.label));
+    return btn;
+  }
+  function kpiCard({ icon: iconName, tone, value, label, sub, filter }) {
+    const btn = el("button", "kpi-card" + (tone ? " " + tone : ""));
+    const head = el("div", "kpi-card-h");
+    const icWrap = el("div", "kpi-card-ic");
+    if (iconName) icWrap.appendChild(icon(iconName));
+    head.appendChild(icWrap);
+    head.appendChild(el("span", null, label));
+    btn.appendChild(head);
+    btn.appendChild(el("div", "kpi-card-num", value));
+    if (sub) btn.appendChild(el("div", "kpi-card-sub", sub));
+    if (filter) btn.dataset.statfilter = filter;
+    else btn.disabled = true;
+    return btn;
+  }
+  function renderPulse(ticks, jobs) {
+    const { per, checks, buckets, kinds, T } = tickTotals(ticks);
+    const span = T.bucket_seconds || 900;
+    const start = T.start || Math.floor(Date.now() / 1e3) - 86400;
+    const totalOf = (b) => b.reduce((a, n) => a + n, 0);
+    const max = buckets.reduce((m, b) => Math.max(m, totalOf(b)), 0);
+    const frag = document.createDocumentFragment();
+    frag.appendChild(el("div", "pulse-t", "Last 24 hours"));
+    if (!checks) {
+      const asleep = el("div", "band asleep");
+      asleep.appendChild(el(
+        "span",
+        null,
+        "The loop has not checked anything in the last 24 hours. " + bandEmptyReason(jobs)
+      ));
+      frag.appendChild(asleep);
+    } else {
+      const band = el("div", "band");
+      buckets.forEach((b, bi) => {
+        const at = start + bi * span, tot = totalOf(b);
+        const bk = el("div", "bk");
+        bk.title = tot ? clockAt(at) + "\u2013" + clockAt(at + span) + "\n" + kinds.map((name, i) => b[i] ? b[i] + " " + (TICK_KINDS.find((x) => x[0] === name) || [, name])[1] : "").filter(Boolean).join("\n") : clockAt(at) + "\u2013" + clockAt(at + span) + "\nno checks";
+        kinds.forEach((name, i) => {
+          if (!b[i]) return;
+          const bar = el("i", "k-" + name);
+          bar.style.height = (b[i] / max * 100).toFixed(2) + "%";
+          bk.appendChild(bar);
+        });
+        band.appendChild(bk);
+      });
+      frag.appendChild(band);
+    }
+    const axis = el("div", "axis");
+    [0, 0.25, 0.5, 0.75].forEach((f) => axis.appendChild(el("span", null, clockAt(start + 86400 * f))));
+    axis.appendChild(el("span", null, "now"));
+    frag.appendChild(axis);
+    const shown = TICK_KINDS.filter(([name]) => per[name]);
+    if (shown.length) {
+      const legend = el("div", "legend");
+      shown.forEach(([name, what]) => {
+        const item = el("span");
+        item.appendChild(el("i", "k-" + name));
+        item.appendChild(document.createTextNode(per[name] + " " + what));
+        legend.appendChild(item);
+      });
+      frag.appendChild(legend);
+    }
+    return frag;
+  }
+  function renderOverviewHead(kpis, firstName) {
+    const jobs = CC.DATA.jobs || [];
+    const ticks = CC.DATA.ticks || {};
+    const tt = tickTotals(ticks);
+    const merged = Object.assign({}, kpis, { checks: tt.checks, per: tt.per });
+    const cards = pulseKpis(merged);
+    const { title, subtitle } = greetingParts(merged, jobs, firstName);
+    const headHost = $("ov-head");
+    if (headHost) {
+      headHost.textContent = "";
+      headHost.appendChild(pageHeader({
+        icon: "grid",
+        title,
+        subtitle,
+        actions: [
+          { id: "ov-refresh", icon: "radar", label: "Refresh" },
+          { id: "ov-new-job", icon: "plus", label: "New job", primary: true }
+        ]
+      }));
+    }
+    const kpiHost = $("ov-kpis");
+    if (kpiHost) {
+      kpiHost.textContent = "";
+      const ICONS = {
+        "Checks": "radar",
+        "Woke a run": "zap",
+        "Warnings": "alert",
+        "Errors": "xcircle",
+        "Spent today": "dollar"
+      };
+      cards.forEach((c) => kpiHost.appendChild(kpiCard({
+        icon: ICONS[c.label],
+        tone: c.tone,
+        value: c.value,
+        label: c.label,
+        sub: c.sub,
+        filter: c.filter
+      })));
+    }
+    const bandHost = $("stats");
+    if (bandHost) {
+      bandHost.textContent = "";
+      bandHost.appendChild(renderPulse(ticks, jobs));
+    }
+  }
 
   // ui/app/index.js
   function init(cc) {
@@ -300,8 +535,17 @@
     spendTone,
     groupJobs,
     jobsEmptyNote,
-    nextRunNote
+    nextRunNote,
+    // pageHeader/kpiCard/renderPulse are exported for Phases 2
+    // and 3, which put a page header and KPI cards on every
+    // remaining page -- renderOverviewHead is the only one of
+    // the four this phase's own call site (bin/dashboard.html's
+    // render()) actually calls.
+    pageHeader,
+    kpiCard,
+    renderPulse,
+    renderOverviewHead
   };
 })();
-/* ui-bundle: 007c4c1caeaa1177d3451f52a450f3fad4d141b5bb321e900d10254997c586fd */
-/* ui-sources: 12dfe0c96e338f51bdec9882985c0555e4560c68d2ab217b4a9ba1e9b6371e6d */
+/* ui-bundle: 41e5794b0a7daf2b5b88ff49db52f96e82bb256d664d2d22eb0b1914fd624da2 */
+/* ui-sources: 122681a7966b019f077dc14c1e1357c0211026f99777c662649bc66e08e1da2d */

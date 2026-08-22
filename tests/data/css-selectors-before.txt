@@ -233,9 +233,6 @@
 .fs-list li.fs-up .ic
 .fs-list li:hover
 .grid
-.hello
-.hello h2
-.hello p
 .ic
 .iconbtn
 .iconbtn .ic
@@ -256,9 +253,6 @@
 .k-idle
 .k-rate_limited
 .k-woke
-.kpi
-.kpi b
-.kpi-sep
 .kv
 .kv dd
 .kv dt
@@ -390,11 +384,6 @@
 .projgroup-h:hover
 .projgroup.collapsed .pgh-chevron
 .projgroup.collapsed .projgroup-body
-.pulse-chips
-.pulse-f
-.pulse-grid
-.pulse-left
-.pulse-right
 .pulse-t
 .pulsepanel
 .repo-f
@@ -659,13 +648,6 @@
 .termnote
 .termnote code
 .termwrap
-.tile
-.tile .tl
-.tile .ts
-.tile .tv
-.tile.bad .tv
-.tile:first-child
-.tiles
 .timeline
 .timeline .thint
 .timeline .tn
@@ -686,7 +668,7 @@
 .trigger-badge
 .trigger-badge.resumed
 .updated
-.view > .secthead:first-child,.view > .pulsepanel:first-child, .view > .hello:first-child
+.view > .secthead:first-child,.view > .pulsepanel:first-child
 .view[hidden]
 .viewtab
 .viewtab .ic
@@ -711,13 +693,6 @@
 :root[data-theme="dark"]
 :where(a,button,input,select,textarea,summary,[tabindex]):focus-visible, .fs-list li:focus-visible,.combo-list li:focus-visible
 body
-button.kpi
-button.kpi .ic
-button.kpi.err
-button.kpi.warn
-button.kpi:disabled
-button.kpi:disabled b
-button.kpi:hover:not(:disabled)
 button.secrow
 button.secrow:hover
 code

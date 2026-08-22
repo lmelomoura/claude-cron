@@ -825,6 +825,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   because an unset model means "the engine's default", not "opus now and
   whatever the field remembers later".
 
+- **The Overview's greeting line, three loose tiles and a footer strip become
+  a page header and five KPI cards; the 24-hour band takes the width they
+  leave behind.** `pageHeader({icon, title, subtitle, actions})` and
+  `kpiCard({icon, tone, value, label, sub, filter})`, DOM builders added to
+  `ui/app/overview.js` alongside the pure functions Task 6 pinned, replace
+  `pulseHtml` and `helloHtml` outright — along with `tickTotals` and
+  `pickLine`, the two functions Task 7 left behind because nothing still
+  called them standing alone. Both builders are written generically —
+  nothing in either assumes it is drawing the Overview — because Phases 2
+  and 3 put one of each on every remaining page. The ten characterisation
+  tests pinned earlier
+  in this phase hold across the rewrite unedited: the five numbers still come
+  from `pulseKpis`, and Warnings/Errors still carry `data-statfilter` into a
+  card that is a real, clickable `<button>` when its count is nonzero and a
+  disabled one when it is not — the exact door behaviour a chip used to
+  provide with a `title` attribute nobody could discover without hovering.
+  Every card, and the band's own bars and axis, are built with
+  `createElement`/`createTextNode`; a repository name or a branch containing
+  `<img onerror=…>` was never a real risk here, but the discipline that
+  stopped it being one anywhere else in this app now covers `ui/app/` too.
+  What it cost not to have this: a card was free to grow a second number
+  beside its first because nothing said it could not — the "one number per
+  label" rule this design exists to enforce is the fix for a mistake six
+  cards had already made once, in an earlier phase of this project, before
+  it was written down as a rule rather than a habit.
+
 ### Added
 
 - **A read-only query layer for the Security dashboard.** `security/queries.py`

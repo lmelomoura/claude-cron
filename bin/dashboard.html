@@ -182,9 +182,13 @@ document.documentElement.dataset.theme =
 </header>
 <main class="wrap">
   <div class="view" id="view-overview">
-  <!-- The one line on this page addressed to a person. Written from the same
-       numbers the panel below draws. -->
-  <div class="hello" id="hello"></div>
+  <!-- Icon, title and the one sentence written from the numbers the loop
+       actually produced, with Refresh and New job trailing on the right.
+       Built whole by CCApp.renderOverviewHead() -- see ui/app/overview.js. -->
+  <div id="ov-head"></div>
+  <!-- Checks, Woke a run, Warnings, Errors, Spent today. Warnings and Errors
+       are doors into Runs -- see initStatFilters() below. -->
+  <div class="kpi-grid" id="ov-kpis"></div>
   <!-- The loop's last 24 hours. Drawn from tick.log, so it shows the scheduler
        working even on a day when every check found nothing to do. -->
   <section class="pulsepanel" id="stats"></section>
@@ -2534,192 +2538,11 @@ function sessionLines(jobId){
   }).join("");
 }
 
-/* --------------------------------------------------------------- loop band */
-// What each outcome means, in the order the server stacks them. `woke` is the
-// signal — everything else is a degree of quiet, and `failed` is the one that
-// needs somebody.
-const TICK_KINDS=[
-  ["woke",   "started a run"],
-  ["idle",   "nothing to do"],
-  ["capped", "daily cap reached"],
-  // Money and usage are different ceilings with different next moves: a daily
-  // cap is a number the operator chose and can raise, a spent window is a wait
-  // for the clock. Folding them together hid which one was holding the fleet.
-  ["rate_limited", "usage window spent"],
-  // Not "at its parallel limit": with max_parallel=1 — the common case — that
-  // reads as a ceiling the operator should consider raising, when all it means
-  // is that the previous run had not finished. "Already running" is true at
-  // every limit and says the thing the operator actually needs to know.
-  ["blocked","already running"],
-  ["failed", "could not run"],
-];
-const clockAt=(sec)=>new Date(sec*1000)
-  .toLocaleTimeString(undefined,{hour:"2-digit",minute:"2-digit"});
-
-/* What the ticks add up to, split out because the greeting above the panel reads
-   the same numbers the panel draws — and two independent tallies of one thing
-   is how a page ends up contradicting itself. */
-function tickTotals(){
-  const T=DATA.ticks||{}, buckets=Array.isArray(T.buckets)?T.buckets:[];
-  const kinds=Array.isArray(T.outcomes)?T.outcomes:TICK_KINDS.map(x=>x[0]);
-  const per={};
-  TICK_KINDS.forEach(([name])=>{ per[name]=0; });   // every kind counts, even at zero
-  kinds.forEach((name,i)=>{ per[name]=buckets.reduce((a,b)=>a+(b[i]||0),0); });
-  return {per, checks:Object.values(per).reduce((a,n)=>a+n,0), buckets, kinds, T};
-}
-
-function pulseHtml(k){
-  const {per, checks, buckets, kinds, T} = tickTotals();
-  const span=(T.bucket_seconds||900), start=T.start||(Math.floor(Date.now()/1000)-86400);
-  const totalOf=(b)=>b.reduce((a,n)=>a+n,0);
-  const max=buckets.reduce((m,b)=>Math.max(m,totalOf(b)),0);
-  // The five KPI numbers (checks, woke, warnings, errors, today's spend) are
-  // CCApp.pulseKpis's own arithmetic now -- see ui/app/overview.js. Looked up
-  // by label rather than positionally, since the redesign this is pinned
-  // ahead of is free to reorder the array without this lookup caring.
-  const kpis=CCApp.pulseKpis({checks, per, warn:k.warn, err:k.err, spentToday:k.spentToday,
-                              spentWeek:k.spentWeek, runsToday:k.runsToday, runsWeek:k.runsWeek});
-  const kBy={}; kpis.forEach(c=>kBy[c.label]=c);
-
-  let band;
-  if(!checks){
-    // The honest empty state. A fresh install, or an evening after everything
-    // was switched off, is not a broken chart — say which it is.
-    band='<div class="band asleep"><span>The loop has not checked anything in the '
-      +'last 24 hours. '+esc(CCApp.bandEmptyReason(DATA.jobs||[]))+'</span></div>';
-  }else{
-    band='<div class="band">'+buckets.map((b,bi)=>{
-      const at=start+bi*span, tot=totalOf(b);
-      const parts=kinds.map((name,i)=>b[i]?'<i class="k-'+name+'" style="height:'
-        +(b[i]/max*100).toFixed(2)+'%"></i>':"").join("");
-      const label=tot
-        ? clockAt(at)+"–"+clockAt(at+span)+"\n"
-          +kinds.map((name,i)=>b[i]?b[i]+" "+(TICK_KINDS.find(x=>x[0]===name)||[,name])[1]:"")
-              .filter(Boolean).join("\n")
-        : clockAt(at)+"–"+clockAt(at+span)+"\nno checks";
-      return '<div class="bk" title="'+esc(label)+'">'+parts+'</div>';
-    }).join("")+'</div>';
-  }
-
-  const marks=[0,.25,.5,.75].map(f=>'<span>'+esc(clockAt(start+86400*f))+'</span>')
-    .join("")+'<span>now</span>';
-  const legend=TICK_KINDS.filter(([name])=>per[name]).map(([name,what])=>
-    '<span><i class="k-'+name+'"></i>'+esc(per[name]+" "+what)+'</span>').join("");
-
-  // Warnings and errors are a way IN to the runs they count, and inert when
-  // there is nothing to go to. No lit "on" state any more: the table they filter
-  // moved to its own page, so a pill left glowing here was advertising a
-  // selection nobody on this page could see — and clicking it a second time
-  // silently cleared a filter on a screen you were not looking at. One click,
-  // one destination.
-  // `active` (not `n` itself) gates data-statfilter/disabled: kBy's values
-  // are already display strings ("0" is truthy), so the count that used to
-  // do double duty as its own truthiness check is now passed separately.
-  const chip=(kind,icon,valueText,active,label,tip)=>
-    '<button class="kpi '+(kind==="error"?"err":"warn")+'"'
-      +(active?' data-statfilter="'+kind+'"':' disabled')
-      +' title="'+esc(active?tip:"No "+label.toLowerCase()+" in the last 7 days")+'">'
-      +icon+'<b>'+valueText+'</b> '+esc(label)+'</button>';
-  // A percentage of nothing is not 0%, it is nothing — say "no checks yet"
-  // rather than print a confident 0% derived from an empty denominator.
-  const pct=(n)=>checks?Math.round(n/checks*100)+"%":"—";
-  const tile=(label,value,sub,bad)=>'<div class="tile'+(bad?" bad":"")+'">'
-    +'<div class="tl">'+esc(label)+'</div><div class="tv">'+value+'</div>'
-    +'<div class="ts">'+esc(sub)+'</div></div>';
-
-  return '<div class="pulse-grid">'
-    +'<div class="pulse-left">'
-      +'<div class="pulse-t">Last 24 hours</div>'
-      +band
-      +'<div class="axis">'+marks+'</div>'
-      +(legend?'<div class="legend">'+legend+'</div>':"")
-    +'</div>'
-    +'<div class="pulse-right">'
-      +'<div class="tiles">'
-        +tile("Checks", kBy["Checks"].value, kBy["Checks"].sub)
-        +tile("Woke a run", kBy["Woke a run"].value, kBy["Woke a run"].sub)
-        +tile("Errors", per.failed, checks?pct(per.failed)+" error rate":"—", per.failed>0)
-      +'</div>'
-      +'<div class="pulse-f">'
-        +'<span class="kpi">Today <b>'+k.runsToday+'</b> run'+(k.runsToday===1?"":"s")
-          +' <b>'+esc(kBy["Spent today"].value)+'</b></span>'
-        +'<span class="kpi-sep"></span>'
-        +'<span class="kpi">7 days <b>'+k.runsWeek+'</b> run'+(k.runsWeek===1?"":"s")
-          +' <b>'+esc(money(k.spentWeek))+'</b></span>'
-        +'<span class="spacer"></span>'
-        // The two read as a pair — "3 warnings, 0 errors" is one fact about the
-        // week. Wrapped together so a narrow panel drops both to the next line
-        // instead of stranding one of them a line above the other.
-        +'<span class="pulse-chips">'
-          +chip("warning",I.alert,kBy["Warnings"].value,!!kBy["Warnings"].filter,"warnings",kBy["Warnings"].sub)
-          +chip("error",I.xcircle,kBy["Errors"].value,!!kBy["Errors"].filter,"errors",kBy["Errors"].sub)
-        +'</span>'
-      +'</div>'
-    +'</div>'
-  +'</div>';
-}
-
-/* ------------------------------------------------------------- the greeting
-   Written from what the loop actually did, so it is worth reading twice rather
-   than being a fortune cookie stapled to a dashboard. Pinned to the hour on
-   purpose: this panel repaints every five seconds, and a line that rerolled
-   each time would be unreadable — and would look like the page was glitching. */
-function pickLine(lines){
-  return lines[Math.floor(Date.now()/3600000) % lines.length];
-}
-// "All 1 jobs disabled" is the kind of seam that makes a friendly line read as
-// generated. Every count in a sentence goes through here.
-const nOf=(n,word)=>n+" "+word+(n===1?"":"s");
-function helloHtml(k, per, checks){
-  const first = String((CFG.user||{}).name||"").trim().split(/\s+/)[0] || "";
-  const h = new Date().getHours();
-  const when = h<5 ? "Still up" : h<12 ? "Good morning"
-             : h<19 ? "Good afternoon" : "Good evening";
-  const jobs = DATA.jobs||[], off = jobs.filter(j=>j.enabled===false).length;
-  const runs = k.runsToday, spent = money(k.spentToday);
-  let line;
-  if(!jobs.length){
-    line = pickLine([
-      "No jobs yet, so nothing has gone wrong. Enjoy the perfect record while it lasts.",
-      "An empty scheduler has never once exceeded its budget.",
-      "Nothing to run. This is the safest this dashboard will ever be."]);
-  }else if(off === jobs.length){
-    line = pickLine([
-      "Every job is switched off — the quietest kind of correct.",
-      (jobs.length===1 ? "Your one job is disabled" : "All "+jobs.length+" jobs are disabled")
-        +". Nothing is spending your money, which is one way to stay under budget.",
-      "The loop is awake and has absolutely nothing to do about it."]);
-  }else if(k.err){
-    line = pickLine([
-      nOf(k.err,"error")+" in the last 7 days. They are not going to read themselves.",
-      nOf(k.err,"run")+" failed this week — the logs know why, and they are one click away.",
-      "Something broke "+nOf(k.err,"time")+" this week. Better here than in review."]);
-  }else if(per.failed){
-    line = pickLine([
-      nOf(per.failed,"check")+" could not even start today. That is usually a path or a lock.",
-      "The prober failed "+nOf(per.failed,"time")+" — worth a look before it becomes a habit."]);
-  }else if(runs && k.spentToday >= 50){
-    line = pickLine([
-      nOf(runs,"run")+" and "+spent+" today. The agents have been enthusiastic.",
-      spent+" spent today across "+nOf(runs,"run")+". Money well spent, presumably.",
-      nOf(runs,"run")+" today. Your credit card has been paying attention."]);
-  }else if(runs){
-    line = pickLine([
-      nOf(runs,"run")+" today, nothing on fire.",
-      nOf(runs,"run")+" today for "+spent+", none of which asked permission.",
-      nOf(runs,"run")+" today and zero errors. Suspicious, but I will take it."]);
-  }else if(checks){
-    line = pickLine([
-      "Nothing has run today. The loop is awake, just unimpressed by the queue.",
-      nOf(checks,"check")+" today and nothing worth waking a run for. That is the system working.",
-      "Quiet so far — every precheck looked and found nothing to do."]);
-  }else{
-    line = pickLine([
-      "The loop has not checked anything in the last 24 hours.",
-      "No ticks today. If that is a surprise, check that launchd is still loaded."]);
-  }
-  return "<h2>"+esc(when+(first?", "+first:""))+".</h2><p>"+esc(line)+"</p>";
-}
+/* --------------------------------------------------------------- loop band
+   The page header, the five KPI cards and the 24-hour band itself are all
+   built as DOM now -- CCApp.renderOverviewHead(), in ui/app/overview.js.
+   TICK_KINDS, tickTotals, pickLine and the greeting's own wording moved
+   there with it; nothing in this file still reads any of them. */
 
 function render(){
   const _g=DATA.generated?new Date(DATA.generated):null;
@@ -2738,9 +2561,7 @@ function render(){
   const kpis={runsToday:rt.length, spentToday:sum(rt,r=>r.cost),
               runsWeek:rw.length, spentWeek:sum(rw,r=>r.cost),
               warn:nWarn, err:nErr};
-  const tt=tickTotals();
-  $("hello").innerHTML=helloHtml(kpis, tt.per, tt.checks);
-  $("stats").innerHTML=pulseHtml(kpis);
+  CCApp.renderOverviewHead(kpis, (CFG.user||{}).name||"");
 
   paintNav();
   paintUser();
@@ -4814,10 +4635,12 @@ function initViews(){
     b.classList.toggle("active", b.dataset.tab === dashTab));
   setView(currentView);
 }
-// The warning and error tiles are a way IN to the runs they count: click one to
-// show exactly those runs, click it again to clear the filter.
+// The warning and error KPI cards are a way IN to the runs they count: click
+// one to show exactly those runs. kpiCard() (ui/app/overview.js) still marks
+// them with the same data-statfilter a chip used to carry, so this listener
+// -- now on the KPI grid rather than the band -- is unchanged.
 function initStatFilters(){
-  const host=$("stats"); if(!host) return;
+  const host=$("ov-kpis"); if(!host) return;
   host.addEventListener("click",(e)=>{
     const t=e.target.closest("[data-statfilter]"); if(!t) return;
     // Set, never toggle. Clicking a second time used to clear the filter, which
@@ -4991,6 +4814,13 @@ document.addEventListener("click", async (e)=>{
   // page exists.
   if(e.target.closest("#new-project")){ openProjectEditor(); return; }
   if(e.target.closest("#new-job")){ openCreator(); return; }
+  // The page header's own actions -- same targets as the Jobs toolbar's
+  // "New job" above, reached from a second button because the header is
+  // built once by CCApp.renderOverviewHead() and cannot share an id with
+  // the "movable" toolbar block (see its own comment on why that block is
+  // one DOM node, not two).
+  if(e.target.closest("#ov-refresh")){ refresh(); return; }
+  if(e.target.closest("#ov-new-job")){ openCreator(); return; }
   const b=e.target.closest("button[data-op]"); if(!b) return;
   const op=b.dataset.op, id=b.dataset.id;
   if(op==="edit"){ openEditor(id); return; }

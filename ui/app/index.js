@@ -12,14 +12,17 @@
    jobProjectNames would not fail loudly; it would throw the first time a
    5-second poll tried to redraw.
 
-   overview.js's seven exports are the same deal for pulseHtml, jobCard and
-   renderJobCards: the arithmetic and the wording move here, the markup that
-   was built from them stays in the page and now calls back in by name. */
+   overview.js's exports are the same deal for pulseHtml, helloHtml, jobCard
+   and renderJobCards: the arithmetic, the wording and (as of the page header
+   and the five KPI cards) the markup itself all moved here, and the page
+   calls back in by name instead of building any of it inline. jobCard and
+   renderJobCards are still to come -- Task 9 rewrites those the same way. */
 import { bindPage } from "./page.js";
 import { jobFacts, visibleJobs, jobFilters, bulkOn, bulkLabel,
          clearJobFilters, jobProjectNames } from "./jobs-domain.js";
 import { pulseKpis, bandEmptyReason, probeVerdict, spendTone, groupJobs,
-         jobsEmptyNote, nextRunNote } from "./overview.js";
+         jobsEmptyNote, nextRunNote, pageHeader, kpiCard, renderPulse,
+         renderOverviewHead } from "./overview.js";
 
 function init(cc){
   bindPage(cc);
@@ -28,4 +31,10 @@ function init(cc){
 window.CCApp = { init, jobFacts, visibleJobs, jobFilters, bulkOn,
                  bulkLabel, clearJobFilters, jobProjectNames,
                  pulseKpis, bandEmptyReason, probeVerdict, spendTone,
-                 groupJobs, jobsEmptyNote, nextRunNote };
+                 groupJobs, jobsEmptyNote, nextRunNote,
+                 // pageHeader/kpiCard/renderPulse are exported for Phases 2
+                 // and 3, which put a page header and KPI cards on every
+                 // remaining page -- renderOverviewHead is the only one of
+                 // the four this phase's own call site (bin/dashboard.html's
+                 // render()) actually calls.
+                 pageHeader, kpiCard, renderPulse, renderOverviewHead };

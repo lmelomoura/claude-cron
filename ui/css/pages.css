@@ -208,8 +208,7 @@
    a muddy pink. A star this small has room for one of the two. */
 td .favdot{display:inline-flex;margin-left:5px}
 td .favdot .ic{width:11px;height:11px;fill:var(--warn);stroke:none}
-.view > .secthead:first-child,.view > .pulsepanel:first-child,
-.view > .hello:first-child{margin-top:4px}
+.view > .secthead:first-child,.view > .pulsepanel:first-child{margin-top:4px}
 /* Jobs and Runs are one screen with two lists, and they are read against each
    other — a warning in the band sends you to the run that caused it. The strip
    is a second control on the SAME state the sidebar sets, never its own: both
@@ -287,23 +286,11 @@ td .favdot .ic{width:11px;height:11px;fill:var(--warn);stroke:none}
    bare `.pulse` here dressed that 8px dot in this panel's padding and border. */
 .pulsepanel{background:var(--panel);border:1px solid var(--line);border-radius:14px;
   padding:16px 20px;box-shadow:var(--shadow)}
-/* Two columns: what the loop did on the left, what it cost on the right. The
-   counters used to be a sentence above the chart, where a number nobody could
-   compare against anything sat in prose. */
-.pulse-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr)}
-.pulse-left{min-width:0;padding-right:22px;display:flex;flex-direction:column}
-.pulse-right{min-width:0;padding-left:24px;border-left:1px solid var(--line);
-  display:flex;flex-direction:column}
+/* Full width now: the KPI cards that used to share this panel (as a `.tiles`
+   column and a `.pulse-f` footer strip) are their own cards above, in
+   ui/css/components.css -- a time series with nothing left to compete with
+   it for the room. */
 .pulse-t{font-size:13.5px;font-weight:640;letter-spacing:-.01em;margin:0 0 2px}
-.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));flex:1 1 auto;
-  align-items:center;padding:2px 0 14px}
-.tile{text-align:center;padding:0 6px;border-left:1px solid var(--line2);min-width:0}
-.tile:first-child{border-left:0}
-.tile .tl{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.tile .tv{font-size:25px;font-weight:640;letter-spacing:-.03em;line-height:1.3;
-  font-variant-numeric:tabular-nums}
-.tile.bad .tv{color:var(--err)}
-.tile .ts{font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* The floor matters: without it the bars hang in an empty box and the eye has
    nothing to read them against. */
 .band{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:1px;
@@ -334,13 +321,6 @@ td .favdot .ic{width:11px;height:11px;fill:var(--warn);stroke:none}
 .legend{display:flex;gap:14px;flex-wrap:wrap;margin:11px 0 0;font-size:11px;color:var(--muted)}
 .legend span{display:inline-flex;align-items:center;gap:6px}
 .legend i{width:9px;height:9px;border-radius:2px;flex:none}
-.pulse-f{display:flex;align-items:center;gap:7px 14px;flex-wrap:wrap;margin:0;
-  padding:13px 0 0;border-top:1px solid var(--line2)}
-/* The greeting. Above the panel because it is the one line on this page written
-   for a person rather than for a number. */
-.hello{margin:2px 0 15px}
-.hello h2{font-size:19px;font-weight:660;letter-spacing:-.02em;margin:0 0 3px}
-.hello p{margin:0;font-size:12.5px;color:var(--muted)}
 .b-accent{background:var(--accent-soft);color:var(--accent)}
 .b-ok{background:var(--ok-soft);color:var(--ok)}
 .b-warn{background:var(--warn-soft);color:var(--warn)}
@@ -1120,12 +1100,6 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 @media (max-width:900px){
   .band{height:44px}
   .legend{gap:10px}
-  /* Side by side these two columns are ~180px each and the 25px figures start
-     colliding with their own captions. Stack them and put the rule back between. */
-  .pulse-grid{grid-template-columns:minmax(0,1fr)}
-  .pulse-left{padding-right:0}
-  .pulse-right{padding-left:0;border-left:0;border-top:1px solid var(--line);margin-top:14px}
-  .tiles{padding:14px 0}
   /* A 236px rail out of a 760px viewport is a quarter of the page spent on
      navigation, so here the menu leaves the flow and slides in over it. The
      topbar grows the only hamburger that is visible at this width. */
@@ -1141,8 +1115,10 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .pulsepanel{padding:13px 14px 12px}
   .band{gap:0}
   .axis span:nth-child(2),.axis span:nth-child(4){display:none}
-  .pulse-f{gap:7px 10px}
-  .kpi-sep{display:none}
+  /* Icon, title, sentence and two actions in one row is tight below 640px --
+     let the actions drop to their own line rather than squeezing the title. */
+  .page-header{flex-wrap:wrap}
+  .page-header-actions{margin-left:41px}
   .secthead{flex-wrap:wrap}
   .secthead .btn{flex:1 1 auto;justify-content:center}
   .projgroup-h{flex-wrap:wrap}
