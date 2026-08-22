@@ -1138,9 +1138,15 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-## Task 7: The Overview moves, pixel-identical
+## Task 7: The pure half moves
 
-With its behaviour pinned, the Overview's rendering moves to `ui/app/overview.js`. Nothing about how it looks changes in this task. The tests from Task 6 are the proof.
+**Read this before starting — it corrects an assumption the earlier tasks were written under.** This task originally said "move the Overview's renderers, pixel-identical, and let Task 6's tests prove it". That is not possible, and the pre-flight review of this plan caught it.
+
+`test_the_built_ui_never_builds_dom_from_html_strings` forbids `innerHTML`, `insertAdjacentHTML`, `outerHTML`, `createContextualFragment`, `DOMParser` and `setAttribute("on` in **every** `.js` file under `ui/`, with no exceptions. `pulseHtml`, `helloHtml`, `jobCard`, `renderJobCards` and `renderRetained` are all HTML-string builders. Moving any of them into `ui/app/` turns that scan red the moment it arrives.
+
+So no renderer is moved. This task takes only what is already sink-free — the pure functions Task 6 extracted — and Tasks 8, 9 and 10 **write** their DOM replacements in `ui/app/`, deleting the string versions from the page as each one is replaced.
+
+The consequence is worth stating plainly: there is no "moved unchanged, tests prove it" step in this phase. Task 6's ten tests are the only net across the rewrite, which is exactly why they were written first and proven falsifiable.
 
 **Files:**
 - Create: `ui/app/overview.js`
@@ -1148,33 +1154,36 @@ With its behaviour pinned, the Overview's rendering moves to `ui/app/overview.js
 
 **Interfaces:**
 - Consumes: everything from Tasks 5 and 6.
-- Produces: `ui/app/overview.js` exports `renderOverview()`, `renderJobCards(jobs, projects)`, and the pure helpers Task 6 extracted. `CCApp` gains `renderOverview`.
+- Produces: `ui/app/overview.js` exports the pure helpers `pulseKpis`, `bandEmptyReason`, `spendTone`, `groupJobs`, `jobsEmptyNote`, `tickTotals`, `pickLine`, and the DOM builders `probeVerdict` and `nextRunNote`. `CCApp` gains all of them.
 
-- [ ] **Step 1: Move the renderers**
+- [ ] **Step 1: Move only what has no sink**
 
-Move `pulseHtml`, `helloHtml`, `pickLine`, `jobCard`, `renderJobCards`, `checkList`, `tickTotals`, `renderRetained`, `setDashTab` and `sessionLines` from `bin/dashboard.html` into `ui/app/overview.js`, with the pure helpers Task 6 extracted. Add `export` where `index.js` needs it, and an import header for the page bindings.
+Move into `ui/app/overview.js`: `pulseKpis`, `bandEmptyReason`, `spendTone`, `groupJobs`, `jobsEmptyNote`, `tickTotals`, `pickLine`, `probeVerdict` and `nextRunNote`.
 
-Leave `renderJobs()` in the page for now: it is the fork between cards and table, and the table half moves in Phase 2.
+The last two already return DOM nodes — Task 6 extracted them that way. Everything else is arithmetic or a plain string.
 
-- [ ] **Step 2: Wire it**
+**Leave in `bin/dashboard.html` for now:** `pulseHtml`, `helloHtml`, `jobCard`, `renderJobCards`, `checkList`, `renderRetained`, `setDashTab`, `sessionLines` and `renderJobs`. They call into the moved helpers via `CCApp`.
 
-In `ui/app/index.js`, add to the imports and to the `window.CCApp` object:
+- [ ] **Step 2: Verify the moved set is sink-free before wiring anything**
 
-```javascript
-import { renderOverview, renderJobCards } from "./overview.js";
+```bash
+grep -nE 'innerHTML|insertAdjacentHTML|outerHTML|createContextualFragment|DOMParser|setAttribute\("on' ui/app/*.js
 ```
 
-In `bin/dashboard.html`, the call sites become `CCApp.renderOverview()` and `CCApp.renderJobCards(vis, allProjects)`.
+Expected: no output. If anything matches, that function does not belong in this task — put it back and let Task 8 or 9 write its replacement.
 
-- [ ] **Step 3: Run the pinned tests**
+- [ ] **Step 3: Wire it**
+
+In `ui/app/index.js`, import from `./overview.js` and add each name to the `window.CCApp` object.
+
+In `bin/dashboard.html`, the remaining string renderers call `CCApp.pulseKpis(...)`, `CCApp.spendTone(...)` and so on. `probeVerdict` and `nextRunNote` return nodes, so their call sites use `.outerHTML`— **no.** Those two call sites move into Task 9 with `jobCard` itself; until then `jobCard` keeps its own inline string versions of those two fragments, and the moved DOM builders are exercised only by Task 6's tests.
+
+That duplication is deliberate, temporary and lasts exactly one task. Note it in the commit message so it is not mistaken for drift.
+
+- [ ] **Step 4: Run everything**
 
 Run: `pytest tests/test_page_contract.py -v`
-Expected: PASS. Nothing in Task 6 should have moved.
-
-- [ ] **Step 4: Confirm the page still reaches everything it names**
-
-Run: `pytest tests/test_page_contract.py -k "element_the_script_reaches" -v`
-Expected: PASS. A missed `$("id")` fails here.
+Expected: PASS, including the sink-scan — nothing with a sink moved.
 
 - [ ] **Step 5: Build, verify, commit**
 
@@ -1182,14 +1191,20 @@ Expected: PASS. A missed `$("id")` fails here.
 bash build/build-ui.sh
 pytest -q && bash bin/claude-cron selftest >/dev/null && echo GREEN
 git add ui/app bin/static bin/dashboard.html
-git commit -m "refactor(ui): the Overview's renderers move to ui/app/
+git commit -m "refactor(ui): the Overview's pure half moves to ui/app/
 
-614 lines out of dashboard.html and into overview.js. Not one pixel
-changes here -- the ten tests pinned in the previous commit are the
-proof, and they were written before this move for exactly that reason.
+The arithmetic and the two DOM fragments extracted while pinning the
+Overview's behaviour move out; every HTML-string renderer stays in the
+page.
 
-renderJobs() stays in the page: it is the fork between the cards and the
-Jobs table, and the table half does not move until phase 2.
+Not a staging choice -- a constraint. The sink scan forbids innerHTML in
+every file under ui/, so pulseHtml, jobCard and their neighbours cannot
+be moved at all, only rewritten. Tasks 8 and 9 write their DOM
+replacements and delete the string versions as they go.
+
+probeVerdict and nextRunNote have no call site until jobCard is
+rewritten, so jobCard keeps inline copies of those two fragments for one
+task. Deliberate and temporary; task 9 deletes them.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
@@ -1211,15 +1226,25 @@ Now the visual work. The page header replaces the loose greeting line; five KPI 
 
 In `ui/css/components.css`, add the page-header, KPI-card, filter-bar, table-card, table-footer and pager rules from the approved canvas. Use only tokens from `ui/css/tokens.css` — no literal colours.
 
-- [ ] **Step 2: Build the header and the cards**
+- [ ] **Step 2: Write the header, the cards and the band as DOM**
 
-In `ui/app/overview.js`, add `pageHeader` and `kpiCard` as DOM builders. `kpiCard` renders `filter` as a click target only when it is truthy, and sets `disabled` when it is not — that is what Task 6's door test pins.
+In `ui/app/overview.js`, add `pageHeader`, `kpiCard` and `renderPulse` as DOM builders, using a local `el(tag, cls, text)` helper matching `ui/security/dom.js`'s. The band's bars and the axis are `createElement`; nothing here goes through the HTML parser.
 
-Render the header from `helloHtml`'s existing sentence and the five cards from `pulseKpis`.
+`kpiCard` renders `filter` as a click target only when it is truthy, and sets `disabled` when it is not — that is what Task 6's door test pins.
 
-- [ ] **Step 3: Remove what they replace**
+The header's sentence is `helloHtml`'s existing wording, as text. The five cards come from `pulseKpis`.
 
-Delete the three `tile()` calls, the `pulse-f` footer strip and the two `chip()` calls from `pulseHtml`. The band, its axis and its legend stay, now at full width.
+- [ ] **Step 3: Delete the string versions**
+
+Remove `pulseHtml` and `helloHtml` from `bin/dashboard.html` entirely, along with the three `tile()` calls, the `pulse-f` footer strip and the two `chip()` calls inside them. The call site becomes `CCApp.renderOverviewHead()`.
+
+Confirm nothing was left behind:
+
+```bash
+grep -n 'pulseHtml\|helloHtml\|pulse-f\|function tile\|function chip' bin/dashboard.html
+```
+
+Expected: no output.
 
 - [ ] **Step 4: Run the pinned tests**
 
@@ -1268,31 +1293,88 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: Tasks 6–8.
 - Produces: `jobCard(job) -> Element`.
 
-- [ ] **Step 1: Confirm the sink-scan currently fails on the moved code**
+- [ ] **Step 1: Write the failing test**
 
-Run: `pytest tests/test_page_contract.py -k "never_builds_dom_from_html_strings" -v`
-Expected: FAIL — `jobCard` moved into `ui/app/` in Task 7 carrying its `innerHTML` assignment, and the scan walks all of `ui/`.
+`jobCard` still lives in `bin/dashboard.html`, so the sink-scan is green and cannot be this task's failing test. Write one that fails because the card is not in the bundle yet:
 
-This is the failing test for this task. It was not written here; it already existed and started applying the moment the code arrived.
+```python
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_job_card_is_built_from_nodes_and_shows_what_it_always_showed(
+        srv, tmp_path):
+    """The card is the densest thing on the page and the last HTML-string
+    builder in the Overview. Rewritten as nodes it keeps every fact: the
+    state, what the probe saw, the counts it reported, the spend against the
+    cap, and when the next run is.
 
-- [ ] **Step 2: Rebuild `jobCard` as DOM**
+    checkList renders the first line of an arbitrary probe script's output,
+    so a card built from nodes is also the end of that exposure -- the
+    sink scan holds the rule, this holds the content."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "el", "probeVerdict", "nextRunNote",
+                              "spendTone", "checkList", "jobCard")
+    script = tmp_path / "card.js"
+    script.write_text(_INDEX_DOM_HARNESS + _JOBS_DOMAIN_HARNESS + deps + """
+    const n = jobCard({id: "qg-dev-agent", project: "Quality Gate",
+                       enabled: true, interval_minutes: 15});
+    console.log(JSON.stringify(collectAll(n, [])));
+    """)
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    txt = " ".join(r["text"] for r in got)
+    assert "qg-dev-agent" in txt, "the card did not name its own job"
 
-Rewrite `jobCard` to build and return an `Element`. Keep every fact it shows: the state pill, the probe verdict, the check list, the sparkline, the spend bar, the next-run note, the kept-session notice and the buttons.
 
-Use `secEl`-style construction throughout — a small local `el(tag, cls, text)` in `ui/app/overview.js`, matching `ui/security/dom.js`'s helper. Do not import across the two bundles; a shared module can wait until both stop moving.
+def test_a_probe_line_containing_markup_stays_text(srv, tmp_path):
+    """The first line of a probe script's stdout, rendered. `esc()` held
+    this before by discipline; nodes hold it by construction."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "el", "checkList")
+    script = tmp_path / "probe-markup.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    const n = checkList('ready=<img src=x onerror=alert(1)> blocked=0');
+    console.log(JSON.stringify(collectAll(n, [])));
+    """)
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    txt = " ".join(r["text"] for r in got)
+    assert "<img" in txt, "the markup was not preserved as literal text"
+    tags = [r for r in got if r.get("cls") == "" and "img" in str(r)]
+    assert all("onerror" not in str(r.get("cls", "")) for r in got)
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `pytest tests/test_page_contract.py -k "job_card_is_built_from_nodes or probe_line_containing_markup" -v`
+Expected: FAIL — `_plainfn` raises `ValueError: substring not found`; `jobCard` and `checkList` are still in the page, not in the bundle.
+
+- [ ] **Step 3: Write `jobCard` and `checkList` as DOM in `ui/app/overview.js`**
+
+Build and return an `Element`. Keep every fact the string version showed: the state pill, the probe verdict (from `probeVerdict`, now getting its first call site), the check list, the sparkline, the spend bar, the next-run note (from `nextRunNote`, likewise), the kept-session notice and the buttons.
+
+Use the same local `el(tag, cls, text)` Task 8 introduced. Do not import across the two bundles; a shared module can wait until both stop moving.
 
 The sparkline and the icons are the only SVG: build them with `createElementNS`, as the Security screens do.
 
-- [ ] **Step 3: Restyle in `ui/css/pages.css`**
+- [ ] **Step 4: Delete the string versions and their temporary duplicates**
+
+Remove `jobCard`, `renderJobCards` and `checkList` from `bin/dashboard.html`, including the inline copies of the probe-verdict and next-run fragments that Task 7 left there for exactly one task.
+
+```bash
+grep -n 'function jobCard\|function checkList\|function renderJobCards' bin/dashboard.html
+```
+
+Expected: no output.
+
+- [ ] **Step 5: Restyle in `ui/css/pages.css`**
 
 Card radius and shadow to match the table cards, the state as a pill using the `.pill` classes from `components.css`, the six type roles, and the spend bar sharing the progress-bar rule.
 
-- [ ] **Step 4: Run everything**
+- [ ] **Step 6: Run everything**
 
 Run: `pytest tests/test_page_contract.py -v`
-Expected: PASS, including the sink-scan and all ten pinned tests.
+Expected: PASS — the two new tests, the sink-scan, and all ten pinned tests.
 
-- [ ] **Step 5: Look at it, then commit**
+- [ ] **Step 7: Look at it, then commit**
 
 ```bash
 bash build/build-ui.sh
@@ -1463,6 +1545,10 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ## Self-Review
 
 **Spec coverage.** Every section of the design maps to a task: the file layout to Tasks 4 and 5; the `renderJobs` coupling to Task 5; the Overview's four parts to Tasks 8, 9 and 10; the three removals to Tasks 8 and 10; the DOM rule to Task 9; the ten tests to Task 6; the shared source digest and the stamps to Tasks 2 and 4; the two latent bugs to Tasks 1 and 3; the verification gates to Task 11.
+
+**A conflict found in the pre-flight review of this plan, and how it was resolved.** Task 7 originally moved the Overview's renderers into `ui/app/` "pixel-identical", with Task 6's tests as the proof, and Task 9 then rewrote `jobCard` as DOM. That sequence cannot run: the sink scan forbids `innerHTML` in *every* file under `ui/`, so `pulseHtml`, `helloHtml`, `jobCard`, `renderJobCards` and `renderRetained` turn it red the moment they arrive — they cannot be moved at all, only rewritten in place of.
+
+Task 7 now takes only the sink-free pure functions, and Tasks 8, 9 and 10 write DOM replacements and delete the string versions as they go. The cost is real and is stated in Task 7: this phase has no "moved unchanged, tests prove it" step, so Task 6's ten tests are the only net across the rewrite. That is why they are written first and proven falsifiable.
 
 **One deviation from the spec, recorded here rather than silently.** The spec says the DOM rule needs "one line" in the sink-scan test. It needs none: `_security_sources()` already walks all of `ui/`, so `ui/app/` is covered from the moment it exists. Only the test's name was wrong, and Task 5 renames it.
 
