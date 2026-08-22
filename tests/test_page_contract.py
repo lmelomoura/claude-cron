@@ -22,7 +22,12 @@ def _page(srv):
 
 
 def _js(srv):
-    return re.search(r"<script>(.*)</script>", _page(srv), re.S).group(1)
+    # The page now opens with a small inline theme script in <head>, ahead of
+    # the main body script -- two <script> blocks where there used to be one,
+    # so a single greedy match would span from the head script's opening tag
+    # to the body script's closing tag and swallow the <style> block and HTML
+    # between them. The main script is the last <script>...</script> block.
+    return re.findall(r"<script>(.*?)</script>", _page(srv), re.S)[-1]
 
 
 def test_the_page_renders_with_the_token_and_favicon_substituted(srv):
@@ -44,6 +49,39 @@ def test_the_page_paints_the_screen_the_session_calls_for(srv):
     assert ".boot-login #login[hidden],.boot-setup #setup[hidden]{display:flex}" in signed_out
     # ...and the signed-in page must NOT hide its own shell.
     assert 'class="boot-authed"' in srv.render_page("boot-authed")
+
+
+def test_the_theme_is_resolved_before_the_first_stylesheet(srv):
+    """A dark-mode user must never see a white frame. The theme is stored in
+    localStorage, which only script can read, so the read has to happen in
+    the head ahead of any stylesheet -- once styles are parsed the page can
+    paint, and a data-theme applied after that is applied to a frame the user
+    has already seen.
+
+    Asserted by position rather than by presence: a theme script that exists
+    somewhere on the page is exactly what the page had while it flashed."""
+    page = srv.render_page()
+    head = page[:page.index("</head>")]
+    theme_at = head.index("dataset.theme")
+    first_style = min(
+        (head.index(m) for m in ("<style", "<link rel=\"stylesheet\"")
+         if m in head), default=None)
+    assert first_style is not None, "no stylesheet in the head at all"
+    assert theme_at < first_style, (
+        "the theme is resolved after the first stylesheet -- dark mode will "
+        "paint one white frame before it corrects itself"
+    )
+
+
+def test_the_theme_preference_has_exactly_one_definition(srv):
+    """The inline head script and themePref() must not each carry their own
+    copy of "localStorage, else the media query" -- two spellings of one
+    rule, and the day they disagree the page corrects its own first frame to
+    the wrong theme."""
+    page = srv.render_page()
+    assert page.count("prefers-color-scheme: dark") == 1, (
+        "the theme preference rule is written in more than one place"
+    )
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")

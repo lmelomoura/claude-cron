@@ -4,6 +4,18 @@
 <title>claude-cron · Agent Loop Manager</title>
 <link rel="icon" type="image/svg+xml" href="__FAVICON__">
 <meta name="theme-color" content="#4f46e5">
+<!-- The theme, resolved before anything can paint. It lives in localStorage,
+     which only script can read, and the script that used to read it sat at
+     the end of the body behind 6,700 lines of page and a 93 KB bundle -- so
+     a dark-mode user got one white frame on every load. The stylesheet below
+     is render-blocking, so setting the attribute here means the first frame
+     is already right. themePref() further down reads this back rather than
+     spelling the rule a second time. -->
+<script>
+document.documentElement.dataset.theme =
+  localStorage.ccTheme ||
+  (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+</script>
 <style>
 :root{
   --bg:#f6f7f9; --panel:#ffffff; --panel2:#fbfbfc; --ink:#16181d; --muted:#697077;
@@ -2524,7 +2536,11 @@ function causeTag(rec){
 }
 
 /* ---------------------------------------------------------------- theme */
-function themePref(){ return localStorage.ccTheme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); }
+/* The rule itself is in the head script, which had to run before any
+   stylesheet (see its comment). Restating it here would be two spellings of
+   one preference, and the day they disagreed the page would correct its own
+   correct first frame to the wrong theme. */
+function themePref(){ return document.documentElement.dataset.theme || "light"; }
 function applyTheme(t){ document.documentElement.dataset.theme=t; $("themebtn").innerHTML = t==="dark" ? I.sun : I.moon; }
 applyTheme(themePref());
 

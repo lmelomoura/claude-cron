@@ -322,6 +322,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A dark-mode user no longer sees a white flash on every load.**
+  `applyTheme(themePref())` ran in the script at the end of the body and read
+  `localStorage`; until that ran, the CSS sat in its light default. With 6,725
+  lines of page and a 93 KB bundle ahead of it, that first frame painted light
+  regardless of the stored preference, then snapped to dark once the body
+  script finally reached it. Three lines now run in the `<head>`, ahead of the
+  render-blocking stylesheet, setting `document.documentElement.dataset.theme`
+  before anything can paint. `themePref()` now reads that attribute back
+  instead of restating "localStorage, else the media query" a second time —
+  two copies of one preference rule would eventually disagree, and the page
+  would then correct a correct first frame to the wrong theme.
+
 - **The UI bundle's modified-body guard can no longer be defeated by a
   single crafted line.** The previous commit moved both freshness stamps
   from `//` line comments to `/* … */` block comments so a CSS artifact
