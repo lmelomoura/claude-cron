@@ -1167,10 +1167,15 @@ const normStatus=(s)=>s==="ok"?"success":(s||"—");
 // the wait, doubling again per failure, capped at 16x. Kept in step by hand:
 // if one side changes, the card starts promising checks the tick will not make.
 const BACKOFF_AFTER=3, BACKOFF_MAX=16;
-const backoffMultiplier=(streak)=>{
+// A function declaration rather than a const arrow, like activeRunsOf below --
+// CCApp.init's interface object references this by name well above this line,
+// and a const would still be in its temporal dead zone there. It worked today
+// only by textual position; hoisting makes that not matter, the same fix
+// activeRunsOf already needed for the identical reason.
+function backoffMultiplier(streak){
   const s=+streak||0; if(s<BACKOFF_AFTER) return 1;
   return Math.min(BACKOFF_MAX, Math.pow(2, s-BACKOFF_AFTER+1));
-};
+}
 // effort level → human label (empty = the flag is omitted and the CLI decides)
 const EFFORT_LABELS={"":"default","low":"Low","medium":"Medium","high":"High","xhigh":"Extra high","max":"Max"};
 const effortLabel=(v)=>EFFORT_LABELS[v||""]||v;
@@ -1289,12 +1294,8 @@ function eff(j, field, def){
 
 function jobCard(j){
   const F=CCApp.jobFacts(j);
-  const {st, chk, disabled, spentToday, cap, capped, streak, backoff, dueAt, nextAt}=F;
-  const next = j.enabled===false ? '<span class="muted">disabled</span>'
-    : (nextAt==null ? '<span class="muted">no matching window</span>'
-    : esc(fmtWhen(nextAt))+(nextAt>dueAt+30?' <span class="muted">· when the window reopens</span>':'')
-      +(backoff>1?' <span style="color:var(--warn)">· backing off '+backoff+'× after '
-        +streak+' failed runs</span>':''));
+  const {st, chk, disabled, spentToday, cap, capped}=F;
+  const next = CCApp.nextRunNote(j, F).outerHTML;
   const pc=st.last_precheck||null;
   let checkStr=st.last_start?("probed "+fmtAgo(st.last_start)):"";
   // The counts the probe reported get their own panel beside the status lines,
@@ -1306,10 +1307,8 @@ function jobCard(j){
     // Three outcomes, not two. A probe that could not run (any exit other than
     // 0 or 1) once rendered as the calm "nothing to do", so a job whose
     // credentials had gone missing looked healthy while it silently never ran
-    // again. It now says so, in the error colour.
-    const verdict = pc.exit===0 ? '<span style="color:var(--ok)">work found</span>'
-                  : pc.exit===1 ? "nothing to do"
-                  : '<span style="color:var(--err);font-weight:600">probe FAILED (exit '+esc(String(pc.exit))+')</span>';
+    // again. It now says so, in the error colour. See CCApp.probeVerdict.
+    const verdict = CCApp.probeVerdict(pc).outerHTML;
     // A probe result with no recorded check time is a probe you ran by hand.
     // Leading with a bare em-dash then read as though a word had gone missing.
     checkStr = (checkStr ? checkStr+" — " : "last probe: ")+verdict;
@@ -1351,7 +1350,8 @@ function jobCard(j){
 
   // ---- the money. A cap you are close to is worth seeing before you hit it.
   const pct = (cap!=null && cap>0) ? Math.min(100, spentToday/cap*100) : 0;
-  const barCls = capped ? " over" : (pct>=80 ? " near" : "");
+  const tone = CCApp.spendTone(spentToday, cap);
+  const barCls = tone ? " "+tone : "";
   const spend = '<div class="spend">'
     +(cap!=null
       ? '<div class="spendbar'+barCls+'"><i style="width:'+pct.toFixed(1)+'%"></i></div>'
@@ -1696,8 +1696,7 @@ function renderJobs(){
 function renderJobCards(vis, allProjects){
   const filtering = CCApp.jobFilters.project || CCApp.jobFilters.status || CCApp.jobFilters.query.trim();
   if(!vis.length){
-    $("jobs").innerHTML='<div class="card empty">'+I.inbox
-      +(filtering ? "No jobs match these filters." : "No jobs yet — create one.")+'</div>';
+    $("jobs").innerHTML='<div class="card empty">'+I.inbox+CCApp.jobsEmptyNote(!!filtering)+'</div>';
     return;
   }
 
@@ -1707,34 +1706,44 @@ function renderJobCards(vis, allProjects){
     return;
   }
 
-  // Starred projects first, then the rest alphabetically. This is the whole
-  // point of the star: on an install with a dozen projects, the two you are
-  // actually working in stop being a scroll away.
-  const names=[...new Set(vis.map(j=>j.project||"").filter(Boolean))]
-    .sort((a,b)=>(isFav(b)-isFav(a)) || a.localeCompare(b));
+  // Starred projects first, then the rest alphabetically, standalone jobs in
+  // their own group last — CCApp.groupJobs's own doc comment has the "no
+  // group at all" case this can still fall through to below. `isFav` wrapped
+  // in a `.has()` rather than a real Set: the favourites this reads are the
+  // page's own persisted set, and groupJobs only ever asks whether one name
+  // is in it.
+  const groups=CCApp.groupJobs(vis, {has:isFav});
   let html="";
-  for(const name of names){
-    const js=vis.filter(j=>j.project===name); if(!js.length) continue;
-    const p=projById(name), fav=isFav(name);
-    const head='<span class="pgh-ic">'+I.folder+'</span><span class="pgh-name">'+esc(name)+'</span>'
-      +'<span class="pgh-count">'+js.length+' job'+(js.length===1?"":"s")+'</span>'
+  for(const g of groups){
+    if(g.name==="__standalone__"){
+      const head='<span class="pgh-ic">'+I.folder+'</span><span class="pgh-name standalone">Standalone jobs</span>'
+        +'<span class="pgh-count">'+g.jobs.length+' job'+(g.jobs.length===1?"":"s")+'</span>'
+        +'<span class="spacer"></span>'
+        +bulkBtn("pgh-bulk", "standalone", "__standalone__", g.jobs);
+      html+=collapsibleGroup("__standalone__", head, g.jobs.map(jobCard).join(""));
+      continue;
+    }
+    const p=projById(g.name), fav=isFav(g.name);
+    const head='<span class="pgh-ic">'+I.folder+'</span><span class="pgh-name">'+esc(g.name)+'</span>'
+      +'<span class="pgh-count">'+g.jobs.length+' job'+(g.jobs.length===1?"":"s")+'</span>'
       +(p&&p.description?'<span class="pgh-desc">'+esc(p.description)+'</span>':'')
       +'<span class="spacer"></span>'
-      +'<button class="pgh-star'+(fav?" on":"")+'" data-fav="'+esc(name)+'"'
+      +'<button class="pgh-star'+(fav?" on":"")+'" data-fav="'+esc(g.name)+'"'
       +' aria-pressed="'+(fav?"true":"false")+'"'
       +' title="'+(fav?"Remove from favourites":"Favourite — keeps this project at the top")+'">'
       +I.star+'</button>'
-      +bulkBtn("pgh-bulk", "project", name, js)
-      +'<button class="pgh-edit" data-editproj="'+esc(name)+'" title="Edit project">'+I.pencil+'</button>';
-    html+=collapsibleGroup(name, head, js.map(jobCard).join(""));
+      +bulkBtn("pgh-bulk", "project", g.name, g.jobs)
+      +'<button class="pgh-edit" data-editproj="'+esc(g.name)+'" title="Edit project">'+I.pencil+'</button>';
+    html+=collapsibleGroup(g.name, head, g.jobs.map(jobCard).join(""));
   }
-  const loose=vis.filter(j=>!j.project);
-  if(loose.length){
-    const head='<span class="pgh-ic">'+I.folder+'</span><span class="pgh-name standalone">Standalone jobs</span>'
-      +'<span class="pgh-count">'+loose.length+' job'+(loose.length===1?"":"s")+'</span>'
-      +'<span class="spacer"></span>'
-      +bulkBtn("pgh-bulk", "standalone", "__standalone__", loose);
-    html+=collapsibleGroup("__standalone__", head, loose.map(jobCard).join(""));
+  // groupJobs returns no groups at all when none of `vis` carries a project
+  // (its own "flat grid" case, same shape as the `!allProjects.length` guard
+  // above) -- fall back to the same ungrouped grid rather than the "no jobs"
+  // empty state below, which would otherwise hide a screenful of real jobs
+  // behind a message that says there are none.
+  if(!groups.length){
+    $("jobs").innerHTML='<div class="grid">'+vis.map(jobCard).join("")+'</div>';
+    return;
   }
   $("jobs").innerHTML = html || '<div class="card empty">'+I.inbox+'No jobs in this view.</div>';
 }
@@ -2556,18 +2565,20 @@ function pulseHtml(k){
   const span=(T.bucket_seconds||900), start=T.start||(Math.floor(Date.now()/1000)-86400);
   const totalOf=(b)=>b.reduce((a,n)=>a+n,0);
   const max=buckets.reduce((m,b)=>Math.max(m,totalOf(b)),0);
+  // The five KPI numbers (checks, woke, warnings, errors, today's spend) are
+  // CCApp.pulseKpis's own arithmetic now -- see ui/app/overview.js. Looked up
+  // by label rather than positionally, since the redesign this is pinned
+  // ahead of is free to reorder the array without this lookup caring.
+  const kpis=CCApp.pulseKpis({checks, per, warn:k.warn, err:k.err, spentToday:k.spentToday,
+                              spentWeek:k.spentWeek, runsToday:k.runsToday, runsWeek:k.runsWeek});
+  const kBy={}; kpis.forEach(c=>kBy[c.label]=c);
 
   let band;
   if(!checks){
     // The honest empty state. A fresh install, or an evening after everything
     // was switched off, is not a broken chart — say which it is.
-    const jobs=DATA.jobs||[], off=jobs.filter(j=>j.enabled===false).length;
-    const why = !jobs.length ? "There are no jobs yet."
-      : off===jobs.length ? "All "+jobs.length+" jobs are disabled."
-      : off ? off+" of "+jobs.length+" jobs are disabled."
-      : "Every job is enabled — the next tick will show up here.";
     band='<div class="band asleep"><span>The loop has not checked anything in the '
-      +'last 24 hours. '+esc(why)+'</span></div>';
+      +'last 24 hours. '+esc(CCApp.bandEmptyReason(DATA.jobs||[]))+'</span></div>';
   }else{
     band='<div class="band">'+buckets.map((b,bi)=>{
       const at=start+bi*span, tot=totalOf(b);
@@ -2593,11 +2604,14 @@ function pulseHtml(k){
   // selection nobody on this page could see — and clicking it a second time
   // silently cleared a filter on a screen you were not looking at. One click,
   // one destination.
-  const chip=(kind,icon,n,label,tip)=>
+  // `active` (not `n` itself) gates data-statfilter/disabled: kBy's values
+  // are already display strings ("0" is truthy), so the count that used to
+  // do double duty as its own truthiness check is now passed separately.
+  const chip=(kind,icon,valueText,active,label,tip)=>
     '<button class="kpi '+(kind==="error"?"err":"warn")+'"'
-      +(n?' data-statfilter="'+kind+'"':' disabled')
-      +' title="'+esc(n?tip:"No "+label.toLowerCase()+" in the last 7 days")+'">'
-      +icon+'<b>'+n+'</b> '+esc(label)+'</button>';
+      +(active?' data-statfilter="'+kind+'"':' disabled')
+      +' title="'+esc(active?tip:"No "+label.toLowerCase()+" in the last 7 days")+'">'
+      +icon+'<b>'+valueText+'</b> '+esc(label)+'</button>';
   // A percentage of nothing is not 0%, it is nothing — say "no checks yet"
   // rather than print a confident 0% derived from an empty denominator.
   const pct=(n)=>checks?Math.round(n/checks*100)+"%":"—";
@@ -2614,13 +2628,13 @@ function pulseHtml(k){
     +'</div>'
     +'<div class="pulse-right">'
       +'<div class="tiles">'
-        +tile("Checks", checks, checks?"in the last 24h":"nothing yet")
-        +tile("Woke a run", per.woke, checks?pct(per.woke)+" of checks":"—")
+        +tile("Checks", kBy["Checks"].value, kBy["Checks"].sub)
+        +tile("Woke a run", kBy["Woke a run"].value, kBy["Woke a run"].sub)
         +tile("Errors", per.failed, checks?pct(per.failed)+" error rate":"—", per.failed>0)
       +'</div>'
       +'<div class="pulse-f">'
         +'<span class="kpi">Today <b>'+k.runsToday+'</b> run'+(k.runsToday===1?"":"s")
-          +' <b>'+esc(money(k.spentToday))+'</b></span>'
+          +' <b>'+esc(kBy["Spent today"].value)+'</b></span>'
         +'<span class="kpi-sep"></span>'
         +'<span class="kpi">7 days <b>'+k.runsWeek+'</b> run'+(k.runsWeek===1?"":"s")
           +' <b>'+esc(money(k.spentWeek))+'</b></span>'
@@ -2629,9 +2643,8 @@ function pulseHtml(k){
         // week. Wrapped together so a narrow panel drops both to the next line
         // instead of stranding one of them a line above the other.
         +'<span class="pulse-chips">'
-          +chip("warning",I.alert,k.warn,"warnings",
-                "Runs that finished without failing but did not do the work — open them in Runs")
-          +chip("error",I.xcircle,k.err,"errors","Runs that failed — open them in Runs")
+          +chip("warning",I.alert,kBy["Warnings"].value,!!kBy["Warnings"].filter,"warnings",kBy["Warnings"].sub)
+          +chip("error",I.xcircle,kBy["Errors"].value,!!kBy["Errors"].filter,"errors",kBy["Errors"].sub)
         +'</span>'
       +'</div>'
     +'</div>'

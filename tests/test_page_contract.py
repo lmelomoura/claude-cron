@@ -137,7 +137,13 @@ def test_the_backoff_curve_matches_the_engine(srv, tmp_path):
     check really is. Two implementations of one rule drift; this is what stops
     the card promising a check the tick will not make."""
     js = _js(srv)
-    fn = re.search(r"const BACKOFF_AFTER=.*?\n};", js, re.S).group(0)
+    # backoffMultiplier is a hoisted `function` declaration, not the `const`
+    # arrow it used to be (see its own comment: CCApp.init reads it by name
+    # well above this line, the same temporal-dead-zone fix activeRunsOf
+    # already needed) -- so its constants and its body are pulled separately
+    # rather than as one `const BACKOFF_AFTER=...\n};` span.
+    consts = re.search(r"const BACKOFF_AFTER=.*?;\n", js).group(0)
+    fn = consts + _plainfn(js, "backoffMultiplier")
     script = tmp_path / "b.js"
     script.write_text(fn + "\nconsole.log([0,1,2,3,4,5,6,7,20]"
                            ".map(backoffMultiplier).join(' '));")
@@ -787,6 +793,238 @@ def test_job_facts_survive_the_move_unchanged(srv, tmp_path):
     assert out["plain"]["state"] == "enabled"
     assert out["disabled"]["disabled"] is True
     assert out["plain"]["capped"] is False
+
+
+# ---- the Overview's own arithmetic, pinned ahead of the redesign that turns
+# three loose tiles and a footer strip into five KPI cards and rebuilds the
+# job card from HTML strings into DOM nodes. Characterisation tests: they
+# describe behaviour the page already has, so they pass on their first run --
+# the falsifiability of each one is recorded by hand in
+# .superpowers/sdd/task-6-report.md rather than by a red-then-green cycle
+# here. pulseKpis, bandEmptyReason, spendTone, groupJobs and jobsEmptyNote
+# are pure; probeVerdict and nextRunNote build DOM nodes and so need
+# _INDEX_DOM_HARNESS's stub document and collectAll, the same stand-in the
+# Security index screen's own DOM tests above already use.
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_kpis_come_from_the_numbers_the_loop_recorded(srv, tmp_path):
+    """Checks, woke, warnings, errors and today's spend, from a known
+    tick.log and a known journal. Pinned before the panel is redrawn: the
+    redesign moves these five out of three loose tiles and a footer strip
+    into five cards, and the one thing that must not change on the way is
+    what any of them says."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "pulseKpis")
+    script = tmp_path / "kpis.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    console.log(JSON.stringify(pulseKpis({
+      checks: 96, per: {woke: 23, idle: 68, blocked: 4, capped: 1},
+      warn: 3, err: 1, spentToday: 9.34, spentWeek: 41.02,
+      runsToday: 12, runsWeek: 58,
+    })));
+    """)
+    got = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True,
+                                    check=True).stdout)
+    by = {c["label"]: c for c in got}
+    assert by["Checks"]["value"] == "96"
+    assert by["Woke a run"]["value"] == "23"
+    assert by["Woke a run"]["sub"] == "24% of checks"
+    assert by["Warnings"]["value"] == "3"
+    assert by["Errors"]["value"] == "1"
+    assert by["Spent today"]["value"] == "$9.34"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_a_percentage_of_nothing_is_a_dash_not_zero_percent(srv, tmp_path):
+    """"0% error rate" over an empty denominator is a confident claim about
+    a day on which the loop never ran. The rule is already in pct(); nothing
+    held it."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "pulseKpis")
+    script = tmp_path / "pct.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    console.log(JSON.stringify(pulseKpis({
+      checks: 0, per: {woke: 0}, warn: 0, err: 0,
+      spentToday: 0, spentWeek: 0, runsToday: 0, runsWeek: 0,
+    })));
+    """)
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    subs = [c["sub"] for c in got]
+    assert not any("0%" in s for s in subs), f"a zero percent was printed: {subs}"
+    assert any("—" in s for s in subs), f"no dash where a percentage cannot exist: {subs}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_warning_and_error_cards_lead_to_the_runs_they_count(srv, tmp_path):
+    """These two are the way IN to the runs behind them -- today as chips
+    carrying data-statfilter, after the redesign as cards. The navigation is
+    the point of them, and a card with nothing to show must be inert rather
+    than navigating to an empty filtered table."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "pulseKpis")
+    script = tmp_path / "doors.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    const some = pulseKpis({checks: 10, per: {woke: 1}, warn: 3, err: 2,
+      spentToday: 0, spentWeek: 0, runsToday: 0, runsWeek: 0});
+    const none = pulseKpis({checks: 10, per: {woke: 1}, warn: 0, err: 0,
+      spentToday: 0, spentWeek: 0, runsToday: 0, runsWeek: 0});
+    console.log(JSON.stringify({some, none}));
+    """)
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    some = {c["label"]: c for c in got["some"]}
+    none = {c["label"]: c for c in got["none"]}
+    assert some["Warnings"]["filter"] == "warning"
+    assert some["Errors"]["filter"] == "error"
+    assert not none["Warnings"]["filter"], "a card with nothing to show still navigates"
+    assert not none["Errors"]["filter"], "a card with nothing to show still navigates"
+
+
+@pytest.mark.parametrize("jobs,expected", [
+    ([], "There are no jobs yet."),
+    ([{"enabled": False}], "All 1 jobs are disabled."),
+    ([{"enabled": False}, {"enabled": True}], "1 of 2 jobs are disabled."),
+    ([{"enabled": True}], "Every job is enabled — the next tick will show up here."),
+])
+def test_a_band_with_no_checks_says_which_empty_it_is(srv, tmp_path, jobs, expected):
+    """A fresh install, an evening with everything switched off, and a loop
+    that is about to tick are three different facts. One blank chart for all
+    three is the state this sentence exists to prevent."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "bandEmptyReason")
+    script = tmp_path / "band.js"
+    script.write_text(deps + f"""
+    console.log(bandEmptyReason({json.dumps(jobs)}));
+    """)
+    got = subprocess.run(["node", str(script)], capture_output=True, text=True,
+                         check=True).stdout.strip()
+    assert got == expected
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+@pytest.mark.parametrize("exit_code,expect", [
+    (0, "work found"), (1, "nothing to do"), (2, "probe FAILED"),
+    (127, "probe FAILED"),
+])
+def test_a_probe_that_could_not_run_says_so(srv, tmp_path, exit_code, expect):
+    """Any exit other than 0 or 1 once rendered as the calm "nothing to do",
+    so a job whose credentials had gone missing looked healthy while it
+    silently never ran again. Fixed in the code, never held by a test --
+    and the card is about to be rewritten."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "probeVerdict")
+    script = tmp_path / "probe.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + f"""
+    const n = probeVerdict({{exit: {exit_code}, output: ""}});
+    console.log(JSON.stringify(collectAll(n, [])));
+    """)
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert any(expect in r["text"] for r in got), \
+        f"exit {exit_code} did not read as {expect!r}: {[r['text'] for r in got]}"
+
+
+@pytest.mark.parametrize("spent,cap,expect", [
+    (1.00, 5.00, ""), (3.99, 5.00, ""), (4.00, 5.00, "near"),
+    (4.90, 5.00, "near"), (5.00, 5.00, "over"), (7.00, 5.00, "over"),
+])
+def test_the_spend_bar_warns_before_the_cap_and_says_when_it_is_reached(
+        srv, tmp_path, spent, cap, expect):
+    """80% is a warning and 100% is a stop, and the boundary between them is
+    exactly where an off-by-one lives. Pinned at both edges."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "spendTone")
+    script = tmp_path / "spend.js"
+    script.write_text(deps + f"console.log(spendTone({spent}, {cap}) || '');")
+    got = subprocess.run(["node", str(script)], capture_output=True, text=True,
+                         check=True).stdout.strip()
+    assert got == expect
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_favourite_projects_come_first_and_no_projects_means_a_flat_grid(
+        srv, tmp_path):
+    """The star's whole purpose: on an install with a dozen projects, the two
+    you are working in stop being a scroll away. And a install with no
+    projects at all gets no group chrome to scroll past."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "groupJobs")
+    script = tmp_path / "group.js"
+    script.write_text(deps + """
+    const jobs = [{id:"a",project:"Zeta"},{id:"b",project:"Alpha"},
+                  {id:"c",project:"Minerva"}];
+    console.log(JSON.stringify({
+      starred:   groupJobs(jobs, new Set(["Zeta"])).map(g => g.name),
+      unstarred: groupJobs(jobs, new Set()).map(g => g.name),
+      flat:      groupJobs([{id:"x"},{id:"y"}], new Set()).map(g => g.name),
+    }));
+    """)
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert got["starred"][0] == "Zeta", "a favourite did not sort to the top"
+    assert got["unstarred"] == ["Alpha", "Minerva", "Zeta"]
+    assert got["flat"] == [], "jobs with no project were given group chrome"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+@pytest.mark.parametrize("filtering,expect", [
+    (False, "No jobs yet"), (True, "No jobs match"),
+])
+def test_an_empty_list_says_whether_a_filter_emptied_it(srv, tmp_path,
+                                                         filtering, expect):
+    """"Nothing here" and "nothing here MATCHING WHAT YOU TYPED" send a
+    reader to two different places. Getting it wrong sends them to create a
+    job they already have."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "jobsEmptyNote")
+    script = tmp_path / "empty.js"
+    script.write_text(deps
+                      + f"console.log(jobsEmptyNote({str(filtering).lower()}));")
+    got = subprocess.run(["node", str(script)], capture_output=True, text=True,
+                         check=True).stdout
+    assert expect in got
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_backoff_names_the_multiplier_and_the_failures_behind_it(srv, tmp_path):
+    """"backing off" alone does not say for how long or why. The number of
+    failed runs is what tells an operator whether to wait or to look."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "nextRunNote")
+    script = tmp_path / "backoff.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    const n = nextRunNote({enabled: true}, {nextAt: 1, dueAt: 1,
+                                            backoff: 4, streak: 3});
+    console.log(JSON.stringify(collectAll(n, [])));
+    """)
+    txt = " ".join(r["text"] for r in json.loads(
+        subprocess.run(["node", str(script)], capture_output=True, text=True,
+                       check=True).stdout))
+    assert "4×" in txt and "3 failed" in txt, txt
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+@pytest.mark.parametrize("job,facts,expect", [
+    ({"enabled": False}, {"nextAt": None}, "disabled"),
+    ({"enabled": True}, {"nextAt": None}, "no matching window"),
+])
+def test_no_window_and_switched_off_are_different_answers(srv, tmp_path, job,
+                                                           facts, expect):
+    """A job nobody enabled and a job whose window will not reopen today are
+    two different things to do something about."""
+    block = _app_js(srv)
+    deps = _index_screen_deps(block, "nextRunNote")
+    script = tmp_path / "window.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + f"""
+    const n = nextRunNote({json.dumps(job)}, {json.dumps(facts)});
+    console.log(JSON.stringify(collectAll(n, [])));
+    """)
+    txt = " ".join(r["text"] for r in json.loads(
+        subprocess.run(["node", str(script)], capture_output=True, text=True,
+                       check=True).stdout))
+    assert expect in txt, txt
 
 
 def test_a_nested_security_module_still_reaches_the_sink_scan(tmp_path):

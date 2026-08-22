@@ -150,6 +150,137 @@
     return [...new Set((CC.DATA.jobs || []).map((j) => j.project || "").filter(Boolean))].sort();
   }
 
+  // ui/app/overview.js
+  function pulseKpis(k) {
+    const checks = k.checks || 0;
+    const per = k.per || {};
+    const warn = k.warn || 0;
+    const err = k.err || 0;
+    const spentToday = k.spentToday || 0;
+    const pct = (n) => checks ? Math.round(n / checks * 100) + "%" : "\u2014";
+    const dollars = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: Math.abs(spentToday) < 0.1 ? 4 : 2
+    }).format(spentToday);
+    return [
+      {
+        label: "Checks",
+        value: String(checks),
+        sub: checks ? "in the last 24h" : "nothing yet",
+        tone: "",
+        filter: ""
+      },
+      {
+        label: "Woke a run",
+        value: String(per.woke || 0),
+        sub: pct(per.woke || 0) + " of checks",
+        tone: "",
+        filter: ""
+      },
+      // Warnings and errors are a way IN to the runs they count, and inert
+      // when there is nothing to go to -- see pulseHtml's own comment beside
+      // chip() on why a card with nothing to show must not navigate.
+      {
+        label: "Warnings",
+        value: String(warn),
+        sub: warn ? "Runs that finished without failing but did not do the work \u2014 open them in Runs" : "No warnings in the last 7 days",
+        tone: "warn",
+        filter: warn ? "warning" : ""
+      },
+      {
+        label: "Errors",
+        value: String(err),
+        sub: err ? "Runs that failed \u2014 open them in Runs" : "No errors in the last 7 days",
+        tone: "err",
+        filter: err ? "error" : ""
+      },
+      { label: "Spent today", value: dollars, sub: "", tone: "", filter: "" }
+    ];
+  }
+  function bandEmptyReason(jobs) {
+    const js = jobs || [];
+    const off = js.filter((j) => j.enabled === false).length;
+    return !js.length ? "There are no jobs yet." : off === js.length ? "All " + js.length + " jobs are disabled." : off ? off + " of " + js.length + " jobs are disabled." : "Every job is enabled \u2014 the next tick will show up here.";
+  }
+  function probeVerdict(pc) {
+    const span = document.createElement("span");
+    if (pc.exit === 0) {
+      span.style.color = "var(--ok)";
+      span.textContent = "work found";
+    } else if (pc.exit === 1) {
+      span.textContent = "nothing to do";
+    } else {
+      span.style.color = "var(--err)";
+      span.style.fontWeight = "600";
+      span.textContent = "probe FAILED (exit " + pc.exit + ")";
+    }
+    return span;
+  }
+  function spendTone(spent, cap) {
+    const capped = cap != null && spent >= cap;
+    const pct = cap != null && cap > 0 ? Math.min(100, spent / cap * 100) : 0;
+    return capped ? "over" : pct >= 80 ? "near" : "";
+  }
+  function groupJobs(jobs, favSet) {
+    const names = [...new Set(jobs.map((j) => j.project || "").filter(Boolean))].sort((a, b) => favSet.has(b) - favSet.has(a) || a.localeCompare(b));
+    if (!names.length) return [];
+    const groups = [];
+    for (const name of names) {
+      const js = jobs.filter((j) => j.project === name);
+      if (js.length) groups.push({ name, jobs: js });
+    }
+    const loose = jobs.filter((j) => !j.project);
+    if (loose.length) groups.push({ name: "__standalone__", jobs: loose });
+    return groups;
+  }
+  function jobsEmptyNote(filtering) {
+    return filtering ? "No jobs match these filters." : "No jobs yet \u2014 create one.";
+  }
+  function nextRunNote(job, facts) {
+    const wrap = document.createElement("span");
+    if (job.enabled === false) {
+      const muted = document.createElement("span");
+      muted.className = "muted";
+      muted.textContent = "disabled";
+      wrap.appendChild(muted);
+      return wrap;
+    }
+    const { nextAt, dueAt, backoff, streak } = facts;
+    if (nextAt == null) {
+      const muted = document.createElement("span");
+      muted.className = "muted";
+      muted.textContent = "no matching window";
+      wrap.appendChild(muted);
+      return wrap;
+    }
+    wrap.appendChild(document.createTextNode(new Date(nextAt * 1e3).toLocaleString(
+      void 0,
+      {
+        year: "numeric",
+        month: "numeric",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        second: "2-digit"
+      }
+    )));
+    if (nextAt > dueAt + 30) {
+      const reopen = document.createElement("span");
+      reopen.className = "muted";
+      reopen.textContent = " \xB7 when the window reopens";
+      wrap.appendChild(reopen);
+    }
+    if (backoff > 1) {
+      const back = document.createElement("span");
+      back.style.color = "var(--warn)";
+      back.textContent = " \xB7 backing off " + backoff + "\xD7 after " + streak + " failed runs";
+      wrap.appendChild(back);
+    }
+    return wrap;
+  }
+
   // ui/app/index.js
   function init(cc) {
     bindPage(cc);
@@ -162,8 +293,15 @@
     bulkOn,
     bulkLabel,
     clearJobFilters,
-    jobProjectNames
+    jobProjectNames,
+    pulseKpis,
+    bandEmptyReason,
+    probeVerdict,
+    spendTone,
+    groupJobs,
+    jobsEmptyNote,
+    nextRunNote
   };
 })();
-/* ui-bundle: 382e8b3d69a86c59431e9d00322b87fad6328811b52f92b00f0c16aaa24ab44a */
-/* ui-sources: 21552f6fd69190700fd5401d0f6b1b7881ba21e301af748f5294aca600481653 */
+/* ui-bundle: 0238b8526341c97df2e22e00c92fb2b4266705bd93a145d883e8f6804b7545a0 */
+/* ui-sources: 5915bdb8e4fe508859f94ec08164682d710d4f0db0072665f869f0982bd9c09d */

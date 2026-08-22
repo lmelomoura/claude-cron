@@ -10,14 +10,22 @@
    the second consumer a later phase adds, not this one. A page that could no
    longer reach jobFacts, visibleJobs, bulkOn, bulkLabel, clearJobFilters or
    jobProjectNames would not fail loudly; it would throw the first time a
-   5-second poll tried to redraw. */
+   5-second poll tried to redraw.
+
+   overview.js's seven exports are the same deal for pulseHtml, jobCard and
+   renderJobCards: the arithmetic and the wording move here, the markup that
+   was built from them stays in the page and now calls back in by name. */
 import { bindPage } from "./page.js";
 import { jobFacts, visibleJobs, jobFilters, bulkOn, bulkLabel,
          clearJobFilters, jobProjectNames } from "./jobs-domain.js";
+import { pulseKpis, bandEmptyReason, probeVerdict, spendTone, groupJobs,
+         jobsEmptyNote, nextRunNote } from "./overview.js";
 
 function init(cc){
   bindPage(cc);
 }
 
 window.CCApp = { init, jobFacts, visibleJobs, jobFilters, bulkOn,
-                 bulkLabel, clearJobFilters, jobProjectNames };
+                 bulkLabel, clearJobFilters, jobProjectNames,
+                 pulseKpis, bandEmptyReason, probeVerdict, spendTone,
+                 groupJobs, jobsEmptyNote, nextRunNote };

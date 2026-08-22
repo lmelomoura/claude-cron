@@ -640,6 +640,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The Overview's own arithmetic — the five KPI numbers, the band's empty
+  states, the probe's three verdicts, the spend bar's two thresholds,
+  favourite-first project grouping, the two "no jobs" emptinesses, and what
+  the backoff/window note says — moved out of `pulseHtml`, `jobCard` and
+  `renderJobCards` into seven pure functions in a new `ui/app/overview.js`
+  (`pulseKpis`, `bandEmptyReason`, `probeVerdict`, `spendTone`, `groupJobs`,
+  `jobsEmptyNote`, `nextRunNote`), reached from the page as
+  `CCApp.pulseKpis` and so on.** Ten characterisation tests pin exactly what
+  each one says today, ahead of a redesign that rebuilds the KPI panel into
+  cards and the job card from an HTML string into DOM nodes — the point of
+  pinning it first is that neither rebuild can silently change a number, a
+  verdict or an empty-state sentence on the way. Two of the seven
+  (`probeVerdict`, `nextRunNote`) return DOM nodes built with
+  `createElement`/`createTextNode`, the same rule `ui/security/`'s screens
+  already follow, and the renderers that still build HTML strings splice
+  them in with a serialised copy of the node. `groupJobs` folds
+  `renderJobCards`'s per-vis "no projects → flat grid" check into its own
+  "none of these jobs carry a project → no groups" one, which is almost the
+  same rule but not quite: filtering a multi-project install down to
+  Standalone only used to render a "Standalone jobs" group with its own
+  header chrome, and now falls back to the same flat grid an install with
+  no projects at all gets — a group header lost, not a job hidden, and
+  narrower than what was there before on purpose rather than by accident.
+
+  Folded into the same change: `backoffMultiplier` was a `const` arrow
+  referenced by `CCApp.init`'s interface object well above its own
+  definition, working today only because nothing had reordered the file yet
+  — the identical shape `activeRunsOf` was converted away from for the same
+  reason one commit ago. It is now a hoisted `function` declaration too, so
+  the risk is closed rather than merely still dormant.
+
 - **The jobs domain moved out of `bin/dashboard.html` into `ui/app/`, bundled
   into a committed `bin/static/app.js` the same way `ui/security/` becomes
   `bin/static/security.js`.** `jobFacts` (state, next run, budget cap,
