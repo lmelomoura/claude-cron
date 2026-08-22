@@ -3478,7 +3478,7 @@ def test_no_css_rule_was_lost_when_the_stylesheet_moved_out(srv):
     assert not (want - have), f"rules lost in the move: {sorted(want - have)[:20]}"
 
 
-def test_the_css_baseline_fixture_is_committed_not_just_present():
+def test_the_css_baseline_fixture_is_tracked_not_just_present_on_disk():
     """The test above reads tests/data/css-selectors-before.txt from disk, but
     a file sitting in a checkout is not the same thing as a file the
     repository carries. `tests/data/` used to be swallowed by a bare `data/`
