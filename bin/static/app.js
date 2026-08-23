@@ -134,6 +134,55 @@
     return [...new Set((CC.DATA.jobs || []).map((j) => j.project || "").filter(Boolean))].sort();
   }
 
+  // ui/app/chrome.js
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  function pageHeader({ icon: iconName, title, subtitle, actions }) {
+    const head = el("div", "page-header");
+    const icWrap = el("div", "page-header-ic");
+    if (iconName) icWrap.appendChild(icon(iconName));
+    head.appendChild(icWrap);
+    const body = el("div", "page-header-body");
+    body.appendChild(el("h1", null, title));
+    if (subtitle) body.appendChild(el("p", null, subtitle));
+    head.appendChild(body);
+    if (actions && actions.length) {
+      const bar = el("div", "page-header-actions");
+      actions.forEach((a) => bar.appendChild(pageHeaderAction(a)));
+      head.appendChild(bar);
+    }
+    return head;
+  }
+  function pageHeaderAction(a) {
+    const btn = el("button", "btn " + (a.primary ? "primary" : "ghost"));
+    if (a.id) btn.id = a.id;
+    if (a.icon) btn.appendChild(icon(a.icon));
+    btn.appendChild(document.createTextNode(a.label));
+    return btn;
+  }
+  function kpiCard(opts) {
+    const { icon: iconName, tone, value, label, sub, title, filter, door } = opts;
+    const card = el(door ? "button" : "div", "kpi-card" + (tone ? " " + tone : ""));
+    if (title) card.title = title;
+    const head = el("div", "kpi-card-h");
+    const icWrap = el("div", "kpi-card-ic");
+    if (iconName) icWrap.appendChild(icon(iconName));
+    head.appendChild(icWrap);
+    head.appendChild(el("span", "kpi-card-num", value));
+    card.appendChild(head);
+    card.appendChild(el("div", "kpi-card-label", label));
+    if (sub) card.appendChild(el("div", "kpi-card-sub", sub));
+    if (door) {
+      if (filter) card.dataset.statfilter = filter;
+      else card.disabled = true;
+    }
+    return card;
+  }
+
   // ui/app/overview.js
   function pulseKpis(k) {
     const checks = k.checks || 0;
@@ -347,12 +396,6 @@
     actions.appendChild(btn);
     card.appendChild(actions);
     return card;
-  }
-  function el(tag, cls, text) {
-    const n = document.createElement(tag);
-    if (cls) n.className = cls;
-    if (text != null) n.textContent = text;
-    return n;
   }
   var DOW = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   function fmtDays(arr) {
@@ -713,47 +756,6 @@
     const first = String(firstName || "").trim().split(/\s+/)[0] || "";
     return { title: when + (first ? ", " + first : "") + ".", subtitle: line };
   }
-  function pageHeader({ icon: iconName, title, subtitle, actions }) {
-    const head = el("div", "page-header");
-    const icWrap = el("div", "page-header-ic");
-    if (iconName) icWrap.appendChild(icon(iconName));
-    head.appendChild(icWrap);
-    const body = el("div", "page-header-body");
-    body.appendChild(el("h1", null, title));
-    if (subtitle) body.appendChild(el("p", null, subtitle));
-    head.appendChild(body);
-    if (actions && actions.length) {
-      const bar = el("div", "page-header-actions");
-      actions.forEach((a) => bar.appendChild(pageHeaderAction(a)));
-      head.appendChild(bar);
-    }
-    return head;
-  }
-  function pageHeaderAction(a) {
-    const btn = el("button", "btn " + (a.primary ? "primary" : "ghost"));
-    if (a.id) btn.id = a.id;
-    if (a.icon) btn.appendChild(icon(a.icon));
-    btn.appendChild(document.createTextNode(a.label));
-    return btn;
-  }
-  function kpiCard(opts) {
-    const { icon: iconName, tone, value, label, sub, title, filter, door } = opts;
-    const card = el(door ? "button" : "div", "kpi-card" + (tone ? " " + tone : ""));
-    if (title) card.title = title;
-    const head = el("div", "kpi-card-h");
-    const icWrap = el("div", "kpi-card-ic");
-    if (iconName) icWrap.appendChild(icon(iconName));
-    head.appendChild(icWrap);
-    head.appendChild(el("span", "kpi-card-num", value));
-    card.appendChild(head);
-    card.appendChild(el("div", "kpi-card-label", label));
-    if (sub) card.appendChild(el("div", "kpi-card-sub", sub));
-    if (door) {
-      if (filter) card.dataset.statfilter = filter;
-      else card.disabled = true;
-    }
-    return card;
-  }
   function renderPulse(ticks, jobs) {
     const { per, checks, buckets, kinds, T } = tickTotals(ticks);
     const span = T.bucket_seconds || 900;
@@ -891,5 +893,5 @@
     jobCard
   };
 })();
-/* ui-bundle: b3a1a77bf483aa4af7a2d0f893021e62dc85515ba8e9801f71605ec4ea6588c5 */
-/* ui-sources: 23933bee097a72161a606cb8392cfd83752d729acffdebb230a51064ea0a1af8 */
+/* ui-bundle: 086a3fadb1a40546975dca160b0655892133f911b2323e24bc6ef3826351cadf */
+/* ui-sources: 8374e3d3b04a6fb3759f0e7940f746717e5be63eb53dbaeb54a18b8d4bcf96e7 */

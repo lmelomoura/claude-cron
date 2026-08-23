@@ -1066,6 +1066,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`tests/test_page_contract.py`) and a new `check_ui_artifacts()` case in
   `cmd_selftest` (`bin/claude-cron`) both reproduce the swap directly and
   pin the fix.
+- **`el`, `pageHeader` and `kpiCard` move to their own file.** All three
+  were written generically from the start — nothing in any of them assumes
+  it is drawing the Overview — because Phases 2 and 3 put one of each on
+  every remaining page; `ui/app/overview.js` was only ever meant to hold
+  the Overview's own arithmetic and markup. Six pages importing generic
+  builders out of a file named `overview.js` would have been a name lying
+  six times over, so the three move to a new `ui/app/chrome.js` now, while
+  `overview.js` is still the only consumer to update. No function body
+  changed in the move; the characterisation tests that read these
+  functions out of the built bundle's own source text still find them,
+  since `_app_js` (`tests/test_page_contract.py`) concatenates every `.js`
+  under `ui/app/` regardless of which file a function lives in.
 
 ### Added
 

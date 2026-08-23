@@ -26,8 +26,9 @@
 import { bindPage } from "./page.js";
 import { jobFacts, visibleJobs, jobFilters, bulkOn, bulkLabel,
          clearJobFilters, jobProjectNames } from "./jobs-domain.js";
-import { groupJobs, jobsEmptyNote, worktreesCard, pageHeader, kpiCard,
+import { groupJobs, jobsEmptyNote, worktreesCard,
          renderPulse, renderOverviewHead, jobCard } from "./overview.js";
+import { pageHeader, kpiCard } from "./chrome.js";
 
 function init(cc){
   bindPage(cc);
