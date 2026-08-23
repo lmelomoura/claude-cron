@@ -256,68 +256,66 @@ document.documentElement.dataset.theme =
     <div id="jobs-table"></div>
   </div><!-- /view-jobs -->
 
-  <!-- Runs as its own page. Same story as the Jobs toolbar above: this used
-       to also render inside the Overview's own Runs pane, moved there and
-       back by relocate(); it lives only on this page now. -->
+  <!-- Runs as its own page, speaking the Overview's visual language --
+       runs-head/runs-kpis/runs-table are built whole by CCApp.renderRunsPage()
+       every poll; runstoolbar's search box and four pickers are static
+       markup CCApp.renderRunsPage() lays out ONCE (mountRunsToolbar, guarded
+       by data-mounted) and repaints in place every poll after that, the
+       same split jobs-table.js's own mountJobsToolbar()/paintJobFilterBar()
+       use for the Jobs toolbar above. -->
   <div class="view" id="view-runs" hidden>
     <div id="runs-head"></div>
-    <div id="runsblock">
-      <div class="toolbar">
-        <div class="searchbox" id="searchbox">
-          <input id="q" placeholder="Search runs & log content…" autocomplete="off">
-          <button class="clear" id="q-clear" hidden></button>
-        </div>
-        <div class="picker" id="rprojpick">
-          <button class="picker-trigger" id="rprojpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
-          <div class="picker-pop" id="rprojpick-pop" hidden>
-            <div class="picker-search"><input id="rprojpick-q" placeholder="Search projects…" autocomplete="off"></div>
-            <div class="picker-list" id="rprojpick-list" role="listbox"></div>
-            <div class="picker-foot" id="rprojpick-foot"></div>
-          </div>
-        </div>
-        <div class="picker" id="rjobpick">
-          <button class="picker-trigger" id="rjobpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
-          <div class="picker-pop" id="rjobpick-pop" hidden>
-            <div class="picker-search"><input id="rjobpick-q" placeholder="Search jobs…" autocomplete="off"></div>
-            <div class="picker-list" id="rjobpick-list" role="listbox"></div>
-            <div class="picker-foot" id="rjobpick-foot"></div>
-          </div>
-        </div>
-        <div class="picker" id="rstatpick">
-          <button class="picker-trigger" id="rstatpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
-          <div class="picker-pop" id="rstatpick-pop" hidden>
-            <div class="picker-list" id="rstatpick-list" role="listbox"></div>
-          </div>
-        </div>
-        <!-- The date range keeps its own control rather than disappearing with the
-             old filter panel: presets for the answer you usually want, and the two
-             exact fields underneath for the one time you do not. -->
-        <div class="picker" id="rdatepick">
-          <button class="picker-trigger" id="rdatepick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
-          <div class="picker-pop" id="rdatepick-pop" hidden>
-            <div class="picker-list" id="rdatepick-list" role="listbox"></div>
-            <div class="daterange">
-              <label>From <input type="datetime-local" id="f-from"></label>
-              <label>To <input type="datetime-local" id="f-to"></label>
-            </div>
-          </div>
-        </div>
-        <button class="btn ghost" id="f-clear"></button>
-        <div class="spacer"></div>
-        <label class="perpage">Per page
-          <select id="f-size"><option>10</option><option>25</option><option>50</option><option>100</option></select>
-        </label>
+    <div class="kpi-grid" id="runs-kpis"></div>
+    <div id="runstoolbar">
+      <div class="searchbox" id="searchbox">
+        <input id="q" placeholder="Search runs & log content…" autocomplete="off">
+        <button class="clear" id="q-clear" hidden></button>
       </div>
+      <div class="picker" id="rprojpick">
+        <button class="picker-trigger" id="rprojpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
+        <div class="picker-pop" id="rprojpick-pop" hidden>
+          <div class="picker-search"><input id="rprojpick-q" placeholder="Search projects…" autocomplete="off"></div>
+          <div class="picker-list" id="rprojpick-list" role="listbox"></div>
+          <div class="picker-foot" id="rprojpick-foot"></div>
+        </div>
+      </div>
+      <div class="picker" id="rjobpick">
+        <button class="picker-trigger" id="rjobpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
+        <div class="picker-pop" id="rjobpick-pop" hidden>
+          <div class="picker-search"><input id="rjobpick-q" placeholder="Search jobs…" autocomplete="off"></div>
+          <div class="picker-list" id="rjobpick-list" role="listbox"></div>
+          <div class="picker-foot" id="rjobpick-foot"></div>
+        </div>
+      </div>
+      <div class="picker" id="rstatpick">
+        <button class="picker-trigger" id="rstatpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
+        <div class="picker-pop" id="rstatpick-pop" hidden>
+          <div class="picker-list" id="rstatpick-list" role="listbox"></div>
+        </div>
+      </div>
+      <!-- The date range keeps its own control rather than disappearing with the
+           old filter panel: presets for the answer you usually want, and the two
+           exact fields underneath for the one time you do not. -->
+      <div class="picker" id="rdatepick">
+        <button class="picker-trigger" id="rdatepick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
+        <div class="picker-pop" id="rdatepick-pop" hidden>
+          <div class="picker-list" id="rdatepick-list" role="listbox"></div>
+          <div class="daterange">
+            <label>From <input type="datetime-local" id="f-from"></label>
+            <label>To <input type="datetime-local" id="f-to"></label>
+          </div>
+        </div>
+      </div>
+      <button class="btn ghost" id="f-clear"></button>
+      <label class="perpage" id="f-size-wrap">Per page
+        <select id="f-size"><option>10</option><option>25</option><option>50</option><option>100</option></select>
+      </label>
       <div class="activefilters" id="ractive" hidden></div>
-      <div class="tablewrap"><table>
-        <thead><tr id="runhead"></tr></thead>
-        <tbody id="runs"></tbody></table></div>
-      <div class="pager">
-        <button class="btn ghost" id="pg-prev"></button>
-        <span id="pg-info"></span>
-        <button class="btn ghost" id="pg-next"></button>
-      </div>
     </div>
+    <!-- The table card itself, footer included -- see CCApp.tableCard()'s own
+         comment (ui/app/chrome.js) on why the footer lives INSIDE the card
+         this builds rather than as a separate element below it. -->
+    <div id="runs-table"></div>
   </div><!-- /view-runs -->
 
   <!-- Projects as its own page, speaking the Overview's visual language --
@@ -1129,21 +1127,12 @@ const I={
 };
 const STATUS_ICON={success:I.check, warning:I.alert, error:I.xcircle, idle:I.clock,
                    running:I.timer, stopped:I.power};
-/* `error` covered a 529 the API returned and an agent that got its tools taken
-   away, and those want opposite responses from the person reading the table —
-   wait, versus go and look. The cause says which without opening the run. */
-const CAUSE_LABEL={
-  api_error:    ["API",      "the API refused a turn — the provider's fault, not this job's, and it does not count towards the failure backoff"],
-  rate_limited: ["limit",    "the account is over its rate or usage limit — it does not count towards the failure backoff"],
-  tools_denied: ["blocked",  "the agent asked for a tool it is not allowed, so it could not do the work"],
-  killed:       ["killed",   "the run was cut off — a watchdog, a crash, or a kill — and never reported a result"],
-  agent_error:  ["agent",    "the agent itself ended in error"],
-};
-function causeTag(rec){
-  const c=CAUSE_LABEL[(rec&&rec.cause)||""];
-  if(!c) return "";
-  return '<span class="causetag" title="'+esc(c[1])+'">'+esc(c[0])+'</span>';
-}
+// CAUSE_LABEL and causeTag (the run table's own "API"/"limit"/"blocked"/
+// "killed"/"agent" badge) moved to ui/app/runs.js in Phase 2 Task 7, rebuilt
+// there as a real element instead of an HTML string -- the row it sits in
+// is built the same way now, and STATUS_ICON just above stays here since
+// resumeTip/resumedBadgeTip/statusPill (the log modal) still read it as a
+// raw string.
 
 /* ---------------------------------------------------------------- theme */
 /* The rule itself is in the head script, which had to run before any
@@ -1721,6 +1710,8 @@ CCApp.init({ $, fmtAgo, fmtDur, money,
              effortLabel, fmtExpiresIn, resumeInFlight,
              fmtWhen, fmtIn, isFav, TOKEN, toast, refresh, paintJobPickers,
              normStatus,
+             openLog, resumeTarget, resumeTip, continuedRun, resumedBadgeTip,
+             runKey, isStopping, unjournaledLive, paintRunPickers, runDateLabel,
              get DATA(){ return DATA; },
              get currentView(){ return currentView; } });
 /* ================================================================ end app */
@@ -1762,10 +1753,8 @@ function projectFoot(known, q, P){
   if(!n) return "";
   return "Showing "+Math.min(P.limit,n)+" of "+n+" project"+(n===1?"":"s");
 }
-// jobProjectNames moved to ui/app/jobs-domain.js, reached as CCApp.jobProjectNames.
-function runProjectNames(){
-  return [...new Set((DATA.runs||[]).map(r=>r.project||"").filter(Boolean))].sort();
-}
+// jobProjectNames moved to ui/app/jobs-domain.js, reached as CCApp.jobProjectNames;
+// runProjectNames moved to ui/app/runs.js the same way, reached as CCApp.runProjectNames.
 
 let projPicker, jobStatusPicker, runProjPicker, runJobPicker, runStatusPicker, runDatePicker;
 // The two Jobs pickers' own paint step, reached by ui/app/jobs-table.js's
@@ -1773,6 +1762,14 @@ let projPicker, jobStatusPicker, runProjPicker, runJobPicker, runStatusPicker, r
 // stay here, since initPickers() below builds the four Runs pickers
 // alongside them and those are not this task's to hand over.
 function paintJobPickers(){ projPicker.paint(); jobStatusPicker.paint(); }
+// The same bridge for the four Runs pickers, reached by ui/app/runs.js's
+// own paintRunFilters() -- runDateLabel is the one extra reach that picker
+// needs beyond `.paint()`, since the "Date: …" chip's own label text comes
+// from the picker's own valueLabel logic below, not from RF directly.
+function paintRunPickers(){
+  runProjPicker.paint(); runJobPicker.paint(); runStatusPicker.paint(); runDatePicker.paint();
+}
+function runDateLabel(){ return runDatePicker.label(); }
 function initPickers(){
   projPicker=makePicker("projpick",{
     label:"Project", icon:I.folder, pageSize:PROJ_PAGE,
@@ -1807,31 +1804,31 @@ function initPickers(){
 
   runProjPicker=makePicker("rprojpick",{
     label:"Project", icon:I.folder, pageSize:PROJ_PAGE,
-    valueLabel:()=>RF.project==="" ? "All projects"
-      : RF.project==="__none__" ? "No project" : RF.project,
+    valueLabel:()=>CCApp.RF.project==="" ? "All projects"
+      : CCApp.RF.project==="__none__" ? "No project" : CCApp.RF.project,
     rows:(q,P)=>{
-      const runs=DATA.runs||[], known=runProjectNames();
+      const runs=DATA.runs||[], known=CCApp.runProjectNames();
       const rows=projectRowsFor(known, n=>runs.filter(r=>r.project===n).length,
-                                runs.length, RF.project, q, P);
+                                runs.length, CCApp.RF.project, q, P);
       const loose=runs.filter(r=>!r.project).length;
       if(loose && (!q || "no project".includes(q.toLowerCase())))
-        rows.push({v:"__none__",label:"No project",n:loose,sel:RF.project==="__none__",icon:I.inbox});
+        rows.push({v:"__none__",label:"No project",n:loose,sel:CCApp.RF.project==="__none__",icon:I.inbox});
       return rows;
     },
-    hasMore:(q,P)=>runProjectNames().filter(n=>!q||n.toLowerCase().includes(q.toLowerCase())).length>P.limit,
-    foot:(q,P)=>projectFoot(runProjectNames(), q, P),
-    onPick:(v)=>{ RF.project=v; noteRecentProject(v); page=1; renderRuns(); },
+    hasMore:(q,P)=>CCApp.runProjectNames().filter(n=>!q||n.toLowerCase().includes(q.toLowerCase())).length>P.limit,
+    foot:(q,P)=>projectFoot(CCApp.runProjectNames(), q, P),
+    onPick:(v)=>{ CCApp.RF.project=v; noteRecentProject(v); CCApp.runsFilterChanged(); },
   });
   runJobPicker=makePicker("rjobpick",{
     label:"Job", icon:I.zap, pageSize:PROJ_PAGE,
-    valueLabel:()=>RF.job||"All jobs",
+    valueLabel:()=>CCApp.RF.job||"All jobs",
     rows:(q,P)=>{
       const runs=DATA.runs||[];
       const ids=[...new Set(runs.map(r=>r.id))].sort()
         .filter(i=>!q||i.toLowerCase().includes(q.toLowerCase()));
-      const rows=[{v:"",label:"All jobs",n:runs.length,sel:RF.job==="",icon:I.layers}];
+      const rows=[{v:"",label:"All jobs",n:runs.length,sel:CCApp.RF.job==="",icon:I.layers}];
       ids.slice(0,P.limit).forEach(i=>
-        rows.push({v:i,label:i,n:runs.filter(r=>r.id===i).length,sel:RF.job===i,icon:I.zap}));
+        rows.push({v:i,label:i,n:runs.filter(r=>r.id===i).length,sel:CCApp.RF.job===i,icon:I.zap}));
       return rows;
     },
     hasMore:(q,P)=>[...new Set((DATA.runs||[]).map(r=>r.id))]
@@ -1841,36 +1838,36 @@ function initPickers(){
         .filter(i=>!q||i.toLowerCase().includes(q.toLowerCase())).length;
       return n ? "Showing "+Math.min(P.limit,n)+" of "+n+" job"+(n===1?"":"s") : "";
     },
-    onPick:(v)=>{ RF.job=v; page=1; renderRuns(); },
+    onPick:(v)=>{ CCApp.RF.job=v; CCApp.runsFilterChanged(); },
   });
   runStatusPicker=makePicker("rstatpick",{
     label:"Status", icon:I.activity,
-    valueLabel:()=>RF.status||"All",
+    valueLabel:()=>CCApp.RF.status||"All",
     rows:()=>{
       const runs=DATA.runs||[], n=(s)=>runs.filter(r=>normStatus(r.status)===s).length;
-      return [{v:"",label:"All",n:runs.length,sel:RF.status==="",icon:I.layers},
-              {v:"success",label:"success",n:n("success"),sel:RF.status==="success",icon:I.check},
-              {v:"warning",label:"warning",n:n("warning"),sel:RF.status==="warning",icon:I.alert},
-              {v:"error",label:"error",n:n("error"),sel:RF.status==="error",icon:I.xcircle},
-              {v:"stopped",label:"stopped",n:n("stopped"),sel:RF.status==="stopped",icon:I.power}];
+      return [{v:"",label:"All",n:runs.length,sel:CCApp.RF.status==="",icon:I.layers},
+              {v:"success",label:"success",n:n("success"),sel:CCApp.RF.status==="success",icon:I.check},
+              {v:"warning",label:"warning",n:n("warning"),sel:CCApp.RF.status==="warning",icon:I.alert},
+              {v:"error",label:"error",n:n("error"),sel:CCApp.RF.status==="error",icon:I.xcircle},
+              {v:"stopped",label:"stopped",n:n("stopped"),sel:CCApp.RF.status==="stopped",icon:I.power}];
     },
-    onPick:(v)=>{ RF.status=v; page=1; renderRuns(); },
+    onPick:(v)=>{ CCApp.RF.status=v; CCApp.runsFilterChanged(); },
   });
   runDatePicker=makePicker("rdatepick",{
     label:"Date", icon:I.calendar,
     valueLabel:()=>{
-      if(!RF.from && !RF.to) return "All time";
-      const p=DATE_PRESETS.find(d=>d.v && d.from()===RF.from && !RF.to);
+      if(!CCApp.RF.from && !CCApp.RF.to) return "All time";
+      const p=DATE_PRESETS.find(d=>d.v && d.from()===CCApp.RF.from && !CCApp.RF.to);
       return p ? p.label : "Custom";
     },
     rows:()=>DATE_PRESETS.map(d=>({v:d.v, label:d.label, icon:I.clock2,
-      sel:(d.v==="" ? (!RF.from && !RF.to) : (RF.from===d.from() && !RF.to))})),
+      sel:(d.v==="" ? (!CCApp.RF.from && !CCApp.RF.to) : (CCApp.RF.from===d.from() && !CCApp.RF.to))})),
     onPick:(v)=>{
       const d=DATE_PRESETS.find(x=>x.v===v);
-      RF.from = (d && d.v) ? d.from() : "";
-      RF.to="";
-      $("f-from").value=RF.from; $("f-to").value="";
-      page=1; renderRuns();
+      CCApp.RF.from = (d && d.v) ? d.from() : "";
+      CCApp.RF.to="";
+      $("f-from").value=CCApp.RF.from; $("f-to").value="";
+      CCApp.runsFilterChanged();
     },
   });
 }
@@ -2258,16 +2255,20 @@ function render(){
   CCApp.renderProjectsPage();
   CCSecurity.render();
   renderJobsArea();
-  renderRuns();
+  CCApp.renderRunsPage();
   $("foot").textContent="claude-cron · control server on 127.0.0.1 · SQLite index.db ("
     +fmtBytes(DATA.db_bytes)+") holds run history & search · runs.ndjson is the append journal";
 }
 
-/* ------------------------------------------- runs: search + filters + pages */
-const RF={project:"",job:"",status:"",from:"",to:""};
-let pageSize=parseInt(localStorage.ccPageSize||"25",10)||25, page=1;
-let searchKeys=null, snippets={}, searchSeq=0;
-
+/* ------------------------------------------- runs: search + filters + pages
+   RF, pageSize/page, searchKeys/snippets/searchSeq and everything that used
+   to read them directly (renderRunHead, renderRuns, paintRunFilters,
+   runSearch, clearRunFilters) moved to ui/app/runs.js (CCApp.*) in Phase 2
+   Task 7, the same move jobs-table.js and projects.js already made for
+   their own tables. What stays here is the live-run bookkeeping
+   (liveRuns/unjournaledLive/stopping and friends) and the resume-tooltip
+   machinery below -- both reached from the moved table through the page.js
+   interface (see that file's own comment on why each one stays put). */
 
 // Runs happening right now. They are not in the journal yet (a record is only
 // written when a run ends), so synthesize their rows — that is what puts an
@@ -2300,9 +2301,18 @@ function isStopping(r){ return r.live && stopping.has(String(r.pid)); }
    too many. The journal is the record: a live slot for a run already in it is
    the same run, already over, and the slot is just the last thing to be
    cleared. Everything that counts or lists runs goes through here. */
+// A pid that is gone is no longer "stopping" -- folded in here (Phase 2
+// Task 7) rather than left as a second call every caller had to remember to
+// make, now that ui/app/runs.js is a second caller: unjournaledLive() is the
+// one function both this page's own sidebar count (paintNav) and the moved
+// Runs table (CCApp.renderRunsPage, through the page.js interface) call on
+// every render, so it is also the one place this bookkeeping is guaranteed
+// to run on every render, regardless of which of the two calls it.
 function unjournaledLive(){
+  const live=liveRuns();
+  forgetDeadStops(live);
   const journaled=new Set((DATA.runs||[]).map(r=>runKey(r.id, r.start)));
-  return liveRuns().filter(r=>!journaled.has(runKey(r.id, r.start)));
+  return live.filter(r=>!journaled.has(runKey(r.id, r.start)));
 }
 
 function liveRuns(){
@@ -2319,20 +2329,12 @@ function liveRuns(){
   return out.sort((a,b)=>b.start-a.start);
 }
 
-// The comparators and the filter+sort arithmetic itself moved to
-// ui/app/runs.js (CCApp.filteredRuns) in Phase 2 Task 6, pure, no DOM, ready
-// for a characterisation test to read without pulling this page in -- the
-// same split Task 2 and Task 4 already made for the Jobs and Projects
-// tables' own sortJobs/visibleProjects. RF, RUN_COLS and the sort state
-// itself (sortKey/sortDir right below) stay here for now: see runs.js's own
-// banner comment on why relocating RF is not this task's to do.
-let sortKey="when", sortDir=-1;
-
-function filteredRuns(){
-  // a pid that is gone is no longer "stopping"
-  forgetDeadStops(liveRuns());
-  return CCApp.filteredRuns(RF, unjournaledLive(), searchKeys, sortKey, sortDir);
-}
+// The comparators, the filter+sort arithmetic, the sort/page state and the
+// table itself all moved to ui/app/runs.js (CCApp.renderRunsPage and
+// friends) in Phase 2 Task 7 -- the same move jobs-table.js and projects.js
+// already made for their own tables. What is left here is the live-run
+// bookkeeping above and the resume-tooltip machinery below, both reached
+// from the moved table through the page.js interface.
 
 /* ---- hover tooltip (fixed bubble on <body>, so no container can clip it) ---- */
 let _tipEl=null;
@@ -2355,13 +2357,9 @@ function initTooltips(){
   document.addEventListener("scroll",tipHide,true);
 }
 
-// "Succeeded, but nothing actually ran" — the engine puts the agent's own
-// `NOTHING TO DO: <reason>` in the run's note. Returns the reason, or "".
-function nothingNote(r){
-  const n=(r&&r.note)||"";
-  const i=n.indexOf("NOTHING TO DO:");
-  return i<0 ? "" : n.slice(i+"NOTHING TO DO:".length).trim();
-}
+// nothingNote and livePidFor moved to ui/app/runs.js in Phase 2 Task 7 --
+// row-only helpers with no other caller, so they travelled whole rather than
+// staying here as a second implementation reached through the interface.
 
 /* ---- live runs: a job may now have SEVERAL at once (one slot each) ---- */
 // A function declaration rather than a const arrow, like openEditor/isFav
@@ -2370,15 +2368,15 @@ function nothingNote(r){
 // const would still be in its temporal dead zone there. Hoisting is the
 // point, not a style choice.
 function activeRunsOf(id){ return (DATA.active_runs||{})[id] || []; }
-// Which live slot to stop from a runs-table row. With one live run it is that
-// run; with several, the row cannot tell them apart, so fall back to the first
-// and let the engine's per-pid stop do the precise work.
-function livePidFor(id){ const a=activeRunsOf(id); return a.length ? a[0].pid : ""; }
 
 /* ---- resume bookkeeping: which failed run was already resumed, and into what ---- */
 let resumedRuns={};
 try{ resumedRuns=JSON.parse(localStorage.ccResumed||"{}"); }catch(e){ resumedRuns={}; }
-const runKey=(id,start)=>id+"|"+start;
+// A hoisted function declaration rather than a const arrow, like
+// activeRunsOf above -- CCApp.init's interface object (well above this
+// line) references this by name, and a const arrow would still be in its
+// temporal dead zone there.
+function runKey(id,start){ return id+"|"+start; }
 function markResumed(id,start){
   resumedRuns[runKey(id,start)]=Math.floor(Date.now()/1000);
   localStorage.ccResumed=JSON.stringify(resumedRuns);
@@ -2461,217 +2459,32 @@ function resumeTip(id, start){
   return '<div class="tt-h">'+I.play+esc(head)+'</div>'+rows;
 }
 
-// An action that does not apply to this row keeps its column and loses its
-// button. `aria-hidden` because there is nothing here to announce — the reason
-// is on the tooltip, for a pointer that goes looking.
-
-// The table head. Sortable columns say so — the caret is reserved in the layout
-// so the header does not jump when it appears, and aria-sort tells a screen
-// reader what the visual caret tells everybody else.
-// Duration and cost are SEPARATE columns because they answer different
-// questions and you sort by them for different reasons — "what is slow" and
-// "what is expensive" are rarely the same run. Merging them dropped the cost
-// sort entirely: the comparator below still existed, but no header could reach
-// it, so the most expensive run of a day became unfindable in a 25-row page.
-const RUN_COLS=[
-  ["when","When"],["job","Job"],[null,"Project"],["status","Status"],
-  ["duration","Duration"],["cost","Cost"],[null,"Session"],[null,""],
-];
-function renderRunHead(){
-  $("runhead").innerHTML=RUN_COLS.map(([key,label])=>{
-    if(!key) return "<th>"+esc(label)+"</th>";
-    const on=sortKey===key;
-    return '<th class="sortable'+(on?" sorted":"")+'" data-sort="'+key+'"'
-      +' aria-sort="'+(on?(sortDir<0?"descending":"ascending"):"none")+'"'
-      +' title="Sort by '+esc(label.toLowerCase())+'">'
-      +esc(label)+(on&&sortDir>0?I.sortasc:I.sortdesc)+'</th>';
-  }).join("");
+// The tooltip content for a row that continued an earlier run -- extracted
+// out of renderRuns()'s own row template (Phase 2 Task 7), which built this
+// inline, so ui/app/runs.js's DOM-built row can reach it as a plain string
+// the same way it already reaches resumeTip above: assigned to a real
+// element's `.dataset.tip`, read back by tipShow() (this file, unmoved)
+// exactly as before. Naming it is the only change here, not a rewrite of
+// what it says.
+function resumedBadgeTip(parent){
+  return '<div class="tt-h">'+I.play+'Resumed run</div>'
+    +'<div class="tt-row"><span class="tt-k">Continues</span><span class="tt-v">'+esc(fmtWhen(parent.start))+'</span></div>'
+    +'<div class="tt-row"><span class="tt-k">That run</span><span class="tt-v stat-cell s-'+esc(normStatus(parent.status))+'">'
+      +(STATUS_ICON[normStatus(parent.status)]||"")+esc(normStatus(parent.status))+'</span></div>'
+    +'<div class="tt-row"><span class="tt-k">Session</span><span class="tt-v"><code>'+esc((parent.session||"—").slice(0,8))+'</code></span></div>'
+    +'<div class="tt-foot">Same conversation, picked up where it stopped.</div>';
 }
 
-function renderRuns(){
-  renderRunHead();
-  const all=filteredRuns();
-  const pages=Math.max(1,Math.ceil(all.length/pageSize));
-  if(page>pages) page=pages;
-  const slice=all.slice((page-1)*pageSize, page*pageSize);
-  $("runs").innerHTML = slice.map(r=>{
-    const s=normStatus(r.status);
-    const snip=searchKeys?(snippets[r.id+"|"+r.start]||""):"";
-    // A single source of truth for "can this row's Resume button ever be
-    // live", read at three places below (the followUp lookup, the "?"
-    // badge, and the button itself) -- three separate checks is three
-    // places to keep in sync the day this set changes again, which is
-    // exactly what happened going from `error`-only to `error`-or-
-    // `warning`, and again when `stopped` was folded in here too.
-    //
-    // Warning is not "worse than nothing" here -- UNDELIVERED, UNDECLARED
-    // ENDING and BUDGET LIMITED all end warning, and the engine keeps their
-    // worktrees and their services up for exactly as long as it keeps an
-    // error's, specifically so a resume can pick them back up. A run the
-    // operator stopped mid-work never declares an ending either, so its
-    // `.ended` is `open` too -- the engine keeps ITS tree and ITS services
-    // the identical way, for the identical reason, and used to be the one
-    // status that qualified for that but had no button to show for it.
-    //
-    // Whether there is a SESSION to actually resume is a separate question,
-    // answered below by the `!r.session` branch, not by this set: a stop
-    // that landed before the agent ever started recorded none, and this is
-    // the one row shape where that is the ordinary case, not a fault.
-    const resumable = s==="error"||s==="warning"||s==="stopped";
-    // A derived security run is OBSERVED here, never managed here: resume
-    // cannot work (the analysis request it ran on was consumed, and its
-    // ledger row is closed), and deleting it erases the transcript the
-    // Security page's "Open the run" points at. Watch it, stop it — the
-    // rest belongs to the Security area.
-    const isSec = String(r.id||"").startsWith("security-");
-    // For a resumable run: has the job run again since? (drives the
-    // disabled Resume button and the "?" badge, and is true regardless of
-    // which browser resumed it)
-    const followUp = resumable ? resumeTarget(r.id, r.start) : null;
-    // A run that continued an earlier one says so, and points at it: without
-    // this the two rows look unrelated, and the pair is the whole story.
-    const parent = continuedRun(r);
-    const resumedBadge = parent
-      ? '<span class="trigger-badge resumed" data-tip="'
-        +encodeURIComponent('<div class="tt-h">'+I.play+'Resumed run</div>'
-          +'<div class="tt-row"><span class="tt-k">Continues</span><span class="tt-v">'+esc(fmtWhen(parent.start))+'</span></div>'
-          +'<div class="tt-row"><span class="tt-k">That run</span><span class="tt-v stat-cell s-'+esc(normStatus(parent.status))+'">'
-            +(STATUS_ICON[normStatus(parent.status)]||"")+esc(normStatus(parent.status))+'</span></div>'
-          +'<div class="tt-row"><span class="tt-k">Session</span><span class="tt-v"><code>'+esc((parent.session||"—").slice(0,8))+'</code></span></div>'
-          +'<div class="tt-foot">Same conversation, picked up where it stopped.</div>').replace(/"/g,"%22")
-        +'">resumed</span>'
-      : '';
-    // "3 days ago" is what you are actually reading for; the stamp to the second
-    // is one hover away, where it belongs.
-    return "<tr><td class=num><span class=\"when-rel\" title=\""+esc(fmtWhen(r.start))+'">'
-      +esc(fmtAgo(r.start))+"</span>"
-      +(r.forced?'<span class="trigger-badge">forced</span>':'')
-      +resumedBadge
-      +(snip?'<div class="snip" title="'+esc(snip)+'">'+esc(snip)+'</div>':'')+"</td>"
-      +"<td><code>"+esc(r.id)+"</code></td>"
-      +'<td>'+(r.project?'<span class="projtag">'+I.folder+esc(r.project)+'</span>':'<span class="muted">—</span>')+'</td>'
-      +'<td>'+(r.live
-          ? '<span class="runningbadge'+(isStopping(r)?" stopping":"")+'"><span class="pulse"></span>'
-            +(isStopping(r)?"stopping…":"running…")+'</span>'
-          : '<span class="stat-cell s-'+esc(s)+'">'+(STATUS_ICON[s]||"")+esc(s)+"</span>"+causeTag(r)
-            +((resumable && followUp)
-               ? '<span class="tipbadge" data-tip="'+encodeURIComponent(resumeTip(r.id,r.start)).replace(/"/g,"%22")+'">?</span>'
-               // A run can end fine having done nothing at all — a resumed task
-               // already finished, or its ticket is gone. That is recorded as a
-               // WARNING, and the reason is shown here, so a clean-looking run is
-               // never mistaken for work that happened.
-               : (nothingNote(r)
-                  ? '<span class="tipbadge" data-tip="'+encodeURIComponent("Nothing was done in this run — "+nothingNote(r)).replace(/"/g,"%22")+'">?</span>'
-                  : "")))
-      +"</td>"
-      // How long and how much are read together — two columns half the table
-      // apart just made you scan across the empty middle.
-      +"<td class=num>"+esc(fmtDur(r.duration))+(r.live?' <span class="muted">so far</span>':"")+"</td>"
-      +"<td class=num>"+(r.live?'<span class="muted">—</span>':esc(money(r.cost)))+"</td>"
-      +"<td><code>"+esc((r.session||"").slice(0,8)||"—")+"</code></td>"
-      +'<td class="rowacts">'
-        +'<button class="iconbtn'+(r.live?' live':'')+'" title="'+(r.live?"Follow this run live":"View log")+'"'
-          +' data-log-id="'+esc(r.id)+'" data-log-start="'+esc(r.start)+'">'+I.eye+'</button>'
-        // Stop and Resume are rendered on EVERY row, greyed where they do not
-        // apply, because a toolbar whose icons move between rows is one you have
-        // to re-read each time: the eye is in a different place on a finished run
-        // than on a live one, and you end up aiming instead of clicking. The
-        // reason a button is dead is on its tooltip, and a dead button still
-        // teaches that the action exists — an empty slot teaches nothing.
-        // Stop ends THIS run (by its pid); resume continues THIS run's own
-        // session — the same task, picked back up, exactly like
-        // `claude --resume <session>` — never a fresh run of the job.
-        +(r.live
-           // Stop THIS run: the row carries its own pid now, so with several
-           // runs of one job the right one is ended, not merely the first.
-           // Once asked for, it stays down — see `stopping`.
-           ? (isStopping(r)
-             ? '<button class="iconbtn danger" disabled title="Already stopping — waiting for it to wind down">'+I.power+'</button>'
-             : '<button class="iconbtn danger" title="Stop this run"'
-               +' data-op="stop" data-id="'+esc(r.id)+'" data-run-pid="'+esc(r.pid||livePidFor(r.id))+'">'+I.power+'</button>')
-           : '<button class="iconbtn" disabled title="This run has already finished — only a running run can be stopped">'+I.power+'</button>')
-        // A failed OR warning run is worth retrying — offer it right where the
-        // problem shows. Reuses the Run-now op, so it inherits the precheck
-        // guard and toasts. Gone once the job has picked the task back up
-        // (resumed here or anywhere): a second resume would just duplicate
-        // the work, and the "?" beside the status says where it went.
-        //
-        // Warning belongs here too: UNDELIVERED, UNDECLARED ENDING and
-        // BUDGET LIMITED all end a run as `warning`, not `error`, and every
-        // one of their own notes says "resume this run to continue with its
-        // context" -- while the engine keeps the worktree and its services
-        // up specifically so that resume has something to continue IN. A
-        // button that only lit up for `error` was dead advice on the far
-        // more common case.
-        +(r.live
-           ? '<button class="iconbtn retry" disabled title="This run is still going">'+I.play+'</button>'
-           : isSec
-             ? '<button class="iconbtn retry" disabled title="A security analysis is never resumed — its request was consumed when it ran. Launch a fresh one from the Security area">'+I.play+'</button>'
-           : resumable
-             ? (!r.session
-                ? '<button class="iconbtn retry" disabled title="This run recorded no session id, so it cannot be resumed">'+I.play+'</button>'
-                : followUp
-                  ? '<button class="iconbtn retry" disabled title="'
-                    +(followUp.running?"A newer run is in progress":"This task was already resumed")
-                    +' — see the ? beside the status">'+I.play+'</button>'
-                  : '<button class="iconbtn retry" title="Resume this task — continue session '
-                    +esc((r.session||"").slice(0,8))+' where it stopped"'
-                    +' data-op="resume" data-id="'+esc(r.id)+'" data-session="'+esc(r.session||"")+'"'
-                    +' data-resume-key="'+esc(runKey(r.id,r.start))+'">'+I.play+'</button>')
-             : '<button class="iconbtn retry" disabled title="Only a failed, warning or stopped run can be resumed">'+I.play+'</button>')
-        // Erase this run for good: its log files, its journal line and its rows
-        // in the search database. Never offered while it is still running.
-        +(r.live
-           ? '<button class="iconbtn" disabled title="A running run cannot be deleted — stop it first">'+I.trash+'</button>'
-           : isSec
-             ? '<button class="iconbtn" disabled title="This run is a security analysis\'s evidence — the Security area owns its lifecycle">'+I.trash+'</button>'
-           : '<button class="iconbtn danger" title="Delete this run and everything it left behind"'
-             +' data-del-id="'+esc(r.id)+'" data-del-start="'+esc(r.start)+'">'+I.trash+'</button>')
-      +'</td></tr>';
-  }).join("") || '<tr><td colspan=6 class="empty">'+I.inbox
-      +(DATA.runs.length?(searchKeys?"No runs match this search.":"No runs match the filters."):"No runs recorded yet.")+'</td></tr>';
-  $("pg-info").textContent="Page "+page+" / "+pages+" · "+all.length+" run"+(all.length===1?"":"s")
-    +(searchKeys?" · searching logs":"");
-  $("pg-prev").disabled = page<=1;
-  $("pg-next").disabled = page>=pages;
-  paintRunFilters(all.length);
-}
-
-/* The Runs toolbar, same shape as the Jobs one. The date range is one chip
-   however it was set, because "From 2026-07-01T00:00" and "Last 7 days" are the
-   same filter and two chips for it would imply two. */
-function paintRunFilters(shown){
-  [runProjPicker, runJobPicker, runStatusPicker, runDatePicker].forEach(p=>p.paint());
-  const chips=[];
-  if(RF.project) chips.push(["project","Project: "
-    +(RF.project==="__none__" ? "No project" : RF.project)]);
-  if(RF.job) chips.push(["job","Job: "+RF.job]);
-  if(RF.status) chips.push(["status","Status: "+RF.status]);
-  if(RF.from||RF.to) chips.push(["date","Date: "+runDatePicker.label()]);
-  const q=$("q").value.trim();
-  if(q) chips.push(["q",'Search: "'+q+'"']);
-  const box=$("ractive");
-  box.hidden=!chips.length;
-  box.innerHTML=chips.length ? '<span class="aflabel">Active filters:</span>'
-    +chips.map(([k,label])=>'<span class="afchip">'+esc(label)
-      +'<button data-droprf="'+k+'" title="Remove this filter">'+I.x+"</button></span>").join("")
-    +'<span class="aflabel">'+shown+" of "+(DATA.runs||[]).length+" runs</span>" : "";
-  $("f-clear").hidden=!chips.length;
-}
-
-async function runSearch(q){
-  const seq=++searchSeq;
-  if(!q || q.trim().length<2){ searchKeys=null; snippets={}; renderRuns(); return; }
-  try{
-    const r=await fetch("/api/search?q="+encodeURIComponent(q.trim()), {headers:{"X-CC-Token":TOKEN}});
-    if(!r.ok) throw new Error("HTTP "+r.status);
-    const j=await r.json();
-    if(seq!==searchSeq) return;            // a newer query superseded this one
-    searchKeys=new Set(); snippets={};
-    (j.results||[]).forEach(x=>{ const k=x.id+"|"+x.start; searchKeys.add(k); if(x.snippet) snippets[k]=x.snippet; });
-    page=1; renderRuns();
-  }catch(e){ if(seq===searchSeq) toast("Search failed — "+e.message, true); }
-}
+// RUN_COLS, renderRunHead, renderRuns, paintRunFilters and runSearch all
+// moved to ui/app/runs.js in Phase 2 Task 7 -- the row's own markup, built
+// with el() instead of an HTML string, the column widths a declared
+// test_the_jobs_and_projects_tables_declare_a_width_for_every_column now
+// also guards, and the search debounce all live there now, reached from the
+// page as CCApp.renderRunsPage()/CCApp.runSearch(). The "view log" button
+// no longer carries a `data-log-id` attribute for this page's own click
+// dispatcher to read: it calls CCApp's own imported openLog directly
+// instead (see page.js's own comment on why this one action moved with the
+// row rather than staying declarative).
 
 /* ---------------------------------------------------------------- editor */
 const DEFAULT_PRECHECK="#!/bin/bash\n# Exit 0 to wake a Claude run; exit 1 to stay idle (a skipped tick costs nothing).\n# Put a cheap check here — curl an API, grep a log, test a file.\nexit 0\n";
@@ -4277,8 +4090,8 @@ function initStatFilters(){
     const t=e.target.closest("[data-statfilter]"); if(!t) return;
     // Set, never toggle. Clicking a second time used to clear the filter, which
     // from Overview meant silently undoing a selection on a page you had left.
-    RF.status = t.dataset.statfilter;
-    page=1;
+    CCApp.RF.status = t.dataset.statfilter;
+    CCApp.runsGotoFirstPage();
     setView("runs");
   });
 }
@@ -4306,8 +4119,11 @@ document.addEventListener("click", async (e)=>{
   }
   const day=e.target.closest(".day-btn");
   if(day){ day.classList.toggle("on"); return; }
-  const lg=e.target.closest("button[data-log-id]");
-  if(lg){ openLog(lg.dataset.logId, lg.dataset.logStart); return; }
+  // The "view log" button no longer carries a `data-log-id` attribute for
+  // this listener to read -- ui/app/runs.js's own row wires it straight to
+  // openLog (through the page.js interface) instead, since the row itself
+  // is built there now. See page.js's own comment on why this one action
+  // moved with the row rather than staying declarative.
   // delete one run, for good — files, journal line and search index alike
   const del=e.target.closest("button[data-del-id]");
   if(del){
@@ -4373,16 +4189,10 @@ document.addEventListener("click", async (e)=>{
     if(!r.ok){ toast(j.error||"could not discard", true); wtd.disabled=false; return; }
     toast("Discarded "+job+" / "+stamp); refresh(); return;
   }
-  // sorting the runs table. First click on a new column takes the order that
-  // is useful for it — newest and dearest first, jobs A→Z — rather than always
-  // ascending, which for "when" would open on the oldest run you have.
+  // sorting the runs table -- the sort state itself, and the fork on the key
+  // that decides the opening direction, now live in ui/app/runs.js.
   const sh=e.target.closest("th[data-sort]");
-  if(sh){
-    const key=sh.dataset.sort;
-    if(sortKey===key) sortDir=-sortDir;
-    else { sortKey=key; sortDir=(key==="job"||key==="status")?1:-1; }
-    page=1; renderRuns(); return;
-  }
+  if(sh){ CCApp.runsSort(sh.dataset.sort); return; }
   // sorting the Projects table -- the sort state itself, and the fork on the
   // key that decides the opening direction, now live in ui/app/projects.js.
   const ph=e.target.closest("th[data-prjsort]");
@@ -4422,8 +4232,8 @@ document.addEventListener("click", async (e)=>{
   const jr=e.target.closest("[data-jobruns]");
   if(jr){
     closeMenus();
-    RF.job=jr.dataset.jobruns; RF.status="";
-    page=1;
+    CCApp.RF.job=jr.dataset.jobruns; CCApp.RF.status="";
+    CCApp.runsGotoFirstPage();
     setView("runs");
     return;
   }
@@ -4457,6 +4267,13 @@ document.addEventListener("click", async (e)=>{
   // the same way the Jobs pager above is -- same clamp-and-redraw reasoning.
   if(e.target.closest("#prj-pg-prev")){ CCApp.projectsSetPage(-1); return; }
   if(e.target.closest("#prj-pg-next")){ CCApp.projectsSetPage(1); return; }
+  // The Runs page's own "Refresh", and its footer pager -- both built by
+  // CCApp.renderRunsPage(), the same clamp-and-redraw reasoning as Jobs'
+  // own pager above. The static #pg-prev/#pg-next this used to answer are
+  // gone with the rest of the static table markup Task 7 replaced.
+  if(e.target.closest("#runs-refresh")){ refresh(); return; }
+  if(e.target.closest("#runs-pg-prev")){ CCApp.runsSetPage(-1); return; }
+  if(e.target.closest("#runs-pg-next")){ CCApp.runsSetPage(1); return; }
   // The worktrees card's own footer button, built the same way by
   // CCApp.worktreesCard() -- opens the full list the card only summarises.
   if(e.target.closest("#ov-wt-view")){ $("wt-halo").innerHTML=I.folder; $("wtmodal").showModal(); return; }
@@ -4645,24 +4462,17 @@ $("themebtn").addEventListener("click", ()=>{
   const t=(document.documentElement.dataset.theme==="dark")?"light":"dark";
   localStorage.ccTheme=t; applyTheme(t);
 });
-// The two exact date fields inside the Date picker. They set the same RF.from /
-// RF.to the presets do, so a hand-typed range and "Last 7 days" are one filter
-// with one chip, not two competing ones.
+// The two exact date fields inside the Date picker. They set the same
+// CCApp.RF.from/CCApp.RF.to the presets do, so a hand-typed range and "Last
+// 7 days" are one filter with one chip, not two competing ones.
 ["f-from","f-to"].forEach(id=>$(id).addEventListener("change",()=>{
-  RF.from=$("f-from").value; RF.to=$("f-to").value;
-  page=1; renderRuns();
+  CCApp.RF.from=$("f-from").value; CCApp.RF.to=$("f-to").value;
+  CCApp.runsFilterChanged();
 }));
 $("f-size").addEventListener("change",()=>{
-  pageSize=parseInt($("f-size").value,10)||25;
-  localStorage.ccPageSize=pageSize; page=1; renderRuns();
+  CCApp.runsSetPageSize(parseInt($("f-size").value,10)||25);
 });
-function clearRunFilters(){
-  RF.project=RF.job=RF.status=RF.from=RF.to="";
-  $("f-from").value=""; $("f-to").value="";
-  $("q").value=""; $("q-clear").hidden=true;
-  page=1; runSearch("");
-}
-$("f-clear").addEventListener("click", clearRunFilters);
+$("f-clear").addEventListener("click", CCApp.clearRunFilters);
 $("jf-clear").addEventListener("click", CCApp.clearJobFilters);
 // Removing one filter from the chip row. Named per axis rather than "clear the
 // last one" so the row keeps working whatever order they were applied in.
@@ -4677,12 +4487,12 @@ $("jactive").addEventListener("click",(e)=>{
 $("ractive").addEventListener("click",(e)=>{
   const b=e.target.closest("[data-droprf]"); if(!b) return;
   const k=b.dataset.droprf;
-  if(k==="project") RF.project="";
-  if(k==="job") RF.job="";
-  if(k==="status") RF.status="";
-  if(k==="date"){ RF.from=RF.to=""; $("f-from").value=""; $("f-to").value=""; }
-  if(k==="q"){ $("q").value=""; $("q-clear").hidden=true; page=1; runSearch(""); return; }
-  page=1; renderRuns();
+  if(k==="project") CCApp.RF.project="";
+  if(k==="job") CCApp.RF.job="";
+  if(k==="status") CCApp.RF.status="";
+  if(k==="date"){ CCApp.RF.from=CCApp.RF.to=""; $("f-from").value=""; $("f-to").value=""; }
+  if(k==="q"){ $("q").value=""; $("q-clear").hidden=true; CCApp.runSearch(""); return; }
+  CCApp.runsFilterChanged();
 });
 // Jobs search. Local and instant — the whole set is already in memory, unlike
 // the runs search, which goes to the server for log content.
@@ -4702,16 +4512,18 @@ document.addEventListener("click",(e)=>{
   e.stopPropagation();
   toggleFav(s.dataset.fav);
 });
-$("pg-prev").addEventListener("click",()=>{ page--; renderRuns(); });
-$("pg-next").addEventListener("click",()=>{ page++; renderRuns(); });
+// #pg-prev/#pg-next no longer exist as static markup at boot -- the pager is
+// built fresh by CCApp.renderRunsPage() every poll, as #runs-pg-prev/
+// #runs-pg-next, answered by the central dispatcher above the same way
+// #jobs-pg-prev/#prj-pg-prev already are.
 let _qTimer=null;
 $("q").addEventListener("input",()=>{
   const v=$("q").value;
   $("q-clear").hidden=!v;
-  clearTimeout(_qTimer); _qTimer=setTimeout(()=>runSearch(v), 350);
+  clearTimeout(_qTimer); _qTimer=setTimeout(()=>CCApp.runSearch(v), 350);
 });
 $("q-clear").addEventListener("click",()=>{
-  $("q").value=""; $("q-clear").hidden=true; runSearch("");
+  $("q").value=""; $("q-clear").hidden=true; CCApp.runSearch("");
 });
 
 /* ---------------------------------------------------------------- boot */
@@ -4738,17 +4550,16 @@ $("pq-clear").addEventListener("click",()=>{ CCApp.projFilters.query=""; $("pq")
 $("f-clear").innerHTML=I.x+"Clear filters";
 $("jf-clear").innerHTML=I.x+"Clear filters";
 $("f-clear").hidden=$("jf-clear").hidden=true;
-$("pg-prev").innerHTML=I.cleft+"Prev";
-$("pg-next").innerHTML="Next"+I.cright;
-// The Jobs table's own pager is NOT labelled here the way Runs' is above --
-// #jobs-pg-prev/#jobs-pg-next no longer exist as static markup at boot.
-// CCApp.tableFooter() (ui/app/chrome.js) builds them fresh, icon and label
-// included, every time CCApp.renderJobsPage() redraws the table card.
+// Neither table's own pager is labelled here any more -- #jobs-pg-prev/
+// #jobs-pg-next and #runs-pg-prev/#runs-pg-next no longer exist as static
+// markup at boot. CCApp.tableFooter() (ui/app/chrome.js) builds them fresh,
+// icon and label included, every time CCApp.renderJobsPage()/
+// CCApp.renderRunsPage() redraws the table card.
 $("q-clear").innerHTML=I.x;
 $("jq-clear").innerHTML=I.x;
 $("searchbox").insertAdjacentHTML("afterbegin", I.search);
 $("jobsearchbox").insertAdjacentHTML("afterbegin", I.search);
-$("f-size").value=String(pageSize);
+$("f-size").value=String(CCApp.runsPageSize());
 
 /* Ask the server which of the three states this is before drawing anything, and
    only start the 5s poll once there is a session for it to poll with. */

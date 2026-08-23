@@ -145,9 +145,21 @@ seguimento de scroll. O modal não é uma tabela e não faz parte do redesenho �
 **move-se sem ser restilizado**, e isso deve ser dito no commit em vez de
 descoberto depois.
 
+**Correção pós-Tarefa 7: não se moveu, nem restilizado nem tal-e-qual.** Ver
+a secção própria mais abaixo — a diferença entre "fica para trás" e "move-se
+sem restyle" acabou por ser real, não cosmética, e a spec previa a segunda.
+
 **`clearRunFilters` tem 104 linhas.** É grande demais para o que o nome promete
 e provavelmente faz mais do que limpar. Lê-se antes de mover; se fizer três
 coisas, separa-se — mas o comportamento não muda nesta fase.
+
+**Correção pós-Tarefa 7: a contagem estava errada.** `clearRunFilters` mede
+6 linhas, não 104, e faz uma coisa — repõe os cinco campos de filtro, os dois
+campos de data, a caixa de pesquisa e a página, e repete a pesquisa em
+seguida. Os "104" vieram de um script de medição que contava tudo entre duas
+declarações de topo, não o corpo da função; não há três responsabilidades
+por separar porque nunca lá estiveram. Ver o relatório da Tarefa 6/7
+(`.superpowers/sdd/f2-task-6-7-report.md`) para o que foi de facto verificado.
 
 **A coluna Security em Projects é a única informação nova em toda a fase.**
 Tudo o resto é o que já está lá, noutro sítio. Se algo correr mal, é aqui.
@@ -162,13 +174,48 @@ isoladamente:
 2. **Projects ganha uma coluna Security.** Está no mockup; a página não a tem.
 3. **O modal de log move-se sem restyle.** É o único componente que a fase toca
    sem redesenhar, e fá-lo para não inchar o âmbito.
+
+   **Correção pós-Tarefa 7: não aterrou assim.** O modal ficou em
+   `bin/dashboard.html`, ponto final — ver a secção própria, mais abaixo,
+   para a razão.
 4. **A ordem das tarefas é Jobs → Projects → Runs**, do mais pequeno para o
    maior, para que o padrão esteja estabelecido quando chegar às 526 linhas de
    Runs.
 
+## Tarefa 7: o modal de log fica em bin/dashboard.html
+
+Decisão tomada durante a implementação, não prevista aqui: `renderLog`,
+`paintLog` e `openLog` não se movem para `ui/app/run-log.js` nesta fase.
+Ficam exactamente onde estavam.
+
+A razão não é falta de tempo. É que o modal não é uma tabela — é um
+terminal com seguimento de scroll ao vivo, realce de sintaxe e uma caixa de
+entrada — e transformar as suas 191 linhas de HTML em string em construtores
+de DOM é uma reimplementação, não uma mudança de sítio. É exactamente o
+tipo de componente em que um comportamento desaparece em silêncio: uma
+condição de scroll mal traduzida, um `keydown` que deixa de ser capturado,
+um estado de "a seguir ao vivo" que se perde a meio de uma reconstrução.
+Esse trabalho merece a sua própria tarefa, com os seus próprios testes e a
+sua própria passagem de falsificabilidade — não um sub-passo apressado na
+maior tarefa desta fase, já ela a maior das três.
+
+Há uma segunda razão, que não é só sobre âmbito: o modal desenha o que o
+agente escreveu, e a saída de um agente é entrada não confiável. O
+`innerHTML` que o modal usa para a desenhar vale a pena remover pelos seus
+próprios méritos — não porque `ui/` o proíbe (o modal nunca esteve sob
+`ui/`), mas porque conteúdo não confiável a entrar num parser de HTML é o
+tipo de risco que se testa e se fecha deliberadamente, não que se herda de
+uma tarefa que tinha outro objectivo. Não aqui, mas a sério.
+
+Ficou registado como tarefa à parte: converter `renderLog`/`paintLog` para
+construtores de DOM, com os seus próprios testes de caracterização e a sua
+própria passagem de falsificabilidade — o mesmo portão que já protegeu as
+três tabelas nesta fase.
+
 ## Fora de âmbito
 
-Os dois editores (Fase 3) e as lacunas do índice Security (Fase 4).
+Os dois editores (Fase 3), as lacunas do índice Security (Fase 4), e a
+conversão do modal de log para DOM (ver a secção acima).
 
 ## Verificação
 

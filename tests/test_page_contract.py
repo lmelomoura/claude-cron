@@ -537,8 +537,11 @@ def test_a_job_card_shows_every_kept_session_honestly(srv, tmp_path):
 # ---- the Runs table's own Resume button: which statuses it ever lights up
 # for, distinct from the job card's sessionLines above (different data
 # source, different guard already proven by test_resume_target_defers_to_...
-# above) -- see the `resumable` comment in renderRuns for why this is ONE
-# const read from three places rather than three separate checks.
+# above) -- see the `resumable` comment in runRow (ui/app/runs.js, moved
+# there whole from renderRuns in Phase 2 Task 7) for why this is ONE const
+# read from three places rather than three separate checks. Both tests below
+# read the app bundle rather than the page's own inline script for the same
+# reason: the row this guard is about moved into ui/app/runs.js.
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_a_stopped_run_is_resumable_alongside_error_and_warning(srv, tmp_path):
@@ -548,8 +551,8 @@ def test_a_stopped_run_is_resumable_alongside_error_and_warning(srv, tmp_path):
     "Sessions that are still open" in the README). Before this, `resumable`
     covered error and warning only: the button did not cover the one status
     whose whole run dir is sitting there, kept, for exactly this reason."""
-    js = _js(srv)
-    line = re.search(r"const resumable = .*?;", js).group(0)
+    block = _app_js(srv)
+    line = re.search(r"const resumable = .*?;", block).group(0)
     script = tmp_path / "resumable.js"
     script.write_text("""
     function check(s){ %s return resumable; }
@@ -566,9 +569,9 @@ def test_the_disabled_resume_tooltip_names_every_resumable_status(srv):
     warning run can be resumed" -- accurate right up until `stopped` joined
     the set above, at which point it started telling the operator something
     false about the very button it sits beside."""
-    js = _js(srv)
-    assert "Only a failed, warning or stopped run can be resumed" in js
-    assert "Only a failed or warning run can be resumed" not in js
+    block = _app_js(srv)
+    assert "Only a failed, warning or stopped run can be resumed" in block
+    assert "Only a failed or warning run can be resumed" not in block
 
 
 # ---- the run modal saying WHY a run ended, when the API is what ended it.
@@ -1460,8 +1463,9 @@ def test_the_security_column_tells_three_states_apart(srv, tmp_path):
 @pytest.mark.parametrize("view,const_name", [
     ("view-jobs", "JOB_COLS"),
     ("view-projects", "PRJ_COLS"),
-], ids=["jobs", "projects"])
-def test_the_jobs_and_projects_tables_declare_a_width_for_every_column(
+    ("view-runs", "RUN_COLS"),
+], ids=["jobs", "projects", "runs"])
+def test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column(
         srv, tmp_path, view, const_name):
     """Must fail against the pre-fix CSS (Security's th:nth-child(6) has no
     width rule, so column 6 is 'missing') and pass once every column gets
@@ -1475,10 +1479,12 @@ def test_the_jobs_and_projects_tables_declare_a_width_for_every_column(
     broken (JOB_COLS' own eight columns already had eight matching width
     rules, summing to 100%, both before and after this fix), but so a future
     column added to Jobs is checked exactly the same way a future one added
-    to Runs will be once Runs converts to tableCard() and gains its own
-    #view-runs rules -- the whole point being one guard that holds regardless
-    of which of the three pages next grows a column, not a Projects-only
-    patch good for exactly seven columns."""
+    to Projects or Runs is -- the whole point being one guard that holds
+    regardless of which of the three pages next grows a column, not a
+    Projects-only patch good for exactly seven columns. Runs joined in Phase
+    2 Task 7, once its own table moved onto tableCard() and gained its own
+    #view-runs rules -- this parametrize entry is that promise kept, not a
+    new guard."""
     app_js = _app_js(srv)
     consts = _const(app_js, const_name)
     script = tmp_path / f"{view.replace('-', '_')}-cols.js"
@@ -1511,33 +1517,58 @@ def test_the_jobs_and_projects_tables_declare_a_width_for_every_column(
         f"nth-child {nth_widths} + last-child {last_width}")
 
 
-# ---- the Runs table, pinned ahead of phase 2's redesign (Task 6). Same gate
+# ---- the Runs table, pinned ahead of phase 2's redesign (Task 6), then
+# moved whole into ui/app/runs.js by the redesign itself (Task 7). Same gate
 # as the Jobs and Projects tables above: characterisation tests, so they pass
 # on their first run -- the falsifiability of each one (break, red, revert)
 # is recorded by hand in .superpowers/sdd/f2-task-6-7-report.md rather than
-# by a red-then-green cycle here. filteredRuns and SORTERS (both new in
-# ui/app/runs.js, extracted verbatim from bin/dashboard.html's own
-# filteredRuns()) are pure and pinned directly below. renderRuns's own
-# pagination clamp and footer count stay in the page for this task (see
-# runs.js's own banner comment on why RF is not relocated yet) and are
-# pinned by driving the REAL function -- not a hand-copied snippet -- over a
-# scenario engineered so its row-building branch (built from HTML strings,
-# and already exercised by the Resume-button tests above) is never reached:
-# an empty filtered set skips straight to the fallback row, so the only
-# things that matter here -- the page clamp and the footer text -- are
-# exercised without needing STATUS_ICON, causeTag, resumeTarget or any of
-# renderRuns's other row-only dependencies.
+# by a red-then-green cycle here. filteredRuns and SORTERS were extracted
+# verbatim from bin/dashboard.html's own filteredRuns() in Task 6 and are
+# pure and pinned directly below; renderRunsTable's own pagination clamp and
+# footer count moved whole into the same module in Task 7 (they were
+# renderRuns's, read out of the page's own inline script through Task 6 --
+# now read out of the app bundle instead, the same "the test follows the
+# code" update test_a_job_card_shows_every_kept_session_honestly's own
+# comment describes) and are pinned by driving the REAL function -- not a
+# hand-copied snippet -- over a scenario engineered so its row-building
+# branch (built with el(), and already exercised by the Resume-button tests
+# above) is never reached: an empty filtered set skips straight to the
+# fallback row, so the only things that matter here -- the page clamp and
+# the footer's own opts -- are exercised without needing runRow's own
+# dependencies (icon names, resumeTarget, isStopping and the rest) at all.
 
-def _runs_page_stub_harness():
-    """$, renderRunHead and paintRunFilters, stood up just enough for
-    renderRuns() to run to completion against an EMPTY filtered set -- see
-    this section's own banner comment on why empty is enough."""
+def _runs_table_stub_harness():
+    """Every free name renderRunsTable (ui/app/runs.js) reaches for, stood up
+    just enough to run it to completion against an EMPTY filtered set: $,
+    el, icon, document.createTextNode, tableCard and paintRunFilters are all
+    stubs that build nothing real, and tableFooter is a stub that RECORDS
+    the options it was called with instead -- `page`, `total` and `pages`
+    are read back from that capture rather than from parsed footer text, so
+    this harness does not also have to reimplement tableFooter's own "Showing
+    X to Y of N" sentence (chrome.js, already exercised by the Jobs table's
+    own test_the_jobs_page_footer_says_how_many_it_is_showing).
+
+    An EMPTY filtered set is enough for both of Task 6's own tests below: it
+    skips renderRunsTable's row-building branch entirely (`slice.map(r =>
+    runRow(r))` never calls its callback over an empty slice), so runRow's
+    own row-only dependencies (icon names, resumeTarget, isStopping and the
+    rest) never need stubbing here at all -- they are what the Resume-button
+    tests above already exercise, not what these two are about."""
     return """
     const ELS = {};
-    function $(id){ if(!ELS[id]) ELS[id] = {textContent:"", disabled:false, innerHTML:""}; return ELS[id]; }
-    function renderRunHead(){}
+    function $(id){ if(!ELS[id]) ELS[id] = {textContent:"", disabled:false, appendChild(){}}; return ELS[id]; }
+    function el(tag, cls, text){ return {tag, cls, text, childNodes: [], appendChild(c){ this.childNodes.push(c); }}; }
+    function icon(_name){ return el("span"); }
+    const document = { createTextNode(s){ return {text: s}; } };
+    function mountRunsToolbar(){}
     function paintRunFilters(_shown){}
-    const I = { inbox: "" };
+    function tableCard(_opts){ return el("div"); }
+    let lastFooterOpts = null;
+    function tableFooter(opts){ lastFooterOpts = opts; return el("div"); }
+    const RF = {};
+    function unjournaledLive(){ return []; }
+    let searchKeys = null;
+    let sortKey = "when", sortDir = -1;
     """
 
 
@@ -1545,56 +1576,56 @@ def _runs_page_stub_harness():
 def test_a_shrunk_filtered_set_pulls_the_current_page_back_from_beyond_it(srv, tmp_path):
     """A filter (or a search) that narrows the visible runs below the page
     the operator is already on must not leave them staring at a page that no
-    longer exists -- renderRuns() pulls `page` back to the last real page the
-    moment the filtered set no longer reaches it."""
-    js = _js(srv)
-    fn = _plainfn(js, "renderRuns")
+    longer exists -- renderRunsTable() pulls `page` back to the last real
+    page the moment the filtered set no longer reaches it. Drives the real
+    function out of the app bundle (ui/app/runs.js), which is where it moved
+    in Phase 2 Task 7 -- not a hand-copied snippet."""
+    block = _app_js(srv)
+    deps = _const(block, "RUN_COLS") + _plainfn(block, "renderRunsTable")
     script = tmp_path / "runs-page-clamp.js"
-    script.write_text(_runs_page_stub_harness() + """
+    script.write_text(_runs_table_stub_harness() + """
     // The filter narrowed the set to nothing -- one page, and page 5 (where
     // the operator was looking at a larger, unfiltered set) is well past it.
     function filteredRuns(){ return []; }
-    const DATA = { runs: [1, 2, 3, 4, 5] };
-    const searchKeys = null;
+    const CC = { DATA: { runs: [1, 2, 3, 4, 5] } };
     let page = 5, pageSize = 25;
-    """ + fn + """
-    renderRuns();
-    console.log(JSON.stringify({page, pgInfo: $("pg-info").textContent}));
+    """ + deps + """
+    renderRunsTable();
+    console.log(JSON.stringify({page, pages: lastFooterOpts.pages}));
     """)
     out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
                                     text=True, check=True).stdout)
+    assert out["pages"] == 1, out
     assert out["page"] == 1, (
         f"the filtered set has one page, but page stayed at {out['page']} -- "
         "the operator is left looking at a page that no longer exists")
-    assert out["pgInfo"].startswith("Page 1 / 1"), out["pgInfo"]
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_footer_and_pager_count_the_filtered_set_not_the_total(srv, tmp_path):
-    '''"0 of 5 runs" and "5 of 5 runs" are two different sentences -- the
+    """"0 of 5 runs" and "5 of 5 runs" are two different sentences -- the
     footer (and the page count driving it) must read off the FILTERED set
-    filteredRuns() returns, never DATA.runs.length, or a filter that narrowed
-    the table to nothing would still claim to be showing everything.'''
-    js = _js(srv)
-    fn = _plainfn(js, "renderRuns")
+    filteredRuns() returns, never CC.DATA.runs.length, or a filter that
+    narrowed the table to nothing would still claim to be showing
+    everything."""
+    block = _app_js(srv)
+    deps = _const(block, "RUN_COLS") + _plainfn(block, "renderRunsTable")
     script = tmp_path / "runs-footer-count.js"
-    script.write_text(_runs_page_stub_harness() + """
+    script.write_text(_runs_table_stub_harness() + """
     // Five runs on record; the active filter matches none of them -- the
     // footer has to say 0, not 5.
     function filteredRuns(){ return []; }
-    const DATA = { runs: [1, 2, 3, 4, 5] };
-    const searchKeys = null;
+    const CC = { DATA: { runs: [1, 2, 3, 4, 5] } };
     let page = 1, pageSize = 25;
-    """ + fn + """
-    renderRuns();
-    console.log($("pg-info").textContent);
+    """ + deps + """
+    renderRunsTable();
+    console.log(JSON.stringify({total: lastFooterOpts.total}));
     """)
-    out = subprocess.run(["node", str(script)], capture_output=True,
-                         text=True, check=True).stdout.strip()
-    assert "0 run" in out, f"the footer did not read the filtered count: {out!r}"
-    assert "5 run" not in out, (
-        f"the footer counted DATA.runs.length (the total, 5) instead of the "
-        f"filtered set (0): {out!r}")
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["total"] == 0, (
+        f"the footer did not read the filtered count (0): got {out['total']}, "
+        "which is CC.DATA.runs.length (the total, 5) if this regressed")
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -3278,11 +3309,15 @@ def test_switching_to_branches_or_reports_hides_the_other_three_panes(srv, tmp_p
 def test_the_runs_table_observes_but_never_manages_a_security_run(srv):
     """On a security-* row only the eye and Stop stay live: resume ran on a
     consumed request, and delete erases the transcript the Security page's
-    "Open the run" points at."""
-    page = srv.render_page("boot-authed")
-    assert 'String(r.id||"").startsWith("security-")' in page
-    assert "A security analysis is never resumed" in page
-    assert "the Security area owns its lifecycle" in page
+    "Open the run" points at.
+
+    Read from the app bundle rather than the page's own inline script since
+    Phase 2 Task 7: the row this guard is about moved into ui/app/runs.js
+    along with the rest of the Runs table."""
+    block = _app_js(srv)
+    assert 'String(r.id||"").startsWith("security-")' in block
+    assert "A security analysis is never resumed" in block
+    assert "the Security area owns its lifecycle" in block
 
 
 # ---- Task 11: the findings browser (ui/security/findings-screen.js). Same

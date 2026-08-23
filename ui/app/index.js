@@ -32,7 +32,9 @@ import { pageHeader, kpiCard } from "./chrome.js";
 import { renderJobsPage, jobsSort, jobsSetPage, initJobDrag } from "./jobs-table.js";
 import { visibleProjects, projFilters, projectIsolation,
          renderProjectsPage, projectsSort, projectsSetPage } from "./projects.js";
-import { filteredRuns } from "./runs.js";
+import { RF, filteredRuns, renderRunsPage, runsSort, runsSetPage,
+         runsFilterChanged, runsGotoFirstPage, runsSetPageSize, runsPageSize,
+         clearRunFilters, runSearch, runProjectNames } from "./runs.js";
 
 function init(cc){
   bindPage(cc);
@@ -111,12 +113,35 @@ window.CCApp = { init, jobFacts, visibleJobs, jobFilters, bulkOn,
                  // for the footer's pager, instead of keeping
                  // prjSortKey/prjSortDir/page as its own module state.
                  renderProjectsPage, projectsSort, projectsSetPage,
-                 // filteredRuns is Phase 2 Task 6's: bin/dashboard.html's own
-                 // filteredRuns() now delegates its filter+sort arithmetic to
-                 // CCApp.filteredRuns(RF, liveRows, searchKeys, sortKey,
-                 // sortDir) instead of keeping a second copy -- SORTERS stays
-                 // internal to ui/app/runs.js, since nothing outside that
-                 // module calls it directly (see that file's own banner
-                 // comment on why RF, RUN_COLS and the sort state itself stay
-                 // in the page for this task).
-                 filteredRuns };
+                 // filteredRuns is Phase 2 Task 6's, still reached the same
+                 // way now that Task 7 gives the rest of the table a home
+                 // beside it: SORTERS stays internal to ui/app/runs.js, since
+                 // nothing outside that module calls it directly.
+                 filteredRuns,
+                 // RF, renderRunsPage, runsSort, runsSetPage,
+                 // runsFilterChanged, runsGotoFirstPage, runsSetPageSize,
+                 // runsPageSize, clearRunFilters, runSearch and
+                 // runProjectNames are Phase 2 Task 7's: the Runs table
+                 // itself, moved whole out of bin/dashboard.html
+                 // (renderRunHead/renderRuns/paintRunFilters/runSearch/
+                 // clearRunFilters and the four pickers' own onPick bodies)
+                 // into ui/app/runs.js, the same move jobs-table.js and
+                 // projects.js already made for their own tables. RF is a
+                 // single exported object rather than five module-level
+                 // `let`s for the same reason jobFilters/projFilters are:
+                 // the four Runs pickers' own onPick callbacks (still in
+                 // bin/dashboard.html, since they are page-owned stateful
+                 // widgets) read and write CCApp.RF.project/job/status/
+                 // from/to directly. render() (bin/dashboard.html) calls
+                 // CCApp.renderRunsPage() once per poll; the page's
+                 // delegated click listener calls CCApp.runsSort(key) for a
+                 // sortable header and CCApp.runsSetPage(delta) for the
+                 // footer's pager; runsFilterChanged/runsGotoFirstPage are
+                 // the two shapes every filter change needs (one that also
+                 // redraws, one that does not because a view switch is about
+                 // to); runsSetPageSize/runsPageSize back the per-page
+                 // `<select>`; clearRunFilters and runSearch are `#f-clear`'s
+                 // and the search box's own click/input handlers.
+                 RF, renderRunsPage, runsSort, runsSetPage, runsFilterChanged,
+                 runsGotoFirstPage, runsSetPageSize, runsPageSize,
+                 clearRunFilters, runSearch, runProjectNames };

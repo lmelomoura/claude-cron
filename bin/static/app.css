@@ -594,6 +594,24 @@ footer{margin-top:30px;color:var(--muted);font-size:11px;text-align:center}
 #view-projects th:nth-child(6){width:16%}   /* Security          */
 #view-projects th:last-child{width:10%}     /* actions           */
 #view-projects .rowacts{padding-left:4px;padding-right:10px}
+/* Eight columns (RUN_COLS, ui/app/runs.js) -- min-width matches the other
+   two tables for the same reason: a status pill plus its cause tag plus a
+   resumed badge needs more room than a narrower floor budgeted for. See
+   test_the_jobs_and_projects_tables_declare_a_width_for_every_column
+   (tests/test_page_contract.py), extended to this view in Phase 2 Task 7
+   for the identical reason it already guards Jobs and Projects: an eighth
+   column with no width rule computes to a hair over 0px under
+   table-layout:fixed and spills into whichever comes after it. */
+#view-runs table{table-layout:fixed;min-width:1000px}
+#view-runs th:nth-child(1){width:20%}   /* When     */
+#view-runs th:nth-child(2){width:13%}   /* Job      */
+#view-runs th:nth-child(3){width:11%}   /* Project  */
+#view-runs th:nth-child(4){width:16%}   /* Status   */
+#view-runs th:nth-child(5){width:9%}    /* Duration */
+#view-runs th:nth-child(6){width:9%}    /* Cost     */
+#view-runs th:nth-child(7){width:9%}    /* Session  */
+#view-runs th:last-child{width:13%}     /* actions  */
+#view-runs .rowacts{padding-left:4px;padding-right:10px}
 /* Filled, not outlined. The icon set draws with `stroke:currentColor`, and the
    folder rule beside it paints the row's icons accent — so an amber fill came
    out under a 2px indigo outline, which at 11px is not amber and not indigo but
@@ -1528,5 +1546,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: d26a16961b203bd3c299adb9803a1088a58bcc3c3de886256629e667066b0320 */
-/* ui-sources: ceadec8ddc99f588873606db3fcd69049dd74e40afbc9d13af71d134a1ae6cc2 */
+/* ui-bundle: bfcdbda7280f6a2b56d802b5b18e9c55bbc6bf3f9ba7970ada6e2ad382ed5d66 */
+/* ui-sources: 8fd4d714ca0b9b238569cb497c9422bbdd983f2eff8f7b943bfe3980b3e55790 */

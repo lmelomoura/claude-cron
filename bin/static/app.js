@@ -21,6 +21,16 @@
   var refresh;
   var paintJobPickers;
   var normStatus;
+  var openLog;
+  var resumeTarget;
+  var resumeTip;
+  var continuedRun;
+  var resumedBadgeTip;
+  var runKey;
+  var isStopping;
+  var unjournaledLive;
+  var paintRunPickers;
+  var runDateLabel;
   var CC = null;
   function bindPage(cc) {
     CC = cc;
@@ -45,7 +55,17 @@
       toast,
       refresh,
       paintJobPickers,
-      normStatus
+      normStatus,
+      openLog,
+      resumeTarget,
+      resumeTip,
+      continuedRun,
+      resumedBadgeTip,
+      runKey,
+      isStopping,
+      unjournaledLive,
+      paintRunPickers,
+      runDateLabel
     } = cc);
   }
 
@@ -251,20 +271,20 @@
     return bar;
   }
   function tableCard(opts) {
-    const { columns, sortKey: sortKey3, sortDir: sortDir3, sortAttr, rows, footer } = opts;
+    const { columns, sortKey: sortKey4, sortDir: sortDir4, sortAttr, rows, footer } = opts;
     const headRow = el("tr");
     columns.forEach(([key, label]) => {
       if (!key) {
         headRow.appendChild(el("th", null, label));
         return;
       }
-      const on = sortKey3 === key;
+      const on = sortKey4 === key;
       const th = el("th", "sortable" + (on ? " sorted" : ""));
       th.dataset[sortAttr] = key;
-      th.setAttribute("aria-sort", on ? sortDir3 < 0 ? "descending" : "ascending" : "none");
+      th.setAttribute("aria-sort", on ? sortDir4 < 0 ? "descending" : "ascending" : "none");
       th.title = "Sort by " + label.toLowerCase();
       th.appendChild(document.createTextNode(label));
-      th.appendChild(icon(on && sortDir3 > 0 ? "sortasc" : "sortdesc"));
+      th.appendChild(icon(on && sortDir4 > 0 ? "sortasc" : "sortdesc"));
       headRow.appendChild(th);
     });
     const thead = el("thead");
@@ -282,7 +302,7 @@
     return card;
   }
   function tableFooter(opts) {
-    const { shown, total, noun, page: page3, pages, prevId, nextId, infoId } = opts;
+    const { shown, total, noun, page: page4, pages, prevId, nextId, infoId } = opts;
     const foot = el("div", "table-foot");
     const info = el(
       "span",
@@ -296,13 +316,13 @@
     if (prevId) prev.id = prevId;
     prev.appendChild(icon("cleft"));
     prev.appendChild(document.createTextNode("Prev"));
-    prev.disabled = page3 <= 1;
+    prev.disabled = page4 <= 1;
     nav.appendChild(prev);
     const next = el("button", "btn ghost");
     if (nextId) next.id = nextId;
     next.appendChild(document.createTextNode("Next"));
     next.appendChild(icon("cright"));
-    next.disabled = page3 >= pages;
+    next.disabled = page4 >= pages;
     nav.appendChild(next);
     foot.appendChild(nav);
     return foot;
@@ -316,7 +336,7 @@
     const err = k.err || 0;
     const spentToday = k.spentToday || 0;
     const spentWeek = k.spentWeek || 0;
-    const pct = (n) => checks ? Math.round(n / checks * 100) + "%" : "\u2014";
+    const pct2 = (n) => checks ? Math.round(n / checks * 100) + "%" : "\u2014";
     const money2 = (n) => new Intl.NumberFormat("en-US", {
       style: "currency",
       currency: "USD",
@@ -341,7 +361,7 @@
       {
         label: "Woke a run",
         value: String(per.woke || 0),
-        sub: checks ? pct(per.woke || 0) + " of checks" : "\u2014",
+        sub: checks ? pct2(per.woke || 0) + " of checks" : "\u2014",
         tone: "",
         filter: "",
         door: false
@@ -428,8 +448,8 @@
   }
   function spendTone(spent, cap) {
     const capped = cap != null && spent >= cap;
-    const pct = cap != null && cap > 0 ? Math.min(100, spent / cap * 100) : 0;
-    return capped ? "over" : pct >= 80 ? "near" : "";
+    const pct2 = cap != null && cap > 0 ? Math.min(100, spent / cap * 100) : 0;
+    return capped ? "over" : pct2 >= 80 ? "near" : "";
   }
   function groupJobs(jobs, favSet, allProjects) {
     const names = [...new Set(jobs.map((j) => j.project || "").filter(Boolean))].sort((a, b) => favSet.has(b) - favSet.has(a) || a.localeCompare(b));
@@ -697,13 +717,13 @@
     nextLine.appendChild(nextGrow);
     card.appendChild(nextLine);
     const model = eff(j, "model", "opus"), perm = eff(j, "permission_mode", "dontAsk"), budg = eff(j, "max_budget_usd", 2);
-    const pct = cap != null && cap > 0 ? Math.min(100, spentToday / cap * 100) : 0;
+    const pct2 = cap != null && cap > 0 ? Math.min(100, spentToday / cap * 100) : 0;
     const tone = spendTone(spentToday, cap);
     const spend = el("div", "spend");
     if (cap != null) {
       const bar = el("div", "spendbar" + (tone ? " " + tone : ""));
       const fill = el("i");
-      fill.style.width = pct.toFixed(1) + "%";
+      fill.style.width = pct2.toFixed(1) + "%";
       bar.appendChild(fill);
       spend.appendChild(bar);
     }
@@ -998,7 +1018,7 @@
     const runningJobs = facts.filter((F) => F.running).length;
     const spentToday = facts.reduce((a, F) => a + F.spentToday, 0);
     const cappedCount = facts.filter((F) => F.capped).length;
-    const pct = (num, den) => den ? Math.round(num / den * 100) + "%" : "\u2014";
+    const pct2 = (num, den) => den ? Math.round(num / den * 100) + "%" : "\u2014";
     return [
       {
         label: "Total jobs",
@@ -1019,7 +1039,7 @@
       {
         label: "Running now",
         value: String(runningJobs),
-        sub: pct(runningJobs, enabled.length) + " of enabled jobs",
+        sub: pct2(runningJobs, enabled.length) + " of enabled jobs",
         tone: "",
         filter: "",
         door: false
@@ -1630,6 +1650,7 @@
   }
 
   // ui/app/runs.js
+  var RF = { project: "", job: "", status: "", from: "", to: "" };
   var SORTERS = {
     when: (a, b) => a.start - b.start,
     job: (a, b) => String(a.id).localeCompare(String(b.id)) || a.start - b.start,
@@ -1637,9 +1658,9 @@
     cost: (a, b) => (a.cost || 0) - (b.cost || 0) || a.start - b.start,
     duration: (a, b) => (a.duration || 0) - (b.duration || 0) || a.start - b.start
   };
-  function filteredRuns(rf, liveRows, searchKeys, sortKey3, sortDir3) {
+  function filteredRuns(rf, liveRows, searchKeys2, sortKey4, sortDir4) {
     const fromT = rf.from ? Date.parse(rf.from) : null, toT = rf.to ? Date.parse(rf.to) : null;
-    const live = searchKeys ? [] : liveRows;
+    const live = searchKeys2 ? [] : liveRows;
     const rows = live.concat(CC.DATA.runs).filter((r) => {
       if (r.live) {
         if (rf.project) {
@@ -1650,7 +1671,7 @@
         if (rf.status && rf.status !== "running") return false;
         return true;
       }
-      if (searchKeys && !searchKeys.has(r.id + "|" + r.start)) return false;
+      if (searchKeys2 && !searchKeys2.has(r.id + "|" + r.start)) return false;
       if (rf.project) {
         const rp = r.project || "";
         if (rf.project === "__none__" ? rp !== "" : rp !== rf.project) return false;
@@ -1662,11 +1683,446 @@
       if (toT && t > toT) return false;
       return true;
     });
-    if (sortKey3 !== "when" || sortDir3 !== -1) {
-      const cmp = SORTERS[sortKey3] || SORTERS.when;
-      rows.sort((a, b) => cmp(a, b) * sortDir3);
+    if (sortKey4 !== "when" || sortDir4 !== -1) {
+      const cmp = SORTERS[sortKey4] || SORTERS.when;
+      rows.sort((a, b) => cmp(a, b) * sortDir4);
     }
     return rows;
+  }
+  function runsHeaderSubtitle(runs, liveCount) {
+    const total = runs.length + liveCount;
+    if (!total) return "Nothing recorded yet \u2014 a run appears here the moment a job wakes.";
+    const t0 = Math.floor((/* @__PURE__ */ new Date()).setHours(0, 0, 0, 0) / 1e3);
+    const today = runs.filter((r) => r.start >= t0).length + liveCount;
+    return total + " run" + (total === 1 ? "" : "s") + " on record, " + today + " today.";
+  }
+  function pct(num, den) {
+    return den ? Math.round(num / den * 100) + "%" : "\u2014";
+  }
+  function runsKpis(runs, liveCount) {
+    const t0 = Math.floor((/* @__PURE__ */ new Date()).setHours(0, 0, 0, 0) / 1e3);
+    const total = runs.length + liveCount;
+    const finished = runs.length;
+    const warnCount = runs.filter((r) => normStatus(r.status) === "warning").length;
+    const errCount = runs.filter((r) => normStatus(r.status) === "error").length;
+    const todayCount = runs.filter((r) => r.start >= t0).length + liveCount;
+    return [
+      {
+        label: "Total runs",
+        value: String(total),
+        sub: todayCount + " today",
+        tone: "",
+        filter: "",
+        door: false
+      },
+      {
+        label: "Running now",
+        value: String(liveCount),
+        sub: liveCount ? "following live" : "none in flight",
+        tone: "",
+        filter: "",
+        door: false
+      },
+      {
+        label: "Warnings",
+        value: String(warnCount),
+        sub: pct(warnCount, finished) + " of finished runs",
+        tone: "",
+        filter: "",
+        door: false
+      },
+      {
+        label: "Errors",
+        value: String(errCount),
+        sub: pct(errCount, finished) + " of finished runs",
+        tone: "",
+        filter: "",
+        door: false
+      }
+    ];
+  }
+  var KPI_ICONS3 = {
+    "Total runs": "layers",
+    "Running now": "play",
+    "Warnings": "alert",
+    "Errors": "xcircle"
+  };
+  function mountRunsToolbar() {
+    const host = $("runstoolbar");
+    if (!host || host.dataset.mounted) return;
+    const bar = filterBar({
+      search: $("searchbox"),
+      selects: [$("rprojpick"), $("rjobpick"), $("rstatpick"), $("rdatepick")],
+      actions: [$("f-clear"), $("f-size-wrap")]
+    });
+    host.insertBefore(bar, $("ractive"));
+    host.dataset.mounted = "1";
+  }
+  function paintRunFilters(shown) {
+    paintRunPickers();
+    const box = $("ractive");
+    box.textContent = "";
+    const chips = [];
+    if (RF.project) chips.push(["project", "Project: " + (RF.project === "__none__" ? "No project" : RF.project)]);
+    if (RF.job) chips.push(["job", "Job: " + RF.job]);
+    if (RF.status) chips.push(["status", "Status: " + RF.status]);
+    if (RF.from || RF.to) chips.push(["date", "Date: " + runDateLabel()]);
+    const q = $("q").value.trim();
+    if (q) chips.push(["q", 'Search: "' + q + '"']);
+    box.hidden = !chips.length;
+    if (chips.length) {
+      box.appendChild(el("span", "aflabel", "Active filters:"));
+      chips.forEach(([key, label]) => {
+        const chip = el("span", "afchip");
+        chip.appendChild(document.createTextNode(label));
+        const drop = el("button");
+        drop.dataset.droprf = key;
+        drop.title = "Remove this filter";
+        drop.appendChild(icon("x"));
+        chip.appendChild(drop);
+        box.appendChild(chip);
+      });
+      box.appendChild(el("span", "aflabel", shown + " of " + (CC.DATA.runs || []).length + " runs"));
+    }
+    $("f-clear").hidden = !chips.length;
+  }
+  var sortKey3 = "when";
+  var sortDir3 = -1;
+  var page3 = 1;
+  var pageSize = parseInt(localStorage.ccPageSize || "25", 10) || 25;
+  var searchKeys = null;
+  var snippets = {};
+  var searchSeq = 0;
+  function runsSort(key) {
+    if (sortKey3 === key) sortDir3 = -sortDir3;
+    else {
+      sortKey3 = key;
+      sortDir3 = key === "job" || key === "status" ? 1 : -1;
+    }
+    page3 = 1;
+    renderRunsPage();
+  }
+  function runsSetPage(delta) {
+    page3 += delta;
+    renderRunsPage();
+  }
+  function runsFilterChanged() {
+    page3 = 1;
+    renderRunsPage();
+  }
+  function runsGotoFirstPage() {
+    page3 = 1;
+  }
+  function runsSetPageSize(n) {
+    pageSize = n;
+    localStorage.ccPageSize = n;
+    page3 = 1;
+    renderRunsPage();
+  }
+  function runsPageSize() {
+    return pageSize;
+  }
+  function clearRunFilters() {
+    RF.project = RF.job = RF.status = RF.from = RF.to = "";
+    $("f-from").value = "";
+    $("f-to").value = "";
+    $("q").value = "";
+    $("q-clear").hidden = true;
+    page3 = 1;
+    runSearch("");
+  }
+  async function runSearch(q) {
+    const seq = ++searchSeq;
+    if (!q || q.trim().length < 2) {
+      searchKeys = null;
+      snippets = {};
+      renderRunsPage();
+      return;
+    }
+    try {
+      const r = await fetch("/api/search?q=" + encodeURIComponent(q.trim()), { headers: { "X-CC-Token": TOKEN } });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const j = await r.json();
+      if (seq !== searchSeq) return;
+      searchKeys = /* @__PURE__ */ new Set();
+      snippets = {};
+      (j.results || []).forEach((x) => {
+        const k = x.id + "|" + x.start;
+        searchKeys.add(k);
+        if (x.snippet) snippets[k] = x.snippet;
+      });
+      page3 = 1;
+      renderRunsPage();
+    } catch (e) {
+      if (seq === searchSeq) toast("Search failed \u2014 " + e.message, true);
+    }
+  }
+  function runProjectNames() {
+    return [...new Set((CC.DATA.runs || []).map((r) => r.project || "").filter(Boolean))].sort();
+  }
+  function nothingNote(r) {
+    const n = r && r.note || "";
+    const i = n.indexOf("NOTHING TO DO:");
+    return i < 0 ? "" : n.slice(i + "NOTHING TO DO:".length).trim();
+  }
+  function livePidFor(id) {
+    const a = (CC.DATA.active_runs || {})[id] || [];
+    return a.length ? a[0].pid : "";
+  }
+  var STATUS_ICON_NAME = {
+    success: "check",
+    warning: "alert",
+    error: "xcircle",
+    idle: "clock",
+    running: "timer",
+    stopped: "power"
+  };
+  var CAUSE_LABEL = {
+    api_error: ["API", "the API refused a turn \u2014 the provider's fault, not this job's, and it does not count towards the failure backoff"],
+    rate_limited: ["limit", "the account is over its rate or usage limit \u2014 it does not count towards the failure backoff"],
+    tools_denied: ["blocked", "the agent asked for a tool it is not allowed, so it could not do the work"],
+    killed: ["killed", "the run was cut off \u2014 a watchdog, a crash, or a kill \u2014 and never reported a result"],
+    agent_error: ["agent", "the agent itself ended in error"]
+  };
+  function causeTag(rec) {
+    const c = CAUSE_LABEL[rec && rec.cause || ""];
+    if (!c) return null;
+    const tag = el("span", "causetag", c[0]);
+    tag.title = c[1];
+    return tag;
+  }
+  var RUN_COLS = [
+    ["when", "When"],
+    ["job", "Job"],
+    [null, "Project"],
+    ["status", "Status"],
+    ["duration", "Duration"],
+    ["cost", "Cost"],
+    [null, "Session"],
+    [null, ""]
+  ];
+  function runRow(r) {
+    const tr = el("tr");
+    const s = normStatus(r.status);
+    const snip = searchKeys ? snippets[r.id + "|" + r.start] || "" : "";
+    const resumable = s === "error" || s === "warning" || s === "stopped";
+    const isSec = String(r.id || "").startsWith("security-");
+    const followUp = resumable ? resumeTarget(r.id, r.start) : null;
+    const parent = continuedRun(r);
+    const tdWhen = el("td", "num");
+    const when = el("span", "when-rel", fmtAgo(r.start));
+    when.title = fmtWhen(r.start);
+    tdWhen.appendChild(when);
+    if (r.forced) tdWhen.appendChild(el("span", "trigger-badge", "forced"));
+    if (parent) {
+      const badge = el("span", "trigger-badge resumed", "resumed");
+      badge.dataset.tip = encodeURIComponent(resumedBadgeTip(parent));
+      tdWhen.appendChild(badge);
+    }
+    if (snip) {
+      const snipEl = el("div", "snip", snip);
+      snipEl.title = snip;
+      tdWhen.appendChild(snipEl);
+    }
+    tr.appendChild(tdWhen);
+    const tdJob = el("td");
+    tdJob.appendChild(el("code", null, r.id));
+    tr.appendChild(tdJob);
+    const tdProject = el("td");
+    if (r.project) {
+      const tag = el("span", "projtag");
+      tag.appendChild(icon("folder"));
+      tag.appendChild(document.createTextNode(r.project));
+      tdProject.appendChild(tag);
+    } else {
+      tdProject.appendChild(el("span", "muted", "\u2014"));
+    }
+    tr.appendChild(tdProject);
+    const tdStatus = el("td");
+    if (r.live) {
+      const badge = el("span", "runningbadge" + (isStopping(r) ? " stopping" : ""));
+      badge.appendChild(el("span", "pulse"));
+      badge.appendChild(document.createTextNode(isStopping(r) ? "stopping\u2026" : "running\u2026"));
+      tdStatus.appendChild(badge);
+    } else {
+      const cell = el("span", "stat-cell s-" + s);
+      cell.appendChild(icon(STATUS_ICON_NAME[s] || "clock"));
+      cell.appendChild(document.createTextNode(s));
+      tdStatus.appendChild(cell);
+      const cause = causeTag(r);
+      if (cause) tdStatus.appendChild(cause);
+      if (resumable && followUp) {
+        const badge = el("span", "tipbadge", "?");
+        badge.dataset.tip = encodeURIComponent(resumeTip(r.id, r.start));
+        tdStatus.appendChild(badge);
+      } else {
+        const note = nothingNote(r);
+        if (note) {
+          const badge = el("span", "tipbadge", "?");
+          badge.dataset.tip = encodeURIComponent("Nothing was done in this run \u2014 " + note);
+          tdStatus.appendChild(badge);
+        }
+      }
+    }
+    tr.appendChild(tdStatus);
+    const tdDuration = el("td", "num");
+    tdDuration.appendChild(document.createTextNode(fmtDur(r.duration)));
+    if (r.live) {
+      tdDuration.appendChild(document.createTextNode(" "));
+      tdDuration.appendChild(el("span", "muted", "so far"));
+    }
+    tr.appendChild(tdDuration);
+    const tdCost = el("td", "num");
+    if (r.live) tdCost.appendChild(el("span", "muted", "\u2014"));
+    else tdCost.appendChild(document.createTextNode(money(r.cost)));
+    tr.appendChild(tdCost);
+    const tdSession = el("td");
+    tdSession.appendChild(el("code", null, (r.session || "").slice(0, 8) || "\u2014"));
+    tr.appendChild(tdSession);
+    const tdActs = el("td", "rowacts");
+    const view = el("button", "iconbtn" + (r.live ? " live" : ""));
+    view.title = r.live ? "Follow this run live" : "View log";
+    view.appendChild(icon("eye"));
+    view.addEventListener("click", () => openLog(r.id, r.start));
+    tdActs.appendChild(view);
+    const stop = el("button", "iconbtn" + (r.live ? " danger" : ""));
+    stop.appendChild(icon("power"));
+    if (r.live) {
+      if (isStopping(r)) {
+        stop.disabled = true;
+        stop.title = "Already stopping \u2014 waiting for it to wind down";
+      } else {
+        stop.title = "Stop this run";
+        stop.dataset.op = "stop";
+        stop.dataset.id = r.id;
+        stop.dataset.runPid = r.pid || livePidFor(r.id);
+      }
+    } else {
+      stop.disabled = true;
+      stop.title = "This run has already finished \u2014 only a running run can be stopped";
+    }
+    tdActs.appendChild(stop);
+    const retry = el("button", "iconbtn retry");
+    retry.appendChild(icon("play"));
+    if (r.live) {
+      retry.disabled = true;
+      retry.title = "This run is still going";
+    } else if (isSec) {
+      retry.disabled = true;
+      retry.title = "A security analysis is never resumed \u2014 its request was consumed when it ran. Launch a fresh one from the Security area";
+    } else if (resumable) {
+      if (!r.session) {
+        retry.disabled = true;
+        retry.title = "This run recorded no session id, so it cannot be resumed";
+      } else if (followUp) {
+        retry.disabled = true;
+        retry.title = (followUp.running ? "A newer run is in progress" : "This task was already resumed") + " \u2014 see the ? beside the status";
+      } else {
+        retry.title = "Resume this task \u2014 continue session " + (r.session || "").slice(0, 8) + " where it stopped";
+        retry.dataset.op = "resume";
+        retry.dataset.id = r.id;
+        retry.dataset.session = r.session || "";
+        retry.dataset.resumeKey = runKey(r.id, r.start);
+      }
+    } else {
+      retry.disabled = true;
+      retry.title = "Only a failed, warning or stopped run can be resumed";
+    }
+    tdActs.appendChild(retry);
+    const del = el("button", "iconbtn" + (r.live || isSec ? "" : " danger"));
+    del.appendChild(icon("trash"));
+    if (r.live) {
+      del.disabled = true;
+      del.title = "A running run cannot be deleted \u2014 stop it first";
+    } else if (isSec) {
+      del.disabled = true;
+      del.title = "This run is a security analysis's evidence \u2014 the Security area owns its lifecycle";
+    } else {
+      del.title = "Delete this run and everything it left behind";
+      del.dataset.delId = r.id;
+      del.dataset.delStart = r.start;
+    }
+    tdActs.appendChild(del);
+    tr.appendChild(tdActs);
+    return tr;
+  }
+  function renderRunsTable() {
+    const all = filteredRuns(RF, unjournaledLive(), searchKeys, sortKey3, sortDir3);
+    const total = all.length;
+    const pages = Math.max(1, Math.ceil(total / pageSize));
+    if (page3 > pages) page3 = pages;
+    if (page3 < 1) page3 = 1;
+    const from = total ? (page3 - 1) * pageSize + 1 : 0;
+    const to = Math.min(page3 * pageSize, total);
+    const slice = all.slice((page3 - 1) * pageSize, page3 * pageSize);
+    let rows;
+    if (!total) {
+      const tr = el("tr");
+      const td = el("td", "tblempty");
+      td.colSpan = RUN_COLS.length;
+      td.appendChild(icon("inbox"));
+      td.appendChild(document.createTextNode(
+        (CC.DATA.runs || []).length ? searchKeys ? "No runs match this search." : "No runs match the filters." : "No runs recorded yet."
+      ));
+      tr.appendChild(td);
+      rows = [tr];
+    } else {
+      rows = slice.map((r) => runRow(r));
+    }
+    const footer = tableFooter({
+      // The footer and the pager count the FILTERED set, never the total --
+      // test_the_footer_and_pager_count_the_filtered_set_not_the_total pins
+      // this the same way.
+      shown: { from, to },
+      total,
+      noun: "run",
+      page: page3,
+      pages,
+      prevId: "runs-pg-prev",
+      nextId: "runs-pg-next",
+      infoId: "runs-pg-info"
+    });
+    const card = tableCard({
+      columns: RUN_COLS,
+      sortKey: sortKey3,
+      sortDir: sortDir3,
+      sortAttr: "sort",
+      rows,
+      footer
+    });
+    const host = $("runs-table");
+    host.textContent = "";
+    host.appendChild(card);
+    paintRunFilters(total);
+  }
+  function renderRunsPage() {
+    mountRunsToolbar();
+    const runs = CC.DATA.runs || [];
+    const liveCount = unjournaledLive().length;
+    const headHost = $("runs-head");
+    if (headHost) {
+      headHost.textContent = "";
+      headHost.appendChild(pageHeader({
+        icon: "activity",
+        title: "Runs",
+        subtitle: runsHeaderSubtitle(runs, liveCount),
+        actions: [{ id: "runs-refresh", icon: "radar", label: "Refresh" }]
+      }));
+    }
+    const kpiHost = $("runs-kpis");
+    if (kpiHost) {
+      kpiHost.textContent = "";
+      runsKpis(runs, liveCount).forEach((c) => kpiHost.appendChild(kpiCard({
+        icon: KPI_ICONS3[c.label],
+        tone: c.tone,
+        value: c.value,
+        label: c.label,
+        sub: c.sub,
+        filter: c.filter,
+        door: c.door
+      })));
+    }
+    renderRunsTable();
   }
 
   // ui/app/index.js
@@ -1753,16 +2209,47 @@
     renderProjectsPage,
     projectsSort,
     projectsSetPage,
-    // filteredRuns is Phase 2 Task 6's: bin/dashboard.html's own
-    // filteredRuns() now delegates its filter+sort arithmetic to
-    // CCApp.filteredRuns(RF, liveRows, searchKeys, sortKey,
-    // sortDir) instead of keeping a second copy -- SORTERS stays
-    // internal to ui/app/runs.js, since nothing outside that
-    // module calls it directly (see that file's own banner
-    // comment on why RF, RUN_COLS and the sort state itself stay
-    // in the page for this task).
-    filteredRuns
+    // filteredRuns is Phase 2 Task 6's, still reached the same
+    // way now that Task 7 gives the rest of the table a home
+    // beside it: SORTERS stays internal to ui/app/runs.js, since
+    // nothing outside that module calls it directly.
+    filteredRuns,
+    // RF, renderRunsPage, runsSort, runsSetPage,
+    // runsFilterChanged, runsGotoFirstPage, runsSetPageSize,
+    // runsPageSize, clearRunFilters, runSearch and
+    // runProjectNames are Phase 2 Task 7's: the Runs table
+    // itself, moved whole out of bin/dashboard.html
+    // (renderRunHead/renderRuns/paintRunFilters/runSearch/
+    // clearRunFilters and the four pickers' own onPick bodies)
+    // into ui/app/runs.js, the same move jobs-table.js and
+    // projects.js already made for their own tables. RF is a
+    // single exported object rather than five module-level
+    // `let`s for the same reason jobFilters/projFilters are:
+    // the four Runs pickers' own onPick callbacks (still in
+    // bin/dashboard.html, since they are page-owned stateful
+    // widgets) read and write CCApp.RF.project/job/status/
+    // from/to directly. render() (bin/dashboard.html) calls
+    // CCApp.renderRunsPage() once per poll; the page's
+    // delegated click listener calls CCApp.runsSort(key) for a
+    // sortable header and CCApp.runsSetPage(delta) for the
+    // footer's pager; runsFilterChanged/runsGotoFirstPage are
+    // the two shapes every filter change needs (one that also
+    // redraws, one that does not because a view switch is about
+    // to); runsSetPageSize/runsPageSize back the per-page
+    // `<select>`; clearRunFilters and runSearch are `#f-clear`'s
+    // and the search box's own click/input handlers.
+    RF,
+    renderRunsPage,
+    runsSort,
+    runsSetPage,
+    runsFilterChanged,
+    runsGotoFirstPage,
+    runsSetPageSize,
+    runsPageSize,
+    clearRunFilters,
+    runSearch,
+    runProjectNames
   };
 })();
-/* ui-bundle: eb5fdf46b3cb5ffbbce8521aa08ac70342805c46edd81574073fd96d1f08bede */
-/* ui-sources: ceadec8ddc99f588873606db3fcd69049dd74e40afbc9d13af71d134a1ae6cc2 */
+/* ui-bundle: 60f7d5e4a697c8ec254694bdb5c62a4d732dd54028979b835a4c5cd978aa52ba */
+/* ui-sources: 8fd4d714ca0b9b238569cb497c9422bbdd983f2eff8f7b943bfe3980b3e55790 */

@@ -47,9 +47,46 @@
    keeping a second copy, the same "one implementation, reached from every
    caller" rule eff/backoffMultiplier/activeRunsOf already followed above.
 
-   esc, iconLabel, openLog, openEditor and setView still are not exported:
-   nothing under ui/app/ calls any of them. api is not either -- the module's
-   own network calls (initJobDrag's reorder) go through a plain `fetch` the
+   openLog, resumeTarget, resumeTip, continuedRun, resumedBadgeTip, runKey,
+   isStopping, unjournaledLive, paintRunPickers and runDateLabel join the
+   list for the Runs table's own move (Phase 2 Task 7). Every one of them
+   keeps its single implementation in the page:
+
+   - openLog opens the log modal, which stays in bin/dashboard.html --
+     see that file's own banner comment on why the modal did not move with
+     the rest of this table. The row's own "view" button reaches it
+     directly (an `addEventListener`, the same way initJobDrag reaches
+     TOKEN/toast/refresh below for its own reorder round trip) rather than
+     through a `data-log-id` attribute a central listener used to read, since
+     nothing else needs that attribute once the row that carried it moved.
+   - resumeTarget, resumeTip and continuedRun are the resume-tooltip
+     machinery: which failed/warning/stopped run already has a follow-up,
+     and the rich tooltip describing it. Both keep returning a plain HTML
+     string, exactly as before -- it is assigned to a real element's
+     `.dataset.tip` now instead of spliced into a template, and read back by
+     the page's own unmoved tipShow(), so nothing about what the tooltip
+     says or how it renders changed.
+   - resumedBadgeTip is new: the "resumed" badge's own tooltip content used
+     to be built inline inside the row template renderRuns() no longer has;
+     naming it here is the only change, not a rewrite of what it says.
+   - runKey names the `id|start` composite key the resumed-run bookkeeping
+     (resumedRuns, localStorage-backed) is keyed by; the table's own row
+     needs it for the same `data-resume-key` attribute it always carried.
+   - isStopping reads the page's own `stopping` Set (kept in step by
+     markStopping, which the page's central click dispatcher still calls
+     directly, and by forgetDeadStops, folded into unjournaledLive below).
+   - unjournaledLive is live runs not yet in the journal -- already reached
+     by the page's own sidebar count (paintNav), so it stays defined there
+     rather than gaining a second home; forgetDeadStops now runs inside it
+     rather than being a second call every caller had to remember to make.
+   - paintRunPickers/runDateLabel mirror paintJobPickers exactly: the four
+     Runs pickers stay page-owned stateful widgets (initPickers() builds
+     them alongside the two Jobs ones), and this module only ever reaches
+     their `.paint()`/`.label()` through these two small bridges.
+
+   esc, iconLabel, openEditor and setView still are not exported: nothing
+   under ui/app/ calls any of them. api is not either -- the module's own
+   network calls (initJobDrag's reorder) go through a plain `fetch` the
    same way the page's own `api()` wraps one, since bulkToggle/showConfirm's
    confirmation dialog stays behind in the page for the one caller
    (bulkToggle) that still needs it. */
@@ -58,7 +95,9 @@ export let $, fmtAgo, fmtDur, money,
            backoffMultiplier, activeRunsOf, renderJobs,
            effortLabel, fmtExpiresIn, resumeInFlight,
            fmtWhen, fmtIn, isFav, TOKEN, toast, refresh, paintJobPickers,
-           normStatus;
+           normStatus,
+           openLog, resumeTarget, resumeTip, continuedRun, resumedBadgeTip,
+           runKey, isStopping, unjournaledLive, paintRunPickers, runDateLabel;
 
 /* DATA and currentView are REASSIGNED by the page -- DATA on every five-second
    poll, currentView on every navigation. Destructured they would freeze at
@@ -73,5 +112,7 @@ export function bindPage(cc){
      backoffMultiplier, activeRunsOf, renderJobs,
      effortLabel, fmtExpiresIn, resumeInFlight,
      fmtWhen, fmtIn, isFav, TOKEN, toast, refresh, paintJobPickers,
-     normStatus } = cc);
+     normStatus,
+     openLog, resumeTarget, resumeTip, continuedRun, resumedBadgeTip,
+     runKey, isStopping, unjournaledLive, paintRunPickers, runDateLabel } = cc);
 }

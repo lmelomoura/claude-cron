@@ -1279,6 +1279,62 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   every caller" rule `eff`/`backoffMultiplier`/`activeRunsOf` already
   follow, rather than a second copy living in the new module.
 
+- **Runs speaks the Overview's visual language and moves to
+  `ui/app/runs.js`, closing out Phase 2.** A page header, four KPI cards
+  (total runs, running now, warnings, errors), the existing search box and
+  four pickers repainted rather than rebuilt (its placeholder already said
+  what it has always done — "Search runs & log content…", reaching a run's
+  log as well as its name — and stays exactly as it was), the same seven
+  data columns built with `el()` instead of an HTML string, plus the footer
+  and pager Runs — unlike Jobs and Projects before their own moves — already
+  had, now rebuilt through `tableCard()`/`tableFooter()` the identical way.
+  `RF`, the sort/page state and `RUN_COLS` — deliberately left in the page
+  by Task 6 — move the rest of the way now, the same way `PRJ_COLS`/
+  `prjSortKey`/`prjSortDir` finished moving in Task 5: the four Runs
+  pickers' own `onPick` callbacks (still page-owned static widgets) now
+  read and write `CCApp.RF.project`/`job`/`status`/`from`/`to` directly.
+  `runKey` — one of several small helpers the moved row now reaches through
+  `ui/app/page.js`'s shared interface — had to become a hoisted `function`
+  declaration rather than a `const` arrow: `CCApp.init`'s interface object
+  referenced it by name well above its own declaration, which a `const`
+  arrow cannot survive (the exact temporal-dead-zone trap `activeRunsOf`
+  and `backoffMultiplier` were already converted for, caught here live in a
+  browser before it shipped — the whole reason this phase's own gate ends
+  with looking at the page, not just running the suite). The "view log"
+  button no longer carries a `data-log-id` attribute for the page's central
+  click dispatcher to read; it calls the page's `openLog` directly instead,
+  the same "reach a page-owned function directly when a static attribute
+  is not enough" precedent `initJobDrag` already set for its own
+  save-then-refresh round trip.
+
+  **The log modal does not move.** `renderLog`, `paintLog` and `openLog`
+  stay in `bin/dashboard.html`, unchanged, reached by the new module
+  through the page interface. This is a deliberate decision, not an
+  oversight: the modal is not a table, it is a terminal with live-tail
+  scrolling, syntax highlighting and an input box, and turning its 191
+  lines of HTML-string markup into DOM builders is a reimplementation of
+  exactly the kind of component where behaviour goes missing quietly —
+  a scroll-follow condition translated wrong, a lost `keydown` capture, a
+  "live" state that drops mid-rebuild. It also renders whatever an agent
+  wrote, which is untrusted input, so the HTML-parsing sink it uses to
+  render that is worth removing on its own terms — with its own tests and
+  its own falsifiability pass — not as a rushed sub-step of the largest,
+  last task of this phase. Tracked as a task of its own; see the design
+  spec's own note on why (`docs/superpowers/specs/2026-08-23-app-redesign-
+  phase-2-tables-design.md`).
+
+  `test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column`
+  (renamed from its Jobs-and-Projects-only name) now also guards Runs'
+  own eight columns — `#view-runs` gained its own `table-layout:fixed` and
+  a width rule per column in `ui/css/pages.css`, the identical shape the
+  Security column's own missing rule broke Projects with once already.
+  `clearRunFilters`, read before moving as this task's own first step,
+  turned out to be 6 lines doing one job (reset every filter, the two date
+  inputs and the search box, then re-run the now-empty search) — not the
+  104 lines carrying three responsibilities the plan expected; the design
+  spec is corrected to say so, with the mis-measurement named as the cause
+  rather than left looking like the code once carried more than it does.
+
 ### Added
 
 - **A read-only query layer for the Security dashboard.** `security/queries.py`

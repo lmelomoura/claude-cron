@@ -214,6 +214,24 @@
 #view-projects th:nth-child(6){width:16%}   /* Security          */
 #view-projects th:last-child{width:10%}     /* actions           */
 #view-projects .rowacts{padding-left:4px;padding-right:10px}
+/* Eight columns (RUN_COLS, ui/app/runs.js) -- min-width matches the other
+   two tables for the same reason: a status pill plus its cause tag plus a
+   resumed badge needs more room than a narrower floor budgeted for. See
+   test_the_jobs_and_projects_tables_declare_a_width_for_every_column
+   (tests/test_page_contract.py), extended to this view in Phase 2 Task 7
+   for the identical reason it already guards Jobs and Projects: an eighth
+   column with no width rule computes to a hair over 0px under
+   table-layout:fixed and spills into whichever comes after it. */
+#view-runs table{table-layout:fixed;min-width:1000px}
+#view-runs th:nth-child(1){width:20%}   /* When     */
+#view-runs th:nth-child(2){width:13%}   /* Job      */
+#view-runs th:nth-child(3){width:11%}   /* Project  */
+#view-runs th:nth-child(4){width:16%}   /* Status   */
+#view-runs th:nth-child(5){width:9%}    /* Duration */
+#view-runs th:nth-child(6){width:9%}    /* Cost     */
+#view-runs th:nth-child(7){width:9%}    /* Session  */
+#view-runs th:last-child{width:13%}     /* actions  */
+#view-runs .rowacts{padding-left:4px;padding-right:10px}
 /* Filled, not outlined. The icon set draws with `stroke:currentColor`, and the
    folder rule beside it paints the row's icons accent — so an amber fill came
    out under a 2px indigo outline, which at 11px is not amber and not indigo but
