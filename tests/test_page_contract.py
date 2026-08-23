@@ -1375,6 +1375,61 @@ def test_the_project_search_reaches_the_directory_too(srv, tmp_path):
     assert out["byDirectory"] == ["Minerva"], out["byDirectory"]
 
 
+# ---- the Security column (Task 5) -- the only new information Phase 2 adds
+# to Projects. Written BEFORE projectSecurity exists, per the task's own
+# gate: the risk here is not a typo, it is painting two different facts
+# alike, so the test is what has to exist first, not the column.
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_security_column_tells_three_states_apart(srv, tmp_path):
+    """Read straight from what the page actually has, not from what would be
+    nice to show: `/api/config` carries a project's security block (enabled
+    or not, plus its configuration knobs) and nothing about what any
+    analysis found -- that lives behind `GET /api/security/index`, a
+    subprocess-backed endpoint this page's 5-second poll has no business
+    calling. `DATA.runs`, already fetched every poll for every other page,
+    DOES carry the derived "security-<slug>" job's own runs, correctly
+    attributed to the real project name (`bin/claude-cron`'s
+    `security_derived_jobs` sets `project` on the derived job element
+    itself) -- so "never analysed" and "analysed" are told apart from data
+    the page already has in hand, without inventing a severity this column
+    has no way to know. A completed run's own status is deliberately not
+    read as a stand-in for posture either: checked against the real ledger
+    behind this branch, a project's most recent run said "success" while its
+    analysis had recorded 6 high and 33 medium findings -- "the run
+    succeeded" and "nothing was found" are not the same fact, and painting
+    one as the other would be exactly the mistake this column exists to
+    avoid making a second time."""
+    block = _app_js(srv)
+    fn = _plainfn(block, "projectSecurity")
+    script = tmp_path / "prj-security.js"
+    script.write_text("""
+    const CC = { DATA: { runs: [
+      {id: "security-beta", project: "Beta", start: 100, status: "success"},
+      {id: "security-beta", project: "Beta", start: 200, status: "error"},
+    ] } };
+    """ + fn + """
+    console.log(JSON.stringify({
+      off:        projectSecurity({name: "Alpha", security: {enabled: false}}).state,
+      absent:     projectSecurity({name: "Alpha"}).state,
+      unanalysed: projectSecurity({name: "Alpha", security: {enabled: true}}).state,
+      analysed:   projectSecurity({name: "Beta", security: {enabled: true}}).state,
+      lastAt:     projectSecurity({name: "Beta", security: {enabled: true}}).lastAt,
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["off"] == "disabled", out
+    assert out["absent"] == "disabled", out
+    assert out["unanalysed"] == "unanalysed", out
+    assert out["analysed"] == "analysed", out
+    # The most recent of Beta's two runs, not whichever one the array lists
+    # first.
+    assert out["lastAt"] == 200, out
+    assert len({out["off"], out["unanalysed"], out["analysed"]}) == 3, (
+        "two of the three security states painted alike")
+
+
 # ---- the Overview's own arithmetic, pinned ahead of the redesign that turns
 # three loose tiles and a footer strip into five KPI cards and rebuilds the
 # job card from HTML strings into DOM nodes. Characterisation tests: they

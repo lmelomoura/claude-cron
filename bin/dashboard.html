@@ -320,21 +320,33 @@ document.documentElement.dataset.theme =
     </div>
   </div><!-- /view-runs -->
 
+  <!-- Projects as its own page, speaking the Overview's visual language --
+       prj-head/prj-kpis/prj-table are built whole by CCApp.renderProjectsPage()
+       every poll, the same way jobs-head/jobs-kpis/jobs-table are built by
+       CCApp.renderJobsPage(): icon, title, one sentence from the real
+       numbers, New project trailing right, then four KPI cards, then the
+       table card itself (columns: Project, Jobs, Working directory, Repos,
+       Isolation, Security, actions).
+
+       #prjtoolbar's own child is NOT rebuilt the same way: the search box is
+       static markup and a stateful widget that already existed before this
+       page had a header of its own, and CCApp.renderProjectsPage() only lays
+       it out once, into a `.toolbar` it builds a single time
+       (CCApp.filterBar(), moving the element rather than rebuilding it) --
+       see ui/app/projects.js's own mountProjectsToolbar(). -->
   <div class="view" id="view-projects" hidden>
-    <p class="paneblurb">What a group of jobs has in common — the folder they work
-      in, the repos they check out, the account they sign in as. A job in a project
-      inherits all of it unless it says otherwise.</p>
-    <div class="toolbar">
+    <div id="prj-head"></div>
+    <div class="kpi-grid" id="prj-kpis"></div>
+    <div id="prjtoolbar">
       <div class="searchbox" id="projsearchbox">
         <input id="pq" placeholder="Search projects…" autocomplete="off">
         <button class="clear" id="pq-clear" hidden></button>
       </div>
-      <div class="spacer"></div>
-      <button class="btn primary" id="new-project"></button>
     </div>
-    <div class="tablewrap"><table>
-      <thead><tr id="prjhead"></tr></thead>
-      <tbody id="prjrows"></tbody></table></div>
+    <!-- The table card itself, footer included -- see CCApp.tableCard()'s own
+         comment (ui/app/chrome.js) on why the footer lives INSIDE the card
+         this builds rather than as a separate element below it. -->
+    <div id="prj-table"></div>
   </div><!-- /view-projects -->
 
   <!-- The list is projects, not jobs: a project can be registered for this and
@@ -1474,7 +1486,7 @@ async function bulkToggle(btn, kind, key, enable){
 // below, to the historical HTML-string builder CCApp.jobCard(j) replaced in
 // Task 9, and reusing it here would read as this function still being that
 // one. See renderJobsArea() below for what replaces the fork -- both halves
-// are drawn every poll now, the same way renderProjects()/renderRuns()
+// are drawn every poll now, the same way CCApp.renderProjectsPage()/renderRuns()
 // already redraw their own tables regardless of which page is showing; the
 // old view check only ever saved building whichever of cards/table was
 // hidden, and the saving was never worth the special case.
@@ -1600,70 +1612,16 @@ function renderJobsArea(){
   CCApp.renderJobsPage();
 }
 
-/* ------------------------------------------------------- projects as a table
-   Same furniture as Jobs and Runs. A project is mostly what its jobs inherit,
-   so the columns are exactly that: where runs work, what they check out, and
-   whether each gets its own worktree.
-
-   visibleProjects() and the isolation read moved to ui/app/projects.js in
-   Phase 2 Task 4 (CCApp.visibleProjects / CCApp.projectIsolation), pure, no
-   DOM, ready for a characterisation test to read without pulling this page
-   in -- the same split Task 2 already made for the Jobs table's sortJobs/
-   JOB_COLS. What stays here is the sort state and the markup the visible,
-   sorted rows become; Task 5 moves the rest. */
-const PRJ_COLS=[
-  ["name","Project"],["jobs","Jobs"],[null,"Working directory"],
-  ["repos","Repos"],[null,"Isolation"],[null,""],
-];
-let prjSortKey="name", prjSortDir=1;
-const PRJ_SORTERS={
-  name:{cmp:(a,b)=>String(a.name).localeCompare(String(b.name))},
-  jobs:{cmp:(a,b)=>a._jobs-b._jobs, tie:(a,b)=>String(a.name).localeCompare(String(b.name))},
-  repos:{cmp:(a,b)=>a._repos-b._repos, tie:(a,b)=>String(a.name).localeCompare(String(b.name))},
-};
-function renderProjects(){
-  // Same guard as the job cards: an open row menu must not be redrawn out from
-  // under the pointer by the 5-second poll.
-  if(document.querySelector(".menu-pop:not([hidden])")) return;
-  $("prjhead").innerHTML=PRJ_COLS.map(([key,label])=>{
-    if(!key) return "<th>"+esc(label)+"</th>";
-    const on=prjSortKey===key;
-    return '<th class="sortable'+(on?" sorted":"")+'" data-prjsort="'+key+'"'
-      +' aria-sort="'+(on?(prjSortDir<0?"descending":"ascending"):"none")+'"'
-      +' title="Sort by '+esc(label.toLowerCase())+'">'
-      +esc(label)+(on&&prjSortDir>0?I.sortasc:I.sortdesc)+"</th>";
-  }).join("");
-  const S=PRJ_SORTERS[prjSortKey]||PRJ_SORTERS.name;
-  const rows=CCApp.visibleProjects().sort((a,b)=>(S.cmp(a,b)*prjSortDir) || (S.tie?S.tie(a,b):0));
-  $("pq-clear").hidden=!CCApp.projFilters.query;
-  if(!rows.length){
-    $("prjrows").innerHTML='<tr><td colspan="'+PRJ_COLS.length+'" class="tblempty">'+I.inbox
-      +(CCApp.projFilters.query.trim() ? "No projects match that search."
-        : "No projects yet — a job does not need one, but jobs that share a repo do.")+"</td></tr>";
-    return;
-  }
-  $("prjrows").innerHTML=rows.map(p=>{
-    const iso = CCApp.projectIsolation(p);
-    const fav=isFav(p.name);
-    return "<tr>"
-      +'<td><span class="jobcell">'+I.folder+"<b>"+esc(p.name)+"</b>"
-        +'<button class="favstar'+(fav?" on":"")+'" data-fav="'+esc(p.name)+'"'
-        +' aria-pressed="'+(fav?"true":"false")+'"'
-        +' title="'+(fav?"Remove from favourites":"Favourite — keeps this project at the top of Jobs")+'">'
-        +I.star+"</button></span>"
-        +(p.description?'<div class="snip" title="'+esc(p.description)+'">'+esc(p.description)+"</div>":"")+"</td>"
-      +'<td class="num nowrap">'+p._jobs+"</td>"
-      +"<td>"+(p.cwd?'<code class="pathcell" title="'+esc(p.cwd)+'">'+esc(p.cwd)+"</code>"
-              :'<span class="muted">—</span>')+"</td>"
-      +'<td class="nowrap">'+(p._repos ? p._repos+" repo"+(p._repos===1?"":"s")
-              :'<span class="muted">single</span>')+"</td>"
-      +'<td class="nowrap"><span class="isopill '+iso[0]+'">'+iso[1]+"</span></td>"
-      +'<td class="rowacts">'
-        +'<button class="iconbtn" data-editproj="'+esc(p.name)+'" title="Edit project">'+I.pencil+"</button>"
-        +'<button class="iconbtn danger" data-delproj="'+esc(p.name)+'" title="Delete project">'+I.trash+"</button>"
-      +"</td></tr>";
-  }).join("");
-}
+// The Projects table -- its columns, its sort state, its rows, and the new
+// Security column the mockup asked for and the old table did not have --
+// moved whole into ui/app/projects.js in Phase 2 Task 5, as
+// CCApp.renderProjectsPage(), the same move jobs-table.js already made for
+// Jobs in Task 3. The page's delegated click listener now calls
+// CCApp.projectsSort(key) for a header click and CCApp.projectsSetPage(delta)
+// for the footer's pager, rather than touching prjSortKey/prjSortDir/page
+// directly. CCApp.visibleProjects and CCApp.projectIsolation
+// (ui/app/projects.js) are unchanged by this move -- they were already pure,
+// DOM-free, and pinned by Task 4's own tests.
 
 /* ================================================================ security
    The Security area itself is no longer here. It is ES modules under
@@ -2296,7 +2254,7 @@ function render(){
 
   paintNav();
   paintUser();
-  renderProjects();
+  CCApp.renderProjectsPage();
   CCSecurity.render();
   renderJobsArea();
   renderRuns();
@@ -4452,13 +4410,10 @@ document.addEventListener("click", async (e)=>{
     else { sortKey=key; sortDir=(key==="job"||key==="status")?1:-1; }
     page=1; renderRuns(); return;
   }
+  // sorting the Projects table -- the sort state itself, and the fork on the
+  // key that decides the opening direction, now live in ui/app/projects.js.
   const ph=e.target.closest("th[data-prjsort]");
-  if(ph){
-    const key=ph.dataset.prjsort;
-    if(prjSortKey===key) prjSortDir=-prjSortDir;
-    else { prjSortKey=key; prjSortDir=(key==="name")?1:-1; }
-    renderProjects(); return;
-  }
+  if(ph){ CCApp.projectsSort(ph.dataset.prjsort); return; }
   const dp=e.target.closest("[data-delproj]");
   if(dp){
     const name=dp.dataset.delproj;
@@ -4525,6 +4480,10 @@ document.addEventListener("click", async (e)=>{
   if(e.target.closest("#jobs-refresh")){ refresh(); return; }
   if(e.target.closest("#jobs-pg-prev")){ CCApp.jobsSetPage(-1); return; }
   if(e.target.closest("#jobs-pg-next")){ CCApp.jobsSetPage(1); return; }
+  // The Projects page's own footer pager, built by CCApp.renderProjectsPage()
+  // the same way the Jobs pager above is -- same clamp-and-redraw reasoning.
+  if(e.target.closest("#prj-pg-prev")){ CCApp.projectsSetPage(-1); return; }
+  if(e.target.closest("#prj-pg-next")){ CCApp.projectsSetPage(1); return; }
   // The worktrees card's own footer button, built the same way by
   // CCApp.worktreesCard() -- opens the full list the card only summarises.
   if(e.target.closest("#ov-wt-view")){ $("wt-halo").innerHTML=I.folder; $("wtmodal").showModal(); return; }
@@ -4794,15 +4753,15 @@ $("h-settings").innerHTML=I.gear+"Settings";
 const soon=(what)=>I.hammer+"<b>Not built yet</b><p>"+what+"</p>";
 $("soon-settings").innerHTML=soon("Your profile — photo, name, email and password — plus the "
   +"scheduler's own settings will live here. Nothing is editable yet.");
-// "New job" is no longer static markup here -- it is built into the Jobs
-// page's own header by CCApp.renderJobsPage() (ui/app/jobs-table.js), the
-// same id as before (#new-job) but appended fresh on the first render
-// rather than labelled once at boot.
-$("new-project").innerHTML=I.plus+"New project";
+// "New job" and "New project" are no longer static markup here -- each is
+// built into its own page's header by CCApp.renderJobsPage()/
+// CCApp.renderProjectsPage() (ui/app/jobs-table.js, ui/app/projects.js), the
+// same id as before (#new-job, #new-project) but appended fresh on the
+// first render rather than labelled once at boot.
 $("pq-clear").innerHTML=I.x;
 $("projsearchbox").insertAdjacentHTML("afterbegin", I.search);
-$("pq").addEventListener("input",()=>{ CCApp.projFilters.query=$("pq").value; renderProjects(); });
-$("pq-clear").addEventListener("click",()=>{ CCApp.projFilters.query=""; $("pq").value=""; renderProjects(); });
+$("pq").addEventListener("input",()=>{ CCApp.projFilters.query=$("pq").value; CCApp.renderProjectsPage(); });
+$("pq-clear").addEventListener("click",()=>{ CCApp.projFilters.query=""; $("pq").value=""; CCApp.renderProjectsPage(); });
 $("f-clear").innerHTML=I.x+"Clear filters";
 $("jf-clear").innerHTML=I.x+"Clear filters";
 $("f-clear").hidden=$("jf-clear").hidden=true;

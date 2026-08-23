@@ -249,20 +249,20 @@
     return bar;
   }
   function tableCard(opts) {
-    const { columns, sortKey: sortKey2, sortDir: sortDir2, sortAttr, rows, footer } = opts;
+    const { columns, sortKey: sortKey3, sortDir: sortDir3, sortAttr, rows, footer } = opts;
     const headRow = el("tr");
     columns.forEach(([key, label]) => {
       if (!key) {
         headRow.appendChild(el("th", null, label));
         return;
       }
-      const on = sortKey2 === key;
+      const on = sortKey3 === key;
       const th = el("th", "sortable" + (on ? " sorted" : ""));
       th.dataset[sortAttr] = key;
-      th.setAttribute("aria-sort", on ? sortDir2 < 0 ? "descending" : "ascending" : "none");
+      th.setAttribute("aria-sort", on ? sortDir3 < 0 ? "descending" : "ascending" : "none");
       th.title = "Sort by " + label.toLowerCase();
       th.appendChild(document.createTextNode(label));
-      th.appendChild(icon(on && sortDir2 > 0 ? "sortasc" : "sortdesc"));
+      th.appendChild(icon(on && sortDir3 > 0 ? "sortasc" : "sortdesc"));
       headRow.appendChild(th);
     });
     const thead = el("thead");
@@ -280,7 +280,7 @@
     return card;
   }
   function tableFooter(opts) {
-    const { shown, total, noun, page: page2, pages, prevId, nextId, infoId } = opts;
+    const { shown, total, noun, page: page3, pages, prevId, nextId, infoId } = opts;
     const foot = el("div", "table-foot");
     const info = el(
       "span",
@@ -294,13 +294,13 @@
     if (prevId) prev.id = prevId;
     prev.appendChild(icon("cleft"));
     prev.appendChild(document.createTextNode("Prev"));
-    prev.disabled = page2 <= 1;
+    prev.disabled = page3 <= 1;
     nav.appendChild(prev);
     const next = el("button", "btn ghost");
     if (nextId) next.id = nextId;
     next.appendChild(document.createTextNode("Next"));
     next.appendChild(icon("cright"));
-    next.disabled = page2 >= pages;
+    next.disabled = page3 >= pages;
     nav.appendChild(next);
     foot.appendChild(nav);
     return foot;
@@ -1358,6 +1358,254 @@
     const wt = p.worktree && p.worktree.enabled;
     return wt === true || wt === "true" ? ["on", "always"] : wt === false || wt === "false" ? ["off", "never"] : ["auto", "auto"];
   }
+  function projectSecurity(p) {
+    const sec = p.security;
+    const enabled = !!(sec && typeof sec === "object" && (sec.enabled === true || sec.enabled === "true"));
+    if (!enabled) return { state: "disabled", cls: "disabled", label: "Disabled" };
+    const runs = (CC.DATA.runs || []).filter((r) => r.project === p.name && String(r.id || "").startsWith("security-"));
+    if (!runs.length) return { state: "unanalysed", cls: "idle", label: "Never analysed" };
+    const last = runs.reduce((a, b) => a.start > b.start ? a : b);
+    return { state: "analysed", cls: "on", label: "Analysed", lastAt: last.start };
+  }
+  function projectsKpis(rows) {
+    const total = rows.length;
+    const withJobs = rows.filter((p) => p._jobs > 0).length;
+    const jobsTotal = rows.reduce((a, p) => a + p._jobs, 0);
+    const secStates = rows.map((p) => projectSecurity(p).state);
+    const secEnabled = secStates.filter((s) => s !== "disabled").length;
+    const secAnalysed = secStates.filter((s) => s === "analysed").length;
+    const isoStates = rows.map((p) => projectIsolation(p)[0]);
+    const isolated = isoStates.filter((s) => s === "on").length;
+    const neverIsolated = isoStates.filter((s) => s === "off").length;
+    return [
+      {
+        label: "Projects",
+        value: String(total),
+        sub: !total ? "none configured yet" : total - withJobs ? total - withJobs + " with no jobs of their own" : "every one has a job",
+        tone: "",
+        filter: "",
+        door: false
+      },
+      {
+        label: "Jobs organised",
+        value: String(jobsTotal),
+        sub: total ? (jobsTotal / total).toFixed(1) + " per project" : "no projects yet",
+        tone: "",
+        filter: "",
+        door: false
+      },
+      {
+        label: "Security enabled",
+        value: String(secEnabled),
+        sub: !secEnabled ? "none turned on yet" : secAnalysed + " analysed at least once",
+        tone: "",
+        filter: "",
+        door: false
+      },
+      {
+        label: "Isolated",
+        value: String(isolated),
+        sub: neverIsolated ? neverIsolated + " never isolate" : "none set to never",
+        tone: "",
+        filter: "",
+        door: false
+      }
+    ];
+  }
+  var KPI_ICONS2 = {
+    "Projects": "folder",
+    "Jobs organised": "layers",
+    "Security enabled": "shield",
+    "Isolated": "cpu"
+  };
+  function projectsHeaderSubtitle(rows) {
+    if (!rows.length) return "Nothing configured yet \u2014 a project gives a group of jobs somewhere to inherit from.";
+    const n = rows.length;
+    const withJobs = rows.filter((p) => p._jobs > 0).length;
+    const secOn = rows.filter((p) => projectSecurity(p).state !== "disabled").length;
+    const jobsPart = withJobs === n ? ", every one with jobs of its own" : withJobs ? ", " + withJobs + " with jobs of their own" : ", none with jobs of their own yet";
+    const secPart = secOn ? ", " + secOn + " with security enabled" : "";
+    return n + " project" + (n === 1 ? "" : "s") + jobsPart + secPart + ".";
+  }
+  function mountProjectsToolbar() {
+    const host = $("prjtoolbar");
+    if (!host || host.dataset.mounted) return;
+    const bar = filterBar({ search: $("projsearchbox") });
+    host.appendChild(bar);
+    host.dataset.mounted = "1";
+  }
+  function projectsEmptyNote(filtering) {
+    return filtering ? "No projects match that search." : "No projects yet \u2014 a job does not need one, but jobs that share a repo do.";
+  }
+  var PRJ_COLS = [
+    ["name", "Project"],
+    ["jobs", "Jobs"],
+    [null, "Working directory"],
+    ["repos", "Repos"],
+    [null, "Isolation"],
+    [null, "Security"],
+    [null, ""]
+  ];
+  var PRJ_SORTERS = {
+    name: { cmp: (a, b) => String(a.name).localeCompare(String(b.name)) },
+    jobs: {
+      cmp: (a, b) => a._jobs - b._jobs,
+      tie: (a, b) => String(a.name).localeCompare(String(b.name))
+    },
+    repos: {
+      cmp: (a, b) => a._repos - b._repos,
+      tie: (a, b) => String(a.name).localeCompare(String(b.name))
+    }
+  };
+  var sortKey2 = "name";
+  var sortDir2 = 1;
+  var page2 = 1;
+  var PAGE_SIZE2 = 20;
+  function projectsSort(key) {
+    if (sortKey2 === key) sortDir2 = -sortDir2;
+    else {
+      sortKey2 = key;
+      sortDir2 = key === "name" ? 1 : -1;
+    }
+    page2 = 1;
+    renderProjectsPage();
+  }
+  function projectsSetPage(delta) {
+    page2 += delta;
+    renderProjectsPage();
+  }
+  function projectRow(p) {
+    const tr = el("tr");
+    const tdName = el("td");
+    const cell = el("span", "jobcell");
+    cell.appendChild(icon("folder"));
+    cell.appendChild(el("b", null, p.name));
+    const fav = isFav(p.name);
+    const favBtn = el("button", "favstar" + (fav ? " on" : ""));
+    favBtn.dataset.fav = p.name;
+    favBtn.setAttribute("aria-pressed", fav ? "true" : "false");
+    favBtn.title = fav ? "Remove from favourites" : "Favourite \u2014 keeps this project at the top of Jobs";
+    favBtn.appendChild(icon("star"));
+    cell.appendChild(favBtn);
+    tdName.appendChild(cell);
+    if (p.description) {
+      const snip = el("div", "snip", p.description);
+      snip.title = p.description;
+      tdName.appendChild(snip);
+    }
+    tr.appendChild(tdName);
+    tr.appendChild(el("td", "num nowrap", String(p._jobs)));
+    const tdCwd = el("td");
+    if (p.cwd) {
+      const code = el("code", "pathcell", p.cwd);
+      code.title = p.cwd;
+      tdCwd.appendChild(code);
+    } else {
+      tdCwd.appendChild(el("span", "muted", "\u2014"));
+    }
+    tr.appendChild(tdCwd);
+    const tdRepos = el("td", "nowrap");
+    if (p._repos) tdRepos.appendChild(document.createTextNode(p._repos + " repo" + (p._repos === 1 ? "" : "s")));
+    else tdRepos.appendChild(el("span", "muted", "single"));
+    tr.appendChild(tdRepos);
+    const tdIso = el("td", "nowrap");
+    const iso = projectIsolation(p);
+    tdIso.appendChild(el("span", "isopill " + iso[0], iso[1]));
+    tr.appendChild(tdIso);
+    const tdSec = el("td", "nowrap");
+    const sec = projectSecurity(p);
+    const pill = el("span", "pill " + sec.cls, sec.label);
+    if (sec.state === "analysed") pill.title = "Last analysed " + fmtWhen(sec.lastAt);
+    tdSec.appendChild(pill);
+    tr.appendChild(tdSec);
+    const tdActs = el("td", "rowacts");
+    const editBtn = el("button", "iconbtn");
+    editBtn.dataset.editproj = p.name;
+    editBtn.title = "Edit project";
+    editBtn.appendChild(icon("pencil"));
+    tdActs.appendChild(editBtn);
+    const delBtn = el("button", "iconbtn danger");
+    delBtn.dataset.delproj = p.name;
+    delBtn.title = "Delete project";
+    delBtn.appendChild(icon("trash"));
+    tdActs.appendChild(delBtn);
+    tr.appendChild(tdActs);
+    return tr;
+  }
+  function renderProjectsTable(vis) {
+    const S = PRJ_SORTERS[sortKey2] || PRJ_SORTERS.name;
+    const sorted = [...vis].sort((a, b) => S.cmp(a, b) * sortDir2 || (S.tie ? S.tie(a, b) : 0));
+    const total = sorted.length;
+    const pages = Math.max(1, Math.ceil(total / PAGE_SIZE2));
+    if (page2 > pages) page2 = pages;
+    if (page2 < 1) page2 = 1;
+    const from = total ? (page2 - 1) * PAGE_SIZE2 + 1 : 0;
+    const to = Math.min(page2 * PAGE_SIZE2, total);
+    const slice = sorted.slice((page2 - 1) * PAGE_SIZE2, page2 * PAGE_SIZE2);
+    let rows;
+    if (!total) {
+      const filtering = !!projFilters.query.trim();
+      const tr = el("tr");
+      const td = el("td", "tblempty");
+      td.colSpan = PRJ_COLS.length;
+      td.appendChild(icon("inbox"));
+      td.appendChild(document.createTextNode(projectsEmptyNote(filtering)));
+      tr.appendChild(td);
+      rows = [tr];
+    } else {
+      rows = slice.map((p) => projectRow(p));
+    }
+    const footer = tableFooter({
+      shown: { from, to },
+      total,
+      noun: "project",
+      page: page2,
+      pages,
+      prevId: "prj-pg-prev",
+      nextId: "prj-pg-next",
+      infoId: "prj-pg-info"
+    });
+    const card = tableCard({
+      columns: PRJ_COLS,
+      sortKey: sortKey2,
+      sortDir: sortDir2,
+      sortAttr: "prjsort",
+      rows,
+      footer
+    });
+    const host = $("prj-table");
+    host.textContent = "";
+    host.appendChild(card);
+  }
+  function renderProjectsPage() {
+    mountProjectsToolbar();
+    const rows = visibleProjects();
+    const headHost = $("prj-head");
+    if (headHost) {
+      headHost.textContent = "";
+      headHost.appendChild(pageHeader({
+        icon: "folder",
+        title: "Projects",
+        subtitle: projectsHeaderSubtitle(rows),
+        actions: [{ id: "new-project", icon: "plus", label: "New project", primary: true }]
+      }));
+    }
+    const kpiHost = $("prj-kpis");
+    if (kpiHost) {
+      kpiHost.textContent = "";
+      projectsKpis(rows).forEach((c) => kpiHost.appendChild(kpiCard({
+        icon: KPI_ICONS2[c.label],
+        tone: c.tone,
+        value: c.value,
+        label: c.label,
+        sub: c.sub,
+        filter: c.filter,
+        door: c.door
+      })));
+    }
+    $("pq-clear").hidden = !projFilters.query;
+    renderProjectsTable(rows);
+  }
 
   // ui/app/index.js
   function init(cc) {
@@ -1423,18 +1671,27 @@
     jobsSetPage,
     initJobDrag,
     // visibleProjects, projFilters and projectIsolation are
-    // Phase 2 Task 4's: renderProjects() in bin/dashboard.html
-    // calls CCApp.visibleProjects() and CCApp.projectIsolation(p)
-    // instead of keeping its own copies, and the search box's
-    // input/clear handlers read and write CCApp.projFilters.query
-    // instead of a module-level prjQuery -- the same "table is
-    // the second consumer" reach sortJobs/JOB_COLS already have
-    // above. Task 5 builds the restyled table around the same
-    // three exports.
+    // Phase 2 Task 4's: the search box's input/clear handlers
+    // read and write CCApp.projFilters.query instead of a
+    // module-level prjQuery -- the same "table is the second
+    // consumer" reach sortJobs/JOB_COLS already have above.
     visibleProjects,
     projFilters,
-    projectIsolation
+    projectIsolation,
+    // renderProjectsPage, projectsSort and projectsSetPage are
+    // Phase 2 Task 5's: the Projects table itself, moved whole
+    // out of bin/dashboard.html's renderProjects() into
+    // ui/app/projects.js, the same move jobs-table.js already
+    // made for Jobs. render() (bin/dashboard.html) calls
+    // CCApp.renderProjectsPage() once per poll; the page's
+    // delegated click listener calls CCApp.projectsSort(key)
+    // for a sortable header and CCApp.projectsSetPage(delta)
+    // for the footer's pager, instead of keeping
+    // prjSortKey/prjSortDir/page as its own module state.
+    renderProjectsPage,
+    projectsSort,
+    projectsSetPage
   };
 })();
-/* ui-bundle: d9f1b3b041715b665c73bba6b4519d2744184e2aa4c031bdb7cd45bc9afbd4f1 */
-/* ui-sources: 0263f5cc1bcecf588c70508b10efc25c940dde7d8139eb99339f4bfd40b1f355 */
+/* ui-bundle: 8ab8a929e708038e1aeed3635237f98873afb0549953e0cac8289fcdb222214c */
+/* ui-sources: d2c641561b56a0a572960641f4891fa3176d42c323b4fc653603b742904e9ef8 */

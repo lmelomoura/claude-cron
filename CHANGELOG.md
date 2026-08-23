@@ -1187,6 +1187,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   object, mirroring `jobFilters` for the same reason: an ES module cannot
   let an importer reassign a plain binding, only read and write through one
   shared reference.
+- **Projects speaks the Overview's visual language, moves to
+  `ui/app/projects.js`, and gains a Security column — the only new
+  information this whole phase adds.** A page header written from the real
+  numbers, four KPI cards (projects, jobs organised, security enabled,
+  isolated), the existing search box repainted rather than rebuilt, the
+  same six data columns built with `el()` instead of an HTML string, plus a
+  seventh, and a footer with real pagination the table never had before
+  ("Showing X to Y of N"). `renderProjects()`'s inline row markup and its
+  `PRJ_COLS`/`PRJ_SORTERS`/sort state move whole into the new module, the
+  same move `jobs-table.js` already made for Jobs; "New project" moves into
+  the page header's own actions, the same move "New job" already made.
+
+  The Security column distinguishes three facts, not two: disabled
+  (`.pill.disabled`), enabled but never analysed (`.pill.idle`, "Never
+  analysed"), and enabled with at least one analysis on record (`.pill.on`,
+  "Analysed", with a "last analysed" timestamp). Reading `/api/config`'s own
+  `security` block (enabled or not, nothing about outcomes) plus `DATA.runs`
+  — already fetched every poll, and already correctly attributed to a
+  project by the derived job's own `project` field — is enough to tell
+  "never analysed" apart from "analysed" honestly, without a new fetch to
+  the ledger-backed `GET /api/security/index`, whose per-call subprocess
+  cost this page's 5-second poll has no business paying. What the column
+  deliberately does NOT show is a severity or a finding count: a real
+  project's most recent analysis run in this branch's own ledger said
+  "success" while it had recorded 6 high and 33 medium findings, so a
+  completed run's own status is not read as a stand-in for posture —
+  showing it that way would have been this page's own version of the error
+  the Security area already paid for once, absence read as proof. Seeing
+  the actual posture still means opening the Security area.
 
 ### Added
 

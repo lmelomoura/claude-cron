@@ -30,7 +30,8 @@ import { groupJobs, jobsEmptyNote, worktreesCard,
          renderPulse, renderOverviewHead, jobCard } from "./overview.js";
 import { pageHeader, kpiCard } from "./chrome.js";
 import { renderJobsPage, jobsSort, jobsSetPage, initJobDrag } from "./jobs-table.js";
-import { visibleProjects, projFilters, projectIsolation } from "./projects.js";
+import { visibleProjects, projFilters, projectIsolation,
+         renderProjectsPage, projectsSort, projectsSetPage } from "./projects.js";
 
 function init(cc){
   bindPage(cc);
@@ -93,12 +94,19 @@ window.CCApp = { init, jobFacts, visibleJobs, jobFilters, bulkOn,
                  // jobSortDir/page as its own module state.
                  renderJobsPage, jobsSort, jobsSetPage, initJobDrag,
                  // visibleProjects, projFilters and projectIsolation are
-                 // Phase 2 Task 4's: renderProjects() in bin/dashboard.html
-                 // calls CCApp.visibleProjects() and CCApp.projectIsolation(p)
-                 // instead of keeping its own copies, and the search box's
-                 // input/clear handlers read and write CCApp.projFilters.query
-                 // instead of a module-level prjQuery -- the same "table is
-                 // the second consumer" reach sortJobs/JOB_COLS already have
-                 // above. Task 5 builds the restyled table around the same
-                 // three exports.
-                 visibleProjects, projFilters, projectIsolation };
+                 // Phase 2 Task 4's: the search box's input/clear handlers
+                 // read and write CCApp.projFilters.query instead of a
+                 // module-level prjQuery -- the same "table is the second
+                 // consumer" reach sortJobs/JOB_COLS already have above.
+                 visibleProjects, projFilters, projectIsolation,
+                 // renderProjectsPage, projectsSort and projectsSetPage are
+                 // Phase 2 Task 5's: the Projects table itself, moved whole
+                 // out of bin/dashboard.html's renderProjects() into
+                 // ui/app/projects.js, the same move jobs-table.js already
+                 // made for Jobs. render() (bin/dashboard.html) calls
+                 // CCApp.renderProjectsPage() once per poll; the page's
+                 // delegated click listener calls CCApp.projectsSort(key)
+                 // for a sortable header and CCApp.projectsSetPage(delta)
+                 // for the footer's pager, instead of keeping
+                 // prjSortKey/prjSortDir/page as its own module state.
+                 renderProjectsPage, projectsSort, projectsSetPage };
