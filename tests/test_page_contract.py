@@ -1055,42 +1055,46 @@ def _jobs_table_deps(block):
     # extracted pageHeader this way, so nothing was pinned expecting it to
     # work; the test below stubs pageHeader instead of pulling in the real
     # one, since verifying the footer text does not need the real header to
-    # run, only to not throw.
+    # run, only to not throw. filterBar, tableCard and tableFooter all take
+    # the same `opts`-destructured-in-the-body shape as kpiCard specifically
+    # so this test (and its structural sibling below) CAN pull in the real
+    # ones instead of stubbing a second load-bearing piece.
     consts = (_const(block, "STATE_RANK") + _const(block, "JOB_SORTERS")
               + _const(block, "JOB_COLS") + _const(block, "KPI_ICONS"))
-    fns = ("el", "kpiCard",
+    fns = ("el", "kpiCard", "filterBar", "tableCard", "tableFooter",
            "inWindow", "nextCheckAt", "jobFacts", "visibleJobs", "sortJobs",
            "bulkOn", "bulkLabel", "jobsEmptyNote",
-           "jobsHeaderSubtitle", "jobsKpis", "paintJobFilterBar",
-           "renderJobsTableHead", "jobRow", "renderJobsTable", "renderJobsPage")
+           "jobsHeaderSubtitle", "jobsKpis", "mountJobsToolbar",
+           "paintJobFilterBar", "jobRow", "renderJobsTable", "renderJobsPage")
     return consts + "\n".join(_plainfn(block, n) for n in fns)
 
 
-@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
-def test_the_jobs_page_footer_says_how_many_it_is_showing(srv, tmp_path):
-    """Runs already had a pager; Jobs had none at all -- renderJobTable drew
-    every visible row with nothing below the table. CCApp.renderJobsPage()
-    (ui/app/jobs-table.js, Task 3's replacement) is driven whole here --
-    header, KPIs, filter bar and table -- against a small fixed set of jobs,
-    checking the one thing this task actually adds: a footer reading
-    "Showing X to Y of N", present even on a set that fits on one page.
+# The page's own static mounts -- renderJobsPage() only ever reaches for ids
+# bin/dashboard.html already defines, never builds them itself. Shared by
+# both tests below since both drive renderJobsPage() whole: "jobstoolbar" is
+# deliberately NOT among them (mountJobsToolbar()'s own `if(!host) ...`
+# guard is what a page with no toolbar mount falls through on, and neither
+# test is about the toolbar), which is also why neither ever needs to stub
+# filterBar's own three inputs ($("jobsearchbox") etc.) -- the guard returns
+# before filterBar is ever called.
+_JOBS_PAGE_STATIC_IDS = ("jobs-head", "jobs-kpis", "jactive", "jf-clear",
+                         "bulk-all", "jobs-table")
 
-    Written to fail before renderJobsPage existed (no such name to extract,
-    so _plainfn would raise) and to pass once it does."""
-    block = _app_js(srv)
-    deps = _jobs_table_deps(block)
-    script = tmp_path / "jobs-footer.js"
-    script.write_text(_INDEX_DOM_HARNESS + _JOBS_DOMAIN_HARNESS + """
+
+def _jobs_page_harness(deps):
+    """The page.js bindings and page-owned state renderJobsPage()'s own
+    extracted body reaches for by bare name -- the same stand-ins
+    test_the_jobs_page_footer_says_how_many_it_is_showing used before this
+    helper existed, pulled out so its structural sibling below does not
+    have to retype them."""
+    return _INDEX_DOM_HARNESS + _JOBS_DOMAIN_HARNESS + """
     CC.DATA.jobs = [
       {id: "a", project: "Alpha", enabled: true},
       {id: "b", project: "Alpha", enabled: false},
       {id: "c", project: "Beta",  enabled: true},
     ];
-    // The page's own static mounts -- renderJobsPage() only ever reaches
-    // for ids bin/dashboard.html already defines, never builds them itself.
     const ELS = {};
-    ["jobs-head", "jobs-kpis", "jactive", "jf-clear", "bulk-all",
-     "jobhead", "jobrows", "jobs-pg-info", "jobs-pg-prev", "jobs-pg-next"]
+    """ + json.dumps(list(_JOBS_PAGE_STATIC_IDS)) + """
       .forEach(id => { ELS[id] = document.createElement("div"); });
     const $ = (id) => ELS[id];
     // Small, honest stand-ins for the page.js bindings this module reads --
@@ -1107,12 +1111,56 @@ def test_the_jobs_page_footer_says_how_many_it_is_showing(srv, tmp_path):
     const jobFilters = {project: "", status: "", query: ""};
     let sortKey = "job", sortDir = 1, page = 1;
     const PAGE_SIZE = 20;
-    """ + deps + """
+    """ + deps
+
+
+# FakeElement (_INDEX_DOM_HARNESS) has no querySelector -- this is collectAll's
+# own recursion, aimed at an id instead of a class/title/text record, since
+# the structural test below needs to know WHERE in the tree a node sits, not
+# just that it exists somewhere in it.
+_FIND_BY_ID_JS = """
+function findById(n, id){
+  if(!n) return null;
+  if(n.id === id) return n;
+  for(const c of (n.childNodes || [])){
+    const found = findById(c, id);
+    if(found) return found;
+  }
+  return null;
+}
+"""
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_jobs_page_footer_says_how_many_it_is_showing(srv, tmp_path):
+    """Runs already had a pager; Jobs had none at all -- renderJobTable drew
+    every visible row with nothing below the table. CCApp.renderJobsPage()
+    (ui/app/jobs-table.js) is driven whole here -- header, KPIs, filter bar
+    and table -- against a small fixed set of jobs, checking the one thing
+    Task 3 actually added: a footer reading "Showing X to Y of N", present
+    even on a set that fits on one page.
+
+    Originally written to fail before renderJobsPage existed at all (no such
+    name to extract, so _plainfn would raise). The gap-closing task that
+    moved the footer into tableCard()/tableFooter() (chrome.js) changed
+    WHERE these three ids live -- inside the table card renderJobsTable()
+    now mounts under $("jobs-table"), not separate static elements of their
+    own -- so the harness looks them up by walking that mount instead of
+    reaching for them directly; the assertions themselves (the sentence, the
+    disabled state) are exactly what they were before."""
+    block = _app_js(srv)
+    deps = _jobs_table_deps(block)
+    script = tmp_path / "jobs-footer.js"
+    script.write_text(_jobs_page_harness(deps) + _FIND_BY_ID_JS + """
     renderJobsPage();
+    const table = $("jobs-table");
+    const info = findById(table, "jobs-pg-info");
+    const prev = findById(table, "jobs-pg-prev");
+    const next = findById(table, "jobs-pg-next");
     console.log(JSON.stringify({
-      info: $("jobs-pg-info").textContent,
-      prevDisabled: $("jobs-pg-prev").disabled,
-      nextDisabled: $("jobs-pg-next").disabled,
+      info: info && info.textContent,
+      prevDisabled: prev && prev.disabled,
+      nextDisabled: next && next.disabled,
     }));
     """)
     out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
@@ -1123,6 +1171,69 @@ def test_the_jobs_page_footer_says_how_many_it_is_showing(srv, tmp_path):
     # is one page".
     assert out["prevDisabled"] is True
     assert out["nextDisabled"] is True
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_jobs_table_footer_sits_inside_the_table_card(srv, tmp_path):
+    """The gap an inspection found after Task 3 landed: the rendered
+    structure was `jobs-head / kpi-grid / jobstoolbar / tablewrap / pager` --
+    the pager a loose sibling below `.tablewrap`, with no background and no
+    border-top, instead of living inside the card the rows are in. The
+    approved design puts the footer INSIDE the table card, separated from
+    the rows by a border-top (see components.css's own `.table-foot`).
+
+    Pinned structurally rather than visually: this walks the actual DOM
+    renderJobsPage() builds and asserts that the element carrying the
+    pager's own id (`jobs-pg-prev`, chosen arbitrarily among the footer's
+    three ids -- any would do) is a DESCENDANT of the element with class
+    `table-card`, not a sibling of it. A regression that put the footer back
+    outside the card -- appending it next to `tableCard(...)`'s return value
+    instead of handing it to `tableCard` as `footer` -- fails this without
+    touching the footer's own text or disabled state, which is exactly what
+    test_the_jobs_page_footer_says_how_many_it_is_showing above already
+    covers and this test deliberately does not repeat.
+
+    Recorded failing against the code this gap-closing task started from:
+    tableCard/tableFooter did not exist in chrome.js, renderJobsTable()
+    built `.tablewrap` and the pager as two separate pieces with nothing
+    wrapping them both, and `_plainfn(block, "tableCard")` raised
+    (`ValueError: no such function`) before a single assertion ran."""
+    block = _app_js(srv)
+    deps = _jobs_table_deps(block)
+    script = tmp_path / "jobs-footer-in-card.js"
+    script.write_text(_jobs_page_harness(deps) + _FIND_BY_ID_JS + """
+    // Walks UP from the footer's own element to see whether a table-card
+    // ancestor is on the way, rather than back down from the card -- no
+    // parentNode on FakeElement, so the tree is searched from the card's
+    // side and the footer's id is looked for underneath it.
+    function hasDescendantWithId(n, id){
+      return !!findById(n, id);
+    }
+    renderJobsPage();
+    const table = $("jobs-table");
+    function findByClass(n, cls){
+      if(!n) return null;
+      if((n.className || "").split(" ").includes(cls)) return n;
+      for(const c of (n.childNodes || [])){
+        const found = findByClass(c, cls);
+        if(found) return found;
+      }
+      return null;
+    }
+    const card = findByClass(table, "table-card");
+    console.log(JSON.stringify({
+      cardFound: !!card,
+      footerInsideCard: card ? hasDescendantWithId(card, "jobs-pg-prev") : false,
+      footerAtTopLevel: hasDescendantWithId(table, "jobs-pg-prev"),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["cardFound"], "no element with class \"table-card\" was rendered at all"
+    assert out["footerAtTopLevel"], "the footer's own pager button never rendered anywhere"
+    assert out["footerInsideCard"], (
+        "the footer rendered, but not inside the table-card element -- it is a "
+        "loose sibling again, the exact regression this test exists to catch")
 
 
 # ---- the Overview's own arithmetic, pinned ahead of the redesign that turns

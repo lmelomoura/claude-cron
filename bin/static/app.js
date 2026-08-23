@@ -235,6 +235,76 @@
     }
     return card;
   }
+  function filterBar(opts) {
+    const { search, selects, actions } = opts;
+    const bar = el("div", "toolbar");
+    if (search) bar.appendChild(search);
+    (selects || []).forEach((s) => {
+      if (s) bar.appendChild(s);
+    });
+    bar.appendChild(el("div", "spacer"));
+    (actions || []).forEach((a) => {
+      if (a) bar.appendChild(a);
+    });
+    return bar;
+  }
+  function tableCard(opts) {
+    const { columns, sortKey: sortKey2, sortDir: sortDir2, sortAttr, rows, footer } = opts;
+    const headRow = el("tr");
+    columns.forEach(([key, label]) => {
+      if (!key) {
+        headRow.appendChild(el("th", null, label));
+        return;
+      }
+      const on = sortKey2 === key;
+      const th = el("th", "sortable" + (on ? " sorted" : ""));
+      th.dataset[sortAttr] = key;
+      th.setAttribute("aria-sort", on ? sortDir2 < 0 ? "descending" : "ascending" : "none");
+      th.title = "Sort by " + label.toLowerCase();
+      th.appendChild(document.createTextNode(label));
+      th.appendChild(icon(on && sortDir2 > 0 ? "sortasc" : "sortdesc"));
+      headRow.appendChild(th);
+    });
+    const thead = el("thead");
+    thead.appendChild(headRow);
+    const tbody = el("tbody");
+    rows.forEach((tr) => tbody.appendChild(tr));
+    const table = el("table");
+    table.appendChild(thead);
+    table.appendChild(tbody);
+    const scroll = el("div", "table-scroll");
+    scroll.appendChild(table);
+    const card = el("div", "table-card");
+    card.appendChild(scroll);
+    if (footer) card.appendChild(footer);
+    return card;
+  }
+  function tableFooter(opts) {
+    const { shown, total, noun, page: page2, pages, prevId, nextId, infoId } = opts;
+    const foot = el("div", "table-foot");
+    const info = el(
+      "span",
+      "table-foot-info",
+      "Showing " + shown.from + " to " + shown.to + " of " + total + " " + noun + (total === 1 ? "" : "s")
+    );
+    if (infoId) info.id = infoId;
+    foot.appendChild(info);
+    const nav = el("div", "table-foot-pager");
+    const prev = el("button", "btn ghost");
+    if (prevId) prev.id = prevId;
+    prev.appendChild(icon("cleft"));
+    prev.appendChild(document.createTextNode("Prev"));
+    prev.disabled = page2 <= 1;
+    nav.appendChild(prev);
+    const next = el("button", "btn ghost");
+    if (nextId) next.id = nextId;
+    next.appendChild(document.createTextNode("Next"));
+    next.appendChild(icon("cright"));
+    next.disabled = page2 >= pages;
+    nav.appendChild(next);
+    foot.appendChild(nav);
+    return foot;
+  }
 
   // ui/app/overview.js
   function pulseKpis(k) {
@@ -968,6 +1038,17 @@
     "Running now": "play",
     "Spent today": "dollar"
   };
+  function mountJobsToolbar() {
+    const host = $("jobstoolbar");
+    if (!host || host.dataset.mounted) return;
+    const bar = filterBar({
+      search: $("jobsearchbox"),
+      selects: [$("projpick"), $("statpick")],
+      actions: [$("jf-clear"), $("bulk-all")]
+    });
+    host.insertBefore(bar, $("jactive"));
+    host.dataset.mounted = "1";
+  }
   function paintJobFilterBar(vis, allJobs) {
     paintJobPickers();
     const box = $("jactive");
@@ -1020,24 +1101,6 @@
   function jobsSetPage(delta) {
     page += delta;
     renderJobsPage();
-  }
-  function renderJobsTableHead() {
-    const tr = $("jobhead");
-    tr.textContent = "";
-    JOB_COLS.forEach(([key, label]) => {
-      if (!key) {
-        tr.appendChild(el("th", null, label));
-        return;
-      }
-      const on = sortKey === key;
-      const th = el("th", "sortable" + (on ? " sorted" : ""));
-      th.dataset.jobsort = key;
-      th.setAttribute("aria-sort", on ? sortDir < 0 ? "descending" : "ascending" : "none");
-      th.title = "Sort by " + label.toLowerCase();
-      th.appendChild(document.createTextNode(label));
-      th.appendChild(icon(on && sortDir > 0 ? "sortasc" : "sortdesc"));
-      tr.appendChild(th);
-    });
   }
   function jobRow(j, F) {
     const tr = el("tr", F.disabled ? "rowoff" : null);
@@ -1150,17 +1213,15 @@
     return tr;
   }
   function renderJobsTable(vis) {
-    renderJobsTableHead();
-    const rows = sortJobs(vis.map((j) => ({ j, F: jobFacts(j) })), sortKey, sortDir);
-    const total = rows.length;
+    const sorted = sortJobs(vis.map((j) => ({ j, F: jobFacts(j) })), sortKey, sortDir);
+    const total = sorted.length;
     const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
     if (page > pages) page = pages;
     if (page < 1) page = 1;
     const from = total ? (page - 1) * PAGE_SIZE + 1 : 0;
     const to = Math.min(page * PAGE_SIZE, total);
-    const slice = rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-    const tbody = $("jobrows");
-    tbody.textContent = "";
+    const slice = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+    let rows;
     if (!total) {
       const filtering = !!(jobFilters.project || jobFilters.status || jobFilters.query.trim());
       const tr = el("tr");
@@ -1169,15 +1230,34 @@
       td.appendChild(icon("inbox"));
       td.appendChild(document.createTextNode(jobsEmptyNote(filtering)));
       tr.appendChild(td);
-      tbody.appendChild(tr);
+      rows = [tr];
     } else {
-      slice.forEach(({ j, F }) => tbody.appendChild(jobRow(j, F)));
+      rows = slice.map(({ j, F }) => jobRow(j, F));
     }
-    $("jobs-pg-info").textContent = "Showing " + from + " to " + to + " of " + total + " job" + (total === 1 ? "" : "s");
-    $("jobs-pg-prev").disabled = page <= 1;
-    $("jobs-pg-next").disabled = page >= pages;
+    const footer = tableFooter({
+      shown: { from, to },
+      total,
+      noun: "job",
+      page,
+      pages,
+      prevId: "jobs-pg-prev",
+      nextId: "jobs-pg-next",
+      infoId: "jobs-pg-info"
+    });
+    const card = tableCard({
+      columns: JOB_COLS,
+      sortKey,
+      sortDir,
+      sortAttr: "jobsort",
+      rows,
+      footer
+    });
+    const host = $("jobs-table");
+    host.textContent = "";
+    host.appendChild(card);
   }
   function renderJobsPage() {
+    mountJobsToolbar();
     const jobs = CC.DATA.jobs || [];
     const allProjects = [...new Set(jobs.map((j) => j.project || "").filter(Boolean))].sort();
     if (jobFilters.project && jobFilters.project !== "__none__" && !allProjects.includes(jobFilters.project)) jobFilters.project = "";
@@ -1329,5 +1409,5 @@
     initJobDrag
   };
 })();
-/* ui-bundle: 06171bf0edd0bf7b3567c4f97e6e62a857304cb25120a0483264211ed659473e */
-/* ui-sources: 0c17191baf002a67e0300a65f96999eab5eae350f744b2f4ffb902153f2b7685 */
+/* ui-bundle: 3d5a139180e9b2dbe60bc4a57eda65f18dc56d1525b48a41e5d873606771e53d */
+/* ui-sources: 81f68907575e73d47027414c5587c3d34f4f410becd2573aac2b55c18c00d110 */

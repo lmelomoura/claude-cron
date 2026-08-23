@@ -270,8 +270,29 @@ button.kpi-card.err:not(:disabled):hover{border-color:color-mix(in srgb,var(--er
 .perpage{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}
 .perpage select{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);
   border-radius:7px;padding:5px 8px}
-.tablewrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;
+.tablewrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:13px;
   box-shadow:var(--shadow)}
+/* ------------------------------------------------------------- the table card
+   tableCard()/tableFooter() (ui/app/chrome.js): the same border/background/
+   13px-radius/shadow `.tablewrap` already gives a bare table, but with a
+   footer glued to the bottom of the SAME box instead of `.tablewrap`'s job
+   of being just a scroller. `.table-card` owns the chrome and clips to its
+   own rounded corners (`overflow:hidden`); `.table-scroll` inside it is
+   `.tablewrap` stripped down to only the one property that has to sit on
+   the part that actually scrolls, so a wide table drags itself sideways
+   without dragging the footer under it along too. Deliberately a NEW pair
+   of classes rather than a new trick for `.tablewrap` itself: that class is
+   used bare -- no footer, no wrapper -- by Runs, Projects, the Sessions
+   dialog and six ui/security/*.js screens, and changing what it means would
+   restyle all of them at once. */
+.table-card{background:var(--panel);border:1px solid var(--line);border-radius:13px;
+  box-shadow:var(--shadow);overflow:hidden}
+.table-scroll{overflow-x:auto}
+.table-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:11px 14px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);
+  font-variant-numeric:tabular-nums}
+.table-foot-info{white-space:nowrap}
+.table-foot-pager{display:flex;gap:8px;align-items:center}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
 th{text-align:left;font-weight:600;color:var(--muted);font-size:10.5px;text-transform:uppercase;
   letter-spacing:.05em;padding:11px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
@@ -1477,5 +1498,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: 44860d619dfbfc4e560e11b3bf39a1432bc884a96a164c0269e8c2573ece75be */
-/* ui-sources: 0c17191baf002a67e0300a65f96999eab5eae350f744b2f4ffb902153f2b7685 */
+/* ui-bundle: b7821816cf9efd93cebf7e0f81ee9a557d9655642bb32786b5f4ee8d0bc3668c */
+/* ui-sources: 81f68907575e73d47027414c5587c3d34f4f410becd2573aac2b55c18c00d110 */

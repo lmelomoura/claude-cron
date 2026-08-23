@@ -30,11 +30,26 @@
       that matches its own stated intent ("stay A→Z whichever way the arrow
       points") -- `state` should eventually match it, by moving its id
       fallback out of `cmp` and into its own `tie`, but that is a
-      deliberate follow-up, not this task. */
+      deliberate follow-up, not this task.
+
+   Two more findings, from inspection of what THIS task's own first pass
+   landed, are closed here instead of being left for Projects and Runs to
+   repeat: the footer used to be a loose `<div class="pager">` sibling below
+   `.tablewrap` -- no border, no background, floating under the card rather
+   than belonging to it -- and the card's own radius was 12px where every
+   other card in this language is 13px. `renderJobsTableHead` and the
+   `<table>`/footer markup it and `renderJobsTable` used to build directly
+   are gone; both now come from chrome.js's `tableCard`/`tableFooter`, the
+   second consumer promised when those two (and `filterBar`, for the
+   toolbar below) were added there alongside `pageHeader`/`kpiCard`. See
+   chrome.js's own comments on `tableCard` and `tableFooter` for why the
+   sort click and the pager click are still answered by
+   bin/dashboard.html's one delegated listener rather than a listener built
+   here. */
 import { jobFacts, visibleJobs, jobFilters, sortJobs, JOB_COLS,
          bulkOn, bulkLabel } from "./jobs-domain.js";
 import { jobsEmptyNote } from "./overview.js";
-import { el, pageHeader, kpiCard } from "./chrome.js";
+import { el, pageHeader, kpiCard, filterBar, tableCard, tableFooter } from "./chrome.js";
 import { $, CC, icon, money, fmtAgo, fmtDur, fmtWhen, fmtIn, isFav,
          TOKEN, toast, refresh, paintJobPickers } from "./page.js";
 
@@ -97,12 +112,38 @@ export function jobsKpis(jobs){
 const KPI_ICONS = {"Total jobs": "layers", "Enabled": "power",
                    "Running now": "play", "Spent today": "dollar"};
 
+/* ------------------------------------------------------------- the toolbar
+   Assembled ONCE, not on every poll: `#jobstoolbar`'s static markup used to
+   hand-lay-out the search box, the two pickers and the two trailing buttons
+   itself (a `.toolbar` div with a `.spacer` in it, hand-copied into Runs'
+   own markup as well); chrome.js's `filterBar` is now that layout,
+   reachable by every page rather than re-typed by each. Guarded by
+   `#jobstoolbar`'s own `data-mounted` rather than rebuilt every
+   renderJobsPage() call the way the header and KPI row are: the search box
+   filterBar re-parents is a LIVE `<input>` an operator may be mid-typing
+   into, and rebuilding it from scratch every five seconds would drop
+   whatever they had just typed. The pickers and buttons filterBar also
+   re-parents are moved, not rebuilt -- see filterBar's own comment
+   (chrome.js) on why moving an already-wired element costs it nothing. */
+function mountJobsToolbar(){
+  const host = $("jobstoolbar");
+  if(!host || host.dataset.mounted) return;
+  const bar = filterBar({
+    search: $("jobsearchbox"),
+    selects: [$("projpick"), $("statpick")],
+    actions: [$("jf-clear"), $("bulk-all")],
+  });
+  host.insertBefore(bar, $("jactive"));
+  host.dataset.mounted = "1";
+}
+
 /* ------------------------------------------------------------ the filters
    Repaints the pickers, the active-filter chip row and the top bulk button
    -- the same three things `paintJobFilters` (bin/dashboard.html) used to,
    against the SAME elements: `#jactive`, `#jf-clear` and `#bulk-all` are
-   static markup that already exists in the page (the toolbar and the two
-   pickers are not rebuilt here, only their state). */
+   static markup that already exists in the page (the pickers are not
+   rebuilt here, only their state; the toolbar that lays them out is built
+   once by mountJobsToolbar() above, not repainted here). */
 function paintJobFilterBar(vis, allJobs){
   paintJobPickers();
 
@@ -169,22 +210,6 @@ export function jobsSort(key){
 export function jobsSetPage(delta){
   page += delta;
   renderJobsPage();
-}
-
-function renderJobsTableHead(){
-  const tr = $("jobhead");
-  tr.textContent = "";
-  JOB_COLS.forEach(([key, label]) => {
-    if(!key){ tr.appendChild(el("th", null, label)); return; }
-    const on = sortKey === key;
-    const th = el("th", "sortable" + (on ? " sorted" : ""));
-    th.dataset.jobsort = key;
-    th.setAttribute("aria-sort", on ? (sortDir < 0 ? "descending" : "ascending") : "none");
-    th.title = "Sort by " + label.toLowerCase();
-    th.appendChild(document.createTextNode(label));
-    th.appendChild(icon(on && sortDir > 0 ? "sortasc" : "sortdesc"));
-    tr.appendChild(th);
-  });
 }
 
 // One row, four flat action icons and no overflow menu -- in a table the
@@ -311,9 +336,8 @@ function jobRow(j, F){
 }
 
 function renderJobsTable(vis){
-  renderJobsTableHead();
-  const rows = sortJobs(vis.map(j => ({j, F: jobFacts(j)})), sortKey, sortDir);
-  const total = rows.length;
+  const sorted = sortJobs(vis.map(j => ({j, F: jobFacts(j)})), sortKey, sortDir);
+  const total = sorted.length;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   // Both ends: `.disabled` on the pager buttons is what stops an ordinary
   // click from ever pushing `page` out of range, but that is a UI gate, not
@@ -325,10 +349,9 @@ function renderJobsTable(vis){
   if(page < 1) page = 1;
   const from = total ? (page - 1) * PAGE_SIZE + 1 : 0;
   const to = Math.min(page * PAGE_SIZE, total);
-  const slice = rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const slice = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
-  const tbody = $("jobrows");
-  tbody.textContent = "";
+  let rows;
   if(!total){
     // Calls jobsEmptyNote rather than restating its two sentences -- see this
     // module's own banner comment, finding 1.
@@ -339,23 +362,34 @@ function renderJobsTable(vis){
     td.appendChild(icon("inbox"));
     td.appendChild(document.createTextNode(jobsEmptyNote(filtering)));
     tr.appendChild(td);
-    tbody.appendChild(tr);
+    rows = [tr];
   }else{
-    slice.forEach(({j, F}) => tbody.appendChild(jobRow(j, F)));
+    rows = slice.map(({j, F}) => jobRow(j, F));
   }
 
-  $("jobs-pg-info").textContent = "Showing " + from + " to " + to + " of " + total
-    + " job" + (total === 1 ? "" : "s");
-  $("jobs-pg-prev").disabled = page <= 1;
-  $("jobs-pg-next").disabled = page >= pages;
+  const footer = tableFooter({
+    shown: {from, to}, total, noun: "job", page, pages,
+    prevId: "jobs-pg-prev", nextId: "jobs-pg-next", infoId: "jobs-pg-info",
+  });
+  const card = tableCard({
+    columns: JOB_COLS, sortKey, sortDir, sortAttr: "jobsort", rows, footer,
+  });
+
+  const host = $("jobs-table");
+  host.textContent = "";
+  host.appendChild(card);
 }
 
 /* -------------------------------------------------------------- the mount
    bin/dashboard.html's own renderJobsArea() calls this once per poll, the
    same way render() already calls CCApp.renderOverviewHead() -- rebuilding
-   the header and the KPI row whole rather than patching them, since neither
-   is more than a handful of elements. */
+   the header, the KPI row and the table card whole rather than patching
+   them, since none of the three is more than a handful of elements and
+   none holds anything an operator could be mid-typing into. The toolbar is
+   the one exception -- mountJobsToolbar() above is guarded to run once,
+   not every poll, for exactly that reason. */
 export function renderJobsPage(){
+  mountJobsToolbar();
   const jobs = (CC.DATA.jobs || []);
   // A stale project filter (the project was renamed or deleted out from
   // under it) must not silently hide every job -- mirrors the same guard

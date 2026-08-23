@@ -210,55 +210,50 @@ document.documentElement.dataset.theme =
        dashboard, where you are scanning a handful at a glance; a table is for
        when jobs are the thing you came for and you want to sort them.
 
-       jobs-head/jobs-kpis are built whole by CCApp.renderJobsPage() every
-       poll, the same way ov-head/ov-kpis above are built by
+       jobs-head/jobs-kpis/jobs-table are built whole by CCApp.renderJobsPage()
+       every poll, the same way ov-head/ov-kpis above are built by
        CCApp.renderOverviewHead() -- icon, title, one sentence from the real
-       numbers, Refresh and New job trailing right, then four KPI cards. The
-       toolbar below is NOT rebuilt the same way: the search box and the two
-       pickers are static markup that already existed before this page had a
-       header of its own, and CCApp.renderJobsPage() only repaints their
-       state (labels, chips, the top bulk button) -- see jobs-table.js's own
-       paintJobFilterBar(). -->
+       numbers, Refresh and New job trailing right, then four KPI cards, then
+       the table card itself (CCApp.tableCard()/tableFooter(), ui/app/chrome.js).
+       #jobstoolbar's own children are NOT rebuilt the same way: the search
+       box and the two pickers are static markup and stateful widgets that
+       already existed before this page had a header of its own, and
+       CCApp.renderJobsPage() only lays them out once, into a `.toolbar` it
+       builds a single time (CCApp.filterBar(), moving these elements rather
+       than rebuilding them -- a rebuilt search box would drop whatever an
+       operator was mid-typing), then repaints their STATE every poll
+       (labels, chips, the top bulk button) -- see jobs-table.js's own
+       mountJobsToolbar() and paintJobFilterBar(). -->
   <div class="view" id="view-jobs" hidden>
     <div id="jobs-head"></div>
     <div class="kpi-grid" id="jobs-kpis"></div>
     <div id="jobstoolbar">
-      <div class="toolbar">
-        <div class="searchbox" id="jobsearchbox">
-          <input id="jq" placeholder="Search jobs…" autocomplete="off">
-          <button class="clear" id="jq-clear" hidden></button>
-        </div>
-        <div class="picker" id="projpick">
-          <button class="picker-trigger" id="projpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
-          <div class="picker-pop" id="projpick-pop" hidden>
-            <div class="picker-search"><input id="projpick-q" placeholder="Search projects…" autocomplete="off"></div>
-            <div class="picker-list" id="projpick-list" role="listbox"></div>
-            <div class="picker-foot" id="projpick-foot"></div>
-          </div>
-        </div>
-        <div class="picker" id="statpick">
-          <button class="picker-trigger" id="statpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
-          <div class="picker-pop" id="statpick-pop" hidden>
-            <div class="picker-list" id="statpick-list" role="listbox"></div>
-          </div>
-        </div>
-        <button class="btn ghost" id="jf-clear"></button>
-        <div class="spacer"></div>
-        <button class="btn ghost" id="bulk-all" hidden></button>
+      <div class="searchbox" id="jobsearchbox">
+        <input id="jq" placeholder="Search jobs…" autocomplete="off">
+        <button class="clear" id="jq-clear" hidden></button>
       </div>
+      <div class="picker" id="projpick">
+        <button class="picker-trigger" id="projpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
+        <div class="picker-pop" id="projpick-pop" hidden>
+          <div class="picker-search"><input id="projpick-q" placeholder="Search projects…" autocomplete="off"></div>
+          <div class="picker-list" id="projpick-list" role="listbox"></div>
+          <div class="picker-foot" id="projpick-foot"></div>
+        </div>
+      </div>
+      <div class="picker" id="statpick">
+        <button class="picker-trigger" id="statpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
+        <div class="picker-pop" id="statpick-pop" hidden>
+          <div class="picker-list" id="statpick-list" role="listbox"></div>
+        </div>
+      </div>
+      <button class="btn ghost" id="jf-clear"></button>
+      <button class="btn ghost" id="bulk-all" hidden></button>
       <div class="activefilters" id="jactive" hidden></div>
     </div>
-    <div class="tablewrap"><table>
-      <thead><tr id="jobhead"></tr></thead>
-      <tbody id="jobrows"></tbody></table></div>
-    <!-- "Showing X to Y of N" and a pager, even on an install with one page
-         of jobs -- Jobs had no pagination at all before this; see
-         jobs-table.js's own renderJobsTable(). -->
-    <div class="pager" id="jobs-pager">
-      <button class="btn ghost" id="jobs-pg-prev"></button>
-      <span id="jobs-pg-info"></span>
-      <button class="btn ghost" id="jobs-pg-next"></button>
-    </div>
+    <!-- The table card itself, footer included -- see CCApp.tableCard()'s own
+         comment (ui/app/chrome.js) on why the footer lives INSIDE the card
+         this builds rather than as a separate element below it. -->
+    <div id="jobs-table"></div>
   </div><!-- /view-jobs -->
 
   <!-- Runs as its own page. Same story as the Jobs toolbar above: this used
@@ -4816,11 +4811,10 @@ $("jf-clear").innerHTML=I.x+"Clear filters";
 $("f-clear").hidden=$("jf-clear").hidden=true;
 $("pg-prev").innerHTML=I.cleft+"Prev";
 $("pg-next").innerHTML="Next"+I.cright;
-// The Jobs table's own pager, same one-time labelling as Runs' above --
-// CCApp.renderJobsPage() only ever toggles .disabled and sets #jobs-pg-info's
-// text, never rebuilds these two buttons' icon+label content.
-$("jobs-pg-prev").innerHTML=I.cleft+"Prev";
-$("jobs-pg-next").innerHTML="Next"+I.cright;
+// The Jobs table's own pager is NOT labelled here the way Runs' is above --
+// #jobs-pg-prev/#jobs-pg-next no longer exist as static markup at boot.
+// CCApp.tableFooter() (ui/app/chrome.js) builds them fresh, icon and label
+// included, every time CCApp.renderJobsPage() redraws the table card.
 $("q-clear").innerHTML=I.x;
 $("jq-clear").innerHTML=I.x;
 $("searchbox").insertAdjacentHTML("afterbegin", I.search);

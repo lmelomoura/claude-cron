@@ -1136,6 +1136,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ("stay A→Z whichever way the arrow points"), so `state` should eventually
   move its id fallback out of `cmp` and into its own `tie` to match it, but
   that is a deliberate follow-up, not a change smuggled into a restyle.
+- **`ui/app/chrome.js` gains the three builders Projects and Runs will need
+  too — `filterBar`, `tableCard`, `tableFooter` — and the Jobs table adopts
+  all three, closing two divergences an inspection found in the previous
+  task's own first pass.** The table's footer used to be a loose
+  `<div class="pager">` sibling below `.tablewrap` — no border, no
+  background, floating under the card instead of belonging to it — and the
+  card's own corner radius was 12px where every other card in this
+  language (`.card`, `.kpi-card`) is 13px. `tableCard()` now builds
+  `.table-card > .table-scroll > table`, with the footer `tableFooter()`
+  returns as a second child of the card rather than a sibling of it,
+  separated from the rows by its own `border-top`; `.tablewrap` itself
+  moves to 13px too, for free, for every one of its other users (Runs,
+  Projects, the Sessions dialog, six `ui/security/*.js` screens). The
+  toolbar's own search box and two pickers are no longer static markup the
+  table's module reaches into by id and repaints in place — `filterBar()`
+  lays them out into one `.toolbar` it builds, called once rather than
+  every poll (`mountJobsToolbar()`, guarded), so the live search input is
+  moved rather than rebuilt and never drops a keystroke an operator was
+  mid-typing. The sort click and the pager click are still answered by
+  `bin/dashboard.html`'s one existing delegated listener, unchanged — these
+  three builders place the same ids and `data-` attributes it already
+  reads, never a listener of their own, the same "markup carries the hook"
+  split `pageHeader`/`kpiCard` already use. See
+  `.superpowers/sdd/chrome-tablecard-report.md` for the three signatures
+  and what was checked in Projects' and Runs' own still-unconverted markup
+  before settling them.
 
 ### Added
 
