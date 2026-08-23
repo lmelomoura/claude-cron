@@ -30,6 +30,7 @@ import { groupJobs, jobsEmptyNote, worktreesCard,
          renderPulse, renderOverviewHead, jobCard } from "./overview.js";
 import { pageHeader, kpiCard } from "./chrome.js";
 import { renderJobsPage, jobsSort, jobsSetPage, initJobDrag } from "./jobs-table.js";
+import { visibleProjects, projFilters, projectIsolation } from "./projects.js";
 
 function init(cc){
   bindPage(cc);
@@ -90,4 +91,14 @@ window.CCApp = { init, jobFacts, visibleJobs, jobFilters, bulkOn,
                  // for a sortable header and CCApp.jobsSetPage(delta) for
                  // the footer's pager instead of keeping jobSortKey/
                  // jobSortDir/page as its own module state.
-                 renderJobsPage, jobsSort, jobsSetPage, initJobDrag };
+                 renderJobsPage, jobsSort, jobsSetPage, initJobDrag,
+                 // visibleProjects, projFilters and projectIsolation are
+                 // Phase 2 Task 4's: renderProjects() in bin/dashboard.html
+                 // calls CCApp.visibleProjects() and CCApp.projectIsolation(p)
+                 // instead of keeping its own copies, and the search box's
+                 // input/clear handlers read and write CCApp.projFilters.query
+                 // instead of a module-level prjQuery -- the same "table is
+                 // the second consumer" reach sortJobs/JOB_COLS already have
+                 // above. Task 5 builds the restyled table around the same
+                 // three exports.
+                 visibleProjects, projFilters, projectIsolation };

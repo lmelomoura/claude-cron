@@ -1236,6 +1236,145 @@ def test_the_jobs_table_footer_sits_inside_the_table_card(srv, tmp_path):
         "loose sibling again, the exact regression this test exists to catch")
 
 
+# ---- Projects, pinned ahead of phase 2's redesign (Task 4). Same deal as the
+# Jobs table above: characterisation tests, so they pass on their first run --
+# the falsifiability of each one (break, red, revert) is recorded by hand in
+# .superpowers/sdd/task-4-5-report.md rather than by a red-then-green cycle
+# here. visibleProjects already existed (bin/dashboard.html's module-level
+# function, reading a module-level prjQuery); it and the isolation ternary
+# renderProjects() used to build inline both moved to ui/app/projects.js,
+# unchanged in substance -- see that file's own banner comment. groupJobs is
+# not new: it already exists in ui/app/overview.js (moved there in Phase 1)
+# and is pinned again here for what the favourite star specifically does with
+# it, not duplicating the Overview's own grouping tests.
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_a_projects_job_count_is_the_jobs_that_actually_name_it(srv, tmp_path):
+    """visibleProjects()'s own `_jobs` field is what the Projects table shows
+    in its Jobs column -- the count of jobs whose `project` names THIS
+    project, not the size of the whole fleet. A project with none of its own
+    must read 0, even on an install where every other project has jobs."""
+    block = _app_js(srv)
+    fn = _plainfn(block, "visibleProjects")
+    script = tmp_path / "proj-count.js"
+    script.write_text("""
+    const CC = { DATA: { projects: [
+      {name: "Alpha"}, {name: "Beta"}, {name: "Empty"},
+    ], jobs: [
+      {id: "a1", project: "Alpha"}, {id: "a2", project: "Alpha"},
+      {id: "b1", project: "Beta"},
+    ] } };
+    const projFilters = { query: "" };
+    """ + fn + """
+    console.log(JSON.stringify(Object.fromEntries(
+      visibleProjects().map(p => [p.name, p._jobs]))));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out == {"Alpha": 2, "Beta": 1, "Empty": 0}, out
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_a_favourited_project_sorts_first_and_only_the_starred_one_does(srv, tmp_path):
+    """groupJobs (ui/app/overview.js) is what actually gives the favourite
+    star its effect -- a favourited project's jobs float to the top of the
+    Overview's own grouping, and by the same mechanism, of the Jobs page.
+    Pinned here for what the STAR specifically drives: which of two projects
+    comes first flips with which one the caller says is favourited, not a
+    fixed position in the list that would pass even with the favourite term
+    deleted from the comparator entirely."""
+    block = _app_js(srv)
+    fn = _plainfn(block, "groupJobs")
+    script = tmp_path / "group-fav.js"
+    script.write_text(fn + """
+    const jobs = [
+      {id: "a", project: "Alpha"}, {id: "b", project: "Bravo"},
+      {id: "c", project: "Charlie"},
+    ];
+    // Neither favourited name is "Alpha" -- the alphabetically-first one --
+    // on purpose: a comparator with the favourite term deleted would fall
+    // back to plain A-Z and still open on "Alpha" by coincidence, passing a
+    // test that favourited it either way.
+    const favBravo = {has: (n) => n === "Bravo"};
+    const favCharlie = {has: (n) => n === "Charlie"};
+    console.log(JSON.stringify({
+      bravoFirst: groupJobs(jobs, favBravo).map(g => g.name),
+      charlieFirst: groupJobs(jobs, favCharlie).map(g => g.name),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["bravoFirst"][0] == "Bravo", out["bravoFirst"]
+    assert out["charlieFirst"][0] == "Charlie", out["charlieFirst"]
+    # Whichever one is favourited changes the order -- proving the sort reads
+    # the star's own state rather than always opening on the same name.
+    assert out["bravoFirst"] != out["charlieFirst"]
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_isolation_reads_three_states_not_two(srv, tmp_path):
+    """A project can run every job in its own worktree (`true`), never
+    (`false`), or leave it to the engine to decide per job -- "automatic",
+    which is also what a project with no `worktree` block at all gets, and
+    what a hand-edited config's literal string "auto" gets too (see
+    config/projects.json). Collapsing "automatic" into either of the other
+    two is a real misdescription: an "auto" project is not permanently
+    isolated OR permanently not, and painting it as either would tell an
+    operator something the engine does not actually do with it."""
+    block = _app_js(srv)
+    fn = _plainfn(block, "projectIsolation")
+    script = tmp_path / "isolation.js"
+    script.write_text(fn + """
+    console.log(JSON.stringify({
+      always: projectIsolation({worktree: {enabled: true}}),
+      never:  projectIsolation({worktree: {enabled: false}}),
+      auto:   projectIsolation({worktree: {enabled: "auto"}}),
+      none:   projectIsolation({}),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["always"] == ["on", "always"], out["always"]
+    assert out["never"] == ["off", "never"], out["never"]
+    assert out["auto"] == ["auto", "auto"], out["auto"]
+    assert out["none"] == ["auto", "auto"], out["none"]
+    assert len({tuple(out["always"]), tuple(out["never"]), tuple(out["auto"])}) == 3, (
+        "fewer than three distinct isolation states came back")
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_project_search_reaches_the_directory_too(srv, tmp_path):
+    """The search box narrows Projects by more than the name typed at setup
+    time -- a project remembered by its folder, or by a phrase in its own
+    description, has to surface just as reliably as one matched by name."""
+    block = _app_js(srv)
+    fn = _plainfn(block, "visibleProjects")
+    script = tmp_path / "proj-search.js"
+    script.write_text("""
+    const CC = { DATA: { jobs: [], projects: [
+      {name: "Quality Gate", description: "the QG Jira board", cwd: "/repos/qg"},
+      {name: "Minerva", description: "Revenue Platform", cwd: "/repos/rp-dev-knowledge"},
+      {name: "Scratch", description: "throwaway", cwd: "/tmp/scratch"},
+    ] } };
+    const projFilters = { query: "" };
+    """ + fn + """
+    function names(q){
+      projFilters.query = q;
+      return visibleProjects().map(p => p.name);
+    }
+    console.log(JSON.stringify({
+      byName: names("minerva"),
+      byDescription: names("jira board"),
+      byDirectory: names("rp-dev-knowledge"),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["byName"] == ["Minerva"], out["byName"]
+    assert out["byDescription"] == ["Quality Gate"], out["byDescription"]
+    assert out["byDirectory"] == ["Minerva"], out["byDirectory"]
+
+
 # ---- the Overview's own arithmetic, pinned ahead of the redesign that turns
 # three loose tiles and a footer strip into five KPI cards and rebuilds the
 # job card from HTML strings into DOM nodes. Characterisation tests: they

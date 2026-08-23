@@ -1162,6 +1162,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `.superpowers/sdd/chrome-tablecard-report.md` for the three signatures
   and what was checked in Projects' and Runs' own still-unconverted markup
   before settling them.
+- **Projects' own arithmetic — the per-project job count, and the
+  three-state isolation read (always / never / automatic) — moves out of
+  `bin/dashboard.html`'s `visibleProjects()` and `renderProjects()`'s own
+  inline ternary into two pure functions in a new `ui/app/projects.js`
+  (`visibleProjects`, `projectIsolation`), reached from the page as
+  `CCApp.visibleProjects`/`CCApp.projectIsolation`, the same "table is the
+  second consumer" reach `sortJobs`/`JOB_COLS` already have.** Four
+  characterisation tests pin exactly what the Projects table already does
+  today, ahead of the redesign that gives it the Overview's visual language
+  and a new Security column: the Jobs column counts only the jobs that
+  actually name a project, never the whole fleet; a favourited project
+  (`groupJobs`, already in `ui/app/overview.js`) sorts first, and which
+  project comes first changes with which one is starred, not a fixed
+  position; the isolation read distinguishes "always", "never" and
+  "automatic" as three genuinely different facts, where "automatic" is also
+  what a project with no `worktree` block, or the literal config string
+  `"auto"`, gets; and the search box reaches a project's description and
+  working directory, not only the name it was set up under. The three
+  module-level `prjSortKey`/`prjSortDir` and `PRJ_COLS`/`PRJ_SORTERS` stay
+  in the page for now — Task 4's four tests are none of them about column
+  sorting — and move with the rest of the table in the task that restyles
+  it. The single `prjQuery` binding becomes an exported `projFilters`
+  object, mirroring `jobFilters` for the same reason: an ES module cannot
+  let an importer reassign a plain binding, only read and write through one
+  shared reference.
 
 ### Added
 

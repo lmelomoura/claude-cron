@@ -1603,25 +1603,24 @@ function renderJobsArea(){
 /* ------------------------------------------------------- projects as a table
    Same furniture as Jobs and Runs. A project is mostly what its jobs inherit,
    so the columns are exactly that: where runs work, what they check out, and
-   whether each gets its own worktree. */
+   whether each gets its own worktree.
+
+   visibleProjects() and the isolation read moved to ui/app/projects.js in
+   Phase 2 Task 4 (CCApp.visibleProjects / CCApp.projectIsolation), pure, no
+   DOM, ready for a characterisation test to read without pulling this page
+   in -- the same split Task 2 already made for the Jobs table's sortJobs/
+   JOB_COLS. What stays here is the sort state and the markup the visible,
+   sorted rows become; Task 5 moves the rest. */
 const PRJ_COLS=[
   ["name","Project"],["jobs","Jobs"],[null,"Working directory"],
   ["repos","Repos"],[null,"Isolation"],[null,""],
 ];
-let prjSortKey="name", prjSortDir=1, prjQuery="";
+let prjSortKey="name", prjSortDir=1;
 const PRJ_SORTERS={
   name:{cmp:(a,b)=>String(a.name).localeCompare(String(b.name))},
   jobs:{cmp:(a,b)=>a._jobs-b._jobs, tie:(a,b)=>String(a.name).localeCompare(String(b.name))},
   repos:{cmp:(a,b)=>a._repos-b._repos, tie:(a,b)=>String(a.name).localeCompare(String(b.name))},
 };
-function visibleProjects(){
-  const jobs=DATA.jobs||[];
-  const q=prjQuery.trim().toLowerCase();
-  return (DATA.projects||[])
-    .map(p=>Object.assign({}, p, {_jobs:jobs.filter(j=>j.project===p.name).length,
-                                  _repos:(p.repos||[]).length}))
-    .filter(p=>!q || (p.name+" "+(p.description||"")+" "+(p.cwd||"")).toLowerCase().includes(q));
-}
 function renderProjects(){
   // Same guard as the job cards: an open row menu must not be redrawn out from
   // under the pointer by the 5-second poll.
@@ -1635,18 +1634,16 @@ function renderProjects(){
       +esc(label)+(on&&prjSortDir>0?I.sortasc:I.sortdesc)+"</th>";
   }).join("");
   const S=PRJ_SORTERS[prjSortKey]||PRJ_SORTERS.name;
-  const rows=visibleProjects().sort((a,b)=>(S.cmp(a,b)*prjSortDir) || (S.tie?S.tie(a,b):0));
-  $("pq-clear").hidden=!prjQuery;
+  const rows=CCApp.visibleProjects().sort((a,b)=>(S.cmp(a,b)*prjSortDir) || (S.tie?S.tie(a,b):0));
+  $("pq-clear").hidden=!CCApp.projFilters.query;
   if(!rows.length){
     $("prjrows").innerHTML='<tr><td colspan="'+PRJ_COLS.length+'" class="tblempty">'+I.inbox
-      +(prjQuery.trim() ? "No projects match that search."
+      +(CCApp.projFilters.query.trim() ? "No projects match that search."
         : "No projects yet — a job does not need one, but jobs that share a repo do.")+"</td></tr>";
     return;
   }
   $("prjrows").innerHTML=rows.map(p=>{
-    const wt=p.worktree && p.worktree.enabled;
-    const iso = (wt===true||wt==="true") ? ["on","always"]
-              : (wt===false||wt==="false") ? ["off","never"] : ["auto","auto"];
+    const iso = CCApp.projectIsolation(p);
     const fav=isFav(p.name);
     return "<tr>"
       +'<td><span class="jobcell">'+I.folder+"<b>"+esc(p.name)+"</b>"
@@ -4804,8 +4801,8 @@ $("soon-settings").innerHTML=soon("Your profile — photo, name, email and passw
 $("new-project").innerHTML=I.plus+"New project";
 $("pq-clear").innerHTML=I.x;
 $("projsearchbox").insertAdjacentHTML("afterbegin", I.search);
-$("pq").addEventListener("input",()=>{ prjQuery=$("pq").value; renderProjects(); });
-$("pq-clear").addEventListener("click",()=>{ prjQuery=""; $("pq").value=""; renderProjects(); });
+$("pq").addEventListener("input",()=>{ CCApp.projFilters.query=$("pq").value; renderProjects(); });
+$("pq-clear").addEventListener("click",()=>{ CCApp.projFilters.query=""; $("pq").value=""; renderProjects(); });
 $("f-clear").innerHTML=I.x+"Clear filters";
 $("jf-clear").innerHTML=I.x+"Clear filters";
 $("f-clear").hidden=$("jf-clear").hidden=true;

@@ -1344,6 +1344,21 @@
     });
   }
 
+  // ui/app/projects.js
+  var projFilters = { query: "" };
+  function visibleProjects() {
+    const jobs = CC.DATA.jobs || [];
+    const q = projFilters.query.trim().toLowerCase();
+    return (CC.DATA.projects || []).map((p) => Object.assign({}, p, {
+      _jobs: jobs.filter((j) => j.project === p.name).length,
+      _repos: (p.repos || []).length
+    })).filter((p) => !q || (p.name + " " + (p.description || "") + " " + (p.cwd || "")).toLowerCase().includes(q));
+  }
+  function projectIsolation(p) {
+    const wt = p.worktree && p.worktree.enabled;
+    return wt === true || wt === "true" ? ["on", "always"] : wt === false || wt === "false" ? ["off", "never"] : ["auto", "auto"];
+  }
+
   // ui/app/index.js
   function init(cc) {
     bindPage(cc);
@@ -1406,8 +1421,20 @@
     renderJobsPage,
     jobsSort,
     jobsSetPage,
-    initJobDrag
+    initJobDrag,
+    // visibleProjects, projFilters and projectIsolation are
+    // Phase 2 Task 4's: renderProjects() in bin/dashboard.html
+    // calls CCApp.visibleProjects() and CCApp.projectIsolation(p)
+    // instead of keeping its own copies, and the search box's
+    // input/clear handlers read and write CCApp.projFilters.query
+    // instead of a module-level prjQuery -- the same "table is
+    // the second consumer" reach sortJobs/JOB_COLS already have
+    // above. Task 5 builds the restyled table around the same
+    // three exports.
+    visibleProjects,
+    projFilters,
+    projectIsolation
   };
 })();
-/* ui-bundle: 3d5a139180e9b2dbe60bc4a57eda65f18dc56d1525b48a41e5d873606771e53d */
-/* ui-sources: 81f68907575e73d47027414c5587c3d34f4f410becd2573aac2b55c18c00d110 */
+/* ui-bundle: d9f1b3b041715b665c73bba6b4519d2744184e2aa4c031bdb7cd45bc9afbd4f1 */
+/* ui-sources: 0263f5cc1bcecf588c70508b10efc25c940dde7d8139eb99339f4bfd40b1f355 */
