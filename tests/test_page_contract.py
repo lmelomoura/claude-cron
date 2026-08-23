@@ -1034,6 +1034,97 @@ def test_the_tables_empty_state_tells_no_jobs_apart_from_none_matched(
     assert expect in out["note"], out["note"]
 
 
+# ---- the Jobs table's own page (Phase 2 Task 3): CCApp.renderJobsPage()
+# (ui/app/jobs-table.js) replaces renderJobTable/renderJobHead/
+# paintJobFilters and the fork inside the old renderJobs(). Unlike sortJobs/
+# jobFacts/jobsEmptyNote above, renderJobsPage is not one of the isolated,
+# self-contained functions this file extracts and runs alone -- it is the
+# page's own DOM builder, reaching pageHeader/kpiCard (chrome.js), jobFacts/
+# visibleJobs/sortJobs (jobs-domain.js) and jobsEmptyNote (overview.js) by
+# bare name, the same way jobCard does. _jobs_table_deps below joins every
+# one of those, the same "join several _plainfn/_const extractions" pattern
+# _sort_jobs_deps and _index_screen_deps above already use.
+
+def _jobs_table_deps(block):
+    # pageHeader (chrome.js) is NOT in this list: it destructures its params
+    # directly (`function pageHeader({icon, title, subtitle, actions}){`),
+    # and _plainfn's brace-matching starts at the first `{` after the name --
+    # which is the DESTRUCTURING's own brace, not the body's (exactly the
+    # trap kpiCard's own `opts` parameter, extracted below with no trouble,
+    # exists to dodge -- see its comment in chrome.js). No prior test ever
+    # extracted pageHeader this way, so nothing was pinned expecting it to
+    # work; the test below stubs pageHeader instead of pulling in the real
+    # one, since verifying the footer text does not need the real header to
+    # run, only to not throw.
+    consts = (_const(block, "STATE_RANK") + _const(block, "JOB_SORTERS")
+              + _const(block, "JOB_COLS") + _const(block, "KPI_ICONS"))
+    fns = ("el", "kpiCard",
+           "inWindow", "nextCheckAt", "jobFacts", "visibleJobs", "sortJobs",
+           "bulkOn", "bulkLabel", "jobsEmptyNote",
+           "jobsHeaderSubtitle", "jobsKpis", "paintJobFilterBar",
+           "renderJobsTableHead", "jobRow", "renderJobsTable", "renderJobsPage")
+    return consts + "\n".join(_plainfn(block, n) for n in fns)
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_jobs_page_footer_says_how_many_it_is_showing(srv, tmp_path):
+    """Runs already had a pager; Jobs had none at all -- renderJobTable drew
+    every visible row with nothing below the table. CCApp.renderJobsPage()
+    (ui/app/jobs-table.js, Task 3's replacement) is driven whole here --
+    header, KPIs, filter bar and table -- against a small fixed set of jobs,
+    checking the one thing this task actually adds: a footer reading
+    "Showing X to Y of N", present even on a set that fits on one page.
+
+    Written to fail before renderJobsPage existed (no such name to extract,
+    so _plainfn would raise) and to pass once it does."""
+    block = _app_js(srv)
+    deps = _jobs_table_deps(block)
+    script = tmp_path / "jobs-footer.js"
+    script.write_text(_INDEX_DOM_HARNESS + _JOBS_DOMAIN_HARNESS + """
+    CC.DATA.jobs = [
+      {id: "a", project: "Alpha", enabled: true},
+      {id: "b", project: "Alpha", enabled: false},
+      {id: "c", project: "Beta",  enabled: true},
+    ];
+    // The page's own static mounts -- renderJobsPage() only ever reaches
+    // for ids bin/dashboard.html already defines, never builds them itself.
+    const ELS = {};
+    ["jobs-head", "jobs-kpis", "jactive", "jf-clear", "bulk-all",
+     "jobhead", "jobrows", "jobs-pg-info", "jobs-pg-prev", "jobs-pg-next"]
+      .forEach(id => { ELS[id] = document.createElement("div"); });
+    const $ = (id) => ELS[id];
+    // Small, honest stand-ins for the page.js bindings this module reads --
+    // same spirit as fmtAgo/fmtDur above, which _INDEX_DOM_HARNESS already
+    // stubs the identical way.
+    function money(n){ return "$" + (n || 0).toFixed(2); }
+    function fmtWhen(t){ return "when" + t; }
+    function fmtIn(t){ return "in" + t; }
+    function isFav(_name){ return false; }
+    function paintJobPickers(){}
+    // Stubbed rather than extracted -- see _jobs_table_deps's own comment on
+    // why pageHeader in particular cannot go through _plainfn.
+    function pageHeader(_opts){ return document.createElement("div"); }
+    const jobFilters = {project: "", status: "", query: ""};
+    let sortKey = "job", sortDir = 1, page = 1;
+    const PAGE_SIZE = 20;
+    """ + deps + """
+    renderJobsPage();
+    console.log(JSON.stringify({
+      info: $("jobs-pg-info").textContent,
+      prevDisabled: $("jobs-pg-prev").disabled,
+      nextDisabled: $("jobs-pg-next").disabled,
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["info"] == "Showing 1 to 3 of 3 jobs", out["info"]
+    # One page only -- the pager still renders, both buttons simply disabled
+    # rather than pointing nowhere. See the brief: "a pager, even when there
+    # is one page".
+    assert out["prevDisabled"] is True
+    assert out["nextDisabled"] is True
+
+
 # ---- the Overview's own arithmetic, pinned ahead of the redesign that turns
 # three loose tiles and a footer strip into five KPI cards and rebuilds the
 # job card from HTML strings into DOM nodes. Characterisation tests: they
@@ -4544,17 +4635,26 @@ def test_the_job_disabled_pill_and_the_launchd_off_pill_use_different_classes():
     are not the same fact -- one is a choice, the other is a fault -- and
     they used to share `.pill.off` (red) regardless, painting every disabled
     job as a problem. The job card (ui/app/overview.js) and the Jobs table
-    (bin/dashboard.html) now resolve a disabled job to `.pill.disabled`
-    (grey); only the topbar's launchd pill (bin/dashboard.html) still uses
-    `.pill.off` (red), because there it genuinely is a fault.
+    (ui/app/jobs-table.js, moved out of bin/dashboard.html in Phase 2
+    Task 3) now resolve a disabled job to `.pill.disabled` (grey); only the
+    topbar's launchd pill (bin/dashboard.html) still uses `.pill.off` (red),
+    because there it genuinely is a fault.
 
     This reads the three ternaries straight from source rather than the
     built bundle, so it catches a regression at the point someone would
     introduce it -- typing "off" back into either job-state ternary -- not
     just its downstream effect. A future edit that reunites the job-disabled
     class with the launchd-off class, the exact simplification the CSS
-    comment in ui/css/components.css warns against, fails this test."""
+    comment in ui/css/components.css warns against, fails this test.
+
+    The table's own ternary used to be read as a string-concatenation
+    fragment (`pill '+(F.disabled?"disabled":...)`) because renderJobTable
+    built the row as an HTML string; Task 3 rebuilt it as a real `const
+    pillCls = ...` assignment feeding `el()`, the same shape the job card's
+    own ternary already had -- so the regex below now matches jobs-table.js
+    in that shape rather than dashboard.html in the old one."""
     overview_js = (REPO / "ui" / "app" / "overview.js").read_text()
+    jobs_table_js = (REPO / "ui" / "app" / "jobs-table.js").read_text()
     dashboard_html = (REPO / "bin" / "dashboard.html").read_text()
 
     m = re.search(r'const pillCls = disabled \? "([^"]+)" : \(idle \? "([^"]+)" : "([^"]+)"\)',
@@ -4562,9 +4662,9 @@ def test_the_job_disabled_pill_and_the_launchd_off_pill_use_different_classes():
     assert m, "the job card's pill-class ternary was not found where expected in overview.js"
     card_disabled, card_idle, card_on = m.groups()
 
-    m = re.search(r'pill \'\+\(F\.disabled\?"([^"]+)":\(F\.idle\?"([^"]+)":"([^"]+)"\)\)',
-                  dashboard_html)
-    assert m, "the Jobs table's pill-class ternary was not found where expected in dashboard.html"
+    m = re.search(r'const pillCls = F\.disabled \? "([^"]+)" : \(F\.idle \? "([^"]+)" : "([^"]+)"\)',
+                  jobs_table_js)
+    assert m, "the Jobs table's pill-class ternary was not found where expected in jobs-table.js"
     table_disabled, table_idle, table_on = m.groups()
 
     m = re.search(r'pill \'\+\(DATA\.launchd_loaded\?"([^"]+)":"([^"]+)"\)', dashboard_html)

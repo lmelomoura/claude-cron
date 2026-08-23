@@ -13,6 +13,13 @@
   var effortLabel;
   var fmtExpiresIn;
   var resumeInFlight;
+  var fmtWhen;
+  var fmtIn;
+  var isFav;
+  var TOKEN;
+  var toast;
+  var refresh;
+  var paintJobPickers;
   var CC = null;
   function bindPage(cc) {
     CC = cc;
@@ -29,7 +36,14 @@
       renderJobs,
       effortLabel,
       fmtExpiresIn,
-      resumeInFlight
+      resumeInFlight,
+      fmtWhen,
+      fmtIn,
+      isFav,
+      TOKEN,
+      toast,
+      refresh,
+      paintJobPickers
     } = cc);
   }
 
@@ -892,6 +906,364 @@
     }
   }
 
+  // ui/app/jobs-table.js
+  function jobsHeaderSubtitle(jobs) {
+    if (!jobs.length) return "Nothing configured yet \u2014 add a job to put the scheduler to work.";
+    const enabled = jobs.filter((j) => j.enabled !== false).length;
+    const disabled = jobs.length - enabled;
+    const projects = new Set(jobs.map((j) => j.project).filter(Boolean)).size;
+    const n = jobs.length;
+    const projPart = projects ? " across " + projects + " project" + (projects === 1 ? "" : "s") : "";
+    const offPart = disabled ? ", " + disabled + " disabled" : ", all enabled";
+    return n + " job" + (n === 1 ? "" : "s") + projPart + offPart + ".";
+  }
+  function jobsKpis(jobs) {
+    const total = jobs.length;
+    const enabled = jobs.filter((j) => j.enabled !== false);
+    const disabled = total - enabled.length;
+    const facts = jobs.map((j) => jobFacts(j));
+    const idle = facts.filter((F) => F.idle).length;
+    const runningJobs = facts.filter((F) => F.running).length;
+    const spentToday = facts.reduce((a, F) => a + F.spentToday, 0);
+    const cappedCount = facts.filter((F) => F.capped).length;
+    const pct = (num, den) => den ? Math.round(num / den * 100) + "%" : "\u2014";
+    return [
+      {
+        label: "Total jobs",
+        value: String(total),
+        sub: disabled ? disabled + " disabled" : "all enabled",
+        tone: "",
+        filter: "",
+        door: false
+      },
+      {
+        label: "Enabled",
+        value: String(enabled.length),
+        sub: !enabled.length ? "nothing enabled yet" : idle ? idle + " idle right now" : "all within their window",
+        tone: "",
+        filter: "",
+        door: false
+      },
+      {
+        label: "Running now",
+        value: String(runningJobs),
+        sub: pct(runningJobs, enabled.length) + " of enabled jobs",
+        tone: "",
+        filter: "",
+        door: false
+      },
+      {
+        label: "Spent today",
+        value: money(spentToday),
+        sub: cappedCount ? cappedCount + " at their cap" : "no jobs at cap",
+        tone: "",
+        filter: "",
+        door: false
+      }
+    ];
+  }
+  var KPI_ICONS = {
+    "Total jobs": "layers",
+    "Enabled": "power",
+    "Running now": "play",
+    "Spent today": "dollar"
+  };
+  function paintJobFilterBar(vis, allJobs) {
+    paintJobPickers();
+    const box = $("jactive");
+    box.textContent = "";
+    const chips = [];
+    if (jobFilters.project) chips.push(["project", "Project: " + (jobFilters.project === "__none__" ? "Standalone" : jobFilters.project)]);
+    if (jobFilters.status) chips.push(["status", "Status: " + jobFilters.status]);
+    if (jobFilters.query.trim()) chips.push(["q", 'Search: "' + jobFilters.query.trim() + '"']);
+    box.hidden = !chips.length;
+    if (chips.length) {
+      box.appendChild(el("span", "aflabel", "Active filters:"));
+      chips.forEach(([key, label]) => {
+        const chip = el("span", "afchip");
+        chip.appendChild(document.createTextNode(label));
+        const drop = el("button");
+        drop.dataset.dropjf = key;
+        drop.title = "Remove this filter";
+        drop.appendChild(icon("x"));
+        chip.appendChild(drop);
+        box.appendChild(chip);
+      });
+      box.appendChild(el("span", "aflabel", vis.length + " of " + allJobs.length + " jobs"));
+    }
+    $("jf-clear").hidden = !chips.length;
+    const ball = $("bulk-all");
+    ball.hidden = !vis.length;
+    if (vis.length) {
+      const on = bulkOn(vis);
+      ball.dataset.bulkKind = "visible";
+      ball.dataset.bulk = "__visible__";
+      ball.dataset.bulkTo = on ? "0" : "1";
+      ball.textContent = "";
+      ball.appendChild(icon("power"));
+      ball.appendChild(document.createTextNode(bulkLabel(on, vis.length)));
+    }
+  }
+  var sortKey = "job";
+  var sortDir = 1;
+  var page = 1;
+  var PAGE_SIZE = 20;
+  function jobsSort(key) {
+    if (sortKey === key) sortDir = -sortDir;
+    else {
+      sortKey = key;
+      sortDir = key === "job" || key === "project" || key === "state" ? 1 : -1;
+    }
+    page = 1;
+    renderJobsPage();
+  }
+  function jobsSetPage(delta) {
+    page += delta;
+    renderJobsPage();
+  }
+  function renderJobsTableHead() {
+    const tr = $("jobhead");
+    tr.textContent = "";
+    JOB_COLS.forEach(([key, label]) => {
+      if (!key) {
+        tr.appendChild(el("th", null, label));
+        return;
+      }
+      const on = sortKey === key;
+      const th = el("th", "sortable" + (on ? " sorted" : ""));
+      th.dataset.jobsort = key;
+      th.setAttribute("aria-sort", on ? sortDir < 0 ? "descending" : "ascending" : "none");
+      th.title = "Sort by " + label.toLowerCase();
+      th.appendChild(document.createTextNode(label));
+      th.appendChild(icon(on && sortDir > 0 ? "sortasc" : "sortdesc"));
+      tr.appendChild(th);
+    });
+  }
+  function jobRow(j, F) {
+    const tr = el("tr", F.disabled ? "rowoff" : null);
+    const tdJob = el("td");
+    const jobcell = el("span", "jobcell");
+    jobcell.appendChild(icon("bot"));
+    jobcell.appendChild(el("code", null, j.id));
+    tdJob.appendChild(jobcell);
+    if (j.description) {
+      const snip = el("div", "snip", j.description);
+      snip.title = j.description;
+      tdJob.appendChild(snip);
+    }
+    tr.appendChild(tdJob);
+    const tdProj = el("td");
+    if (j.project) {
+      const tag = el("span", "projtag");
+      tag.appendChild(icon("folder"));
+      tag.appendChild(document.createTextNode(j.project));
+      if (isFav(j.project)) {
+        const fav = el("span", "favdot");
+        fav.title = "Favourite";
+        fav.appendChild(icon("star"));
+        tag.appendChild(fav);
+      }
+      tdProj.appendChild(tag);
+    } else {
+      tdProj.appendChild(el("span", "muted", "\u2014"));
+    }
+    tr.appendChild(tdProj);
+    const tdState = el("td");
+    if (F.running) {
+      const badge = el("span", "runningbadge");
+      badge.appendChild(el("span", "pulse"));
+      badge.appendChild(document.createTextNode(F.nLive + " running\u2026"));
+      tdState.appendChild(badge);
+    } else {
+      const pillCls = F.disabled ? "disabled" : F.idle ? "idle" : "on";
+      const pill = el("span", "pill " + pillCls, F.state);
+      if (F.idle) pill.title = "Outside its active window \u2014 no runs until the window reopens";
+      tdState.appendChild(pill);
+    }
+    tr.appendChild(tdState);
+    const tdSched = el("td", "nowrap");
+    tdSched.appendChild(el("span", "muted", "every"));
+    tdSched.appendChild(document.createTextNode(" " + fmtDur(j.interval_seconds || 300)));
+    if (F.backoff > 1) {
+      const back = el("span", "s-warning", " \xD7" + F.backoff);
+      back.title = "Backing off after " + F.streak + " failed runs";
+      tdSched.appendChild(back);
+    }
+    tr.appendChild(tdSched);
+    const tdLast = el("td", "nowrap");
+    if (F.st.last_run_start) {
+      const span = el("span", null, fmtAgo(F.st.last_run_start));
+      span.title = fmtWhen(F.st.last_run_start);
+      tdLast.appendChild(span);
+    } else {
+      tdLast.appendChild(el("span", "muted", "never"));
+    }
+    tr.appendChild(tdLast);
+    const tdNext = el("td", "nowrap");
+    if (F.disabled) {
+      tdNext.appendChild(el("span", "muted", "disabled"));
+    } else if (F.nextAt == null) {
+      tdNext.appendChild(el("span", "muted", "no window"));
+    } else {
+      const span = el("span", null, fmtIn(F.nextAt));
+      span.title = fmtWhen(F.nextAt);
+      tdNext.appendChild(span);
+    }
+    tr.appendChild(tdNext);
+    const tdToday = el("td", "num nowrap");
+    tdToday.appendChild(document.createTextNode(money(F.spentToday)));
+    if (F.cap != null) {
+      tdToday.appendChild(document.createTextNode(" "));
+      tdToday.appendChild(el("span", "cap", "of " + money(F.cap)));
+    }
+    if (F.capped) {
+      tdToday.appendChild(document.createTextNode(" "));
+      tdToday.appendChild(el("span", "s-error", "capped"));
+    }
+    tr.appendChild(tdToday);
+    const tdActs = el("td", "rowacts");
+    const run = el("button", "iconbtn");
+    run.dataset.op = "run";
+    run.dataset.id = j.id;
+    run.title = "Run now";
+    run.appendChild(icon("play"));
+    tdActs.appendChild(run);
+    const toggle = el("button", "iconbtn");
+    toggle.dataset.op = F.disabled ? "enable" : "disable";
+    toggle.dataset.id = j.id;
+    toggle.title = F.disabled ? "Enable" : "Disable";
+    toggle.appendChild(icon("power"));
+    tdActs.appendChild(toggle);
+    const editBtn = el("button", "iconbtn");
+    editBtn.dataset.op = "edit";
+    editBtn.dataset.id = j.id;
+    editBtn.title = "Edit";
+    editBtn.appendChild(icon("pencil"));
+    tdActs.appendChild(editBtn);
+    const del = el("button", "iconbtn danger");
+    del.dataset.op = "delete";
+    del.dataset.id = j.id;
+    del.title = "Delete job";
+    del.appendChild(icon("trash"));
+    tdActs.appendChild(del);
+    tr.appendChild(tdActs);
+    return tr;
+  }
+  function renderJobsTable(vis) {
+    renderJobsTableHead();
+    const rows = sortJobs(vis.map((j) => ({ j, F: jobFacts(j) })), sortKey, sortDir);
+    const total = rows.length;
+    const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    if (page > pages) page = pages;
+    if (page < 1) page = 1;
+    const from = total ? (page - 1) * PAGE_SIZE + 1 : 0;
+    const to = Math.min(page * PAGE_SIZE, total);
+    const slice = rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+    const tbody = $("jobrows");
+    tbody.textContent = "";
+    if (!total) {
+      const filtering = !!(jobFilters.project || jobFilters.status || jobFilters.query.trim());
+      const tr = el("tr");
+      const td = el("td", "tblempty");
+      td.colSpan = JOB_COLS.length;
+      td.appendChild(icon("inbox"));
+      td.appendChild(document.createTextNode(jobsEmptyNote(filtering)));
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    } else {
+      slice.forEach(({ j, F }) => tbody.appendChild(jobRow(j, F)));
+    }
+    $("jobs-pg-info").textContent = "Showing " + from + " to " + to + " of " + total + " job" + (total === 1 ? "" : "s");
+    $("jobs-pg-prev").disabled = page <= 1;
+    $("jobs-pg-next").disabled = page >= pages;
+  }
+  function renderJobsPage() {
+    const jobs = CC.DATA.jobs || [];
+    const allProjects = [...new Set(jobs.map((j) => j.project || "").filter(Boolean))].sort();
+    if (jobFilters.project && jobFilters.project !== "__none__" && !allProjects.includes(jobFilters.project)) jobFilters.project = "";
+    const vis = visibleJobs();
+    const headHost = $("jobs-head");
+    if (headHost) {
+      headHost.textContent = "";
+      headHost.appendChild(pageHeader({
+        icon: "zap",
+        title: "Jobs",
+        subtitle: jobsHeaderSubtitle(jobs),
+        actions: [
+          { id: "jobs-refresh", icon: "radar", label: "Refresh" },
+          { id: "new-job", icon: "plus", label: "New job", primary: true }
+        ]
+      }));
+    }
+    const kpiHost = $("jobs-kpis");
+    if (kpiHost) {
+      kpiHost.textContent = "";
+      jobsKpis(jobs).forEach((c) => kpiHost.appendChild(kpiCard({
+        icon: KPI_ICONS[c.label],
+        tone: c.tone,
+        value: c.value,
+        label: c.label,
+        sub: c.sub,
+        filter: c.filter,
+        door: c.door
+      })));
+    }
+    paintJobFilterBar(vis, jobs);
+    renderJobsTable(vis);
+  }
+  var _dragId = null;
+  function initJobDrag() {
+    const host = $("jobs");
+    if (!host) return;
+    host.addEventListener("dragstart", (e) => {
+      const c = e.target.closest(".card[data-job-id]");
+      if (!c) return;
+      _dragId = c.dataset.jobId;
+      c.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      try {
+        e.dataTransfer.setData("text/plain", _dragId);
+      } catch (_) {
+      }
+    });
+    host.addEventListener("dragend", () => {
+      _dragId = null;
+      host.querySelectorAll(".dragging,.dragover").forEach((x) => x.classList.remove("dragging", "dragover"));
+    });
+    host.addEventListener("dragover", (e) => {
+      if (!_dragId) return;
+      const over = e.target.closest(".card[data-job-id]");
+      const from = host.querySelector('.card[data-job-id="' + CSS.escape(_dragId) + '"]');
+      if (!over || !from || over === from || over.closest(".grid") !== from.closest(".grid")) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      host.querySelectorAll(".dragover").forEach((x) => x.classList.remove("dragover"));
+      over.classList.add("dragover");
+    });
+    host.addEventListener("drop", async (e) => {
+      const over = e.target.closest(".card[data-job-id]");
+      const from = _dragId && host.querySelector('.card[data-job-id="' + CSS.escape(_dragId) + '"]');
+      if (!over || !from || over === from || over.closest(".grid") !== from.closest(".grid")) return;
+      e.preventDefault();
+      const grid = over.closest(".grid");
+      const cards = [...grid.querySelectorAll(".card[data-job-id]")];
+      grid.insertBefore(from, cards.indexOf(from) < cards.indexOf(over) ? over.nextSibling : over);
+      over.classList.remove("dragover");
+      const order = [...grid.querySelectorAll(".card[data-job-id]")].map((c) => c.dataset.jobId);
+      _dragId = null;
+      const r = await fetch("/api/action", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain", "X-CC-Token": TOKEN },
+        body: JSON.stringify({ op: "reorder", order })
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        toast("Could not save the order \u2014 " + (j.error || "HTTP " + r.status), true);
+      } else toast("Order saved", false, "check");
+      refresh();
+    });
+  }
+
   // ui/app/index.js
   function init(cc) {
     bindPage(cc);
@@ -931,13 +1303,31 @@
     kpiCard,
     renderPulse,
     renderOverviewHead,
-    // jobCard is Task 9's: renderJobs() in bin/dashboard.html
-    // calls CCApp.jobCard(j) per job instead of building the
-    // card as an HTML string. checkList and the kept-session
-    // notice are internal to jobCard and have no other caller,
-    // so they stay unexported, the same shape as el() above.
-    jobCard
+    // jobCard is Task 9's: renderJobCards() in bin/dashboard.html
+    // (the Overview's own cards, what used to be inside
+    // renderJobs() before the Jobs table forked off it) calls
+    // CCApp.jobCard(j) per job instead of building the card as
+    // an HTML string. checkList and the kept-session notice are
+    // internal to jobCard and have no other caller, so they
+    // stay unexported, the same shape as el() above.
+    jobCard,
+    // renderJobsPage, jobsSort, jobsSetPage and initJobDrag are
+    // Phase 2 Task 3's: the Jobs table itself, moved whole out
+    // of bin/dashboard.html (renderJobTable/renderJobHead/
+    // paintJobFilters and the table branch that used to live
+    // inside renderJobs()) into ui/app/jobs-table.js.
+    // renderJobsArea() (bin/dashboard.html) calls
+    // CCApp.renderJobsPage() once per poll, the same way it
+    // calls renderJobCards() for the Overview's own cards; the
+    // page's delegated click listener calls CCApp.jobsSort(key)
+    // for a sortable header and CCApp.jobsSetPage(delta) for
+    // the footer's pager instead of keeping jobSortKey/
+    // jobSortDir/page as its own module state.
+    renderJobsPage,
+    jobsSort,
+    jobsSetPage,
+    initJobDrag
   };
 })();
-/* ui-bundle: 95ef56b6b934a82bb4a9d0811a155870be1b2dba667212a9649981ab46f9a08f */
-/* ui-sources: 98e77745b1b3ff544083ff283fdae8c6fbcf041d54b7e3b45695157a70486a27 */
+/* ui-bundle: 06171bf0edd0bf7b3567c4f97e6e62a857304cb25120a0483264211ed659473e */
+/* ui-sources: 0c17191baf002a67e0300a65f96999eab5eae350f744b2f4ffb902153f2b7685 */

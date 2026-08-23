@@ -29,6 +29,7 @@ import { jobFacts, visibleJobs, jobFilters, bulkOn, bulkLabel,
 import { groupJobs, jobsEmptyNote, worktreesCard,
          renderPulse, renderOverviewHead, jobCard } from "./overview.js";
 import { pageHeader, kpiCard } from "./chrome.js";
+import { renderJobsPage, jobsSort, jobsSetPage, initJobDrag } from "./jobs-table.js";
 
 function init(cc){
   bindPage(cc);
@@ -69,9 +70,24 @@ window.CCApp = { init, jobFacts, visibleJobs, jobFilters, bulkOn,
                  // phase's own call site (bin/dashboard.html's render())
                  // actually calls itself.
                  pageHeader, kpiCard, renderPulse, renderOverviewHead,
-                 // jobCard is Task 9's: renderJobs() in bin/dashboard.html
-                 // calls CCApp.jobCard(j) per job instead of building the
-                 // card as an HTML string. checkList and the kept-session
-                 // notice are internal to jobCard and have no other caller,
-                 // so they stay unexported, the same shape as el() above.
-                 jobCard };
+                 // jobCard is Task 9's: renderJobCards() in bin/dashboard.html
+                 // (the Overview's own cards, what used to be inside
+                 // renderJobs() before the Jobs table forked off it) calls
+                 // CCApp.jobCard(j) per job instead of building the card as
+                 // an HTML string. checkList and the kept-session notice are
+                 // internal to jobCard and have no other caller, so they
+                 // stay unexported, the same shape as el() above.
+                 jobCard,
+                 // renderJobsPage, jobsSort, jobsSetPage and initJobDrag are
+                 // Phase 2 Task 3's: the Jobs table itself, moved whole out
+                 // of bin/dashboard.html (renderJobTable/renderJobHead/
+                 // paintJobFilters and the table branch that used to live
+                 // inside renderJobs()) into ui/app/jobs-table.js.
+                 // renderJobsArea() (bin/dashboard.html) calls
+                 // CCApp.renderJobsPage() once per poll, the same way it
+                 // calls renderJobCards() for the Overview's own cards; the
+                 // page's delegated click listener calls CCApp.jobsSort(key)
+                 // for a sortable header and CCApp.jobsSetPage(delta) for
+                 // the footer's pager instead of keeping jobSortKey/
+                 // jobSortDir/page as its own module state.
+                 renderJobsPage, jobsSort, jobsSetPage, initJobDrag };

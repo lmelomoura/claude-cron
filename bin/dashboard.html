@@ -208,12 +208,20 @@ document.documentElement.dataset.theme =
 
   <!-- Jobs as its own page: the same set, as a table. Cards are for the
        dashboard, where you are scanning a handful at a glance; a table is for
-       when jobs are the thing you came for and you want to sort them. The
-       toolbar below used to also do duty on the Overview's own Jobs pane,
-       moved back and forth by relocate() -- it lives only here now that the
-       Overview has no pane of its own to move it to. -->
+       when jobs are the thing you came for and you want to sort them.
+
+       jobs-head/jobs-kpis are built whole by CCApp.renderJobsPage() every
+       poll, the same way ov-head/ov-kpis above are built by
+       CCApp.renderOverviewHead() -- icon, title, one sentence from the real
+       numbers, Refresh and New job trailing right, then four KPI cards. The
+       toolbar below is NOT rebuilt the same way: the search box and the two
+       pickers are static markup that already existed before this page had a
+       header of its own, and CCApp.renderJobsPage() only repaints their
+       state (labels, chips, the top bulk button) -- see jobs-table.js's own
+       paintJobFilterBar(). -->
   <div class="view" id="view-jobs" hidden>
     <div id="jobs-head"></div>
+    <div class="kpi-grid" id="jobs-kpis"></div>
     <div id="jobstoolbar">
       <div class="toolbar">
         <div class="searchbox" id="jobsearchbox">
@@ -237,13 +245,20 @@ document.documentElement.dataset.theme =
         <button class="btn ghost" id="jf-clear"></button>
         <div class="spacer"></div>
         <button class="btn ghost" id="bulk-all" hidden></button>
-        <button class="btn primary" id="new-job"></button>
       </div>
       <div class="activefilters" id="jactive" hidden></div>
     </div>
     <div class="tablewrap"><table>
       <thead><tr id="jobhead"></tr></thead>
       <tbody id="jobrows"></tbody></table></div>
+    <!-- "Showing X to Y of N" and a pager, even on an install with one page
+         of jobs -- Jobs had no pagination at all before this; see
+         jobs-table.js's own renderJobsTable(). -->
+    <div class="pager" id="jobs-pager">
+      <button class="btn ghost" id="jobs-pg-prev"></button>
+      <span id="jobs-pg-info"></span>
+      <button class="btn ghost" id="jobs-pg-next"></button>
+    </div>
   </div><!-- /view-jobs -->
 
   <!-- Runs as its own page. Same story as the Jobs toolbar above: this used
@@ -1275,52 +1290,12 @@ function eff(j, field, def){
 // returns a real Element instead of an HTML string. See its own comment for
 // why (checkList rendered an arbitrary probe script's own stdout).
 
-/* ---- drag to reorder job cards within their group ---- */
-// Order lives in jobs.json (the engine rewrites only the dragged group's slots),
-// so it survives reloads and is the order the tick walks the jobs in.
-let _dragId=null;
-function initJobDrag(){
-  const host=$("jobs"); if(!host) return;
-  host.addEventListener("dragstart",(e)=>{
-    const c=e.target.closest(".card[data-job-id]"); if(!c) return;
-    _dragId=c.dataset.jobId; c.classList.add("dragging");
-    e.dataTransfer.effectAllowed="move";
-    try{ e.dataTransfer.setData("text/plain", _dragId); }catch(_){}
-  });
-  host.addEventListener("dragend",()=>{
-    _dragId=null;
-    host.querySelectorAll(".dragging,.dragover").forEach(x=>x.classList.remove("dragging","dragover"));
-  });
-  host.addEventListener("dragover",(e)=>{
-    if(!_dragId) return;
-    const over=e.target.closest(".card[data-job-id]");
-    const from=host.querySelector('.card[data-job-id="'+CSS.escape(_dragId)+'"]');
-    // Only within the same group: reordering is per project, never across.
-    if(!over || !from || over===from || over.closest(".grid")!==from.closest(".grid")) return;
-    e.preventDefault(); e.dataTransfer.dropEffect="move";
-    host.querySelectorAll(".dragover").forEach(x=>x.classList.remove("dragover"));
-    over.classList.add("dragover");
-  });
-  host.addEventListener("drop",async(e)=>{
-    const over=e.target.closest(".card[data-job-id]");
-    const from=_dragId && host.querySelector('.card[data-job-id="'+CSS.escape(_dragId)+'"]');
-    if(!over || !from || over===from || over.closest(".grid")!==from.closest(".grid")) return;
-    e.preventDefault();
-    const grid=over.closest(".grid");
-    // Insert before or after, depending on which way the card was dragged.
-    const cards=[...grid.querySelectorAll(".card[data-job-id]")];
-    grid.insertBefore(from, cards.indexOf(from)<cards.indexOf(over) ? over.nextSibling : over);
-    over.classList.remove("dragover");
-    const order=[...grid.querySelectorAll(".card[data-job-id]")].map(c=>c.dataset.jobId);
-    _dragId=null;
-    const r=await fetch("/api/action",{method:"POST",
-      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
-      body:JSON.stringify({op:"reorder",order})});
-    if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Could not save the order — "+(j.error||("HTTP "+r.status)), true); }
-    else toast("Order saved", false, "check");
-    refresh();
-  });
-}
+// initJobDrag (drag to reorder job cards within their group) moved to
+// ui/app/jobs-table.js in Phase 2 Task 3 -- it still drags CARDS on the
+// Overview (`$("jobs")`, not a table row), but it is job-domain code, not
+// page furniture, so it now lives with the rest of what that module owns.
+// Called once, below, as CCApp.initJobDrag() -- see jobs-table.js's own
+// banner comment for why.
 
 // The group's own chrome only -- header, chevron, collapse state -- built as
 // a string the same as before, since none of it comes from a job's own
@@ -1437,7 +1412,7 @@ async function setPref(key, value){
 function toggleFav(name){
   const cur=favProjects();
   setPref("favorite_projects", cur.includes(name) ? cur.filter(n=>n!==name) : [name, ...cur]);
-  renderJobs();
+  renderJobsArea();
 }
 // The last three projects you actually filtered by. Kept longer than three so
 // the list survives a project being renamed out from under it.
@@ -1492,10 +1467,26 @@ async function bulkToggle(btn, kind, key, enable){
   refresh();
 }
 
-function renderJobs(){
-  // The cards are rebuilt from scratch on every 5-second poll. An overflow menu
-  // is inside one, so redrawing while it is open would snatch it away mid-reach;
-  // the next poll is 5 seconds behind at worst.
+// The Overview's own card grid -- what used to be the second half of
+// renderJobs(), before the Jobs table (the branch that used to fork off the
+// front half, `if(currentView==="jobs"){ renderJobTable(vis); return; }`)
+// moved whole into ui/app/jobs-table.js as CCApp.renderJobsPage(). Renamed
+// rather than left as renderJobs(): the old name described a function that
+// drew EITHER the cards or the table depending on the current view, and now
+// that the table has its own module and its own render call, keeping that
+// name on the half that only ever draws cards would say the fork still
+// existed. Not named renderJobCards() either -- that name already belongs,
+// below, to the historical HTML-string builder CCApp.jobCard(j) replaced in
+// Task 9, and reusing it here would read as this function still being that
+// one. See renderJobsArea() below for what replaces the fork -- both halves
+// are drawn every poll now, the same way renderProjects()/renderRuns()
+// already redraw their own tables regardless of which page is showing; the
+// old view check only ever saved building whichever of cards/table was
+// hidden, and the saving was never worth the special case.
+function renderOverviewJobs(){
+  // Rebuilt from scratch on every 5-second poll. An overflow menu is inside
+  // one, so redrawing while it is open would snatch it away mid-reach; the
+  // next poll is 5 seconds behind at worst.
   if(document.querySelector(".menu-pop:not([hidden])")) return;
   const jobs=DATA.jobs||[];
   const allProjects=[...new Set(jobs.map(j=>j.project||"").filter(Boolean))].sort();
@@ -1504,31 +1495,16 @@ function renderJobs(){
 
   // Everything below groups the FILTERED set, so search and status narrow the
   // groups themselves — a project whose only matching job was disabled should
-  // not sit there as an empty card.
+  // not sit there as an empty card. The Jobs page's own toolbar is the only
+  // place this filter is ever set, but the Overview's cards read the same
+  // shared state -- pre-existing behaviour, unchanged by this move.
   const vis=CCApp.visibleJobs();
-  paintJobFilters(vis);
 
-  // Top button acts on exactly what this render is about to show, so it can
-  // never touch a job a filter has taken off-screen. Its label carries the
-  // count for the same reason — "all" is ambiguous while a filter is on.
-  const ball=$("bulk-all");
-  ball.hidden=!vis.length;
-  if(vis.length){
-    const on=CCApp.bulkOn(vis);
-    ball.dataset.bulkKind="visible";
-    ball.dataset.bulk="__visible__";
-    ball.dataset.bulkTo=on?"0":"1";
-    ball.innerHTML=I.power+CCApp.bulkLabel(on, vis.length);
-  }
-
-  // Two renderings of one filtered set. Only the visible one is drawn — the
-  // other is behind a hidden view and would be work nobody can see.
-  if(currentView==="jobs"){ renderJobTable(vis); return; }
-
-  // ---- the job cards. renderJobCards used to build this whole area,
-  // including every card, as one HTML string; now CCApp.jobCard(j) returns a
-  // real Element (see its own file for why), so the cards go in with
-  // appendChild rather than string concatenation. The group CHROME below
+  // ---- the job cards. renderJobCards (a different, historical function --
+  // see this function's own banner comment above) used to build this whole
+  // area, including every card, as one HTML string; now CCApp.jobCard(j)
+  // returns a real Element (see its own file for why), so the cards go in
+  // with appendChild rather than string concatenation. The group CHROME below
   // (the collapsible header, the star, the bulk button) stays built from
   // strings, in this file, same as before: it is markup the page composes
   // from names and counts it already chose, never from a job's own fields or
@@ -1604,76 +1580,29 @@ function renderJobs(){
   }
 }
 
-/* ------------------------------------------------------------- jobs as a table
-   The same set the cards show, for when jobs are what you came for rather than
-   something you are glancing at. The columns and the sort itself moved to
-   ui/app/jobs-domain.js (CCApp.JOB_COLS / CCApp.sortJobs) -- pure, no DOM,
-   ready for a characterisation test to read without pulling this page in.
-   What stays here is the sort state (which column, which direction) and the
-   markup the sorted rows become. */
-let jobSortKey="job", jobSortDir=1;
+// renderJobHead/renderJobTable (the Jobs table's own head and rows, built as
+// HTML strings) moved whole into ui/app/jobs-table.js in Phase 2 Task 3, as
+// CCApp.renderJobsPage() -- built from real DOM elements now, not markup.
+// The sort state they used to keep as this page's own `jobSortKey`/
+// `jobSortDir` module-level lets moved with them, into that module's own
+// closure; the page's delegated click listener now calls CCApp.jobsSort(key)
+// for a header click and CCApp.jobsSetPage(delta) for the footer's pager
+// rather than touching that state directly. CCApp.JOB_COLS and
+// CCApp.sortJobs (ui/app/jobs-domain.js) are unchanged by this move -- they
+// were already pure, DOM-free, and pinned by Task 2's own tests.
 
-function renderJobHead(){
-  $("jobhead").innerHTML=CCApp.JOB_COLS.map(([key,label])=>{
-    if(!key) return "<th>"+esc(label)+"</th>";
-    const on=jobSortKey===key;
-    return '<th class="sortable'+(on?" sorted":"")+'" data-jobsort="'+key+'"'
-      +' aria-sort="'+(on?(jobSortDir<0?"descending":"ascending"):"none")+'"'
-      +' title="Sort by '+esc(label.toLowerCase())+'">'
-      +esc(label)+(on&&jobSortDir>0?I.sortasc:I.sortdesc)+'</th>';
-  }).join("");
-}
-function renderJobTable(vis){
-  renderJobHead();
-  const all=vis.map(j=>({j, F:CCApp.jobFacts(j)}));
-  const rows=CCApp.sortJobs(all, jobSortKey, jobSortDir);
-  if(!rows.length){
-    $("jobrows").innerHTML='<tr><td colspan="'+CCApp.JOB_COLS.length+'" class="tblempty">'+I.inbox
-      +((CCApp.jobFilters.project||CCApp.jobFilters.status||CCApp.jobFilters.query.trim())
-        ? "No jobs match these filters." : "No jobs yet — create one.")+'</td></tr>';
-    return;
-  }
-  $("jobrows").innerHTML=rows.map(({j,F})=>{
-    const cap=F.cap;
-    const stateCell = F.running
-      ? '<span class="runningbadge"><span class="pulse"></span>'+F.nLive+' running…</span>'
-      : '<span class="pill '+(F.disabled?"disabled":(F.idle?"idle":"on"))+'"'
-        +(F.idle?' title="Outside its active window — no runs until the window reopens"':"")
-        +'>'+F.state+'</span>';
-    const next = F.disabled ? '<span class="muted">disabled</span>'
-      : F.nextAt==null ? '<span class="muted">no window</span>'
-      : '<span title="'+esc(fmtWhen(F.nextAt))+'">'+esc(fmtIn(F.nextAt))+'</span>';
-    const last = F.st.last_run_start
-      ? '<span title="'+esc(fmtWhen(F.st.last_run_start))+'">'+esc(fmtAgo(F.st.last_run_start))+'</span>'
-      : '<span class="muted">never</span>';
-    const money2 = esc(money(F.spentToday))
-      + (cap!=null ? ' <span class="cap">of '+esc(money(cap))+'</span>' : "")
-      + (F.capped ? ' <span class="s-error">capped</span>' : "");
-    return '<tr'+(F.disabled?' class="rowoff"':"")+'>'
-      +'<td><span class="jobcell">'+I.bot+'<code>'+esc(j.id)+'</code></span>'
-        +(j.description?'<div class="snip" title="'+esc(j.description)+'">'+esc(j.description)+'</div>':"")+'</td>'
-      +'<td>'+(j.project?'<span class="projtag">'+I.folder+esc(j.project)
-              +(isFav(j.project)?'<span class="favdot" title="Favourite">'+I.star+'</span>':"")+'</span>'
-              :'<span class="muted">—</span>')+'</td>'
-      +'<td>'+stateCell+'</td>'
-      +'<td class="nowrap"><span class="muted">every</span> '+esc(fmtDur(j.interval_seconds||300))
-        +(F.backoff>1?' <span style="color:var(--warn)" title="Backing off after '+F.streak+' failed runs">×'+F.backoff+'</span>':"")
-        +'</td>'
-      +'<td class="nowrap">'+last+'</td>'
-      +'<td class="nowrap">'+next+'</td>'
-      +'<td class="num nowrap">'+money2+'</td>'
-      // Four flat icons, no overflow menu. In a table the row already IS the
-      // list, so a menu hiding two of the four actions behind a click was one
-      // layer of chrome doing nothing. Delete still confirms — that dialog is
-      // what keeps it off the edge of a slip, not the menu that used to hide it.
-      +'<td class="rowacts">'
-        +'<button class="iconbtn" data-op="run" data-id="'+esc(j.id)+'" title="Run now">'+I.play+'</button>'
-        +'<button class="iconbtn" data-op="'+(F.disabled?"enable":"disable")+'" data-id="'+esc(j.id)+'"'
-        +' title="'+(F.disabled?"Enable":"Disable")+'">'+I.power+'</button>'
-        +'<button class="iconbtn" data-op="edit" data-id="'+esc(j.id)+'" title="Edit">'+I.pencil+'</button>'
-        +'<button class="iconbtn danger" data-op="delete" data-id="'+esc(j.id)+'" title="Delete job">'+I.trash+'</button>'
-      +'</td></tr>';
-  }).join("");
+// The Jobs table and the Overview's own cards are two renderings of the
+// same filtered set, and used to be one function (renderJobs()) that drew
+// only whichever was visible. Now that the table is its own module, both
+// halves redraw every poll -- see renderOverviewJobs()'s own banner comment
+// above for why that is not a regression. clearJobFilters()
+// (ui/app/jobs-domain.js) and the toolbar's own filter handlers below all
+// call this through the SAME `renderJobs` name the page hands the module
+// via CCApp.init() -- see that call's own comment for why the key stays
+// `renderJobs` even though the function behind it does not.
+function renderJobsArea(){
+  renderOverviewJobs();
+  CCApp.renderJobsPage();
 }
 
 /* ------------------------------------------------------- projects as a table
@@ -1800,10 +1729,14 @@ CCSecurity.init(CC);
    The jobs domain -- jobFacts, visibleJobs and the small helpers around them
    -- is no longer here either. It is ES modules under ui/app/, bundled into
    bin/static/app.js and loaded by the <script> tag above the Security one,
-   for the same reason and at the same point in the boot sequence: the page's
-   own screens (renderJobTable, the bulk buttons, the filter toolbar) stayed
-   here and call back into the module through CCApp. jobCard moved into the
-   module itself in Task 9 -- renderJobs below now calls CCApp.jobCard(j).
+   for the same reason and at the same point in the boot sequence. The Jobs
+   table itself (renderJobTable, the bulk buttons, the filter toolbar's own
+   paint step, initJobDrag) moved into the same bundle in Phase 2 Task 3, as
+   ui/app/jobs-table.js -- what stayed here is the page-owned static markup
+   those functions used to reach into ($("jactive"), $("bulk-all"), the two
+   pickers) and the delegated click listener that answers what they build.
+   jobCard moved into overview.js in Task 9 -- renderOverviewJobs above calls
+   CCApp.jobCard(j).
 
    Everything in ui/app/page.js's export list has to appear in this object --
    a name missing from it is a bind-time failure with that name in the
@@ -1812,50 +1745,43 @@ CCSecurity.init(CC);
    not a second definition of it: the icon table is this page's, and there is
    exactly one honest way to inject an entry from it. effortLabel is a
    `const` defined well above this point, so it is already initialised by the
-   time this object is built. fmtExpiresIn and resumeInFlight sit BELOW this
-   call instead, but both are hoisted `function` declarations -- safe for the
-   same reason activeRunsOf and backoffMultiplier already are (see their own
-   comments): the name resolves the moment a card actually reads it, well
-   after boot, not at this line.
+   time this object is built. fmtExpiresIn, resumeInFlight and
+   paintJobPickers sit BELOW this call instead, but all three are hoisted
+   `function` declarations -- safe for the same reason activeRunsOf and
+   backoffMultiplier already are (see their own comments): the name resolves
+   the moment jobs-table.js actually reads it, well after boot, not at this
+   line. `renderJobs` is bound to renderJobsArea, not to a function of that
+   name -- see renderJobsArea's own comment on why the function it names no
+   longer matches the key: `jobs-domain.js`'s clearJobFilters() calls
+   `renderJobs()` through this exact binding and must keep working
+   unmodified, since that file is not this task's to touch.
 
-   TOKEN, api, toast, esc, fmtWhen, fmtIn, iconLabel, openLog, openEditor,
-   isFav and setView are NOT in this object: ui/app/page.js does not export
-   them, because neither overview.js nor jobs-domain.js ever calls them --
-   they were copied in from ui/security/page.js's own list, whose every name
-   IS consumed there, and nobody trimmed the copy down to what this page's
-   screens actually read. Every one of the eleven still has exactly one
-   definition, right here in this page's own script, for this page's own
-   use -- removing them from CCApp.init() does not remove them from
-   dashboard.html, only from a bridge nothing was crossing. */
+   api, esc, iconLabel, openLog, openEditor and setView are NOT in this
+   object: ui/app/page.js does not export them, because nothing under
+   ui/app/ ever calls them -- they were copied in from ui/security/page.js's
+   own list, whose every name IS consumed there, and nobody trimmed the copy
+   down to what this page's screens actually read. Every one still has
+   exactly one definition, right here in this page's own script, for this
+   page's own use -- removing them from CCApp.init() does not remove them
+   from dashboard.html, only from a bridge nothing was crossing. */
 CCApp.init({ $, fmtAgo, fmtDur, money,
              icon: CC.icon,
              projById, eff,
-             backoffMultiplier, activeRunsOf, renderJobs,
+             backoffMultiplier, activeRunsOf, renderJobs: renderJobsArea,
              effortLabel, fmtExpiresIn, resumeInFlight,
+             fmtWhen, fmtIn, isFav, TOKEN, toast, refresh, paintJobPickers,
              get DATA(){ return DATA; },
              get currentView(){ return currentView; } });
 /* ================================================================ end app */
 
-/* The toolbar's own state: the two triggers, the Clear button and the row of
-   chips that says, in words, what is being left out. The pickers alone cannot
-   say that — a trigger reading "All projects" next to one reading "Disabled"
-   does not add up to "you are looking at a subset". */
-function paintJobFilters(vis){
-  projPicker.paint();
-  jobStatusPicker.paint();
-  const chips=[];
-  if(CCApp.jobFilters.project) chips.push(["project", "Project: "
-    +(CCApp.jobFilters.project==="__none__" ? "Standalone" : CCApp.jobFilters.project)]);
-  if(CCApp.jobFilters.status) chips.push(["status", "Status: "+CCApp.jobFilters.status]);
-  if(CCApp.jobFilters.query.trim()) chips.push(["q", 'Search: "'+CCApp.jobFilters.query.trim()+'"']);
-  const box=$("jactive");
-  box.hidden=!chips.length;
-  box.innerHTML=chips.length ? '<span class="aflabel">Active filters:</span>'
-    +chips.map(([k,label])=>'<span class="afchip">'+esc(label)
-      +'<button data-dropjf="'+k+'" title="Remove this filter">'+I.x+"</button></span>").join("")
-    +'<span class="aflabel">'+vis.length+" of "+(DATA.jobs||[]).length+" jobs</span>" : "";
-  $("jf-clear").hidden=!chips.length;
-}
+// paintJobFilters (the toolbar's own repaint: the two pickers, the active-
+// filter chip row, the top bulk button) moved into ui/app/jobs-table.js in
+// Phase 2 Task 3, as paintJobFilterBar() -- called from CCApp.renderJobsPage()
+// rather than from here. It reaches $("jactive")/$("jf-clear")/$("bulk-all")
+// the same way it always did (static markup, not rebuilt), and the two
+// pickers through paintJobPickers() below, since the picker OBJECTS
+// themselves stay here -- initPickers() also builds the four Runs pickers,
+// which are not this task's to hand over.
 // clearJobFilters moved to ui/app/jobs-domain.js, reached as CCApp.clearJobFilters.
 
 /* ------------------------------------------------------- the five pickers
@@ -1891,6 +1817,11 @@ function runProjectNames(){
 }
 
 let projPicker, jobStatusPicker, runProjPicker, runJobPicker, runStatusPicker, runDatePicker;
+// The two Jobs pickers' own paint step, reached by ui/app/jobs-table.js's
+// paintJobFilterBar() through the page.js interface -- the picker OBJECTS
+// stay here, since initPickers() below builds the four Runs pickers
+// alongside them and those are not this task's to hand over.
+function paintJobPickers(){ projPicker.paint(); jobStatusPicker.paint(); }
 function initPickers(){
   projPicker=makePicker("projpick",{
     label:"Project", icon:I.folder, pageSize:PROJ_PAGE,
@@ -1907,7 +1838,7 @@ function initPickers(){
     },
     hasMore:(q,P)=>CCApp.jobProjectNames().filter(n=>!q||n.toLowerCase().includes(q.toLowerCase())).length>P.limit,
     foot:(q,P)=>projectFoot(CCApp.jobProjectNames(), q, P),
-    onPick:(v)=>{ CCApp.jobFilters.project=v; noteRecentProject(v); renderJobs(); },
+    onPick:(v)=>{ CCApp.jobFilters.project=v; noteRecentProject(v); renderJobsArea(); },
   });
   jobStatusPicker=makePicker("statpick",{
     label:"Status", icon:I.power,
@@ -1920,7 +1851,7 @@ function initPickers(){
               {v:"enabled",label:"Enabled",n:on,sel:CCApp.jobFilters.status==="enabled",icon:I.play},
               {v:"disabled",label:"Disabled",n:jobs.length-on,sel:CCApp.jobFilters.status==="disabled",icon:I.power}];
     },
-    onPick:(v)=>{ CCApp.jobFilters.status=v; renderJobs(); },
+    onPick:(v)=>{ CCApp.jobFilters.status=v; renderJobsArea(); },
   });
 
   runProjPicker=makePicker("rprojpick",{
@@ -2375,7 +2306,7 @@ function render(){
   paintUser();
   renderProjects();
   CCSecurity.render();
-  renderJobs();
+  renderJobsArea();
   renderRuns();
   $("foot").textContent="claude-cron · control server on 127.0.0.1 · SQLite index.db ("
     +fmtBytes(DATA.db_bytes)+") holds run history & search · runs.ndjson is the append journal";
@@ -4389,17 +4320,17 @@ async function enterDashboard(user){
   startPolling();
 }
 
-// The Jobs and Runs pages' own headers -- static, built once rather than on
-// every render() the way the Overview's own (data-driven, CCApp.
-// renderOverviewHead()) has to be. What each said used to be a `paneblurb`
-// paragraph inside the Overview's own Jobs/Runs pane; with that pane gone,
-// this sentence is the page it belongs to's own header instead.
+// The Runs page's own header -- static, built once rather than on every
+// render() the way the Overview's own (data-driven, CCApp.
+// renderOverviewHead()) has to be. What it said used to be a `paneblurb`
+// paragraph inside the Overview's own Runs pane; with that pane gone, this
+// sentence is the page it belongs to's own header instead.
+//
+// Jobs' own header used to be built here the same way -- it moved into
+// CCApp.renderJobsPage() (ui/app/jobs-table.js) in Phase 2 Task 3, since the
+// brief for that page asked for a sentence written from the real numbers
+// rather than a fixed caption, the same as the Overview's own.
 function initPageHeaders(){
-  const jh=$("jobs-head");
-  if(jh) jh.appendChild(CCApp.pageHeader({icon:"zap", title:"Jobs",
-    subtitle:"What the scheduler is set up to do — each row is one job: "
-      +"how often it looks, what its last probe found, and what it has "
-      +"spent today."}));
   const rh=$("runs-head");
   if(rh) rh.appendChild(CCApp.pageHeader({icon:"activity", title:"Runs",
     subtitle:"Every run the scheduler has taken, newest first — what it "
@@ -4549,18 +4480,12 @@ document.addEventListener("click", async (e)=>{
     if(await api("project_delete",{name})) { toast("Deleted project "+name); refresh(); }
     return;
   }
-  // sorting the jobs table. Same rule for the opening direction: the useful end
-  // of each column first. Name and status read A→Z and worst-first; the three
-  // clock/money columns open on the largest, which is what you came to find.
+  // sorting the jobs table. The opening direction per column, and the sort
+  // state itself, now live in ui/app/jobs-table.js -- CCApp.jobsSort(key)
+  // does what this handler used to do inline (toggle direction on a repeat
+  // click, else pick the useful end to open on) and redraws the page.
   const jh=e.target.closest("th[data-jobsort]");
-  if(jh){
-    const key=jh.dataset.jobsort;
-    if(jobSortKey===key) jobSortDir=-jobSortDir;
-    // Names open A→Z; the clock and money columns open on the largest, which is
-    // the end of each you actually came to look at.
-    else { jobSortKey=key; jobSortDir=(key==="job"||key==="project"||key==="state")?1:-1; }
-    renderJobs(); return;
-  }
+  if(jh){ CCApp.jobsSort(jh.dataset.jobsort); return; }
   // the card's overflow menu — one open at a time
   const mtrig=e.target.closest("[data-menu]");
   if(mtrig){
@@ -4588,13 +4513,26 @@ document.addEventListener("click", async (e)=>{
   // edits; creating one from scratch belongs on the Projects page when that
   // page exists.
   if(e.target.closest("#new-project")){ openProjectEditor(); return; }
+  // The Jobs page's own "New job" -- built into its page header now by
+  // CCApp.renderJobsPage() (ui/app/jobs-table.js), not a static toolbar
+  // button any more, but the same single id: there is exactly one of it in
+  // the DOM at a time (the toolbar's own copy is gone), so nothing here
+  // needed to change to keep answering it.
   if(e.target.closest("#new-job")){ openCreator(); return; }
-  // The page header's own actions -- same targets as the Jobs toolbar's
-  // "New job" above, reached from a second button because the header is
-  // built once by CCApp.renderOverviewHead() and lives in a different DOM
-  // subtree than the Jobs page's own toolbar, so the two cannot share an id.
+  // The Overview's own page header actions -- built once by
+  // CCApp.renderOverviewHead() and living in a different DOM subtree than
+  // the Jobs page's header, so the two cannot share an id the way "New job"
+  // above does with itself.
   if(e.target.closest("#ov-refresh")){ refresh(); return; }
   if(e.target.closest("#ov-new-job")){ openCreator(); return; }
+  // The Jobs page's own "Refresh", and its footer pager -- both built by
+  // CCApp.renderJobsPage(). jobsSetPage(delta) clamps and redraws; there is
+  // no explicit page=1 to reset elsewhere, because every filter/sort change
+  // already goes through a full renderJobsPage() that clamps the current
+  // page down to whatever the new row count actually has.
+  if(e.target.closest("#jobs-refresh")){ refresh(); return; }
+  if(e.target.closest("#jobs-pg-prev")){ CCApp.jobsSetPage(-1); return; }
+  if(e.target.closest("#jobs-pg-next")){ CCApp.jobsSetPage(1); return; }
   // The worktrees card's own footer button, built the same way by
   // CCApp.worktreesCard() -- opens the full list the card only summarises.
   if(e.target.closest("#ov-wt-view")){ $("wt-halo").innerHTML=I.folder; $("wtmodal").showModal(); return; }
@@ -4723,7 +4661,7 @@ initFormTabs("projmodal","data-pjtab","data-pjpane");
 initCombos();
 initFolderPicker();
 initTooltips();
-initJobDrag();
+CCApp.initJobDrag();
 initStatFilters();
 initModalScrollLock();
 initResizeFollow("editor");
@@ -4810,7 +4748,7 @@ $("jactive").addEventListener("click",(e)=>{
   if(k==="project") CCApp.jobFilters.project="";
   if(k==="status") CCApp.jobFilters.status="";
   if(k==="q"){ CCApp.jobFilters.query=""; $("jq").value=""; $("jq-clear").hidden=true; }
-  renderJobs();
+  renderJobsArea();
 });
 $("ractive").addEventListener("click",(e)=>{
   const b=e.target.closest("[data-droprf]"); if(!b) return;
@@ -4827,10 +4765,10 @@ $("ractive").addEventListener("click",(e)=>{
 $("jq").addEventListener("input",()=>{
   CCApp.jobFilters.query=$("jq").value;
   $("jq-clear").hidden=!CCApp.jobFilters.query;
-  renderJobs();
+  renderJobsArea();
 });
 $("jq-clear").addEventListener("click",()=>{
-  CCApp.jobFilters.query=""; $("jq").value=""; $("jq-clear").hidden=true; renderJobs();
+  CCApp.jobFilters.query=""; $("jq").value=""; $("jq-clear").hidden=true; renderJobsArea();
 });
 // Starring a project floats its card to the top of Jobs. Reachable from the
 // group header on the dashboard and from the Projects table, so it listens on
@@ -4864,7 +4802,10 @@ $("h-settings").innerHTML=I.gear+"Settings";
 const soon=(what)=>I.hammer+"<b>Not built yet</b><p>"+what+"</p>";
 $("soon-settings").innerHTML=soon("Your profile — photo, name, email and password — plus the "
   +"scheduler's own settings will live here. Nothing is editable yet.");
-$("new-job").innerHTML=I.plus+"New job";
+// "New job" is no longer static markup here -- it is built into the Jobs
+// page's own header by CCApp.renderJobsPage() (ui/app/jobs-table.js), the
+// same id as before (#new-job) but appended fresh on the first render
+// rather than labelled once at boot.
 $("new-project").innerHTML=I.plus+"New project";
 $("pq-clear").innerHTML=I.x;
 $("projsearchbox").insertAdjacentHTML("afterbegin", I.search);
@@ -4875,6 +4816,11 @@ $("jf-clear").innerHTML=I.x+"Clear filters";
 $("f-clear").hidden=$("jf-clear").hidden=true;
 $("pg-prev").innerHTML=I.cleft+"Prev";
 $("pg-next").innerHTML="Next"+I.cright;
+// The Jobs table's own pager, same one-time labelling as Runs' above --
+// CCApp.renderJobsPage() only ever toggles .disabled and sets #jobs-pg-info's
+// text, never rebuilds these two buttons' icon+label content.
+$("jobs-pg-prev").innerHTML=I.cleft+"Prev";
+$("jobs-pg-next").innerHTML="Next"+I.cright;
 $("q-clear").innerHTML=I.x;
 $("jq-clear").innerHTML=I.x;
 $("searchbox").insertAdjacentHTML("afterbegin", I.search);

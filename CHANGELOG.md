@@ -1106,6 +1106,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   any one of them alone would have hidden; and the table's own empty row
   tells "no jobs exist yet" apart from "the filters left nothing", the same
   distinction `jobsEmptyNote` already draws for the card view.
+- **The Jobs page speaks the Overview's visual language, and its table moves
+  to `ui/app/jobs-table.js`.** A page header written from the real numbers
+  (total jobs, projects, how many disabled) with Refresh and New job
+  trailing right; four KPI cards — total, enabled, running now, spent
+  today — each a plain element rather than a disabled button, since none of
+  them is a door into anywhere else; the existing search box and the two
+  project/status pickers, repainted rather than rebuilt; the same seven
+  columns as before, now built with `el()` instead of an HTML string; and a
+  footer reading "Showing X to Y of N" with a real pager, which the Jobs
+  table never had at all before this. `renderJobTable`, `renderJobHead`,
+  `paintJobFilters` and the branch inside the old `renderJobs()` that forked
+  between the cards and the table all leave `bin/dashboard.html` for the new
+  module; `initJobDrag` (drag-to-reorder within a project's cards) moves
+  with it too, even though it still drags cards on the Overview, not this
+  table's rows, because it is job-domain code rather than page furniture.
+  The Overview's own card grid keeps its old logic under a new name,
+  `renderOverviewJobs`, since the old `renderJobs` described a function that
+  drew either the cards or the table depending on the page — a fork that no
+  longer exists now that the table redraws itself.
+
+  Two things the previous task's pins flagged, closed here: the table's own
+  empty row used to duplicate `jobsEmptyNote`'s two sentences character for
+  character in an inline ternary instead of calling it — it now calls it,
+  same as the card view always has. The `state` column's id tiebreak
+  reverses with the sort direction while `project`'s deliberately does
+  not — a real inconsistency in `JOB_SORTERS` — is left exactly as pinned:
+  `project`'s comparator is the one that matches its own stated intent
+  ("stay A→Z whichever way the arrow points"), so `state` should eventually
+  move its id fallback out of `cmp` and into its own `tie` to match it, but
+  that is a deliberate follow-up, not a change smuggled into a restyle.
 
 ### Added
 

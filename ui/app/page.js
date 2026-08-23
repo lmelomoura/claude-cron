@@ -25,11 +25,32 @@
    and each already has exactly one implementation in the page's own script
    -- fmtExpiresIn also feeds the Sessions dialog, resumeInFlight also guards
    resumeTarget's live-slot branch, so a second copy here would be the same
-   drift the paragraph above already paid for. */
+   drift the paragraph above already paid for.
+
+   fmtWhen, fmtIn, isFav, TOKEN, toast, refresh and paintJobPickers joined
+   when the Jobs table moved into this module (Phase 2 Task 3): the table's
+   own cells read the first two for their tooltips and their "next" column,
+   isFav for the same favourite-project star the job card already shows,
+   and initJobDrag -- job-domain code that moved into the same module even
+   though it still drags CARDS on the Overview, not this table's rows --
+   reads TOKEN, toast and refresh for its own save-then-refresh round trip.
+   paintJobPickers is not a page global at all: it is a small wrapper
+   bin/dashboard.html defines purely to hand over `projPicker.paint()` and
+   `jobStatusPicker.paint()` without handing over the picker objects
+   themselves, which also paint the four Runs pickers this same
+   `initPickers()` builds and are not this module's to own.
+
+   esc, iconLabel, openLog, openEditor and setView still are not exported:
+   nothing under ui/app/ calls any of them. api is not either -- the module's
+   own network calls (initJobDrag's reorder) go through a plain `fetch` the
+   same way the page's own `api()` wraps one, since bulkToggle/showConfirm's
+   confirmation dialog stays behind in the page for the one caller
+   (bulkToggle) that still needs it. */
 export let $, fmtAgo, fmtDur, money,
            icon, projById, eff,
            backoffMultiplier, activeRunsOf, renderJobs,
-           effortLabel, fmtExpiresIn, resumeInFlight;
+           effortLabel, fmtExpiresIn, resumeInFlight,
+           fmtWhen, fmtIn, isFav, TOKEN, toast, refresh, paintJobPickers;
 
 /* DATA and currentView are REASSIGNED by the page -- DATA on every five-second
    poll, currentView on every navigation. Destructured they would freeze at
@@ -42,5 +63,6 @@ export function bindPage(cc){
   ({ $, fmtAgo, fmtDur, money,
      icon, projById, eff,
      backoffMultiplier, activeRunsOf, renderJobs,
-     effortLabel, fmtExpiresIn, resumeInFlight } = cc);
+     effortLabel, fmtExpiresIn, resumeInFlight,
+     fmtWhen, fmtIn, isFav, TOKEN, toast, refresh, paintJobPickers } = cc);
 }
