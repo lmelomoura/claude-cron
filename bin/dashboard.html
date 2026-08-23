@@ -1720,6 +1720,7 @@ CCApp.init({ $, fmtAgo, fmtDur, money,
              backoffMultiplier, activeRunsOf, renderJobs: renderJobsArea,
              effortLabel, fmtExpiresIn, resumeInFlight,
              fmtWhen, fmtIn, isFav, TOKEN, toast, refresh, paintJobPickers,
+             normStatus,
              get DATA(){ return DATA; },
              get currentView(){ return currentView; } });
 /* ================================================================ end app */
@@ -2318,47 +2319,19 @@ function liveRuns(){
   return out.sort((a,b)=>b.start-a.start);
 }
 
-// Column sort. `when` descending is the default and the only order in which a
-// live run belongs at the top, so live rows keep their place there and are
-// sorted with everything else under any other key.
-const SORTERS={
-  when:(a,b)=>a.start-b.start,
-  job:(a,b)=>String(a.id).localeCompare(String(b.id)) || a.start-b.start,
-  status:(a,b)=>String(a.live?"running":normStatus(a.status))
-                  .localeCompare(String(b.live?"running":normStatus(b.status))) || a.start-b.start,
-  cost:(a,b)=>((a.cost||0)-(b.cost||0)) || a.start-b.start,
-  duration:(a,b)=>((a.duration||0)-(b.duration||0)) || a.start-b.start,
-};
+// The comparators and the filter+sort arithmetic itself moved to
+// ui/app/runs.js (CCApp.filteredRuns) in Phase 2 Task 6, pure, no DOM, ready
+// for a characterisation test to read without pulling this page in -- the
+// same split Task 2 and Task 4 already made for the Jobs and Projects
+// tables' own sortJobs/visibleProjects. RF, RUN_COLS and the sort state
+// itself (sortKey/sortDir right below) stay here for now: see runs.js's own
+// banner comment on why relocating RF is not this task's to do.
 let sortKey="when", sortDir=-1;
 
 function filteredRuns(){
-  const fromT=RF.from?Date.parse(RF.from):null, toT=RF.to?Date.parse(RF.to):null;
-  // live rows first — a search narrows to indexed runs, so they drop out there
-  forgetDeadStops(liveRuns());   // a pid that is gone is no longer "stopping"
-  const live=searchKeys?[]:unjournaledLive();
-  const rows=live.concat(DATA.runs).filter(r=>{
-    if(r.live){
-      if(RF.project){ const rp=r.project||""; if(RF.project==="__none__" ? rp!=="" : rp!==RF.project) return false; }
-      if(RF.job && r.id!==RF.job) return false;
-      if(RF.status && RF.status!=="running") return false;
-      return true;
-    }
-    if(searchKeys && !searchKeys.has(r.id+"|"+r.start)) return false;
-    if(RF.project){ const rp=r.project||""; if(RF.project==="__none__" ? rp!=="" : rp!==RF.project) return false; }
-    if(RF.job && r.id!==RF.job) return false;
-    if(RF.status && normStatus(r.status)!==RF.status) return false;
-    const t=r.start*1000;
-    if(fromT && t<fromT) return false;
-    if(toT && t>toT) return false;
-    return true;
-  });
-  // The default order is already what the query produced, so only re-sort when
-  // the user has actually asked for something else.
-  if(sortKey!=="when" || sortDir!==-1){
-    const cmp=SORTERS[sortKey]||SORTERS.when;
-    rows.sort((a,b)=>cmp(a,b)*sortDir);
-  }
-  return rows;
+  // a pid that is gone is no longer "stopping"
+  forgetDeadStops(liveRuns());
+  return CCApp.filteredRuns(RF, unjournaledLive(), searchKeys, sortKey, sortDir);
 }
 
 /* ---- hover tooltip (fixed bubble on <body>, so no container can clip it) ---- */

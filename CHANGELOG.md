@@ -1246,6 +1246,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the Security area already paid for once, absence read as proof. Seeing
   the actual posture still means opening the Security area.
 
+- **The Runs table's own filter, search and sort arithmetic moves to a new
+  `ui/app/runs.js` (`filteredRuns`, `SORTERS`), pinned by four
+  characterisation tests ahead of the redesign that rebuilds this table into
+  a DOM module — the largest of the three, and the last before that
+  redesign.** `filteredRuns()` (`bin/dashboard.html`) merged live and
+  journaled runs, filtered both by the picker/search state and re-sorted the
+  result; it is now reached as `CCApp.filteredRuns(rf, liveRows, searchKeys,
+  sortKey, sortDir)`, with the filter object (`RF`), the sort state and
+  `RUN_COLS` all left in the page for now, unlike `jobFilters`/`projFilters`
+  — RF has five fields read from four picker call sites apiece, around forty
+  references in `bin/dashboard.html`, and none of Task 6's own four tests
+  are about who owns that state, only what the algorithm does with it; it
+  moves with the rest of the table in the task that restyles it, the same
+  deferral Task 4 already made for `PRJ_COLS`/`prjSortKey`/`prjSortDir`. The
+  four tests pin what the table already does: a filter (or a search) that
+  narrows the visible runs below the page an operator is already on pulls
+  `page` back to the last real one rather than leaving them looking at a
+  page that no longer exists; the footer and the pager read the FILTERED
+  count, never `DATA.runs.length`, so a filter that narrows the table to
+  nothing still says so truthfully instead of claiming to show everything;
+  a run the server's own search index matched purely by something its LOG
+  said — sharing nothing with the query text in its id — still surfaces,
+  because the client trusts that result set whole rather than re-checking
+  names on top of it; and Duration and Cost sort independently, since the
+  slowest run of a day and the most expensive one are rarely the same run —
+  the two were once merged into one column, which silently dropped the cost
+  sort entirely (the comparator still existed; no header could reach it),
+  making the priciest run of a 25-row page unfindable. `normStatus`
+  (`bin/dashboard.html`) joins `ui/app/page.js`'s shared interface for
+  `SORTERS.status`'s own sake, the same "one implementation, reached from
+  every caller" rule `eff`/`backoffMultiplier`/`activeRunsOf` already
+  follow, rather than a second copy living in the new module.
+
 ### Added
 
 - **A read-only query layer for the Security dashboard.** `security/queries.py`

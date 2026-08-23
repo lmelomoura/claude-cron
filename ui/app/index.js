@@ -32,6 +32,7 @@ import { pageHeader, kpiCard } from "./chrome.js";
 import { renderJobsPage, jobsSort, jobsSetPage, initJobDrag } from "./jobs-table.js";
 import { visibleProjects, projFilters, projectIsolation,
          renderProjectsPage, projectsSort, projectsSetPage } from "./projects.js";
+import { filteredRuns } from "./runs.js";
 
 function init(cc){
   bindPage(cc);
@@ -109,4 +110,13 @@ window.CCApp = { init, jobFacts, visibleJobs, jobFilters, bulkOn,
                  // for a sortable header and CCApp.projectsSetPage(delta)
                  // for the footer's pager, instead of keeping
                  // prjSortKey/prjSortDir/page as its own module state.
-                 renderProjectsPage, projectsSort, projectsSetPage };
+                 renderProjectsPage, projectsSort, projectsSetPage,
+                 // filteredRuns is Phase 2 Task 6's: bin/dashboard.html's own
+                 // filteredRuns() now delegates its filter+sort arithmetic to
+                 // CCApp.filteredRuns(RF, liveRows, searchKeys, sortKey,
+                 // sortDir) instead of keeping a second copy -- SORTERS stays
+                 // internal to ui/app/runs.js, since nothing outside that
+                 // module calls it directly (see that file's own banner
+                 // comment on why RF, RUN_COLS and the sort state itself stay
+                 // in the page for this task).
+                 filteredRuns };

@@ -20,6 +20,7 @@
   var toast;
   var refresh;
   var paintJobPickers;
+  var normStatus;
   var CC = null;
   function bindPage(cc) {
     CC = cc;
@@ -43,7 +44,8 @@
       TOKEN,
       toast,
       refresh,
-      paintJobPickers
+      paintJobPickers,
+      normStatus
     } = cc);
   }
 
@@ -1627,6 +1629,46 @@
     renderProjectsTable(rows);
   }
 
+  // ui/app/runs.js
+  var SORTERS = {
+    when: (a, b) => a.start - b.start,
+    job: (a, b) => String(a.id).localeCompare(String(b.id)) || a.start - b.start,
+    status: (a, b) => String(a.live ? "running" : normStatus(a.status)).localeCompare(String(b.live ? "running" : normStatus(b.status))) || a.start - b.start,
+    cost: (a, b) => (a.cost || 0) - (b.cost || 0) || a.start - b.start,
+    duration: (a, b) => (a.duration || 0) - (b.duration || 0) || a.start - b.start
+  };
+  function filteredRuns(rf, liveRows, searchKeys, sortKey3, sortDir3) {
+    const fromT = rf.from ? Date.parse(rf.from) : null, toT = rf.to ? Date.parse(rf.to) : null;
+    const live = searchKeys ? [] : liveRows;
+    const rows = live.concat(CC.DATA.runs).filter((r) => {
+      if (r.live) {
+        if (rf.project) {
+          const rp = r.project || "";
+          if (rf.project === "__none__" ? rp !== "" : rp !== rf.project) return false;
+        }
+        if (rf.job && r.id !== rf.job) return false;
+        if (rf.status && rf.status !== "running") return false;
+        return true;
+      }
+      if (searchKeys && !searchKeys.has(r.id + "|" + r.start)) return false;
+      if (rf.project) {
+        const rp = r.project || "";
+        if (rf.project === "__none__" ? rp !== "" : rp !== rf.project) return false;
+      }
+      if (rf.job && r.id !== rf.job) return false;
+      if (rf.status && normStatus(r.status) !== rf.status) return false;
+      const t = r.start * 1e3;
+      if (fromT && t < fromT) return false;
+      if (toT && t > toT) return false;
+      return true;
+    });
+    if (sortKey3 !== "when" || sortDir3 !== -1) {
+      const cmp = SORTERS[sortKey3] || SORTERS.when;
+      rows.sort((a, b) => cmp(a, b) * sortDir3);
+    }
+    return rows;
+  }
+
   // ui/app/index.js
   function init(cc) {
     bindPage(cc);
@@ -1710,8 +1752,17 @@
     // prjSortKey/prjSortDir/page as its own module state.
     renderProjectsPage,
     projectsSort,
-    projectsSetPage
+    projectsSetPage,
+    // filteredRuns is Phase 2 Task 6's: bin/dashboard.html's own
+    // filteredRuns() now delegates its filter+sort arithmetic to
+    // CCApp.filteredRuns(RF, liveRows, searchKeys, sortKey,
+    // sortDir) instead of keeping a second copy -- SORTERS stays
+    // internal to ui/app/runs.js, since nothing outside that
+    // module calls it directly (see that file's own banner
+    // comment on why RF, RUN_COLS and the sort state itself stay
+    // in the page for this task).
+    filteredRuns
   };
 })();
-/* ui-bundle: 0b5a7cc0aea7e29ce2f4e76b7146cb0de9451881eab90d458e5507b783cd6a43 */
-/* ui-sources: f58127b22f783eaccd3103d2c74542f374ca98ee113fe9b521b6c3ff02c83f29 */
+/* ui-bundle: eb5fdf46b3cb5ffbbce8521aa08ac70342805c46edd81574073fd96d1f08bede */
+/* ui-sources: ceadec8ddc99f588873606db3fcd69049dd74e40afbc9d13af71d134a1ae6cc2 */

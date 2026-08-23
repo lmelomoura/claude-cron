@@ -40,6 +40,13 @@
    themselves, which also paint the four Runs pickers this same
    `initPickers()` builds and are not this module's to own.
 
+   normStatus joins the list for the Runs table's own sake (Phase 2 Task 6):
+   the page's one implementation (`s==="ok"?"success":(s||"—")`) normalises a
+   run's stored status for the log modal, the resume tooltip AND the Runs
+   table's own sort -- ui/app/runs.js's SORTERS.status reads it rather than
+   keeping a second copy, the same "one implementation, reached from every
+   caller" rule eff/backoffMultiplier/activeRunsOf already followed above.
+
    esc, iconLabel, openLog, openEditor and setView still are not exported:
    nothing under ui/app/ calls any of them. api is not either -- the module's
    own network calls (initJobDrag's reorder) go through a plain `fetch` the
@@ -50,7 +57,8 @@ export let $, fmtAgo, fmtDur, money,
            icon, projById, eff,
            backoffMultiplier, activeRunsOf, renderJobs,
            effortLabel, fmtExpiresIn, resumeInFlight,
-           fmtWhen, fmtIn, isFav, TOKEN, toast, refresh, paintJobPickers;
+           fmtWhen, fmtIn, isFav, TOKEN, toast, refresh, paintJobPickers,
+           normStatus;
 
 /* DATA and currentView are REASSIGNED by the page -- DATA on every five-second
    poll, currentView on every navigation. Destructured they would freeze at
@@ -64,5 +72,6 @@ export function bindPage(cc){
      icon, projById, eff,
      backoffMultiplier, activeRunsOf, renderJobs,
      effortLabel, fmtExpiresIn, resumeInFlight,
-     fmtWhen, fmtIn, isFav, TOKEN, toast, refresh, paintJobPickers } = cc);
+     fmtWhen, fmtIn, isFav, TOKEN, toast, refresh, paintJobPickers,
+     normStatus } = cc);
 }

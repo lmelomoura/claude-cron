@@ -1511,6 +1511,156 @@ def test_the_jobs_and_projects_tables_declare_a_width_for_every_column(
         f"nth-child {nth_widths} + last-child {last_width}")
 
 
+# ---- the Runs table, pinned ahead of phase 2's redesign (Task 6). Same gate
+# as the Jobs and Projects tables above: characterisation tests, so they pass
+# on their first run -- the falsifiability of each one (break, red, revert)
+# is recorded by hand in .superpowers/sdd/f2-task-6-7-report.md rather than
+# by a red-then-green cycle here. filteredRuns and SORTERS (both new in
+# ui/app/runs.js, extracted verbatim from bin/dashboard.html's own
+# filteredRuns()) are pure and pinned directly below. renderRuns's own
+# pagination clamp and footer count stay in the page for this task (see
+# runs.js's own banner comment on why RF is not relocated yet) and are
+# pinned by driving the REAL function -- not a hand-copied snippet -- over a
+# scenario engineered so its row-building branch (built from HTML strings,
+# and already exercised by the Resume-button tests above) is never reached:
+# an empty filtered set skips straight to the fallback row, so the only
+# things that matter here -- the page clamp and the footer text -- are
+# exercised without needing STATUS_ICON, causeTag, resumeTarget or any of
+# renderRuns's other row-only dependencies.
+
+def _runs_page_stub_harness():
+    """$, renderRunHead and paintRunFilters, stood up just enough for
+    renderRuns() to run to completion against an EMPTY filtered set -- see
+    this section's own banner comment on why empty is enough."""
+    return """
+    const ELS = {};
+    function $(id){ if(!ELS[id]) ELS[id] = {textContent:"", disabled:false, innerHTML:""}; return ELS[id]; }
+    function renderRunHead(){}
+    function paintRunFilters(_shown){}
+    const I = { inbox: "" };
+    """
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_a_shrunk_filtered_set_pulls_the_current_page_back_from_beyond_it(srv, tmp_path):
+    """A filter (or a search) that narrows the visible runs below the page
+    the operator is already on must not leave them staring at a page that no
+    longer exists -- renderRuns() pulls `page` back to the last real page the
+    moment the filtered set no longer reaches it."""
+    js = _js(srv)
+    fn = _plainfn(js, "renderRuns")
+    script = tmp_path / "runs-page-clamp.js"
+    script.write_text(_runs_page_stub_harness() + """
+    // The filter narrowed the set to nothing -- one page, and page 5 (where
+    // the operator was looking at a larger, unfiltered set) is well past it.
+    function filteredRuns(){ return []; }
+    const DATA = { runs: [1, 2, 3, 4, 5] };
+    const searchKeys = null;
+    let page = 5, pageSize = 25;
+    """ + fn + """
+    renderRuns();
+    console.log(JSON.stringify({page, pgInfo: $("pg-info").textContent}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["page"] == 1, (
+        f"the filtered set has one page, but page stayed at {out['page']} -- "
+        "the operator is left looking at a page that no longer exists")
+    assert out["pgInfo"].startswith("Page 1 / 1"), out["pgInfo"]
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_footer_and_pager_count_the_filtered_set_not_the_total(srv, tmp_path):
+    '''"0 of 5 runs" and "5 of 5 runs" are two different sentences -- the
+    footer (and the page count driving it) must read off the FILTERED set
+    filteredRuns() returns, never DATA.runs.length, or a filter that narrowed
+    the table to nothing would still claim to be showing everything.'''
+    js = _js(srv)
+    fn = _plainfn(js, "renderRuns")
+    script = tmp_path / "runs-footer-count.js"
+    script.write_text(_runs_page_stub_harness() + """
+    // Five runs on record; the active filter matches none of them -- the
+    // footer has to say 0, not 5.
+    function filteredRuns(){ return []; }
+    const DATA = { runs: [1, 2, 3, 4, 5] };
+    const searchKeys = null;
+    let page = 1, pageSize = 25;
+    """ + fn + """
+    renderRuns();
+    console.log($("pg-info").textContent);
+    """)
+    out = subprocess.run(["node", str(script)], capture_output=True,
+                         text=True, check=True).stdout.strip()
+    assert "0 run" in out, f"the footer did not read the filtered count: {out!r}"
+    assert "5 run" not in out, (
+        f"the footer counted DATA.runs.length (the total, 5) instead of the "
+        f"filtered set (0): {out!r}")
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_a_run_matched_only_in_its_log_content_still_surfaces(srv, tmp_path):
+    """/api/search's own index covers a run's log content as well as its id
+    (see ui/app/runs.js's own comment on filteredRuns) -- the client has to
+    trust that whole result set, so a run whose id shares nothing with the
+    query text, matched purely by something its LOG said, must still show up
+    here. Restricting the client's own filter to names as well -- redundant
+    with the server, and exactly the regression this test exists to catch --
+    would silently hide it again."""
+    block = _app_js(srv)
+    fn = _plainfn(block, "filteredRuns")
+    script = tmp_path / "search-log-content.js"
+    script.write_text("""
+    const CC = { DATA: { runs: [
+      {id: "nightly-backup", start: 1000, status: "success"},
+      {id: "weekly-report",  start: 2000, status: "success"},
+    ] } };
+    function normStatus(s){ return s === "ok" ? "success" : (s || "\\u2014"); }
+    const RF = {project: "", job: "", status: "", from: "", to: ""};
+    // The server flagged "weekly-report" as a match -- nothing about that id
+    // shares a word with the query; the hit came from something its log said.
+    const searchKeys = new Set(["weekly-report|2000"]);
+    """ + fn + """
+    console.log(JSON.stringify(filteredRuns(RF, [], searchKeys, "when", -1).map(r => r.id)));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out == ["weekly-report"], (
+        "a run the server matched by log content alone did not survive the "
+        f"client's own filter: got {out}")
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_duration_and_cost_sort_independently(srv, tmp_path):
+    """The slowest run of the day and the most expensive one are rarely the
+    same run -- Duration and Cost are separate comparators (ui/app/runs.js's
+    SORTERS) precisely so both stay reachable by their own header. They used
+    to be merged into one column, which silently dropped the cost sort: the
+    comparator still existed, but no header could reach it, so the priciest
+    run of a 25-row page became unfindable -- the historical defect RUN_COLS'
+    own comment (bin/dashboard.html) describes."""
+    block = _app_js(srv)
+    sorters = _const(block, "SORTERS")
+    script = tmp_path / "sort-cost-duration.js"
+    script.write_text(sorters + """
+    const rows = [
+      {id: "slow-cheap",  start: 1, duration: 500, cost: 1},
+      {id: "fast-pricey", start: 2, duration: 10,  cost: 99},
+      {id: "mid",         start: 3, duration: 100, cost: 20},
+    ];
+    console.log(JSON.stringify({
+      byDuration: [...rows].sort(SORTERS.duration).map(r => r.id),
+      byCost:     [...rows].sort(SORTERS.cost).map(r => r.id),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["byDuration"] == ["fast-pricey", "mid", "slow-cheap"], out["byDuration"]
+    assert out["byCost"] == ["slow-cheap", "mid", "fast-pricey"], out["byCost"]
+    assert out["byDuration"] != out["byCost"], (
+        "sorting by cost produced the same order as duration -- the "
+        "historical regression RUN_COLS' own comment describes")
+
+
 # ---- the Overview's own arithmetic, pinned ahead of the redesign that turns
 # three loose tiles and a footer strip into five KPI cards and rebuilds the
 # job card from HTML strings into DOM nodes. Characterisation tests: they
