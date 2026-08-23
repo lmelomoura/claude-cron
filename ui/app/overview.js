@@ -23,18 +23,19 @@
    against the engine's own bash copy: kept in step by hand, called out here
    so the next person knows there are two to update.
 
-   pageHeader, kpiCard, renderPulse and renderOverviewHead, added below the
-   pinned functions, are a different kind of thing: they build the DOM the
-   page mounts, so they need $, CC and icon from ./page.js the way every
-   other screen's renderer does (see ui/security/index-screen.js). Most of
-   them are never pulled out and run standing alone by a test, so the
-   isolation rule above does not bind them -- but tickTotals, pickLine and
-   greetingParts, which they call, still are self-contained on purpose:
-   nothing stops a future test from extracting one of those three the same
-   way pulseKpis already is. kpiCard is the one exception: the door-vs-
-   plain-element characterisation test extracts it (and its own `el`
-   helper) by name, which is why its parameter is a plain `opts` rather
-   than a destructured object -- see its own comment. */
+   renderPulse and renderOverviewHead are a different kind of thing: they
+   build the DOM the page mounts, so they need $, CC and icon from
+   ./page.js the way every other screen's renderer does (see
+   ui/security/index-screen.js). Neither is pulled out and run standing
+   alone by a test, so the isolation rule above does not bind them -- but
+   tickTotals, pickLine and greetingParts, which they call, still are
+   self-contained on purpose: nothing stops a future test from extracting
+   one of those three the same way pulseKpis already is.
+
+   pageHeader and kpiCard used to sit here too. They are page-agnostic --
+   every screen phase 2 and 3 touch needs both -- so they moved to
+   ./chrome.js rather than have five pages import their own furniture from
+   a file named for one of them. */
 import { $, CC, icon, eff, fmtAgo, fmtDur, money, effortLabel, fmtExpiresIn,
          resumeInFlight, projById } from "./page.js";
 import { jobFacts } from "./jobs-domain.js";
@@ -50,7 +51,7 @@ import { el, pageHeader, kpiCard } from "./chrome.js";
 // nothing behind it to navigate to -- see pulseHtml's own chip() closure,
 // which this is extracted from. `door` says whether the card is a way IN to
 // Runs AT ALL, regardless of the current count: true for Warnings/Errors,
-// false for the other three, always -- see kpiCard's own comment on why
+// false for the other three, always -- see kpiCard's own comment in chrome.js on why
 // `filter` alone (empty both for a card that never navigates and for a door
 // at a zero count) cannot carry that distinction by itself. `value` and the
 // currency in "Spent today" are already display-ready strings, not raw
@@ -98,7 +99,7 @@ export function pulseKpis(k){
     // as if it happened today. What a warning or an error actually IS goes
     // in `title` instead, where a full sentence is free rather than
     // fighting the three-to-five-word bar every other sublabel holds to --
-    // see kpiCard's own comment on how `title` reaches the card. "open them
+    // see kpiCard's own comment in chrome.js on how `title` reaches the card. "open them
     // in Runs" is dropped rather than moved: the card is already a button,
     // and a disabled one already says there is nothing behind it. Do not
     // restate the count in the sublabel ("2 in the last 7 days") -- the

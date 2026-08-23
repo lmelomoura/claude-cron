@@ -236,7 +236,7 @@
       // as if it happened today. What a warning or an error actually IS goes
       // in `title` instead, where a full sentence is free rather than
       // fighting the three-to-five-word bar every other sublabel holds to --
-      // see kpiCard's own comment on how `title` reaches the card. "open them
+      // see kpiCard's own comment in chrome.js on how `title` reaches the card. "open them
       // in Runs" is dropped rather than moved: the card is already a button,
       // and a disabled one already says there is nothing behind it. Do not
       // restate the count in the sublabel ("2 in the last 7 days") -- the
@@ -893,5 +893,5 @@
     jobCard
   };
 })();
-/* ui-bundle: 086a3fadb1a40546975dca160b0655892133f911b2323e24bc6ef3826351cadf */
-/* ui-sources: 8374e3d3b04a6fb3759f0e7940f746717e5be63eb53dbaeb54a18b8d4bcf96e7 */
+/* ui-bundle: 1d1f4bd491294e042276e88a0fcffe5736cdcefcd2e42dd127a45183f58d84a4 */
+/* ui-sources: fd9f4e37ecba0a59d1d3e1f54f2adfb1a83df44aa4d20b811bd504f88fa6e99e */

@@ -322,6 +322,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`ui/app/overview.js`'s banner no longer describes a layout the file does
+  not have.** `pageHeader` and `kpiCard` moved out to `ui/app/chrome.js`, and
+  three pointers stayed behind: the banner still listed both among the things
+  defined below it, and two comments sent a reader to `kpiCard`'s explanation
+  without saying which file now holds it. The comments in this file carry the
+  reasoning behind its isolation rule and its deliberate duplications, so one
+  that misdescribes the file's own shape costs more than no comment at all.
+
 - **The Overview's job groups no longer butt up against the 24-hour band.**
   The band's panel carried no bottom margin, because until this redesign it was
   the last thing in the Overview's top block and nothing sat below it to clear.
