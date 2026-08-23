@@ -265,6 +265,20 @@ button.kpi-card.err:not(:disabled):hover{border-color:color-mix(in srgb,var(--er
 .table-card{background:var(--panel);border:1px solid var(--line);border-radius:13px;
   box-shadow:var(--shadow);overflow:hidden}
 .table-scroll{overflow-x:auto}
+/* Defense in depth, not the fix itself: the actual bug that made the
+   Security column's pill spill into Projects' own actions column was a
+   missing per-column width in pages.css (see #view-projects's own comment),
+   fixed there. This rule is what keeps the SAME class of mistake from ever
+   again reading as a collision -- a cell with too little width can still end
+   up here (a column added to Jobs or Runs later, its own pages.css rules
+   forgotten the same way), and a table cell has no overflow control of its
+   own by default, so its content would keep spilling into the next one.
+   Scoped to `.table-card` specifically -- the one wrapper tableCard()
+   (chrome.js) always renders around Jobs', Projects' and (once it converts)
+   Runs' own tables -- so a future column miscount there is caught by
+   degrading to a clipped cell, never a pill hiding behind a row's own edit
+   and delete buttons. */
+.table-card td,.table-card th{overflow:hidden}
 .table-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;
   padding:11px 14px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);
   font-variant-numeric:tabular-nums}

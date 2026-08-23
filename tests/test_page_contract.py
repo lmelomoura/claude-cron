@@ -1430,6 +1430,87 @@ def test_the_security_column_tells_three_states_apart(srv, tmp_path):
         "two of the three security states painted alike")
 
 
+# ---- the Security column overlapping the row actions (visual-inspection
+# finding 1). PRJ_COLS gained a seventh entry (Security) above and
+# #view-projects's own width rules in ui/css/pages.css were never updated to
+# match: five nth-child rules plus th:last-child already summed to 100%
+# without it, so the new th:nth-child(6) had no width rule at all. Under
+# table-layout:fixed that is not "shares whatever is left" -- it computed to
+# a hair over 0px (confirmed live: getBoundingClientRect() on the Security
+# <th> read 0.03125px against a table 1218px wide) -- and the pill inside it
+# (white-space:nowrap, nothing of its own to clip it) spilled rightward into
+# the actions column, landing on top of the row's own edit/delete buttons.
+#
+# Geometry itself cannot be driven here: _INDEX_DOM_HARNESS's FakeElement
+# (this file's own Node DOM stand-in) has no layout whatsoever -- a bare
+# .style object, no getBoundingClientRect, no cascade, nothing table-layout
+# could even be computed against -- so no test in this suite can lay out a
+# row and measure whether two cells' boxes overlap. Nor would "is the actions
+# cell a real final <td>, not an overlay" have caught this: it always was a
+# real final <td> in normal table flow -- that was never the defect, so a
+# test of only that shape would pass on the broken CSS just as it does on the
+# fixed CSS, and prove nothing. What actually was wrong, and is testable
+# without a layout engine, is the CSS's own bookkeeping: does every column
+# tableCard() (ui/app/chrome.js) renders have a declared width, summing to a
+# real 100% -- read from the same PRJ_COLS/JOB_COLS arrays the page itself
+# renders from, not a hand-typed column count that could drift from them the
+# same way the CSS already did once.
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+@pytest.mark.parametrize("view,const_name", [
+    ("view-jobs", "JOB_COLS"),
+    ("view-projects", "PRJ_COLS"),
+], ids=["jobs", "projects"])
+def test_the_jobs_and_projects_tables_declare_a_width_for_every_column(
+        srv, tmp_path, view, const_name):
+    """Must fail against the pre-fix CSS (Security's th:nth-child(6) has no
+    width rule, so column 6 is 'missing') and pass once every column gets
+    one. The sum-to-100% assertion below is a second, weaker guard -- it is
+    NOT what pins this bug, since the broken CSS's five nth-child rules plus
+    th:last-child already summed to exactly 100% without the Security column
+    ever entering the sum at all. `missing` is the assertion that actually
+    catches it.
+
+    Jobs is included in the same parametrize list, not because it was ever
+    broken (JOB_COLS' own eight columns already had eight matching width
+    rules, summing to 100%, both before and after this fix), but so a future
+    column added to Jobs is checked exactly the same way a future one added
+    to Runs will be once Runs converts to tableCard() and gains its own
+    #view-runs rules -- the whole point being one guard that holds regardless
+    of which of the three pages next grows a column, not a Projects-only
+    patch good for exactly seven columns."""
+    app_js = _app_js(srv)
+    consts = _const(app_js, const_name)
+    script = tmp_path / f"{view.replace('-', '_')}-cols.js"
+    script.write_text(consts + f"console.log({const_name}.length);")
+    n_cols = int(subprocess.run(["node", str(script)], capture_output=True,
+                                 text=True, check=True).stdout.strip())
+
+    css = (REPO / "ui" / "css" / "pages.css").read_text()
+    rule = re.compile(
+        r"#" + re.escape(view) + r" th:nth-child\((\d+)\)\{width:([\d.]+)%\}|"
+        r"#" + re.escape(view) + r" th:last-child\{width:([\d.]+)%\}")
+    nth_widths = {}
+    last_width = None
+    for m in rule.finditer(css):
+        if m.group(1):
+            nth_widths[int(m.group(1))] = float(m.group(2))
+        else:
+            last_width = float(m.group(3))
+
+    assert last_width is not None, f"#{view} has no th:last-child width rule"
+    missing = [i for i in range(1, n_cols) if i not in nth_widths]
+    assert not missing, (
+        f"#{view} renders {n_cols} columns ({const_name}) but "
+        f"th:nth-child({missing}) has no width rule -- an undeclared column "
+        f"computes to ~0px under table-layout:fixed and spills its content "
+        f"into whichever column comes after it")
+    total = sum(nth_widths.values()) + last_width
+    assert abs(total - 100) < 0.01, (
+        f"#{view}'s declared column widths sum to {total}%, not 100%: "
+        f"nth-child {nth_widths} + last-child {last_width}")
+
+
 # ---- the Overview's own arithmetic, pinned ahead of the redesign that turns
 # three loose tiles and a footer strip into five KPI cards and rebuilds the
 # job card from HTML strings into DOM nodes. Characterisation tests: they

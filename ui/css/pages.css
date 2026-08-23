@@ -190,13 +190,29 @@
 /* A path is read from the end — that is where the repo name is. */
 .pathcell{display:block;direction:rtl;text-align:left;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;font-size:11.5px;color:var(--muted)}
-#view-projects table{table-layout:fixed;min-width:900px}
-#view-projects th:nth-child(1){width:28%}
-#view-projects th:nth-child(2){width:8%}
-#view-projects th:nth-child(3){width:30%}
-#view-projects th:nth-child(4){width:12%}
-#view-projects th:nth-child(5){width:12%}
-#view-projects th:last-child{width:10%}
+/* Seven columns, not six: PRJ_COLS (ui/app/projects.js) grew a Security
+   column and this rule set was never updated to match, which left the new
+   th:nth-child(6) with no declared width at all. Under table-layout:fixed
+   that is not "auto-sized" -- the five nth-child rules plus th:last-child
+   already summed to 100%, so the undeclared column got NOTHING, computed to
+   a hair over 0px. Its pill (white-space:nowrap, no overflow of its own)
+   still rendered at full size and spilled rightward, landing on top of the
+   actions column's icon buttons -- "Never analysed"/"Disabled" reading as
+   half-hidden behind Edit/Delete. min-width goes from 900 to 1000 (matching
+   #view-jobs below) for the same reason #view-jobs already sits at 1000: a
+   Security pill needs more room than the 900px floor budgeted for six
+   columns ever had to give it. See
+   test_the_jobs_and_projects_tables_declare_a_width_for_every_column
+   (tests/test_page_contract.py) for the guard that now fails the moment a
+   th count and a rule count next drift apart, in either table. */
+#view-projects table{table-layout:fixed;min-width:1000px}
+#view-projects th:nth-child(1){width:25%}   /* Project           */
+#view-projects th:nth-child(2){width:8%}    /* Jobs              */
+#view-projects th:nth-child(3){width:20%}   /* Working directory */
+#view-projects th:nth-child(4){width:10%}   /* Repos             */
+#view-projects th:nth-child(5){width:11%}   /* Isolation         */
+#view-projects th:nth-child(6){width:16%}   /* Security          */
+#view-projects th:last-child{width:10%}     /* actions           */
 #view-projects .rowacts{padding-left:4px;padding-right:10px}
 /* Filled, not outlined. The icon set draws with `stroke:currentColor`, and the
    folder rule beside it paints the row's icons accent — so an amber fill came

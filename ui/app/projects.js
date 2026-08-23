@@ -116,6 +116,7 @@ function projectsKpis(rows){
   const isoStates = rows.map(p => projectIsolation(p)[0]);
   const isolated = isoStates.filter(s => s === "on").length;
   const neverIsolated = isoStates.filter(s => s === "off").length;
+  const autoIsolated = isoStates.filter(s => s === "auto").length;
 
   return [
     {label: "Projects", value: String(total),
@@ -124,13 +125,34 @@ function projectsKpis(rows){
         : "every one has a job",
      tone: "", filter: "", door: false},
     {label: "Jobs organised", value: String(jobsTotal),
-     sub: total ? (jobsTotal / total).toFixed(1) + " per project" : "no projects yet",
+     // Rounded to one decimal, THEN handed to a Number rather than kept as a
+     // fixed string -- two projects with four jobs each is a count ("4 per
+     // project"), not a float wearing a trailing zero ("4.0"); two with four
+     // and five is genuinely fractional ("4.5") and keeps its one digit.
+     // `.toFixed(1)` always printed the zero; `Math.round(...)/10` produces
+     // a Number, and Number#toString() drops it on its own.
+     sub: total ? (Math.round(jobsTotal / total * 10) / 10) + " per project" : "no projects yet",
      tone: "", filter: "", door: false},
     {label: "Security enabled", value: String(secEnabled),
      sub: !secEnabled ? "none turned on yet" : secAnalysed + " analysed at least once",
      tone: "", filter: "", door: false},
+    // Isolation is three states, not two (see projectIsolation's own
+    // comment) -- `isolated` counts only "always" (`on`). Pairing it with
+    // `neverIsolated` (`off`) alone used to fall back to "none set to never"
+    // whenever off was zero, a sublabel that names a state nobody asked
+    // about and never mentions the one the headline number actually counts
+    // (checked against config/projects.json: Minerva is "always", Quality
+    // Gate is "auto", so `off` is 0 and the reader saw "Isolated 1 / none
+    // set to never" -- two facts about two different things, not one).
+    // `off`, when it is the more informative of the remaining two states,
+    // still leads; `auto` -- the state a real fleet is more likely to have
+    // nonzero, since it is also what an unconfigured project defaults to --
+    // is the fallback that keeps the pair naming an actual state instead of
+    // the absence of one.
     {label: "Isolated", value: String(isolated),
-     sub: neverIsolated ? neverIsolated + " never isolate" : "none set to never",
+     sub: neverIsolated ? neverIsolated + " never isolate"
+        : autoIsolated ? autoIsolated + " left automatic"
+        : (total ? "every project isolates" : "no projects yet"),
      tone: "", filter: "", door: false},
   ];
 }

@@ -322,6 +322,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The Security column no longer hides behind Projects' own row actions,
+  and the Projects KPI cards say what their numbers mean.** `PRJ_COLS`
+  (`ui/app/projects.js`) grew a seventh column (Security) and `ui/css/
+  pages.css`'s own `#view-projects` width rules were never updated to
+  match — five `nth-child` rules plus `th:last-child` already summed to
+  100% without it, so the new column had no width rule at all. Under
+  `table-layout:fixed` that computes to a hair over 0px, not "whatever is
+  left" (confirmed live: `getBoundingClientRect()` on the Security `<th>`
+  read 0.03px), and the pill inside it — `white-space:nowrap`, nothing of
+  its own to clip it — spilled rightward into the actions column, landing
+  on top of the row's own edit/delete buttons. Every `#view-projects`
+  column now has a real declared width (`min-width` moves to 1000px,
+  matching `#view-jobs`, since a 900px floor sized for six columns never
+  had to fit a Security pill), and `.table-card td,.table-card
+  th{overflow:hidden}` is added so the same class of mistake — a column
+  added to Jobs or Runs later with its own width rule forgotten — degrades
+  to a clipped cell rather than one element hiding behind another. Jobs
+  itself was never affected: its eight columns already had eight matching
+  width rules summing to 100%, checked and confirmed live before touching
+  anything. Separately, the "Jobs organised" KPI's sublabel no longer reads
+  "4.0 per project" for an exact integer average — `Math.round(ratio *
+  10) / 10` replaces `.toFixed(1)`, so the trailing zero only survives
+  when the average genuinely has a fractional part. And the "Isolated"
+  KPI's sublabel no longer says "none set to never" while the headline
+  number counts an entirely different isolation state (`always`) — it now
+  names whichever of the other two states (`never`, then `auto`) is
+  actually nonzero, so the pair reads as one fact instead of two
+  unrelated ones.
+
 - **`ui/app/overview.js`'s banner no longer describes a layout the file does
   not have.** `pageHeader` and `kpiCard` moved out to `ui/app/chrome.js`, and
   three pointers stayed behind: the banner still listed both among the things
