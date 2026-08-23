@@ -322,6 +322,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The Overview's job groups no longer butt up against the 24-hour band.**
+  The band's panel carried no bottom margin, because until this redesign it was
+  the last thing in the Overview's top block and nothing sat below it to clear.
+  With the job cards moved directly beneath it, the two touched. It now carries
+  the same 20px section gap the KPI grid above it already used.
+
 - **Filtering the Overview down to "Standalone" no longer drops the
   "Standalone jobs" group header.** `groupJobs(jobs, favSet)`, extracted
   from `renderJobCards` one commit ago, only ever saw the already-filtered

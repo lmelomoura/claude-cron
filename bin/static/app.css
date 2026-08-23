@@ -621,8 +621,12 @@ td .favdot .ic{width:11px;height:11px;fill:var(--warn);stroke:none}
    running, or could not probe at all. */
 /* `pulsepanel`, not `pulse`: the running badge's dot is a `.pulse` too, and a
    bare `.pulse` here dressed that 8px dot in this panel's padding and border. */
+/* The bottom margin is the page's own 20px section gap, the same one
+   .kpi-grid carries above this panel. Without it the job groups butt straight
+   up against the band -- the panel used to be the last thing in the Overview's
+   top block, so nothing below it needed clearing. */
 .pulsepanel{background:var(--panel);border:1px solid var(--line);border-radius:14px;
-  padding:16px 20px;box-shadow:var(--shadow)}
+  padding:16px 20px;margin:0 0 20px;box-shadow:var(--shadow)}
 /* Full width now: the KPI cards that used to share this panel (as a `.tiles`
    column and a `.pulse-f` footer strip) are their own cards above, in
    ui/css/components.css -- a time series with nothing left to compete with
@@ -1473,5 +1477,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: 58e73e559f2e68294708f06bf93e36ac72ee8b2a66546668e081fae3b3d367b0 */
-/* ui-sources: 428a88024f77dcc6641508f28eadfaa0bc31f3a3072737d4e2f709643990311c */
+/* ui-bundle: 44860d619dfbfc4e560e11b3bf39a1432bc884a96a164c0269e8c2573ece75be */
+/* ui-sources: 23933bee097a72161a606cb8392cfd83752d729acffdebb230a51064ea0a1af8 */
