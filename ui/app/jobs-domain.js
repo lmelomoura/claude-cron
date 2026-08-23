@@ -123,3 +123,54 @@ export function clearJobFilters(){
 export function jobProjectNames(){
   return [...new Set((CC.DATA.jobs||[]).map(j=>j.project||"").filter(Boolean))].sort();
 }
+
+/* ------------------------------------------------------------- jobs as a table
+   The same set the cards show, for when jobs are what you came for rather than
+   something you are glancing at. Deliberately narrow: a card can afford a
+   sparkline, a probe verdict and nine settings; a table row that tried would be
+   unreadable at twenty rows, which is the only size where a table wins. What is
+   here is what you sort or scan by — everything else is one click into Edit.
+   Moved out of bin/dashboard.html's renderJobTable, unchanged: the table is
+   this module's second consumer, not yet a rewrite of what it sorts by. */
+export const JOB_COLS = [
+  ["job","Job"],["project","Project"],["state","Status"],[null,"Schedule"],
+  ["last","Last run"],["next","Next"],["today","Today"],[null,""],
+];
+// Worst-first when sorting by status: disabled and idle are the two you are
+// looking for, and "enabled" is the state of everything you are not.
+const STATE_RANK = {running:0, enabled:1, idle:2, disabled:3};
+// `missing` is the rows the column has no answer for — a job that has never run
+// has no "last run", a disabled one has no "next". They sort to the BOTTOM
+// whichever way the arrow points, because "never" is neither early nor late:
+// treating it as a very large number is what put seventeen disabled jobs above
+// the ones actually due the moment you reversed the column.
+const JOB_SORTERS = {
+  job:{cmp:(a,b)=>String(a.j.id).localeCompare(String(b.j.id))},
+  // Within a project the jobs stay A→Z whichever way the column points: you sort
+  // by project to read one project's jobs together, not to scramble them.
+  project:{cmp:(a,b)=>String(a.j.project).localeCompare(String(b.j.project)),
+           tie:(a,b)=>String(a.j.id).localeCompare(String(b.j.id)),
+           missing:(x)=>!x.j.project},
+  state:{cmp:(a,b)=>(STATE_RANK[a.F.state]-STATE_RANK[b.F.state])
+                    || String(a.j.id).localeCompare(String(b.j.id))},
+  last:{cmp:(a,b)=>(a.F.st.last_run_start-b.F.st.last_run_start),
+        missing:(x)=>!x.F.st.last_run_start},
+  next:{cmp:(a,b)=>(a.F.nextAt-b.F.nextAt),
+        missing:(x)=>x.F.disabled || x.F.nextAt==null},
+  today:{cmp:(a,b)=>(a.F.spentToday-b.F.spentToday)},
+};
+
+// Orders one column's worth of `{j, F}` rows exactly as renderJobTable
+// (bin/dashboard.html) built the sort inline: rows the column has an answer
+// for, sorted by that column and tie-broken by id -- the tiebreak deliberately
+// NOT reversed with `dir`, see JOB_SORTERS' own `project` comment -- then rows
+// it has none for, appended in id order regardless of `dir` (see the `missing`
+// comment above JOB_SORTERS).
+export function sortJobs(rows, key, dir){
+  const S=JOB_SORTERS[key]||JOB_SORTERS.job;
+  const have=[], none=[];
+  rows.forEach(x => ((S.missing && S.missing(x)) ? none : have).push(x));
+  have.sort((a,b)=>(S.cmp(a,b)*dir) || (S.tie ? S.tie(a,b) : 0));
+  none.sort((a,b)=>String(a.j.id).localeCompare(String(b.j.id)));
+  return have.concat(none);
+}

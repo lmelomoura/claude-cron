@@ -1086,6 +1086,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   functions out of the built bundle's own source text still find them,
   since `_app_js` (`tests/test_page_contract.py`) concatenates every `.js`
   under `ui/app/` regardless of which file a function lives in.
+- **The Jobs table's sort moves to `ui/app/jobs-domain.js`, pinned by five
+  characterisation tests ahead of the redesign that rebuilds this table into
+  a DOM module.** `renderJobTable`/`renderJobHead` (`bin/dashboard.html`)
+  built the sort inline and declared the column map beside it; both are now
+  `sortJobs(rows, key, dir)` and `JOB_COLS`, reached as `CCApp.sortJobs`/
+  `CCApp.JOB_COLS` the same way the page already reaches `jobFacts` and
+  `visibleJobs` in the same file — no comparator, tiebreak or `missing`
+  predicate changed in the move. The five tests pin what the table already
+  does, so neither this move nor the redesign that follows it can quietly
+  change it: every column sorts as expected in both directions; a job that
+  has never run, or a disabled job's absent "next", sorts to the BOTTOM of
+  its column regardless of which way the arrow points, rather than reading
+  as an extreme number; sorting by project keeps two jobs of the same
+  project in the same relative order whichever way the column points,
+  because the id tiebreak is deliberately applied outside the direction
+  flip the comparator itself gets; the project, status and search filters
+  narrow one set in sequence, so the three together can never show a job
+  any one of them alone would have hidden; and the table's own empty row
+  tells "no jobs exist yet" apart from "the filters left nothing", the same
+  distinction `jobsEmptyNote` already draws for the card view.
 
 ### Added
 

@@ -8,9 +8,9 @@
    paintJobFilters and initPickers all read this domain today and stayed
    behind because they draw the Jobs table -- the second consumer a later
    phase adds, not this one. A page that could no longer reach jobFacts,
-   visibleJobs, bulkOn, bulkLabel, clearJobFilters or jobProjectNames would
-   not fail loudly; it would throw the first time a 5-second poll tried to
-   redraw.
+   visibleJobs, bulkOn, bulkLabel, clearJobFilters, jobProjectNames, sortJobs
+   or JOB_COLS would not fail loudly; it would throw the first time a
+   5-second poll tried to redraw.
 
    overview.js's exports are the same deal for what pulseHtml, helloHtml and
    renderJobCards used to build: the arithmetic, the wording and the markup
@@ -25,7 +25,7 @@
    rather than from a job's own fields. */
 import { bindPage } from "./page.js";
 import { jobFacts, visibleJobs, jobFilters, bulkOn, bulkLabel,
-         clearJobFilters, jobProjectNames } from "./jobs-domain.js";
+         clearJobFilters, jobProjectNames, sortJobs, JOB_COLS } from "./jobs-domain.js";
 import { groupJobs, jobsEmptyNote, worktreesCard,
          renderPulse, renderOverviewHead, jobCard } from "./overview.js";
 import { pageHeader, kpiCard } from "./chrome.js";
@@ -49,6 +49,12 @@ function init(cc){
 // landed inside the module instead.
 window.CCApp = { init, jobFacts, visibleJobs, jobFilters, bulkOn,
                  bulkLabel, clearJobFilters, jobProjectNames,
+                 // sortJobs and JOB_COLS are Task 2 (phase 2)'s: renderJobTable
+                 // and renderJobHead in bin/dashboard.html call CCApp.sortJobs
+                 // and read CCApp.JOB_COLS instead of keeping their own copies,
+                 // the same "table is the second consumer" reach jobFacts and
+                 // visibleJobs already have above.
+                 sortJobs, JOB_COLS,
                  groupJobs, jobsEmptyNote, worktreesCard,
                  // pageHeader already has a second caller today, not a
                  // future one: bin/dashboard.html's initPageHeaders() calls

@@ -847,6 +847,193 @@ def test_job_facts_survive_the_move_unchanged(srv, tmp_path):
     assert out["plain"]["capped"] is False
 
 
+# ---- the Jobs table, pinned ahead of phase 2's redesign (Task 2). Same deal
+# as the jobFacts test above: characterisation tests, so they pass on their
+# first run -- the falsifiability of each one (break, red, revert) is
+# recorded by hand in .superpowers/sdd/task-2-report.md rather than by a
+# red-then-green cycle here. sortJobs and JOB_COLS (both new in
+# ui/app/jobs-domain.js, extracted verbatim from renderJobTable/renderJobHead
+# in bin/dashboard.html) are pure; visibleJobs/jobFilters and jobsEmptyNote
+# already existed and are pinned again here for what the table specifically
+# does with them, not duplicating the existing card-focused tests above.
+
+def _sort_jobs_deps(block):
+    """STATE_RANK and JOB_SORTERS are sortJobs's own module-private consts --
+    not reachable via _plainfn, so they travel with it the same way
+    _index_screen_deps above joins several _plainfn extractions."""
+    return (_const(block, "STATE_RANK") + _const(block, "JOB_SORTERS")
+            + _plainfn(block, "sortJobs"))
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_sorting_by_each_column_gives_the_expected_order(srv, tmp_path):
+    """Every column the Jobs table can be sorted by, both directions,
+    against a known four-row set with no ties and nothing missing -- ties
+    and missing values are test_the_id_tiebreak_does_not_reverse_with_the_
+    column's and test_rows_with_no_answer_sort_to_the_bottom_not_the_top's
+    own jobs, not this one's."""
+    block = _app_js(srv)
+    deps = _sort_jobs_deps(block)
+    script = tmp_path / "sort-columns.js"
+    script.write_text(deps + """
+    const rows = [
+      {j:{id:"j3", project:"Charlie"}, F:{state:"enabled", st:{last_run_start:300}, nextAt:50,  spentToday:40, disabled:false}},
+      {j:{id:"j1", project:"Bravo"},   F:{state:"idle",    st:{last_run_start:500}, nextAt:200, spentToday:15, disabled:false}},
+      {j:{id:"j4", project:"Delta"},   F:{state:"idle",    st:{last_run_start:700}, nextAt:999, spentToday:1,  disabled:false}},
+      {j:{id:"j2", project:"Alpha"},   F:{state:"running", st:{last_run_start:100}, nextAt:800, spentToday:5,  disabled:false}},
+    ];
+    const ids = (out) => out.map(x => x.j.id);
+    const out = {};
+    for(const key of ["job","project","state","last","next","today"]){
+      out[key+"_asc"]  = ids(sortJobs(rows, key, 1));
+      out[key+"_desc"] = ids(sortJobs(rows, key, -1));
+    }
+    console.log(JSON.stringify(out));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["job_asc"]      == ["j1", "j2", "j3", "j4"]
+    assert out["job_desc"]     == ["j4", "j3", "j2", "j1"]
+    assert out["project_asc"]  == ["j2", "j1", "j3", "j4"]   # Alpha,Bravo,Charlie,Delta
+    assert out["project_desc"] == ["j4", "j3", "j1", "j2"]   # Delta,Charlie,Bravo,Alpha
+    assert out["state_asc"]    == ["j2", "j3", "j1", "j4"]   # running,enabled,idle(j1<j4)
+    assert out["state_desc"]   == ["j4", "j1", "j3", "j2"]   # idle(j4,j1),enabled,running
+    assert out["last_asc"]     == ["j2", "j3", "j1", "j4"]   # 100,300,500,700
+    assert out["last_desc"]    == ["j4", "j1", "j3", "j2"]
+    assert out["next_asc"]     == ["j3", "j1", "j2", "j4"]   # 50,200,800,999
+    assert out["next_desc"]    == ["j4", "j2", "j1", "j3"]
+    assert out["today_asc"]    == ["j4", "j2", "j1", "j3"]   # 1,5,15,40
+    assert out["today_desc"]   == ["j3", "j1", "j2", "j4"]
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_rows_with_no_answer_sort_to_the_bottom_not_the_top(srv, tmp_path):
+    """A job that has never run has no "last run"; a disabled job has no
+    "next" (see JOB_SORTERS' own `missing` comment, ui/app/jobs-domain.js).
+    Both sort to the BOTTOM whichever way the arrow points -- reversing the
+    column must never promote "never"/"disabled" to first, the exact
+    regression the comment describes ("put seventeen disabled jobs above
+    the ones actually due the moment you reversed the column")."""
+    block = _app_js(srv)
+    deps = _sort_jobs_deps(block)
+    script = tmp_path / "sort-missing.js"
+    script.write_text(deps + """
+    const lastRows = [
+      {j:{id:"never"}, F:{st:{last_run_start:0}}},
+      {j:{id:"soon"},  F:{st:{last_run_start:100}}},
+      {j:{id:"late"},  F:{st:{last_run_start:50}}},
+    ];
+    const nextRows = [
+      {j:{id:"off"},  F:{disabled:true,  nextAt:10}},
+      {j:{id:"far"},  F:{disabled:false, nextAt:500}},
+      {j:{id:"soon"}, F:{disabled:false, nextAt:100}},
+    ];
+    console.log(JSON.stringify({
+      last_asc:  sortJobs(lastRows, "last", 1).map(x => x.j.id),
+      last_desc: sortJobs(lastRows, "last", -1).map(x => x.j.id),
+      next_asc:  sortJobs(nextRows, "next", 1).map(x => x.j.id),
+      next_desc: sortJobs(nextRows, "next", -1).map(x => x.j.id),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["last_asc"]  == ["late", "soon", "never"]
+    assert out["last_desc"] == ["soon", "late", "never"]
+    assert out["next_asc"]  == ["soon", "far", "off"]
+    assert out["next_desc"] == ["far", "soon", "off"]
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_id_tiebreak_does_not_reverse_with_the_column(srv, tmp_path):
+    """Sorting by project keeps two jobs of the SAME project in the same
+    relative order whichever way the arrow points -- you sort by project to
+    read one project's jobs together, not to scramble them (JOB_SORTERS'
+    own `project` comment, ui/app/jobs-domain.js). The tiebreak is applied
+    outside the `*dir` multiplication, deliberately unlike the comparator
+    itself."""
+    block = _app_js(srv)
+    deps = _sort_jobs_deps(block)
+    script = tmp_path / "sort-tiebreak.js"
+    script.write_text(deps + """
+    const rows = [
+      {j:{id:"b-job", project:"Same"}},
+      {j:{id:"a-job", project:"Same"}},
+      {j:{id:"z-job", project:"Other"}},
+    ];
+    console.log(JSON.stringify({
+      asc:  sortJobs(rows, "project", 1).map(x => x.j.id),
+      desc: sortJobs(rows, "project", -1).map(x => x.j.id),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    same_only = lambda ids: [i for i in ids if i in ("a-job", "b-job")]
+    assert same_only(out["asc"]) == ["a-job", "b-job"]
+    assert same_only(out["desc"]) == ["a-job", "b-job"], (
+        "the id tiebreak reversed along with the column -- descending gave "
+        f"{out['desc']}")
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_three_filters_narrow_the_same_set_together(srv, tmp_path):
+    """Project, status and free-text search (visibleJobs, ui/app/jobs-
+    domain.js) all narrow the SAME set in sequence -- so the three combined
+    can never show a job that any ONE of them alone would have hidden."""
+    block = _app_js(srv)
+    fn = _plainfn(block, "visibleJobs")
+    script = tmp_path / "filters.js"
+    script.write_text("""
+    const CC = { DATA: { jobs: [
+      {id:"a1", project:"Alpha", enabled:true,  description:"nightly backup"},
+      {id:"a2", project:"Alpha", enabled:false, description:"weekly report"},
+      {id:"b1", project:"Beta",  enabled:true,  description:"deploy"},
+      {id:"b2", project:"Beta",  enabled:true,  description:"nightly cleanup"},
+    ] } };
+    const jobFilters = {project:"Beta", status:"enabled", query:"nightly"};
+    """ + fn + """
+    console.log(JSON.stringify(visibleJobs().map(j => j.id)));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out == ["b2"], (
+        "the three filters did not intersect to exactly the one job that "
+        f"satisfies project, status AND query at once: got {out}")
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+@pytest.mark.parametrize("jobs,query,expect", [
+    ([], "", "No jobs yet"),
+    ([{"id": "a1", "project": "", "enabled": True, "description": ""}],
+     "nothing-matches", "No jobs match"),
+], ids=["no-jobs-at-all", "filtered-to-nothing"])
+def test_the_tables_empty_state_tells_no_jobs_apart_from_none_matched(
+        srv, tmp_path, jobs, query, expect):
+    """The Jobs table's own empty row (renderJobTable, bin/dashboard.html)
+    says one of two different things depending on WHY it is empty -- no
+    jobs exist at all, or the filters narrowed a non-empty set to nothing --
+    the same distinction jobsEmptyNote (ui/app/overview.js) already draws
+    for the card view. This drives it through visibleJobs()/jobFilters, the
+    actual inputs the table's own branch reads, rather than handing
+    jobsEmptyNote a bare boolean the way the existing card-focused test
+    above does."""
+    block = _app_js(srv)
+    deps = _plainfn(block, "visibleJobs") + _plainfn(block, "jobsEmptyNote")
+    script = tmp_path / "empty-table.js"
+    script.write_text(
+        "const CC = { DATA: { jobs: " + json.dumps(jobs) + " } };\n"
+        "const jobFilters = { project: \"\", status: \"\", query: "
+        + json.dumps(query) + " };\n"
+        + deps + """
+    const vis = visibleJobs();
+    const filtering = !!(jobFilters.project || jobFilters.status || jobFilters.query.trim());
+    console.log(JSON.stringify({empty: vis.length === 0, note: jobsEmptyNote(filtering)}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["empty"] is True, f"test setup did not produce an empty visible set: {out}"
+    assert expect in out["note"], out["note"]
+
+
 # ---- the Overview's own arithmetic, pinned ahead of the redesign that turns
 # three loose tiles and a footer strip into five KPI cards and rebuilds the
 # job card from HTML strings into DOM nodes. Characterisation tests: they

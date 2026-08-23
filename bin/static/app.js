@@ -133,6 +133,45 @@
   function jobProjectNames() {
     return [...new Set((CC.DATA.jobs || []).map((j) => j.project || "").filter(Boolean))].sort();
   }
+  var JOB_COLS = [
+    ["job", "Job"],
+    ["project", "Project"],
+    ["state", "Status"],
+    [null, "Schedule"],
+    ["last", "Last run"],
+    ["next", "Next"],
+    ["today", "Today"],
+    [null, ""]
+  ];
+  var STATE_RANK = { running: 0, enabled: 1, idle: 2, disabled: 3 };
+  var JOB_SORTERS = {
+    job: { cmp: (a, b) => String(a.j.id).localeCompare(String(b.j.id)) },
+    // Within a project the jobs stay A→Z whichever way the column points: you sort
+    // by project to read one project's jobs together, not to scramble them.
+    project: {
+      cmp: (a, b) => String(a.j.project).localeCompare(String(b.j.project)),
+      tie: (a, b) => String(a.j.id).localeCompare(String(b.j.id)),
+      missing: (x) => !x.j.project
+    },
+    state: { cmp: (a, b) => STATE_RANK[a.F.state] - STATE_RANK[b.F.state] || String(a.j.id).localeCompare(String(b.j.id)) },
+    last: {
+      cmp: (a, b) => a.F.st.last_run_start - b.F.st.last_run_start,
+      missing: (x) => !x.F.st.last_run_start
+    },
+    next: {
+      cmp: (a, b) => a.F.nextAt - b.F.nextAt,
+      missing: (x) => x.F.disabled || x.F.nextAt == null
+    },
+    today: { cmp: (a, b) => a.F.spentToday - b.F.spentToday }
+  };
+  function sortJobs(rows, key, dir) {
+    const S = JOB_SORTERS[key] || JOB_SORTERS.job;
+    const have = [], none = [];
+    rows.forEach((x) => (S.missing && S.missing(x) ? none : have).push(x));
+    have.sort((a, b) => S.cmp(a, b) * dir || (S.tie ? S.tie(a, b) : 0));
+    none.sort((a, b) => String(a.j.id).localeCompare(String(b.j.id)));
+    return have.concat(none);
+  }
 
   // ui/app/chrome.js
   function el(tag, cls, text) {
@@ -866,6 +905,13 @@
     bulkLabel,
     clearJobFilters,
     jobProjectNames,
+    // sortJobs and JOB_COLS are Task 2 (phase 2)'s: renderJobTable
+    // and renderJobHead in bin/dashboard.html call CCApp.sortJobs
+    // and read CCApp.JOB_COLS instead of keeping their own copies,
+    // the same "table is the second consumer" reach jobFacts and
+    // visibleJobs already have above.
+    sortJobs,
+    JOB_COLS,
     groupJobs,
     jobsEmptyNote,
     worktreesCard,
@@ -893,5 +939,5 @@
     jobCard
   };
 })();
-/* ui-bundle: 1d1f4bd491294e042276e88a0fcffe5736cdcefcd2e42dd127a45183f58d84a4 */
-/* ui-sources: fd9f4e37ecba0a59d1d3e1f54f2adfb1a83df44aa4d20b811bd504f88fa6e99e */
+/* ui-bundle: 95ef56b6b934a82bb4a9d0811a155870be1b2dba667212a9649981ab46f9a08f */
+/* ui-sources: 98e77745b1b3ff544083ff283fdae8c6fbcf041d54b7e3b45695157a70486a27 */
