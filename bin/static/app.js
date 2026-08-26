@@ -2132,6 +2132,42 @@
     renderRunsTable();
   }
 
+  // ui/app/editor-domain.js
+  function changedKeys(now, clean) {
+    return Object.keys(now).filter((k) => now[k] !== clean[k]);
+  }
+  var EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
+  function effortIndex(v) {
+    return Math.max(0, EFFORTS.indexOf(v || ""));
+  }
+  function effortFromIndex(raw) {
+    return EFFORTS[+raw || 0] || "";
+  }
+  function dayNumbers(rawValues) {
+    return rawValues.map((v) => +v);
+  }
+  function shapeRepoRows(rawRows) {
+    return rawRows.map((r) => ({ name: r.name.trim(), path: r.path.trim(), base: r.base.trim() })).filter((r) => r.name && r.path);
+  }
+  function projectStepError(k, values) {
+    if (k === "project") {
+      const n = values.name;
+      if (!n) return { ok: false, message: "A project name is required." };
+      if (!values.editingProject && values.projects.some((p) => p.name === n))
+        return { ok: false, message: "A project with that name already exists." };
+      if (!values.cwd)
+        return { ok: false, message: "Pick a working directory \u2014 the folder its runs work in." };
+    }
+    if (k === "repos" && values.multi) {
+      const rows = values.repos;
+      if (!rows.length)
+        return { ok: false, message: "Add a repository, or go back to a single repository." };
+      if (!rows.some((r) => r.path === values.cwd))
+        return { ok: false, message: "One repo's path must be exactly the working directory from step 1 \u2014 that is the repo the agent starts in. None of these match it." };
+    }
+    return { ok: true };
+  }
+
   // ui/app/index.js
   function init(cc) {
     bindPage(cc);
@@ -2264,8 +2300,28 @@
     runsPageSize,
     clearRunFilters,
     runSearch,
-    runProjectNames
+    runProjectNames,
+    // changedKeys, EFFORTS, effortIndex, effortFromIndex,
+    // dayNumbers, shapeRepoRows and projectStepError are Phase 3
+    // Task 2's: the two editor dialogs' own decision/mapping
+    // code, pulled out of bin/dashboard.html ahead of their
+    // restyle so each can be pinned under Node. makeWizard's own
+    // W.changed calls changedKeys; effortSet/effortGet call
+    // effortIndex/effortFromIndex and read EFFORTS for the
+    // "unset" check; getDays calls dayNumbers; collectRepos
+    // calls shapeRepoRows; validateProjectStep calls
+    // projectStepError. Every one of them is plain values in,
+    // plain values out -- none reaches $, document or CC.DATA,
+    // so none needed a page.js entry the way jobs-domain.js's
+    // exports do.
+    changedKeys,
+    EFFORTS,
+    effortIndex,
+    effortFromIndex,
+    dayNumbers,
+    shapeRepoRows,
+    projectStepError
   };
 })();
-/* ui-bundle: 504f62e551f2657352d03ba30beb5ddb1b5b722623147616590118d1809f72bf */
-/* ui-sources: daaef2e170306aeb9084ba038c10dc92927ae3624b6b9d68c17361a88efd7cc1 */
+/* ui-bundle: fb6cfd0be509a55bf4c0ccd3ab2a604eead13c8f0e130dda5b11ef2e2f0212de */
+/* ui-sources: cabd1f912d60d5346b354e1fad8b4c5d157f370f688ae1345758d19b81c21507 */

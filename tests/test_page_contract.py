@@ -5775,3 +5775,231 @@ def test_the_poll_never_reaches_into_a_form_dialog(srv):
         "would clobber whatever a person was doing in it:\n  "
         + "\n  ".join(violations)
     )
+
+
+# ---- Phase 3 Task 2: the two editor dialogs' pure half, pinned ahead of
+# their own restyle -- same deal as the Jobs table's own Task 2 section
+# above: characterisation tests, so they pass on their first run. The
+# falsifiability of each one (break the named thing, run this one test, see
+# it fail, revert) is recorded by hand in .superpowers/sdd/f3-task-2-report.md
+# rather than by a red-then-green cycle here. changedKeys, effortIndex,
+# effortFromIndex, dayNumbers, shapeRepoRows and projectStepError are all new
+# in ui/app/editor-domain.js, extracted verbatim from edWiz/pjWiz's shared
+# makeWizard, effortSet/effortGet, getDays, collectRepos and
+# validateProjectStep (bin/dashboard.html) -- the decision/mapping half of
+# each, never the DOM read that feeds it. makeWizard itself did NOT move (it
+# stays page-owned, shared by both dialogs) and is pinned here by pulling its
+# own source out of the inline script rather than the app bundle.
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_dirty_tracking_compares_snapshots_by_value_not_by_reference(srv, tmp_path):
+    """edIsDirty (bin/dashboard.html) is edWiz.dirty(), i.e. W.changed().length>0,
+    and W.changed() is now CCApp.changedKeys(now, clean) -- makeWizard's own
+    inline filter, extracted whole. Pinned against the three shapes the
+    wizard actually asks it for: an untouched form, one changed field, and a
+    freshly taken snapshot compared right back against an equal one (what
+    markClean() leaves behind) -- the last of which is exactly what a
+    reference comparison gets wrong, since snapshot() builds a brand new
+    object on every call and two of those are never `===` even when every
+    value inside agrees."""
+    block = _app_js(srv)
+    fn = _plainfn(block, "changedKeys")
+    script = tmp_path / "changed-keys.js"
+    script.write_text(fn + """
+    const clean = {"ed-id": "job-1", "ed-desc": "", __days: "1,2,3"};
+    console.log(JSON.stringify({
+      untouched: changedKeys({...clean}, clean).length > 0,
+      oneChanged: changedKeys({...clean, "ed-desc": "now filled in"}, clean).length > 0,
+      freshSnapshot: changedKeys({...clean}, {...clean}).length > 0,
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["untouched"] is False, "an untouched form must not read as dirty"
+    assert out["oneChanged"] is True, "a single changed field must read as dirty"
+    assert out["freshSnapshot"] is False, "a snapshot compared to an equal one must read as clean"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_wizard_gates_advancing_on_validation_but_editing_reaches_any_tab(srv, tmp_path):
+    """makeWizard (bin/dashboard.html) backs both editor dialogs' dual mode:
+    CREATING walks a numbered stepper where Next (stepForward -> edWiz/
+    pjWiz.forward()) refuses to advance past an invalid step and says why;
+    EDITING shows flat tabs and any of them is one click away
+    (onTabClick's own `!W.creating ||` short-circuit), because every step
+    is already filled in and there is no "next" to reach. Drives the real
+    makeWizard under Node with a synthetic 3-step config -- the shared
+    mechanism itself, not either dialog's own field-specific rules
+    (validateStep/validateProjectStep are pinned on their own, elsewhere)."""
+    js = _js(srv)
+    deps = "\n".join([_plainfn(js, "showFormTab"), _plainfn(js, "focusFirstControl"),
+                       _plainfn(js, "makeWizard")])
+    script = tmp_path / "wizard.js"
+    script.write_text("""
+    const I = {cleft:"<cleft>", cright:"<cright>", check2:"<check2>", alert:"<alert>"};
+    const esc = (s) => String(s);
+    function paintPromptHighlight(){}
+    // makeWizard's own W.changed() (dirtySteps' path, taken once editing
+    // paints its nav) now calls CCApp.changedKeys -- pinned on its own in
+    // test_dirty_tracking_compares_snapshots_by_value_not_by_reference above,
+    // so a small, honest stand-in here is enough; this test is about
+    // forward()/onTabClick, not the comparison itself.
+    const CCApp = {changedKeys: (now, clean) => Object.keys(now).filter(k => now[k] !== clean[k])};
+    // A tab strip minimal enough to drive paintTabs/paintNav: innerHTML is
+    // parsed only for the one attribute paintTabs ever writes (data-ttab="key"),
+    // in the order the real DOM would give querySelectorAll.
+    function makeTabsEl(attr){
+      let btns = [];
+      return {
+        classList: {add(){}, toggle(){}},
+        set innerHTML(html){
+          const re = new RegExp(attr + '="([^"]+)"', "g");
+          btns = [...html.matchAll(re)].map(m => ({
+            getAttribute(a){ return a === attr ? m[1] : null; },
+            classList: {toggle(){}},
+            querySelector(sel){ return sel === ".stepn" ? {innerHTML: ""} : null; },
+          }));
+        },
+        get innerHTML(){ return ""; },
+        querySelectorAll(){ return btns; },
+      };
+    }
+    const DLG = {querySelectorAll: () => [], querySelector: () => null, close(){}};
+    const ELS = {
+      "t-tabs": makeTabsEl("data-ttab"),
+      "t-back": {hidden: false, innerHTML: ""},
+      "t-save": {innerHTML: ""},
+      "t-err": {hidden: true, innerHTML: ""},
+    };
+    function $(id){ return id === "dlg" ? DLG : ELS[id]; }
+    """ + deps + """
+    let nextErr = null;
+    const wiz = makeWizard({
+      id: "dlg", prefix: "t", tabAttr: "data-ttab", paneAttr: "data-tpane",
+      steps: [{k:"a",label:"A",next:"B"}, {k:"b",label:"B",next:"C"}, {k:"c",label:"C",next:null}],
+      validate: (k) => nextErr,
+      saveLabel: "Save", createLabel: "Create",
+    });
+
+    // CREATING: numbered stepper, Next validates before advancing.
+    wiz.open(true);
+    wiz.goto(0);
+    nextErr = "bad";
+    const invalidAdvance = {ret: wiz.forward(), i: wiz.i, errShown: !ELS["t-err"].hidden};
+    nextErr = null;
+    const step1 = {ret: wiz.forward(), i: wiz.i};   // a -> b
+    const step2 = {ret: wiz.forward(), i: wiz.i};   // b -> c (last)
+    const step3 = {ret: wiz.forward(), i: wiz.i};   // c is last: signal save, do not move
+    wiz.goto(0);
+    wiz.onTabClick("c");                            // clicking ahead while creating: refused
+    const creatingTabClickAhead = wiz.i;
+
+    // EDITING: flat tabs, every one reachable regardless of order.
+    wiz.open(false);
+    wiz.goto(0);
+    wiz.onTabClick("c");
+    const editingTabClick = wiz.i;
+
+    console.log(JSON.stringify({invalidAdvance, step1, step2, step3,
+                                 creatingTabClickAhead, editingTabClick}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["invalidAdvance"] == {"ret": False, "i": 0, "errShown": True}, \
+        "an invalid step must refuse to advance, and must show why"
+    assert out["step1"] == {"ret": False, "i": 1}, "a valid, non-last step must advance"
+    assert out["step2"] == {"ret": False, "i": 2}, "a valid, non-last step must advance"
+    assert out["step3"] == {"ret": True, "i": 2}, "the last valid step signals save, not another advance"
+    assert out["creatingTabClickAhead"] == 0, "creating must not let a tab click skip ahead"
+    assert out["editingTabClick"] == 2, "editing must let a tab click reach any step directly"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_project_step_validation_refuses_an_empty_name_and_a_malformed_repo(srv, tmp_path):
+    """validateProjectStep (bin/dashboard.html) gathers the step's own fields
+    and hands them to CCApp.projectStepError for the decision -- extracted
+    whole, same conditions, same messages, in the same order. Two ways a
+    step can be incomplete, pinned against the two the brief calls out by
+    name: an empty project name, and a repo row that never became one.
+    shapeRepoRows -- collectRepos' own pure half -- drops a row missing its
+    name or its path before validation ever sees it, so a "malformed" row on
+    the DOM and an empty list handed to projectStepError are the same case."""
+    block = _app_js(srv)
+    deps = "\n".join(_plainfn(block, n) for n in ("shapeRepoRows", "projectStepError"))
+    script = tmp_path / "project-step.js"
+    script.write_text(deps + """
+    const base = {name:"Web", cwd:"/x/web", editingProject:"Web", projects:[], multi:false, repos:[]};
+    const emptyName = projectStepError("project", {...base, name:""});
+    const dupeName = projectStepError("project", {...base, editingProject:null,
+      projects:[{name:"Web"}]});
+    const noCwd = projectStepError("project", {...base, cwd:""});
+    const okProject = projectStepError("project", base);
+
+    // A row with a path but no name never becomes a repo -- shapeRepoRows
+    // drops it, exactly as it would coming straight off the DOM.
+    const malformed = shapeRepoRows([{name:"", path:"/x/web", base:""}]);
+    const reposEmpty = projectStepError("repos", {...base, multi:true, repos: malformed});
+    const reposMismatch = projectStepError("repos", {...base, multi:true,
+      repos: shapeRepoRows([{name:"other", path:"/elsewhere", base:""}])});
+    const reposOk = projectStepError("repos", {...base, multi:true,
+      repos: shapeRepoRows([{name:"web", path:"/x/web", base:""}])});
+    const reposSkippedWhenSingle = projectStepError("repos", {...base, multi:false, repos:[]});
+
+    console.log(JSON.stringify({emptyName, dupeName, noCwd, okProject,
+      malformedDropped: malformed.length, reposEmpty, reposMismatch, reposOk,
+      reposSkippedWhenSingle}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["emptyName"] == {"ok": False, "message": "A project name is required."}
+    assert out["dupeName"] == {"ok": False, "message": "A project with that name already exists."}
+    assert out["noCwd"]["ok"] is False and "working directory" in out["noCwd"]["message"]
+    assert out["okProject"] == {"ok": True}
+    assert out["malformedDropped"] == 0, "a repo row missing its name must not survive shaping"
+    assert out["reposEmpty"]["ok"] is False and "Add a repository" in out["reposEmpty"]["message"]
+    assert (out["reposMismatch"]["ok"] is False
+            and "must be exactly the working directory" in out["reposMismatch"]["message"])
+    assert out["reposOk"] == {"ok": True}
+    assert out["reposSkippedWhenSingle"] == {"ok": True}, "the repos rule only applies in multi-repo mode"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_days_and_effort_map_form_and_job_without_loss(srv, tmp_path):
+    """dayNumbers (getDays' own pure half) and effortIndex/effortFromIndex
+    (effortSet/effortGet's) are the form<->job halves of every value a job's
+    active_days and effort fields can hold. Pinned against literal slider
+    positions, not just round-trip invertibility -- swapping two names in
+    EFFORTS would still round-trip perfectly, because both directions would
+    then agree on the very same shuffled table; only checking a known value
+    against its known position catches a level quietly renamed."""
+    block = _app_js(srv)
+    deps = ("\n".join(_plainfn(block, n) for n in ("effortIndex", "effortFromIndex", "dayNumbers"))
+            + "\n" + _const(block, "EFFORTS"))
+    script = tmp_path / "days-effort.js"
+    script.write_text(deps + """
+    const levels = ["", "low", "medium", "high", "xhigh", "max"];
+    console.log(JSON.stringify({
+      indexOf: levels.map(v => effortIndex(v)),
+      valueOf: [0,1,2,3,4,5].map(i => effortFromIndex(String(i))),
+      roundTrip: levels.every(v => effortFromIndex(String(effortIndex(v))) === v),
+      unknownSettlesOnUnset: effortIndex("not-a-real-level"),
+      outOfRangeSettlesOnUnset: effortFromIndex("99"),
+      days: {
+        none: dayNumbers([]),
+        some: dayNumbers(["1","4","7"]),
+        allSeven: dayNumbers(["1","2","3","4","5","6","7"]),
+      },
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["indexOf"] == [0, 1, 2, 3, 4, 5], f"effort level -> slider index drifted: {out['indexOf']}"
+    assert out["valueOf"] == ["", "low", "medium", "high", "xhigh", "max"], \
+        f"slider index -> effort level drifted: {out['valueOf']}"
+    assert out["roundTrip"] is True
+    assert out["unknownSettlesOnUnset"] == 0, "an effort value the slider does not have settles on 0 (unset)"
+    assert out["outOfRangeSettlesOnUnset"] == "", "a slider position past the table settles on unset"
+    assert out["days"]["none"] == []
+    assert out["days"]["some"] == [1, 4, 7]
+    assert out["days"]["allSeven"] == [1, 2, 3, 4, 5, 6, 7]

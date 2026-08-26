@@ -1971,11 +1971,12 @@ function repoModeOff(){
 // Read at SAVE time from the DOM, so rows added and removed since the editor
 // opened are both honoured.
 function collectRepos(){
-  return [...document.querySelectorAll("#pj-repos .repo-row")].map(d=>({
-    name: d.querySelector(".rp-name").value.trim(),
-    path: d.querySelector(".rp-path").value.trim(),
-    base: d.querySelector(".rp-base").value.trim()
-  })).filter(r=>r.name && r.path);
+  const rows=[...document.querySelectorAll("#pj-repos .repo-row")].map(d=>({
+    name: d.querySelector(".rp-name").value,
+    path: d.querySelector(".rp-path").value,
+    base: d.querySelector(".rp-base").value
+  }));
+  return CCApp.shapeRepoRows(rows);
 }
 function openProjectEditor(name){
   editingProject=name||null;
@@ -2515,7 +2516,7 @@ function resumedBadgeTip(parent){
 const DEFAULT_PRECHECK="#!/bin/bash\n# Exit 0 to wake a Claude run; exit 1 to stay idle (a skipped tick costs nothing).\n# Put a cheap check here — curl an API, grep a log, test a file.\nexit 0\n";
 
 function getDays(){
-  return [...document.querySelectorAll("#ed-days-pick .day-btn.on")].map(b=>+b.dataset.day);
+  return CCApp.dayNumbers([...document.querySelectorAll("#ed-days-pick .day-btn.on")].map(b=>b.dataset.day));
 }
 function setDays(arr){
   const on=new Set((arr&&arr.length?arr:[]).map(Number));
@@ -2767,11 +2768,12 @@ const EFFORTS=["","low","medium","high","xhigh","max"];
 // One slider, two homes: the job editor and the project editor's Security tab
 // share the exact control, so the same value reads the same everywhere.
 function effortSet(id,labelId,v){
-  const i=Math.max(0, EFFORTS.indexOf(v||""));
+  const i=CCApp.effortIndex(v);
+  const level=CCApp.EFFORTS[i];
   $(id).value=String(i);
-  $(labelId).textContent=(EFFORTS[i]===""?"Default (CLI decides)":effortLabel(EFFORTS[i]));
+  $(labelId).textContent=(level===""?"Default (CLI decides)":effortLabel(level));
 }
-function effortGet(id){ return EFFORTS[+$(id).value||0]||""; }
+function effortGet(id){ return CCApp.effortFromIndex($(id).value); }
 function setEffort(v){ effortSet("ed-effort","ed-effort-label",v); }
 function getEffort(){ return effortGet("ed-effort"); }
 const WT_MODES=[
@@ -3500,8 +3502,7 @@ function makeWizard(cfg){
     });
     return Object.assign(v, cfg.extraSnapshot ? cfg.extraSnapshot() : {});
   };
-  W.changed=()=>{ const now=W.snapshot();
-    return Object.keys(now).filter(k=>now[k]!==W.clean[k]); };
+  W.changed=()=>CCApp.changedKeys(W.snapshot(), W.clean);
   W.dirty=()=>W.changed().length>0;
   // Which STEP each changed field belongs to — the pane it sits in.
   W.dirtySteps=()=>{
@@ -3644,29 +3645,19 @@ const PJ_STEPS=[
   {k:"prov",     label:"Provisioning",      next:"Security"},
   {k:"security", label:"Security",          next:null},
 ];
+// Gathers the step's own fields (this pane's DOM, the project list, the repo
+// mode flag, the shaped repo rows) and hands them to CCApp.projectStepError
+// for the actual decision -- see that function's own comment for the rules.
 function validateProjectStep(k){
-  if(k==="project"){
-    const n=$("pj-name").value.trim();
-    if(!n) return "A project name is required.";
-    // Creating only: renaming onto an existing name is the engine's to refuse,
-    // and it knows about jobs pointing at both.
-    if(!editingProject && (DATA.projects||[]).some(p=>p.name===n))
-      return "A project with that name already exists.";
-    if(!$("pj-cwd").value.trim()) return "Pick a working directory — the folder its runs work in.";
-  }
-  // The engine picks the repo the agent starts in by matching a row's path
-  // against the cwd, and aborts the run when none does. That used to surface
-  // hours later as a run that failed for no stated reason; catch it here, where
-  // the two paths are both on screen.
-  if(k==="repos" && pjMulti){
-    const rows=collectRepos();
-    if(!rows.length) return "Add a repository, or go back to a single repository.";
-    const cwd=$("pj-cwd").value.trim();
-    if(!rows.some(r=>r.path===cwd))
-      return "One repo's path must be exactly the working directory from step 1 — "
-           + "that is the repo the agent starts in. None of these match it.";
-  }
-  return null;
+  const v=CCApp.projectStepError(k, {
+    name: $("pj-name").value.trim(),
+    cwd: $("pj-cwd").value.trim(),
+    editingProject,
+    projects: DATA.projects||[],
+    multi: pjMulti,
+    repos: collectRepos(),
+  });
+  return v.ok ? null : v.message;
 }
 const pjWiz=makeWizard({
   id:"projmodal", prefix:"pj", tabAttr:"data-pjtab", paneAttr:"data-pjpane",

@@ -19,6 +19,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The two editor dialogs' decision/mapping logic is pinned and pulled out
+  into `ui/app/editor-domain.js`, ahead of Phase 3 restyling either one.**
+  The job editor and the project editor share one wizard
+  (`makeWizard`, `bin/dashboard.html`) for dirty tracking and dual-mode
+  navigation — a numbered stepper that validates each step while creating,
+  flat tabs all reachable at once while editing — plus a handful of small
+  form↔job mappings (`getDays`, the effort slider's `effortGet`/`effortSet`)
+  and `validateProjectStep`'s own per-step rules. All of it read `$("...")`
+  or `document` directly, which is exactly what a characterisation test
+  cannot drive without a browser, so only the DOM-free half of each moved:
+  `changedKeys` (the snapshot comparison behind `edIsDirty` — compared key
+  by key, never the two snapshot objects by reference, since `snapshot()`
+  returns a fresh object on every call), `effortIndex`/`effortFromIndex`
+  (the slider position ↔ CLI value table), `dayNumbers`, `shapeRepoRows`
+  (`collectRepos`' row-to-list shaping) and `projectStepError`
+  (`validateProjectStep`'s rules, given the gathered values). Every export
+  is plain values in, plain values out — none reaches `$`, `document` or
+  `CC.DATA` — extracted verbatim, not rewritten: same comparisons, same
+  messages, same table. `makeWizard` itself stayed in `bin/dashboard.html`,
+  shared by both dialogs as before. Four characterisation tests in
+  `tests/test_page_contract.py` pin the behaviour this move must not
+  change, each proved falsifiable by hand (break the thing the test is
+  named for, watch it fail, revert) before this shipped.
+
 - **A test now fails if `render()`'s 5-second poll ever reaches into a form
   dialog's own field.** `editor`, `projmodal`, `profmodal`, `confirm`,
   `secreason` and `fsmodal` hold a form a person may be mid-typing into —

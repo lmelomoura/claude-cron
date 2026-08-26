@@ -37,6 +37,8 @@ import { visibleProjects, projFilters, projectIsolation,
 import { RF, renderRunsPage, runsSort, runsSetPage,
          runsFilterChanged, runsGotoFirstPage, runsSetPageSize, runsPageSize,
          clearRunFilters, runSearch, runProjectNames } from "./runs.js";
+import { changedKeys, EFFORTS, effortIndex, effortFromIndex,
+         dayNumbers, shapeRepoRows, projectStepError } from "./editor-domain.js";
 
 function init(cc){
   bindPage(cc);
@@ -159,4 +161,19 @@ window.CCApp = { init, visibleJobs, jobFilters, bulkOn,
                  // and the search box's own click/input handlers.
                  RF, renderRunsPage, runsSort, runsSetPage, runsFilterChanged,
                  runsGotoFirstPage, runsSetPageSize, runsPageSize,
-                 clearRunFilters, runSearch, runProjectNames };
+                 clearRunFilters, runSearch, runProjectNames,
+                 // changedKeys, EFFORTS, effortIndex, effortFromIndex,
+                 // dayNumbers, shapeRepoRows and projectStepError are Phase 3
+                 // Task 2's: the two editor dialogs' own decision/mapping
+                 // code, pulled out of bin/dashboard.html ahead of their
+                 // restyle so each can be pinned under Node. makeWizard's own
+                 // W.changed calls changedKeys; effortSet/effortGet call
+                 // effortIndex/effortFromIndex and read EFFORTS for the
+                 // "unset" check; getDays calls dayNumbers; collectRepos
+                 // calls shapeRepoRows; validateProjectStep calls
+                 // projectStepError. Every one of them is plain values in,
+                 // plain values out -- none reaches $, document or CC.DATA,
+                 // so none needed a page.js entry the way jobs-domain.js's
+                 // exports do.
+                 changedKeys, EFFORTS, effortIndex, effortFromIndex,
+                 dayNumbers, shapeRepoRows, projectStepError };
