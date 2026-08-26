@@ -105,7 +105,11 @@ td .projtag{white-space:nowrap}
 .paneblurb{margin:0 0 14px;font-size:12.5px;color:var(--muted);max-width:96ch;line-height:1.6}
 .secthead{display:flex;align-items:center;justify-content:space-between;margin:26px 0 12px}
 td .projtag{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--muted)}
-td .projtag .ic{width:12px;height:12px;color:var(--accent)}
+/* `flex:none`, the same protection .jobcell's own icon already has above --
+   without it, a name too long for the column (.projtag-name, pages.css)
+   shrank this icon right along with the text under flex-shrink instead of
+   leaving it alone at its natural 12px. */
+td .projtag .ic{width:12px;height:12px;color:var(--accent);flex:none}
 /* ------------------------------------------------------------- page header
    Icon, title, one sentence, actions trailing on the right -- pageHeader()
    in ui/app/overview.js is the only place that builds one, so every page
@@ -563,10 +567,38 @@ footer{margin-top:30px;color:var(--muted);font-size:11px;text-align:center}
 #view-jobs th:nth-child(7){width:11%}   /* Today    */
 #view-jobs th:last-child{width:13%}     /* actions  */
 #view-jobs .rowacts{padding-left:4px;padding-right:10px}
-/* Job takes whatever is left; the description truncates rather than pushing. */
-#jobrows td:first-child{overflow:hidden}
-#jobrows td:first-child .snip{max-width:100%}
-#jobrows td .projtag{overflow:hidden;text-overflow:ellipsis;max-width:100%}
+/* Job takes whatever is left; the description truncates rather than pushing.
+   Was `#jobrows td:first-child`/`#jobrows td .projtag` -- Phase 2 Task 3
+   moved the Jobs table's tbody into tableCard() (ui/app/chrome.js), which
+   builds it with no id at all, so both rules stopped matching anything the
+   moment they shipped. `#jobrows td:first-child{overflow:hidden}` was
+   already fully subsumed by `.table-card td,.table-card th{overflow:hidden}`
+   (components.css) even before that -- every table-card cell already got
+   the same property -- so it is dropped outright rather than retargeted.
+   `.projtag`'s rule is not redundant: nothing else gives it a max-width, so
+   a long project name filled the flex box out to its natural width and got
+   HARD-clipped at the table-card cell's own overflow:hidden with no
+   ellipsis, on both Jobs and Runs (the two tables that render one) --
+   retargeted below rather than dropped. `#jobrows td:first-child .snip`
+   (the job description) is dropped the same way as the first rule: it
+   only ever tightened `.snip`'s own max-width:420px (components.css) to
+   the column's exact width, a refinement nobody has reported missing, not
+   a hard-clip like `.projtag`'s.
+
+   Retargeting alone still did not ellipsise anything -- proved by actually
+   rendering it, not by re-reading the rule: `.projtag` is
+   `display:inline-flex` (components.css, for the icon/name alignment), and
+   `text-overflow` has no effect on a flex container's own box, only on a
+   block one -- max-width:100% here still does useful work (it stops the
+   flex box outgrowing the cell) but the cut stayed a hard clip, no `…`.
+   `.projtag-name` is the actual fix: a span the name's text node now has
+   (ui/app/jobs-table.js, ui/app/runs.js) purely so ellipsis has an
+   element's box to apply to, `flex:1 1 auto` and `min-width:0` so IT
+   shrinks under the row's own flex layout instead of the icon beside it
+   (which has `flex:none` for exactly that reason -- components.css). */
+.table-card td .projtag{overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.table-card td .projtag-name{overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;min-width:0;flex:1 1 auto}
 /* A path is read from the end — that is where the repo name is. */
 .pathcell{display:block;direction:rtl;text-align:left;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;font-size:11.5px;color:var(--muted)}
@@ -1546,5 +1578,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: bfcdbda7280f6a2b56d802b5b18e9c55bbc6bf3f9ba7970ada6e2ad382ed5d66 */
-/* ui-sources: 8fd4d714ca0b9b238569cb497c9422bbdd983f2eff8f7b943bfe3980b3e55790 */
+/* ui-bundle: a78d4f8795f54ce7c9bf6e556f7498ae8c9c4e25c25627c900daf2fe1c7ac7d6 */
+/* ui-sources: a79b9ca374594ded9752c159a890586e4b6b026d8875f78e137a415c2c866dfd */

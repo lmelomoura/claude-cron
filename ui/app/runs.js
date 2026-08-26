@@ -127,26 +127,49 @@ function runsHeaderSubtitle(runs, liveCount){
    is a door: unlike the Overview's own Warning/Error cards (which lead HERE
    from a different page), a door back into the page you are already on
    leads nowhere, the same reasoning that keeps all four of Jobs' own cards
-   `door: false`. */
-function pct(num, den){ return den ? Math.round(num/den*100) + "%" : "—"; }
+   `door: false`.
 
+   Warnings/Errors used to count ALL of `runs` (the server's own 1000-row
+   cap on CC.DATA.runs -- see bin/claude-cron-server's `LIMIT 1000`, far
+   more than 7 days at any real job count) and said "N% of finished runs".
+   The Overview's own cards of the same name count only the last 7 days and
+   say so in their `sub` -- and one of them is a DOOR that lands a click
+   straight on this page's own card, so the two disagreeing under an
+   identical label was not a coincidence anyone could see, only a bug
+   waiting for someone to click through. `wk` is the Overview's own cutoff,
+   copied rather than imported: render() (bin/dashboard.html) computes the
+   identical `Math.floor(Date.now()/1000)-7*86400` against this exact same
+   CC.DATA.runs to feed CCApp.renderOverviewHead, so the two windows can
+   only ever agree if this is the same formula, not a second one that
+   happens to produce the same answer today. See
+   test_the_overview_and_runs_warning_cards_name_the_same_window
+   (tests/test_page_contract.py) for the guard. */
 function runsKpis(runs, liveCount){
   const t0 = Math.floor(new Date().setHours(0,0,0,0)/1000);
+  const wk = Math.floor(Date.now()/1000) - 7*86400;
   const total = runs.length + liveCount;
   const finished = runs.length;
-  const warnCount = runs.filter(r => normStatus(r.status)==="warning").length;
-  const errCount = runs.filter(r => normStatus(r.status)==="error").length;
+  const recent = runs.filter(r => r.start >= wk);
+  const warnCount = recent.filter(r => normStatus(r.status)==="warning").length;
+  const errCount = recent.filter(r => normStatus(r.status)==="error").length;
   const todayCount = runs.filter(r => r.start >= t0).length + liveCount;
 
   return [
-    {label: "Total runs", value: String(total),
+    // The server's own cap (see above) makes `total` a FLOOR at that cap,
+    // not a true total -- "1000 runs on record" reads as a complete count
+    // when the 1001st-oldest run is sitting right there, uncounted, in the
+    // same database. `finished` rather than `total`: the live count on top
+    // does not change what the journaled cap has already thrown away.
+    {label: "Total runs", value: finished >= 1000 ? "1000+" : String(total),
      sub: todayCount + " today", tone: "", filter: "", door: false},
     {label: "Running now", value: String(liveCount),
      sub: liveCount ? "following live" : "none in flight", tone: "", filter: "", door: false},
-    {label: "Warnings", value: String(warnCount),
-     sub: pct(warnCount, finished) + " of finished runs", tone: "", filter: "", door: false},
-    {label: "Errors", value: String(errCount),
-     sub: pct(errCount, finished) + " of finished runs", tone: "", filter: "", door: false},
+    {label: "Warnings", value: String(warnCount), sub: "in the last 7 days",
+     title: "Runs that finished without failing but did not do the work",
+     tone: "", filter: "", door: false},
+    {label: "Errors", value: String(errCount), sub: "in the last 7 days",
+     title: "Runs that failed",
+     tone: "", filter: "", door: false},
   ];
 }
 
@@ -397,7 +420,12 @@ function runRow(r){
   if(r.project){
     const tag = el("span", "projtag");
     tag.appendChild(icon("folder"));
-    tag.appendChild(document.createTextNode(r.project));
+    // .projtag-name, not a bare text node -- see jobs-table.js's own comment
+    // beside its identical tag.appendChild(el("span", "projtag-name", ...)):
+    // ellipsis needs an element's box to apply to, and .projtag's own box
+    // (display:inline-flex, for the icon/name alignment) is not eligible
+    // for it at all.
+    tag.appendChild(el("span", "projtag-name", r.project));
     tdProject.appendChild(tag);
   }else{
     tdProject.appendChild(el("span", "muted", "—"));
@@ -617,7 +645,7 @@ export function renderRunsPage(){
     kpiHost.textContent = "";
     runsKpis(runs, liveCount).forEach(c => kpiHost.appendChild(kpiCard({
       icon: KPI_ICONS[c.label], tone: c.tone, value: c.value,
-      label: c.label, sub: c.sub, filter: c.filter, door: c.door,
+      label: c.label, sub: c.sub, title: c.title, filter: c.filter, door: c.door,
     })));
   }
 

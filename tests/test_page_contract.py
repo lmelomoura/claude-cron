@@ -1579,6 +1579,30 @@ def test_a_favourited_project_sorts_first_and_only_the_starred_one_does(srv, tmp
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_starring_a_project_repaints_the_projects_page_too(srv, tmp_path):
+    """Structural, not behavioural -- the same shape as
+    test_resume_target_defers_to_resume_in_flight above, for the same
+    reason: toggleFav() is a page-owned click handler wired to no seam a
+    harness can drive without also standing up CFG/api()/loadConfig, so
+    what is falsifiable here is which repaints it calls, not what a full
+    render produces.
+
+    The star shows on a project's row on BOTH the Jobs table (its project
+    tag) and the Projects page (the row itself), and toggleFav() used to
+    call only renderJobsArea() -- clicking a star on Projects updated the
+    favourite_projects preference and left that very button unfilled and
+    aria-pressed="false" for up to 5 seconds, until the next poll's
+    render() got around to it, long enough to invite a second click that
+    silently undoes the first."""
+    js = _js(srv)
+    body = _plainfn(js, "toggleFav")
+    assert "renderJobsArea()" in body, "toggleFav no longer repaints Jobs"
+    assert "CCApp.renderProjectsPage()" in body, (
+        "toggleFav does not repaint Projects -- a star clicked there stays "
+        "stale until the next poll")
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_isolation_reads_three_states_not_two(srv, tmp_path):
     """A project can run every job in its own worktree (`true`), never
     (`false`), or leave it to the engine to decide per job -- "automatic",
@@ -1954,6 +1978,105 @@ def test_duration_and_cost_sort_independently(srv, tmp_path):
     assert out["byDuration"] != out["byCost"], (
         "sorting by cost produced the same order as duration -- the "
         "historical regression RUN_COLS' own comment describes")
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_overview_and_runs_warning_cards_name_the_same_window(srv, tmp_path):
+    """The Overview's Warnings/Errors cards are a door into Runs
+    (initStatFilters, bin/dashboard.html): click one and CCApp.RF.status is
+    set, landing on the Runs page's OWN Warnings/Errors cards -- same label,
+    same icon, same box. This is the second time the two disagreed under
+    that identical label: the Overview counts a 7-day window and says so
+    (`sub: "in the last 7 days"`); the Runs page counted ALL of
+    CC.DATA.runs -- which the server caps at 1000 rows, far more than 7
+    days at any real job count -- and said "N% of finished runs" instead,
+    with no window named anywhere on the card. A reader who follows the
+    door lands on a page whose own card reports a different number under
+    the label they just clicked.
+
+    Reads both card builders' own source out of the built bundle and
+    compares their `sub` text directly -- no fixture is shared between
+    them, each computes its own numbers from its own inputs, the way the
+    two pages genuinely do -- so the next page that grows a Warnings/Errors
+    card either names the same window or turns this red."""
+    block = _app_js(srv)
+    overview_fn = _plainfn(block, "pulseKpis")
+    runs_fn = _plainfn(block, "runsKpis")
+    script = tmp_path / "window-agreement.js"
+    script.write_text("""
+    // normStatus is a page-owned binding (bin/dashboard.html), filled in at
+    // runtime by bindPage() -- not a function this block can extract, so it
+    // is stubbed the same trivial way
+    // test_a_run_matched_only_in_its_log_content_still_surfaces above
+    // already does. pct is ui/app/runs.js's own module-private helper --
+    // stubbed the same way so this test does not care whether runsKpis
+    // still calls it.
+    function normStatus(s){ return s === "ok" ? "success" : (s || "\\u2014"); }
+    function pct(num, den){ return den ? Math.round(num/den*100) + "%" : "\\u2014"; }
+    """ + overview_fn + runs_fn + """
+    const overview = pulseKpis({checks: 10, per: {woke: 1}, warn: 3, err: 2,
+      spentToday: 0, spentWeek: 0, runsToday: 0, runsWeek: 0});
+    const now = Math.floor(Date.now() / 1000);
+    const runs = [
+      {id: "r1", start: now - 3600,     status: "warning"},
+      {id: "r2", start: now - 3600,     status: "error"},
+      {id: "r3", start: now - 40*86400, status: "warning"},
+    ];
+    const runsPage = runsKpis(runs, 0);
+    const by = (list) => Object.fromEntries(list.map(c => [c.label, c]));
+    const ov = by(overview), rp = by(runsPage);
+    console.log(JSON.stringify({
+      overviewWarnSub: ov["Warnings"].sub, runsWarnSub: rp["Warnings"].sub,
+      overviewErrSub: ov["Errors"].sub, runsErrSub: rp["Errors"].sub,
+    }));
+    """)
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert got["overviewWarnSub"] == got["runsWarnSub"], (
+        f"Overview's Warnings card says {got['overviewWarnSub']!r}, Runs' "
+        f"own says {got['runsWarnSub']!r} -- the door and its destination "
+        f"name different windows under the same label")
+    assert got["overviewErrSub"] == got["runsErrSub"], (
+        f"Overview's Errors card says {got['overviewErrSub']!r}, Runs' own "
+        f"says {got['runsErrSub']!r} -- the door and its destination name "
+        f"different windows under the same label")
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_total_runs_says_1000_plus_at_the_servers_own_cap(srv, tmp_path):
+    """bin/claude-cron-server's own load_data() caps the runs query at 1000
+    rows (`ORDER BY start DESC, rowid DESC LIMIT 1000`) -- CC.DATA.runs can
+    never carry more than that, no matter how much history actually exists.
+    "Total runs" used to print that capped length as a plain number, which
+    reads as a complete count at exactly the point it stops being one: the
+    1001st-oldest run is sitting in the same database, uncounted.
+
+    Keyed on `finished` (the journaled rows actually in hand), not `total`
+    (finished + live) -- a run in flight is not yet in the capped list, so
+    adding it on top must not turn an honest floor back into a
+    precise-looking number a run or two later."""
+    block = _app_js(srv)
+    fn = _plainfn(block, "runsKpis")
+    script = tmp_path / "total-runs-cap.js"
+    script.write_text("""
+    function normStatus(s){ return s === "ok" ? "success" : (s || "\\u2014"); }
+    """ + fn + """
+    const mk = (n) => Array.from({length: n}, (_, i) => ({id: "r"+i, start: i, status: "success"}));
+    const totalRuns = (runs, live) =>
+      runsKpis(runs, live).find(c => c.label === "Total runs").value;
+    console.log(JSON.stringify({
+      atCap:    totalRuns(mk(1000), 0),
+      belowCap: totalRuns(mk(999),  0),
+      overCap:  totalRuns(mk(1000), 3),
+    }));
+    """)
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert got["atCap"] == "1000+", f"1000 journaled runs should read as a floor: {got['atCap']!r}"
+    assert got["belowCap"] == "999", f"below the cap, the exact count should still show: {got['belowCap']!r}"
+    assert got["overCap"] == "1000+", (
+        f"live runs on top of a capped 1000 must not turn the floor back "
+        f"into a precise-looking number: {got['overCap']!r}")
 
 
 # ---- the Overview's own arithmetic, pinned ahead of the redesign that turns

@@ -1409,6 +1409,13 @@ function toggleFav(name){
   const cur=favProjects();
   setPref("favorite_projects", cur.includes(name) ? cur.filter(n=>n!==name) : [name, ...cur]);
   renderJobsArea();
+  // A star lives on both Jobs' project tags and Projects' own rows -- without
+  // this, clicking one on Projects updated the preference and repainted the
+  // OTHER page, leaving the button the user actually clicked unfilled and
+  // aria-pressed="false" for up to 5 seconds, until the next poll's render()
+  // got to it. That gap invites a second click that silently undoes the
+  // first.
+  CCApp.renderProjectsPage();
 }
 // The last three projects you actually filtered by. Kept longer than three so
 // the list survives a project being renamed out from under it.
@@ -4056,23 +4063,6 @@ async function enterDashboard(user){
   startPolling();
 }
 
-// The Runs page's own header -- static, built once rather than on every
-// render() the way the Overview's own (data-driven, CCApp.
-// renderOverviewHead()) has to be. What it said used to be a `paneblurb`
-// paragraph inside the Overview's own Runs pane; with that pane gone, this
-// sentence is the page it belongs to's own header instead.
-//
-// Jobs' own header used to be built here the same way -- it moved into
-// CCApp.renderJobsPage() (ui/app/jobs-table.js) in Phase 2 Task 3, since the
-// brief for that page asked for a sentence written from the real numbers
-// rather than a fixed caption, the same as the Overview's own.
-function initPageHeaders(){
-  const rh=$("runs-head");
-  if(rh) rh.appendChild(CCApp.pageHeader({icon:"activity", title:"Runs",
-    subtitle:"Every run the scheduler has taken, newest first — what it "
-      +"cost, how long it took, and how it ended. The search reaches "
-      +"inside the logs, not just the run names."}));
-}
 function initViews(){
   document.querySelectorAll(".navitem").forEach(b =>
     b.addEventListener("click", () => setView(b.dataset.view)));
@@ -4531,7 +4521,6 @@ $("setup-form").addEventListener("submit", submitSetup);
 $("login-form").addEventListener("submit", submitLogin);
 initSidebar();
 initPickers();
-initPageHeaders();
 initViews();
 paintUser();
 $("h-settings").innerHTML=I.gear+"Settings";

@@ -336,7 +336,7 @@
     const err = k.err || 0;
     const spentToday = k.spentToday || 0;
     const spentWeek = k.spentWeek || 0;
-    const pct2 = (n) => checks ? Math.round(n / checks * 100) + "%" : "\u2014";
+    const pct = (n) => checks ? Math.round(n / checks * 100) + "%" : "\u2014";
     const money2 = (n) => new Intl.NumberFormat("en-US", {
       style: "currency",
       currency: "USD",
@@ -361,7 +361,7 @@
       {
         label: "Woke a run",
         value: String(per.woke || 0),
-        sub: checks ? pct2(per.woke || 0) + " of checks" : "\u2014",
+        sub: checks ? pct(per.woke || 0) + " of checks" : "\u2014",
         tone: "",
         filter: "",
         door: false
@@ -448,8 +448,8 @@
   }
   function spendTone(spent, cap) {
     const capped = cap != null && spent >= cap;
-    const pct2 = cap != null && cap > 0 ? Math.min(100, spent / cap * 100) : 0;
-    return capped ? "over" : pct2 >= 80 ? "near" : "";
+    const pct = cap != null && cap > 0 ? Math.min(100, spent / cap * 100) : 0;
+    return capped ? "over" : pct >= 80 ? "near" : "";
   }
   function groupJobs(jobs, favSet, allProjects) {
     const names = [...new Set(jobs.map((j) => j.project || "").filter(Boolean))].sort((a, b) => favSet.has(b) - favSet.has(a) || a.localeCompare(b));
@@ -717,13 +717,13 @@
     nextLine.appendChild(nextGrow);
     card.appendChild(nextLine);
     const model = eff(j, "model", "opus"), perm = eff(j, "permission_mode", "dontAsk"), budg = eff(j, "max_budget_usd", 2);
-    const pct2 = cap != null && cap > 0 ? Math.min(100, spentToday / cap * 100) : 0;
+    const pct = cap != null && cap > 0 ? Math.min(100, spentToday / cap * 100) : 0;
     const tone = spendTone(spentToday, cap);
     const spend = el("div", "spend");
     if (cap != null) {
       const bar = el("div", "spendbar" + (tone ? " " + tone : ""));
       const fill = el("i");
-      fill.style.width = pct2.toFixed(1) + "%";
+      fill.style.width = pct.toFixed(1) + "%";
       bar.appendChild(fill);
       spend.appendChild(bar);
     }
@@ -1018,7 +1018,7 @@
     const runningJobs = facts.filter((F) => F.running).length;
     const spentToday = facts.reduce((a, F) => a + F.spentToday, 0);
     const cappedCount = facts.filter((F) => F.capped).length;
-    const pct2 = (num, den) => den ? Math.round(num / den * 100) + "%" : "\u2014";
+    const pct = (num, den) => den ? Math.round(num / den * 100) + "%" : "\u2014";
     return [
       {
         label: "Total jobs",
@@ -1039,7 +1039,7 @@
       {
         label: "Running now",
         value: String(runningJobs),
-        sub: pct2(runningJobs, enabled.length) + " of enabled jobs",
+        sub: pct(runningJobs, enabled.length) + " of enabled jobs",
         tone: "",
         filter: "",
         door: false
@@ -1141,7 +1141,7 @@
     if (j.project) {
       const tag = el("span", "projtag");
       tag.appendChild(icon("folder"));
-      tag.appendChild(document.createTextNode(j.project));
+      tag.appendChild(el("span", "projtag-name", j.project));
       if (isFav(j.project)) {
         const fav = el("span", "favdot");
         fav.title = "Favourite";
@@ -1696,20 +1696,24 @@
     const today = runs.filter((r) => r.start >= t0).length + liveCount;
     return total + " run" + (total === 1 ? "" : "s") + " on record, " + today + " today.";
   }
-  function pct(num, den) {
-    return den ? Math.round(num / den * 100) + "%" : "\u2014";
-  }
   function runsKpis(runs, liveCount) {
     const t0 = Math.floor((/* @__PURE__ */ new Date()).setHours(0, 0, 0, 0) / 1e3);
+    const wk = Math.floor(Date.now() / 1e3) - 7 * 86400;
     const total = runs.length + liveCount;
     const finished = runs.length;
-    const warnCount = runs.filter((r) => normStatus(r.status) === "warning").length;
-    const errCount = runs.filter((r) => normStatus(r.status) === "error").length;
+    const recent = runs.filter((r) => r.start >= wk);
+    const warnCount = recent.filter((r) => normStatus(r.status) === "warning").length;
+    const errCount = recent.filter((r) => normStatus(r.status) === "error").length;
     const todayCount = runs.filter((r) => r.start >= t0).length + liveCount;
     return [
+      // The server's own cap (see above) makes `total` a FLOOR at that cap,
+      // not a true total -- "1000 runs on record" reads as a complete count
+      // when the 1001st-oldest run is sitting right there, uncounted, in the
+      // same database. `finished` rather than `total`: the live count on top
+      // does not change what the journaled cap has already thrown away.
       {
         label: "Total runs",
-        value: String(total),
+        value: finished >= 1e3 ? "1000+" : String(total),
         sub: todayCount + " today",
         tone: "",
         filter: "",
@@ -1726,7 +1730,8 @@
       {
         label: "Warnings",
         value: String(warnCount),
-        sub: pct(warnCount, finished) + " of finished runs",
+        sub: "in the last 7 days",
+        title: "Runs that finished without failing but did not do the work",
         tone: "",
         filter: "",
         door: false
@@ -1734,7 +1739,8 @@
       {
         label: "Errors",
         value: String(errCount),
-        sub: pct(errCount, finished) + " of finished runs",
+        sub: "in the last 7 days",
+        title: "Runs that failed",
         tone: "",
         filter: "",
         door: false
@@ -1932,7 +1938,7 @@
     if (r.project) {
       const tag = el("span", "projtag");
       tag.appendChild(icon("folder"));
-      tag.appendChild(document.createTextNode(r.project));
+      tag.appendChild(el("span", "projtag-name", r.project));
       tdProject.appendChild(tag);
     } else {
       tdProject.appendChild(el("span", "muted", "\u2014"));
@@ -2118,6 +2124,7 @@
         value: c.value,
         label: c.label,
         sub: c.sub,
+        title: c.title,
         filter: c.filter,
         door: c.door
       })));
@@ -2131,7 +2138,6 @@
   }
   window.CCApp = {
     init,
-    jobFacts,
     visibleJobs,
     jobFilters,
     bulkOn,
@@ -2141,28 +2147,33 @@
     // sortJobs and JOB_COLS are Task 2 (phase 2)'s: renderJobTable
     // and renderJobHead in bin/dashboard.html call CCApp.sortJobs
     // and read CCApp.JOB_COLS instead of keeping their own copies,
-    // the same "table is the second consumer" reach jobFacts and
-    // visibleJobs already have above.
+    // the same "table is the second consumer" reach visibleJobs
+    // already has above.
     sortJobs,
     JOB_COLS,
     groupJobs,
     jobsEmptyNote,
     worktreesCard,
-    // pageHeader already has a second caller today, not a
-    // future one: bin/dashboard.html's initPageHeaders() calls
-    // CCApp.pageHeader() for the Jobs and Runs pages' own
-    // headers, in this same phase. kpiCard and renderPulse are
-    // the two still genuinely waiting -- Jobs and Runs have a
-    // header now but no KPI row and no 24h band of their own,
-    // and CCApp.renderOverviewHead's own two DOM builders are
-    // exactly what the day one of them grows either will reach
-    // for, the same way initPageHeaders reached for pageHeader.
-    // renderOverviewHead remains the only one of the four this
-    // phase's own call site (bin/dashboard.html's render())
-    // actually calls itself.
-    pageHeader,
-    kpiCard,
-    renderPulse,
+    // pageHeader, kpiCard and renderPulse (all three from
+    // ./chrome.js and ./overview.js) used to sit here for a
+    // stated future -- Jobs and Runs had a header of their own
+    // but no KPI row and no 24h band, and CCApp.
+    // renderOverviewHead's own two DOM builders were what the
+    // day either grew one would reach for. That future landed
+    // differently: Jobs, Runs and Projects all grew their own
+    // KPI row this phase (jobsKpis/runsKpis/projectsKpis, each
+    // calling kpiCard() by a direct ES import inside its own
+    // module, never through this global), and
+    // bin/dashboard.html's initPageHeaders() -- pageHeader's
+    // one and only caller -- is gone: boot order meant its
+    // static Runs header was always overwritten by
+    // CCApp.renderRunsPage() before a frame painted, and the
+    // two disagreed besides. Grepped for CCApp.pageHeader,
+    // CCApp.kpiCard and CCApp.renderPulse across bin/ and
+    // tests/ before removing them -- zero readers of any of
+    // the three. renderOverviewHead remains the only one of
+    // the four this phase's own call site (bin/dashboard.html's
+    // render()) actually calls itself.
     renderOverviewHead,
     // jobCard is Task 9's: renderJobCards() in bin/dashboard.html
     // (the Overview's own cards, what used to be inside
@@ -2209,11 +2220,16 @@
     renderProjectsPage,
     projectsSort,
     projectsSetPage,
-    // filteredRuns is Phase 2 Task 6's, still reached the same
-    // way now that Task 7 gives the rest of the table a home
-    // beside it: SORTERS stays internal to ui/app/runs.js, since
-    // nothing outside that module calls it directly.
-    filteredRuns,
+    // filteredRuns (Phase 2 Task 6) and SORTERS both stay
+    // internal to ui/app/runs.js's own exports now that Task 7
+    // gave the rest of the table a home beside it: nothing in
+    // bin/dashboard.html or a test has ever called
+    // CCApp.filteredRuns() -- the characterisation tests that
+    // pin its behaviour read the function's own source text
+    // out of the built bundle (`_app_js` + `_plainfn` in
+    // tests/test_page_contract.py), the same as pulseKpis and
+    // its neighbours above, so it does not belong on
+    // window.CCApp either.
     // RF, renderRunsPage, runsSort, runsSetPage,
     // runsFilterChanged, runsGotoFirstPage, runsSetPageSize,
     // runsPageSize, clearRunFilters, runSearch and
@@ -2251,5 +2267,5 @@
     runProjectNames
   };
 })();
-/* ui-bundle: 60f7d5e4a697c8ec254694bdb5c62a4d732dd54028979b835a4c5cd978aa52ba */
-/* ui-sources: 8fd4d714ca0b9b238569cb497c9422bbdd983f2eff8f7b943bfe3980b3e55790 */
+/* ui-bundle: 504f62e551f2657352d03ba30beb5ddb1b5b722623147616590118d1809f72bf */
+/* ui-sources: a79b9ca374594ded9752c159a890586e4b6b026d8875f78e137a415c2c866dfd */

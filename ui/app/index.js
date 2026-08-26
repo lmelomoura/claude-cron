@@ -7,10 +7,13 @@
    surviving code still calls: renderJobTable, bulkBtn, bulkScope, renderJobs,
    paintJobFilters and initPickers all read this domain today and stayed
    behind because they draw the Jobs table -- the second consumer a later
-   phase adds, not this one. A page that could no longer reach jobFacts,
-   visibleJobs, bulkOn, bulkLabel, clearJobFilters, jobProjectNames, sortJobs
-   or JOB_COLS would not fail loudly; it would throw the first time a
-   5-second poll tried to redraw.
+   phase adds, not this one. A page that could no longer reach visibleJobs,
+   bulkOn, bulkLabel, clearJobFilters, jobProjectNames, sortJobs or JOB_COLS
+   would not fail loudly; it would throw the first time a 5-second poll
+   tried to redraw. jobFacts is jobs-domain.js's own export too, but reached
+   only by ES import inside this bundle (overview.js, jobs-table.js) -- the
+   page itself never calls CCApp.jobFacts(), so it does not belong on this
+   list or on window.CCApp below.
 
    overview.js's exports are the same deal for what pulseHtml, helloHtml and
    renderJobCards used to build: the arithmetic, the wording and the markup
@@ -24,15 +27,14 @@
    renderJobs, since it builds markup from strings the page chooses itself
    rather than from a job's own fields. */
 import { bindPage } from "./page.js";
-import { jobFacts, visibleJobs, jobFilters, bulkOn, bulkLabel,
+import { visibleJobs, jobFilters, bulkOn, bulkLabel,
          clearJobFilters, jobProjectNames, sortJobs, JOB_COLS } from "./jobs-domain.js";
 import { groupJobs, jobsEmptyNote, worktreesCard,
-         renderPulse, renderOverviewHead, jobCard } from "./overview.js";
-import { pageHeader, kpiCard } from "./chrome.js";
+         renderOverviewHead, jobCard } from "./overview.js";
 import { renderJobsPage, jobsSort, jobsSetPage, initJobDrag } from "./jobs-table.js";
 import { visibleProjects, projFilters, projectIsolation,
          renderProjectsPage, projectsSort, projectsSetPage } from "./projects.js";
-import { RF, filteredRuns, renderRunsPage, runsSort, runsSetPage,
+import { RF, renderRunsPage, runsSort, runsSetPage,
          runsFilterChanged, runsGotoFirstPage, runsSetPageSize, runsPageSize,
          clearRunFilters, runSearch, runProjectNames } from "./runs.js";
 
@@ -53,28 +55,36 @@ function init(cc){
 // asks for that way -- see this file's own history for the four that WERE
 // carried here for a stated future and then never trimmed once that future
 // landed inside the module instead.
-window.CCApp = { init, jobFacts, visibleJobs, jobFilters, bulkOn,
+window.CCApp = { init, visibleJobs, jobFilters, bulkOn,
                  bulkLabel, clearJobFilters, jobProjectNames,
                  // sortJobs and JOB_COLS are Task 2 (phase 2)'s: renderJobTable
                  // and renderJobHead in bin/dashboard.html call CCApp.sortJobs
                  // and read CCApp.JOB_COLS instead of keeping their own copies,
-                 // the same "table is the second consumer" reach jobFacts and
-                 // visibleJobs already have above.
+                 // the same "table is the second consumer" reach visibleJobs
+                 // already has above.
                  sortJobs, JOB_COLS,
                  groupJobs, jobsEmptyNote, worktreesCard,
-                 // pageHeader already has a second caller today, not a
-                 // future one: bin/dashboard.html's initPageHeaders() calls
-                 // CCApp.pageHeader() for the Jobs and Runs pages' own
-                 // headers, in this same phase. kpiCard and renderPulse are
-                 // the two still genuinely waiting -- Jobs and Runs have a
-                 // header now but no KPI row and no 24h band of their own,
-                 // and CCApp.renderOverviewHead's own two DOM builders are
-                 // exactly what the day one of them grows either will reach
-                 // for, the same way initPageHeaders reached for pageHeader.
-                 // renderOverviewHead remains the only one of the four this
-                 // phase's own call site (bin/dashboard.html's render())
-                 // actually calls itself.
-                 pageHeader, kpiCard, renderPulse, renderOverviewHead,
+                 // pageHeader, kpiCard and renderPulse (all three from
+                 // ./chrome.js and ./overview.js) used to sit here for a
+                 // stated future -- Jobs and Runs had a header of their own
+                 // but no KPI row and no 24h band, and CCApp.
+                 // renderOverviewHead's own two DOM builders were what the
+                 // day either grew one would reach for. That future landed
+                 // differently: Jobs, Runs and Projects all grew their own
+                 // KPI row this phase (jobsKpis/runsKpis/projectsKpis, each
+                 // calling kpiCard() by a direct ES import inside its own
+                 // module, never through this global), and
+                 // bin/dashboard.html's initPageHeaders() -- pageHeader's
+                 // one and only caller -- is gone: boot order meant its
+                 // static Runs header was always overwritten by
+                 // CCApp.renderRunsPage() before a frame painted, and the
+                 // two disagreed besides. Grepped for CCApp.pageHeader,
+                 // CCApp.kpiCard and CCApp.renderPulse across bin/ and
+                 // tests/ before removing them -- zero readers of any of
+                 // the three. renderOverviewHead remains the only one of
+                 // the four this phase's own call site (bin/dashboard.html's
+                 // render()) actually calls itself.
+                 renderOverviewHead,
                  // jobCard is Task 9's: renderJobCards() in bin/dashboard.html
                  // (the Overview's own cards, what used to be inside
                  // renderJobs() before the Jobs table forked off it) calls
@@ -113,11 +123,16 @@ window.CCApp = { init, jobFacts, visibleJobs, jobFilters, bulkOn,
                  // for the footer's pager, instead of keeping
                  // prjSortKey/prjSortDir/page as its own module state.
                  renderProjectsPage, projectsSort, projectsSetPage,
-                 // filteredRuns is Phase 2 Task 6's, still reached the same
-                 // way now that Task 7 gives the rest of the table a home
-                 // beside it: SORTERS stays internal to ui/app/runs.js, since
-                 // nothing outside that module calls it directly.
-                 filteredRuns,
+                 // filteredRuns (Phase 2 Task 6) and SORTERS both stay
+                 // internal to ui/app/runs.js's own exports now that Task 7
+                 // gave the rest of the table a home beside it: nothing in
+                 // bin/dashboard.html or a test has ever called
+                 // CCApp.filteredRuns() -- the characterisation tests that
+                 // pin its behaviour read the function's own source text
+                 // out of the built bundle (`_app_js` + `_plainfn` in
+                 // tests/test_page_contract.py), the same as pulseKpis and
+                 // its neighbours above, so it does not belong on
+                 // window.CCApp either.
                  // RF, renderRunsPage, runsSort, runsSetPage,
                  // runsFilterChanged, runsGotoFirstPage, runsSetPageSize,
                  // runsPageSize, clearRunFilters, runSearch and

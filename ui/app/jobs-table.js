@@ -234,7 +234,16 @@ function jobRow(j, F){
   if(j.project){
     const tag = el("span", "projtag");
     tag.appendChild(icon("folder"));
-    tag.appendChild(document.createTextNode(j.project));
+    // A bare text node cannot take its own overflow/text-overflow -- ellipsis
+    // only ever applies to an ELEMENT's box, never to a text node directly,
+    // and (per the CSS spec) not even to a FLEX container's own box either
+    // -- .projtag is `display:inline-flex` for the icon/name alignment, so
+    // the ellipsis has to live on this inner span instead (see .projtag-name,
+    // ui/css/pages.css), the one flex ITEM here that is actually allowed to
+    // shrink: .projtag .ic carries `flex:none` (ui/css/components.css) so a
+    // long name shrinks only the name, never distorts the folder icon
+    // beside it.
+    tag.appendChild(el("span", "projtag-name", j.project));
     if(isFav(j.project)){
       const fav = el("span", "favdot");
       fav.title = "Favourite";

@@ -82,7 +82,11 @@ td .projtag{white-space:nowrap}
 .paneblurb{margin:0 0 14px;font-size:12.5px;color:var(--muted);max-width:96ch;line-height:1.6}
 .secthead{display:flex;align-items:center;justify-content:space-between;margin:26px 0 12px}
 td .projtag{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--muted)}
-td .projtag .ic{width:12px;height:12px;color:var(--accent)}
+/* `flex:none`, the same protection .jobcell's own icon already has above --
+   without it, a name too long for the column (.projtag-name, pages.css)
+   shrank this icon right along with the text under flex-shrink instead of
+   leaving it alone at its natural 12px. */
+td .projtag .ic{width:12px;height:12px;color:var(--accent);flex:none}
 /* ------------------------------------------------------------- page header
    Icon, title, one sentence, actions trailing on the right -- pageHeader()
    in ui/app/overview.js is the only place that builds one, so every page

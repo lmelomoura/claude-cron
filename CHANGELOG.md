@@ -353,6 +353,53 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The Runs page's own Warnings and Errors cards now count the same 7-day
+  window the Overview's do, and say so.** The Overview's Warnings/Errors
+  cards are a door into Runs (`initStatFilters`, `bin/dashboard.html`):
+  click one and it lands on Runs' own cards of the same name, same icon,
+  same box. The Overview counts the last 7 days and says so (`sub: "in
+  the last 7 days"`); Runs counted ALL of `CC.DATA.runs` — the server's
+  own 1000-row cap (`bin/claude-cron-server`'s `LIMIT 1000`), far more
+  than 7 days at any real job count — and said "N% of finished runs",
+  naming no window anywhere on the card. Three warnings from today and
+  forty from a month ago read "Warnings 3 / in the last 7 days" on the
+  Overview and "Warnings 43" one click later, on the page the door itself
+  leads to. `runsKpis` (`ui/app/runs.js`) now filters to the identical
+  `Date.now()/1000 - 7*86400` cutoff `render()` (`bin/dashboard.html`)
+  already computes against this same `CC.DATA.runs` for the Overview, with
+  a matching `sub` and a `title` naming what each counts.
+  `test_the_overview_and_runs_warning_cards_name_the_same_window`
+  (`tests/test_page_contract.py`) reads both card builders out of the
+  built bundle and pins their `sub` text to agree. Separately, "Total
+  runs" gained the same honesty: at the server's own 1000-row cap the true
+  total is unknown, so it now reads "1000+" rather than a precise-looking
+  number that is actually a floor.
+
+- **Starring a project on the Projects page fills its own star
+  immediately, instead of up to 5 seconds later.** `toggleFav()`
+  (`bin/dashboard.html`) updated the `favorite_projects` preference and
+  repainted only Jobs (`renderJobsArea()`) — a star clicked on the
+  Projects page itself stayed unfilled, `aria-pressed="false"`, until the
+  next poll's `render()` got around to it, long enough to invite a second
+  click that silently undoes the first. It now also calls
+  `CCApp.renderProjectsPage()`.
+
+- **A long project name ellipsises instead of hard-clipping mid-word, on
+  both Jobs and Runs.** `.projtag`'s own truncation rule
+  (`ui/css/pages.css`) targeted `#jobrows`, an id `tableCard()`
+  (`ui/app/chrome.js`) has not built since Phase 2 Task 3 moved the Jobs
+  table's tbody there — it matched nothing, on either table, and a name
+  like "Revenue Learning Platform" read as "Revenue Learning Platf" against
+  the table-card's own defense-in-depth `overflow:hidden` instead.
+  Retargeting the rule alone was not enough, confirmed by actually
+  rendering it: `.projtag` is `display:inline-flex` (for the icon/name
+  alignment), and `text-overflow` has no effect on a flex container's own
+  box, only on a block one. The project name now sits in its own inner
+  span, `.projtag-name` (`ui/app/jobs-table.js`, `ui/app/runs.js`), which
+  is what actually ellipsises; its icon carries `flex:none`
+  (`ui/css/components.css`) so a long name shrinks only the text, never
+  distorts the folder icon beside it.
+
 - **The Security column no longer hides behind Projects' own row actions,
   and the Projects KPI cards say what their numbers mean.** `PRJ_COLS`
   (`ui/app/projects.js`) grew a seventh column (Security) and `ui/css/
