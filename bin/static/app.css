@@ -1309,16 +1309,25 @@ textarea:focus,.dlg-b input:focus,.dlg-b select:focus{outline:none;border-color:
    bare rule here would have reskinned dialogs this phase never looked at.
    `.row2`, `.combo-trigger`, `.stepper`, `.moneyin`, `.day-btn` and
    `.tabs.wiz` need no such scoping: nothing outside these two dialogs'
-   shared wizard (`makeWizard`) ever uses them. */
+   shared wizard (`makeWizard`) ever uses them. Task 4 (the project editor)
+   only ever ADDS `#projmodal` to a selector already here -- the furniture
+   is Task 3's, unchanged. */
 
 /* labels: a field title, not a small-caps caption -- .req (components.css)
    already paints the required marker in --err, untouched here */
-#editor .dlg-b label{font-size:13px;font-weight:600;text-transform:none;letter-spacing:0}
+#editor .dlg-b label,#projmodal .dlg-b label{
+  font-size:13px;font-weight:600;text-transform:none;letter-spacing:0;
+}
+/* the repo rows are a compact, repeated mini-table -- NAME/PATH/BASE BRANCH
+   stay the small-caps column-header scale (th's own recipe, one property
+   short of it: weight 600 already reaches these from the rule above), not
+   the field-label size, or two repos on screen doubles in height */
+#projmodal .repo-f>label{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em}
 
 /* one grey help line, not a hint paragraph -- the italic read as a
    footnote, the opposite of "the sentence that stops you filling the
    field in wrongly" */
-#editor .fieldhelp{font-size:12.5px;font-style:normal;line-height:1.45;margin:5px 0 0}
+#editor .fieldhelp,#projmodal .fieldhelp{font-size:12.5px;font-style:normal;line-height:1.45;margin:5px 0 0}
 
 /* controls: one height and one radius for every single-line field -- a
    text input, a time input, the combo trigger -- so nothing in a .row2
@@ -1326,12 +1335,15 @@ textarea:focus,.dlg-b input:focus,.dlg-b select:focus{outline:none;border-color:
    own 26px track (.effslider) and a checkbox its native size, so both are
    excluded rather than fought with a second, later override. */
 #editor .dlg-b input:not([type=checkbox]):not([type=range]),
-#editor .combo-trigger{
+#editor .combo-trigger,
+#projmodal .dlg-b input:not([type=checkbox]):not([type=range]),
+#projmodal .combo-trigger{
   height:40px;padding:0 13px;border-radius:9px;
 }
 /* the stepper and the money field are one visible control wearing two
    elements -- the border and the radius belong to the wrapper, so the
-   wrapper takes the fixed height and the input inside just fills it */
+   wrapper takes the fixed height and the input inside just fills it.
+   Job-editor only -- the project editor has neither. */
 #editor .stepper,#editor .moneyin{height:40px;border-radius:9px}
 #editor .stepper input,#editor .moneyin input{height:100%;padding-top:0;padding-bottom:0}
 
@@ -1633,5 +1645,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: 7fe03edf950aa7e69ecd00dafd558cb28712915d20cf25c5c393d1ffb060b70d */
-/* ui-sources: ab23c9211bea9e062eb8cf6bd2e277cb0eba59e5e7dba0657aff0ba2ce680f8b */
+/* ui-bundle: e31263059fda2bf33f48a054f7e6fd7ff9603e890150ef99e9d3e40d06acc405 */
+/* ui-sources: a3bf14da174299d6b7843b82bee9494c6494c069d8f5d3a47bd916c2530a6a99 */

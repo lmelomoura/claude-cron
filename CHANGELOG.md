@@ -19,6 +19,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The project editor gains the same artboard furniture as the job
+  editor, and the Security pane's model/effort controls stay provably
+  identical to the job editor's own.** `bin/dashboard.html`'s
+  `<dialog id="projmodal">` reuses every class Task 3 already put in
+  `ui/css/pages.css` — none of it is new — extended there to also match
+  `#projmodal`: the 13px/600 labels, the plain 12.5px help line, and the
+  40px/9px control height/radius on every text input, select and combo
+  trigger across all four panes (project, repos, provisioning, security).
+  `.row2`, `.day-btn`(unused here) and the tab strip's 13px/600 were
+  already bare rules from Task 3, so the project editor picked those up
+  the moment they shipped. The one addition: `.repo-f>label` keeps the
+  small-caps NAME/PATH/BASE BRANCH scale a repeated repo row needs — the
+  new field-label size would have doubled a two-repo project's row
+  height for no reason.
+
+  Nine more `.fieldhelp` paragraphs shrink to one sentence each, three of
+  them former multi-clause paragraphs carrying `<b>`/`<code>` emphasis
+  that the flat, one-line convention drops in favour of plain prose (code
+  literals like `*`/`release/*`/the `CC_*` environment names stay
+  `<code>`, since those are syntax, not emphasis): the base-branch note,
+  the Claude-account note, the single- and multi-repo notes, the
+  worktree-isolation warning, the provisioning script note, and the
+  Security pane's model/permission-mode/Claude-account notes. Two
+  `.fieldhelp`s were already one sentence and are untouched (the
+  `--force` budget note, the min-severity note).
+
+  `test_the_project_editor_has_a_security_pane`,
+  `test_security_model_and_effort_use_the_job_editors_controls`, the
+  min-severity and whole-security-block tests, and the repo-save
+  round-trip tests all stay green and unedited; verified live in both
+  themes, editing and the four-step numbered create wizard (with its own
+  validation refusal), the repos pane with one and with two rows, and a
+  save round-trip against a real project's description.
+
 - **The job editor speaks the artboards' furniture: 40px/9px controls,
   13px/600 labels, one plain grey help line per field, pill day-buttons.**
   `bin/dashboard.html`'s `<dialog id="editor">` markup is unchanged in

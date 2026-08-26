@@ -787,46 +787,29 @@ document.documentElement.dataset.theme =
   <label>Base branch — the branch runs are cut from, and the branch their merge requests target</label>
   <input id="pj-base" type="text" placeholder="empty — use whatever branch the working directory is on"
          autocomplete="off" spellcheck="false">
-  <p class="fieldhelp">Runs never work in the folder above directly; each one gets its own worktree
-    cut from this branch. <b>Leave it empty</b> and the branch is read from that folder at run time,
-    which is fine until the checkout is left detached or on somebody's feature branch — then every
-    run inherits it. Naming the branch here is what makes runs repeatable no matter what state the
-    folder is in. Ending it in <code>*</code> (<code>release/*</code>) takes the newest branch of
-    that family, so a project shipping through release trains is set once instead of pointing at
-    last month's train.</p>
+  <p class="fieldhelp">The branch each run's worktree is cut from — empty reads it from the folder
+    at run time, and a trailing <code>*</code> (<code>release/*</code>) takes that family's newest.</p>
   </div>
   <label>Claude account — the config directory this project's runs sign in as</label>
   <input id="pj-ccd" type="text" placeholder="default — the account the scheduler itself runs as"
          autocomplete="off" spellcheck="false">
-  <p class="fieldhelp">Claude Code keeps
-    credentials, settings, plugins, MCP servers and past sessions
-    per config directory — one signed-in account each — so this is what puts a project's runs on
-    your work account (<code>~/.claude-work</code>) rather than your personal one
-    (<code>~/.claude-personal</code>). Leave it empty to inherit whatever
-    <code>CLAUDE_CONFIG_DIR</code> the scheduler runs with. It is typed, not browsed: the folder
-    picker hides dot-directories. Keep it stable once runs exist — a resumed session is looked up
-    inside the account that created it.</p>
+  <p class="fieldhelp">Empty inherits the scheduler's own account; once runs exist, keep it stable —
+    a resumed session is looked up inside the account that created it.</p>
   </div><!-- /pane project -->
 
   <div class="tabpane" data-pjpane="repos">
   <p class="sechint">Where a run of this project actually works, and what it finds there.</p>
   <label>Repositories — how many a single run of this project touches</label>
   <div id="pj-single">
-    <p class="fieldhelp">One: the working directory from step&nbsp;1, cut from the base branch you
-      set there. There is nothing to fill in here — the run's worktree is made from that folder.</p>
+    <p class="fieldhelp">One repo: the working directory from step&nbsp;1, cut from the base branch
+      set there — nothing to fill in here.</p>
     <button type="button" class="btn ghost" id="pj-multi-on">Several repositories…</button>
   </div>
   <div id="pj-multi" hidden>
     <div id="pj-repos"></div>
     <button type="button" class="btn ghost" id="pj-repo-add" style="align-self:flex-start">+ repo</button>
-    <p class="fieldhelp">Use this when one ticket touches several repositories at once. Each row gets
-      its own worktree inside the run's directory, and the agent reaches the others through
-      <code>CC_RUN_MANIFEST</code>. <b>One row must have the same path as the working directory in
-      step&nbsp;1</b> — that is the repo the agent starts in, and a run whose rows all point
-      elsewhere is refused before it begins. <b>Name</b> is the worktree's folder name.
-      <b>Base</b> is per repo here, so the field in step&nbsp;1 is put away while this is on; empty
-      still means "read it from that checkout", and <code>*</code> (<code>release/*</code>) still
-      takes the newest of a family.</p>
+    <p class="fieldhelp">Each row gets its own worktree, and one must match the working directory
+      from step&nbsp;1 — that is where the agent starts, and rows that all point elsewhere are refused.</p>
     <button type="button" class="btn ghost" id="pj-multi-off">Back to a single repository</button>
   </div>
   <label>Worktree isolation — where a run actually works</label>
@@ -841,14 +824,8 @@ document.documentElement.dataset.theme =
     </div>
     <input type="hidden" id="pj-wt">
   </div>
-  <p class="fieldhelp">Turn this off and every run of this project works in the same folder. Two agents
-    then share one working tree: one <code>git checkout</code> silently moves the other off its
-    branch, and its work is gone. Worse, anything else pointed at that folder — a Docker bind-mount,
-    your editor, a running dev server — gets served whichever branch an agent happened to leave
-    behind. <b>Auto</b> is the safe default and isolates whenever the cwd is a git repo;
-    <b>Always</b> refuses to run in the cwd even when the git check is inconclusive — use it when
-    something outside claude-cron depends on that folder. Only choose <b>Off</b> for a cwd nothing
-    else reads.</p>
+  <p class="fieldhelp">Off shares one working tree across every run of this project — two agents can
+    then silently overwrite each other's checkout and anything else pointed at that folder.</p>
   </div><!-- /pane repos -->
 
   <div class="tabpane fill" data-pjpane="prov">
@@ -860,14 +837,11 @@ document.documentElement.dataset.theme =
             placeholder="#!/usr/bin/env bash&#10;cp -c &quot;$CC_REPO_PATH/.env&quot; .env"></textarea>
   <label><code>down</code> — run when the run ends</label>
   <textarea id="pj-down" spellcheck="false"></textarea>
-  <p class="fieldhelp">They run
-    <b>once per repo</b>, with the working directory set to that repo's worktree and the run in the
-    environment: <code>CC_REPO_NAME</code>, <code>CC_REPO_PATH</code> (the canonical checkout to copy
-    from), <code>CC_WORKTREE</code>, <code>CC_BASE</code>, <code>CC_RUN_DIR</code>,
-    <code>CC_RUN_MANIFEST</code>, <code>CC_PROJECT</code>, <code>CC_JOB_ID</code>. A non-zero
-    <code>up</code> aborts the run rather than hand an agent a half-built tree. Anything with a
-    global name — a herd site, a compose project — must derive it from <code>$CC_RUN_DIR</code>, or
-    two runs of the same repo collide.</p>
+  <p class="fieldhelp">Run once per repo in that repo's worktree, with <code>CC_REPO_NAME</code>,
+    <code>CC_REPO_PATH</code>, <code>CC_WORKTREE</code>, <code>CC_BASE</code>, <code>CC_RUN_DIR</code>,
+    <code>CC_RUN_MANIFEST</code>, <code>CC_PROJECT</code> and <code>CC_JOB_ID</code> in the
+    environment — a non-zero <code>up</code> aborts the run, so anything with a global name must
+    derive it from <code>$CC_RUN_DIR</code> or collide.</p>
   </div><!-- /pane prov -->
 
   <div class="tabpane" data-pjpane="security">
@@ -889,7 +863,7 @@ document.documentElement.dataset.theme =
         </div>
         <input type="hidden" id="sec-model">
       </div>
-      <p class="fieldhelp">The model the analysis runs as. Default follows the opus family.</p></div>
+      <p class="fieldhelp">The model the analysis runs as — defaults to the opus family.</p></div>
     <div><label>Effort <span class="efflabel" id="sec-effort-label">—</span></label>
       <input type="range" id="sec-effort" class="effslider" min="0" max="5" step="1" value="0">
       <div class="effends"><span>Faster</span><span>Smarter</span></div>
@@ -907,12 +881,12 @@ document.documentElement.dataset.theme =
     </div>
     <input type="hidden" id="sec-perm">
   </div>
-  <p class="fieldhelp">How the analysis agent may use tools. dontAsk without an allowlist denies
-    everything in a headless run — the ledger is protected by the CLI's validating door either way.</p>
+  <p class="fieldhelp">How the analysis agent may use tools — dontAsk without an allowlist denies
+    everything headless, but the ledger stays protected by the CLI's validating door either way.</p>
   <label>Claude account — which account signs the analysis</label>
   <input id="sec-cfgdir" type="text" placeholder="inherits the project's" autocomplete="off" spellcheck="false">
-  <p class="fieldhelp">Empty inherits this project's own Claude account above, which inherits the
-    install's. Set here only when the analysis itself should sign in as someone else.</p>
+  <p class="fieldhelp">Empty inherits this project's own Claude account above; set it only when the
+    analysis itself should sign in as someone else.</p>
   <label>Default profile — offered first when you open Analyse for this project</label>
   <select id="sec-profile-default">
     <option value="quick">Quick</option>
