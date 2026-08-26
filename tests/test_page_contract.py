@@ -548,7 +548,14 @@ def _run_save(srv, tmp_path, *, multi, name="save.js"):
     // reads them back off its interface, so the stub is that interface.
     const CCSecurity = { SEC_PROFILES: ["quick","standard","deep"],
                          SEV_ORDER: ["low","medium","high","critical"] };
-    const EFFORTS = ["","low","medium","high","xhigh","max"];
+    // saveProject reads the effort through effortGet -- the page's one
+    // route to the canonical CCApp.EFFORTS. The stub mirrors that route
+    // rather than declaring a copy of the list: a copy here was the THIRD
+    // EFFORTS in the tree, and proof the production code read a bare
+    // page-global instead of the canonical one.
+    const CCApp = { EFFORTS: ["","low","medium","high","xhigh","max"],
+                    effortFromIndex: (i) => CCApp.EFFORTS[+i||0] || "" };
+    const effortGet = (id) => CCApp.effortFromIndex($(id).value);
     const sent = [];
     const vals = {"pj-name":"Web","pj-desc":"","pj-cwd":"%s","pj-ccd":"","pj-base":"develop",
                   "pj-wt":"auto","pj-up":"","pj-down":"already here",
@@ -1746,6 +1753,23 @@ def test_the_security_column_tells_three_states_apart(srv, tmp_path):
 # real 100% -- read from the same PRJ_COLS/JOB_COLS arrays the page itself
 # renders from, not a hand-typed column count that could drift from them the
 # same way the CSS already did once.
+
+def test_the_page_has_no_effort_vocabulary_of_its_own(srv):
+    """The effort levels live in ONE place: EFFORTS in ui/app/editor-domain.js,
+    reached from the page only through CCApp. The page used to carry its own
+    literal copy, read by exactly one call site -- the one that SAVES
+    proj.security.effort -- while the slider's label read the canonical list.
+    The day the two diverged, the user would confirm one effort level on
+    screen and a different one would land in the config, silently.
+
+    Three copies existed at the worst point (page, domain module, and a test
+    stub feeding the extracted saveProject). This pins the count at one."""
+    page = srv.render_page()
+    assert "const EFFORTS" not in page, (
+        "the page declares its own EFFORTS again -- the effort vocabulary "
+        "must only be reached through CCApp (see ui/app/editor-domain.js)"
+    )
+
 
 def test_the_cells_icon_rule_cannot_repaint_the_favourite_star(srv):
     """The identity cell (.jobcell) holds two icons: its own, a direct child,

@@ -2125,7 +2125,13 @@ async function saveProject(){
     proj.security = {
       enabled: $("sec-enabled").checked,
       model: $("sec-model").value.trim(),
-      effort: EFFORTS[+$("sec-effort").value||0]||"",
+      // Through the ONE canonical list (CCApp.EFFORTS, editor-domain.js).
+      // This read used to index a page-local copy: the label beside the
+      // slider and the value saved to disk each resolved their own array,
+      // and the day the two diverged the user would confirm one effort
+      // level on screen while a different one landed in the config --
+      // silently, since project_set accepts any string.
+      effort: effortGet("sec-effort"),
       permission_mode: $("sec-perm").value||"bypassPermissions",
       claude_config_dir: $("sec-cfgdir").value.trim(),
       default_profile: CCSecurity.SEC_PROFILES.includes(profDef) ? profDef : "standard",
@@ -2764,7 +2770,6 @@ async function loadModels(){
 
 // Effort: slider position ↔ CLI value. 0 leaves it unset (the CLI decides).
 // slider stops, in order; labels come from the shared EFFORT_LABELS map
-const EFFORTS=["","low","medium","high","xhigh","max"];
 // One slider, two homes: the job editor and the project editor's Security tab
 // share the exact control, so the same value reads the same everywhere.
 function effortSet(id,labelId,v){
@@ -3655,7 +3660,7 @@ function validateProjectStep(k){
     editingProject,
     projects: DATA.projects||[],
     multi: pjMulti,
-    repos: collectRepos(),
+    repos: (k==="repos" && pjMulti) ? collectRepos() : [],
   });
   return v.ok ? null : v.message;
 }

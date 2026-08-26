@@ -394,6 +394,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The effort level a project SAVES is read from the same list as the one it
+  SHOWS.** Extracting the editors' vocabulary left the page with its own copy
+  of the effort list, read by exactly one call site — the one persisting
+  `proj.security.effort` — while the slider's label beside it read the
+  canonical `CCApp.EFFORTS`. Both agreed today; the day one changed without
+  the other, the user would confirm one effort level on screen and a
+  different one would land in the config, silently. The save now routes
+  through `effortGet`, the page's one path to the canonical list, the dead
+  copy is gone, and a test refuses any `const EFFORTS` on the page so the
+  count stays at one.
+
 - **The favourite star on Projects shows its real state again.** The
   redesigned identity cell gained a rule painting its icon accent —
   `.jobcell .ic` — and the descendant selector also reached the star's icon
