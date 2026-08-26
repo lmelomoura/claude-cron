@@ -5727,7 +5727,30 @@ FORM_DIALOGS = ("editor", "projmodal", "profmodal", "confirm", "secreason", "fsm
 # widening the scan was judged not worth the complexity it would add for the
 # violation shape it would additionally catch.
 _DIALOG_POLL_PAGE_FNS = ("render", "renderRetained", "renderJobsArea", "paintNav", "paintUser")
-_DIALOG_POLL_APP_FNS = ("renderProjectsPage", "renderRunsPage", "renderOverviewHead")
+_DIALOG_POLL_APP_FNS = ("renderProjectsPage", "renderRunsPage", "renderOverviewHead",
+                        # render() calls this one directly too -- it builds the
+                        # Overview's worktrees summary card every poll.
+                        "worktreesCard")
+
+
+_LIVE_DIALOGS = ("wtmodal", "logmodal")
+
+
+def test_every_dialog_is_either_guarded_or_deliberately_live(srv):
+    """FORM_DIALOGS is hand-maintained. Today it plus the two deliberate
+    exclusions covers every <dialog> on the page -- but a ninth dialog with a
+    text input would be silently unguarded while this file stayed green. This
+    pins the accounting: a new dialog must be filed in one list or the other,
+    on purpose, before the suite passes again."""
+    page = srv.render_page()
+    on_page = set(re.findall(r'<dialog id="(\w+)"', page))
+    accounted = set(FORM_DIALOGS) | set(_LIVE_DIALOGS)
+    assert on_page == accounted, (
+        f"dialogs unaccounted for: {sorted(on_page - accounted)} -- add each "
+        "to FORM_DIALOGS (holds user input; the poll must never repaint it) "
+        f"or to _LIVE_DIALOGS (read-only, live-updates by design); "
+        f"stale entries: {sorted(accounted - on_page)}"
+    )
 
 
 def _dialog_static_ids(page, dialog_id):

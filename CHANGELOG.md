@@ -84,7 +84,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `test_the_poll_never_reaches_into_a_form_dialog` and every wizard/
   dirty-tracking/day/effort test pinned ahead of this restyle stay green
   and unedited; verified live in both themes and both the numbered-stepper
-  (create) and flat-tab (edit) navigations, including a save round-trip
+  (create) and numbered-tab (edit) navigations, including a save round-trip
   against a real job's description.
 
 ### Added
@@ -94,7 +94,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The job editor and the project editor share one wizard
   (`makeWizard`, `bin/dashboard.html`) for dirty tracking and dual-mode
   navigation — a numbered stepper that validates each step while creating,
-  flat tabs all reachable at once while editing — plus a handful of small
+  numbered tabs all reachable at once while editing — plus a handful of small
   form↔job mappings (`getDays`, the effort slider's `effortGet`/`effortSet`)
   and `validateProjectStep`'s own per-step rules. All of it read `$("...")`
   or `document` directly, which is exactly what a characterisation test
@@ -463,6 +463,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   analyses across two branches); the caption now says so.
 
 ### Fixed
+
+- **An untouched job editor no longer claims to have unsaved changes while
+  its precheck script loads.** The clean snapshot was taken before the
+  "loading…" placeholder went into the script field, so for the length of
+  that fetch — indefinite on a hung backend — Escape and Cancel asked
+  "Discard your changes?" over edits that never happened. An operator taught
+  to click through that prompt clicks through it on the day it is true. The
+  placeholder now goes in first. Also: the poll guard's scan gains
+  `worktreesCard` (a direct call of `render()` it had missed), a new test
+  pins that every dialog on the page is filed as either form-guarded or
+  deliberately live, a stale comment stopped promising a flat tab strip the
+  editor has not had for months, and two shortened help texts got their
+  dropped hazards back (the stray-branch checkout trap, and
+  `CLAUDE_CONFIG_DIR` with its keep-it-stable warning).
 
 - **The effort level a project SAVES is read from the same list as the one it
   SHOWS.** Extracting the editors' vocabulary left the page with its own copy

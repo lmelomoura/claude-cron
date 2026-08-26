@@ -2,7 +2,7 @@
 
 **Data:** 2026-08-26
 **Branch:** `feat/security-analysis`
-**Estado:** desenho escrito com o utilizador presente mas sem revisão por secções — as decisões estruturais vêm das fases anteriores; o que é novo está em «Decisões que este documento toma sozinho»
+**Estado:** implementado e revisto; corrigido contra o que aterrou
 
 ## Porquê
 
@@ -109,3 +109,32 @@ widgets de formulário (trabalho nomeado, sem fase atribuída).
 Os portões habituais: `pytest`, `claude-cron selftest`, `test/e2e.test.sh`,
 árvore limpa, artefactos no mesmo commit. E o teste do contrato de render
 verde desde a primeira tarefa.
+
+
+## Correcções pós-implementação
+
+**O pino «formulário intocado não avisa» era mais fraco do que a spec
+alegava.** O teste cobre a comparação (`changedKeys`), mas ao vivo um editor
+de job acabado de abrir lia-se como sujo durante o fetch do precheck — o
+snapshot limpo era tirado antes do placeholder «loading…» entrar no campo.
+Pré-existente (o bloco era byte-idêntico através da fase), encontrado pela
+revisão final ao tentar o caminho que o teste não vê. Corrigido no fecho:
+o placeholder entra antes do snapshot.
+
+**Dois fieldhelps encurtados perderam o essencial, não só o comprimento** —
+o do base branch deixou de avisar do checkout detached/stray que todos os
+runs herdam, e o do config dir perdeu o termo pesquisável
+`CLAUDE_CONFIG_DIR`. Repostos no fecho, encurtados mas com o perigo. A regra
+(«o texto pode encolher, o significado não») manteve-se válida; a aplicação
+falhou em 2 dos 14 casos e a revisão apanhou-os.
+
+**A navegação numerada existe nos dois modos** — a distinção editar/criar é
+comportamental (tudo alcançável + marcas de edição, vs. avanço validado +
+vistos), não visual. Um comentário antigo prometia «plain tab strip when
+editing»; corrigido, junto com duas frases do CHANGELOG que herdaram o
+«flat».
+
+**O scan do contrato de render tinha uma chamada directa fora da lista**
+(`worktreesCard`), inerte hoje mas contrária ao que a docstring alegava;
+acrescentada, e um teste novo obriga cada `<dialog>` da página a estar
+arquivado numa das duas listas — guardado ou deliberadamente vivo.

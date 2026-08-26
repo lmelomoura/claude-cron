@@ -582,8 +582,10 @@ document.documentElement.dataset.theme =
   <div class="dlg-ht"><span id="ed-title">Edit job</span><span class="dlg-sub" id="ed-sub"></span></div>
   <button type="button" class="dlg-x" id="ed-x" title="Close"></button></div>
 <div class="dlg-b">
-  <!-- Rendered by paintEditorNav(): a plain tab strip when editing an existing
-       job, a numbered stepper when creating one. Same panes either way. -->
+  <!-- Drawn by the shared wizard (see edWiz / makeWizard): numbered tabs in
+       both modes -- editing marks changed steps and reaches any tab; creating
+       gates each advance on the step's validation and ticks completed ones.
+       -->
   <nav class="tabs" id="ed-tabs"></nav>
   <div class="tabpanes">
   <div class="tabpane active" data-edpane="job">
@@ -788,12 +790,14 @@ document.documentElement.dataset.theme =
   <input id="pj-base" type="text" placeholder="empty — use whatever branch the working directory is on"
          autocomplete="off" spellcheck="false">
   <p class="fieldhelp">The branch each run's worktree is cut from — empty reads it from the folder
-    at run time, and a trailing <code>*</code> (<code>release/*</code>) takes that family's newest.</p>
+    at run time — a detached or stray-branch checkout included, which every run
+    then inherits — and a trailing <code>*</code> (<code>release/*</code>) takes that family's newest.</p>
   </div>
   <label>Claude account — the config directory this project's runs sign in as</label>
   <input id="pj-ccd" type="text" placeholder="default — the account the scheduler itself runs as"
          autocomplete="off" spellcheck="false">
-  <p class="fieldhelp">Empty inherits the scheduler's own account; once runs exist, keep it stable —
+  <p class="fieldhelp">Exported to runs as <code>CLAUDE_CONFIG_DIR</code> (e.g. <code>~/.claude-work</code>).
+    Empty inherits the scheduler's own account; once runs exist, keep it stable —
     a resumed session is looked up inside the account that created it.</p>
   </div><!-- /pane project -->
 
@@ -2886,6 +2890,12 @@ function openEditor(id){
   editingPrecheck=null;
   $("editor").showModal();
   editingJob=j;
+  // The "loading…" placeholder goes in BEFORE the clean snapshot below, or
+  // the snapshot captures the previous job's script and an untouched form
+  // reads as dirty for the length of the fetch -- Escape then asks "Discard
+  // your changes?" over edits that never happened, and an operator taught to
+  // click through that prompt clicks through it on the day it is true.
+  $("ed-precheck").value="loading…";
   edWiz.markClean();                       // what "unsaved" is measured against
   // Always open on the first step: whatever step you left the last job on says
   // nothing about the one you just opened.
@@ -2893,7 +2903,6 @@ function openEditor(id){
   // Fetched after the dialog is up so opening it stays instant; the textarea
   // fills a moment later, and editingPrecheck is what "did the user change it?"
   // compares against on save.
-  $("ed-precheck").value="loading…";
   fetchPrecheck(id).then(src=>{
     if(editingId!==id) return;             // the user moved on while it loaded
     editingPrecheck=src;
