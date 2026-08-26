@@ -84,8 +84,14 @@ h3 .ic{width:14px;height:14px}
 /* The robot mark, same as on the card, so a job id reads as a job wherever it
    appears rather than as one more monospaced string in a row of them. */
 .jobcell{display:inline-flex;align-items:center;gap:7px}
-.jobcell .ic{width:14px;height:14px;flex:none;color:var(--accent)}
-.rowoff .jobcell .ic{color:var(--muted)}
+/* DIRECT child only. The cell also holds the favourite star, whose icon
+   fills with currentColor so the BUTTON's colour can say off (--line) or
+   on (--warn). A descendant selector here set color on that nested .ic
+   directly, which currentColor then read -- both stars painted accent,
+   identical in either state, and clicking one changed the class but not a
+   single pixel. */
+.jobcell > .ic{width:14px;height:14px;flex:none;color:var(--accent)}
+.rowoff .jobcell > .ic{color:var(--muted)}
 td.nowrap{white-space:nowrap}
 td .cap{color:var(--muted);font-weight:400}
 td .projtag{white-space:nowrap}
@@ -1578,5 +1584,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: a78d4f8795f54ce7c9bf6e556f7498ae8c9c4e25c25627c900daf2fe1c7ac7d6 */
-/* ui-sources: a79b9ca374594ded9752c159a890586e4b6b026d8875f78e137a415c2c866dfd */
+/* ui-bundle: c7a937c7ef8e7a6cbac6ef54dc87754353730b8bca470748b301c231df30a7a7 */
+/* ui-sources: daaef2e170306aeb9084ba038c10dc92927ae3624b6b9d68c17361a88efd7cc1 */

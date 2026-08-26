@@ -61,8 +61,14 @@ h3 .ic{width:14px;height:14px}
 /* The robot mark, same as on the card, so a job id reads as a job wherever it
    appears rather than as one more monospaced string in a row of them. */
 .jobcell{display:inline-flex;align-items:center;gap:7px}
-.jobcell .ic{width:14px;height:14px;flex:none;color:var(--accent)}
-.rowoff .jobcell .ic{color:var(--muted)}
+/* DIRECT child only. The cell also holds the favourite star, whose icon
+   fills with currentColor so the BUTTON's colour can say off (--line) or
+   on (--warn). A descendant selector here set color on that nested .ic
+   directly, which currentColor then read -- both stars painted accent,
+   identical in either state, and clicking one changed the class but not a
+   single pixel. */
+.jobcell > .ic{width:14px;height:14px;flex:none;color:var(--accent)}
+.rowoff .jobcell > .ic{color:var(--muted)}
 td.nowrap{white-space:nowrap}
 td .cap{color:var(--muted);font-weight:400}
 td .projtag{white-space:nowrap}

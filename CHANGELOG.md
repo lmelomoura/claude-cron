@@ -353,6 +353,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The favourite star on Projects shows its real state again.** The
+  redesigned identity cell gained a rule painting its icon accent —
+  `.jobcell .ic` — and the descendant selector also reached the star's icon
+  nested inside the button. The star fills with `currentColor`, which reads
+  the icon's own colour first, so both stars painted accent: filled,
+  identical whether favourited or not, and clicking one changed the class
+  but not a single pixel. One favourite looked like two, and the toggle
+  looked dead. The rule now uses the direct-child combinator, and a test
+  refuses the descendant form so it cannot come back.
+
 - **The Runs page's own Warnings and Errors cards now count the same 7-day
   window the Overview's do, and say so.** The Overview's Warnings/Errors
   cards are a door into Runs (`initStatFilters`, `bin/dashboard.html`):

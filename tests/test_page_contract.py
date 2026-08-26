@@ -1747,6 +1747,28 @@ def test_the_security_column_tells_three_states_apart(srv, tmp_path):
 # renders from, not a hand-typed column count that could drift from them the
 # same way the CSS already did once.
 
+def test_the_cells_icon_rule_cannot_repaint_the_favourite_star(srv):
+    """The identity cell (.jobcell) holds two icons: its own, a direct child,
+    and the favourite star's, nested inside the .favstar button. The star
+    fills with currentColor so the BUTTON's colour can say off (--line) or
+    on (--warn). A descendant selector -- `.jobcell .ic` with a space -- sets
+    color on the nested icon directly, and currentColor reads the element's
+    own color first: both stars painted accent, identical in either state,
+    and clicking one changed the class but not a single pixel. Found on the
+    live install, with the whole suite green, because the earlier check read
+    the CLASS back and never the paint.
+
+    Guards the mechanism: the cell's icon rule must use the direct-child
+    combinator, so it can never reach into the button."""
+    css, _ = srv.static_asset("app.css")
+    offenders = [ln.strip() for ln in css.splitlines()
+                 if ".jobcell .ic" in ln or ".jobcell  .ic" in ln]
+    assert not offenders, (
+        "a descendant .jobcell icon rule is back -- it repaints the "
+        f"favourite star and makes its states indistinguishable: {offenders}"
+    )
+
+
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 @pytest.mark.parametrize("view,const_name", [
     ("view-jobs", "JOB_COLS"),
