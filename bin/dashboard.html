@@ -307,9 +307,15 @@ document.documentElement.dataset.theme =
         </div>
       </div>
       <button class="btn ghost" id="f-clear"></button>
-      <label class="perpage" id="f-size-wrap">Per page
-        <select id="f-size"><option>10</option><option>25</option><option>50</option><option>100</option></select>
-      </label>
+      <!-- The last native <select> on a converted page went here. Per-page is
+           a picker like its four neighbours in this same bar -- one dropdown
+           vocabulary for the whole product (see makePicker). -->
+      <div class="picker" id="rsizepick">
+        <button class="picker-trigger" id="rsizepick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
+        <div class="picker-pop" id="rsizepick-pop" hidden>
+          <div class="picker-list" id="rsizepick-list" role="listbox"></div>
+        </div>
+      </div>
       <div class="activefilters" id="ractive" hidden></div>
     </div>
     <!-- The table card itself, footer included -- see CCApp.tableCard()'s own
@@ -1750,7 +1756,7 @@ function projectFoot(known, q, P){
 // jobProjectNames moved to ui/app/jobs-domain.js, reached as CCApp.jobProjectNames;
 // runProjectNames moved to ui/app/runs.js the same way, reached as CCApp.runProjectNames.
 
-let projPicker, jobStatusPicker, runProjPicker, runJobPicker, runStatusPicker, runDatePicker;
+let projPicker, jobStatusPicker, runProjPicker, runJobPicker, runStatusPicker, runDatePicker, runSizePicker;
 // The two Jobs pickers' own paint step, reached by ui/app/jobs-table.js's
 // paintJobFilterBar() through the page.js interface -- the picker OBJECTS
 // stay here, since initPickers() below builds the four Runs pickers
@@ -1762,6 +1768,7 @@ function paintJobPickers(){ projPicker.paint(); jobStatusPicker.paint(); }
 // from the picker's own valueLabel logic below, not from RF directly.
 function paintRunPickers(){
   runProjPicker.paint(); runJobPicker.paint(); runStatusPicker.paint(); runDatePicker.paint();
+  runSizePicker.paint();
 }
 function runDateLabel(){ return runDatePicker.label(); }
 function initPickers(){
@@ -1846,6 +1853,13 @@ function initPickers(){
               {v:"stopped",label:"stopped",n:n("stopped"),sel:CCApp.RF.status==="stopped",icon:I.power}];
     },
     onPick:(v)=>{ CCApp.RF.status=v; CCApp.runsFilterChanged(); },
+  });
+  runSizePicker=makePicker("rsizepick",{
+    label:"Per page", icon:I.layers,
+    valueLabel:()=>String(CCApp.runsPageSize()),
+    rows:()=>[10,25,50,100].map(n=>({v:String(n), label:String(n),
+      sel:CCApp.runsPageSize()===n, icon:I.layers})),
+    onPick:(v)=>{ CCApp.runsSetPageSize(parseInt(v,10)||25); },
   });
   runDatePicker=makePicker("rdatepick",{
     label:"Date", icon:I.calendar,
@@ -4485,9 +4499,7 @@ $("themebtn").addEventListener("click", ()=>{
   CCApp.RF.from=$("f-from").value; CCApp.RF.to=$("f-to").value;
   CCApp.runsFilterChanged();
 }));
-$("f-size").addEventListener("change",()=>{
-  CCApp.runsSetPageSize(parseInt($("f-size").value,10)||25);
-});
+
 $("f-clear").addEventListener("click", CCApp.clearRunFilters);
 $("jf-clear").addEventListener("click", CCApp.clearJobFilters);
 // Removing one filter from the chip row. Named per axis rather than "clear the
@@ -4574,7 +4586,6 @@ $("q-clear").innerHTML=I.x;
 $("jq-clear").innerHTML=I.x;
 $("searchbox").insertAdjacentHTML("afterbegin", I.search);
 $("jobsearchbox").insertAdjacentHTML("afterbegin", I.search);
-$("f-size").value=String(CCApp.runsPageSize());
 
 /* Ask the server which of the three states this is before drawing anything, and
    only start the 5s poll once there is a session for it to poll with. */

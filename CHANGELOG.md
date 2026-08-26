@@ -494,6 +494,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The product's dropdowns are now one vocabulary — the last native
+  `<select>`s on converted pages are gone.** The project editor's Security
+  pane rendered its default-profile and minimum-severity fields as grey
+  native OS menus, and the Runs page's per-page control was a native select
+  sitting in a filter bar whose four neighbours are house pickers. All three
+  now use the application's own controls — the two dialog fields as the same
+  searchable combo the job editor's fields use (hidden inputs keep their ids,
+  so the save and open paths did not change), and per-page as a `makePicker`
+  beside its siblings. Three native selects remain, all in the Security
+  area's analysis launcher, which the next phase restyles wholesale.
+
 - **An untouched job editor no longer claims to have unsaved changes while
   its precheck script loads.** The clean snapshot was taken before the
   "loading…" placeholder went into the script field, so for the length of

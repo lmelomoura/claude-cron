@@ -179,7 +179,7 @@ const KPI_ICONS = {"Total runs": "layers", "Running now": "play",
 /* ------------------------------------------------------------- the toolbar
    Assembled ONCE, not on every poll -- the same "move the live search input,
    never rebuild it" reasoning mountJobsToolbar (jobs-table.js) states in
-   full. `#f-size` (per-page) and `#f-clear` both land in `actions`, right of
+   full. `#rsizepick` (the per-page picker) and `#f-clear` both land in `actions`, right of
    the spacer filterBar itself inserts -- the static markup's own `.spacer`
    div, which used to sit between the pickers and `#f-clear`, goes with it;
    the two never disagreed about WHAT the toolbar's rightmost group is, only
@@ -190,7 +190,7 @@ function mountRunsToolbar(){
   const bar = filterBar({
     search: $("searchbox"),
     selects: [$("rprojpick"), $("rjobpick"), $("rstatpick"), $("rdatepick")],
-    actions: [$("f-clear"), $("f-size-wrap")],
+    actions: [$("f-clear"), $("rsizepick")],
   });
   host.insertBefore(bar, $("ractive"));
   host.dataset.mounted = "1";
@@ -279,9 +279,8 @@ export function runsSetPageSize(n){
   pageSize=n; localStorage.ccPageSize=n; page=1; renderRunsPage();
 }
 
-// The boot script's own one-time read: `#f-size`'s initial selected option
-// has to match whatever was persisted last session, or it would default to
-// the select's own first `<option>` regardless of what pageSize actually is.
+// Read by the per-page picker's own valueLabel/rows on every paint, so the
+// trigger always shows whatever was persisted last session.
 export function runsPageSize(){ return pageSize; }
 
 export function clearRunFilters(){

@@ -1759,7 +1759,7 @@
     const bar = filterBar({
       search: $("searchbox"),
       selects: [$("rprojpick"), $("rjobpick"), $("rstatpick"), $("rdatepick")],
-      actions: [$("f-clear"), $("f-size-wrap")]
+      actions: [$("f-clear"), $("rsizepick")]
     });
     host.insertBefore(bar, $("ractive"));
     host.dataset.mounted = "1";
@@ -2323,5 +2323,5 @@
     projectStepError
   };
 })();
-/* ui-bundle: fb6cfd0be509a55bf4c0ccd3ab2a604eead13c8f0e130dda5b11ef2e2f0212de */
-/* ui-sources: a3bf14da174299d6b7843b82bee9494c6494c069d8f5d3a47bd916c2530a6a99 */
+/* ui-bundle: a228456d4edf61dc604bbea09cfa3f5c5ee8d65a8df0b136c3b5058fd039a66a */
+/* ui-sources: 18c91fe9cd84e6c5201699568da584bd84ed15553746d979717611fe677802f7 */
