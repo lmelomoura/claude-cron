@@ -19,6 +19,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A test now fails if `render()`'s 5-second poll ever reaches into a form
+  dialog's own field.** `editor`, `projmodal`, `profmodal`, `confirm`,
+  `secreason` and `fsmodal` hold a form a person may be mid-typing into —
+  each is mounted once, filled by its own "open" function, and was never
+  touched again by the poll, but until now only by accident of how the code
+  happened to be laid out, not because anything enforced it. Phase 3 is
+  about to restyle these dialogs, so
+  `test_the_poll_never_reaches_into_a_form_dialog`
+  (`tests/test_page_contract.py`) turns the accident into a contract: it
+  scans `render()` and the functions it calls directly — on the page and in
+  the `ui/app/`/`ui/security/` bundles — for a `$("<id>")` read of any id
+  belonging to one of those dialogs. `wtmodal` and `logmodal` are
+  deliberately exempt — both live-update by design (a running agent's own
+  log, the worktrees table) — and the comment beside `render()` in
+  `bin/dashboard.html` says why, so the exemption cannot be mistaken for an
+  oversight later.
+
 - **A test now fails if `bin/dashboard.html` ships the temporal-dead-zone bug
   a third time by itself becoming a fourth.** `CCApp.init(...)` and
   `CCSecurity.init(...)` each build one object naming dozens of functions

@@ -5665,3 +5665,113 @@ def test_the_job_disabled_pill_and_the_launchd_off_pill_use_different_classes():
         "a job pill state collides with the launchd fault class "
         f"({launchd_off!r})"
     )
+
+
+# ---- Phase 3 Task 1: render()'s dialog contract. Two of the page's dialogs
+# (editor, projmodal) are the obvious ones, but profmodal, confirm, secreason
+# and fsmodal hold exactly the same kind of thing: a form a person may be
+# mid-typing into. Every one of them is mounted once in the page's static
+# markup, filled by its own "open" function, and never touched again until it
+# closes -- but until this test existed, that was true only because nothing
+# had ever wired render() into one of them, not because anything stopped it.
+# Phase 3 is about to restyle these dialogs; this is what turns the accident
+# into a rule that moving code cannot break silently.
+
+FORM_DIALOGS = ("editor", "projmodal", "profmodal", "confirm", "secreason", "fsmodal")
+
+# wtmodal and logmodal are deliberately NOT in the list above. Both are
+# read-only surfaces that live-update BY DESIGN: logmodal tails a running
+# agent's own output, and renderRetained() -- called from render() on every
+# poll -- repaints wtmodal's worktrees table on purpose (see renderRetained's
+# own comment on wthead/wt-blurb/wtrows). This contract protects state a
+# person is mid-typing, not "a view that never changes without a click" --
+# holding those two to the same rule this test enforces would make it red
+# against exactly the behaviour they exist for. If you are looking at this
+# list wondering whether to "fix" the omission: don't -- read the paragraph
+# above first.
+
+# The functions render() reaches, at DIRECT-CALL depth only -- not the
+# transitive closure. renderJobsArea() also calls CCApp.renderJobsPage(),
+# which this test does not descend into; renderProjectsPage() calls
+# mountProjectsToolbar() and renderProjectsTable(), likewise unscanned. That
+# is a stated limit, not an oversight: this test catches render() (or one of
+# the names below) reaching directly into a form dialog. A violation two
+# calls deeper -- say, renderProjectsTable() itself starting to read
+# $("ed-id") -- would not be caught here. A full call-graph walk would catch
+# that too, but the list below is short, hand-countable, and has been stable
+# since the page was split into bin/dashboard.html + ui/app/ + ui/security/;
+# widening the scan was judged not worth the complexity it would add for the
+# violation shape it would additionally catch.
+_DIALOG_POLL_PAGE_FNS = ("render", "renderRetained", "renderJobsArea", "paintNav", "paintUser")
+_DIALOG_POLL_APP_FNS = ("renderProjectsPage", "renderRunsPage", "renderOverviewHead")
+
+
+def _dialog_static_ids(page, dialog_id):
+    """Every id="..." belonging to <dialog id="dialog_id">'s own static
+    markup -- a plain regex over the segment from that opening tag through
+    its matching </dialog>, the same brace-free, DOM-free approach the rest
+    of this file uses for source-level scans.
+
+    The segment starts AT the literal `<dialog id="dialog_id"`, so the
+    dialog's own id is itself the first match: a poll-reached
+    `$("editor").close()` would yank a dialog shut out from under whoever
+    opened it exactly as much as a poll-reached `$("ed-id")` would clobber a
+    field inside it, and this way both are one rule instead of the
+    container id needing a special case."""
+    start = page.index(f'<dialog id="{dialog_id}"')
+    end = page.index("</dialog>", start)
+    return re.findall(r'id="([^"]+)"', page[start:end])
+
+
+def test_the_poll_never_reaches_into_a_form_dialog(srv):
+    """render() runs on every 5-second poll and rebuilds the page's views
+    from scratch. If it, or anything it calls directly, ever reached into
+    one of FORM_DIALOGS, it would overwrite a field mid-keystroke -- input
+    lost to a timer no click ever asked for. Until now that has been true by
+    accident of how the code happens to be laid out; this test is what makes
+    moving code (Phase 3 restyles these dialogs next) unable to reintroduce
+    it without a test going red first.
+
+    Method: extract every id="..." from each form dialog's own static markup
+    (_dialog_static_ids), extract the source of render() and everything it
+    calls directly -- brace-matched for the page's own functions
+    (_DIALOG_POLL_PAGE_FNS), and via _app_js()/_security_js() for the two
+    bundles (_DIALOG_POLL_APP_FNS, plus CCSecurity.render, exported from
+    renderSecurity in ui/security/index.js) -- and assert that none of those
+    bodies contains `$("<id>")`, single- or double-quoted, for any id that
+    belongs to a form dialog.
+
+    See the comments above FORM_DIALOGS for what is deliberately excluded
+    (wtmodal, logmodal) and why; see the comment above
+    _DIALOG_POLL_PAGE_FNS for why the scan stops at direct calls instead of
+    walking the full call graph."""
+    page = _page(srv)
+    js = _js(srv)
+    app_js = _app_js(srv)
+    sec_js = _security_js(srv)
+
+    guarded = {d: _dialog_static_ids(page, d) for d in FORM_DIALOGS}
+    for d, ids in guarded.items():
+        assert ids, f'<dialog id="{d}"> has no ids in its static markup -- did the markup move?'
+
+    scanned = {}
+    for name in _DIALOG_POLL_PAGE_FNS:
+        scanned[f"{name}() (bin/dashboard.html)"] = _plainfn(js, name)
+    for name in _DIALOG_POLL_APP_FNS:
+        scanned[f"CCApp.{name}() (ui/app/)"] = _plainfn(app_js, name)
+    scanned["CCSecurity.render() (renderSecurity, ui/security/index.js)"] = (
+        _plainfn(sec_js, "renderSecurity"))
+
+    violations = []
+    for label, body in scanned.items():
+        for dialog, ids in guarded.items():
+            for gid in ids:
+                if re.search(r"""\$\(\s*(['"])""" + re.escape(gid) + r"""\1\s*\)""", body):
+                    violations.append(
+                        f'{label} reads $("{gid}") -- belongs to <dialog id="{dialog}">')
+
+    assert not violations, (
+        "the poll reaches directly into a form dialog's own markup, which "
+        "would clobber whatever a person was doing in it:\n  "
+        + "\n  ".join(violations)
+    )

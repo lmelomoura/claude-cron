@@ -2224,6 +2224,24 @@ function renderRetained(){
    TICK_KINDS, tickTotals, pickLine and the greeting's own wording moved
    there with it; nothing in this file still reads any of them. */
 
+/* ------------------------------------------------------ the dialog contract
+   Six dialogs -- editor, projmodal, profmodal, confirm, secreason, fsmodal --
+   hold a form a person may be mid-typing into. Each is mounted once in this
+   page's static markup, filled by its own "open" function, and never
+   touched again until it closes: render() below, and everything it calls
+   directly, must never read one of their fields -- otherwise a keystroke
+   racing the 5-second poll loses to a timer nobody asked for.
+
+   wtmodal and logmodal are NOT held to that rule -- both are read-only and
+   live-update BY DESIGN (logmodal tails a running agent; renderRetained(),
+   called a few lines into render(), repaints wtmodal's worktrees table on
+   every poll, on purpose). The contract is "never clobber state a person is
+   entering", not "nothing here changes without a click".
+
+   Enforced by test_the_poll_never_reaches_into_a_form_dialog
+   (tests/test_page_contract.py), which scans render() and the functions it
+   calls directly -- not their callees in turn; see that test's own
+   docstring for the exact, honestly-stated limit of what it can catch. */
 function render(){
   const _g=DATA.generated?new Date(DATA.generated):null;
   $("updated").textContent=(_g&&!isNaN(_g))?_g.toLocaleString(undefined,{dateStyle:"medium",timeStyle:"medium"}):"";
