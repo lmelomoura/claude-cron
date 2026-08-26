@@ -1298,6 +1298,55 @@ textarea:focus,.dlg-b input:focus,.dlg-b select:focus{outline:none;border-color:
 .timerow input[type=time]{flex:1}
 .timerow .sep{color:var(--muted);font-size:12px}
 .dlg-f{display:flex;justify-content:flex-end;gap:9px;padding:13px 20px 19px}
+/* ---- dialog forms ----
+   The job and project editors' approved artboards (JobEditor.dc.html,
+   ProjectEditor.dc.html): 40px/9px controls, 13px/600 labels, one 12.5px
+   grey help line per field, pill day-buttons, and a tab strip sized like
+   the rest of the app. `.fieldhelp` and the bare `.dlg-b label`/`input`/
+   `select` rules above are shared with every OTHER dialog too (profile,
+   the log modal, the finding-reason box), so their restyle below is
+   scoped to `#editor`/`#projmodal` rather than rewritten in place -- a
+   bare rule here would have reskinned dialogs this phase never looked at.
+   `.row2`, `.combo-trigger`, `.stepper`, `.moneyin`, `.day-btn` and
+   `.tabs.wiz` need no such scoping: nothing outside these two dialogs'
+   shared wizard (`makeWizard`) ever uses them. */
+
+/* labels: a field title, not a small-caps caption -- .req (components.css)
+   already paints the required marker in --err, untouched here */
+#editor .dlg-b label{font-size:13px;font-weight:600;text-transform:none;letter-spacing:0}
+
+/* one grey help line, not a hint paragraph -- the italic read as a
+   footnote, the opposite of "the sentence that stops you filling the
+   field in wrongly" */
+#editor .fieldhelp{font-size:12.5px;font-style:normal;line-height:1.45;margin:5px 0 0}
+
+/* controls: one height and one radius for every single-line field -- a
+   text input, a time input, the combo trigger -- so nothing in a .row2
+   pair sits shorter than the field beside it. The effort range keeps its
+   own 26px track (.effslider) and a checkbox its native size, so both are
+   excluded rather than fought with a second, later override. */
+#editor .dlg-b input:not([type=checkbox]):not([type=range]),
+#editor .combo-trigger{
+  height:40px;padding:0 13px;border-radius:9px;
+}
+/* the stepper and the money field are one visible control wearing two
+   elements -- the border and the radius belong to the wrapper, so the
+   wrapper takes the fixed height and the input inside just fills it */
+#editor .stepper,#editor .moneyin{height:40px;border-radius:9px}
+#editor .stepper input,#editor .moneyin input{height:100%;padding-top:0;padding-bottom:0}
+
+/* pairs: 18px apart, not 12 -- enough that a stepper's own border and the
+   time row next to it read as two fields, not one smudged block */
+.row2{gap:18px}
+
+/* the day picker, as pill buttons -- the accent-filled `.on` state above
+   is unchanged, only the shape is new */
+.day-btn{border-radius:999px}
+
+/* the tab strip, sized like the rest of the app's own (13px/600, the same
+   scale a KPI card's label uses) rather than the smaller size every other
+   tab strip in this file still carries */
+.tabs.wiz .tab{font-size:13px;font-weight:600}
 /* ------------------------------------------------------------------- profile */
 .pf-photo{display:flex;align-items:center;gap:15px;margin-top:2px}
 .pf-face{width:64px;height:64px;border-radius:50%;flex:none;background:var(--accent);
@@ -1584,5 +1633,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: c7a937c7ef8e7a6cbac6ef54dc87754353730b8bca470748b301c231df30a7a7 */
-/* ui-sources: cabd1f912d60d5346b354e1fad8b4c5d157f370f688ae1345758d19b81c21507 */
+/* ui-bundle: 7fe03edf950aa7e69ecd00dafd558cb28712915d20cf25c5c393d1ffb060b70d */
+/* ui-sources: ab23c9211bea9e062eb8cf6bd2e277cb0eba59e5e7dba0657aff0ba2ce680f8b */

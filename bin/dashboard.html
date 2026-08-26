@@ -589,7 +589,7 @@ document.documentElement.dataset.theme =
   <div class="tabpane active" data-edpane="job">
   <div id="ed-id-row" style="display:none"><label>Job id (letters, digits, - and _)<span class="req" aria-hidden="true">*</span></label>
     <input id="ed-id" type="text" placeholder="e.g. my-job" autocomplete="off">
-    <p class="fieldhelp">Unique identifier for this job. Use letters, numbers, - and _ only.</p></div>
+    <p class="fieldhelp">Unique identifier for this job — letters, numbers, - and _ only.</p></div>
   <label>Project (optional — groups jobs; leave empty for none)</label>
   <div class="combo" id="ed-project-combo">
     <button type="button" class="combo-trigger" id="ed-project-trigger" aria-haspopup="listbox" aria-expanded="false">
@@ -602,7 +602,7 @@ document.documentElement.dataset.theme =
     </div>
     <input type="hidden" id="ed-project">
   </div>
-  <p class="fieldhelp">Select a project to group this job with others. Leave empty to keep it ungrouped.</p>
+  <p class="fieldhelp">Groups this job with a project's others — leave empty to keep it ungrouped.</p>
   <label>Description</label>
   <textarea id="ed-desc" class="shorttext" placeholder="What this job does"></textarea>
   <p class="fieldhelp">Describe the purpose and behaviour of this job.</p>
@@ -611,7 +611,7 @@ document.documentElement.dataset.theme =
     <input id="ed-cwd" type="text" placeholder="/Users/…/some-repo" readonly data-cwd-target="ed-cwd" class="cwd-ro">
     <button type="button" class="btn cwd-browse" data-cwd-target="ed-cwd">Browse…</button>
   </div>
-  <p class="fieldhelp" id="ed-cwd-help">The directory the agent runs in. Pick a project above to inherit one.</p>
+  <p class="fieldhelp" id="ed-cwd-help">The directory the agent runs in — pick a project above to inherit one.</p>
   <div class="hint" id="ed-cwd-note" hidden></div>
   </div><!-- /pane job -->
 
@@ -624,7 +624,7 @@ document.documentElement.dataset.theme =
   <p class="fieldhelp">This is the prompt that will be sent to the agent when the job runs.</p>
   <label>Precheck script — exit 0 wakes a run, exit 1 stays idle (a skipped tick costs nothing)</label>
   <textarea id="ed-precheck" spellcheck="false" placeholder="Enter the precheck script…"></textarea>
-  <p class="fieldhelp">Run before the agent. Exit 0 and the job runs; exit 1 and it stays idle.</p>
+  <p class="fieldhelp">Runs before the agent — exit 0 starts the job, exit 1 leaves it idle.</p>
   </div><!-- /pane runs -->
 
   <div class="tabpane" data-edpane="when">
@@ -709,9 +709,8 @@ document.documentElement.dataset.theme =
   <div class="row2">
     <div><label>Max simultaneous runs</label>
       <input id="ed-maxpar" type="number" min="0" step="1" inputmode="numeric" placeholder="3">
-      <p class="fieldhelp">How many runs of this job may work at once, each in its own worktree.
-        Default 3; set 0 for no limit. At the limit, Run now and Resume say so instead of
-        starting anything.</p></div>
+      <p class="fieldhelp">How many runs may work at once, each in its own worktree — default 3, 0
+        for no limit; at the limit, Run now and Resume refuse instead of starting one.</p></div>
     <div><label>Stall guard (minutes with no output)</label>
       <div class="stepper">
         <button type="button" class="step-btn" data-step="-1" data-for="ed-stall">−</button>

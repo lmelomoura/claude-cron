@@ -17,6 +17,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The job editor speaks the artboards' furniture: 40px/9px controls,
+  13px/600 labels, one plain grey help line per field, pill day-buttons.**
+  `bin/dashboard.html`'s `<dialog id="editor">` markup is unchanged in
+  structure — every id, `readForm` and `fill` untouched — the look comes
+  from a new `/* ---- dialog forms ---- */` section of `ui/css/pages.css`,
+  tokens only. `.row2`'s pairs go from 12px to 18px apart, `.day-btn`
+  becomes a full pill, and the tab strip (`.tabs.wiz .tab`, drawn by the
+  shared `makeWizard`) moves to the same 13px/600 scale a KPI card's own
+  label uses. These three, plus `.combo-trigger`/`.stepper`/`.moneyin`,
+  are bare rules: nothing outside the two editor dialogs' shared wizard
+  ever reaches them. `.fieldhelp` and the bare `.dlg-b label`/`input`/
+  `select` rules are a different story — the profile modal, the log modal
+  and the finding-reason box use them too — so their restyle (13px/600
+  sentence-case labels, a plain 12.5px help line instead of an italic one)
+  is scoped to `#editor` alone; the project editor's own turn is next.
+
+  Five `.fieldhelp` paragraphs were two sentences or more; each shrinks to
+  one, wording only — the job id's ("Unique identifier for this job. Use
+  letters, numbers, - and _ only." → "...— letters, numbers, - and _
+  only."), the project combo's, the working-directory note's
+  (`ed-cwd-help`), the precheck script's, and the max-simultaneous-runs
+  one, which folds three sentences (what it controls, the 0-for-no-limit
+  default, and that Run now/Resume refuse at the cap) into one without
+  dropping any of the three. The footer (Cancel, then Save changes; no
+  destructive action lives in this dialog — a job is deleted from its row
+  in the table, not from its own editor) already matched the artboard's
+  order and needed no markup change.
+
+  `test_the_poll_never_reaches_into_a_form_dialog` and every wizard/
+  dirty-tracking/day/effort test pinned ahead of this restyle stay green
+  and unedited; verified live in both themes and both the numbered-stepper
+  (create) and flat-tab (edit) navigations, including a save round-trip
+  against a real job's description.
+
 ### Added
 
 - **The two editor dialogs' decision/mapping logic is pinned and pulled out
