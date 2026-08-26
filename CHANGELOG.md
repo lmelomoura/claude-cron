@@ -19,6 +19,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The Security pane's last two native `<select>`s — default analysis
+  profile and minimum severity shown — become the house combo, so the
+  project editor no longer drops into a grey OS menu right next to every
+  other dropdown in the product.** `sec-profile-default` and
+  `sec-min-severity` in `bin/dashboard.html` now follow `ed-perm`'s exact
+  shape: `.combo` wrapper, searchable popover, and a hidden input keeping
+  the original id, so `saveProject`'s reads and the two fields'
+  `CCSecurity`-validated fallbacks at open time are untouched. Their
+  option lists are `CCSecurity.SEC_PROFILES` and `CCSecurity.SEV_ORDER`
+  themselves, each run through one new one-line `titleOpt` helper — not a
+  third hand-typed copy of either vocabulary. The open path's existing
+  validation lines write the hidden input exactly as before; a new
+  `if(secProfileCombo) secProfileCombo.set(...)` (and the same for
+  severity) right after each keeps the visible label in step with it —
+  without it, reopening a project with a non-default stored value showed
+  the wrong label while still saving the right one underneath.
+
+  `test_the_min_severity_dropdown_offers_info_as_the_lowest_option` is
+  rewritten to read the combo's option source — `CCSecurity.SEV_ORDER.map
+  (titleOpt)`, executed against the real vocabulary — instead of a
+  `<select>`'s markup; same substance pinned: info lowest, medium the
+  default. `test_the_project_editor_has_a_security_pane` and
+  `test_saving_always_sends_the_whole_security_block_with_a_real_boolean`
+  stay green and unedited. Verified live in both themes on a project with
+  non-default stored values (Deep/Low): both fields render as combos, not
+  native menus; search filters ("de" narrows to Deep); a severity change
+  survives a save round-trip into `projects.json` and back; and the
+  popover is not clipped by the dialog's own scrolling body, including at
+  a ~900px-tall viewport.
+
 - **The project editor gains the same artboard furniture as the job
   editor, and the Security pane's model/effort controls stay provably
   identical to the job editor's own.** `bin/dashboard.html`'s

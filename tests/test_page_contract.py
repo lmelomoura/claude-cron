@@ -629,25 +629,36 @@ def test_the_project_editor_has_a_security_pane(srv):
         assert f'id="{field}"' in page, f"the security pane has no {field} field"
 
 
-def test_the_min_severity_dropdown_offers_info_as_the_lowest_option(srv):
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_min_severity_dropdown_offers_info_as_the_lowest_option(srv, tmp_path):
     """The info severity sits below the default display floor, recorded but hidden,
-    until somebody lowers the floor to look at it. The dropdown must offer info as
-    the lowest option to make it reachable through the UI."""
-    page = srv.render_page("boot-authed")
-    # Extract the sec-min-severity select options
-    select_match = re.search(r'<select id="sec-min-severity">(.*?)</select>', page, re.S)
-    assert select_match, "sec-min-severity select not found"
-    select_html = select_match.group(1)
-    # Verify info option exists
-    assert '<option value="info">Info</option>' in select_html, \
-        "the info option is not offered in the severity dropdown"
-    # Verify it is the first option (lowest)
-    first_option = re.search(r'<option value="([^"]+)">', select_html)
-    assert first_option.group(1) == "info", \
-        f"info must be the first (lowest) option, not {first_option.group(1)}"
-    # Verify medium is still the selected default
-    assert 'selected>Medium</option>' in select_html or '<option value="medium" selected>Medium</option>' in select_html, \
-        "medium is no longer the selected default"
+    until somebody lowers the floor to look at it. The combo must offer info as
+    the lowest option to make it reachable through the UI.
+
+    sec-min-severity used to be a bare <select> with its own literal <option>
+    list; now it is the house combo and its options are built by mapping
+    titleOpt over CCSecurity.SEV_ORDER -- so this pins the combo's fidelity to
+    that source (structurally, and by actually running the map), not a
+    hand-typed option list living a second time in the page. SEV_ORDER's own
+    order -- info lowest -- is pinned separately by
+    test_sev_order_ranks_info_as_the_lowest_severity against the real
+    vocabulary source, which is what this test's own SEV_ORDER comes from."""
+    js = _js(srv)
+    # Structural: the combo's options must come from CCSecurity.SEV_ORDER
+    # itself, not a second hardcoded list that could quietly drift from it.
+    assert "CCSecurity.SEV_ORDER.map(titleOpt)" in js, \
+        "sec-min-severity must build its options from CCSecurity.SEV_ORDER, not a copy of it"
+    assert 'secMinSevCombo.set("medium", CCSecurity.SEV_ORDER.map(titleOpt))' in js, \
+        "medium is no longer offered as the selected default"
+    sev_order_src = _const(_security_js(srv), "SEV_ORDER")
+    script = tmp_path / "sevopts.js"
+    script.write_text(sev_order_src + _plainfn(js, "titleOpt") + """
+    console.log(JSON.stringify(SEV_ORDER.map(titleOpt)));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out[0] == {"v": "info", "label": "Info"}, \
+        f"info must be the first (lowest) option offered, not {out[0]}"
 
 
 def test_security_model_and_effort_use_the_job_editors_controls(srv):

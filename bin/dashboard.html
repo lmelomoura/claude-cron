@@ -892,11 +892,17 @@ document.documentElement.dataset.theme =
   <p class="fieldhelp">Empty inherits this project's own Claude account above; set it only when the
     analysis itself should sign in as someone else.</p>
   <label>Default profile — offered first when you open Analyse for this project</label>
-  <select id="sec-profile-default">
-    <option value="quick">Quick</option>
-    <option value="standard" selected>Standard</option>
-    <option value="deep">Deep</option>
-  </select>
+  <div class="combo" id="sec-profile-default-combo">
+    <button type="button" class="combo-trigger" id="sec-profile-default-trigger" aria-haspopup="listbox" aria-expanded="false">
+      <span class="combo-val" id="sec-profile-default-val">Standard</span>
+      <span class="combo-caret"></span>
+    </button>
+    <div class="combo-pop" id="sec-profile-default-pop" hidden>
+      <input type="text" class="combo-search" id="sec-profile-default-search" placeholder="Search profiles…" autocomplete="off">
+      <ul class="combo-list" id="sec-profile-default-opts" role="listbox"></ul>
+    </div>
+    <input type="hidden" id="sec-profile-default">
+  </div>
   <div class="row2">
     <div><label>Cap per analysis (USD) — empty = no cap</label>
       <input id="sec-max-budget" type="number" min="0" step="0.5" inputmode="decimal" placeholder="e.g. 2.00"></div>
@@ -911,13 +917,17 @@ document.documentElement.dataset.theme =
        pay for it, and it never reaches the ledger); min_severity only filters what is SHOWN, so
        lowering it later reveals what is already in the ledger from before. -->
   <label>Minimum severity shown</label>
-  <select id="sec-min-severity">
-    <option value="info">Info</option>
-    <option value="low">Low</option>
-    <option value="medium" selected>Medium</option>
-    <option value="high">High</option>
-    <option value="critical">Critical</option>
-  </select>
+  <div class="combo" id="sec-min-severity-combo">
+    <button type="button" class="combo-trigger" id="sec-min-severity-trigger" aria-haspopup="listbox" aria-expanded="false">
+      <span class="combo-val" id="sec-min-severity-val">Medium</span>
+      <span class="combo-caret"></span>
+    </button>
+    <div class="combo-pop" id="sec-min-severity-pop" hidden>
+      <input type="text" class="combo-search" id="sec-min-severity-search" placeholder="Search severities…" autocomplete="off">
+      <ul class="combo-list" id="sec-min-severity-opts" role="listbox"></ul>
+    </div>
+    <input type="hidden" id="sec-min-severity">
+  </div>
   <p class="fieldhelp">A fixed finding is always shown regardless of this floor — the checklist's
     whole job is to say what closed.</p>
   <label>Paths excluded from analysis — one glob per line</label>
@@ -2021,6 +2031,10 @@ function openProjectEditor(name){
   else $("sec-perm").value = sec.permission_mode||"bypassPermissions";
   $("sec-cfgdir").value = sec.claude_config_dir||"";
   $("sec-profile-default").value = CCSecurity.SEC_PROFILES.includes(sec.default_profile) ? sec.default_profile : "standard";
+  // The hidden input above is the value saveProject reads; the combo also
+  // needs telling, or the trigger keeps showing whatever it last rendered
+  // instead of this project's own stored profile.
+  if(secProfileCombo) secProfileCombo.set($("sec-profile-default").value);
   $("sec-max-budget").value = (sec.max_budget_usd!=null && sec.max_budget_usd!=="") ? sec.max_budget_usd : "";
   $("sec-daily-budget").value = (sec.daily_budget_usd!=null && sec.daily_budget_usd!=="") ? sec.daily_budget_usd : "";
   // "medium" only for a project that has never had this pane to touch — a new
@@ -2030,6 +2044,9 @@ function openProjectEditor(name){
   // never silently hides findings that were showing a moment ago.
   $("sec-min-severity").value = CCSecurity.SEV_ORDER.includes(sec.min_severity) ? sec.min_severity
                                : (name ? "low" : "medium");
+  // Same reason as the profile combo just above: keep the visible label in
+  // step with the hidden input this just set.
+  if(secMinSevCombo) secMinSevCombo.set($("sec-min-severity").value);
   $("sec-ignore").value = typeof sec.ignore_paths==="string" ? sec.ignore_paths
                          : (Array.isArray(sec.ignore_paths) ? sec.ignore_paths.join("\n") : "");
   $("pj-delete").style.display=name?"":"none";
@@ -2771,7 +2788,13 @@ const PERMS=[
   {v:"plan",label:"plan"},
   {v:"manual",label:"manual"},
 ];
-let projectCombo=null, modelCombo=null, permCombo=null, wtCombo=null, secModelCombo=null, secPermCombo=null;
+let projectCombo=null, modelCombo=null, permCombo=null, wtCombo=null, secModelCombo=null, secPermCombo=null,
+    secProfileCombo=null, secMinSevCombo=null;
+// Quick/Standard/Deep and Info..Critical are both just Titlecase of the
+// value -- so the two fixed-enum security combos can map straight off
+// CCSecurity's own SEC_PROFILES/SEV_ORDER instead of carrying a second,
+// hand-typed copy of either vocabulary.
+function titleOpt(v){ return {v, label: v.charAt(0).toUpperCase()+v.slice(1)}; }
 function initCombos(){
   projectCombo=createCombo({id:"ed-project", allowNone:true, noneLabel:"— None —", withIcon:true,
     onPick:(v)=>syncCwdField(v)});
@@ -2785,6 +2808,13 @@ function initCombos(){
   secModelCombo.set("", MODELS);
   secPermCombo=createCombo({id:"sec-perm", allowNone:false, def:"bypassPermissions"});
   secPermCombo.set("bypassPermissions", PERMS);
+  secProfileCombo=createCombo({id:"sec-profile-default", allowNone:false, def:"standard"});
+  secProfileCombo.set("standard", CCSecurity.SEC_PROFILES.map(titleOpt));
+  // "low" (not "medium") is the structural def -- it matches the save-time
+  // fallback and the existing-project-with-nothing-saved-yet fallback below;
+  // "medium" is only the new-project nudge that fallback already spells out.
+  secMinSevCombo=createCombo({id:"sec-min-severity", allowNone:false, def:"low"});
+  secMinSevCombo.set("medium", CCSecurity.SEV_ORDER.map(titleOpt));
   // The real list is fetched once there is a session — asking for it at boot
   // just 401s on a signed-out page and leaves the editor on the fallback list
   // for the rest of the visit.
