@@ -19,6 +19,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A test now fails if `bin/dashboard.html` ships the temporal-dead-zone bug
+  a third time by itself becoming a fourth.** `CCApp.init(...)` and
+  `CCSecurity.init(...)` each build one object naming dozens of functions
+  the moved-out `ui/app/` and `ui/security/` modules call back into, read
+  the instant that object literal is built — and three times now, a name in
+  one of them (`activeRunsOf`, `backoffMultiplier`, `runKey`) turned out to
+  be a `const NAME = (...) => {...}` declared BELOW the object that reads
+  it. `const`/`let` are hoisted by name but not by value, so reading one
+  before its own declaration line throws a `ReferenceError` from the
+  temporal dead zone — during boot, before a single row of the page's own
+  JavaScript a test could exercise has run. Nothing in the suite loads the
+  page the way a browser does, so all three were only ever caught by
+  opening it and watching it crash — `runKey` as recently as the previous
+  task. `test_every_name_ccapp_and_ccsecurity_init_pass_is_already_usable`
+  (`tests/test_page_contract.py`) is a static stand-in for that: it never
+  executes the script, only extracts every bare-name property either
+  interface object reads eagerly (a shorthand, or a `key: value` pair whose
+  value is a plain identifier or a dotted chain of them — a method,
+  getter/setter or inline function value is correctly left unchecked, since
+  none of those read anything until called, well after boot) and fails if
+  that name is declared `const`/`let` anywhere below the point its object
+  is built; a `function` declaration is never flagged, since it is exactly
+  the fix all three past occurrences converged on. Proved able to fail by
+  reverting `runKey` to the `const` arrow it used to be, in place, and
+  watching this test name it before reverting the change back. A pass over
+  the rest of the file found no second instance of the class: every other
+  name read at the top level as the script boots (`initSidebar()`,
+  `initPickers()`, the `submitLogin`/`submitSetup` handlers, the closing
+  `boot()` IIFE and the rest) resolves to a hoisted `function` declaration
+  today, not a `const`.
+
 - **The Security area has an Activity screen.** What happened and when,
   every project unless scoped to one, filterable by kind — All activity,
   Analyses, Findings, Settings — and by a period selector (7 days, 30 days,

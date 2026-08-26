@@ -200,6 +200,270 @@ def test_the_backoff_curve_matches_the_engine(srv, tmp_path):
     assert from_js == from_bash, f"js={from_js} bash={from_bash}"
 
 
+# ---- temporal-dead-zone guard for the two boot-time interface objects.
+#
+# bin/dashboard.html builds one object for CCApp.init(...) and one for
+# CCSecurity.init(...), each naming dozens of functions the moved-out modules
+# call back into. Three times now, a name in one of these objects turned out
+# to be a `const NAME = (...) => {...}` declared BELOW the object that reads
+# it (activeRunsOf, backoffMultiplier, runKey) -- `const`/`let` are hoisted by
+# name but not by value, so reading one before its own declaration line
+# throws a ReferenceError from the temporal dead zone, and that throw happens
+# while the object literal is being built, which is during page boot, which
+# crashes the whole page before a single row of JavaScript that a test could
+# `require()` ever runs. All three were fixed the same way: turn the arrow
+# back into a hoisted `function NAME(...){...}`, which this guard treats as
+# always safe regardless of where it sits, because a `function` declaration
+# IS fully usable from line 1 of its enclosing script.
+#
+# No test here loads the page in a browser, so nothing else notices this
+# class of bug -- it was found twice by a human loading the page and
+# watching it crash. This is a static stand-in for that: it never executes
+# the script, only inspects the two object literals' source text and
+# compares it against every top-level `const`/`let` in the same file.
+
+_IDENT = r"[A-Za-z_$][\w$]*"
+
+
+def _skip_ws_comments(s, i):
+    """Advance i past whitespace and //.../* */ comments, stopping at the
+    first character that is neither."""
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c in " \t\r\n":
+            i += 1
+        elif s.startswith("//", i):
+            j = s.find("\n", i)
+            i = n if j == -1 else j
+        elif s.startswith("/*", i):
+            j = s.find("*/", i)
+            i = n if j == -1 else j + 2
+        else:
+            break
+    return i
+
+
+def _scan_balanced(s, start):
+    """From the index of an opening bracket (one of ``{[(``), return the
+    index one past its matching closer. Tracks nesting depth and skips over
+    string literals and comments so a stray bracket inside either cannot
+    desync the count.
+
+    Not a JS parser: it does not understand regex literals or template-
+    string interpolation (`` `${x}` `` is scanned as one opaque string, not
+    as code containing an `x`), and a bracket inside either would misparse.
+    Neither of this file's two interface objects contains one today."""
+    opens = {"{": "}", "[": "]", "(": ")"}
+    closer = opens[s[start]]
+    depth = 0
+    i, n = start, len(s)
+    while i < n:
+        c = s[i]
+        if s.startswith("//", i):
+            j = s.find("\n", i)
+            i = n if j == -1 else j + 1
+            continue
+        if s.startswith("/*", i):
+            j = s.find("*/", i)
+            i = n if j == -1 else j + 2
+            continue
+        if c in "\"'`":
+            q = c
+            i += 1
+            while i < n and s[i] != q:
+                i += 2 if s[i] == "\\" else 1
+            i += 1
+            continue
+        if c in "{[(":
+            depth += 1
+        elif c in "}])":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    raise AssertionError(f"unbalanced {closer!r} scanning from index {start}")
+
+
+def _strip_comments(s):
+    """`s` with every //.../* */ comment removed, string/template literals
+    left untouched (so a comma or `//` typed inside one is never mistaken
+    for a real one)."""
+    out, i, n = [], 0, len(s)
+    while i < n:
+        if s.startswith("//", i):
+            j = s.find("\n", i)
+            i = n if j == -1 else j + 1
+            continue
+        if s.startswith("/*", i):
+            j = s.find("*/", i)
+            i = n if j == -1 else j + 2
+            continue
+        if s[i] in "\"'`":
+            q = s[i]
+            start = i
+            i += 1
+            while i < n and s[i] != q:
+                i += 2 if s[i] == "\\" else 1
+            i += 1
+            out.append(s[start:i])
+            continue
+        out.append(s[i])
+        i += 1
+    return "".join(out)
+
+
+def _top_level_entries(body):
+    """Split the inside of an object literal (braces already stripped) into
+    its top-level, comma-separated property entries -- a comma nested inside
+    a bracket, a string, or a comment never splits an entry in half."""
+    entries, depth, i, n, start = [], 0, 0, len(body), 0
+    while i < n:
+        c = body[i]
+        if body.startswith("//", i):
+            j = body.find("\n", i)
+            i = n if j == -1 else j + 1
+            continue
+        if body.startswith("/*", i):
+            j = body.find("*/", i)
+            i = n if j == -1 else j + 2
+            continue
+        if c in "\"'`":
+            q = c
+            i += 1
+            while i < n and body[i] != q:
+                i += 2 if body[i] == "\\" else 1
+            i += 1
+            continue
+        if c in "{[(":
+            depth += 1
+        elif c in "}])":
+            depth -= 1
+        elif c == "," and depth == 0:
+            entries.append(body[start:i])
+            start = i + 1
+        i += 1
+    if body[start:].strip():
+        entries.append(body[start:])
+    return [e.strip() for e in entries if e.strip()]
+
+
+def _iface_value_names(entry):
+    """From one object-literal entry, return the bare identifier(s) whose
+    VALUE is read the instant the enclosing object literal is built -- the
+    exact moment a `const`/`let` in its temporal dead zone would throw.
+
+    Three shapes read nothing eagerly and yield no names: a method shorthand
+    (`name(args){...}`) and a getter/setter (`get name(){...}`) both define a
+    function that only runs later, on a call the object's own construction
+    never makes; an inline `function`/arrow VALUE (`key: () => ...`) is the
+    same. A spread entry (`...x`) or a computed key (`[expr]: v`) are not
+    produced by either call site today, so they are explicitly out of scope
+    here rather than silently accepted as "no name to check".
+
+    Honest limit: a value that is a bare identifier or a dotted chain of them
+    (`renderJobs: renderJobsArea`, `icon: CC.icon`) is resolved to its root
+    name; a value built from a call, a ternary, or any other expression is
+    left unchecked, because none of those read an outer binding the instant
+    the object literal is built the way a bare identifier reference does."""
+    e = _strip_comments(entry).strip()
+    if not e or e.startswith("...") or e.startswith("["):
+        return []
+    if re.match(rf"^(get|set)\s+{_IDENT}\s*\(", e):
+        return []
+    if re.match(rf"^{_IDENT}\s*\(", e):
+        return []
+    m = re.match(rf"^({_IDENT})\s*:\s*(.*)$", e, re.S)
+    if m:
+        value = m.group(2).strip()
+        if (value.startswith("function") or "=>" in value
+                or value.startswith("{") or value.startswith("[")):
+            return []
+        vm = re.match(rf"^({_IDENT})(?:\.{_IDENT})*$", value, re.S)
+        return [vm.group(1)] if vm else []
+    m = re.match(rf"^({_IDENT})$", e)
+    return [m.group(1)] if m else []
+
+
+def _init_call_object(js, call_name):
+    """Return the (start, end) span of the object literal passed to
+    `call_name(...)` -- indices of its outer braces, inclusive.
+
+    Handles the two shapes this file's own call sites use: the object
+    written inline at the call site (`X.init({ ... })`), and a bare
+    identifier (`X.init(NAME)`) resolved back to the nearest EARLIER
+    top-level `const NAME = {` in the same script. The object literal's own
+    position is what is returned -- not the call's -- because that is where
+    its properties' values are actually read; for CCSecurity.init(CC) that
+    position is earlier in the file than the call itself, which only makes
+    this check stricter, never weaker.
+
+    `call_name + "("` also matches this file's own prose (two comments say
+    "CCApp.init()" to explain what calls where); those are skipped by
+    requiring the parenthesised argument be non-empty, which every real call
+    here has and every comment mention does not."""
+    call_idx = None
+    for m in re.finditer(re.escape(call_name) + r"\(", js):
+        if js[_skip_ws_comments(js, m.end())] != ")":
+            call_idx = m.start()
+            break
+    if call_idx is None:
+        raise AssertionError(f"no non-empty call to {call_name}(...) found")
+    i = _skip_ws_comments(js, call_idx + len(call_name) + 1)
+    if js[i] == "{":
+        return i, _scan_balanced(js, i)
+    m = re.match(_IDENT, js[i:])
+    assert m, f"{call_name}(...)'s argument is neither an object literal nor a bare name"
+    name = m.group(0)
+    decl = None
+    for dm in re.finditer(rf"^(?:const|let)\s+{name}\s*=\s*", js[:call_idx], re.M):
+        decl = dm  # last one wins: the nearest declaration before the call
+    assert decl, f"no top-level const/let {name} found before {call_name}(...)"
+    brace = decl.end()
+    assert js[brace] == "{", f"{name} is not bound to an object literal"
+    return brace, _scan_balanced(js, brace)
+
+
+def test_every_name_ccapp_and_ccsecurity_init_pass_is_already_usable(srv):
+    """Guards the temporal-dead-zone class described above the helpers: for
+    every bare-name property CCApp.init(...) and CCSecurity.init(...) pass,
+    if that name is declared with `const`/`let` AFTER the point where the
+    interface object reads it, fail -- a `function` declaration anywhere in
+    the file (hoisted, always callable) is not flagged, deliberately, since
+    that is the fix all three past occurrences converged on.
+
+    This only recognises a TOP-LEVEL `const`/`let` -- one declared at column
+    0, the convention every existing declaration in this file already
+    follows (checked below) -- so a same-named `const` inside some unrelated
+    function body is never confused with it, but a top-level declaration
+    written with leading indentation would go unseen."""
+    js = _js(srv)
+    # The column-0 convention this guard relies on, asserted rather than
+    # assumed -- if it ever stops holding the guard would quietly stop
+    # seeing real declarations instead of failing loudly.
+    assert re.search(r"^(?:const|let)\s", js, re.M), \
+        "no top-level const/let found at all -- the column-0 convention this guard reads may have changed"
+
+    for call_name in ("CCApp.init", "CCSecurity.init"):
+        eval_pos, end = _init_call_object(js, call_name)
+        names = []
+        for entry in _top_level_entries(js[eval_pos + 1:end - 1]):
+            names.extend(_iface_value_names(entry))
+        assert names, f"{call_name}(...) yielded no bare-name properties -- the extraction itself may be broken"
+        for name in names:
+            decl = re.search(rf"^(?:const|let)\s+{re.escape(name)}\b",
+                              js[eval_pos:], re.M)
+            assert decl is None, (
+                f"{call_name}(...) reads `{name}` at the point its interface "
+                f"object is built, but `{name}` is declared `const`/`let` "
+                f"BELOW that point -- reading it there throws a "
+                f"ReferenceError from the temporal dead zone and crashes the "
+                f"page on load. Declare it as a hoisted `function` instead "
+                f"(the fix all three past occurrences of this bug used), or "
+                f"move the declaration above this call."
+            )
+
+
 def _fn(js, name):
     """The source of one function, brace-matched — regex alone stops at the
     first `}` inside the body."""
