@@ -48,6 +48,19 @@ body{margin:0;background:var(--bg);color:var(--ink);
    .isopill.auto already uses for "this is a mode, not a state" rather than
    any of the tones above. */
 .pill.profile{background:var(--accent-soft);color:var(--accent)}
+/* An ANALYSIS's own state (Phase 4 Task 4, the Security index's Recent
+   analyses table) -- RUN_STATES's own four values (project-screen.js),
+   Title-Cased as "Completed"/"Capped"/"Failed"/"Running". New modifiers
+   rather than reusing `.pill.on`/`.pill.off`: those two are reserved for a
+   PROJECT's own active/launchd-fault reading (see `.pill.off`'s own comment
+   above), and a historical analysis run is a third, unrelated fact that
+   happens to want the same four tone families -- ok/warn/err/accent, the
+   identical set `.pill.on`/`.idle`/`.off`/`.profile` already draw from --
+   not the same two classes repurposed for a different question.*/
+.pill.done{background:var(--ok-soft);color:var(--ok)}
+.pill.capped{background:var(--warn-soft);color:var(--warn)}
+.pill.failed{background:var(--err-soft);color:var(--err)}
+.pill.running{background:var(--accent-soft);color:var(--accent)}
 h3{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
   margin:0;display:flex;align-items:center;gap:7px}
 h3 .ic{width:14px;height:14px}

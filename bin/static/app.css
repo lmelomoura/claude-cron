@@ -71,6 +71,19 @@ body{margin:0;background:var(--bg);color:var(--ink);
    .isopill.auto already uses for "this is a mode, not a state" rather than
    any of the tones above. */
 .pill.profile{background:var(--accent-soft);color:var(--accent)}
+/* An ANALYSIS's own state (Phase 4 Task 4, the Security index's Recent
+   analyses table) -- RUN_STATES's own four values (project-screen.js),
+   Title-Cased as "Completed"/"Capped"/"Failed"/"Running". New modifiers
+   rather than reusing `.pill.on`/`.pill.off`: those two are reserved for a
+   PROJECT's own active/launchd-fault reading (see `.pill.off`'s own comment
+   above), and a historical analysis run is a third, unrelated fact that
+   happens to want the same four tone families -- ok/warn/err/accent, the
+   identical set `.pill.on`/`.idle`/`.off`/`.profile` already draw from --
+   not the same two classes repurposed for a different question.*/
+.pill.done{background:var(--ok-soft);color:var(--ok)}
+.pill.capped{background:var(--warn-soft);color:var(--warn)}
+.pill.failed{background:var(--err-soft);color:var(--err)}
+.pill.running{background:var(--accent-soft);color:var(--accent)}
 h3{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
   margin:0;display:flex;align-items:center;gap:7px}
 h3 .ic{width:14px;height:14px}
@@ -1655,17 +1668,114 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secidx-donut-svg{width:150px;height:150px}
 .secidx-donut-total{font:700 20px/1 ui-sans-serif,system-ui,sans-serif;fill:var(--ink)}
 .secidx-catcol{flex:1 1 260px;min-width:220px}
-.secidx-cathead{font-size:11px;text-transform:uppercase;letter-spacing:.05em;
-  color:var(--muted);font-weight:600;margin:0 0 10px}
-.secidx-catrow{display:flex;align-items:center;gap:10px;margin:0 0 8px;font-size:12px}
-.secidx-catname{flex:0 0 140px;min-width:0;overflow:hidden;text-overflow:ellipsis;
-  white-space:nowrap;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:11.5px}
-.secidx-catbar{flex:1 1 auto;height:7px;border-radius:4px;background:var(--panel2);overflow:hidden}
-.secidx-catfill{display:block;height:100%;background:var(--accent);border-radius:4px}
-.secidx-catcount{flex:none;font-variant-numeric:tabular-nums;color:var(--muted);min-width:20px;text-align:right}
+/* "Top issue categories" (Phase 4 Task 4) -- a section title now, not the
+   eyebrow label the old "Rules producing the most open findings" caption
+   wore (that sentence explained what the numbers below it were; the new,
+   shorter one is just its name, the mockup's own register). Small-caps goes
+   with it, the same reasoning `.secidx-cardhead h3` (below) opts the two
+   bottom-row card titles out of the page's generic uppercase `h3`. */
+.secidx-cathead{font-size:13px;font-weight:650;color:var(--ink);margin:0 0 10px}
+/* Icon, name, right-aligned count -- no bar (Phase 4 Task 4 dropped the
+   width-scaled fill the mockup never drew here). `.secidx-catname` no
+   longer reserves a fixed 140px for itself: with nothing to its right but
+   the count, it grows to fill the row instead. */
+.secidx-catrow{display:flex;align-items:center;gap:10px;margin:0 0 10px;font-size:12.5px}
+.secidx-catrow:last-child{margin-bottom:0}
+.secidx-catrow .ic{width:15px;height:15px;color:var(--muted);flex:none}
+.secidx-catname{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.secidx-catcount{flex:none;font-variant-numeric:tabular-nums;font-weight:650;color:var(--ink);min-width:20px;text-align:right}
 @media (max-width:700px){
   .secidx-donutwrap{flex-direction:column;align-items:center}
 }
+/* ---------------------------------------------- recent analyses / findings
+   Phase 4 Task 4: the index's own bottom row, side by side like the mockup
+   -- Recent analyses in `.secpjmain` (ui/css/components.css, the project
+   screen's own main column, reused as-is), Findings overview in
+   `.secidx-findcard` below. A fixed flex-basis rather than the project
+   screen's own 300px `.secpjside`: that width suits a donut stacked ABOVE
+   its own legend (the project sidebar's own layout, untouched by any of
+   this), but this card puts the donut BESIDE its legend (`.secidx-findbody`
+   below) and asks for more room to do it -- narrower than `.secpjmain`
+   still leaves it read, at a glance, as the SIDE column of the row. */
+.secidx-findcard{flex:1 1 380px;min-width:300px}
+@media (max-width:900px){
+  .secidx-findcard{flex:1 1 100%}
+}
+/* A card's own title row -- bold, sentence case, one optional grey sub-line,
+   one trailing action -- for BOTH bottom-row cards (secIndexCardHead,
+   ui/security/index-screen.js). `h3` is uppercase small caps everywhere
+   else on this page (the table headers, `.secidx-cathead` above) -- an
+   eyebrow style for a label sitting ABOVE a busier panel, not the mockup's
+   own bold, sentence-case reading for "Recent analyses"/"Findings
+   overview". Scoped to opt OUT of that inherited rule rather than the rule
+   itself losing its transform for every other `h3` still wanting it. */
+.secidx-cardhead{display:flex;align-items:flex-start;justify-content:space-between;
+  gap:16px;padding:18px 20px 14px}
+.secidx-cardhead-text{min-width:0}
+.secidx-cardhead h3{margin:0;font-size:15px;font-weight:650;color:var(--ink);
+  text-transform:none;letter-spacing:normal;display:block}
+.secidx-cardhead-sub{margin:4px 0 0;font-size:12px;color:var(--muted)}
+.secidx-cardhead .btn{flex:none}
+/* The house combo (Phase 4 Task 4's own period picker) -- the identical
+   <details>/<summary>/.menu-pop popover secIndexProjectRow's own kebab
+   already draws, `position:fixed` recompute on open included (both clip
+   against this same `.table-card{overflow:hidden}`), styled as a trigger
+   with `.filterpick`'s own look (this file, above) so it reads as the same
+   kind of control as the projects table's own pickers three inches away. */
+.secidx-periodpick{position:relative;display:inline-flex}
+.secidx-periodpick > summary{list-style:none;cursor:pointer}
+.secidx-periodpick > summary::-webkit-details-marker{display:none}
+.secidx-periodpick .menu-pop{top:calc(100% + 6px);bottom:auto;min-width:168px}
+.secidx-periodpick .menu-pop button{justify-content:space-between}
+/* The shared donut+legend+categories block (secIndexDonut), planted inside
+   THIS card's own box instead of bare in a sidebar -- `.secidx-donutwrap`'s
+   own background/border/shadow/padding is for the latter (project-screen.js
+   plants it with no card of its own around it) and would double this card's
+   chrome if left in place here, so it is stripped back out, scoped to this
+   one wrapper rather than changed at the source. The donut sits BESIDE its
+   legend here (`flex-direction:row`, not the shared rule's own column) and
+   the categories list drops to its own full-width row below both --
+   `.secidx-findbody` is index-screen.js's own wrapper, so neither change
+   reaches the project screen's sidebar, which this task's mockup says
+   nothing about. */
+.secidx-findbody{padding:2px 20px 16px}
+.secidx-findbody .secidx-donutwrap{background:none;border:none;box-shadow:none;padding:0}
+.secidx-findbody .secidx-donutcol{flex-direction:row;align-items:center;gap:16px}
+.secidx-findbody .secidx-donut-svg{flex:none}
+.secidx-findbody .secidx-catcol{flex:1 1 100%}
+/* The legend, redrawn as a dot beside plain text instead of a filled chip --
+   a coloured `::before` circle (never part of `.textContent`, so the pinned
+   pill text `secIndexDonutLegend` builds underneath this is untouched) plus
+   the count-and-percentage pair the plain chip had no room for. Each row is
+   `justify-content:space-between` so the count+percentage lands flush right
+   against the card's own edge, the mockup's own alignment. */
+.secidx-findlegend{display:flex;flex-direction:column;gap:9px;flex:1 1 auto;min-width:0}
+.secidx-findlegend .secidx-legendrow{display:flex;align-items:center;
+  justify-content:space-between;gap:14px;width:100%}
+/* `:not(.clean)` -- the zero-findings "nothing open" pill (secIndexDonutLegend's
+   own early return, before any row/percentage exists to redraw) keeps its
+   ordinary green chip look untouched; only a real severity's own pill is
+   redrawn as a dot. Without this exclusion the clean pill lost its
+   background to the rule below AND had no `::before` colour of its own (it
+   matches none of the five severities beneath it), rendering as invisible-
+   dot plain text instead of the green "nothing open" every other clean
+   state on this screen shows. */
+.secidx-findlegend .sevpill:not(.clean){background:none;border-color:transparent;
+  padding:0 0 0 14px;border-radius:0;position:relative;font-size:12.5px;
+  font-weight:600;gap:0;color:var(--ink)}
+.secidx-findlegend .sevpill:not(.clean)::before{content:"";position:absolute;left:0;top:50%;
+  transform:translateY(-50%);width:8px;height:8px;border-radius:50%}
+.secidx-findlegend .sevpill.critical::before,.secidx-findlegend .sevpill.high::before{
+  background:var(--err)}
+.secidx-findlegend .sevpill.medium::before{background:var(--warn)}
+.secidx-findlegend .sevpill.low::before,.secidx-findlegend .sevpill.info::before{
+  background:var(--muted)}
+.secidx-legendpct{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums;
+  white-space:nowrap}
+/* Full-width, centred -- the mockup's own "View full report" -- rather than
+   the inline-flex `.btn` shrinking to its own label's width and sitting
+   flush left under a card this wide. */
+.secidx-reportbtn{display:flex;justify-content:center;margin:4px 20px 20px}
 /* --------------------------------------------------------------- a11y floor
    One ring, everywhere, and only for keyboard users — :focus-visible keeps it
    off a mouse click. The custom widgets (day picker, chips, tabs, steppers,
@@ -1735,5 +1845,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: 9b95a04d8578aaaaea0f3365aa823eb8d6dc94f3ab92266a7ea0c19deccc2378 */
-/* ui-sources: f7162fd75e5dfd3c09fe9ec5e4f9164881397a8e8ff522469d7730e877bb0b62 */
+/* ui-bundle: 45439c69bfb92c010e020e444cebffbd8cf37b98dd73ae55fec820d073a55cda */
+/* ui-sources: fff620c33e3b212ae72191bed9e3332fb6ce4fca45db1da0cf52e379b24b3492 */

@@ -2152,13 +2152,15 @@
       host.textContent = "";
       host._secCards = secEl("div");
       host._secProjects = secEl("div", "secidx-section");
-      host._secRecent = secEl("div");
-      host._secDonut = secEl("div");
+      host._secBottomRow = secEl("div", "secpjbody");
+      host._secRecent = secEl("div", "secpjmain");
+      host._secDonut = secEl("div", "secidx-findcard");
+      host._secBottomRow.appendChild(host._secRecent);
+      host._secBottomRow.appendChild(host._secDonut);
       host.appendChild(host._secCards);
       host.appendChild(secEl("div", "secpj-caption", SEC_FLOOR_SCOPE_NOTE));
       host.appendChild(host._secProjects);
-      host.appendChild(host._secRecent);
-      host.appendChild(host._secDonut);
+      host.appendChild(host._secBottomRow);
       secMountProjectsSection(host._secProjects);
     }
     host._secCards.textContent = "";
@@ -2166,24 +2168,20 @@
     secLatestProjects = data.projects || [];
     secRefreshFilterOptions(secLatestProjects);
     secRepaintProjectsTable();
+    const recent = data.recent || [];
     host._secRecent.textContent = "";
-    host._secRecent.appendChild(secIndexSection(
-      "Recent analyses",
-      secIndexRecent(data.recent || [])
-    ));
+    host._secRecent.appendChild(secIndexRecentCard(recent));
     host._secDonut.textContent = "";
-    host._secDonut.appendChild(secIndexSection(
-      "Findings by severity",
+    host._secDonut.appendChild(secIndexFindingsCard(
+      data.donut || {},
+      data.categories || [],
       // The donut is the fleet's whole posture rolled into one figure, so it
       // cannot carry the per-row `incomplete` badge the table beside it uses --
       // it gets the same caveat the Critical/High cards get, from the same
       // count, or it is the one number on this screen that still presents a
       // partial read as a complete one.
-      secIndexDonut(
-        data.donut || {},
-        data.categories || [],
-        secCappedNote(data.summary || {})
-      )
+      secCappedNote(data.summary || {}),
+      recent
     ));
   }
   function secCappedScopeNote(n, of, noun) {
@@ -2196,12 +2194,6 @@
       summary.projects || 0,
       "project"
     );
-  }
-  function secIndexSection(title, body) {
-    const sec = secEl("div", "secidx-section");
-    sec.appendChild(secEl("h3", null, title));
-    sec.appendChild(body);
-    return sec;
   }
   function secIndexCards(summary) {
     const wrap = secEl("div", "kpi-grid");
@@ -2630,36 +2622,161 @@
     secProjectsTableHost = secEl("div");
     sectionHost.appendChild(secProjectsTableHost);
   }
-  function secIndexRecentRow(a) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "secrow secidx-recentrow";
-    row.onclick = () => secOpenProject(a.project);
-    row.appendChild(secIcon(a.state === "running" ? "timer" : a.state === "failed" ? "xcircle" : "check"));
-    const grow = secEl("div", "grow");
-    grow.appendChild(secEl(
-      "div",
-      "secname",
-      a.project + " \xB7 " + a.repo + " @ " + a.branch
-    ));
-    const bits = [
-      a.profile,
-      a.state,
-      a.state === "running" ? "started " + fmtAgo(a.started) : "ended " + fmtAgo(a.ended || a.started)
-    ];
-    if (a.open != null) bits.push(a.open + " open");
-    bits.push(money(a.spend_usd || 0));
-    grow.appendChild(secEl("div", "secmeta", bits.filter(Boolean).join(" \xB7 ")));
-    row.appendChild(grow);
-    return row;
+  function secIndexCardHead(title, sub, action) {
+    const head = secEl("div", "secidx-cardhead");
+    const text = secEl("div", "secidx-cardhead-text");
+    text.appendChild(secEl("h3", null, title));
+    if (sub) text.appendChild(secEl("p", "secidx-cardhead-sub", sub));
+    head.appendChild(text);
+    if (action) head.appendChild(action);
+    return head;
   }
-  function secIndexRecent(recent) {
-    if (!recent.length) {
-      return secEl("div", "tblempty", "No analyses have run yet.");
+  function secViewAllAnalysesButton() {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn ghost";
+    btn.appendChild(secIcon("activity"));
+    btn.appendChild(document.createTextNode("View all analyses"));
+    btn.onclick = () => {
+      secOpenActivity("");
+      secActSwitchTab("analyses");
+    };
+    return btn;
+  }
+  function secViewFullReportButton(recent) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn ghost secidx-reportbtn";
+    btn.appendChild(secIcon("file"));
+    btn.appendChild(document.createTextNode("View full report"));
+    const latest = (recent || [])[0];
+    if (!latest) {
+      btn.disabled = true;
+      btn.title = "No analyses yet \u2014 there is nothing to report.";
+      return btn;
     }
-    const host = secEl("div", "seclist");
-    recent.forEach((a) => host.appendChild(secIndexRecentRow(a)));
-    return host;
+    btn.title = "Open " + latest.project + "\u2019s own Reports tab \u2014 the nearest report to this card's totals; there is no single report spanning every project.";
+    btn.onclick = () => {
+      secOpenProject(latest.project);
+      secSwitchProjectTab("reports");
+    };
+    return btn;
+  }
+  var SEC_RECENT_COLS = [
+    ["run", "Run"],
+    ["project", "Project"],
+    ["profile", "Profile"],
+    ["branch", "Branch"],
+    ["findings", "Findings"],
+    ["status", "Status"],
+    ["date", "Date"]
+  ];
+  var SEC_RUN_STATUS_LABEL = {
+    running: "Running",
+    done: "Completed",
+    capped: "Capped",
+    failed: "Failed"
+  };
+  function secIndexRunStatusPill(state) {
+    const known = Object.prototype.hasOwnProperty.call(SEC_RUN_STATUS_LABEL, state);
+    return secEl(
+      "span",
+      "pill " + (known ? state : "failed"),
+      known ? SEC_RUN_STATUS_LABEL[state] : "Unknown"
+    );
+  }
+  function secIndexRecentFindingsCell(open) {
+    if (open == null) return secEl("span", "muted", "\u2014");
+    if (!open) return secEl("span", "sevpill clean", "nothing open");
+    const span = secEl("span", null, open + (open === 1 ? " finding" : " findings"));
+    span.title = "The severity split lives on this project's own Findings tab \u2014 this row's own analysis was never given one to show here.";
+    return span;
+  }
+  function secIndexRecentRow(a) {
+    const tr = document.createElement("tr");
+    tr.className = "secidx-rowlink";
+    tr.onclick = () => secOpenProject(a.project);
+    const tdRun = document.createElement("td");
+    tdRun.textContent = "#" + a.id;
+    tr.appendChild(tdRun);
+    const tdProject = document.createElement("td");
+    const nameLine = secEl("div", "secidx-pname");
+    nameLine.appendChild(secIcon("folder"));
+    nameLine.appendChild(secEl("span", "secidx-pname-text", a.project));
+    tdProject.appendChild(nameLine);
+    tr.appendChild(tdProject);
+    const tdProfile = document.createElement("td");
+    tdProfile.appendChild(a.profile ? secEl("span", "pill profile", secProfileLabel(a.profile)) : secEl("span", "muted", "\u2014"));
+    tr.appendChild(tdProfile);
+    const tdBranch = document.createElement("td");
+    tdBranch.textContent = a.branch || "\u2014";
+    tr.appendChild(tdBranch);
+    const tdFindings = document.createElement("td");
+    tdFindings.appendChild(secIndexRecentFindingsCell(a.open));
+    tr.appendChild(tdFindings);
+    const tdStatus = document.createElement("td");
+    tdStatus.appendChild(secIndexRunStatusPill(a.state));
+    tr.appendChild(tdStatus);
+    const tdDate = document.createElement("td");
+    tdDate.appendChild(document.createTextNode(fmtAgo(a.started)));
+    tdDate.appendChild(secEl("div", "secidx-sub", secIndexRunWhen(a.started)));
+    tr.appendChild(tdDate);
+    return tr;
+  }
+  var SEC_RECENT_PAGE_SIZE = 5;
+  var secRecentPage = 1;
+  function secIndexRecentCard(recent) {
+    const card = secEl("div", "table-card");
+    card.appendChild(secIndexCardHead(
+      "Recent analyses",
+      "Latest security analyses across all projects",
+      secViewAllAnalysesButton()
+    ));
+    const total = recent.length;
+    if (!total) {
+      const e = secEl("div", "tblempty");
+      e.appendChild(secIcon("inbox"));
+      e.appendChild(document.createTextNode("No analyses have run yet."));
+      card.appendChild(e);
+      return card;
+    }
+    const pages = Math.max(1, Math.ceil(total / SEC_RECENT_PAGE_SIZE));
+    secRecentPage = Math.min(Math.max(1, secRecentPage), pages);
+    const from = (secRecentPage - 1) * SEC_RECENT_PAGE_SIZE + 1;
+    const to = Math.min(total, secRecentPage * SEC_RECENT_PAGE_SIZE);
+    const scroll = secEl("div", "table-scroll");
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    const htr = document.createElement("tr");
+    SEC_RECENT_COLS.forEach(([, label]) => htr.appendChild(secEl("th", null, label)));
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    recent.slice(from - 1, to).forEach((a) => tbody.appendChild(secIndexRecentRow(a)));
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    card.appendChild(scroll);
+    const footer = tableFooter({
+      shown: { from, to },
+      total,
+      noun: "run",
+      page: secRecentPage,
+      pages,
+      prevId: "secrecent-pg-prev",
+      nextId: "secrecent-pg-next",
+      infoId: "secrecent-pg-info"
+    });
+    footer.onclick = (e) => {
+      if (e.target.closest("#secrecent-pg-prev")) {
+        secRecentPage = Math.max(1, secRecentPage - 1);
+        secRenderIndex();
+      } else if (e.target.closest("#secrecent-pg-next")) {
+        secRecentPage = secRecentPage + 1;
+        secRenderIndex();
+      }
+    };
+    card.appendChild(footer);
+    return card;
   }
   var SEV_ORDER5 = ["critical", "high", "medium", "low", "info"];
   var SEV_STROKE = {
@@ -2714,8 +2831,9 @@
     return svg;
   }
   var DONUT_PILL_TITLE = "Distinct problems (fingerprints) \u2014 the same finding open on two branches counts once here.";
-  function secIndexDonutLegend(donut) {
-    const wrap = secEl("div", "sevpills");
+  function secIndexDonutLegend(donut, opts) {
+    const showPercent = !!(opts && opts.showPercent);
+    const wrap = secEl("div", "sevpills" + (showPercent ? " secidx-findlegend" : ""));
     const total = SEV_ORDER5.reduce((n, s) => n + (donut[s] || 0), 0);
     if (!total) {
       wrap.appendChild(secEl("span", "sevpill clean", "nothing open"));
@@ -2725,7 +2843,18 @@
       if (!donut[sev]) return;
       const pill = secEl("span", "sevpill " + sev, donut[sev] + " " + sev);
       pill.title = DONUT_PILL_TITLE;
-      wrap.appendChild(pill);
+      if (!showPercent) {
+        wrap.appendChild(pill);
+        return;
+      }
+      const row = secEl("div", "secidx-legendrow");
+      row.appendChild(pill);
+      row.appendChild(secEl(
+        "span",
+        "secidx-legendpct",
+        "(" + (donut[sev] / total * 100).toFixed(1) + "%)"
+      ));
+      wrap.appendChild(row);
     });
     return wrap;
   }
@@ -2734,25 +2863,20 @@
       return secEl("div", "tblempty", "No open findings to categorise.");
     }
     const wrap = secEl("div", "secidx-categories");
-    const max = categories.reduce((n, c) => Math.max(n, c.count || 0), 1);
     categories.forEach((c) => {
       const row = secEl("div", "secidx-catrow");
+      row.appendChild(secIcon("alert"));
       row.appendChild(secEl("span", "secidx-catname", c.rule));
-      const bar = secEl("span", "secidx-catbar");
-      const fill = secEl("span", "secidx-catfill");
-      fill.style.width = Math.max(6, Math.round((c.count || 0) / max * 100)) + "%";
-      bar.appendChild(fill);
-      row.appendChild(bar);
       row.appendChild(secEl("span", "secidx-catcount", String(c.count || 0)));
       wrap.appendChild(row);
     });
     return wrap;
   }
-  function secIndexDonut(donut, categories, cappedNote) {
+  function secIndexDonut(donut, categories, cappedNote, opts) {
     const wrap = secEl("div", "secidx-donutwrap");
     const left = secEl("div", "secidx-donutcol");
     left.appendChild(secIndexDonutSvg(donut));
-    left.appendChild(secIndexDonutLegend(donut));
+    left.appendChild(secIndexDonutLegend(donut, opts));
     if ((cappedNote || "").trim()) {
       const warn = secEl("div", "warnline bad");
       warn.appendChild(secIcon("alert"));
@@ -2761,14 +2885,63 @@
     }
     wrap.appendChild(left);
     const right = secEl("div", "secidx-catcol");
-    right.appendChild(secEl(
-      "div",
-      "secidx-cathead",
-      "Rules producing the most open findings"
-    ));
+    right.appendChild(secEl("div", "secidx-cathead", "Top issue categories"));
     right.appendChild(secIndexCategories(categories));
     wrap.appendChild(right);
     return wrap;
+  }
+  var secFindPeriodDays = 30;
+  function secFindPeriodLabel(days) {
+    return days > 0 ? "Last " + days + " days" : "All time";
+  }
+  var SEC_FIND_PERIOD_TITLE = "Findings are the fleet's current posture \u2014 every open finding right now, read off each branch's latest finished analysis. A posture cannot be windowed without dropping quiet branches out of it, so this does not filter the totals below.";
+  function secFindingsPeriodPicker() {
+    const wrap = document.createElement("details");
+    wrap.className = "secidx-periodpick";
+    const trigger = document.createElement("summary");
+    trigger.className = "filterpick";
+    trigger.title = SEC_FIND_PERIOD_TITLE;
+    trigger.onclick = (e) => e.stopPropagation();
+    const value = secEl("span", null, secFindPeriodLabel(secFindPeriodDays));
+    trigger.appendChild(value);
+    trigger.appendChild(secIcon("cdown"));
+    wrap.appendChild(trigger);
+    const pop = secEl("div", "menu-pop");
+    pop.setAttribute("role", "menu");
+    ACT_PERIODS.forEach(([days]) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.setAttribute("role", "menuitem");
+      item.appendChild(document.createTextNode(secFindPeriodLabel(days)));
+      if (days === secFindPeriodDays) item.appendChild(secIcon("check2"));
+      item.onclick = (e) => {
+        e.stopPropagation();
+        secFindPeriodDays = days;
+        wrap.open = false;
+        secRenderIndex();
+      };
+      pop.appendChild(item);
+    });
+    wrap.appendChild(pop);
+    wrap.ontoggle = () => {
+      if (!wrap.open) return;
+      const r = trigger.getBoundingClientRect();
+      pop.style.position = "fixed";
+      pop.style.top = r.bottom + 6 + "px";
+      pop.style.right = window.innerWidth - r.right + "px";
+      pop.style.left = "auto";
+      pop.style.bottom = "auto";
+    };
+    return wrap;
+  }
+  function secIndexFindingsCard(donut, categories, cappedNote, recent) {
+    const card = secEl("div", "table-card");
+    card.appendChild(secIndexCardHead("Findings overview", null, secFindingsPeriodPicker()));
+    const body = secEl("div", "secidx-findbody");
+    body.appendChild(secIndexDonut(donut, categories, cappedNote, { showPercent: true }));
+    card.appendChild(body);
+    card.appendChild(secViewFullReportButton(recent));
+    return card;
   }
 
   // ui/security/index.js
@@ -2841,5 +3014,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 12fa1403a8b8253a28670581ec9af02b411d1a6ede72b1e492836fb2fb567eb3 */
-/* ui-sources: f7162fd75e5dfd3c09fe9ec5e4f9164881397a8e8ff522469d7730e877bb0b62 */
+/* ui-bundle: 13ad0ca8cf99186cdff5b57be04809fbe6ee73abd921e4720467b72c6072b8f3 */
+/* ui-sources: fff620c33e3b212ae72191bed9e3332fb6ce4fca45db1da0cf52e379b24b3492 */

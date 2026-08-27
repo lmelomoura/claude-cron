@@ -5081,6 +5081,209 @@ def test_the_two_kinds_of_severity_pill_each_say_what_they_count(srv, tmp_path):
         "two numbers answering different questions still carry the same explanation"
 
 
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_findings_overview_legend_states_each_severitys_share_of_the_total(srv, tmp_path):
+    """Phase 4 Task 4. The mockup's own legend reads "Critical 45 (23.8%)" --
+    a percentage secIndexDonutLegend never drew before this task. It is
+    opt-in (`{showPercent: true}`, the index screen's own call) so the
+    project screen's sidebar donut -- the SAME function's other caller,
+    checked against no mockup of its own -- keeps rendering exactly as it
+    always has; the pinned pill-scope test above already proves the
+    one-argument call stays untouched, this proves the percentage itself is
+    the mockup's own arithmetic: each severity's share of the TOTAL (45 of
+    189 is 23.8%), not a share that has to sum to 100 across the legend --
+    45+90+54 do add to 189 here (a real, internally consistent payload
+    always sums this way, since the total is computed FROM the severities),
+    but the mockup's own three printed numbers (45+127+78=250 against a
+    printed total of 189) do not, which is the mockup's own inconsistency,
+    not a formula to reproduce with equally inconsistent test data."""
+    block = _security_js(srv)
+    consts = _const(block, "SEV_ORDER5") + _const(block, "DONUT_PILL_TITLE")
+    deps = _index_screen_deps(block, "secEl", "secIndexDonutLegend")
+    script = tmp_path / "findings-legend-pct.js"
+    script.write_text(_INDEX_DOM_HARNESS + consts + deps + """
+    const donut = {critical: 45, high: 90, medium: 54, low: 0, info: 0};
+    const withPct = collectAll(secIndexDonutLegend(donut, {showPercent: true}), []);
+    const without = collectAll(secIndexDonutLegend(donut), []);
+    console.log(JSON.stringify({withPct, without}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+
+    def pcts(rows):
+        return sorted(r["text"] for r in rows if r["cls"] == "secidx-legendpct")
+
+    assert pcts(out["withPct"]) == ["(23.8%)", "(28.6%)", "(47.6%)"], \
+        f"the legend's own percentages are wrong: {pcts(out['withPct'])}"
+    # The pinned pill itself is untouched: "45 critical", not "45 critical
+    # (23.8%)" -- the percentage is a sibling, never appended inside it (see
+    # secIndexDonutLegend's own comment on why a child would fail this and
+    # the two donut-capped-cue tests above it).
+    pills = [r for r in out["withPct"] if r["cls"] == "sevpill critical"]
+    assert pills and pills[0]["text"] == "45 critical", pills
+    # Opt-out (no second argument, the project screen's own call shape)
+    # renders no percentage at all -- the identical DOM the function always
+    # produced, not a half-migrated shape.
+    assert not pcts(out["without"]), \
+        f"a percentage rendered without opting in: {pcts(out['without'])}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_findings_legend_percentage_never_divides_by_a_zero_denominator(srv, tmp_path):
+    """The brief's own dash rule: a zero denominator renders no percentage,
+    never "0.0%" and never a NaN/Infinity leaking onto the page. Already
+    structurally true (a zero total never leaves the early "nothing open"
+    branch to reach the division at all) -- this pins that guarantee so a
+    later refactor moving the percentage above that branch fails loudly."""
+    block = _security_js(srv)
+    consts = _const(block, "SEV_ORDER5") + _const(block, "DONUT_PILL_TITLE")
+    deps = _index_screen_deps(block, "secEl", "secIndexDonutLegend")
+    script = tmp_path / "findings-legend-zero.js"
+    script.write_text(_INDEX_DOM_HARNESS + consts + deps + """
+    const empty = {critical: 0, high: 0, medium: 0, low: 0, info: 0};
+    console.log(JSON.stringify(
+      collectAll(secIndexDonutLegend(empty, {showPercent: true}), [])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    joined = " ".join(r["text"] for r in out)
+    assert "nothing open" in joined, f"the clean pill did not render: {joined}"
+    assert "%" not in joined, f"a percentage rendered over a zero denominator: {joined}"
+    assert "NaN" not in joined and "Infinity" not in joined, joined
+    # The clean pill keeps its ordinary green chip look -- .secidx-findlegend's
+    # own CSS override excludes `.sevpill.clean` by name specifically so this
+    # stays true (see ui/css/pages.css's own comment beside that rule).
+    clean = [r for r in out if r["cls"] == "sevpill clean"]
+    assert clean, f"no clean pill in the percentage-mode legend: {out}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_recent_analyses_findings_cell_says_the_one_count_it_actually_has(srv, tmp_path):
+    """Phase 4 Task 4. `queries.recent_analyses` hands a historical row one
+    combined open-findings COUNT, never a per-severity breakdown (that comes
+    from a different query, `project_rows`' posture, read off each
+    project's CURRENT latest analysis) -- so this cell must never fabricate
+    three severity chips it has no severity to colour them by. Three
+    honesty cases: not yet recorded (a running/failed analysis), genuinely
+    clean, and some open."""
+    block = _security_js(srv)
+    deps = _index_screen_deps(block, "secEl", "secIndexRecentFindingsCell")
+    script = tmp_path / "recent-findings-cell.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    console.log(JSON.stringify({
+      notYet: collectAll(secIndexRecentFindingsCell(null), []),
+      clean: collectAll(secIndexRecentFindingsCell(0), []),
+      some: collectAll(secIndexRecentFindingsCell(5), []),
+      one: collectAll(secIndexRecentFindingsCell(1), []),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert any(r["text"] == "—" for r in out["notYet"]), \
+        f"a not-yet-recorded analysis did not render an honest dash: {out['notYet']}"
+    assert any(r["cls"] == "sevpill clean" for r in out["clean"]), \
+        f"zero open findings did not render the ordinary clean pill: {out['clean']}"
+    some_text = " ".join(r["text"] for r in out["some"])
+    assert "5 findings" in some_text, some_text
+    # No fabricated severity chip anywhere in the positive case -- this row
+    # was never given a severity split to draw one honestly.
+    assert not any(r["cls"].startswith("sevpill ") and r["cls"] != "sevpill clean"
+                   for r in out["some"]), \
+        f"a severity-coloured chip rendered from a count with no severity: {out['some']}"
+    assert any(r["text"] == "1 finding" for r in out["one"]), \
+        f"the singular did not read '1 finding': {out['one']}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_recent_analyses_status_pill_uses_its_own_tone_family(srv, tmp_path):
+    """Phase 4 Task 4. RUN_STATES' own four values (project-screen.js), each
+    Title-Cased and given a NEW `.pill` modifier -- never `.pill.on`/
+    `.pill.off`, which stay reserved for a project's own active/launchd-
+    fault reading (see that class's own comment, ui/css/components.css).
+    An unrecognised state reads as a loud fault, not a silent "Running"."""
+    block = _security_js(srv)
+    consts = _const(block, "SEC_RUN_STATUS_LABEL")
+    deps = _index_screen_deps(block, "secEl", "secIndexRunStatusPill")
+    script = tmp_path / "recent-status-pill.js"
+    script.write_text(_INDEX_DOM_HARNESS + consts + deps + """
+    console.log(JSON.stringify(["running", "done", "capped", "failed", "corrupted"]
+      .map(s => collectAll(secIndexRunStatusPill(s), [])[0])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    by_state = dict(zip(["running", "done", "capped", "failed", "corrupted"], out))
+    assert by_state["running"] == {"cls": "pill running", "title": "", "text": "Running"}
+    assert by_state["done"] == {"cls": "pill done", "title": "", "text": "Completed"}
+    assert by_state["capped"] == {"cls": "pill capped", "title": "", "text": "Capped"}
+    assert by_state["failed"] == {"cls": "pill failed", "title": "", "text": "Failed"}
+    # Corrupted data (a value RUN_STATES never actually emits) reads as a
+    # fault -- the loud branch, not a quiet, misleading "Running".
+    assert by_state["corrupted"]["cls"] == "pill failed", by_state["corrupted"]
+    assert by_state["corrupted"]["text"] == "Unknown", by_state["corrupted"]
+    for state, row in by_state.items():
+        assert row["cls"] not in ("pill on", "pill off"), \
+            f"{state} reused the project active/launchd-fault pill classes: {row}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_view_full_report_is_an_honest_door(srv, tmp_path):
+    """Phase 4 Task 4. There is no report spanning every project (a report
+    is generated from one analysis's own checklist), so "View full report"
+    opens the most recent analysis's own project on its Reports tab -- and
+    is disabled, honestly, when there is no analysis yet to pick one from,
+    the same door-with-nothing-behind-it reasoning kpiCard's own `door` flag
+    documents (ui/app/chrome.js)."""
+    block = _security_js(srv)
+    deps = _index_screen_deps(block, "secIcon", "secViewFullReportButton")
+    script = tmp_path / "view-full-report.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    function secOpenProject(){} function secSwitchProjectTab(){}
+    const closedDoor = secViewFullReportButton([]);
+    const openDoor = secViewFullReportButton([{project: "minerva", id: 12}]);
+    console.log(JSON.stringify({
+      closed: {disabled: !!closedDoor.disabled, title: closedDoor.title,
+               text: closedDoor.textContent},
+      open: {disabled: !!openDoor.disabled, title: openDoor.title,
+             text: openDoor.textContent},
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["closed"]["disabled"], f"nothing to report but the door is open: {out['closed']}"
+    assert "nothing to report" in out["closed"]["title"].lower(), out["closed"]
+    assert not out["open"]["disabled"], f"an analysis exists but the door stayed shut: {out['open']}"
+    assert "minerva" in out["open"]["title"], \
+        f"the door does not say which project it opens: {out['open']}"
+    assert out["closed"]["text"] == out["open"]["text"] == "View full report", \
+        "the label itself changes between the open and closed door"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_recent_analyses_card_head_names_todays_navigation_and_the_empty_state(
+        srv, tmp_path):
+    """Phase 4 Task 4. The card's own head (title, sub, "View all analyses")
+    and its honest empty state -- exercised through the empty branch only,
+    which returns before ever touching the pagination state
+    (secRecentPage/SEC_RECENT_PAGE_SIZE) a standalone script has not stood
+    up, the same reason the pinned tests above never drive
+    secIndexProjectsTable's OWN footer branch without building one first."""
+    block = _security_js(srv)
+    deps = _index_screen_deps(block, "secEl", "secIcon", "secIndexCardHead",
+                              "secViewAllAnalysesButton", "secIndexRecentCard")
+    script = tmp_path / "recent-card-empty.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    function secOpenActivity(){} function secActSwitchTab(){}
+    console.log(JSON.stringify(collectAll(secIndexRecentCard([]), [])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    joined = " ".join(r["text"] for r in out)
+    assert "Recent analyses" in joined
+    assert "Latest security analyses across all projects" in joined
+    assert "View all analyses" in joined
+    assert "No analyses have run yet." in joined
+
+
 def test_the_severity_floors_scope_is_stated_where_the_unfloored_numbers_are(srv):
     """IMPORTANT 6. The floor was applied on two surfaces (the single-analysis
     checklist and the findings table) and ignored on six (Overview chips,

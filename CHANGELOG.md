@@ -288,6 +288,60 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (create) and numbered-tab (edit) navigations, including a save round-trip
   against a real job's description.
 
+- **The Security index gets its own Recent analyses table and Findings
+  overview card, side by side, closing Phase 4.** The old plain feed
+  (project · repo @ branch, one line per analysis) becomes a table matching
+  the mockup's own columns — Run (#N), Project, Profile, Branch, Findings,
+  Status, Date (relative time, the exact timestamp beneath) — paginated five
+  at a time through the shared `tableFooter()`. Its Findings cell says the
+  one true number `recent_analyses` actually hands a historical row (a
+  combined open-findings count) rather than fabricating the fleet table's
+  own three severity chips from a per-severity breakdown that query was
+  never given; Status reads a new four-way pill vocabulary (Completed/
+  Capped/Failed/Running, `.pill.done/.capped/.failed/.running`) rather than
+  reusing `.pill.on`/`.pill.off`, which stay reserved for a project's own
+  active/launchd-fault reading. Findings overview keeps the donut, its
+  categories list (now "Top issue categories", an icon and a right-aligned
+  count, no more width-scaled bar) and adds a legend a reader can actually
+  total: a coloured dot, the severity name, its count AND its percentage
+  share of the whole ("45 critical (23.8%)") — computed from the same donut
+  totals the mockup's own arithmetic uses (per-severity share of the total,
+  which is why the mockup's own three percentages do not sum to 100). Both
+  card titles drop the page's usual small-caps eyebrow style for the
+  mockup's own bold, sentence-case reading, and a period picker (Last 7/30/
+  90 days, All time — the Activity screen's own vocabulary, now exported
+  and shared rather than re-typed) sits beside the second card's title as a
+  real popover, not a `<select>`, using the identical `<details>`/
+  `position:fixed` mechanism the projects table's own row kebab already
+  relies on to escape `.table-card`'s corner clip.
+
+  The picker's own selection deliberately never changes the totals beneath
+  it, and says so in its own tooltip: `queries.severity_totals` and
+  `top_categories` used to accept a `days` parameter, ignore it completely,
+  and were never passed one by either caller — a POSTURE is what is open
+  right now, off each branch's latest finished analysis, and windowing it
+  would not narrow the answer, it would drop quiet branches out of it and
+  report them clean (see this same file's own entry on that fix). Reusing
+  the mockup's own "Findings overview (30 days)" caption verbatim would
+  have resurrected exactly the claim that fix removed, so the card's title
+  drops the parenthetical instead — a named divergence, not an oversight.
+
+  Two more named divergences, both forced by what the payload actually
+  carries rather than chosen for taste: `tableFooter` has no numbered pager
+  (the mockup's own "1 2 3"), only Prev/Next, and forking a second footer
+  component for one card was a bigger yak than this task asked for; and
+  `recent_analyses` defaults to its own top 5 with no total count or paging
+  parameter, so the footer reads "Showing 1 to 5 of 5 runs" against a real
+  server today, not the mockup's own "of 12" — the pagination logic is real
+  and covers whatever length a payload actually hands it (exercised here
+  against fabricated longer lists), but nothing live can reach a second page
+  yet. "View all analyses" opens the Activity screen straight onto its own
+  Analyses tab (today's nearest equivalent navigation, kept rather than
+  invented); "View full report" opens the most recent analysis's own
+  project on its Reports tab, honestly disabled when there is no analysis
+  yet to open one for — there is no report spanning every project, only one
+  per project's own checklist.
+
 ### Added
 
 - **The two editor dialogs' decision/mapping logic is pinned and pulled out

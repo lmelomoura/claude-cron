@@ -17,10 +17,12 @@
    called secRenderList()), and refetched only on an explicit Refresh or
    when something that changed the numbers just happened (secBack(), after
    leaving a project screen where an analysis may have just finished). */
-import { $, fmtAgo, money, pageHeader, kpiCard, tableFooter, openProjectEditor } from "./page.js";
+import { $, fmtAgo, pageHeader, kpiCard, tableFooter, openProjectEditor } from "./page.js";
 import { secIcon, secEl, secFetch } from "./dom.js";
 import { SEC_NEVER, SEC_FLOOR_SCOPE_NOTE } from "./vocabulary.js";
-import { secOpenProject } from "./project-screen.js";
+// secSwitchProjectTab: "View full report" (Phase 4 Task 4) opens a project
+// straight onto its own Reports tab -- see secViewFullReportButton, below.
+import { secOpenProject, secSwitchProjectTab } from "./project-screen.js";
 // secOpenActivity: the kebab's own "View activity" item (Phase 4 Task 3)
 // opens the SAME Activity screen the header button always has, scoped to
 // this one row's project -- secOpenActivity(project) already takes that
@@ -28,7 +30,13 @@ import { secOpenProject } from "./project-screen.js";
 // project"). No cycle risk this file did not already have: project-screen.js
 // already imports back from here (secIndexPosturePills/secIndexDonut, below),
 // and activity-screen.js imports nothing from this module.
-import { secOpenActivity } from "./activity-screen.js";
+//
+// secActSwitchTab/ACT_PERIODS (Phase 4 Task 4): "View all analyses" jumps
+// straight to the Activity screen's own "Analyses" tab instead of leaving a
+// reader to find it themselves (secViewAllAnalysesButton, below); ACT_PERIODS
+// is the exact vocabulary the Findings-overview card's period picker borrows
+// rather than re-typing (secFindingsPeriodPicker, below).
+import { secOpenActivity, secActSwitchTab, ACT_PERIODS } from "./activity-screen.js";
 
 let secIndexCache = null;
 let secIndexGen = 0;
@@ -151,8 +159,21 @@ export function secRenderIndex(){
     host.textContent = "";
     host._secCards = secEl("div");
     host._secProjects = secEl("div", "secidx-section");
-    host._secRecent = secEl("div");
-    host._secDonut = secEl("div");
+    // Recent analyses and Findings overview sit SIDE BY SIDE now (Phase 4
+    // Task 4), the mockup's own bottom row -- reusing the project screen's
+    // own main+sidebar split (.secpjbody/.secpjmain, ui/css/components.css)
+    // for the row and its left card rather than inventing a second grid:
+    // same gap, same flex-wrap, same "stacks under 900px" behaviour, already
+    // proven on that screen. The right card gets its own fixed-basis class
+    // (.secidx-findcard, ui/css/pages.css) instead of that same file's
+    // .secpjside -- 300px is too narrow for a donut sitting beside its own
+    // legend, and this card alone needs the room, not the project sidebar's
+    // every other user.
+    host._secBottomRow = secEl("div", "secpjbody");
+    host._secRecent = secEl("div", "secpjmain");
+    host._secDonut = secEl("div", "secidx-findcard");
+    host._secBottomRow.appendChild(host._secRecent);
+    host._secBottomRow.appendChild(host._secDonut);
     host.appendChild(host._secCards);
     // ONCE per screen, under the cards and above every other number on it --
     // the KPI cards, the table's findings chips and the donut are all
@@ -162,8 +183,7 @@ export function secRenderIndex(){
     // SEC_FLOOR_SCOPE_NOTE's own comment in vocabulary.js for the decision.
     host.appendChild(secEl("div", "secpj-caption", SEC_FLOOR_SCOPE_NOTE));
     host.appendChild(host._secProjects);
-    host.appendChild(host._secRecent);
-    host.appendChild(host._secDonut);
+    host.appendChild(host._secBottomRow);
     secMountProjectsSection(host._secProjects);
   }
 
@@ -177,19 +197,18 @@ export function secRenderIndex(){
   secRefreshFilterOptions(secLatestProjects);
   secRepaintProjectsTable();
 
+  const recent = data.recent || [];
   host._secRecent.textContent = "";
-  host._secRecent.appendChild(secIndexSection("Recent analyses",
-    secIndexRecent(data.recent || [])));
+  host._secRecent.appendChild(secIndexRecentCard(recent));
 
   host._secDonut.textContent = "";
-  host._secDonut.appendChild(secIndexSection("Findings by severity",
+  host._secDonut.appendChild(secIndexFindingsCard(data.donut || {}, data.categories || [],
     // The donut is the fleet's whole posture rolled into one figure, so it
     // cannot carry the per-row `incomplete` badge the table beside it uses --
     // it gets the same caveat the Critical/High cards get, from the same
     // count, or it is the one number on this screen that still presents a
     // partial read as a complete one.
-    secIndexDonut(data.donut || {}, data.categories || [],
-                  secCappedNote(data.summary || {}))));
+    secCappedNote(data.summary || {}), recent));
 }
 
 /* The one sentence the cards, the donut and (via project-data's own
@@ -208,13 +227,6 @@ export function secCappedScopeNote(n, of, noun){
 function secCappedNote(summary){
   return secCappedScopeNote(summary.capped_projects || 0,
                             summary.projects || 0, "project");
-}
-
-function secIndexSection(title, body){
-  const sec = secEl("div", "secidx-section");
-  sec.appendChild(secEl("h3", null, title));
-  sec.appendChild(body);
-  return sec;
 }
 
 /* ------------------------------------------------------------------ cards
@@ -849,36 +861,263 @@ function secMountProjectsSection(sectionHost){
   sectionHost.appendChild(secProjectsTableHost);
 }
 
-/* ---------------------------------------------------------- recent feed */
-function secIndexRecentRow(a){
-  const row = document.createElement("button");
-  row.type = "button";
-  row.className = "secrow secidx-recentrow";
-  // Opens the project, not this exact historical analysis -- there is no
-  // per-analysis screen yet outside the project's own history list.
-  row.onclick = () => secOpenProject(a.project);
-  row.appendChild(secIcon(a.state === "running" ? "timer"
-    : a.state === "failed" ? "xcircle" : "check"));
-  const grow = secEl("div", "grow");
-  grow.appendChild(secEl("div", "secname",
-    a.project + " · " + a.repo + " @ " + a.branch));
-  const bits = [a.profile, a.state,
-    a.state === "running" ? "started " + fmtAgo(a.started)
-                          : "ended " + fmtAgo(a.ended || a.started)];
-  if(a.open != null) bits.push(a.open + " open");
-  bits.push(money(a.spend_usd || 0));
-  grow.appendChild(secEl("div", "secmeta", bits.filter(Boolean).join(" · ")));
-  row.appendChild(grow);
-  return row;
+/* ------------------------------------------------------------- card heads
+   Phase 4 Task 4: the mockup's own header for BOTH bottom-row cards -- a
+   title, an optional grey one-line sub, and one trailing action -- replacing
+   the small-caps `h3` secIndexSection used to draw (an eyebrow style meant
+   for a label ABOVE a busier panel, not the mockup's own bold, sentence-case
+   card titles). `.secidx-cardhead h3` (ui/css/pages.css) opts back out of
+   the page's generic uppercase `h3` rather than that rule changing for
+   every OTHER eyebrow on this screen (the table headers, `.secidx-cathead`
+   beside it) that still wants it. */
+function secIndexCardHead(title, sub, action){
+  const head = secEl("div", "secidx-cardhead");
+  const text = secEl("div", "secidx-cardhead-text");
+  text.appendChild(secEl("h3", null, title));
+  if(sub) text.appendChild(secEl("p", "secidx-cardhead-sub", sub));
+  head.appendChild(text);
+  if(action) head.appendChild(action);
+  return head;
 }
 
-function secIndexRecent(recent){
-  if(!recent.length){
-    return secEl("div", "tblempty", "No analyses have run yet.");
+/* "View all analyses" -- today's own equivalent navigation, kept rather than
+   invented: the index header's unscoped "Activity" entry (moved into the
+   projects filter bar by Phase 4 Task 3, `#sec-view-activity`) already opens
+   this exact screen, unscoped, for "every analysis across every project";
+   this button is the same door, just opened straight onto its "Analyses"
+   tab instead of leaving a reader to find that tab themselves. Two calls,
+   not one new `secOpenActivity(project, tab)` parameter: `secOpenActivity`
+   starts an ALL-activity fetch (`tab: ""`) before this can run one line
+   later, but `secActSwitchTab`'s own generation counter (`secActGen`) makes
+   the second, "analyses"-scoped fetch it starts the newest request in
+   flight -- so the first response loses the race in `secActLoad` and is
+   dropped silently, the identical guard a reader double-clicking two tabs
+   in a row already relies on. The reader never sees "All activity" flash
+   before "Analyses" paints. */
+function secViewAllAnalysesButton(){
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn ghost";
+  btn.appendChild(secIcon("activity"));
+  btn.appendChild(document.createTextNode("View all analyses"));
+  btn.onclick = () => { secOpenActivity(""); secActSwitchTab("analyses"); };
+  return btn;
+}
+
+/* "View full report" -- there is no report spanning every project (a report
+   is generated from ONE analysis's own checklist, see reports-tab.js's own
+   file comment), so this opens the most recent analysis's OWN project,
+   straight onto its Reports tab -- the nearest existing surface, not an
+   invented cross-project one. Disabled, honestly, when there is nothing to
+   open: an install with no analyses yet has no "most recent" project to
+   jump to, the same door-with-nothing-behind-it reasoning kpiCard's own
+   `door` flag documents (ui/app/chrome.js). */
+function secViewFullReportButton(recent){
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn ghost secidx-reportbtn";
+  btn.appendChild(secIcon("file"));
+  btn.appendChild(document.createTextNode("View full report"));
+  const latest = (recent || [])[0];
+  if(!latest){
+    btn.disabled = true;
+    btn.title = "No analyses yet — there is nothing to report.";
+    return btn;
   }
-  const host = secEl("div", "seclist");
-  recent.forEach(a => host.appendChild(secIndexRecentRow(a)));
-  return host;
+  btn.title = "Open " + latest.project + "’s own Reports tab — the nearest "
+    + "report to this card's totals; there is no single report spanning "
+    + "every project.";
+  btn.onclick = () => { secOpenProject(latest.project); secSwitchProjectTab("reports"); };
+  return btn;
+}
+
+/* ---------------------------------------------------------- recent table
+   Phase 4 Task 4: the mockup's own table -- Run (#N), Project, Profile,
+   Branch, Findings, Status, Date -- replacing the old plain list
+   (secIndexRecentRow/secIndexRecent) the same way Phase 4 Task 3 replaced
+   the five-column project list with the fleet table beside it. Reuses this
+   file's own established cell-builders (secProfileLabel, secIndexRunWhen)
+   rather than inventing a second set for a table that is, in every way that
+   matters, shaped like the one above it. */
+const SEC_RECENT_COLS = [
+  ["run", "Run"], ["project", "Project"], ["profile", "Profile"],
+  ["branch", "Branch"], ["findings", "Findings"], ["status", "Status"],
+  ["date", "Date"],
+];
+
+// STATUS pill vocabulary for an ANALYSIS -- RUN_STATES's own four values
+// (project-screen.js), Title-Cased for the mockup's own "Completed" -- new
+// `.pill` modifiers (ui/css/components.css, beside `.pill.profile`) rather
+// than reusing `.pill.on`/`.pill.off`: those two are reserved for the
+// launchd fault pill and the disabled-project pill respectively (see
+// `.pill.off`'s own comment there), and an analysis's own running/done/
+// capped/failed is a third, unrelated fact that happens to want the same
+// four tone families, not the same two classes.
+const SEC_RUN_STATUS_LABEL = {running: "Running", done: "Completed",
+                              capped: "Capped", failed: "Failed"};
+
+function secIndexRunStatusPill(state){
+  // An unrecognised state (corrupted data; every value the pipeline can
+  // legitimately produce is listed above) reads as a fault rather than
+  // silently as "Running" or vanishing from the cell entirely -- the same
+  // "loud branch, not a quiet one" rule secSevRank's own comment states for
+  // a severity nothing in the pipeline actually emits.
+  const known = Object.prototype.hasOwnProperty.call(SEC_RUN_STATUS_LABEL, state);
+  return secEl("span", "pill " + (known ? state : "failed"),
+    known ? SEC_RUN_STATUS_LABEL[state] : "Unknown");
+}
+
+/* FINDINGS: the one true number `recent_analyses` actually hands this row --
+   a combined open-findings COUNT (`queries.recent_analyses`'s own `open`),
+   not the per-severity breakdown the fleet table's own Findings cell shows
+   a few pixels above it. That breakdown comes from a DIFFERENT query
+   (`project_rows`' posture, read off each project's CURRENT latest analysis)
+   that this HISTORICAL row was never given -- so this cell says the one
+   thing it actually knows instead of guessing a split across three chips it
+   has no severity to colour them by. `null` (a `running`/`failed` analysis
+   has not finished recording findings yet) reads as an honest dash, never a
+   zero -- the same distinction `secIndexProjectRow`'s own Last analysis cell
+   already draws for "not counted" vs "counted as zero". */
+function secIndexRecentFindingsCell(open){
+  if(open == null) return secEl("span", "muted", "—");
+  if(!open) return secEl("span", "sevpill clean", "nothing open");
+  const span = secEl("span", null, open + (open === 1 ? " finding" : " findings"));
+  span.title = "The severity split lives on this project's own Findings tab — "
+    + "this row's own analysis was never given one to show here.";
+  return span;
+}
+
+function secIndexRecentRow(a){
+  const tr = document.createElement("tr");
+  tr.className = "secidx-rowlink";
+  // Same destination as a click on the fleet table's own row above it:
+  // there is no per-analysis screen yet outside the project's own history
+  // list (secIndexProjectRow's own comment says the identical thing).
+  tr.onclick = () => secOpenProject(a.project);
+
+  const tdRun = document.createElement("td");
+  tdRun.textContent = "#" + a.id;
+  tr.appendChild(tdRun);
+
+  const tdProject = document.createElement("td");
+  const nameLine = secEl("div", "secidx-pname");
+  nameLine.appendChild(secIcon("folder"));
+  nameLine.appendChild(secEl("span", "secidx-pname-text", a.project));
+  tdProject.appendChild(nameLine);
+  tr.appendChild(tdProject);
+
+  const tdProfile = document.createElement("td");
+  tdProfile.appendChild(a.profile
+    ? secEl("span", "pill profile", secProfileLabel(a.profile))
+    : secEl("span", "muted", "—"));
+  tr.appendChild(tdProfile);
+
+  // textContent, never markup: a branch name may legally contain '<', '>'
+  // and '&' (vocabulary.js's own opening comment) and a repository chooses
+  // it, not this page.
+  const tdBranch = document.createElement("td");
+  tdBranch.textContent = a.branch || "—";
+  tr.appendChild(tdBranch);
+
+  const tdFindings = document.createElement("td");
+  tdFindings.appendChild(secIndexRecentFindingsCell(a.open));
+  tr.appendChild(tdFindings);
+
+  const tdStatus = document.createElement("td");
+  tdStatus.appendChild(secIndexRunStatusPill(a.state));
+  tr.appendChild(tdStatus);
+
+  const tdDate = document.createElement("td");
+  tdDate.appendChild(document.createTextNode(fmtAgo(a.started)));
+  tdDate.appendChild(secEl("div", "secidx-sub", secIndexRunWhen(a.started)));
+  tr.appendChild(tdDate);
+
+  return tr;
+}
+
+/* The whole card: head (title, sub, "View all analyses"), the table (or the
+   honest empty state), and `tableFooter`'s own footer.
+   `queries.recent_analyses` defaults to its own top 5 (`limit=5`, never
+   raised by `index-data`'s own call) and `index-data` takes no page
+   parameter at all, so `recent` is never more than 5 rows against a real
+   server today -- the footer below still paginates whatever it IS handed,
+   five at a time, both so this card matches the mockup's own "five rows"
+   and so a fabricated payload longer than 5 (this screen's own tests, or a
+   future `index-data` that raises the limit) is already handled rather than
+   silently dumped in one unpaginated table. `tableFooter` (ui/app/chrome.js)
+   has no numbered variant (1 2 3, the mockup's own pager) -- only Prev/Next
+   -- and forking a second footer component to get one was a bigger yak than
+   this card asked for, so this uses it exactly as the fleet table above it
+   already does and the difference is named in this task's own report
+   instead of quietly forked around. */
+const SEC_RECENT_PAGE_SIZE = 5;
+let secRecentPage = 1;
+
+function secIndexRecentCard(recent){
+  const card = secEl("div", "table-card");
+  card.appendChild(secIndexCardHead("Recent analyses",
+    "Latest security analyses across all projects", secViewAllAnalysesButton()));
+
+  const total = recent.length;
+  if(!total){
+    const e = secEl("div", "tblempty");
+    e.appendChild(secIcon("inbox"));
+    e.appendChild(document.createTextNode("No analyses have run yet."));
+    card.appendChild(e);
+    return card;
+  }
+
+  const pages = Math.max(1, Math.ceil(total / SEC_RECENT_PAGE_SIZE));
+  // Clamped, not reset: a filter shrinking the set out from under a page
+  // number is the exact case tableFooter's own comment already documents,
+  // and the fix is the same one it names -- clamp here, at paint time,
+  // rather than a second place remembering to reset the page to 1.
+  secRecentPage = Math.min(Math.max(1, secRecentPage), pages);
+  const from = (secRecentPage - 1) * SEC_RECENT_PAGE_SIZE + 1;
+  const to = Math.min(total, secRecentPage * SEC_RECENT_PAGE_SIZE);
+
+  const scroll = secEl("div", "table-scroll");
+  const table = document.createElement("table");
+  const thead = document.createElement("thead");
+  const htr = document.createElement("tr");
+  SEC_RECENT_COLS.forEach(([, label]) => htr.appendChild(secEl("th", null, label)));
+  thead.appendChild(htr);
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  recent.slice(from - 1, to).forEach(a => tbody.appendChild(secIndexRecentRow(a)));
+  table.appendChild(tbody);
+  scroll.appendChild(table);
+  card.appendChild(scroll);
+
+  // "run", not "analysis": tableFooter's own pluraliser is a bare `+ "s"`
+  // (right for every OTHER noun this app hands it -- project, job, run),
+  // which would print "analysiss" for this one irregular plural. "Run" is
+  // both grammatically safe there and the mockup's own word for this same
+  // column ("RUN #12"), so it costs the table nothing to say.
+  const footer = tableFooter({
+    shown: {from, to}, total, noun: "run", page: secRecentPage, pages,
+    prevId: "secrecent-pg-prev", nextId: "secrecent-pg-next", infoId: "secrecent-pg-info",
+  });
+  // Wired directly on the footer THIS call just built and already holds a
+  // reference to -- not a central delegated listener (bin/dashboard.html's
+  // own click dispatcher has no entry for either id, and Jobs/Projects/Runs
+  // only reach it because their pagers are the page's own static markup;
+  // this card's is rebuilt fresh every repaint, same as every other
+  // interactive element in this file). `e.target.closest(...)`, not a bare
+  // id check, because a click can land on the button's own icon glyph
+  // instead of the button itself -- the identical reason dashboard.html's
+  // OWN dispatcher already reaches for `closest` over `#jobs-pg-prev`.
+  footer.onclick = (e) => {
+    if(e.target.closest("#secrecent-pg-prev")){
+      secRecentPage = Math.max(1, secRecentPage - 1);
+      secRenderIndex();
+    }else if(e.target.closest("#secrecent-pg-next")){
+      secRecentPage = secRecentPage + 1;
+      secRenderIndex();
+    }
+  };
+  card.appendChild(footer);
+  return card;
 }
 
 /* --------------------------------------------------------- donut + rules */
@@ -958,8 +1197,28 @@ function secIndexDonutSvg(donut){
 const DONUT_PILL_TITLE = "Distinct problems (fingerprints) — the same finding "
   + "open on two branches counts once here.";
 
-function secIndexDonutLegend(donut){
-  const wrap = secEl("div", "sevpills");
+/* `showPercent` (Phase 4 Task 4): the index screen's own Findings-overview
+   card adds each severity's share of the total beside its pill -- "45
+   critical (23.8%)", the mockup's own "Critical 45 (23.8%)" with the count
+   staying INSIDE the pinned pill text (see below) rather than in front of
+   it. Opt-in, defaulting OFF, so the project screen's own sidebar donut
+   (secIndexDonut's other caller, project-screen.js) keeps rendering exactly
+   as it always has -- this task's mockup is the index page's alone, and
+   nothing here has been checked against the project screen's own pixels.
+   `test_the_two_kinds_of_severity_pill_each_say_what_they_count` calls this
+   with ONE argument, so `showPercent` is `undefined` there and every line
+   below behaves exactly as it did before this option existed.
+
+   The percentage is a SIBLING of the pill, never a child of it: this
+   function's own pill text ("45 critical") is what that pinned test (and
+   `test_the_index_donut_carries_the_same_capped_cue_the_cards_do` beside it)
+   reads back with `.textContent`, which aggregates every descendant -- a
+   percentage appended INSIDE the pill would silently change that string to
+   "45 critical (23.8%)" and fail both. Appending it beside the pill instead,
+   inside a shared row, changes nothing about what the pill itself says. */
+function secIndexDonutLegend(donut, opts){
+  const showPercent = !!(opts && opts.showPercent);
+  const wrap = secEl("div", "sevpills" + (showPercent ? " secidx-findlegend" : ""));
   const total = SEV_ORDER5.reduce((n, s) => n + (donut[s] || 0), 0);
   if(!total){
     wrap.appendChild(secEl("span", "sevpill clean", "nothing open"));
@@ -969,25 +1228,41 @@ function secIndexDonutLegend(donut){
     if(!donut[sev]) return;
     const pill = secEl("span", "sevpill " + sev, donut[sev] + " " + sev);
     pill.title = DONUT_PILL_TITLE;
-    wrap.appendChild(pill);
+    if(!showPercent){
+      wrap.appendChild(pill);
+      return;
+    }
+    // `total` is never 0 here (the guard above already returned "nothing
+    // open" for that case), and neither is `donut[sev]` (the `if(!donut[sev])
+    // return` just above it) -- so this division never sees a zero
+    // denominator and never needs the dash rule the brief names for one.
+    const row = secEl("div", "secidx-legendrow");
+    row.appendChild(pill);
+    row.appendChild(secEl("span", "secidx-legendpct",
+      "(" + ((donut[sev] / total) * 100).toFixed(1) + "%)"));
+    wrap.appendChild(row);
   });
   return wrap;
 }
 
+/* Icon, name, right-aligned count -- the mockup's own row, replacing the
+   width-scaled bar Phase 4 Task 3 drew here (no bar in the mockup at all).
+   One fixed icon for every row, not five different ones: `top_categories`
+   (queries.py) groups by `rule` -- a specific, dynamic string (a GHSA
+   advisory id, a rule slug, whatever the analysis wrote), never by the small
+   fixed `category` enum a per-row icon lookup would need, and that field is
+   not even in this payload -- so five distinct glyphs here would be a
+   pattern this function invented over data it does not have, not one the
+   rule names actually carry. */
 function secIndexCategories(categories){
   if(!categories.length){
     return secEl("div", "tblempty", "No open findings to categorise.");
   }
   const wrap = secEl("div", "secidx-categories");
-  const max = categories.reduce((n, c) => Math.max(n, c.count || 0), 1);
   categories.forEach(c => {
     const row = secEl("div", "secidx-catrow");
+    row.appendChild(secIcon("alert"));
     row.appendChild(secEl("span", "secidx-catname", c.rule));
-    const bar = secEl("span", "secidx-catbar");
-    const fill = secEl("span", "secidx-catfill");
-    fill.style.width = Math.max(6, Math.round(((c.count || 0) / max) * 100)) + "%";
-    bar.appendChild(fill);
-    row.appendChild(bar);
     row.appendChild(secEl("span", "secidx-catcount", String(c.count || 0)));
     wrap.appendChild(row);
   });
@@ -1000,11 +1275,11 @@ function secIndexCategories(categories){
    figure, and a rollup has no row to hang a badge off. Both callers pass one:
    the index screen from `summary.capped_projects`, the project sidebar from
    `sidebar.capped_branches`. Omitting it keeps the plain donut. */
-export function secIndexDonut(donut, categories, cappedNote){
+export function secIndexDonut(donut, categories, cappedNote, opts){
   const wrap = secEl("div", "secidx-donutwrap");
   const left = secEl("div", "secidx-donutcol");
   left.appendChild(secIndexDonutSvg(donut));
-  left.appendChild(secIndexDonutLegend(donut));
+  left.appendChild(secIndexDonutLegend(donut, opts));
   if((cappedNote || "").trim()){
     const warn = secEl("div", "warnline bad");
     warn.appendChild(secIcon("alert"));
@@ -1013,9 +1288,136 @@ export function secIndexDonut(donut, categories, cappedNote){
   }
   wrap.appendChild(left);
   const right = secEl("div", "secidx-catcol");
-  right.appendChild(secEl("div", "secidx-cathead",
-    "Rules producing the most open findings"));
+  // "Top issue categories" (Phase 4 Task 4): the mockup's own title for
+  // this same data -- `top_categories` (queries.py) really does rank RULES,
+  // not the small `category` enum a finding also carries, so the OLD
+  // caption was the more literally accurate one; the new one is shorter and
+  // reads as a section title instead of an explanation, which is what the
+  // mockup draws here. Shared by both callers of secIndexDonut (this index
+  // screen and the project screen's sidebar) rather than gated behind
+  // `opts`, unlike the percentage above -- a caption rename changes no
+  // shape and nothing on the project screen has to look any different for
+  // this one word choice to be consistently true there too.
+  right.appendChild(secEl("div", "secidx-cathead", "Top issue categories"));
   right.appendChild(secIndexCategories(categories));
   wrap.appendChild(right);
   return wrap;
+}
+
+/* ------------------------------------------------------- findings overview
+   Phase 4 Task 4: the mockup's own right-hand card -- a title, a period
+   picker that does NOT filter the totals beneath it (see
+   secFindingsPeriodPicker's own comment for why that is a deliberate, tested
+   decision and not a missing feature), the donut+legend+categories block
+   above, and "View full report" beneath. */
+
+// The house combo, not a native <select> -- this card's own period picker
+// has to say so out loud the moment it opens (see below), which a <select>
+// has nowhere to put; the SAME <details>/<summary>/.menu-pop popover this
+// file already draws for the row kebab (secIndexProjectRow), including its
+// `position:fixed` recompute on open -- `.table-card{overflow:hidden}`
+// clips a `position:absolute` popup here exactly as it does there, and this
+// card is a `.table-card` too (see secIndexFindingsCard).
+let secFindPeriodDays = 30;
+
+function secFindPeriodLabel(days){
+  return days > 0 ? "Last " + days + " days" : "All time";
+}
+
+/* WHY changing this selection never changes the numbers below it, said once
+   here rather than assumed: `queries.severity_totals`/`top_categories` both
+   used to accept a `days` parameter, ignore it completely, and were never
+   passed one by either caller -- dead code that came from a mockup panel
+   captioned "Findings overview (30 days)", the exact caption this card
+   would otherwise be reproducing verbatim. See this repository's own
+   CHANGELOG (search "posture number") for the full reasoning: a POSTURE is
+   what is open RIGHT NOW, read off each branch's latest finished analysis
+   however long ago that ran, and windowing it would not narrow the answer,
+   it would drop quiet branches out of it and report them clean. That
+   parameter is gone, pinned by a test that fails if it comes back
+   (tests/security/test_queries.py) -- so this picker keeps the mockup's own
+   vocabulary and default (Activity's four buckets, "Last 30 days" first)
+   for a reader who expects one here, and says plainly, in its own title,
+   that picking a different bucket will not change anything beneath it. */
+const SEC_FIND_PERIOD_TITLE = "Findings are the fleet's current posture — every "
+  + "open finding right now, read off each branch's latest finished analysis. "
+  + "A posture cannot be windowed without dropping quiet branches out of it, "
+  + "so this does not filter the totals below.";
+
+function secFindingsPeriodPicker(){
+  const wrap = document.createElement("details");
+  wrap.className = "secidx-periodpick";
+  const trigger = document.createElement("summary");
+  trigger.className = "filterpick";
+  trigger.title = SEC_FIND_PERIOD_TITLE;
+  // Found live: bin/dashboard.html's global "click outside a menu-pop closes
+  // every open one" listener (closeMenus(), bound on `document`) has no idea
+  // this menu is a <details> rather than the older hidden-attribute-toggled
+  // .mtrig pattern -- a click on THIS trigger bubbles past it exactly like a
+  // click anywhere else, and closeMenus() sets `hidden` on every visible
+  // `.menu-pop` it finds, this one included, a beat before the browser's own
+  // default action opens the <details>. The popover opened and was
+  // immediately re-hidden by a listener that never meant to touch it.
+  // secIndexProjectRow's own kebab already carries this exact line for the
+  // identical reason -- missing it here was this task's own bug, not a
+  // second occurrence of a pre-existing one.
+  trigger.onclick = (e) => e.stopPropagation();
+  const value = secEl("span", null, secFindPeriodLabel(secFindPeriodDays));
+  trigger.appendChild(value);
+  trigger.appendChild(secIcon("cdown"));
+  wrap.appendChild(trigger);
+
+  const pop = secEl("div", "menu-pop");
+  pop.setAttribute("role", "menu");
+  ACT_PERIODS.forEach(([days]) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.setAttribute("role", "menuitem");
+    item.appendChild(document.createTextNode(secFindPeriodLabel(days)));
+    if(days === secFindPeriodDays) item.appendChild(secIcon("check2"));
+    item.onclick = (e) => {
+      e.stopPropagation();
+      secFindPeriodDays = days;
+      wrap.open = false;
+      secRenderIndex();
+    };
+    pop.appendChild(item);
+  });
+  wrap.appendChild(pop);
+
+  // Recomputed on every open from the trigger's own screen position, the
+  // identical fix secIndexProjectRow's own kebab already needed for the
+  // same `.table-card{overflow:hidden}` clip -- see that popup's own
+  // `ontoggle` comment.
+  wrap.ontoggle = () => {
+    if(!wrap.open) return;
+    const r = trigger.getBoundingClientRect();
+    pop.style.position = "fixed";
+    pop.style.top = (r.bottom + 6) + "px";
+    pop.style.right = (window.innerWidth - r.right) + "px";
+    pop.style.left = "auto";
+    pop.style.bottom = "auto";
+  };
+  return wrap;
+}
+
+/* The whole card: head (title, the period picker above), the donut block
+   (percentages on, "Top issue categories" beneath it, no small-caps eyebrow
+   -- see ui/css/pages.css's own `.secidx-cardhead h3`), and "View full
+   report". `.secidx-findbody` (ui/css/pages.css) is where the donut block's
+   OWN box chrome (background/border/shadow/padding, needed when
+   project-screen.js plants it bare in its sidebar) is stripped back out
+   again -- this card already draws that chrome once, itself, and nesting
+   the shared block's own copy inside it would double it. Scoped to this one
+   wrapper class rather than changing `.secidx-donutwrap` itself, the same
+   reasoning `showPercent` above already follows: nothing here has been
+   checked against the project screen's own pixels. */
+function secIndexFindingsCard(donut, categories, cappedNote, recent){
+  const card = secEl("div", "table-card");
+  card.appendChild(secIndexCardHead("Findings overview", null, secFindingsPeriodPicker()));
+  const body = secEl("div", "secidx-findbody");
+  body.appendChild(secIndexDonut(donut, categories, cappedNote, {showPercent: true}));
+  card.appendChild(body);
+  card.appendChild(secViewFullReportButton(recent));
+  return card;
 }

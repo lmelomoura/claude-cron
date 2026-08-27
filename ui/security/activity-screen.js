@@ -66,7 +66,14 @@ const ACT_TAB_BUTTON_ID = {"": "secactt-all", analyses: "secactt-analyses",
 // `security_activity`'s own `since` is a raw timestamp, matching
 // `ledger.events_for`'s contract, so the "last N days" framing lives here,
 // not on the wire. 0 means "no lower bound" (every event ever recorded).
-const ACT_PERIODS = [[7, "7 days"], [30, "30 days"], [90, "90 days"], [0, "All time"]];
+// Exported (Phase 4 Task 4): the index screen's own Findings-overview period
+// picker reuses this SAME four-bucket vocabulary rather than typing a second
+// copy — see secFindingsPeriodPicker (index-screen.js). Its own totals stay
+// unwindowed regardless of which bucket is showing (queries.severity_totals/
+// top_categories deliberately took a `days` parameter and dropped it again,
+// see this repository's own CHANGELOG entry on why), so the picker there is
+// this vocabulary's labels only, not a second fetch.
+export const ACT_PERIODS = [[7, "7 days"], [30, "30 days"], [90, "90 days"], [0, "All time"]];
 const ACT_PER_PAGE = 25;
 
 let secActOpen = false;
