@@ -69,6 +69,125 @@
     } = cc);
   }
 
+  // ui/app/chrome.js
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  function pageHeader({ icon: iconName, title, subtitle, actions }) {
+    const head = el("div", "page-header");
+    const icWrap = el("div", "page-header-ic");
+    if (iconName) icWrap.appendChild(icon(iconName));
+    head.appendChild(icWrap);
+    const body = el("div", "page-header-body");
+    body.appendChild(el("h1", null, title));
+    if (subtitle) body.appendChild(el("p", null, subtitle));
+    head.appendChild(body);
+    if (actions && actions.length) {
+      const bar = el("div", "page-header-actions");
+      actions.forEach((a) => bar.appendChild(pageHeaderAction(a)));
+      head.appendChild(bar);
+    }
+    return head;
+  }
+  function pageHeaderAction(a) {
+    const btn = el("button", "btn " + (a.primary ? "primary" : "ghost"));
+    if (a.id) btn.id = a.id;
+    if (a.icon) btn.appendChild(icon(a.icon));
+    btn.appendChild(document.createTextNode(a.label));
+    return btn;
+  }
+  function kpiCard(opts) {
+    const { icon: iconName, tone, value, label, sub, title, filter, door } = opts;
+    const card = el(door ? "button" : "div", "kpi-card" + (tone ? " " + tone : ""));
+    if (title) card.title = title;
+    const head = el("div", "kpi-card-h");
+    const icWrap = el("div", "kpi-card-ic");
+    if (iconName) icWrap.appendChild(icon(iconName));
+    head.appendChild(icWrap);
+    head.appendChild(el("span", "kpi-card-num", value));
+    card.appendChild(head);
+    card.appendChild(el("div", "kpi-card-label", label));
+    if (sub) card.appendChild(el("div", "kpi-card-sub", sub));
+    if (door) {
+      if (filter) card.dataset.statfilter = filter;
+      else card.disabled = true;
+    }
+    return card;
+  }
+  function filterBar(opts) {
+    const { search, selects, actions } = opts;
+    const bar = el("div", "toolbar");
+    if (search) bar.appendChild(search);
+    (selects || []).forEach((s) => {
+      if (s) bar.appendChild(s);
+    });
+    bar.appendChild(el("div", "spacer"));
+    (actions || []).forEach((a) => {
+      if (a) bar.appendChild(a);
+    });
+    return bar;
+  }
+  function tableCard(opts) {
+    const { columns, sortKey: sortKey4, sortDir: sortDir4, sortAttr, rows, footer } = opts;
+    const headRow = el("tr");
+    columns.forEach(([key, label]) => {
+      if (!key) {
+        headRow.appendChild(el("th", null, label));
+        return;
+      }
+      const on = sortKey4 === key;
+      const th = el("th", "sortable" + (on ? " sorted" : ""));
+      th.dataset[sortAttr] = key;
+      th.setAttribute("aria-sort", on ? sortDir4 < 0 ? "descending" : "ascending" : "none");
+      th.title = "Sort by " + label.toLowerCase();
+      th.appendChild(document.createTextNode(label));
+      th.appendChild(icon(on && sortDir4 > 0 ? "sortasc" : "sortdesc"));
+      headRow.appendChild(th);
+    });
+    const thead = el("thead");
+    thead.appendChild(headRow);
+    const tbody = el("tbody");
+    rows.forEach((tr) => tbody.appendChild(tr));
+    const table = el("table");
+    table.appendChild(thead);
+    table.appendChild(tbody);
+    const scroll = el("div", "table-scroll");
+    scroll.appendChild(table);
+    const card = el("div", "table-card");
+    card.appendChild(scroll);
+    if (footer) card.appendChild(footer);
+    return card;
+  }
+  function tableFooter(opts) {
+    const { shown, total, noun, page: page4, pages, prevId, nextId, infoId } = opts;
+    const foot = el("div", "table-foot");
+    const info = el(
+      "span",
+      "table-foot-info",
+      "Showing " + shown.from + " to " + shown.to + " of " + total + " " + noun + (total === 1 ? "" : "s")
+    );
+    if (infoId) info.id = infoId;
+    foot.appendChild(info);
+    const nav = el("div", "table-foot-pager");
+    const prev = el("button", "btn ghost");
+    if (prevId) prev.id = prevId;
+    prev.appendChild(icon("cleft"));
+    prev.appendChild(document.createTextNode("Prev"));
+    prev.disabled = page4 <= 1;
+    nav.appendChild(prev);
+    const next = el("button", "btn ghost");
+    if (nextId) next.id = nextId;
+    next.appendChild(document.createTextNode("Next"));
+    next.appendChild(icon("cright"));
+    next.disabled = page4 >= pages;
+    nav.appendChild(next);
+    foot.appendChild(nav);
+    return foot;
+  }
+
   // ui/app/jobs-domain.js
   var jobFilters = { project: "", status: "", query: "" };
   function inWindow(j, when) {
@@ -207,125 +326,6 @@
     have.sort((a, b) => S.cmp(a, b) * dir || (S.tie ? S.tie(a, b) : 0));
     none.sort((a, b) => String(a.j.id).localeCompare(String(b.j.id)));
     return have.concat(none);
-  }
-
-  // ui/app/chrome.js
-  function el(tag, cls, text) {
-    const n = document.createElement(tag);
-    if (cls) n.className = cls;
-    if (text != null) n.textContent = text;
-    return n;
-  }
-  function pageHeader({ icon: iconName, title, subtitle, actions }) {
-    const head = el("div", "page-header");
-    const icWrap = el("div", "page-header-ic");
-    if (iconName) icWrap.appendChild(icon(iconName));
-    head.appendChild(icWrap);
-    const body = el("div", "page-header-body");
-    body.appendChild(el("h1", null, title));
-    if (subtitle) body.appendChild(el("p", null, subtitle));
-    head.appendChild(body);
-    if (actions && actions.length) {
-      const bar = el("div", "page-header-actions");
-      actions.forEach((a) => bar.appendChild(pageHeaderAction(a)));
-      head.appendChild(bar);
-    }
-    return head;
-  }
-  function pageHeaderAction(a) {
-    const btn = el("button", "btn " + (a.primary ? "primary" : "ghost"));
-    if (a.id) btn.id = a.id;
-    if (a.icon) btn.appendChild(icon(a.icon));
-    btn.appendChild(document.createTextNode(a.label));
-    return btn;
-  }
-  function kpiCard(opts) {
-    const { icon: iconName, tone, value, label, sub, title, filter, door } = opts;
-    const card = el(door ? "button" : "div", "kpi-card" + (tone ? " " + tone : ""));
-    if (title) card.title = title;
-    const head = el("div", "kpi-card-h");
-    const icWrap = el("div", "kpi-card-ic");
-    if (iconName) icWrap.appendChild(icon(iconName));
-    head.appendChild(icWrap);
-    head.appendChild(el("span", "kpi-card-num", value));
-    card.appendChild(head);
-    card.appendChild(el("div", "kpi-card-label", label));
-    if (sub) card.appendChild(el("div", "kpi-card-sub", sub));
-    if (door) {
-      if (filter) card.dataset.statfilter = filter;
-      else card.disabled = true;
-    }
-    return card;
-  }
-  function filterBar(opts) {
-    const { search, selects, actions } = opts;
-    const bar = el("div", "toolbar");
-    if (search) bar.appendChild(search);
-    (selects || []).forEach((s) => {
-      if (s) bar.appendChild(s);
-    });
-    bar.appendChild(el("div", "spacer"));
-    (actions || []).forEach((a) => {
-      if (a) bar.appendChild(a);
-    });
-    return bar;
-  }
-  function tableCard(opts) {
-    const { columns, sortKey: sortKey4, sortDir: sortDir4, sortAttr, rows, footer } = opts;
-    const headRow = el("tr");
-    columns.forEach(([key, label]) => {
-      if (!key) {
-        headRow.appendChild(el("th", null, label));
-        return;
-      }
-      const on = sortKey4 === key;
-      const th = el("th", "sortable" + (on ? " sorted" : ""));
-      th.dataset[sortAttr] = key;
-      th.setAttribute("aria-sort", on ? sortDir4 < 0 ? "descending" : "ascending" : "none");
-      th.title = "Sort by " + label.toLowerCase();
-      th.appendChild(document.createTextNode(label));
-      th.appendChild(icon(on && sortDir4 > 0 ? "sortasc" : "sortdesc"));
-      headRow.appendChild(th);
-    });
-    const thead = el("thead");
-    thead.appendChild(headRow);
-    const tbody = el("tbody");
-    rows.forEach((tr) => tbody.appendChild(tr));
-    const table = el("table");
-    table.appendChild(thead);
-    table.appendChild(tbody);
-    const scroll = el("div", "table-scroll");
-    scroll.appendChild(table);
-    const card = el("div", "table-card");
-    card.appendChild(scroll);
-    if (footer) card.appendChild(footer);
-    return card;
-  }
-  function tableFooter(opts) {
-    const { shown, total, noun, page: page4, pages, prevId, nextId, infoId } = opts;
-    const foot = el("div", "table-foot");
-    const info = el(
-      "span",
-      "table-foot-info",
-      "Showing " + shown.from + " to " + shown.to + " of " + total + " " + noun + (total === 1 ? "" : "s")
-    );
-    if (infoId) info.id = infoId;
-    foot.appendChild(info);
-    const nav = el("div", "table-foot-pager");
-    const prev = el("button", "btn ghost");
-    if (prevId) prev.id = prevId;
-    prev.appendChild(icon("cleft"));
-    prev.appendChild(document.createTextNode("Prev"));
-    prev.disabled = page4 <= 1;
-    nav.appendChild(prev);
-    const next = el("button", "btn ghost");
-    if (nextId) next.id = nextId;
-    next.appendChild(document.createTextNode("Next"));
-    next.appendChild(icon("cright"));
-    next.disabled = page4 >= pages;
-    nav.appendChild(next);
-    foot.appendChild(nav);
-    return foot;
   }
 
   // ui/app/overview.js
@@ -2191,25 +2191,35 @@
     jobsEmptyNote,
     worktreesCard,
     // pageHeader, kpiCard and renderPulse (all three from
-    // ./chrome.js and ./overview.js) used to sit here for a
-    // stated future -- Jobs and Runs had a header of their own
-    // but no KPI row and no 24h band, and CCApp.
-    // renderOverviewHead's own two DOM builders were what the
-    // day either grew one would reach for. That future landed
-    // differently: Jobs, Runs and Projects all grew their own
-    // KPI row this phase (jobsKpis/runsKpis/projectsKpis, each
-    // calling kpiCard() by a direct ES import inside its own
-    // module, never through this global), and
-    // bin/dashboard.html's initPageHeaders() -- pageHeader's
-    // one and only caller -- is gone: boot order meant its
-    // static Runs header was always overwritten by
-    // CCApp.renderRunsPage() before a frame painted, and the
-    // two disagreed besides. Grepped for CCApp.pageHeader,
+    // ./chrome.js and ./overview.js) used to sit on this global
+    // for a stated future that landed differently -- Jobs, Runs
+    // and Projects all grew their own KPI row by calling
+    // kpiCard() through a direct ES import inside their own
+    // module, never through window.CCApp, and pageHeader's one
+    // caller (bin/dashboard.html's initPageHeaders()) was
+    // removed outright. Grepped for CCApp.pageHeader,
     // CCApp.kpiCard and CCApp.renderPulse across bin/ and
-    // tests/ before removing them -- zero readers of any of
-    // the three. renderOverviewHead remains the only one of
-    // the four this phase's own call site (bin/dashboard.html's
-    // render()) actually calls itself.
+    // tests/ before removing all three -- zero readers.
+    //
+    // pageHeader and kpiCard are back (Phase 4 Task 1), for a
+    // real reader this time: ui/security/ is a SEPARATE esbuild
+    // bundle that cannot import chrome.js directly (see
+    // ui/security/page.js's own comment on why -- a second,
+    // never-bound copy of this module's `icon` is the failure
+    // mode), so bin/dashboard.html's CC object reads
+    // CCApp.pageHeader/CCApp.kpiCard off this global instead and
+    // hands them into CCSecurity.init(CC) alongside every other
+    // name the area needs. tableFooter joins them for the first
+    // time, not a comeback -- nothing has ever read
+    // CCApp.tableFooter -- because the same bridge is the one
+    // sane way for a later task's own project/recent-analyses
+    // pager to reach it too, and adding it now means that task
+    // does not have to touch this file again. renderPulse stays
+    // off this list: Security has never needed it, and it is
+    // still true that nothing else reads it through here.
+    pageHeader,
+    kpiCard,
+    tableFooter,
     renderOverviewHead,
     // jobCard is Task 9's: renderJobCards() in bin/dashboard.html
     // (the Overview's own cards, what used to be inside
@@ -2323,5 +2333,5 @@
     projectStepError
   };
 })();
-/* ui-bundle: a228456d4edf61dc604bbea09cfa3f5c5ee8d65a8df0b136c3b5058fd039a66a */
-/* ui-sources: e20fa05642667af7a3594b51cc157342e01476f499f90f50814956d789f8057a */
+/* ui-bundle: aa0fa654dbc4d17469fd522163b996eb1c9c876052ccb5aae0719bd2d3de730f */
+/* ui-sources: 9a29075595efe3da9476d8e30c60fcb8213f69295f29d32d9f75eaa5f419dd9c */

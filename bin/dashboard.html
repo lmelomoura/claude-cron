@@ -359,15 +359,14 @@ document.documentElement.dataset.theme =
        saying where to turn it on rather than a page that does nothing. -->
   <div class="view" id="view-security" hidden>
     <section id="sec-projects">
-      <p class="paneblurb">What the last analysis of each project found, and what
-        you decided about it. Findings are kept whole in the ledger: raising or
-        lowering a project's minimum severity changes what this page shows, never
-        what was recorded.</p>
-      <div class="toolbar">
-        <div class="spacer"></div>
-        <button class="btn ghost" id="sec-view-activity"></button>
-        <button class="btn ghost" id="sec-reload"></button>
-      </div>
+      <!-- sec-head is rebuilt on every repaint by ui/security/index-screen.js's
+           own secRenderHead() -- shield, "Security", one sentence, Activity
+           and Refresh trailing right (the loose <p class="paneblurb"> and
+           the bare .toolbar this replaces used to carry that sentence and
+           those two buttons as static markup). Called from secRenderIndex()
+           rather than ui/security/index.js's own init() -- see
+           secRenderHead's own comment on why init() is too early. -->
+      <div id="sec-head"></div>
       <div class="seclist" id="sec-list"></div>
     </section>
 
@@ -1087,6 +1086,10 @@ const I={
   calendar:ic('<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/>'),
   clock:ic('<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>'),
   alert:ic('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>'),
+  // The circled sibling of `alert`'s triangle -- the Security index's own
+  // High-severity KPI card (Phase 4 Task 1) draws a ringed exclamation mark,
+  // not a triangle, and no existing icon already had that shape.
+  alertcircle:ic('<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>'),
   xcircle:ic('<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>'),
   check:ic('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'),
   play:ic('<polygon points="6 3 20 12 6 21"/>'),
@@ -1633,10 +1636,24 @@ function renderJobsArea(){
 
    Built and passed at exactly the point the moved code used to start, so every
    statement still runs in the order it always did -- including the listeners
-   init() attaches, which were attached from here. */
+   init() attaches, which were attached from here.
+
+   pageHeader/kpiCard/tableFooter (Phase 4 Task 1) are the one exception to
+   "everything here is this page's own": they are ui/app/chrome.js's builders,
+   read off CCApp rather than defined here, because ui/security/ cannot import
+   that file directly (see ui/security/page.js's own comment on the bundle
+   split this avoids). This is a plain PROPERTY READ, not a call, so it is
+   safe this early even though CCApp.init() below has not run yet and
+   ui/app/page.js's own `icon` is still unbound at this line -- nothing in
+   this object CALLS pageHeader/kpiCard yet, it only hands the reference
+   over. ui/security/index-screen.js's own secRenderHead()/secIndexCards()
+   are what call them, well after boot, off a poll tick or a resolved fetch
+   -- see secRenderHead's own comment for why calling either one any earlier
+   throws. */
 const CC = {
   $, TOKEN, api, toast, openLog, projById, sessionLost, unjournaledLive,
   fmtAgo, fmtWhen, fmtDur, money,
+  pageHeader: CCApp.pageHeader, kpiCard: CCApp.kpiCard, tableFooter: CCApp.tableFooter,
   // The project screen's "Project settings" link opens the SAME editor the
   // Projects page already uses -- the form is not duplicated here, only
   // pointed at. Defined later in this file; safe to read now because
@@ -4349,6 +4366,16 @@ document.addEventListener("click", async (e)=>{
   if(e.target.closest("#runs-refresh")){ refresh(); return; }
   if(e.target.closest("#runs-pg-prev")){ CCApp.runsSetPage(-1); return; }
   if(e.target.closest("#runs-pg-next")){ CCApp.runsSetPage(1); return; }
+  // The Security index's own page header actions (Phase 4 Task 1) -- built
+  // fresh on every repaint by ui/security/index-screen.js's own
+  // secRenderHead(), the same "rebuild it, answer it by id" split every
+  // pageHeader() action above already uses, and for the identical reason:
+  // a listener attached directly to the button itself would be torn away
+  // the moment the next repaint replaces it with a new element.
+  // CCSecurity.openActivity/reload are the two thin wrappers
+  // ui/security/index.js exports for exactly this call site.
+  if(e.target.closest("#sec-view-activity")){ CCSecurity.openActivity(); return; }
+  if(e.target.closest("#sec-reload")){ CCSecurity.reload(); return; }
   // The worktrees card's own footer button, built the same way by
   // CCApp.worktreesCard() -- opens the full list the card only summarises.
   if(e.target.closest("#ov-wt-view")){ $("wt-halo").innerHTML=I.folder; $("wtmodal").showModal(); return; }

@@ -44,7 +44,6 @@ function init(cc){
   wireReasonDialog();
   iconLabel($("sr-halo"), "shield");
   iconLabel($("sec-back"), "cleft", "All projects");
-  iconLabel($("sec-reload"), "radar", "Refresh");
   iconLabel($("sec-dl-md"), "file", "Markdown");
   iconLabel($("sec-dl-json"), "file", "JSON");
   iconLabel($("sec-dl-html"), "file", "HTML");
@@ -60,17 +59,24 @@ function init(cc){
   $("secpjt-findings").addEventListener("click", () => secSwitchProjectTab("findings"));
   $("secpjt-reports").addEventListener("click", () => secSwitchProjectTab("reports"));
 
-  // The Activity screen: entry point from the index, its own back/reload,
-  // its four kind tabs, its free-text project scope, and the fingerprint
-  // dialog a decision's own row opens. See ui/security/activity-screen.js.
-  iconLabel($("sec-view-activity"), "activity", "Activity");
+  // The Activity screen: its own back/reload, its four kind tabs, its
+  // free-text project scope, and the fingerprint dialog a decision's own row
+  // opens. See ui/security/activity-screen.js. The entry point used to be
+  // here too (#sec-view-activity, iconLabel'd and wired the same direct way
+  // as every id below) -- it is now one of the index header's own actions,
+  // built fresh on every repaint by ui/security/index-screen.js's own
+  // secRenderHead() (pageHeader() draws its icon and label from the actions
+  // array, so a separate iconLabel() call here would fight it), and
+  // answered by bin/dashboard.html's central delegated click listener
+  // through CCSecurity.openActivity() below, the same "rebuilt every poll,
+  // answered by id centrally" split every other page's pageHeader() action
+  // already uses. #sec-reload moved the same way, into CCSecurity.reload().
   iconLabel($("sec-act-back"), "cleft", "All projects");
   iconLabel($("sec-act-reload"), "radar", "Refresh");
   iconLabel($("secactt-all"), "activity", "All activity");
   iconLabel($("secactt-analyses"), "shield", "Analyses");
   iconLabel($("secactt-findings"), "search", "Findings");
   iconLabel($("secactt-settings"), "gear", "Settings");
-  $("sec-view-activity").addEventListener("click", () => secOpenActivity(""));
   $("sec-act-back").addEventListener("click", secBackFromActivity);
   $("sec-act-reload").addEventListener("click", secActReload);
   $("secactt-all").addEventListener("click", () => secActSwitchTab(""));
@@ -89,7 +95,6 @@ function init(cc){
   // where a reader assumes they match.
   $("sec-dl-note").textContent = "Downloads always contain every recorded finding, whatever the severity floor shows.";
   $("sec-back").addEventListener("click", secBack);
-  $("sec-reload").addEventListener("click", () => { secLoadIndex(true); });
   $("sec-run").addEventListener("click", secAnalyse);
   $("sec-dl-md").addEventListener("click", () => secDownload("md"));
   $("sec-dl-json").addEventListener("click", () => secDownload("json"));
@@ -114,12 +119,27 @@ function init(cc){
 /* The page calls init() once and then only these. SEV_ORDER and SEC_PROFILES
    are read by the PROJECT EDITOR, which stayed in the page: it validates its
    two dropdowns against the same vocabulary the area works in, and the
-   vocabulary belongs with the area that defines what the words mean. */
+   vocabulary belongs with the area that defines what the words mean.
+
+   openActivity/reload (Phase 4 Task 1) are the index header's own two
+   actions, answered by bin/dashboard.html's central delegated click
+   listener (`#sec-view-activity`/`#sec-reload`) rather than a listener
+   ui/security/index-screen.js attaches itself -- see secRenderHead's own
+   comment on why: pageHeader() rebuilds both buttons on every repaint, the
+   same as every other page's own header actions, so a listener attached
+   directly to either one would be torn away the moment the next repaint
+   replaces it with a new element. Thin, zero-argument wrappers rather than
+   exporting secOpenActivity/secLoadIndex themselves: the delegated call
+   site wants "open the all-projects activity feed" and "refresh the index",
+   not a project-scoped open or a soft (cache-permitting) refresh -- the two
+   things secOpenActivity("") and secLoadIndex(true) actually mean here. */
 window.CCSecurity = {
   init,
   render: renderSecurity,
   enter: secEnter,
   leave: secLeave,
+  openActivity: () => secOpenActivity(""),
+  reload: () => secLoadIndex(true),
   SEV_ORDER,
   SEC_PROFILES,
 };

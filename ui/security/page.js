@@ -16,7 +16,24 @@
    nothing in this area runs before that. */
 export let $, TOKEN, api, toast, openLog, projById, sessionLost,
            unjournaledLive, fmtAgo, fmtWhen, fmtDur, money, icon, iconLabel,
-           openProjectEditor;
+           openProjectEditor,
+           // The chrome bridge (Phase 4 Task 1): pageHeader, kpiCard and
+           // tableFooter are ui/app/chrome.js's own builders, read off
+           // CCApp -- not imported -- because ui/security/ and ui/app/ are
+           // two separate esbuild bundles, and importing chrome.js here
+           // would pull in a SECOND, never-bound copy of ui/app/page.js
+           // (its `icon` stays undefined forever, since only CCApp.init()
+           // binds it). bin/dashboard.html's CC object reads
+           // CCApp.pageHeader/CCApp.kpiCard/CCApp.tableFooter -- the ONE
+           // compiled copy chrome.js ever gets, already bound to the app
+           // bundle's own `icon` by the time anything here calls one of
+           // these -- and hands them into CCSecurity.init(CC) alongside
+           // every other name. One executing copy, zero drift.
+           //
+           // tableFooter has no caller under ui/security/ yet: it joins the
+           // other two now so a later task's own project/recent-analyses
+           // pager does not have to touch this bridge again to reach it.
+           pageHeader, kpiCard, tableFooter;
 
 /* DATA and currentView are the two the page REASSIGNS as it runs — DATA on
    every five-second poll, currentView on every navigation. Destructured into a
@@ -30,5 +47,6 @@ export let CC = null;
 export function bindPage(cc) {
   CC = cc;
   ({ $, TOKEN, api, toast, openLog, projById, sessionLost, unjournaledLive,
-     fmtAgo, fmtWhen, fmtDur, money, icon, iconLabel, openProjectEditor } = cc);
+     fmtAgo, fmtWhen, fmtDur, money, icon, iconLabel, openProjectEditor,
+     pageHeader, kpiCard, tableFooter } = cc);
 }

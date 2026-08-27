@@ -1163,17 +1163,12 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .secpjside{flex:1 1 100%}
 }
 /* --------------------------------------------------------- security index
-   The five KPI cards, the project table, the recent-analyses feed and the
-   severity donut all paint into the same #sec-list host the flat project
-   list used to fill -- see ui/security/index-screen.js. */
-.secidx-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
-.secidx-card{gap:8px}
-.secidx-card-h{display:flex;align-items:center;gap:8px;color:var(--muted);
-  font-size:11px;text-transform:uppercase;letter-spacing:.05em;font-weight:600}
-.secidx-card-h .ic{width:14px;height:14px;color:var(--accent)}
-.secidx-num{font-size:26px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
-.secidx-note{font-size:11px;color:var(--muted);line-height:1.5}
-.secidx-note.warn{color:var(--warn);font-weight:600}
+   The project table, the recent-analyses feed and the severity donut all
+   paint into the same #sec-list host the flat project list used to fill --
+   see ui/security/index-screen.js. The five KPI cards used to be here too
+   (.secidx-kpis/.secidx-card and friends) until Phase 4 Task 1 moved them
+   onto the shared .kpi-grid/.kpi-card (ui/css/components.css) every other
+   page's own KPI row already uses -- see secIndexCards's own comment. */
 .secidx-section{display:flex;flex-direction:column;gap:9px}
 .secidx-section h3{margin:0;font-size:13px}
 .secidx-desc{font-size:11.5px;color:var(--muted);margin-top:2px;font-weight:400}

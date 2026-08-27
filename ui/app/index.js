@@ -27,6 +27,7 @@
    renderJobs, since it builds markup from strings the page chooses itself
    rather than from a job's own fields. */
 import { bindPage } from "./page.js";
+import { pageHeader, kpiCard, tableFooter } from "./chrome.js";
 import { visibleJobs, jobFilters, bulkOn, bulkLabel,
          clearJobFilters, jobProjectNames, sortJobs, JOB_COLS } from "./jobs-domain.js";
 import { groupJobs, jobsEmptyNote, worktreesCard,
@@ -67,25 +68,33 @@ window.CCApp = { init, visibleJobs, jobFilters, bulkOn,
                  sortJobs, JOB_COLS,
                  groupJobs, jobsEmptyNote, worktreesCard,
                  // pageHeader, kpiCard and renderPulse (all three from
-                 // ./chrome.js and ./overview.js) used to sit here for a
-                 // stated future -- Jobs and Runs had a header of their own
-                 // but no KPI row and no 24h band, and CCApp.
-                 // renderOverviewHead's own two DOM builders were what the
-                 // day either grew one would reach for. That future landed
-                 // differently: Jobs, Runs and Projects all grew their own
-                 // KPI row this phase (jobsKpis/runsKpis/projectsKpis, each
-                 // calling kpiCard() by a direct ES import inside its own
-                 // module, never through this global), and
-                 // bin/dashboard.html's initPageHeaders() -- pageHeader's
-                 // one and only caller -- is gone: boot order meant its
-                 // static Runs header was always overwritten by
-                 // CCApp.renderRunsPage() before a frame painted, and the
-                 // two disagreed besides. Grepped for CCApp.pageHeader,
+                 // ./chrome.js and ./overview.js) used to sit on this global
+                 // for a stated future that landed differently -- Jobs, Runs
+                 // and Projects all grew their own KPI row by calling
+                 // kpiCard() through a direct ES import inside their own
+                 // module, never through window.CCApp, and pageHeader's one
+                 // caller (bin/dashboard.html's initPageHeaders()) was
+                 // removed outright. Grepped for CCApp.pageHeader,
                  // CCApp.kpiCard and CCApp.renderPulse across bin/ and
-                 // tests/ before removing them -- zero readers of any of
-                 // the three. renderOverviewHead remains the only one of
-                 // the four this phase's own call site (bin/dashboard.html's
-                 // render()) actually calls itself.
+                 // tests/ before removing all three -- zero readers.
+                 //
+                 // pageHeader and kpiCard are back (Phase 4 Task 1), for a
+                 // real reader this time: ui/security/ is a SEPARATE esbuild
+                 // bundle that cannot import chrome.js directly (see
+                 // ui/security/page.js's own comment on why -- a second,
+                 // never-bound copy of this module's `icon` is the failure
+                 // mode), so bin/dashboard.html's CC object reads
+                 // CCApp.pageHeader/CCApp.kpiCard off this global instead and
+                 // hands them into CCSecurity.init(CC) alongside every other
+                 // name the area needs. tableFooter joins them for the first
+                 // time, not a comeback -- nothing has ever read
+                 // CCApp.tableFooter -- because the same bridge is the one
+                 // sane way for a later task's own project/recent-analyses
+                 // pager to reach it too, and adding it now means that task
+                 // does not have to touch this file again. renderPulse stays
+                 // off this list: Security has never needed it, and it is
+                 // still true that nothing else reads it through here.
+                 pageHeader, kpiCard, tableFooter,
                  renderOverviewHead,
                  // jobCard is Task 9's: renderJobCards() in bin/dashboard.html
                  // (the Overview's own cards, what used to be inside

@@ -3134,7 +3134,7 @@ def test_the_index_kpis_render_a_dash_not_zero_percent_when_nothing_finished(srv
     the JSON-contract tests in tests/security/test_cli.py and
     tests/test_security_api.py, neither of which ever paints anything."""
     block = _security_js(srv)
-    deps = _index_screen_deps(block, "secEl", "secIcon", "secIndexCard",
+    deps = _index_screen_deps(block, "el", "secEl", "secIcon", "kpiCard",
                               "secCappedScopeNote", "secIndexCards")
     script = tmp_path / "kpi-dash.js"
     script.write_text(_INDEX_DOM_HARNESS + deps + """
@@ -3144,7 +3144,10 @@ def test_the_index_kpis_render_a_dash_not_zero_percent_when_nothing_finished(srv
     """)
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
-    nums = [r["text"] for r in out if r["cls"] == "secidx-num"]
+    # secidx-num was the card's own number class before Phase 4 Task 1 moved
+    # the five KPI cards onto the shared kpiCard() builder (ui/app/chrome.js)
+    # -- kpi-card-num is its exact replacement, same one-number-per-card shape.
+    nums = [r["text"] for r in out if r["cls"] == "kpi-card-num"]
     assert "—" in nums, f"no dash rendered for a null success rate: {nums}"
     assert "0%" not in nums, f"a zero-percent rendered where a dash belongs: {nums}"
 
@@ -3240,7 +3243,7 @@ def test_the_critical_and_high_kpi_cards_flag_incomplete_contributors(srv, tmp_p
     capped, the Critical/High KPI cards must say how many, instead of
     presenting a fleet-wide total that looks complete."""
     block = _security_js(srv)
-    deps = _index_screen_deps(block, "secEl", "secIcon", "secIndexCard",
+    deps = _index_screen_deps(block, "el", "secEl", "secIcon", "kpiCard",
                               "secCappedScopeNote", "secIndexCards")
     script = tmp_path / "kpi-capped.js"
     script.write_text(_INDEX_DOM_HARNESS + deps + """
@@ -3250,7 +3253,14 @@ def test_the_critical_and_high_kpi_cards_flag_incomplete_contributors(srv, tmp_p
     """)
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
-    notes = [r["text"] for r in out if r["cls"].startswith("secidx-note")]
+    # The caveat used to be a visible .secidx-note line; Phase 4 Task 1's
+    # kpiCard-based cards have no room left in the sub for a sentence this
+    # long (the mockup's own sub is the fixed, short "needs immediate
+    # attention"), so it now lives in the card's own `.title` tooltip instead
+    # -- kpiCard's documented purpose for that attribute (see its own comment
+    # in ui/app/chrome.js). Still the outer card element, still reachable by
+    # `collectAll`, just a different field on the same record.
+    notes = [r["title"] for r in out if r["cls"].startswith("kpi-card") and r["title"]]
     assert any("1" in n and "stopped" in n for n in notes), \
         f"no note names the incomplete contributor: {notes}"
     assert not any(n == "Open now, in every project's latest analysis" for n in notes), \
@@ -4563,7 +4573,7 @@ def test_the_kpi_cards_say_when_a_total_was_read_off_an_undeclared_branch(srv, t
     never confused in silence. `fell_back_projects` is the count and this is
     the sentence."""
     block = _security_js(srv)
-    deps = _index_screen_deps(block, "secEl", "secIcon", "secIndexCard",
+    deps = _index_screen_deps(block, "el", "secEl", "secIcon", "kpiCard",
                               "secCappedScopeNote", "secIndexCards")
     script = tmp_path / "kpi-fellback.js"
     script.write_text(_INDEX_DOM_HARNESS + deps + """
@@ -4571,11 +4581,15 @@ def test_the_kpi_cards_say_when_a_total_was_read_off_an_undeclared_branch(srv, t
       capped_projects: 0, fell_back_projects: 1, success_rate: 1.0});
     const clean = secIndexCards({projects: 3, analyses: 4, critical: 2, high: 1,
       capped_projects: 0, fell_back_projects: 0, success_rate: 1.0});
+    // secidx-note was a visible line before Phase 4 Task 1's kpiCard-based
+    // cards moved this caveat into the card's own `.title` tooltip (see the
+    // comment above secIndexCards) -- kpi-card is the outer card's class,
+    // and `.title` is where the same sentence lives now.
     console.log(JSON.stringify({
-      notes: collectAll(cards, []).filter(r => r.cls.indexOf("secidx-note") === 0)
-                                  .map(r => r.text),
-      cleanNotes: collectAll(clean, []).filter(r => r.cls.indexOf("secidx-note") === 0)
-                                       .map(r => r.text),
+      notes: collectAll(cards, []).filter(r => r.cls.indexOf("kpi-card") === 0 && r.title)
+                                  .map(r => r.title),
+      cleanNotes: collectAll(clean, []).filter(r => r.cls.indexOf("kpi-card") === 0 && r.title)
+                                       .map(r => r.title),
     }));
     """)
     out = json.loads(subprocess.run(["node", str(script)],
@@ -4599,13 +4613,17 @@ def test_the_success_rate_card_labels_its_all_time_scope(srv, tmp_path):
     labelled "All time — a historical total". The fifth and sixth instances
     of an unlabelled scope clash on this branch; this is the sixth."""
     block = _security_js(srv)
-    deps = _index_screen_deps(block, "secEl", "secIcon", "secIndexCard",
+    deps = _index_screen_deps(block, "el", "secEl", "secIcon", "kpiCard",
                               "secCappedScopeNote", "secIndexCards")
     script = tmp_path / "kpi-scope.js"
     script.write_text(_INDEX_DOM_HARNESS + deps + """
     const cards = secIndexCards({projects: 2, analyses: 5, critical: 0, high: 0,
       capped_projects: 0, fell_back_projects: 0, success_rate: 0.8});
-    console.log(JSON.stringify(collectAll(cards, []).map(r => r.text)));
+    // Phase 4 Task 1 moved this card's own scope sentence from its `sub`
+    // (now the mockup's fixed, short "analyses completed") into its `.title`
+    // tooltip -- collecting title alongside text keeps this reachable
+    // wherever kpiCard put it, without caring which of the two it landed in.
+    console.log(JSON.stringify(collectAll(cards, []).map(r => r.text + " " + r.title)));
     """)
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)

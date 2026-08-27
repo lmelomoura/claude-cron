@@ -19,6 +19,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The Security index gets a real page header and five KPI cards matching
+  the approved mockup, through a new runtime bridge into `ui/app/`'s shared
+  chrome.** The loose intro paragraph and its bare toolbar are gone,
+  replaced by `pageHeader()` (shield icon, "Security", "Vulnerability
+  analysis across your projects.", Activity and Refresh as its own
+  actions) and the same `kpiCard()` every other page's KPI row already
+  uses: Projects/"with security enabled", Total analyses/"across all
+  projects", Critical findings/"needs immediate attention" (`err` tone),
+  High severity/"requires review" (`warn` tone), Success rate/"analyses
+  completed" (a new `ok` tone, joining `warn`/`err` on `kpi-card-ic`).
+  `ui/security/` and `ui/app/` stay two separate esbuild bundles —
+  importing `chrome.js` directly would give the Security bundle a second,
+  never-bound copy of `ui/app/page.js`'s own `icon` — so `bin/dashboard.
+  html`'s `CC` object now hands `CCApp.pageHeader`/`CCApp.kpiCard`/
+  `CCApp.tableFooter` into `CCSecurity.init(CC)` at runtime, and
+  `ui/security/page.js` declares and binds all three like every other name
+  the area is given; `ui/security/index-screen.js`'s new `secRenderHead()`
+  and `secIndexCards()` are the only two callers, both reached off a poll
+  tick or a resolved fetch, never from `init()` itself, which runs before
+  `CCApp.init()` has bound that `icon`. The Critical/High cards' own
+  capped-analysis and fallen-back-branch caveats move from a visible
+  `.secidx-note` line into the card's own `.title` tooltip — the mockup's
+  fixed, short sub-caption for both leaves no room for a sentence that
+  long — and Activity/Refresh are now answered by `bin/dashboard.html`'s
+  central delegated click listener rather than a listener attached
+  directly to either button, the same split every other page's own
+  `pageHeader()` actions already use. The old `.secidx-kpis`/`.secidx-card`
+  markup and CSS are gone; the KPI grid now shares `.kpi-grid`/`.kpi-card`
+  with every other page, and a new `alertcircle` icon covers the one shape
+  (a ringed exclamation mark) nothing in the existing set already drew.
+
 - **The job and project editor dialogs close their last four gaps against
   the approved artboards (`JobEditor.view.html`/`ProjectEditor.view.html`
   in the design canvas), found by comparing the shipped dialogs to the

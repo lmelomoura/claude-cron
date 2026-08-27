@@ -109,8 +109,8 @@ td .projtag .ic{width:12px;height:12px;color:var(--accent);flex:none}
 
 /* ------------------------------------------------------------------ KPI card
    Five numbers, one card each: a tinted icon square (the tint carries the
-   tone -- accent by default, warn/err for the two that double as filters)
-   and the NUMBER share the first line at 27px/700 -- the number is what the
+   tone -- accent by default, warn/err/ok for a card that wants a different
+   one) and the NUMBER share the first line at 27px/700 -- the number is what the
    eye should land on beside the icon, not the caption -- then the label at
    13.5px/600, then a muted sublabel at 12.5px. The second number of a pair
    belongs in that sublabel, never beside the first -- see pulseKpis's own
@@ -138,6 +138,12 @@ button.kpi-card:not(:disabled):hover{border-color:color-mix(in srgb,var(--accent
 .kpi-card-ic .ic{width:15px;height:15px}
 .kpi-card.warn .kpi-card-ic{background:var(--warn-soft);color:var(--warn)}
 .kpi-card.err .kpi-card-ic{background:var(--err-soft);color:var(--err)}
+/* `ok` joins warn/err for the Security index's own Success-rate card (Phase
+   4 Task 1) -- a plain, never-a-door card, unlike every warn/err card before
+   it (Warnings/Errors, Critical/High), so only the icon tint applies: the
+   hover/disabled rules below are for a card that doubles as a filter link,
+   which this one never does. */
+.kpi-card.ok .kpi-card-ic{background:var(--ok-soft);color:var(--ok)}
 button.kpi-card.warn:not(:disabled):hover{border-color:color-mix(in srgb,var(--warn) 42%,var(--line))}
 button.kpi-card.err:not(:disabled):hover{border-color:color-mix(in srgb,var(--err) 42%,var(--line))}
 /* Zero warnings/errors is nothing to open -- the card fades the same register

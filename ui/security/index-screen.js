@@ -17,7 +17,7 @@
    called secRenderList()), and refetched only on an explicit Refresh or
    when something that changed the numbers just happened (secBack(), after
    leaving a project screen where an analysis may have just finished). */
-import { $, fmtAgo, fmtDur, money } from "./page.js";
+import { $, fmtAgo, fmtDur, money, pageHeader, kpiCard } from "./page.js";
 import { secIcon, secEl, secFetch } from "./dom.js";
 import { SEC_NEVER, SEC_FLOOR_SCOPE_NOTE } from "./vocabulary.js";
 import { secOpenProject } from "./project-screen.js";
@@ -59,12 +59,56 @@ export async function secLoadIndex(force){
   secRenderIndex();
 }
 
+/* The index's own page header (Phase 4 Task 1) -- shield, "Security", one
+   sentence, Activity and Refresh trailing right -- replacing what used to be
+   a loose <p class="paneblurb"> plus a bare .toolbar holding those same two
+   buttons. #sec-head is static markup (bin/dashboard.html), always in the
+   DOM whether or not the security view is the one showing, the same as
+   #jobs-head/#prj-head/#runs-head already are for their own pages.
+
+   Rebuilt whole on every call, exactly like every other page's own
+   pageHeader() call (renderJobsPage(), renderProjectsPage(), ...): neither
+   action button carries a listener of its own, so throwing both away and
+   drawing fresh ones costs nothing. Activity and Refresh are answered by
+   bin/dashboard.html's central delegated click listener
+   (`#sec-view-activity`/`#sec-reload`, routed to CCSecurity.openActivity()/
+   reload()) instead, the same "markup carries the hook, a central listener
+   does the click" split chrome.js's own pageHeader comment describes for
+   every other page's actions -- pageHeader only ever draws the button and
+   stamps the id the caller asked for, never a click handler.
+
+   Called from secRenderIndex() rather than ui/security/index.js's own
+   init(), and this is not a style choice: init() runs inside
+   CCSecurity.init(CC), which bin/dashboard.html calls BEFORE CCApp.init() --
+   see that file's own banner comment above the CC object. pageHeader (like
+   kpiCard) calls straight into `icon()`, which for this bridge resolves to
+   ui/app/page.js's own binding, and that binding is not set until
+   CCApp.init() runs. Calling pageHeader() from inside init() would read it
+   in its temporal dead zone and throw on every load. secRenderIndex() only
+   ever runs off a poll tick or a resolved fetch, both strictly after the
+   page's own script has finished running top to bottom -- CCApp.init()
+   included -- so this is the earliest point that is actually safe. */
+function secRenderHead(){
+  const host = $("sec-head");
+  if(!host) return;
+  host.textContent = "";
+  host.appendChild(pageHeader({
+    icon: "shield", title: "Security",
+    subtitle: "Vulnerability analysis across your projects.",
+    actions: [
+      {id: "sec-view-activity", icon: "activity", label: "Activity"},
+      {id: "sec-reload", icon: "radar", label: "Refresh"},
+    ],
+  }));
+}
+
 /* Cheap and synchronous: paints whatever is already cached, or leaves the
    host exactly as secLoadIndex last left it (its own "Loading…" placeholder,
    or an error) when nothing has answered yet. Safe to call on every poll
    tick -- it touches no network -- so the relative "3m ago" stamps in the
    recent-analyses feed and the project table stay current between fetches. */
 export function secRenderIndex(){
+  secRenderHead();
   const host = $("sec-list");
   if(!host) return;
   if(!secIndexCache) return;
@@ -121,25 +165,35 @@ function secIndexSection(title, body){
    `analyses`, `critical`, `high`, `success_rate` -- no sixth number invented
    here, and none of these five dropped. `capped_projects` is not a card of
    its own: it qualifies the Critical/High cards' own note when the fleet
-   total they show might be an undercount (see the comment below). */
-function secIndexCard(iconName, label, valueText, note, warn){
-  const card = secEl("div", "card secidx-card");
-  const head = secEl("div", "secidx-card-h");
-  head.appendChild(secIcon(iconName));
-  head.appendChild(secEl("span", null, label));
-  card.appendChild(head);
-  card.appendChild(secEl("div", "secidx-num", valueText));
-  if(note) card.appendChild(secEl("div", "secidx-note" + (warn ? " warn" : ""), note));
-  return card;
-}
+   total they show might be an undercount (see the comment below).
 
+   Built with the bridged kpiCard() (Phase 4 Task 1) instead of a local
+   secIndexCard() helper -- the mockup draws these five exactly like every
+   other page's KPI row (number beside a tinted icon, then a bold label, then
+   a muted one-line sub), so this area reaches for the SAME builder Jobs/
+   Runs/Projects already do rather than keeping its own inverted variant
+   (number below the icon, no tone) in step by hand. See ui/security/page.js
+   for how kpiCard reaches this file without ui/security/ importing
+   ui/app/chrome.js directly.
+
+   The label and sub are now FIXED, mockup-drawn strings -- "Critical
+   findings"/"needs immediate attention", not a number-qualified sentence --
+   which leaves nowhere left in the card's own layout for a caveat as long as
+   the capped/fell-back note above. `title` is that home: kpiCard's own
+   comment in chrome.js already uses it for exactly this, "the definition of
+   what the card is counting" as a native tooltip instead of squeezed into
+   `sub`. Critical and High both carry the caveat there when one applies, and
+   the plain "Open now, in every project's latest analysis" sentence
+   otherwise -- so the card that never has a caveat still explains its own
+   count on hover, the same as it did before this task touched it. */
 function secIndexCards(summary){
-  const wrap = secEl("div", "secidx-kpis");
+  const wrap = secEl("div", "kpi-grid");
   const s = summary || {};
-  wrap.appendChild(secIndexCard("shield", "Projects", String(s.projects || 0),
-    "Security analysis is on"));
-  wrap.appendChild(secIndexCard("activity", "Analyses", String(s.analyses || 0),
-    "All time — a historical total, not current posture"));
+  wrap.appendChild(kpiCard({icon: "folder", value: String(s.projects || 0),
+    label: "Projects", sub: "with security enabled"}));
+  wrap.appendChild(kpiCard({icon: "activity", value: String(s.analyses || 0),
+    label: "Total analyses", sub: "across all projects",
+    title: "All time — a historical total, not current posture"}));
   // A capped analysis is a PARTIAL read of the repository (see secPaint's own
   // notice on the analysis screen): its "critical: 0"/"high: 0" means "none
   // found before it stopped," not "none." Folding one into these totals with
@@ -166,23 +220,27 @@ function secIndexCards(summary){
   }
   const cappedNote = caveats.length ? caveats.join(" · ")
                                     : "Open now, in every project's latest analysis";
-  wrap.appendChild(secIndexCard("alert", "Critical", String(s.critical || 0),
-    cappedNote, !!caveats.length));
-  wrap.appendChild(secIndexCard("zap", "High", String(s.high || 0),
-    cappedNote, !!caveats.length));
+  wrap.appendChild(kpiCard({icon: "shield", tone: "err", value: String(s.critical || 0),
+    label: "Critical findings", sub: "needs immediate attention", title: cappedNote}));
+  wrap.appendChild(kpiCard({icon: "alertcircle", tone: "warn", value: String(s.high || 0),
+    label: "High severity", sub: "requires review", title: cappedNote}));
   const rate = s.success_rate;
   // A dash, not 0%: no finished analysis is not a zero-percent success rate --
   // those are different facts, and the number below has to say which one it is.
   //
-  // "All time" up front, in the SAME words the Analyses card two places left
-  // already uses: this card sits between two cards that say "open now" and is
-  // itself a historical ratio over every analysis ever run, which is exactly
-  // the unlabelled scope clash this area has had to fix five times over.
-  wrap.appendChild(secIndexCard("check", "Success rate",
-    rate == null ? "—" : Math.round(rate * 100) + "%",
-    rate == null ? "No finished analysis yet"
-                 : "All time — a historical total, not current posture: "
-                   + "finished analyses that completed clean, not capped or failed"));
+  // "All time" still said, just moved: this card sits between two cards that
+  // say "open now" and is itself a historical ratio over every analysis ever
+  // run, which is exactly the unlabelled scope clash this area has had to
+  // fix five times over -- the sentence saying so is now the card's `title`
+  // rather than its `sub`, since the mockup's own sub for this card is the
+  // fixed "analyses completed", the same three-to-five-word budget every
+  // other card's sub keeps to.
+  wrap.appendChild(kpiCard({icon: "check", tone: "ok",
+    value: rate == null ? "—" : Math.round(rate * 100) + "%",
+    label: "Success rate",
+    sub: rate == null ? "No finished analysis yet" : "analyses completed",
+    title: rate == null ? "" : "All time — a historical total, not current posture: "
+      + "finished analyses that completed clean, not capped or failed"}));
   return wrap;
 }
 

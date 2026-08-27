@@ -132,8 +132,8 @@ td .projtag .ic{width:12px;height:12px;color:var(--accent);flex:none}
 
 /* ------------------------------------------------------------------ KPI card
    Five numbers, one card each: a tinted icon square (the tint carries the
-   tone -- accent by default, warn/err for the two that double as filters)
-   and the NUMBER share the first line at 27px/700 -- the number is what the
+   tone -- accent by default, warn/err/ok for a card that wants a different
+   one) and the NUMBER share the first line at 27px/700 -- the number is what the
    eye should land on beside the icon, not the caption -- then the label at
    13.5px/600, then a muted sublabel at 12.5px. The second number of a pair
    belongs in that sublabel, never beside the first -- see pulseKpis's own
@@ -161,6 +161,12 @@ button.kpi-card:not(:disabled):hover{border-color:color-mix(in srgb,var(--accent
 .kpi-card-ic .ic{width:15px;height:15px}
 .kpi-card.warn .kpi-card-ic{background:var(--warn-soft);color:var(--warn)}
 .kpi-card.err .kpi-card-ic{background:var(--err-soft);color:var(--err)}
+/* `ok` joins warn/err for the Security index's own Success-rate card (Phase
+   4 Task 1) -- a plain, never-a-door card, unlike every warn/err card before
+   it (Warnings/Errors, Critical/High), so only the icon tint applies: the
+   hover/disabled rules below are for a card that doubles as a filter link,
+   which this one never does. */
+.kpi-card.ok .kpi-card-ic{background:var(--ok-soft);color:var(--ok)}
 button.kpi-card.warn:not(:disabled):hover{border-color:color-mix(in srgb,var(--warn) 42%,var(--line))}
 button.kpi-card.err:not(:disabled):hover{border-color:color-mix(in srgb,var(--err) 42%,var(--line))}
 /* Zero warnings/errors is nothing to open -- the card fades the same register
@@ -1553,17 +1559,12 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .secpjside{flex:1 1 100%}
 }
 /* --------------------------------------------------------- security index
-   The five KPI cards, the project table, the recent-analyses feed and the
-   severity donut all paint into the same #sec-list host the flat project
-   list used to fill -- see ui/security/index-screen.js. */
-.secidx-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
-.secidx-card{gap:8px}
-.secidx-card-h{display:flex;align-items:center;gap:8px;color:var(--muted);
-  font-size:11px;text-transform:uppercase;letter-spacing:.05em;font-weight:600}
-.secidx-card-h .ic{width:14px;height:14px;color:var(--accent)}
-.secidx-num{font-size:26px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
-.secidx-note{font-size:11px;color:var(--muted);line-height:1.5}
-.secidx-note.warn{color:var(--warn);font-weight:600}
+   The project table, the recent-analyses feed and the severity donut all
+   paint into the same #sec-list host the flat project list used to fill --
+   see ui/security/index-screen.js. The five KPI cards used to be here too
+   (.secidx-kpis/.secidx-card and friends) until Phase 4 Task 1 moved them
+   onto the shared .kpi-grid/.kpi-card (ui/css/components.css) every other
+   page's own KPI row already uses -- see secIndexCards's own comment. */
 .secidx-section{display:flex;flex-direction:column;gap:9px}
 .secidx-section h3{margin:0;font-size:13px}
 .secidx-desc{font-size:11.5px;color:var(--muted);margin-top:2px;font-weight:400}
@@ -1663,5 +1664,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: 5503db2438d3f120bf2288b26c57a2597617513d7e7e957f44b1fadd61b91ea8 */
-/* ui-sources: e20fa05642667af7a3594b51cc157342e01476f499f90f50814956d789f8057a */
+/* ui-bundle: cdaacce413d38e9bf2605421b710fc71804845bd01cb5525df25e16823776994 */
+/* ui-sources: 9a29075595efe3da9476d8e30c60fcb8213f69295f29d32d9f75eaa5f419dd9c */

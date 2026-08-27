@@ -15,6 +15,9 @@
   var icon;
   var iconLabel;
   var openProjectEditor;
+  var pageHeader;
+  var kpiCard;
+  var tableFooter;
   var CC = null;
   function bindPage(cc) {
     CC = cc;
@@ -33,7 +36,10 @@
       money,
       icon,
       iconLabel,
-      openProjectEditor
+      openProjectEditor,
+      pageHeader,
+      kpiCard,
+      tableFooter
     } = cc);
   }
 
@@ -2126,7 +2132,22 @@
     secIndexCache = data;
     secRenderIndex();
   }
+  function secRenderHead() {
+    const host = $("sec-head");
+    if (!host) return;
+    host.textContent = "";
+    host.appendChild(pageHeader({
+      icon: "shield",
+      title: "Security",
+      subtitle: "Vulnerability analysis across your projects.",
+      actions: [
+        { id: "sec-view-activity", icon: "activity", label: "Activity" },
+        { id: "sec-reload", icon: "radar", label: "Refresh" }
+      ]
+    }));
+  }
   function secRenderIndex() {
+    secRenderHead();
     const host = $("sec-list");
     if (!host) return;
     if (!secIndexCache) return;
@@ -2173,31 +2194,22 @@
     sec.appendChild(body);
     return sec;
   }
-  function secIndexCard(iconName, label, valueText, note, warn) {
-    const card = secEl("div", "card secidx-card");
-    const head = secEl("div", "secidx-card-h");
-    head.appendChild(secIcon(iconName));
-    head.appendChild(secEl("span", null, label));
-    card.appendChild(head);
-    card.appendChild(secEl("div", "secidx-num", valueText));
-    if (note) card.appendChild(secEl("div", "secidx-note" + (warn ? " warn" : ""), note));
-    return card;
-  }
   function secIndexCards(summary) {
-    const wrap = secEl("div", "secidx-kpis");
+    const wrap = secEl("div", "kpi-grid");
     const s = summary || {};
-    wrap.appendChild(secIndexCard(
-      "shield",
-      "Projects",
-      String(s.projects || 0),
-      "Security analysis is on"
-    ));
-    wrap.appendChild(secIndexCard(
-      "activity",
-      "Analyses",
-      String(s.analyses || 0),
-      "All time \u2014 a historical total, not current posture"
-    ));
+    wrap.appendChild(kpiCard({
+      icon: "folder",
+      value: String(s.projects || 0),
+      label: "Projects",
+      sub: "with security enabled"
+    }));
+    wrap.appendChild(kpiCard({
+      icon: "activity",
+      value: String(s.analyses || 0),
+      label: "Total analyses",
+      sub: "across all projects",
+      title: "All time \u2014 a historical total, not current posture"
+    }));
     const capped = s.capped_projects || 0;
     const fellBack = s.fell_back_projects || 0;
     const total = s.projects || 0;
@@ -2207,27 +2219,31 @@
       caveats.push(fellBack + " of " + total + " project" + (total === 1 ? "" : "s") + " is counted from a branch other than its declared base, because that base has never been analysed");
     }
     const cappedNote = caveats.length ? caveats.join(" \xB7 ") : "Open now, in every project's latest analysis";
-    wrap.appendChild(secIndexCard(
-      "alert",
-      "Critical",
-      String(s.critical || 0),
-      cappedNote,
-      !!caveats.length
-    ));
-    wrap.appendChild(secIndexCard(
-      "zap",
-      "High",
-      String(s.high || 0),
-      cappedNote,
-      !!caveats.length
-    ));
+    wrap.appendChild(kpiCard({
+      icon: "shield",
+      tone: "err",
+      value: String(s.critical || 0),
+      label: "Critical findings",
+      sub: "needs immediate attention",
+      title: cappedNote
+    }));
+    wrap.appendChild(kpiCard({
+      icon: "alertcircle",
+      tone: "warn",
+      value: String(s.high || 0),
+      label: "High severity",
+      sub: "requires review",
+      title: cappedNote
+    }));
     const rate = s.success_rate;
-    wrap.appendChild(secIndexCard(
-      "check",
-      "Success rate",
-      rate == null ? "\u2014" : Math.round(rate * 100) + "%",
-      rate == null ? "No finished analysis yet" : "All time \u2014 a historical total, not current posture: finished analyses that completed clean, not capped or failed"
-    ));
+    wrap.appendChild(kpiCard({
+      icon: "check",
+      tone: "ok",
+      value: rate == null ? "\u2014" : Math.round(rate * 100) + "%",
+      label: "Success rate",
+      sub: rate == null ? "No finished analysis yet" : "analyses completed",
+      title: rate == null ? "" : "All time \u2014 a historical total, not current posture: finished analyses that completed clean, not capped or failed"
+    }));
     return wrap;
   }
   function secIndexPosturePills(posture) {
@@ -2469,7 +2485,6 @@
     wireReasonDialog();
     iconLabel($("sr-halo"), "shield");
     iconLabel($("sec-back"), "cleft", "All projects");
-    iconLabel($("sec-reload"), "radar", "Refresh");
     iconLabel($("sec-dl-md"), "file", "Markdown");
     iconLabel($("sec-dl-json"), "file", "JSON");
     iconLabel($("sec-dl-html"), "file", "HTML");
@@ -2484,14 +2499,12 @@
     $("secpjt-branches").addEventListener("click", () => secSwitchProjectTab("branches"));
     $("secpjt-findings").addEventListener("click", () => secSwitchProjectTab("findings"));
     $("secpjt-reports").addEventListener("click", () => secSwitchProjectTab("reports"));
-    iconLabel($("sec-view-activity"), "activity", "Activity");
     iconLabel($("sec-act-back"), "cleft", "All projects");
     iconLabel($("sec-act-reload"), "radar", "Refresh");
     iconLabel($("secactt-all"), "activity", "All activity");
     iconLabel($("secactt-analyses"), "shield", "Analyses");
     iconLabel($("secactt-findings"), "search", "Findings");
     iconLabel($("secactt-settings"), "gear", "Settings");
-    $("sec-view-activity").addEventListener("click", () => secOpenActivity(""));
     $("sec-act-back").addEventListener("click", secBackFromActivity);
     $("sec-act-reload").addEventListener("click", secActReload);
     $("secactt-all").addEventListener("click", () => secActSwitchTab(""));
@@ -2502,9 +2515,6 @@
     wireActivityFindingDialog();
     $("sec-dl-note").textContent = "Downloads always contain every recorded finding, whatever the severity floor shows.";
     $("sec-back").addEventListener("click", secBack);
-    $("sec-reload").addEventListener("click", () => {
-      secLoadIndex(true);
-    });
     $("sec-run").addEventListener("click", secAnalyse);
     $("sec-dl-md").addEventListener("click", () => secDownload("md"));
     $("sec-dl-json").addEventListener("click", () => secDownload("json"));
@@ -2526,9 +2536,11 @@
     render: renderSecurity,
     enter: secEnter,
     leave: secLeave,
+    openActivity: () => secOpenActivity(""),
+    reload: () => secLoadIndex(true),
     SEV_ORDER,
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 4b50f201fb220913d4679476ed5866bad8e8eb4b8da6f83e99aa65e435bd6032 */
-/* ui-sources: e20fa05642667af7a3594b51cc157342e01476f499f90f50814956d789f8057a */
+/* ui-bundle: 0f2b3c3fae3d0224952a75d6dcf0d49486d594c811a766e2be0c15f9a36fa0bd */
+/* ui-sources: 9a29075595efe3da9476d8e30c60fcb8213f69295f29d32d9f75eaa5f419dd9c */
