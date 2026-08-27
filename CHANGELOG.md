@@ -801,6 +801,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The Security index's last stray paragraph moved into a tooltip.** The
+  severity-floor scope note — the sentence explaining that posture totals are
+  never narrowed by a project's floor — sat between the KPI cards and the
+  filter bar, the one piece of mid-page prose the approved mockup does not
+  have. It is now the KPI strip's own `title`, same words, reachable from the
+  unfloored numbers it explains, off the page's face. The pin that requires
+  the scope to be stated on every screen carrying an unfloored number still
+  holds.
+
 - **The project editor's delete button says what it deletes.** The approved
   artboard reads "Delete project"; the button read "Delete", and the job
   editor's new "Delete job" sibling made the inconsistency visible.

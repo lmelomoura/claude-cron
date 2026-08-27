@@ -183,13 +183,15 @@ export function secRenderIndex(){
     host._secBottomRow.appendChild(host._secRecent);
     host._secBottomRow.appendChild(host._secDonut);
     host.appendChild(host._secCards);
-    // ONCE per screen, under the cards and above every other number on it --
-    // the KPI cards, the table's findings chips and the donut are all
-    // UNFLOORED, and until this line existed nothing anywhere said so while
-    // the drill-down one click away openly held rows back. A fixed constant,
-    // painted once at mount and never touched again -- see
-    // SEC_FLOOR_SCOPE_NOTE's own comment in vocabulary.js for the decision.
-    host.appendChild(secEl("div", "secpj-caption", SEC_FLOOR_SCOPE_NOTE));
+    // ONCE per screen, as the KPI strip's own tooltip -- the cards, the
+    // table's findings chips and the donut are all UNFLOORED, and the
+    // drill-down one click away openly holds rows back, so the scope has to
+    // be said where the unfloored numbers are. It used to be a paragraph
+    // between the cards and the filter bar; the approved mockup has no such
+    // line, so the sentence moved into `title` on the strip that carries the
+    // numbers it explains -- same words, reachable from the numbers, off the
+    // page's face. See SEC_FLOOR_SCOPE_NOTE's own comment in vocabulary.js.
+    host._secCards.title = SEC_FLOOR_SCOPE_NOTE;
     host.appendChild(host._secProjects);
     host.appendChild(host._secBottomRow);
     secMountProjectsSection(host._secProjects);

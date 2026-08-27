@@ -2158,7 +2158,7 @@
       host._secBottomRow.appendChild(host._secRecent);
       host._secBottomRow.appendChild(host._secDonut);
       host.appendChild(host._secCards);
-      host.appendChild(secEl("div", "secpj-caption", SEC_FLOOR_SCOPE_NOTE));
+      host._secCards.title = SEC_FLOOR_SCOPE_NOTE;
       host.appendChild(host._secProjects);
       host.appendChild(host._secBottomRow);
       secMountProjectsSection(host._secProjects);
@@ -3049,5 +3049,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 02128712c693aad92a671e55ff1da0a0c02565f0905ef561142caa07e83539ae */
-/* ui-sources: 3fe0f595aebeffdaefed231160acd9edc569e1f3dfc555970c1a7d170683c474 */
+/* ui-bundle: 53d0e99a468a5ddd13ad5b2a251bcd4f63a120daa3e6c33803c3c8037a3ea2ee */
+/* ui-sources: 422550b793389f891313b214d3819fec2f0db2f33d62958ee22449b3544c7f21 */
