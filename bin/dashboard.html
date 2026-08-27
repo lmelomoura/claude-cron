@@ -360,12 +360,12 @@ document.documentElement.dataset.theme =
   <div class="view" id="view-security" hidden>
     <section id="sec-projects">
       <!-- sec-head is rebuilt on every repaint by ui/security/index-screen.js's
-           own secRenderHead() -- shield, "Security", one sentence, Activity
-           and Refresh trailing right (the loose <p class="paneblurb"> and
-           the bare .toolbar this replaces used to carry that sentence and
-           those two buttons as static markup). Called from secRenderIndex()
-           rather than ui/security/index.js's own init() -- see
-           secRenderHead's own comment on why init() is too early. -->
+           own secRenderHead() -- shield, "Security", one sentence, no
+           trailing actions (Phase 4 Task 3 moved Activity/Refresh down into
+           the projects filter bar, mounted inside #sec-list below). Called
+           from secRenderIndex() rather than ui/security/index.js's own
+           init() -- see secRenderHead's own comment on why init() is too
+           early. -->
       <div id="sec-head"></div>
       <div class="seclist" id="sec-list"></div>
     </section>
@@ -1109,6 +1109,15 @@ const I={
   file:ic('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/>'),
   terminal:ic('<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>'),
   shield:ic('<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1 1 0 0 1 1.52 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"/>'),
+  // The badge secIndexProjectRow draws beside a project's name (Phase 4
+  // Task 3, ui/security/index-screen.js): the plain shield above says
+  // "security"; nothing said "enabled". Same shield path plus Lucide's own
+  // check overlay -- no existing icon already had this shape, the same
+  // reason alertcircle (below) was added for Task 1's KPI cards.
+  shieldcheck:ic('<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1 1 0 0 1 1.52 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/>'),
+  // The Security index table's own Branch filter picker (Phase 4 Task 3) --
+  // no existing icon already had this shape either.
+  gitbranch:ic('<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>'),
   cpu:ic('<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v2"/><path d="M15 2v2"/><path d="M9 20v2"/><path d="M15 20v2"/><path d="M2 9h2"/><path d="M2 15h2"/><path d="M20 9h2"/><path d="M20 15h2"/>'),
   timer:ic('<path d="M10 2h4"/><path d="M12 14v-4"/><circle cx="12" cy="14" r="8"/>'),
   inbox:ic('<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>'),

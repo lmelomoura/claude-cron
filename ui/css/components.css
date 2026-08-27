@@ -42,6 +42,12 @@ body{margin:0;background:var(--bg);color:var(--ink);
    grey-on-panel2 treatment .sevpill.low/.sevpill.info already use for "not
    urgent" elsewhere on this page. */
 .pill.disabled{background:var(--panel2);color:var(--muted)}
+/* Not a status -- the Security index table's own Profile column (Phase 4
+   Task 3, ui/security/index-screen.js) is a fixed choice (Deep/Standard/
+   Quick), never on/off/idle/disabled, so it gets the same accent tint
+   .isopill.auto already uses for "this is a mode, not a state" rather than
+   any of the tones above. */
+.pill.profile{background:var(--accent-soft);color:var(--accent)}
 h3{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
   margin:0;display:flex;align-items:center;gap:7px}
 h3 .ic{width:14px;height:14px}

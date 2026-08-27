@@ -65,6 +65,12 @@ body{margin:0;background:var(--bg);color:var(--ink);
    grey-on-panel2 treatment .sevpill.low/.sevpill.info already use for "not
    urgent" elsewhere on this page. */
 .pill.disabled{background:var(--panel2);color:var(--muted)}
+/* Not a status -- the Security index table's own Profile column (Phase 4
+   Task 3, ui/security/index-screen.js) is a fixed choice (Deep/Standard/
+   Quick), never on/off/idle/disabled, so it gets the same accent tint
+   .isopill.auto already uses for "this is a mode, not a state" rather than
+   any of the tones above. */
+.pill.profile{background:var(--accent-soft);color:var(--accent)}
 h3{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
   margin:0;display:flex;align-items:center;gap:7px}
 h3 .ic{width:14px;height:14px}
@@ -656,6 +662,23 @@ footer{margin-top:30px;color:var(--muted);font-size:11px;text-align:center}
 #view-runs th:nth-child(7){width:9%}    /* Session  */
 #view-runs th:last-child{width:13%}     /* actions  */
 #view-runs .rowacts{padding-left:4px;padding-right:10px}
+/* Eight columns (SEC_PROJECT_COLS, ui/security/index-screen.js) -- same
+   guard, same reason, as the three tables above: an undeclared column
+   computes to a hair over 0px under table-layout:fixed and spills into
+   whichever comes after it (Projects' own Security column lived that bug
+   once -- see this file's earlier comment on #view-projects). Phase 4 Task
+   3, extending test_the_jobs_projects_and_runs_tables_declare_a_width_for_
+   every_column (tests/test_page_contract.py) to this fourth table. */
+#view-security table{table-layout:fixed;min-width:1000px}
+#view-security th:nth-child(1){width:22%}   /* Project        */
+#view-security th:nth-child(2){width:15%}   /* Last analysis  */
+#view-security th:nth-child(3){width:8%}    /* Profile        */
+#view-security th:nth-child(4){width:11%}   /* Last run       */
+#view-security th:nth-child(5){width:13%}   /* Findings       */
+#view-security th:nth-child(6){width:13%}   /* Trend (30d)    */
+#view-security th:nth-child(7){width:7%}    /* Status         */
+#view-security th:last-child{width:11%}     /* actions        */
+#view-security .rowacts{padding-left:4px;padding-right:10px;display:flex;align-items:center;gap:8px}
 /* Filled, not outlined. The icon set draws with `stroke:currentColor`, and the
    folder rule beside it paints the row's icons accent — so an amber fill came
    out under a 2px indigo outline, which at 11px is not amber and not indigo but
@@ -1567,8 +1590,56 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    page's own KPI row already uses -- see secIndexCards's own comment. */
 .secidx-section{display:flex;flex-direction:column;gap:9px}
 .secidx-section h3{margin:0;font-size:13px}
-.secidx-desc{font-size:11.5px;color:var(--muted);margin-top:2px;font-weight:400}
+/* Two lines, then an ellipsis -- the mockup's own Project column, a fixed
+   22% of the table, would otherwise let a longer description grow the row
+   as tall as it likes. Only user here (grep before reusing elsewhere). */
+.secidx-desc{font-size:11.5px;color:var(--muted);margin-top:2px;font-weight:400;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .secidx-fellback{color:var(--warn);font-size:11.5px;margin-left:6px}
+/* -------------------------------------------------- projects table + bar
+   Phase 4 Task 3: the 8-column table's own cells (secIndexProjectRow,
+   ui/security/index-screen.js) and the filter bar mounted above it
+   (secProjectsFilterBar, same file). */
+.secidx-pname{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:650;min-width:0}
+/* Direct-child combinator, not a descendant one -- .secidx-enabled's own
+   badge icon (nested one level deeper, inside that span) must NOT inherit
+   this accent tint, or a security-enabled badge would repaint the same
+   accent purple as the folder icon beside it instead of staying green. This
+   is the exact mistake test_the_cells_icon_rule_cannot_repaint_the_
+   favourite_star (tests/test_page_contract.py) already pins for .jobcell --
+   same shape, same fix, a different cell. */
+.secidx-pname > .ic{width:15px;height:15px;color:var(--accent);flex:none}
+.secidx-pname-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.secidx-enabled{display:inline-flex;color:var(--ok);flex:none}
+.secidx-enabled .ic{width:15px;height:15px}
+.secidx-sub{color:var(--muted);font-size:11.5px;margin-top:3px;line-height:1.5}
+.secidx-findcell{display:flex;flex-direction:column;gap:4px;align-items:flex-start}
+.secidx-findtotal{font-size:11px;color:var(--muted)}
+.secidx-spark-svg{width:100%;max-width:150px;height:32px;display:block}
+.secidx-rowlink{cursor:pointer}
+#view-security tbody tr.secidx-rowlink:hover{background:var(--panel2)}
+/* The kebab: <details>/<summary> rather than a click-toggled div (see
+   secIndexProjectRow's own comment) -- .menu-pop (above, job-card block)
+   already draws the popup itself; only the anchor and the open direction
+   are this table's own. Pops DOWNWARD (top, not .menu-pop's own upward
+   bottom) -- a job card sits at the bottom of a grid, a table row can be
+   anywhere, including the very first one, where popping up would clip
+   against the table's own header. */
+.secidx-kebab{position:relative;display:inline-flex}
+.secidx-kebab > summary{list-style:none;cursor:pointer}
+.secidx-kebab > summary::-webkit-details-marker{display:none}
+.secidx-kebab .menu-pop{top:calc(100% + 6px);bottom:auto}
+/* Copies .picker-trigger's look (components.css) by hand -- see
+   secProjectsFilterBar's own comment on why this is a plain <select>, not
+   that widget's real .picker/.picker-pop. */
+.filterpick{display:inline-flex;align-items:center;gap:8px;font:inherit;font-size:12.5px;
+  padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:var(--panel);
+  color:var(--ink);cursor:pointer}
+.filterpick:hover{border-color:var(--muted)}
+.filterpick .ic{width:15px;height:15px;color:var(--muted);flex:none}
+.filterpick .fp-k{color:var(--muted);flex:none;white-space:nowrap}
+.filterpick select{font:inherit;font-weight:600;color:var(--ink);border:0;outline:0;
+  background:transparent;cursor:pointer}
 /* A capped analysis is a PARTIAL read (see secIndexProjectRow) -- flagged the
    same register as .sevpill.medium (warn tokens, not a new colour) so the
    badge reads as a caution beside the pills it sits next to, not decoration. */
@@ -1664,5 +1735,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: cdaacce413d38e9bf2605421b710fc71804845bd01cb5525df25e16823776994 */
-/* ui-sources: 9a29075595efe3da9476d8e30c60fcb8213f69295f29d32d9f75eaa5f419dd9c */
+/* ui-bundle: 9b95a04d8578aaaaea0f3365aa823eb8d6dc94f3ab92266a7ea0c19deccc2378 */
+/* ui-sources: f7162fd75e5dfd3c09fe9ec5e4f9164881397a8e8ff522469d7730e877bb0b62 */

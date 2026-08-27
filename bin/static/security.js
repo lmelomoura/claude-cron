@@ -2139,11 +2139,7 @@
     host.appendChild(pageHeader({
       icon: "shield",
       title: "Security",
-      subtitle: "Vulnerability analysis across your projects.",
-      actions: [
-        { id: "sec-view-activity", icon: "activity", label: "Activity" },
-        { id: "sec-reload", icon: "radar", label: "Refresh" }
-      ]
+      subtitle: "Vulnerability analysis across your projects."
     }));
   }
   function secRenderIndex() {
@@ -2151,19 +2147,32 @@
     const host = $("sec-list");
     if (!host) return;
     if (!secIndexCache) return;
-    host.textContent = "";
     const data = secIndexCache;
-    host.appendChild(secIndexCards(data.summary || {}));
-    host.appendChild(secEl("div", "secpj-caption", SEC_FLOOR_SCOPE_NOTE));
-    host.appendChild(secIndexSection(
-      "Projects",
-      secIndexProjectsTable(data.projects || [])
-    ));
-    host.appendChild(secIndexSection(
+    if (!host.contains(host._secProjects)) {
+      host.textContent = "";
+      host._secCards = secEl("div");
+      host._secProjects = secEl("div", "secidx-section");
+      host._secRecent = secEl("div");
+      host._secDonut = secEl("div");
+      host.appendChild(host._secCards);
+      host.appendChild(secEl("div", "secpj-caption", SEC_FLOOR_SCOPE_NOTE));
+      host.appendChild(host._secProjects);
+      host.appendChild(host._secRecent);
+      host.appendChild(host._secDonut);
+      secMountProjectsSection(host._secProjects);
+    }
+    host._secCards.textContent = "";
+    host._secCards.appendChild(secIndexCards(data.summary || {}));
+    secLatestProjects = data.projects || [];
+    secRefreshFilterOptions(secLatestProjects);
+    secRepaintProjectsTable();
+    host._secRecent.textContent = "";
+    host._secRecent.appendChild(secIndexSection(
       "Recent analyses",
       secIndexRecent(data.recent || [])
     ));
-    host.appendChild(secIndexSection(
+    host._secDonut.textContent = "";
+    host._secDonut.appendChild(secIndexSection(
       "Findings by severity",
       // The donut is the fleet's whole posture rolled into one figure, so it
       // cannot carry the per-row `incomplete` badge the table beside it uses --
@@ -2258,54 +2267,197 @@
     });
     return wrap;
   }
+  var FIND_SEVS = ["critical", "high", "medium"];
+  function secIndexFindingsChips(posture, capped) {
+    const p = posture || {};
+    const wrap = secEl("div", "secidx-findcell");
+    const chips = secEl("div", "sevpills");
+    FIND_SEVS.forEach((sev) => chips.appendChild(
+      secEl("span", "sevpill " + sev, String(p[sev] || 0))
+    ));
+    wrap.appendChild(chips);
+    wrap.appendChild(secEl("div", "secidx-findtotal", (p.total || 0) + " total"));
+    if (capped) {
+      const badge = secEl("span", "secidx-capped", "incomplete");
+      badge.title = "This analysis is INCOMPLETE: it stopped before covering the whole scope. The counts above are what it had reached, not what is there.";
+      wrap.appendChild(badge);
+    }
+    return wrap;
+  }
+  function secIndexTrendSpark(trend) {
+    const points = (trend || []).map((n2) => Math.max(0, n2 || 0));
+    if (!points.length) return secEl("span", "muted", "\u2014");
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 100 32");
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("class", "secidx-spark-svg");
+    svg.setAttribute("role", "img");
+    const max = Math.max(1, ...points);
+    const n = points.length;
+    const slot = 100 / n;
+    const barW = Math.max(0.6, slot * 0.6);
+    points.forEach((v, i) => {
+      const h = Math.max(1, v / max * 30);
+      const bar = document.createElementNS(ns, "rect");
+      bar.setAttribute("x", String(i * slot + (slot - barW) / 2));
+      bar.setAttribute("y", String(32 - h));
+      bar.setAttribute("width", String(barW));
+      bar.setAttribute("height", String(h));
+      bar.style.fill = "var(--accent)";
+      svg.appendChild(bar);
+    });
+    return svg;
+  }
+  function secProfileLabel(profile) {
+    return profile ? profile[0].toUpperCase() + profile.slice(1) : "";
+  }
+  function secLastRunDuration(seconds) {
+    const s = Math.max(0, Math.floor(seconds || 0));
+    if (s < 60) return s + "s";
+    const h = Math.floor(s / 3600);
+    const m = Math.floor(s % 3600 / 60);
+    return (h ? h + "h " : "") + m + "m";
+  }
+  function secIndexRunWhen(ts) {
+    if (!ts) return "";
+    return new Date(ts * 1e3).toLocaleString(
+      void 0,
+      { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }
+    );
+  }
   function secIndexProjectRow(p) {
     const tr = document.createElement("tr");
-    const tdName = document.createElement("td");
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btn ghost";
-    btn.textContent = p.name;
-    btn.onclick = () => secOpenProject(p.name);
-    tdName.appendChild(btn);
+    tr.className = "secidx-rowlink";
+    tr.onclick = () => secOpenProject(p.name);
+    const tdProject = document.createElement("td");
+    const nameLine = secEl("div", "secidx-pname");
+    nameLine.appendChild(secIcon("folder"));
+    nameLine.appendChild(secEl("span", "secidx-pname-text", p.name));
+    const badge = secEl("span", "secidx-enabled");
+    badge.appendChild(secIcon("shieldcheck"));
+    badge.title = "Security analysis is enabled for this project";
+    nameLine.appendChild(badge);
+    tdProject.appendChild(nameLine);
     if ((p.description || "").trim()) {
-      tdName.appendChild(secEl("div", "secidx-desc", p.description));
+      tdProject.appendChild(secEl("div", "secidx-desc", p.description));
     }
-    tr.appendChild(tdName);
-    const tdBranch = document.createElement("td");
-    tdBranch.appendChild(document.createTextNode(p.branch || "\u2014"));
-    if (p.branch_fell_back) {
-      tdBranch.appendChild(secEl(
-        "span",
-        "secidx-fellback",
-        " (fell back \u2014 the default branch was never analysed)"
-      ));
-    }
-    tr.appendChild(tdBranch);
-    const tdPosture = document.createElement("td");
-    tdPosture.appendChild(secIndexPosturePills(p.posture));
-    if (p.last_state === "capped") {
-      const badge = secEl("span", "secidx-capped", "incomplete");
-      badge.title = "This analysis is INCOMPLETE: it stopped before covering the whole scope. The posture above is what it had reached, not what is there.";
-      tdPosture.appendChild(badge);
-    }
-    tr.appendChild(tdPosture);
-    const tdLast = document.createElement("td");
+    tr.appendChild(tdProject);
+    const tdAnalysis = document.createElement("td");
     if (!p.analyses) {
-      tdLast.textContent = SEC_NEVER.short;
-      tdLast.title = SEC_NEVER.next;
+      tdAnalysis.textContent = SEC_NEVER.short;
+      tdAnalysis.title = SEC_NEVER.next;
     } else {
-      const bits = [p.profile, fmtAgo(p.last_started)];
-      if (p.last_duration) bits.push(fmtDur(p.last_duration));
-      tdLast.textContent = bits.filter(Boolean).join(" \xB7 ");
+      tdAnalysis.appendChild(document.createTextNode(fmtAgo(p.last_started)));
+      const sub = secEl("div", "secidx-sub");
+      sub.appendChild(document.createTextNode(
+        [p.profile, p.branch || "\u2014"].filter(Boolean).join(" \xB7 ")
+      ));
+      if (p.branch_fell_back) {
+        sub.appendChild(secEl(
+          "span",
+          "secidx-fellback",
+          " (fell back \u2014 the default branch was never analysed)"
+        ));
+      }
+      tdAnalysis.appendChild(sub);
     }
-    tr.appendChild(tdLast);
-    const tdCount = document.createElement("td");
-    tdCount.className = "num";
-    tdCount.textContent = String(p.analyses || 0);
-    tr.appendChild(tdCount);
+    tr.appendChild(tdAnalysis);
+    const tdProfile = document.createElement("td");
+    if (p.profile) {
+      tdProfile.appendChild(secEl("span", "pill profile", secProfileLabel(p.profile)));
+    } else {
+      tdProfile.appendChild(secEl("span", "muted", "\u2014"));
+    }
+    tr.appendChild(tdProfile);
+    const tdRun = document.createElement("td");
+    if (p.last_duration) {
+      tdRun.appendChild(document.createTextNode(secLastRunDuration(p.last_duration)));
+      tdRun.appendChild(secEl("div", "secidx-sub", secIndexRunWhen(p.last_started)));
+    } else {
+      tdRun.appendChild(secEl("span", "muted", "\u2014"));
+    }
+    tr.appendChild(tdRun);
+    const tdFindings = document.createElement("td");
+    tdFindings.appendChild(secIndexFindingsChips(p.posture, p.last_state === "capped"));
+    tr.appendChild(tdFindings);
+    const tdTrend = document.createElement("td");
+    tdTrend.appendChild(secIndexTrendSpark(p.trend));
+    tr.appendChild(tdTrend);
+    const tdStatus = document.createElement("td");
+    const active = p.enabled !== false;
+    tdStatus.appendChild(secEl(
+      "span",
+      "pill " + (active ? "on" : "disabled"),
+      active ? "Active" : "Disabled"
+    ));
+    tr.appendChild(tdStatus);
+    const tdActions = document.createElement("td");
+    tdActions.className = "rowacts";
+    const view = document.createElement("button");
+    view.type = "button";
+    view.className = "btn primary";
+    view.appendChild(document.createTextNode("View"));
+    view.onclick = (e) => {
+      e.stopPropagation();
+      secOpenProject(p.name);
+    };
+    tdActions.appendChild(view);
+    const kebab = document.createElement("details");
+    kebab.className = "secidx-kebab";
+    const summary = document.createElement("summary");
+    summary.className = "iconbtn";
+    summary.title = "More actions";
+    summary.appendChild(secIcon("dots"));
+    summary.onclick = (e) => e.stopPropagation();
+    kebab.appendChild(summary);
+    const pop = secEl("div", "menu-pop");
+    pop.setAttribute("role", "menu");
+    const actBtn = document.createElement("button");
+    actBtn.setAttribute("role", "menuitem");
+    actBtn.appendChild(secIcon("activity"));
+    actBtn.appendChild(document.createTextNode("View activity"));
+    actBtn.onclick = (e) => {
+      e.stopPropagation();
+      kebab.open = false;
+      secOpenActivity(p.name);
+    };
+    pop.appendChild(actBtn);
+    const editBtn = document.createElement("button");
+    editBtn.setAttribute("role", "menuitem");
+    editBtn.appendChild(secIcon("pencil"));
+    editBtn.appendChild(document.createTextNode("Edit project"));
+    editBtn.onclick = (e) => {
+      e.stopPropagation();
+      kebab.open = false;
+      openProjectEditor(p.name);
+    };
+    pop.appendChild(editBtn);
+    kebab.appendChild(pop);
+    kebab.ontoggle = () => {
+      if (!kebab.open) return;
+      const r = summary.getBoundingClientRect();
+      pop.style.position = "fixed";
+      pop.style.top = r.bottom + 6 + "px";
+      pop.style.right = window.innerWidth - r.right + "px";
+      pop.style.left = "auto";
+      pop.style.bottom = "auto";
+    };
+    tdActions.appendChild(kebab);
+    tr.appendChild(tdActions);
     return tr;
   }
-  function secIndexProjectsTable(projects) {
+  var SEC_PROJECT_COLS = [
+    ["project", "Project"],
+    ["analysis", "Last analysis"],
+    ["profile", "Profile"],
+    ["run", "Last run"],
+    ["findings", "Findings"],
+    ["trend", "Trend (30d)"],
+    ["status", "Status"],
+    [null, ""]
+  ];
+  function secIndexProjectsTable(projects, footer) {
     if (!projects.length) {
       const e = secEl("div", "tblempty");
       e.appendChild(secIcon("inbox"));
@@ -2314,22 +2466,169 @@
       ));
       return e;
     }
-    const wrap = secEl("div", "tablewrap");
+    const wrap = secEl("div", "table-card");
+    const scroll = secEl("div", "table-scroll");
     const table = document.createElement("table");
     const thead = document.createElement("thead");
     const htr = document.createElement("tr");
-    ["Project", "Branch", "Posture", "Last analysis", "Analyses"].forEach((h) => {
-      const th = document.createElement("th");
-      th.textContent = h;
-      htr.appendChild(th);
-    });
+    SEC_PROJECT_COLS.forEach(([, label]) => htr.appendChild(secEl("th", null, label)));
     thead.appendChild(htr);
     table.appendChild(thead);
     const tbody = document.createElement("tbody");
     projects.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))).forEach((p) => tbody.appendChild(secIndexProjectRow(p)));
     table.appendChild(tbody);
-    wrap.appendChild(table);
+    scroll.appendChild(table);
+    wrap.appendChild(scroll);
+    if (footer) wrap.appendChild(footer);
     return wrap;
+  }
+  var secProjectFilters = { query: "", status: "", profile: "", branch: "" };
+  var secLatestProjects = [];
+  var secProjectsTableHost = null;
+  var secProfileFilterSelect = null;
+  var secBranchFilterSelect = null;
+  function secFilterProjects(projects, filters) {
+    const f = filters || {};
+    const q = (f.query || "").trim().toLowerCase();
+    return (projects || []).filter((p) => {
+      if (q) {
+        const hay = ((p.name || "") + " " + (p.description || "")).toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      if (f.status) {
+        const active = p.enabled !== false;
+        if (f.status === "active" && !active) return false;
+        if (f.status === "disabled" && active) return false;
+      }
+      if (f.profile && (p.profile || "") !== f.profile) return false;
+      if (f.branch && (p.branch || "") !== f.branch) return false;
+      return true;
+    });
+  }
+  function secOption(value, label) {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    return o;
+  }
+  function secFillFilterOptions(select, values, selected) {
+    select.textContent = "";
+    select.appendChild(secOption("", "All"));
+    values.forEach((v) => select.appendChild(secOption(v, v)));
+    select.value = selected && values.includes(selected) ? selected : "";
+  }
+  function secUniqueValues(projects, key) {
+    return [...new Set((projects || []).map((p) => p[key]).filter(Boolean))].sort();
+  }
+  function secFilterPick(iconName, label, id) {
+    const wrap = secEl("label", "filterpick");
+    wrap.appendChild(secIcon(iconName));
+    wrap.appendChild(secEl("span", "fp-k", label));
+    const select = document.createElement("select");
+    select.id = id;
+    wrap.appendChild(select);
+    wrap.appendChild(secIcon("cdown"));
+    return { wrap, select };
+  }
+  function secProjectsFilterBar() {
+    const bar = secEl("div", "toolbar");
+    const search = secEl("div", "searchbox");
+    search.appendChild(secIcon("search"));
+    const input = document.createElement("input");
+    input.type = "search";
+    input.placeholder = "Search projects\u2026";
+    input.setAttribute("aria-label", "Search projects by name or description");
+    input.oninput = () => {
+      secProjectFilters.query = input.value;
+      secRepaintProjectsTable();
+    };
+    search.appendChild(input);
+    bar.appendChild(search);
+    const status = secFilterPick("filter", "Status:", "secpj-filter-status");
+    status.select.appendChild(secOption("", "All"));
+    status.select.appendChild(secOption("active", "Active"));
+    status.select.appendChild(secOption("disabled", "Disabled"));
+    status.select.onchange = () => {
+      secProjectFilters.status = status.select.value;
+      secRepaintProjectsTable();
+    };
+    bar.appendChild(status.wrap);
+    const profile = secFilterPick("shield", "Profile:", "secpj-filter-profile");
+    profile.select.onchange = () => {
+      secProjectFilters.profile = profile.select.value;
+      secRepaintProjectsTable();
+    };
+    bar.appendChild(profile.wrap);
+    secProfileFilterSelect = profile.select;
+    const branch = secFilterPick("gitbranch", "Branch:", "secpj-filter-branch");
+    branch.select.onchange = () => {
+      secProjectFilters.branch = branch.select.value;
+      secRepaintProjectsTable();
+    };
+    bar.appendChild(branch.wrap);
+    secBranchFilterSelect = branch.select;
+    bar.appendChild(secEl("div", "spacer"));
+    const activity = document.createElement("button");
+    activity.type = "button";
+    activity.id = "sec-view-activity";
+    activity.className = "btn ghost";
+    activity.appendChild(secIcon("activity"));
+    activity.appendChild(document.createTextNode("Activity"));
+    bar.appendChild(activity);
+    const refresh = document.createElement("button");
+    refresh.type = "button";
+    refresh.id = "sec-reload";
+    refresh.className = "btn ghost";
+    refresh.appendChild(secIcon("radar"));
+    refresh.appendChild(document.createTextNode("Refresh"));
+    bar.appendChild(refresh);
+    return bar;
+  }
+  function secRefreshFilterOptions(projects) {
+    if (secProfileFilterSelect) secFillFilterOptions(
+      secProfileFilterSelect,
+      secUniqueValues(projects, "profile"),
+      secProjectFilters.profile
+    );
+    if (secBranchFilterSelect) secFillFilterOptions(
+      secBranchFilterSelect,
+      secUniqueValues(projects, "branch"),
+      secProjectFilters.branch
+    );
+  }
+  function secRepaintProjectsTable() {
+    if (!secProjectsTableHost) return;
+    secProjectsTableHost.textContent = "";
+    if (!secLatestProjects.length) {
+      secProjectsTableHost.appendChild(secIndexProjectsTable([]));
+      return;
+    }
+    const filtered = secFilterProjects(secLatestProjects, secProjectFilters);
+    if (!filtered.length) {
+      const e = secEl("div", "tblempty");
+      e.appendChild(secIcon("inbox"));
+      e.appendChild(document.createTextNode(
+        "No projects match these filters \u2014 try a different search or picker."
+      ));
+      secProjectsTableHost.appendChild(e);
+      return;
+    }
+    const footer = tableFooter({
+      shown: { from: 1, to: filtered.length },
+      total: filtered.length,
+      noun: "project",
+      page: 1,
+      pages: 1,
+      prevId: "secpj-pg-prev",
+      nextId: "secpj-pg-next",
+      infoId: "secpj-pg-info"
+    });
+    secProjectsTableHost.appendChild(secIndexProjectsTable(filtered, footer));
+  }
+  function secMountProjectsSection(sectionHost) {
+    sectionHost.appendChild(secProjectsFilterBar());
+    secProjectsTableHost = secEl("div");
+    sectionHost.appendChild(secProjectsTableHost);
   }
   function secIndexRecentRow(a) {
     const row = document.createElement("button");
@@ -2542,5 +2841,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 0f2b3c3fae3d0224952a75d6dcf0d49486d594c811a766e2be0c15f9a36fa0bd */
-/* ui-sources: 9a29075595efe3da9476d8e30c60fcb8213f69295f29d32d9f75eaa5f419dd9c */
+/* ui-bundle: 12fa1403a8b8253a28670581ec9af02b411d1a6ede72b1e492836fb2fb567eb3 */
+/* ui-sources: f7162fd75e5dfd3c09fe9ec5e4f9164881397a8e8ff522469d7730e877bb0b62 */

@@ -1805,13 +1805,18 @@ def test_the_cells_icon_rule_cannot_repaint_the_favourite_star(srv):
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
-@pytest.mark.parametrize("view,const_name", [
-    ("view-jobs", "JOB_COLS"),
-    ("view-projects", "PRJ_COLS"),
-    ("view-runs", "RUN_COLS"),
-], ids=["jobs", "projects", "runs"])
+@pytest.mark.parametrize("view,const_name,bundle", [
+    ("view-jobs", "JOB_COLS", "app"),
+    ("view-projects", "PRJ_COLS", "app"),
+    ("view-runs", "RUN_COLS", "app"),
+    # SEC_PROJECT_COLS lives in ui/security/index-screen.js -- a separate
+    # bundle from JOB_COLS/PRJ_COLS/RUN_COLS' own ui/app/ (see
+    # ui/security/index.js's own banner comment on why the two stay apart),
+    # so this row alone reads `bundle="security"` below instead of "app".
+    ("view-security", "SEC_PROJECT_COLS", "security"),
+], ids=["jobs", "projects", "runs", "security"])
 def test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column(
-        srv, tmp_path, view, const_name):
+        srv, tmp_path, view, const_name, bundle):
     """Must fail against the pre-fix CSS (Security's th:nth-child(6) has no
     width rule, so column 6 is 'missing') and pass once every column gets
     one. The sum-to-100% assertion below is a second, weaker guard -- it is
@@ -1829,9 +1834,14 @@ def test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column(
     Projects-only patch good for exactly seven columns. Runs joined in Phase
     2 Task 7, once its own table moved onto tableCard() and gained its own
     #view-runs rules -- this parametrize entry is that promise kept, not a
-    new guard."""
-    app_js = _app_js(srv)
-    consts = _const(app_js, const_name)
+    new guard. Security joined in Phase 4 Task 3 for the identical reason,
+    the fourth table converted onto this same shape (secIndexProjectsTable,
+    ui/security/index-screen.js) -- and the ORIGINAL five-column Security
+    table is exactly the one this guard was written against in the first
+    place (see this docstring's own opening sentence), so this row closes
+    the loop: the table that motivated the guard now carries it too."""
+    src_js = _app_js(srv) if bundle == "app" else _security_js(srv)
+    consts = _const(src_js, const_name)
     script = tmp_path / f"{view.replace('-', '_')}-cols.js"
     script.write_text(consts + f"console.log({const_name}.length);")
     n_cols = int(subprocess.run(["node", str(script)], capture_output=True,
@@ -3157,12 +3167,16 @@ def test_a_fallen_back_branch_is_rendered_with_its_name_visible(srv, tmp_path):
     """Postures of different branches must never be confused in silence --
     the branch a posture actually belongs to has to stay on the page, not
     just a bare "(fell back)" note with nothing named (see the comment on
-    secIndexProjectRow's own tdBranch). Drives secIndexProjectsTable end to
-    end rather than the JSON contract alone."""
+    secIndexProjectRow's own Last analysis cell -- the fallen-back note's
+    home since Phase 4 Task 3 folded the table's old dedicated Branch column
+    into that cell's "profile · branch" sub-line). Drives
+    secIndexProjectsTable end to end rather than the JSON contract alone."""
     block = _security_js(srv)
-    deps = _index_screen_deps(block, "secEl", "secIcon",
-                              "secIndexPosturePills", "secIndexProjectRow",
-                              "secIndexProjectsTable")
+    deps = (_const(block, "SEC_PROJECT_COLS") + _const(block, "FIND_SEVS")
+            + _index_screen_deps(block, "secEl", "secIcon", "secIndexProjectRow",
+                                 "secIndexProjectsTable", "secIndexFindingsChips",
+                                 "secIndexTrendSpark", "secLastRunDuration",
+                                 "secIndexRunWhen", "secProfileLabel"))
     script = tmp_path / "branch-fellback.js"
     script.write_text(_INDEX_DOM_HARNESS + deps + """
     const table = secIndexProjectsTable([{
@@ -3189,11 +3203,15 @@ def test_a_capped_analysis_marks_its_project_row_with_an_incomplete_cue(srv, tmp
     stopped," not "none"). The index screen used to render that posture
     with no cue at all -- not even the state word. This must fail against
     the code before finding 1's fix (no `last_state` branch existed in
-    secIndexProjectRow) and pass after it."""
+    secIndexProjectRow) and pass after it. The cue itself moved to the
+    Findings cell in Phase 4 Task 3 (secIndexFindingsChips) -- the counts it
+    qualifies are the ones on that cell now, not a separate Posture column."""
     block = _security_js(srv)
-    deps = _index_screen_deps(block, "secEl", "secIcon",
-                              "secIndexPosturePills", "secIndexProjectRow",
-                              "secIndexProjectsTable")
+    deps = (_const(block, "SEC_PROJECT_COLS") + _const(block, "FIND_SEVS")
+            + _index_screen_deps(block, "secEl", "secIcon", "secIndexProjectRow",
+                                 "secIndexProjectsTable", "secIndexFindingsChips",
+                                 "secIndexTrendSpark", "secLastRunDuration",
+                                 "secIndexRunWhen", "secProfileLabel"))
     script = tmp_path / "capped-row.js"
     script.write_text(_INDEX_DOM_HARNESS + deps + """
     const table = secIndexProjectsTable([{
@@ -3219,9 +3237,11 @@ def test_a_row_with_a_finished_latest_analysis_gets_no_capped_cue(srv, tmp_path)
     that fires regardless of state would be worse than the missing one, a
     caution shown over posture that is not in doubt."""
     block = _security_js(srv)
-    deps = _index_screen_deps(block, "secEl", "secIcon",
-                              "secIndexPosturePills", "secIndexProjectRow",
-                              "secIndexProjectsTable")
+    deps = (_const(block, "SEC_PROJECT_COLS") + _const(block, "FIND_SEVS")
+            + _index_screen_deps(block, "secEl", "secIcon", "secIndexProjectRow",
+                                 "secIndexProjectsTable", "secIndexFindingsChips",
+                                 "secIndexTrendSpark", "secLastRunDuration",
+                                 "secIndexRunWhen", "secProfileLabel"))
     script = tmp_path / "capped-row-control.js"
     script.write_text(_INDEX_DOM_HARNESS + deps + """
     const table = secIndexProjectsTable([{
@@ -3235,6 +3255,149 @@ def test_a_row_with_a_finished_latest_analysis_gets_no_capped_cue(srv, tmp_path)
                                     capture_output=True, text=True, check=True).stdout)
     joined = " ".join(r["text"] for r in out).lower()
     assert "incomplete" not in joined, f"a finished analysis got the capped cue: {out}"
+
+
+# ---- Phase 4 Task 3's own new substance: the filter bar's pure filtering
+# function, the trend sparkline's honest-empty-cell rule, the Findings
+# cell's fixed three-chip shape and the Status pill's enabled/disabled read.
+# None of these four existed before this task; each is pinned here rather
+# than left to only the mockup's own pixels to hold in place.
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_secFilterProjects_matches_by_query_status_profile_and_branch(srv, tmp_path):
+    """The filter bar's own client-side filtering ("they filter THIS table
+    client-side from what the payload carries") -- a pure function, no DOM,
+    so this drives it directly rather than through a picker's onchange no
+    test here can click. Query matches name OR description, case-
+    insensitively; status/profile/branch are exact matches against the
+    row's own fields, empty meaning "All"."""
+    block = _security_js(srv)
+    deps = _plainfn(block, "secFilterProjects")
+    script = tmp_path / "filter-projects.js"
+    script.write_text(deps + """
+    const rows = [
+      {name: "Minerva", description: "Revenue platform", profile: "deep",
+       branch: "develop", enabled: true},
+      {name: "Quality Gate", description: "QG board", profile: "standard",
+       branch: "main", enabled: false},
+    ];
+    console.log(JSON.stringify({
+      byQuery: secFilterProjects(rows, {query: "revenue"}).map(p => p.name),
+      byQueryOnName: secFilterProjects(rows, {query: "GATE"}).map(p => p.name),
+      byStatusActive: secFilterProjects(rows, {status: "active"}).map(p => p.name),
+      byStatusDisabled: secFilterProjects(rows, {status: "disabled"}).map(p => p.name),
+      byProfile: secFilterProjects(rows, {profile: "standard"}).map(p => p.name),
+      byBranch: secFilterProjects(rows, {branch: "develop"}).map(p => p.name),
+      noFilters: secFilterProjects(rows, {}).map(p => p.name),
+      noMatch: secFilterProjects(rows, {query: "nothing-matches-this"}).map(p => p.name),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["byQuery"] == ["Minerva"], out
+    assert out["byQueryOnName"] == ["Quality Gate"], out
+    assert out["byStatusActive"] == ["Minerva"], out
+    assert out["byStatusDisabled"] == ["Quality Gate"], out
+    assert out["byProfile"] == ["Quality Gate"], out
+    assert out["byBranch"] == ["Minerva"], out
+    assert out["noFilters"] == ["Minerva", "Quality Gate"], out
+    assert out["noMatch"] == [], out
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_an_empty_trend_renders_a_dash_not_a_fabricated_flat_line(srv, tmp_path):
+    """trend_series (bin/security/queries.py) returns [] for a project with
+    no declared base, or one never analysed on it -- deliberately never
+    plotting a FALLBACK branch's history under a name it does not belong to
+    (see that function's own docstring). The cell has to say so honestly --
+    a flat zero-height line drawn over an empty list would look like a
+    measured, unchanging history instead of "nothing to plot"."""
+    block = _security_js(srv)
+    deps = _plainfn(block, "secEl") + _plainfn(block, "secIndexTrendSpark")
+    script = tmp_path / "trend-spark.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    const empty = secIndexTrendSpark([]);
+    const withPoints = secIndexTrendSpark([1, 5, 2, 0, 8]);
+    console.log(JSON.stringify({
+      emptyText: empty.textContent,
+      emptyTag: empty.tagName,
+      pointsTag: withPoints.tagName,
+      barCount: (withPoints.childNodes || []).length,
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["emptyText"] == "—", out
+    assert out["emptyTag"] == "span", f"an empty trend must not render an <svg>: {out}"
+    assert out["pointsTag"] == "svg", out
+    assert out["barCount"] == 5, "one bar per point, five points in: " + str(out)
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_findings_chips_show_three_severities_and_the_postures_own_total(srv, tmp_path):
+    """Three FIXED chips (critical/high/medium), always in that order even
+    at zero -- and "N total" is posture's OWN total, not a sum of the three
+    shown chips: low/info both count toward it with no chip of their own,
+    exactly like the mockup's own "89 total" over chips that only add to 82."""
+    block = _security_js(srv)
+    deps = _plainfn(block, "secEl") + _plainfn(block, "secIndexFindingsChips")
+    script = tmp_path / "findings-chips.js"
+    # FIND_SEVS is a module-level const the real file declares OUTSIDE the
+    # function (same reason _JOBS_DOMAIN_HARNESS stands up small stand-ins
+    # for names jobFacts reads from its own module's outer scope).
+    script.write_text(_INDEX_DOM_HARNESS + """
+    const FIND_SEVS = ["critical", "high", "medium"];
+    """ + deps + """
+    const cell = secIndexFindingsChips(
+      {critical: 12, high: 27, medium: 43, low: 5, info: 2, total: 89}, false);
+    console.log(JSON.stringify({
+      chipCount: cell.childNodes[0].childNodes.length,
+      chips: cell.childNodes[0].childNodes.map(c => c.textContent),
+      total: cell.childNodes[1].textContent,
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["chipCount"] == 3, out
+    assert out["chips"] == ["12", "27", "43"], out
+    assert out["total"] == "89 total", \
+        f"total must be posture's OWN total, not 12+27+43: {out}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_status_pill_reads_active_or_disabled_from_the_enabled_field(srv, tmp_path):
+    """`.pill.off` stays reserved for the scheduler fault (its own comment,
+    components.css) -- a project simply switched off gets `.pill.disabled`,
+    the grey one, never the red one. `enabled` defaults to active when
+    absent -- every real row today IS security-enabled by construction (see
+    secIndexProjectRow's own comment on the PROJECT cell's badge), so the
+    real payload never actually sends `enabled: false`; this proves the
+    branch still works honestly for whenever a payload does."""
+    block = _security_js(srv)
+    deps = (_const(block, "FIND_SEVS")
+            + _index_screen_deps(block, "secEl", "secIcon", "secIndexProjectRow",
+                                 "secIndexProjectsTable", "secIndexFindingsChips",
+                                 "secIndexTrendSpark", "secLastRunDuration",
+                                 "secIndexRunWhen", "secProfileLabel"))
+    script = tmp_path / "status-pill.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    const base = {name: "web", description: "", branch: "main",
+      branch_fell_back: false, posture: {critical:0,high:0,medium:0,low:0,info:0,total:0},
+      profile: "quick", last_started: 0, last_duration: 0, last_state: "done", analyses: 1};
+    const active = secIndexProjectRow(Object.assign({}, base));
+    const disabled = secIndexProjectRow(Object.assign({}, base, {enabled: false}));
+    // Exact match, not "starts with pill " -- the Profile cell's own pill
+    // ("pill profile") would otherwise be the first match collectAll finds,
+    // since it sits earlier in the row than Status does.
+    function statusPill(tr){
+      return collectAll(tr, []).find(r => r.cls === "pill on" || r.cls === "pill disabled");
+    }
+    console.log(JSON.stringify({active: statusPill(active), disabled: statusPill(disabled)}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["active"]["cls"] == "pill on" and out["active"]["text"] == "Active", out
+    assert out["disabled"]["cls"] == "pill disabled" and out["disabled"]["text"] == "Disabled", out
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")

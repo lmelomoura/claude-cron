@@ -19,6 +19,57 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The Security index's projects table becomes the approved mockup's, and
+  a client-side filter bar arrives above it.** Phase 4 Task 3, the largest
+  of the phase. The table grows from five columns to eight — Project
+  (folder icon, bold name, an unconditional green "security enabled"
+  badge, a two-line clamped description), Last analysis (relative time,
+  "profile · branch" beneath, the fallen-back note now living in that
+  sub-line instead of a dedicated Branch column), Profile (a new
+  `.pill.profile` accent pill), Last run (a coarser "2h 15m"/"45m" duration
+  than the shared `fmtDur`'s "135m 0s", its own date beneath), Findings
+  (three FIXED severity chips — critical/high/medium, always in that
+  order, even at zero — plus "N total" from posture's own total, which can
+  exceed what the three chips show since low/info count toward it with no
+  chip of their own), Trend (30d) (a bar sparkline over `trend_series`'s
+  30-day series, `createElementNS`, accent bars, baseline-aligned, an
+  honest muted dash for an empty list rather than a fabricated flat line),
+  Status (Active/Disabled, reading a new `enabled` field the real payload
+  never actually sends false today — every row here is security-enabled by
+  construction — but the branch is real, not dead code, for whenever a
+  future payload does) and Actions (a solid View plus a kebab holding two
+  already-existing actions, View activity and Edit project, scoped to that
+  row's own project). Every pinned cue survives the reshape: a capped
+  analysis's "incomplete" badge moved from the old Posture cell to
+  Findings, where the counts it qualifies now live; a fallen-back branch
+  still names itself in the open, never just a bare "(fell back)"; never-
+  analysed still reads the one `SEC_NEVER` sentence. The filter bar (Search
+  projects + Status + Profile + Branch pickers + Refresh, Activity moved
+  down beside it since the mockup's own header carries neither) is plain
+  `<select>`s, not `ui/app/chrome.js`'s real `.picker` widget — that
+  widget's pickers are static markup wired inside `bin/dashboard.html`
+  itself, and porting it across the `ui/security`/`ui/app` bundle split for
+  four new ones was a bigger migration than this table's own redesign
+  asked for. Filtering itself (`secFilterProjects`) is a pure function, unit
+  tested directly. Getting the live search box to survive this screen's
+  five-second poll took two tries: the first attempt gated a remount on a
+  `dataset.mounted` flag, which missed that `secLoadIndex`'s own
+  pre-existing "Loading…" placeholder clears the very same host on an
+  explicit Refresh or `secBack()`, leaving the guard permanently skipping a
+  remount it now actually needed — found live, as a Security screen stuck
+  on "Loading…" after returning from a project. The fix checks whether the
+  slot is still ACTUALLY attached to the DOM, not a flag that survives the
+  wipe. The kebab's own popup hit a second, unrelated ceiling live: `.table-
+  card{overflow:hidden}` (its own rounded-corner clip) and the generic
+  per-cell overflow guard both clip a plain `position:absolute` popup
+  along with anything else escaping the row's box, so it opened (`.open`
+  true, a correctly laid-out rect) and painted nothing — fixed by
+  recomputing `position:fixed` coordinates from the button's own screen
+  position on every open, which escapes the clip the way `absolute` never
+  can. Two new icons (`shieldcheck`, `gitbranch`) join `bin/dashboard.
+  html`'s shared table, the same reason `alertcircle` joined it in Task 1:
+  the mockup needed a shape nothing already had.
+
 - **`queries.py` gains `trend_series`, and a project's index row carries
   `trend` again.** Phase 4 Task 2: the 30-day open-findings series
   `8c0eaf8` deleted for having no reader is back, ready for the Trend
