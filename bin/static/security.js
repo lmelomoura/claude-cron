@@ -14,10 +14,13 @@
   var money;
   var icon;
   var iconLabel;
+  var iconHTML;
   var openProjectEditor;
   var pageHeader;
   var kpiCard;
   var tableFooter;
+  var makePicker;
+  var createCombo;
   var CC = null;
   function bindPage(cc) {
     CC = cc;
@@ -36,10 +39,13 @@
       money,
       icon,
       iconLabel,
+      iconHTML,
       openProjectEditor,
       pageHeader,
       kpiCard,
-      tableFooter
+      tableFooter,
+      makePicker,
+      createCombo
     } = cc);
   }
 
@@ -190,21 +196,14 @@
   function secIcon(name) {
     return icon(name);
   }
+  function secIconHTML(name) {
+    return iconHTML(name);
+  }
   function secEl(tag, cls, text) {
     const n = document.createElement(tag);
     if (cls) n.className = cls;
     if (text != null) n.textContent = text;
     return n;
-  }
-  function secFill(select, values, selected) {
-    select.textContent = "";
-    values.forEach((v) => {
-      const o = document.createElement("option");
-      o.value = v;
-      o.textContent = v;
-      select.appendChild(o);
-    });
-    if (selected != null && values.includes(selected)) select.value = selected;
   }
   async function secFetch(path) {
     const r = await fetch(path, { headers: { "X-CC-Token": TOKEN } });
@@ -315,6 +314,33 @@
   }
 
   // ui/security/analysis.js
+  function secProfileOpt(v) {
+    return { v, label: v.charAt(0).toUpperCase() + v.slice(1) };
+  }
+  var secRepoCombo = null;
+  var secBranchCombo = null;
+  var secProfileCombo = null;
+  function secInitLaunchCombos() {
+    secRepoCombo = createCombo({
+      id: "sec-repo",
+      allowNone: false,
+      onPick: async () => {
+        await secLoadBranches("");
+        $("sec-branch-other").value = "";
+        secSyncScope();
+      }
+    });
+    secBranchCombo = createCombo({
+      id: "sec-branch",
+      allowNone: false,
+      onPick: () => {
+        $("sec-branch-other").value = "";
+        secSyncScope();
+      }
+    });
+    secProfileCombo = createCombo({ id: "sec-profile", allowNone: false, def: "standard" });
+    secProfileCombo.set("standard", SEC_PROFILES.map(secProfileOpt));
+  }
   var secTimer = null;
   function secStopPoll() {
     if (secTimer) {
@@ -373,9 +399,9 @@
     secStatus("Loading\u2026");
     const p = projById(project) || {};
     const repos = secRepos(p);
-    secFill($("sec-repo"), repos);
+    secRepoCombo.set("", repos.map((r) => ({ v: r, label: r })));
     $("sec-repo-field").hidden = repos.length < 2;
-    $("sec-profile").value = secDefaultProfile(project);
+    secProfileCombo.set(secDefaultProfile(project));
     $("sec-branch-other").value = "";
     try {
       const list = await secFetch("/api/security?project=" + encodeURIComponent(project));
@@ -387,16 +413,15 @@
       secStatus("Could not read its analyses \u2014 " + e.message);
     }
     const last = secState.analyses[0];
-    if (last && repos.includes(last.repo)) $("sec-repo").value = last.repo;
+    if (last && repos.includes(last.repo)) secRepoCombo.set(last.repo);
     await secLoadBranches(last ? last.branch : "");
     if (seq !== secState.seq) return;
-    if (last && SEC_PROFILES.includes(last.profile)) $("sec-profile").value = last.profile;
+    if (last && SEC_PROFILES.includes(last.profile)) secProfileCombo.set(last.profile);
     await secSyncScope();
   }
   async function secLoadBranches(want) {
     const seq = secState.seq;
-    const sel = $("sec-branch");
-    secFill(sel, ["\u2026"], "\u2026");
+    secBranchCombo.set("\u2026", [{ v: "\u2026", label: "\u2026" }]);
     let branches = [];
     try {
       const j = await secFetch("/api/security/branches?project=" + encodeURIComponent(secState.project) + "&repo=" + encodeURIComponent($("sec-repo").value));
@@ -404,12 +429,12 @@
       branches = j.branches || [];
     } catch (e) {
       if (seq !== secState.seq) return;
-      secFill(sel, []);
+      secBranchCombo.set("", []);
       toast("Could not list branches \u2014 " + e.message, true);
       return;
     }
     if (want && !branches.includes(want)) branches = [want].concat(branches);
-    secFill(sel, branches, want);
+    secBranchCombo.set(want, branches.map((b) => ({ v: b, label: b })));
   }
   function secScope() {
     const typed = $("sec-branch-other").value.trim();
@@ -1267,25 +1292,64 @@
     const bar = secEl("div", "secbar");
     const pickField = secEl("div", "secfield");
     pickField.appendChild(secEl("span", null, "Saved filters"));
-    const sel = document.createElement("select");
-    const blank = document.createElement("option");
-    blank.value = "";
-    blank.textContent = "\u2014 choose \u2014";
-    sel.appendChild(blank);
-    (data.filters || []).forEach((f) => {
-      const o = document.createElement("option");
-      o.value = f.name;
-      o.textContent = f.name;
-      sel.appendChild(o);
+    const filters = data.filters || [];
+    if (!filters.some((f) => f.name === fs.savedName)) fs.savedName = "";
+    const delBtn = secEl("button", "btn ghost", "Delete");
+    delBtn.type = "button";
+    delBtn.disabled = !fs.savedName;
+    delBtn.onclick = () => secFindDeleteSaved(fs, fs.savedName);
+    const wrap = document.createElement("details");
+    wrap.className = "secfind-savedpick";
+    const trigger = document.createElement("summary");
+    trigger.className = "filterpick";
+    trigger.onclick = (e) => e.stopPropagation();
+    const valueEl = secEl("span", null, fs.savedName || "\u2014 choose \u2014");
+    trigger.appendChild(valueEl);
+    trigger.appendChild(secIcon("cdown"));
+    wrap.appendChild(trigger);
+    const pop = secEl("div", "menu-pop");
+    pop.setAttribute("role", "menu");
+    function pick(name, query) {
+      fs.savedName = name;
+      valueEl.textContent = name || "\u2014 choose \u2014";
+      delBtn.disabled = !name;
+      wrap.open = false;
+      if (query) secFindApplyQuery(fs, query);
+    }
+    const blank = document.createElement("button");
+    blank.type = "button";
+    blank.setAttribute("role", "menuitem");
+    blank.appendChild(document.createTextNode("\u2014 choose \u2014"));
+    if (!fs.savedName) blank.appendChild(secIcon("check2"));
+    blank.onclick = (e) => {
+      e.stopPropagation();
+      pick("");
+    };
+    pop.appendChild(blank);
+    filters.forEach((f) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.setAttribute("role", "menuitem");
+      item.appendChild(document.createTextNode(f.name));
+      if (f.name === fs.savedName) item.appendChild(secIcon("check2"));
+      item.onclick = (e) => {
+        e.stopPropagation();
+        pick(f.name, f.query);
+      };
+      pop.appendChild(item);
     });
-    if ((data.filters || []).some((f) => f.name === fs.savedName)) sel.value = fs.savedName;
-    else fs.savedName = "";
-    sel.addEventListener("change", () => {
-      fs.savedName = sel.value;
-      const found = (data.filters || []).find((f) => f.name === sel.value);
-      if (found) secFindApplyQuery(fs, found.query);
-    });
-    pickField.appendChild(sel);
+    wrap.appendChild(pop);
+    wrap.ontoggle = () => {
+      pop.hidden = !wrap.open;
+      if (!wrap.open) return;
+      const r = trigger.getBoundingClientRect();
+      pop.style.position = "fixed";
+      pop.style.top = r.bottom + 6 + "px";
+      pop.style.left = r.left + "px";
+      pop.style.right = "auto";
+      pop.style.bottom = "auto";
+    };
+    pickField.appendChild(wrap);
     bar.appendChild(pickField);
     const nameField = secEl("div", "secfield");
     nameField.appendChild(secEl("span", null, "Save current as"));
@@ -1302,10 +1366,6 @@
     saveBtn.type = "button";
     saveBtn.onclick = () => secFindSaveCurrent(fs, nameInput.value);
     bar.appendChild(saveBtn);
-    const delBtn = secEl("button", "btn ghost", "Delete");
-    delBtn.type = "button";
-    delBtn.disabled = !fs.savedName;
-    delBtn.onclick = () => secFindDeleteSaved(fs, fs.savedName);
     bar.appendChild(delBtn);
     return bar;
   }
@@ -2206,7 +2266,7 @@
     host._secCards.textContent = "";
     host._secCards.appendChild(secIndexCards(data.summary || {}));
     secLatestProjects = data.projects || [];
-    secRefreshFilterOptions(secLatestProjects);
+    secClearStaleFilterValues(secLatestProjects);
     secRepaintProjectsTable();
     const recent = data.recent || { rows: [], total: 0 };
     host._secRecent.textContent = "";
@@ -2517,8 +2577,9 @@
   var secProjectFilters = { query: "", status: "", profile: "", branch: "" };
   var secLatestProjects = [];
   var secProjectsTableHost = null;
-  var secProfileFilterSelect = null;
-  var secBranchFilterSelect = null;
+  var secStatusPicker = null;
+  var secProfileFilterPicker = null;
+  var secBranchFilterPicker = null;
   function secFilterProjects(projects, filters) {
     const f = filters || {};
     const q = (f.query || "").trim().toLowerCase();
@@ -2537,30 +2598,28 @@
       return true;
     });
   }
-  function secOption(value, label) {
-    const o = document.createElement("option");
-    o.value = value;
-    o.textContent = label;
-    return o;
-  }
-  function secFillFilterOptions(select, values, selected) {
-    select.textContent = "";
-    select.appendChild(secOption("", "All"));
-    values.forEach((v) => select.appendChild(secOption(v, v)));
-    select.value = selected && values.includes(selected) ? selected : "";
-  }
   function secUniqueValues(projects, key) {
     return [...new Set((projects || []).map((p) => p[key]).filter(Boolean))].sort();
   }
-  function secFilterPick(iconName, label, id) {
-    const wrap = secEl("label", "filterpick");
-    wrap.appendChild(secIcon(iconName));
-    wrap.appendChild(secEl("span", "fp-k", label));
-    const select = document.createElement("select");
-    select.id = id;
-    wrap.appendChild(select);
-    wrap.appendChild(secIcon("cdown"));
-    return { wrap, select };
+  function secPickerShell(id) {
+    const wrap = secEl("div", "picker");
+    wrap.id = id;
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "picker-trigger";
+    trigger.id = id + "-trigger";
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute("aria-expanded", "false");
+    wrap.appendChild(trigger);
+    const pop = secEl("div", "picker-pop");
+    pop.id = id + "-pop";
+    pop.hidden = true;
+    const list = secEl("div", "picker-list");
+    list.id = id + "-list";
+    list.setAttribute("role", "listbox");
+    pop.appendChild(list);
+    wrap.appendChild(pop);
+    return wrap;
   }
   function secProjectsFilterBar() {
     const bar = secEl("div", "toolbar");
@@ -2576,29 +2635,9 @@
     };
     search.appendChild(input);
     bar.appendChild(search);
-    const status = secFilterPick("filter", "Status:", "secpj-filter-status");
-    status.select.appendChild(secOption("", "All"));
-    status.select.appendChild(secOption("active", "Active"));
-    status.select.appendChild(secOption("disabled", "Disabled"));
-    status.select.onchange = () => {
-      secProjectFilters.status = status.select.value;
-      secRepaintProjectsTable();
-    };
-    bar.appendChild(status.wrap);
-    const profile = secFilterPick("shield", "Profile:", "secpj-filter-profile");
-    profile.select.onchange = () => {
-      secProjectFilters.profile = profile.select.value;
-      secRepaintProjectsTable();
-    };
-    bar.appendChild(profile.wrap);
-    secProfileFilterSelect = profile.select;
-    const branch = secFilterPick("gitbranch", "Branch:", "secpj-filter-branch");
-    branch.select.onchange = () => {
-      secProjectFilters.branch = branch.select.value;
-      secRepaintProjectsTable();
-    };
-    bar.appendChild(branch.wrap);
-    secBranchFilterSelect = branch.select;
+    bar.appendChild(secPickerShell("secpj-filter-status"));
+    bar.appendChild(secPickerShell("secpj-filter-profile"));
+    bar.appendChild(secPickerShell("secpj-filter-branch"));
     bar.appendChild(secEl("div", "spacer"));
     const activity = document.createElement("button");
     activity.type = "button";
@@ -2616,19 +2655,108 @@
     bar.appendChild(refresh);
     return bar;
   }
-  function secRefreshFilterOptions(projects) {
-    if (secProfileFilterSelect) secFillFilterOptions(
-      secProfileFilterSelect,
-      secUniqueValues(projects, "profile"),
-      secProjectFilters.profile
-    );
-    if (secBranchFilterSelect) secFillFilterOptions(
-      secBranchFilterSelect,
-      secUniqueValues(projects, "branch"),
-      secProjectFilters.branch
-    );
+  function secInitProjectFilterPickers() {
+    secStatusPicker = makePicker("secpj-filter-status", {
+      icon: secIconHTML("filter"),
+      label: "Status",
+      valueLabel: () => secProjectFilters.status === "active" ? "Active" : secProjectFilters.status === "disabled" ? "Disabled" : "All",
+      rows: () => {
+        const projects = secLatestProjects;
+        const activeN = projects.filter((p) => p.enabled !== false).length;
+        return [
+          {
+            v: "",
+            label: "All",
+            n: projects.length,
+            sel: secProjectFilters.status === "",
+            icon: secIconHTML("layers")
+          },
+          {
+            v: "active",
+            label: "Active",
+            n: activeN,
+            sel: secProjectFilters.status === "active",
+            icon: secIconHTML("play")
+          },
+          {
+            v: "disabled",
+            label: "Disabled",
+            n: projects.length - activeN,
+            sel: secProjectFilters.status === "disabled",
+            icon: secIconHTML("power")
+          }
+        ];
+      },
+      onPick: (v) => {
+        secProjectFilters.status = v;
+        secRepaintProjectsTable();
+      }
+    });
+    secProfileFilterPicker = makePicker("secpj-filter-profile", {
+      icon: secIconHTML("shield"),
+      label: "Profile",
+      valueLabel: () => secProjectFilters.profile ? secProfileLabel(secProjectFilters.profile) : "All",
+      rows: () => {
+        const projects = secLatestProjects, values = secUniqueValues(projects, "profile");
+        const rows = [{
+          v: "",
+          label: "All",
+          n: projects.length,
+          sel: secProjectFilters.profile === "",
+          icon: secIconHTML("layers")
+        }];
+        values.forEach((v) => rows.push({
+          v,
+          label: secProfileLabel(v),
+          n: projects.filter((p) => p.profile === v).length,
+          sel: secProjectFilters.profile === v,
+          icon: secIconHTML("shield")
+        }));
+        return rows;
+      },
+      onPick: (v) => {
+        secProjectFilters.profile = v;
+        secRepaintProjectsTable();
+      }
+    });
+    secBranchFilterPicker = makePicker("secpj-filter-branch", {
+      icon: secIconHTML("gitbranch"),
+      label: "Branch",
+      valueLabel: () => secProjectFilters.branch || "All",
+      rows: () => {
+        const projects = secLatestProjects, values = secUniqueValues(projects, "branch");
+        const rows = [{
+          v: "",
+          label: "All",
+          n: projects.length,
+          sel: secProjectFilters.branch === "",
+          icon: secIconHTML("layers")
+        }];
+        values.forEach((v) => rows.push({
+          v,
+          label: v,
+          n: projects.filter((p) => p.branch === v).length,
+          sel: secProjectFilters.branch === v,
+          icon: secIconHTML("gitbranch")
+        }));
+        return rows;
+      },
+      onPick: (v) => {
+        secProjectFilters.branch = v;
+        secRepaintProjectsTable();
+      }
+    });
+  }
+  function secClearStaleFilterValues(projects) {
+    const profiles = secUniqueValues(projects, "profile");
+    if (secProjectFilters.profile && !profiles.includes(secProjectFilters.profile)) secProjectFilters.profile = "";
+    const branches = secUniqueValues(projects, "branch");
+    if (secProjectFilters.branch && !branches.includes(secProjectFilters.branch)) secProjectFilters.branch = "";
   }
   function secRepaintProjectsTable() {
+    if (secStatusPicker) secStatusPicker.paint();
+    if (secProfileFilterPicker) secProfileFilterPicker.paint();
+    if (secBranchFilterPicker) secBranchFilterPicker.paint();
     if (!secProjectsTableHost) return;
     secProjectsTableHost.textContent = "";
     if (!secLatestProjects.length) {
@@ -2660,6 +2788,7 @@
   }
   function secMountProjectsSection(sectionHost) {
     sectionHost.appendChild(secProjectsFilterBar());
+    secInitProjectFilterPickers();
     secProjectsTableHost = secEl("div");
     sectionHost.appendChild(secProjectsTableHost);
   }
@@ -3061,15 +3190,7 @@
     $("sec-dl-json").addEventListener("click", () => secDownload("json"));
     $("sec-dl-html").addEventListener("click", () => secDownload("html"));
     $("sec-dl-sbom").addEventListener("click", () => secDownload("sbom"));
-    $("sec-repo").addEventListener("change", async () => {
-      await secLoadBranches("");
-      $("sec-branch-other").value = "";
-      secSyncScope();
-    });
-    $("sec-branch").addEventListener("change", () => {
-      $("sec-branch-other").value = "";
-      secSyncScope();
-    });
+    secInitLaunchCombos();
     $("sec-branch-other").addEventListener("change", () => secSyncScope());
   }
   window.CCSecurity = {
@@ -3083,5 +3204,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: fefbb6c756942a8060537119e93938615351039db9252ffc1eb16d19ec9074e9 */
-/* ui-sources: 6461f456be9f74dc6adf4324613dd96bfb9dff7459cba930522798bdbf8a432f */
+/* ui-bundle: 191cf937ac362d388520b39fcfebc7ed3a29277831eb57ebc5f2e359dc0e79b7 */
+/* ui-sources: e43c7b5f5bfc8acefb2a4926ed5abb1d80d67d1d6858d92a832c39899318198a */

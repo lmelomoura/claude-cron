@@ -19,6 +19,56 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The last seven native `<select>`s in the product become the house
+  `.picker` or `.combo`, and a test keeps the count at zero.** Two user
+  reports named the same defect twice on this branch: a bare `<select>`
+  renders as a grey OS menu wearing its own browser-drawn indicator right
+  next to a hand-drawn chevron, which is what made the Security index's own
+  filter bar (Phase 4 Task 3) wrap under Refresh at the pane's own width.
+  `secpj-filter-status`/`-profile`/`-branch` (`ui/security/index-screen.js`)
+  are now `makePicker()` pickers — one chevron each, counts per option,
+  built at runtime the way this screen's own DOM already is, wired through a
+  new bridge: `makePicker`/`createCombo` (both hoisted `function`s native to
+  `bin/dashboard.html`, no ui/-side source to import) join
+  `CCSecurity.init(CC)` exactly like Task 1's `pageHeader`/`kpiCard` did, the
+  opposite direction of that same bridge — the widget is the page's, the
+  behaviour is the area's. `secInitProjectFilterPickers` wires them only
+  after their markup is attached to the live document, since makePicker's
+  own constructor looks its ids up with `$()`/`getElementById`, which finds
+  nothing on a still-detached fragment. The Analyse launcher's
+  `sec-repo`/`sec-branch`/`sec-profile` (`ui/security/analysis.js`) follow
+  `ed-perm`'s exact combo shape — hidden input keeping the original id, so
+  `secScope`/`secAnalyse`/the branches fetch read `$("sec-repo").value` etc.
+  completely unchanged; `secInitLaunchCombos` wires the three combos'
+  `onPick` to exactly what the old `change` listeners did (reload branches,
+  clear the typed override, re-sync scope), which a hidden input's own
+  `.value` — never touched by a person — would otherwise silently stop
+  answering. A seventh `<select>`, unnamed in the original plan, turned up
+  under the same sweep that wrote the guard: the findings browser's own
+  "Saved filters" dropdown (`secFindSavedFilters`,
+  `ui/security/findings-screen.js`), mounted in two places at once (the
+  Findings tab and the Activity screen's fingerprint dialog) and rebuilt on
+  every filter change with nothing to page through — a poor fit for
+  makePicker's own once-per-page-life registry, so it becomes the
+  `<details>/<summary>/.menu-pop` popover `secIndexProjectRow`'s kebab and
+  `secFindingsPeriodPicker` already established for exactly that shape.
+  Building it exposed a latent race in that shared pattern: `closeMenus()`
+  (`bin/dashboard.html`) hides every `.menu-pop` in the document that is not
+  already marked hidden on ANY click outside one, including a popover this
+  function had only just built and never opened — the two older instances
+  self-heal within one 5-second poll tick that rebuilds them hidden-free
+  again, but this table fetches on demand, so its own picker could go
+  silently un-openable until the next filter change. Fixed by setting the
+  pop's `hidden` from the trigger's own open/close state on every toggle,
+  instead of trusting whatever an earlier stray click left behind.
+  `test_the_page_and_every_ui_module_are_free_of_native_selects` (and its
+  own falsification companion) is the guard: no literal `<select` anywhere
+  in the rendered page (HTML comments naming what used to be one, stripped
+  first — the rule is about what the browser renders, not five characters
+  in a sentence) and no `createElement("select"` under any module in `ui/`.
+  `secFill` (`ui/security/dom.js`), the last helper that ever populated a
+  bare `<select>`, has no callers left and is gone.
+
 - **"Top issue categories" shows a human label and a rule-specific icon
   instead of the raw rule string.** `SEC_RULE_META` and `secRuleMeta`
   (ui/security/vocabulary.js) are a new curated vocabulary for exactly the

@@ -409,29 +409,65 @@ document.documentElement.dataset.theme =
 
             <div class="secbar">
               <!-- Only shown for a project that declares several repos: with one
-                   checkout there is nothing to choose between. -->
-              <label class="secfield" id="sec-repo-field" hidden>
+                   checkout there is nothing to choose between. sec-repo/
+                   sec-branch/sec-profile (Phase 4 Task 5) are the house combo,
+                   ed-perm's exact shape (see that field's own comment) --
+                   static markup, dynamic options: secInitLaunchCombos()
+                   (ui/security/analysis.js) wires them at boot, secOpen() and
+                   secLoadBranches() feed each combo's own .set(value, options)
+                   whenever a project opens or its repo changes, exactly where
+                   this used to call secFill() on a bare <select>. Every reader
+                   of $("sec-repo").value etc. (secScope, secAnalyse, the
+                   branches fetch) is untouched -- the hidden input keeps the
+                   original id. -->
+              <div class="secfield" id="sec-repo-field" hidden>
                 <span>Repo</span>
-                <select id="sec-repo"></select>
-              </label>
-              <label class="secfield">
+                <div class="combo" id="sec-repo-combo">
+                  <button type="button" class="combo-trigger" id="sec-repo-trigger" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="combo-val" id="sec-repo-val"></span>
+                    <span class="combo-caret"></span>
+                  </button>
+                  <div class="combo-pop" id="sec-repo-pop" hidden>
+                    <input type="text" class="combo-search" id="sec-repo-search" placeholder="Search repos…" autocomplete="off">
+                    <ul class="combo-list" id="sec-repo-opts" role="listbox"></ul>
+                  </div>
+                  <input type="hidden" id="sec-repo">
+                </div>
+              </div>
+              <div class="secfield">
                 <span>Branch</span>
-                <select id="sec-branch"></select>
-              </label>
+                <div class="combo" id="sec-branch-combo">
+                  <button type="button" class="combo-trigger" id="sec-branch-trigger" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="combo-val" id="sec-branch-val"></span>
+                    <span class="combo-caret"></span>
+                  </button>
+                  <div class="combo-pop" id="sec-branch-pop" hidden>
+                    <input type="text" class="combo-search" id="sec-branch-search" placeholder="Search branches…" autocomplete="off">
+                    <ul class="combo-list" id="sec-branch-opts" role="listbox"></ul>
+                  </div>
+                  <input type="hidden" id="sec-branch">
+                </div>
+              </div>
               <!-- The picker lists what the checkout has; this is for a branch it
                    does not — one pushed a minute ago, or one only origin knows. -->
               <label class="secfield">
                 <span>…or type one</span>
                 <input id="sec-branch-other" placeholder="branch name" autocomplete="off" spellcheck="false">
               </label>
-              <label class="secfield">
+              <div class="secfield">
                 <span>Profile</span>
-                <select id="sec-profile">
-                  <option value="quick">Quick</option>
-                  <option value="standard" selected>Standard</option>
-                  <option value="deep">Deep</option>
-                </select>
-              </label>
+                <div class="combo" id="sec-profile-combo">
+                  <button type="button" class="combo-trigger" id="sec-profile-trigger" aria-haspopup="listbox" aria-expanded="false">
+                    <span class="combo-val" id="sec-profile-val">Standard</span>
+                    <span class="combo-caret"></span>
+                  </button>
+                  <div class="combo-pop" id="sec-profile-pop" hidden>
+                    <input type="text" class="combo-search" id="sec-profile-search" placeholder="Search profiles…" autocomplete="off">
+                    <ul class="combo-list" id="sec-profile-opts" role="listbox"></ul>
+                  </div>
+                  <input type="hidden" id="sec-profile">
+                </div>
+              </div>
               <button class="btn primary" id="sec-run">Analyse</button>
             </div>
             <div class="secstat" id="sec-status"></div>
@@ -1712,6 +1748,18 @@ const CC = {
   // defined before this point; unjournaledLive and sessionLost are both
   // defined after it too).
   openProjectEditor,
+  // makePicker/createCombo (Phase 4 Task 5): both are hoisted `function`s
+  // defined further down THIS script (see each one's own comment), so a
+  // bare read here is exactly as safe as openProjectEditor's above --
+  // reading them earlier than their own textual position still finds them,
+  // and test_every_name_ccapp_and_ccsecurity_init_pass_is_already_usable
+  // exists specifically to keep that true. Unlike pageHeader/kpiCard/
+  // tableFooter above, neither one has a ui/app/ source to read off CCApp
+  // for: both are page-native widgets whose markup can be built anywhere but
+  // whose behaviour is the caller's, so ui/security/ builds its own three
+  // filter pickers and three launcher combos and wires them through these
+  // rather than through a fourth copy of either widget living twice.
+  makePicker, createCombo,
   // The two the page REASSIGNS while it runs: DATA on every poll, currentView
   // on every navigation. Copied in by value they would freeze at what they held
   // right now -- an empty DATA, the startup view -- so they are read live,
@@ -1735,6 +1783,16 @@ const CC = {
     el.innerHTML = I[name] || "";
     if(label != null) el.appendChild(document.createTextNode(label));
   },
+  // The raw icon markup string itself (Phase 4 Task 5), for makePicker's own
+  // cfg.icon/row.icon -- both are concatenated into a trigger/row's own
+  // markup string (bin/dashboard.html's paintTrigger/paintList, unchanged by
+  // this task), never assigned through an element the way icon()/iconLabel()
+  // above are. ui/security/'s own sink guard (tests/test_page_contract.py)
+  // bans the DOM property those two use by name, bare, in every module
+  // under ui/ -- reading it here, where that guard does not look, is what
+  // lets secIconHTML (dom.js) hand a picker's cfg the same table entry
+  // icon()/iconLabel() already read without ever spelling out how.
+  iconHTML(name){ return I[name] || ""; },
 };
 CCSecurity.init(CC);
 /* ============================================================ end security */

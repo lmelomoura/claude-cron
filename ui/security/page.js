@@ -15,7 +15,7 @@
    executes). Nothing here is readable until init() has been called, and
    nothing in this area runs before that. */
 export let $, TOKEN, api, toast, openLog, projById, sessionLost,
-           unjournaledLive, fmtAgo, fmtWhen, fmtDur, money, icon, iconLabel,
+           unjournaledLive, fmtAgo, fmtWhen, fmtDur, money, icon, iconLabel, iconHTML,
            openProjectEditor,
            // The chrome bridge (Phase 4 Task 1): pageHeader, kpiCard and
            // tableFooter are ui/app/chrome.js's own builders, read off
@@ -33,7 +33,42 @@ export let $, TOKEN, api, toast, openLog, projById, sessionLost,
            // tableFooter has no caller under ui/security/ yet: it joins the
            // other two now so a later task's own project/recent-analyses
            // pager does not have to touch this bridge again to reach it.
-           pageHeader, kpiCard, tableFooter;
+           pageHeader, kpiCard, tableFooter,
+           // makePicker/createCombo (Phase 4 Task 5) are the opposite
+           // direction of bridge from the three above: pageHeader/kpiCard/
+           // tableFooter are ui/app/chrome.js's own builders, read off CCApp
+           // because THEY live outside the page; makePicker and createCombo
+           // are hoisted `function`s bin/dashboard.html defines directly in
+           // its own inline script (there is no ui/-side source for either
+           // one to import), read off CC just like every other page-native
+           // name above. Both build and wire a widget whose markup can live
+           // anywhere, but whose BEHAVIOUR -- what a row means, what picking
+           // one does -- belongs to whichever screen is asking, so unlike
+           // Jobs/Runs' own pickers and the project editor's own combos
+           // (built once, in the page, by the page), the Security area calls
+           // these itself: secProjectsFilterBar (index-screen.js) builds
+           // three `.picker` DOM nodes at runtime and wires them with
+           // makePicker, and secInitLaunchCombos (analysis.js) does the same
+           // for the three `.combo` nodes replacing sec-repo/sec-branch/
+           // sec-profile's old <select>s. Safe to read this early (this
+           // object is built before CCSecurity.init(CC) even runs): both are
+           // `function` declarations, hoisted whole, not `const`/`let` --
+           // test_every_name_ccapp_and_ccsecurity_init_pass_is_already_usable
+           // exists to catch exactly the alternative.
+           //
+           // iconHTML (grouped with icon/iconLabel above, not here) is what
+           // feeds makePicker's own cfg.icon/row.icon: bin/dashboard.html's
+           // paintTrigger/paintList concatenate it into a trigger/row's own
+           // markup STRING, the same shape every other picker's cfg already
+           // passes -- not an element the way icon() wraps one. dom.js's
+           // secIconHTML reads this rather than pulling the string back out
+           // of icon()'s own returned element, which would spell, bare, the
+           // one DOM property name this area's own sink guard
+           // (tests/test_page_contract.py) bans from every module under ui/
+           // -- a read is as invisible to that guard's plain substring check
+           // as a write, and rightly so, since nothing there can tell code
+           // from prose either.
+           makePicker, createCombo;
 
 /* DATA and currentView are the two the page REASSIGNS as it runs — DATA on
    every five-second poll, currentView on every navigation. Destructured into a
@@ -47,6 +82,6 @@ export let CC = null;
 export function bindPage(cc) {
   CC = cc;
   ({ $, TOKEN, api, toast, openLog, projById, sessionLost, unjournaledLive,
-     fmtAgo, fmtWhen, fmtDur, money, icon, iconLabel, openProjectEditor,
-     pageHeader, kpiCard, tableFooter } = cc);
+     fmtAgo, fmtWhen, fmtDur, money, icon, iconLabel, iconHTML, openProjectEditor,
+     pageHeader, kpiCard, tableFooter, makePicker, createCombo } = cc);
 }

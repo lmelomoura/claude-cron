@@ -466,30 +466,128 @@ async function secFindDeleteSaved(fs, name){
   await secFindRefresh(fs);
 }
 
+// The house <details>/<summary>/.menu-pop popover (Phase 4 Task 5) --
+// secIndexProjectRow's own kebab and secFindingsPeriodPicker (both
+// index-screen.js) already draw this exact shape for the identical reason:
+// a short, dynamically-populated list with no paging, mounted and torn down
+// far too often for makePicker's own module-level PICKERS registry (built
+// for STATIC, boot-once markup -- Jobs/Runs' pickers, and this screen's own
+// three filter pickers, all live exactly once for the page's whole life).
+// This one is neither: renderFindings rebuilds its whole host, savedName
+// included, on every filter change and every poll tick, AND -- see this
+// file's own "ONE MODULE, TWO HOMES" comment -- can be mounted twice at
+// once (the Findings tab and the Activity screen's fingerprint dialog). A
+// <details>-based popover closes over its OWN nodes, not a shared id
+// registry, so neither repeated rebuilds nor two live instances collide the
+// way a second makePicker("secfind-saved", ...) call on a duplicate id
+// would.
 function secFindSavedFilters(fs, data){
   const bar = secEl("div", "secbar");
   const pickField = secEl("div", "secfield");
   pickField.appendChild(secEl("span", null, "Saved filters"));
-  const sel = document.createElement("select");
-  const blank = document.createElement("option");
-  blank.value = ""; blank.textContent = "— choose —";
-  sel.appendChild(blank);
-  (data.filters || []).forEach(f => {
-    const o = document.createElement("option");
-    // .value/.textContent, never markup: a saved filter's name is a string a
-    // human typed on this page, but still text a reader did not write, the
-    // same rule every other value in this area follows.
-    o.value = f.name; o.textContent = f.name;
-    sel.appendChild(o);
+
+  const filters = data.filters || [];
+  // Mirrors the old <select>'s own reset: a name that no longer matches any
+  // saved filter (renamed or deleted from elsewhere) must not keep pinning
+  // the field to it.
+  if(!filters.some(f => f.name === fs.savedName)) fs.savedName = "";
+
+  const delBtn = secEl("button", "btn ghost", "Delete");
+  delBtn.type = "button";
+  delBtn.disabled = !fs.savedName;
+  delBtn.onclick = () => secFindDeleteSaved(fs, fs.savedName);
+
+  const wrap = document.createElement("details");
+  wrap.className = "secfind-savedpick";
+  const trigger = document.createElement("summary");
+  trigger.className = "filterpick";
+  // Found live by secFindingsPeriodPicker first (see that function's own
+  // comment): bin/dashboard.html's global "click outside a menu-pop closes
+  // every open one" listener has no idea this menu is a <details> rather
+  // than the older hidden-attribute-toggled pattern, and hides this very
+  // popover a beat before the browser's own default action opens it, unless
+  // the opening click is stopped here from ever reaching that listener.
+  trigger.onclick = (e) => e.stopPropagation();
+  const valueEl = secEl("span", null, fs.savedName || "— choose —");
+  trigger.appendChild(valueEl);
+  trigger.appendChild(secIcon("cdown"));
+  wrap.appendChild(trigger);
+
+  const pop = secEl("div", "menu-pop");
+  pop.setAttribute("role", "menu");
+
+  // A custom widget has no browser-native "picking an option repaints the
+  // control" behaviour the way the old <select> did -- the trigger label and
+  // the Delete button's own enabled state are repainted here, by hand, on
+  // every pick (the list itself is rebuilt fresh from scratch the next time
+  // it opens, so it never needs a matching manual repaint).
+  function pick(name, query){
+    fs.savedName = name;
+    valueEl.textContent = name || "— choose —";
+    delBtn.disabled = !name;
+    wrap.open = false;
+    // Only a REAL saved filter re-fetches -- picking "— choose —" just
+    // clears the field, the same no-op the old <select>'s blank option was
+    // (sel.value === "" never matched a saved filter's own name, so
+    // secFindApplyQuery was never reached for it either).
+    if(query) secFindApplyQuery(fs, query);
+  }
+
+  const blank = document.createElement("button");
+  blank.type = "button";
+  blank.setAttribute("role", "menuitem");
+  blank.appendChild(document.createTextNode("— choose —"));
+  if(!fs.savedName) blank.appendChild(secIcon("check2"));
+  blank.onclick = (e) => { e.stopPropagation(); pick(""); };
+  pop.appendChild(blank);
+
+  filters.forEach(f => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.setAttribute("role", "menuitem");
+    // .textContent, never markup: a saved filter's name is a string a human
+    // typed on this page, but still text a reader did not write, the same
+    // rule every other value in this area follows.
+    item.appendChild(document.createTextNode(f.name));
+    if(f.name === fs.savedName) item.appendChild(secIcon("check2"));
+    item.onclick = (e) => { e.stopPropagation(); pick(f.name, f.query); };
+    pop.appendChild(item);
   });
-  if((data.filters || []).some(f => f.name === fs.savedName)) sel.value = fs.savedName;
-  else fs.savedName = "";
-  sel.addEventListener("change", () => {
-    fs.savedName = sel.value;
-    const found = (data.filters || []).find(f => f.name === sel.value);
-    if(found) secFindApplyQuery(fs, found.query);
-  });
-  pickField.appendChild(sel);
+  wrap.appendChild(pop);
+
+  // Found live, the hard way: bin/dashboard.html's global closeMenus() (bound
+  // on document, fired by any click that is not inside an open .menu-pop --
+  // navigating to this very tab is exactly such a click) sets `hidden` on
+  // EVERY `.menu-pop` in the document that does not already carry it,
+  // including one this function only just built and never opened yet.
+  // secIndexProjectRow's own kebab and secFindingsPeriodPicker (both
+  // index-screen.js) share this exact shape and are not immune to the same
+  // race in principle, but in practice self-heal within one 5-second poll
+  // tick, which rebuilds their markup hidden-attribute-free again; this
+  // table has no such tick (it fetches on demand, not on a timer), so a
+  // find-filters bar built once could stay silently un-openable until the
+  // next filter change or tab switch rebuilt it. Setting `hidden` here, from
+  // the trigger's OWN open/close state rather than trusting whatever a
+  // stray earlier click left behind, is what makes ontoggle the one place
+  // that can never disagree with `wrap.open`.
+  //
+  // Positioning is recomputed on every open from the trigger's own screen
+  // position, the identical fix secIndexProjectRow's own kebab and
+  // secFindingsPeriodPicker both already need: this table sits inside an
+  // overflow-clipped card the same way theirs do, which cuts off a popup
+  // positioned any other way.
+  wrap.ontoggle = () => {
+    pop.hidden = !wrap.open;
+    if(!wrap.open) return;
+    const r = trigger.getBoundingClientRect();
+    pop.style.position = "fixed";
+    pop.style.top = (r.bottom + 6) + "px";
+    pop.style.left = r.left + "px";
+    pop.style.right = "auto";
+    pop.style.bottom = "auto";
+  };
+
+  pickField.appendChild(wrap);
   bar.appendChild(pickField);
 
   const nameField = secEl("div", "secfield");
@@ -507,10 +605,6 @@ function secFindSavedFilters(fs, data){
   saveBtn.onclick = () => secFindSaveCurrent(fs, nameInput.value);
   bar.appendChild(saveBtn);
 
-  const delBtn = secEl("button", "btn ghost", "Delete");
-  delBtn.type = "button";
-  delBtn.disabled = !fs.savedName;
-  delBtn.onclick = () => secFindDeleteSaved(fs, fs.savedName);
   bar.appendChild(delBtn);
 
   return bar;

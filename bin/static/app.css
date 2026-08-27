@@ -1528,9 +1528,14 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .warnline.bad{border-color:color-mix(in srgb,var(--err) 40%,var(--line));
   background:var(--err-soft);color:var(--err)}
 .secfield > span{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
-.secfield select,.secfield input{font:inherit;font-size:13px;padding:8px 11px;min-width:160px;
+.secfield input{font:inherit;font-size:13px;padding:8px 11px;min-width:160px;
   max-width:280px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);color:var(--ink)}
-.secfield select:focus,.secfield input:focus{outline:none;border-color:var(--accent)}
+.secfield input:focus{outline:none;border-color:var(--accent)}
+/* sec-repo/sec-branch/sec-profile are the house combo now (Phase 4 Task 5),
+   not a bare <select> -- .combo-trigger (above) already carries its own
+   border/padding/background, so this only bounds the WRAPPER's width the
+   way the old select/input rule above did, rather than doubling the box. */
+.secfield .combo{min-width:160px;max-width:280px}
 .secstat{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted);
   background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 13px;margin:0 0 12px}
 .secstat b{color:var(--ink);font-weight:650}
@@ -1572,7 +1577,7 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .sechrow .grow{flex:1 1 auto;min-width:0;color:var(--muted)}
 @media (max-width:700px){
   .secfield{flex:1 1 100%}
-  .secfield select,.secfield input{max-width:none;width:100%}
+  .secfield .combo,.secfield input{max-width:none;width:100%}
 }
 /* -------------------------------------------------------- project screen
    The header strip, the Overview/Runs tabs (viewtabs/pane, the same
@@ -1687,17 +1692,20 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secidx-kebab > summary{list-style:none;cursor:pointer}
 .secidx-kebab > summary::-webkit-details-marker{display:none}
 .secidx-kebab .menu-pop{top:calc(100% + 6px);bottom:auto}
-/* Copies .picker-trigger's look (components.css) by hand -- see
-   secProjectsFilterBar's own comment on why this is a plain <select>, not
-   that widget's real .picker/.picker-pop. */
+/* The trigger look shared by every <details>/<summary>/.menu-pop popover on
+   this page that is not the full makePicker/createCombo widget --
+   secFindingsPeriodPicker's own (index-screen.js) and secFindSavedFilters'
+   (findings-screen.js). It used to also be secProjectsFilterBar's own three
+   filter triggers, copying .picker-trigger's look by hand around a plain
+   <select> (ui/app/chrome.js's own filterBar comment explains the widget
+   this was standing in for); Phase 4 Task 5 gave that bar the real
+   `.picker`/`.picker-pop` instead (see that function's own comment), so
+   `.filterpick` is scoped to the two <details> triggers now. */
 .filterpick{display:inline-flex;align-items:center;gap:8px;font:inherit;font-size:12.5px;
   padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:var(--panel);
   color:var(--ink);cursor:pointer}
 .filterpick:hover{border-color:var(--muted)}
 .filterpick .ic{width:15px;height:15px;color:var(--muted);flex:none}
-.filterpick .fp-k{color:var(--muted);flex:none;white-space:nowrap}
-.filterpick select{font:inherit;font-weight:600;color:var(--ink);border:0;outline:0;
-  background:transparent;cursor:pointer}
 /* A capped analysis is a PARTIAL read (see secIndexProjectRow) -- flagged the
    same register as .sevpill.medium (warn tokens, not a new colour) so the
    badge reads as a caution beside the pills it sits next to, not decoration. */
@@ -1772,6 +1780,17 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secidx-periodpick > summary::-webkit-details-marker{display:none}
 .secidx-periodpick .menu-pop{top:calc(100% + 6px);bottom:auto;min-width:168px}
 .secidx-periodpick .menu-pop button{justify-content:space-between}
+/* The findings browser's own saved-filters picker (Phase 4 Task 5,
+   findings-screen.js) -- the identical <details>/<summary>/.menu-pop shape
+   as .secidx-periodpick just above, for the identical reason (see
+   secFindSavedFilters's own comment): a short, dynamically-populated list
+   that gets rebuilt far too often, and can be mounted twice at once, for
+   makePicker's own once-per-page-life PICKERS registry. */
+.secfind-savedpick{position:relative;display:inline-flex}
+.secfind-savedpick > summary{list-style:none;cursor:pointer}
+.secfind-savedpick > summary::-webkit-details-marker{display:none}
+.secfind-savedpick .menu-pop{top:calc(100% + 6px);bottom:auto;min-width:168px}
+.secfind-savedpick .menu-pop button{justify-content:space-between}
 /* The shared donut+legend+categories block (secIndexDonut), planted inside
    THIS card's own box instead of bare in a sidebar -- `.secidx-donutwrap`'s
    own background/border/shadow/padding is for the latter (project-screen.js
@@ -1888,5 +1907,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: d503d42aff9553d9238a85c1acef65aa52f39772867a904e11f2c881920828e5 */
-/* ui-sources: 6461f456be9f74dc6adf4324613dd96bfb9dff7459cba930522798bdbf8a432f */
+/* ui-bundle: d1158356e23e6fc06ce5e785c1019d232aea9ba9310b212b9f038dc0de6f4d95 */
+/* ui-sources: e43c7b5f5bfc8acefb2a4926ed5abb1d80d67d1d6858d92a832c39899318198a */

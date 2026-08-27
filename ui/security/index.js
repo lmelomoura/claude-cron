@@ -23,7 +23,7 @@ import { bindPage, $, iconLabel, CC } from "./page.js";
 import { SEC_PROFILES, SEV_ORDER } from "./vocabulary.js";
 import { secState } from "./state.js";
 import { secRenderIndex, secLoadIndex } from "./index-screen.js";
-import { secBack, secEnter, secLeave, secLoadBranches, secSyncScope } from "./analysis.js";
+import { secBack, secEnter, secLeave, secSyncScope, secInitLaunchCombos } from "./analysis.js";
 import { secAnalyse, secDownload } from "./actions.js";
 import { wireReasonDialog } from "./reason.js";
 import { secSwitchProjectTab } from "./project-screen.js";
@@ -100,17 +100,12 @@ function init(cc){
   $("sec-dl-json").addEventListener("click", () => secDownload("json"));
   $("sec-dl-html").addEventListener("click", () => secDownload("html"));
   $("sec-dl-sbom").addEventListener("click", () => secDownload("sbom"));
-  $("sec-repo").addEventListener("change", async () => {
-    await secLoadBranches("");
-    $("sec-branch-other").value = "";
-    secSyncScope();
-  });
-  // Choosing from the list is a decision; the typed field would otherwise keep
-  // overruling it from off screen.
-  $("sec-branch").addEventListener("change", () => {
-    $("sec-branch-other").value = "";
-    secSyncScope();
-  });
+  // sec-repo/sec-branch are the house combo now (Phase 4 Task 5): a hidden
+  // input's `.value` is never touched by a person, so a `change` listener
+  // here would simply stop firing. secInitLaunchCombos (analysis.js) wires
+  // the equivalent behaviour -- "pick a repo, reload its branches", "choosing
+  // from the list overrules the typed field" -- as each combo's own onPick.
+  secInitLaunchCombos();
   // `change`, not `input`: a fetch per keystroke would be a subprocess per
   // keystroke on the server.
   $("sec-branch-other").addEventListener("change", () => secSyncScope());

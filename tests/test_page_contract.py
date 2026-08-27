@@ -2854,6 +2854,66 @@ def test_the_html_sink_denylist_would_catch_one(srv):
         block + '\n  b.setAttribute("onclick", "secDecide(" + f.id + ")");\n')
 
 
+# ---- the native <select> ban. Two user reports on this branch, both about
+# the same thing: a bare <select> renders as a grey OS menu right next to the
+# house .picker (makePicker) or .combo (createCombo) every other dropdown in
+# the product wears, and drags a SECOND chevron of its own in on top of
+# whichever one the surrounding markup already drew -- the extra chevron is
+# what made the Security index's own filter bar wrap under Refresh at the
+# pane's own width, before Phase 4 Task 5 fixed it. The house has one
+# dropdown vocabulary; this is the guard that keeps a native <select> from
+# ever joining it again -- not just the six the plan named (the filter bar's
+# three, the Analyse launcher's three) but the findings browser's own
+# saved-filters dropdown this task found unnamed on its own, which is
+# exactly the kind of instance a scan over every module beats a scan over a
+# named list at catching.
+
+def _select_findings(page, sources_text):
+    """Every sign of a native <select> the guard below refuses: a literal
+    <select> tag anywhere the rendered page sends to the browser, or a
+    createElement("select") / createElement('select') call anywhere under
+    ui/ -- both quote styles, since nothing here enforces which one a future
+    edit reaches for.
+
+    HTML comments are stripped from `page` first: this file's own prose (and
+    bin/dashboard.html's, explaining what a field used to be) says "<select>"
+    freely, same as the codebase already did before this guard existed --
+    the rule is about what the browser renders or the script creates, not
+    about the five characters "<select" appearing in a sentence. The
+    JS-source check gets no such pass: createElement("select"/'select') is
+    specific enough as a call shape that prose is never going to write it by
+    accident (this file's own HTML_SINKS denylist above leans on the same
+    idea -- innerHTML alone, in a sentence, matches none of its patterns
+    either)."""
+    rendered = re.sub(r"<!--.*?-->", "", page, flags=re.S)
+    found = []
+    if "<select" in rendered:
+        found.append("<select> in the rendered page")
+    if re.search(r"""createElement\(\s*["']select["']\s*\)""", sources_text):
+        found.append('createElement("select") under ui/')
+    return found
+
+
+def test_the_page_and_every_ui_module_are_free_of_native_selects(srv):
+    """_security_sources() (see its own comment) already walks the whole of
+    `ui/` by default, ui/app/ included -- one scan, not two, covers both "the
+    Security area" and "the app bundle" the same way _security_js's own
+    HTML-sink guards above do."""
+    found = _select_findings(_page(srv), _security_js(srv))
+    assert not found, f"a native <select> survives: {found}"
+
+
+def test_the_select_ban_would_catch_one(srv):
+    """The guard above passes today because there is nothing left to find,
+    which is also what a broken guard looks like. Mutate the real page and
+    the real sources the way a regression actually would -- a hand-written
+    <select> back in the markup, a createElement call in either quote style
+    -- and check each shape is seen."""
+    assert _select_findings(_page(srv) + '\n<select id="regression"></select>\n', _security_js(srv))
+    assert _select_findings(_page(srv), _security_js(srv) + '\n  document.createElement("select");\n')
+    assert _select_findings(_page(srv), _security_js(srv) + "\n  document.createElement('select');\n")
+
+
 def test_the_severity_filter_never_hides_a_fixed_finding(srv):
     assert 'f.state === "fixed" ||' in _security_js(srv)
 

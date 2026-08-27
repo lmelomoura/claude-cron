@@ -1,6 +1,6 @@
 /* --------------------------------------------------------- one project */
-import { $, CC, api, toast, openLog, projById, fmtAgo, fmtDur, money } from "./page.js";
-import { secIcon, secEl, secFill, secFetch } from "./dom.js";
+import { $, CC, api, toast, openLog, projById, fmtAgo, fmtDur, money, createCombo } from "./page.js";
+import { secIcon, secEl, secFetch } from "./dom.js";
 import { SEC_POLL_MS, SEC_PROFILES, SEC_STATES, SEC_STATE_HELP, SEC_STATE_LABEL,
          SEV_ORDER, SEC_NEVER, secDefaultProfile, secMinSeverity, secPosture,
          secRepos, secSevKey, secSevRank, secStateKey, secVisible } from "./vocabulary.js";
@@ -9,6 +9,40 @@ import { secInvalidateIndex, secRenderIndex, secLoadIndex } from "./index-screen
 import { secRunFor, secRenderHistory } from "./history.js";
 import { secAskReason } from "./reason.js";
 import { secInvalidateProject, secRefreshProject } from "./project-screen.js";
+
+// "quick" -> "Quick": the launcher's own profile combo, mapped off the same
+// SEC_PROFILES list the project editor's default-profile combo already maps
+// with its own titleOpt (bin/dashboard.html) -- not a second hand-typed
+// "Quick"/"Standard"/"Deep" list, which is exactly what the old <option>
+// markup this replaces would have become the moment a fourth profile shipped.
+function secProfileOpt(v){ return {v, label: v.charAt(0).toUpperCase() + v.slice(1)}; }
+
+// The three combos that replaced sec-repo/sec-branch/sec-profile's native
+// <select>s (Phase 4 Task 5). Populated by secOpen/secLoadBranches below,
+// exactly where secFill() used to feed the bare <select>s; read by
+// secScope/secAnalyse through the hidden input each keeps, at the same id,
+// so neither of those changed at all.
+let secRepoCombo = null, secBranchCombo = null, secProfileCombo = null;
+
+// Wires the three above onto the static markup bin/dashboard.html now draws
+// for them -- called once from index.js's own init(), the identical
+// "constructed once at boot" moment bin/dashboard.html's own initCombos()
+// wires every other combo on the page. createCombo itself stays defined
+// there (see page.js's own comment on the chrome bridge, and makePicker's
+// twin one in secProjectsFilterBar below) -- bridged in through
+// CCSecurity.init(CC) because the WIDGET is the page's, but what populates
+// it and what a pick does is this area's own.
+export function secInitLaunchCombos(){
+  // onPick mirrors exactly what index.js's own sec-repo/sec-branch `change`
+  // listeners did before this task -- a hidden input's `.value` is never
+  // touched by a person, so those listeners would otherwise just stop firing.
+  secRepoCombo = createCombo({id: "sec-repo", allowNone: false,
+    onPick: async () => { await secLoadBranches(""); $("sec-branch-other").value = ""; secSyncScope(); }});
+  secBranchCombo = createCombo({id: "sec-branch", allowNone: false,
+    onPick: () => { $("sec-branch-other").value = ""; secSyncScope(); }});
+  secProfileCombo = createCombo({id: "sec-profile", allowNone: false, def: "standard"});
+  secProfileCombo.set("standard", SEC_PROFILES.map(secProfileOpt));
+}
 
 let secTimer = null;
 export function secStopPoll(){ if(secTimer){ clearInterval(secTimer); secTimer = null; } }
@@ -80,11 +114,11 @@ export async function secOpen(project){
 
   const p = projById(project) || {};
   const repos = secRepos(p);
-  secFill($("sec-repo"), repos);
+  secRepoCombo.set("", repos.map(r => ({v: r, label: r})));
   // With one checkout there is nothing to choose between, and the row is filed
   // under the project's own name either way.
   $("sec-repo-field").hidden = repos.length < 2;
-  $("sec-profile").value = secDefaultProfile(project);
+  secProfileCombo.set(secDefaultProfile(project));
   $("sec-branch-other").value = "";
 
   try{
@@ -97,10 +131,10 @@ export async function secOpen(project){
   }
   // Open on what was last analysed: that is the screen somebody came back for.
   const last = secState.analyses[0];
-  if(last && repos.includes(last.repo)) $("sec-repo").value = last.repo;
+  if(last && repos.includes(last.repo)) secRepoCombo.set(last.repo);
   await secLoadBranches(last ? last.branch : "");
   if(seq !== secState.seq) return;
-  if(last && SEC_PROFILES.includes(last.profile)) $("sec-profile").value = last.profile;
+  if(last && SEC_PROFILES.includes(last.profile)) secProfileCombo.set(last.profile);
   // secSyncScope() takes the next generation for itself, so nothing after this
   // may test `seq` again.
   await secSyncScope();
@@ -112,8 +146,7 @@ export async function secLoadBranches(want){
   // somebody has already navigated away from must not fill the picker of the
   // one now on screen.
   const seq = secState.seq;
-  const sel = $("sec-branch");
-  secFill(sel, ["…"], "…");
+  secBranchCombo.set("…", [{v: "…", label: "…"}]);
   let branches = [];
   try{
     const j = await secFetch("/api/security/branches?project="
@@ -122,14 +155,14 @@ export async function secLoadBranches(want){
     branches = j.branches || [];
   }catch(e){
     if(seq !== secState.seq) return;
-    secFill(sel, []);
+    secBranchCombo.set("", []);
     toast("Could not list branches — " + e.message, true);
     return;
   }
   // The branch of the last analysis may be gone from the checkout by now; it is
   // still the one this screen is about, so it stays in the list.
   if(want && !branches.includes(want)) branches = [want].concat(branches);
-  secFill(sel, branches, want);
+  secBranchCombo.set(want, branches.map(b => ({v: b, label: b})));
 }
 
 /* What the three controls currently say. The free-text field wins when it has

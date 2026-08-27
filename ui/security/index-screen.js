@@ -17,8 +17,8 @@
    called secRenderList()), and refetched only on an explicit Refresh or
    when something that changed the numbers just happened (secBack(), after
    leaving a project screen where an analysis may have just finished). */
-import { $, fmtAgo, pageHeader, kpiCard, tableFooter, openProjectEditor } from "./page.js";
-import { secIcon, secEl, secFetch } from "./dom.js";
+import { $, fmtAgo, pageHeader, kpiCard, tableFooter, openProjectEditor, makePicker } from "./page.js";
+import { secIcon, secIconHTML, secEl, secFetch } from "./dom.js";
 import { SEC_NEVER, SEC_FLOOR_SCOPE_NOTE, secRuleMeta } from "./vocabulary.js";
 // secSwitchProjectTab: "View full report" (Phase 4 Task 4) opens a project
 // straight onto its own Reports tab -- see secViewFullReportButton, below.
@@ -204,7 +204,7 @@ export function secRenderIndex(){
   // never fetching again -- "filters THIS table client-side from what the
   // payload carries" (Phase 4 Task 3), not a new round trip per filter.
   secLatestProjects = data.projects || [];
-  secRefreshFilterOptions(secLatestProjects);
+  secClearStaleFilterValues(secLatestProjects);
   secRepaintProjectsTable();
 
   // `{rows, total}` now (Phase 4 Task 5) -- `queries.recent_analyses` pages
@@ -712,23 +712,30 @@ function secIndexProjectsTable(projects, footer){
    Refresh (moved here from the header, see secRenderHead's own comment) is
    still the only thing that asks the server again.
 
-   Plain <select>s, not chrome.js's own custom `.picker`/`makePicker()`
-   widget (ui/app/chrome.js's own filterBar comment, and bin/dashboard.html's
-   makePicker itself): that widget's pickers are static markup already
-   wired, per id, inside dashboard.html at boot -- Jobs/Runs/Projects all
-   reach for ALREADY-BUILT elements filterBar only lays out, never ones it
-   builds itself. Four brand-new pickers for a screen in a SEPARATE bundle
-   (ui/security/, built apart from ui/app/ -- see ui/security/index.js's own
-   banner comment on why) would mean porting that widget's JS across the
-   bundle split for this one filter bar, a bigger migration than this
-   table's own redesign asked for -- `.filterpick` (ui/css/pages.css) copies
-   `.picker-trigger`'s look by hand instead, so restyling the real widget
-   later cannot silently restyle a plain select it was never meant to reach. */
+   The house `.picker` widget now (Phase 4 Task 5), not a hand-copied
+   `.filterpick` wearing a plain <select>: three native selects here, plus
+   three more on the Analyse launcher (analysis.js), were the product's last
+   ones, flagged twice by the same reader, and each one wore TWO chevrons --
+   the native indicator plus this screen's own decorative one -- which is
+   what made the bar wrap under Refresh at the pane's own width in the first
+   place. bin/dashboard.html's makePicker() is bridged in through
+   CCSecurity.init(CC) rather than ported a second time into this bundle
+   (see ui/security/page.js's own comment on why that bridge runs in THIS
+   direction, the opposite of pageHeader/kpiCard/tableFooter's) -- this
+   screen still builds the markup, at runtime, the way it always has (unlike
+   Jobs/Runs' own pickers, this screen's DOM is never static); it just wires
+   that markup with the real widget instead of copying its look by hand.
+   secPickerShell builds the `.picker`/`-trigger`/`-pop`/`-list` nodes
+   makePicker expects to already find by id; secInitProjectFilterPickers
+   wires each one, called only AFTER secMountProjectsSection has actually
+   attached that markup to the live document -- makePicker's own constructor
+   looks its ids up with $(), document.getElementById underneath, which
+   finds nothing on a still-detached fragment and would silently wire
+   nothing. */
 let secProjectFilters = {query: "", status: "", profile: "", branch: ""};
 let secLatestProjects = [];
 let secProjectsTableHost = null;
-let secProfileFilterSelect = null;
-let secBranchFilterSelect = null;
+let secStatusPicker = null, secProfileFilterPicker = null, secBranchFilterPicker = null;
 
 /* Pure and exported: filters `projects` against `filters` with no DOM and
    no module state of its own, so a test can drive it directly with a
@@ -752,41 +759,35 @@ export function secFilterProjects(projects, filters){
   });
 }
 
-function secOption(value, label){
-  const o = document.createElement("option");
-  o.value = value;
-  o.textContent = label;
-  return o;
-}
-
-// Repopulates an already-built <select> in place (never recreated -- see
-// secMountProjectsSection's own comment on why the bar itself is built
-// once) with "All" plus one option per value, restoring `selected` when it
-// is still among them -- a stale profile/branch (the one project that had
-// it is gone after a Refresh) must not silently pin the picker to a value
-// nothing can ever match again.
-function secFillFilterOptions(select, values, selected){
-  select.textContent = "";
-  select.appendChild(secOption("", "All"));
-  values.forEach(v => select.appendChild(secOption(v, v)));
-  select.value = (selected && values.includes(selected)) ? selected : "";
-}
-
 function secUniqueValues(projects, key){
   return [...new Set((projects || []).map(p => p[key]).filter(Boolean))].sort();
 }
 
-// One picker: an icon, a muted "Label:", the live <select> and a trailing
-// chevron -- `.filterpick`'s own shape (ui/css/pages.css).
-function secFilterPick(iconName, label, id){
-  const wrap = secEl("label", "filterpick");
-  wrap.appendChild(secIcon(iconName));
-  wrap.appendChild(secEl("span", "fp-k", label));
-  const select = document.createElement("select");
-  select.id = id;
-  wrap.appendChild(select);
-  wrap.appendChild(secIcon("cdown"));
-  return {wrap, select};
+// The bare `.picker`/`-trigger`/`-pop`/`-list` shell makePicker's own
+// constructor wires by id -- no search box, no paged footer: all three
+// filters below are short, in-memory lists with nothing to page through,
+// the same shape jobStatusPicker/runStatusPicker/runSizePicker already use
+// for the identical reason (bin/dashboard.html, see makePicker's own
+// comment on cfg.pageSize).
+function secPickerShell(id){
+  const wrap = secEl("div", "picker");
+  wrap.id = id;
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "picker-trigger";
+  trigger.id = id + "-trigger";
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+  wrap.appendChild(trigger);
+  const pop = secEl("div", "picker-pop");
+  pop.id = id + "-pop";
+  pop.hidden = true;
+  const list = secEl("div", "picker-list");
+  list.id = id + "-list";
+  list.setAttribute("role", "listbox");
+  pop.appendChild(list);
+  wrap.appendChild(pop);
+  return wrap;
 }
 
 function secProjectsFilterBar(){
@@ -802,22 +803,9 @@ function secProjectsFilterBar(){
   search.appendChild(input);
   bar.appendChild(search);
 
-  const status = secFilterPick("filter", "Status:", "secpj-filter-status");
-  status.select.appendChild(secOption("", "All"));
-  status.select.appendChild(secOption("active", "Active"));
-  status.select.appendChild(secOption("disabled", "Disabled"));
-  status.select.onchange = () => { secProjectFilters.status = status.select.value; secRepaintProjectsTable(); };
-  bar.appendChild(status.wrap);
-
-  const profile = secFilterPick("shield", "Profile:", "secpj-filter-profile");
-  profile.select.onchange = () => { secProjectFilters.profile = profile.select.value; secRepaintProjectsTable(); };
-  bar.appendChild(profile.wrap);
-  secProfileFilterSelect = profile.select;
-
-  const branch = secFilterPick("gitbranch", "Branch:", "secpj-filter-branch");
-  branch.select.onchange = () => { secProjectFilters.branch = branch.select.value; secRepaintProjectsTable(); };
-  bar.appendChild(branch.wrap);
-  secBranchFilterSelect = branch.select;
+  bar.appendChild(secPickerShell("secpj-filter-status"));
+  bar.appendChild(secPickerShell("secpj-filter-profile"));
+  bar.appendChild(secPickerShell("secpj-filter-branch"));
 
   bar.appendChild(secEl("div", "spacer"));
 
@@ -843,17 +831,94 @@ function secProjectsFilterBar(){
   return bar;
 }
 
-function secRefreshFilterOptions(projects){
-  if(secProfileFilterSelect) secFillFilterOptions(secProfileFilterSelect,
-    secUniqueValues(projects, "profile"), secProjectFilters.profile);
-  if(secBranchFilterSelect) secFillFilterOptions(secBranchFilterSelect,
-    secUniqueValues(projects, "branch"), secProjectFilters.branch);
+// Wired onto secProjectsFilterBar's own markup by secMountProjectsSection,
+// once, right after that markup is attached to the live document. Each cfg
+// mirrors exactly what the three <select>s' own onchange handlers did
+// before this task: valueLabel reads secProjectFilters, rows counts
+// secLatestProjects by the SAME predicate secFilterProjects itself checks
+// (above), onPick writes the filter and repaints the table. "All" always
+// carries the `layers` icon, the same "this row means every one of them"
+// convention every other picker's own "All ..." row already uses
+// (bin/dashboard.html's projPicker/jobStatusPicker/runProjPicker/
+// runJobPicker/runStatusPicker); a real profile/branch value has no
+// individual icon of its own to reach for, so it wears the picker's own
+// trigger icon instead, the same way runSizePicker's page-size rows all
+// wear `layers`, its own trigger icon, rather than nothing.
+function secInitProjectFilterPickers(){
+  secStatusPicker = makePicker("secpj-filter-status", {
+    icon: secIconHTML("filter"), label: "Status",
+    valueLabel: () => secProjectFilters.status === "active" ? "Active"
+      : secProjectFilters.status === "disabled" ? "Disabled" : "All",
+    rows: () => {
+      const projects = secLatestProjects;
+      const activeN = projects.filter(p => p.enabled !== false).length;
+      return [
+        {v: "", label: "All", n: projects.length,
+         sel: secProjectFilters.status === "", icon: secIconHTML("layers")},
+        {v: "active", label: "Active", n: activeN,
+         sel: secProjectFilters.status === "active", icon: secIconHTML("play")},
+        {v: "disabled", label: "Disabled", n: projects.length - activeN,
+         sel: secProjectFilters.status === "disabled", icon: secIconHTML("power")},
+      ];
+    },
+    onPick: (v) => { secProjectFilters.status = v; secRepaintProjectsTable(); },
+  });
+  secProfileFilterPicker = makePicker("secpj-filter-profile", {
+    icon: secIconHTML("shield"), label: "Profile",
+    valueLabel: () => secProjectFilters.profile ? secProfileLabel(secProjectFilters.profile) : "All",
+    rows: () => {
+      const projects = secLatestProjects, values = secUniqueValues(projects, "profile");
+      const rows = [{v: "", label: "All", n: projects.length,
+        sel: secProjectFilters.profile === "", icon: secIconHTML("layers")}];
+      values.forEach(v => rows.push({v, label: secProfileLabel(v),
+        n: projects.filter(p => p.profile === v).length,
+        sel: secProjectFilters.profile === v, icon: secIconHTML("shield")}));
+      return rows;
+    },
+    onPick: (v) => { secProjectFilters.profile = v; secRepaintProjectsTable(); },
+  });
+  secBranchFilterPicker = makePicker("secpj-filter-branch", {
+    icon: secIconHTML("gitbranch"), label: "Branch",
+    valueLabel: () => secProjectFilters.branch || "All",
+    rows: () => {
+      const projects = secLatestProjects, values = secUniqueValues(projects, "branch");
+      const rows = [{v: "", label: "All", n: projects.length,
+        sel: secProjectFilters.branch === "", icon: secIconHTML("layers")}];
+      values.forEach(v => rows.push({v, label: v,
+        n: projects.filter(p => p.branch === v).length,
+        sel: secProjectFilters.branch === v, icon: secIconHTML("gitbranch")}));
+      return rows;
+    },
+    onPick: (v) => { secProjectFilters.branch = v; secRepaintProjectsTable(); },
+  });
+}
+
+// A stale filter value -- the one project that had it just vanished after a
+// Refresh -- must not silently pin a picker to a value nothing can ever
+// match again. Used to reset a bare <select>'s own .value, which repainted
+// the trigger for free (a browser-native behaviour); now resets the plain
+// filter state instead, and secRepaintProjectsTable's own picker.paint()
+// calls below are what make the reset visible, since a custom widget has no
+// such free repaint.
+function secClearStaleFilterValues(projects){
+  const profiles = secUniqueValues(projects, "profile");
+  if(secProjectFilters.profile && !profiles.includes(secProjectFilters.profile)) secProjectFilters.profile = "";
+  const branches = secUniqueValues(projects, "branch");
+  if(secProjectFilters.branch && !branches.includes(secProjectFilters.branch)) secProjectFilters.branch = "";
 }
 
 // Repaints ONLY the table + footer -- never the filter bar mounted above it
-// (secMountProjectsSection), so the live search box and the two picker
-// selects are never rebuilt, on a poll tick or on a filter change alike.
+// (secMountProjectsSection), so the live search box is never rebuilt, on a
+// poll tick or on a filter change alike. The three pickers' own trigger
+// labels DO repaint here every time, though -- the identical "repaint on
+// every render, not just after a pick" idiom ui/app/jobs-table.js's own
+// paintJobFilterBar() already follows for paintJobPickers(), since a poll
+// tick can silently invalidate a stale profile/branch (secClearStaleFilterValues,
+// called from secRenderIndex below) with no onPick anywhere in the loop.
 function secRepaintProjectsTable(){
+  if(secStatusPicker) secStatusPicker.paint();
+  if(secProfileFilterPicker) secProfileFilterPicker.paint();
+  if(secBranchFilterPicker) secBranchFilterPicker.paint();
   if(!secProjectsTableHost) return;
   secProjectsTableHost.textContent = "";
   if(!secLatestProjects.length){
@@ -888,10 +953,14 @@ function secRepaintProjectsTable(){
 }
 
 // Runs exactly once (secRenderIndex's own mount guard): the filter bar built
-// here holds the live search box and the two picker <select>s, none of
-// which this screen may ever rebuild from scratch again after this.
+// here holds the live search box and the three pickers, none of which this
+// screen may ever rebuild from scratch again after this. secInitProjectFilterPickers
+// runs AFTER the appendChild, deliberately -- see this file's own banner
+// comment on the filter bar for why makePicker must find its ids already in
+// the live document.
 function secMountProjectsSection(sectionHost){
   sectionHost.appendChild(secProjectsFilterBar());
+  secInitProjectFilterPickers();
   secProjectsTableHost = secEl("div");
   sectionHost.appendChild(secProjectsTableHost);
 }
