@@ -559,6 +559,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The project editor's delete button says what it deletes.** The approved
+  artboard reads "Delete project"; the button read "Delete", and the job
+  editor's new "Delete job" sibling made the inconsistency visible.
+
+
 - **The product's dropdowns are now one vocabulary — the last native
   `<select>`s on converted pages are gone.** The project editor's Security
   pane rendered its default-profile and minimum-severity fields as grey
