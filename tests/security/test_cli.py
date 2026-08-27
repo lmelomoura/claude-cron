@@ -1973,7 +1973,7 @@ def test_index_data_survives_a_ledger_that_does_not_exist_yet(tmp_path):
         "posture": {"critical": 0, "high": 0, "medium": 0, "low": 0,
                     "info": 0, "total": 0},
         "profile": "", "last_started": 0, "last_duration": 0, "last_state": "",
-        "analyses": 0}]
+        "analyses": 0, "trend": []}]
     assert out["recent"] == []
     assert out["donut"] == {"critical": 0, "high": 0, "medium": 0, "low": 0,
                             "info": 0, "total": 0}
@@ -2018,6 +2018,11 @@ def test_index_data_shows_the_branch_it_fell_back_to(tmp_path):
     assert row["branch"] == "develop"
     assert row["branch_fell_back"] is True
     assert row["posture"]["critical"] == 1
+    # The declared base (`main`) has no history of its own -- the sparkline
+    # has no cell to say "fell back to develop" the way this row's own
+    # `branch_fell_back` does for its posture, so it shows nothing rather
+    # than silently plot `develop`'s history under `main`'s name.
+    assert row["trend"] == []
 
 
 def test_index_data_marks_a_project_row_whose_latest_analysis_is_capped(tmp_path):

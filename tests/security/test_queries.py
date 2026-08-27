@@ -337,10 +337,147 @@ def test_trend_query_carries_the_id_tiebreak_in_its_order_by(conn):
         "the tiebreak belongs in the SQL text, not in however the engine breaks a tie"
 
 
-def test_project_rows_reports_branch_posture(conn):
+# ---- Task 2 (Phase 4): the trend series comes back, this time served and
+# tested. `8c0eaf8` deleted `project_rows`'s own call to `trend()` because
+# nothing on the index screen rendered it; the render is a later task, and
+# `trend_series` is the reading it will draw from -- NOT `8c0eaf8`'s own
+# line un-deleted, because that line called `trend()` with the
+# FALLBACK-resolved branch (`default_branch_posture`'s own choice for the
+# posture cards), and a sparkline has no cell of its own to say "fell back
+# to develop" the way the Branch column's `branch_fell_back` does.
+# `trend_series` reads the project's DECLARED base only -- see its own
+# docstring in queries.py for the full reasoning.
+
+def test_trend_series_returns_open_counts_oldest_first(conn):
+    """Three finished analyses of the declared branch, backdated to known
+    times with known, deliberately non-monotonic open counts -- proves the
+    series is ordered by time, not by count or by id."""
+    a1 = _analysis(conn, "main", findings=[("critical", "secret")] * 3)
+    a2 = _analysis(conn, "main", findings=[("high", "sast")])
+    a3 = _analysis(conn, "main", findings=[("low", "hygiene")] * 2)
+    now = int(time.time())
+    conn.execute("UPDATE analysis SET started=? WHERE id=?", (now - 20 * 86400, a1))
+    conn.execute("UPDATE analysis SET started=? WHERE id=?", (now - 10 * 86400, a2))
+    conn.execute("UPDATE analysis SET started=? WHERE id=?", (now - 1 * 86400, a3))
+    conn.commit()
+
+    assert queries.trend_series(conn, {"name": "web", "base": "main"}) == [3, 1, 2]
+
+
+def test_trend_series_excludes_an_analysis_older_than_the_window(conn):
+    old = _analysis(conn, "main", findings=[("critical", "secret")])
+    recent = _analysis(conn, "main", findings=[("high", "sast")])
+    now = int(time.time())
+    conn.execute("UPDATE analysis SET started=? WHERE id=?", (now - 40 * 86400, old))
+    conn.execute("UPDATE analysis SET started=? WHERE id=?", (now - 5 * 86400, recent))
+    conn.commit()
+
+    series = queries.trend_series(conn, {"name": "web", "base": "main"}, days=30)
+    assert series == [1], "the analysis outside the 30-day window must not contribute a point"
+
+
+def test_trend_series_ignores_analyses_on_a_non_declared_branch(conn):
+    """`web` declares `main`; only `feature-x` has ever been analysed. Even
+    though `feature-x` has real history, the series for `main` must be
+    empty -- never another branch's history silently plotted under the
+    declared branch's name. The area's hardest-won rule (7edb912), applied
+    to the one column with no cell of its own to admit a fallback happened."""
+    _analysis(conn, "feature-x", findings=[("critical", "secret")])
+
+    series = queries.trend_series(conn, {"name": "web", "base": "main"})
+    assert series == [], "an analysis on a non-declared branch must not contribute"
+
+
+def test_trend_series_ignores_unfinished_and_failed_analyses(conn):
+    _analysis(conn, "main", state="running", findings=[])
+    _analysis(conn, "main", state="failed", findings=[("critical", "secret")])
+    _analysis(conn, "main", findings=[("high", "sast")])
+
+    series = queries.trend_series(conn, {"name": "web", "base": "main"})
+    assert series == [1], "only the finished analysis may contribute a point"
+
+
+def test_trend_series_counts_a_capped_analysis_like_posture_does(conn):
+    """A `capped` analysis is a PARTIAL read -- but `posture` and
+    `default_branch_posture` still count it (the incomplete badge is
+    carried elsewhere, not by dropping the number from the total).
+    Consistency with the rest of the page's numbers beats any private
+    opinion about what 'finished' should mean here."""
+    _analysis(conn, "main", state="capped", findings=[("high", "sast")])
+
+    series = queries.trend_series(conn, {"name": "web", "base": "main"})
+    assert series == [1], "a capped analysis contributes its own partial count, like posture does"
+
+
+def test_trend_series_is_empty_when_the_project_has_never_been_analysed(conn):
+    assert queries.trend_series(conn, {"name": "web", "base": "main"}) == []
+
+
+def test_trend_series_is_empty_with_no_declared_base(conn):
+    """No base configured is answered without a query -- the same 'nothing
+    declared, nothing to show' as a base that has never been analysed, not
+    a guess at some other branch."""
+    _analysis(conn, "main", findings=[("critical", "secret")])
+    assert queries.trend_series(conn, {"name": "web", "base": ""}) == []
+    assert queries.trend_series(conn, {"name": "web"}) == []
+
+
+def test_trend_series_does_not_count_a_fixed_finding_as_open(conn):
+    """Falsifiability: a finding present in one analysis and genuinely gone
+    from the next finished one is `fixed`, not open. Proving this needs two
+    real analyses where the finding actually disappears -- a change that
+    made `trend_series` sum every returned row regardless of state (instead
+    of filtering through `is_open`, as `trend`/`posture` already do) would
+    pass a unit test of `is_open` alone and still fail this."""
+    _analysis(conn, "main", findings=[("critical", "secret")])
+    _analysis(conn, "main", findings=[])
+
+    series = queries.trend_series(conn, {"name": "web", "base": "main"})
+    assert series == [1, 0], "the second point must not still count the fixed finding as open"
+
+
+def test_trend_series_reuses_the_checklist_already_cached_by_posture(tmp_path):
+    """`project_rows` computes `posture` (which calls `checklist` on the
+    declared branch's latest finished analysis) before it computes `trend`
+    for the same branch, on the same connection -- and that latest analysis
+    is also the newest point of a 30-day series whenever the branch has not
+    fallen back. On the read-only connection the server actually uses for
+    this (`_CachingConnection`, see `queries.read_only`) that must be a
+    cache hit, not a second `checklist()` (findings_of x2, a history scan,
+    decisions_for): the common case -- one analysis inside the window --
+    must cost nothing beyond `trend`'s own single SELECT on top of what
+    `posture` already paid.
+
+    Uses `queries.read_only`, not the plain `conn` fixture: the fixture is
+    `ledger.connect`'s own writable connection, which carries no
+    `_checklist_cache` at all (see `checklist`'s own docstring) -- asserting
+    a cache hit through it would pass for the wrong reason, or not at all."""
+    db = tmp_path / "security.db"
+    conn = ledger.connect(db)
+    _analysis(conn, "main", findings=[("high", "sast")])
+    conn.close()
+
+    ro = queries.read_only(db)
+    queries.posture(ro, "web", "main")
+
+    statements = []
+    ro.set_trace_callback(statements.append)
+    try:
+        series = queries.trend_series(ro, {"name": "web", "base": "main"})
+    finally:
+        ro.set_trace_callback(None)
+    ro.close()
+
+    assert series == [1]
+    assert len(statements) == 1, (
+        "trend_series should need only trend()'s own SELECT here -- this "
+        f"analysis's checklist is already cached by posture: {statements}")
+
+
+def test_project_rows_reports_branch_posture_and_trend(conn):
     """A project with two branches, one of them the declared base. The row
-    must reflect the base branch's own posture, not either branch's blindly,
-    and `analyses` counts the whole project."""
+    must reflect the base branch's own posture AND trend, not either
+    branch's blindly, and `analyses` counts the whole project."""
     _analysis(conn, "main", findings=[("critical", "secret")])
     _analysis(conn, "feature-x", findings=[("low", "hygiene")])
 
@@ -355,11 +492,9 @@ def test_project_rows_reports_branch_posture(conn):
     assert row["posture"]["critical"] == 1
     assert row["analyses"] == 2, "both branches count toward the project total"
     assert row["last_state"] == "done", "the row must carry the state posture was computed from"
-    # No `trend` key at all: the index screen's table never reads one (see
-    # `project_rows`'s own docstring), and a per-project `trend()` call would
-    # be a `checklist()` per analysis in the 30-day window, computed and
-    # thrown away on every index-screen load.
-    assert "trend" not in row
+    # The declared base's own history only -- `feature-x`'s low/hygiene
+    # finding must not leak into it. Branch discipline again.
+    assert row["trend"] == [1]
 
 
 def test_project_rows_carries_the_capped_state_for_an_incomplete_analysis(conn):

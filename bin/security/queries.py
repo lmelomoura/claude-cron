@@ -347,13 +347,16 @@ def project_rows(conn, projects):
     """One row per project. `projects` carries name, base and description,
     read from projects.json by the caller -- the ledger does not know them.
 
-    Deliberately does NOT carry `trend`: ui/security/index-screen.js's table
-    header is fixed at Project/Branch/Posture/Last analysis/Analyses and no
-    cell of it ever reads a row's trend, so computing one here paid for a
-    `checklist()` call per analysis in each project's 30-day window and threw
-    the result away on every index-screen load. `trend()` itself stays --
-    `branch_rows` (below) calls it legitimately, for the Branches tab that
-    actually renders it."""
+    Carries `trend` again, via `trend_series(conn, proj)` -- see `8c0eaf8`
+    for why it was dropped (no cell of the table read it; a later task adds
+    one) and `trend_series`'s own docstring for how this reading differs
+    from the one that commit deleted. That one read `branch`, the
+    FALLBACK-resolved column right below, so a project whose declared base
+    had never been analysed would have plotted another branch's history
+    under it, silently. `trend_series` reads `proj` -- the declared base
+    alone -- and returns `[]` rather than do that: the same discipline
+    `branch_fell_back` already enforces for the row's own posture, just with
+    no cell of its own to say so out loud."""
     out = []
     for proj in projects:
         name = proj["name"]
@@ -381,7 +384,11 @@ def project_rows(conn, projects):
             "last_state": (last or {}).get("state", ""),
             "analyses": conn.execute(
                 "SELECT COUNT(*) c FROM analysis WHERE project=?", (name,)
-            ).fetchone()["c"]})
+            ).fetchone()["c"],
+            # `proj`, not `name`/`branch`: `trend_series` reads the DECLARED
+            # base off the record itself, never the fallback branch resolved
+            # two lines above -- see its own docstring and `8c0eaf8`.
+            "trend": trend_series(conn, proj)})
     return out
 
 
@@ -411,6 +418,57 @@ def trend(conn, project, branch, days=30):
                     "state": a["state"],
                     "open": sum(1 for f in findings if is_open(f["state"]))})
     return out
+
+
+def trend_series(conn, project, days=30):
+    """The open-findings count at each finished analysis of `project`'s OWN
+    DECLARED branch, oldest first -- the sparkline the index screen's Trend
+    column needs. This is the reading `8c0eaf8` deleted (it computed one per
+    project on every index load and nothing rendered it); a later task adds
+    the renderer, and this is that renderer's data, built new rather than by
+    un-deleting `8c0eaf8`'s own line.
+
+    `project` is the same `{name, base, ...}` record `project_rows` and
+    `index_summary` are handed per item, not a bare name: the question this
+    answers ("what did this project's OWN branch look like over time") only
+    makes sense against the branch the project DECLARES. Unlike
+    `default_branch_posture` -- which falls back to the most recently
+    analysed branch so the posture cards are never blank, and says so via
+    `branch_fell_back` -- this never falls back. An analysis on any branch
+    other than the declared one contributes NOTHING here, even when the
+    declared branch has no finished analysis at all: a sparkline is a bare
+    list of integers with no cell of its own to carry a "fell back to
+    develop" caveat, so rather than silently plot another branch's history
+    under the declared branch's name, it shows nothing. No declared branch
+    at all (`project.get("base")` empty) is the same "nothing to show",
+    answered without a query.
+
+    Delegates entirely to `trend()` for the actual reading -- same window,
+    same `done`/`capped` treatment (a `capped` analysis is a PARTIAL read,
+    exactly as `posture`/`default_branch_posture` already treat it: counted,
+    not excluded, with the incomplete badge carried elsewhere), same
+    `is_open()` -- and keeps only the `open` count from each point, since
+    the sparkline needs relative heights and nothing else. Restating
+    `trend`'s SQL or its open-state predicate here would be a fourth
+    duplicated vocabulary in this module (see its own opening docstring);
+    this is the first time it is a thin wrapper instead.
+
+    Cost: one extra SQL query per project (`trend`'s own SELECT) plus one
+    `checklist()` per finished analysis actually inside the window -- but
+    `project_rows` already computes and caches `checklist()` for the
+    declared branch's LATEST finished analysis via `posture()`, on the SAME
+    connection, and that is also the newest point in this series whenever
+    the branch has not fallen back. So the common case (one analysis in the
+    last 30 days) costs zero additional `checklist()` calls, and a busier
+    project pays once per analysis actually in the window -- never once per
+    analysis in the ledger's full history, which is the cost `8c0eaf8`
+    removed for having no reader.
+    """
+    branch = project.get("base")
+    if not branch:
+        return []
+    name = project.get("name", "")
+    return [point["open"] for point in trend(conn, name, branch, days=days)]
 
 
 def recent_analyses(conn, limit=5, projects=None):

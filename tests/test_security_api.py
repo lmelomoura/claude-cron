@@ -566,6 +566,27 @@ def test_the_index_answers_with_every_panel_the_screen_draws(srv, monkeypatch):
     assert set(payload) == {"summary", "projects", "recent", "donut", "categories"}
 
 
+def test_the_index_project_row_carries_trend_untouched(srv, monkeypatch):
+    """`security_index` is a pure pass-through of whatever the CLI's
+    `index-data` reports (see `_json_or_500`, and the structural test right
+    below this one) -- pinned here so a project row's `trend` series (Task
+    2 of Phase 4: `queries.trend_series`, served through `project_rows`)
+    survives that relay exactly as the CLI produced it, a plain list of
+    ints, rather than being dropped or reshaped by some future edit to this
+    route. The empty list for a never-analysed project must arrive as `[]`,
+    not a missing key -- the same "never null, never absent" the row's own
+    `posture`/`branch` fields already guarantee."""
+    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, json.dumps({
+        "summary": {}, "recent": [], "donut": {}, "categories": [],
+        "projects": [{"name": "web", "trend": [3, 1, 2]},
+                    {"name": "never-analysed", "trend": []}]})))
+    code, payload = srv.security_index()
+    assert code == 200
+    assert payload["projects"][0]["trend"] == [3, 1, 2]
+    assert payload["projects"][1]["trend"] == [], \
+        "a project with nothing to show must carry an empty list, not a missing key"
+
+
 def test_the_index_survives_a_ledger_that_does_not_exist_yet(srv, monkeypatch):
     """Nobody has run an analysis. That is an empty screen with a sentence,
     not a 500."""

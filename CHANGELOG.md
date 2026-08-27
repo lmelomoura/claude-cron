@@ -19,6 +19,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`queries.py` gains `trend_series`, and a project's index row carries
+  `trend` again.** Phase 4 Task 2: the 30-day open-findings series
+  `8c0eaf8` deleted for having no reader is back, ready for the Trend
+  sparkline a later task renders — but not as `8c0eaf8`'s own line
+  un-deleted. That line called `trend()` with the branch
+  `default_branch_posture` had already resolved for the row's posture
+  cards, fallback included; a project whose declared base had never been
+  analysed would have plotted another branch's history under it, silently.
+  `trend_series(conn, project, days=30)` reads the project's DECLARED base
+  alone and returns `[]` instead — the same discipline `branch_fell_back`
+  already gives the row's own posture, just with no cell of its own to say
+  a fallback happened. It delegates entirely to the existing `trend()` for
+  the SQL, the window and the `done`/`capped` treatment (a `capped`
+  analysis still counts, exactly as `posture` already treats one), keeping
+  only each point's `open` count. Cost: one query per project (`trend`'s
+  own `SELECT`) plus one `checklist()` per finished analysis actually
+  inside the window — and the declared branch's newest such analysis is
+  already cached by `project_rows`'s own `posture()` call on the same
+  connection, so the common case (one analysis in 30 days) adds nothing
+  beyond that one `SELECT`, pinned by a query-count test the same way
+  `finding_counts_by_analysis` already is. `bin/security/cli.py`'s
+  no-ledger fallback and both test layers carry the field through too —
+  always a list, never null or absent.
+
 - **The Security index gets a real page header and five KPI cards matching
   the approved mockup, through a new runtime bridge into `ui/app/`'s shared
   chrome.** The loose intro paragraph and its bare toolbar are gone,
