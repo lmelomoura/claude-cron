@@ -795,7 +795,7 @@ def test_severity_totals_and_top_categories_count_one_fingerprint_once_across_br
     assert totals["total"] == 1
 
     cats = queries.top_categories(conn, "web")
-    assert cats == [{"rule": "aws_access_key", "count": 1}]
+    assert cats == [{"rule": "aws_access_key", "count": 1, "category": "secret"}]
 
 
 def test_severity_totals_and_top_categories_do_not_collapse_distinct_fingerprints(conn):
@@ -817,7 +817,7 @@ def test_severity_totals_and_top_categories_do_not_collapse_distinct_fingerprint
     assert totals["critical"] == 2, "two distinct secrets must not collapse into one"
 
     cats = queries.top_categories(conn, "web")
-    assert cats == [{"rule": "aws_access_key", "count": 2}]
+    assert cats == [{"rule": "aws_access_key", "count": 2, "category": "secret"}]
 
 
 def test_posture_rollups_default_to_no_time_window(conn):
@@ -849,9 +849,9 @@ def test_posture_rollups_default_to_no_time_window(conn):
     assert queries.severity_totals(conn, "web", days=0)["critical"] == 1, \
         "an explicit falsy days must read exactly like the omitted default"
     assert queries.top_categories(conn, "web") == [
-        {"rule": "aws_access_key", "count": 1}]
+        {"rule": "aws_access_key", "count": 1, "category": "secret"}]
     assert queries.top_categories(conn, "web", days=0) == [
-        {"rule": "aws_access_key", "count": 1}]
+        {"rule": "aws_access_key", "count": 1, "category": "secret"}]
 
 
 def test_severity_totals_and_top_categories_a_real_window_narrows_and_widening_restores(conn):
@@ -877,7 +877,7 @@ def test_severity_totals_and_top_categories_a_real_window_narrows_and_widening_r
         "widening the window back past the analysis's own age must restore it"
     assert queries.top_categories(conn, "web", days=7) == []
     assert queries.top_categories(conn, "web", days=30) == [
-        {"rule": "aws_access_key", "count": 1}]
+        {"rule": "aws_access_key", "count": 1, "category": "secret"}]
 
 
 def test_severity_totals_windows_by_when_the_analysis_itself_ran(conn):
@@ -910,7 +910,7 @@ def test_severity_totals_windows_by_when_the_analysis_itself_ran(conn):
     assert totals["total"] == 1
 
     cats = queries.top_categories(conn, "web", days=30)
-    assert cats == [{"rule": "aws_access_key", "count": 1}], \
+    assert cats == [{"rule": "aws_access_key", "count": 1, "category": "secret"}], \
         "the out-of-window branch's rule must not appear at all"
 
 
@@ -1012,7 +1012,7 @@ def test_a_fingerprint_resolved_on_one_branch_and_open_on_another_counts_once_as
     assert totals["total"] == 1
 
     cats = queries.top_categories(conn, "web")
-    assert cats == [{"rule": "aws_access_key", "count": 1}]
+    assert cats == [{"rule": "aws_access_key", "count": 1, "category": "secret"}]
 
 
 def test_activity_summary_counts_per_kind_seeded_from_event_kinds(conn):

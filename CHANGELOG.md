@@ -839,6 +839,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Top issue categories no longer guesses a rule's category from the shape
+  of its id.** The ranked rows carried only `rule` and `count`, so the page's
+  label/icon resolver told SAST and hygiene apart by kebab-case versus
+  snake_case — an accident of naming convention an agent-authored rule could
+  break tomorrow. Each row now carries its own `category` from the ledger,
+  and the resolver reads it.
+
 - **The Security index's last stray paragraph moved into a tooltip.** The
   severity-floor scope note — the sentence explaining that posture totals are
   never narrowed by a project's floor — sat between the KPI cards and the

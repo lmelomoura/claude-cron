@@ -723,10 +723,20 @@ def top_categories(conn, project=None, limit=5, days=0):
     to its newest finished analysis that started within the window."""
     since = (int(time.time()) - int(days) * 86400) if days else None
     counts = {}
+    cats = {}
     for f in _open_findings_by_fingerprint(conn, project, since=since).values():
         counts[f["rule"]] = counts.get(f["rule"], 0) + 1
+        # The rule's own category rides along so the page's label/icon
+        # resolver reads it instead of inferring one from the id's shape --
+        # kebab-vs-snake told sast and hygiene apart only by accident of
+        # naming convention, and an agent is free to write a snake_case sast
+        # rule tomorrow. A rule id lives in exactly one category in practice;
+        # if two ever disagree, the newest read wins and the disagreement is
+        # a ledger oddity, not something this ranking should crash on.
+        cats[f["rule"]] = f.get("category") or ""
     ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-    return [{"rule": k, "count": v} for k, v in ranked[:limit]]
+    return [{"rule": k, "count": v, "category": cats.get(k, "")}
+            for k, v in ranked[:limit]]
 
 
 def branch_rows(conn, project):

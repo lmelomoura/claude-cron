@@ -2004,7 +2004,7 @@ def test_index_data_reports_current_posture_for_the_projects_given(tmp_path):
         {"critical": 0, "high": 1, "medium": 0}
     assert out["donut"]["high"] == 1
     assert out["donut"]["total"] == 1
-    assert out["categories"] == [{"rule": "sql-injection", "count": 1}]
+    assert out["categories"] == [{"rule": "sql-injection", "count": 1, "category": "sast"}]
 
 
 def test_index_data_shows_the_branch_it_fell_back_to(tmp_path):
@@ -2108,7 +2108,7 @@ def test_index_data_days_narrows_the_donut_and_categories(tmp_path):
     assert narrow["categories"] == []
     assert wide["donut"]["critical"] == 1, \
         "widening past the analysis's own age must restore it"
-    assert wide["categories"] == [{"rule": "hardcoded-secret", "count": 1}]
+    assert wide["categories"] == [{"rule": "hardcoded-secret", "count": 1, "category": "sast"}]
 
 
 def test_index_data_recent_page_pages_server_side_with_a_true_total(tmp_path):
@@ -2210,7 +2210,7 @@ def test_project_data_reports_current_posture_and_checklist_counts(tmp_path):
     assert [r["id"] for r in out["tabs"]["runs"]] == [aid]
     assert out["tabs"]["runs"][0]["findings"] == 1
     assert out["sidebar"]["donut"]["high"] == 1
-    assert out["sidebar"]["categories"] == [{"rule": "sql-injection", "count": 1}]
+    assert out["sidebar"]["categories"] == [{"rule": "sql-injection", "count": 1, "category": "sast"}]
     assert out["sidebar"]["branch_count"] == 1
     assert out["tabs"]["overview"]["attempted"] is True
 
