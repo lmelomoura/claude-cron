@@ -715,6 +715,15 @@ dialog::backdrop{background:rgba(9,11,16,.55);backdrop-filter:blur(3px)}
 .tabs.wiz .tab.edited .stepn::after{content:"";position:absolute;top:-1px;right:-1px;
   width:7px;height:7px;border-radius:50%;background:var(--warn);border:1.5px solid var(--panel)}
 .tabs.wiz .tab .stepn{position:relative}
+/* Editing has no stepn circle to redden or put the dirty-dot on -- the flat
+   tab carries both cues itself instead. A failed save can gotoStep() into a
+   tab you are not looking at while editing exactly as it can while creating
+   (saveEditor/saveProject validate every step, not only the current one),
+   and a changed step needs the same "something here is unsaved" signal
+   .edited gives the numbered strip above, just without a circle to badge. */
+.tabs:not(.wiz) .tab.bad{color:var(--err);border-bottom-color:var(--err)}
+.tabs:not(.wiz) .tab.edited::after{content:"";display:inline-block;width:6px;height:6px;
+  border-radius:50%;background:var(--warn);margin-left:1px}
 .dlg-b{padding:13px 20px}
 .dlg-b label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
   color:var(--muted);margin:14px 0 6px}
@@ -798,6 +807,15 @@ textarea:focus,.dlg-b input:focus,.dlg-b select:focus{outline:none;border-color:
 .cwd-browse{flex:none;white-space:nowrap}
 .checkline{display:flex!important;align-items:center;gap:9px;text-transform:none;letter-spacing:0;font-size:12.5px;color:var(--ink);cursor:pointer;margin-bottom:6px}
 .checkline input{width:auto!important;margin:0}
+/* A two-way choice as equal halves rather than a checkbox -- the project
+   editor's Security pane (Enabled/Disabled) is its only user today. Paints a
+   hidden checkbox's state; see paintSecEnabled and its click listener in
+   bin/dashboard.html, which is what actually owns the value. */
+.segctl{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+.segctl-opt{flex:1;height:38px;border:0;border-right:1px solid var(--line);background:var(--panel2);
+  font:inherit;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer}
+.segctl-opt:last-child{border-right:0}
+.segctl-opt.on{background:var(--accent-soft);color:var(--accent)}
 /* Field notes: set apart from the control they explain (the negative top margin
    used to glue them to it), italic, and a step softer than --muted — mixed
    towards the panel so it dims in dark mode instead of getting brighter. */

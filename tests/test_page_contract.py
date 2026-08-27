@@ -6061,3 +6061,235 @@ def test_days_and_effort_map_form_and_job_without_loss(srv, tmp_path):
     assert out["days"]["none"] == []
     assert out["days"]["some"] == [1, 4, 7]
     assert out["days"]["allSeven"] == [1, 2, 3, 4, 5, 6, 7]
+
+
+# ---- Artboard parity: closing four divergences between the shipped editor
+# dialogs and their approved artboards (JobEditor.view.html/ProjectEditor.
+# view.html, extracted from the design canvas) -- edit mode's flat tabs vs
+# create mode's numbered stepper (paintTabs), a Delete button in the job
+# editor's footer wired through the Jobs table row's own delete flow, the
+# job pane's Project/Working directory pairing, and the Security pane's
+# checkbox becoming a segmented control over the same hidden #sec-enabled
+# saveProject/openProjectEditor already read and write.
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_paint_tabs_renders_flat_text_tabs_while_editing_and_the_numbered_stepper_while_creating(
+        srv, tmp_path):
+    """paintTabs (makeWizard, bin/dashboard.html) is the one place that
+    builds the tab strip's own markup -- paintNav (pinned elsewhere) only
+    toggles classes on buttons paintTabs already drew. The approved
+    artboards show a numbered stepper only while CREATING; EDITING gets the
+    same flat, underlined text tabs every other page's plain .tabs/.tab
+    already draw -- no "wiz" class on the nav, no per-tab step number. Drives
+    the real makeWizard (not a copy) and inspects exactly what it assigned
+    to the nav element's classList/innerHTML on each mode."""
+    js = _js(srv)
+    deps = "\n".join([_plainfn(js, "showFormTab"), _plainfn(js, "focusFirstControl"),
+                       _plainfn(js, "makeWizard")])
+    script = tmp_path / "paint-tabs.js"
+    script.write_text("""
+    const I = {cleft:"<cleft>", cright:"<cright>", check2:"<check2>", alert:"<alert>"};
+    const esc = (s) => String(s);
+    function paintPromptHighlight(){}
+    const CCApp = {changedKeys: () => []};
+    function makeNav(){
+      const rec = {wiz: [], html: []};
+      return {
+        rec,
+        classList: {toggle(cls, val){ if(cls === "wiz") rec.wiz.push(!!val); }},
+        set innerHTML(h){ rec.html.push(h); },
+        get innerHTML(){ return rec.html[rec.html.length - 1] || ""; },
+        querySelectorAll(){ return []; },
+      };
+    }
+    const nav = makeNav();
+    const DLG = {querySelectorAll: () => [], querySelector: () => null, close(){}};
+    const ELS = {
+      "t-tabs": nav, "t-back": {hidden:false, innerHTML:""},
+      "t-save": {innerHTML:""}, "t-err": {hidden:true, innerHTML:""},
+    };
+    function $(id){ return id === "dlg" ? DLG : ELS[id]; }
+    """ + deps + """
+    const wiz = makeWizard({
+      id: "dlg", prefix: "t", tabAttr: "data-ttab", paneAttr: "data-tpane",
+      steps: [{k:"a",label:"Alpha",next:"B"}, {k:"b",label:"Beta",next:null}],
+      validate: () => null, saveLabel: "Save", createLabel: "Create",
+    });
+    wiz.open(true);
+    const creating = {wizFlag: nav.rec.wiz[nav.rec.wiz.length - 1],
+                       html: nav.rec.html[nav.rec.html.length - 1]};
+    wiz.open(false);
+    const editing = {wizFlag: nav.rec.wiz[nav.rec.wiz.length - 1],
+                      html: nav.rec.html[nav.rec.html.length - 1]};
+    console.log(JSON.stringify({creating, editing}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["creating"]["wizFlag"] is True, "creating must still get the numbered stepper's wiz class"
+    assert '<span class="stepn">1</span>' in out["creating"]["html"], "creating lost its step numbers"
+    assert out["editing"]["wizFlag"] is False, "editing must not carry the numbered stepper's wiz class"
+    assert "stepn" not in out["editing"]["html"], \
+        "editing still renders a step-number span -- the artboard shows flat text tabs"
+    assert "Alpha</button>" in out["editing"]["html"] and "Beta</button>" in out["editing"]["html"], \
+        "editing must still render every tab's own label"
+
+
+def test_flat_tabs_get_their_own_bad_and_edited_treatment(srv):
+    """.tabs.wiz .tab.bad/.edited (ui/css/pages.css) only fire on a stepn
+    circle to redden or badge -- which edit mode no longer renders (previous
+    test). test_no_class_the_shipped_ui_uses_lacks_a_css_rule cannot catch a
+    missing rule here, because paintTabs writes "bad"/"edited" from inside
+    dashboard.html's own <script>, which that scan deliberately excludes (it
+    is a static-markup/JS-bundle scan) -- so this checks the built
+    stylesheet directly: a failed save can still gotoStep() into a tab you
+    are not looking at while editing (saveEditor/saveProject validate every
+    step, not only the current one), and a changed step still needs an
+    "unsaved" signal without a circle to put a corner-dot on."""
+    css, _ = srv.static_asset("app.css")
+    assert re.search(r"\.tabs:not\(\.wiz\)\s+\.tab\.bad\s*\{[^}]*color:var\(--err\)", css), \
+        "editing needs its own .tab.bad rule -- .tabs.wiz .tab.bad alone no longer reaches a flat tab"
+    assert re.search(r"\.tabs:not\(\.wiz\)\s+\.tab\.edited::after\s*\{", css), \
+        "editing needs its own dirty-step indicator -- the wiz one lives on a stepn circle that is gone"
+
+
+def test_delete_job_from_the_editor_reuses_the_rows_own_confirm_and_api_call(srv):
+    """B: the job editor's Delete button must not become a second way to
+    delete a job with its own, possibly-drifting confirm copy or its own
+    endpoint. deleteJobFromModal (bin/dashboard.html) has to ask the exact
+    same question the Jobs table row's own data-op="delete" branch asks
+    (same title, message and confirmLabel), and call the exact same
+    api("delete", ...) -- never a new "job_delete" op."""
+    js = _js(srv)
+    row = re.search(
+        r'if\(op==="delete"\)\{\s*'
+        r'const yes=await showConfirm\(\{tone:"danger", icon:"trash", title:"Delete job "\+id\+"\?",\s*'
+        r'message:"([^"]+)",\s*'
+        r'confirmLabel:"([^"]+)"\}\);',
+        js)
+    assert row, "the Jobs table row's own delete confirmation was not found where expected"
+    modal = _fn(js, "deleteJobFromModal")
+    assert 'title:"Delete job "+id+"?"' in modal, "the modal's confirm title drifted from the row's"
+    assert f'message:"{row.group(1)}"' in modal, "the modal's confirm message drifted from the row's"
+    assert f'confirmLabel:"{row.group(2)}"' in modal, "the modal's confirm label drifted from the row's"
+    assert 'api("delete",{id})' in modal, 'must call the row-shared api("delete", ...), not a new op'
+    assert "job_delete" not in js, "a second, job_delete-named delete path must not exist"
+
+
+def test_ed_delete_sits_first_in_the_footer_and_only_shows_up_while_editing(srv):
+    """Mirrors pj-delete: present and visible only when there is a job to
+    delete (openEditor), hidden while creating (openCreator) -- the wizard's
+    footer there is Back/Next, and there is no job yet to delete."""
+    page = _page(srv)
+    js = _js(srv)
+    footer_start = page.index('<div class="dlg-f">')
+    footer = page[footer_start:footer_start + 400]
+    first_button = re.search(r"<button[^>]*>", footer)
+    assert first_button and 'id="ed-delete"' in first_button.group(0), (
+        "Delete job must be the FIRST control in the job editor's own footer, "
+        f"the same position pj-delete already holds in the project editor: {first_button}"
+    )
+    assert 'class="btn danger"' in first_button.group(0), "must read as a destructive action, like pj-delete"
+    assert "Delete job</button>" in footer
+    open_editor = _plainfn(js, "openEditor")
+    open_creator = _plainfn(js, "openCreator")
+    assert '$("ed-delete").style.display=""' in open_editor, "openEditor must show the Delete button"
+    assert '$("ed-delete").style.display="none"' in open_creator, \
+        "openCreator must hide the Delete button -- there is no job yet to delete"
+
+
+def test_the_job_panes_project_and_working_directory_are_paired(srv):
+    """C: the artboard pairs Project and Working directory side by side in
+    one .row2; the shipped page used to stack them with Description sitting
+    between the two. ids and help text are untouched -- only the grouping
+    and the order moved, to match the artboard's own field order."""
+    page = _page(srv)
+    job_pane = page[page.index('data-edpane="job"'):page.index("<!-- /pane job -->")]
+    assert job_pane.count('<div class="row2">') == 1, \
+        "expected exactly one .row2 pairing in the job pane"
+    i_row2 = job_pane.index('<div class="row2">')
+    i_project = job_pane.index('id="ed-project-combo"')
+    i_cwd = job_pane.index('id="ed-cwd"')
+    i_browse = job_pane.index("Browse…")
+    i_desc_label = job_pane.index("<label>Description</label>")
+    assert i_row2 < i_project < i_cwd < i_browse < i_desc_label, (
+        "Project and Working directory must sit together inside one .row2, "
+        "ahead of Description -- the artboard's own field order"
+    )
+    # every id this pane owned before the reshuffle is still exactly there
+    for field in ("ed-project-combo", "ed-project-trigger", "ed-project-val", "ed-project-pop",
+                  "ed-project-search", "ed-project-opts", "ed-project", "ed-cwd", "ed-cwd-help",
+                  "ed-cwd-note", "ed-desc"):
+        assert f'id="{field}"' in job_pane, f"the job pane lost {field} in the reshuffle"
+
+
+def test_security_enable_is_a_hidden_checkbox_behind_a_segmented_control(srv):
+    """D: the artboard shows an Enabled/Disabled segmented control, not a
+    checkbox. saveProject/openProjectEditor are untouched -- both still work
+    through a real #sec-enabled checkbox, kept in the DOM (hidden, not
+    removed) so W.snapshot()'s querySelectorAll("input[id]...") still finds
+    it, and the two segments toggle that hidden checkbox rather than being a
+    second, competing source of truth."""
+    page = _page(srv)
+    assert '<input type="checkbox" id="sec-enabled" hidden>' in page, \
+        "sec-enabled must still be a real checkbox saveProject/openProjectEditor can read and set -- just hidden"
+    assert "Enable security analysis" not in page, "the old checkbox label must not linger alongside the segments"
+    seg = re.search(r'<div class="segctl" id="sec-enabled-seg">(.*?)</div>', page, re.S)
+    assert seg, "the Enabled/Disabled segmented control is missing"
+    opts = re.findall(r'<button[^>]*data-secenabled="(\d)"[^>]*>([^<]+)</button>', seg.group(1))
+    assert opts == [("1", "Enabled"), ("0", "Disabled")], \
+        f"expected the artboard's two segments, in order, got {opts}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_paint_sec_enabled_reflects_the_hidden_checkboxs_state(srv, tmp_path):
+    """The segments are paint, not state -- see paintSecEnabled's own comment
+    in bin/dashboard.html. Drives the real function over a stub DOM: checked
+    lights Enabled and only Enabled; unchecked lights Disabled and only
+    Disabled -- the stale segment must lose its "on" class rather than both
+    staying lit or neither lighting up."""
+    js = _js(srv)
+    fn = _plainfn(js, "paintSecEnabled")
+    script = tmp_path / "paint-sec-enabled.js"
+    script.write_text("""
+    let ELS = {};
+    function $(id){ return ELS[id]; }
+    """ + fn + """
+    function button(v){
+      const b = {dataset: {secenabled: v}, on: false, pressed: null};
+      b.classList = {toggle(cls, val){ if(cls === "on") b.on = !!val; }};
+      b.setAttribute = (k, val) => { if(k === "aria-pressed") b.pressed = val; };
+      return b;
+    }
+    function run(checked){
+      const enabledBtn = button("1"), disabledBtn = button("0");
+      ELS = {"sec-enabled": {checked},
+             "sec-enabled-seg": {querySelectorAll: () => [enabledBtn, disabledBtn]}};
+      paintSecEnabled();
+      return {enabled: {on: enabledBtn.on, pressed: enabledBtn.pressed},
+              disabled: {on: disabledBtn.on, pressed: disabledBtn.pressed}};
+    }
+    console.log(JSON.stringify({whenOn: run(true), whenOff: run(false)}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["whenOn"] == {"enabled": {"on": True, "pressed": "true"},
+                              "disabled": {"on": False, "pressed": "false"}}
+    assert out["whenOff"] == {"enabled": {"on": False, "pressed": "false"},
+                               "disabled": {"on": True, "pressed": "true"}}
+
+
+def test_clicking_a_segment_sets_the_hidden_checkbox_and_fires_change(srv):
+    """#projmodal's own delegated change listener (paintNav) is what used to
+    react to a person ticking #sec-enabled directly; a segment click must
+    keep it reacting exactly as before, so this pins that the click handler
+    flips the real checkbox and dispatches a bubbling "change" -- not a
+    hand-rolled repaint that route would stop seeing."""
+    js = _js(srv)
+    handler = re.search(
+        r'\$\("sec-enabled-seg"\)\.addEventListener\("click",\(e\)=>\{(.*?)\}\);',
+        js, re.S)
+    assert handler, "no click handler wired on the segmented control"
+    body = handler.group(1)
+    assert '$("sec-enabled").checked=on' in body, "a segment click must set the real, hidden checkbox"
+    assert 'new Event("change",{bubbles:true})' in body, \
+        'the click must dispatch a bubbling change event so #projmodal\'s own change listener still fires'

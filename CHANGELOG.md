@@ -19,6 +19,71 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The job and project editor dialogs close their last four gaps against
+  the approved artboards (`JobEditor.view.html`/`ProjectEditor.view.html`
+  in the design canvas), found by comparing the shipped dialogs to the
+  canvas pane by pane.**
+
+  Edit mode now draws the same flat, underlined text tabs every other
+  page's `.tabs`/`.tab` already draw — no numbered stepper, no per-tab step
+  number — while CREATE mode keeps the numbered stepper exactly as it was
+  (its numbers and check-ticks carry real gating semantics there).
+  `makeWizard`'s `paintTabs` (`bin/dashboard.html`) now branches on
+  `W.creating`; `paintNav`'s gating and `goto`/`forward`/`onTabClick` are
+  untouched, so `test_the_wizard_gates_advancing_on_validation_but_
+  editing_reaches_any_tab` stays green unedited. `.tab.bad`/`.tab.edited`
+  used to live only on `.tabs.wiz`'s numbered circle — a corner-badge on
+  the `stepn` span a flat tab no longer renders — so both get a non-wiz
+  twin in `ui/css/pages.css`: a reddened tab for a step that failed
+  validation, and a small dot after the label for a step with unsaved
+  edits, so neither signal silently disappears now that editing has no
+  stepper.
+
+  The job editor's footer gains `ed-delete` ("Delete job"), first in
+  `.dlg-f` like `pj-delete` already is, visible only while editing (shown
+  in `openEditor`, hidden in `openCreator` — creating has no job yet to
+  delete). It calls the exact confirm copy and the exact `api("delete",
+  ...)` the Jobs table row's own `data-op="delete"` button already uses —
+  one delete path, not two that could drift apart — and closes the dialog
+  on success.
+
+  "The job" pane pairs Project and Working directory in one `.row2`
+  (Description now follows the pair instead of sitting between the two
+  fields), matching the artboard's own field order. Every id and every
+  help line is untouched; only the grouping and the order moved.
+
+  The Security pane's "Enable security analysis" checkbox becomes a
+  two-segment Enabled/Disabled control (`.segctl`) over the exact same
+  `#sec-enabled` — now a real checkbox kept in the DOM with the `hidden`
+  attribute, not removed, so `saveProject` and `openProjectEditor` read and
+  set it exactly as before. `paintSecEnabled()` keeps the two segments in
+  step with it, called right after `openProjectEditor` sets `.checked` the
+  same way the combos' own `.set()` calls are hooked; a segment click flips
+  the hidden checkbox and dispatches a bubbling `change`, so `#projmodal`'s
+  own delegated change listener (dirty tracking) keeps firing exactly as it
+  did when this was a visible checkbox. Grepping the tree first turned up
+  no OTHER listener keyed on `#sec-enabled` — no dependent-fields gate
+  existed to preserve beyond that one.
+
+  Three artboard divergences are deliberate and untouched: the "Branch to
+  analyse" field (the Security launcher picks the branch per-analysis), the
+  3-segment Effort control (the product has 6 levels shared with the job
+  editor's own slider by a pinned rule), and the Categories pills (the
+  product uses profiles instead).
+
+  `readForm`/`fill`/`saveProject`/`saveEditor` and every existing element
+  id are untouched. Eight new pinned tests (`tests/test_page_contract.py`)
+  drive the real `paintTabs`/`paintSecEnabled` under Node and check the new
+  markup and wiring by source, one to three per divergence. Verified live
+  in both themes and both editor modes, side by side with the artboards at
+  the same width: edit mode flat with an underline and create mode
+  numbered, and reopening the same dialog in the other mode repaints
+  correctly both ways; Delete job confirms, deletes a scratch job and
+  closes; toggling the segments enables/disables exactly as the checkbox
+  did (dirty tracking still fires), and `security.enabled` round-trips
+  `true` → `false` → `true` through scratch `projects.json`, saved as a
+  real JSON boolean both times.
+
 - **The Security pane's last two native `<select>`s — default analysis
   profile and minimum severity shown — become the house combo, so the
   project editor no longer drops into a grey OS menu right next to every

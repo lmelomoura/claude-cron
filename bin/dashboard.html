@@ -588,39 +588,41 @@ document.documentElement.dataset.theme =
   <div class="dlg-ht"><span id="ed-title">Edit job</span><span class="dlg-sub" id="ed-sub"></span></div>
   <button type="button" class="dlg-x" id="ed-x" title="Close"></button></div>
 <div class="dlg-b">
-  <!-- Drawn by the shared wizard (see edWiz / makeWizard): numbered tabs in
-       both modes -- editing marks changed steps and reaches any tab; creating
-       gates each advance on the step's validation and ticks completed ones.
-       -->
+  <!-- Drawn by the shared wizard (see edWiz / makeWizard): a numbered stepper
+       while creating, flat text tabs while editing -- editing marks changed
+       steps and reaches any tab; creating gates each advance on the step's
+       validation and ticks completed ones. -->
   <nav class="tabs" id="ed-tabs"></nav>
   <div class="tabpanes">
   <div class="tabpane active" data-edpane="job">
   <div id="ed-id-row" style="display:none"><label>Job id (letters, digits, - and _)<span class="req" aria-hidden="true">*</span></label>
     <input id="ed-id" type="text" placeholder="e.g. my-job" autocomplete="off">
     <p class="fieldhelp">Unique identifier for this job — letters, numbers, - and _ only.</p></div>
-  <label>Project (optional — groups jobs; leave empty for none)</label>
-  <div class="combo" id="ed-project-combo">
-    <button type="button" class="combo-trigger" id="ed-project-trigger" aria-haspopup="listbox" aria-expanded="false">
-      <span class="combo-val none" id="ed-project-val">— None —</span>
-      <span class="combo-caret"></span>
-    </button>
-    <div class="combo-pop" id="ed-project-pop" hidden>
-      <input type="text" class="combo-search" id="ed-project-search" placeholder="Search projects…" autocomplete="off">
-      <ul class="combo-list" id="ed-project-opts" role="listbox"></ul>
+  <div class="row2">
+    <div><label>Project (optional — groups jobs; leave empty for none)</label>
+    <div class="combo" id="ed-project-combo">
+      <button type="button" class="combo-trigger" id="ed-project-trigger" aria-haspopup="listbox" aria-expanded="false">
+        <span class="combo-val none" id="ed-project-val">— None —</span>
+        <span class="combo-caret"></span>
+      </button>
+      <div class="combo-pop" id="ed-project-pop" hidden>
+        <input type="text" class="combo-search" id="ed-project-search" placeholder="Search projects…" autocomplete="off">
+        <ul class="combo-list" id="ed-project-opts" role="listbox"></ul>
+      </div>
+      <input type="hidden" id="ed-project">
     </div>
-    <input type="hidden" id="ed-project">
+    <p class="fieldhelp">Groups this job with a project's others — leave empty to keep it ungrouped.</p></div>
+    <div><label>Working directory (cwd the agent runs in)<span class="req" aria-hidden="true">*</span></label>
+    <div class="cwdrow">
+      <input id="ed-cwd" type="text" placeholder="/Users/…/some-repo" readonly data-cwd-target="ed-cwd" class="cwd-ro">
+      <button type="button" class="btn cwd-browse" data-cwd-target="ed-cwd">Browse…</button>
+    </div>
+    <p class="fieldhelp" id="ed-cwd-help">The directory the agent runs in — pick a project above to inherit one.</p>
+    <div class="hint" id="ed-cwd-note" hidden></div></div>
   </div>
-  <p class="fieldhelp">Groups this job with a project's others — leave empty to keep it ungrouped.</p>
   <label>Description</label>
   <textarea id="ed-desc" class="shorttext" placeholder="What this job does"></textarea>
   <p class="fieldhelp">Describe the purpose and behaviour of this job.</p>
-  <label>Working directory (cwd the agent runs in)<span class="req" aria-hidden="true">*</span></label>
-  <div class="cwdrow">
-    <input id="ed-cwd" type="text" placeholder="/Users/…/some-repo" readonly data-cwd-target="ed-cwd" class="cwd-ro">
-    <button type="button" class="btn cwd-browse" data-cwd-target="ed-cwd">Browse…</button>
-  </div>
-  <p class="fieldhelp" id="ed-cwd-help">The directory the agent runs in — pick a project above to inherit one.</p>
-  <div class="hint" id="ed-cwd-note" hidden></div>
   </div><!-- /pane job -->
 
   <div class="tabpane fill" data-edpane="runs">
@@ -740,6 +742,7 @@ document.documentElement.dataset.theme =
   </div><!-- /tabpanes -->
 </div>
 <div class="dlg-f">
+  <button type="button" class="btn danger" id="ed-delete">Delete job</button>
   <button type="button" class="btn ghost" id="ed-back" hidden></button>
   <div class="spacer"></div>
   <span class="dlg-dirty" id="ed-dirty" hidden>Unsaved changes</span>
@@ -858,8 +861,13 @@ document.documentElement.dataset.theme =
   <p class="sechint">What a security analysis of this project runs as — see the Security area
     for actually running one. Off by default: a project with nothing here gets no analysis and no
     derived job at all.</p>
-  <label class="checkline"><input type="checkbox" id="sec-enabled">
-    Enable security analysis</label>
+  <label>Analysis</label>
+  <div class="segctl" id="sec-enabled-seg">
+    <button type="button" class="segctl-opt" data-secenabled="1">Enabled</button>
+    <button type="button" class="segctl-opt" data-secenabled="0">Disabled</button>
+  </div>
+  <input type="checkbox" id="sec-enabled" hidden>
+  <p class="fieldhelp">A project can be registered for security analysis alone — no jobs required.</p>
   <div class="row2">
     <div><label>Model</label>
       <div class="combo" id="sec-model-combo">
@@ -2038,6 +2046,7 @@ function openProjectEditor(name){
   // not yet created.
   const sec=(p&&p.security)||{};
   $("sec-enabled").checked = sec.enabled===true || sec.enabled==="true";
+  paintSecEnabled();
   if(secModelCombo) secModelCombo.set(sec.model||"", MODELS);
   else $("sec-model").value = sec.model||"";
   effortSet("sec-effort","sec-effort-label", sec.effort||"");
@@ -2789,6 +2798,19 @@ function effortSet(id,labelId,v){
 function effortGet(id){ return CCApp.effortFromIndex($(id).value); }
 function setEffort(v){ effortSet("ed-effort","ed-effort-label",v); }
 function getEffort(){ return effortGet("ed-effort"); }
+// The Enabled/Disabled segmented control is paint, not state -- #sec-enabled
+// (a real, hidden checkbox) stays the one thing openProjectEditor sets and
+// saveProject reads. This just keeps the two segments in step with it,
+// the same way secModelCombo.set()/secProfileCombo.set() keep their own
+// trigger labels in step with the hidden inputs they sit beside.
+function paintSecEnabled(){
+  const on=$("sec-enabled").checked;
+  $("sec-enabled-seg").querySelectorAll(".segctl-opt").forEach(b=>{
+    const isOn=(b.dataset.secenabled==="1")===on;
+    b.classList.toggle("on", isOn);
+    b.setAttribute("aria-pressed", isOn?"true":"false");
+  });
+}
 const WT_MODES=[
   {v:"auto", label:"Auto — isolate when the cwd is a git repo"},
   {v:"true", label:"Always — never run in the cwd"},
@@ -2920,6 +2942,7 @@ function openEditor(id){
   $("ed-halo").innerHTML=I.pencil;
   $("ed-title").textContent="Edit — "+id;
   $("ed-sub").textContent="Change anything, from any step, and save";
+  $("ed-delete").style.display="";
   paintEditorNav();
   edError("");
   // The id is editable here too: renaming carries the job's state, logs and
@@ -2964,6 +2987,9 @@ function openCreator(){
   $("ed-halo").innerHTML=I.plus;
   $("ed-title").textContent="New job";
   $("ed-sub").textContent="Create a new job to run your agent on a schedule";
+  // The wizard's footer is Back/Next while creating -- there is no job yet
+  // to delete, and editingId is still null besides.
+  $("ed-delete").style.display="none";
   $("ed-id-row").style.display="";
   $("ed-id").value="";
   fill({_precheck:DEFAULT_PRECHECK, interval_seconds:300, model:"opus",
@@ -3085,6 +3111,20 @@ async function saveEditor(){
     if(!await setF("permission_mode",$("ed-perm").value,j.permission_mode||"dontAsk")) return;
     edWiz.markClean(); $("editor").close(); toast("Saved "+id); refresh();
   } finally { btn.disabled=false; }
+}
+// The SAME flow the Jobs table row's own delete button uses (see the
+// `data-op="delete"` branch of the delegated click handler below) — same
+// confirm copy, same api() call — so there is exactly one way a job actually
+// gets deleted, whether that click starts on the row or from inside here.
+async function deleteJobFromModal(){
+  if(!editingId) return;
+  const id=editingId;
+  const yes=await showConfirm({tone:"danger", icon:"trash", title:"Delete job "+id+"?",
+    message:"This removes the job from jobs.json. Its logs and precheck script are kept on disk.",
+    confirmLabel:"Delete job"});
+  if(!yes) return;
+  if(!await api("delete",{id})) return;
+  edWiz.markClean(); $("editor").close(); toast("Deleted "+id); refresh();
 }
 
 /* ---------------------------------------------------------------- log modal */
@@ -3552,12 +3592,17 @@ function makeWizard(cfg){
     W.bad=msg ? (step||W.steps[W.i].k) : "";
     W.paintNav();
   };
+  // Creating walks five decisions in order, so it gets the numbered stepper
+  // (ticks, gating -- the numbers carry that meaning). Editing is browsing --
+  // every step is already answered and any one is a click away -- so it gets
+  // the same flat, underlined tabs the rest of the app's pages use, which
+  // .tabs/.tab already draw without the "wiz" class or a step number.
   W.paintTabs=()=>{
     const nav=g("tabs");
-    nav.classList.add("wiz");
+    nav.classList.toggle("wiz", W.creating);
     nav.innerHTML=W.steps.map((s,i)=>
       '<button type="button" class="tab" '+cfg.tabAttr+'="'+s.k+'">'
-      + '<span class="stepn">'+(i+1)+"</span>" + esc(s.label) + "</button>").join("");
+      + (W.creating ? '<span class="stepn">'+(i+1)+"</span>" : "") + esc(s.label) + "</button>").join("");
   };
   W.paintNav=()=>{
     const dirty=W.creating ? new Set() : W.dirtySteps();
@@ -4447,6 +4492,7 @@ $("ed-x").innerHTML=I.x;
 $("ed-x").addEventListener("click", closeEditor);
 $("ed-back").addEventListener("click", ()=>edWiz.goto(edWiz.i-1));
 $("ed-save").addEventListener("click", saveEditor);
+$("ed-delete").addEventListener("click", deleteJobFromModal);
 // Escape closes a <dialog> natively, which would bypass the check above.
 $("editor").addEventListener("cancel",(e)=>{ e.preventDefault(); closeEditor(); });
 // Typing clears the complaint the moment it might no longer be true — leaving it
@@ -4457,6 +4503,18 @@ $("editor").addEventListener("change", paintEditorDirty);
 $("editor").addEventListener("click",(e)=>{ if(e.target.closest(".day-btn")) setTimeout(paintEditorDirty,0); });
 $("ed-effort").addEventListener("input", ()=>setEffort(getEffort()));
 $("sec-effort").addEventListener("input", ()=>effortSet("sec-effort","sec-effort-label", effortGet("sec-effort")));
+// Clicking a segment sets the hidden checkbox and fires the same "change" a
+// person ticking it would have — #projmodal's own delegated change listener
+// (paintNav, a few lines up in this file) is what actually reacts to it, and
+// it must keep reacting exactly as it did when this was a visible checkbox.
+$("sec-enabled-seg").addEventListener("click",(e)=>{
+  const b=e.target.closest(".segctl-opt"); if(!b) return;
+  const on=b.dataset.secenabled==="1";
+  if($("sec-enabled").checked===on) return;
+  $("sec-enabled").checked=on;
+  paintSecEnabled();
+  $("sec-enabled").dispatchEvent(new Event("change",{bubbles:true}));
+});
 $("ed-budget").addEventListener("blur", fmtBudget);
 ["ed-budget","ed-daily"].forEach(id=>$(id).addEventListener("input", ()=>{
   const el=$(id); el.value=el.value.replace(/[^0-9.]/g,"").replace(/(\..*)\./g,"$1");
