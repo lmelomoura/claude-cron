@@ -19,6 +19,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **"Top issue categories" shows a human label and a rule-specific icon
+  instead of the raw rule string.** `SEC_RULE_META` and `secRuleMeta`
+  (ui/security/vocabulary.js) are a new curated vocabulary for exactly the
+  rules the deterministic engines can write — the eight secrets.py
+  patterns (`private_key` → "Private keys committed", `generic_secret` →
+  "Hardcoded secrets", and one labelled entry each for the AWS/GitHub/
+  Slack/Stripe/OpenAI/Google key shapes) and the four hygiene.py findings
+  (`.env file committed`, `Private key file committed`, `No .gitignore in
+  the repository` — worded from that rule's own rationale, which is about a
+  stray credential slipping in, not about build output — and
+  `World-writable file`). A dependency rule keeps itself as the label
+  unconditionally (`GHSA-...`/`CVE-...` are already names, exactly as the
+  mockup keeps "GHSA-8xcm-r25x-g524" verbatim), and a sast rule — the one
+  open vocabulary, since the analysis agent writes its own kebab-case id
+  per finding — is humanised instead of shown as a raw slug
+  ("auth-gate-fails-open" → "Auth gate fails open"). Icons follow the same
+  logic: `private_key` and `committed_key_file` both draw the new `key`
+  icon (a key found by content or by filename is still a key), the other
+  secret rules and any future one this map has not been told about yet draw
+  `lock`, an advisory id or any other dependency rule draws `shield` or the
+  new `package` icon, hygiene draws the existing `hammer`, sast draws the
+  existing `code`, and anything truly unrecognised falls back to `shield`
+  rather than a blank glyph. `key` and `package` are new entries in
+  bin/dashboard.html's icon table, plain stroke paths in the same 24×24/
+  stroke-2 style as the rest of it. The raw rule id is never dropped, only
+  demoted to the row's own `title`, so an operator who greps the ledger by
+  rule id still finds it one hover away. This replaces `secIndexCatIcon`, a
+  substring heuristic over the rule string that shipped one task earlier and
+  showed the bare rule id as the row's name regardless — a deliberate
+  choice at the time ("data truth, not an invented translation table") that
+  this task reverses now that the translation is sourced from the engines'
+  own rationale rather than guessed. One known gap: `top_categories`
+  (bin/security/queries.py) still groups by rule alone and does not hand
+  this card a category, so `secRuleMeta` resolves every rule the closed
+  engines can produce without needing one — the gap only matters for a
+  sast rule that has neither an exact entry nor a category to humanise by,
+  which today's ledger never surfaces in the top five.
+
 - **The Security index's projects table becomes the approved mockup's, and
   a client-side filter bar arrives above it.** Phase 4 Task 3, the largest
   of the phase. The table grows from five columns to eight — Project

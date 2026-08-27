@@ -183,3 +183,105 @@ export function secPosture(findings, minSeverity){
   });
   return counts;
 }
+
+/* ---------------------------------------------------------- rule vocabulary
+   The label and icon a RULE earns on screen -- today the Security index's
+   "Top issue categories" card (secIndexCategories, ui/security/index-
+   screen.js) -- kept here for the reason every other word in this file is:
+   one home, so a second screen that wants the same word never grows a copy
+   that can drift from this one.
+
+   SEC_RULE_META covers exactly the CLOSED rule vocabularies: category
+   "secret" (bin/security/secrets.py's own `_RULES`) and category "hygiene"
+   (bin/security/hygiene.py's own findings) -- both fixed lists, because the
+   engine that writes them ships a fixed list of its own. Two more
+   categories are closed too and still need no entry here: "dependency"
+   (bin/security/osv.py) writes the OSV.dev advisory id itself as the rule --
+   GHSA-... or CVE-... -- and an advisory id is already a name (the mockup
+   keeps "GHSA-8xcm-r25x-g524" verbatim, never translates it, see
+   SEC_ADVISORY_RULE below); "sast" is the one OPEN vocabulary -- the
+   analysis agent writes its own kebab-case rule id per finding, so no fixed
+   list could ever cover it, and secRuleMeta humanises it instead of looking
+   it up.
+
+   Every label below was written FROM the rule's own rationale in secrets.py
+   or hygiene.py, not guessed from the rule's name -- both files are short;
+   read them before changing a word here. `committed_key_file` earns the
+   SAME icon as `private_key` rather than the other three hygiene rules'
+   icon: both name a key sitting in the repository, found two different ways
+   (by content, by filename), and the icon is about the risk, not which
+   scanner tripped over it. */
+const ICON_HYGIENE = "hammer";
+export const SEC_RULE_META = {
+  // secret -- bin/security/secrets.py's `_RULES`, in that file's own order.
+  private_key:         {label: "Private keys committed",         icon: "key"},
+  generic_secret:      {label: "Hardcoded secrets",               icon: "lock"},
+  aws_access_key:      {label: "AWS access key committed",        icon: "lock"},
+  github_token:        {label: "GitHub token committed",          icon: "lock"},
+  slack_token:         {label: "Slack token committed",           icon: "lock"},
+  stripe_key:          {label: "Stripe live key committed",       icon: "lock"},
+  openai_key:          {label: "OpenAI API key committed",        icon: "lock"},
+  google_api_key:      {label: "Google API key committed",        icon: "lock"},
+  // hygiene -- bin/security/hygiene.py's four findings. Labels say what each
+  // rule's own rationale says it detects, not what its name suggests:
+  // missing_gitignore's rationale is "the first .env, key or credential file
+  // someone adds is committed by default" -- about secrets slipping in, not
+  // about build output -- so the label says that, not "build artifacts".
+  committed_env_file:  {label: ".env file committed",             icon: ICON_HYGIENE},
+  committed_key_file:  {label: "Private key file committed",      icon: "key"},
+  missing_gitignore:   {label: "No .gitignore in the repository", icon: ICON_HYGIENE},
+  world_writable_file: {label: "World-writable file",             icon: ICON_HYGIENE},
+};
+
+// Every advisory id OSV.dev can hand back for a dependency (bin/security/
+// osv.py's own `rule` field) matches one of these two prefixes -- an id IS
+// the finding's name, so a rule shaped like one is echoed back exactly as it
+// arrived, never looked up or reworded.
+const SEC_ADVISORY_RULE = /^(?:GHSA|CVE)-/i;
+
+/* kebab-case -> sentence case, and nothing else: "auth-gate-fails-open"
+   becomes "Auth gate fails open". The only translation the open "sast"
+   vocabulary gets (see SEC_RULE_META's own comment for why a fixed list
+   cannot cover it) -- a plain, reversible transform rather than a
+   dictionary someone has to keep in sync with an agent that can invent a
+   new rule id on every run. */
+function secHumaniseRule(rule){
+  const words = String(rule || "").split("-").filter(Boolean);
+  if(!words.length) return String(rule || "");
+  const sentence = words.join(" ");
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1);
+}
+
+/* (category, rule) -> {label, icon} for one row of "Top issue categories" --
+   never throws, and never names an icon bin/dashboard.html's own table (`I`)
+   does not define (tests/test_page_contract.py parses that table directly
+   and checks every icon this function can return against it, rather than
+   trusting a second list here).
+
+   In order:
+     1. SEC_RULE_META, regardless of what `category` says -- queries.
+        top_categories (bin/security/queries.py) groups by rule alone and
+        does not hand this card a category at all, so a lookup that only
+        worked when `category` happened to be right would silently stop
+        working the one place this runs today. Every rule a CLOSED engine
+        (secrets.py, hygiene.py) can produce is in that map, so this step
+        alone resolves all of them regardless.
+     2. An advisory id (SEC_ADVISORY_RULE) keeps itself as the label.
+     3. `category === "sast"` -- the one OPEN vocabulary -- humanised.
+     4. Whatever `category` says, sensibly, for a rule from a closed engine
+        this map has not been told about yet (a future secret/dependency/
+        hygiene rule).
+     5. `shield`, unconditionally -- the same fallback an unrecognised
+        severity or state already gets elsewhere in this file (secSevRank,
+        secStateKey). */
+export function secRuleMeta(category, rule){
+  const known = SEC_RULE_META[rule];
+  if(known) return known;
+  const safe = (rule == null || rule === "") ? "Unknown rule" : String(rule);
+  if(SEC_ADVISORY_RULE.test(safe)) return {label: safe, icon: "shield"};
+  if(category === "sast") return {label: secHumaniseRule(safe), icon: "code"};
+  if(category === "secret") return {label: safe, icon: "lock"};
+  if(category === "dependency") return {label: safe, icon: "package"};
+  if(category === "hygiene") return {label: safe, icon: ICON_HYGIENE};
+  return {label: safe, icon: "shield"};
+}

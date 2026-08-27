@@ -132,6 +132,45 @@
     });
     return counts;
   }
+  var ICON_HYGIENE = "hammer";
+  var SEC_RULE_META = {
+    // secret -- bin/security/secrets.py's `_RULES`, in that file's own order.
+    private_key: { label: "Private keys committed", icon: "key" },
+    generic_secret: { label: "Hardcoded secrets", icon: "lock" },
+    aws_access_key: { label: "AWS access key committed", icon: "lock" },
+    github_token: { label: "GitHub token committed", icon: "lock" },
+    slack_token: { label: "Slack token committed", icon: "lock" },
+    stripe_key: { label: "Stripe live key committed", icon: "lock" },
+    openai_key: { label: "OpenAI API key committed", icon: "lock" },
+    google_api_key: { label: "Google API key committed", icon: "lock" },
+    // hygiene -- bin/security/hygiene.py's four findings. Labels say what each
+    // rule's own rationale says it detects, not what its name suggests:
+    // missing_gitignore's rationale is "the first .env, key or credential file
+    // someone adds is committed by default" -- about secrets slipping in, not
+    // about build output -- so the label says that, not "build artifacts".
+    committed_env_file: { label: ".env file committed", icon: ICON_HYGIENE },
+    committed_key_file: { label: "Private key file committed", icon: "key" },
+    missing_gitignore: { label: "No .gitignore in the repository", icon: ICON_HYGIENE },
+    world_writable_file: { label: "World-writable file", icon: ICON_HYGIENE }
+  };
+  var SEC_ADVISORY_RULE = /^(?:GHSA|CVE)-/i;
+  function secHumaniseRule(rule) {
+    const words = String(rule || "").split("-").filter(Boolean);
+    if (!words.length) return String(rule || "");
+    const sentence = words.join(" ");
+    return sentence.charAt(0).toUpperCase() + sentence.slice(1);
+  }
+  function secRuleMeta(category, rule) {
+    const known = SEC_RULE_META[rule];
+    if (known) return known;
+    const safe = rule == null || rule === "" ? "Unknown rule" : String(rule);
+    if (SEC_ADVISORY_RULE.test(safe)) return { label: safe, icon: "shield" };
+    if (category === "sast") return { label: secHumaniseRule(safe), icon: "code" };
+    if (category === "secret") return { label: safe, icon: "lock" };
+    if (category === "dependency") return { label: safe, icon: "package" };
+    if (category === "hygiene") return { label: safe, icon: ICON_HYGIENE };
+    return { label: safe, icon: "shield" };
+  }
 
   // ui/security/state.js
   var secState = {
@@ -2878,23 +2917,17 @@
     });
     return wrap;
   }
-  function secIndexCatIcon(rule) {
-    const r = String(rule || "").toLowerCase();
-    if (/secret|credential|password|private.?key|api.?key|token/.test(r)) return "lock";
-    if (/^ghsa|depend|cve-|vulnerab/.test(r)) return "shield";
-    if (/xss|sql|inject|sast|csrf|\brce\b/.test(r)) return "code";
-    if (/hygiene|lint|style|deprecat|dead.?code|\btodo\b/.test(r)) return "hammer";
-    return "alert";
-  }
   function secIndexCategories(categories) {
     if (!categories.length) {
       return secEl("div", "tblempty", "No open findings to categorise.");
     }
     const wrap = secEl("div", "secidx-categories");
     categories.forEach((c) => {
+      const meta = secRuleMeta(c.category, c.rule);
       const row = secEl("div", "secidx-catrow");
-      row.appendChild(secIcon(secIndexCatIcon(c.rule)));
-      row.appendChild(secEl("span", "secidx-catname", c.rule));
+      row.title = c.rule;
+      row.appendChild(secIcon(meta.icon));
+      row.appendChild(secEl("span", "secidx-catname", meta.label));
       row.appendChild(secEl("span", "secidx-catcount", String(c.count || 0)));
       wrap.appendChild(row);
     });
@@ -3049,5 +3082,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 53d0e99a468a5ddd13ad5b2a251bcd4f63a120daa3e6c33803c3c8037a3ea2ee */
-/* ui-sources: 422550b793389f891313b214d3819fec2f0db2f33d62958ee22449b3544c7f21 */
+/* ui-bundle: b6df5f2c74b1df4e6e2d42ccea7388a37c11b3deb69f4728cb0121db60777599 */
+/* ui-sources: 3f8d75136456819d5c5a4ec9e48c669696fc346368fc62a9e33ac6777f03dcab */

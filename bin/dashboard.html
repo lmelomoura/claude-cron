@@ -1142,12 +1142,22 @@ const I={
   layers:ic('<path d="m12 2 9 5-9 5-9-5z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/>'),
   hammer:ic('<path d="m15 12-8.5 8.5a2.12 2.12 0 1 1-3-3L12 9"/><path d="M17.64 15 22 10.64"/><path d="m20.91 11.7-1.25-1.25c-.6-.6-.93-1.4-.93-2.25v-.86L16.01 4.6a5.56 5.56 0 0 0-3.94-1.64H9l.92.82A6.18 6.18 0 0 1 12 8.4v1.56l2 2h2.47l2.26 1.91"/>'),
   // The Security index's own "Top issue categories" rows (Phase 4 Task 5)
-  // pick one of these four per row from what the rule string actually names
-  // (secIndexCatIcon, ui/security/index-screen.js) -- lock and code are new,
-  // no existing icon already had either shape; shield and hammer above are
-  // reused as-is.
+  // originally picked one of these four per row from a guess over the rule
+  // string; secRuleMeta (ui/security/vocabulary.js) replaced that guesswork
+  // with a curated map and picks the icon by rule/category instead, but the
+  // icons themselves stay -- lock and code had no existing shape to reuse,
+  // shield and hammer below are the same ones already drawn above.
   lock:ic('<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'),
   code:ic('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>'),
+  // secRuleMeta's rule/category -> icon map needs two more shapes neither
+  // lock, shield, code nor hammer already covers: a round key (private_key
+  // and committed_key_file -- a key found two different ways is still a
+  // key) and a package (any dependency rule that is not an advisory id
+  // shield already draws). Straight lines and one circle, same 24x24/
+  // stroke-2 style as every icon above, deliberately not a byte-exact trace
+  // of a third-party icon set.
+  key:ic('<circle cx="7" cy="12" r="4"/><path d="M11 12h9"/><path d="M17 12v3"/><path d="M20 12v3"/>'),
+  package:ic('<path d="M12 3 3 8v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/>'),
 };
 const STATUS_ICON={success:I.check, warning:I.alert, error:I.xcircle, idle:I.clock,
                    running:I.timer, stopped:I.power};

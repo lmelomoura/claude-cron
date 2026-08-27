@@ -6750,3 +6750,189 @@ def test_clicking_a_segment_sets_the_hidden_checkbox_and_fires_change(srv):
     assert '$("sec-enabled").checked=on' in body, "a segment click must set the real, hidden checkbox"
     assert 'new Event("change",{bubbles:true})' in body, \
         'the click must dispatch a bubbling change event so #projmodal\'s own change listener still fires'
+
+
+# ---- rule vocabulary (secRuleMeta / SEC_RULE_META, ui/security/vocabulary.js)
+#
+# secRuleMeta resolves the label and icon "Top issue categories" draws for one
+# rule (secIndexCategories, ui/security/index-screen.js) -- see that map's own
+# module comment for the four rule vocabularies it covers (secret, hygiene,
+# dependency, sast) and why a curated map replaced the substring heuristic
+# (secIndexCatIcon) this screen used to run over the raw rule string. These
+# tests drive the real function under Node, and check every icon it can
+# return against the page's OWN icon table (`const I={...}`, bin/
+# dashboard.html) rather than a second, hand-typed list that could drift from
+# it the next time an icon is renamed.
+
+def _icon_names(js):
+    """Every key the page's own icon table (`const I={...}`) defines, parsed
+    from the live page rather than copied into a second list a new icon
+    could be added without updating. Brace-matched with _scan_balanced the
+    same way _const matches a `const NAME = {...}` value -- _const's own
+    exact-substring lookup wants `"const NAME ="` with a space either side
+    of the `=`, and this table is written `const I={` with none."""
+    i = js.index("const I={")
+    open_idx = js.index("{", i)
+    end = _scan_balanced(js, open_idx)
+    body = _strip_comments(js[open_idx:end])
+    return set(re.findall(r"(?:^|[{,\s])([A-Za-z_$][\w$]*)\s*:\s*ic\(", body))
+
+
+def _rule_meta_deps(block):
+    """Everything secRuleMeta needs to run standalone: the two consts it
+    closes over (ICON_HYGIENE, SEC_RULE_META), the pattern it tests an
+    advisory id against (SEC_ADVISORY_RULE), and the one private helper it
+    calls on its "sast" branch (secHumaniseRule). Pulled together once so
+    every test below gets secRuleMeta's whole dependency set, not a
+    per-test guess at which of its branches that test happens to reach."""
+    return (_const(block, "ICON_HYGIENE") + _const(block, "SEC_RULE_META")
+            + _const(block, "SEC_ADVISORY_RULE")
+            + _plainfn(block, "secHumaniseRule") + _plainfn(block, "secRuleMeta"))
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_every_deterministic_rule_resolves_its_pinned_label_and_a_real_icon(srv, tmp_path):
+    """SEC_RULE_META is the closed vocabulary for the secret and hygiene
+    engines (bin/security/secrets.py's own `_RULES`, bin/security/
+    hygiene.py's four findings) -- every rule either module can write must
+    be in it, worded from that rule's own rationale (see the map's own
+    comment -- missing_gitignore's label says "no .gitignore", not "build
+    artifacts", because the rule's rationale is about a stray .env or key
+    file slipping in, not about build output), and every one of them must
+    name an icon the page's real table defines: a typo here is a blank
+    glyph on a live dashboard, not a failure anywhere else in this suite."""
+    block = _security_js(srv)
+    deps = _rule_meta_deps(block)
+    icon_names = _icon_names(_js(srv))
+    script = tmp_path / "rule-meta-exact.js"
+    script.write_text(deps + """
+    console.log(JSON.stringify(Object.keys(SEC_RULE_META).map(rule => (
+      Object.assign({rule}, secRuleMeta(null, rule))
+    ))));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    expected = {
+        "private_key":         "Private keys committed",
+        "generic_secret":      "Hardcoded secrets",
+        "aws_access_key":      "AWS access key committed",
+        "github_token":        "GitHub token committed",
+        "slack_token":         "Slack token committed",
+        "stripe_key":          "Stripe live key committed",
+        "openai_key":          "OpenAI API key committed",
+        "google_api_key":      "Google API key committed",
+        "committed_env_file":  ".env file committed",
+        "committed_key_file":  "Private key file committed",
+        "missing_gitignore":   "No .gitignore in the repository",
+        "world_writable_file": "World-writable file",
+    }
+    got = {row["rule"]: row["label"] for row in out}
+    assert got == expected, f"a label drifted from the pinned map: {got}"
+    for row in out:
+        assert row["icon"] in icon_names, (
+            f"{row['rule']} points at icon {row['icon']!r}, which bin/dashboard.html's "
+            f"own table does not define: {sorted(icon_names)}")
+    # private_key and committed_key_file name a key sitting in the repository
+    # found two different ways -- both must draw the SAME icon (see
+    # SEC_RULE_META's own comment), not two different ones that would make a
+    # reader wonder why the same risk looks different depending on which
+    # scanner found it.
+    by_rule = {row["rule"]: row["icon"] for row in out}
+    assert by_rule["private_key"] == by_rule["committed_key_file"] == "key"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_an_advisory_id_keeps_itself_as_the_label(srv, tmp_path):
+    """bin/security/osv.py writes the OSV.dev advisory id itself as the
+    `rule` -- GHSA-... or CVE-... -- and an id is already a name (the
+    mockup keeps "GHSA-8xcm-r25x-g524" verbatim, never translates it). Both
+    prefixes, both cases, so a lowercase id is not silently treated as an
+    unrecognised rule."""
+    block = _security_js(srv)
+    deps = _rule_meta_deps(block)
+    script = tmp_path / "rule-meta-advisory.js"
+    script.write_text(deps + """
+    console.log(JSON.stringify({
+      ghsa: secRuleMeta("dependency", "GHSA-8xcm-r25x-g524"),
+      cve: secRuleMeta("dependency", "CVE-2024-12345"),
+      lower: secRuleMeta("dependency", "ghsa-lowercase-id"),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["ghsa"] == {"label": "GHSA-8xcm-r25x-g524", "icon": "shield"}
+    assert out["cve"] == {"label": "CVE-2024-12345", "icon": "shield"}
+    assert out["lower"] == {"label": "ghsa-lowercase-id", "icon": "shield"}
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_an_unknown_sast_rule_is_humanised_not_shown_as_a_raw_slug(srv, tmp_path):
+    """sast is the one OPEN vocabulary (SEC_RULE_META's own comment): the
+    analysis agent writes its own kebab-case rule id per finding, so this is
+    the one category secRuleMeta transforms rather than looks up.
+    "auth-gate-fails-open" is a real rule id already sitting in the ledger
+    (data/security.db), not a made-up example -- pinned as an exact in/out
+    pair, not just "contains a capital letter somewhere"."""
+    block = _security_js(srv)
+    deps = _rule_meta_deps(block)
+    script = tmp_path / "rule-meta-sast.js"
+    script.write_text(deps + """
+    console.log(JSON.stringify(secRuleMeta("sast", "auth-gate-fails-open")));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out == {"label": "Auth gate fails open", "icon": "code"}
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_an_unknown_category_falls_back_safely(srv, tmp_path):
+    """`top_categories` (bin/security/queries.py) groups by rule alone and
+    does not hand this card a category at all today -- see secRuleMeta's own
+    comment -- so `category` is `undefined` on every real call this function
+    gets right now, for whatever rule the map does not know. That must never
+    throw and must never leave a row pointing at an icon the page cannot
+    draw; a genuinely unrecognised category string, and a missing rule too,
+    are the same case made more explicit."""
+    block = _security_js(srv)
+    deps = _rule_meta_deps(block)
+    icon_names = _icon_names(_js(srv))
+    script = tmp_path / "rule-meta-unknown.js"
+    script.write_text(deps + """
+    console.log(JSON.stringify({
+      noCategory: secRuleMeta(undefined, "totally-unrecognised-rule"),
+      bogusCategory: secRuleMeta("not-a-real-category", "totally-unrecognised-rule"),
+      noRuleEither: secRuleMeta(undefined, undefined),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    for key in ("noCategory", "bogusCategory"):
+        row = out[key]
+        assert row["label"] == "totally-unrecognised-rule", f"{key}: {row}"
+        assert row["icon"] in icon_names, f"{key} points at an unknown icon: {row}"
+    assert out["noRuleEither"]["icon"] in icon_names
+    assert out["noRuleEither"]["label"], "even with no rule at all, some label must render"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_rendered_category_row_keeps_the_raw_rule_id_one_hover_away(srv, tmp_path):
+    """secIndexCategories now shows a human label instead of the raw rule id
+    -- an operator who greps the ledger by rule id must still find it, so
+    the id moves to the row's own title rather than disappearing from the
+    page entirely."""
+    block = _security_js(srv)
+    deps = (_rule_meta_deps(block)
+            + _index_screen_deps(block, "secEl", "secIcon", "secIndexCategories"))
+    script = tmp_path / "cat-row-title.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    const wrap = secIndexCategories([{rule: "private_key", count: 23}]);
+    console.log(JSON.stringify(collectAll(wrap, [])));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    row = next(r for r in out if r["cls"] == "secidx-catrow")
+    assert row["title"] == "private_key", f"the raw rule id is not on the row's title: {row}"
+    assert "Private keys committed" in row["text"], \
+        f"the resolved label did not render at all: {row['text']!r}"
+    assert "private_key" not in row["text"], \
+        "the raw rule id leaked into the visible text instead of staying in the title only"

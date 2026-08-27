@@ -19,7 +19,7 @@
    leaving a project screen where an analysis may have just finished). */
 import { $, fmtAgo, pageHeader, kpiCard, tableFooter, openProjectEditor } from "./page.js";
 import { secIcon, secEl, secFetch } from "./dom.js";
-import { SEC_NEVER, SEC_FLOOR_SCOPE_NOTE } from "./vocabulary.js";
+import { SEC_NEVER, SEC_FLOOR_SCOPE_NOTE, secRuleMeta } from "./vocabulary.js";
 // secSwitchProjectTab: "View full report" (Phase 4 Task 4) opens a project
 // straight onto its own Reports tab -- see secViewFullReportButton, below.
 import { secOpenProject, secSwitchProjectTab } from "./project-screen.js";
@@ -1311,40 +1311,33 @@ function secIndexDonutLegend(donut, opts){
   return wrap;
 }
 
-/* A heuristic over the RULE string, not a lookup keyed by a field the
-   payload does not carry (Phase 4 Task 5): `top_categories` (queries.py)
-   groups by `rule` -- a specific, dynamic string (a GHSA advisory id, a
-   rule slug, whatever the analysis wrote), never a small fixed `category`
-   enum. Checked top to bottom, first match wins, so a rule matching more
-   than one bucket (rare; none of the four patterns overlap in practice)
-   picks whichever concern a reader would name first. `alert` is the same
-   default every row drew before this task -- a rule matching nothing below
-   still gets a sensible, generic "issue" glyph, never a blank cell. */
-function secIndexCatIcon(rule){
-  const r = String(rule || "").toLowerCase();
-  if(/secret|credential|password|private.?key|api.?key|token/.test(r)) return "lock";
-  if(/^ghsa|depend|cve-|vulnerab/.test(r)) return "shield";
-  if(/xss|sql|inject|sast|csrf|\brce\b/.test(r)) return "code";
-  if(/hygiene|lint|style|deprecat|dead.?code|\btodo\b/.test(r)) return "hammer";
-  return "alert";
-}
+/* Icon, human label, right-aligned count -- the mockup's own row, replacing
+   the width-scaled bar Phase 4 Task 3 drew here (no bar in the mockup at
+   all). The label and icon both come from secRuleMeta (ui/security/
+   vocabulary.js) now, in place of the guesswork this used to run over the
+   raw rule string (a substring heuristic, and before that `c.rule` shown
+   verbatim -- see that function's own comment for why a curated map
+   replaced both: the mockup's "Private keys committed" is a real label the
+   engine's own rationale earns, not a coincidence of the rule's name).
+   `c.category` is not in `top_categories`'s own payload today
+   (bin/security/queries.py groups by rule alone) -- secRuleMeta is written
+   to resolve correctly without it regardless, and picks it up for free the
+   day that payload carries one.
 
-/* Icon, name, right-aligned count -- the mockup's own row, replacing the
-   width-scaled bar Phase 4 Task 3 drew here (no bar in the mockup at all).
-   The icon is now per-row (secIndexCatIcon, above); the name is `c.rule`
-   UNCHANGED -- exactly the mockup's own mix of a human label where the
-   analysis wrote one ("Private keys committed") and a bare rule id where
-   that is what exists ("GHSA-8xcm-r25x-g524"), which is data truth, not
-   something to paper over with an invented translation table. */
+   The raw rule id is never dropped, only demoted to `.title`: an operator
+   who greps the ledger by rule id still finds it one hover away, even on a
+   row whose visible name is now a human label rather than that id. */
 function secIndexCategories(categories){
   if(!categories.length){
     return secEl("div", "tblempty", "No open findings to categorise.");
   }
   const wrap = secEl("div", "secidx-categories");
   categories.forEach(c => {
+    const meta = secRuleMeta(c.category, c.rule);
     const row = secEl("div", "secidx-catrow");
-    row.appendChild(secIcon(secIndexCatIcon(c.rule)));
-    row.appendChild(secEl("span", "secidx-catname", c.rule));
+    row.title = c.rule;
+    row.appendChild(secIcon(meta.icon));
+    row.appendChild(secEl("span", "secidx-catname", meta.label));
     row.appendChild(secEl("span", "secidx-catcount", String(c.count || 0)));
     wrap.appendChild(row);
   });
