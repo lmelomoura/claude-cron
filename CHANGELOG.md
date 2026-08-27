@@ -839,6 +839,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Three details the user's side-by-side with the mockup caught on the
+  Security index.** The findings chips gained the mockup's subtle tint
+  border (the flat soft background alone reads unfinished); the last column
+  header now says "Actions" instead of standing empty; and every table cell
+  across the app now centres vertically in its row — the mockups always
+  drew it that way, and a tall two-line identity cell beside a one-line
+  duration read staggered with the old top alignment.
+
 - **An unknown rule id in Top issue categories humanises instead of showing
   raw.** The resolver humanised only rules whose category was `sast`; a rule
   arriving under any other or unknown category rendered its raw kebab id.

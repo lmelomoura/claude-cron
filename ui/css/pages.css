@@ -1233,6 +1233,16 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secidx-sev3 .sevpill.high{
   background:color-mix(in srgb,var(--err-soft) 50%,var(--warn-soft) 50%);
   color:color-mix(in srgb,var(--err) 50%,var(--warn) 50%)}
+/* The mockup outlines every chip in its own tint -- a subtle 1px ring the
+   flat soft background alone does not give. Same colour expression as each
+   chip's text, knocked back with color-mix, so no new hue enters the
+   vocabulary. Scoped to .secidx-sev3 like the three-tone override above:
+   this is the index screen's own dialect. */
+.secidx-sev3 .sevpill.critical{border-color:color-mix(in srgb,var(--err) 40%,transparent)}
+.secidx-sev3 .sevpill.high{
+  border-color:color-mix(in srgb,color-mix(in srgb,var(--err) 50%,var(--warn) 50%) 40%,transparent)}
+.secidx-sev3 .sevpill.medium{border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+.secidx-sev3 .sevpill.low,.secidx-sev3 .sevpill.info{border-color:var(--line)}
 .secidx-spark-svg{width:100%;max-width:150px;height:32px;display:block}
 .secidx-rowlink{cursor:pointer}
 #view-security tbody tr.secidx-rowlink:hover{background:var(--panel2)}

@@ -343,7 +343,11 @@ th.sortable .ic{width:12px;height:12px;vertical-align:-2px;margin-left:4px;opaci
 th.sortable:hover .ic{opacity:.6}
 th.sortable.sorted{color:var(--ink)}
 th.sortable.sorted .ic{opacity:1;color:var(--accent)}
-td{padding:10px 14px;border-bottom:1px solid var(--line2);vertical-align:top}
+/* Middle, not top: every approved drawing -- Security.png and the four
+   artboards -- centres a cell's content in its row, and a tall two-line
+   identity cell beside a one-line duration reads staggered when the short
+   one hugs the top. */
+td{padding:10px 14px;border-bottom:1px solid var(--line2);vertical-align:middle}
 /* When: relative reads at a glance, the exact stamp is one hover away. */
 .when-rel{font-variant-numeric:tabular-nums;cursor:help;border-bottom:1px dotted var(--line)}
 /* align-items must be stated: the default `stretch` made the job id's <code>

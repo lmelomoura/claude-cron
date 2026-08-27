@@ -664,7 +664,7 @@ function secIndexProjectRow(p){
 const SEC_PROJECT_COLS = [
   ["project", "Project"], ["analysis", "Last analysis"], ["profile", "Profile"],
   ["run", "Last run"], ["findings", "Findings"], ["trend", "Trend (30d)"],
-  ["status", "Status"], [null, ""],
+  ["status", "Status"], [null, "Actions"],
 ];
 
 /* `footer`, when given, is a pre-built tableFooter() (ui/app/chrome.js)

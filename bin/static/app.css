@@ -366,7 +366,11 @@ th.sortable .ic{width:12px;height:12px;vertical-align:-2px;margin-left:4px;opaci
 th.sortable:hover .ic{opacity:.6}
 th.sortable.sorted{color:var(--ink)}
 th.sortable.sorted .ic{opacity:1;color:var(--accent)}
-td{padding:10px 14px;border-bottom:1px solid var(--line2);vertical-align:top}
+/* Middle, not top: every approved drawing -- Security.png and the four
+   artboards -- centres a cell's content in its row, and a tall two-line
+   identity cell beside a one-line duration reads staggered when the short
+   one hugs the top. */
+td{padding:10px 14px;border-bottom:1px solid var(--line2);vertical-align:middle}
 /* When: relative reads at a glance, the exact stamp is one hover away. */
 .when-rel{font-variant-numeric:tabular-nums;cursor:help;border-bottom:1px dotted var(--line)}
 /* align-items must be stated: the default `stretch` made the job id's <code>
@@ -1659,6 +1663,16 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secidx-sev3 .sevpill.high{
   background:color-mix(in srgb,var(--err-soft) 50%,var(--warn-soft) 50%);
   color:color-mix(in srgb,var(--err) 50%,var(--warn) 50%)}
+/* The mockup outlines every chip in its own tint -- a subtle 1px ring the
+   flat soft background alone does not give. Same colour expression as each
+   chip's text, knocked back with color-mix, so no new hue enters the
+   vocabulary. Scoped to .secidx-sev3 like the three-tone override above:
+   this is the index screen's own dialect. */
+.secidx-sev3 .sevpill.critical{border-color:color-mix(in srgb,var(--err) 40%,transparent)}
+.secidx-sev3 .sevpill.high{
+  border-color:color-mix(in srgb,color-mix(in srgb,var(--err) 50%,var(--warn) 50%) 40%,transparent)}
+.secidx-sev3 .sevpill.medium{border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+.secidx-sev3 .sevpill.low,.secidx-sev3 .sevpill.info{border-color:var(--line)}
 .secidx-spark-svg{width:100%;max-width:150px;height:32px;display:block}
 .secidx-rowlink{cursor:pointer}
 #view-security tbody tr.secidx-rowlink:hover{background:var(--panel2)}
@@ -1874,5 +1888,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: d79a4247846d5fc241c4960ffb9c9f4501c0f416078684af2489e692302e8f1c */
-/* ui-sources: 772ebcae0ec1efad9adee417c8ee4091e48a0bbcd5ddb1189f113ddd5814ff94 */
+/* ui-bundle: d503d42aff9553d9238a85c1acef65aa52f39772867a904e11f2c881920828e5 */
+/* ui-sources: 6461f456be9f74dc6adf4324613dd96bfb9dff7459cba930522798bdbf8a432f */

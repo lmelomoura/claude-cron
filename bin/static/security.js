@@ -2487,7 +2487,7 @@
     ["findings", "Findings"],
     ["trend", "Trend (30d)"],
     ["status", "Status"],
-    [null, ""]
+    [null, "Actions"]
   ];
   function secIndexProjectsTable(projects, footer) {
     if (!projects.length) {
@@ -3083,5 +3083,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 88e3c5da0011d1a0160165d636fe179000917b5fc34b14fbc0d3805630fb5701 */
-/* ui-sources: 772ebcae0ec1efad9adee417c8ee4091e48a0bbcd5ddb1189f113ddd5814ff94 */
+/* ui-bundle: fefbb6c756942a8060537119e93938615351039db9252ffc1eb16d19ec9074e9 */
+/* ui-sources: 6461f456be9f74dc6adf4324613dd96bfb9dff7459cba930522798bdbf8a432f */
