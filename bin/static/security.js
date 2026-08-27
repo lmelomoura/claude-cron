@@ -165,11 +165,12 @@
     if (known) return known;
     const safe = rule == null || rule === "" ? "Unknown rule" : String(rule);
     if (SEC_ADVISORY_RULE.test(safe)) return { label: safe, icon: "shield" };
-    if (category === "sast") return { label: secHumaniseRule(safe), icon: "code" };
-    if (category === "secret") return { label: safe, icon: "lock" };
-    if (category === "dependency") return { label: safe, icon: "package" };
-    if (category === "hygiene") return { label: safe, icon: ICON_HYGIENE };
-    return { label: safe, icon: "shield" };
+    const label = secHumaniseRule(safe);
+    if (category === "sast") return { label, icon: "code" };
+    if (category === "secret") return { label, icon: "lock" };
+    if (category === "dependency") return { label, icon: "package" };
+    if (category === "hygiene") return { label, icon: ICON_HYGIENE };
+    return { label, icon: "shield" };
   }
 
   // ui/security/state.js
@@ -3082,5 +3083,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: b6df5f2c74b1df4e6e2d42ccea7388a37c11b3deb69f4728cb0121db60777599 */
-/* ui-sources: 3f8d75136456819d5c5a4ec9e48c669696fc346368fc62a9e33ac6777f03dcab */
+/* ui-bundle: 88e3c5da0011d1a0160165d636fe179000917b5fc34b14fbc0d3805630fb5701 */
+/* ui-sources: 772ebcae0ec1efad9adee417c8ee4091e48a0bbcd5ddb1189f113ddd5814ff94 */

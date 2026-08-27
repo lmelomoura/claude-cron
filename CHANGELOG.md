@@ -839,6 +839,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **An unknown rule id in Top issue categories humanises instead of showing
+  raw.** The resolver humanised only rules whose category was `sast`; a rule
+  arriving under any other or unknown category rendered its raw kebab id.
+  Advisory ids (GHSA-*/CVE-*) are names and stay verbatim; everything else
+  unknown now reads in sentence case, with the raw id kept in the row's
+  `title` for the operator who greps by it.
+
 - **Top issue categories no longer guesses a rule's category from the shape
   of its id.** The ranked rows carried only `rule` and `count`, so the page's
   label/icon resolver told SAST and hygiene apart by kebab-case versus

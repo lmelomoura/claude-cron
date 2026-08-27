@@ -6886,13 +6886,13 @@ def test_an_unknown_sast_rule_is_humanised_not_shown_as_a_raw_slug(srv, tmp_path
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_an_unknown_category_falls_back_safely(srv, tmp_path):
-    """`top_categories` (bin/security/queries.py) groups by rule alone and
-    does not hand this card a category at all today -- see secRuleMeta's own
-    comment -- so `category` is `undefined` on every real call this function
-    gets right now, for whatever rule the map does not know. That must never
-    throw and must never leave a row pointing at an icon the page cannot
-    draw; a genuinely unrecognised category string, and a missing rule too,
-    are the same case made more explicit."""
+    """`top_categories` serves each row's category now, but the resolver
+    still has to survive whatever it is handed: an unknown category string,
+    an unknown rule, or nothing at all. It must never throw and never point
+    at an icon the page cannot draw -- and an unknown id HUMANISES (sentence
+    case) rather than rendering raw, because the card's whole job is human
+    labels and the raw id lives on the row's title. Advisory ids are the one
+    exception, tested beside the GHSA case."""
     block = _security_js(srv)
     deps = _rule_meta_deps(block)
     icon_names = _icon_names(_js(srv))
@@ -6908,7 +6908,7 @@ def test_an_unknown_category_falls_back_safely(srv, tmp_path):
                                     text=True, check=True).stdout)
     for key in ("noCategory", "bogusCategory"):
         row = out[key]
-        assert row["label"] == "totally-unrecognised-rule", f"{key}: {row}"
+        assert row["label"] == "Totally unrecognised rule", f"{key}: {row}"
         assert row["icon"] in icon_names, f"{key} points at an unknown icon: {row}"
     assert out["noRuleEither"]["icon"] in icon_names
     assert out["noRuleEither"]["label"], "even with no rule at all, some label must render"

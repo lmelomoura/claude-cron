@@ -278,10 +278,17 @@ export function secRuleMeta(category, rule){
   const known = SEC_RULE_META[rule];
   if(known) return known;
   const safe = (rule == null || rule === "") ? "Unknown rule" : String(rule);
+  // Advisory ids ARE names -- never humanised, whatever the category says.
   if(SEC_ADVISORY_RULE.test(safe)) return {label: safe, icon: "shield"};
-  if(category === "sast") return {label: secHumaniseRule(safe), icon: "code"};
-  if(category === "secret") return {label: safe, icon: "lock"};
-  if(category === "dependency") return {label: safe, icon: "package"};
-  if(category === "hygiene") return {label: safe, icon: ICON_HYGIENE};
-  return {label: safe, icon: "shield"};
+  // Every other unknown id humanises. A raw kebab/snake id is never a better
+  // display string than its sentence-case form, and the raw id stays one
+  // hover away in the row's title -- this is what keeps the card legible
+  // when a category outside the four known ones shows up (an agent is free
+  // to invent one tomorrow).
+  const label = secHumaniseRule(safe);
+  if(category === "sast") return {label, icon: "code"};
+  if(category === "secret") return {label, icon: "lock"};
+  if(category === "dependency") return {label, icon: "package"};
+  if(category === "hygiene") return {label, icon: ICON_HYGIENE};
+  return {label, icon: "shield"};
 }
