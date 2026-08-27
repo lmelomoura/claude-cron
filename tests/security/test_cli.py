@@ -18,6 +18,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from security.fingerprint import fingerprint as compute_fingerprint, secret_fingerprint
@@ -1974,7 +1975,7 @@ def test_index_data_survives_a_ledger_that_does_not_exist_yet(tmp_path):
                     "info": 0, "total": 0},
         "profile": "", "last_started": 0, "last_duration": 0, "last_state": "",
         "analyses": 0, "trend": []}]
-    assert out["recent"] == []
+    assert out["recent"] == {"rows": [], "total": 0}
     assert out["donut"] == {"critical": 0, "high": 0, "medium": 0, "low": 0,
                             "info": 0, "total": 0}
     assert out["categories"] == []
@@ -1996,8 +1997,11 @@ def test_index_data_reports_current_posture_for_the_projects_given(tmp_path):
     assert row["branch_fell_back"] is False
     assert row["posture"]["high"] == 1
     assert row["analyses"] == 1
-    assert [r["id"] for r in out["recent"]] == [aid]
-    assert out["recent"][0]["open"] == 1
+    assert [r["id"] for r in out["recent"]["rows"]] == [aid]
+    assert out["recent"]["total"] == 1
+    assert out["recent"]["rows"][0]["open"] == 1
+    assert out["recent"]["rows"][0]["severities"] == \
+        {"critical": 0, "high": 1, "medium": 0}
     assert out["donut"]["high"] == 1
     assert out["donut"]["total"] == 1
     assert out["categories"] == [{"rule": "sql-injection", "count": 1}]
@@ -2074,8 +2078,57 @@ def test_index_data_summary_is_scoped_to_the_projects_given(tmp_path):
     assert out["donut"]["high"] == 1
     assert [c["rule"] for c in out["categories"]] == ["r"], \
         "gone's rule leaked into the category rollup: " + repr(out["categories"])
-    assert aid_gone not in [a["id"] for a in out["recent"]], \
+    assert aid_gone not in [a["id"] for a in out["recent"]["rows"]], \
         "gone's analysis leaked into the recent-analyses feed"
+
+
+def test_index_data_days_narrows_the_donut_and_categories(tmp_path):
+    """`--days` (default 30 when omitted) reaches `queries.severity_totals`/
+    `top_categories` for real now -- see those functions' own docstrings.
+    An analysis backdated to 60 days ago must vanish from a narrower window
+    and reappear once the window widens back past it, proving the CLI flag
+    is actually wired through rather than accepted and dropped."""
+    db = tmp_path / "security.db"
+    aid = finished_analysis(db, tmp_path, "web", "main", severity="critical",
+                            rule="hardcoded-secret")
+    conn = sqlite3.connect(str(db))
+    sixty_days_ago = int(time.time()) - 60 * 86400
+    conn.execute("UPDATE analysis SET started=?, ended=? WHERE id=?",
+                 (sixty_days_ago, sixty_days_ago, aid))
+    conn.commit()
+    conn.close()
+
+    narrow = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]), "--days", "30")
+    wide = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]), "--days", "90")
+
+    assert narrow["donut"]["critical"] == 0, \
+        "a 30-day window must not see an analysis 60 days old"
+    assert narrow["categories"] == []
+    assert wide["donut"]["critical"] == 1, \
+        "widening past the analysis's own age must restore it"
+    assert wide["categories"] == [{"rule": "hardcoded-secret", "count": 1}]
+
+
+def test_index_data_recent_page_pages_server_side_with_a_true_total(tmp_path):
+    """`--recent-page` (default 1) pages `recent_analyses` in the database
+    itself -- see that function's own docstring for why. Seven analyses,
+    five per page: page 1 carries the five newest, page 2 carries the
+    remaining two, and `total` says 7 on both pages."""
+    db = tmp_path / "security.db"
+    ids = [finished_analysis(db, tmp_path, "web", "main") for _ in range(7)]
+    newest_first = list(reversed(ids))
+
+    page1 = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]), "--recent-page", "1")
+    page2 = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]), "--recent-page", "2")
+
+    assert [r["id"] for r in page1["recent"]["rows"]] == newest_first[0:5]
+    assert page1["recent"]["total"] == 7
+    assert [r["id"] for r in page2["recent"]["rows"]] == newest_first[5:7]
+    assert page2["recent"]["total"] == 7
 
 
 def test_index_data_refuses_projects_that_is_not_json(tmp_path):

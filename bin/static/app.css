@@ -342,6 +342,17 @@ button.kpi-card.err:not(:disabled):hover{border-color:color-mix(in srgb,var(--er
   font-variant-numeric:tabular-nums}
 .table-foot-info{white-space:nowrap}
 .table-foot-pager{display:flex;gap:8px;align-items:center}
+/* The numbered "‹ 1 2 3 ›" pager (Phase 4 Task 5, tableFooter's own opt-in --
+   see its comment, ui/app/chrome.js) -- Jobs/Projects/Runs never pass
+   `numbered`, so `.table-foot-pager` bare (no `.numbered`) and its two
+   `.btn.ghost` children above are exactly what they always were. */
+.table-foot-pager.numbered{gap:4px}
+.pagebtn{display:inline-flex;align-items:center;justify-content:center;min-width:30px;
+  height:30px;padding:0 8px;border-radius:8px;border:1px solid transparent;
+  background:none;color:var(--muted);font:inherit;font-size:12.5px;font-weight:600;
+  font-variant-numeric:tabular-nums;cursor:pointer;transition:.13s}
+.pagebtn:hover:not(.active){background:var(--panel2);color:var(--ink)}
+.pagebtn.active{background:var(--accent);color:var(--accent-ink);cursor:default}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
 th{text-align:left;font-weight:600;color:var(--muted);font-size:10.5px;text-transform:uppercase;
   letter-spacing:.05em;padding:11px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
@@ -1628,6 +1639,26 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secidx-sub{color:var(--muted);font-size:11.5px;margin-top:3px;line-height:1.5}
 .secidx-findcell{display:flex;flex-direction:column;gap:4px;align-items:flex-start}
 .secidx-findtotal{font-size:11px;color:var(--muted)}
+/* Three DISTINCT chip tones for this screen alone (Phase 4 Task 5) -- the
+   mockup's own crit-red/high-orange/medium-amber, in place of the two-tone
+   `.sevpill.critical,.sevpill.high{background:var(--err-soft)}` grouping
+   every OTHER severity-chipped surface in the app still uses (the findings
+   browser, the branches tab, a project's own Overview) and this task does
+   not touch. Scoped to `.secidx-sev3` (both this screen's tables wrap their
+   chips in it -- the fleet table's own Findings cell and the Recent-
+   analyses row beside it) rather than changed at `.sevpill`'s own source,
+   so this stays exactly this screen's own vocabulary. `color-mix()`, not a
+   new hex literal: this design's tokens (ui/css/tokens.css) have only
+   `--err`/`--warn` as hue tokens, no third "orange" of their own, so `high`
+   sits exactly between the two it is severity-between -- the identical
+   expression SEV_STROKE (ui/security/index-screen.js) and
+   `.secidx-legendrow.high` (above) both use, the one vocabulary this
+   screen now keeps everywhere severity has a colour. `.critical`/`.medium`
+   need no override: they already read `--err`/`--warn` from the shared
+   `.sevpill` rule, exactly the mockup's own red and amber. */
+.secidx-sev3 .sevpill.high{
+  background:color-mix(in srgb,var(--err-soft) 50%,var(--warn-soft) 50%);
+  color:color-mix(in srgb,var(--err) 50%,var(--warn) 50%)}
 .secidx-spark-svg{width:100%;max-width:150px;height:32px;display:block}
 .secidx-rowlink{cursor:pointer}
 #view-security tbody tr.secidx-rowlink:hover{background:var(--panel2)}
@@ -1743,34 +1774,32 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secidx-findbody .secidx-donutcol{flex-direction:row;align-items:center;gap:16px}
 .secidx-findbody .secidx-donut-svg{flex:none}
 .secidx-findbody .secidx-catcol{flex:1 1 100%}
-/* The legend, redrawn as a dot beside plain text instead of a filled chip --
-   a coloured `::before` circle (never part of `.textContent`, so the pinned
-   pill text `secIndexDonutLegend` builds underneath this is untouched) plus
-   the count-and-percentage pair the plain chip had no room for. Each row is
+/* The legend, the mockup's own row -- a coloured dot, the severity's name,
+   a right-aligned "count (pct%)" -- its own element (Phase 4 Task 5), not a
+   `.sevpill` wearing a percentage the way this screen first built it (see
+   secIndexDonutLegend's own comment, ui/security/index-screen.js, for why
+   that shape was replaced: the pinned pill tests hold `.sevpill` to what it
+   already means elsewhere on this screen, and this legend needed to say
+   something a pill's own shape has no room for). Each row is
    `justify-content:space-between` so the count+percentage lands flush right
    against the card's own edge, the mockup's own alignment. */
 .secidx-findlegend{display:flex;flex-direction:column;gap:9px;flex:1 1 auto;min-width:0}
-.secidx-findlegend .secidx-legendrow{display:flex;align-items:center;
-  justify-content:space-between;gap:14px;width:100%}
-/* `:not(.clean)` -- the zero-findings "nothing open" pill (secIndexDonutLegend's
-   own early return, before any row/percentage exists to redraw) keeps its
-   ordinary green chip look untouched; only a real severity's own pill is
-   redrawn as a dot. Without this exclusion the clean pill lost its
-   background to the rule below AND had no `::before` colour of its own (it
-   matches none of the five severities beneath it), rendering as invisible-
-   dot plain text instead of the green "nothing open" every other clean
-   state on this screen shows. */
-.secidx-findlegend .sevpill:not(.clean){background:none;border-color:transparent;
-  padding:0 0 0 14px;border-radius:0;position:relative;font-size:12.5px;
-  font-weight:600;gap:0;color:var(--ink)}
-.secidx-findlegend .sevpill:not(.clean)::before{content:"";position:absolute;left:0;top:50%;
-  transform:translateY(-50%);width:8px;height:8px;border-radius:50%}
-.secidx-findlegend .sevpill.critical::before,.secidx-findlegend .sevpill.high::before{
-  background:var(--err)}
-.secidx-findlegend .sevpill.medium::before{background:var(--warn)}
-.secidx-findlegend .sevpill.low::before,.secidx-findlegend .sevpill.info::before{
+.secidx-legendrow{display:flex;align-items:center;justify-content:space-between;
+  gap:14px;width:100%;font-size:12.5px}
+.secidx-legenddot{width:8px;height:8px;border-radius:50%;flex:none}
+/* The SAME three-tone vocabulary SEV_STROKE and .secidx-sev3 use (this
+   file, below, and ui/security/index-screen.js's own comment on SEV_STROKE)
+   -- one set of colours for the donut wedges, the findings chips AND this
+   legend's own dots, never a fourth palette of its own. */
+.secidx-legendrow.critical .secidx-legenddot{background:var(--err)}
+.secidx-legendrow.high .secidx-legenddot{
+  background:color-mix(in srgb,var(--err) 50%,var(--warn) 50%)}
+.secidx-legendrow.medium .secidx-legenddot{background:var(--warn)}
+.secidx-legendrow.low .secidx-legenddot,.secidx-legendrow.info .secidx-legenddot{
   background:var(--muted)}
-.secidx-legendpct{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums;
+.secidx-legendname{flex:1 1 auto;min-width:0;font-weight:600;color:var(--ink);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.secidx-legendcount{flex:none;color:var(--muted);font-variant-numeric:tabular-nums;
   white-space:nowrap}
 /* Full-width, centred -- the mockup's own "View full report" -- rather than
    the inline-flex `.btn` shrinking to its own label's width and sitting
@@ -1845,5 +1874,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: 45439c69bfb92c010e020e444cebffbd8cf37b98dd73ae55fec820d073a55cda */
-/* ui-sources: fff620c33e3b212ae72191bed9e3332fb6ce4fca45db1da0cf52e379b24b3492 */
+/* ui-bundle: d79a4247846d5fc241c4960ffb9c9f4501c0f416078684af2489e692302e8f1c */
+/* ui-sources: 3fe0f595aebeffdaefed231160acd9edc569e1f3dfc555970c1a7d170683c474 */

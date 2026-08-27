@@ -2113,7 +2113,7 @@
     }
     let data;
     try {
-      data = await secFetch("/api/security/index");
+      data = await secFetch("/api/security/index?days=" + secFindPeriodDays + "&recent_page=" + secRecentPage);
     } catch (e) {
       if (gen !== secIndexGen) return;
       const host = $("sec-list");
@@ -2168,7 +2168,7 @@
     secLatestProjects = data.projects || [];
     secRefreshFilterOptions(secLatestProjects);
     secRepaintProjectsTable();
-    const recent = data.recent || [];
+    const recent = data.recent || { rows: [], total: 0 };
     host._secRecent.textContent = "";
     host._secRecent.appendChild(secIndexRecentCard(recent));
     host._secDonut.textContent = "";
@@ -2181,7 +2181,7 @@
       // count, or it is the one number on this screen that still presents a
       // partial read as a complete one.
       secCappedNote(data.summary || {}),
-      recent
+      recent.rows
     ));
   }
   function secCappedScopeNote(n, of, noun) {
@@ -2205,7 +2205,7 @@
       sub: "with security enabled"
     }));
     wrap.appendChild(kpiCard({
-      icon: "activity",
+      icon: "trend",
       value: String(s.analyses || 0),
       label: "Total analyses",
       sub: "across all projects",
@@ -2263,7 +2263,7 @@
   function secIndexFindingsChips(posture, capped) {
     const p = posture || {};
     const wrap = secEl("div", "secidx-findcell");
-    const chips = secEl("div", "sevpills");
+    const chips = secEl("div", "sevpills secidx-sev3");
     FIND_SEVS.forEach((sev) => chips.appendChild(
       secEl("span", "sevpill " + sev, String(p[sev] || 0))
     ));
@@ -2340,7 +2340,7 @@
       tdAnalysis.textContent = SEC_NEVER.short;
       tdAnalysis.title = SEC_NEVER.next;
     } else {
-      tdAnalysis.appendChild(document.createTextNode(fmtAgo(p.last_started)));
+      tdAnalysis.appendChild(document.createTextNode(fmtAgo(p.last_started, true)));
       const sub = secEl("div", "secidx-sub");
       sub.appendChild(document.createTextNode(
         [p.profile, p.branch || "\u2014"].filter(Boolean).join(" \xB7 ")
@@ -2611,6 +2611,7 @@
       noun: "project",
       page: 1,
       pages: 1,
+      numbered: true,
       prevId: "secpj-pg-prev",
       nextId: "secpj-pg-next",
       infoId: "secpj-pg-info"
@@ -2685,12 +2686,13 @@
       known ? SEC_RUN_STATUS_LABEL[state] : "Unknown"
     );
   }
-  function secIndexRecentFindingsCell(open) {
-    if (open == null) return secEl("span", "muted", "\u2014");
-    if (!open) return secEl("span", "sevpill clean", "nothing open");
-    const span = secEl("span", null, open + (open === 1 ? " finding" : " findings"));
-    span.title = "The severity split lives on this project's own Findings tab \u2014 this row's own analysis was never given one to show here.";
-    return span;
+  function secIndexRecentFindingsChips(severities) {
+    if (!severities) return secEl("span", "muted", "\u2014");
+    const wrap = secEl("div", "sevpills secidx-sev3");
+    FIND_SEVS.forEach((sev) => wrap.appendChild(
+      secEl("span", "sevpill " + sev, String(severities[sev] || 0))
+    ));
+    return wrap;
   }
   function secIndexRecentRow(a) {
     const tr = document.createElement("tr");
@@ -2712,13 +2714,13 @@
     tdBranch.textContent = a.branch || "\u2014";
     tr.appendChild(tdBranch);
     const tdFindings = document.createElement("td");
-    tdFindings.appendChild(secIndexRecentFindingsCell(a.open));
+    tdFindings.appendChild(secIndexRecentFindingsChips(a.severities));
     tr.appendChild(tdFindings);
     const tdStatus = document.createElement("td");
     tdStatus.appendChild(secIndexRunStatusPill(a.state));
     tr.appendChild(tdStatus);
     const tdDate = document.createElement("td");
-    tdDate.appendChild(document.createTextNode(fmtAgo(a.started)));
+    tdDate.appendChild(document.createTextNode(fmtAgo(a.started, true)));
     tdDate.appendChild(secEl("div", "secidx-sub", secIndexRunWhen(a.started)));
     tr.appendChild(tdDate);
     return tr;
@@ -2732,7 +2734,8 @@
       "Latest security analyses across all projects",
       secViewAllAnalysesButton()
     ));
-    const total = recent.length;
+    const rows = recent.rows || [];
+    const total = recent.total || 0;
     if (!total) {
       const e = secEl("div", "tblempty");
       e.appendChild(secIcon("inbox"));
@@ -2742,8 +2745,8 @@
     }
     const pages = Math.max(1, Math.ceil(total / SEC_RECENT_PAGE_SIZE));
     secRecentPage = Math.min(Math.max(1, secRecentPage), pages);
-    const from = (secRecentPage - 1) * SEC_RECENT_PAGE_SIZE + 1;
-    const to = Math.min(total, secRecentPage * SEC_RECENT_PAGE_SIZE);
+    const from = total ? (secRecentPage - 1) * SEC_RECENT_PAGE_SIZE + 1 : 0;
+    const to = from + rows.length - 1;
     const scroll = secEl("div", "table-scroll");
     const table = document.createElement("table");
     const thead = document.createElement("thead");
@@ -2752,28 +2755,36 @@
     thead.appendChild(htr);
     table.appendChild(thead);
     const tbody = document.createElement("tbody");
-    recent.slice(from - 1, to).forEach((a) => tbody.appendChild(secIndexRecentRow(a)));
+    rows.forEach((a) => tbody.appendChild(secIndexRecentRow(a)));
     table.appendChild(tbody);
     scroll.appendChild(table);
     card.appendChild(scroll);
     const footer = tableFooter({
+      // `plural: "analyses"` -- tableFooter's own bare `noun + "s"` reads
+      // "analysiss" otherwise (see its own comment, ui/app/chrome.js); found
+      // live, in this exact card, verifying against the mockup.
       shown: { from, to },
       total,
-      noun: "run",
+      noun: "analysis",
+      plural: "analyses",
       page: secRecentPage,
       pages,
+      numbered: true,
       prevId: "secrecent-pg-prev",
-      nextId: "secrecent-pg-next",
-      infoId: "secrecent-pg-info"
+      nextId: "secrecent-pg-next"
     });
     footer.onclick = (e) => {
-      if (e.target.closest("#secrecent-pg-prev")) {
+      const pageBtn = e.target.closest(".pagebtn");
+      if (pageBtn) {
+        secRecentPage = Number(pageBtn.dataset.page);
+      } else if (e.target.closest("#secrecent-pg-prev")) {
         secRecentPage = Math.max(1, secRecentPage - 1);
-        secRenderIndex();
       } else if (e.target.closest("#secrecent-pg-next")) {
-        secRecentPage = secRecentPage + 1;
-        secRenderIndex();
+        secRecentPage = Math.min(pages, secRecentPage + 1);
+      } else {
+        return;
       }
+      secLoadIndex(true);
     };
     card.appendChild(footer);
     return card;
@@ -2781,7 +2792,7 @@
   var SEV_ORDER5 = ["critical", "high", "medium", "low", "info"];
   var SEV_STROKE = {
     critical: "var(--err)",
-    high: "var(--err)",
+    high: "color-mix(in srgb, var(--err) 50%, var(--warn) 50%)",
     medium: "var(--warn)",
     low: "var(--muted)",
     info: "var(--muted)"
@@ -2839,24 +2850,41 @@
       wrap.appendChild(secEl("span", "sevpill clean", "nothing open"));
       return wrap;
     }
+    if (!showPercent) {
+      SEV_ORDER5.forEach((sev) => {
+        if (!donut[sev]) return;
+        const pill = secEl("span", "sevpill " + sev, donut[sev] + " " + sev);
+        pill.title = DONUT_PILL_TITLE;
+        wrap.appendChild(pill);
+      });
+      return wrap;
+    }
     SEV_ORDER5.forEach((sev) => {
       if (!donut[sev]) return;
-      const pill = secEl("span", "sevpill " + sev, donut[sev] + " " + sev);
-      pill.title = DONUT_PILL_TITLE;
-      if (!showPercent) {
-        wrap.appendChild(pill);
-        return;
-      }
-      const row = secEl("div", "secidx-legendrow");
-      row.appendChild(pill);
+      const row = secEl("div", "secidx-legendrow " + sev);
+      row.title = DONUT_PILL_TITLE;
+      row.appendChild(secEl("span", "secidx-legenddot"));
       row.appendChild(secEl(
         "span",
-        "secidx-legendpct",
-        "(" + (donut[sev] / total * 100).toFixed(1) + "%)"
+        "secidx-legendname",
+        sev[0].toUpperCase() + sev.slice(1)
+      ));
+      row.appendChild(secEl(
+        "span",
+        "secidx-legendcount",
+        donut[sev] + " (" + (donut[sev] / total * 100).toFixed(1) + "%)"
       ));
       wrap.appendChild(row);
     });
     return wrap;
+  }
+  function secIndexCatIcon(rule) {
+    const r = String(rule || "").toLowerCase();
+    if (/secret|credential|password|private.?key|api.?key|token/.test(r)) return "lock";
+    if (/^ghsa|depend|cve-|vulnerab/.test(r)) return "shield";
+    if (/xss|sql|inject|sast|csrf|\brce\b/.test(r)) return "code";
+    if (/hygiene|lint|style|deprecat|dead.?code|\btodo\b/.test(r)) return "hammer";
+    return "alert";
   }
   function secIndexCategories(categories) {
     if (!categories.length) {
@@ -2865,7 +2893,7 @@
     const wrap = secEl("div", "secidx-categories");
     categories.forEach((c) => {
       const row = secEl("div", "secidx-catrow");
-      row.appendChild(secIcon("alert"));
+      row.appendChild(secIcon(secIndexCatIcon(c.rule)));
       row.appendChild(secEl("span", "secidx-catname", c.rule));
       row.appendChild(secEl("span", "secidx-catcount", String(c.count || 0)));
       wrap.appendChild(row);
@@ -2894,7 +2922,10 @@
   function secFindPeriodLabel(days) {
     return days > 0 ? "Last " + days + " days" : "All time";
   }
-  var SEC_FIND_PERIOD_TITLE = "Findings are the fleet's current posture \u2014 every open finding right now, read off each branch's latest finished analysis. A posture cannot be windowed without dropping quiet branches out of it, so this does not filter the totals below.";
+  function secFindPeriodTitleSuffix(days) {
+    return days > 0 ? "(" + days + " day" + (days === 1 ? "" : "s") + ")" : "(All time)";
+  }
+  var SEC_FIND_PERIOD_TITLE = "Findings recorded by analyses that ran in this period. Changing it asks the server again \u2014 the donut, legend and categories below all re-render for the period chosen.";
   function secFindingsPeriodPicker() {
     const wrap = document.createElement("details");
     wrap.className = "secidx-periodpick";
@@ -2918,7 +2949,7 @@
         e.stopPropagation();
         secFindPeriodDays = days;
         wrap.open = false;
-        secRenderIndex();
+        secLoadIndex(true);
       };
       pop.appendChild(item);
     });
@@ -2936,7 +2967,11 @@
   }
   function secIndexFindingsCard(donut, categories, cappedNote, recent) {
     const card = secEl("div", "table-card");
-    card.appendChild(secIndexCardHead("Findings overview", null, secFindingsPeriodPicker()));
+    card.appendChild(secIndexCardHead(
+      "Findings overview " + secFindPeriodTitleSuffix(secFindPeriodDays),
+      null,
+      secFindingsPeriodPicker()
+    ));
     const body = secEl("div", "secidx-findbody");
     body.appendChild(secIndexDonut(donut, categories, cappedNote, { showPercent: true }));
     card.appendChild(body);
@@ -3014,5 +3049,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 13ad0ca8cf99186cdff5b57be04809fbe6ee73abd921e4720467b72c6072b8f3 */
-/* ui-sources: fff620c33e3b212ae72191bed9e3332fb6ce4fca45db1da0cf52e379b24b3492 */
+/* ui-bundle: 02128712c693aad92a671e55ff1da0a0c02565f0905ef561142caa07e83539ae */
+/* ui-sources: 3fe0f595aebeffdaefed231160acd9edc569e1f3dfc555970c1a7d170683c474 */

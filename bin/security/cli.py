@@ -830,6 +830,13 @@ def cmd_index_data(args):
     `security list`/`security checklist` read without a project filter of
     their own, but this is a screen about the fleet AS CONFIGURED, not an
     unscoped activity log.
+
+    `--days` (default 30, the mockup's own "Last 30 days") is the Findings-
+    overview card's own period, passed straight to `severity_totals`/
+    `top_categories` -- see their own docstrings for what a real window
+    means now. `--recent-page` (default 1) pages `recent_analyses` server-
+    side, five analyses at a time -- see that function's own docstring for
+    why paging there rather than shipping more rows and slicing client-side.
     """
     try:
         projects = json.loads(args.projects)
@@ -851,10 +858,12 @@ def cmd_index_data(args):
                 "last_started": 0, "last_duration": 0, "last_state": "",
                 "analyses": 0, "trend": [],
             } for p in projects],
-            "recent": [], "donut": queries._empty_posture(), "categories": []}))
+            "recent": {"rows": [], "total": 0},
+            "donut": queries._empty_posture(), "categories": []}))
         return
 
     names = [p.get("name", "") for p in projects]
+    recent_page = max(1, int(args.recent_page))
     print(json.dumps({
         # `projects`, NOT `names`. `index_summary` and `project_rows` both
         # pick a project's branch through `default_branch_posture`, which
@@ -865,9 +874,10 @@ def cmd_index_data(args):
         # See `queries.index_summary`'s own docstring.
         "summary": queries.index_summary(conn, projects),
         "projects": queries.project_rows(conn, projects),
-        "recent": queries.recent_analyses(conn, projects=names),
-        "donut": queries.severity_totals(conn, project=names),
-        "categories": queries.top_categories(conn, project=names),
+        "recent": queries.recent_analyses(
+            conn, limit=5, offset=(recent_page - 1) * 5, projects=names),
+        "donut": queries.severity_totals(conn, project=names, days=args.days),
+        "categories": queries.top_categories(conn, project=names, days=args.days),
     }))
 
 
@@ -1029,8 +1039,15 @@ def cmd_project_data(args):
                  "runs": runs,
                  "branches": queries.branch_rows(conn, args.project),
                  "reports": reports},
-        "sidebar": {"donut": queries.severity_totals(conn, project=args.project),
-                   "categories": queries.top_categories(conn, project=args.project),
+        # `days=0`: explicitly the as-of-now posture severity_totals/
+        # top_categories still default to, stated here rather than left
+        # implicit -- this sidebar is a DIFFERENT screen from the index's own
+        # Findings-overview card (which asks for a real window,
+        # `cmd_index_data`'s own `--days`) and must never drift onto that
+        # card's window just because the shared function's default changed
+        # under it.
+        "sidebar": {"donut": queries.severity_totals(conn, project=args.project, days=0),
+                   "categories": queries.top_categories(conn, project=args.project, days=0),
                    "activity": ledger.events_for(conn, project=args.project, limit=5),
                    "branch_count": queries.analysed_branch_count(conn, args.project),
                    # The donut rolls every analysed branch into one number,
@@ -1326,6 +1343,11 @@ def main(argv=None):
     # ledger through `queries.read_only` and writes nothing.
     ix = sub.add_parser("index-data", parents=[dbflag]); ix.set_defaults(fn=cmd_index_data)
     ix.add_argument("--projects", required=True)
+    # The Findings-overview card's own period (mockup default "Last 30
+    # days") and the Recent-analyses table's own page -- see cmd_index_data's
+    # own docstring.
+    ix.add_argument("--days", type=int, default=30)
+    ix.add_argument("--recent-page", type=int, default=1)
 
     # Deliberately absent from AGENT_FORBIDDEN: same reasoning as `index-data`
     # right above -- it opens the ledger through `queries.read_only` and

@@ -224,6 +224,17 @@ export function tableCard(opts){
    "what the number is" and "how it is drawn"). `total`/`noun` build the
    sentence; `page`/`pages` only disable the two buttons at either end.
 
+   `plural` (Phase 4 Task 5) is the noun's own irregular plural, used
+   instead of the bare `noun + "s"` below when the count is not 1 --
+   optional, so every caller before this one (project/job/run, all regular)
+   is untouched. Found live: the Recent-analyses card's own footer read
+   "Showing 1 to 5 of 12 analysiss" the moment its `noun` became "analysis"
+   -- a previous task's own report names this exact trap and had sidestepped
+   it by keeping `noun: "run"` there instead, which this task's mockup does
+   not allow ("...of 12 analyses" is the literal text asked for). Passing
+   `plural: "analyses"` fixes the sentence without teaching this function a
+   general pluraliser it does not need for anything else it draws.
+
    `prevId`/`nextId`/`infoId` exist for the same reason `sortAttr` does on
    tableCard: the actual click is answered by bin/dashboard.html's existing
    delegated listener (`#jobs-pg-prev`/`#jobs-pg-next` today), and this file
@@ -231,25 +242,57 @@ export function tableCard(opts){
    ever one instance of its own table on screen at a time could skip them,
    but Jobs, Projects and Runs coexist in the DOM at once (hidden by their
    view, not removed), so an id every page must supply its OWN name for is
-   the only way three footers do not collide. */
+   the only way three footers do not collide.
+
+   `numbered` (Phase 4 Task 5) is the mockup's own "‹ 1 2 3 ›" pager for the
+   Security index's two tables -- optional, defaulting to the Prev/Next-with-
+   text shape above, so Jobs/Runs/Projects (none of which pass it) are byte-
+   for-byte untouched. Numbered mode drops the two buttons' own text (icon
+   only, `.iconbtn`-sized) and inserts one `.pagebtn` per page between them,
+   `.active` marking the current one -- and, when there is only one page,
+   drops the whole nav rather than showing a pager with nothing to page
+   through: the fleet table's own footer in the mockup ("Showing 1 to 2 of 2
+   projects") carries no buttons at all, unlike Jobs/Projects/Runs, which
+   keep showing a disabled Prev/Next even at one page and are not this
+   task's to change. Clicking a page number is answered by the CALLER's own
+   `footer.onclick` (the same "built fresh every repaint, wired directly on
+   the element just built" idiom secIndexRecentCard's own Prev/Next already
+   use) reading `closest("[data-page]")`, not a central dashboard.html
+   listener -- neither of this variant's two callers is page-static markup. */
 export function tableFooter(opts){
-  const {shown, total, noun, page, pages, prevId, nextId, infoId} = opts;
+  const {shown, total, noun, plural, page, pages, prevId, nextId, infoId, numbered} = opts;
   const foot = el("div", "table-foot");
   const info = el("span", "table-foot-info",
     "Showing " + shown.from + " to " + shown.to + " of " + total + " "
-    + noun + (total === 1 ? "" : "s"));
+    + (total === 1 ? noun : (plural || noun + "s")));
   if(infoId) info.id = infoId;
   foot.appendChild(info);
-  const nav = el("div", "table-foot-pager");
-  const prev = el("button", "btn ghost");
+  if(numbered && pages <= 1) return foot;
+  const nav = el("div", "table-foot-pager" + (numbered ? " numbered" : ""));
+  // `.iconbtn` alone in numbered mode, not `.btn.ghost` too -- both are
+  // complete, self-sufficient button styles (fixed 30px square vs.
+  // padded-to-content), and combining them would fight over box sizing.
+  // `.iconbtn` is this app's own established icon-only button (the row
+  // kebab, `.rowacts`), exactly what a numbered pager's bare Prev/Next
+  // chevrons are.
+  const prev = el("button", numbered ? "iconbtn" : "btn ghost");
   if(prevId) prev.id = prevId;
   prev.appendChild(icon("cleft"));
-  prev.appendChild(document.createTextNode("Prev"));
+  if(!numbered) prev.appendChild(document.createTextNode("Prev"));
   prev.disabled = page <= 1;
   nav.appendChild(prev);
-  const next = el("button", "btn ghost");
+  if(numbered){
+    for(let p = 1; p <= pages; p++){
+      const btn = el("button", "pagebtn" + (p === page ? " active" : ""), String(p));
+      btn.type = "button";
+      btn.dataset.page = String(p);
+      if(p === page) btn.disabled = true;
+      nav.appendChild(btn);
+    }
+  }
+  const next = el("button", numbered ? "iconbtn" : "btn ghost");
   if(nextId) next.id = nextId;
-  next.appendChild(document.createTextNode("Next"));
+  if(!numbered) next.appendChild(document.createTextNode("Next"));
   next.appendChild(icon("cright"));
   next.disabled = page >= pages;
   nav.appendChild(next);

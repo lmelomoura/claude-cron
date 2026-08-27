@@ -661,6 +661,70 @@ def test_the_index_asks_the_cli_for_only_the_security_enabled_projects(srv, monk
     assert sent == [{"name": "web", "base": "main", "description": "d"}]
 
 
+def test_the_index_days_defaults_to_30_and_passes_an_explicit_zero_through(srv, monkeypatch):
+    """`days` (the Findings-overview card's own period) follows the same
+    absent-vs-explicit contract `security_activity`'s own `since` already
+    does: ABSENT must reach the CLI as 30 (`SECURITY_INDEX_DEFAULT_WINDOW_
+    DAYS`), not `queries.severity_totals`'s own all-time default -- and an
+    EXPLICIT `0` ("All time", the picker's own vocabulary) must reach it as
+    `0`, not be collapsed into the same 30 an absent value gets."""
+    seen = []
+
+    def fake_cc(args, stdin=None):
+        seen.append(args)
+        return True, json.dumps({"summary": {}, "projects": [], "recent": [],
+                                  "donut": {}, "categories": []})
+    monkeypatch.setattr(srv, "cc", fake_cc)
+
+    code, _ = srv.security_index()
+    assert code == 200
+    args = seen[0]
+    assert args[args.index("--days") + 1] == "30", \
+        "an absent days must reach the CLI as the 30-day default, not all-time"
+
+    code, _ = srv.security_index({"days": ["0"]})
+    assert code == 200
+    args = seen[1]
+    assert args[args.index("--days") + 1] == "0", \
+        "an explicit 0 ('All time') must not be collapsed into the 30-day default"
+
+    code, _ = srv.security_index({"days": ["7"]})
+    assert code == 200
+    assert seen[2][seen[2].index("--days") + 1] == "7"
+
+
+def test_the_index_days_refuses_a_value_that_is_not_an_integer(srv):
+    code, payload = srv.security_index({"days": ["soon"]})
+    assert code == 400
+    assert "days" in payload["error"]
+
+
+def test_the_index_recent_page_defaults_to_1_and_forwards_an_explicit_page(srv, monkeypatch):
+    """`recent_page` pages `queries.recent_analyses` server-side (see its own
+    docstring) -- absent or invalid reads as page 1, the same clamp-not-
+    reject treatment `security_activity` gives its own `page`."""
+    seen = []
+
+    def fake_cc(args, stdin=None):
+        seen.append(args)
+        return True, json.dumps({"summary": {}, "projects": [], "recent": [],
+                                  "donut": {}, "categories": []})
+    monkeypatch.setattr(srv, "cc", fake_cc)
+
+    code, _ = srv.security_index()
+    assert code == 200
+    assert seen[0][seen[0].index("--recent-page") + 1] == "1"
+
+    code, _ = srv.security_index({"recent_page": ["3"]})
+    assert code == 200
+    assert seen[1][seen[1].index("--recent-page") + 1] == "3"
+
+    code, _ = srv.security_index({"recent_page": ["0"]})
+    assert code == 200
+    assert seen[2][seen[2].index("--recent-page") + 1] == "1", \
+        "page 0 (or anything below 1) must clamp up to page 1, not pass through"
+
+
 def test_the_project_screen_refuses_an_unknown_project(srv):
     code, payload = srv.security_project("")
     assert code == 400

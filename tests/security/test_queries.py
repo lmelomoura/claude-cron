@@ -655,11 +655,16 @@ def test_recent_analyses_newest_first_open_only_for_finished(conn):
     aid_old = _analysis(conn, "main", findings=[("high", "sast")])
     aid_running = _analysis(conn, "main", state="running", findings=[])
 
-    rows = queries.recent_analyses(conn, limit=5)
+    result = queries.recent_analyses(conn, limit=5)
+    rows = result["rows"]
 
     assert [r["id"] for r in rows] == [aid_running, aid_old], "newest first"
+    assert result["total"] == 2
     assert rows[0]["open"] is None, "a running analysis has no posture yet"
+    assert rows[0]["severities"] is None, \
+        "a running analysis has no severity split yet either"
     assert rows[1]["open"] == 1, "a finished analysis reports its open count"
+    assert rows[1]["severities"] == {"critical": 0, "high": 1, "medium": 0}
 
 
 def test_recent_analyses_scoped_to_a_project_list_excludes_others(conn):
@@ -670,7 +675,7 @@ def test_recent_analyses_scoped_to_a_project_list_excludes_others(conn):
     aid_web = _analysis(conn, "main", project="web", findings=[("high", "sast")])
     _analysis(conn, "main", project="gone", findings=[("critical", "secret")])
 
-    rows = queries.recent_analyses(conn, projects=["web"])
+    rows = queries.recent_analyses(conn, projects=["web"])["rows"]
 
     assert [r["id"] for r in rows] == [aid_web]
 
@@ -681,7 +686,7 @@ def test_recent_analyses_of_an_empty_project_list_is_explicitly_empty(conn):
     however `WHERE project IN ()` behaves, this would silently fall back to
     the OLD unscoped behaviour finding 2 exists to close."""
     _analysis(conn, "main", project="web", findings=[("high", "sast")])
-    assert queries.recent_analyses(conn, projects=[]) == []
+    assert queries.recent_analyses(conn, projects=[]) == {"rows": [], "total": 0}
 
 
 def test_recent_analyses_with_no_projects_argument_stays_fleet_wide(conn):
@@ -690,8 +695,42 @@ def test_recent_analyses_with_no_projects_argument_stays_fleet_wide(conn):
     must not quietly narrow every OTHER caller of this function too."""
     aid_web = _analysis(conn, "main", project="web", findings=[("high", "sast")])
     aid_gone = _analysis(conn, "main", project="gone", findings=[("critical", "secret")])
-    ids = {r["id"] for r in queries.recent_analyses(conn, limit=10)}
+    ids = {r["id"] for r in queries.recent_analyses(conn, limit=10)["rows"]}
     assert {aid_web, aid_gone} <= ids
+
+
+def test_recent_analyses_pages_server_side_with_an_honest_total(conn):
+    """`total` counts every analysis the scope matches, not just the page
+    handed back -- the index screen's footer ("Showing 6 to 8 of 12
+    analyses") needs the true count without a second request. `offset`
+    pages the SQL itself: page 2 of a 3-row-per-page listing is rows 3-4-5,
+    oldest of the page last (still newest-first overall)."""
+    ids = [_analysis(conn, "main", findings=[("high", "sast")]) for _ in range(5)]
+    # `_analysis` runs them in order, so ids are oldest-to-newest; the feed
+    # itself is newest-first.
+    newest_first = list(reversed(ids))
+
+    page1 = queries.recent_analyses(conn, limit=3, offset=0)
+    page2 = queries.recent_analyses(conn, limit=3, offset=3)
+
+    assert page1["total"] == 5 and page2["total"] == 5
+    assert [r["id"] for r in page1["rows"]] == newest_first[0:3]
+    assert [r["id"] for r in page2["rows"]] == newest_first[3:5], \
+        "the second page must pick up exactly where the first left off"
+
+
+def test_recent_analyses_severities_tally_only_critical_high_and_medium(conn):
+    """The mockup's own three fixed chips per row -- low/info findings exist
+    in the ledger but have no chip of their own on this table (the fleet
+    table above it draws the identical line, see
+    test_findings_chips_show_three_severities_and_the_postures_own_total),
+    so this tally must not silently grow a fourth/fifth key nothing reads."""
+    _analysis(conn, "main", findings=[
+        ("critical", "secret"), ("high", "sast"), ("high", "sast"),
+        ("medium", "hygiene"), ("low", "hygiene"), ("info", "hygiene")])
+    row = queries.recent_analyses(conn, limit=1)["rows"][0]
+    assert row["severities"] == {"critical": 1, "high": 2, "medium": 1}
+    assert row["open"] == 6, "the combined count still counts every severity"
 
 
 def test_severity_totals_sums_branches_and_excludes_resolved(conn):
@@ -781,43 +820,127 @@ def test_severity_totals_and_top_categories_do_not_collapse_distinct_fingerprint
     assert cats == [{"rule": "aws_access_key", "count": 2}]
 
 
-def test_posture_rollups_take_no_time_window(conn):
-    """Both of these used to accept a `days=30` they never read, and neither
-    caller ever passed it -- a signature promising a filter the body does not
-    apply. Whoever eventually wrote `days=7` would have got an all-time answer
-    that looked like a weekly one, with nothing failing to say so.
+def test_posture_rollups_default_to_no_time_window(conn):
+    """`days` used to be accepted, ignored, and never passed by either
+    caller. It is a REAL window now (see the tests below) -- this pins that
+    its absence, or an explicit falsy value, is STILL the safe, unwindowed
+    reading every existing caller (the project sidebar's own donut, chiefly)
+    gets without asking: a POSTURE number is as-of-now by construction, read
+    off each branch's LATEST finished analysis, and a critical finding does
+    not stop being open because nobody re-analysed that branch this month.
 
-    The parameter is gone rather than implemented, because a POSTURE number is
-    as-of-now by construction: it is read off each branch's LATEST finished
-    analysis, and a critical finding does not stop being open because nobody
-    re-analysed that branch this month. A window here would not narrow the
-    answer, it would drop quiet branches out of it and report them clean.
-
-    Pinned as a probe, not as trivia: re-adding an ignored `days` is exactly
-    the kind of change that reads as harmless in a diff. Proved below by an
-    analysis that is far older than any window anybody would pick -- it must
-    still be counted."""
+    Proved below by an analysis that is far older than any window the
+    Findings-overview card offers -- with no window requested, it must still
+    be counted."""
     aid = ledger.start_analysis(conn, "web", "web", "main", "sha", "quick", "r")
     ledger.record_finding(conn, aid, {
         "fingerprint": "a" * 64, "category": "secret", "rule": "aws_access_key",
         "severity": "critical", "title": "t", "occurrences": []})
     ledger.mark_prepared(conn, aid)
     ledger.finish_analysis(conn, aid, "done")
-    # A year ago -- older than 30 days, older than any period the Activity
-    # screen offers, and still open.
+    # A year ago -- older than any period the Findings-overview card offers,
+    # and still open.
     long_ago = int(time.time()) - 365 * 86400
     conn.execute("UPDATE analysis SET started=?, ended=? WHERE id=?",
                  (long_ago, long_ago, aid))
     conn.commit()
 
     assert queries.severity_totals(conn, "web")["critical"] == 1
+    assert queries.severity_totals(conn, "web", days=0)["critical"] == 1, \
+        "an explicit falsy days must read exactly like the omitted default"
     assert queries.top_categories(conn, "web") == [
         {"rule": "aws_access_key", "count": 1}]
+    assert queries.top_categories(conn, "web", days=0) == [
+        {"rule": "aws_access_key", "count": 1}]
 
-    with pytest.raises(TypeError):
-        queries.severity_totals(conn, "web", days=7)
-    with pytest.raises(TypeError):
-        queries.top_categories(conn, "web", days=7)
+
+def test_severity_totals_and_top_categories_a_real_window_narrows_and_widening_restores(conn):
+    """The falsifiability the brief asks for, in one test: narrowing the
+    window to less than the finding's own age must drop it, and widening it
+    back past that age must bring it back -- proving `days` actually filters
+    now, rather than being accepted and silently ignored the way it used to
+    be (see the sibling test above, and CHANGELOG.md for that history)."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "sha", "quick", "r")
+    ledger.record_finding(conn, aid, {
+        "fingerprint": "a" * 64, "category": "secret", "rule": "aws_access_key",
+        "severity": "critical", "title": "t", "occurrences": []})
+    ledger.mark_prepared(conn, aid)
+    ledger.finish_analysis(conn, aid, "done")
+    ten_days_ago = int(time.time()) - 10 * 86400
+    conn.execute("UPDATE analysis SET started=?, ended=? WHERE id=?",
+                 (ten_days_ago, ten_days_ago, aid))
+    conn.commit()
+
+    assert queries.severity_totals(conn, "web", days=7)["critical"] == 0, \
+        "a 7-day window must not see an analysis ten days old"
+    assert queries.severity_totals(conn, "web", days=30)["critical"] == 1, \
+        "widening the window back past the analysis's own age must restore it"
+    assert queries.top_categories(conn, "web", days=7) == []
+    assert queries.top_categories(conn, "web", days=30) == [
+        {"rule": "aws_access_key", "count": 1}]
+
+
+def test_severity_totals_windows_by_when_the_analysis_itself_ran(conn):
+    """Known findings at known times: two branches of the same project, one
+    analysed inside the window, one outside it -- only the in-window
+    branch's finding counts. The out-of-window branch contributes NOTHING,
+    not a stale reading from further back -- the same treatment `trend`'s
+    own windowed series already gives a branch with nothing recent in it."""
+    aid_recent = ledger.start_analysis(conn, "web", "web", "main", "s1", "quick", "r")
+    ledger.record_finding(conn, aid_recent, {
+        "fingerprint": "a" * 64, "category": "secret", "rule": "aws_access_key",
+        "severity": "critical", "title": "t", "occurrences": []})
+    ledger.mark_prepared(conn, aid_recent)
+    ledger.finish_analysis(conn, aid_recent, "done")
+
+    aid_old = ledger.start_analysis(conn, "web", "web", "develop", "s2", "quick", "r")
+    ledger.record_finding(conn, aid_old, {
+        "fingerprint": "b" * 64, "category": "sast", "rule": "sql-injection",
+        "severity": "high", "title": "t", "occurrences": []})
+    ledger.mark_prepared(conn, aid_old)
+    ledger.finish_analysis(conn, aid_old, "done")
+    sixty_days_ago = int(time.time()) - 60 * 86400
+    conn.execute("UPDATE analysis SET started=?, ended=? WHERE id=?",
+                 (sixty_days_ago, sixty_days_ago, aid_old))
+    conn.commit()
+
+    totals = queries.severity_totals(conn, "web", days=30)
+    assert totals["critical"] == 1, "the recent branch's finding must count"
+    assert totals["high"] == 0, "develop's analysis is outside the 30-day window"
+    assert totals["total"] == 1
+
+    cats = queries.top_categories(conn, "web", days=30)
+    assert cats == [{"rule": "aws_access_key", "count": 1}], \
+        "the out-of-window branch's rule must not appear at all"
+
+
+def test_severity_totals_window_boundary_is_inclusive(conn, monkeypatch):
+    """An analysis started EXACTLY at the cutoff second is inside the window
+    -- the same `>=` boundary `trend()` already uses (queries.py), not a
+    second, silently different edge for this rollup. The clock is frozen so
+    the cutoff this test computes and the one `severity_totals` computes
+    internally are the SAME instant -- a real wall clock would let time pass
+    between the two and turn "exactly at the edge" into "one second before
+    it" by accident, an off-by-one this test must not itself introduce."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "sha", "quick", "r")
+    ledger.record_finding(conn, aid, {
+        "fingerprint": "a" * 64, "category": "secret", "rule": "aws_access_key",
+        "severity": "critical", "title": "t", "occurrences": []})
+    ledger.mark_prepared(conn, aid)
+    ledger.finish_analysis(conn, aid, "done")
+
+    now = 1_800_000_000
+    monkeypatch.setattr(queries.time, "time", lambda: now)
+    days = 7
+    edge = now - days * 86400
+    conn.execute("UPDATE analysis SET started=?, ended=? WHERE id=?",
+                 (edge, edge, aid))
+    conn.commit()
+
+    assert queries.severity_totals(conn, "web", days=days)["critical"] == 1, \
+        "an analysis started exactly at the cutoff must count as inside the window"
+    assert queries.severity_totals(conn, "web", days=days - 1)["critical"] == 0, \
+        "narrower by one day, the same analysis must now fall outside it"
 
 
 def test_severity_totals_keeps_the_more_severe_of_two_branches(conn):

@@ -1872,6 +1872,63 @@ def test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column(
         f"nth-child {nth_widths} + last-child {last_width}")
 
 
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_table_footer_takes_an_irregular_plural_and_a_numbered_pager(srv, tmp_path):
+    """Found live (Phase 4 Task 5), verifying the Security index's Recent-
+    analyses card against its mockup: the footer read "Showing 1 to 5 of 12
+    analysiss" the moment its `noun` became "analysis" -- tableFooter's own
+    pluraliser is a bare `noun + "s"`, right for every regular noun this app
+    already hands it (project, job, run) but wrong for this one. `plural`,
+    optional, fixes the sentence without teaching this function a general
+    pluraliser it does not need for anything else it draws -- a caller that
+    never passes it (every one before this task) keeps reading `noun + "s"`
+    exactly as before, pinned here as the "regular" case.
+
+    `numbered` is pinned alongside it: one `.pagebtn` per page, `.active` on
+    the current one, `.iconbtn` (not `.btn.ghost`) for a text-less Prev/Next
+    -- and, with only one page, no pager nav at all, the mockup's own
+    Projects-table footer with nothing to page through."""
+    block = _app_js(srv)
+    deps = _plainfn(block, "el") + _plainfn(block, "tableFooter")
+    script = tmp_path / "table-footer.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    const irregular = collectAll(tableFooter({
+      shown: {from: 1, to: 5}, total: 12, noun: "analysis", plural: "analyses",
+      page: 1, pages: 3, numbered: true,
+    }), []);
+    const regular = collectAll(tableFooter({
+      shown: {from: 1, to: 2}, total: 2, noun: "project", page: 1, pages: 1,
+    }), []);
+    const onePageNumbered = collectAll(tableFooter({
+      shown: {from: 1, to: 2}, total: 2, noun: "project",
+      page: 1, pages: 1, numbered: true,
+    }), []);
+    console.log(JSON.stringify({irregular, regular, onePageNumbered}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+
+    def info_text(rows):
+        return next(r["text"] for r in rows if r["cls"] == "table-foot-info")
+
+    assert info_text(out["irregular"]) == "Showing 1 to 5 of 12 analyses", \
+        info_text(out["irregular"])
+    pagebtns = [r["text"] for r in out["irregular"] if r["cls"].startswith("pagebtn")]
+    assert pagebtns == ["1", "2", "3"], pagebtns
+    active = [r for r in out["irregular"] if r["cls"] == "pagebtn active"]
+    assert active and active[0]["text"] == "1", \
+        f"the current page must be marked .active: {active}"
+    iconbtns = [r for r in out["irregular"] if r["cls"] == "iconbtn"]
+    assert len(iconbtns) == 2 and all(r["text"] == "" for r in iconbtns), \
+        f"numbered Prev/Next must be icon-only .iconbtn, no .btn.ghost text: {iconbtns}"
+
+    assert info_text(out["regular"]) == "Showing 1 to 2 of 2 projects", \
+        "a caller with no plural override must keep reading the bare noun + 's'"
+
+    assert not [r for r in out["onePageNumbered"] if r["cls"].startswith("table-foot-pager")], \
+        "a numbered footer with only one page must render no pager nav at all"
+
+
 # ---- the Runs table, pinned ahead of phase 2's redesign (Task 6), then
 # moved whole into ui/app/runs.js by the redesign itself (Task 7). Same gate
 # as the Jobs and Projects tables above: characterisation tests, so they pass
@@ -5083,13 +5140,17 @@ def test_the_two_kinds_of_severity_pill_each_say_what_they_count(srv, tmp_path):
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_findings_overview_legend_states_each_severitys_share_of_the_total(srv, tmp_path):
-    """Phase 4 Task 4. The mockup's own legend reads "Critical 45 (23.8%)" --
-    a percentage secIndexDonutLegend never drew before this task. It is
-    opt-in (`{showPercent: true}`, the index screen's own call) so the
-    project screen's sidebar donut -- the SAME function's other caller,
-    checked against no mockup of its own -- keeps rendering exactly as it
-    always has; the pinned pill-scope test above already proves the
-    one-argument call stays untouched, this proves the percentage itself is
+    """Phase 4 Task 5. The mockup's own legend row -- a coloured dot, the
+    severity's NAME alone ("Critical"), and a right-aligned "count (pct%)"
+    ("45 (23.8%)") -- its own element, not a `.sevpill` wearing a
+    percentage the way Task 4 first built it (see secIndexDonutLegend's own
+    comment for why that shape was replaced). Opt-in (`{showPercent: true}`,
+    the index screen's own call) so the project screen's sidebar donut --
+    the SAME function's other caller, checked against no mockup of its own
+    -- keeps rendering its plain `.sevpill` legend exactly as it always has;
+    the pinned pill-scope test
+    (test_the_two_kinds_of_severity_pill_each_say_what_they_count) already
+    proves that one-argument call stays untouched. The percentage itself is
     the mockup's own arithmetic: each severity's share of the TOTAL (45 of
     189 is 23.8%), not a share that has to sum to 100 across the legend --
     45+90+54 do add to 189 here (a real, internally consistent payload
@@ -5110,22 +5171,31 @@ def test_the_findings_overview_legend_states_each_severitys_share_of_the_total(s
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
 
-    def pcts(rows):
-        return sorted(r["text"] for r in rows if r["cls"] == "secidx-legendpct")
+    def by_class(rows, cls):
+        return {r["text"] for r in rows if r["cls"] == cls}
 
-    assert pcts(out["withPct"]) == ["(23.8%)", "(28.6%)", "(47.6%)"], \
-        f"the legend's own percentages are wrong: {pcts(out['withPct'])}"
-    # The pinned pill itself is untouched: "45 critical", not "45 critical
-    # (23.8%)" -- the percentage is a sibling, never appended inside it (see
-    # secIndexDonutLegend's own comment on why a child would fail this and
-    # the two donut-capped-cue tests above it).
-    pills = [r for r in out["withPct"] if r["cls"] == "sevpill critical"]
-    assert pills and pills[0]["text"] == "45 critical", pills
+    names = by_class(out["withPct"], "secidx-legendname")
+    counts = by_class(out["withPct"], "secidx-legendcount")
+    assert names == {"Critical", "High", "Medium"}, names
+    assert counts == {"45 (23.8%)", "90 (47.6%)", "54 (28.6%)"}, \
+        f"the legend's own count-and-percentage pairs are wrong: {counts}"
+    # A legend row, not a sevpill: this branch must never produce the OLD
+    # "45 critical" pill Task 4 built. `.startswith("sevpill ")`, with the
+    # trailing space, so the WRAPPER's own plural "sevpills secidx-
+    # findlegend" class (which also starts with the substring "sevpill")
+    # does not false-positive this check.
+    per_severity_pill = {"sevpill " + s for s in
+                         ("critical", "high", "medium", "low", "info")}
+    assert not (per_severity_pill & {r["cls"] for r in out["withPct"]}), \
+        f"a sevpill rendered in the percentage-mode legend: {out['withPct']}"
     # Opt-out (no second argument, the project screen's own call shape)
-    # renders no percentage at all -- the identical DOM the function always
-    # produced, not a half-migrated shape.
-    assert not pcts(out["without"]), \
-        f"a percentage rendered without opting in: {pcts(out['without'])}"
+    # renders the plain sevpill legend, no dot/name/count row at all -- the
+    # identical DOM the function always produced, not a half-migrated shape.
+    assert not by_class(out["without"], "secidx-legendcount"), \
+        "a count-and-percentage row rendered without opting in"
+    assert {r["cls"] for r in out["without"]} & {
+        "sevpill critical", "sevpill high", "sevpill medium"}, \
+        "the opt-out call must still render its own plain sevpills"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -5158,40 +5228,43 @@ def test_the_findings_legend_percentage_never_divides_by_a_zero_denominator(srv,
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
-def test_the_recent_analyses_findings_cell_says_the_one_count_it_actually_has(srv, tmp_path):
-    """Phase 4 Task 4. `queries.recent_analyses` hands a historical row one
-    combined open-findings COUNT, never a per-severity breakdown (that comes
-    from a different query, `project_rows`' posture, read off each
-    project's CURRENT latest analysis) -- so this cell must never fabricate
-    three severity chips it has no severity to colour them by. Three
-    honesty cases: not yet recorded (a running/failed analysis), genuinely
-    clean, and some open."""
+def test_the_recent_analyses_findings_cell_shows_three_severity_chips_or_an_honest_dash(
+        srv, tmp_path):
+    """Phase 4 Task 5. `queries.recent_analyses` now tallies `severities`
+    (critical/high/medium) per row from the SAME `checklist()` call its own
+    `open` count already made -- so this cell draws the mockup's own three
+    fixed chips, the identical shape (and "always three, even zero" rule)
+    `secIndexFindingsChips` already draws on the fleet table above it --
+    see test_findings_chips_show_three_severities_and_the_postures_own_total.
+    `null` (a running/failed analysis has not finished recording findings
+    yet) still reads as an honest dash, never a fabricated zero -- the one
+    honesty case carried over from this cell's pre-Task-5 shape."""
     block = _security_js(srv)
-    deps = _index_screen_deps(block, "secEl", "secIndexRecentFindingsCell")
-    script = tmp_path / "recent-findings-cell.js"
+    deps = (_const(block, "FIND_SEVS")
+            + _index_screen_deps(block, "secEl", "secIndexRecentFindingsChips"))
+    script = tmp_path / "recent-findings-chips.js"
     script.write_text(_INDEX_DOM_HARNESS + deps + """
     console.log(JSON.stringify({
-      notYet: collectAll(secIndexRecentFindingsCell(null), []),
-      clean: collectAll(secIndexRecentFindingsCell(0), []),
-      some: collectAll(secIndexRecentFindingsCell(5), []),
-      one: collectAll(secIndexRecentFindingsCell(1), []),
+      notYet: collectAll(secIndexRecentFindingsChips(null), []),
+      clean: collectAll(secIndexRecentFindingsChips(
+        {critical: 0, high: 0, medium: 0}), []),
+      some: collectAll(secIndexRecentFindingsChips(
+        {critical: 1, high: 2, medium: 5}), []),
     }));
     """)
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
     assert any(r["text"] == "—" for r in out["notYet"]), \
         f"a not-yet-recorded analysis did not render an honest dash: {out['notYet']}"
-    assert any(r["cls"] == "sevpill clean" for r in out["clean"]), \
-        f"zero open findings did not render the ordinary clean pill: {out['clean']}"
-    some_text = " ".join(r["text"] for r in out["some"])
-    assert "5 findings" in some_text, some_text
-    # No fabricated severity chip anywhere in the positive case -- this row
-    # was never given a severity split to draw one honestly.
-    assert not any(r["cls"].startswith("sevpill ") and r["cls"] != "sevpill clean"
-                   for r in out["some"]), \
-        f"a severity-coloured chip rendered from a count with no severity: {out['some']}"
-    assert any(r["text"] == "1 finding" for r in out["one"]), \
-        f"the singular did not read '1 finding': {out['one']}"
+    assert not any(r["cls"].startswith("sevpill") for r in out["notYet"]), \
+        "the dash case must never also render a chip"
+
+    clean_chips = [r["text"] for r in out["clean"] if r["cls"].startswith("sevpill ")]
+    assert clean_chips == ["0", "0", "0"], \
+        f"zero findings must still draw three fixed chips, same as the fleet table: {clean_chips}"
+
+    some_chips = [r["text"] for r in out["some"] if r["cls"].startswith("sevpill ")]
+    assert some_chips == ["1", "2", "5"], some_chips
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -5273,7 +5346,7 @@ def test_the_recent_analyses_card_head_names_todays_navigation_and_the_empty_sta
     script = tmp_path / "recent-card-empty.js"
     script.write_text(_INDEX_DOM_HARNESS + deps + """
     function secOpenActivity(){} function secActSwitchTab(){}
-    console.log(JSON.stringify(collectAll(secIndexRecentCard([]), [])));
+    console.log(JSON.stringify(collectAll(secIndexRecentCard({rows: [], total: 0}), [])));
     """)
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)

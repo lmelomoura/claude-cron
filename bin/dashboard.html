@@ -1082,6 +1082,10 @@ const I={
   user:ic('<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>'),
   zap:ic('<polygon points="13 2 3 14 12 14 11 22 21 10 12 10"/>'),
   activity:ic('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'),
+  // The Security index's own Total-analyses KPI card (Phase 4 Task 5) draws
+  // the mockup's upward trend-line, not the ECG pulse `activity` already
+  // means everywhere else -- no existing icon already had this shape.
+  trend:ic('<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>'),
   dollar:ic('<path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>'),
   calendar:ic('<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/>'),
   clock:ic('<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>'),
@@ -1137,6 +1141,13 @@ const I={
   clock2:ic('<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/>'),
   layers:ic('<path d="m12 2 9 5-9 5-9-5z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/>'),
   hammer:ic('<path d="m15 12-8.5 8.5a2.12 2.12 0 1 1-3-3L12 9"/><path d="M17.64 15 22 10.64"/><path d="m20.91 11.7-1.25-1.25c-.6-.6-.93-1.4-.93-2.25v-.86L16.01 4.6a5.56 5.56 0 0 0-3.94-1.64H9l.92.82A6.18 6.18 0 0 1 12 8.4v1.56l2 2h2.47l2.26 1.91"/>'),
+  // The Security index's own "Top issue categories" rows (Phase 4 Task 5)
+  // pick one of these four per row from what the rule string actually names
+  // (secIndexCatIcon, ui/security/index-screen.js) -- lock and code are new,
+  // no existing icon already had either shape; shield and hammer above are
+  // reused as-is.
+  lock:ic('<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'),
+  code:ic('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>'),
 };
 const STATUS_ICON={success:I.check, warning:I.alert, error:I.xcircle, idle:I.clock,
                    running:I.timer, stopped:I.power};
@@ -1160,9 +1171,29 @@ applyTheme(themePref());
 let DATA={jobs:[],state:{},runs:[],launchd_loaded:false};
 let editingId=null, creating=false;
 const esc=(s)=>String(s ?? "").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const fmtAgo=(s)=>{ if(!s) return "never"; const d=Math.floor(Date.now()/1000)-s;
-  if(d<60)return d+"s ago"; if(d<3600)return Math.floor(d/60)+"m ago";
-  if(d<86400)return Math.floor(d/3600)+"h ago"; return Math.floor(d/86400)+"d ago"; };
+// `long` (Phase 4 Task 5, Security index only): "2 hours ago"/"1 day ago"
+// instead of the abbreviated "2h ago"/"1d ago" every other page keeps -- the
+// mockup's own wording for the index's Last-analysis and Recent-analyses
+// cells. Extended in this ONE home rather than a second formatter: both
+// page interfaces (ui/app/page.js, ui/security/page.js) already thread the
+// SAME `fmtAgo` reference through their `bindPage()`, so the new parameter
+// reaches ui/security/index-screen.js for free the moment a call site there
+// passes `true` -- every OTHER caller (Jobs/Runs/Projects, the log modal's
+// own timestamp) never passes a second argument and keeps the short form
+// exactly as it always read.
+const fmtAgo=(s,long)=>{
+  if(!s) return "never";
+  const d=Math.floor(Date.now()/1000)-s;
+  if(!long){
+    if(d<60)return d+"s ago"; if(d<3600)return Math.floor(d/60)+"m ago";
+    if(d<86400)return Math.floor(d/3600)+"h ago"; return Math.floor(d/86400)+"d ago";
+  }
+  const words=(n,w)=>n+" "+w+(n===1?"":"s")+" ago";
+  if(d<60)return words(d,"second");
+  if(d<3600)return words(Math.floor(d/60),"minute");
+  if(d<86400)return words(Math.floor(d/3600),"hour");
+  return words(Math.floor(d/86400),"day");
+};
 const fmtDur=(s)=>s<60 ? s+"s" : Math.floor(s/60)+"m "+(s%60)+"s";
 // Forward in time, which fmtAgo cannot do: it subtracts now from the stamp, so
 // a check due in five minutes came out as "0s ago" — the one column where the

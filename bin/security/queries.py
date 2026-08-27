@@ -186,11 +186,29 @@ def finding_counts_by_analysis(conn, project):
         " WHERE a.project=? GROUP BY f.analysis_id", (project,))}
 
 
-def _latest_finished(conn, project, branch):
-    row = conn.execute(
-        "SELECT * FROM analysis WHERE project=? AND branch=?"
-        " AND state IN ('done','capped') ORDER BY id DESC LIMIT 1",
-        (project, branch)).fetchone()
+def _latest_finished(conn, project, branch, since=None):
+    """The branch's newest finished analysis -- or, when `since` is given
+    (a unix timestamp), the newest one that ALSO started at or after it.
+
+    The `>=` boundary matches `trend`'s own (`AND started >= ?`) rather than
+    inventing a second one: an analysis started exactly at the cutoff second
+    counts as inside the window in both places. `since=None` (every existing
+    caller before this one gained one) is not "a window starting at time
+    zero" -- it is no filter at all, the identical query this function ran
+    before `since` existed, kept as its own branch rather than folded into
+    `AND started >= COALESCE(?, -1)` so a caller reading the SQL never has to
+    wonder whether some large-but-finite epoch could defeat it."""
+    if since is None:
+        row = conn.execute(
+            "SELECT * FROM analysis WHERE project=? AND branch=?"
+            " AND state IN ('done','capped') ORDER BY id DESC LIMIT 1",
+            (project, branch)).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT * FROM analysis WHERE project=? AND branch=?"
+            " AND state IN ('done','capped') AND started >= ?"
+            " ORDER BY id DESC LIMIT 1",
+            (project, branch, since)).fetchone()
     return dict(row) if row else None
 
 
@@ -471,8 +489,22 @@ def trend_series(conn, project, days=30):
     return [point["open"] for point in trend(conn, name, branch, days=days)]
 
 
-def recent_analyses(conn, limit=5, projects=None):
-    """The most recent analyses, newest first.
+def recent_analyses(conn, limit=5, offset=0, projects=None):
+    """The most recent analyses, newest first, ONE PAGE of them -- returns
+    `{"rows": [...], "total": N}`, `total` counting every analysis the same
+    scope matches, not just the page requested, so the index screen's footer
+    can say "Showing 1 to 5 of 12 analyses" without a second round trip.
+
+    Paged server-side (`LIMIT`/`OFFSET` in the SQL itself), not fetched whole
+    and sliced in Python: the index screen polls this every 5 seconds, and
+    each row in the page actually returned costs one `checklist()` call
+    (below) -- fetching up to `MAX_PER_PAGE` rows on every poll just so a
+    reader COULD page past row 5 would multiply that cost by however large
+    the cap is, paid on every tick whether or not anyone ever pages. Serving
+    exactly the page asked for keeps the common case (page 1, nobody has
+    clicked Next) exactly as cheap as before this function could page at
+    all: `limit` (5 by default, matching the mockup) checklist() calls, not
+    50.
 
     `projects`, when given, is an iterable of names to scope to -- the index
     screen's `summary` and `projects` panels have always been scoped to
@@ -484,28 +516,51 @@ def recent_analyses(conn, limit=5, projects=None):
     explicit "nothing to show," the same reasoning `index_summary` and
     `_analysed_scopes` apply to an empty project list, rather than whatever
     `WHERE project IN ()` happens to do.
+
+    Each finished row also carries `severities` -- `{critical, high, medium}`
+    tallied from the SAME `checklist()` call `open` already makes, no second
+    query -- so the index's Recent-analyses table can show the mockup's own
+    three severity chips per row instead of one undifferentiated count. Both
+    `open` and `severities` are `None` for a `running`/`failed` analysis: it
+    has not finished recording findings yet, and a `None` reads as an honest
+    dash rather than a fabricated zero (the same distinction every other
+    "not counted yet" cell on this screen already draws).
     """
-    sql = "SELECT * FROM analysis"
-    args = []
+    where, args, names = "", [], None
     if projects is not None:
         names = list(projects)
         if not names:
-            return []
+            return {"rows": [], "total": 0}
         placeholders = ",".join("?" * len(names))
-        sql += f" WHERE project IN ({placeholders})"
-        args.extend(names)
-    sql += " ORDER BY started DESC, id DESC LIMIT ?"
-    args.append(max(1, min(int(limit), 50)))
+        where = f" WHERE project IN ({placeholders})"
+        args = list(names)
+
+    total = conn.execute(f"SELECT COUNT(*) c FROM analysis{where}", args).fetchone()["c"]
+
+    limit = max(1, min(int(limit), 50))
+    offset = max(0, int(offset))
     rows = []
-    for a in conn.execute(sql, args):
+    for a in conn.execute(
+            f"SELECT * FROM analysis{where} ORDER BY started DESC, id DESC LIMIT ? OFFSET ?",
+            args + [limit, offset]):
         d = dict(a)
         if a["state"] in ("done", "capped"):
             _an, findings = checklist(conn, a["id"])
-            d["open"] = sum(1 for f in findings if is_open(f["state"]))
+            sev = {"critical": 0, "high": 0, "medium": 0}
+            open_n = 0
+            for f in findings:
+                if not is_open(f["state"]):
+                    continue
+                open_n += 1
+                if f["severity"] in sev:
+                    sev[f["severity"]] += 1
+            d["open"] = open_n
+            d["severities"] = sev
         else:
-            d["open"] = None      # a running analysis has no posture yet
+            d["open"] = None       # a running/failed analysis has no posture yet
+            d["severities"] = None
         rows.append(d)
-    return rows
+    return {"rows": rows, "total": total}
 
 
 def _analysed_scopes(conn, project=None):
@@ -550,7 +605,7 @@ def analysed_branch_count(conn, project):
 _SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
 
-def _open_findings_by_fingerprint(conn, project):
+def _open_findings_by_fingerprint(conn, project, since=None):
     """The open findings across every scope `_analysed_scopes` returns for
     `project`, collapsed from one entry per (branch, fingerprint) to one
     entry per FINGERPRINT -- shared by `severity_totals` and
@@ -581,10 +636,21 @@ def _open_findings_by_fingerprint(conn, project):
     finding is the wrong way to be wrong: an operator seeing "medium" while
     one branch's own analysis called it "critical" is worse served than one
     seeing "critical" for a finding a later run downgraded.
+
+    `since`, when given, is passed straight to `_latest_finished`: a scope
+    whose newest finished analysis falls outside the window contributes
+    NOTHING here, not a stale reading from further back. This is "findings
+    whose analyses fall in the period," not "findings visible as of now,
+    reported only if a project happened to run recently" -- a branch with no
+    analysis in the window has nothing to say about the period, the same way
+    it has nothing to say about `trend`'s own windowed series. Costs no extra
+    `checklist()` calls versus the unwindowed read: still exactly one per
+    analysed scope, `_latest_finished`'s own SQL predicate narrowed, not a
+    second pass over more analyses.
     """
     by_fingerprint = {}
     for r in _analysed_scopes(conn, project):
-        a = _latest_finished(conn, r["project"], r["branch"])
+        a = _latest_finished(conn, r["project"], r["branch"], since=since)
         if not a:
             continue
         _an, findings = checklist(conn, a["id"])
@@ -599,7 +665,7 @@ def _open_findings_by_fingerprint(conn, project):
     return by_fingerprint
 
 
-def severity_totals(conn, project=None):
+def severity_totals(conn, project=None, days=0):
     """Open findings by severity across every scope `_analysed_scopes`
     returns for `project` -- a single name, an iterable of names, or `None`
     for the whole ledger. Counted by DISTINCT FINGERPRINT (see
@@ -607,31 +673,39 @@ def severity_totals(conn, project=None):
     finding open on two branches of one project is one problem, not two, so
     it must contribute to this total exactly once.
 
-    THERE IS NO TIME WINDOW HERE, and there used to be a `days=30` parameter
-    saying otherwise. It was accepted, never read, and never passed by either
-    caller -- a signature promising a filter the body does not apply, which
-    is worse than no parameter at all: the first person to pass `days=7`
-    would get a 30-day-looking answer that is really an all-time one, with
-    nothing failing. It was a leftover from a mockup panel captioned
-    "Findings overview (30 days)", and that caption was the actual mistake.
-    A POSTURE number answers "what is open RIGHT NOW", which is as-of-now by
-    construction: it is read off each branch's LATEST finished analysis
-    (`_latest_finished`), whether that ran an hour ago or last spring, and a
-    critical finding does not stop being open because nobody re-analysed the
-    branch this month. Windowing it would not narrow the answer, it would
-    DELETE branches from it -- reporting a quiet repository as clean. What
-    genuinely does have a window is a series over time (`trend`) or a count
-    of events in a period (`activity_summary`), and both of those keep their
-    `days` because both of them use it."""
+    `days` USED to be accepted, ignored, and never passed by either caller --
+    a signature promising a filter the body did not apply, worse than no
+    parameter at all: the first person to pass `days=7` got a 30-day-looking
+    answer that was really an all-time one, with nothing failing. It is real
+    now: truthy, it narrows every scope to the finished analysis (per branch)
+    that is itself newest AND started within the last `days` days, via
+    `_latest_finished`'s own `since` -- a scope with nothing that recent
+    contributes NOTHING, not a stale reading from further back. Falsy (the
+    default, `0`) is UNCHANGED from before this parameter did anything: no
+    window at all, the as-of-now posture every existing caller (the project
+    sidebar's own donut, chiefly) still gets without asking, read off each
+    branch's LATEST finished analysis whether that ran an hour ago or last
+    spring -- a critical finding does not stop being open because nobody
+    re-analysed the branch this month, and windowing THAT reading would not
+    narrow the answer, it would delete quiet branches from it and report
+    them clean. The default stays that safe reading on purpose, unlike
+    `trend`/`activity_summary`'s own `days=30`: those two are ALWAYS
+    windowed by what they answer (a series over time, a count of events in a
+    period); this one is not, for every caller that has never asked
+    otherwise. Only the index screen's own Findings-overview card asks for a
+    real window today (`cmd_index_data`, `--days 30` by default) -- see
+    CHANGELOG.md for the fuller history, including the reasoning this
+    supersedes."""
+    since = (int(time.time()) - int(days) * 86400) if days else None
     out = _empty_posture()
-    for f in _open_findings_by_fingerprint(conn, project).values():
+    for f in _open_findings_by_fingerprint(conn, project, since=since).values():
         if f["severity"] in out:
             out[f["severity"]] += 1
         out["total"] += 1
     return out
 
 
-def top_categories(conn, project=None, limit=5):
+def top_categories(conn, project=None, limit=5, days=0):
     """The rules producing the most open findings, ranked across every scope
     `_analysed_scopes` returns for `project` -- a single name, an iterable of
     names, or `None` for the whole ledger. Counted by DISTINCT FINGERPRINT
@@ -643,12 +717,13 @@ def top_categories(conn, project=None, limit=5):
     could drop a rule that only ranks highly once several projects' counts
     are combined.
 
-    No time window, for the reason `severity_totals` states at length: this
-    ranks what is OPEN, read off each branch's latest finished analysis, and
-    "open" has no period. The `days=30` this used to accept and ignore is
-    gone with its sibling's."""
+    `days`: the identical parameter `severity_totals` now carries, for the
+    identical reason -- see that function's own docstring. Falsy (default)
+    ranks every scope's current state, unwindowed; truthy narrows each scope
+    to its newest finished analysis that started within the window."""
+    since = (int(time.time()) - int(days) * 86400) if days else None
     counts = {}
-    for f in _open_findings_by_fingerprint(conn, project).values():
+    for f in _open_findings_by_fingerprint(conn, project, since=since).values():
         counts[f["rule"]] = counts.get(f["rule"], 0) + 1
     ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
     return [{"rule": k, "count": v} for k, v in ranked[:limit]]

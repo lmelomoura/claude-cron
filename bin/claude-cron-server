@@ -2408,7 +2408,10 @@ def security_project(project):
     return _json_or_500(ok, out, "project data")
 
 
-def security_index():
+SECURITY_INDEX_DEFAULT_WINDOW_DAYS = 30  # the mockup's own "Last 30 days"
+
+
+def security_index(params=None):
     """Every panel the Security index screen draws, in ONE call to the CLI.
 
     The old per-project list (ui/security/projects.js) cost two subprocesses
@@ -2422,9 +2425,49 @@ def security_index():
     already use for a non-zero exit AND for rc-0 chatter that is not valid
     JSON (`cc()` merges stdout and stderr) -- this used to be a second copy
     of that exact try/except.
+
+    `params` is optional (`None` reads as no query string at all, exactly
+    the polling and test call sites that predate this parameter) and carries
+    two independent knobs:
+
+    `days` -- the Findings-overview card's own period, forwarded to
+    `queries.severity_totals`/`top_categories` (see their own docstrings for
+    what a real window means now). ABSENT defaults to
+    `SECURITY_INDEX_DEFAULT_WINDOW_DAYS` rather than those functions' own
+    all-time default, so a caller that never asks for a period still gets
+    the mockup's own "Last 30 days"; EXPLICIT, including `0` ("All time",
+    the period picker's own `ACT_PERIODS` vocabulary), is passed straight
+    through. Collapsing "absent" and "explicit 0" into one case would make
+    "All time" silently mean "30 days" instead -- the identical trap
+    `security_activity`'s own `since` parameter already refuses.
+
+    `recent_page` -- the Recent-analyses table's own page, forwarded as
+    `index-data`'s `--recent-page` (`queries.recent_analyses` pages the SQL
+    itself; see that function's own docstring for why). Absent or invalid
+    reads as page 1, the same clamp-not-reject treatment `security_activity`
+    gives its own `page`.
     """
+    params = params or {}
+    raw_days = _param(params, "days", None)
+    if raw_days is None:
+        days = SECURITY_INDEX_DEFAULT_WINDOW_DAYS
+    else:
+        try:
+            days = int(raw_days or 0)
+        except (TypeError, ValueError):
+            return 400, {"error": "days must be an integer"}
+        if days < 0:
+            days = 0
+
+    try:
+        recent_page = int(_param(params, "recent_page", "1") or 1)
+    except (TypeError, ValueError):
+        return 400, {"error": "recent_page must be an integer"}
+    recent_page = max(1, recent_page)
+
     ok, out = cc(["security", "index-data",
-                 "--projects", json.dumps(_security_projects())])
+                 "--projects", json.dumps(_security_projects()),
+                 "--days", str(days), "--recent-page", str(recent_page)])
     return _json_or_500(ok, out, "index data")
 
 
@@ -2931,7 +2974,8 @@ class Handler(BaseHTTPRequestHandler):
             code, payload = security_list((q.get("project") or [""])[0])
             return self._send(code, payload)
         if path == "/api/security/index":
-            code, payload = security_index()
+            q = parse_qs(urlparse(self.path).query)
+            code, payload = security_index(q)
             return self._send(code, payload)
         if path == "/api/security/project":
             q = parse_qs(urlparse(self.path).query)

@@ -342,6 +342,88 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   yet to open one for — there is no report spanning every project, only one
   per project's own checklist.
 
+- **The Security index closes the last gaps against its own mockup — a real
+  time window, real paging, three severity tones, and the numbered pager
+  both its tables were still missing.** Phase 4 Task 5, and the third and
+  last pass this screen needed: the previous two tasks each shipped a
+  handful of individually-reasoned divergences (consistency with the rest
+  of the app, "the payload does not carry that", a pinned test's own
+  wording), and side by side with the mockup none of them held up. This
+  task closes every one, `docs/superpowers/specs/2026-08-27-app-redesign-
+  phase-4-security-index-design.md`'s own four Decisões and two further
+  practical exceptions (the Activity button; the Refresh icon) aside.
+
+  `queries.severity_totals`/`top_categories` gain a REAL `days` window —
+  reversing this file's own earlier entry ("the two posture rollups no
+  longer accept a time window they never applied"), which was correct
+  about that OLD parameter (accepted, ignored, dead) but became the reason
+  two later tasks left the Findings-overview card's period picker
+  filtering nothing. The default (`days=0`) is unchanged: every existing
+  caller (the project sidebar's own donut, chiefly) still gets the as-of-
+  now posture it always has, read off each branch's latest finished
+  analysis with no window at all. Only `cmd_index_data` asks for a real
+  one now (`--days`, 30 by default, forwarded from the picker), and
+  windowing means "the branches whose newest finished analysis itself
+  falls in the period" — the identical `>=` boundary `trend` already uses,
+  at no extra query cost (still one `_latest_finished` read and at most one
+  `checklist()` per analysed scope; a scope with nothing recent contributes
+  nothing, never a stale reading from further back). Picking a different
+  period now genuinely re-renders the donut, legend and categories, and the
+  card's own title says which one — "Findings overview (7 days)" — instead
+  of dropping the parenthetical the mockup asks for.
+
+  `queries.recent_analyses` returns `{rows, total}` and pages the SQL
+  itself (`LIMIT`/`OFFSET`, five at a time) instead of a bare list capped
+  at five with no way to ask for a second page — the footer reads "Showing
+  6 to 10 of 12 analyses" against a real server now, not "of 5". Each row
+  also carries `severities` (critical/high/medium, tallied from the same
+  `checklist()` call its `open` count already made), so its own Findings
+  cell draws the mockup's three fixed chips instead of one undifferentiated
+  count with a tooltip pointing elsewhere. Cost: one extra `COUNT(*)` per
+  `index-data` call (polled every 5 seconds); the `checklist()` volume is
+  unchanged, since the page size served was already five.
+
+  Findings chips (both tables) and the donut's own legend move off the
+  two-tone grouping (critical and high sharing one colour) onto three —
+  critical (`--err`), high (`color-mix(in srgb, var(--err) 50%, var(--warn)
+  50%)`, the one new expression, not a new hex literal — this design's
+  tokens have no third hue of their own), medium (`--warn`) — scoped to
+  this screen alone (`.secidx-sev3`) so the findings browser, the branches
+  tab and a project's own Overview, none of them touched by this task, keep
+  the grouping they already had. The donut's own legend is redrawn as the
+  mockup's own row — a coloured dot, the severity's name, a right-aligned
+  "count (pct%)" — its own element now, not a `.sevpill` wearing a
+  percentage the way the previous task built it (the pinned test that shape
+  carried moved with it: `test_the_findings_overview_legend_states_each_
+  severitys_share_of_the_total`, `tests/test_page_contract.py`). "Top issue
+  categories" gets a per-row icon guessed from the rule string (secrets →
+  lock, GHSA/dependency → shield, injection/XSS → code, hygiene → hammer,
+  anything else → the same generic alert glyph every row drew before), and
+  the Total-analyses KPI card gets its own trend-line icon instead of
+  reusing the unrelated activity pulse — three new icons in
+  `bin/dashboard.html`'s own table (`trend`, `lock`, `code`), shield and
+  hammer reused as they already were.
+
+  `tableFooter` (`ui/app/chrome.js`) gains an optional numbered "‹ 1 2 3 ›"
+  pager — the mockup's own, in place of the Prev/Next-with-text shape a
+  previous task kept rather than fork a second footer component — and,
+  numbered with only one page, no pager at all, matching the fleet table's
+  own "Showing 1 to 2 of 2 projects" with nothing to click. Existing
+  Prev/Next callers (Jobs, Runs, the OTHER Projects page) never pass the
+  new option and are untouched. Found live, verifying against the mockup:
+  the footer's own pluraliser is a bare `noun + "s"`, which reads "Showing
+  1 to 5 of 12 analysiss" the moment a caller's noun is this one irregular
+  plural — `plural`, an optional override, fixes the sentence without a
+  general pluraliser this function does not need for anything else it
+  draws, pinned by `test_table_footer_takes_an_irregular_plural_and_a_
+  numbered_pager`.
+
+  `fmtAgo` (`bin/dashboard.html`, threaded through both page interfaces)
+  gains an optional long-form reading — "2 hours ago", "1 day ago" — for
+  this screen's Last-analysis and Recent-analyses cells; every other page
+  keeps calling it with one argument and keeps the short form it always
+  had.
+
 ### Added
 
 - **The two editor dialogs' decision/mapping logic is pinned and pulled out

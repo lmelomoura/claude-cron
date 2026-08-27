@@ -162,25 +162,35 @@
     return card;
   }
   function tableFooter(opts) {
-    const { shown, total, noun, page: page4, pages, prevId, nextId, infoId } = opts;
+    const { shown, total, noun, plural, page: page4, pages, prevId, nextId, infoId, numbered } = opts;
     const foot = el("div", "table-foot");
     const info = el(
       "span",
       "table-foot-info",
-      "Showing " + shown.from + " to " + shown.to + " of " + total + " " + noun + (total === 1 ? "" : "s")
+      "Showing " + shown.from + " to " + shown.to + " of " + total + " " + (total === 1 ? noun : plural || noun + "s")
     );
     if (infoId) info.id = infoId;
     foot.appendChild(info);
-    const nav = el("div", "table-foot-pager");
-    const prev = el("button", "btn ghost");
+    if (numbered && pages <= 1) return foot;
+    const nav = el("div", "table-foot-pager" + (numbered ? " numbered" : ""));
+    const prev = el("button", numbered ? "iconbtn" : "btn ghost");
     if (prevId) prev.id = prevId;
     prev.appendChild(icon("cleft"));
-    prev.appendChild(document.createTextNode("Prev"));
+    if (!numbered) prev.appendChild(document.createTextNode("Prev"));
     prev.disabled = page4 <= 1;
     nav.appendChild(prev);
-    const next = el("button", "btn ghost");
+    if (numbered) {
+      for (let p = 1; p <= pages; p++) {
+        const btn = el("button", "pagebtn" + (p === page4 ? " active" : ""), String(p));
+        btn.type = "button";
+        btn.dataset.page = String(p);
+        if (p === page4) btn.disabled = true;
+        nav.appendChild(btn);
+      }
+    }
+    const next = el("button", numbered ? "iconbtn" : "btn ghost");
     if (nextId) next.id = nextId;
-    next.appendChild(document.createTextNode("Next"));
+    if (!numbered) next.appendChild(document.createTextNode("Next"));
     next.appendChild(icon("cright"));
     next.disabled = page4 >= pages;
     nav.appendChild(next);
@@ -2333,5 +2343,5 @@
     projectStepError
   };
 })();
-/* ui-bundle: aa0fa654dbc4d17469fd522163b996eb1c9c876052ccb5aae0719bd2d3de730f */
-/* ui-sources: fff620c33e3b212ae72191bed9e3332fb6ce4fca45db1da0cf52e379b24b3492 */
+/* ui-bundle: f2b3a730fd0c60b7f82529bfdc699a0378f1581862d21576136480f73b00a0ba */
+/* ui-sources: 3fe0f595aebeffdaefed231160acd9edc569e1f3dfc555970c1a7d170683c474 */

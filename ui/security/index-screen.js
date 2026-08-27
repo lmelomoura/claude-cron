@@ -56,7 +56,15 @@ export async function secLoadIndex(force){
   }
   let data;
   try{
-    data = await secFetch("/api/security/index");
+    // `days`/`recent_page` are the Findings-overview period and the Recent-
+    // analyses page -- both module state below (secFindPeriodDays,
+    // secRecentPage), read live at fetch time so a period change or a page
+    // click (both now force a real refetch, see secFindingsPeriodPicker's
+    // and secIndexRecentCard's own onclick handlers) asks the server for
+    // exactly what the reader just chose, and the routine 5-second poll
+    // keeps asking for whatever they chose last rather than resetting it.
+    data = await secFetch("/api/security/index?days=" + secFindPeriodDays
+      + "&recent_page=" + secRecentPage);
   }catch(e){
     if(gen !== secIndexGen) return;      // a newer request (Refresh) already answered
     const host = $("sec-list");
@@ -197,7 +205,12 @@ export function secRenderIndex(){
   secRefreshFilterOptions(secLatestProjects);
   secRepaintProjectsTable();
 
-  const recent = data.recent || [];
+  // `{rows, total}` now (Phase 4 Task 5) -- `queries.recent_analyses` pages
+  // server-side, see its own docstring. `rows` alone is what
+  // secIndexFindingsCard's own "View full report" button needs (the most
+  // recent analysis's own project); the card itself reads `total` too, for
+  // its footer's honest "of N analyses".
+  const recent = data.recent || {rows: [], total: 0};
   host._secRecent.textContent = "";
   host._secRecent.appendChild(secIndexRecentCard(recent));
 
@@ -208,7 +221,7 @@ export function secRenderIndex(){
     // it gets the same caveat the Critical/High cards get, from the same
     // count, or it is the one number on this screen that still presents a
     // partial read as a complete one.
-    secCappedNote(data.summary || {}), recent));
+    secCappedNote(data.summary || {}), recent.rows));
 }
 
 /* The one sentence the cards, the donut and (via project-data's own
@@ -260,7 +273,11 @@ function secIndexCards(summary){
   const s = summary || {};
   wrap.appendChild(kpiCard({icon: "folder", value: String(s.projects || 0),
     label: "Projects", sub: "with security enabled"}));
-  wrap.appendChild(kpiCard({icon: "activity", value: String(s.analyses || 0),
+  // "trend", not "activity" (Phase 4 Task 5): the mockup's own upward
+  // trend-line for this card, distinct from the ECG-pulse `activity` icon
+  // still means everywhere else it appears on this screen (the kebab's own
+  // "View activity" item, the header's Activity button).
+  wrap.appendChild(kpiCard({icon: "trend", value: String(s.analyses || 0),
     label: "Total analyses", sub: "across all projects",
     title: "All time — a historical total, not current posture"}));
   // A capped analysis is a PARTIAL read of the repository (see secPaint's own
@@ -364,7 +381,14 @@ const FIND_SEVS = ["critical", "high", "medium"];
 function secIndexFindingsChips(posture, capped){
   const p = posture || {};
   const wrap = secEl("div", "secidx-findcell");
-  const chips = secEl("div", "sevpills");
+  // `secidx-sev3`: this screen's own three-tone chip colours (item 4) --
+  // critical/high/medium each a distinct hue, reusing the donut's own
+  // SEV_STROKE vocabulary (below) rather than the two-tone grouping
+  // `.sevpill.critical,.sevpill.high` share everywhere else findings are
+  // chipped (the findings browser, the branches tab, a project's own
+  // Overview) -- screens this task does not touch. Scoped to this class
+  // rather than changed at `.sevpill`'s own source for exactly that reason.
+  const chips = secEl("div", "sevpills secidx-sev3");
   FIND_SEVS.forEach(sev => chips.appendChild(
     secEl("span", "sevpill " + sev, String(p[sev] || 0))));
   wrap.appendChild(chips);
@@ -497,7 +521,10 @@ function secIndexProjectRow(p){
     tdAnalysis.textContent = SEC_NEVER.short;
     tdAnalysis.title = SEC_NEVER.next;
   }else{
-    tdAnalysis.appendChild(document.createTextNode(fmtAgo(p.last_started)));
+    // `true`: long-form ("2 hours ago"), the mockup's own wording for this
+    // screen -- see fmtAgo's own comment (bin/dashboard.html) for why this
+    // is the shared formatter itself, not a second one.
+    tdAnalysis.appendChild(document.createTextNode(fmtAgo(p.last_started, true)));
     const sub = secEl("div", "secidx-sub");
     // Lowercase, unlike the Profile column's own pill (secProfileLabel) --
     // the mockup's own sub-line reads "deep · develop", the raw profile
@@ -844,9 +871,15 @@ function secRepaintProjectsTable(){
     secProjectsTableHost.appendChild(e);
     return;
   }
+  // `numbered: true` (Phase 4 Task 5): this table has exactly one page
+  // today (client-side filtering only, and the mockup itself shows two
+  // projects), so tableFooter's own numbered branch shows the "Showing 1 to
+  // 2 of 2 projects" sentence with NO pager at all -- the mockup's own
+  // footer for this table, byte for byte, rather than a disabled Prev/Next
+  // with nothing behind either button.
   const footer = tableFooter({
     shown: {from: 1, to: filtered.length}, total: filtered.length, noun: "project",
-    page: 1, pages: 1,
+    page: 1, pages: 1, numbered: true,
     prevId: "secpj-pg-prev", nextId: "secpj-pg-next", infoId: "secpj-pg-info",
   });
   secProjectsTableHost.appendChild(secIndexProjectsTable(filtered, footer));
@@ -967,24 +1000,27 @@ function secIndexRunStatusPill(state){
     known ? SEC_RUN_STATUS_LABEL[state] : "Unknown");
 }
 
-/* FINDINGS: the one true number `recent_analyses` actually hands this row --
-   a combined open-findings COUNT (`queries.recent_analyses`'s own `open`),
-   not the per-severity breakdown the fleet table's own Findings cell shows
-   a few pixels above it. That breakdown comes from a DIFFERENT query
-   (`project_rows`' posture, read off each project's CURRENT latest analysis)
-   that this HISTORICAL row was never given -- so this cell says the one
-   thing it actually knows instead of guessing a split across three chips it
-   has no severity to colour them by. `null` (a `running`/`failed` analysis
-   has not finished recording findings yet) reads as an honest dash, never a
-   zero -- the same distinction `secIndexProjectRow`'s own Last analysis cell
-   already draws for "not counted" vs "counted as zero". */
-function secIndexRecentFindingsCell(open){
-  if(open == null) return secEl("span", "muted", "—");
-  if(!open) return secEl("span", "sevpill clean", "nothing open");
-  const span = secEl("span", null, open + (open === 1 ? " finding" : " findings"));
-  span.title = "The severity split lives on this project's own Findings tab — "
-    + "this row's own analysis was never given one to show here.";
-  return span;
+/* FINDINGS: three fixed severity chips -- `queries.recent_analyses` now
+   tallies `severities` (critical/high/medium) per row from the SAME
+   `checklist()` call its own `open` count already made (Phase 4 Task 5;
+   before this, it had only the combined count, and this cell said so with
+   plain text rather than guess a split it had no severity to colour). The
+   SAME fixed three, SAME order and SAME "always three, even zero" rule the
+   fleet table's own `secIndexFindingsChips` draws a few pixels above this
+   one -- this table's own mockup shows the identical chip shape, just with
+   no "N total" line beneath (there is nothing beyond the three shown here
+   to total: low/info are not tracked per historical row the way the fleet
+   table's own current posture tracks them). `null` (a `running`/`failed`
+   analysis has not finished recording findings yet) still reads as an
+   honest dash, never a fabricated zero -- the same distinction
+   `secIndexProjectRow`'s own Last analysis cell already draws for "not
+   counted" vs "counted as zero". */
+function secIndexRecentFindingsChips(severities){
+  if(!severities) return secEl("span", "muted", "—");
+  const wrap = secEl("div", "sevpills secidx-sev3");
+  FIND_SEVS.forEach(sev => wrap.appendChild(
+    secEl("span", "sevpill " + sev, String(severities[sev] || 0))));
+  return wrap;
 }
 
 function secIndexRecentRow(a){
@@ -1020,7 +1056,7 @@ function secIndexRecentRow(a){
   tr.appendChild(tdBranch);
 
   const tdFindings = document.createElement("td");
-  tdFindings.appendChild(secIndexRecentFindingsCell(a.open));
+  tdFindings.appendChild(secIndexRecentFindingsChips(a.severities));
   tr.appendChild(tdFindings);
 
   const tdStatus = document.createElement("td");
@@ -1028,7 +1064,9 @@ function secIndexRecentRow(a){
   tr.appendChild(tdStatus);
 
   const tdDate = document.createElement("td");
-  tdDate.appendChild(document.createTextNode(fmtAgo(a.started)));
+  // `true`: long-form, the mockup's own wording -- see the Last-analysis
+  // cell's identical call above for why this is the shared fmtAgo itself.
+  tdDate.appendChild(document.createTextNode(fmtAgo(a.started, true)));
   tdDate.appendChild(secEl("div", "secidx-sub", secIndexRunWhen(a.started)));
   tr.appendChild(tdDate);
 
@@ -1036,20 +1074,19 @@ function secIndexRecentRow(a){
 }
 
 /* The whole card: head (title, sub, "View all analyses"), the table (or the
-   honest empty state), and `tableFooter`'s own footer.
-   `queries.recent_analyses` defaults to its own top 5 (`limit=5`, never
-   raised by `index-data`'s own call) and `index-data` takes no page
-   parameter at all, so `recent` is never more than 5 rows against a real
-   server today -- the footer below still paginates whatever it IS handed,
-   five at a time, both so this card matches the mockup's own "five rows"
-   and so a fabricated payload longer than 5 (this screen's own tests, or a
-   future `index-data` that raises the limit) is already handled rather than
-   silently dumped in one unpaginated table. `tableFooter` (ui/app/chrome.js)
-   has no numbered variant (1 2 3, the mockup's own pager) -- only Prev/Next
-   -- and forking a second footer component to get one was a bigger yak than
-   this card asked for, so this uses it exactly as the fleet table above it
-   already does and the difference is named in this task's own report
-   instead of quietly forked around. */
+   honest empty state), and `tableFooter`'s own numbered footer.
+
+   Paged SERVER-SIDE now (Phase 4 Task 5): `recent` is `{rows, total}`,
+   `rows` already exactly the page `secRecentPage` asked for (`queries.
+   recent_analyses`'s own `limit=5`/`offset`, threaded through `index-data`'s
+   `--recent-page` and this screen's own fetch, secLoadIndex) and `total`
+   the TRUE count across every analysis the scope matches -- so the footer
+   can read "Showing 6 to 8 of 12 analyses" against a real server, not the
+   "of 5" a previous task named as a divergence forced by the payload never
+   carrying more than its own page. Clicking a page number or Prev/Next asks
+   the server again (below) rather than re-slicing an array already fetched
+   whole, which is what let this table page at all before this task even
+   though the server itself never served more than 5 rows to slice. */
 const SEC_RECENT_PAGE_SIZE = 5;
 let secRecentPage = 1;
 
@@ -1058,7 +1095,8 @@ function secIndexRecentCard(recent){
   card.appendChild(secIndexCardHead("Recent analyses",
     "Latest security analyses across all projects", secViewAllAnalysesButton()));
 
-  const total = recent.length;
+  const rows = recent.rows || [];
+  const total = recent.total || 0;
   if(!total){
     const e = secEl("div", "tblempty");
     e.appendChild(secIcon("inbox"));
@@ -1068,13 +1106,15 @@ function secIndexRecentCard(recent){
   }
 
   const pages = Math.max(1, Math.ceil(total / SEC_RECENT_PAGE_SIZE));
-  // Clamped, not reset: a filter shrinking the set out from under a page
-  // number is the exact case tableFooter's own comment already documents,
-  // and the fix is the same one it names -- clamp here, at paint time,
-  // rather than a second place remembering to reset the page to 1.
+  // A display safeguard, not the pagination mechanism itself any more: the
+  // server already served the page `secRecentPage` asked for. This only
+  // matters if the set shrinks out from under a reader sitting on its last
+  // page between two polls -- clamped here so the sentence below never
+  // claims a page number past the end; the NUMBER itself stays stale until
+  // the next poll re-asks with the corrected one.
   secRecentPage = Math.min(Math.max(1, secRecentPage), pages);
-  const from = (secRecentPage - 1) * SEC_RECENT_PAGE_SIZE + 1;
-  const to = Math.min(total, secRecentPage * SEC_RECENT_PAGE_SIZE);
+  const from = total ? (secRecentPage - 1) * SEC_RECENT_PAGE_SIZE + 1 : 0;
+  const to = from + rows.length - 1;
 
   const scroll = secEl("div", "table-scroll");
   const table = document.createElement("table");
@@ -1084,37 +1124,41 @@ function secIndexRecentCard(recent){
   thead.appendChild(htr);
   table.appendChild(thead);
   const tbody = document.createElement("tbody");
-  recent.slice(from - 1, to).forEach(a => tbody.appendChild(secIndexRecentRow(a)));
+  rows.forEach(a => tbody.appendChild(secIndexRecentRow(a)));
   table.appendChild(tbody);
   scroll.appendChild(table);
   card.appendChild(scroll);
 
-  // "run", not "analysis": tableFooter's own pluraliser is a bare `+ "s"`
-  // (right for every OTHER noun this app hands it -- project, job, run),
-  // which would print "analysiss" for this one irregular plural. "Run" is
-  // both grammatically safe there and the mockup's own word for this same
-  // column ("RUN #12"), so it costs the table nothing to say.
+  // Numbered (Phase 4 Task 5): tableFooter's own "‹ 1 2 3 ›" variant
+  // (ui/app/chrome.js) -- Prev/Next-with-text was a divergence a previous
+  // task named rather than fork a second footer component for one card;
+  // this task closes it, over the SAME footer both this table and the
+  // fleet table above it now share.
   const footer = tableFooter({
-    shown: {from, to}, total, noun: "run", page: secRecentPage, pages,
-    prevId: "secrecent-pg-prev", nextId: "secrecent-pg-next", infoId: "secrecent-pg-info",
+    // `plural: "analyses"` -- tableFooter's own bare `noun + "s"` reads
+    // "analysiss" otherwise (see its own comment, ui/app/chrome.js); found
+    // live, in this exact card, verifying against the mockup.
+    shown: {from, to}, total, noun: "analysis", plural: "analyses",
+    page: secRecentPage, pages, numbered: true,
+    prevId: "secrecent-pg-prev", nextId: "secrecent-pg-next",
   });
-  // Wired directly on the footer THIS call just built and already holds a
-  // reference to -- not a central delegated listener (bin/dashboard.html's
-  // own click dispatcher has no entry for either id, and Jobs/Projects/Runs
-  // only reach it because their pagers are the page's own static markup;
-  // this card's is rebuilt fresh every repaint, same as every other
-  // interactive element in this file). `e.target.closest(...)`, not a bare
-  // id check, because a click can land on the button's own icon glyph
-  // instead of the button itself -- the identical reason dashboard.html's
-  // OWN dispatcher already reaches for `closest` over `#jobs-pg-prev`.
+  // Wired directly on the footer THIS call just built, the same "rebuilt
+  // fresh every repaint" idiom as before -- `closest`, not a bare id check,
+  // because a click can land on a button's own icon glyph rather than the
+  // button itself. `secLoadIndex(true)`, not a local re-render: a page
+  // change now genuinely asks the server for different rows.
   footer.onclick = (e) => {
-    if(e.target.closest("#secrecent-pg-prev")){
+    const pageBtn = e.target.closest(".pagebtn");
+    if(pageBtn){
+      secRecentPage = Number(pageBtn.dataset.page);
+    }else if(e.target.closest("#secrecent-pg-prev")){
       secRecentPage = Math.max(1, secRecentPage - 1);
-      secRenderIndex();
     }else if(e.target.closest("#secrecent-pg-next")){
-      secRecentPage = secRecentPage + 1;
-      secRenderIndex();
+      secRecentPage = Math.min(pages, secRecentPage + 1);
+    }else{
+      return;
     }
+    secLoadIndex(true);
   };
   card.appendChild(footer);
   return card;
@@ -1122,17 +1166,27 @@ function secIndexRecentCard(recent){
 
 /* --------------------------------------------------------- donut + rules */
 const SEV_ORDER5 = ["critical", "high", "medium", "low", "info"];
-// The exact colour grouping .sevpill already uses (critical and high share
-// one colour there too, and so do low and info) -- a donut that invented a
-// finer palette than the pills the rest of the area draws with would teach
-// the reader a distinction the pills never made.
+// Three DISTINCT tones for critical/high/medium (Phase 4 Task 5) -- the
+// mockup's own donut draws three visibly different wedges (red, orange,
+// yellow-amber), which critical/high sharing one colour (this table's own
+// choice before this task) never reproduced regardless of intent. `high` is
+// `color-mix()`, not a new hex literal: this design's token set has only
+// `--err` (red) and `--warn` (amber) as hue tokens (ui/css/tokens.css), no
+// third "orange" of its own, so high sits exactly between the two existing
+// ones it is severity-between -- the same `color-mix()` idiom
+// `.sevpill.critical`'s own border-color already uses (ui/css/pages.css).
+// This IS now the one vocabulary: `.secidx-sev3` (the findings chips, both
+// tables) and `.secidx-legendrow` (the legend dots) below both read the
+// identical two expressions, not a second palette of their own.
 //
-// `info` was `var(--line)` -- the SAME token the empty track below is painted
-// with, so an info-only segment was invisible against the ring it was drawn
-// on while the legend beside it went on listing the count. `.sevpill.info`
-// and `.sevpill.low` are both `var(--muted)` in the stylesheet, which is the
-// grouping this table is supposed to be mirroring in the first place.
-const SEV_STROKE = {critical: "var(--err)", high: "var(--err)",
+// `info` stays `var(--muted)`, distinct from `var(--line)` -- the SAME
+// token the empty track below is painted with, so an info-only segment
+// remains visible against the ring it is drawn on while the legend beside
+// it lists its count. `.sevpill.info`/`.sevpill.low` keep the same grouping
+// in the stylesheet, unaffected by this task (out of scope: chips elsewhere
+// on the app stay as they are, only this screen's own vocabulary changes).
+const SEV_STROKE = {critical: "var(--err)",
+                    high: "color-mix(in srgb, var(--err) 50%, var(--warn) 50%)",
                     medium: "var(--warn)", low: "var(--muted)", info: "var(--muted)"};
 
 function secIndexDonutSvg(donut){
@@ -1197,25 +1251,29 @@ function secIndexDonutSvg(donut){
 const DONUT_PILL_TITLE = "Distinct problems (fingerprints) — the same finding "
   + "open on two branches counts once here.";
 
-/* `showPercent` (Phase 4 Task 4): the index screen's own Findings-overview
-   card adds each severity's share of the total beside its pill -- "45
-   critical (23.8%)", the mockup's own "Critical 45 (23.8%)" with the count
-   staying INSIDE the pinned pill text (see below) rather than in front of
-   it. Opt-in, defaulting OFF, so the project screen's own sidebar donut
-   (secIndexDonut's other caller, project-screen.js) keeps rendering exactly
-   as it always has -- this task's mockup is the index page's alone, and
-   nothing here has been checked against the project screen's own pixels.
+/* `showPercent` (Phase 4 Task 4, reshaped by Task 5): the index screen's own
+   Findings-overview card draws the mockup's own legend row -- a coloured
+   dot, the severity's name, and a right-aligned "45 (23.8%)" -- which is
+   its own element, NOT a `.sevpill` wearing a percentage. Opt-in, defaulting
+   OFF, so the project screen's own sidebar donut (secIndexDonut's other
+   caller, project-screen.js) keeps rendering the plain `.sevpill` legend it
+   always has -- this task's mockup is the index page's alone.
    `test_the_two_kinds_of_severity_pill_each_say_what_they_count` calls this
-   with ONE argument, so `showPercent` is `undefined` there and every line
-   below behaves exactly as it did before this option existed.
+   with ONE argument, so `showPercent` is `undefined` there and the whole
+   `if(!showPercent)` branch below behaves exactly as it did before this
+   option existed -- byte for byte the same `.sevpill` shape, same title.
 
-   The percentage is a SIBLING of the pill, never a child of it: this
-   function's own pill text ("45 critical") is what that pinned test (and
-   `test_the_index_donut_carries_the_same_capped_cue_the_cards_do` beside it)
-   reads back with `.textContent`, which aggregates every descendant -- a
-   percentage appended INSIDE the pill would silently change that string to
-   "45 critical (23.8%)" and fail both. Appending it beside the pill instead,
-   inside a shared row, changes nothing about what the pill itself says. */
+   The `showPercent:true` branch dropped its OWN pinned shape (Task 4's
+   `.sevpill critical` reading "45 critical", a `.secidx-legendpct` sibling
+   reading "(23.8%)") for the mockup's literal one: "the sevpill tests pin
+   sevpills where sevpills appear" is true of the OTHER branch above, which
+   still is one -- this branch draws a legend row instead, on purpose, and
+   the test that pinned its old sevpill-shaped reading moved with it (see
+   test_the_findings_overview_legend_states_each_severitys_share_of_the_
+   total). Colour lives on the ROW (`.secidx-legendrow.<severity>`), which
+   both the dot and (via CSS) nothing else read -- one selector, matching
+   `.secidx-sev3`'s own chips and SEV_STROKE's own donut wedges, the "one
+   vocabulary" this screen now keeps everywhere severity has a colour. */
 function secIndexDonutLegend(donut, opts){
   const showPercent = !!(opts && opts.showPercent);
   const wrap = secEl("div", "sevpills" + (showPercent ? " secidx-findlegend" : ""));
@@ -1224,36 +1282,58 @@ function secIndexDonutLegend(donut, opts){
     wrap.appendChild(secEl("span", "sevpill clean", "nothing open"));
     return wrap;
   }
+  if(!showPercent){
+    SEV_ORDER5.forEach(sev => {
+      if(!donut[sev]) return;
+      const pill = secEl("span", "sevpill " + sev, donut[sev] + " " + sev);
+      pill.title = DONUT_PILL_TITLE;
+      wrap.appendChild(pill);
+    });
+    return wrap;
+  }
   SEV_ORDER5.forEach(sev => {
     if(!donut[sev]) return;
-    const pill = secEl("span", "sevpill " + sev, donut[sev] + " " + sev);
-    pill.title = DONUT_PILL_TITLE;
-    if(!showPercent){
-      wrap.appendChild(pill);
-      return;
-    }
+    const row = secEl("div", "secidx-legendrow " + sev);
+    row.title = DONUT_PILL_TITLE;
+    row.appendChild(secEl("span", "secidx-legenddot"));
+    row.appendChild(secEl("span", "secidx-legendname",
+      sev[0].toUpperCase() + sev.slice(1)));
     // `total` is never 0 here (the guard above already returned "nothing
     // open" for that case), and neither is `donut[sev]` (the `if(!donut[sev])
     // return` just above it) -- so this division never sees a zero
     // denominator and never needs the dash rule the brief names for one.
-    const row = secEl("div", "secidx-legendrow");
-    row.appendChild(pill);
-    row.appendChild(secEl("span", "secidx-legendpct",
-      "(" + ((donut[sev] / total) * 100).toFixed(1) + "%)"));
+    row.appendChild(secEl("span", "secidx-legendcount",
+      donut[sev] + " (" + ((donut[sev] / total) * 100).toFixed(1) + "%)"));
     wrap.appendChild(row);
   });
   return wrap;
 }
 
+/* A heuristic over the RULE string, not a lookup keyed by a field the
+   payload does not carry (Phase 4 Task 5): `top_categories` (queries.py)
+   groups by `rule` -- a specific, dynamic string (a GHSA advisory id, a
+   rule slug, whatever the analysis wrote), never a small fixed `category`
+   enum. Checked top to bottom, first match wins, so a rule matching more
+   than one bucket (rare; none of the four patterns overlap in practice)
+   picks whichever concern a reader would name first. `alert` is the same
+   default every row drew before this task -- a rule matching nothing below
+   still gets a sensible, generic "issue" glyph, never a blank cell. */
+function secIndexCatIcon(rule){
+  const r = String(rule || "").toLowerCase();
+  if(/secret|credential|password|private.?key|api.?key|token/.test(r)) return "lock";
+  if(/^ghsa|depend|cve-|vulnerab/.test(r)) return "shield";
+  if(/xss|sql|inject|sast|csrf|\brce\b/.test(r)) return "code";
+  if(/hygiene|lint|style|deprecat|dead.?code|\btodo\b/.test(r)) return "hammer";
+  return "alert";
+}
+
 /* Icon, name, right-aligned count -- the mockup's own row, replacing the
    width-scaled bar Phase 4 Task 3 drew here (no bar in the mockup at all).
-   One fixed icon for every row, not five different ones: `top_categories`
-   (queries.py) groups by `rule` -- a specific, dynamic string (a GHSA
-   advisory id, a rule slug, whatever the analysis wrote), never by the small
-   fixed `category` enum a per-row icon lookup would need, and that field is
-   not even in this payload -- so five distinct glyphs here would be a
-   pattern this function invented over data it does not have, not one the
-   rule names actually carry. */
+   The icon is now per-row (secIndexCatIcon, above); the name is `c.rule`
+   UNCHANGED -- exactly the mockup's own mix of a human label where the
+   analysis wrote one ("Private keys committed") and a bare rule id where
+   that is what exists ("GHSA-8xcm-r25x-g524"), which is data truth, not
+   something to paper over with an invented translation table. */
 function secIndexCategories(categories){
   if(!categories.length){
     return secEl("div", "tblempty", "No open findings to categorise.");
@@ -1261,7 +1341,7 @@ function secIndexCategories(categories){
   const wrap = secEl("div", "secidx-categories");
   categories.forEach(c => {
     const row = secEl("div", "secidx-catrow");
-    row.appendChild(secIcon("alert"));
+    row.appendChild(secIcon(secIndexCatIcon(c.rule)));
     row.appendChild(secEl("span", "secidx-catname", c.rule));
     row.appendChild(secEl("span", "secidx-catcount", String(c.count || 0)));
     wrap.appendChild(row);
@@ -1324,25 +1404,29 @@ function secFindPeriodLabel(days){
   return days > 0 ? "Last " + days + " days" : "All time";
 }
 
-/* WHY changing this selection never changes the numbers below it, said once
-   here rather than assumed: `queries.severity_totals`/`top_categories` both
-   used to accept a `days` parameter, ignore it completely, and were never
-   passed one by either caller -- dead code that came from a mockup panel
-   captioned "Findings overview (30 days)", the exact caption this card
-   would otherwise be reproducing verbatim. See this repository's own
-   CHANGELOG (search "posture number") for the full reasoning: a POSTURE is
-   what is open RIGHT NOW, read off each branch's latest finished analysis
-   however long ago that ran, and windowing it would not narrow the answer,
-   it would drop quiet branches out of it and report them clean. That
-   parameter is gone, pinned by a test that fails if it comes back
-   (tests/security/test_queries.py) -- so this picker keeps the mockup's own
-   vocabulary and default (Activity's four buckets, "Last 30 days" first)
-   for a reader who expects one here, and says plainly, in its own title,
-   that picking a different bucket will not change anything beneath it. */
-const SEC_FIND_PERIOD_TITLE = "Findings are the fleet's current posture — every "
-  + "open finding right now, read off each branch's latest finished analysis. "
-  + "A posture cannot be windowed without dropping quiet branches out of it, "
-  + "so this does not filter the totals below.";
+// "(30 days)"/"(7 days)"/"(All time)" -- the card head's own title suffix
+// (secIndexFindingsCard, below), bound to the same secFindPeriodDays this
+// picker sets. Deliberately NOT secFindPeriodLabel's own "Last 30 days":
+// the mockup's card title reads "Findings overview (30 days)", the trigger
+// itself reads "Last 30 days" a few pixels below it -- two different
+// readings of the same number, both the mockup's own.
+function secFindPeriodTitleSuffix(days){
+  return days > 0 ? "(" + days + " day" + (days === 1 ? "" : "s") + ")" : "(All time)";
+}
+
+/* Real now (Phase 4 Task 5): `queries.severity_totals`/`top_categories` both
+   USED to accept a `days` parameter, ignore it completely, and were never
+   passed one by either caller -- that history (and the fuller reasoning
+   this supersedes) is in CHANGELOG.md. Picking a bucket here now asks the
+   server again (see this picker's own `onclick`, below) with THAT `days`
+   value, and `cmd_index_data` forwards it straight through -- the donut,
+   legend and categories all re-render from whatever the server sends back
+   for the selected period, a real window over "findings whose analyses
+   fall in the period", not the fleet's as-of-now posture this same card
+   showed before this task. */
+const SEC_FIND_PERIOD_TITLE = "Findings recorded by analyses that ran in this "
+  + "period. Changing it asks the server again — the donut, legend and "
+  + "categories below all re-render for the period chosen.";
 
 function secFindingsPeriodPicker(){
   const wrap = document.createElement("details");
@@ -1379,7 +1463,12 @@ function secFindingsPeriodPicker(){
       e.stopPropagation();
       secFindPeriodDays = days;
       wrap.open = false;
-      secRenderIndex();
+      // A real refetch (Phase 4 Task 5), not a local re-render from cache:
+      // the period now genuinely changes what the server sends back (see
+      // SEC_FIND_PERIOD_TITLE's own comment) -- secLoadIndex(true) reads
+      // secFindPeriodDays live and asks again, the same "force" path an
+      // explicit Refresh already uses.
+      secLoadIndex(true);
     };
     pop.appendChild(item);
   });
@@ -1414,7 +1503,13 @@ function secFindingsPeriodPicker(){
    checked against the project screen's own pixels. */
 function secIndexFindingsCard(donut, categories, cappedNote, recent){
   const card = secEl("div", "table-card");
-  card.appendChild(secIndexCardHead("Findings overview", null, secFindingsPeriodPicker()));
+  // "(30 days)" back in the title (Phase 4 Task 5), bound to the picker's
+  // own selection -- see secFindPeriodTitleSuffix's own comment for why
+  // this reads "(30 days)" while the trigger beside it reads "Last 30
+  // days": both are the mockup's own wording, in two different spots.
+  card.appendChild(secIndexCardHead(
+    "Findings overview " + secFindPeriodTitleSuffix(secFindPeriodDays),
+    null, secFindingsPeriodPicker()));
   const body = secEl("div", "secidx-findbody");
   body.appendChild(secIndexDonut(donut, categories, cappedNote, {showPercent: true}));
   card.appendChild(body);

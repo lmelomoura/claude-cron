@@ -319,6 +319,17 @@ button.kpi-card.err:not(:disabled):hover{border-color:color-mix(in srgb,var(--er
   font-variant-numeric:tabular-nums}
 .table-foot-info{white-space:nowrap}
 .table-foot-pager{display:flex;gap:8px;align-items:center}
+/* The numbered "‹ 1 2 3 ›" pager (Phase 4 Task 5, tableFooter's own opt-in --
+   see its comment, ui/app/chrome.js) -- Jobs/Projects/Runs never pass
+   `numbered`, so `.table-foot-pager` bare (no `.numbered`) and its two
+   `.btn.ghost` children above are exactly what they always were. */
+.table-foot-pager.numbered{gap:4px}
+.pagebtn{display:inline-flex;align-items:center;justify-content:center;min-width:30px;
+  height:30px;padding:0 8px;border-radius:8px;border:1px solid transparent;
+  background:none;color:var(--muted);font:inherit;font-size:12.5px;font-weight:600;
+  font-variant-numeric:tabular-nums;cursor:pointer;transition:.13s}
+.pagebtn:hover:not(.active){background:var(--panel2);color:var(--ink)}
+.pagebtn.active{background:var(--accent);color:var(--accent-ink);cursor:default}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
 th{text-align:left;font-weight:600;color:var(--muted);font-size:10.5px;text-transform:uppercase;
   letter-spacing:.05em;padding:11px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
