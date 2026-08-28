@@ -21,6 +21,7 @@
   var tableFooter;
   var makePicker;
   var createCombo;
+  var closeMenus;
   var CC = null;
   function bindPage(cc) {
     CC = cc;
@@ -45,7 +46,8 @@
       kpiCard,
       tableFooter,
       makePicker,
-      createCombo
+      createCombo,
+      closeMenus
     } = cc);
   }
 
@@ -161,7 +163,7 @@
   };
   var SEC_ADVISORY_RULE = /^(?:GHSA|CVE)-/i;
   function secHumaniseRule(rule) {
-    const words = String(rule || "").split("-").filter(Boolean);
+    const words = String(rule || "").split(/[-_]/).filter(Boolean);
     if (!words.length) return String(rule || "");
     const sentence = words.join(" ");
     return sentence.charAt(0).toUpperCase() + sentence.slice(1);
@@ -1507,7 +1509,10 @@
       htr.appendChild(th);
     });
     const thAct = document.createElement("th");
-    thAct.textContent = "Actions";
+    const actLabel = secEl("button", "btn ghost");
+    actLabel.type = "button";
+    actLabel.appendChild(secEl("span", null, "Actions"));
+    thAct.appendChild(actLabel);
     htr.appendChild(thAct);
     thead.appendChild(htr);
     table.appendChild(thead);
@@ -1644,13 +1649,7 @@
     secActPaint();
   }
   function secActRenderShell() {
-    const title = $("sec-act-title");
     const titleText = secActState.project ? "Activity \u2014 " + secActState.project : "Activity";
-    if (title) {
-      title.textContent = "";
-      title.appendChild(secIcon("activity"));
-      title.appendChild(document.createTextNode(titleText));
-    }
     const head = $("sec-act-head");
     if (head) {
       head.textContent = "";
@@ -1854,7 +1853,7 @@
   function secActSummaryCard(summary) {
     const box = secEl("div", "card");
     const head = secEl("div", "secpj-cardhead");
-    head.appendChild(secEl("h3", null, "This period"));
+    head.appendChild(secEl("h3", null, "Activity summary"));
     box.appendChild(head);
     box.appendChild(secEl(
       "div",
@@ -2188,7 +2187,9 @@
     tr.appendChild(cell(String(r.commit_sha || "").slice(0, 12)));
     tr.appendChild(cell(r.started && r.ended ? fmtDur(Math.max(0, r.ended - r.started)) : r.state === "running" ? "running\u2026" : "\u2014"));
     tr.appendChild(cell(r.findings == null ? "\u2014" : String(r.findings)));
-    tr.appendChild(cell(r.state));
+    const tdState = document.createElement("td");
+    tdState.appendChild(secIndexRunStatusPill(r.state));
+    tr.appendChild(tdState);
     tr.appendChild(cell(fmtWhen(r.started)));
     return tr;
   }
@@ -2365,7 +2366,7 @@
     const cappedNote = caveats.length ? caveats.join(" \xB7 ") : "Open now, in every project's latest analysis";
     wrap.appendChild(kpiCard({
       icon: "shield",
-      tone: "err",
+      tone: "sev-crit",
       value: String(s.critical || 0),
       label: "Critical findings",
       sub: "needs immediate attention",
@@ -2373,7 +2374,7 @@
     }));
     wrap.appendChild(kpiCard({
       icon: "alertcircle",
-      tone: "warn",
+      tone: "sev-high",
       value: String(s.high || 0),
       label: "High severity",
       sub: "requires review",
@@ -2421,7 +2422,11 @@
   }
   function secIndexTrendSpark(trend) {
     const points = (trend || []).map((n2) => Math.max(0, n2 || 0));
-    if (!points.length) return secEl("span", "muted", "\u2014");
+    if (!points.length) {
+      const dash = secEl("span", "muted", "\u2014");
+      dash.title = "No finished analysis of the declared base branch within the last 30 days";
+      return dash;
+    }
     const ns = "http://www.w3.org/2000/svg";
     const svg = document.createElementNS(ns, "svg");
     svg.setAttribute("viewBox", "0 0 100 32");
@@ -2544,7 +2549,10 @@
     summary.className = "iconbtn";
     summary.title = "More actions";
     summary.appendChild(secIcon("dots"));
-    summary.onclick = (e) => e.stopPropagation();
+    summary.onclick = (e) => {
+      e.stopPropagation();
+      closeMenus();
+    };
     kebab.appendChild(summary);
     const pop = secEl("div", "menu-pop");
     pop.setAttribute("role", "menu");
@@ -2570,6 +2578,7 @@
     pop.appendChild(editBtn);
     kebab.appendChild(pop);
     kebab.ontoggle = () => {
+      pop.hidden = !kebab.open;
       if (!kebab.open) return;
       const r = summary.getBoundingClientRect();
       pop.style.position = "fixed";
@@ -3106,17 +3115,17 @@
     const left = secEl("div", "secidx-donutcol");
     left.appendChild(secIndexDonutSvg(donut));
     left.appendChild(secIndexDonutLegend(donut, opts));
-    if ((cappedNote || "").trim()) {
-      const warn = secEl("div", "warnline bad");
-      warn.appendChild(secIcon("alert"));
-      warn.appendChild(secEl("span", "grow", cappedNote));
-      left.appendChild(warn);
-    }
     wrap.appendChild(left);
     const right = secEl("div", "secidx-catcol");
     right.appendChild(secEl("div", "secidx-cathead", "Top issue categories"));
     right.appendChild(secIndexCategories(categories));
     wrap.appendChild(right);
+    if ((cappedNote || "").trim()) {
+      const warn = secEl("div", "warnline bad secidx-donutwarn");
+      warn.appendChild(secIcon("alert"));
+      warn.appendChild(secEl("span", "grow", cappedNote));
+      wrap.appendChild(warn);
+    }
     return wrap;
   }
   var secFindPeriodDays = 30;
@@ -3242,5 +3251,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 8198f98eaff1ebee443bdd7bbc915eef15b3a8d1d1c0b2726caede08900e80ef */
-/* ui-sources: 231c10c3501d1e1f511ab70f3826ed5a8e27e74b398d4e2aebe190c4bc586b3c */
+/* ui-bundle: 261c9518cf1bb8f5c7172e08924df5a7539a7716a5d20197090161f6fa785380 */
+/* ui-sources: 3ad13859ea01797355886e4272de248df52a743cac6ae2cf8a3d355d36740a54 */

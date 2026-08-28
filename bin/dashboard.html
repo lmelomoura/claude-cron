@@ -521,8 +521,12 @@ document.documentElement.dataset.theme =
          "Recent activity" card. Built entirely by
          ui/security/activity-screen.js. -->
     <section id="sec-activity" hidden>
+      <!-- No small-caps eyebrow here (I2, Phase 4 final review) -- it used
+           to duplicate #sec-act-head's own pageHeader() title a few pixels
+           below with the identical text, which the mockup draws once. Back
+           navigation is untouched: #sec-act-back never lived in the eyebrow
+           itself, only beside it. -->
       <div class="secthead">
-        <h3 id="sec-act-title"></h3>
         <button class="btn ghost" id="sec-act-back"></button>
       </div>
       <!-- Rebuilt on every open by ui/security/activity-screen.js's own
@@ -1766,6 +1770,15 @@ const CC = {
   // filter pickers and three launcher combos and wires them through these
   // rather than through a fourth copy of either widget living twice.
   makePicker, createCombo,
+  // closeMenus (I4, Phase 4 final review): a hoisted `function` defined
+  // further down THIS script (see its own comment) -- same "safe to read
+  // this early" reasoning as makePicker/createCombo just above. The row
+  // kebab's own summary (secIndexProjectRow, ui/security/index-screen.js)
+  // calls this directly, synchronously, on every open -- its own
+  // `e.stopPropagation()` (protecting the row's click-to-open from firing
+  // underneath it) also keeps that click from ever bubbling to `document`,
+  // which is where this function is normally reached from.
+  closeMenus,
   // The two the page REASSIGNS while it runs: DATA on every poll, currentView
   // on every navigation. Copied in by value they would freeze at what they held
   // right now -- an empty DATA, the startup view -- so they are read live,
@@ -4305,10 +4318,31 @@ function initStatFilters(){
 /* ---------------------------------------------------------------- events */
 // The card overflow menus. They live inside cards that are redrawn every poll,
 // so nothing here holds a reference to one — it always re-reads the DOM.
+//
+// I4 (Phase 4 final review): `details[open].secidx-kebab` closes every
+// <details>-based ROW kebab this class marks -- today that is only the
+// Security fleet table's own row (secIndexProjectRow, ui/security/
+// index-screen.js), but the selector is generic over the CLASS, not one
+// element, so a sibling row kebab elsewhere that reuses `.secidx-kebab`
+// closes for free. This is deliberately narrower than "every <details> this
+// page ever pops open": secFindingsPeriodPicker's and secFindSavedFilters'
+// own <details> popovers (also ui/security/) are single, page-level
+// pickers, not per-row action menus, and neither was named by this finding
+// -- native <details> semantics already close each of THOSE on its own next
+// interaction, and widening this selector to catch them too was not asked
+// for and is not free of risk this pass has not verified.
+//
+// `.menu-pop`'s own `hidden` attribute (the FIRST line below, the older
+// `[data-menu]` pattern's own ground truth for "open") is not what tracks a
+// `<details>`-based popover's state at all -- closing one here through
+// `.open = false` fires its own `ontoggle`, which is what actually
+// resyncs `.menu-pop[hidden]` for that shape (see secIndexProjectRow's own
+// kebab.ontoggle for why that resync has to happen there, not here).
 function closeMenus(){
   document.querySelectorAll(".menu-pop:not([hidden])").forEach(p=>{ p.hidden=true; });
   document.querySelectorAll('[data-menu][aria-expanded="true"]')
     .forEach(b=>b.setAttribute("aria-expanded","false"));
+  document.querySelectorAll("details.secidx-kebab[open]").forEach(d=>{ d.open=false; });
 }
 document.addEventListener("keydown",(e)=>{
   if(e.key==="Escape" && document.querySelector(".menu-pop:not([hidden])")){

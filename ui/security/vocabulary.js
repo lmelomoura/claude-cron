@@ -239,14 +239,17 @@ export const SEC_RULE_META = {
 // arrived, never looked up or reworded.
 const SEC_ADVISORY_RULE = /^(?:GHSA|CVE)-/i;
 
-/* kebab-case -> sentence case, and nothing else: "auth-gate-fails-open"
-   becomes "Auth gate fails open". The only translation the open "sast"
-   vocabulary gets (see SEC_RULE_META's own comment for why a fixed list
-   cannot cover it) -- a plain, reversible transform rather than a
-   dictionary someone has to keep in sync with an agent that can invent a
-   new rule id on every run. */
+/* kebab-case OR snake_case -> sentence case, and nothing else:
+   "auth-gate-fails-open" and "auth_gate_fails_open" both become "Auth gate
+   fails open" -- the agent that writes the open "sast" vocabulary's own rule
+   ids (see SEC_RULE_META's own comment for why a fixed list cannot cover it)
+   is not promised to pick one separator over the other, so this splits on
+   either rather than only ever recognising the one it happened to be
+   written against. A plain, reversible transform rather than a dictionary
+   someone has to keep in sync with an agent that can invent a new rule id on
+   every run. */
 function secHumaniseRule(rule){
-  const words = String(rule || "").split("-").filter(Boolean);
+  const words = String(rule || "").split(/[-_]/).filter(Boolean);
   if(!words.length) return String(rule || "");
   const sentence = words.join(" ");
   return sentence.charAt(0).toUpperCase() + sentence.slice(1);
@@ -260,12 +263,12 @@ function secHumaniseRule(rule){
 
    In order:
      1. SEC_RULE_META, regardless of what `category` says -- queries.
-        top_categories (bin/security/queries.py) groups by rule alone and
-        does not hand this card a category at all, so a lookup that only
-        worked when `category` happened to be right would silently stop
-        working the one place this runs today. Every rule a CLOSED engine
-        (secrets.py, hygiene.py) can produce is in that map, so this step
-        alone resolves all of them regardless.
+        top_categories (bin/security/queries.py) now serves each row's own
+        category alongside its rule, but this step still checks the map
+        FIRST and ignores `category` when it matches: every rule a CLOSED
+        engine (secrets.py, hygiene.py) can produce is in that map, labelled
+        from the engine's own rationale, which a generic per-category label
+        (step 4, below) would only flatten.
      2. An advisory id (SEC_ADVISORY_RULE) keeps itself as the label.
      3. `category === "sast"` -- the one OPEN vocabulary -- humanised.
      4. Whatever `category` says, sensibly, for a rule from a closed engine

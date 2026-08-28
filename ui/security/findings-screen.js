@@ -805,8 +805,22 @@ function secFindTableSection(fs, data){
     th.appendChild(btn);
     htr.appendChild(th);
   });
+  // MINOR 5 (Phase 4 final review): a bare `<th>` reads the page's generic
+  // uppercase small-caps `th` rule (ui/css/components.css) -- every sortable
+  // sibling beside it reads sentence case instead, not because of a class
+  // opting IT out, but because each one's label sits inside a `<button>`,
+  // and the browser's own UA stylesheet resets a form control's
+  // `text-transform` to `none` before this file ever touches it (the same
+  // reason `.btn`'s own font-size/weight/colour differ from a plain `th`'s
+  // too). A non-sortable `<button>` -- same class, same shape, no `onclick`
+  // -- is what actually makes "Actions" match its row instead of merely
+  // fixing the one property a hand-picked CSS override would have left
+  // size/colour/weight still mismatched.
   const thAct = document.createElement("th");
-  thAct.textContent = "Actions";
+  const actLabel = secEl("button", "btn ghost");
+  actLabel.type = "button";
+  actLabel.appendChild(secEl("span", null, "Actions"));
+  thAct.appendChild(actLabel);
   htr.appendChild(thAct);
   thead.appendChild(htr);
   table.appendChild(thead);

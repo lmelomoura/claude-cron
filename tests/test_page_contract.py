@@ -348,6 +348,45 @@ def _top_level_entries(body):
     return [e.strip() for e in entries if e.strip()]
 
 
+def _top_level_statements(body):
+    """Split a function BODY (its own outer braces already stripped) into its
+    top-level statements -- a `;`/bracket nested inside a string or a nested
+    block never splits one in half. Mirrors _top_level_entries's own
+    technique (commas -> object-literal entries) for semicolon-terminated
+    statements instead.
+
+    Unlike _top_level_entries, this does NOT skip `//`/`/* */` comments
+    itself -- call `_strip_comments` on `body` FIRST. A comment's own prose
+    can legitimately contain a name a caller goes on to regex-match at the
+    start of the NEXT statement (test_calling_the_bridged_chrome_builders_...
+    below found this the hard way: ui/security/index.js's own init() narrates
+    `pageHeader()` by name in a comment sitting between two real statements;
+    left unstripped, that comment's text glues onto the following statement
+    and both a false "pageHeader(" match and a missed real call slip through
+    in the same stroke)."""
+    stmts, depth, i, n, start = [], 0, 0, len(body), 0
+    while i < n:
+        c = body[i]
+        if c in "\"'`":
+            q = c
+            i += 1
+            while i < n and body[i] != q:
+                i += 2 if body[i] == "\\" else 1
+            i += 1
+            continue
+        if c in "{[(":
+            depth += 1
+        elif c in "}])":
+            depth -= 1
+        elif c == ";" and depth == 0:
+            stmts.append(body[start:i])
+            start = i + 1
+        i += 1
+    if body[start:].strip():
+        stmts.append(body[start:])
+    return [s.strip() for s in stmts if s.strip()]
+
+
 def _iface_value_names(entry):
     """From one object-literal entry, return the bare identifier(s) whose
     VALUE is read the instant the enclosing object literal is built -- the
@@ -3821,8 +3860,15 @@ def test_the_project_runs_header_names_what_its_own_column_recorded(srv, tmp_pat
     # button_disabling_at_both_edges (findings-screen.js's own pager test)
     # already pulls it in for real.
     chrome_deps = _plainfn(_app_js(srv), "el") + "\n" + _plainfn(_app_js(srv), "tableFooter")
-    deps = (_const(block, "SEC_RUNS_COLS") + chrome_deps + "\n"
-            + "\n".join(_plainfn(block, n) for n in ("secEl", "secRunRow", "secRunsTable")))
+    # secRunRow now paints its own STATE cell with secIndexRunStatusPill
+    # (M6a, Phase 4 final review, index-screen.js) instead of the bare
+    # lowercase word it used to -- both that function and the label map it
+    # reads join the dependency list for the same reason SEC_RUNS_COLS
+    # already does: secRunRow is exercised for real below, not stubbed.
+    deps = (_const(block, "SEC_RUNS_COLS") + _const(block, "SEC_RUN_STATUS_LABEL")
+            + chrome_deps + "\n"
+            + "\n".join(_plainfn(block, n) for n in
+                ("secEl", "secIndexRunStatusPill", "secRunRow", "secRunsTable")))
     script = tmp_path / "pj-runs-header.js"
     script.write_text(_PROJECT_DOM_HARNESS + """
     let secRunsFilter = "";
@@ -7008,16 +7054,25 @@ def test_an_unknown_sast_rule_is_humanised_not_shown_as_a_raw_slug(srv, tmp_path
     the one category secRuleMeta transforms rather than looks up.
     "auth-gate-fails-open" is a real rule id already sitting in the ledger
     (data/security.db), not a made-up example -- pinned as an exact in/out
-    pair, not just "contains a capital letter somewhere"."""
+    pair, not just "contains a capital letter somewhere". MINOR 2 (Phase 4
+    final review): the agent is not promised to write kebab-case rather than
+    snake_case, so the identical rule id spelled "auth_gate_fails_open" is
+    pinned alongside it, same expected label -- secHumaniseRule's own comment
+    already promised both separators; this is what holds it to that."""
     block = _security_js(srv)
     deps = _rule_meta_deps(block)
     script = tmp_path / "rule-meta-sast.js"
     script.write_text(deps + """
-    console.log(JSON.stringify(secRuleMeta("sast", "auth-gate-fails-open")));
+    console.log(JSON.stringify({
+      kebab: secRuleMeta("sast", "auth-gate-fails-open"),
+      snake: secRuleMeta("sast", "auth_gate_fails_open"),
+    }));
     """)
     out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
                                     text=True, check=True).stdout)
-    assert out == {"label": "Auth gate fails open", "icon": "code"}
+    assert out["kebab"] == {"label": "Auth gate fails open", "icon": "code"}
+    assert out["snake"] == {"label": "Auth gate fails open", "icon": "code"}, \
+        f"snake_case did not humanise the same way kebab-case does: {out['snake']}"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -7072,3 +7127,70 @@ def test_the_rendered_category_row_keeps_the_raw_rule_id_one_hover_away(srv, tmp
         f"the resolved label did not render at all: {row['text']!r}"
     assert "private_key" not in row["text"], \
         "the raw rule id leaked into the visible text instead of staying in the title only"
+
+
+def test_calling_the_bridged_chrome_builders_during_securitys_own_init_does_not_reach_a_dead_binding():
+    """CRITICAL 2 (Phase 4 final review). ui/security/page.js's own comment
+    explains the trap this guards: pageHeader/kpiCard/tableFooter are read
+    off CCApp at CCSecurity.init(CC) time (bin/dashboard.html) -- a plain
+    property READ, safe that early, since CCApp's own module script has
+    already executed and defined them by then. But CALLING one of the three,
+    synchronously, from inside ui/security/index.js's own init() (or a
+    function it calls directly, at that same synchronous point) runs
+    chrome.js's own function body immediately -- and that body calls
+    `icon(...)`, which for THIS bridge resolves to ui/app/page.js's own
+    binding. That binding is not assigned until CCApp.init() runs, which
+    bin/dashboard.html calls AFTER CCSecurity.init(CC) (see that file's own
+    banner comment above the CC object) -- so at the instant init() would
+    call pageHeader(), `icon` there is still `undefined`, and `icon(...)`
+    throws "icon is not a function". The whole page comes up blank, and
+    every OTHER test in this suite still passes, because none of them boots
+    the real script in the real order: the reviewer reproduced exactly this
+    -- 775 green tests, one blank page -- by adding a bare `pageHeader({})`
+    call to init(). Falsified against this exact guard: with that one line
+    added, this test goes red (the assertion below fails, naming
+    "init() calls pageHeader("); reverted, it is green again.
+
+    Honest limit: SYNCHRONOUS, DIRECT callees only. A bare `name(...)`
+    statement sitting at init()'s own top level counts; a callback handed to
+    `addEventListener`/`onPick`/etc. does not, because it runs later, off an
+    event, never while init() itself is on the stack -- and neither does
+    anything TWO calls deep (what a direct callee's OWN callees call). Every
+    import at the top of index.js is a "./..." one, so a direct callee's own
+    definition -- when it has one at all; `iconLabel` and `$` are bridged
+    bindings with no local function body to find -- can only live under
+    ui/security/, never ui/app/: that other bundle defines its own,
+    DIFFERENT `bindPage`, and checking it would silently guard nothing."""
+    index_js = (UI_ROOT / "security" / "index.js").read_text()
+    init_src = _plainfn(index_js, "init")
+    init_body = _strip_comments(init_src[init_src.index("{") + 1:init_src.rindex("}")])
+
+    forbidden = ("pageHeader(", "kpiCard(", "tableFooter(")
+
+    def violations(label, text):
+        return [f"{label} calls {name}" for name in forbidden if name in text]
+
+    problems = violations("init()", init_body)
+
+    security_dir = UI_ROOT / "security"
+    security_files = {p.name: p.read_text() for p in security_dir.glob("*.js")}
+    checked = set()
+    for stmt in _top_level_statements(init_body):
+        m = re.match(rf"^({_IDENT})\(", stmt)
+        if not m or m.group(1) in checked or m.group(1) == "init":
+            continue
+        name = m.group(1)
+        checked.add(name)
+        for fname, text in security_files.items():
+            if fname == "index.js" or not re.search(rf"\bfunction\s+{re.escape(name)}\s*\(", text):
+                continue
+            callee_body = _strip_comments(_plainfn(text, name))
+            problems.extend(violations(f"{name}() ({fname}), a direct callee of init()",
+                                        callee_body))
+
+    assert problems == [], (
+        "init() (or a function it calls directly and synchronously) reaches a "
+        "bridged chrome builder before CCApp.init() has bound ui/app/page.js's "
+        "own `icon` -- this throws and blanks the whole page on load: "
+        + "; ".join(problems)
+    )

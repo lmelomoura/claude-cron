@@ -19,6 +19,142 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Phase 4's final review closes its last findings: a warnline that
+  overflowed its card, a boot-killing dead-binding trap with no guard, and
+  kebab menus that would not close.** Two CRITICAL, four IMPORTANT, six
+  MINOR.
+
+  The Findings-overview card's own capped/fell-back warnline was a THIRD
+  child of `.secidx-donutcol` (`secIndexDonut`, ui/security/index-screen.js)
+  -- harmless in the project sidebar's own column layout, but
+  `.secidx-findbody .secidx-donutcol{flex-direction:row}` flips that column
+  into a row for this card, and a `flex:none` row item does not shrink: the
+  sentence took its own ~670px content width straight through a 424px card,
+  clipped mid-word by `.table-card{overflow:hidden}` on any project whose
+  latest analysis is capped. It is now `.secidx-donutwrap`'s own third flex
+  child instead -- a sibling of the donut+legend column and the categories
+  column, never nested inside either -- with a forced 100% flex-basis
+  (`.secidx-donutwarn`, ui/css/pages.css) so it always lands on its own full-
+  width line below both, and `min-width:0` so its text actually wraps there
+  instead of reasserting the same overflow one level up. Verified by
+  `getBoundingClientRect()` in a fresh tab at the mockup's own 424px card
+  width, both themes: the warnline's right edge sits inside the card's, not
+  past it, and the full sentence renders unclipped.
+
+  `ui/security/index.js`'s own `init()` runs inside `CCSecurity.init(CC)`,
+  which `bin/dashboard.html` calls BEFORE `CCApp.init()` has bound
+  `ui/app/page.js`'s own `icon` -- so calling the bridged `pageHeader`/
+  `kpiCard`/`tableFooter` from inside `init()` (or a function it calls
+  directly) reads that binding while it is still `undefined` and throws,
+  blanking the whole page on load, with every other test in the suite still
+  green, because none of them boots the real script in the real order. This
+  had no guard. A new source-level test
+  (`test_calling_the_bridged_chrome_builders_during_securitys_own_init_does_
+  not_reach_a_dead_binding`, tests/test_page_contract.py) extracts `init()`'s
+  own body and the bodies of every function it calls directly and
+  synchronously at that same top level, and fails if any of them reaches
+  `pageHeader(`, `kpiCard(` or `tableFooter(` -- brace-matched and comment-
+  stripped the same way the file's own `_plainfn`/`_strip_comments` already
+  work, so a comment that merely NAMES one of the three (`init()`'s own
+  banner comment does, to explain the trap) is never mistaken for a call to
+  it. Falsified against itself: adding a bare `pageHeader({})` to `init()`
+  turns it red, naming exactly that call; reverted, it is green again.
+  Honest limit stated in the test's own docstring: synchronous, direct
+  callees only, one level deep -- a callback handed to `addEventListener`
+  runs later, off an event, and is not traced into.
+
+  The `<details>`-based row kebab (the fleet table's own "More actions",
+  `secIndexProjectRow`) did not close when a reader opened a DIFFERENT row's
+  kebab: its own `summary.onclick` calls `e.stopPropagation()` to keep the
+  click from also firing the row's click-to-open underneath it, which as a
+  side effect also kept that click from ever reaching `document`, where
+  `bin/dashboard.html`'s `closeMenus()` is normally reached from. `closeMenus`
+  is now bridged into `ui/security/` the same direction `makePicker`/
+  `createCombo` already are, and the kebab's own summary calls it directly,
+  synchronously, on every open -- closing any OTHER already-open row kebab
+  the instant this one is clicked, never itself (at that exact point its own
+  `.open` has not toggled yet). `closeMenus()` itself gained one more clause,
+  `details.secidx-kebab[open]` -> `.open = false`, so the existing
+  document-level Escape and background-click paths -- unchanged otherwise --
+  close it too. The kebab's own `ontoggle` now also resyncs
+  `pop.hidden = !kebab.open` on every toggle (the identical fix
+  `secFindSavedFilters`'s own `ontoggle` already carried, for the identical
+  race: `closeMenus()`'s first line marks every `.menu-pop` in the document
+  hidden on any click, including one about to open, and without this resync
+  a kebab could end up `.open === true` with its own popup still marked
+  `[hidden]` -- open, and painting nothing). Verified with real, separately-
+  dispatched click and Escape events in a fresh tab: opening kebab A then
+  kebab B closes A and leaves B's popup genuinely visible; a background
+  click closes B; reopening and pressing Escape closes it.
+
+  The Security index's own Critical/High KPI cards now wear the severity
+  scale (`sev-crit`/`sev-high`, two new `kpiCard` tone classes,
+  ui/css/components.css) instead of the app's status tones (`err`/`warn`,
+  which stay reserved for a card reporting a STATUS -- Overview's own
+  Warnings/Errors, this same screen's own Success-rate): these two COUNT
+  severities, a different fact, and the mockup's own drawing samples them
+  from the severity tokens, not the status ones. No `-soft` companion token
+  exists for a severity hue, so the icon square's tint is `color-mix()` of
+  the token itself, the identical idiom `.secidx-sev3`'s own chips already
+  use. No other card's tone changes.
+
+  The Activity screen filled BOTH `#sec-act-title` (a small-caps eyebrow)
+  and its own `pageHeader()` with the identical computed title -- the
+  mockup draws exactly one heading. The eyebrow fill is gone, and so is its
+  now-permanently-empty element in `bin/dashboard.html`; back navigation
+  (`#sec-act-back`, in the same `.secthead` wrapper) is untouched.
+
+  Six stale claims fixed where they stood rather than corrected on top: this
+  file's own account of the Findings-overview period picker ("never changes
+  the totals", "drops the parenthetical") and of "Top issue categories"
+  guessing an icon from the raw rule string and severity being a `color-mix`
+  of `--err`/`--warn`, all superseded by later entries already in this same
+  file; two stale code comments making the identical now-false claims
+  (`secIndexCategories`'s own comment, ui/security/index-screen.js; the
+  `.secidx-sev3` comment, ui/css/pages.css); `secRuleMeta`'s own ordering
+  comment (vocabulary.js), which still said `top_categories` carried no
+  `category` at all; and `ui/security/page.js`'s own claim that `tableFooter`
+  "has no caller under ui/security/ yet" -- it has four. The missing entry
+  this pass adds: `GET /api/security/index` gained `days` and `recent_page`
+  query parameters and two 400 responses (`bin/claude-cron-server`), the
+  HTTP end of the period picker and the Recent-analyses pager.
+
+  Six smaller ones: the five severity tokens (ui/css/tokens.css) were
+  declared twice, verbatim -- the duplicate is gone, with a comment stating
+  dark mode deliberately keeps the same bright hues rather than dimming
+  them. `secHumaniseRule` (vocabulary.js) split only on `-`; the agent that
+  writes the open "sast" vocabulary is not promised to prefer kebab-case
+  over snake_case, so it now splits on either, pinned with a snake_case
+  in/out pair beside the existing kebab-case one. An empty Trend (30d) cell
+  gained a `title` naming which of "no declared base" or "a declared base
+  never analysed" it is, in `trend_series`'s own vocabulary, rather than
+  leaving a reader to guess why one row's own cell is blank. The findings
+  browser's own "Actions" header read UPPERCASE while every sortable
+  sibling beside it read sentence case -- not by a class opting them out,
+  but because each sibling's label sits inside a `<button>`, and the
+  browser's own default stylesheet resets a form control's `text-transform`
+  before this file ever touches it; "Actions" now sits inside the identical
+  non-sortable button, matching size, weight and colour along with the
+  case, not just the one property a hand-picked override would have left
+  the rest of mismatched. The project screen's own Runs tab printed an
+  analysis's `state` as a bare lowercase word; it now reads the index
+  screen's own `secIndexRunStatusPill`/`SEC_RUN_STATUS_LABEL` (exported for
+  this, ui/security/index-screen.js) so the same fact reads in the same
+  Title-Cased pill register on both tables. The Activity sidebar's own
+  summary card read "This period"; the mockup's own wording, already cited
+  by this file's own `.secpj-cardhead h3` CSS comment, is "Activity
+  summary".
+
+  `tests/test_page_contract.py`'s own Runs-header test now extracts
+  `secIndexRunStatusPill`/`SEC_RUN_STATUS_LABEL` alongside `secRunRow`,
+  since that row now calls the former for real; the humaniser test above
+  gained its snake_case pair. Verified live throughout against a fabricated
+  two-project fleet (one capped) served from a throwaway harness page --
+  the real built bundles and the real static markup, booted with a captured
+  `index-data`/`project-data`/`findings-page`/`activity-data` response in
+  place of the real server, since scripting through this app's own
+  operator login was not this task's to do.
+
 - **Phase 4 Task 6's furniture pass reaches the project, findings and
   activity screens.** Each of `ProjectDetails.png`/`AllFindings.png`/
   `FullActivity.png`, followed for the same moves the index screen (Phase 4
@@ -62,12 +198,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reordering `FIND_SORT_COLUMNS` to match both the body and the mockup. Not
   done, and noted in the task report rather than attempted: the mockups' own
   fuller project header (icon, title, a "Security enabled" badge, a
-  description), the Runs tab's own KPI-card summary row and sparkline, Title-
-  Cased colour pills for an analysis's state (the index screen's own recent-
-  analyses table already has these; the project screen's Runs table does
-  not), and the findings table's own per-row severity pill and left-edge
-  colour bar — none of these exist in any form on the current screens today,
-  so building them from nothing is information architecture, not furniture.
+  description), the Runs tab's own KPI-card summary row and sparkline, and
+  the findings table's own per-row severity pill and left-edge colour bar —
+  none of these exist in any form on the current screens today, so building
+  them from nothing is information architecture, not furniture. (The Runs
+  tab's own analysis-state pill, listed here as undone at the time, is
+  fixed later in this file's own Unreleased section — it reuses the index
+  screen's existing vocabulary rather than inventing new information
+  architecture, which is what this paragraph is actually about.)
 
 - **The last seven native `<select>`s in the product become the house
   `.picker` or `.combo`, and a test keeps the count at zero.** Two user
@@ -150,12 +288,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   showed the bare rule id as the row's name regardless — a deliberate
   choice at the time ("data truth, not an invented translation table") that
   this task reverses now that the translation is sourced from the engines'
-  own rationale rather than guessed. One known gap: `top_categories`
-  (bin/security/queries.py) still groups by rule alone and does not hand
-  this card a category, so `secRuleMeta` resolves every rule the closed
-  engines can produce without needing one — the gap only matters for a
-  sast rule that has neither an exact entry nor a category to humanise by,
-  which today's ledger never surfaces in the top five.
+  own rationale rather than guessed. (`top_categories` grouped by rule alone
+  at the time, with no `category` of its own to hand this card — closed two
+  commits later, this same file's own entry on that fix.)
 
 - **The Security index's projects table becomes the approved mockup's, and
   a client-side filter bar arrives above it.** Phase 4 Task 3, the largest
@@ -182,13 +317,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Findings, where the counts it qualifies now live; a fallen-back branch
   still names itself in the open, never just a bare "(fell back)"; never-
   analysed still reads the one `SEC_NEVER` sentence. The filter bar (Search
-  projects + Status + Profile + Branch pickers + Refresh, Activity moved
-  down beside it since the mockup's own header carries neither) is plain
-  `<select>`s, not `ui/app/chrome.js`'s real `.picker` widget — that
-  widget's pickers are static markup wired inside `bin/dashboard.html`
+  projects + Status + Profile + Branch pickers + Refresh) is plain
+  `<select>`s at this point, not `ui/app/chrome.js`'s real `.picker` widget —
+  that widget's pickers are static markup wired inside `bin/dashboard.html`
   itself, and porting it across the `ui/security`/`ui/app` bundle split for
-  four new ones was a bigger migration than this table's own redesign
-  asked for. Filtering itself (`secFilterProjects`) is a pure function, unit
+  four new ones was a bigger migration than this table's own redesign asked
+  for at the time (a later task closes it — see this same file's own entry
+  on the product's last native selects). Filtering itself
+  (`secFilterProjects`) is a pure function, unit
   tested directly. Getting the live search box to survive this screen's
   five-second poll took two tries: the first attempt gated a remount on a
   `dataset.mounted` flag, which missed that `secLoadIndex`'s own
@@ -236,8 +372,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the approved mockup, through a new runtime bridge into `ui/app/`'s shared
   chrome.** The loose intro paragraph and its bare toolbar are gone,
   replaced by `pageHeader()` (shield icon, "Security", "Vulnerability
-  analysis across your projects.", Activity and Refresh as its own
-  actions) and the same `kpiCard()` every other page's KPI row already
+  analysis across your projects.", Activity and Refresh as its own actions
+  at this point — both later moved out, then Activity dropped for good; see
+  this same file's later entries) and the same `kpiCard()` every other
+  page's KPI row already
   uses: Projects/"with security enabled", Total analyses/"across all
   projects", Critical findings/"needs immediate attention" (`err` tone),
   High severity/"requires review" (`warn` tone), Success rate/"analyses
@@ -255,10 +393,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   capped-analysis and fallen-back-branch caveats move from a visible
   `.secidx-note` line into the card's own `.title` tooltip — the mockup's
   fixed, short sub-caption for both leaves no room for a sentence that
-  long — and Activity/Refresh are now answered by `bin/dashboard.html`'s
-  central delegated click listener rather than a listener attached
-  directly to either button, the same split every other page's own
-  `pageHeader()` actions already use. The old `.secidx-kpis`/`.secidx-card`
+  long — and Activity/Refresh are answered by `bin/dashboard.html`'s central
+  delegated click listener rather than a listener attached directly to
+  either button, the same split every other page's own `pageHeader()`
+  actions already use. The old `.secidx-kpis`/`.secidx-card`
   markup and CSS are gone; the KPI grid now shares `.kpi-grid`/`.kpi-card`
   with every other page, and a new `alertcircle` icon covers the one shape
   (a ringed exclamation mark) nothing in the existing set already drew.
@@ -453,16 +591,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `position:fixed` mechanism the projects table's own row kebab already
   relies on to escape `.table-card`'s corner clip.
 
-  The picker's own selection deliberately never changes the totals beneath
-  it, and says so in its own tooltip: `queries.severity_totals` and
-  `top_categories` used to accept a `days` parameter, ignore it completely,
-  and were never passed one by either caller — a POSTURE is what is open
-  right now, off each branch's latest finished analysis, and windowing it
-  would not narrow the answer, it would drop quiet branches out of it and
-  report them clean (see this same file's own entry on that fix). Reusing
-  the mockup's own "Findings overview (30 days)" caption verbatim would
-  have resurrected exactly the claim that fix removed, so the card's title
-  drops the parenthetical instead — a named divergence, not an oversight.
+  The picker's own selection does not change the totals beneath it at this
+  point: `queries.severity_totals` and `top_categories` used to accept a
+  `days` parameter, ignore it completely, and were never passed one by
+  either caller — a POSTURE is what is open right now, off each branch's
+  latest finished analysis, and windowing it would not narrow the answer, it
+  would drop quiet branches out of it and report them clean (see this same
+  file's own entry on that fix). Reusing the mockup's own "Findings overview
+  (30 days)" caption verbatim would have resurrected exactly the claim that
+  fix removed, so the card's title drops the parenthetical instead, at this
+  point — a named divergence, not an oversight. (A later task makes the
+  window real and the parenthetical honest again — see this same file's own
+  entry on `queries.severity_totals`/`top_categories` gaining a real `days`
+  window.)
 
   Two more named divergences, both forced by what the payload actually
   carries rather than chosen for taste: `tableFooter` has no numbered pager
@@ -524,20 +665,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Findings chips (both tables) and the donut's own legend move off the
   two-tone grouping (critical and high sharing one colour) onto three —
   critical (`--err`), high (`color-mix(in srgb, var(--err) 50%, var(--warn)
-  50%)`, the one new expression, not a new hex literal — this design's
-  tokens have no third hue of their own), medium (`--warn`) — scoped to
-  this screen alone (`.secidx-sev3`) so the findings browser, the branches
-  tab and a project's own Overview, none of them touched by this task, keep
-  the grouping they already had. The donut's own legend is redrawn as the
-  mockup's own row — a coloured dot, the severity's name, a right-aligned
-  "count (pct%)" — its own element now, not a `.sevpill` wearing a
-  percentage the way the previous task built it (the pinned test that shape
-  carried moved with it: `test_the_findings_overview_legend_states_each_
-  severitys_share_of_the_total`, `tests/test_page_contract.py`). "Top issue
-  categories" gets a per-row icon guessed from the rule string (secrets →
-  lock, GHSA/dependency → shield, injection/XSS → code, hygiene → hammer,
-  anything else → the same generic alert glyph every row drew before), and
-  the Total-analyses KPI card gets its own trend-line icon instead of
+  50%)`, the one new expression at this point, not a new hex literal — this
+  design's tokens had no third hue of their own yet), medium (`--warn`) —
+  scoped to this screen alone (`.secidx-sev3`) so the findings browser, the
+  branches tab and a project's own Overview, none of them touched by this
+  task, keep the grouping they already had. (A later task replaces all
+  three with dedicated `--sev-crit`/`--sev-high`/`--sev-med` tokens sampled
+  from the mockup's own pixels — see this same file's own "Four gaps"
+  entry.) The donut's own legend is redrawn as the mockup's own row — a
+  coloured dot, the severity's name, a right-aligned "count (pct%)" — its
+  own element now, not a `.sevpill` wearing a percentage the way the
+  previous task built it (the pinned test that shape carried moved with it:
+  `test_the_findings_overview_legend_states_each_severitys_share_of_the_
+  total`, `tests/test_page_contract.py`). "Top issue categories" gets a
+  per-row icon guessed from the rule string at this point (secrets → lock,
+  GHSA/dependency → shield, injection/XSS → code, hygiene → hammer, anything
+  else → the same generic alert glyph every row drew before) — replaced two
+  tasks later by `secRuleMeta`'s curated map, keyed off the rule's own
+  rationale rather than a guess (see this same file's own entry on "Top
+  issue categories" earning a human label) — and the Total-analyses KPI card
+  gets its own trend-line icon instead of
   reusing the unrelated activity pulse — three new icons in
   `bin/dashboard.html`'s own table (`trend`, `lock`, `code`), shield and
   hammer reused as they already were.
@@ -561,6 +708,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   this screen's Last-analysis and Recent-analyses cells; every other page
   keeps calling it with one argument and keeps the short form it always
   had.
+
+- **`GET /api/security/index` gains `days` and `recent_page` query
+  parameters, the HTTP end of the same period picker and Recent-analyses
+  pager this file's own entry above describes.** `security_index`
+  (`bin/claude-cron-server`) forwards both straight through to
+  `index-data`'s own `--days`/`--recent-page`: `days` absent defaults to
+  `SECURITY_INDEX_DEFAULT_WINDOW_DAYS` (30, the mockup's own "Last 30 days")
+  rather than `queries.py`'s own all-time default, so a caller that never
+  asks for a period still gets the mockup's own window; `days=0` ("All
+  time") is passed through explicitly rather than collapsed into "absent"
+  — the identical trap `security_activity`'s own `since` parameter already
+  refuses, since folding the two together would make "All time" silently
+  mean "30 days" instead. A `days` that will not parse as an integer is a
+  400 (`{"error": "days must be an integer"}`); a negative one clamps to 0
+  rather than erroring, since a negative window has an obvious honest
+  reading ("no window") a non-numeric one does not. `recent_page` absent or
+  unparseable reads as page 1 — the same clamp-not-reject treatment
+  `security_activity` already gives its own `page` — except a value that
+  will not parse as an integer AT ALL, which is the second 400
+  (`{"error": "recent_page must be an integer"}`); a parseable one below 1
+  clamps up to 1 instead of erroring.
 
 ### Added
 

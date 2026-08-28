@@ -19,9 +19,13 @@
      must never paint a severity in the empty track's colour. */
   --sev-crit:#e3302b; --sev-high:#f79b38; --sev-med:#edb425;
   --sev-low:#8b919a; --sev-info:#b9bfc9;
-  --sev-crit:#e3302b; --sev-high:#f79b38; --sev-med:#edb425;
-  --sev-low:#8b919a; --sev-info:#b9bfc9;
 }
+/* Dark mode deliberately does NOT redefine the five --sev-* tokens above:
+   :root[data-theme="dark"] below leaves them unset, so dark inherits the
+   exact same light-mode hues rather than a second, dimmer sample -- these
+   are bright enough (sampled off the mockup at full saturation) to still
+   read correctly against the dark panel background, the same reasoning the
+   mockup itself never needed a separate dark palette for severity. */
 :root[data-theme="dark"]{
   --bg:#0d1017; --panel:#151a23; --panel2:#11151d; --ink:#e8eaee; --muted:#98a0ab;
   --term-bg:#0b0e14; --term-brd:#2b3444; --term-tool:#fb923c; --term-sys:#5eead4;

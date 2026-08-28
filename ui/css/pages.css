@@ -1332,15 +1332,20 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    not touch. Scoped to `.secidx-sev3` (both this screen's tables wrap their
    chips in it -- the fleet table's own Findings cell and the Recent-
    analyses row beside it) rather than changed at `.sevpill`'s own source,
-   so this stays exactly this screen's own vocabulary. `color-mix()`, not a
-   new hex literal: this design's tokens (ui/css/tokens.css) have only
-   `--err`/`--warn` as hue tokens, no third "orange" of their own, so `high`
-   sits exactly between the two it is severity-between -- the identical
-   expression SEV_STROKE (ui/security/index-screen.js) and
-   `.secidx-legendrow.high` (above) both use, the one vocabulary this
+   so this stays exactly this screen's own vocabulary. `color-mix()` here
+   tints each token's own hue into a soft chip background/border, the same
+   idiom `.sevpill.critical`'s own border-color already uses -- it is not
+   standing in for a missing hue any more: `--sev-crit`/`--sev-high`/
+   `--sev-med` (ui/css/tokens.css) are their own dedicated tokens, sampled
+   from the approved mockup's own pixels (see that file's own comment), the
+   identical tokens SEV_STROKE (ui/security/index-screen.js) and
+   `.secidx-legendrow.high` (above) both read, the one vocabulary this
    screen now keeps everywhere severity has a colour. `.critical`/`.medium`
-   need no override: they already read `--err`/`--warn` from the shared
-   `.sevpill` rule, exactly the mockup's own red and amber. */
+   need their own tokens named explicitly below for the same reason `.high`
+   does -- none of the three reads `--err`/`--warn` any more, not even
+   `.critical`: `--sev-crit` (`#e3302b`) is its own close-but-distinct red
+   from `--err` (`#d92d20`), sampled from the mockup rather than borrowed
+   from the status scale it used to share a hue with by coincidence. */
 .secidx-sev3 .sevpill.critical{background:color-mix(in srgb,var(--sev-crit) 12%,transparent);
   color:var(--sev-crit);border-color:color-mix(in srgb,var(--sev-crit) 40%,transparent)}
 .secidx-sev3 .sevpill.high{background:color-mix(in srgb,var(--sev-high) 14%,transparent);
@@ -1390,6 +1395,16 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   background:var(--panel);border:1px solid var(--line);border-radius:12px;
   padding:16px 18px;box-shadow:var(--shadow)}
 .secidx-donutcol{display:flex;flex-direction:column;align-items:center;gap:12px;flex:none}
+/* C1 (Phase 4 final review): the capped/fell-back warnline is `.secidx-
+   donutwrap`'s own third flex child now, a sibling of `.secidx-donutcol`/
+   `.secidx-catcol`, never nested inside either -- see secIndexDonut's own
+   comment (ui/security/index-screen.js) for why. `flex:1 1 100%` forces it
+   onto its own line regardless of how much room the two columns beside it
+   took (`.secidx-donutwrap`'s own `flex-wrap:wrap`); `min-width:0` is what
+   actually lets `.warnline`'s own text wrap at that width instead of
+   reasserting its unwrapped content width one level up, the same overflow
+   this class exists to close. */
+.secidx-donutwarn{flex:1 1 100%;min-width:0}
 .secidx-donut-svg{width:150px;height:150px}
 .secidx-donut-total{font:700 20px/1 ui-sans-serif,system-ui,sans-serif;fill:var(--ink)}
 .secidx-catcol{flex:1 1 260px;min-width:220px}

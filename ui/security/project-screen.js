@@ -26,8 +26,8 @@ import { secIcon, secEl, secFetch } from "./dom.js";
 import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP, SEC_NEVER,
          SEC_FLOOR_SCOPE_NOTE, EVENT_KIND_LABEL } from "./vocabulary.js";
 import { secState } from "./state.js";
-import { secIndexPosturePills, secIndexDonut,
-         secCappedScopeNote } from "./index-screen.js";
+import { secIndexPosturePills, secIndexDonut, secCappedScopeNote,
+         secIndexRunStatusPill } from "./index-screen.js";
 import { secOpen, secShowAnalysis } from "./analysis.js";
 import { secRenderProjectBranches } from "./branches-tab.js";
 import { secRenderProjectReports } from "./reports-tab.js";
@@ -430,7 +430,16 @@ function secRunRow(r){
   tr.appendChild(cell(r.started && r.ended ? fmtDur(Math.max(0, r.ended - r.started))
                                             : (r.state === "running" ? "running…" : "—")));
   tr.appendChild(cell(r.findings == null ? "—" : String(r.findings)));
-  tr.appendChild(cell(r.state));
+  // M6a (Phase 4 final review): the index screen's own Recent-analyses table
+  // reads this exact fact (an analysis's `state`) as a Title-Cased colour
+  // pill (secIndexRunStatusPill, index-screen.js) -- this table used to
+  // print the raw lowercase word instead (`cell(r.state)`), the same state
+  // in a second, plainer register a reader crossing between the two tables
+  // had no reason to expect. Imported rather than re-typed: both modules
+  // are ui/security/'s own bundle, so this is not a new cross-bundle bridge.
+  const tdState = document.createElement("td");
+  tdState.appendChild(secIndexRunStatusPill(r.state));
+  tr.appendChild(tdState);
   tr.appendChild(cell(fmtWhen(r.started)));
   return tr;
 }

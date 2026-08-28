@@ -30,9 +30,12 @@ export let $, TOKEN, api, toast, openLog, projById, sessionLost,
            // these -- and hands them into CCSecurity.init(CC) alongside
            // every other name. One executing copy, zero drift.
            //
-           // tableFooter has no caller under ui/security/ yet: it joins the
-           // other two now so a later task's own project/recent-analyses
-           // pager does not have to touch this bridge again to reach it.
+           // tableFooter joined the other two so a later task's own project/
+           // recent-analyses pager would not have to touch this bridge again
+           // to reach it -- it now has four callers: the fleet table and the
+           // recent-analyses table (both index-screen.js), the project
+           // screen's own Runs tab (project-screen.js) and the findings
+           // browser (findings-screen.js).
            pageHeader, kpiCard, tableFooter,
            // makePicker/createCombo (Phase 4 Task 5) are the opposite
            // direction of bridge from the three above: pageHeader/kpiCard/
@@ -68,7 +71,21 @@ export let $, TOKEN, api, toast, openLog, projById, sessionLost,
            // -- a read is as invisible to that guard's plain substring check
            // as a write, and rightly so, since nothing there can tell code
            // from prose either.
-           makePicker, createCombo;
+           makePicker, createCombo,
+           // closeMenus (I4, Phase 4 final review) joins makePicker/
+           // createCombo's own direction of bridge -- a hoisted `function`
+           // bin/dashboard.html defines directly, native to the page, not
+           // ui/app/chrome.js's. The row kebab's own summary needs to call it
+           // DIRECTLY, synchronously, the instant a reader opens one kebab
+           // while another is already open: that click's own
+           // `e.stopPropagation()` (see secIndexProjectRow's own comment on
+           // why it is there at all -- protecting the row's own click-to-
+           // open from firing underneath the kebab) also keeps it from ever
+           // bubbling to `document`, which is where bin/dashboard.html's own
+           // closeMenus() is normally reached from. Safe to read this early
+           // for the identical reason makePicker/createCombo already are: a
+           // hoisted `function` declaration, not `const`/`let`.
+           closeMenus;
 
 /* DATA and currentView are the two the page REASSIGNS as it runs — DATA on
    every five-second poll, currentView on every navigation. Destructured into a
@@ -83,5 +100,5 @@ export function bindPage(cc) {
   CC = cc;
   ({ $, TOKEN, api, toast, openLog, projById, sessionLost, unjournaledLive,
      fmtAgo, fmtWhen, fmtDur, money, icon, iconLabel, iconHTML, openProjectEditor,
-     pageHeader, kpiCard, tableFooter, makePicker, createCombo } = cc);
+     pageHeader, kpiCard, tableFooter, makePicker, createCombo, closeMenus } = cc);
 }

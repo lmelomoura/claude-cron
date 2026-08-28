@@ -17,7 +17,8 @@
    called secRenderList()), and refetched only on an explicit Refresh or
    when something that changed the numbers just happened (secBack(), after
    leaving a project screen where an analysis may have just finished). */
-import { $, fmtAgo, pageHeader, kpiCard, tableFooter, openProjectEditor, makePicker } from "./page.js";
+import { $, fmtAgo, pageHeader, kpiCard, tableFooter, openProjectEditor, makePicker,
+         closeMenus } from "./page.js";
 import { secIcon, secIconHTML, secEl, secFetch } from "./dom.js";
 import { SEC_NEVER, SEC_FLOOR_SCOPE_NOTE, secRuleMeta } from "./vocabulary.js";
 // secSwitchProjectTab: "View full report" (Phase 4 Task 4) opens a project
@@ -101,10 +102,13 @@ export async function secLoadIndex(force){
    init(), and this is not a style choice: init() runs inside
    CCSecurity.init(CC), which bin/dashboard.html calls BEFORE CCApp.init() --
    see that file's own banner comment above the CC object. pageHeader (like
-   kpiCard) calls straight into `icon()`, which for this bridge resolves to
-   ui/app/page.js's own binding, and that binding is not set until
-   CCApp.init() runs. Calling pageHeader() from inside init() would read it
-   in its temporal dead zone and throw on every load. secRenderIndex() only
+   kpiCard and tableFooter) calls straight into `icon()`, which for this
+   bridge resolves to ui/app/page.js's own binding, and that binding is not
+   set until CCApp.init() runs. Calling pageHeader() from inside init() would
+   read it in its temporal dead zone and throw on every load -- see
+   tests/test_page_contract.py's own
+   test_calling_the_bridged_chrome_builders_during_securitys_own_init_does_
+   not_reach_a_dead_binding for the guard and the reproduction. secRenderIndex() only
    ever runs off a poll tick or a resolved fetch, both strictly after the
    page's own script has finished running top to bottom -- CCApp.init()
    included -- so this is the earliest point that is actually safe. */
@@ -311,9 +315,16 @@ function secIndexCards(summary){
   }
   const cappedNote = caveats.length ? caveats.join(" · ")
                                     : "Open now, in every project's latest analysis";
-  wrap.appendChild(kpiCard({icon: "shield", tone: "err", value: String(s.critical || 0),
+  // I3 (Phase 4 final review), DECIDED: these two COUNT severities, not
+  // statuses, so they wear the severity scale (`sev-crit`/`sev-high`,
+  // ui/css/components.css) rather than the app's own status tones (`err`/
+  // `warn`, which stay reserved for a card reporting a STATUS -- Overview's
+  // Warnings/Errors, this screen's own Success-rate) -- no other card on
+  // this page changes tone, and no page outside Security reads a severity
+  // at all.
+  wrap.appendChild(kpiCard({icon: "shield", tone: "sev-crit", value: String(s.critical || 0),
     label: "Critical findings", sub: "needs immediate attention", title: cappedNote}));
-  wrap.appendChild(kpiCard({icon: "alertcircle", tone: "warn", value: String(s.high || 0),
+  wrap.appendChild(kpiCard({icon: "alertcircle", tone: "sev-high", value: String(s.high || 0),
     label: "High severity", sub: "requires review", title: cappedNote}));
   const rate = s.success_rate;
   // A dash, not 0%: no finished analysis is not a zero-percent success rate --
@@ -422,10 +433,18 @@ function secIndexFindingsChips(posture, capped){
    a declared base never analysed -- trend_series returns [] for both,
    deliberately never plotting a fallback branch's history under a name it
    does not belong to) renders an honest muted dash, not a fabricated flat
-   line pretending to be a real zero-history reading. */
+   line pretending to be a real zero-history reading -- MINOR 3 (Phase 4
+   final review), that dash now carries a `title` saying which of the two
+   this is, in trend_series's own vocabulary, rather than leaving a reader
+   to guess why one row's Trend column is empty. */
 function secIndexTrendSpark(trend){
   const points = (trend || []).map(n => Math.max(0, n || 0));
-  if(!points.length) return secEl("span", "muted", "—");
+  if(!points.length){
+    const dash = secEl("span", "muted", "—");
+    dash.title = "No finished analysis of the declared base branch within "
+      + "the last 30 days";
+    return dash;
+  }
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
   svg.setAttribute("viewBox", "0 0 100 32");
@@ -610,7 +629,21 @@ function secIndexProjectRow(p){
   summary.className = "iconbtn";
   summary.title = "More actions";
   summary.appendChild(secIcon("dots"));
-  summary.onclick = (e) => e.stopPropagation();
+  // I4 (Phase 4 final review): `stopPropagation()` alone used to mean this
+  // click could never close a SIBLING row's already-open kebab either --
+  // it protects the row's own click-to-open (tr.onclick, above) from firing
+  // underneath this button, but that same stop keeps the click from ever
+  // reaching `document`, which is where bin/dashboard.html's closeMenus()
+  // is normally reached from (see this file's own banner note on why
+  // stopPropagation is there at all). Calling the bridged closeMenus()
+  // directly closes any OTHER open row kebab the instant this one is
+  // clicked, opening or closing -- and never THIS one: at this exact
+  // synchronous point `kebab.open` has not toggled yet (the browser's own
+  // default action, which flips it, runs only after every bubble-phase
+  // listener including this one has finished), so
+  // `details.secidx-kebab[open]` inside closeMenus() can only ever match an
+  // ALREADY-open sibling, never this row reacting to its own click.
+  summary.onclick = (e) => { e.stopPropagation(); closeMenus(); };
   kebab.appendChild(summary);
   const pop = secEl("div", "menu-pop");
   pop.setAttribute("role", "menu");
@@ -642,7 +675,21 @@ function secIndexProjectRow(p){
   // is the one thing this does not track (no scroll listener here for a
   // popup this short-lived) -- accepted rather than a second mechanism for
   // a case nobody scrolls into mid-click.
+  // `pop.hidden` resynced from `kebab.open` on EVERY toggle (I4, Phase 4
+  // final review), not just recomputed position on an open -- closeMenus()'s
+  // own first line (bin/dashboard.html) sets `hidden=true` on every
+  // `.menu-pop` in the document lacking it already, this one included,
+  // whenever it runs for ANY reason (background click, Escape, this row's
+  // own summary opening ITSELF). Left unresynced, a kebab opened right after
+  // that could end up `.open === true` with its popup still `[hidden]` --
+  // native <details> visibility says "show it", the leftover attribute says
+  // "display:none" and wins, so the menu opens and paints nothing. Setting
+  // it here, from `kebab.open` itself, is what makes this the one place
+  // that can never disagree with the element's own state -- the identical
+  // fix secFindSavedFilters' own ontoggle already uses (findings-screen.js),
+  // for the identical race, found there first.
   kebab.ontoggle = () => {
+    pop.hidden = !kebab.open;
     if(!kebab.open) return;
     const r = summary.getBoundingClientRect();
     pop.style.position = "fixed";
@@ -1052,10 +1099,17 @@ const SEC_RECENT_COLS = [
 // `.pill.off`'s own comment there), and an analysis's own running/done/
 // capped/failed is a third, unrelated fact that happens to want the same
 // four tone families, not the same two classes.
-const SEC_RUN_STATUS_LABEL = {running: "Running", done: "Completed",
+//
+// Exported (M6a, Phase 4 final review): the project screen's own Runs tab
+// (project-screen.js) used to render this same `analysis.state` as a bare
+// lowercase word (`cell(r.state)`, no pill at all) -- one fact, two
+// registers, depending on which table a reader happened to be looking at.
+// It now imports both names from here rather than keeping a second,
+// drifting copy of either the label map or the pill builder.
+export const SEC_RUN_STATUS_LABEL = {running: "Running", done: "Completed",
                               capped: "Capped", failed: "Failed"};
 
-function secIndexRunStatusPill(state){
+export function secIndexRunStatusPill(state){
   // An unrecognised state (corrupted data; every value the pipeline can
   // legitimately produce is listed above) reads as a fault rather than
   // silently as "Running" or vanishing from the cell entirely -- the same
@@ -1236,15 +1290,17 @@ const SEV_ORDER5 = ["critical", "high", "medium", "low", "info"];
 // Three DISTINCT tones for critical/high/medium (Phase 4 Task 5) -- the
 // mockup's own donut draws three visibly different wedges (red, orange,
 // yellow-amber), which critical/high sharing one colour (this table's own
-// choice before this task) never reproduced regardless of intent. `high` is
-// `color-mix()`, not a new hex literal: this design's token set has only
-// `--err` (red) and `--warn` (amber) as hue tokens (ui/css/tokens.css), no
-// third "orange" of its own, so high sits exactly between the two existing
-// ones it is severity-between -- the same `color-mix()` idiom
-// `.sevpill.critical`'s own border-color already uses (ui/css/pages.css).
-// This IS now the one vocabulary: `.secidx-sev3` (the findings chips, both
-// tables) and `.secidx-legendrow` (the legend dots) below both read the
-// identical two expressions, not a second palette of their own.
+// choice before this task) never reproduced regardless of intent. `high`
+// used to be `color-mix(in srgb, var(--err) 50%, var(--warn) 50%)` -- this
+// design's token set had only `--err`/`--warn` as hue tokens, no third
+// "orange" of its own -- but a later fix (see CHANGELOG.md) sampled all
+// three severities straight from the approved mockup's own pixels instead
+// and gave them dedicated tokens (`--sev-crit`/`--sev-high`/`--sev-med`,
+// ui/css/tokens.css), which is what SEV_STROKE reads below now: real hues,
+// not a mix of two unrelated status tones standing in for one. This IS the
+// one vocabulary: `.secidx-sev3` (the findings chips, both tables) and
+// `.secidx-legendrow` (the legend dots) below both read the identical
+// tokens, not a second palette of their own.
 //
 // `info` stays `var(--muted)`, distinct from `var(--line)` -- the SAME
 // token the empty track below is painted with, so an info-only segment
@@ -1386,10 +1442,12 @@ function secIndexDonutLegend(donut, opts){
    verbatim -- see that function's own comment for why a curated map
    replaced both: the mockup's "Private keys committed" is a real label the
    engine's own rationale earns, not a coincidence of the rule's name).
-   `c.category` is not in `top_categories`'s own payload today
-   (bin/security/queries.py groups by rule alone) -- secRuleMeta is written
-   to resolve correctly without it regardless, and picks it up for free the
-   day that payload carries one.
+   `c.category` IS in `top_categories`'s own payload now (bin/security/
+   queries.py serves each row's own category alongside its rule, closing the
+   gap the label/icon resolver used to have to work around) -- secRuleMeta
+   prefers it (see that function's own comment for the exact order), and
+   still resolves correctly on a payload that omits it, for a caller that
+   has not been updated.
 
    The raw rule id is never dropped, only demoted to `.title`: an operator
    who greps the ledger by rule id still finds it one hover away, even on a
@@ -1416,18 +1474,29 @@ function secIndexCategories(categories){
    here because a donut is every branch (or every project) rolled into one
    figure, and a rollup has no row to hang a badge off. Both callers pass one:
    the index screen from `summary.capped_projects`, the project sidebar from
-   `sidebar.capped_branches`. Omitting it keeps the plain donut. */
+   `sidebar.capped_branches`. Omitting it keeps the plain donut.
+
+   C1 (Phase 4 final review): the warnline used to be a THIRD child of `left`
+   (.secidx-donutcol) -- harmless in the sidebar's own column layout
+   (project-screen.js plants this bare, .secidx-donutcol stays a column
+   there), but `.secidx-findbody .secidx-donutcol{flex-direction:row}`
+   (ui/css/pages.css) flips that column into a ROW for the findings card, and
+   `.secidx-donutcol{flex:none}` does not shrink -- the sentence took its own
+   ~670px content width right through a 424px card, clipped mid-word by
+   `.table-card{overflow:hidden}` rather than wrapped. Planted here instead,
+   as `wrap`'s (.secidx-donutwrap) own THIRD child rather than nested inside
+   the column that gets flipped, with a forced 100% flex-basis
+   (.secidx-donutwarn, ui/css/pages.css) so it always lands on its own line,
+   below both the donut+legend and the categories list, at the FULL width of
+   whichever container actually holds this block -- never sized by a row it
+   does not belong to. `min-width:0` on that same class is what lets it
+   actually shrink and wrap instead of reasserting the identical overflow one
+   level up. */
 export function secIndexDonut(donut, categories, cappedNote, opts){
   const wrap = secEl("div", "secidx-donutwrap");
   const left = secEl("div", "secidx-donutcol");
   left.appendChild(secIndexDonutSvg(donut));
   left.appendChild(secIndexDonutLegend(donut, opts));
-  if((cappedNote || "").trim()){
-    const warn = secEl("div", "warnline bad");
-    warn.appendChild(secIcon("alert"));
-    warn.appendChild(secEl("span", "grow", cappedNote));
-    left.appendChild(warn);
-  }
   wrap.appendChild(left);
   const right = secEl("div", "secidx-catcol");
   // "Top issue categories" (Phase 4 Task 4): the mockup's own title for
@@ -1443,6 +1512,12 @@ export function secIndexDonut(donut, categories, cappedNote, opts){
   right.appendChild(secEl("div", "secidx-cathead", "Top issue categories"));
   right.appendChild(secIndexCategories(categories));
   wrap.appendChild(right);
+  if((cappedNote || "").trim()){
+    const warn = secEl("div", "warnline bad secidx-donutwarn");
+    warn.appendChild(secIcon("alert"));
+    warn.appendChild(secEl("span", "grow", cappedNote));
+    wrap.appendChild(warn);
+  }
   return wrap;
 }
 

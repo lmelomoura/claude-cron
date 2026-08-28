@@ -103,3 +103,60 @@ Os portões habituais, mais um específico da fase: **captura lado a lado com o
 PNG em cada tarefa visual**, nos dois temas, anexada ao relatório da tarefa. A
 revisão final compara o ecrã acabado com o `Security.png` elemento a elemento
 e lista qualquer divergência que não esteja em «Decisões».
+
+## Decisões pós-revisão
+
+A revisão final da Fase 4 fechou um conjunto de findings sobre o índice já
+implementado (warnline a transbordar o cartão, uma trap de dead-binding no
+boot sem guarda nenhuma, kebabs de linha que não fechavam) e tomou duas
+decisões de desenho que valem registo aqui, ao lado das «Decisões» originais:
+
+1. **Os cartões KPI Critical/High leem a escala de severidade, não a escala
+   de estado.** Contam severidades (quantos findings críticos, quantos de
+   alta), não um estado do sistema — por isso vestem `sev-crit`/`sev-high`
+   (tokens novos em `ui/css/tokens.css`, amostrados do mesmo mockup), nunca
+   `err`/`warn`. Esses dois tons ficam reservados para um cartão que reporta
+   um ESTADO — os Warnings/Errors do Overview, o Success rate deste mesmo
+   ecrã — e nenhum outro cartão desta página muda de tom. A confusão entre
+   «isto conta uma severidade» e «isto reporta um estado» já tinha custado
+   uma cor emprestada (`--err`/`--warn` a fazer de substituto de uma
+   severidade que ainda não tinha token próprio); esta decisão fecha-a de
+   vez, aqui e para qualquer cartão futuro que conte severidades.
+2. **Os kebabs de linha fecham através do `closeMenus()` já existente,
+   ensinado a reconhecer `<details>`.** O padrão antigo (`.menu-pop` com
+   `hidden` alternado por `[data-menu]`) e o padrão novo (`<details>`/
+   `<summary>`, usado pelo kebab da fleet table e pelos pickers de período/
+   filtros salvos) coexistem nesta área; em vez de um segundo mecanismo de
+   fecho para o segundo padrão, `closeMenus()` ganhou uma cláusula genérica
+   sobre a CLASSE que marca um kebab de linha (`details.secidx-kebab[open]`
+   → `.open = false`), para que um kebab de linha futuro que reutilize essa
+   classe feche de graça, sem tocar outra vez nesta função. O próprio
+   `summary.onclick` do kebab passou a chamar `closeMenus()` diretamente e de
+   forma síncrona — o `stopPropagation()` que já lá estava (para o clique de
+   abrir não acionar também a navegação da linha) impedia esse mesmo clique
+   de alguma vez chegar ao `document`, que é de onde `closeMenus()` normalmente
+   é alcançado.
+
+**Duas lacunas de verificação ficam nomeadas, deliberadamente, como o maior
+risco por resolver deste redesenho** — encontradas precisamente porque esta
+revisão as sentiu na pele (o boot morto do dead-binding trap não aparecia em
+775 testes verdes; o overflow do warnline só apareceu ao medir um `<details>`
+real num separador novo do browser):
+
+- **Um smoke check em browser real:** abrir o ecrã Security a sério (não uma
+  função de render chamada em Node) e confirmar que a consola fica vazia —
+  o género de falha que a trap do dead-binding representa (a página fica em
+  branco, todos os testes continuam verdes) só um boot real seria capaz de
+  apanhar de forma genérica, para qualquer chamada futura à ponte
+  `pageHeader`/`kpiCard`/`tableFooter` que a guarda estática desta revisão
+  não veja (o seu próprio limite documentado: só chamadas diretas e
+  síncronas, um nível de profundidade).
+- **Asserções de geometria:** nenhum elemento pode ter a margem direita a
+  ultrapassar a do seu próprio cartão, medido com `getBoundingClientRect()`
+  num separador novo. É exatamente o que apanhou o warnline aqui, e não há
+  guarda nenhuma no conjunto de testes que o repita automaticamente para o
+  resto do ecrã — cada card novo, cada linha nova, continua dependente de
+  alguém medir à mão.
+
+Nenhuma das duas ficou implementada nesta passagem — nomeadas aqui para que
+a próxima tarefa que toque neste ecrã as encontre escritas, não redescobertas.

@@ -163,6 +163,19 @@ button.kpi-card:not(:disabled):hover{border-color:color-mix(in srgb,var(--accent
    hover/disabled rules below are for a card that doubles as a filter link,
    which this one never does. */
 .kpi-card.ok .kpi-card-ic{background:var(--ok-soft);color:var(--ok)}
+/* I3 (Phase 4 final review), DECIDED: the Security index's own Critical/High
+   cards COUNT severities, not statuses -- they wear the severity scale
+   (`--sev-crit`/`--sev-high`, ui/css/tokens.css), never `err`/`warn`, which
+   stay reserved for a card that reports a STATUS (Warnings/Errors, and this
+   same screen's own Success-rate). No `-soft` companion token exists for a
+   severity hue the way `--warn-soft`/`--err-soft` do for their own tones,
+   so the icon square's tint is `color-mix()` of the token itself instead --
+   the identical idiom `.secidx-sev3`'s own chips already use for the same
+   reason (ui/css/pages.css). Plain `<div>` cards like `ok` above, never a
+   door (neither Security KPI card passes `door: true`), so no hover-border
+   rule either. */
+.kpi-card.sev-crit .kpi-card-ic{background:color-mix(in srgb,var(--sev-crit) 16%,transparent);color:var(--sev-crit)}
+.kpi-card.sev-high .kpi-card-ic{background:color-mix(in srgb,var(--sev-high) 16%,transparent);color:var(--sev-high)}
 button.kpi-card.warn:not(:disabled):hover{border-color:color-mix(in srgb,var(--warn) 42%,var(--line))}
 button.kpi-card.err:not(:disabled):hover{border-color:color-mix(in srgb,var(--err) 42%,var(--line))}
 /* Zero warnings/errors is nothing to open -- the card fades the same register

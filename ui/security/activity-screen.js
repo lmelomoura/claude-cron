@@ -187,23 +187,18 @@ async function secActLoad(){
 
 /* ----------------------------------------------------------------- shell */
 function secActRenderShell(){
-  const title = $("sec-act-title");
   const titleText = secActState.project ? "Activity — " + secActState.project : "Activity";
-  if(title){
-    title.textContent = "";
-    title.appendChild(secIcon("activity"));
-    title.appendChild(document.createTextNode(titleText));
-  }
   // The page header (Phase 4 Task 6) -- FullActivity.png's own icon, title
   // and grey sentence, replacing the loose `<p class="paneblurb">` that used
   // to sit here (bin/dashboard.html), the same conversion the index screen's
   // own secRenderHead already made in an earlier task. Built once per open,
-  // the same cadence the breadcrumb-style title above already has (neither
-  // one re-reads `secActState.project` on the routine poll tick) -- and the
-  // SAME computed title text, so the two headers never disagree about which
-  // scope this screen is showing. No actions: the mockup's own Export and
-  // Filters have no working handler behind them yet, and a button with
-  // nothing behind it is worse furniture than no button.
+  // the same cadence the small-caps eyebrow this used to sit beside had --
+  // I2 (Phase 4 final review) removed that eyebrow (`#sec-act-title`) for
+  // painting the SAME computed title text a second time right above this
+  // one: the mockup draws exactly one heading here, and a reader had no way
+  // to tell the two apart as anything but a duplicate. Back navigation
+  // (`#sec-act-back`, wired in index.js's own init()) is untouched -- it
+  // never lived in the eyebrow's own element, only beside it.
   const head = $("sec-act-head");
   if(head){
     head.textContent = "";
@@ -490,7 +485,11 @@ function secActSidebar(data){
 function secActSummaryCard(summary){
   const box = secEl("div", "card");
   const head = secEl("div", "secpj-cardhead");
-  head.appendChild(secEl("h3", null, "This period"));
+  // M6b (Phase 4 final review): the mockup's own wording (FullActivity.png)
+  // -- ui/css/pages.css's own `.secpj-cardhead h3` comment already cites
+  // this exact phrase as what the artboard draws here; this card's own
+  // title never actually caught up to it.
+  head.appendChild(secEl("h3", null, "Activity summary"));
   box.appendChild(head);
   box.appendChild(secEl("div", "secpj-caption",
     "Every kind, regardless of which tab is selected above."));
