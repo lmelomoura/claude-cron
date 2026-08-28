@@ -939,6 +939,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **"1 of 2 branchs" reads "branches" again.** The capped-scope note's
+  naive `+s` pluraliser met the word "branch" on the branches tab; nouns
+  ending in ch/sh/s/x/z now take "es".
+
 - **Three more user-caught gaps on the Security index's lower half.** The
   Recent-analyses card now genuinely fills the row's height — the first
   stretch fix targeted a child class that does not exist, so the wrapper

@@ -234,7 +234,9 @@ export function secRenderIndex(){
    there. */
 export function secCappedScopeNote(n, of, noun){
   if(!n) return "";
-  return n + " of " + of + " " + noun + (of === 1 ? "" : "s")
+  // Naive "+s" pluralised "branch" to "branchs" on the branches tab.
+  return n + " of " + of + " "
+    + (of === 1 ? noun : noun + (/(ch|sh|s|x|z)$/.test(noun) ? "es" : "s"))
     + " had a latest analysis that stopped before covering its whole scope "
     + "— this total may be an undercount";
 }

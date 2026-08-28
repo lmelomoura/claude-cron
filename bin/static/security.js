@@ -2329,7 +2329,7 @@
   }
   function secCappedScopeNote(n, of, noun) {
     if (!n) return "";
-    return n + " of " + of + " " + noun + (of === 1 ? "" : "s") + " had a latest analysis that stopped before covering its whole scope \u2014 this total may be an undercount";
+    return n + " of " + of + " " + (of === 1 ? noun : noun + (/(ch|sh|s|x|z)$/.test(noun) ? "es" : "s")) + " had a latest analysis that stopped before covering its whole scope \u2014 this total may be an undercount";
   }
   function secCappedNote(summary) {
     return secCappedScopeNote(
@@ -3242,5 +3242,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: a44d7f7d4ae98e86c831440579d924c88c04ed203c26a0eb17f5931223229aa8 */
-/* ui-sources: 18016a8f07791ed8feea91f72aa014acd1222a8f032bc426bda7e8c165444384 */
+/* ui-bundle: 8198f98eaff1ebee443bdd7bbc915eef15b3a8d1d1c0b2726caede08900e80ef */
+/* ui-sources: 231c10c3501d1e1f511ab70f3826ed5a8e27e74b398d4e2aebe190c4bc586b3c */
