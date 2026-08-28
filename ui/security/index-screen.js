@@ -118,7 +118,7 @@ function secRenderHead(){
   // right side instead (secProjectsFilterBar, below the table), the mockup's
   // named place for Refresh; the mockup has no Activity button at all, so
   // this is a deliberate divergence-resolution, not something it shows.
-  // Both ids (#sec-view-activity/#sec-reload) are UNCHANGED, so
+  // The id (#sec-reload) is UNCHANGED, so
   // bin/dashboard.html's existing delegated click listener answers them
   // from their new home exactly as it did in the header.
   host.appendChild(pageHeader({
@@ -177,7 +177,7 @@ export function secRenderIndex(){
     // .secpjside -- 300px is too narrow for a donut sitting beside its own
     // legend, and this card alone needs the room, not the project sidebar's
     // every other user.
-    host._secBottomRow = secEl("div", "secpjbody");
+    host._secBottomRow = secEl("div", "secpjbody secidx-bottom");
     host._secRecent = secEl("div", "secpjmain");
     host._secDonut = secEl("div", "secidx-findcard");
     host._secBottomRow.appendChild(host._secRecent);
@@ -689,6 +689,7 @@ function secIndexProjectsTable(projects, footer){
   const wrap = secEl("div", "table-card");
   const scroll = secEl("div", "table-scroll");
   const table = document.createElement("table");
+  table.className = "secidx-fleet";
   const thead = document.createElement("thead");
   const htr = document.createElement("tr");
   SEC_PROJECT_COLS.forEach(([, label]) => htr.appendChild(secEl("th", null, label)));
@@ -812,13 +813,6 @@ function secProjectsFilterBar(){
   // Both ids unchanged from the header they moved out of -- see
   // secRenderHead's own comment on why that is enough for
   // bin/dashboard.html's existing delegated listener to keep answering them.
-  const activity = document.createElement("button");
-  activity.type = "button";
-  activity.id = "sec-view-activity";
-  activity.className = "btn ghost";
-  activity.appendChild(secIcon("activity"));
-  activity.appendChild(document.createTextNode("Activity"));
-  bar.appendChild(activity);
 
   const refresh = document.createElement("button");
   refresh.type = "button";
@@ -985,8 +979,7 @@ function secIndexCardHead(title, sub, action){
 }
 
 /* "View all analyses" -- today's own equivalent navigation, kept rather than
-   invented: the index header's unscoped "Activity" entry (moved into the
-   projects filter bar by Phase 4 Task 3, `#sec-view-activity`) already opens
+   invented: the "View all analyses" button on the Recent-analyses card already opens
    this exact screen, unscoped, for "every analysis across every project";
    this button is the same door, just opened straight onto its "Analyses"
    tab instead of leaving a reader to find that tab themselves. Two calls,
@@ -1189,6 +1182,7 @@ function secIndexRecentCard(recent){
 
   const scroll = secEl("div", "table-scroll");
   const table = document.createElement("table");
+  table.className = "secidx-recent";
   const thead = document.createElement("thead");
   const htr = document.createElement("tr");
   SEC_RECENT_COLS.forEach(([, label]) => htr.appendChild(secEl("th", null, label)));
@@ -1256,9 +1250,11 @@ const SEV_ORDER5 = ["critical", "high", "medium", "low", "info"];
 // it lists its count. `.sevpill.info`/`.sevpill.low` keep the same grouping
 // in the stylesheet, unaffected by this task (out of scope: chips elsewhere
 // on the app stay as they are, only this screen's own vocabulary changes).
-const SEV_STROKE = {critical: "var(--err)",
-                    high: "color-mix(in srgb, var(--err) 50%, var(--warn) 50%)",
-                    medium: "var(--warn)", low: "var(--muted)", info: "var(--muted)"};
+// The severity hue tokens (ui/css/tokens.css) -- sampled from the mockup's
+// own pixels, one scale for donut, legend and chips alike.
+const SEV_STROKE = {critical: "var(--sev-crit)", high: "var(--sev-high)",
+                    medium: "var(--sev-med)", low: "var(--sev-low)",
+                    info: "var(--sev-info)"};
 
 function secIndexDonutSvg(donut){
   const total = SEV_ORDER5.reduce((n, s) => n + (donut[s] || 0), 0);

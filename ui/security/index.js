@@ -62,7 +62,7 @@ function init(cc){
   // The Activity screen: its own back/reload, its four kind tabs, its
   // free-text project scope, and the fingerprint dialog a decision's own row
   // opens. See ui/security/activity-screen.js. The entry point used to be
-  // here too (#sec-view-activity, iconLabel'd and wired the same direct way
+  // here too (#sec-reload, iconLabel'd and wired the same direct way
   // as every id below) -- it is now one of the index header's own actions,
   // built fresh on every repaint by ui/security/index-screen.js's own
   // secRenderHead() (pageHeader() draws its icon and label from the actions
@@ -118,7 +118,7 @@ function init(cc){
 
    openActivity/reload (Phase 4 Task 1) are the index header's own two
    actions, answered by bin/dashboard.html's central delegated click
-   listener (`#sec-view-activity`/`#sec-reload`) rather than a listener
+   listener (`#sec-reload`) rather than a listener
    ui/security/index-screen.js attaches itself -- see secRenderHead's own
    comment on why: pageHeader() rebuilds both buttons on every repaint, the
    same as every other page's own header actions, so a listener attached

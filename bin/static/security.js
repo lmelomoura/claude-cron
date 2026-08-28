@@ -2252,7 +2252,7 @@
       host.textContent = "";
       host._secCards = secEl("div");
       host._secProjects = secEl("div", "secidx-section");
-      host._secBottomRow = secEl("div", "secpjbody");
+      host._secBottomRow = secEl("div", "secpjbody secidx-bottom");
       host._secRecent = secEl("div", "secpjmain");
       host._secDonut = secEl("div", "secidx-findcard");
       host._secBottomRow.appendChild(host._secRecent);
@@ -2561,6 +2561,7 @@
     const wrap = secEl("div", "table-card");
     const scroll = secEl("div", "table-scroll");
     const table = document.createElement("table");
+    table.className = "secidx-fleet";
     const thead = document.createElement("thead");
     const htr = document.createElement("tr");
     SEC_PROJECT_COLS.forEach(([, label]) => htr.appendChild(secEl("th", null, label)));
@@ -2639,13 +2640,6 @@
     bar.appendChild(secPickerShell("secpj-filter-profile"));
     bar.appendChild(secPickerShell("secpj-filter-branch"));
     bar.appendChild(secEl("div", "spacer"));
-    const activity = document.createElement("button");
-    activity.type = "button";
-    activity.id = "sec-view-activity";
-    activity.className = "btn ghost";
-    activity.appendChild(secIcon("activity"));
-    activity.appendChild(document.createTextNode("Activity"));
-    bar.appendChild(activity);
     const refresh = document.createElement("button");
     refresh.type = "button";
     refresh.id = "sec-reload";
@@ -2918,6 +2912,7 @@
     const to = from + rows.length - 1;
     const scroll = secEl("div", "table-scroll");
     const table = document.createElement("table");
+    table.className = "secidx-recent";
     const thead = document.createElement("thead");
     const htr = document.createElement("tr");
     SEC_RECENT_COLS.forEach(([, label]) => htr.appendChild(secEl("th", null, label)));
@@ -2960,11 +2955,11 @@
   }
   var SEV_ORDER5 = ["critical", "high", "medium", "low", "info"];
   var SEV_STROKE = {
-    critical: "var(--err)",
-    high: "color-mix(in srgb, var(--err) 50%, var(--warn) 50%)",
-    medium: "var(--warn)",
-    low: "var(--muted)",
-    info: "var(--muted)"
+    critical: "var(--sev-crit)",
+    high: "var(--sev-high)",
+    medium: "var(--sev-med)",
+    low: "var(--sev-low)",
+    info: "var(--sev-info)"
   };
   function secIndexDonutSvg(donut) {
     const total = SEV_ORDER5.reduce((n, s) => n + (donut[s] || 0), 0);
@@ -3204,5 +3199,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 191cf937ac362d388520b39fcfebc7ed3a29277831eb57ebc5f2e359dc0e79b7 */
-/* ui-sources: e43c7b5f5bfc8acefb2a4926ed5abb1d80d67d1d6858d92a832c39899318198a */
+/* ui-bundle: 053fa3281aff50dfbe77bb072780b04bec96972cb381b3a93f63e7ba78891841 */
+/* ui-sources: d04cc1c444cb6fb4c665caa210c3063f5582c1a832dfcb7bf4a451bbe0e3d26a */

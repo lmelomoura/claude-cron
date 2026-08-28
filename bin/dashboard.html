@@ -517,7 +517,7 @@ document.documentElement.dataset.theme =
 
     <!-- What happened and when, filterable by kind, every project unless
          scoped to one -- the entry points are the toolbar button above
-         (#sec-view-activity) and the "View all" link on a project's own
+         the "View all analyses" button and the "View all" link on a project's own
          "Recent activity" card. Built entirely by
          ui/security/activity-screen.js. -->
     <section id="sec-activity" hidden>
@@ -4482,7 +4482,6 @@ document.addEventListener("click", async (e)=>{
   // the moment the next repaint replaces it with a new element.
   // CCSecurity.openActivity/reload are the two thin wrappers
   // ui/security/index.js exports for exactly this call site.
-  if(e.target.closest("#sec-view-activity")){ CCSecurity.openActivity(); return; }
   if(e.target.closest("#sec-reload")){ CCSecurity.reload(); return; }
   // The worktrees card's own footer button, built the same way by
   // CCApp.worktreesCard() -- opens the full list the card only summarises.

@@ -1806,15 +1806,21 @@ def test_the_cells_icon_rule_cannot_repaint_the_favourite_star(srv):
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 @pytest.mark.parametrize("view,const_name,bundle", [
-    ("view-jobs", "JOB_COLS", "app"),
-    ("view-projects", "PRJ_COLS", "app"),
-    ("view-runs", "RUN_COLS", "app"),
-    # SEC_PROJECT_COLS lives in ui/security/index-screen.js -- a separate
-    # bundle from JOB_COLS/PRJ_COLS/RUN_COLS' own ui/app/ (see
-    # ui/security/index.js's own banner comment on why the two stay apart),
-    # so this row alone reads `bundle="security"` below instead of "app".
-    ("view-security", "SEC_PROJECT_COLS", "security"),
-], ids=["jobs", "projects", "runs", "security"])
+    ("#view-jobs", "JOB_COLS", "app"),
+    ("#view-projects", "PRJ_COLS", "app"),
+    ("#view-runs", "RUN_COLS", "app"),
+    # SEC_PROJECT_COLS/SEC_RECENT_COLS live in ui/security/index-screen.js --
+    # a separate bundle from ui/app/'s three (see ui/security/index.js's own
+    # banner comment on why the two stay apart), so these rows read
+    # `bundle="security"`. TWO security tables, each with its own selector
+    # scope: one shared `#view-security th:nth-child` set once gave the
+    # Recent-analyses table the fleet's widths -- its RUN column wore
+    # Project's 22% and the card scrolled sideways for nothing. Scoping the
+    # rules per table is the fix; parametrising per table is what keeps a
+    # third table in this view from inheriting either set unnoticed.
+    (".secidx-fleet", "SEC_PROJECT_COLS", "security"),
+    (".secidx-recent", "SEC_RECENT_COLS", "security"),
+], ids=["jobs", "projects", "runs", "security-fleet", "security-recent"])
 def test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column(
         srv, tmp_path, view, const_name, bundle):
     """Must fail against the pre-fix CSS (Security's th:nth-child(6) has no
@@ -1842,15 +1848,15 @@ def test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column(
     the loop: the table that motivated the guard now carries it too."""
     src_js = _app_js(srv) if bundle == "app" else _security_js(srv)
     consts = _const(src_js, const_name)
-    script = tmp_path / f"{view.replace('-', '_')}-cols.js"
+    script = tmp_path / f"{re.sub(r'[^a-z]', '_', view)}-cols.js"
     script.write_text(consts + f"console.log({const_name}.length);")
     n_cols = int(subprocess.run(["node", str(script)], capture_output=True,
                                  text=True, check=True).stdout.strip())
 
     css = (REPO / "ui" / "css" / "pages.css").read_text()
     rule = re.compile(
-        r"#" + re.escape(view) + r" th:nth-child\((\d+)\)\{width:([\d.]+)%\}|"
-        r"#" + re.escape(view) + r" th:last-child\{width:([\d.]+)%\}")
+        re.escape(view) + r" th:nth-child\((\d+)\)\{width:([\d.]+)%\}|"
+        + re.escape(view) + r" th:last-child\{width:([\d.]+)%\}")
     nth_widths = {}
     last_width = None
     for m in rule.finditer(css):
@@ -1859,16 +1865,22 @@ def test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column(
         else:
             last_width = float(m.group(3))
 
-    assert last_width is not None, f"#{view} has no th:last-child width rule"
-    missing = [i for i in range(1, n_cols) if i not in nth_widths]
+    # A table whose last column is a real data column (the recent-analyses
+    # table ends in Date, no actions cell) declares all n columns by
+    # nth-child and has no last-child rule at all -- both shapes are valid,
+    # and either way every rendered column must be declared and the set must
+    # sum to 100.
+    declared_last = 1 if last_width is not None else 0
+    missing = [i for i in range(1, n_cols + 1 - declared_last)
+               if i not in nth_widths]
     assert not missing, (
-        f"#{view} renders {n_cols} columns ({const_name}) but "
+        f"{view} renders {n_cols} columns ({const_name}) but "
         f"th:nth-child({missing}) has no width rule -- an undeclared column "
         f"computes to ~0px under table-layout:fixed and spills its content "
         f"into whichever column comes after it")
-    total = sum(nth_widths.values()) + last_width
+    total = sum(nth_widths.values()) + (last_width or 0)
     assert abs(total - 100) < 0.01, (
-        f"#{view}'s declared column widths sum to {total}%, not 100%: "
+        f"{view}'s declared column widths sum to {total}%, not 100%: "
         f"nth-child {nth_widths} + last-child {last_width}")
 
 

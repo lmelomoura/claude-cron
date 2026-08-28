@@ -889,6 +889,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Four gaps the user's side-by-side with the mockup caught on the Security
+  index.** Severity now has its own colour tokens, sampled from the approved
+  mockup's actual pixels (critical `#e3302b`, high `#f79b38`, medium
+  `#edb425`) — the donut, its legend and the findings chips all read the
+  same scale, replacing the muddy err/warn mixes that made medium a dark
+  brown. The two bottom cards stretch to one height like the drawing. The
+  Recent-analyses table stops wearing the fleet table's column widths — one
+  shared `#view-security th:nth-child` set gave its RUN column the fleet's
+  22% Project width and forced a sideways scroll in a half-width card; each
+  table now declares its own set, and the width guard checks the two
+  separately. And the filter bar's Activity button, which the mockup does
+  not have, is gone — the Activity screen is reached through "View all
+  analyses", where the drawing puts the door.
+
 - **Three details the user's side-by-side with the mockup caught on the
   Security index.** The findings chips gained the mockup's subtle tint
   border (the flat soft background alone reads unfinished); the last column

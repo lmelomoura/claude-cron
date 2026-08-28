@@ -11,6 +11,16 @@
   --warn-soft:#fdf3e2; --err:#d92d20; --err-soft:#feecea; --idle:#8b919a;
   --shadow:0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.08);
   --shadow-lg:0 12px 32px rgba(16,24,40,.16);
+  /* Severity hues, sampled from the approved Security mockup's own pixels
+     (legend dots at 1307,665/687/708 of Security.png): these are the
+     drawing's colours, not a designer's memory of them. Statuses keep
+     ok/warn/err; severity is its own scale and now has its own tokens.
+     --sev-info differs from both --sev-low and --line on purpose: the donut
+     must never paint a severity in the empty track's colour. */
+  --sev-crit:#e3302b; --sev-high:#f79b38; --sev-med:#edb425;
+  --sev-low:#8b919a; --sev-info:#b9bfc9;
+  --sev-crit:#e3302b; --sev-high:#f79b38; --sev-med:#edb425;
+  --sev-low:#8b919a; --sev-info:#b9bfc9;
 }
 :root[data-theme="dark"]{
   --bg:#0d1017; --panel:#151a23; --panel2:#11151d; --ink:#e8eaee; --muted:#98a0ab;

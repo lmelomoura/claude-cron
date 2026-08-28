@@ -11,6 +11,16 @@
   --warn-soft:#fdf3e2; --err:#d92d20; --err-soft:#feecea; --idle:#8b919a;
   --shadow:0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.08);
   --shadow-lg:0 12px 32px rgba(16,24,40,.16);
+  /* Severity hues, sampled from the approved Security mockup's own pixels
+     (legend dots at 1307,665/687/708 of Security.png): these are the
+     drawing's colours, not a designer's memory of them. Statuses keep
+     ok/warn/err; severity is its own scale and now has its own tokens.
+     --sev-info differs from both --sev-low and --line on purpose: the donut
+     must never paint a severity in the empty track's colour. */
+  --sev-crit:#e3302b; --sev-high:#f79b38; --sev-med:#edb425;
+  --sev-low:#8b919a; --sev-info:#b9bfc9;
+  --sev-crit:#e3302b; --sev-high:#f79b38; --sev-med:#edb425;
+  --sev-low:#8b919a; --sev-info:#b9bfc9;
 }
 :root[data-theme="dark"]{
   --bg:#0d1017; --panel:#151a23; --panel2:#11151d; --ink:#e8eaee; --muted:#98a0ab;
@@ -697,15 +707,31 @@ footer{margin-top:30px;color:var(--muted);font-size:11px;text-align:center}
    once -- see this file's earlier comment on #view-projects). Phase 4 Task
    3, extending test_the_jobs_projects_and_runs_tables_declare_a_width_for_
    every_column (tests/test_page_contract.py) to this fourth table. */
-#view-security table{table-layout:fixed;min-width:1000px}
-#view-security th:nth-child(1){width:22%}   /* Project        */
-#view-security th:nth-child(2){width:15%}   /* Last analysis  */
-#view-security th:nth-child(3){width:8%}    /* Profile        */
-#view-security th:nth-child(4){width:11%}   /* Last run       */
-#view-security th:nth-child(5){width:13%}   /* Findings       */
-#view-security th:nth-child(6){width:13%}   /* Trend (30d)    */
-#view-security th:nth-child(7){width:7%}    /* Status         */
-#view-security th:last-child{width:11%}     /* actions        */
+#view-security table{table-layout:fixed}
+/* Only the fleet needs a floor -- eight columns with a sparkline. The
+   recent-analyses table lives in a half-width card and must fit it. */
+.secidx-fleet{min-width:1000px}
+/* SCOPED to each table, not to the view: #view-security holds TWO tables
+   (the fleet and Recent analyses), and one shared nth-child set gave the
+   recent table the fleet's widths -- its RUN column wore Project's 22%,
+   Status and Date were crushed off the edge, and the card scrolled
+   sideways for no reason. Each table declares its own set; the width test
+   checks them separately. */
+.secidx-fleet th:nth-child(1){width:22%}   /* Project        */
+.secidx-fleet th:nth-child(2){width:15%}   /* Last analysis  */
+.secidx-fleet th:nth-child(3){width:8%}    /* Profile        */
+.secidx-fleet th:nth-child(4){width:11%}   /* Last run       */
+.secidx-fleet th:nth-child(5){width:13%}   /* Findings       */
+.secidx-fleet th:nth-child(6){width:13%}   /* Trend (30d)    */
+.secidx-fleet th:nth-child(7){width:7%}    /* Status         */
+.secidx-recent th:nth-child(1){width:8%}    /* Run     */
+.secidx-recent th:nth-child(2){width:20%}   /* Project */
+.secidx-recent th:nth-child(3){width:12%}   /* Profile */
+.secidx-recent th:nth-child(4){width:16%}   /* Branch  */
+.secidx-recent th:nth-child(5){width:19%}   /* Findings*/
+.secidx-recent th:nth-child(6){width:12%}   /* Status  */
+.secidx-recent th:nth-child(7){width:13%}   /* Date    */
+.secidx-fleet th:last-child{width:11%}     /* actions        */
 #view-security .rowacts{padding-left:4px;padding-right:10px;display:flex;align-items:center;gap:8px}
 /* Filled, not outlined. The icon set draws with `stroke:currentColor`, and the
    folder rule beside it paints the row's icons accent — so an amber fill came
@@ -1621,6 +1647,15 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    (.secidx-kpis/.secidx-card and friends) until Phase 4 Task 1 moved them
    onto the shared .kpi-grid/.kpi-card (ui/css/components.css) every other
    page's own KPI row already uses -- see secIndexCards's own comment. */
+/* The mockup's two bottom cards bottom-align: the row stretches its
+   children to one height, each section is a column, and the left card's
+   footer rides at the bottom with the table filling the middle. Scoped to
+   the index's own row -- .secpjbody elsewhere (the project screen) keeps
+   its flex-start. */
+.secidx-bottom{align-items:stretch}
+.secidx-bottom > .secidx-section{display:flex;flex-direction:column}
+.secidx-bottom > .secidx-section > .table-card{flex:1;display:flex;flex-direction:column}
+.secidx-bottom .table-card > .table-scroll{flex:1}
 .secidx-section{display:flex;flex-direction:column;gap:9px}
 .secidx-section h3{margin:0;font-size:13px}
 /* Two lines, then an ellipsis -- the mockup's own Project column, a fixed
@@ -1665,18 +1700,14 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    screen now keeps everywhere severity has a colour. `.critical`/`.medium`
    need no override: they already read `--err`/`--warn` from the shared
    `.sevpill` rule, exactly the mockup's own red and amber. */
-.secidx-sev3 .sevpill.high{
-  background:color-mix(in srgb,var(--err-soft) 50%,var(--warn-soft) 50%);
-  color:color-mix(in srgb,var(--err) 50%,var(--warn) 50%)}
-/* The mockup outlines every chip in its own tint -- a subtle 1px ring the
-   flat soft background alone does not give. Same colour expression as each
-   chip's text, knocked back with color-mix, so no new hue enters the
-   vocabulary. Scoped to .secidx-sev3 like the three-tone override above:
-   this is the index screen's own dialect. */
-.secidx-sev3 .sevpill.critical{border-color:color-mix(in srgb,var(--err) 40%,transparent)}
-.secidx-sev3 .sevpill.high{
-  border-color:color-mix(in srgb,color-mix(in srgb,var(--err) 50%,var(--warn) 50%) 40%,transparent)}
-.secidx-sev3 .sevpill.medium{border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+.secidx-sev3 .sevpill.critical{background:color-mix(in srgb,var(--sev-crit) 12%,transparent);
+  color:var(--sev-crit);border-color:color-mix(in srgb,var(--sev-crit) 40%,transparent)}
+.secidx-sev3 .sevpill.high{background:color-mix(in srgb,var(--sev-high) 14%,transparent);
+  color:color-mix(in srgb,var(--sev-high) 80%,var(--ink) 20%);
+  border-color:color-mix(in srgb,var(--sev-high) 45%,transparent)}
+.secidx-sev3 .sevpill.medium{background:color-mix(in srgb,var(--sev-med) 16%,transparent);
+  color:color-mix(in srgb,var(--sev-med) 70%,var(--ink) 30%);
+  border-color:color-mix(in srgb,var(--sev-med) 50%,transparent)}
 .secidx-sev3 .sevpill.low,.secidx-sev3 .sevpill.info{border-color:var(--line)}
 .secidx-spark-svg{width:100%;max-width:150px;height:32px;display:block}
 .secidx-rowlink{cursor:pointer}
@@ -1824,12 +1855,11 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    file, below, and ui/security/index-screen.js's own comment on SEV_STROKE)
    -- one set of colours for the donut wedges, the findings chips AND this
    legend's own dots, never a fourth palette of its own. */
-.secidx-legendrow.critical .secidx-legenddot{background:var(--err)}
-.secidx-legendrow.high .secidx-legenddot{
-  background:color-mix(in srgb,var(--err) 50%,var(--warn) 50%)}
-.secidx-legendrow.medium .secidx-legenddot{background:var(--warn)}
-.secidx-legendrow.low .secidx-legenddot,.secidx-legendrow.info .secidx-legenddot{
-  background:var(--muted)}
+.secidx-legendrow.critical .secidx-legenddot{background:var(--sev-crit)}
+.secidx-legendrow.high .secidx-legenddot{background:var(--sev-high)}
+.secidx-legendrow.medium .secidx-legenddot{background:var(--sev-med)}
+.secidx-legendrow.low .secidx-legenddot{background:var(--sev-low)}
+.secidx-legendrow.info .secidx-legenddot{background:var(--sev-info)}
 .secidx-legendname{flex:1 1 auto;min-width:0;font-weight:600;color:var(--ink);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .secidx-legendcount{flex:none;color:var(--muted);font-variant-numeric:tabular-nums;
@@ -1907,5 +1937,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: d1158356e23e6fc06ce5e785c1019d232aea9ba9310b212b9f038dc0de6f4d95 */
-/* ui-sources: e43c7b5f5bfc8acefb2a4926ed5abb1d80d67d1d6858d92a832c39899318198a */
+/* ui-bundle: 26ebf577364942608c41ec2bb58dd809839be2ad7bf34471006059f6a966f1d8 */
+/* ui-sources: d04cc1c444cb6fb4c665caa210c3063f5582c1a832dfcb7bf4a451bbe0e3d26a */
