@@ -292,7 +292,13 @@
 .secidx-recent th:nth-child(6){width:12%}   /* Status  */
 .secidx-recent th:nth-child(7){width:13%}   /* Date    */
 .secidx-fleet th:last-child{width:11%}     /* actions        */
-#view-security .rowacts{padding-left:4px;padding-right:10px;display:flex;align-items:center;gap:8px}
+/* NOT display:flex -- that turns the td into a flex box, which stops
+   being a table cell: vertical-align:middle is then ignored and the
+   buttons ride the top of a tall row. The cell stays a cell (the shared
+   td rule centres it); the kebab's <details> just has to sit inline
+   beside View instead of stacking as a block. */
+#view-security .rowacts{padding-left:4px;padding-right:10px}
+#view-security .rowacts > details{display:inline-flex;vertical-align:middle}
 /* Filled, not outlined. The icon set draws with `stroke:currentColor`, and the
    folder rule beside it paints the row's icons accent — so an amber fill came
    out under a 2px indigo outline, which at 11px is not amber and not indigo but
@@ -1213,8 +1219,14 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    the index's own row -- .secpjbody elsewhere (the project screen) keeps
    its flex-start. */
 .secidx-bottom{align-items:stretch}
-.secidx-bottom > .secidx-section{display:flex;flex-direction:column}
-.secidx-bottom > .secidx-section > .table-card{flex:1;display:flex;flex-direction:column}
+/* The row's REAL children are .secpjmain (wrapping the Recent card) and
+   .secidx-findcard (the card itself). The first cut of this rule targeted
+   a .secidx-section child that does not exist -- the wrapper stretched,
+   the card inside did not, and whichever side was shorter stopped visibly
+   above the other. Scratch data hid it: the left side happened to be the
+   tall one there. */
+.secidx-bottom > .secpjmain{display:flex;flex-direction:column}
+.secidx-bottom > .secpjmain > .table-card{flex:1;display:flex;flex-direction:column}
 .secidx-bottom .table-card > .table-scroll{flex:1}
 .secidx-section{display:flex;flex-direction:column;gap:9px}
 .secidx-section h3{margin:0;font-size:13px}
@@ -1341,7 +1353,11 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    this), but this card puts the donut BESIDE its legend (`.secidx-findbody`
    below) and asks for more room to do it -- narrower than `.secpjmain`
    still leaves it read, at a glance, as the SIDE column of the row. */
-.secidx-findcard{flex:1 1 380px;min-width:300px}
+/* The mockup's own proportions: the donut card holds ~424px of a 1248px
+   content row and does NOT grow -- the analyses table takes the rest.
+   flex-grow:1 here made the two cards split the row almost evenly, twice
+   the drawing's width. */
+.secidx-findcard{flex:0 1 424px;min-width:320px}
 @media (max-width:900px){
   .secidx-findcard{flex:1 1 100%}
 }

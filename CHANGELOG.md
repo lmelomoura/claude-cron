@@ -889,6 +889,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Three more user-caught gaps on the Security index's lower half.** The
+  Recent-analyses card now genuinely fills the row's height — the first
+  stretch fix targeted a child class that does not exist, so the wrapper
+  stretched while the card inside stopped short (scratch data hid it: the
+  left side happened to be the tall one there). The Findings-overview card
+  takes the mockup's own width — 424px, no grow — instead of splitting the
+  row almost evenly at twice the drawing's width. And the fleet's View
+  button and kebab sit dead-centre in their row again: an area rule had set
+  `display:flex` on the actions `<td>`, which stops a cell being a table
+  cell at all, so `vertical-align:middle` was silently ignored and the
+  buttons rode the top of every tall row.
+
 - **Four gaps the user's side-by-side with the mockup caught on the Security
   index.** Severity now has its own colour tokens, sampled from the approved
   mockup's actual pixels (critical `#e3302b`, high `#f79b38`, medium
