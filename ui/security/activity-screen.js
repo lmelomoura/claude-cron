@@ -44,7 +44,7 @@
    view is a fixed-id pane wired into the project screen with no portable
    host of its own, while the findings browser was already rebuilt
    (Task 11) to be mountable anywhere, twice over. */
-import { $, fmtWhen } from "./page.js";
+import { $, fmtWhen, pageHeader } from "./page.js";
 import { secEl, secIcon, secFetch } from "./dom.js";
 import { EVENT_KINDS, EVENT_KIND_LABEL } from "./vocabulary.js";
 import { secBack, secShowAnalysis } from "./analysis.js";
@@ -188,11 +188,31 @@ async function secActLoad(){
 /* ----------------------------------------------------------------- shell */
 function secActRenderShell(){
   const title = $("sec-act-title");
+  const titleText = secActState.project ? "Activity — " + secActState.project : "Activity";
   if(title){
     title.textContent = "";
     title.appendChild(secIcon("activity"));
-    title.appendChild(document.createTextNode(
-      secActState.project ? "Activity — " + secActState.project : "Activity"));
+    title.appendChild(document.createTextNode(titleText));
+  }
+  // The page header (Phase 4 Task 6) -- FullActivity.png's own icon, title
+  // and grey sentence, replacing the loose `<p class="paneblurb">` that used
+  // to sit here (bin/dashboard.html), the same conversion the index screen's
+  // own secRenderHead already made in an earlier task. Built once per open,
+  // the same cadence the breadcrumb-style title above already has (neither
+  // one re-reads `secActState.project` on the routine poll tick) -- and the
+  // SAME computed title text, so the two headers never disagree about which
+  // scope this screen is showing. No actions: the mockup's own Export and
+  // Filters have no working handler behind them yet, and a button with
+  // nothing behind it is worse furniture than no button.
+  const head = $("sec-act-head");
+  if(head){
+    head.textContent = "";
+    head.appendChild(pageHeader({
+      icon: "activity", title: titleText,
+      subtitle: "What happened and when. An analysis links to that analysis; "
+        + "a decision links into the findings browser filtered to the one "
+        + "fingerprint it decided about.",
+    }));
   }
   const input = $("sec-act-project");
   if(input) input.value = secActState.project;
@@ -234,9 +254,11 @@ function secActRenderPeriod(){
 /* ----------------------------------------------------------------- paint */
 function secActPaint(){
   if(!secActOpen) return;
-  const host = $("sec-act-table"), pager = $("sec-act-pager"), side = $("sec-act-side");
+  // No separate `sec-act-pager` slot any more (Phase 4 Task 6): the footer
+  // now renders INSIDE secActTable's own table-card -- see that function's
+  // own comment.
+  const host = $("sec-act-table"), side = $("sec-act-side");
   if(host) host.textContent = "";
-  if(pager) pager.textContent = "";
   if(side) side.textContent = "";
   if(!host) return;
   if(secActState.error){
@@ -249,7 +271,6 @@ function secActPaint(){
   const data = secActState.data;
   if(!data) return;
   host.appendChild(secActTable(data));
-  if(pager) pager.appendChild(secActPager(data));
   if(side) side.appendChild(secActSidebar(data));
 }
 
@@ -271,17 +292,33 @@ function secActEmptyMessage(){
   return "No activity recorded " + scope + secActPeriodPhrase() + ".";
 }
 
+// [key, label] tuples, SEC_PROJECT_COLS-shaped (index-screen.js) even
+// though nothing here sorts by one yet -- test_the_jobs_projects_and_runs_
+// tables_declare_a_width_for_every_column (tests/test_page_contract.py)
+// reads only `.length` off this, so a sixth column added here later is
+// caught by the same guard with no change to the test itself. No `null`/
+// "Actions" entry: Related is a real data column, not an actions column --
+// the same shape the index screen's own Recent-analyses table (SEC_RECENT_
+// COLS) already uses for its own Date column, and the width guard handles
+// both shapes (see its own docstring).
+const SEC_ACT_TABLE_COLS = [
+  ["time", "Time"], ["event", "Event"], ["detail", "Detail"],
+  ["project", "Project"], ["related", "Related"],
+];
+
 function secActTable(data){
   const events = data.events || [];
   if(!events.length) return secEl("div", "tblempty", secActEmptyMessage());
 
-  const wrap = secEl("div", "tablewrap");
+  const wrap = secEl("div", "table-card");
+  const scroll = secEl("div", "table-scroll");
   const table = document.createElement("table");
+  table.className = "secact-table";
   const thead = document.createElement("thead");
   const htr = document.createElement("tr");
-  ["Time", "Event", "Detail", "Project", "Related"].forEach(h => {
+  SEC_ACT_TABLE_COLS.forEach(([, label]) => {
     const th = document.createElement("th");
-    th.textContent = h;
+    th.textContent = label;
     htr.appendChild(th);
   });
   thead.appendChild(htr);
@@ -289,7 +326,16 @@ function secActTable(data){
   const tbody = document.createElement("tbody");
   events.forEach(e => tbody.appendChild(secActRow(e)));
   table.appendChild(tbody);
-  wrap.appendChild(table);
+  scroll.appendChild(table);
+  wrap.appendChild(scroll);
+  // The footer lives INSIDE this same table-card, never as a loose sibling
+  // below it (see tableFooter's own comment in chrome.js on
+  // test_the_jobs_table_footer_sits_inside_the_table_card for the regression
+  // that shape used to be) -- folded in here rather than by the caller
+  // (contrast findings-screen.js's secFindPaint) since this table has no
+  // "nothing to show" branch that would leave it without a box to sit in
+  // once the empty-events return above has already run.
+  wrap.appendChild(secActPager(data));
   return wrap;
 }
 
@@ -386,34 +432,46 @@ export function wireActivityFindingDialog(){
 }
 
 /* ------------------------------------------------------------------ pager
-   No `total` in the payload (see cmd_activity_data's own docstring: a plain
-   COUNT(*) alongside a paginated events query would be a second query for a
-   number this screen has no strict need of) -- so "is there a next page" is
+   The same LOOK every other table-card footer in this app now uses
+   (.table-foot/.table-foot-info/.table-foot-pager, chrome.js's own
+   tableFooter) -- hand-built here rather than calling that bridged function
+   directly, because its own "Showing X to Y of N" sentence needs a real
+   total, and this endpoint deliberately has none: a plain COUNT(*) alongside
+   a paginated events query would be a second query for a number this screen
+   has no strict need of (see this file's own header comment on
+   cmd_activity_data's docstring). "Page N" is what stays sayable without
+   one. The MECHANISM is exactly what it was: "is there a next page" is still
    inferred from whether this page came back full, the same heuristic every
-   "Next" button here can offer without it: on the rare exact multiple, one
-   extra click lands on a legitimately empty next page rather than a wrong
-   answer about one that still has rows. */
+   "Next" button here can offer without a total -- on the rare exact
+   multiple, one extra click lands on a legitimately empty next page rather
+   than a wrong answer about one that still has rows. */
 function secActPager(data){
-  const wrap = secEl("div", "pager");
+  const foot = secEl("div", "table-foot");
+  foot.appendChild(secEl("span", "table-foot-info", "Page " + (data.page || 1)));
+
   const page = data.page || 1;
   const perPage = data.per_page || ACT_PER_PAGE;
   const hasMore = (data.events || []).length >= perPage;
 
-  const prev = secEl("button", "btn ghost", "Prev");
+  const nav = secEl("div", "table-foot-pager");
+  const prev = secEl("button", "btn ghost");
   prev.type = "button";
+  prev.appendChild(secIcon("cleft"));
+  prev.appendChild(document.createTextNode("Prev"));
   prev.disabled = page <= 1;
   prev.onclick = () => { secActState.page = Math.max(1, page - 1); secActLoad(); };
-  wrap.appendChild(prev);
+  nav.appendChild(prev);
 
-  wrap.appendChild(secEl("span", null, "Page " + page));
-
-  const next = secEl("button", "btn ghost", "Next");
+  const next = secEl("button", "btn ghost");
   next.type = "button";
+  next.appendChild(document.createTextNode("Next"));
+  next.appendChild(secIcon("cright"));
   next.disabled = !hasMore;
   next.onclick = () => { secActState.page = page + 1; secActLoad(); };
-  wrap.appendChild(next);
+  nav.appendChild(next);
 
-  return wrap;
+  foot.appendChild(nav);
+  return foot;
 }
 
 /* ---------------------------------------------------------------- sidebar
@@ -450,7 +508,13 @@ function secActSummaryCard(summary){
 
 function secActProjectsCard(projects){
   const box = secEl("div", "card");
-  box.appendChild(secEl("h3", null, "Most active projects"));
+  // Wrapped in the SAME .secpj-cardhead the summary card above already uses
+  // (Phase 4 Task 6), rather than a bare h3, so this title picks up the
+  // identical card-title style (bold, sentence-case) the index screen's own
+  // two bottom cards use -- see that class's own comment in ui/css/pages.css.
+  const head = secEl("div", "secpj-cardhead");
+  head.appendChild(secEl("h3", null, "Most active projects"));
+  box.appendChild(head);
   if(secActState.project){
     // The one operator's reasoning, applied here too: a list already
     // filtered down to a single project is a list of one, which the

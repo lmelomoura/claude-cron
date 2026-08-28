@@ -77,7 +77,7 @@
    saved-filter picker); switching away and back to the SAME project's
    Findings tab -- on the SAME host -- keeps them, the same as every other
    tab on this screen. */
-import { api, toast, fmtWhen } from "./page.js";
+import { api, toast, fmtWhen, tableFooter } from "./page.js";
 import { secEl, secIcon, secFetch } from "./dom.js";
 import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP, SEV_ORDER, SEC_NEVER,
          secMinSeverity, secSevKey, secStateKey, secVisible } from "./vocabulary.js";
@@ -91,9 +91,30 @@ import { secInvalidateProject } from "./project-screen.js";
 // (see claude-cron-server's own comment on FINDING_SEVERITIES/FINDING_STATES/
 // FINDING_CATEGORIES for why a value the server already validates is still
 // named again here).
+// Phase 4 Task 6: State and First seen swapped from their original order --
+// a pre-existing mismatch found while giving this table its own width class
+// (below), where the HEADER this array draws read "...Branch | First seen |
+// State | Actions" while secFindRow's own cells rendered "...Branch | State
+// | First seen | Actions": the header and the body disagreed about which
+// column was which. This order matches both secFindRow's own cell order and
+// AllFindings.png's own column order; only the sort buttons' own visual
+// position moves -- which key each one sorts by (`fs.sort`) is unchanged.
 const FIND_SORT_COLUMNS = [
   ["severity", "Severity"], ["title", "Title"], ["category", "Category"],
-  ["branch", "Branch"], ["first_seen", "First seen"], ["state", "State"],
+  ["branch", "Branch"], ["state", "State"], ["first_seen", "First seen"],
+];
+// Mirrors FIND_SORT_COLUMNS plus the Actions column rendered after it --
+// kept in step by hand (the same duplication FIND_CATEGORIES below already
+// carries against the server's own FINDING_CATEGORIES) because
+// test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column's
+// own harness extracts ONE const in total isolation: a
+// `FIND_SORT_COLUMNS.concat(...)` expression here would throw
+// ReferenceError under that harness, which never also stands up
+// FIND_SORT_COLUMNS alongside it.
+const SEC_FIND_TABLE_COLS = [
+  ["severity", "Severity"], ["title", "Title"], ["category", "Category"],
+  ["branch", "Branch"], ["state", "State"], ["first_seen", "First seen"],
+  [null, "Actions"],
 ];
 const FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene"];
 const FIND_PER_PAGE = 25;
@@ -208,8 +229,15 @@ function secFindPaint(fs){
   if(!data) return;
   host.appendChild(secFindStrip(fs, data));
   host.appendChild(secFindFilterBar(fs, data));
-  host.appendChild(secFindTableSection(fs, data));
-  host.appendChild(secFindPager(fs, data));
+  const section = secFindTableSection(fs, data);
+  // The footer lives INSIDE the same table-card the rows are in, never as a
+  // loose sibling below it (see tableFooter's own comment in chrome.js on
+  // test_the_jobs_table_footer_sits_inside_the_table_card for the regression
+  // that shape used to be) -- so it is appended only when secFindTableSection
+  // actually built one; its two "nothing to show" branches return a bare
+  // .tblempty with no box for a footer to sit inside.
+  if((section.className || "").includes("table-card")) section.appendChild(secFindPager(fs, data));
+  host.appendChild(section);
 }
 
 /* ------------------------------------------------------------------ strip
@@ -244,7 +272,16 @@ const ROW_PILL_TITLE = "Rows matching the current filters — the same finding "
   + "open on two branches counts twice here.";
 
 function secFindStrip(fs, data){
-  const wrap = secEl("div", "sevpills");
+  // `secfind-sev3` (Phase 4 Task 6): AllFindings.png paints these five per-
+  // severity pills crit-red/high-orange/medium-amber/low-blue/info-grey --
+  // this design's tokens (ui/css/tokens.css) have no blue defined for any
+  // severity (the donut legend's own Low dot is the same neutral grey
+  // `--sev-low` already is), so this dialect matches the three tones the
+  // tokens DO give distinctly (critical/high/medium) and leaves low/info in
+  // their existing muted look, exactly the choice the index screen's own
+  // `.secidx-sev3` already made for the identical reason -- see that class's
+  // own comment (ui/css/pages.css) and this class's own, beside it.
+  const wrap = secEl("div", "sevpills secfind-sev3");
   const totalPill = secEl("span", "sevpill", data.total + " total");
   totalPill.title = ROW_PILL_TITLE;
   wrap.appendChild(totalPill);
@@ -747,8 +784,10 @@ function secFindTableSection(fs, data){
       + " severity floor — recorded, not shown.");
   }
 
-  const wrap = secEl("div", "tablewrap");
+  const wrap = secEl("div", "table-card");
+  const scroll = secEl("div", "table-scroll");
   const table = document.createElement("table");
+  table.className = "secfind-table";
   const thead = document.createElement("thead");
   const htr = document.createElement("tr");
   FIND_SORT_COLUMNS.forEach(([key, label]) => {
@@ -775,32 +814,45 @@ function secFindTableSection(fs, data){
   const tbody = document.createElement("tbody");
   visible.forEach(f => tbody.appendChild(secFindRow(fs, f)));
   table.appendChild(tbody);
-  wrap.appendChild(table);
+  scroll.appendChild(table);
+  wrap.appendChild(scroll);
   return wrap;
 }
 
-/* ------------------------------------------------------------------ pager */
+/* ------------------------------------------------------------------ pager
+   The bridged tableFooter() (Phase 4 Task 6) -- AllFindings.png's own
+   "Showing X to Y of N findings" + pager, replacing the bare "Page X / Y ·
+   N rows" line that used to sit outside the table's own box (`.pager`, the
+   shape Jobs/Runs/Projects already moved off of onto this same builder).
+   The MECHANISM is untouched -- still Prev/Next stepping `fs.page` through a
+   server-paginated fetch -- only the LOOK converges on what every other
+   table card in this app already uses. `numbered` is left unset (plain
+   Prev/Next), not the numbered-dots variant the mockup itself shows:
+   chrome.js's own tableFooter draws one button per page with no "…"
+   collapsing, fine at Jobs/Runs/Projects' own page counts but untested at
+   however many pages a heavily-findings project can reach here.
+   secFindPaint appends this INSIDE the same table-card secFindTableSection
+   returns (see that call site's own comment) -- this function only builds
+   the footer and wires its own two buttons, and is not responsible for
+   where it ends up mounted. The buttons are found by their fixed position
+   in tableFooter's own non-numbered output (info span, then a nav holding
+   exactly Prev then Next) rather than by id: this module mounts into two
+   hosts at once (see this file's own header comment), and a fixed id would
+   collide the moment both mounts' footers rendered together. */
 function secFindPager(fs, data){
-  const wrap = secEl("div", "pager");
   const total = data.total || 0;
   const perPage = data.per_page || FIND_PER_PAGE;
   const pages = Math.max(1, Math.ceil(total / perPage));
   const page = data.page || 1;
+  const from = total ? (page - 1) * perPage + 1 : 0;
+  const to = Math.min(page * perPage, total);
 
-  const prev = secEl("button", "btn ghost", "Prev");
-  prev.type = "button";
-  prev.disabled = page <= 1;
-  prev.onclick = () => { fs.page = Math.max(1, page - 1); secFindRefresh(fs); };
-  wrap.appendChild(prev);
-
-  wrap.appendChild(secEl("span", null,
-    "Page " + page + " / " + pages + " · " + total + " row" + (total === 1 ? "" : "s")));
-
-  const next = secEl("button", "btn ghost", "Next");
-  next.type = "button";
-  next.disabled = page >= pages;
-  next.onclick = () => { fs.page = Math.min(pages, page + 1); secFindRefresh(fs); };
-  wrap.appendChild(next);
-
-  return wrap;
+  const foot = tableFooter({shown: {from, to}, total, noun: "finding", page, pages});
+  const nav = foot.childNodes[1];
+  if(nav){
+    const prev = nav.childNodes[0], next = nav.childNodes[1];
+    prev.onclick = () => { fs.page = Math.max(1, page - 1); secFindRefresh(fs); };
+    next.onclick = () => { fs.page = Math.min(pages, page + 1); secFindRefresh(fs); };
+  }
+  return foot;
 }

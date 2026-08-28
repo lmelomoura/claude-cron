@@ -19,6 +19,56 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Phase 4 Task 6's furniture pass reaches the project, findings and
+  activity screens.** Each of `ProjectDetails.png`/`AllFindings.png`/
+  `FullActivity.png`, followed for the same moves the index screen (Phase 4
+  Tasks 1-5) already made, closing this phase's remaining three inner
+  screens. Table footers: the Runs tab's own analyses table
+  (`ui/security/project-screen.js`) and the findings browser's table
+  (`ui/security/findings-screen.js`) get the bridged `tableFooter()` inside a
+  proper `.table-card`, replacing a bare, footer-less `.tablewrap` for Runs
+  and a `.pager` sibling below the table for Findings — each earns its own
+  scoped width class (`.secpj-runstable`/`.secfind-table`) and joins
+  `test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column`'s
+  parametrize, with a `min-width` safety net measured live against real
+  header text (several clipped silently under `#view-security table{table-
+  layout:fixed}` at this view's own width, e.g. "Findings recorded" to
+  "Findings reco" — invisible to the width-guard test itself, which checks
+  only that every column sums to 100%, not that a header's own text fits
+  it). The Activity table (`ui/security/activity-screen.js`) gets the
+  identical `.table-card` look, hand-built rather than through `tableFooter()`
+  itself since `cmd_activity_data` deliberately carries no `total` to build
+  its "Showing X to Y of N" sentence from — this footer says "Page N"
+  instead, the Prev/Next mechanism otherwise unchanged. The Activity screen's
+  loose `<p class="paneblurb">` becomes a `pageHeader()`, the same conversion
+  the index screen's own header already made in an earlier task; no Export/
+  Filters actions, since the mockup's own two have no working handler behind
+  them yet, and a button with nothing behind it is worse furniture than none.
+  "Recent activity" (the project sidebar), "This period" and "Most active
+  projects" (the activity sidebar) pick up the index screen's own bold,
+  sentence-case card-title style through one shared CSS opt-out on
+  `.secpj-cardhead h3`, rather than three separate fixes. The findings
+  browser's own top-strip severity pills join the severity tokens in a new
+  `.secfind-sev3` dialect — critical/high/medium each a distinct hue, low/
+  info left in their existing muted look — the identical choice, and the
+  identical reason, `.secidx-sev3` already made: this design's tokens have no
+  blue, and the mockup's own Low dot is blue. The project sidebar's own
+  floor-scope caveat (`secSidebarCaption`) moves from visible prose into a
+  `title`, matching the index screen's own identical note; the branch-count
+  sentence beside it stays visible text, a different pinned test's own
+  substance. Incidental: the findings table's header and body cells
+  disagreed about column order (State and First seen swapped) since before
+  this task — found while giving the table its own width class, fixed by
+  reordering `FIND_SORT_COLUMNS` to match both the body and the mockup. Not
+  done, and noted in the task report rather than attempted: the mockups' own
+  fuller project header (icon, title, a "Security enabled" badge, a
+  description), the Runs tab's own KPI-card summary row and sparkline, Title-
+  Cased colour pills for an analysis's state (the index screen's own recent-
+  analyses table already has these; the project screen's Runs table does
+  not), and the findings table's own per-row severity pill and left-edge
+  colour bar — none of these exist in any form on the current screens today,
+  so building them from nothing is information architecture, not furniture.
+
 - **The last seven native `<select>`s in the product become the house
   `.picker` or `.combo`, and a test keeps the count at zero.** Two user
   reports named the same defect twice on this branch: a bare `<select>`

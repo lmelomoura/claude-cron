@@ -292,6 +292,46 @@
 .secidx-recent th:nth-child(6){width:12%}   /* Status  */
 .secidx-recent th:nth-child(7){width:13%}   /* Date    */
 .secidx-fleet th:last-child{width:11%}     /* actions        */
+/* Three more tables joined onto the same #view-security table{table-layout:
+   fixed} (above) by Phase 4 Task 6's own footer work -- the Runs tab's
+   analyses table, the findings browser's table and the Activity table each
+   get their OWN scoped class and width set, never a view-wide nth-child rule,
+   for the exact reason the comment above already gives: one shared set once
+   gave the recent-analyses table the fleet's own widths. Each joins
+   test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column's
+   own parametrize (tests/test_page_contract.py). */
+/* Both tables below carry a min-width, the same `.secidx-fleet{min-width:
+   1000px}` safety net right above -- measured live (a fresh preview tab,
+   1280px-wide window) against real header LABEL text: at this view's own
+   .secpjmain flex width (~660px with the sidebar beside it), several of
+   these headers' natural width did not fit their own percentage share and
+   silently clipped ("Findings recorded" to "Findings reco", "Severity" to
+   "Sever") -- `table-layout:fixed` gives a clipped header no visual sign
+   this happened, unlike a body cell, which still wraps. The min-width does
+   not change what any of these tables looks like above it; it only turns
+   clipping into `.table-scroll`'s own horizontal scrollbar below it. */
+.secpj-runstable{min-width:900px}
+.secpj-runstable th:nth-child(1){width:7%}    /* Run              */
+.secpj-runstable th:nth-child(2){width:9%}    /* Profile          */
+.secpj-runstable th:nth-child(3){width:25%}   /* Branch           */
+.secpj-runstable th:nth-child(4){width:9%}    /* Commit           */
+.secpj-runstable th:nth-child(5){width:10%}   /* Duration         */
+.secpj-runstable th:nth-child(6){width:18%}   /* Findings recorded*/
+.secpj-runstable th:nth-child(7){width:8%}    /* State            */
+.secpj-runstable th:nth-child(8){width:14%}   /* Date             */
+.secfind-table{min-width:900px}
+.secfind-table th:nth-child(1){width:14%}   /* Severity */
+.secfind-table th:nth-child(2){width:22%}   /* Title    */
+.secfind-table th:nth-child(3){width:13%}   /* Category */
+.secfind-table th:nth-child(4){width:12%}   /* Branch   */
+.secfind-table th:nth-child(5){width:10%}   /* State    */
+.secfind-table th:nth-child(6){width:13%}   /* First seen*/
+.secfind-table th:nth-child(7){width:16%}   /* Actions  */
+.secact-table th:nth-child(1){width:13%}   /* Time    */
+.secact-table th:nth-child(2){width:16%}   /* Event   */
+.secact-table th:nth-child(3){width:32%}   /* Detail  */
+.secact-table th:nth-child(4){width:15%}   /* Project */
+.secact-table th:nth-child(5){width:24%}   /* Related */
 /* NOT display:flex -- that turns the td into a flex box, which stops
    being a table cell: vertical-align:middle is then ignored and the
    buttons ride the top of a tall row. The cell stays a cell (the shared
@@ -1107,6 +1147,28 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .sevpill.low{background:var(--panel2);color:var(--muted);border-color:var(--line)}
 .sevpill.info{background:var(--panel2);color:var(--muted)}
 .sevpill.clean{background:var(--ok-soft);color:var(--ok)}
+/* The findings browser's own top-strip severity pills (Phase 4 Task 6) --
+   AllFindings.png paints the same crit-red/high-orange/medium-amber the index
+   screen's own .secidx-sev3 already gives its two tables, for the identical
+   reason (see that class's own comment above .secidx-sev3 for why `.critical`/
+   `.medium` need no override and only `.high` does -- this design's tokens
+   have only `--err`/`--warn` as hue tokens, so `high` alone needs the
+   in-between colour-mix). Scoped separately here rather than reused: that
+   class is named for, and stays, the index screen's own vocabulary.
+   The mockup's own Low dot is blue -- a hue nothing in this design's tokens
+   (ui/css/tokens.css) defines for any severity, Low included (`--sev-low` is
+   the same neutral grey the donut legend's own Low dot already uses) -- so,
+   like `.secidx-sev3` before it, only the border moves for `.low`/`.info`,
+   not a fabricated blue this design system carries nowhere else. */
+.secfind-sev3 .sevpill.critical{background:color-mix(in srgb,var(--sev-crit) 12%,transparent);
+  color:var(--sev-crit);border-color:color-mix(in srgb,var(--sev-crit) 40%,transparent)}
+.secfind-sev3 .sevpill.high{background:color-mix(in srgb,var(--sev-high) 14%,transparent);
+  color:color-mix(in srgb,var(--sev-high) 80%,var(--ink) 20%);
+  border-color:color-mix(in srgb,var(--sev-high) 45%,transparent)}
+.secfind-sev3 .sevpill.medium{background:color-mix(in srgb,var(--sev-med) 16%,transparent);
+  color:color-mix(in srgb,var(--sev-med) 70%,var(--ink) 30%);
+  border-color:color-mix(in srgb,var(--sev-med) 50%,transparent)}
+.secfind-sev3 .sevpill.low,.secfind-sev3 .sevpill.info{border-color:var(--line)}
 .secbar{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;margin:0 0 14px}
 .secfield{display:flex;flex-direction:column;gap:5px;min-width:0}
 /* An author `display` outranks the UA sheet's [hidden] — the same trap the nav
@@ -1202,7 +1264,14 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    without its page-level top margin, which reads as a gap bug on a header
    that opens a .card rather than a whole pane. */
 .secpj-cardhead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 9px}
-.secpj-cardhead h3{margin:0}
+/* Phase 4 Task 6: the mockup's own bold, sentence-case card title (ProjectDetails
+   .png's "Project activity", FullActivity.png's "Activity summary") -- the same
+   opt-out of the page's generic small-caps `h3` that `.secidx-cardhead h3`
+   (below) already gives the index screen's own two bottom cards, so a reader
+   moving between the three screens never sees the SAME kind of card title in
+   two different registers. */
+.secpj-cardhead h3{margin:0;font-size:15px;font-weight:650;color:var(--ink);
+  text-transform:none;letter-spacing:normal}
 @media (max-width:900px){
   .secpjside{flex:1 1 100%}
 }

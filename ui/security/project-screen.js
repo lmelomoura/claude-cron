@@ -21,7 +21,7 @@
    findings browser, ui/security/findings-screen.js) mounted under the
    Findings tab -- this module still only owns the header, the tabs and the
    sidebar, never the table itself. */
-import { $, fmtAgo, fmtDur, fmtWhen, openProjectEditor } from "./page.js";
+import { $, fmtAgo, fmtDur, fmtWhen, openProjectEditor, tableFooter } from "./page.js";
 import { secIcon, secEl, secFetch } from "./dom.js";
 import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP, SEC_NEVER,
          SEC_FLOOR_SCOPE_NOTE, EVENT_KIND_LABEL } from "./vocabulary.js";
@@ -232,14 +232,23 @@ function secSidebarCaption(branchCount, attempted){
   const scope = branchCount === 1 ? "this project's only analysed branch"
                                   : "all " + branchCount + " analysed branches";
   const cap = secEl("div", "secpj-caption",
-    "Posture and categories below span " + scope + ". ");
+    "Posture and categories below span " + scope + ".");
   // The sidebar is a flex SIBLING of the tab panes -- it is on screen during
   // Overview, Runs, Branches, Findings and Reports alike -- so this is the
   // one place on the project screen that can say what the floor does and be
   // read from every tab. The Overview chips, the Branches tab's "Open" and
   // the donut right below are all unfloored; the findings table one tab over
   // is floored and says so itself. See SEC_FLOOR_SCOPE_NOTE.
-  cap.appendChild(secEl("span", null, SEC_FLOOR_SCOPE_NOTE));
+  //
+  // A `title`, not a second visible sentence (Phase 4 Task 6): none of the
+  // three mockups print this caveat as prose anywhere on the page -- the
+  // index screen's own identical note already lives in a bare tooltip on the
+  // element that carries the unfloored numbers (secRenderIndex's own
+  // `host._secCards.title`), and this is that same treatment applied here.
+  // The branch-count sentence above stays visible text: it disambiguates
+  // which of two genuinely different totals a reader is looking at, which a
+  // hover-only aside would hide rather than explain.
+  cap.title = SEC_FLOOR_SCOPE_NOTE;
   return cap;
 }
 
@@ -338,20 +347,33 @@ function secRunsFilters(runs){
    fixed or pending, so its own total can run higher. Same resolution as
    secOverviewCaption/secSidebarCaption above -- name what each number
    counts rather than force one to match the other. */
+// [key, label] tuples, SEC_PROJECT_COLS-shaped (index-screen.js) even though
+// nothing here sorts by one yet -- test_the_jobs_projects_and_runs_tables_
+// declare_a_width_for_every_column (tests/test_page_contract.py) reads only
+// `.length` off this, so a ninth column added here later is caught by the
+// same guard with no change to the test itself.
+const SEC_RUNS_COLS = [
+  ["run", "Run"], ["profile", "Profile"], ["branch", "Branch"], ["commit", "Commit"],
+  ["duration", "Duration"], ["findings", "Findings recorded"], ["state", "State"],
+  ["date", "Date"],
+];
+
 function secRunsTable(runs){
   const filtered = secRunsFilter ? runs.filter(r => r.state === secRunsFilter) : runs;
   if(!filtered.length){
     return secEl("div", "tblempty", runs.length
       ? "Nothing in that state." : "No analyses of this project yet.");
   }
-  const wrap = secEl("div", "tablewrap");
+  const wrap = secEl("div", "table-card");
+  const scroll = secEl("div", "table-scroll");
   const table = document.createElement("table");
+  table.className = "secpj-runstable";
   const thead = document.createElement("thead");
   const htr = document.createElement("tr");
-  ["Run", "Profile", "Branch", "Commit", "Duration", "Findings recorded", "State", "Date"].forEach(h => {
+  SEC_RUNS_COLS.forEach(([key, label]) => {
     const th = document.createElement("th");
-    th.textContent = h;
-    if(h === "Findings recorded"){
+    th.textContent = label;
+    if(key === "findings"){
       // The one-sentence version of the comment above, for whoever is
       // looking at the rendered table rather than this source.
       th.title = "How many findings this run recorded — the checklist chips "
@@ -366,7 +388,20 @@ function secRunsTable(runs){
   const tbody = document.createElement("tbody");
   filtered.forEach(r => tbody.appendChild(secRunRow(r)));
   table.appendChild(tbody);
-  wrap.appendChild(table);
+  scroll.appendChild(table);
+  wrap.appendChild(scroll);
+  // `numbered: true`, page/pages fixed at 1/1 (Phase 4 Task 6, matching the
+  // mockup's own footer where the PNG shows one): this table holds
+  // everything secRenderProjectRuns was handed (at most 100 rows,
+  // cmd_project_data's own LIMIT) with no slicing of its own -- the identical
+  // "one real page, said honestly" shape secRepaintProjectsTable
+  // (index-screen.js) already established for the fleet table against the
+  // same mockup-vs-data gap (a numbered pager with nothing behind a second
+  // page), rather than a disabled Prev/Next or an invented page size.
+  wrap.appendChild(tableFooter({
+    shown: {from: 1, to: filtered.length}, total: filtered.length, noun: "run",
+    page: 1, pages: 1, numbered: true,
+  }));
   return wrap;
 }
 

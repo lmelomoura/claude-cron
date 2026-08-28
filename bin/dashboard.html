@@ -525,9 +525,13 @@ document.documentElement.dataset.theme =
         <h3 id="sec-act-title"></h3>
         <button class="btn ghost" id="sec-act-back"></button>
       </div>
-      <p class="paneblurb">What happened and when. An analysis links to that
-        analysis; a decision links into the findings browser filtered to the
-        one fingerprint it decided about.</p>
+      <!-- Rebuilt on every open by ui/security/activity-screen.js's own
+           secActRenderShell() -- activity icon, title, one sentence, no
+           trailing actions -- the same pageHeader() conversion
+           index-screen.js's own secRenderHead already made for the Security
+           index in an earlier task. Replaces what used to be a loose
+           <p class="paneblurb"> here (Phase 4 Task 6). -->
+      <div id="sec-act-head"></div>
 
       <nav class="viewtabs" id="sec-act-tabs">
         <button class="viewtab" data-kind="" id="secactt-all"></button>
@@ -551,8 +555,10 @@ document.documentElement.dataset.theme =
 
       <div class="secpjbody">
         <div class="secpjmain">
+          <!-- The footer (Showing/Page + Prev/Next) now renders INSIDE this
+               table's own table-card, not as a separate element below it
+               (Phase 4 Task 6) -- there is no more `#sec-act-pager` slot. -->
           <div id="sec-act-table"></div>
-          <div class="pager" id="sec-act-pager"></div>
         </div>
         <!-- The period's counts per kind, and the most active projects --
              built by activity-screen.js. No "top active users": with one

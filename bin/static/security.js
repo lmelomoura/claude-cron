@@ -946,8 +946,8 @@
     ["title", "Title"],
     ["category", "Category"],
     ["branch", "Branch"],
-    ["first_seen", "First seen"],
-    ["state", "State"]
+    ["state", "State"],
+    ["first_seen", "First seen"]
   ];
   var FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene"];
   var FIND_PER_PAGE = 25;
@@ -1053,8 +1053,9 @@
     if (!data) return;
     host.appendChild(secFindStrip(fs, data));
     host.appendChild(secFindFilterBar(fs, data));
-    host.appendChild(secFindTableSection(fs, data));
-    host.appendChild(secFindPager(fs, data));
+    const section = secFindTableSection(fs, data);
+    if ((section.className || "").includes("table-card")) section.appendChild(secFindPager(fs, data));
+    host.appendChild(section);
   }
   function secFindHiddenByFloor(data, minSeverity) {
     const floor = SEV_ORDER.indexOf(minSeverity);
@@ -1067,7 +1068,7 @@
   }
   var ROW_PILL_TITLE = "Rows matching the current filters \u2014 the same finding open on two branches counts twice here.";
   function secFindStrip(fs, data) {
-    const wrap = secEl("div", "sevpills");
+    const wrap = secEl("div", "sevpills secfind-sev3");
     const totalPill = secEl("span", "sevpill", data.total + " total");
     totalPill.title = ROW_PILL_TITLE;
     wrap.appendChild(totalPill);
@@ -1481,8 +1482,10 @@
         "Every finding on this page is below the " + minSeverity + " severity floor \u2014 recorded, not shown."
       );
     }
-    const wrap = secEl("div", "tablewrap");
+    const wrap = secEl("div", "table-card");
+    const scroll = secEl("div", "table-scroll");
     const table = document.createElement("table");
+    table.className = "secfind-table";
     const thead = document.createElement("thead");
     const htr = document.createElement("tr");
     FIND_SORT_COLUMNS.forEach(([key, label]) => {
@@ -1511,37 +1514,31 @@
     const tbody = document.createElement("tbody");
     visible.forEach((f) => tbody.appendChild(secFindRow(fs, f)));
     table.appendChild(tbody);
-    wrap.appendChild(table);
+    scroll.appendChild(table);
+    wrap.appendChild(scroll);
     return wrap;
   }
   function secFindPager(fs, data) {
-    const wrap = secEl("div", "pager");
     const total = data.total || 0;
     const perPage = data.per_page || FIND_PER_PAGE;
     const pages = Math.max(1, Math.ceil(total / perPage));
     const page = data.page || 1;
-    const prev = secEl("button", "btn ghost", "Prev");
-    prev.type = "button";
-    prev.disabled = page <= 1;
-    prev.onclick = () => {
-      fs.page = Math.max(1, page - 1);
-      secFindRefresh(fs);
-    };
-    wrap.appendChild(prev);
-    wrap.appendChild(secEl(
-      "span",
-      null,
-      "Page " + page + " / " + pages + " \xB7 " + total + " row" + (total === 1 ? "" : "s")
-    ));
-    const next = secEl("button", "btn ghost", "Next");
-    next.type = "button";
-    next.disabled = page >= pages;
-    next.onclick = () => {
-      fs.page = Math.min(pages, page + 1);
-      secFindRefresh(fs);
-    };
-    wrap.appendChild(next);
-    return wrap;
+    const from = total ? (page - 1) * perPage + 1 : 0;
+    const to = Math.min(page * perPage, total);
+    const foot = tableFooter({ shown: { from, to }, total, noun: "finding", page, pages });
+    const nav = foot.childNodes[1];
+    if (nav) {
+      const prev = nav.childNodes[0], next = nav.childNodes[1];
+      prev.onclick = () => {
+        fs.page = Math.max(1, page - 1);
+        secFindRefresh(fs);
+      };
+      next.onclick = () => {
+        fs.page = Math.min(pages, page + 1);
+        secFindRefresh(fs);
+      };
+    }
+    return foot;
   }
 
   // ui/security/activity-screen.js
@@ -1648,12 +1645,20 @@
   }
   function secActRenderShell() {
     const title = $("sec-act-title");
+    const titleText = secActState.project ? "Activity \u2014 " + secActState.project : "Activity";
     if (title) {
       title.textContent = "";
       title.appendChild(secIcon("activity"));
-      title.appendChild(document.createTextNode(
-        secActState.project ? "Activity \u2014 " + secActState.project : "Activity"
-      ));
+      title.appendChild(document.createTextNode(titleText));
+    }
+    const head = $("sec-act-head");
+    if (head) {
+      head.textContent = "";
+      head.appendChild(pageHeader({
+        icon: "activity",
+        title: titleText,
+        subtitle: "What happened and when. An analysis links to that analysis; a decision links into the findings browser filtered to the one fingerprint it decided about."
+      }));
     }
     const input = $("sec-act-project");
     if (input) input.value = secActState.project;
@@ -1690,9 +1695,8 @@
   }
   function secActPaint() {
     if (!secActOpen) return;
-    const host = $("sec-act-table"), pager = $("sec-act-pager"), side = $("sec-act-side");
+    const host = $("sec-act-table"), side = $("sec-act-side");
     if (host) host.textContent = "";
-    if (pager) pager.textContent = "";
     if (side) side.textContent = "";
     if (!host) return;
     if (secActState.error) {
@@ -1705,7 +1709,6 @@
     const data = secActState.data;
     if (!data) return;
     host.appendChild(secActTable(data));
-    if (pager) pager.appendChild(secActPager(data));
     if (side) side.appendChild(secActSidebar(data));
   }
   function secActPeriodPhrase() {
@@ -1715,16 +1718,25 @@
     const scope = secActState.project ? "for " + secActState.project + " " : "";
     return "No activity recorded " + scope + secActPeriodPhrase() + ".";
   }
+  var SEC_ACT_TABLE_COLS = [
+    ["time", "Time"],
+    ["event", "Event"],
+    ["detail", "Detail"],
+    ["project", "Project"],
+    ["related", "Related"]
+  ];
   function secActTable(data) {
     const events = data.events || [];
     if (!events.length) return secEl("div", "tblempty", secActEmptyMessage());
-    const wrap = secEl("div", "tablewrap");
+    const wrap = secEl("div", "table-card");
+    const scroll = secEl("div", "table-scroll");
     const table = document.createElement("table");
+    table.className = "secact-table";
     const thead = document.createElement("thead");
     const htr = document.createElement("tr");
-    ["Time", "Event", "Detail", "Project", "Related"].forEach((h) => {
+    SEC_ACT_TABLE_COLS.forEach(([, label]) => {
       const th = document.createElement("th");
-      th.textContent = h;
+      th.textContent = label;
       htr.appendChild(th);
     });
     thead.appendChild(htr);
@@ -1732,7 +1744,9 @@
     const tbody = document.createElement("tbody");
     events.forEach((e) => tbody.appendChild(secActRow(e)));
     table.appendChild(tbody);
-    wrap.appendChild(table);
+    scroll.appendChild(table);
+    wrap.appendChild(scroll);
+    wrap.appendChild(secActPager(data));
     return wrap;
   }
   function secActRow(e) {
@@ -1802,28 +1816,34 @@
     if (close && dlg) close.addEventListener("click", () => dlg.close());
   }
   function secActPager(data) {
-    const wrap = secEl("div", "pager");
+    const foot = secEl("div", "table-foot");
+    foot.appendChild(secEl("span", "table-foot-info", "Page " + (data.page || 1)));
     const page = data.page || 1;
     const perPage = data.per_page || ACT_PER_PAGE;
     const hasMore = (data.events || []).length >= perPage;
-    const prev = secEl("button", "btn ghost", "Prev");
+    const nav = secEl("div", "table-foot-pager");
+    const prev = secEl("button", "btn ghost");
     prev.type = "button";
+    prev.appendChild(secIcon("cleft"));
+    prev.appendChild(document.createTextNode("Prev"));
     prev.disabled = page <= 1;
     prev.onclick = () => {
       secActState.page = Math.max(1, page - 1);
       secActLoad();
     };
-    wrap.appendChild(prev);
-    wrap.appendChild(secEl("span", null, "Page " + page));
-    const next = secEl("button", "btn ghost", "Next");
+    nav.appendChild(prev);
+    const next = secEl("button", "btn ghost");
     next.type = "button";
+    next.appendChild(document.createTextNode("Next"));
+    next.appendChild(secIcon("cright"));
     next.disabled = !hasMore;
     next.onclick = () => {
       secActState.page = page + 1;
       secActLoad();
     };
-    wrap.appendChild(next);
-    return wrap;
+    nav.appendChild(next);
+    foot.appendChild(nav);
+    return foot;
   }
   function secActSidebar(data) {
     const wrap = document.createElement("div");
@@ -1854,7 +1874,9 @@
   }
   function secActProjectsCard(projects) {
     const box = secEl("div", "card");
-    box.appendChild(secEl("h3", null, "Most active projects"));
+    const head = secEl("div", "secpj-cardhead");
+    head.appendChild(secEl("h3", null, "Most active projects"));
+    box.appendChild(head);
     if (secActState.project) {
       box.appendChild(secEl("div", "tblempty", "Scoped to one project."));
       return box;
@@ -2020,9 +2042,9 @@
     const cap = secEl(
       "div",
       "secpj-caption",
-      "Posture and categories below span " + scope + ". "
+      "Posture and categories below span " + scope + "."
     );
-    cap.appendChild(secEl("span", null, SEC_FLOOR_SCOPE_NOTE));
+    cap.title = SEC_FLOOR_SCOPE_NOTE;
     return cap;
   }
   function secRenderProjectOverview(payload) {
@@ -2099,19 +2121,31 @@
     });
     return wrap;
   }
+  var SEC_RUNS_COLS = [
+    ["run", "Run"],
+    ["profile", "Profile"],
+    ["branch", "Branch"],
+    ["commit", "Commit"],
+    ["duration", "Duration"],
+    ["findings", "Findings recorded"],
+    ["state", "State"],
+    ["date", "Date"]
+  ];
   function secRunsTable(runs) {
     const filtered = secRunsFilter ? runs.filter((r) => r.state === secRunsFilter) : runs;
     if (!filtered.length) {
       return secEl("div", "tblempty", runs.length ? "Nothing in that state." : "No analyses of this project yet.");
     }
-    const wrap = secEl("div", "tablewrap");
+    const wrap = secEl("div", "table-card");
+    const scroll = secEl("div", "table-scroll");
     const table = document.createElement("table");
+    table.className = "secpj-runstable";
     const thead = document.createElement("thead");
     const htr = document.createElement("tr");
-    ["Run", "Profile", "Branch", "Commit", "Duration", "Findings recorded", "State", "Date"].forEach((h) => {
+    SEC_RUNS_COLS.forEach(([key, label]) => {
       const th = document.createElement("th");
-      th.textContent = h;
-      if (h === "Findings recorded") {
+      th.textContent = label;
+      if (key === "findings") {
         th.title = "How many findings this run recorded \u2014 the checklist chips below can total more, since they also carry forward findings that disappeared since the previous analysis of this branch, marked fixed or pending.";
       }
       htr.appendChild(th);
@@ -2121,7 +2155,16 @@
     const tbody = document.createElement("tbody");
     filtered.forEach((r) => tbody.appendChild(secRunRow(r)));
     table.appendChild(tbody);
-    wrap.appendChild(table);
+    scroll.appendChild(table);
+    wrap.appendChild(scroll);
+    wrap.appendChild(tableFooter({
+      shown: { from: 1, to: filtered.length },
+      total: filtered.length,
+      noun: "run",
+      page: 1,
+      pages: 1,
+      numbered: true
+    }));
     return wrap;
   }
   function secRunRow(r) {
@@ -3199,5 +3242,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 053fa3281aff50dfbe77bb072780b04bec96972cb381b3a93f63e7ba78891841 */
-/* ui-sources: 1bf74edacfb2114588ecbb01f1c582db3db9ccbe33cd911178c3014fd973449f */
+/* ui-bundle: a44d7f7d4ae98e86c831440579d924c88c04ed203c26a0eb17f5931223229aa8 */
+/* ui-sources: 18016a8f07791ed8feea91f72aa014acd1222a8f032bc426bda7e8c165444384 */

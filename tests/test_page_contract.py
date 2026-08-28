@@ -1820,7 +1820,16 @@ def test_the_cells_icon_rule_cannot_repaint_the_favourite_star(srv):
     # third table in this view from inheriting either set unnoticed.
     (".secidx-fleet", "SEC_PROJECT_COLS", "security"),
     (".secidx-recent", "SEC_RECENT_COLS", "security"),
-], ids=["jobs", "projects", "runs", "security-fleet", "security-recent"])
+    # Three more joined by Phase 4 Task 6's own footer work (project-screen.js,
+    # findings-screen.js, activity-screen.js) -- same reasoning, same fix:
+    # each table gets its OWN scoped class and width set rather than a
+    # view-wide rule, and its own row here rather than trusting the other
+    # security rows to somehow also cover it.
+    (".secpj-runstable", "SEC_RUNS_COLS", "security"),
+    (".secfind-table", "SEC_FIND_TABLE_COLS", "security"),
+    (".secact-table", "SEC_ACT_TABLE_COLS", "security"),
+], ids=["jobs", "projects", "runs", "security-fleet", "security-recent",
+        "security-runs", "security-findings", "security-activity"])
 def test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column(
         srv, tmp_path, view, const_name, bundle):
     """Must fail against the pre-fix CSS (Security's th:nth-child(6) has no
@@ -3806,14 +3815,25 @@ def test_the_project_runs_header_names_what_its_own_column_recorded(srv, tmp_pat
     a `title` explaining the distinction, rather than either number being
     changed to match the other."""
     block = _security_js(srv)
-    deps = "\n".join(_plainfn(block, n) for n in ("secEl", "secRunRow", "secRunsTable"))
+    # secRunsTable now builds its own footer with the bridged tableFooter()
+    # (Phase 4 Task 6) -- its real implementation (ui/app/chrome.js), not a
+    # stub, joins the dependency list the same way test_the_pager_math_and_
+    # button_disabling_at_both_edges (findings-screen.js's own pager test)
+    # already pulls it in for real.
+    chrome_deps = _plainfn(_app_js(srv), "el") + "\n" + _plainfn(_app_js(srv), "tableFooter")
+    deps = (_const(block, "SEC_RUNS_COLS") + chrome_deps + "\n"
+            + "\n".join(_plainfn(block, n) for n in ("secEl", "secRunRow", "secRunsTable")))
     script = tmp_path / "pj-runs-header.js"
     script.write_text(_PROJECT_DOM_HARNESS + """
     let secRunsFilter = "";
     """ + deps + """
     const wrap = secRunsTable([{id: 2, profile: "quick", repo: "web", branch: "main",
       commit_sha: "abc123def456", started: 100, ended: 110, findings: 1, state: "done"}]);
-    const thead = wrap.childNodes[0].childNodes[0];
+    // table-card -> table-scroll -> table -> thead -> tr (Phase 4 Task 6 put
+    // the table inside a table-card, one level deeper than the bare
+    // .tablewrap this used to walk into directly).
+    const table = wrap.childNodes[0].childNodes[0];
+    const thead = table.childNodes[0];
     const htr = thead.childNodes[0];
     const headers = htr.childNodes.map(th => ({text: th.textContent, title: th.title}));
     console.log(JSON.stringify(headers));
@@ -4323,7 +4343,10 @@ def test_clicking_a_sort_header_toggles_direction_then_switching_column_resets_i
       branch: "main", first_seen: 1, occurrences: [], fingerprint: "a".repeat(64)}],
       total: 1, unique: 1, page: 3, per_page: 25};
     const section = secFindTableSection(fs, data);
-    const headerRow = section.childNodes[0].childNodes[0].childNodes[0];
+    // table-card -> table-scroll -> table -> thead -> tr (Phase 4 Task 6 put
+    // the table inside a table-card, one level deeper than the bare
+    // .tablewrap this used to walk into directly).
+    const headerRow = section.childNodes[0].childNodes[0].childNodes[0].childNodes[0];
     const severityBtn = headerRow.childNodes[0].childNodes[0];
     const titleBtn = headerRow.childNodes[1].childNodes[0];
     severityBtn.onclick();
@@ -4342,30 +4365,63 @@ def test_clicking_a_sort_header_toggles_direction_then_switching_column_resets_i
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_pager_math_and_button_disabling_at_both_edges(srv, tmp_path):
+    """secFindPager (Phase 4 Task 6) now builds the bridged tableFooter() --
+    AllFindings.png's own "Showing X to Y of N findings" + pager, replacing
+    the old bare "Page X / Y · N rows" line that sat outside the table's own
+    box -- and wires its own Prev/Next by POSITION (tableFooter's own
+    non-numbered output is always an info span, then a nav holding exactly
+    Prev then Next), not by id: this module mounts into two hosts at once
+    (see this file's own header comment), and a fixed id would collide the
+    moment both mounts' footers rendered together. Driving the REAL
+    tableFooter (ui/app/chrome.js) here, not a stub, so a regression in
+    EITHER half -- secFindPager's own from/to and page/pages math, or
+    tableFooter's own disabled-state and pluralisation rules -- fails this,
+    the same `el`+`tableFooter` combination
+    test_table_footer_takes_an_irregular_plural_and_a_numbered_pager already
+    drives for real above."""
     block = _security_js(srv)
+    chrome_deps = _plainfn(_app_js(srv), "el") + "\n" + _plainfn(_app_js(srv), "tableFooter")
     deps = _plainfn(block, "secEl") + "\n" + _plainfn(block, "secFindPager")
     script = tmp_path / "find-pager.js"
     script.write_text(_INDEX_DOM_HARNESS + """
-    function secFindRefresh(_fs){}
+    let refreshedTo = null;
+    function secFindRefresh(_fs){ refreshedTo = _fs.page; }
     const fs = {page: 1};
-    """ + deps + """
+    """ + chrome_deps + "\n" + deps + """
     function btns(p){
-      return {prevDisabled: p.childNodes[0].disabled, nextDisabled: p.childNodes[2].disabled,
-              text: p.childNodes[1].textContent};
+      const nav = p.childNodes[1];
+      return {info: p.childNodes[0].textContent,
+              prevDisabled: nav.childNodes[0].disabled, nextDisabled: nav.childNodes[1].disabled,
+              nav};
     }
+    const first = btns(secFindPager(fs, {total: 47, per_page: 25, page: 1}));
+    const last = btns(secFindPager(fs, {total: 47, per_page: 25, page: 2}));
+    const empty = btns(secFindPager(fs, {total: 0, per_page: 25, page: 1}));
+
+    fs.page = 1;
+    first.nav.childNodes[1].onclick();      // Next, from page 1 of 2
+    const nextClickedTo = refreshedTo;
+    fs.page = 2;
+    last.nav.childNodes[0].onclick();       // Prev, from page 2 of 2
+    const prevClickedTo = refreshedTo;
+
     console.log(JSON.stringify({
-      first: btns(secFindPager(fs, {total: 47, per_page: 25, page: 1})),
-      last: btns(secFindPager(fs, {total: 47, per_page: 25, page: 2})),
-      empty: btns(secFindPager(fs, {total: 0, per_page: 25, page: 1})),
+      first: {info: first.info, prevDisabled: first.prevDisabled, nextDisabled: first.nextDisabled},
+      last: {info: last.info, prevDisabled: last.prevDisabled, nextDisabled: last.nextDisabled},
+      empty: {info: empty.info, prevDisabled: empty.prevDisabled, nextDisabled: empty.nextDisabled},
+      nextClickedTo, prevClickedTo,
     }));
     """)
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
     assert out["first"]["prevDisabled"] is True and out["first"]["nextDisabled"] is False
-    assert "Page 1 / 2" in out["first"]["text"] and "47 rows" in out["first"]["text"]
+    assert out["first"]["info"] == "Showing 1 to 25 of 47 findings", out["first"]["info"]
     assert out["last"]["prevDisabled"] is False and out["last"]["nextDisabled"] is True
+    assert out["last"]["info"] == "Showing 26 to 47 of 47 findings", out["last"]["info"]
     assert out["empty"]["prevDisabled"] is True and out["empty"]["nextDisabled"] is True
-    assert "1 / 1" in out["empty"]["text"] and "0 rows" in out["empty"]["text"]
+    assert out["empty"]["info"] == "Showing 0 to 0 of 0 findings", out["empty"]["info"]
+    assert out["nextClickedTo"] == 2, "Next must advance fs.page"
+    assert out["prevClickedTo"] == 1, "Prev must step fs.page back"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -4732,20 +4788,28 @@ def test_most_active_projects_is_hidden_behind_one_line_once_scoped(srv, tmp_pat
 def test_the_pager_infers_a_next_page_from_a_full_page_of_rows(srv, tmp_path):
     """No `total` travels in the payload (see cmd_activity_data's own
     docstring) -- "Next" is enabled exactly when this page came back full,
-    disabled the moment it does not, and "Prev" is disabled on page 1."""
+    disabled the moment it does not, and "Prev" is disabled on page 1.
+    secActPager (Phase 4 Task 6) now builds a `.table-foot`-shaped footer,
+    the same LOOK chrome.js's own tableFooter gives every other table-card
+    in this app, hand-built rather than calling that bridged function
+    directly since its own "Showing X to Y of N" sentence needs a real
+    total this endpoint deliberately does not carry -- the mechanism this
+    test pins (Prev/Next disabled state, inferred from a full page) is
+    unchanged; only the child it lives under one level deeper now."""
     block = _security_js(srv)
-    deps = _activity_deps(block, "secEl", "secActPager")
+    deps = _activity_deps(block, "secEl", "secIcon", "secActPager")
     script = tmp_path / "act-pager.js"
     script.write_text(_PROJECT_DOM_HARNESS + """
     let secActState = {page: 1};
     """ + deps + """
     function pagerState(data){
-      // secActPager's own, fixed child order: Prev button, the "Page N"
-      // span, Next button -- indexed rather than filtered by tagName, since
-      // FakeElement (unlike a real DOM) does not uppercase what was passed
-      // to document.createElement.
+      // secActPager's own, fixed shape: an info span, then a nav div
+      // holding exactly Prev then Next -- indexed rather than filtered by
+      // tagName, since FakeElement (unlike a real DOM) does not uppercase
+      // what was passed to document.createElement.
       const p = secActPager(data);
-      return {prevDisabled: p.childNodes[0].disabled, nextDisabled: p.childNodes[2].disabled};
+      const nav = p.childNodes[1];
+      return {prevDisabled: nav.childNodes[0].disabled, nextDisabled: nav.childNodes[1].disabled};
     }
     const full = pagerState({page: 1, per_page: 25, events: new Array(25).fill(0)});
     const partial = pagerState({page: 1, per_page: 25, events: new Array(10).fill(0)});
