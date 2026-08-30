@@ -1240,6 +1240,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Back no longer stops on a duplicate of the screen it is already showing.**
+  Two navigation paths could fire for one gesture — opening the Activity
+  screen re-asserts the security view on its way — and each pushed the same
+  history state, so one press of Back appeared to do nothing. `pushNav` now
+  drops a push whose state equals the current entry; an A→B→A walk still
+  stacks all three.
+
 - **"1 of 2 branchs" reads "branches" again.** The capped-scope note's
   naive `+s` pluraliser met the word "branch" on the branches tab; nouns
   ending in ch/sh/s/x/z now take "es".

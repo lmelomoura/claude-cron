@@ -4078,6 +4078,12 @@ function currentNavState(){
     : {view: currentView};
 }
 function pushNav(state){
+  // Dedup against the CURRENT entry: two navigation paths can both fire for
+  // one gesture (opening the Activity screen re-asserts the security view on
+  // its way, for one), and each pushing the same state gave Back a stop that
+  // showed the screen it was already on. Comparing serialised state is enough
+  // -- states are tiny plain objects built from literals.
+  if(JSON.stringify(history.state) === JSON.stringify(state)) return;
   history.pushState(state, "", location.href);
 }
 function restoreNav(state){

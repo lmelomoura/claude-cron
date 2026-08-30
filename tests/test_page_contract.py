@@ -6588,6 +6588,36 @@ def _dialog_static_ids(page, dialog_id):
     return re.findall(r'id="([^"]+)"', page[start:end])
 
 
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_pushnav_never_stacks_the_state_it_is_already_on(srv, tmp_path):
+    """Two navigation paths can fire for one gesture (opening the Activity
+    screen re-asserts the security view on its way), and each pushing the
+    same state gave Back a stop that showed the screen it was already on --
+    the duplicate-entry wart both the implementer's and the coordinator's
+    live back-walks hit. pushNav dedups against the CURRENT entry only:
+    A -> B -> A must still stack three."""
+    js = _js(srv)
+    fn = _plainfn(js, "pushNav")
+    script = tmp_path / "pushnav-dedup.js"
+    script.write_text("""
+    const entries = [];
+    const history = {state: null,
+      pushState(s){ this.state = s; entries.push(s); }};
+    const location = {href: "/"};
+    """ + fn + """
+    pushNav({view: "jobs"});
+    pushNav({view: "jobs"});
+    pushNav({view: "security"});
+    pushNav({view: "jobs"});
+    console.log(JSON.stringify(entries.map(e => e.view)));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out == ["jobs", "security", "jobs"], (
+        f"expected the duplicate push dropped and the A-B-A kept: {out}"
+    )
+
+
 def test_the_poll_never_reaches_into_a_form_dialog(srv):
     """render() runs on every 5-second poll and rebuilds the page's views
     from scratch. If it, or anything it calls directly, ever reached into
