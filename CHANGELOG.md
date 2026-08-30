@@ -1272,6 +1272,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The Findings tab stops showing two breadcrumbs.** The project header now
+  carries "Security › project" for every tab, and the Findings pane still
+  drew its own trail beneath it. The pane's copy — and its orphaned CSS —
+  are gone; one breadcrumb, owned by the header.
+
 - **Back no longer stops on a duplicate of the screen it is already showing.**
   Two navigation paths could fire for one gesture — opening the Activity
   screen re-asserts the security view on its way — and each pushed the same

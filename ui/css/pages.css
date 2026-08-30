@@ -1248,12 +1248,6 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    that file's own "ONE MODULE, TWO HOMES" comment): it does not reach into
    or replace project-screen.js's own shared #sec-back/#sec-title/tab strip,
    which still renders above it exactly as it does for the other four tabs. */
-.secfind-crumbs{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted);
-  margin:0 0 12px;flex-wrap:wrap}
-.secfind-crumbs button{font:inherit;font-size:inherit;color:var(--muted);background:none;
-  border:0;padding:0;cursor:pointer}
-.secfind-crumbs button:hover{color:var(--accent)}
-.secfind-crumbs .sep{color:var(--line);display:inline-flex}
 .secfind-crumbs .sep .ic{width:13px;height:13px}
 .secfind-crumbs .current{color:var(--ink);font-weight:650}
 .secfind-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;

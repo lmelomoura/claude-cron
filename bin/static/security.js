@@ -1183,23 +1183,6 @@
   function secFindHeader(fs, data) {
     const wrap = secEl("div");
     if (((fs.filters || {}).fingerprint || "").trim()) return wrap;
-    const crumbs = secEl("nav", "secfind-crumbs");
-    const secBtn = secEl("button", null, "Security");
-    secBtn.type = "button";
-    secBtn.onclick = () => secBack();
-    crumbs.appendChild(secBtn);
-    const sep1 = secEl("span", "sep");
-    sep1.appendChild(secIcon("cright"));
-    crumbs.appendChild(sep1);
-    const projBtn = secEl("button", null, fs.project);
-    projBtn.type = "button";
-    projBtn.onclick = () => secSwitchProjectTab("overview");
-    crumbs.appendChild(projBtn);
-    const sep2 = secEl("span", "sep");
-    sep2.appendChild(secIcon("cright"));
-    crumbs.appendChild(sep2);
-    crumbs.appendChild(secEl("span", "current", "Findings"));
-    wrap.appendChild(crumbs);
     const head = secEl("div", "secfind-head");
     const titleWrap = secEl("div");
     const titleLine = secEl("div", "secfind-head-title");
@@ -4009,5 +3992,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 324ec1dde18705e2be204a74c36d9ce1eb055d4387b64578f2b140ad06771242 */
-/* ui-sources: 9dfe48dabbcc3db3e8eb2549403c3763dd1bbb150b7017720efc4f86b2592d98 */
+/* ui-bundle: 4f0d7426490c938d675ea3db732991fcc89d18bd0a0d2f980150cc31023b4bba */
+/* ui-sources: db4d393b9fa63afaac76b9c97d555a961ca919a06c70790a4496e869247c93e8 */

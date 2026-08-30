@@ -1754,12 +1754,6 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    that file's own "ONE MODULE, TWO HOMES" comment): it does not reach into
    or replace project-screen.js's own shared #sec-back/#sec-title/tab strip,
    which still renders above it exactly as it does for the other four tabs. */
-.secfind-crumbs{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted);
-  margin:0 0 12px;flex-wrap:wrap}
-.secfind-crumbs button{font:inherit;font-size:inherit;color:var(--muted);background:none;
-  border:0;padding:0;cursor:pointer}
-.secfind-crumbs button:hover{color:var(--accent)}
-.secfind-crumbs .sep{color:var(--line);display:inline-flex}
 .secfind-crumbs .sep .ic{width:13px;height:13px}
 .secfind-crumbs .current{color:var(--ink);font-weight:650}
 .secfind-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;
@@ -2452,5 +2446,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: 54c4d52d8bd52b95fd23dca852037b7eeb66bcf7d19b09292a8f1da1482a4547 */
-/* ui-sources: 9dfe48dabbcc3db3e8eb2549403c3763dd1bbb150b7017720efc4f86b2592d98 */
+/* ui-bundle: 27223bae54564bea5fe6a1b9e8f3366abb24e4949839b56747625995f24af405 */
+/* ui-sources: db4d393b9fa63afaac76b9c97d555a961ca919a06c70790a4496e869247c93e8 */

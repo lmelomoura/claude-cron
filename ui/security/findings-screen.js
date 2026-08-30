@@ -287,22 +287,10 @@ function secFindHeader(fs, data){
   const wrap = secEl("div");
   if(((fs.filters || {}).fingerprint || "").trim()) return wrap;
 
-  const crumbs = secEl("nav", "secfind-crumbs");
-  const secBtn = secEl("button", null, "Security");
-  secBtn.type = "button";
-  secBtn.onclick = () => secBack();
-  crumbs.appendChild(secBtn);
-  const sep1 = secEl("span", "sep"); sep1.appendChild(secIcon("cright"));
-  crumbs.appendChild(sep1);
-  const projBtn = secEl("button", null, fs.project);
-  projBtn.type = "button";
-  projBtn.onclick = () => secSwitchProjectTab("overview");
-  crumbs.appendChild(projBtn);
-  const sep2 = secEl("span", "sep"); sep2.appendChild(secIcon("cright"));
-  crumbs.appendChild(sep2);
-  crumbs.appendChild(secEl("span", "current", "Findings"));
-  wrap.appendChild(crumbs);
-
+  // The breadcrumb this pane used to draw for itself moved up: the project
+  // header (project-screen.js) now carries "Security › <project>" for every
+  // tab, so a second trail here stacked two breadcrumbs on one screen. The
+  // pane keeps only its own title row below.
   const head = secEl("div", "secfind-head");
   const titleWrap = secEl("div");
   const titleLine = secEl("div", "secfind-head-title");
