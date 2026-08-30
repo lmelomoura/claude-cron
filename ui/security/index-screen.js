@@ -1324,7 +1324,7 @@ const SEV_STROKE = {critical: "var(--sev-crit)", high: "var(--sev-high)",
                     medium: "var(--sev-med)", low: "var(--sev-low)",
                     info: "var(--sev-info)"};
 
-function secIndexDonutSvg(donut){
+export function secIndexDonutSvg(donut){
   const total = SEV_ORDER5.reduce((n, s) => n + (donut[s] || 0), 0);
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
@@ -1409,11 +1409,21 @@ const DONUT_PILL_TITLE = "Distinct problems (fingerprints) — the same finding 
    both the dot and (via CSS) nothing else read -- one selector, matching
    `.secidx-sev3`'s own chips and SEV_STROKE's own donut wedges, the "one
    vocabulary" this screen now keeps everywhere severity has a colour. */
-function secIndexDonutLegend(donut, opts){
+export function secIndexDonutLegend(donut, opts){
   const showPercent = !!(opts && opts.showPercent);
+  // showZero (project-screen.js's own Runs tab, a single selected run's
+  // posture): render EVERY severity, a zero one included and muted, rather
+  // than omitted -- the mockup's own "Findings by severity" legend for one
+  // run shows "Low 0 (0%)"/"Info 0 (0%)" rather than dropping a row a
+  // reader could otherwise misread as "not tracked" instead of "tracked,
+  // currently zero". Opt-in, defaulting OFF: every existing caller (the
+  // index screen's own Findings-overview card, the project sidebar's
+  // cross-branch donut) keeps hiding a zero severity exactly as before --
+  // this task's mockup is the Runs tab's alone.
+  const showZero = !!(opts && opts.showZero);
   const wrap = secEl("div", "sevpills" + (showPercent ? " secidx-findlegend" : ""));
   const total = SEV_ORDER5.reduce((n, s) => n + (donut[s] || 0), 0);
-  if(!total){
+  if(!total && !showZero){
     wrap.appendChild(secEl("span", "sevpill clean", "nothing open"));
     return wrap;
   }
@@ -1427,18 +1437,19 @@ function secIndexDonutLegend(donut, opts){
     return wrap;
   }
   SEV_ORDER5.forEach(sev => {
-    if(!donut[sev]) return;
-    const row = secEl("div", "secidx-legendrow " + sev);
+    const n = donut[sev] || 0;
+    if(!n && !showZero) return;
+    const row = secEl("div", "secidx-legendrow " + sev + (n ? "" : " zero"));
     row.title = DONUT_PILL_TITLE;
     row.appendChild(secEl("span", "secidx-legenddot"));
     row.appendChild(secEl("span", "secidx-legendname",
       sev[0].toUpperCase() + sev.slice(1)));
-    // `total` is never 0 here (the guard above already returned "nothing
-    // open" for that case), and neither is `donut[sev]` (the `if(!donut[sev])
-    // return` just above it) -- so this division never sees a zero
-    // denominator and never needs the dash rule the brief names for one.
+    // A zero row's own percentage reads "0 (0%)", never "0 (0.0%)" -- the
+    // one-decimal precision below is for splitting a real total between real
+    // severities, and a bare "0%" (no division at all) is what the mockup
+    // itself draws for a severity that carries none of it.
     row.appendChild(secEl("span", "secidx-legendcount",
-      donut[sev] + " (" + ((donut[sev] / total) * 100).toFixed(1) + "%)"));
+      n + " (" + (n ? ((n / total) * 100).toFixed(1) : "0") + "%)"));
     wrap.appendChild(row);
   });
   return wrap;
@@ -1462,7 +1473,7 @@ function secIndexDonutLegend(donut, opts){
    The raw rule id is never dropped, only demoted to `.title`: an operator
    who greps the ledger by rule id still finds it one hover away, even on a
    row whose visible name is now a human label rather than that id. */
-function secIndexCategories(categories){
+export function secIndexCategories(categories){
   if(!categories.length){
     return secEl("div", "tblempty", "No open findings to categorise.");
   }

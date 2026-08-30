@@ -186,6 +186,33 @@ def finding_counts_by_analysis(conn, project):
         " WHERE a.project=? GROUP BY f.analysis_id", (project,))}
 
 
+def finding_severity_by_analysis(conn, project):
+    """The same per-analysis COUNT(*) as `finding_counts_by_analysis`, broken
+    down one level further by severity -- `{analysis_id: {severity: count}}`
+    -- for the Runs table's own per-severity sub-line under each row's total
+    (the mockup's "64C 4H 3M 0L"). A SEPARATE function and a SEPARATE query,
+    not a reshape of `finding_counts_by_analysis` itself: that function's
+    return shape (`{analysis_id: int}`) is pinned by
+    tests/security/test_queries.py -- an exactly-one-statement assertion and
+    three more that compare its values straight to an int -- and every one of
+    those would have to change for a fact (per-analysis total) that has not
+    changed at all. This is still ONE grouped query for the whole project
+    (`GROUP BY f.analysis_id, f.severity`), O(1) round trips like its sibling,
+    never O(analyses); it costs exactly one more SELECT per project-data call
+    than before this screen needed a per-row severity split, not one per row
+    and not one per poll tick beyond what `finding_counts_by_analysis`
+    already paid. Never filtered by state, for the identical reason that
+    function never is: a raw count of what an analysis recorded, not a
+    reading of what is open now."""
+    out = {}
+    for r in conn.execute(
+            "SELECT f.analysis_id, f.severity, COUNT(*) c FROM finding f"
+            " JOIN analysis a ON a.id = f.analysis_id"
+            " WHERE a.project=? GROUP BY f.analysis_id, f.severity", (project,)):
+        out.setdefault(r["analysis_id"], {})[r["severity"]] = r["c"]
+    return out
+
+
 def _latest_finished(conn, project, branch, since=None):
     """The branch's newest finished analysis -- or, when `since` is given
     (a unix timestamp), the newest one that ALSO started at or after it.

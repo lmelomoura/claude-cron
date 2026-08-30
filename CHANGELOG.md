@@ -19,6 +19,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The project screen's shared header and its Runs tab now match the
+  approved mockup: a breadcrumb, a name/badge/description row, and three
+  columns instead of one long list over a single detail pane.** The old
+  `#sec-title`/`#sec-back` pairing is now a "Security › Minerva" breadcrumb
+  (scoped to this screen, not the app's own shared `<header class="topbar">`
+  — the identical boundary findings-screen.js's own breadcrumb already drew
+  for itself); the project's icon, name, "Security enabled" badge and
+  description now paint instantly from the client's own project list,
+  before the project-data fetch that used to be the only source for any of
+  it even starts. The Runs tab is now "Analysis runs" (state chips, a
+  four-column table — Run/Status/Findings recorded/Date, sortable, with a
+  per-row severity breakdown reading e.g. "64C 4H 3M 0L" and an accent
+  highlight on whichever run is on screen) beside the selected run's own
+  card (a meta grid, the incomplete/coverage/live-run notices unchanged,
+  a "Findings recorded" strip, and a search/category/state-Filters bar over
+  its finding cards, one click's own decision flow unchanged underneath).
+  The right rail becomes run-scoped while this tab is open — "Findings by
+  severity" and "Top issue categories" now read the SELECTED run's own
+  checklist instead of the project's cross-branch rollup, two separate
+  cards reusing the index screen's own donut/legend/categories builders
+  (newly exported, and the legend gained an opt-in `showZero` reading for
+  a severity currently at none) — and fall back to the original project-
+  wide donut on every other tab, unchanged. One new field,
+  `findings_by_severity` (`queries.finding_severity_by_analysis`, one more
+  grouped query alongside the existing per-analysis COUNT(*)), is what
+  makes the per-row severity breakdown possible without a query per row;
+  everything else in this screen was already in hand client-side. The old
+  four-button download row is still in the DOM (every pinned id and call
+  the download tests hold it to is untouched) but hidden behind the run
+  head's own download icon and kebab, which call the identical
+  `secDownloadReport`.
+
 - **A `git pull` under a running server now serves fresh assets on the very
   next reload — no restart required.** The build id stamped into every
   asset's `?v=` (and reported to an already-open tab's own 5-second poll)

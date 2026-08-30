@@ -3755,6 +3755,12 @@ def test_switching_project_tabs_shows_one_pane_and_hides_the_other(srv, tmp_path
     script = tmp_path / "pj-tabs.js"
     script.write_text(_PROJECT_DOM_HARNESS + """
     let secProjectTab = "overview";
+    // secSwitchProjectTab now also repaints the sidebar through this cache
+    // (secRenderProjectSidebar, not extracted here) -- null, exactly the
+    // real module's own value before the first project-data fetch answers,
+    // is what keeps that call a no-op so this test stays about pane
+    // visibility alone.
+    let secProjectCache = null;
     """ + deps + """
     secRenderTabs();
     const initial = {ov: _els["sec-pj-overview"].hidden, rn: _els["sec-pj-runs"].hidden};
@@ -3924,16 +3930,25 @@ def test_the_project_runs_header_names_what_its_own_column_recorded(srv, tmp_pat
     # lowercase word it used to -- both that function and the label map it
     # reads join the dependency list for the same reason SEC_RUNS_COLS
     # already does: secRunRow is exercised for real below, not stubbed.
+    # secIcon/SEV_LETTER/secRunSeverityLine (Phase: Runs tab rebuild) join it
+    # for the identical reason: the sortable Date header and the FINDINGS
+    # cell's own per-severity sub-line ("64C 4H 3M 0L") are both real code
+    # paths this table now runs through, not stubs standing in for them.
     deps = (_const(block, "SEC_RUNS_COLS") + _const(block, "SEC_RUN_STATUS_LABEL")
-            + chrome_deps + "\n"
+            + _const(block, "SEV_LETTER") + chrome_deps + "\n"
             + "\n".join(_plainfn(block, n) for n in
-                ("secEl", "secIndexRunStatusPill", "secRunRow", "secRunsTable")))
+                ("secEl", "secIcon", "secIndexRunStatusPill", "secRunSeverityLine",
+                 "secRunRow", "secRunsTable")))
     script = tmp_path / "pj-runs-header.js"
     script.write_text(_PROJECT_DOM_HARNESS + """
     let secRunsFilter = "";
+    // secRunsTable's own Date-column sort state -- module-level in the real
+    // file, declared plainly here the same way secRunsFilter already is.
+    let secRunsSortDir = "desc";
     """ + deps + """
     const wrap = secRunsTable([{id: 2, profile: "quick", repo: "web", branch: "main",
-      commit_sha: "abc123def456", started: 100, ended: 110, findings: 1, state: "done"}]);
+      commit_sha: "abc123def456", started: 100, ended: 110, findings: 1,
+      findings_by_severity: {high: 1}, state: "done"}]);
     // table-card -> table-scroll -> table -> thead -> tr (Phase 4 Task 6 put
     // the table inside a table-card, one level deeper than the bare
     // .tablewrap this used to walk into directly).
@@ -4154,6 +4169,12 @@ def test_switching_to_branches_or_reports_hides_the_other_three_panes(srv, tmp_p
     script = tmp_path / "pj-tabs-4.js"
     script.write_text(_PROJECT_DOM_HARNESS + """
     let secProjectTab = "overview";
+    // secSwitchProjectTab now also repaints the sidebar through this cache
+    // (secRenderProjectSidebar, not extracted here) -- null, the real
+    // module's own value before the first project-data fetch answers, is
+    // what keeps that call a no-op so this test stays about pane
+    // visibility alone.
+    let secProjectCache = null;
     """ + deps + """
     function hidden(){
       return {ov: _els["sec-pj-overview"].hidden, rn: _els["sec-pj-runs"].hidden,
@@ -4600,6 +4621,7 @@ def test_switching_to_findings_hides_the_other_four_panes(srv, tmp_path):
     script = tmp_path / "pj-tabs-5.js"
     script.write_text(_PROJECT_DOM_HARNESS + """
     let secProjectTab = "overview";
+    let secProjectCache = null;
     function renderFindings(_host, _project){}
     """ + deps + """
     function hidden(){
@@ -4639,6 +4661,7 @@ def test_the_project_sidebar_hides_for_findings_alone(srv, tmp_path):
     script = tmp_path / "pj-side.js"
     script.write_text(_PROJECT_DOM_HARNESS + """
     let secProjectTab = "overview";
+    let secProjectCache = null;
     function renderFindings(_host, _project){}
     """ + deps + """
     function sideHidden(){ return _els["sec-pj-side"].hidden; }

@@ -939,7 +939,10 @@ def cmd_project_data(args):
     an `is_open` filter over `checklist()`'s output: it is how many findings
     THIS analysis recorded, a fact that cannot change when a later run's
     decision resolves one of them (the Overview's `checklist` counts above
-    are still where "currently open" belongs).
+    are still where "currently open" belongs). `findings_by_severity` is that
+    same total's own breakdown (`queries.finding_severity_by_analysis`),
+    gated identically -- the Runs tab's per-row "64C 4H 3M 0L" sub-line, one
+    more grouped query for the whole table rather than a second pass per row.
 
     `tabs.overview.attempted` is true the moment ANY analysis of this project
     exists, in any state -- distinct from `state` (empty unless a done/capped
@@ -1004,8 +1007,17 @@ def cmd_project_data(args):
 
     # ONE grouped query for the whole Runs tab, replacing what used to be one
     # checklist() call per done/capped row (see this function's own
-    # docstring, and queries.finding_counts_by_analysis's).
+    # docstring, and queries.finding_counts_by_analysis's). A second grouped
+    # query alongside it -- finding_severity_by_analysis -- for the Runs
+    # tab's own per-severity sub-line under each row's total (the mockup's
+    # "64C 4H 3M 0L", shown for every row, not only the one on screen): that
+    # breakdown is not derivable from anything already fetched here, and it
+    # is genuinely a second question ("how many of each severity" vs "how
+    # many"), not a reshape of the first -- see that function's own
+    # docstring for why it is not folded into finding_counts_by_analysis
+    # instead. Still O(1) round trips, never O(analyses).
     finding_counts = queries.finding_counts_by_analysis(conn, args.project)
+    finding_severities = queries.finding_severity_by_analysis(conn, args.project)
     runs = []
     for row in conn.execute(
             "SELECT * FROM analysis WHERE project=? ORDER BY id DESC LIMIT 100",
@@ -1015,9 +1027,13 @@ def cmd_project_data(args):
         # failed analysis has nothing to report here yet -- not because
         # counting its findings would be expensive (a grouped COUNT(*) never
         # was), but because a run that has not closed cleanly has not
-        # finished recording them.
-        r["findings"] = (finding_counts.get(r["id"], 0)
-                         if r["state"] in ("done", "capped") else None)
+        # finished recording them. `findings_by_severity` follows the exact
+        # same gate as `findings` for the exact same reason -- one is the
+        # other's own breakdown, so a row that does not get a total yet must
+        # not get a partial-looking breakdown either.
+        done = r["state"] in ("done", "capped")
+        r["findings"] = finding_counts.get(r["id"], 0) if done else None
+        r["findings_by_severity"] = finding_severities.get(r["id"], {}) if done else None
         runs.append(r)
 
     # A thin projection of the `runs` rows above -- not a second pass over

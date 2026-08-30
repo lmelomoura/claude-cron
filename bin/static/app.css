@@ -816,15 +816,17 @@ footer{margin-top:30px;color:var(--muted);font-size:11px;text-align:center}
    this happened, unlike a body cell, which still wraps. The min-width does
    not change what any of these tables looks like above it; it only turns
    clipping into `.table-scroll`'s own horizontal scrollbar below it. */
-.secpj-runstable{min-width:900px}
-.secpj-runstable th:nth-child(1){width:7%}    /* Run              */
-.secpj-runstable th:nth-child(2){width:9%}    /* Profile          */
-.secpj-runstable th:nth-child(3){width:25%}   /* Branch           */
-.secpj-runstable th:nth-child(4){width:9%}    /* Commit           */
-.secpj-runstable th:nth-child(5){width:10%}   /* Duration         */
-.secpj-runstable th:nth-child(6){width:18%}   /* Findings recorded*/
-.secpj-runstable th:nth-child(7){width:8%}    /* State            */
-.secpj-runstable th:nth-child(8){width:14%}   /* Date             */
+/* Down from eight columns to four (Phase: Runs tab rebuild) -- Profile/
+   Branch/Commit/Duration moved into the selected run's own meta grid; see
+   SEC_RUNS_COLS's own comment (project-screen.js). min-width follows: the
+   old figure sized a table that needed to fit eight columns' worth of real
+   content without truncating, this one only ever holds four, in a column
+   that is itself narrower than the old single-column layout ever was. */
+.secpj-runstable{min-width:420px}
+.secpj-runstable th:nth-child(1){width:14%}   /* Run               */
+.secpj-runstable th:nth-child(2){width:20%}   /* Status            */
+.secpj-runstable th:nth-child(3){width:38%}   /* Findings recorded */
+.secpj-runstable th:nth-child(4){width:28%}   /* Date              */
 /* Nine columns now (Phase 4, AllFindings.png) -- Location and Analysis run
    are new, Category/Branch/First seen narrow to make room, and "State"
    becomes "Status" (SEC_FIND_TABLE_COLS's own label, findings-screen.js) --
@@ -1968,6 +1970,163 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 @media (max-width:900px){
   .secpjside{flex:1 1 100%}
 }
+/* ---------------------------------------------- project screen: Runs tab
+   rebuild (ProjectRuns.png) -- the breadcrumb that replaces the old
+   #sec-title/#sec-back pairing, the name/badge/description row above the
+   meta strip, the Runs tab's own two-column layout (the third column is
+   #sec-pj-side, a flex sibling shared by every tab already, untouched
+   here), and the selected run's own card. All new classes; .secthead
+   itself (the Activity screen's own back row, among others) is untouched. */
+.secpj-crumbs{display:flex;align-items:center;gap:8px;margin:14px 0 0;font-size:12.5px;color:var(--muted)}
+.secpj-crumbs button{font:inherit;font-size:inherit;color:var(--muted);
+  background:none;border:0;padding:0;cursor:pointer}
+.secpj-crumbs button:hover{color:var(--accent)}
+.secpj-crumbs .sep{color:var(--muted);opacity:.6}
+.secpj-crumbs h3{margin:0;font-size:inherit;font-weight:600;color:var(--ink);
+  text-transform:none;letter-spacing:normal}
+.secpjtitle{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:10px 0 4px}
+.secpjtitle-id{display:flex;align-items:center;gap:10px;min-width:0}
+.secpjtitle-id .ic{width:22px;height:22px;color:var(--accent);flex:none}
+.secpjtitle-name{font-size:20px;font-weight:700;color:var(--ink);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.secpjdesc{margin:0 0 16px;color:var(--muted);font-size:12.5px}
+.secpj-fellback{display:inline-flex;align-items:center;gap:6px;color:var(--warn);white-space:nowrap}
+.secpj-fellback .ic{width:13px;height:13px}
+/* `.card`'s own accent border-left is a Jobs-board state cue, not a generic
+   card look (see that class's own comment) -- activity-screen.js already
+   resets it back to plain --line for its two sidebar cards under the name
+   `.secact-sidecard`; this is the identical one-line reset under a name
+   that does not claim an activity-screen origin for the three NEW/changed
+   cards that need it here (the Runs tab's own "Analysis runs" list and its
+   right rail's "Findings by severity"/"Top issue categories"), rather than
+   borrowing a name about a different screen for what is purely a border
+   colour. */
+.secpj-plaincard{border:1px solid var(--line);border-left:1px solid var(--line)}
+/* Stacked, not side-by-side: secIndexDonutLegend's own showPercent rows
+   ("Critical  64 (90.1%)") need more width than the 300px .secpjside
+   (components.css) has left over once the 150px donut sits beside it --
+   exactly why the shared secIndexDonut's OWN default (this same sidebar's
+   other four tabs) already stacks the donut ABOVE its legend rather than
+   beside it, and only flips to a row inside the wider, 424px-flex-basis
+   .secidx-findcard the index screen's own Findings-overview card uses (see
+   .secidx-findbody's own comment). Found live: without this, "Critical"/
+   "Medium"/"Low" truncated to "Crit…"/"M…"/"L…" behind their own ellipsis. */
+.secrun-donutrow{display:flex;flex-direction:column;align-items:center;gap:10px;margin-top:4px}
+.secrun-donutrow .secidx-findlegend{width:100%}
+.secpj-viewallcats{width:100%;justify-content:center;margin-top:14px}
+
+/* The Runs tab's own two columns -- the "Analysis runs" card (fixed,
+   narrower) and the selected run's own card (grows to fill the rest). A
+   plain flex row rather than the .secpjbody/.secpjmain grid the whole
+   PANE already sits inside: that outer one is main-column-plus-sidebar,
+   this is a split WITHIN the main column alone. */
+.secpj-runslayout{display:flex;gap:16px;align-items:flex-start;margin-top:14px}
+.secpj-runsleft{flex:1 1 360px;min-width:300px}
+.secpj-runsmid{flex:2 1 480px;min-width:340px}
+@media (max-width:900px){
+  .secpj-runslayout{flex-direction:column}
+  .secpj-runsleft,.secpj-runsmid{flex:1 1 100%;width:100%}
+}
+.secpj-runslistcard .secchips{margin-bottom:12px}
+/* The selected run's own row -- an accent border standing in for the
+   mockup's own left rail + ring, since a `<tr>` cannot carry the same
+   box-shadow a card can without breaking table-layout:fixed's own column
+   widths. box-shadow (inset) rather than a border, so it never nudges the
+   row's own height or the columns beside it by a border-width. */
+.secpj-runstable tr.secrun-selected{background:var(--accent-soft)}
+.secpj-runstable tr.secrun-selected td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+.secrun-sevline{display:flex;gap:7px;margin-top:3px;font-size:10.5px;
+  font-variant-numeric:tabular-nums;color:var(--muted)}
+.secrun-sevbit.sev-critical{color:var(--sev-crit)}
+.secrun-sevbit.sev-high{color:var(--sev-high)}
+.secrun-sevbit.sev-medium{color:var(--sev-med)}
+.secrun-sevbit.sev-low{color:var(--sev-low)}
+.secrun-findtotal{font-weight:650;color:var(--ink)}
+
+/* The selected run's own card. */
+.secpj-runcard{padding:16px}
+.secrun-head{display:flex;align-items:center;justify-content:space-between;
+  gap:12px;padding-bottom:13px;margin-bottom:13px;border-bottom:1px solid var(--line)}
+.secrun-headtitle{display:flex;align-items:center;gap:10px;min-width:0}
+.secrun-headid{margin:0;font-size:17px;font-weight:700;color:var(--ink);
+  text-transform:none;letter-spacing:normal}
+.secrun-headactions{display:flex;align-items:center;gap:8px;flex:none}
+.secrun-metagrid{display:flex;flex-wrap:wrap;gap:16px 28px;margin-bottom:4px}
+.secrun-metacell{min-width:70px}
+.secrun-metalabel{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--muted);margin-bottom:4px}
+.secrun-metaval{font-size:13px;font-weight:650;color:var(--ink)}
+.secrun-metaval.mono{font:650 12.5px ui-monospace,"SF Mono",Menlo,monospace}
+.secrun-spend{font-size:11.5px;color:var(--muted);margin:6px 0 0}
+.secrun-notice{font-size:12px;color:var(--muted);margin:10px 0 0;line-height:1.55}
+.secrun-notice.warn{color:var(--warn)}
+
+/* "Findings recorded": a bold label, the total, then one dot-pill per
+   severity -- zero ones muted rather than omitted (the mockup's own "0
+   Low"/"0 Info"), the SAME five-severity, tokens-only colour vocabulary
+   SEV_STROKE/.secidx-legendrow already draw from (index-screen.js), never a
+   second palette for a third place severity gets a colour. */
+.secrun-recorded{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;
+  margin:14px 0;font-size:12.5px}
+.secrun-recorded-label{font-weight:650;color:var(--ink)}
+.secrun-recorded-total{color:var(--muted)}
+.secrun-recpill{display:inline-flex;align-items:center;gap:6px;font-weight:600}
+.secrun-recpill.zero{color:var(--muted);opacity:.6;font-weight:500}
+.secrun-recdot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--muted)}
+.secrun-recpill.sev-critical{color:var(--sev-crit)}
+.secrun-recpill.sev-critical .secrun-recdot{background:var(--sev-crit)}
+.secrun-recpill.sev-high{color:var(--sev-high)}
+.secrun-recpill.sev-high .secrun-recdot{background:var(--sev-high)}
+.secrun-recpill.sev-medium{color:var(--sev-med)}
+.secrun-recpill.sev-medium .secrun-recdot{background:var(--sev-med)}
+.secrun-recpill.sev-low{color:var(--sev-low)}
+.secrun-recpill.sev-low .secrun-recdot{background:var(--sev-low)}
+.secrun-recpill.sev-info{color:var(--sev-info)}
+.secrun-recpill.sev-info .secrun-recdot{background:var(--sev-info)}
+/* A zero pill keeps its muted grey text (the rule above) but its dot still
+   carries the severity's own colour, faded -- a reader glancing at the row
+   of dots alone can still tell which is which. */
+.secrun-recpill.zero .secrun-recdot{opacity:.55}
+
+/* Search + Category + the Filters popover -- .toolbar/.searchbox/.picker
+   are all shared (components.css); only the Filters button's own popover
+   shape and the checklist chips' new vertical stack inside it are new. */
+.secpj-findbar{margin:0 0 4px}
+.secrun-filterpick{position:relative;display:inline-flex}
+.secrun-filterpick > summary{list-style:none;cursor:pointer}
+.secrun-filterpick > summary::-webkit-details-marker{display:none}
+.secrun-filterpop{top:calc(100% + 6px);bottom:auto;left:auto;right:0;min-width:230px;
+  max-height:min(360px, 70vh);overflow-y:auto}
+.secrun-filterpop .secchips{flex-direction:column;flex-wrap:nowrap;gap:4px;margin:0}
+.secrun-filterpop .secchip{width:100%;justify-content:space-between;border-radius:8px}
+.secpj-caption[id="sec-summary"]:empty{display:none}
+/* The old always-visible four-format download row -- MD/JSON/HTML/SBOM,
+   directly under the checklist -- is now the run head's own download icon
+   (Markdown, one click) plus its kebab (the other three formats): same
+   ids, same secDownload("<fmt>") calls (still pinned -- see
+   test_every_download_the_server_offers_has_a_button), same #sec-dl-note
+   sentence, just redundant with the new controls above it now, not
+   removed from the DOM. An id selector, not `.secdl` (reports-tab.js
+   builds its OWN, unrelated elements under that same class, one row per
+   analysis -- hiding the class would hide those too). */
+#sec-dl{display:none}
+
+/* A mono code-snippet block, when a finding carries one (secFindingRow,
+   analysis.js) -- dark-on-panel2, the same register `code`/`pre` already
+   read elsewhere on this page, with an optional language tag borrowed from
+   the mockup's own "sql:" prefix. */
+.secsnippet{margin:9px 0 0;padding:9px 11px;background:var(--panel2);
+  border:1px solid var(--line);border-radius:8px;overflow-x:auto}
+.secsnippet-lang{display:inline-block;margin-right:8px;font-size:10.5px;
+  text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.secsnippet code{font:12px ui-monospace,"SF Mono",Menlo,monospace;color:var(--ink);
+  white-space:pre-wrap;word-break:break-word}
+
+/* A zero-count row in secIndexDonutLegend's own opt-in showZero branch
+   (index-screen.js) -- present, not omitted, but read as background rather
+   than a real slice of the total. */
+.secidx-legendrow.zero{opacity:.5}
+
 /* --------------------------------------------------------- security index
    The project table, the recent-analyses feed and the severity donut all
    paint into the same #sec-list host the flat project list used to fill --
@@ -2293,5 +2452,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: 8f9e1d6e468a91b49d2a883274a053986d1797b58be51a7243be439a14c2387b */
-/* ui-sources: 0f944efd48ba35d3f769297a9828b444a3fbdb8df7901294ca1838b6b345bcb0 */
+/* ui-bundle: 54c4d52d8bd52b95fd23dca852037b7eeb66bcf7d19b09292a8f1da1482a4547 */
+/* ui-sources: 9dfe48dabbcc3db3e8eb2549403c3763dd1bbb150b7017720efc4f86b2592d98 */

@@ -23,7 +23,7 @@ import { bindPage, $, iconLabel, CC, projById } from "./page.js";
 import { SEC_PROFILES, SEV_ORDER } from "./vocabulary.js";
 import { secState } from "./state.js";
 import { secRenderIndex, secLoadIndex } from "./index-screen.js";
-import { secBack, secEnter, secLeave, secSyncScope, secInitLaunchCombos } from "./analysis.js";
+import { secBack, secEnter, secLeave, secSyncScope, secInitLaunchCombos, secInitFindBar } from "./analysis.js";
 import { secAnalyse, secDownload } from "./actions.js";
 import { wireReasonDialog } from "./reason.js";
 import { secSwitchProjectTab, secOpenProject, secCurrentProjectTab } from "./project-screen.js";
@@ -44,6 +44,15 @@ function init(cc){
   bindPage(cc);
   wireReasonDialog();
   iconLabel($("sr-halo"), "shield");
+  // The breadcrumb's own static first crumb (bin/dashboard.html's own
+  // #sec-crumbs) -- plain text and its own click, wired once like every
+  // other fixed label/listener in this function; #sec-title beside it is
+  // the CURRENT segment, which stays analysis.js's own to set (secOpen),
+  // since it already knows which project is open the moment it opens one.
+  // Wrapped, not passed bare, for the identical reason #sec-back is a few
+  // lines below: secBack takes its own `fromHistory` parameter.
+  $("sec-crumb-security").textContent = "Security";
+  $("sec-crumb-security").addEventListener("click", () => secBack());
   iconLabel($("sec-back"), "cleft", "All projects");
   iconLabel($("sec-dl-md"), "file", "Markdown");
   iconLabel($("sec-dl-json"), "file", "JSON");
@@ -115,6 +124,10 @@ function init(cc){
   // the equivalent behaviour -- "pick a repo, reload its branches", "choosing
   // from the list overrules the typed field" -- as each combo's own onPick.
   secInitLaunchCombos();
+  // The Runs tab's own Search/Category/Filters bar (#sec-find-bar) -- wired
+  // once, at boot, exactly like the launch combos just above; secOpen()
+  // only ever resets it per project (secResetFindBar, analysis.js).
+  secInitFindBar();
   // `change`, not `input`: a fetch per keystroke would be a subprocess per
   // keystroke on the server.
   $("sec-branch-other").addEventListener("change", () => secSyncScope());

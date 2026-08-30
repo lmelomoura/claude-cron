@@ -371,10 +371,37 @@ document.documentElement.dataset.theme =
     </section>
 
     <section id="sec-detail" hidden>
-      <div class="secthead">
+      <!-- The mockup's own "Security > Minerva" breadcrumb -- the same
+           <nav>/button/separator/current shape findings-screen.js's own
+           secFindHeader already draws for its three-level "Security >
+           Minerva > Findings" crumb (that one stayed local to its own pane,
+           not the page's shared chrome -- see its own comment on why -- and
+           this is the identical scope call for the SAME reason: reaching
+           into bin/dashboard.html's actual <header class="topbar"> would
+           touch every other view's chrome for one screen's mockup). "Security"
+           is static, wired once in ui/security/index.js's own init() beside
+           #sec-back; #sec-title is untouched -- ui/security/analysis.js's
+           secOpen() still sets its text to the open project's own name, now
+           read as this crumb's CURRENT segment instead of a page title. -->
+      <nav class="secpj-crumbs" id="sec-crumbs">
+        <button type="button" id="sec-crumb-security"></button>
+        <span class="sep">›</span>
         <h3 id="sec-title"></h3>
+      </nav>
+
+      <!-- The mockup's own name row: project icon, bold name, the green
+           "Security enabled" badge (secIndexProjectRow's own badge, every
+           project screen shown here is security-enabled by construction --
+           see that row's comment), the project's own description, and the
+           "‹ All projects" back button, moved down from the crumb row above
+           to sit beside the name the way the mockup draws it. Built by
+           ui/security/project-screen.js from projById() -- data the page
+           already holds, not a new fetch. -->
+      <div class="secpjtitle">
+        <div class="secpjtitle-id" id="sec-pj-titleid"></div>
         <button class="btn ghost" id="sec-back"></button>
       </div>
+      <p class="secpjdesc" id="sec-pj-desc"></p>
 
       <!-- What this project analyses and how big it is — profile, branch,
            lines of code, last analysis time — plus a link to the project
@@ -402,11 +429,16 @@ document.documentElement.dataset.theme =
           <div class="pane" id="sec-pj-overview"></div>
 
           <div class="pane" id="sec-pj-runs" hidden>
-            <!-- The analyses table — run id, profile, branch, commit,
-                 duration, findings, state, date — with its own filters.
-                 Built by project-screen.js. -->
-            <div id="sec-pj-runstable"></div>
-
+            <!-- Starting a new analysis: repo/branch/profile + Analyse,
+                 unchanged from before this task (secInitLaunchCombos/
+                 secLoadBranches/secScope in analysis.js, secAnalyse in
+                 actions.js). The Runs mockup this task rebuilds against does
+                 not depict this bar at all -- its place here, a thin strip
+                 above the three columns rather than inside either one, is
+                 this task's own call, named in its report rather than
+                 silently dropped: starting an analysis is surviving
+                 function, and the mockup's silence about it is not an
+                 instruction to remove it. -->
             <div class="secbar">
               <!-- Only shown for a project that declares several repos: with one
                    checkout there is nothing to choose between. sec-repo/
@@ -470,19 +502,93 @@ document.documentElement.dataset.theme =
               </div>
               <button class="btn primary" id="sec-run">Analyse</button>
             </div>
-            <div class="secstat" id="sec-status"></div>
-            <div class="warnline bad" id="sec-incomplete" hidden></div>
-            <div class="warnline" id="sec-coverage" hidden></div>
-            <div class="sevpills" id="sec-summary"></div>
-            <div class="secchips" id="sec-checklist"></div>
-            <div class="secdl" id="sec-dl" hidden>
-              <button class="btn" id="sec-dl-md"></button>
-              <button class="btn" id="sec-dl-json"></button>
-              <button class="btn" id="sec-dl-html"></button>
-              <button class="btn" id="sec-dl-sbom"></button>
-              <span class="secdlnote" id="sec-dl-note"></span>
+
+            <!-- The mockup's own three columns -- the third (the donut, the
+                 categories, recent activity) is #sec-pj-side below, a flex
+                 SIBLING of this whole pane shared by every tab; only these
+                 first two live inside the Runs pane itself. -->
+            <div class="secpj-runslayout">
+              <div class="secpj-runsleft">
+                <!-- "Analysis runs" card: the state filter chips with
+                     counts, then the table (Run/Status/Findings/Date).
+                     Built by project-screen.js. Selecting a row loads it
+                     below via the exact secShowAnalysis(id, true) a Runs
+                     row has always called -- see that function's own pinned
+                     poll/pin contract in analysis.js, untouched by this
+                     task. It does NOT push browser history: a row pick is a
+                     selection within this surface, the same kind of act as
+                     a filter chip or a column sort, not a navigation to a
+                     new screen (secOpenProject/secSwitchProjectTab/secBack
+                     are the calls that push; this one never has). -->
+                <div id="sec-pj-runstable"></div>
+              </div>
+
+              <div class="secpj-runsmid">
+                <!-- The selected run: header (Run #N, status pill, download/
+                     open-run/kebab actions), a meta grid, the incomplete/
+                     coverage notices, a live-run notice, the "Findings
+                     recorded" strip, this run's own findings browser (search
+                     + category + state Filters) and its finding cards with
+                     decision controls. Built by ui/security/analysis.js
+                     (secPaint and what it calls) except sec-run-recorded,
+                     which is project-screen.js's own (it reads the SAME
+                     per-analysis row the Runs table's own FINDINGS column
+                     does, not the checklist -- see that id's own comment in
+                     project-screen.js for why the two numbers are allowed to
+                     differ from sec-summary below them). -->
+                <div class="card secpj-runcard">
+                  <div class="secstat" id="sec-status"></div>
+                  <div id="sec-run-head"></div>
+                  <div id="sec-run-meta"></div>
+                  <div class="warnline bad" id="sec-incomplete" hidden></div>
+                  <div class="warnline" id="sec-coverage" hidden></div>
+                  <div id="sec-run-notice"></div>
+                  <div id="sec-run-recorded"></div>
+
+                  <!-- Search box, Category picker (the house picker,
+                       ed-perm's shape -- static markup, dynamic options,
+                       wired ONCE at boot by secInitLaunchCombos in
+                       analysis.js, exactly like sec-repo-combo/sec-branch-
+                       combo above and sec-act-projpick in the Activity
+                       screen) and the state Filters popover (the old
+                       always-visible checklist chips, collapsed behind a
+                       button -- see secOpen's own comment in analysis.js).
+                       All static, never rebuilt by secPaint's own 4-second
+                       poll repaint or a project switch, or a reader's
+                       half-typed search would vanish out from under them
+                       along with the caret; secOpen only ever RESETS the
+                       search value and the picker's own selection. -->
+                  <div class="toolbar secpj-findbar" id="sec-find-bar">
+                    <div class="searchbox" id="sec-find-search-box">
+                      <input type="search" id="sec-find-search" placeholder="Search findings in this run…" autocomplete="off">
+                    </div>
+                    <div class="picker" id="sec-find-catpick">
+                      <button type="button" class="picker-trigger" id="sec-find-catpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
+                      <div class="picker-pop" id="sec-find-catpick-pop" hidden>
+                        <div class="picker-list" id="sec-find-catpick-list" role="listbox"></div>
+                      </div>
+                    </div>
+                    <details class="secrun-filterpick" id="sec-run-filterpick">
+                      <summary class="filterpick" id="sec-run-filterpick-trigger"></summary>
+                      <div class="menu-pop secrun-filterpop" id="sec-run-filterpop">
+                        <div class="secchips" id="sec-checklist"></div>
+                      </div>
+                    </details>
+                  </div>
+                  <div class="secpj-caption" id="sec-summary"></div>
+
+                  <div class="secdl" id="sec-dl" hidden>
+                    <button class="btn" id="sec-dl-md"></button>
+                    <button class="btn" id="sec-dl-json"></button>
+                    <button class="btn" id="sec-dl-html"></button>
+                    <button class="btn" id="sec-dl-sbom"></button>
+                    <span class="secdlnote" id="sec-dl-note"></span>
+                  </div>
+                  <div id="sec-findings"></div>
+                </div>
+              </div>
             </div>
-            <div id="sec-findings"></div>
+
             <div class="secthead"><h3>Earlier analyses of this branch</h3></div>
             <div class="sechist" id="sec-history"></div>
           </div>

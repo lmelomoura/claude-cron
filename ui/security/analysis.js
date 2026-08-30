@@ -1,14 +1,15 @@
 /* --------------------------------------------------------- one project */
-import { $, CC, api, toast, openLog, projById, fmtAgo, fmtDur, money, createCombo, pushNav } from "./page.js";
-import { secIcon, secEl, secFetch } from "./dom.js";
+import { $, CC, api, toast, projById, fmtDur, fmtWhen, money, createCombo,
+         makePicker, pushNav } from "./page.js";
+import { secIcon, secIconHTML, secEl, secFetch } from "./dom.js";
 import { SEC_POLL_MS, SEC_PROFILES, SEC_STATES, SEC_STATE_HELP, SEC_STATE_LABEL,
-         SEV_ORDER, SEC_NEVER, secDefaultProfile, secMinSeverity, secPosture,
+         SEC_NEVER, secCategoryMeta, secDefaultProfile, secMinSeverity,
          secRepos, secSevKey, secSevRank, secStateKey, secVisible } from "./vocabulary.js";
 import { secState } from "./state.js";
 import { secInvalidateIndex, secRenderIndex, secLoadIndex } from "./index-screen.js";
 import { secRunFor, secRenderHistory } from "./history.js";
 import { secAskReason } from "./reason.js";
-import { secInvalidateProject, secRefreshProject } from "./project-screen.js";
+import { secInvalidateProject, secRefreshProject, secRefreshRunPanels } from "./project-screen.js";
 
 // "quick" -> "Quick": the launcher's own profile combo, mapped off the same
 // SEC_PROFILES list the project editor's default-profile combo already maps
@@ -110,15 +111,17 @@ export async function secOpen(project){
   secProjectPollWasRunning = null;
   $("sec-projects").hidden = true;
   $("sec-detail").hidden = false;
-  const title = $("sec-title");
-  title.textContent = "";
-  title.appendChild(secIcon("shield"));
-  title.appendChild(document.createTextNode(project));
+  // The breadcrumb's own CURRENT segment (see bin/dashboard.html's own
+  // comment on #sec-crumbs) -- plain text, no icon: a small crumb has no
+  // room for one, and the project already gets its own icon on the name
+  // row right below (secRenderProjectTitle, project-screen.js).
+  $("sec-title").textContent = project;
   $("sec-findings").textContent = "";
   $("sec-history").textContent = "";
   $("sec-summary").textContent = "";
   $("sec-checklist").textContent = "";
   $("sec-dl").hidden = true;
+  secResetFindBar();
   secStatus("Loading…");
 
   const p = projById(project) || {};
@@ -290,19 +293,104 @@ export function secStatus(text){
   box.appendChild(secEl("span", null, text));
 }
 
+/* The mockup's own meta grid under the Run #N head -- Profile (a pill),
+   Branch, Commit (short sha, mono), Duration, Date. Spend rides along as a
+   small trailing line the mockup's own five-cell grid has no room for
+   (nothing in this task's own file list asked for it to disappear, and a
+   figure this screen has always shown is not dropped silently just because
+   a mockup only had five columns of width to draw). */
+function secRenderRunMeta(a){
+  const host = $("sec-run-meta");
+  host.textContent = "";
+  const grid = secEl("div", "secrun-metagrid");
+  const cell = (label, valueNode, extraCls) => {
+    const c = secEl("div", "secrun-metacell");
+    c.appendChild(secEl("div", "secrun-metalabel", label));
+    const v = secEl("div", "secrun-metaval" + (extraCls ? " " + extraCls : ""));
+    v.appendChild(valueNode);
+    c.appendChild(v);
+    return c;
+  };
+  const running = a.state === "running";
+  grid.appendChild(cell("Profile", secEl("span", "pill profile", a.profile || "—")));
+  grid.appendChild(cell("Branch", document.createTextNode(a.branch || "—")));
+  grid.appendChild(cell("Commit",
+    document.createTextNode(String(a.commit_sha || "").slice(0, 12) || "—"), "mono"));
+  grid.appendChild(cell("Duration", document.createTextNode(
+    a.ended && a.started ? fmtDur(Math.max(0, a.ended - a.started))
+                          : (running ? "running…" : "—"))));
+  grid.appendChild(cell("Date", document.createTextNode(fmtWhen(a.started))));
+  host.appendChild(grid);
+  if(a.spend_usd) host.appendChild(secEl("div", "secrun-spend", money(a.spend_usd)));
+}
+
+/* The three transient messages secPaint's old #sec-status line used to
+   append inline, unchanged in wording and in the facts that decide which
+   (if any) shows: the running-analysis reassurance, and the "running in the
+   ledger but no live slot" disagreement's own two readings (dead without a
+   journal past the 180s launch window, or still in the pre-agent worktree-
+   cutting window before that). The "Open the run" button that used to sit
+   beside them is now the Run head's own eye icon (secRenderRunHead,
+   project-screen.js) -- the same secRunFor/openLog call, not a second one. */
+function secRenderRunNotice(a){
+  const host = $("sec-run-notice");
+  host.textContent = "";
+  const running = a.state === "running";
+  if(running){
+    host.appendChild(secEl("div", "secrun-notice",
+      "Secrets, dependencies and CVEs are written moments after the agent starts — "
+      + "they are its first command — so what is below is already real while the "
+      + "code review keeps going."));
+  }
+  const run = secRunFor(a);
+  // `running` in the ledger is a claim; a live slot is the fact. When the two
+  // disagree for longer than a launch could take, say so — a run killed
+  // without a journal (a reboot, a group-kill) leaves exactly this state, and
+  // the page used to show "Analysing…" over it indefinitely.
+  if(running && !run){
+    if((Date.now()/1000 - (a.started||0)) > 180){
+      host.appendChild(secEl("div", "secrun-notice warn",
+        "No live run is behind this analysis — it likely died without closing. "
+        + "The next Analyse sweeps it; until then downloads carry what it recorded."));
+    }else{
+      // The pre-agent window: the engine is cutting a worktree from a fresh
+      // fetch of the branch, which on a big repository is most of the wait.
+      // The run trace exists once the agent starts; until then, name the
+      // phase instead of showing a button-less void.
+      host.appendChild(secEl("div", "secrun-notice",
+        "Preparing the run — fetching the branch and cutting a clean worktree. "
+        + "The live trace appears here the moment the agent starts."));
+    }
+  }
+}
+
 export function secPaint(){
   const a = secState.analysis;
-  const running = !!a && a.state === "running";
   secPaintRunButton();
   // Here rather than only after pressing Analyse: arriving on a project whose
   // analysis somebody else started has to start watching it too, or the screen
   // sits on a running row that never moves.
   secSyncPoll();
+  // #sec-status is now ONLY the "nothing selected yet" message (loading, no
+  // branch picked, never analysed on this branch) -- the structured Run #N
+  // head/meta grid/notices below all get their OWN hosts, built only when
+  // an analysis actually exists, so this box takes no visual space once one
+  // does.
   const box = $("sec-status");
   box.textContent = "";
+  // secRefreshRunPanels (project-screen.js: the Runs table's own selection
+  // highlight, the Run head, the "Findings recorded" strip and the right
+  // rail) and secRenderRunMeta/secRenderRunNotice (below) all clear their
+  // own host first and return early on `!a` -- called unconditionally here
+  // so a branch switched away from a loaded analysis back to an empty one
+  // clears every one of them, not just the two this function still owns
+  // directly.
+  secRefreshRunPanels();
   if(!a){
     box.appendChild(secEl("span", null,
       secState.branch ? SEC_NEVER.branch : SEC_NEVER.pickBranch));
+    $("sec-run-meta").textContent = "";
+    $("sec-run-notice").textContent = "";
     $("sec-incomplete").hidden = true;
     $("sec-coverage").hidden = true;
     $("sec-summary").textContent = "";
@@ -312,47 +400,8 @@ export function secPaint(){
     secRenderHistory();
     return;
   }
-  box.appendChild(secIcon(running ? "timer" : (a.state === "failed" ? "xcircle" : "check")));
-  box.appendChild(secEl("b", null, "Analysis " + a.id));
-  const bits = [a.repo + " @ " + a.branch, String(a.commit_sha || "").slice(0, 12),
-                a.profile, a.state,
-                running ? "started " + fmtAgo(a.started)
-                        : (a.ended ? "ended " + fmtAgo(a.ended) : "started " + fmtAgo(a.started))];
-  if(a.ended && a.started) bits.push(fmtDur(Math.max(0, a.ended - a.started)));
-  bits.push(money(a.spend_usd || 0));
-  box.appendChild(secEl("span", null, bits.filter(Boolean).join(" · ")));
-  if(running){
-    box.appendChild(secEl("span", null,
-      "Secrets, dependencies and CVEs are written moments after the agent starts — "
-      + "they are its first command — so what is below is already real while the "
-      + "code review keeps going."));
-  }
-  const run = secRunFor(a);
-  if(run){
-    const b = secEl("button", "btn", "Open the run");
-    b.type = "button";
-    b.onclick = () => openLog(run.id, run.start);
-    box.appendChild(b);
-  }
-  // `running` in the ledger is a claim; a live slot is the fact. When the two
-  // disagree for longer than a launch could take, say so — a run killed
-  // without a journal (a reboot, a group-kill) leaves exactly this state, and
-  // the page used to show "Analysing…" over it indefinitely.
-  if(running && !run){
-    if((Date.now()/1000 - (a.started||0)) > 180){
-      box.appendChild(secEl("span", "note",
-        "No live run is behind this analysis — it likely died without closing. "
-        + "The next Analyse sweeps it; until then downloads carry what it recorded."));
-    }else{
-      // The pre-agent window: the engine is cutting a worktree from a fresh
-      // fetch of the branch, which on a big repository is most of the wait.
-      // The run trace exists once the agent starts; until then, name the
-      // phase instead of showing a button-less void.
-      box.appendChild(secEl("span", null,
-        "Preparing the run — fetching the branch and cutting a clean worktree. "
-        + "The live trace appears here the moment the agent starts."));
-    }
-  }
+  secRenderRunMeta(a);
+  secRenderRunNotice(a);
 
   // THE SAME NOTICE THE DOWNLOADED REPORT OPENS WITH (bin/security/report.py,
   // _coverage). A capped or failed analysis is a PARTIAL read of the
@@ -403,29 +452,149 @@ export function secPaintRunButton(){
   btn.textContent = running ? "Analysing…" : "Analyse";
 }
 
+// The four category values a finding can carry -- duplicated from the
+// server's own closed set (secrets.py/hygiene.py/osv.py, plus the open
+// "sast" vocabulary -- see vocabulary.js's own SEC_RULE_META comment for
+// why those four and no more), the same duplication findings-screen.js's
+// own FIND_CATEGORIES already carries against the server: the Category
+// picker has to draw its options before any request (there is no request
+// here at all -- this list floors what secState.findings already holds)
+// has ever answered.
+const SEC_FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene"];
+
+// This run's own search text and category pick -- module state beside
+// secState.stateFilter for the identical reason: secOpen() resets all
+// three on a fresh project (or a different one), and nothing else may --
+// least of all secPaint's own 4-second poll repaint, which must find a
+// reader's half-typed search exactly where they left it.
+let secFindSearch = "";
+let secFindCategory = "";
+let secFindCatPicker = null;
+let secFindBadge = null;
+
+/* What the search box, the Category picker AND the checklist chips all
+   narrow further -- the SAME severity-floored list secRenderSummary's own
+   footnote counts against secState.findings, never the raw checklist: a
+   search or category pick tightens the list the floor already produced, it
+   does not open a second, wider one that could surface a row the floor is
+   hiding. */
+function secFindVisible(){
+  return secVisible(secState.findings, secMinSeverity(secState.project));
+}
+
+/* Search + Category + Filters -- STATIC markup (bin/dashboard.html's own
+   #sec-find-bar, the identical "static markup, dynamic behaviour" shape
+   sec-repo-combo/sec-branch-combo above it and the Activity screen's own
+   sec-act-projpick already use), wired ONCE here, at boot, like
+   secInitLaunchCombos below -- never rebuilt by secPaint's own 4-second
+   poll repaint or by a project switch, the way the checklist chips and the
+   finding cards both already ARE on every one of secPaint's calls.
+   Rebuilding the search <input> on a timer or a fresh secOpen would drop
+   whatever a reader had half-typed, and the caret with it -- the exact bug
+   class secSyncPoll's own view guard and secShowAnalysis's own pin exist to
+   keep out of this screen's OTHER moving parts. secResetFindBar (below) is
+   the per-project-open half: it only ever RESETS the value/selection, never
+   touches the DOM.
+
+   "Filters" is the old always-visible checklist chip row (SEC_STATES,
+   secRenderChecklist below, untouched) collapsed behind a button: the
+   mockup draws Search/Category/Filters as one bar with nothing else beside
+   it, so the eight-chip row that used to sit in the open here now sits
+   inside this popover instead -- same id, same function, same counts, only
+   its container and default visibility changed. */
+export function secInitFindBar(){
+  // The magnifying-glass icon every other .searchbox on this bundle already
+  // carries (secProjectsFilterBar's own, index-screen.js) -- markup cannot
+  // call secIcon() itself, so it is inserted here, once, ahead of the
+  // static <input> rather than left out for this one search box alone.
+  $("sec-find-search-box").insertBefore(secIcon("search"), $("sec-find-search"));
+  const input = $("sec-find-search");
+  input.setAttribute("aria-label", "Search findings in this run");
+  input.oninput = () => { secFindSearch = input.value; secRenderFindings(); };
+
+  const fTrigger = $("sec-run-filterpick-trigger");
+  fTrigger.appendChild(secIcon("filter"));
+  fTrigger.appendChild(document.createTextNode("Filters"));
+  secFindBadge = secEl("span", "secfind-filters-badge", "1");
+  secFindBadge.hidden = true;
+  fTrigger.appendChild(secFindBadge);
+  fTrigger.appendChild(secIcon("cdown"));
+  // Found live by secIndexProjectRow's own kebab first (see its comment):
+  // without this, closeMenus() (reached from document's own click listener)
+  // re-hides this popover the instant the browser's default action opens
+  // it, on the very click that was supposed to open it.
+  fTrigger.onclick = (e) => e.stopPropagation();
+  const filters = $("sec-run-filterpick");
+  const fPop = $("sec-run-filterpop");
+  // Resynced from `filters.open` on every toggle, and recomputed to
+  // `position:fixed` off the trigger's own screen position -- the identical
+  // fix secIndexProjectRow's own kebab and secFindingsPeriodPicker's own
+  // popover both already need against a `.table-card{overflow:hidden}`
+  // ancestor; `.card` (this popover's own ancestor here) is not that class,
+  // but the fix is cheap and the alternative -- a popover that silently
+  // clips or mispositions the one time a caller nests this bar somewhere
+  // narrower -- is not something to find out live a second time.
+  filters.ontoggle = () => {
+    fPop.hidden = !filters.open;
+    if(!filters.open) return;
+    const r = fTrigger.getBoundingClientRect();
+    fPop.style.position = "fixed";
+    fPop.style.top = (r.bottom + 6) + "px";
+    fPop.style.right = (window.innerWidth - r.right) + "px";
+    fPop.style.left = "auto";
+    fPop.style.bottom = "auto";
+  };
+
+  secFindCatPicker = makePicker("sec-find-catpick", {
+    icon: secIconHTML("filter"), label: "Category",
+    valueLabel: () => secFindCategory ? secCategoryMeta(secFindCategory).label : "All",
+    rows: () => {
+      const visible = secFindVisible();
+      const counts = {};
+      visible.forEach(f => { counts[f.category] = (counts[f.category] || 0) + 1; });
+      const rows = [{v: "", label: "All", n: visible.length,
+        sel: secFindCategory === "", icon: secIconHTML("layers")}];
+      SEC_FIND_CATEGORIES.forEach(cat => {
+        const meta = secCategoryMeta(cat);
+        rows.push({v: cat, label: meta.label, n: counts[cat] || 0,
+          sel: secFindCategory === cat, icon: secIconHTML(meta.icon)});
+      });
+      return rows;
+    },
+    onPick: (v) => { secFindCategory = v; secRenderFindings(); },
+  });
+}
+
+// Called from secOpen(), every time a project opens (a fresh one, or a
+// reader coming back to one already open): resets the search text and the
+// category pick the same way secOpen already resets secState.stateFilter,
+// without touching the DOM the way a full rebuild would have.
+function secResetFindBar(){
+  secFindSearch = ""; secFindCategory = "";
+  const input = $("sec-find-search");
+  if(input) input.value = "";
+  if(secFindCatPicker) secFindCatPicker.paint();
+}
+
+/* The open-posture pills this used to draw ("3 critical, 1 high...") moved
+   to the right rail's own donut (secProjectRunPosture, project-screen.js) --
+   the mockup's "Findings by severity" card is that exact same computation
+   (secPosture over this same secState.findings), read once by the module
+   that already owns the rail rather than duplicated here to feed a second
+   pill row the mockup does not draw. What is left here, and the one thing
+   secPosture's own donut cannot say for itself, is the severity floor's own
+   footnote: how many recorded findings the floor is keeping OFF the list
+   below (SEC_FLOOR_SCOPE_NOTE) -- a fact about the LIST, not the posture,
+   and the donut is explicitly the unfloored reading (see that function's
+   own comment). */
 function secRenderSummary(){
   const host = $("sec-summary");
   host.textContent = "";
   const shown = secVisible(secState.findings, secMinSeverity(secState.project));
-  const counts = secPosture(secState.findings, secMinSeverity(secState.project));
-  const open = SEV_ORDER.reduce((n, s) => n + counts[s], 0) + counts.other;
-  if(!shown.length){
-    host.appendChild(secEl("span", "sevpill clean", "nothing found"));
-  }else if(!open){
-    host.appendChild(secEl("span", "sevpill clean", "nothing open"));
-  }else{
-    ["critical","high","medium","low","info"].forEach(sev => {
-      if(counts[sev]) host.appendChild(secEl("span", "sevpill " + sev, counts[sev] + " " + sev));
-    });
-    if(counts.other) host.appendChild(secEl("span", "sevpill low", counts.other + " other"));
-  }
-  // What the project's own threshold is keeping off this page. Said out loud,
-  // because the number that is missing is otherwise indistinguishable from a
-  // number that was never found.
   const hidden = secState.findings.length - shown.length;
   if(hidden > 0){
-    host.appendChild(secEl("span", "sevpill low", hidden + " below "
-      + secMinSeverity(secState.project) + " — recorded, not shown"));
+    host.appendChild(document.createTextNode(hidden + " finding" + (hidden === 1 ? "" : "s")
+      + " below " + secMinSeverity(secState.project) + " — recorded, not shown"));
   }
 }
 
@@ -447,6 +616,26 @@ function secRenderChecklist(){
     };
     host.appendChild(chip);
   });
+  // The Filters button's own count badge -- one active state filter is the
+  // only thing this popover can hold today, so it is always 0 or 1, never a
+  // real count to add up.
+  if(secFindBadge) secFindBadge.hidden = !secState.stateFilter;
+}
+
+/* Search text against a finding's own title and its occurrences' file
+   paths -- a rationale search would also match half the OTHER findings on
+   the same run, since remediation prose reuses the same handful of nouns
+   (auth, token, query) across unrelated rows; title and location are what a
+   reader scanning "does this run already know about X" is actually typing.
+   Plain substring, case-insensitive, against text/attribute strings only --
+   never markup, the same discipline every other read of a finding's own
+   fields keeps in this area (see this file's own vocabulary.js banner). */
+function secFindMatchesSearch(f, q){
+  if(!q) return true;
+  const needle = q.trim().toLowerCase();
+  if(!needle) return true;
+  if(String(f.title || "").toLowerCase().includes(needle)) return true;
+  return (f.occurrences || []).some(o => String(o.file || "").toLowerCase().includes(needle));
 }
 
 function secRenderFindings(){
@@ -454,18 +643,26 @@ function secRenderFindings(){
   host.textContent = "";
   let list = secVisible(secState.findings, secMinSeverity(secState.project));
   if(secState.stateFilter) list = list.filter(f => f.state === secState.stateFilter);
+  if(secFindCategory) list = list.filter(f => f.category === secFindCategory);
+  if(secFindSearch.trim()) list = list.filter(f => secFindMatchesSearch(f, secFindSearch));
   // Worst first, and inside a severity the ones nobody has judged yet.
   const stateRank = (f) => SEC_STATES.indexOf(f.state);
   list = list.slice().sort((x, y) => (secSevRank(y.severity) - secSevRank(x.severity))
                                   || (stateRank(x) - stateRank(y))
                                   || String(x.title).localeCompare(String(y.title)));
   if(!list.length){
-    const e = secEl("div", "empty", secState.stateFilter
-      ? "Nothing in that state." : "This analysis reported nothing to show.");
+    const e = secEl("div", "empty", (secState.stateFilter || secFindCategory || secFindSearch.trim())
+      ? "Nothing matches these filters." : "This analysis reported nothing to show.");
     host.appendChild(e);
-    return;
+  }else{
+    list.forEach(f => host.appendChild(secFindingRow(f)));
   }
-  list.forEach(f => host.appendChild(secFindingRow(f)));
+  // The Category picker's own counts are a function of secState.findings,
+  // which just changed (a new analysis, a decision, a poll tick) -- painted
+  // here rather than a second call at every one of secRenderFindings' own
+  // callers, the same "repaint on every render" rule secRepaintProjectsTable
+  // already follows for its own three pickers.
+  if(secFindCatPicker) secFindCatPicker.paint();
 }
 
 function secFindingRow(f){
@@ -498,6 +695,25 @@ function secFindingRow(f){
   if((f.partial_note || "").trim()) row.appendChild(secEl("p", "secwhy", "Partial: " + f.partial_note));
   if((f.decision_reason || "").trim()){
     row.appendChild(secEl("p", "secwhy", SEC_STATE_LABEL[f.state] + " — " + f.decision_reason));
+  }
+  // A mono code-snippet block, when the finding carries one -- the mockup's
+  // own "sql: $sql->where(...)" line under a SAST finding's rationale.
+  // Nothing in today's pipeline ever populates `f.snippet`: `occurrence`
+  // stores only a `snippet_hash` (see bin/security/ledger.py's own schema
+  // comment, and cmd_report_finding's -- storing the raw line back out
+  // would be the exact secret-in-the-open this area's own report-finding
+  // op was written to avoid for a secrets finding, and there is no
+  // per-category exception for a SAST one today). This still renders
+  // whatever the field holds, guarded exactly like remediation/partial_note
+  // above, so a future finding that DOES carry one displays correctly on
+  // day one rather than needing a second change here -- it is simply dark
+  // with every finding this build has ever seen. textContent only, as
+  // always: a snippet is analysed code, not markup.
+  if((f.snippet || "").trim()){
+    const box = secEl("div", "secsnippet");
+    if((f.snippet_lang || "").trim()) box.appendChild(secEl("span", "secsnippet-lang", f.snippet_lang + ":"));
+    box.appendChild(secEl("code", null, f.snippet));
+    row.appendChild(box);
   }
   row.appendChild(secEl("div", "secfp", (f.category || "") + " · " + (f.rule || "")
     + " · " + (f.fingerprint || "")));

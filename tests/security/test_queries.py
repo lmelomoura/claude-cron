@@ -628,6 +628,55 @@ def test_the_runs_row_count_and_the_checklist_total_legitimately_disagree(conn):
     assert len(fixed) == 1, f"the carried-forward finding must show as fixed: {states}"
 
 
+# ---- the Runs table's own per-row severity sub-line ("64C 4H 3M 0L"),
+# shown for every row, not only the one on screen -- so it has to be a
+# per-project grouped query the same shape as finding_counts_by_analysis,
+# never one checklist()-style call per row. A SEPARATE function from that
+# one (see its own docstring): finding_counts_by_analysis's return shape is
+# pinned above (a plain int per id, exactly one statement) by tests that
+# would all have to change for a fact that has not.
+
+def test_finding_severity_by_analysis_is_one_query_for_the_whole_project(conn):
+    for _ in range(5):
+        _analysis(conn, "main", findings=[("high", "sast"), ("low", "hygiene")])
+    statements = []
+    conn.set_trace_callback(statements.append)
+    try:
+        by_sev = queries.finding_severity_by_analysis(conn, "web")
+    finally:
+        conn.set_trace_callback(None)
+    assert len(statements) == 1, \
+        f"expected exactly one grouped query, got {len(statements)}: {statements}"
+    assert len(by_sev) == 5
+    assert all(row == {"high": 1, "low": 1} for row in by_sev.values()), by_sev
+
+
+def test_finding_severity_by_analysis_is_scoped_to_the_project(conn):
+    _analysis(conn, "main", project="web", findings=[("high", "sast")])
+    aid_other = _analysis(conn, "main", project="other", findings=[("critical", "secret")])
+    by_sev = queries.finding_severity_by_analysis(conn, "web")
+    assert aid_other not in by_sev, "another project's analysis leaked into the breakdown"
+
+
+def test_finding_severity_by_analysis_agrees_with_the_plain_count(conn):
+    """The two functions answer the same underlying fact at two resolutions
+    -- summing one analysis's own severities must equal its plain total, or
+    the Runs table's "71 total" and "64C 4H 3M 0L" would silently disagree
+    for a run nobody had decided anything about yet."""
+    aid = _analysis(conn, "main",
+                     findings=[("critical", "sast"), ("critical", "sast"), ("low", "hygiene")])
+    total = queries.finding_counts_by_analysis(conn, "web")[aid]
+    by_sev = queries.finding_severity_by_analysis(conn, "web")[aid]
+    assert sum(by_sev.values()) == total == 3
+    assert by_sev == {"critical": 2, "low": 1}
+
+
+def test_finding_severity_by_analysis_counts_a_running_analysiss_partial_findings_too(conn):
+    aid = _analysis(conn, "main", state="running", findings=[("high", "sast")])
+    by_sev = queries.finding_severity_by_analysis(conn, "web")
+    assert by_sev[aid] == {"high": 1}
+
+
 # ---- review fix (IMPORTANT): two different "posture" numbers on one screen.
 # analysed_branch_count is the number the project screen's sidebar caption
 # names, so a two-branch project and a one-branch project never look alike.

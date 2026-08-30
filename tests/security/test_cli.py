@@ -2390,6 +2390,29 @@ def test_project_data_runs_findings_count_is_per_analysis_not_shared(tmp_path):
     assert by_id[a1] == 2, f"a1 recorded 2 findings: {by_id}"
     assert by_id[a2] == 1, f"a2 recorded 1 finding (r1b was fixed): {by_id}"
 
+    # The Runs tab's own per-severity sub-line rides on the same rows, gated
+    # the same way, and sums back to the plain total above -- see
+    # queries.finding_severity_by_analysis's own docstring for why this is a
+    # second field, not a reshape of `findings`.
+    by_sev = {r["id"]: r["findings_by_severity"] for r in out["tabs"]["runs"]}
+    assert by_sev[a1] == {"high": 1, "low": 1}, by_sev
+    assert by_sev[a2] == {"high": 1}, by_sev
+    assert sum(by_sev[a1].values()) == by_id[a1]
+    assert sum(by_sev[a2].values()) == by_id[a2]
+
+
+def test_project_data_runs_findings_by_severity_is_null_for_an_unfinished_analysis(tmp_path):
+    """The breakdown must not look like a real (empty) answer for a run that
+    has not finished recording findings yet -- the same `None`, not `{}`,
+    gate `findings` itself already uses."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main")
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+    row = next(r for r in out["tabs"]["runs"] if r["id"] == aid)
+    assert row["findings"] is None
+    assert row["findings_by_severity"] is None, \
+        "a running analysis must not report a (misleadingly empty) breakdown"
+
 
 # ---- review fix (MINOR): "Never analysed" was shown to a project whose
 # analyses all failed, even though its own Runs tab plainly lists the
