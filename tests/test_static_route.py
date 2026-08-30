@@ -6,6 +6,8 @@ every directory-traversal bug has ever had -- so the refusals are tested before
 the success is.
 """
 
+import re
+
 
 def test_the_bundle_is_served_as_javascript(srv):
     body, ctype = srv.static_asset("security.js")
@@ -108,6 +110,84 @@ def test_the_build_id_moves_when_a_served_stylesheet_changes(
         "a changed stylesheet left the build id untouched -- "
         "browsers will keep serving the old one from cache"
     )
+
+
+def _versioned_css_link(page):
+    m = re.search(r'app\.css\?v=([0-9a-f]+)', page)
+    assert m, "no versioned app.css link found in the rendered page"
+    return m.group(1)
+
+
+def test_the_build_id_follows_disk_state_per_request_without_restarting(
+        srv, tmp_path, monkeypatch):
+    """F4: `_build_id()` used to run exactly once, at import, into a
+    module-level BUILD -- so a `git pull` (simulated here as any edit to a
+    servable file) landing under a running server left every later page load
+    stamping `?v=` with the OLD id. Browsers then kept the stale cached
+    bundle against markup that had just changed underneath it, fixable only
+    by finding and restarting the process.
+
+    current_build_id() replaces that fixed value with a cache that is
+    cheap to CHECK (a stat() per tracked file, every render_page() call) and
+    expensive only to REFRESH (a real sha256 over full file contents, only
+    when that stat says something moved). This pins both halves at once: an
+    unchanged tree serves the identical id and the real hash runs exactly
+    once across two renders; a changed file moves the id on the very next
+    render -- and nothing here restarts anything. Same `srv` module, same
+    process, same import throughout -- only the bytes on disk change between
+    calls, exactly what a `git pull` under a live server looks like from
+    this function's own point of view."""
+    monkeypatch.setattr(srv, "STATIC_DIR", tmp_path)
+    # A fresh cache: other tests may have already primed the real one against
+    # the real STATIC_DIR, and this test's own assertions must not depend on
+    # whatever they left behind.
+    monkeypatch.setattr(srv, "_build_cache", {"stat": None, "id": None})
+    (tmp_path / "app.css").write_text(":root{--bg:#fff}")
+
+    real_build_id = srv._build_id
+    calls = []
+
+    def counting_build_id():
+        calls.append(1)
+        return real_build_id()
+    monkeypatch.setattr(srv, "_build_id", counting_build_id)
+
+    first = _versioned_css_link(srv.render_page())
+    second = _versioned_css_link(srv.render_page())
+    assert first == second, "an unchanged tree must serve the identical build id"
+    assert len(calls) == 1, (
+        f"the real content hash ran {len(calls)} times across two renders "
+        "with nothing on disk changed -- current_build_id() must be serving "
+        "the cache, not re-hashing on every request"
+    )
+
+    (tmp_path / "app.css").write_text(":root{--bg:#000}")
+    third = _versioned_css_link(srv.render_page())
+    assert third != first, (
+        "a changed stylesheet must move the build id on the very next "
+        "render -- serving the old one is exactly the stale-cache-after-a-"
+        "pull bug this feature exists to close"
+    )
+    assert len(calls) == 2, "the changed file must trigger exactly one more real hash"
+
+
+def test_api_data_reports_the_same_live_build_id_render_page_does(srv, clean_data, tmp_path, monkeypatch):
+    """render_page() and load_data() (the /api/data poll body) used to share
+    one module-level BUILD; current_build_id() is the one function both now
+    call, so an ALREADY-OPEN tab's poll notices a change exactly when a fresh
+    page load would -- see bin/dashboard.html's own `d.build !== BUILD`
+    self-reload check for what reads this field."""
+    monkeypatch.setattr(srv, "STATIC_DIR", tmp_path)
+    monkeypatch.setattr(srv, "_build_cache", {"stat": None, "id": None})
+    (tmp_path / "app.css").write_text(":root{--bg:#fff}")
+
+    before = srv.load_data()["build"]
+    assert before == _versioned_css_link(srv.render_page())
+
+    (tmp_path / "app.css").write_text(":root{--bg:#000}")
+    after = srv.load_data()["build"]
+    assert after != before, "the /api/data poll kept the old build id after a static file changed"
+    assert after == _versioned_css_link(srv.render_page())
 
 
 def test_every_servable_extension_is_fingerprinted(srv, tmp_path, monkeypatch):

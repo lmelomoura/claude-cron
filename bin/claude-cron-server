@@ -130,22 +130,43 @@ ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
 # reload, and — the case that actually bit — editing the page while a tab held
 # the old JavaScript in memory looked identical to nothing having happened,
 # because the 5s poll refreshes DATA and never the code.
-def _build_id() -> str:
-    h = hashlib.sha256()
+#
+# And RECOMPUTED lazily (current_build_id, below) rather than fixed at import:
+# this id used to be assigned once, to a module-level BUILD, when the process
+# first started, which answered "what does this SERVER know about" rather than
+# "what is on DISK right now" -- two different things the moment `git pull`
+# touches this tree under a server that is still running (a KeepAlive launchd
+# agent restarts only on a crash). Every page load after that pull kept
+# stamping `?v=` with the OLD id, so a browser kept serving the stale cached
+# bundle against markup that had just changed underneath it — dead listeners,
+# broken layout, fixed only by finding and restarting the process by hand.
+# `current_build_id()` re-stats the identical set every request and only pays
+# for a real re-hash when that stat has actually moved, so a plain reload is
+# now enough: see that function's own comment.
+def _build_sources():
+    """Every file `_build_id` hashes, and the exact set `current_build_id`'s
+    own cheap stat check has to watch -- one list, not two kept in step by
+    hand, so a file added to either job is a file the other sees for free.
+
+    Everything this directory is ALLOWED to serve, not a second list of
+    extensions kept in step by hand. The page asks for each asset with
+    `?v=<this id>`, so a servable file the id cannot see is a file an open
+    tab keeps out of cache forever. This globbed "*.js" while the Security
+    bundle was the only asset; the stylesheet that joined it in the same
+    directory would have been invisible."""
+    served = sorted(p for p in STATIC_DIR.iterdir()
+                    if p.suffix in STATIC_TYPES) if STATIC_DIR.is_dir() else []
     # The bundles too, not just the page: the Security area's JavaScript moved
     # out of dashboard.html, and a build id derived from the page alone would
     # have stopped changing when that code changed -- which is the whole job of
     # this id. An open tab would keep last week's bundle and never learn, and
     # the `?v=` on the script tag would keep asking for the same cached URL.
-    # Everything this directory is ALLOWED to serve, not a second list of
-    # extensions kept in step by hand. The page asks for each asset with
-    # `?v=<this id>`, so a servable file the id cannot see is a file an open
-    # tab keeps out of cache forever. This globbed "*.js" while the Security
-    # bundle was the only asset; the stylesheet that joined it in the same
-    # directory would have been invisible.
-    served = sorted(p for p in STATIC_DIR.iterdir()
-                    if p.suffix in STATIC_TYPES) if STATIC_DIR.is_dir() else []
-    for f in (PAGE_FILE, Path(__file__), *served):
+    return (PAGE_FILE, Path(__file__), *served)
+
+
+def _build_id() -> str:
+    h = hashlib.sha256()
+    for f in _build_sources():
         try:
             h.update(f.read_bytes())
         except OSError:
@@ -156,7 +177,56 @@ def _build_id() -> str:
     return h.hexdigest()[:12]
 
 
-# BUILD is assigned once PAGE_FILE is known (see below).
+def _build_stat():
+    """A cheap fingerprint of `_build_sources()`: (path, mtime_ns, size) per
+    file, stat()-only -- no content read, so this is a handful of syscalls
+    even for a directory of bundles.
+
+    NEVER the id itself, and never will be: mtime alone lies across a fresh
+    clone (git does not record it, and a checkout writes every path in index
+    order, so the sources are ALWAYS newer than a bundle built from them --
+    this repository already learned that the hard way once, see build/
+    ui-digest.sh's own comment on exactly this). It is only the trigger that
+    decides whether `current_build_id` below is worth paying for a real
+    content hash this request, never a substitute for one."""
+    stat = []
+    for f in _build_sources():
+        try:
+            st = f.stat()
+            stat.append((str(f), st.st_mtime_ns, st.st_size))
+        except OSError:
+            stat.append((str(f), None, None))
+    return tuple(stat)
+
+
+_build_cache = {"stat": None, "id": None}
+
+
+def current_build_id() -> str:
+    """The id `render_page` and `/api/data` actually serve: `_build_id()`'s
+    same content hash, but recomputed only when `_build_stat()` says
+    something in `_build_sources()` moved since the last call -- see the
+    comment above `_build_id` for the bug this replaces (an id fixed at
+    import, oblivious to a `git pull` landing under a running server).
+
+    A handful of stat() calls run on EVERY call, cheap enough to afford once
+    per page load; the sha256 over full file contents -- the real work --
+    only runs again once the stat map has actually changed, so an unpulled,
+    unedited install pays for that hash exactly once, still, no matter how
+    many pages it serves."""
+    stat = _build_stat()
+    if stat != _build_cache["stat"]:
+        _build_cache["id"] = _build_id()
+        _build_cache["stat"] = stat
+    return _build_cache["id"]
+
+
+# current_build_id's cache is primed once PAGE_FILE is known (see below), the
+# same point the id used to be assigned to a module-level BUILD once and for
+# all -- keeping that one eager call preserves the fail-fast property a
+# broken read had before (the server refuses to start rather than serving a
+# first page that discovers the problem), while every call after this one
+# re-checks and re-hashes on its own, per current_build_id's own comment.
 
 _SELF_FILE = Path(__file__).resolve()
 _SELF_DIGEST = hashlib.sha256(_SELF_FILE.read_bytes()).hexdigest()
@@ -1834,7 +1904,17 @@ def load_data():
     # every one of those 5-second polls.
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     checks, ticks = checks_24h()
-    return {"generated": now, "launchd_loaded": launchd_loaded(), "build": BUILD,
+    # current_build_id(), not a fixed BUILD: this is what an ALREADY-OPEN tab
+    # polls every 5s to notice the server moved on and reload itself once
+    # (bin/dashboard.html compares this against the id its own page was
+    # rendered with) -- a static value here would never move, so a pull under
+    # a running server would still need a manual refresh for any tab that was
+    # already open, even though a brand new page load now gets the fresh id
+    # from render_page() immediately. The handful of stat() calls this costs
+    # is the same one render_page() already pays per load, just paid again
+    # per poll tick -- see current_build_id's own comment on why that stays
+    # cheap.
+    return {"generated": now, "launchd_loaded": launchd_loaded(), "build": current_build_id(),
             "config_sig": config_sig(),
             "state": state, "runs": runs,
             # Job ids PLUS the derived security jobs. Those never appear in
@@ -3340,7 +3420,7 @@ class Handler(BaseHTTPRequestHandler):
 # entirely self-contained (same package, no CDN, nothing fetched at runtime),
 # and `node --check` can be pointed straight at its script block.
 PAGE_FILE = BIN_DIR / "dashboard.html"
-BUILD = _build_id()   # content-derived; needs PAGE_FILE
+current_build_id()   # primes the cache now that PAGE_FILE is known -- see its own comment
 _page_cache = {"mtime": None, "text": ""}
 
 
@@ -3369,9 +3449,13 @@ def render_page(boot: str = "boot-authed") -> str:
     still writing the response, so it says so and the first frame is right.
     Answering wrongly is not a leak either way: every endpoint behind the gate
     still refuses, and the page corrects itself the moment the session lands.
+
+    `current_build_id()`, not a fixed BUILD: this runs on every request, so a
+    `git pull` landing under a running server is visible on the very next
+    load -- see that function's own comment.
     """
     return (_page_source().replace("__TOKEN__", TOKEN)
-                .replace("__BUILD__", BUILD)
+                .replace("__BUILD__", current_build_id())
                 .replace("__BOOT__", boot)
                 .replace("__FAVICON__", FAVICON))
 

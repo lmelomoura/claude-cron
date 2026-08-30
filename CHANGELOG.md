@@ -19,6 +19,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A `git pull` under a running server now serves fresh assets on the very
+  next reload — no restart required.** The build id stamped into every
+  asset's `?v=` (and reported to an already-open tab's own 5-second poll)
+  used to be computed once, at process start, into a module-level `BUILD` --
+  so pulling new UI code into a live install left every later page load
+  stamping `?v=` with the OLD id. Browsers then kept serving the stale
+  cached bundle against markup that had just changed underneath it: dead
+  listeners, broken layout, fixable only by finding and restarting the
+  process by hand. `current_build_id()` replaces that fixed value with a
+  cache that is cheap to check (a stat() of the same tracked set the id
+  always hashed, on every request) and only pays for a real re-hash when
+  that stat says something actually moved -- an unpulled, unedited install
+  still hashes its assets exactly once, no matter how many pages or polls it
+  serves.
+
 - **The browser's own Back and Forward buttons now stay inside the app.**
   Nothing before this wrote to `history` at all — every sidebar view and
   every screen inside the Security area (the fleet index, a project's own
