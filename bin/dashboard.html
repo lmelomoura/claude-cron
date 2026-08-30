@@ -1800,6 +1800,16 @@ const CC = {
   // underneath it) also keeps that click from ever bubbling to `document`,
   // which is where this function is normally reached from.
   closeMenus,
+  // pushNav (F4 history layer): a hoisted `function` defined beside setView,
+  // further down THIS script -- same "safe to read this early" reasoning as
+  // makePicker/createCombo/closeMenus above. Every screen-level navigation
+  // ui/security/ makes (secBack, secOpenProject, secSwitchProjectTab,
+  // secOpenActivity/secBackFromActivity, secActSwitchTab) calls this once it
+  // has finished updating its own state, so the browser's Back/Forward
+  // buttons retrace exactly the screens a reader saw instead of leaving the
+  // site on the very first press. See this function's own comment, beside
+  // setView, for the full contract.
+  pushNav,
   // The two the page REASSIGNS while it runs: DATA on every poll, currentView
   // on every navigation. Copied in by value they would freeze at what they held
   // right now -- an empty DATA, the startup view -- so they are read live,
@@ -4001,7 +4011,83 @@ function initModalScrollLock(){
 // instead of restoring them onto a blank pane with no nav item to leave by.
 const VIEWS = ["overview","jobs","runs","projects","security"];
 let currentView = VIEWS.includes(localStorage.ccView) ? localStorage.ccView : "overview";
-function setView(v){
+
+/* ------------------------------------------------------------ browser history
+   Nothing before this wrote to `history` at all: every sidebar view and every
+   screen inside Security repainted in place, so the mouse's own Back button
+   had nothing of this app's to undo and left the tab on the very first press
+   -- from ANYWHERE, since there was never a second entry to fall back to.
+
+   The fix is one entry per navigation that replaces the MAIN SURFACE (a
+   sidebar view, or one of Security's own screens/tabs), each carrying just
+   enough state to repaint from:
+     {view}                                             -- the sidebar
+     {view:"security", sec:{screen, project?, tab?}}     -- Security's own
+   `screen` is "index" (the fleet), "project" (one project's own tabs) or
+   "activity" (the cross-project feed); `project` is its name; `tab` is
+   whichever screen's own active tab id.
+
+   Deliberately NOT in the state, the same way a dialog is not a view: which
+   severity filter a table has set, which row a project's Runs table is
+   scrolled to, which analysis a project screen has pinned, which project the
+   Activity screen's own picker is scoped to after opening. Nobody would call
+   pressing Back "undoing" a filter, and recording one would make a single
+   click cost several Back presses to get past. DIALOGS -- the job editor,
+   the log viewer, confirm, the reason prompt -- do not participate at all:
+   Escape and Cancel already close them, and one entry per open/close would
+   outlive a two-second look at one in the Back stack. Back is view
+   navigation, only.
+
+   Two directions:
+     pushNav(state)     Called by setView below, and — through the CC.pushNav
+                         bridge, see ui/security/page.js's own comment -- by
+                         secBack, secOpenProject, secSwitchProjectTab,
+                         secOpenActivity/secBackFromActivity and
+                         secActSwitchTab in ui/security/, each ONCE IT HAS
+                         FINISHED updating its own state. Every one of those
+                         calls it unconditionally UNLESS it was itself told
+                         `fromHistory` -- the flag a restore (below) passes,
+                         and the flag a handful of compound callers pass to
+                         a navigation function they reuse purely for its
+                         teardown (secOpenActivity reusing secBack's own),
+                         so the ONE screen a click actually shows gets
+                         exactly ONE entry, never one per function it went
+                         through on the way.
+     restoreNav(state)  The `popstate` handler below. Applies a PREVIOUSLY
+                         PUSHED state back onto the page without pushing it
+                         again -- sidebar via setView(v, true), Security via
+                         CCSecurity.navigate(), `fromHistory` threaded
+                         through both.
+
+   Falsifiable the obvious way: drop either `true` in restoreNav and this
+   becomes a restore that pushes -- so every Back lands on a NEW,
+   forward-facing entry identical to the one just left, and the very next
+   Back re-lands on THAT instead of moving further back. A loop, one press
+   deep, that never reaches the page a reader is actually trying to leave
+   to. The test suite drops the flag on purpose to prove this goes red.
+
+   Boot REPLACES the tab's very first entry (initViews below), never pushes
+   one: the reader did not navigate to open the tab, so Back has nothing of
+   ITS to undo there. One press past it leaving the app, or past whatever
+   entry is oldest in a session that has pushed a few more, is correct: the
+   browser's own history from before this tab loaded is not this router's
+   to rewrite. */
+function currentNavState(){
+  return currentView === "security"
+    ? {view: "security", sec: CCSecurity.navState()}
+    : {view: currentView};
+}
+function pushNav(state){
+  history.pushState(state, "", location.href);
+}
+function restoreNav(state){
+  state = state || {view: "overview"};
+  if(state.view !== currentView) setView(state.view, true);
+  if(state.view === "security") CCSecurity.navigate(state.sec || {screen: "index"});
+}
+window.addEventListener("popstate", (e) => restoreNav(e.state));
+
+function setView(v, fromHistory){
   currentView = VIEWS.includes(v) ? v : "overview";
   localStorage.ccView = currentView;
   VIEWS.forEach(name => { $("view-"+name).hidden = (name !== currentView); });
@@ -4015,7 +4101,18 @@ function setView(v){
   // Security reads its own endpoints, one subprocess per project on the server,
   // so it fetches on arrival rather than on the five-second poll — and stops
   // watching a running analysis the moment the page is left.
-  if(currentView === "security") CCSecurity.enter(); else CCSecurity.leave();
+  //
+  // `fromHistory` (F4 history layer) skips enter() specifically: a restore
+  // (restoreNav above) already knows the EXACT screen, project and tab to
+  // land on and calls CCSecurity.navigate() with them right after this
+  // returns -- enter() would ALSO guess a screen, from whatever secState
+  // happened to be left at, and fire its own fetch for that guess an instant
+  // before navigate() throws the result away. initViews's own boot call is
+  // the other fromHistory caller, for the identical reason -- see its
+  // comment.
+  if(currentView === "security"){ if(!fromHistory) CCSecurity.enter(); }
+  else CCSecurity.leave();
+  if(!fromHistory) pushNav(currentNavState());
 }
 function paintNav(){
   const jobs = (DATA.jobs || []).length;
@@ -4316,7 +4413,18 @@ async function enterDashboard(user){
 function initViews(){
   document.querySelectorAll(".navitem").forEach(b =>
     b.addEventListener("click", () => setView(b.dataset.view)));
-  setView(currentView);
+  // `true`: this is the tab's FIRST paint, not a navigation -- setView's own
+  // push is skipped, and for Security specifically so is its own enter()
+  // guess (see setView's own comment above). CCSecurity.navigate() below is
+  // what actually loads it, landing deterministically on the index screen:
+  // ui/security/state.js's secState starts fresh on every load, so cold
+  // boot never has a project or activity screen left over to resume.
+  setView(currentView, true);
+  if(currentView === "security") CCSecurity.navigate({screen: "index"});
+  // Boot REPLACES the tab's very first history entry with where it actually
+  // landed, never pushes one -- see the router's own comment above setView
+  // for the full contract every navigation from here on follows.
+  history.replaceState(currentNavState(), "", location.href);
 }
 // The warning and error KPI cards are a way IN to the runs they count: click
 // one to show exactly those runs. kpiCard() (ui/app/overview.js) still marks

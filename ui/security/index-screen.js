@@ -1039,14 +1039,20 @@ function secIndexCardHead(title, sub, action){
    flight -- so the first response loses the race in `secActLoad` and is
    dropped silently, the identical guard a reader double-clicking two tabs
    in a row already relies on. The reader never sees "All activity" flash
-   before "Analyses" paints. */
+   before "Analyses" paints.
+
+   Same two calls also decide who pushes browser history for this one click
+   (F4 history layer): secOpenActivity(project, true) suppresses its own
+   push -- "All activity" is not a screen this click ever shows -- and
+   secActSwitchTab, called without the flag, pushes the "Analyses" tab that
+   actually paints. See bin/dashboard.html's own router comment. */
 function secViewAllAnalysesButton(){
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "btn ghost";
   btn.appendChild(secIcon("activity"));
   btn.appendChild(document.createTextNode("View all analyses"));
-  btn.onclick = () => { secOpenActivity(""); secActSwitchTab("analyses"); };
+  btn.onclick = () => { secOpenActivity("", true); secActSwitchTab("analyses"); };
   return btn;
 }
 
@@ -1073,7 +1079,11 @@ function secViewFullReportButton(recent){
   btn.title = "Open " + latest.project + "’s own Reports tab — the nearest "
     + "report to this card's totals; there is no single report spanning "
     + "every project.";
-  btn.onclick = () => { secOpenProject(latest.project); secSwitchProjectTab("reports"); };
+  // secOpenProject(name, true) (F4 history layer) suppresses its own push --
+  // "overview" is not the tab this click shows -- and secSwitchProjectTab,
+  // called without the flag, pushes "reports", the tab that actually
+  // paints. See bin/dashboard.html's own router comment, beside setView.
+  btn.onclick = () => { secOpenProject(latest.project, true); secSwitchProjectTab("reports"); };
   return btn;
 }
 

@@ -1,5 +1,5 @@
 /* --------------------------------------------------------- one project */
-import { $, CC, api, toast, openLog, projById, fmtAgo, fmtDur, money, createCombo } from "./page.js";
+import { $, CC, api, toast, openLog, projById, fmtAgo, fmtDur, money, createCombo, pushNav } from "./page.js";
 import { secIcon, secEl, secFetch } from "./dom.js";
 import { SEC_POLL_MS, SEC_PROFILES, SEC_STATES, SEC_STATE_HELP, SEC_STATE_LABEL,
          SEV_ORDER, SEC_NEVER, secDefaultProfile, secMinSeverity, secPosture,
@@ -67,7 +67,15 @@ export function secSyncPoll(){
 export function secEnter(){ if(secState.project) secReload(); else secLoadIndex(false); }
 export function secLeave(){ secStopPoll(); }
 
-export function secBack(){
+/* `fromHistory` (F4 history layer): true for exactly two kinds of caller,
+   neither of which is a reader pressing "All projects" -- CCSecurity.navigate
+   (bin/dashboard.html's popstate handler, restoring a state that already IS
+   this one) and secOpenActivity (activity-screen.js), which reuses this
+   function for its own teardown and pushes ITS OWN, later, resulting state.
+   Either way the entry for "back to the index" must not be pushed a second
+   time -- see bin/dashboard.html's own router comment, beside setView, for
+   the full contract and for what happens when this flag is dropped. */
+export function secBack(fromHistory){
   secStopPoll();
   // Whatever just happened in there (a new analysis, a decision) may have
   // changed the fleet's posture, so the index's cached answer is thrown away
@@ -82,6 +90,7 @@ export function secBack(){
   $("sec-projects").hidden = false;
   secRenderIndex();
   secLoadIndex(false);
+  if(!fromHistory) pushNav({view: "security", sec: {screen: "index"}});
 }
 
 export async function secOpen(project){

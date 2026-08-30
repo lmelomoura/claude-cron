@@ -21,7 +21,7 @@
    findings browser, ui/security/findings-screen.js) mounted under the
    Findings tab -- this module still only owns the header, the tabs and the
    sidebar, never the table itself. */
-import { $, fmtAgo, fmtDur, fmtWhen, openProjectEditor, tableFooter } from "./page.js";
+import { $, fmtAgo, fmtDur, fmtWhen, openProjectEditor, tableFooter, pushNav } from "./page.js";
 import { secIcon, secEl, secFetch } from "./dom.js";
 import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP, SEC_NEVER,
          SEC_FLOOR_SCOPE_NOTE, EVENT_KIND_LABEL } from "./vocabulary.js";
@@ -55,11 +55,23 @@ export function secInvalidateProject(){ secProjectCache = null; }
    analysis.js's secOpen directly. secOpen still does everything it always
    did -- shows #sec-detail, resolves the repo/branch/profile pickers, loads
    the default analysis for drilling into below the Runs table -- this only
-   adds the header/tabs/sidebar fetch on top of it. */
-export async function secOpenProject(name){
+   adds the header/tabs/sidebar fetch on top of it.
+
+   `fromHistory` (F4 history layer): set by CCSecurity.navigate (a popstate
+   restore) and by the two index-screen.js buttons that immediately follow
+   this call with their own secSwitchProjectTab -- that second call is the
+   one real navigation ("open this project's Reports tab") and is the one
+   that pushes; this one would otherwise push the "overview" tab a click
+   never actually showed. See bin/dashboard.html's own router comment. */
+export async function secOpenProject(name, fromHistory){
   secProjectTab = "overview";
   secRunsFilter = "";
   secOpen(name);
+  // Pushed here, before the project-data fetch, not after: the reader is
+  // looking at the project screen (loading state and all) from the instant
+  // this returns, and a fast Back before the fetch settles must already have
+  // this entry to land on.
+  if(!fromHistory) pushNav({view: "security", sec: {screen: "project", project: name, tab: secProjectTab}});
   await secLoadProject(name, true);
 }
 
@@ -103,7 +115,11 @@ function secRenderProjectError(msg){
   host.appendChild(secEl("span", "grow", "Could not read this project — " + msg));
 }
 
-export function secSwitchProjectTab(tab){
+/* `fromHistory` (F4 history layer): true only for CCSecurity.navigate's own
+   restore -- every tab button in the page wires this with a bare tab name,
+   so `fromHistory` there stays undefined/false and every real click still
+   pushes. See bin/dashboard.html's own router comment, beside setView. */
+export function secSwitchProjectTab(tab, fromHistory){
   secProjectTab = ["overview", "runs", "branches", "findings", "reports"].includes(tab)
     ? tab : "overview";
   secRenderTabs();
@@ -114,7 +130,14 @@ export function secSwitchProjectTab(tab){
   // tick ONLY while it stays the active tab, never while some other tab is
   // on screen.
   if(secProjectTab === "findings") renderFindings($("sec-pj-findings"), secState.project);
+  if(!fromHistory) pushNav({view: "security", sec: {screen: "project", project: secState.project, tab: secProjectTab}});
 }
+
+/* The project screen's own active tab -- read by CCSecurity.navState()
+   (ui/security/index.js) to compose the history state a real navigation
+   elsewhere (entering Security from the sidebar, resuming a project) pushes.
+   secProjectTab itself stays module-private; this is the one door in. */
+export function secCurrentProjectTab(){ return secProjectTab; }
 
 function secRenderProject(){
   if(!secProjectCache) return;

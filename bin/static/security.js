@@ -22,6 +22,7 @@
   var makePicker;
   var createCombo;
   var closeMenus;
+  var pushNav;
   var CC = null;
   function bindPage(cc) {
     CC = cc;
@@ -47,7 +48,8 @@
       tableFooter,
       makePicker,
       createCombo,
-      closeMenus
+      closeMenus,
+      pushNav
     } = cc);
   }
 
@@ -378,7 +380,7 @@
   function secLeave() {
     secStopPoll();
   }
-  function secBack() {
+  function secBack(fromHistory) {
     secStopPoll();
     secInvalidateIndex();
     secInvalidateProject();
@@ -392,6 +394,7 @@
     $("sec-projects").hidden = false;
     secRenderIndex();
     secLoadIndex(false);
+    if (!fromHistory) pushNav({ view: "security", sec: { screen: "index" } });
   }
   async function secOpen(project) {
     secStopPoll();
@@ -1907,30 +1910,44 @@
   function secIsActivityOpen() {
     return secActOpen;
   }
-  async function secOpenActivity(project) {
-    secBack();
+  function secActNavState() {
+    return secActState ? { project: secActState.project, tab: secActState.tab } : { project: "", tab: "" };
+  }
+  async function secOpenActivity(project, fromHistory) {
+    secBack(true);
     secActOpen = true;
     secActState = _freshState(project);
     $("sec-projects").hidden = true;
     $("sec-activity").hidden = false;
     secActRenderShell();
+    if (!fromHistory) pushNav({ view: "security", sec: {
+      screen: "activity",
+      project: secActState.project,
+      tab: secActState.tab
+    } });
     await secActLoad();
   }
-  function secBackFromActivity() {
+  function secBackFromActivity(fromHistory) {
     secActOpen = false;
     $("sec-activity").hidden = true;
     $("sec-projects").hidden = false;
+    if (!fromHistory) pushNav({ view: "security", sec: { screen: "index" } });
   }
   async function secActReload() {
     if (!secActOpen) return;
     await secActLoad();
   }
-  function secActSwitchTab(key) {
+  function secActSwitchTab(key, fromHistory) {
     if (!secActState) return;
     secActState.tab = ACT_TABS.some((t) => t.key === key) ? key : "";
     secActState.page = 1;
     secActRenderTabs();
     secActLoad();
+    if (!fromHistory) pushNav({ view: "security", sec: {
+      screen: "activity",
+      project: secActState.project,
+      tab: secActState.tab
+    } });
   }
   function secActProjectChanged(value) {
     if (!secActState) return;
@@ -2193,8 +2210,8 @@
   async function secActOpenAnalysis(project, relatedId) {
     const id = Number(relatedId);
     if (!project || !Number.isFinite(id)) return;
-    secBackFromActivity();
-    await secOpenProject(project);
+    secBackFromActivity(true);
+    await secOpenProject(project, true);
     secSwitchProjectTab("runs");
     await secShowAnalysis(id, true);
   }
@@ -2311,10 +2328,11 @@
   function secInvalidateProject() {
     secProjectCache = null;
   }
-  async function secOpenProject(name) {
+  async function secOpenProject(name, fromHistory) {
     secProjectTab = "overview";
     secRunsFilter = "";
     secOpen(name);
+    if (!fromHistory) pushNav({ view: "security", sec: { screen: "project", project: name, tab: secProjectTab } });
     await secLoadProject(name, true);
   }
   async function secRefreshProject() {
@@ -2348,10 +2366,14 @@
     host.appendChild(secIcon("alert"));
     host.appendChild(secEl("span", "grow", "Could not read this project \u2014 " + msg));
   }
-  function secSwitchProjectTab(tab) {
+  function secSwitchProjectTab(tab, fromHistory) {
     secProjectTab = ["overview", "runs", "branches", "findings", "reports"].includes(tab) ? tab : "overview";
     secRenderTabs();
     if (secProjectTab === "findings") renderFindings($("sec-pj-findings"), secState.project);
+    if (!fromHistory) pushNav({ view: "security", sec: { screen: "project", project: secState.project, tab: secProjectTab } });
+  }
+  function secCurrentProjectTab() {
+    return secProjectTab;
   }
   function secRenderProject() {
     if (!secProjectCache) return;
@@ -3257,7 +3279,7 @@
     btn.appendChild(secIcon("activity"));
     btn.appendChild(document.createTextNode("View all analyses"));
     btn.onclick = () => {
-      secOpenActivity("");
+      secOpenActivity("", true);
       secActSwitchTab("analyses");
     };
     return btn;
@@ -3276,7 +3298,7 @@
     }
     btn.title = "Open " + latest.project + "\u2019s own Reports tab \u2014 the nearest report to this card's totals; there is no single report spanning every project.";
     btn.onclick = () => {
-      secOpenProject(latest.project);
+      secOpenProject(latest.project, true);
       secSwitchProjectTab("reports");
     };
     return btn;
@@ -3625,7 +3647,7 @@
     iconLabel($("secactt-analyses"), "shield", "Analyses");
     iconLabel($("secactt-findings"), "search", "Findings");
     iconLabel($("secactt-settings"), "gear", "Settings");
-    $("sec-act-back").addEventListener("click", secBackFromActivity);
+    $("sec-act-back").addEventListener("click", () => secBackFromActivity());
     $("sec-act-reload").addEventListener("click", secActReload);
     $("secactt-all").addEventListener("click", () => secActSwitchTab(""));
     $("secactt-analyses").addEventListener("click", () => secActSwitchTab("analyses"));
@@ -3634,7 +3656,7 @@
     secActInitProjectPicker();
     wireActivityFindingDialog();
     $("sec-dl-note").textContent = "Downloads always contain every recorded finding, whatever the severity floor shows.";
-    $("sec-back").addEventListener("click", secBack);
+    $("sec-back").addEventListener("click", () => secBack());
     $("sec-run").addEventListener("click", secAnalyse);
     $("sec-dl-md").addEventListener("click", () => secDownload("md"));
     $("sec-dl-json").addEventListener("click", () => secDownload("json"));
@@ -3643,6 +3665,31 @@
     secInitLaunchCombos();
     $("sec-branch-other").addEventListener("change", () => secSyncScope());
   }
+  function secNavState() {
+    if (secIsActivityOpen()) {
+      const a = secActNavState();
+      return { screen: "activity", project: a.project, tab: a.tab };
+    }
+    if (secState.project) return { screen: "project", project: secState.project, tab: secCurrentProjectTab() };
+    return { screen: "index" };
+  }
+  async function secNavigate(sec) {
+    sec = sec || {};
+    if (sec.screen === "project" && sec.project && projById(sec.project)) {
+      if (secIsActivityOpen()) secBackFromActivity(true);
+      if (secState.project !== sec.project) await secOpenProject(sec.project, true);
+      secSwitchProjectTab(sec.tab || "overview", true);
+      return;
+    }
+    if (sec.screen === "activity") {
+      const already = secIsActivityOpen() && secActNavState().project === (sec.project || "");
+      if (!already) await secOpenActivity(sec.project || "", true);
+      secActSwitchTab(sec.tab || "", true);
+      return;
+    }
+    if (secIsActivityOpen()) secBackFromActivity(true);
+    else secBack(true);
+  }
   window.CCSecurity = {
     init,
     render: renderSecurity,
@@ -3650,9 +3697,16 @@
     leave: secLeave,
     openActivity: () => secOpenActivity(""),
     reload: () => secLoadIndex(true),
+    // navState/navigate (F4 history layer): the bridge bin/dashboard.html's
+    // router uses the OTHER direction from every name above -- those answer a
+    // click the page already routed here; these let the page ask this area
+    // what to push, and tell it what to restore. See this file's own comment
+    // above secNavState/secNavigate, and bin/dashboard.html's, beside setView.
+    navState: secNavState,
+    navigate: secNavigate,
     SEV_ORDER,
     SEC_PROFILES
   };
 })();
-/* ui-bundle: c7db38d744110a63bc8598cf568e7cc6afd0040096e947b4fb7725c0f59f649f */
-/* ui-sources: a5fadb1bd9b8cb7ef66826d464210f09d518881b379da9268f5430a1cfc32644 */
+/* ui-bundle: 7c1b6f4b79861d3f9d3aa99a9e585c42a3e3a5ea3df3bab6f6c71672180bf05c */
+/* ui-sources: 0f944efd48ba35d3f769297a9828b444a3fbdb8df7901294ca1838b6b345bcb0 */

@@ -85,7 +85,21 @@ export let $, TOKEN, api, toast, openLog, projById, sessionLost,
            // closeMenus() is normally reached from. Safe to read this early
            // for the identical reason makePicker/createCombo already are: a
            // hoisted `function` declaration, not `const`/`let`.
-           closeMenus;
+           closeMenus,
+           // pushNav (F4 history layer) is the same direction of bridge as
+           // makePicker/createCombo/closeMenus above: a hoisted `function`
+           // bin/dashboard.html defines directly, beside setView, because
+           // `history` and the page's own view/security state are the
+           // page's, never this bundle's. Every screen-level navigation this
+           // area makes -- secBack, secOpenProject, secSwitchProjectTab,
+           // secOpenActivity/secBackFromActivity, secActSwitchTab -- calls
+           // it once it has finished updating ITS OWN state, so the
+           // browser's Back/Forward buttons can retrace exactly the screens
+           // a reader saw. See bin/dashboard.html's own router comment,
+           // beside setView, for the full contract (what gets pushed, when
+           // a caller instead passes `fromHistory` to suppress its own
+           // push, and why).
+           pushNav;
 
 /* DATA and currentView are the two the page REASSIGNS as it runs — DATA on
    every five-second poll, currentView on every navigation. Destructured into a
@@ -100,5 +114,6 @@ export function bindPage(cc) {
   CC = cc;
   ({ $, TOKEN, api, toast, openLog, projById, sessionLost, unjournaledLive,
      fmtAgo, fmtWhen, fmtDur, money, icon, iconLabel, iconHTML, openProjectEditor,
-     pageHeader, kpiCard, tableFooter, makePicker, createCombo, closeMenus } = cc);
+     pageHeader, kpiCard, tableFooter, makePicker, createCombo, closeMenus,
+     pushNav } = cc);
 }

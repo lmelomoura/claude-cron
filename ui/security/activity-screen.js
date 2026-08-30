@@ -49,7 +49,7 @@
    view is a fixed-id pane wired into the project screen with no portable
    host of its own, while the findings browser was already rebuilt
    (Task 11) to be mountable anywhere, twice over. */
-import { $, fmtAgo, pageHeader, makePicker } from "./page.js";
+import { $, fmtAgo, pageHeader, makePicker, pushNav } from "./page.js";
 import { secEl, secIcon, secIconHTML, secFetch } from "./dom.js";
 import { EVENT_KINDS, EVENT_KIND_LABEL } from "./vocabulary.js";
 import { secBack, secShowAnalysis } from "./analysis.js";
@@ -100,25 +100,51 @@ function _freshState(project){
 
 export function secIsActivityOpen(){ return secActOpen; }
 
+/* The current {project, tab} this screen is scoped to and showing, or the
+   empty pair when it is not open at all -- read by CCSecurity.navState()
+   (ui/security/index.js) the same way project-screen.js's
+   secCurrentProjectTab() is; secActState itself stays module-private. */
+export function secActNavState(){
+  return secActState ? {project: secActState.project, tab: secActState.tab}
+                      : {project: "", tab: ""};
+}
+
 /* The entry point both links above call. `secBack()` (analysis.js) does the
    full project-screen teardown (stops the poll, invalidates both caches,
    clears secState, shows #sec-projects) whether or not a project was even
    open -- reused here rather than half-duplicated, then immediately
-   overridden to show #sec-activity instead of the index it just painted. */
-export async function secOpenActivity(project){
-  secBack();
+   overridden to show #sec-activity instead of the index it just painted.
+
+   `fromHistory` (F4 history layer): set by CCSecurity.navigate (a popstate
+   restore) and by secActOpenAnalysis/secViewAllAnalysesButton below, which
+   both chain this with a second call that does the real, later navigation
+   and pushes for the two of them. secBack(true) just above is the identical
+   pattern one level down: this function's own teardown call must not push
+   the "index" entry a reader never actually saw, because THIS function
+   pushes its own, real destination a few lines later. See
+   bin/dashboard.html's own router comment, beside setView. */
+export async function secOpenActivity(project, fromHistory){
+  secBack(true);
   secActOpen = true;
   secActState = _freshState(project);
   $("sec-projects").hidden = true;
   $("sec-activity").hidden = false;
   secActRenderShell();
+  // Pushed here, before the fetch, not after -- see secOpenProject's
+  // identical reasoning (project-screen.js) for why a fast Back must
+  // already have this entry to land on.
+  if(!fromHistory) pushNav({view: "security", sec: {screen: "activity",
+                            project: secActState.project, tab: secActState.tab}});
   await secActLoad();
 }
 
-export function secBackFromActivity(){
+/* `fromHistory`: see secOpenActivity's comment just above -- the identical
+   flag, for the identical reason, on the way back out to the index. */
+export function secBackFromActivity(fromHistory){
   secActOpen = false;
   $("sec-activity").hidden = true;
   $("sec-projects").hidden = false;
+  if(!fromHistory) pushNav({view: "security", sec: {screen: "index"}});
 }
 
 export async function secActReload(){
@@ -126,12 +152,20 @@ export async function secActReload(){
   await secActLoad();
 }
 
-export function secActSwitchTab(key){
+/* `fromHistory`: see secOpenActivity's comment above -- true only for
+   CCSecurity.navigate's own restore and for secViewAllAnalysesButton's
+   second call (index-screen.js), which follows an already-pushing
+   secOpenActivity("", true) with the tab that is the click's real
+   destination. Every tab button in the page wires this with a bare key, so
+   `fromHistory` there stays undefined/false and a real click still pushes. */
+export function secActSwitchTab(key, fromHistory){
   if(!secActState) return;
   secActState.tab = ACT_TABS.some(t => t.key === key) ? key : "";
   secActState.page = 1;
   secActRenderTabs();
   secActLoad();
+  if(!fromHistory) pushNav({view: "security", sec: {screen: "activity",
+                            project: secActState.project, tab: secActState.tab}});
 }
 
 // Private now (F4 Activity polish): the free-text <input>'s own `change`
@@ -519,8 +553,15 @@ function secActRelatedCell(e){
 async function secActOpenAnalysis(project, relatedId){
   const id = Number(relatedId);
   if(!project || !Number.isFinite(id)) return;
-  secBackFromActivity();
-  await secOpenProject(project);
+  // Three navigation functions for one click, chained the same way
+  // secViewAllAnalysesButton (index-screen.js) chains two: only the LAST
+  // one -- landing on this project's own Runs tab, this link's real
+  // destination -- pushes. The first two are suppressed with `true` so
+  // leaving the Activity screen does not also cost the reader an "index"
+  // and a "project/overview" entry nobody asked to see. See
+  // bin/dashboard.html's own router comment, beside setView.
+  secBackFromActivity(true);
+  await secOpenProject(project, true);
   secSwitchProjectTab("runs");
   // `pinned`: this link names ONE analysis, and it is routinely on a branch
   // the project screen's picker did not resolve to. Without it the poll

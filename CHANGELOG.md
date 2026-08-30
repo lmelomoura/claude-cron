@@ -19,6 +19,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The browser's own Back and Forward buttons now stay inside the app.**
+  Nothing before this wrote to `history` at all — every sidebar view and
+  every screen inside the Security area (the fleet index, a project's own
+  tabs, the cross-project Activity feed) repainted in place, so the mouse's
+  Back button had nothing of this app's to undo and left the tab on the very
+  first press, from anywhere. Every navigation that replaces the main
+  surface now pushes one `history` entry with just enough state to repaint
+  from — `{view}` for the sidebar, `{view:"security", sec:{screen, project,
+  tab}}` for Security's own place inside itself — and a `popstate` restores
+  it back through the exact same navigation paths a click already uses,
+  never double-fetching and never pushing the entry it is itself restoring
+  (that second part matters: a restore that pushed would turn every Back
+  press into a one-press-deep loop that never reaches the page a reader is
+  trying to leave to). Dialogs — the job editor, the log viewer, confirm,
+  the reason prompt — deliberately do not participate: Escape and Cancel
+  already close them, and a history entry per open/close would outlive a
+  two-second look at one. See bin/dashboard.html's own router comment,
+  beside `setView`, for the full contract.
+
 - **The Activity screen's control row speaks the house vocabulary now, and
   a findings table column stopped repeating its own neighbour.** Its
   7/30/90-day and All-time chips were the last `.secchip` row of its kind on

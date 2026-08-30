@@ -3678,6 +3678,15 @@ FakeElement.prototype.classList = { toggle(){} };
 // hidden, not relative-time formatting or the project editor.
 function fmtWhen(t){ return "w" + String(t); }
 function openProjectEditor(_name){}
+// pushNav (F4 history layer): a trivial stand-in for bin/dashboard.html's
+// own history.pushState wrapper, bridged in the same way fmtWhen/
+// openProjectEditor above are. secSwitchProjectTab, secBack and
+// activity-screen.js's secOpenActivity/secBackFromActivity/secActSwitchTab
+// all call it once they finish updating their own state (see each
+// function's own comment) -- these tests are about which pane ends up
+// visible or which tab ends up active, never about browser history, so this
+// only has to exist and not throw.
+function pushNav(_state){}
 const secState = { project: "web" };
 // A registry standing in for the real page's markup: $(id) in
 // project-screen.js reaches for these ids the way document.getElementById
@@ -7356,3 +7365,377 @@ def test_calling_the_bridged_chrome_builders_during_securitys_own_init_does_not_
         "own `icon` -- this throws and blanks the whole page on load: "
         + "; ".join(problems)
     )
+
+
+# ============================================================ F4: browser history
+# bin/dashboard.html's own router comment (beside setView) is the contract; these
+# tests drive the REAL extracted functions rather than re-describe it. Three
+# behavioural layers: the page's own router (pushNav/setView/restoreNav/
+# initViews, this file's _js), the Security bridge that composes/applies its own
+# screen (secNavState/secNavigate, ui/security/index.js), and -- text-level,
+# for the fetch-heavy screen functions a full behavioural drive would need a
+# network mock disproportionate to what is being pinned -- the one property a
+# render/fetch cannot hide: every navigation function pushes its OWN state,
+# guarded by `fromHistory`, and a compound click suppresses every step but its
+# last.
+
+def _norm(s):
+    """Collapses whitespace so a substring check does not care whether the
+    real source wrapped an object literal onto a second line."""
+    return re.sub(r"\s+", " ", s)
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_push_nav_writes_the_given_state_to_history(srv, tmp_path):
+    """pushNav is the one function in the whole router that touches `history`
+    directly -- everything else (setView, and every Security navigation
+    point through the CC.pushNav bridge) goes through it. Pinned alone so the
+    tests below can stub it as a plain recorder without re-proving this
+    wiring every time."""
+    js = _js(srv)
+    script = tmp_path / "pushnav.js"
+    script.write_text(_plainfn(js, "pushNav") + """
+    const pushed = [];
+    const location = { href: "http://127.0.0.1:8787/" };
+    const history = { pushState(state, title, url){ pushed.push({state, title, url}); } };
+    pushNav({view: "jobs"});
+    console.log(JSON.stringify(pushed));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out == [{"state": {"view": "jobs"}, "title": "", "url": "http://127.0.0.1:8787/"}], out
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_set_view_pushes_a_real_navigation_and_a_restore_skips_both_the_push_and_securitys_enter(srv, tmp_path):
+    """The two things setView must get right for the router to work: a real
+    navigation (no second argument) pushes the composed state, entering
+    Security through CCSecurity.enter() first so the pushed `sec` reflects
+    whatever it resolved to; a restore (`fromHistory=true`) does neither --
+    CCSecurity.enter() is skipped too, not just the push, because a restore
+    (restoreNav, tested below) already knows the exact screen and is about
+    to call CCSecurity.navigate() with it right after setView returns --
+    see setView's own comment for why calling enter() first would just be a
+    second, wasted guess.
+
+    Drives FOUR calls in one script rather than one assertion each: the
+    counters below only mean anything as a sequence (entered stays 1 across
+    TWO transitions into Security, because only the first was a real one)."""
+    js = _js(srv)
+    deps = "\n".join(_plainfn(js, n) for n in ("currentNavState", "setView"))
+    script = tmp_path / "setview-push.js"
+    script.write_text("""
+    const VIEWS = ["overview","jobs","runs","projects","security"];
+    let currentView = "overview";
+    const localStorage = {};
+    class FakeEl { constructor(){ this.hidden = false; this.dataset = {}; this.classList = { toggle(){} }; } }
+    const _els = {};
+    function $(id){ if(!_els[id]) _els[id] = new FakeEl(); return _els[id]; }
+    const document = { querySelectorAll: () => [] };
+    function closeDrawer(){}
+    function render(){}
+    let entered = 0, left = 0;
+    const CCSecurity = {
+      enter(){ entered++; },
+      leave(){ left++; },
+      navState(){ return {screen: "index"}; },
+    };
+    let pushed = [];
+    function pushNav(state){ pushed.push(state); }
+    """ + deps + """
+    setView("jobs");             // real navigation, not Security: pushes {view:"jobs"}
+    setView("security");         // real navigation, into Security: enter() once, pushes the composed sec
+    setView("overview", true);   // restore, leaving Security: leave() but no push
+    setView("security", true);   // restore, back into Security: enter() must NOT run again, no push
+    console.log(JSON.stringify({pushed, entered, left, currentView}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["pushed"] == [{"view": "jobs"}, {"view": "security", "sec": {"screen": "index"}}], out["pushed"]
+    assert out["entered"] == 1, (
+        "CCSecurity.enter() must run for the ONE real navigation into Security "
+        f"and be skipped for the restore back into it: {out}"
+    )
+    # leave() is unconditional on "the new view is not Security" -- it runs on
+    # BOTH of the two calls that land somewhere else (#1 into "jobs", #3 the
+    # restore into "overview"), fromHistory or not; only enter() is gated.
+    assert out["left"] == 2, out
+    assert out["currentView"] == "security"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_restore_nav_applies_state_without_pushing_and_a_dropped_flag_would_loop(srv, tmp_path):
+    """The classic bug this router exists to avoid, spelled out in bin/
+    dashboard.html's own comment: if a popstate handler ever pushed the state
+    it is restoring, Back would land on a NEW entry identical to the one just
+    left, and the next Back would re-land on THAT instead of moving further
+    back -- a loop, one press deep, that never reaches the page a reader is
+    actually trying to leave to.
+
+    Falsifiability, concretely: the second call below is not a hypothetical
+    mutant description, it is the literal call graph restoreNav's own
+    `setView(state.view, true)` degenerates into if that `true` is ever
+    dropped -- `setView(state.view)`. Driving both through the SAME real
+    extracted functions proves the guard is load-bearing, not vacuous: remove
+    the assertion on afterMutant and this test would still pass with the flag
+    silently gone."""
+    js = _js(srv)
+    deps = "\n".join(_plainfn(js, n) for n in ("currentNavState", "setView", "restoreNav"))
+    script = tmp_path / "restorenav.js"
+    script.write_text("""
+    const VIEWS = ["overview","jobs","runs","projects","security"];
+    let currentView = "overview";
+    const localStorage = {};
+    class FakeEl { constructor(){ this.hidden = false; this.dataset = {}; this.classList = { toggle(){} }; } }
+    const _els = {};
+    function $(id){ if(!_els[id]) _els[id] = new FakeEl(); return _els[id]; }
+    const document = { querySelectorAll: () => [] };
+    function closeDrawer(){}
+    function render(){}
+    const CCSecurity = { enter(){}, leave(){}, navState(){ return {screen: "index"}; }, navigate(){} };
+    let pushed = [];
+    function pushNav(state){ pushed.push(state); }
+    """ + deps + """
+    // The real path: a popstate event handing the browser's own remembered
+    // state back to restoreNav.
+    restoreNav({view: "jobs"});
+    const afterRealRestore = pushed.length;
+    // The mutant restoreNav's own `true` exists to prevent.
+    setView("overview");
+    const afterMutant = pushed.length;
+    console.log(JSON.stringify({afterRealRestore, afterMutant, currentView}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["afterRealRestore"] == 0, "restoreNav must not push the state it is restoring"
+    assert out["currentView"] == "overview"
+    assert out["afterMutant"] == 1, (
+        "dropping restoreNav's own `true` is exactly what would make a restore "
+        f"push -- if this is 0 too, the flag has stopped doing anything: {out}"
+    )
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_boot_replaces_history_and_never_pushes_or_calls_securitys_enter(srv, tmp_path):
+    """Boot (initViews) is a restore of its own kind -- the reader did not
+    navigate to open the tab -- so it REPLACES the tab's very first entry and
+    must never push. For a Security boot specifically it must also never call
+    CCSecurity.enter(): cold boot is deterministically the index screen
+    (ui/security/state.js's secState starts fresh on every load), and
+    initViews calls CCSecurity.navigate({screen:"index"}) directly instead --
+    enter()'s own guess is not just unnecessary here but wrong the instant a
+    future change gives Security any cross-reload memory. CCSecurity.enter()
+    is wired to THROW below specifically to make that regression loud rather
+    than silently wrong."""
+    js = _js(srv)
+    deps = "\n".join(_plainfn(js, n) for n in ("currentNavState", "setView", "initViews"))
+    script = tmp_path / "boot-router.js"
+    script.write_text("""
+    const VIEWS = ["overview","jobs","runs","projects","security"];
+    let currentView;
+    const localStorage = {};
+    class FakeEl { constructor(){ this.hidden = false; this.dataset = {}; this.classList = { toggle(){} }; } }
+    const _els = {};
+    function $(id){ if(!_els[id]) _els[id] = new FakeEl(); return _els[id]; }
+    const document = { querySelectorAll: () => [] };
+    function closeDrawer(){}
+    function render(){}
+    let pushed = [], replaced = [], navigated = [];
+    function pushNav(state){ pushed.push(state); }
+    const location = { href: "http://127.0.0.1:8787/" };
+    const history = { replaceState(state){ replaced.push(state); } };
+    const CCSecurity = {
+      enter(){ throw new Error("CCSecurity.enter() must never run during boot"); },
+      leave(){},
+      navState(){ return {screen: "index"}; },
+      navigate(sec){ navigated.push(sec); },
+    };
+    """ + deps + """
+    currentView = "jobs";
+    initViews();
+    const afterPlainBoot = {pushed: pushed.slice(), replaced: replaced.slice(),
+                             navigated: navigated.slice(), currentView};
+    pushed = []; replaced = []; navigated = [];
+    currentView = "security";
+    initViews();
+    const afterSecurityBoot = {pushed: pushed.slice(), replaced: replaced.slice(),
+                                navigated: navigated.slice(), currentView};
+    console.log(JSON.stringify({afterPlainBoot, afterSecurityBoot}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    plain, sec = out["afterPlainBoot"], out["afterSecurityBoot"]
+    assert plain == {"pushed": [], "replaced": [{"view": "jobs"}], "navigated": [], "currentView": "jobs"}, plain
+    assert sec == {"pushed": [], "replaced": [{"view": "security", "sec": {"screen": "index"}}],
+                   "navigated": [{"screen": "index"}], "currentView": "security"}, sec
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_sec_navigate_composes_the_right_screen_and_avoids_reopening_what_is_already_on_screen(srv, tmp_path):
+    """CCSecurity.navState()/navigate() (ui/security/index.js) are the bridge
+    a restore actually calls. Real extracted logic, small honest stand-ins
+    for every screen function it calls out to (secOpenProject and friends) --
+    this is about the DECISION (open fresh vs. just switch tab, and the
+    unknown-project fallback), not about their own fetches, which the rest of
+    this suite already covers close to where they live."""
+    block = _security_js(srv)
+    deps = "\n".join(_anyfn(block, n) for n in ("secNavigate",)) + "\n" + _plainfn(block, "secNavState")
+    script = tmp_path / "sec-navigate.js"
+    script.write_text("""
+    let secState = {project: ""};
+    let secActOpenFlag = false, secActProject = "", secActTab = "", projTab = "overview";
+    let calls = [];
+    function secIsActivityOpen(){ return secActOpenFlag; }
+    function secActNavState(){ return {project: secActProject, tab: secActTab}; }
+    function secCurrentProjectTab(){ return projTab; }
+    function projById(name){ return ["alpha", "beta"].includes(name) ? {name} : null; }
+    async function secOpenProject(name, fromHistory){
+      calls.push(["open", name, fromHistory]); secState.project = name; projTab = "overview";
+    }
+    function secSwitchProjectTab(tab, fromHistory){
+      calls.push(["tab", tab, fromHistory]); projTab = tab;
+    }
+    async function secOpenActivity(project, fromHistory){
+      calls.push(["actopen", project, fromHistory]);
+      secActOpenFlag = true; secActProject = project; secActTab = "";
+    }
+    function secActSwitchTab(key, fromHistory){
+      calls.push(["acttab", key, fromHistory]); secActTab = key;
+    }
+    function secBack(fromHistory){ calls.push(["back", fromHistory]); secState.project = ""; }
+    function secBackFromActivity(fromHistory){ calls.push(["actback", fromHistory]); secActOpenFlag = false; }
+    """ + deps + """
+    (async () => {
+      const results = {freshIndex: secNavState()};
+
+      await secNavigate({screen: "project", project: "alpha", tab: "findings"});
+      results.openAlpha = {calls: calls.slice(), state: secNavState()};
+      calls = [];
+
+      // Same project, different tab -- must switch, must NOT reopen.
+      await secNavigate({screen: "project", project: "alpha", tab: "reports"});
+      results.sameProjectDifferentTab = {calls: calls.slice(), state: secNavState()};
+      calls = [];
+
+      // A project the fleet no longer lists -- falls back to the index.
+      await secNavigate({screen: "project", project: "ghost", tab: "overview"});
+      results.unknownProject = {calls: calls.slice(), state: secNavState()};
+      calls = [];
+
+      await secNavigate({screen: "activity", project: "beta", tab: "findings"});
+      results.openActivity = {calls: calls.slice(), state: secNavState()};
+      calls = [];
+
+      // Same activity scope, different tab -- must switch, must NOT reopen.
+      await secNavigate({screen: "activity", project: "beta", tab: "settings"});
+      results.sameActivityDifferentTab = {calls: calls.slice(), state: secNavState()};
+      calls = [];
+
+      console.log(JSON.stringify(results));
+    })();
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["freshIndex"] == {"screen": "index"}, out["freshIndex"]
+
+    assert out["openAlpha"]["calls"] == [["open", "alpha", True], ["tab", "findings", True]], out["openAlpha"]
+    assert out["openAlpha"]["state"] == {"screen": "project", "project": "alpha", "tab": "findings"}
+
+    assert out["sameProjectDifferentTab"]["calls"] == [["tab", "reports", True]], \
+        f"already on this project -- must not reopen it: {out['sameProjectDifferentTab']}"
+    assert out["sameProjectDifferentTab"]["state"] == {"screen": "project", "project": "alpha", "tab": "reports"}
+
+    assert out["unknownProject"]["calls"] == [["back", True]], (
+        f"a project the fleet no longer lists must fall back to the index, "
+        f"not open it anyway: {out['unknownProject']}"
+    )
+    assert out["unknownProject"]["state"] == {"screen": "index"}
+
+    assert out["openActivity"]["calls"] == [["actopen", "beta", True], ["acttab", "findings", True]]
+    assert out["openActivity"]["state"] == {"screen": "activity", "project": "beta", "tab": "findings"}
+
+    assert out["sameActivityDifferentTab"]["calls"] == [["acttab", "settings", True]], (
+        f"already scoped to this project's activity -- must not reopen it: "
+        f"{out['sameActivityDifferentTab']}"
+    )
+    assert out["sameActivityDifferentTab"]["state"] == {"screen": "activity", "project": "beta", "tab": "settings"}
+
+
+def test_every_security_navigation_point_pushes_its_own_resulting_screen_unless_told_not_to(srv):
+    """Text-level pin (these are fetch-heavy screen functions; a full
+    behavioural drive of all six would need a network mock disproportionate
+    to what is being pinned here): every one of the six navigation points
+    bin/dashboard.html's router comment names calls pushNav with the state
+    IT resulted in, guarded by `!fromHistory` -- never unconditionally,
+    never with some other screen's shape."""
+    block = _security_js(srv)
+    checks = [
+        (_plainfn(block, "secBack"), '{screen: "index"}'),
+        (_anyfn(block, "secOpenProject"),
+         '{screen: "project", project: name, tab: secProjectTab}'),
+        (_plainfn(block, "secSwitchProjectTab"),
+         '{screen: "project", project: secState.project, tab: secProjectTab}'),
+        (_anyfn(block, "secOpenActivity"),
+         '{screen: "activity", project: secActState.project, tab: secActState.tab}'),
+        (_plainfn(block, "secBackFromActivity"), '{screen: "index"}'),
+        (_plainfn(block, "secActSwitchTab"),
+         '{screen: "activity", project: secActState.project, tab: secActState.tab}'),
+    ]
+    for body, needle in checks:
+        norm = _norm(body)
+        assert "if(!fromHistory) pushNav({view: \"security\", sec:" in norm, (
+            f"not guarded by fromHistory, or not calling pushNav at all: {body}")
+        assert needle in norm, f"pushed the wrong state shape -- expected {needle!r} in: {body}"
+
+
+def test_compound_navigations_suppress_every_step_but_the_last(srv):
+    """One click, one history entry: a navigation function reused purely for
+    its teardown (secOpenActivity reusing secBack's own; the two chained
+    "jump straight to a tab" buttons; the Activity table's own deep link into
+    an analysis) must suppress every call but the one that pushes the screen
+    the click actually ends up showing -- see bin/dashboard.html's router
+    comment on why, and each call site's own comment for which one that is."""
+    block = _security_js(srv)
+
+    open_activity_body = _anyfn(block, "secOpenActivity")
+    assert "secBack(true)" in open_activity_body, (
+        "secOpenActivity must suppress its own teardown call into secBack -- "
+        f"otherwise opening Activity pushes a phantom \"index\" entry first: {open_activity_body}"
+    )
+
+    open_analysis_body = _anyfn(block, "secActOpenAnalysis")
+    assert "secBackFromActivity(true)" in open_analysis_body, open_analysis_body
+    assert "secOpenProject(project, true)" in open_analysis_body, open_analysis_body
+    # The chain's own last call, secSwitchProjectTab("runs"), is deliberately
+    # NOT suppressed -- it is the one real destination this whole click has.
+    assert "secSwitchProjectTab(\"runs\");" in open_analysis_body, open_analysis_body
+
+    index_screen_js = (UI_ROOT / "security" / "index-screen.js").read_text()
+    assert 'secOpenActivity("", true); secActSwitchTab("analyses"); ' in _norm(index_screen_js), (
+        "secViewAllAnalysesButton must suppress secOpenActivity's own push -- "
+        "\"All activity\" is not the tab this button's click ends up showing"
+    )
+    assert 'secOpenProject(latest.project, true); secSwitchProjectTab("reports"); ' in _norm(index_screen_js), (
+        "secViewFullReportButton must suppress secOpenProject's own push -- "
+        "\"overview\" is not the tab this button's click ends up showing"
+    )
+
+
+def test_the_activity_and_index_back_buttons_are_wrapped_not_passed_bare(srv):
+    """secBack/secBackFromActivity now take a `fromHistory` parameter --
+    addEventListener hands its listener the click's own Event object as the
+    first argument, so a BARE function reference here would read that Event
+    as `fromHistory` and read truthy, silently suppressing the button's own
+    history push on every real click. Both must be wrapped in a
+    zero-argument arrow instead."""
+    index_js = (UI_ROOT / "security" / "index.js").read_text()
+    assert '.addEventListener("click", secBack)' not in index_js, (
+        "sec-back's listener is passed bare -- the click Event would leak "
+        "into secBack's own fromHistory parameter"
+    )
+    assert '.addEventListener("click", secBackFromActivity)' not in index_js, (
+        "sec-act-back's listener is passed bare -- the click Event would leak "
+        "into secBackFromActivity's own fromHistory parameter"
+    )
+    assert '.addEventListener("click", () => secBack())' in index_js
+    assert '.addEventListener("click", () => secBackFromActivity())' in index_js
