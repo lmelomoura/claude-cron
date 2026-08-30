@@ -1036,13 +1036,20 @@ def test_the_findings_route_answers_with_the_full_shape(srv, monkeypatch):
         "rows": [{"fingerprint": "a" * 64, "severity": "critical"}],
         "total": 1, "unique": 1,
         "by_severity": {"critical": 1, "high": 0, "medium": 0, "low": 0, "info": 0},
+        # branches/analyses: the Branch / Analysis run pickers' own options
+        # (queries.finding_rows, AllFindings.png) -- the route must relay
+        # them through untouched, the same as every other field here.
+        "branches": ["main"],
+        "analyses": [{"id": 12, "profile": "deep", "branch": "main", "started": 1}],
         "page": 1, "per_page": 25,
         "filters": [{"project": "web", "name": "mine", "query": {}, "saved_at": 1}]})))
     code, payload = srv.security_findings({"project": "web"})
     assert code == 200
     assert set(payload) == {"rows", "total", "unique", "by_severity", "page",
-                            "per_page", "filters"}
+                            "per_page", "filters", "branches", "analyses"}
     assert payload["filters"][0]["name"] == "mine"
+    assert payload["branches"] == ["main"]
+    assert payload["analyses"][0]["profile"] == "deep"
 
 
 # ------------------------------------------------------------ saved filters

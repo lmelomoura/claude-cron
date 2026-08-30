@@ -1989,6 +1989,56 @@ def test_table_footer_takes_an_irregular_plural_and_a_numbered_pager(srv, tmp_pa
         "a numbered footer with only one page must render no pager nav at all"
 
 
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_collapsed_pager_keeps_the_edges_and_the_current_pages_neighbours(srv, tmp_path):
+    """`collapse` (Phase 4, AllFindings.png): "‹ 1 2 3 4 5 … 19 ›", not one
+    `.pagebtn` per page at a page count this tall -- existing `numbered`
+    callers (none of which pass `collapse`) must render byte-for-byte as
+    before (the plain-numbered test above already pins that on its own).
+    Below 8 pages `collapse` is a no-op: 7 is the most `1, pages, page-1,
+    page, page+1` can ever cover on its own with no gap left to close, so a
+    caller at or under that count must see EVERY page number, never a "…"
+    standing in for one it could have shown directly."""
+    block = _app_js(srv)
+    deps = _plainfn(block, "el") + _plainfn(block, "tableFooter")
+    script = tmp_path / "table-footer-collapse.js"
+    script.write_text(_INDEX_DOM_HARNESS + deps + """
+    const atStart = collectAll(tableFooter({
+      shown: {from: 1, to: 10}, total: 189, noun: "finding",
+      page: 1, pages: 19, numbered: true, collapse: true,
+    }), []);
+    const middle = collectAll(tableFooter({
+      shown: {from: 91, to: 100}, total: 189, noun: "finding",
+      page: 10, pages: 19, numbered: true, collapse: true,
+    }), []);
+    const atEnd = collectAll(tableFooter({
+      shown: {from: 181, to: 189}, total: 189, noun: "finding",
+      page: 19, pages: 19, numbered: true, collapse: true,
+    }), []);
+    const smallUncollapsed = collectAll(tableFooter({
+      shown: {from: 1, to: 10}, total: 70, noun: "finding",
+      page: 1, pages: 7, numbered: true, collapse: true,
+    }), []);
+    function pageEntries(rows){
+      return rows.filter(r => r.cls.startsWith("pagebtn")).map(r => r.text);
+    }
+    console.log(JSON.stringify({
+      atStart: pageEntries(atStart), middle: pageEntries(middle),
+      atEnd: pageEntries(atEnd), smallUncollapsed: pageEntries(smallUncollapsed),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["atStart"] == ["1", "2", "…", "19"], \
+        f"page 1 of 19 must keep 1, its neighbour 2, an ellipsis, then 19: {out['atStart']}"
+    assert out["middle"] == ["1", "…", "9", "10", "11", "…", "19"], \
+        f"a middle page must show both edges and its own neighbours either side: {out['middle']}"
+    assert out["atEnd"] == ["1", "…", "18", "19"], \
+        f"the last page must keep its own neighbour and the leading edge: {out['atEnd']}"
+    assert out["smallUncollapsed"] == [str(n) for n in range(1, 8)], \
+        f"7 pages must never collapse -- the window already covers all of them: {out['smallUncollapsed']}"
+
+
 # ---- the Runs table, pinned ahead of phase 2's redesign (Task 6), then
 # moved whole into ui/app/runs.js by the redesign itself (Task 7). Same gate
 # as the Jobs and Projects tables above: characterisation tests, so they pass
@@ -4159,11 +4209,14 @@ def test_findings_row_renders_analysed_strings_as_text_never_markup(srv, tmp_pat
     non-fixed finding gets both decision buttons."""
     block = _security_js(srv)
     consts = (_const(block, "SEC_STATE_LABEL") + _const(block, "SEC_STATE_HELP")
-             + _const(block, "SEV_ORDER") + _const(block, "SEC_STATES"))
+             + _const(block, "SEV_ORDER") + _const(block, "SEC_STATES")
+             + _const(block, "ICON_HYGIENE") + _const(block, "SEC_RULE_META")
+             + _const(block, "SEC_ADVISORY_RULE"))
     arrows = (re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
              + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secFindRow", "secFindDecisionControls"))
+                     ("secEl", "secIcon", "secHumaniseRule", "secRuleMeta", "secFindRow",
+                      "secFindDecisionControls", "secFindActionsCell"))
     script = tmp_path / "find-row.js"
     script.write_text(_INDEX_DOM_HARNESS + """
     function fmtWhen(t){ return "w" + String(t); }
@@ -4172,8 +4225,17 @@ def test_findings_row_renders_analysed_strings_as_text_never_markup(srv, tmp_pat
     const row = secFindRow(fs, {title: "<img src=x onerror=alert(1)>", severity: "high",
       state: "new", category: "sast", branch: "feature/<b>bold</b>", first_seen: 1700000000,
       occurrences: [{file: "a.py", line: 1}, {file: "b.py", line: 2}], fingerprint: "a".repeat(64)});
+    // Decision buttons alone (role=menuitem, inside the kebab's own
+    // menu-pop) -- Phase 4 gave every row an unconditional eye/view button
+    // too (AllFindings.png's own Actions column), so a bare COUNT of every
+    // <button> anywhere in the row no longer isolates the decision actions
+    // this test is actually about (see secFindDecisionControls's own
+    // comment for why it returns exactly this menu-pop and nothing else).
     function countButtons(n, c){
-      (n.childNodes || []).forEach(x => { if(x.tagName === "button") c.n++; countButtons(x, c); });
+      (n.childNodes || []).forEach(x => {
+        if(x.tagName === "button" && x._attrs && x._attrs.role === "menuitem") c.n++;
+        countButtons(x, c);
+      });
       return c;
     }
     console.log(JSON.stringify({rows: collectAll(row, []), buttons: countButtons(row, {n: 0}).n}));
@@ -4194,11 +4256,14 @@ def test_a_fixed_finding_gets_no_decision_controls(srv, tmp_path):
     the same rule analysis.js's own secFindingRow already follows."""
     block = _security_js(srv)
     consts = (_const(block, "SEC_STATE_LABEL") + _const(block, "SEC_STATE_HELP")
-             + _const(block, "SEV_ORDER") + _const(block, "SEC_STATES"))
+             + _const(block, "SEV_ORDER") + _const(block, "SEC_STATES")
+             + _const(block, "ICON_HYGIENE") + _const(block, "SEC_RULE_META")
+             + _const(block, "SEC_ADVISORY_RULE"))
     arrows = (re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
              + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secFindRow", "secFindDecisionControls"))
+                     ("secEl", "secIcon", "secHumaniseRule", "secRuleMeta", "secFindRow",
+                      "secFindDecisionControls", "secFindActionsCell"))
     script = tmp_path / "find-row-fixed.js"
     script.write_text(_INDEX_DOM_HARNESS + """
     function fmtWhen(t){ return "w" + String(t); }
@@ -4206,8 +4271,14 @@ def test_a_fixed_finding_gets_no_decision_controls(srv, tmp_path):
     """ + consts + arrows + deps + """
     const row = secFindRow(fs, {title: "t", severity: "low", state: "fixed", category: "sast",
       branch: "main", first_seen: 1, occurrences: [], fingerprint: "a".repeat(64)});
+    // See the sibling test above (non-fixed) for why this counts only
+    // role=menuitem buttons -- the row's own unconditional eye/view button
+    // is not a decision control and must not affect either count.
     function countButtons(n, c){
-      (n.childNodes || []).forEach(x => { if(x.tagName === "button") c.n++; countButtons(x, c); });
+      (n.childNodes || []).forEach(x => {
+        if(x.tagName === "button" && x._attrs && x._attrs.role === "menuitem") c.n++;
+        countButtons(x, c);
+      });
       return c;
     }
     console.log(JSON.stringify({buttons: countButtons(row, {n: 0}).n}));
@@ -4230,7 +4301,7 @@ def test_the_strip_labels_total_and_unique_and_counts_the_floor_from_the_whole_f
     block = _security_js(srv)
     consts = _const(block, "SEV_ORDER") + _const(block, "ROW_PILL_TITLE")
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secIcon", "secFindHiddenByFloor", "secFindStrip"))
+                     ("secEl", "secIcon", "_secCap", "secFindHiddenByFloor", "secFindStrip"))
     script = tmp_path / "find-strip.js"
     script.write_text(_INDEX_DOM_HARNESS + """
     function secMinSeverity(_p){ return "medium"; }
@@ -4246,8 +4317,20 @@ def test_the_strip_labels_total_and_unique_and_counts_the_floor_from_the_whole_f
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
     joined = " ".join(r["text"] for r in out)
-    assert "10 total" in joined and "8 unique issues" in joined, \
-        f"total and unique must both render, distinctly labelled: {joined}"
+    # Total and Unique are their own DISTINCTLY-classed stat blocks now
+    # (Phase 4, AllFindings.png's own "Total findings" / "Unique issues"
+    # cards replacing the old "10 total"/"8 unique issues" text pills) --
+    # found by class rather than by a literal wording this shape no longer
+    # renders, each one's own aggregated text still carrying both its label
+    # and its number together, which is what "distinctly labelled" means.
+    total_stat = next(r for r in out if r["cls"] == "secfind-stat total")
+    unique_stat = next(r for r in out if r["cls"] == "secfind-stat unique")
+    assert "Total findings" in total_stat["text"] and "10" in total_stat["text"], \
+        f"the Total stat must carry both its label and its number: {total_stat}"
+    assert "Unique issues" in unique_stat["text"] and "8" in unique_stat["text"], \
+        f"the Unique stat must carry both its label and its number: {unique_stat}"
+    assert total_stat["text"] != unique_stat["text"], \
+        "total and unique must not collapse into the same number"
     assert "5 findings below medium" in joined, \
         f"the hidden count must be 3 low + 2 info = 5, read from by_severity: {joined}"
     assert "every recorded finding" in joined, "the downloads-are-unfiltered sentence is missing"
@@ -4261,13 +4344,14 @@ def test_the_table_excludes_rows_below_the_floor_on_this_page(srv, tmp_path):
     block = _security_js(srv)
     consts = (_const(block, "SEC_STATE_LABEL") + _const(block, "SEC_STATE_HELP")
              + _const(block, "SEV_ORDER") + _const(block, "SEC_STATES")
-             + _const(block, "FIND_SORT_COLUMNS"))
+             + _const(block, "FIND_SORT_COLUMNS") + _const(block, "ICON_HYGIENE")
+             + _const(block, "SEC_RULE_META") + _const(block, "SEC_ADVISORY_RULE"))
     arrows = (re.search(r"const secSevRank = .*?\};", block, re.S).group(0) + "\n"
              + re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
              + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secFindRow", "secFindDecisionControls", "secFindTableSection",
-                      "secVisible"))
+                     ("secEl", "secIcon", "secHumaniseRule", "secRuleMeta", "secFindRow",
+                      "secFindDecisionControls", "secFindActionsCell", "secFindTableSection", "secVisible"))
     script = tmp_path / "find-table-floor.js"
     script.write_text(_INDEX_DOM_HARNESS + """
     function fmtWhen(t){ return "w" + String(t); }
@@ -4312,15 +4396,16 @@ def test_a_fixed_finding_stays_visible_and_uncounted_below_the_floor(srv, tmp_pa
     block = _security_js(srv)
     consts = (_const(block, "SEC_STATE_LABEL") + _const(block, "SEC_STATE_HELP")
              + _const(block, "SEV_ORDER") + _const(block, "SEC_STATES")
-             + _const(block, "FIND_SORT_COLUMNS"))
+             + _const(block, "FIND_SORT_COLUMNS") + _const(block, "ICON_HYGIENE")
+             + _const(block, "SEC_RULE_META") + _const(block, "SEC_ADVISORY_RULE"))
     arrows = (re.search(r"const secSevRank = .*?\};", block, re.S).group(0) + "\n"
              + re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
              + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
     consts = consts + _const(block, "ROW_PILL_TITLE")
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secIcon", "secFindHiddenByFloor", "secFindStrip",
-                      "secFindRow", "secFindDecisionControls", "secFindTableSection",
-                      "secVisible"))
+                     ("secEl", "secIcon", "_secCap", "secHumaniseRule", "secRuleMeta",
+                      "secFindHiddenByFloor", "secFindStrip", "secFindRow", "secFindDecisionControls", "secFindActionsCell",
+                      "secFindTableSection", "secVisible"))
     script = tmp_path / "find-fixed-floor.js"
     script.write_text(_INDEX_DOM_HARNESS + """
     function fmtWhen(t){ return "w" + String(t); }
@@ -4370,13 +4455,14 @@ def test_clicking_a_sort_header_toggles_direction_then_switching_column_resets_i
     block = _security_js(srv)
     consts = (_const(block, "SEC_STATE_LABEL") + _const(block, "SEC_STATE_HELP")
              + _const(block, "SEV_ORDER") + _const(block, "SEC_STATES")
-             + _const(block, "FIND_SORT_COLUMNS"))
+             + _const(block, "FIND_SORT_COLUMNS") + _const(block, "ICON_HYGIENE")
+             + _const(block, "SEC_RULE_META") + _const(block, "SEC_ADVISORY_RULE"))
     arrows = (re.search(r"const secSevRank = .*?\};", block, re.S).group(0) + "\n"
              + re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
              + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secFindRow", "secFindDecisionControls", "secFindTableSection",
-                      "secVisible"))
+                     ("secEl", "secIcon", "secHumaniseRule", "secRuleMeta", "secFindRow",
+                      "secFindDecisionControls", "secFindActionsCell", "secFindTableSection", "secVisible"))
     script = tmp_path / "find-sort-click.js"
     script.write_text(_INDEX_DOM_HARNESS + """
     function fmtWhen(t){ return "w" + String(t); }
@@ -4427,35 +4513,48 @@ def test_the_pager_math_and_button_disabling_at_both_edges(srv, tmp_path):
     drives for real above."""
     block = _security_js(srv)
     chrome_deps = _plainfn(_app_js(srv), "el") + "\n" + _plainfn(_app_js(srv), "tableFooter")
-    deps = _plainfn(block, "secEl") + "\n" + _plainfn(block, "secFindPager")
+    consts = _const(block, "FIND_PER_PAGE") + _const(block, "FIND_PER_PAGE_OPTIONS")
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("secEl", "secIcon", "secFindTriggerLabel", "secFindPositionPop",
+                      "secFindPerPageField", "secFindPager"))
     script = tmp_path / "find-pager.js"
     script.write_text(_INDEX_DOM_HARNESS + """
     let refreshedTo = null;
     function secFindRefresh(_fs){ refreshedTo = _fs.page; }
-    const fs = {page: 1};
-    """ + chrome_deps + "\n" + deps + """
+    const fs = {page: 1, perPage: 25};
+    """ + chrome_deps + "\n" + consts + deps + """
+    // wrap's own three children now (Phase 4: the per-page picker sits
+    // between the info sentence and the pager nav) -- nav is `undefined`
+    // at exactly one page, tableFooter's own numbered-mode rule (see its
+    // comment, ui/app/chrome.js) that this pager inherits unchanged.
     function btns(p){
-      const nav = p.childNodes[1];
-      return {info: p.childNodes[0].textContent,
-              prevDisabled: nav.childNodes[0].disabled, nextDisabled: nav.childNodes[1].disabled,
-              nav};
+      const nav = p.childNodes[2];
+      return {info: p.childNodes[0].textContent, nav,
+              prevDisabled: nav ? nav.childNodes[0].disabled : null,
+              nextDisabled: nav ? nav.childNodes[nav.childNodes.length - 1].disabled : null};
     }
     const first = btns(secFindPager(fs, {total: 47, per_page: 25, page: 1}));
     const last = btns(secFindPager(fs, {total: 47, per_page: 25, page: 2}));
     const empty = btns(secFindPager(fs, {total: 0, per_page: 25, page: 1}));
 
     fs.page = 1;
-    first.nav.childNodes[1].onclick();      // Next, from page 1 of 2
+    first.nav.childNodes[first.nav.childNodes.length - 1].onclick();   // Next, from page 1 of 2
     const nextClickedTo = refreshedTo;
     fs.page = 2;
     last.nav.childNodes[0].onclick();       // Prev, from page 2 of 2
     const prevClickedTo = refreshedTo;
+    // A numbered pager's own page-N button, not just Prev/Next -- clicking
+    // "1" while on page 2 must jump straight there.
+    fs.page = 2;
+    const pageOneBtn = Array.from(last.nav.childNodes).find(c => c.dataset && c.dataset.page === "1");
+    pageOneBtn.onclick();
+    const pageBtnClickedTo = refreshedTo;
 
     console.log(JSON.stringify({
       first: {info: first.info, prevDisabled: first.prevDisabled, nextDisabled: first.nextDisabled},
       last: {info: last.info, prevDisabled: last.prevDisabled, nextDisabled: last.nextDisabled},
-      empty: {info: empty.info, prevDisabled: empty.prevDisabled, nextDisabled: empty.nextDisabled},
-      nextClickedTo, prevClickedTo,
+      empty: {info: empty.info, noNav: !empty.nav},
+      nextClickedTo, prevClickedTo, pageBtnClickedTo,
     }));
     """)
     out = json.loads(subprocess.run(["node", str(script)],
@@ -4464,7 +4563,16 @@ def test_the_pager_math_and_button_disabling_at_both_edges(srv, tmp_path):
     assert out["first"]["info"] == "Showing 1 to 25 of 47 findings", out["first"]["info"]
     assert out["last"]["prevDisabled"] is False and out["last"]["nextDisabled"] is True
     assert out["last"]["info"] == "Showing 26 to 47 of 47 findings", out["last"]["info"]
-    assert out["empty"]["prevDisabled"] is True and out["empty"]["nextDisabled"] is True
+    # At one page (0 total, per_page 25) the numbered pager renders no nav
+    # at all -- tableFooter's own established rule for "nothing to page
+    # through" (see test_table_footer_takes_an_irregular_plural_and_a_
+    # numbered_pager's own "onePageNumbered" case), inherited here rather
+    # than a disabled Prev/Next with no pages behind either button.
+    assert out["empty"]["noNav"], "one page must render no pager nav at all"
+    assert out["empty"]["info"] == "Showing 0 to 0 of 0 findings", out["empty"]["info"]
+    assert out["nextClickedTo"] == 2, "Next must advance fs.page"
+    assert out["prevClickedTo"] == 1, "Prev must step fs.page back"
+    assert out["pageBtnClickedTo"] == 1, "clicking a numbered page button must jump straight to it"
     assert out["empty"]["info"] == "Showing 0 to 0 of 0 findings", out["empty"]["info"]
     assert out["nextClickedTo"] == 2, "Next must advance fs.page"
     assert out["prevClickedTo"] == 1, "Prev must step fs.page back"
@@ -4508,6 +4616,41 @@ def test_switching_to_findings_hides_the_other_four_panes(srv, tmp_path):
     assert out["backToOverview"] == {"ov": False, "rn": True, "br": True, "fd": True, "rp": True}
 
 
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_project_sidebar_hides_for_findings_alone(srv, tmp_path):
+    """AllFindings.png draws the findings browser full-width, with no
+    donut/categories/recent-activity rail beside it -- that rail is a
+    summary of the other four tabs' own posture (secRenderProjectSidebar's
+    own comment), and repeating "2 critical / 8 high / ..." beside a table
+    that already lists every one of those rows individually would say the
+    same numbers twice a few inches apart. #sec-pj-side hides for Findings
+    alone; every other tab keeps it exactly as before."""
+    block = _security_js(srv)
+    deps = _plainfn(block, "secRenderTabs") + "\n" + _plainfn(block, "secSwitchProjectTab")
+    script = tmp_path / "pj-side.js"
+    script.write_text(_PROJECT_DOM_HARNESS + """
+    let secProjectTab = "overview";
+    function renderFindings(_host, _project){}
+    """ + deps + """
+    function sideHidden(){ return _els["sec-pj-side"].hidden; }
+    secRenderTabs();
+    const onOverview = sideHidden();
+    secSwitchProjectTab("runs");
+    const onRuns = sideHidden();
+    secSwitchProjectTab("findings");
+    const onFindings = sideHidden();
+    secSwitchProjectTab("reports");
+    const onReports = sideHidden();
+    secSwitchProjectTab("overview");
+    const backToOverview = sideHidden();
+    console.log(JSON.stringify({onOverview, onRuns, onFindings, onReports, backToOverview}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out == {"onOverview": False, "onRuns": False, "onFindings": True,
+                   "onReports": False, "backToOverview": False}, out
+
+
 def test_the_search_field_names_what_it_actually_searches(srv):
     """Review finding 2 on Task 11: `queries.finding_rows`'s own `q` filter
     searches `title`, `rule`, `rationale` and every occurrence's file path
@@ -4542,7 +4685,8 @@ def test_the_search_field_names_what_it_actually_searches(srv):
 # result reaches, not what gets drawn inside it.
 
 _FIND_MOUNT_DEPS = ("_defaultFilters", "_newFindState", "secFindQuery", "secEl", "secIcon",
-                    "secFindPaint")
+                    "secFindTriggerLabel", "secFindPositionPop", "secFindSavedFilters",
+                    "secFindHeader", "secFindPaint")
 
 
 def _find_mount_harness(block, extra=""):
@@ -5195,7 +5339,7 @@ def test_the_findings_strip_never_paints_a_green_all_clear_over_an_unread_projec
     # empty `rows`, and secFindTableSection answers that before it ever
     # reaches the floor -- which is the case under test.
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secIcon", "secFindHiddenByFloor", "secFindStrip",
+                     ("secEl", "secIcon", "_secCap", "secFindHiddenByFloor", "secFindStrip",
                       "secFindTableSection"))
     script = tmp_path / "find-never.js"
     script.write_text(_INDEX_DOM_HARNESS + """
@@ -5254,7 +5398,7 @@ def test_the_findings_strip_says_when_a_branch_behind_it_stopped_early(srv, tmp_
     consts = (_const(block, "SEV_ORDER") + _const(block, "SEC_NEVER")
               + _const(block, "ROW_PILL_TITLE"))
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secIcon", "secFindHiddenByFloor", "secFindStrip"))
+                     ("secEl", "secIcon", "_secCap", "secFindHiddenByFloor", "secFindStrip"))
     script = tmp_path / "find-capped.js"
     script.write_text(_INDEX_DOM_HARNESS + """
     function secMinSeverity(_p){ return "low"; }
@@ -5290,7 +5434,7 @@ def test_the_two_kinds_of_severity_pill_each_say_what_they_count(srv, tmp_path):
     strip_consts = (_const(block, "SEV_ORDER") + _const(block, "SEC_NEVER")
                     + _const(block, "ROW_PILL_TITLE"))
     strip_deps = "\n".join(_plainfn(block, n) for n in
-                           ("secEl", "secIcon", "secFindHiddenByFloor", "secFindStrip"))
+                           ("secEl", "secIcon", "_secCap", "secFindHiddenByFloor", "secFindStrip"))
     donut_consts = _const(block, "SEV_ORDER5") + _const(block, "DONUT_PILL_TITLE")
     donut_deps = _plainfn(block, "secIndexDonutLegend")
     script = tmp_path / "pill-scopes.js"
@@ -5303,12 +5447,17 @@ def test_the_two_kinds_of_severity_pill_each_say_what_they_count(srv, tmp_path):
       by_severity: sev, fixed_by_severity: {critical:0,high:0,medium:0,low:0,info:0},
       page: 1, per_page: 25, attempted: true, analysed: true}), []);
     const legend = collectAll(secIndexDonutLegend({critical: 1}), []);
-    const pill = (rows) => rows.filter(r => r.cls === "sevpill critical")[0] || {};
-    console.log(JSON.stringify({strip: pill(strip), legend: pill(legend)}));
+    // The strip's own Critical stat (Phase 4: a coloured-dot stat block,
+    // ".secfind-stat critical", not a ".sevpill" chip -- see secFindStrip's
+    // own comment for why; its NUMBER and its TITLE are what this test is
+    // actually about, not the exact element shape carrying them).
+    const stripStat = strip.filter(r => r.cls === "secfind-stat critical")[0] || {};
+    const legendPill = legend.filter(r => r.cls === "sevpill critical")[0] || {};
+    console.log(JSON.stringify({strip: stripStat, legend: legendPill}));
     """)
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
-    assert out["strip"].get("text") == "2 critical", out["strip"]
+    assert "2" in out["strip"].get("text", ""), out["strip"]
     assert out["legend"].get("text") == "1 critical", out["legend"]
     assert "Rows" in out["strip"].get("title", ""), \
         f"the strip's severity pill does not say it counts rows: {out['strip']}"
@@ -6234,6 +6383,15 @@ _UNSTYLED_CLASS_ALLOWLIST = {
     # unstyled rather than given an empty rule.
     "secfind-strip",
     "secidx-categories",
+    # secFindStrip's own Total/Unique stat blocks (findings-screen.js):
+    # marker modifiers on ".secfind-stat" (ui/css/pages.css), which already
+    # gives both their full layout -- unlike ".critical"/".high"/... on the
+    # same base class, neither needs its own colour (see this file's own
+    # header comment above .secfind-stat for why only the five severities
+    # carry a dot). Findable by class in a test without a colour rule that
+    # would otherwise exist for no reason but to satisfy this guard.
+    "total",
+    "unique",
 }
 
 

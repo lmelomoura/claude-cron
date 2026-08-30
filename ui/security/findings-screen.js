@@ -61,12 +61,12 @@
    moving between screens learns it once.
 
    Per-host state, not module-level. `secFindStates` is a WeakMap from host to
-   {project, filters, sort, dir, page, gen, data, error, savedName, newName}
-   -- a Map would work for lookups too, but would also hold every host this
-   ever mounted into, and everything it fetched, alive forever; a WeakMap
-   entry is exactly as long-lived as its host, so a discarded host (and its
-   payload) stops being kept alive here without anything having to notice or
-   clean it up. `secFindLoad`'s own staleness guard checks
+   {project, filters, sort, dir, page, perPage, gen, data, error, savedName,
+   newName} -- a Map would work for lookups too, but would also hold every
+   host this ever mounted into, and everything it fetched, alive forever; a
+   WeakMap entry is exactly as long-lived as its host, so a discarded host
+   (and its payload) stops being kept alive here without anything having to
+   notice or clean it up. `secFindLoad`'s own staleness guard checks
    `secFindStates.get(host) !== state` -- object identity against whatever is
    CURRENTLY registered for that host -- rather than a single shared "current
    host" variable, so a second mount into a DIFFERENT host can never
@@ -76,13 +76,25 @@
    DIFFERENT project resets every transient control (filters, sort, page, the
    saved-filter picker); switching away and back to the SAME project's
    Findings tab -- on the SAME host -- keeps them, the same as every other
-   tab on this screen. */
-import { api, toast, fmtWhen, tableFooter } from "./page.js";
+   tab on this screen.
+
+   PHASE 4 (AllFindings.png): this file used to draw its own furniture over
+   the mockup's shape -- chip rows instead of pickers, two bare text buttons
+   instead of an eye+kebab, a "Page X / Y" line instead of the numbered
+   footer every other table-card in this app now shares. Every FUNCTION named
+   below survives this pass unchanged in what it computes; only how each
+   result reaches the screen changes. See secFindHeader, secFindStrip and
+   secFindFilterBar's own comments for the specific shape each one now
+   draws, and this file's own header list above for which names are pinned
+   by tests/test_page_contract.py and must keep both their name and their
+   contract. */
+import { api, toast, fmtWhen, tableFooter, closeMenus } from "./page.js";
 import { secEl, secIcon, secFetch } from "./dom.js";
 import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP, SEV_ORDER, SEC_NEVER,
-         secMinSeverity, secSevKey, secStateKey, secVisible } from "./vocabulary.js";
+         secMinSeverity, secSevKey, secStateKey, secVisible, secRuleMeta } from "./vocabulary.js";
 import { secAskReason } from "./reason.js";
-import { secInvalidateProject } from "./project-screen.js";
+import { secInvalidateProject, secSwitchProjectTab } from "./project-screen.js";
+import { secShowAnalysis, secBack } from "./analysis.js";
 
 // Mirrors bin/security/queries.py's SORTABLE, and bin/claude-cron-server's
 // FINDING_CATEGORIES -- duplicated here, not fetched, because the filter bar
@@ -99,25 +111,34 @@ import { secInvalidateProject } from "./project-screen.js";
 // column was which. This order matches both secFindRow's own cell order and
 // AllFindings.png's own column order; only the sort buttons' own visual
 // position moves -- which key each one sorts by (`fs.sort`) is unchanged.
+// "Status", not "State" (Phase 4, AllFindings.png's own column header) --
+// the sort KEY (queries.finding_rows's own SORTABLE entry) is unchanged,
+// only the human-facing label moves; the pills this sorts among still read
+// SEC_STATE_LABEL exactly as before.
 const FIND_SORT_COLUMNS = [
   ["severity", "Severity"], ["title", "Title"], ["category", "Category"],
-  ["branch", "Branch"], ["state", "State"], ["first_seen", "First seen"],
+  ["branch", "Branch"], ["state", "Status"], ["first_seen", "First seen"],
 ];
-// Mirrors FIND_SORT_COLUMNS plus the Actions column rendered after it --
-// kept in step by hand (the same duplication FIND_CATEGORIES below already
-// carries against the server's own FINDING_CATEGORIES) because
+// The full nine-column order AllFindings.png draws (Location and Analysis
+// run are new; see secFindTableSection's own header-building code for why
+// this const is NOT what that code walks to build them). Kept only for
 // test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column's
-// own harness extracts ONE const in total isolation: a
-// `FIND_SORT_COLUMNS.concat(...)` expression here would throw
-// ReferenceError under that harness, which never also stands up
-// FIND_SORT_COLUMNS alongside it.
+// own harness, which extracts ONE const in total isolation:
+// `FIND_SORT_COLUMNS.concat(...)` (or any other expression reading a name
+// this file declares elsewhere) would throw ReferenceError under that
+// harness, which never also stands up anything but the ONE const it asked
+// for. Kept in step by hand against secFindTableSection's real header loop
+// -- the same duplication FIND_CATEGORIES below already carries against the
+// server's own FINDING_CATEGORIES.
 const SEC_FIND_TABLE_COLS = [
-  ["severity", "Severity"], ["title", "Title"], ["category", "Category"],
-  ["branch", "Branch"], ["state", "State"], ["first_seen", "First seen"],
-  [null, "Actions"],
+  ["severity", "Severity"], ["title", "Title"], [null, "Location"],
+  ["category", "Category"], [null, "Analysis run"], ["branch", "Branch"],
+  ["state", "Status"], ["first_seen", "First seen"], [null, "Actions"],
 ];
 const FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene"];
-const FIND_PER_PAGE = 25;
+// AllFindings.png's own default per-page selection and picker options.
+const FIND_PER_PAGE = 10;
+const FIND_PER_PAGE_OPTIONS = [10, 25, 50];
 
 function _defaultFilters(){
   return {severity: [], state: [], category: [], branch: "", path: "", q: "",
@@ -128,6 +149,7 @@ function _newFindState(host, project){
   return {
     host, project, gen: 0, data: null, error: "",
     filters: _defaultFilters(), sort: "severity", dir: "desc", page: 1,
+    perPage: FIND_PER_PAGE,
     savedName: "", newName: "",
   };
 }
@@ -162,7 +184,7 @@ function secFindQuery(fs){
   p.set("sort", fs.sort);
   p.set("dir", fs.dir);
   p.set("page", String(fs.page));
-  p.set("per_page", String(FIND_PER_PAGE));
+  p.set("per_page", String(fs.perPage || FIND_PER_PAGE));
   const f = fs.filters;
   if(f.severity.length) p.set("severity", f.severity.join(","));
   if(f.state.length) p.set("state", f.state.join(","));
@@ -218,6 +240,7 @@ function secFindPaint(fs){
   const host = fs.host;
   if(!host) return;
   host.textContent = "";
+  host.appendChild(secFindHeader(fs, fs.data));
   if(fs.error){
     const box = secEl("div", "tblempty");
     box.appendChild(secIcon("alert"));
@@ -240,6 +263,74 @@ function secFindPaint(fs){
   host.appendChild(section);
 }
 
+/* ---------------------------------------------------------------- header
+   Breadcrumb, shield title and the two right-aligned buttons (Phase 4,
+   AllFindings.png) -- self-contained inside #sec-pj-findings the same way
+   every other element on this pane already is (see this file's own "ONE
+   MODULE, TWO HOMES" comment): it does not reach into or replace
+   project-screen.js's own shared #sec-back/#sec-title/tab strip, which
+   still renders above this pane exactly as it does for the other four tabs
+   -- reshaping THAT shared, boot-once chrome into a tab-aware breadcrumb of
+   its own is a bigger change than this task's own file list asks for, and
+   is named as a scope boundary in this task's own report rather than done
+   here silently.
+
+   Skipped entirely (returns an empty, harmless wrapper) when this mount is
+   the Activity screen's fingerprint dialog: that dialog already carries its
+   own title ("Findings in <project>", secActOpenFinding) and its own close
+   button, so a second, page-level header stacked inside an already-titled
+   modal would say the same thing twice in two registers. `fingerprint`
+   being set is the one signal that tells the two mounts apart -- only that
+   dialog's own caller ever passes it, through `initialFilters` (see
+   secFindStrip's own identical read of it, a few lines below). */
+function secFindHeader(fs, data){
+  const wrap = secEl("div");
+  if(((fs.filters || {}).fingerprint || "").trim()) return wrap;
+
+  const crumbs = secEl("nav", "secfind-crumbs");
+  const secBtn = secEl("button", null, "Security");
+  secBtn.type = "button";
+  secBtn.onclick = () => secBack();
+  crumbs.appendChild(secBtn);
+  const sep1 = secEl("span", "sep"); sep1.appendChild(secIcon("cright"));
+  crumbs.appendChild(sep1);
+  const projBtn = secEl("button", null, fs.project);
+  projBtn.type = "button";
+  projBtn.onclick = () => secSwitchProjectTab("overview");
+  crumbs.appendChild(projBtn);
+  const sep2 = secEl("span", "sep"); sep2.appendChild(secIcon("cright"));
+  crumbs.appendChild(sep2);
+  crumbs.appendChild(secEl("span", "current", "Findings"));
+  wrap.appendChild(crumbs);
+
+  const head = secEl("div", "secfind-head");
+  const titleWrap = secEl("div");
+  const titleLine = secEl("div", "secfind-head-title");
+  titleLine.appendChild(secIcon("shield"));
+  titleLine.appendChild(secEl("span", null, "All findings"));
+  titleWrap.appendChild(titleLine);
+  titleWrap.appendChild(secEl("p", "secfind-head-sub",
+    "Complete list of security findings for all analyses in this project."));
+  head.appendChild(titleWrap);
+
+  const actions = secEl("div", "secfind-head-actions");
+  const exportBtn = secEl("button", "btn ghost");
+  exportBtn.type = "button";
+  exportBtn.appendChild(secIcon("download"));
+  exportBtn.appendChild(document.createTextNode("Export"));
+  // Reuses the project's own Reports tab -- the report/download surface
+  // this project already offers (secRenderProjectReports,
+  // reports-tab.js: Markdown/JSON/HTML/SBOM per analysis) -- rather than
+  // inventing a second export path with no downloads of its own behind it.
+  exportBtn.title = "Open this project's Reports tab";
+  exportBtn.onclick = () => secSwitchProjectTab("reports");
+  actions.appendChild(exportBtn);
+  actions.appendChild(secFindSavedFilters(fs, data || {}));
+  head.appendChild(actions);
+  wrap.appendChild(head);
+  return wrap;
+}
+
 /* ------------------------------------------------------------------ strip
    total, unique issues, and the five severities -- see this file's own
    comment for why total and unique are both shown, labelled, rather than
@@ -259,68 +350,33 @@ function secFindHiddenByFloor(data, minSeverity){
   return n;
 }
 
-// What the strip's per-severity pills COUNT. The strip labels its own
-// `total`/`unique` pair, and then drew five per-severity pills that are ROWS
-// with no label at all -- in markup identical to the sidebar donut's legend,
-// which on the project screen is a flex sibling of the tab panes and so is on
-// screen AT THE SAME TIME, four inches away, showing per-severity pills that
-// are distinct FINGERPRINTS. Two numbers answering different questions, side
-// by side, in the same shape, with only one of the two pairs labelled. Both
-// sides now say which question they answer (see DONUT_PILL_TITLE in
-// index-screen.js for the other half).
+// What the strip's per-severity stats COUNT. Threaded onto every stat's own
+// `.title` -- both this strip and the sidebar donut legend (index-screen.js,
+// see DONUT_PILL_TITLE there) draw the same kind of row/fingerprint split,
+// and both now say which one they answer rather than leave two adjacent
+// numbers to be told apart by guessing.
 const ROW_PILL_TITLE = "Rows matching the current filters — the same finding "
   + "open on two branches counts twice here.";
 
+function _secCap(s){
+  s = String(s || "");
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
+/* AllFindings.png's own stat strip: Total findings (a doc icon), the five
+   severities (a coloured dot, the count, the share of `total` beneath), a
+   divider, then Unique issues. Its own shape now, not `.sevpills`/`.sevpill`
+   (the pill this file draws everywhere else, including the table's own
+   Severity column below) -- the mockup draws a plain dot beside each label
+   here, a large number under it and a percentage under THAT, closer to a
+   KPI card's own anatomy than to a pill. `secfind-stat total`/`secfind-stat
+   unique` carry their own distinguishing class for exactly the same reason
+   every severity stat carries its own (`.critical`/`.high`/… below) -- so
+   each of the two honesty-critical numbers (this file's own header comment
+   on why total and unique are both shown) stays independently findable,
+   never just "the Nth number in the row". */
 function secFindStrip(fs, data){
-  // `secfind-sev3` (Phase 4 Task 6): AllFindings.png paints these five per-
-  // severity pills crit-red/high-orange/medium-amber/low-blue/info-grey --
-  // this design's tokens (ui/css/tokens.css) have no blue defined for any
-  // severity (the donut legend's own Low dot is the same neutral grey
-  // `--sev-low` already is), so this dialect matches the three tones the
-  // tokens DO give distinctly (critical/high/medium) and leaves low/info in
-  // their existing muted look, exactly the choice the index screen's own
-  // `.secidx-sev3` already made for the identical reason -- see that class's
-  // own comment (ui/css/pages.css) and this class's own, beside it.
-  const wrap = secEl("div", "sevpills secfind-sev3");
-  const totalPill = secEl("span", "sevpill", data.total + " total");
-  totalPill.title = ROW_PILL_TITLE;
-  wrap.appendChild(totalPill);
-  const uniquePill = secEl("span", "sevpill", data.unique + " unique issues");
-  uniquePill.title = "Distinct problems (fingerprints) — the same finding open "
-    + "on two branches counts once here.";
-  wrap.appendChild(uniquePill);
-  const bySev = data.by_severity || {};
-  let any = false;
-  ["critical", "high", "medium", "low", "info"].forEach(sev => {
-    if(!bySev[sev]) return;
-    any = true;
-    const pill = secEl("span", "sevpill " + sev, bySev[sev] + " " + sev);
-    pill.title = ROW_PILL_TITLE;
-    wrap.appendChild(pill);
-  });
-  // The ok-green `clean` pill is a VERDICT -- "we looked and there is nothing
-  // matching" -- so it may only be drawn over a project something has
-  // actually read. `analysed` false means nothing ever finished here, and
-  // painting that green (beside "0 total", with the table below blaming
-  // filters the reader never set) is the one wrong answer this strip can
-  // give. See queries.finding_rows's own docstring for the two flags.
-  if(!any && data.analysed !== false){
-    wrap.appendChild(secEl("span", "sevpill clean", "nothing matches"));
-  }
-
-  const minSeverity = secMinSeverity(fs.project);
-  const hidden = secFindHiddenByFloor(data, minSeverity);
-  const note = secEl("div", "secpj-caption");
-  if(hidden > 0){
-    note.appendChild(document.createTextNode(
-      hidden + " finding" + (hidden === 1 ? "" : "s") + " below " + minSeverity
-      + " " + (hidden === 1 ? "is" : "are")
-      + " hidden by this project's severity floor — recorded, not shown. "));
-  }
-  note.appendChild(secEl("b", null,
-    "Downloads always contain every recorded finding, whatever the severity floor shows."));
-
-  const box = secEl("div", "secfind-strip");
+  const box = secEl("div");
   // FIRST, above everything else the strip says: this project has never been
   // read, or has been attempted and never finished. In the SAME two sentences
   // the Overview and Branches tabs already use for the identical fact (see
@@ -355,34 +411,213 @@ function secFindStrip(fs, data){
       "Filtered to fingerprint " + fingerprintFilter + "… — "
       + "“Clear filters” below shows this project's whole list."));
   }
-  box.appendChild(wrap);
+
+  const strip = secEl("div", "secfind-strip");
+
+  const totalStat = secEl("div", "secfind-stat total");
+  totalStat.title = ROW_PILL_TITLE;
+  totalStat.appendChild(secEl("div", "secfind-stat-label", "Total findings"));
+  const totalLine = secEl("div", "secfind-stat-numline");
+  totalLine.appendChild(secEl("span", "secfind-stat-num", String(data.total || 0)));
+  const totalIc = secEl("span", "secfind-stat-ic"); totalIc.appendChild(secIcon("file"));
+  totalLine.appendChild(totalIc);
+  totalStat.appendChild(totalLine);
+  strip.appendChild(totalStat);
+
+  const bySev = data.by_severity || {};
+  const total = data.total || 0;
+  let any = false;
+  ["critical", "high", "medium", "low", "info"].forEach(sev => {
+    any = any || !!bySev[sev];
+    const n = bySev[sev] || 0;
+    const stat = secEl("div", "secfind-stat " + sev);
+    stat.title = ROW_PILL_TITLE;
+    const label = secEl("div", "secfind-stat-label");
+    label.appendChild(secEl("span", "secfind-stat-dot"));
+    label.appendChild(secEl("span", null, _secCap(sev)));
+    stat.appendChild(label);
+    stat.appendChild(secEl("div", "secfind-stat-num", String(n)));
+    // A dash, not "0.0%" -- a percentage of nothing is not a measured zero
+    // share, the same distinction this app's own KPI cards already draw for
+    // a rate with no denominator yet.
+    stat.appendChild(secEl("div", "secfind-stat-pct", total ? ((n / total) * 100).toFixed(1) + "%" : "—"));
+    strip.appendChild(stat);
+  });
+
+  strip.appendChild(secEl("div", "secfind-strip-div"));
+
+  const uniqueStat = secEl("div", "secfind-stat unique");
+  uniqueStat.title = "Distinct problems (fingerprints) — the same finding open "
+    + "on two branches counts once here.";
+  const uLabel = secEl("div", "secfind-stat-label");
+  const uIcon = secEl("span", "secfind-stat-diamond"); uIcon.appendChild(secIcon("diamond"));
+  uLabel.appendChild(uIcon);
+  uLabel.appendChild(secEl("span", null, "Unique issues"));
+  uniqueStat.appendChild(uLabel);
+  uniqueStat.appendChild(secEl("div", "secfind-stat-num", String(data.unique || 0)));
+  strip.appendChild(uniqueStat);
+
+  box.appendChild(strip);
+  // The ok-green "nothing matches" signal (Phase 4: no longer a `.sevpill`
+  // chip inside the strip's own row of pills, which this shape does not
+  // have any more, but the identical fact still needs the identical cue) --
+  // may only be drawn over a project something has actually READ. `analysed`
+  // false means nothing ever finished here, and painting this green (beside
+  // an all-zero strip, with the table below blaming filters the reader
+  // never set) is the one wrong answer this strip can give. See
+  // queries.finding_rows's own docstring for the two flags.
+  if(!any && data.analysed !== false){
+    box.appendChild(secEl("span", "sevpill clean", "Nothing matches"));
+  }
+
+  const minSeverity = secMinSeverity(fs.project);
+  const hidden = secFindHiddenByFloor(data, minSeverity);
+  const note = secEl("div", "secpj-caption");
+  if(hidden > 0){
+    note.appendChild(document.createTextNode(
+      hidden + " finding" + (hidden === 1 ? "" : "s") + " below " + minSeverity
+      + " " + (hidden === 1 ? "is" : "are")
+      + " hidden by this project's severity floor — recorded, not shown. "));
+  }
+  note.appendChild(secEl("b", null,
+    "Downloads always contain every recorded finding, whatever the severity floor shows."));
   box.appendChild(note);
   return box;
 }
 
 /* -------------------------------------------------------------- filter bar
-   Severity, state and category as toggle chips (secchip/secchips, the same
-   pattern secRunsFilters/secRenderChecklist already use elsewhere on this
-   screen); branch, path, analysis and free text as plain fields (secfield/
-   secbar, the same furniture the repo/branch/profile picker above already
-   uses) -- reusing both rather than inventing a third look for a fourth
-   filter row. */
-function secFindChips(options, selected, onToggle, labelFor){
-  const row = secEl("div", "secchips");
-  options.forEach(opt => {
-    const chip = secEl("button", "secchip" + (selected.includes(opt) ? " on" : ""));
-    chip.type = "button";
-    chip.appendChild(secEl("span", null, labelFor ? labelFor(opt) : opt));
-    chip.onclick = () => onToggle(opt);
-    row.appendChild(chip);
-  });
-  return row;
+   Two rows -- a wide search, five "Label: value" pickers, then Category, the
+   Show-resolved switch and, right-aligned, Clear filters + the Filters(N)
+   badge (AllFindings.png). Every picker below is the SAME hand-rolled
+   <details>/<summary>/.menu-pop shape secFindSavedFilters already used one
+   task ago, for the identical reason that comment gives: `makePicker`
+   (bin/dashboard.html) needs STATIC, boot-once markup registered exactly
+   once into its own module-level PICKERS array, and this whole bar is
+   rebuilt from scratch on every filter/sort/page change -- a second
+   `makePicker(id, ...)` call on the same id every repaint would either find
+   stale markup or grow that registry forever.
+
+   Every filter's SEMANTICS are exactly `queries.finding_rows`'s own, byte
+   for byte: severity/state/category stay arrays (multi-select), branch/
+   analysis/path/q stay the same plain strings the server has always
+   accepted -- Branch and Analysis run merely gain real OPTIONS to pick from
+   (`data.branches`/`data.analyses`, both already exact-match fields
+   server-side; see queries.finding_rows's own docstring) instead of a bare
+   text box asking the reader to already know a branch name or an analysis
+   id by heart. File path stays genuinely free text (a substring search),
+   its trigger just wearing the same "Label: value ▾" look as its five
+   siblings -- opening it reveals the text input, not an enumerated list. */
+function secFindTriggerLabel(label, valueText){
+  const trigger = document.createElement("summary");
+  trigger.className = "filterpick";
+  // Found live by secFindingsPeriodPicker first (see index-screen.js's own
+  // comment): bin/dashboard.html's global "click outside a menu-pop closes
+  // every open one" listener has no idea this menu is a <details> rather
+  // than the older hidden-attribute-toggled pattern, and hides this very
+  // popover a beat before the browser's own default action opens it, unless
+  // the opening click is stopped here from ever reaching that listener.
+  trigger.onclick = (e) => e.stopPropagation();
+  if(label) trigger.appendChild(secEl("span", "pk-k", label + ":"));
+  const valueEl = secEl("span", "pk-v", valueText);
+  trigger.appendChild(valueEl);
+  trigger.appendChild(secIcon("cdown"));
+  return {trigger, valueEl};
 }
 
-function secFindChipField(label, chipsRow){
-  const field = secEl("div", "secfield");
-  field.appendChild(secEl("span", null, label));
-  field.appendChild(chipsRow);
+// Positions `pop` below `trigger`'s own current screen position every time
+// it opens -- escaping `.table-card{overflow:hidden}` the same way
+// secFindSavedFilters's own popover already has to (see that function's own
+// comment, kept below, for the full reasoning: closeMenus() and this bar's
+// own repaint-from-scratch cadence both apply here identically).
+function secFindPositionPop(details, trigger, pop){
+  pop.setAttribute("role", "menu");
+  pop.hidden = true;
+  details.appendChild(pop);
+  details.ontoggle = () => {
+    pop.hidden = !details.open;
+    if(!details.open) return;
+    const r = trigger.getBoundingClientRect();
+    pop.style.position = "fixed";
+    pop.style.top = (r.bottom + 6) + "px";
+    pop.style.left = r.left + "px";
+    pop.style.right = "auto";
+    pop.style.bottom = "auto";
+  };
+}
+
+function secFindMultiPicker(label, options, selected, onToggle){
+  const field = secEl("div", "secfind-fpick");
+  const valueText = !selected.length ? "All"
+    : selected.length === 1 ? ((options.find(o => o.v === selected[0]) || {}).label || selected[0])
+    : selected.length + " selected";
+  const {trigger} = secFindTriggerLabel(label, valueText);
+  const details = document.createElement("details");
+  details.appendChild(trigger);
+  const pop = secEl("div", "menu-pop");
+  options.forEach(opt => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.setAttribute("role", "menuitemcheckbox");
+    item.setAttribute("aria-checked", selected.includes(opt.v) ? "true" : "false");
+    item.appendChild(document.createTextNode(opt.label));
+    if(selected.includes(opt.v)) item.appendChild(secIcon("check2"));
+    // Stays open: a multi-select is usually more than one pick in a row.
+    item.onclick = (e) => { e.stopPropagation(); onToggle(opt.v); };
+    pop.appendChild(item);
+  });
+  secFindPositionPop(details, trigger, pop);
+  field.appendChild(details);
+  return field;
+}
+
+function secFindSinglePicker(label, options, selected, onPick){
+  const field = secEl("div", "secfind-fpick");
+  const current = options.find(o => o.v === selected);
+  const {trigger} = secFindTriggerLabel(label, selected && current ? current.label : "All");
+  const details = document.createElement("details");
+  details.appendChild(trigger);
+  const pop = secEl("div", "menu-pop");
+  const allItem = document.createElement("button");
+  allItem.type = "button";
+  allItem.setAttribute("role", "menuitem");
+  allItem.appendChild(document.createTextNode("All"));
+  if(!selected) allItem.appendChild(secIcon("check2"));
+  allItem.onclick = (e) => { e.stopPropagation(); details.open = false; onPick(""); };
+  pop.appendChild(allItem);
+  options.forEach(opt => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.setAttribute("role", "menuitem");
+    item.appendChild(document.createTextNode(opt.label));
+    if(selected === opt.v) item.appendChild(secIcon("check2"));
+    item.onclick = (e) => { e.stopPropagation(); details.open = false; onPick(opt.v); };
+    pop.appendChild(item);
+  });
+  secFindPositionPop(details, trigger, pop);
+  field.appendChild(details);
+  return field;
+}
+
+function secFindTextPicker(label, value, onChange){
+  const field = secEl("div", "secfind-fpick");
+  const {trigger} = secFindTriggerLabel(label, value.trim() ? value : "All");
+  const details = document.createElement("details");
+  details.appendChild(trigger);
+  const pop = secEl("div", "menu-pop");
+  const inp = document.createElement("input");
+  inp.type = "text";
+  inp.spellcheck = false;
+  inp.autocomplete = "off";
+  inp.placeholder = "contains…";
+  inp.value = value;
+  inp.onclick = (e) => e.stopPropagation();
+  // change, not input: a fetch per keystroke would be a subprocess per
+  // keystroke on the server (see index.js's identical reasoning for
+  // #sec-branch-other).
+  inp.onchange = () => onChange(inp.value);
+  pop.appendChild(inp);
+  secFindPositionPop(details, trigger, pop);
+  field.appendChild(details);
   return field;
 }
 
@@ -391,66 +626,36 @@ function secFindToggleIn(list, value){
   if(i >= 0) list.splice(i, 1); else list.push(value);
 }
 
-function secFindSeverityField(fs){
-  return secFindChipField("Severity", secFindChips(
-    ["critical", "high", "medium", "low", "info"], fs.filters.severity,
-    (sev) => { secFindToggleIn(fs.filters.severity, sev); fs.page = 1; secFindRefresh(fs); }));
-}
-
-function secFindCategoryField(fs){
-  return secFindChipField("Category", secFindChips(
-    FIND_CATEGORIES, fs.filters.category,
-    (cat) => { secFindToggleIn(fs.filters.category, cat); fs.page = 1; secFindRefresh(fs); }));
-}
-
-function secFindStateField(fs){
-  const row = secFindChips(SEC_STATES, fs.filters.state,
-    (st) => { secFindToggleIn(fs.filters.state, st); fs.page = 1; secFindRefresh(fs); },
-    (st) => SEC_STATE_LABEL[st] || st);
-  // secFindChips has no notion of a per-option title -- threaded on
-  // afterwards, same as every chip helper on this screen sets .title once
-  // the element already exists (see secRenderChecklist's identical pattern).
-  Array.from(row.childNodes).forEach((chip, i) => { chip.title = SEC_STATE_HELP[SEC_STATES[i]] || ""; });
-  return secFindChipField("State", row);
-}
-
-function secFindTextField(label, value, onChange){
-  const field = secEl("div", "secfield");
-  field.appendChild(secEl("span", null, label));
-  const inp = document.createElement("input");
-  inp.type = "text";
-  inp.value = value;
-  inp.spellcheck = false;
-  inp.autocomplete = "off";
-  // change, not input: a fetch per keystroke would be a subprocess per
-  // keystroke on the server (see index.js's identical reasoning for
-  // #sec-branch-other).
-  inp.addEventListener("change", () => onChange(inp.value));
-  field.appendChild(inp);
-  return field;
-}
-
-function secFindShowResolvedField(fs){
-  const field = secEl("div", "secfield");
-  field.appendChild(secEl("span", null, "Resolved"));
-  const label = document.createElement("label");
-  const cb = document.createElement("input");
-  cb.type = "checkbox";
-  cb.checked = fs.filters.show_resolved;
-  cb.addEventListener("change", () => {
-    fs.filters.show_resolved = cb.checked;
-    fs.page = 1;
-    secFindRefresh(fs);
-  });
-  label.appendChild(cb);
-  label.appendChild(document.createTextNode(" Show resolved"));
-  field.appendChild(label);
-  return field;
+// Filters(N): a read-only count of how many DIMENSIONS are currently
+// narrowing the request, one per distinct filter -- not per value inside a
+// multi-select, so picking "Critical" and "High" together still reads as
+// ONE active narrow (Severity), the same granularity a reader thinks in
+// ("I have a severity filter on") rather than an internal implementation
+// detail (how many values happen to be inside it). `show_resolved` being
+// OFF counts as an active narrow too, deliberately: it is the one filter
+// this bar applies before a reader ever touches a control (the caption
+// beside Category says so), and it genuinely removes rows from what
+// `finding_rows` returns -- the same reason AllFindings.png's own default,
+// fully-"All" screenshot still reads "Filters (1)" rather than (0).
+function secFindActiveFilterCount(fs){
+  const f = fs.filters;
+  let n = 0;
+  if(f.severity.length) n++;
+  if(f.state.length) n++;
+  if(f.category.length) n++;
+  if(f.branch.trim()) n++;
+  if(f.path.trim()) n++;
+  if(f.analysis.trim()) n++;
+  if(f.q.trim()) n++;
+  if(!f.show_resolved) n++;
+  return n;
 }
 
 function secFindClearButton(fs){
-  const btn = secEl("button", "btn ghost", "Clear filters");
+  const btn = secEl("button", "btn ghost");
   btn.type = "button";
+  btn.appendChild(secIcon("x"));
+  btn.appendChild(document.createTextNode("Clear filters"));
   btn.onclick = () => { fs.filters = _defaultFilters(); fs.page = 1; secFindRefresh(fs); };
   return btn;
 }
@@ -503,181 +708,196 @@ async function secFindDeleteSaved(fs, name){
   await secFindRefresh(fs);
 }
 
-// The house <details>/<summary>/.menu-pop popover (Phase 4 Task 5) --
-// secIndexProjectRow's own kebab and secFindingsPeriodPicker (both
-// index-screen.js) already draw this exact shape for the identical reason:
-// a short, dynamically-populated list with no paging, mounted and torn down
-// far too often for makePicker's own module-level PICKERS registry (built
-// for STATIC, boot-once markup -- Jobs/Runs' pickers, and this screen's own
-// three filter pickers, all live exactly once for the page's whole life).
-// This one is neither: renderFindings rebuilds its whole host, savedName
-// included, on every filter change and every poll tick, AND -- see this
-// file's own "ONE MODULE, TWO HOMES" comment -- can be mounted twice at
-// once (the Findings tab and the Activity screen's fingerprint dialog). A
-// <details>-based popover closes over its OWN nodes, not a shared id
-// registry, so neither repeated rebuilds nor two live instances collide the
-// way a second makePicker("secfind-saved", ...) call on a duplicate id
-// would.
+/* The Saved-filters control: a "Saved filters ▾" trigger (moved into
+   secFindHeader, restyled as AllFindings.png's own button+chevron) whose
+   popover lists every saved filter, a trash icon per row to delete it, and
+   a "Save current view as…" mini-form at the bottom -- the same three
+   operations the old bottom-bar layout offered (pick/save/delete), now
+   inside the one control that opens them rather than three separate always-
+   visible fields. Still the house <details>/<summary>/.menu-pop popover
+   (Phase 4 Task 5) -- secIndexProjectRow's own kebab and
+   secFindingsPeriodPicker (both index-screen.js) already draw this exact
+   shape for the identical reason: a short, dynamically-populated list with
+   no paging, mounted and torn down far too often for makePicker's own
+   module-level PICKERS registry (built for STATIC, boot-once markup --
+   Jobs/Runs' pickers, and this screen's own picker fields above, all live
+   exactly once for the page's whole life). This one is neither: secFindPaint
+   rebuilds its whole host, savedName included, on every filter change and
+   every poll tick, AND -- see this file's own "ONE MODULE, TWO HOMES"
+   comment -- can be mounted twice at once (the Findings tab and the
+   Activity screen's fingerprint dialog, though that mount never actually
+   renders this control -- see secFindHeader's own early return). A
+   <details>-based popover closes over its OWN nodes, not a shared id
+   registry, so neither repeated rebuilds nor two live instances collide the
+   way a second makePicker("secfind-saved", ...) call on a duplicate id
+   would. */
 function secFindSavedFilters(fs, data){
-  const bar = secEl("div", "secbar");
-  const pickField = secEl("div", "secfield");
-  pickField.appendChild(secEl("span", null, "Saved filters"));
-
   const filters = data.filters || [];
   // Mirrors the old <select>'s own reset: a name that no longer matches any
   // saved filter (renamed or deleted from elsewhere) must not keep pinning
   // the field to it.
   if(!filters.some(f => f.name === fs.savedName)) fs.savedName = "";
 
-  const delBtn = secEl("button", "btn ghost", "Delete");
-  delBtn.type = "button";
-  delBtn.disabled = !fs.savedName;
-  delBtn.onclick = () => secFindDeleteSaved(fs, fs.savedName);
-
-  const wrap = document.createElement("details");
-  wrap.className = "secfind-savedpick";
-  const trigger = document.createElement("summary");
-  trigger.className = "filterpick";
-  // Found live by secFindingsPeriodPicker first (see that function's own
-  // comment): bin/dashboard.html's global "click outside a menu-pop closes
-  // every open one" listener has no idea this menu is a <details> rather
-  // than the older hidden-attribute-toggled pattern, and hides this very
-  // popover a beat before the browser's own default action opens it, unless
-  // the opening click is stopped here from ever reaching that listener.
-  trigger.onclick = (e) => e.stopPropagation();
-  const valueEl = secEl("span", null, fs.savedName || "— choose —");
-  trigger.appendChild(valueEl);
-  trigger.appendChild(secIcon("cdown"));
-  wrap.appendChild(trigger);
-
+  const details = document.createElement("details");
+  details.className = "secfind-savedpick";
+  const {trigger, valueEl} = secFindTriggerLabel(null, fs.savedName || "Saved filters");
+  details.appendChild(trigger);
   const pop = secEl("div", "menu-pop");
-  pop.setAttribute("role", "menu");
 
   // A custom widget has no browser-native "picking an option repaints the
-  // control" behaviour the way the old <select> did -- the trigger label and
-  // the Delete button's own enabled state are repainted here, by hand, on
-  // every pick (the list itself is rebuilt fresh from scratch the next time
-  // it opens, so it never needs a matching manual repaint).
+  // control" behaviour the way the old <select> did -- the trigger label is
+  // repainted here, by hand, on every pick (the list itself is rebuilt
+  // fresh from scratch the next time it opens, so it never needs a matching
+  // manual repaint).
   function pick(name, query){
     fs.savedName = name;
-    valueEl.textContent = name || "— choose —";
-    delBtn.disabled = !name;
-    wrap.open = false;
-    // Only a REAL saved filter re-fetches -- picking "— choose —" just
-    // clears the field, the same no-op the old <select>'s blank option was
-    // (sel.value === "" never matched a saved filter's own name, so
-    // secFindApplyQuery was never reached for it either).
+    valueEl.textContent = name || "Saved filters";
+    details.open = false;
+    // Only a REAL saved filter re-fetches -- picking "— none —" just clears
+    // the field, the same no-op the old <select>'s blank option was.
     if(query) secFindApplyQuery(fs, query);
   }
 
   const blank = document.createElement("button");
   blank.type = "button";
   blank.setAttribute("role", "menuitem");
-  blank.appendChild(document.createTextNode("— choose —"));
+  blank.appendChild(document.createTextNode("— none —"));
   if(!fs.savedName) blank.appendChild(secIcon("check2"));
   blank.onclick = (e) => { e.stopPropagation(); pick(""); };
   pop.appendChild(blank);
 
   filters.forEach(f => {
+    const row = secEl("div", "secfind-savedrow");
     const item = document.createElement("button");
     item.type = "button";
     item.setAttribute("role", "menuitem");
-    // .textContent, never markup: a saved filter's name is a string a human
-    // typed on this page, but still text a reader did not write, the same
-    // rule every other value in this area follows.
+    // .textContent (via createTextNode below), never markup: a saved
+    // filter's name is a string a human typed on this page, but still text
+    // a reader did not write, the same rule every other value in this area
+    // follows.
     item.appendChild(document.createTextNode(f.name));
     if(f.name === fs.savedName) item.appendChild(secIcon("check2"));
     item.onclick = (e) => { e.stopPropagation(); pick(f.name, f.query); };
-    pop.appendChild(item);
+    row.appendChild(item);
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "iconbtn";
+    del.title = "Delete this saved filter";
+    del.appendChild(secIcon("trash"));
+    del.onclick = (e) => { e.stopPropagation(); details.open = false; secFindDeleteSaved(fs, f.name); };
+    row.appendChild(del);
+    pop.appendChild(row);
   });
-  wrap.appendChild(pop);
 
-  // Found live, the hard way: bin/dashboard.html's global closeMenus() (bound
-  // on document, fired by any click that is not inside an open .menu-pop --
-  // navigating to this very tab is exactly such a click) sets `hidden` on
-  // EVERY `.menu-pop` in the document that does not already carry it,
-  // including one this function only just built and never opened yet.
-  // secIndexProjectRow's own kebab and secFindingsPeriodPicker (both
-  // index-screen.js) share this exact shape and are not immune to the same
-  // race in principle, but in practice self-heal within one 5-second poll
-  // tick, which rebuilds their markup hidden-attribute-free again; this
-  // table has no such tick (it fetches on demand, not on a timer), so a
-  // find-filters bar built once could stay silently un-openable until the
-  // next filter change or tab switch rebuilt it. Setting `hidden` here, from
-  // the trigger's OWN open/close state rather than trusting whatever a
-  // stray earlier click left behind, is what makes ontoggle the one place
-  // that can never disagree with `wrap.open`.
-  //
-  // Positioning is recomputed on every open from the trigger's own screen
-  // position, the identical fix secIndexProjectRow's own kebab and
-  // secFindingsPeriodPicker both already need: this table sits inside an
-  // overflow-clipped card the same way theirs do, which cuts off a popup
-  // positioned any other way.
-  wrap.ontoggle = () => {
-    pop.hidden = !wrap.open;
-    if(!wrap.open) return;
-    const r = trigger.getBoundingClientRect();
-    pop.style.position = "fixed";
-    pop.style.top = (r.bottom + 6) + "px";
-    pop.style.left = r.left + "px";
-    pop.style.right = "auto";
-    pop.style.bottom = "auto";
-  };
-
-  pickField.appendChild(wrap);
-  bar.appendChild(pickField);
-
-  const nameField = secEl("div", "secfield");
-  nameField.appendChild(secEl("span", null, "Save current as"));
+  pop.appendChild(secEl("div", "sep"));
   const nameInput = document.createElement("input");
   nameInput.type = "text";
-  nameInput.placeholder = "name this view";
+  nameInput.placeholder = "Save current view as…";
   nameInput.value = fs.newName;
-  nameInput.addEventListener("change", () => { fs.newName = nameInput.value; });
-  nameField.appendChild(nameInput);
-  bar.appendChild(nameField);
-
-  const saveBtn = secEl("button", "btn ghost", "Save");
+  nameInput.onclick = (e) => e.stopPropagation();
+  nameInput.onchange = () => { fs.newName = nameInput.value; };
+  pop.appendChild(nameInput);
+  const saveBtn = document.createElement("button");
   saveBtn.type = "button";
-  saveBtn.onclick = () => secFindSaveCurrent(fs, nameInput.value);
-  bar.appendChild(saveBtn);
+  saveBtn.setAttribute("role", "menuitem");
+  saveBtn.appendChild(secIcon("check2"));
+  saveBtn.appendChild(document.createTextNode("Save"));
+  saveBtn.onclick = (e) => { e.stopPropagation(); secFindSaveCurrent(fs, nameInput.value); };
+  pop.appendChild(saveBtn);
 
-  bar.appendChild(delBtn);
-
-  return bar;
+  secFindPositionPop(details, trigger, pop);
+  return details;
 }
 
 function secFindFilterBar(fs, data){
-  const wrap = document.createElement("div");
-  wrap.appendChild(secFindSeverityField(fs));
-  wrap.appendChild(secFindStateField(fs));
-  wrap.appendChild(secEl("div", "secpj-caption",
-    "Fixed, accepted and false-positive rows are excluded unless “Show resolved” is checked."));
-  wrap.appendChild(secFindCategoryField(fs));
+  const wrap = secEl("div", "secfind-filters");
 
-  const bar = secEl("div", "secbar");
-  bar.appendChild(secFindTextField("Branch", fs.filters.branch, (v) => {
-    fs.filters.branch = v; fs.page = 1; secFindRefresh(fs);
-  }));
-  bar.appendChild(secFindTextField("Path contains", fs.filters.path, (v) => {
-    fs.filters.path = v; fs.page = 1; secFindRefresh(fs);
-  }));
-  bar.appendChild(secFindTextField("Analysis #", fs.filters.analysis, (v) => {
-    fs.filters.analysis = v; fs.page = 1; secFindRefresh(fs);
-  }));
+  const row1 = secEl("div", "secfind-filters-row");
+  const search = secEl("div", "secfind-search");
+  search.appendChild(secIcon("search"));
+  const searchInput = document.createElement("input");
+  searchInput.type = "text";
+  searchInput.placeholder = "Search by message, file, or CVE…";
+  searchInput.spellcheck = false;
+  searchInput.autocomplete = "off";
+  searchInput.value = fs.filters.q;
   // Matches what queries.finding_rows's own `q` filter actually searches --
   // title, rule, rationale and every occurrence's file path. "CVE" is not a
   // field of its own: for a dependency finding it is folded into `rule`, so
-  // naming `rule` here is what makes that searchable text discoverable at
-  // all, rather than implying a fifth, nonexistent column.
-  bar.appendChild(secFindTextField("Search title / rule / rationale / file", fs.filters.q, (v) => {
-    fs.filters.q = v; fs.page = 1; secFindRefresh(fs);
-  }));
-  bar.appendChild(secFindShowResolvedField(fs));
-  bar.appendChild(secFindClearButton(fs));
-  wrap.appendChild(bar);
+  // naming `rule` here (in the tooltip -- the mockup's own placeholder
+  // above is the friendly gloss) is what makes that searchable text
+  // discoverable at all, rather than implying a fifth, nonexistent column.
+  searchInput.title = "Search title / rule / rationale / file";
+  searchInput.onchange = () => { fs.filters.q = searchInput.value; fs.page = 1; secFindRefresh(fs); };
+  search.appendChild(searchInput);
+  row1.appendChild(search);
 
-  wrap.appendChild(secFindSavedFilters(fs, data));
+  row1.appendChild(secFindMultiPicker("Severity",
+    [...SEV_ORDER].reverse().map(s => ({v: s, label: _secCap(s)})),
+    fs.filters.severity,
+    (v) => { secFindToggleIn(fs.filters.severity, v); fs.page = 1; secFindRefresh(fs); }));
+
+  row1.appendChild(secFindMultiPicker("Status",
+    SEC_STATES.map(s => ({v: s, label: SEC_STATE_LABEL[s] || s})),
+    fs.filters.state,
+    (v) => { secFindToggleIn(fs.filters.state, v); fs.page = 1; secFindRefresh(fs); }));
+
+  row1.appendChild(secFindSinglePicker("Analysis run",
+    (data.analyses || []).map(a => ({v: String(a.id),
+      label: "#" + a.id + " (" + _secCap(a.profile) + ") — " + a.branch})),
+    fs.filters.analysis,
+    (v) => { fs.filters.analysis = v || ""; fs.page = 1; secFindRefresh(fs); }));
+
+  row1.appendChild(secFindSinglePicker("Branch",
+    (data.branches || []).map(b => ({v: b, label: b})),
+    fs.filters.branch,
+    (v) => { fs.filters.branch = v || ""; fs.page = 1; secFindRefresh(fs); }));
+
+  row1.appendChild(secFindTextPicker("File path", fs.filters.path,
+    (v) => { fs.filters.path = v; fs.page = 1; secFindRefresh(fs); }));
+
+  wrap.appendChild(row1);
+
+  const row2 = secEl("div", "secfind-filters-row row2");
+  row2.appendChild(secFindMultiPicker("Category",
+    FIND_CATEGORIES.map(c => ({v: c, label: _secCap(c)})),
+    fs.filters.category,
+    (v) => { secFindToggleIn(fs.filters.category, v); fs.page = 1; secFindRefresh(fs); }));
+
+  const toggleField = secEl("label", "secfind-toggle-field");
+  // Fixed, accepted and false-positive rows are excluded unless this is on
+  // -- said out loud on the control itself (a hover, not a permanent line
+  // of text the mockup's own row 2 does not draw): the old layout carried
+  // this as a standing caption between the chip rows; AllFindings.png has
+  // no such line, so the explanation moves to where a reader who wants it
+  // will find it without it costing space for the reader who does not.
+  toggleField.title = "Fixed, accepted and false-positive rows are excluded unless this is on.";
+  const sw = secEl("span", "switch");
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = fs.filters.show_resolved;
+  cb.onchange = () => { fs.filters.show_resolved = cb.checked; fs.page = 1; secFindRefresh(fs); };
+  sw.appendChild(cb);
+  sw.appendChild(secEl("span", "track"));
+  sw.appendChild(secEl("span", "knob"));
+  toggleField.appendChild(sw);
+  toggleField.appendChild(secEl("span", null, "Show resolved findings"));
+  row2.appendChild(toggleField);
+
+  const right = secEl("div", "secfind-filters-right");
+  right.appendChild(secFindClearButton(fs));
+  const filtBadge = secEl("button", "btn ghost");
+  filtBadge.type = "button";
+  // A read-only count, not a second control -- see
+  // secFindActiveFilterCount's own comment for what it counts.
+  filtBadge.disabled = true;
+  filtBadge.appendChild(secIcon("filter"));
+  filtBadge.appendChild(document.createTextNode("Filters"));
+  filtBadge.appendChild(secEl("span", "secfind-filters-badge", String(secFindActiveFilterCount(fs))));
+  right.appendChild(filtBadge);
+  row2.appendChild(right);
+
+  wrap.appendChild(row2);
   return wrap;
 }
 
@@ -685,56 +905,147 @@ function secFindFilterBar(fs, data){
    The state a row shows is the state its OWN branch's latest finished
    analysis gives it -- a list that crosses branches (and so crosses
    analyses) has to say which one it is speaking about, hence the Branch and
-   First seen columns beside State rather than a bare severity/title pair. */
+   Analysis run columns beside Status rather than a bare severity/title
+   pair. */
 function secFindRow(fs, f){
   const tr = document.createElement("tr");
   tr.className = "sev-" + secSevKey(f) + " state-" + secStateKey(f);
-  const cell = (text) => { const td = document.createElement("td"); td.textContent = text; return td; };
 
-  tr.appendChild(cell(f.severity || ""));
+  // SEVERITY: a coloured pill (AllFindings.png) -- the row's own left edge
+  // (.secfind-table tr.sev-*>td:first-child, ui/css/pages.css) reads the
+  // SAME class this <tr> already carries; the pill is the second half of
+  // the identical cue, not a separate severity-to-colour map of its own.
+  const tdSev = document.createElement("td");
+  tdSev.appendChild(secEl("span", "sevpill " + secSevKey(f), f.severity || ""));
+  tr.appendChild(tdSev);
 
+  // TITLE: bold title, one-line muted rationale beneath. The occurrence
+  // path used to live in THIS cell's own second line -- it is Location's
+  // own column now (below), split out to match AllFindings.png.
   const tdTitle = document.createElement("td");
-  // Titles and paths come out of analysed code, and a branch name may
+  // Titles and rationale come out of analysed code, and a branch name may
   // legally contain '<', '>' and '&' -- textContent, always, the one rule
   // this whole area exists to keep (see vocabulary.js's own file comment).
   tdTitle.appendChild(secEl("div", "sectitle", f.title || ""));
+  if((f.rationale || "").trim()){
+    tdTitle.appendChild(secEl("div", "secmeta clamp1", f.rationale));
+  }
+  tr.appendChild(tdTitle);
+
+  // LOCATION: the first occurrence's own path:line, a "(+N more)" cue when
+  // there is more than one -- the cue's own title lists the rest, so
+  // nothing is lost, only deferred to a hover.
+  const tdLoc = document.createElement("td");
   const occ = f.occurrences || [];
   if(occ.length){
     const first = occ[0];
     const where = first.line ? first.file + ":" + first.line : first.file;
     const more = occ.length > 1 ? " (+" + (occ.length - 1) + " more)" : "";
-    tdTitle.appendChild(secEl("div", "secmeta", where + more));
+    const locEl = secEl("div", "secfind-loc", where + more);
+    if(occ.length > 1){
+      locEl.title = occ.slice(1)
+        .map(o => o.line ? o.file + ":" + o.line : o.file).join(", ");
+    }
+    tdLoc.appendChild(locEl);
   }
-  tr.appendChild(tdTitle);
+  tr.appendChild(tdLoc);
 
-  tr.appendChild(cell(f.category || ""));
-  tr.appendChild(cell(f.branch || ""));
+  // CATEGORY: icon + label from secRuleMeta -- the SAME (category, rule) ->
+  // {label, icon} map the index screen's own "Top issue categories" card
+  // already reads (secIndexCategories, index-screen.js), never a second one
+  // (this file's own rules: secRuleMeta for category icons/labels, never a
+  // second map). The raw rule id stays one hover away, the same "legible
+  // now, exact on demand" rule secRuleMeta's own callers already follow.
+  const tdCat = document.createElement("td");
+  const meta = secRuleMeta(f.category, f.rule);
+  const catWrap = secEl("div", "secfind-cat");
+  catWrap.appendChild(secIcon(meta.icon));
+  catWrap.appendChild(secEl("span", null, meta.label));
+  if(f.rule) catWrap.title = f.rule;
+  tdCat.appendChild(catWrap);
+  tr.appendChild(tdCat);
 
+  // ANALYSIS RUN: "#<id> (<Profile>)", the date beneath -- links to that
+  // analysis exactly where the Runs tab's own "#N" button already does
+  // (secShowAnalysis), switching this project screen onto its Runs tab
+  // first since that is where the single-analysis drill-down actually
+  // renders (project-screen.js's own comment: "below the Runs table").
+  // Profile/date are read off `fs.data.analyses` (queries.finding_rows's
+  // own per-branch list) by this row's own `branch`/`analysis_id` rather
+  // than carried a second time on every one of hundreds of finding rows
+  // that can share the same handful of analyses.
+  const tdRun = document.createElement("td");
+  const runWrap = secEl("div", "secfind-run");
+  const runInfo = ((fs.data || {}).analyses || []).find(a => a.id === f.analysis_id);
+  if(f.analysis_id != null){
+    const runBtn = document.createElement("button");
+    runBtn.type = "button";
+    runBtn.title = "Show this analysis";
+    const profileWord = runInfo && runInfo.profile ? " (" + _secCap(runInfo.profile) + ")" : "";
+    runBtn.appendChild(document.createTextNode("#" + f.analysis_id + profileWord));
+    runBtn.onclick = (e) => {
+      e.stopPropagation();
+      secSwitchProjectTab("runs");
+      secShowAnalysis(f.analysis_id, true);
+    };
+    runWrap.appendChild(runBtn);
+  }
+  if(runInfo && runInfo.started){
+    runWrap.appendChild(secEl("div", "secmeta", fmtWhen(runInfo.started)));
+  }
+  tdRun.appendChild(runWrap);
+  tr.appendChild(tdRun);
+
+  // BRANCH
+  const tdBranch = document.createElement("td");
+  tdBranch.textContent = f.branch || "";
+  tr.appendChild(tdBranch);
+
+  // STATUS: the SAME .secstate pill this table has always drawn -- only the
+  // COLUMN header renamed, from "State" to AllFindings.png's own "Status"
+  // (FIND_SORT_COLUMNS, this file's own top); the pill and the ledger
+  // states it draws are unchanged.
   const tdState = document.createElement("td");
   const stBadge = secEl("span", "secstate " + secStateKey(f), SEC_STATE_LABEL[f.state] || f.state);
   stBadge.title = SEC_STATE_HELP[f.state] || "";
   tdState.appendChild(stBadge);
   tr.appendChild(tdState);
 
-  tr.appendChild(cell(f.first_seen ? fmtWhen(f.first_seen) : "—"));
+  // FIRST SEEN
+  const tdFirst = document.createElement("td");
+  tdFirst.textContent = f.first_seen ? fmtWhen(f.first_seen) : "—";
+  tr.appendChild(tdFirst);
 
-  const tdAct = document.createElement("td");
-  // A fixed finding is gone: there is nothing left to accept or dismiss --
-  // the same rule secFindingRow in analysis.js already follows.
-  if(f.state !== "fixed") tdAct.appendChild(secFindDecisionControls(fs, f));
-  tr.appendChild(tdAct);
+  // ACTIONS: an eye (view -- the same analysis drill-down Analysis run
+  // links to) plus a kebab holding the decision actions, reusing this app's
+  // own established eye-for-view (runs.js's own "View log") and
+  // kebab-for-more (.secidx-kebab, index-screen.js) vocabulary rather than
+  // the row's own two always-visible text buttons this table used to draw.
+  tr.appendChild(secFindActionsCell(fs, f));
+
   return tr;
 }
 
-function secFindDecisionControls(fs, f){
-  const wrap = secEl("div", "secactions");
+/* The decision menu's own two items -- returns the <div class="menu-pop">
+   itself so a caller (secFindActionsCell) can mount it inside its own
+   kebab. `onPicked`, when given, runs before the API call fires (closing
+   the kebab immediately, rather than leaving it open through the confirm
+   dialog secAskReason shows next). */
+function secFindDecisionControls(fs, f, onPicked){
+  const pop = secEl("div", "menu-pop");
   [["accepted", "Accept risk"], ["false_positive", "False positive"]].forEach(([state, label]) => {
-    const b = secEl("button", "btn", label);
+    const b = document.createElement("button");
     b.type = "button";
-    b.onclick = () => secFindDecide(fs, f, state, label);
-    wrap.appendChild(b);
+    b.setAttribute("role", "menuitem");
+    b.appendChild(document.createTextNode(label));
+    b.onclick = (e) => {
+      e.stopPropagation();
+      if(onPicked) onPicked();
+      secFindDecide(fs, f, state, label);
+    };
+    pop.appendChild(b);
   });
-  return wrap;
+  return pop;
 }
 
 async function secFindDecide(fs, f, state, label){
@@ -756,6 +1067,71 @@ async function secFindDecide(fs, f, state, label){
   // neither shows a stale count without a real reload.
   secInvalidateProject();
   await secFindRefresh(fs);
+}
+
+/* AllFindings.png's own Actions column: an eye, always present, plus a
+   kebab for a non-fixed finding's decision actions. `.rowacts` is this
+   app's own established actions-cell layout (ui/app/jobs-table.js,
+   projects.js, runs.js all already use it) -- text-align/inline spacing on
+   the CELL itself, never `display:flex` on the `<td>` (this area's own
+   rule), which is exactly why a bare `.iconbtn`/`<details>` pair laid out
+   through it needs no flex container of its own. */
+function secFindActionsCell(fs, f){
+  const td = document.createElement("td");
+  td.className = "rowacts";
+
+  const view = document.createElement("button");
+  view.type = "button";
+  view.className = "iconbtn";
+  view.title = f.analysis_id != null ? "View this analysis" : "No analysis to view";
+  view.disabled = f.analysis_id == null;
+  view.appendChild(secIcon("eye"));
+  view.onclick = (e) => {
+    e.stopPropagation();
+    if(f.analysis_id == null) return;
+    secSwitchProjectTab("runs");
+    secShowAnalysis(f.analysis_id, true);
+  };
+  td.appendChild(view);
+
+  // A fixed finding is gone: there is nothing left to accept or dismiss --
+  // the same rule secFindingRow in analysis.js already follows. No kebab at
+  // all here, not one with an empty menu: a menu button opening onto
+  // nothing is a worse affordance than no button.
+  if(f.state !== "fixed"){
+    const kebab = document.createElement("details");
+    kebab.className = "secidx-kebab";
+    const summary = document.createElement("summary");
+    summary.className = "iconbtn";
+    summary.title = "More actions";
+    summary.appendChild(secIcon("dots"));
+    // Closes any OTHER open row's kebab the instant this one is clicked --
+    // see secIndexProjectRow's own identical comment (index-screen.js) for
+    // why `closeMenus()` here can never also close THIS one on its own
+    // opening click (the browser's default action, which flips `.open`,
+    // runs only after every bubble-phase listener including this one).
+    summary.onclick = (e) => { e.stopPropagation(); closeMenus(); };
+    kebab.appendChild(summary);
+    const pop = secFindDecisionControls(fs, f, () => { kebab.open = false; });
+    kebab.appendChild(pop);
+    // Same `position:fixed` escape from `.table-card{overflow:hidden}`
+    // every other popover on this screen already needs (see
+    // secFindPositionPop's own comment) -- right-aligned, since this is the
+    // table's own last column and a left-aligned popover would routinely
+    // open past the viewport's own right edge.
+    kebab.ontoggle = () => {
+      pop.hidden = !kebab.open;
+      if(!kebab.open) return;
+      const r = summary.getBoundingClientRect();
+      pop.style.position = "fixed";
+      pop.style.top = (r.bottom + 6) + "px";
+      pop.style.left = "auto";
+      pop.style.right = (window.innerWidth - r.right) + "px";
+      pop.style.bottom = "auto";
+    };
+    td.appendChild(kebab);
+  }
+  return td;
 }
 
 function secFindTableSection(fs, data){
@@ -790,7 +1166,26 @@ function secFindTableSection(fs, data){
   table.className = "secfind-table";
   const thead = document.createElement("thead");
   const htr = document.createElement("tr");
-  FIND_SORT_COLUMNS.forEach(([key, label]) => {
+
+  // Nine header cells, AllFindings.png's own order. Six are sortable
+  // (FIND_SORT_COLUMNS, this file's own top); Location, Analysis run and
+  // Actions are not -- every one of the nine still gets the SAME inert
+  // `<button class="btn ghost">` shape (no `onclick` on the three that are
+  // not sortable) rather than a bare `<th>`, for the identical reason
+  // MINOR 5's own comment (kept below, unchanged) already gives the Actions
+  // header: a plain `<th>` reads this page's generic uppercase small-caps
+  // rule, and every sortable sibling beside it does not, because each
+  // one's label sits inside a `<button>`, whose own UA stylesheet resets
+  // `text-transform` before this file ever touches it.
+  //
+  // Walks FIND_SORT_COLUMNS itself (not SEC_FIND_TABLE_COLS -- see that
+  // const's own comment for why the render path never reads it) and
+  // splices the three non-sortable headers in after the sortable column
+  // each one follows in the mockup, rather than a second nine-entry array
+  // naming the same nine columns FIND_SORT_COLUMNS plus SEC_FIND_TABLE_COLS
+  // already do between them.
+  const INSERT_AFTER = {title: "Location", category: "Analysis run"};
+  function sortableHeader(key, label){
     const th = document.createElement("th");
     const btn = secEl("button", "btn ghost");
     btn.type = "button";
@@ -803,25 +1198,21 @@ function secFindTableSection(fs, data){
       secFindRefresh(fs);
     };
     th.appendChild(btn);
-    htr.appendChild(th);
+    return th;
+  }
+  function inertHeader(label){
+    const th = document.createElement("th");
+    const btn = secEl("button", "btn ghost");
+    btn.type = "button";
+    btn.appendChild(secEl("span", null, label));
+    th.appendChild(btn);
+    return th;
+  }
+  FIND_SORT_COLUMNS.forEach(([key, label]) => {
+    htr.appendChild(sortableHeader(key, label));
+    if(INSERT_AFTER[key]) htr.appendChild(inertHeader(INSERT_AFTER[key]));
   });
-  // MINOR 5 (Phase 4 final review): a bare `<th>` reads the page's generic
-  // uppercase small-caps `th` rule (ui/css/components.css) -- every sortable
-  // sibling beside it reads sentence case instead, not because of a class
-  // opting IT out, but because each one's label sits inside a `<button>`,
-  // and the browser's own UA stylesheet resets a form control's
-  // `text-transform` to `none` before this file ever touches it (the same
-  // reason `.btn`'s own font-size/weight/colour differ from a plain `th`'s
-  // too). A non-sortable `<button>` -- same class, same shape, no `onclick`
-  // -- is what actually makes "Actions" match its row instead of merely
-  // fixing the one property a hand-picked CSS override would have left
-  // size/colour/weight still mismatched.
-  const thAct = document.createElement("th");
-  const actLabel = secEl("button", "btn ghost");
-  actLabel.type = "button";
-  actLabel.appendChild(secEl("span", null, "Actions"));
-  thAct.appendChild(actLabel);
-  htr.appendChild(thAct);
+  htr.appendChild(inertHeader("Actions"));
   thead.appendChild(htr);
   table.appendChild(thead);
 
@@ -834,39 +1225,82 @@ function secFindTableSection(fs, data){
 }
 
 /* ------------------------------------------------------------------ pager
-   The bridged tableFooter() (Phase 4 Task 6) -- AllFindings.png's own
-   "Showing X to Y of N findings" + pager, replacing the bare "Page X / Y ·
-   N rows" line that used to sit outside the table's own box (`.pager`, the
-   shape Jobs/Runs/Projects already moved off of onto this same builder).
-   The MECHANISM is untouched -- still Prev/Next stepping `fs.page` through a
-   server-paginated fetch -- only the LOOK converges on what every other
-   table card in this app already uses. `numbered` is left unset (plain
-   Prev/Next), not the numbered-dots variant the mockup itself shows:
-   chrome.js's own tableFooter draws one button per page with no "…"
-   collapsing, fine at Jobs/Runs/Projects' own page counts but untested at
-   however many pages a heavily-findings project can reach here.
-   secFindPaint appends this INSIDE the same table-card secFindTableSection
-   returns (see that call site's own comment) -- this function only builds
-   the footer and wires its own two buttons, and is not responsible for
-   where it ends up mounted. The buttons are found by their fixed position
-   in tableFooter's own non-numbered output (info span, then a nav holding
-   exactly Prev then Next) rather than by id: this module mounts into two
-   hosts at once (see this file's own header comment), and a fixed id would
-   collide the moment both mounts' footers rendered together. */
+   The bridged tableFooter() (Phase 4 Task 6, extended Phase 4 for
+   AllFindings.png's own numbered/ellipsis pager and per-page picker) --
+   "Showing X to Y of N findings", the per-page picker, then "‹ 1 2 3 4 5 …
+   19 ›". `numbered: true, collapse: true` is tableFooter's own opt-in
+   variant (ui/app/chrome.js, see its comment) -- this table is the first
+   caller tall enough in real use to need the collapsed form; the index's
+   own two tables (a handful of pages at most today) may adopt either
+   variant later if their own page counts ever grow into it, per that
+   const's own comment, but neither is this task's to change.
+
+   Every button below is wired through `.onclick` assignment, never
+   `addEventListener` -- the Node-driven pinned test that drives this
+   function for real (test_the_pager_math_and_button_disabling_at_both_edges)
+   runs it against a FakeElement with no `addEventListener` of its own, the
+   same constraint this whole file's hand-rolled popovers already write
+   around. secFindPager appends this INSIDE the same table-card
+   secFindTableSection returns (see that call site's own comment in
+   secFindPaint) -- this function only builds the footer and wires its own
+   buttons, and is not responsible for where it ends up mounted. */
+function secFindPerPageField(fs){
+  const field = secEl("div", "secfind-fpick secfind-perpage");
+  const current = fs.perPage || FIND_PER_PAGE;
+  const {trigger} = secFindTriggerLabel(null, current + " per page");
+  const details = document.createElement("details");
+  details.appendChild(trigger);
+  const pop = secEl("div", "menu-pop");
+  FIND_PER_PAGE_OPTIONS.forEach(n => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.setAttribute("role", "menuitem");
+    item.appendChild(document.createTextNode(n + " per page"));
+    if(current === n) item.appendChild(secIcon("check2"));
+    item.onclick = (e) => {
+      e.stopPropagation();
+      details.open = false;
+      fs.perPage = n;
+      fs.page = 1;
+      secFindRefresh(fs);
+    };
+    pop.appendChild(item);
+  });
+  secFindPositionPop(details, trigger, pop);
+  field.appendChild(details);
+  return field;
+}
+
 function secFindPager(fs, data){
   const total = data.total || 0;
-  const perPage = data.per_page || FIND_PER_PAGE;
+  const perPage = data.per_page || fs.perPage || FIND_PER_PAGE;
   const pages = Math.max(1, Math.ceil(total / perPage));
   const page = data.page || 1;
   const from = total ? (page - 1) * perPage + 1 : 0;
   const to = Math.min(page * perPage, total);
 
-  const foot = tableFooter({shown: {from, to}, total, noun: "finding", page, pages});
+  const foot = tableFooter({shown: {from, to}, total, noun: "finding",
+    page, pages, numbered: true, collapse: true});
+  // tableFooter's own numbered mode drops the pager nav entirely at one
+  // page (see its own comment) -- `nav` is `undefined` then, and every
+  // button-wiring step below is skipped along with it.
   const nav = foot.childNodes[1];
   if(nav){
-    const prev = nav.childNodes[0], next = nav.childNodes[1];
-    prev.onclick = () => { fs.page = Math.max(1, page - 1); secFindRefresh(fs); };
-    next.onclick = () => { fs.page = Math.min(pages, page + 1); secFindRefresh(fs); };
+    const kids = nav.childNodes || [];
+    const prev = kids[0], next = kids[kids.length - 1];
+    if(prev) prev.onclick = () => { fs.page = Math.max(1, page - 1); secFindRefresh(fs); };
+    if(next && next !== prev){
+      next.onclick = () => { fs.page = Math.min(pages, page + 1); secFindRefresh(fs); };
+    }
+    kids.forEach(child => {
+      if(child.dataset && child.dataset.page){
+        child.onclick = () => { fs.page = Number(child.dataset.page); secFindRefresh(fs); };
+      }
+    });
   }
-  return foot;
+  const wrap = secEl("div", "table-foot");
+  wrap.appendChild(foot.childNodes[0]);
+  wrap.appendChild(secFindPerPageField(fs));
+  if(nav) wrap.appendChild(nav);
+  return wrap;
 }

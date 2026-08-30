@@ -144,6 +144,15 @@ function secRenderTabs(){
   if(brPane) brPane.hidden = secProjectTab !== "branches";
   if(fdPane) fdPane.hidden = secProjectTab !== "findings";
   if(rpPane) rpPane.hidden = secProjectTab !== "reports";
+  // The donut/categories/recent-activity rail (#sec-pj-side) is a summary
+  // of the OTHER four tabs' own posture -- AllFindings.png draws the
+  // findings browser full-width, with no such rail beside it, and a rail
+  // repeating "2 critical / 8 high / ..." beside a table that already lists
+  // every one of those rows individually would be the same numbers said
+  // twice a few inches apart. Hidden for Findings alone; the other four
+  // tabs keep it exactly as before.
+  const side = $("sec-pj-side");
+  if(side) side.hidden = secProjectTab === "findings";
 }
 
 /* --------------------------------------------------------------- header */

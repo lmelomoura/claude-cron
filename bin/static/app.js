@@ -162,7 +162,19 @@
     return card;
   }
   function tableFooter(opts) {
-    const { shown, total, noun, plural, page: page4, pages, prevId, nextId, infoId, numbered } = opts;
+    const {
+      shown,
+      total,
+      noun,
+      plural,
+      page: page4,
+      pages,
+      prevId,
+      nextId,
+      infoId,
+      numbered,
+      collapse
+    } = opts;
     const foot = el("div", "table-foot");
     const info = el(
       "span",
@@ -180,13 +192,34 @@
     prev.disabled = page4 <= 1;
     nav.appendChild(prev);
     if (numbered) {
-      for (let p = 1; p <= pages; p++) {
-        const btn = el("button", "pagebtn" + (p === page4 ? " active" : ""), String(p));
-        btn.type = "button";
-        btn.dataset.page = String(p);
-        if (p === page4) btn.disabled = true;
-        nav.appendChild(btn);
+      let numberList;
+      if (collapse && pages > 7) {
+        const keep = /* @__PURE__ */ new Set([1, pages, page4 - 1, page4, page4 + 1]);
+        const sorted = [...keep].filter((n) => n >= 1 && n <= pages).sort((a, b) => a - b);
+        numberList = [];
+        sorted.forEach((n, i) => {
+          if (i > 0) {
+            const gap = n - sorted[i - 1];
+            if (gap === 2) numberList.push(sorted[i - 1] + 1);
+            else if (gap > 2) numberList.push("\u2026");
+          }
+          numberList.push(n);
+        });
+      } else {
+        numberList = [];
+        for (let p = 1; p <= pages; p++) numberList.push(p);
       }
+      numberList.forEach((n) => {
+        if (n === "\u2026") {
+          nav.appendChild(el("span", "pagebtn-ellipsis", "\u2026"));
+          return;
+        }
+        const btn = el("button", "pagebtn" + (n === page4 ? " active" : ""), String(n));
+        btn.type = "button";
+        btn.dataset.page = String(n);
+        if (n === page4) btn.disabled = true;
+        nav.appendChild(btn);
+      });
     }
     const next = el("button", numbered ? "iconbtn" : "btn ghost");
     if (nextId) next.id = nextId;
@@ -2343,5 +2376,5 @@
     projectStepError
   };
 })();
-/* ui-bundle: f2b3a730fd0c60b7f82529bfdc699a0378f1581862d21576136480f73b00a0ba */
-/* ui-sources: 3ad13859ea01797355886e4272de248df52a743cac6ae2cf8a3d355d36740a54 */
+/* ui-bundle: e3549861f94f008dac747519522b66496257011649f055a8283ae0b3c51a154d */
+/* ui-sources: d2a02ecaeda740057faaca52754d2ec9ef57b12a352a60a343c54f2b69f01865 */

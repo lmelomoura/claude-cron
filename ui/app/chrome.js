@@ -258,9 +258,30 @@ export function tableCard(opts){
    `footer.onclick` (the same "built fresh every repaint, wired directly on
    the element just built" idiom secIndexRecentCard's own Prev/Next already
    use) reading `closest("[data-page]")`, not a central dashboard.html
-   listener -- neither of this variant's two callers is page-static markup. */
+   listener -- neither of this variant's two callers is page-static markup.
+
+   `collapse` (Phase 4, AllFindings.png) is `numbered`'s own opt-in variant
+   for a page count too tall to draw one button per page -- "‹ 1 2 3 4 5 …
+   19 ›", not nineteen buttons in a row. Ignored unless `numbered` is also
+   true, and a no-op of its own below 8 pages (there is nothing to collapse
+   yet, so every page number renders exactly as plain `numbered` already
+   would) -- existing callers, none of which pass it, get the identical
+   output they always did. The collapsed window is deliberately inlined
+   HERE rather than split into a second top-level helper: every test that
+   drives this function extracts `tableFooter` alone, by name, into an
+   isolated Node script (see tests/test_page_contract.py's own `_plainfn`),
+   and a call out to a helper THAT harness never also stood up would throw
+   ReferenceError the first time this branch actually ran -- the identical
+   trap `SEC_FIND_TABLE_COLS`'s own comment names in findings-screen.js, for
+   the same "one name in total isolation" reason. The window keeps the
+   current page and one neighbour each side, plus both boundaries (page 1
+   and the last page), and only ever collapses a GAP of two or more pages
+   into one "…" -- a gap of exactly one number is shown plainly instead,
+   since a "…" standing in for a single hidden page takes exactly as much
+   room as the number it would have hidden. */
 export function tableFooter(opts){
-  const {shown, total, noun, plural, page, pages, prevId, nextId, infoId, numbered} = opts;
+  const {shown, total, noun, plural, page, pages, prevId, nextId, infoId,
+         numbered, collapse} = opts;
   const foot = el("div", "table-foot");
   const info = el("span", "table-foot-info",
     "Showing " + shown.from + " to " + shown.to + " of " + total + " "
@@ -282,13 +303,39 @@ export function tableFooter(opts){
   prev.disabled = page <= 1;
   nav.appendChild(prev);
   if(numbered){
-    for(let p = 1; p <= pages; p++){
-      const btn = el("button", "pagebtn" + (p === page ? " active" : ""), String(p));
-      btn.type = "button";
-      btn.dataset.page = String(p);
-      if(p === page) btn.disabled = true;
-      nav.appendChild(btn);
+    // Plain 1..pages unless collapsing is both asked for and actually
+    // needed -- below 8 pages the collapsed window would keep every page
+    // anyway (1, pages, page-1, page, page+1 already cover it with no gap
+    // ever wide enough to earn a "…"), so this only ever bothers building
+    // the reduced set once there is a real gap to close.
+    let numberList;
+    if(collapse && pages > 7){
+      const keep = new Set([1, pages, page - 1, page, page + 1]);
+      const sorted = [...keep].filter(n => n >= 1 && n <= pages).sort((a, b) => a - b);
+      numberList = [];
+      sorted.forEach((n, i) => {
+        if(i > 0){
+          const gap = n - sorted[i - 1];
+          if(gap === 2) numberList.push(sorted[i - 1] + 1);   // one hidden page: just show it
+          else if(gap > 2) numberList.push("…");               // two or more: collapse
+        }
+        numberList.push(n);
+      });
+    }else{
+      numberList = [];
+      for(let p = 1; p <= pages; p++) numberList.push(p);
     }
+    numberList.forEach(n => {
+      if(n === "…"){
+        nav.appendChild(el("span", "pagebtn-ellipsis", "…"));
+        return;
+      }
+      const btn = el("button", "pagebtn" + (n === page ? " active" : ""), String(n));
+      btn.type = "button";
+      btn.dataset.page = String(n);
+      if(n === page) btn.disabled = true;
+      nav.appendChild(btn);
+    });
   }
   const next = el("button", numbered ? "iconbtn" : "btn ghost");
   if(nextId) next.id = nextId;

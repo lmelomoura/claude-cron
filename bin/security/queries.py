@@ -857,6 +857,14 @@ def finding_rows(conn, project, filters=None, sort="severity",
     one: how many of the branches these rows were unioned from had their
     latest finished analysis stop early. "0 critical" over such a branch
     means "none found before it stopped," not "none."
+
+    `branches`/`analyses` are the findings browser's own Branch / Analysis
+    run picker OPTIONS (AllFindings.png), not more findings -- every branch
+    with a finished analysis, and that branch's own latest finished analysis
+    (id/profile/started), both read off values this function already had in
+    hand for the main loop above. No second query: a picker whose options
+    come from a scope other than "what `rows` was unioned from" could offer
+    a branch or analysis id that then matches nothing.
     """
     if sort not in SORTABLE:
         raise ValueError(f"sort must be one of {SORTABLE}")
@@ -877,12 +885,23 @@ def finding_rows(conn, project, filters=None, sort="severity",
         " AND state IN ('done','capped')", (project,))]
 
     rows, first_seen, capped_branches = [], {}, 0
+    # The Analysis run / Branch picker options (AllFindings.png) -- collected
+    # from the SAME `_latest_finished` call this loop already makes per
+    # branch, not a second query: one analysis row per branch that has one,
+    # `id`/`profile`/`started` read off it while it is already in hand. This
+    # is deliberately every branch's LATEST finished analysis, not every
+    # analysis that ever ran -- the same scope `rows` itself is built from,
+    # so a value the Analysis run picker offers is always one this endpoint's
+    # own `analysis` filter can actually match a row against.
+    analyses_available = []
     for br in branches:
         a = _latest_finished(conn, project, br)
         if not a:
             continue
         if a["state"] == "capped":
             capped_branches += 1
+        analyses_available.append({"id": a["id"], "profile": a["profile"],
+                                    "branch": br, "started": a["started"]})
         _an, findings = checklist(conn, a["id"])
         for finding in findings:
             row = dict(finding)
@@ -985,6 +1004,13 @@ def finding_rows(conn, project, filters=None, sort="severity",
             "fixed_by_severity": fixed_by_severity,
             "attempted": attempted is not None, "analysed": bool(branches),
             "capped_branches": capped_branches,
+            # Picker options for the filter bar (AllFindings.png's Branch /
+            # Analysis run pickers) -- both free, off `analyses_available`
+            # above and the `branches` list already built for the main loop.
+            # Newest analysis first: the one a reader most likely wants is
+            # the one nearest the top of the list they open.
+            "branches": sorted(branches),
+            "analyses": sorted(analyses_available, key=lambda a: a["id"], reverse=True),
             "page": page, "per_page": per_page}
 
 

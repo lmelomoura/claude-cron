@@ -1111,6 +1111,7 @@ def cmd_findings_page(args):
             # analysed": the browser must draw that, not the ok-green
             # "nothing matches" it used to (see `finding_rows`'s docstring).
             "attempted": False, "analysed": False, "capped_branches": 0,
+            "branches": [], "analyses": [],
             "page": max(1, args.page),
             "per_page": max(1, min(args.per_page, queries.MAX_PER_PAGE)),
             "filters": []}))

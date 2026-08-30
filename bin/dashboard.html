@@ -1204,6 +1204,17 @@ const I={
   // of a third-party icon set.
   key:ic('<circle cx="7" cy="12" r="4"/><path d="M11 12h9"/><path d="M17 12v3"/><path d="M20 12v3"/>'),
   package:ic('<path d="M12 3 3 8v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/>'),
+  // AllFindings.png's own Export button (Phase 4): a tray with an arrow
+  // dropping into it, Lucide's own "download" -- `file` (above) already
+  // means a DOCUMENT, which is not what this button's own glyph draws, and
+  // every OTHER download affordance already in this area (reports-tab.js's
+  // per-format buttons) draws `file` because each one names one FILE
+  // FORMAT, not "export everything" -- a different action, a different icon.
+  download:ic('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>'),
+  // The stat strip's own "Unique issues" figure (Phase 4, AllFindings.png):
+  // a rotated-square outline distinct from every icon above it -- nothing
+  // here already drew a diamond.
+  diamond:ic('<path d="M2.7 10.3a2.41 2.41 0 0 0 0 3.4l7.6 7.6a2.41 2.41 0 0 0 3.4 0l7.6-7.6a2.41 2.41 0 0 0 0-3.4l-7.6-7.6a2.41 2.41 0 0 0-3.4 0Z"/>'),
 };
 const STATUS_ICON={success:I.check, warning:I.alert, error:I.xcircle, idle:I.clock,
                    running:I.timer, stopped:I.power};

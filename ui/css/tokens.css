@@ -16,9 +16,22 @@
      drawing's colours, not a designer's memory of them. Statuses keep
      ok/warn/err; severity is its own scale and now has its own tokens.
      --sev-info differs from both --sev-low and --line on purpose: the donut
-     must never paint a severity in the empty track's colour. */
+     must never paint a severity in the empty track's colour.
+
+     --sev-low (Phase 4, AllFindings.png): Security.png never sampled this
+     one distinctly -- the comment above only names three coordinates
+     (critical/high/medium) -- so it shipped as a guess, the same muted grey
+     as --sev-info, and every screen that draws Low ever since (this findings
+     browser's own strip, the index screen's donut and its legend) drew it
+     that way too. AllFindings.png's own five-dot legend (sampled at
+     494,653,822,983,1135 / y~163) shows Low as a clearly saturated blue
+     (~#4478e8), a fifth hue distinct from every other severity AND from
+     Info's own grey -- not a substitution this dialect chose, a value this
+     token never actually had. Corrected here, once, so every reader of
+     --sev-low (not just this task's own screen) draws the colour the
+     approved drawing actually specifies. */
   --sev-crit:#e3302b; --sev-high:#f79b38; --sev-med:#edb425;
-  --sev-low:#8b919a; --sev-info:#b9bfc9;
+  --sev-low:#4478e8; --sev-info:#b9bfc9;
 }
 /* Dark mode deliberately does NOT redefine the five --sev-* tokens above:
    :root[data-theme="dark"] below leaves them unset, so dark inherits the

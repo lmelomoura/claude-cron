@@ -1133,6 +1133,45 @@ def test_analysis_filter_narrows_to_the_named_analysis_id(conn):
     assert got["rows"][0]["analysis_id"] == a1
 
 
+def test_branches_and_analyses_list_the_findings_browsers_own_picker_options(conn):
+    """AllFindings.png's Branch / Analysis run pickers need every branch with
+    a finished analysis, and that branch's own latest one (id/profile/date),
+    to draw their options -- the findings browser had no such list before
+    this (only per-ROW branch/analysis_id, nothing to populate a picker's
+    OPTIONS from without a second fetch). Must fail on the code before this
+    field existed (KeyError: 'branches') and pass once `finding_rows` returns
+    both, read off the SAME `_latest_finished` call the main loop already
+    makes -- no second query. A branch with a SECOND, older analysis (`main`
+    below) must still surface only its LATEST one, matching the exact
+    analysis id `rows` were themselves unioned from -- the picker must never
+    offer an analysis id that then filters every row on this branch away."""
+    a_old = _analysis(conn, "main", findings=[("critical", "secret")])
+    a_new = _analysis(conn, "main", findings=[("critical", "secret")])
+    _analysis(conn, "develop", findings=[("high", "sast")])
+
+    got = queries.finding_rows(conn, "web")
+
+    assert got["branches"] == ["develop", "main"], \
+        "every branch with a finished analysis, sorted"
+    by_branch = {a["branch"]: a for a in got["analyses"]}
+    assert set(by_branch) == {"main", "develop"}
+    assert by_branch["main"]["id"] == a_new, \
+        "must be main's LATEST analysis, not its superseded first one"
+    assert by_branch["main"]["id"] != a_old
+    assert by_branch["main"]["profile"] == "quick"
+    assert by_branch["develop"]["id"] in {r["analysis_id"] for r in got["rows"]
+                                          if r["branch"] == "develop"}
+
+
+def test_a_project_never_analysed_offers_no_branch_or_analysis_options(conn):
+    """The honest-empty twin of the test above -- a project with no finished
+    analysis at all must offer empty picker option lists, not a KeyError or a
+    stale list left over from a different project."""
+    got = queries.finding_rows(conn, "web")
+    assert got["branches"] == []
+    assert got["analyses"] == []
+
+
 def test_fingerprint_filter_matches_a_prefix(conn):
     """The Activity screen's own deep link (Task 12) carries only the first
     12 characters of a fingerprint -- `related` on a `decision_made` event is

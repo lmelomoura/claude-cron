@@ -19,6 +19,59 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The findings browser now matches AllFindings.png element for element,
+  not just its table.** Three earlier passes treated the mockup's header,
+  stat strip, filter bar and footer as furniture around the table that
+  already worked; none of the four had actually been built.
+
+  The screen now draws its own breadcrumb (Security › ‹project› › Findings,
+  self-contained inside the Findings pane so it never reaches into
+  project-screen.js's shared header) and title row, with Export (opens the
+  project's own Reports tab — every download this screen offers already
+  lives there, nothing new to wire) and Saved filters (the existing
+  details-picker, moved into the header and restyled as a button+chevron,
+  its Save/Delete controls now inside the one popover that opens them
+  rather than three always-visible fields). The stat strip is a real card
+  now — Total findings, the five severities as coloured-dot stat blocks
+  with a share-of-total percentage each (a dash, not `0.0%`, when the
+  denominator is zero), a divider, then Unique issues — replacing the bare
+  `N total`/`N unique issues` pills. The filter bar's chip rows and plain
+  text fields become six "Label: value ▾" pickers (Severity/Status/Category
+  still multi-select; Branch and Analysis run gained real OPTIONS —
+  `queries.finding_rows` now also returns `branches`/`analyses`, read off
+  values the same per-branch loop already had in hand, no second query;
+  File path stays free-text substring search inside its own popover) plus
+  a house on/off switch for "Show resolved findings" (no such control
+  existed in this app before) and a `Filters (N)` count of active narrows,
+  N=1 by default because excluding resolved rows is itself one. The table
+  gained Location (split out of Title) and Analysis run (`#id (Profile)`,
+  linking to that analysis exactly where the Runs tab's own "#N" button
+  already does) columns, a coloured left edge per row, and swapped its two
+  always-visible decision buttons for an eye (view) + kebab (Accept
+  risk/False positive) actions pair, reusing this app's own established
+  eye-for-view and kebab-for-more vocabulary. The footer's pager is
+  numbered with ellipsis collapse now (`tableFooter`'s own new `collapse`
+  option, ui/app/chrome.js — existing callers untouched, off by default)
+  plus a 10/25/50 per-page picker. `--sev-low` (ui/css/tokens.css) was a
+  guess, not a sampled colour (Security.png's own comment only names three
+  of the five severity dots) — corrected to the blue AllFindings.png's own
+  legend actually shows, once, at the token, so every reader of it draws
+  the same corrected hue. The project screen's donut/categories/
+  recent-activity rail hides for the Findings tab alone (AllFindings.png
+  draws the table full-width; that rail is a summary of the other four
+  tabs' own posture, repeating the same counts a reader can already see row
+  by row in the table beside it).
+
+  Every pinned test's SUBSTANCE survives: markup-never-text, the
+  fixed-finding exemption from decision controls (now scoped to the
+  kebab's own menu, since every row also carries an unconditional eye
+  button), the strip's total-vs-unique labelling and floor counting, sort
+  toggling, WeakMap-keyed mount isolation, the severity floor. Not
+  self-contained scope: the shared tab strip and profile-header row above
+  the Findings pane still render, unlike the mockup's chrome-free frame —
+  reshaping those is a bigger change than this task's own file list asked
+  for.
+
 - **Phase 4's final review closes its last findings: a warnline that
   overflowed its card, a boot-killing dead-binding trap with no guard, and
   kebab menus that would not close.** Two CRITICAL, four IMPORTANT, six
