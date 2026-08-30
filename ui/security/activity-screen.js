@@ -27,9 +27,14 @@
    its place instead: with several projects sharing one ledger, WHICH one
    is busiest is a real question with more than one possible answer.
 
-   Time and detail cells are `textContent`, always: an event's `detail`
-   carries human-written text (a decision's own reason), the same rule
-   vocabulary.js's opening comment states for this whole area.
+   Detail, project and Time's own absolute sub-line are `textContent`/text
+   nodes, always: an event's `detail` carries human-written text (a
+   decision's own reason), the same rule vocabulary.js's opening comment
+   states for this whole area. TIME itself is structured now (F4 Activity
+   polish: relative time above, the exact moment beneath, the house two-line
+   pattern this screen's siblings already use) rather than one bare
+   textContent string, but every piece of it is still a text node built by
+   secEl/createTextNode -- never a template string handed to the parser.
 
    The table's "Related" column is the one interesting design decision here:
    an analysis id (`analysis_started`/`analysis_finished`/`report_exported`)
@@ -44,12 +49,12 @@
    view is a fixed-id pane wired into the project screen with no portable
    host of its own, while the findings browser was already rebuilt
    (Task 11) to be mountable anywhere, twice over. */
-import { $, fmtWhen, pageHeader } from "./page.js";
-import { secEl, secIcon, secFetch } from "./dom.js";
+import { $, fmtAgo, pageHeader, makePicker } from "./page.js";
+import { secEl, secIcon, secIconHTML, secFetch } from "./dom.js";
 import { EVENT_KINDS, EVENT_KIND_LABEL } from "./vocabulary.js";
 import { secBack, secShowAnalysis } from "./analysis.js";
 import { secOpenProject, secSwitchProjectTab } from "./project-screen.js";
-import { renderFindings } from "./findings-screen.js";
+import { renderFindings, secFindTriggerLabel, secFindPositionPop } from "./findings-screen.js";
 
 // The mockup's own tab order, minus Users -- see this file's header comment.
 // Each tab is the SAME table, scoped to a subset of EVENT_KINDS; "All
@@ -85,6 +90,9 @@ let secActGen = 0;
 // does (the fingerprint dialog's own findings browser) already gets that
 // from renderFindings()'s own per-host state -- see this file's header.
 let secActState = null;
+// The house PROJECT picker (makePicker), wired once by secActInitProjectPicker
+// -- see that function's own comment for why once, not per screen-open.
+let secActProjPicker = null;
 
 function _freshState(project){
   return {project: project || "", tab: "", days: 30, page: 1, data: null, error: ""};
@@ -126,18 +134,25 @@ export function secActSwitchTab(key){
   secActLoad();
 }
 
-export function secActProjectChanged(value){
+// Private now (F4 Activity polish): the free-text <input>'s own `change`
+// listener (ui/security/index.js) used to call this directly. The house
+// picker's `onPick` is the only caller left -- see secActInitProjectPicker.
+function secActProjectChanged(value){
   if(!secActState) return;
   secActState.project = (value || "").trim();
   secActState.page = 1;
+  if(secActProjPicker) secActProjPicker.paint();
   secActLoad();
 }
 
 function _scopeToProject(project){
   secActState.project = project;
   secActState.page = 1;
-  const input = $("sec-act-project");
-  if(input) input.value = project;
+  // Repaints the picker's own trigger label ("Project: web") -- the old
+  // free-text project input this function used to sync by setting its own
+  // `.value` is gone; a custom widget has no browser-native "the underlying
+  // value changed, repaint yourself" behaviour the way that input had.
+  if(secActProjPicker) secActProjPicker.paint();
   secActLoad();
 }
 
@@ -209,8 +224,11 @@ function secActRenderShell(){
         + "fingerprint it decided about.",
     }));
   }
-  const input = $("sec-act-project");
-  if(input) input.value = secActState.project;
+  // The house PROJECT picker's own trigger ("Project: web") -- repainted
+  // here so opening the screen already scoped (the index table's own kebab,
+  // "View activity" for one project) shows the right value from the first
+  // paint, not just "Project: All" until the reader touches the picker.
+  if(secActProjPicker) secActProjPicker.paint();
   secActRenderTabs();
   secActRenderPeriod();
 }
@@ -222,20 +240,62 @@ function secActRenderTabs(){
   });
 }
 
-function secActPeriodChips(){
-  const wrap = secEl("div", "secchips");
-  ACT_PERIODS.forEach(([days, label]) => {
-    const chip = secEl("button", "secchip" + (secActState.days === days ? " on" : ""));
-    chip.type = "button";
-    chip.appendChild(secEl("span", null, label));
-    chip.onclick = () => {
+// "Last 30 days"/"All time" -- the exact wording secFindPeriodLabel
+// (index-screen.js) already uses for the index's own Findings-overview
+// period picker, duplicated here rather than imported: this file EXPORTS
+// ACT_PERIODS for index-screen.js already (see that const's own comment
+// above) -- importing anything back would be this file's first import FROM
+// index-screen.js, a cycle neither module has needed yet, for one string
+// formatter small enough that a second copy costs nothing to keep in step.
+function secActPeriodLabel(days){
+  return days > 0 ? "Last " + days + " days" : "All time";
+}
+
+/* The house control (F4 Activity polish): the SAME <details>/<summary>/
+   .menu-pop popover the index screen's own Findings-overview card already
+   draws for its period picker (secFindingsPeriodPicker, index-screen.js) --
+   one period vocabulary (ACT_PERIODS), one widget, replacing the row of
+   .secchip buttons this used to be. Built with secFindTriggerLabel/
+   secFindPositionPop (findings-screen.js) rather than a third hand-rolled
+   copy of either -- see their own comments for why those two, not
+   secFindingsPeriodPicker's older pattern: THAT widget's own card is torn
+   down and rebuilt whole every 5-second poll tick, which papers over a
+   `closeMenus()` race (a stray click outside hides the popover without
+   resetting the <details>'s own `open`); this screen never polls while it
+   is open (secIsActivityOpen() is what stops it, see this file's header),
+   so nothing would ever rebuild a stuck instance here.
+
+   Rebuilt whole on every pick (the item's own onclick, below) rather than
+   updated in place: secActPaint() never touches this host (#sec-act-period
+   sits in the SHELL, painted once per open by secActRenderShell(), not by
+   every fetch the way the index screen's own donut card is), so nothing
+   else would ever repaint this trigger's own checkmark/label after a pick
+   if this function did not rebuild itself -- the identical "rebuild, don't
+   patch" the old chip row's own onclick already relied on. */
+function secActPeriodPicker(){
+  const {trigger} = secFindTriggerLabel(null, secActPeriodLabel(secActState.days));
+  trigger.title = "Change the period this screen's table and sidebar cover.";
+  const wrap = document.createElement("details");
+  wrap.className = "secidx-periodpick";
+  wrap.appendChild(trigger);
+
+  const pop = secEl("div", "menu-pop");
+  ACT_PERIODS.forEach(([days]) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.setAttribute("role", "menuitem");
+    item.appendChild(document.createTextNode(secActPeriodLabel(days)));
+    if(days === secActState.days) item.appendChild(secIcon("check2"));
+    item.onclick = (e) => {
+      e.stopPropagation();
       secActState.days = days;
       secActState.page = 1;
       secActRenderPeriod();
       secActLoad();
     };
-    wrap.appendChild(chip);
+    pop.appendChild(item);
   });
+  secFindPositionPop(wrap, trigger, pop);
   return wrap;
 }
 
@@ -243,7 +303,50 @@ function secActRenderPeriod(){
   const host = $("sec-act-period");
   if(!host) return;
   host.textContent = "";
-  host.appendChild(secActPeriodChips());
+  host.appendChild(secActPeriodPicker());
+}
+
+/* Wired ONCE, from ui/security/index.js's own init() -- the identical split
+   secInitLaunchCombos (analysis.js) already uses for sec-repo/sec-branch/
+   sec-profile: `#sec-act-projpick` is STATIC markup (bin/dashboard.html)
+   that lives for the page's whole life, so there is exactly one call to
+   make, not one per screen-open the way the index screen's own three filter
+   pickers (built fresh into throwaway markup, secProjectsFilterBar) need --
+   a second makePicker() call on the same id would either find stale markup
+   or grow that widget's own module-level PICKERS registry forever.
+
+   The house picker in place of the free-text <input> this used to be --
+   "Project: All" reads the same "Label: value" trigger the index screen's
+   own Status/Profile/Branch pickers already use, and a reader picks a real
+   name instead of typing one that may or may not exist. */
+export function secActInitProjectPicker(){
+  secActProjPicker = makePicker("sec-act-projpick", {
+    icon: secIconHTML("folder"), label: "Project",
+    valueLabel: () => secActState.project || "All",
+    rows: () => {
+      const data = secActState.data;
+      const list = (data && data.projects) || [];
+      const rows = [{v: "", label: "All", n: null,
+        sel: !secActState.project, icon: secIconHTML("layers")}];
+      const seen = new Set();
+      list.forEach(p => {
+        seen.add(p.project);
+        rows.push({v: p.project, label: p.project, n: p.count,
+          sel: secActState.project === p.project, icon: secIconHTML("folder")});
+      });
+      // The active scope can legitimately be missing from `list`: the
+      // payload's own `projects` is grouped from events in the CURRENT
+      // window AND scope (cmd_activity_data's own docstring), so a project
+      // already scoped with zero events this period would otherwise vanish
+      // from its own picker the moment it is selected.
+      if(secActState.project && !seen.has(secActState.project)){
+        rows.push({v: secActState.project, label: secActState.project, n: 0,
+          sel: true, icon: secIconHTML("folder")});
+      }
+      return rows;
+    },
+    onPick: (v) => secActProjectChanged(v),
+  });
 }
 
 /* ----------------------------------------------------------------- paint */
@@ -334,10 +437,39 @@ function secActTable(data){
   return wrap;
 }
 
+// "Aug 27, 7:23 AM" -- TIME's own absolute sub-line, the same reading
+// secIndexRunWhen (index-screen.js) gives its own LAST RUN cell, duplicated
+// here rather than imported: this file exports ACT_PERIODS/secActSwitchTab/
+// secOpenActivity FOR index-screen.js already -- importing anything back
+// would be this file's first import FROM it, a cycle neither module has
+// needed yet, for a formatter small enough a second copy costs nothing to
+// keep in step. The shared fmtWhen (page.js) spells out the full numeric
+// date AND the seconds ("8/27/2026, 7:23:19 AM"), the right call for an
+// exact-timestamp tooltip elsewhere but more than this column's own house
+// two-line pattern wants beneath the relative reading above it.
+function secActWhen(ts){
+  if(!ts) return "";
+  return new Date(ts * 1000).toLocaleString(undefined,
+    {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"});
+}
+
+// TIME: the house two-line pattern -- long-form relative on top ("2 hours
+// ago", the same fmtAgo(_, true) reading this screen's own siblings use, not
+// the terse "2h"), the exact moment beneath in the same muted sub-line class
+// (.secidx-sub) the index screen's own Recent-analyses DATE column and LAST
+// RUN cell already use. Replaces the bare fmtWhen() locale string
+// ("8/27/2026, 7:23:23 AM") this cell used to print raw.
+function secActTimeCell(at){
+  const td = document.createElement("td");
+  td.appendChild(document.createTextNode(fmtAgo(at, true)));
+  td.appendChild(secEl("div", "secidx-sub", secActWhen(at)));
+  return td;
+}
+
 function secActRow(e){
   const tr = document.createElement("tr");
   const cell = (text) => { const td = document.createElement("td"); td.textContent = text; return td; };
-  tr.appendChild(cell(fmtWhen(e.at)));
+  tr.appendChild(secActTimeCell(e.at));
   tr.appendChild(cell(EVENT_KIND_LABEL[e.kind] || e.kind));
   tr.appendChild(cell(e.detail || ""));
   tr.appendChild(cell(e.project || ""));
@@ -483,7 +615,14 @@ function secActSidebar(data){
 }
 
 function secActSummaryCard(summary){
-  const box = secEl("div", "card");
+  // "card secact-sidecard", not bare "card": .card's own accent-tinted
+  // border and 3px left rail (ui/css/pages.css) are a Jobs-board state cue
+  // -- "the thing you act on" -- and painted this sidebar's two cards with a
+  // purple outline no other card in Security wears. secact-sidecard resets
+  // just the two border declarations back to the plain --line every other
+  // card here uses, keeping .card's own padding/radius/shadow (already the
+  // house look) untouched -- see that class's own comment, ui/css/pages.css.
+  const box = secEl("div", "card secact-sidecard");
   const head = secEl("div", "secpj-cardhead");
   // M6b (Phase 4 final review): the mockup's own wording (FullActivity.png)
   // -- ui/css/pages.css's own `.secpj-cardhead h3` comment already cites
@@ -506,7 +645,8 @@ function secActSummaryCard(summary){
 }
 
 function secActProjectsCard(projects){
-  const box = secEl("div", "card");
+  // See secActSummaryCard's own comment just above: the identical border fix.
+  const box = secEl("div", "card secact-sidecard");
   // Wrapped in the SAME .secpj-cardhead the summary card above already uses
   // (Phase 4 Task 6), rather than a bare h3, so this title picks up the
   // identical card-title style (bold, sentence-case) the index screen's own

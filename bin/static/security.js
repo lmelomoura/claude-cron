@@ -173,12 +173,28 @@
     if (known) return known;
     const safe = rule == null || rule === "" ? "Unknown rule" : String(rule);
     if (SEC_ADVISORY_RULE.test(safe)) return { label: safe, icon: "shield" };
-    const label = secHumaniseRule(safe);
-    if (category === "sast") return { label, icon: "code" };
-    if (category === "secret") return { label, icon: "lock" };
-    if (category === "dependency") return { label, icon: "package" };
-    if (category === "hygiene") return { label, icon: ICON_HYGIENE };
-    return { label, icon: "shield" };
+    return { label: secHumaniseRule(safe), icon: SEC_CATEGORY_ICON[category] || "shield" };
+  }
+  var SEC_CATEGORY_ICON = {
+    secret: "lock",
+    dependency: "package",
+    hygiene: ICON_HYGIENE,
+    sast: "code"
+  };
+  var SEC_CATEGORY_LABEL = {
+    secret: "Secrets",
+    dependency: "Dependency",
+    hygiene: "Hygiene",
+    sast: "SAST"
+  };
+  function secCategoryMeta(category) {
+    const label = SEC_CATEGORY_LABEL[category];
+    if (label) return { label, icon: SEC_CATEGORY_ICON[category] };
+    const safe = String(category || "");
+    return {
+      label: safe ? safe.charAt(0).toUpperCase() + safe.slice(1) : "Unknown",
+      icon: "shield"
+    };
   }
 
   // ui/security/state.js
@@ -1610,7 +1626,7 @@
     }
     tr.appendChild(tdLoc);
     const tdCat = document.createElement("td");
-    const meta = secRuleMeta(f.category, f.rule);
+    const meta = secCategoryMeta(f.category);
     const catWrap = secEl("div", "secfind-cat");
     catWrap.appendChild(secIcon(meta.icon));
     catWrap.appendChild(secEl("span", null, meta.label));
@@ -1884,6 +1900,7 @@
   var secActOpen = false;
   var secActGen = 0;
   var secActState = null;
+  var secActProjPicker = null;
   function _freshState(project) {
     return { project: project || "", tab: "", days: 30, page: 1, data: null, error: "" };
   }
@@ -1919,13 +1936,13 @@
     if (!secActState) return;
     secActState.project = (value || "").trim();
     secActState.page = 1;
+    if (secActProjPicker) secActProjPicker.paint();
     secActLoad();
   }
   function _scopeToProject(project) {
     secActState.project = project;
     secActState.page = 1;
-    const input = $("sec-act-project");
-    if (input) input.value = project;
+    if (secActProjPicker) secActProjPicker.paint();
     secActLoad();
   }
   function secActSince() {
@@ -1979,8 +1996,7 @@
         subtitle: "What happened and when. An analysis links to that analysis; a decision links into the findings browser filtered to the one fingerprint it decided about."
       }));
     }
-    const input = $("sec-act-project");
-    if (input) input.value = secActState.project;
+    if (secActProjPicker) secActProjPicker.paint();
     secActRenderTabs();
     secActRenderPeriod();
   }
@@ -1990,27 +2006,79 @@
       if (btn) btn.classList.toggle("active", secActState.tab === t.key);
     });
   }
-  function secActPeriodChips() {
-    const wrap = secEl("div", "secchips");
-    ACT_PERIODS.forEach(([days, label]) => {
-      const chip = secEl("button", "secchip" + (secActState.days === days ? " on" : ""));
-      chip.type = "button";
-      chip.appendChild(secEl("span", null, label));
-      chip.onclick = () => {
+  function secActPeriodLabel(days) {
+    return days > 0 ? "Last " + days + " days" : "All time";
+  }
+  function secActPeriodPicker() {
+    const { trigger } = secFindTriggerLabel(null, secActPeriodLabel(secActState.days));
+    trigger.title = "Change the period this screen's table and sidebar cover.";
+    const wrap = document.createElement("details");
+    wrap.className = "secidx-periodpick";
+    wrap.appendChild(trigger);
+    const pop = secEl("div", "menu-pop");
+    ACT_PERIODS.forEach(([days]) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.setAttribute("role", "menuitem");
+      item.appendChild(document.createTextNode(secActPeriodLabel(days)));
+      if (days === secActState.days) item.appendChild(secIcon("check2"));
+      item.onclick = (e) => {
+        e.stopPropagation();
         secActState.days = days;
         secActState.page = 1;
         secActRenderPeriod();
         secActLoad();
       };
-      wrap.appendChild(chip);
+      pop.appendChild(item);
     });
+    secFindPositionPop(wrap, trigger, pop);
     return wrap;
   }
   function secActRenderPeriod() {
     const host = $("sec-act-period");
     if (!host) return;
     host.textContent = "";
-    host.appendChild(secActPeriodChips());
+    host.appendChild(secActPeriodPicker());
+  }
+  function secActInitProjectPicker() {
+    secActProjPicker = makePicker("sec-act-projpick", {
+      icon: secIconHTML("folder"),
+      label: "Project",
+      valueLabel: () => secActState.project || "All",
+      rows: () => {
+        const data = secActState.data;
+        const list = data && data.projects || [];
+        const rows = [{
+          v: "",
+          label: "All",
+          n: null,
+          sel: !secActState.project,
+          icon: secIconHTML("layers")
+        }];
+        const seen = /* @__PURE__ */ new Set();
+        list.forEach((p) => {
+          seen.add(p.project);
+          rows.push({
+            v: p.project,
+            label: p.project,
+            n: p.count,
+            sel: secActState.project === p.project,
+            icon: secIconHTML("folder")
+          });
+        });
+        if (secActState.project && !seen.has(secActState.project)) {
+          rows.push({
+            v: secActState.project,
+            label: secActState.project,
+            n: 0,
+            sel: true,
+            icon: secIconHTML("folder")
+          });
+        }
+        return rows;
+      },
+      onPick: (v) => secActProjectChanged(v)
+    });
   }
   function secActPaint() {
     if (!secActOpen) return;
@@ -2068,6 +2136,19 @@
     wrap.appendChild(secActPager(data));
     return wrap;
   }
+  function secActWhen(ts) {
+    if (!ts) return "";
+    return new Date(ts * 1e3).toLocaleString(
+      void 0,
+      { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }
+    );
+  }
+  function secActTimeCell(at) {
+    const td = document.createElement("td");
+    td.appendChild(document.createTextNode(fmtAgo(at, true)));
+    td.appendChild(secEl("div", "secidx-sub", secActWhen(at)));
+    return td;
+  }
   function secActRow(e) {
     const tr = document.createElement("tr");
     const cell = (text) => {
@@ -2075,7 +2156,7 @@
       td.textContent = text;
       return td;
     };
-    tr.appendChild(cell(fmtWhen(e.at)));
+    tr.appendChild(secActTimeCell(e.at));
     tr.appendChild(cell(EVENT_KIND_LABEL[e.kind] || e.kind));
     tr.appendChild(cell(e.detail || ""));
     tr.appendChild(cell(e.project || ""));
@@ -2171,7 +2252,7 @@
     return wrap;
   }
   function secActSummaryCard(summary) {
-    const box = secEl("div", "card");
+    const box = secEl("div", "card secact-sidecard");
     const head = secEl("div", "secpj-cardhead");
     head.appendChild(secEl("h3", null, "Activity summary"));
     box.appendChild(head);
@@ -2192,7 +2273,7 @@
     return box;
   }
   function secActProjectsCard(projects) {
-    const box = secEl("div", "card");
+    const box = secEl("div", "card secact-sidecard");
     const head = secEl("div", "secpj-cardhead");
     head.appendChild(secEl("h3", null, "Most active projects"));
     box.appendChild(head);
@@ -3550,7 +3631,7 @@
     $("secactt-analyses").addEventListener("click", () => secActSwitchTab("analyses"));
     $("secactt-findings").addEventListener("click", () => secActSwitchTab("findings"));
     $("secactt-settings").addEventListener("click", () => secActSwitchTab("settings"));
-    $("sec-act-project").addEventListener("change", () => secActProjectChanged($("sec-act-project").value));
+    secActInitProjectPicker();
     wireActivityFindingDialog();
     $("sec-dl-note").textContent = "Downloads always contain every recorded finding, whatever the severity floor shows.";
     $("sec-back").addEventListener("click", secBack);
@@ -3573,5 +3654,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: d8fb0fe5ea29778fca007df7d86f819f9d39ae8a3820b2d7c6f9fbf4982ec0ca */
-/* ui-sources: d2a02ecaeda740057faaca52754d2ec9ef57b12a352a60a343c54f2b69f01865 */
+/* ui-bundle: c7db38d744110a63bc8598cf568e7cc6afd0040096e947b4fb7725c0f59f649f */
+/* ui-sources: a5fadb1bd9b8cb7ef66826d464210f09d518881b379da9268f5430a1cfc32644 */

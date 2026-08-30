@@ -545,15 +545,25 @@ document.documentElement.dataset.theme =
       </nav>
 
       <div class="secbar">
-        <!-- Built by activity-screen.js: 7/30/90-day and All-time chips,
-             the same .secchip furniture the Runs tab's own state filter
-             (secRunsFilters) and the findings browser's severity/state/
-             category rows already use. -->
-        <div class="secchips" id="sec-act-period"></div>
-        <label class="secfield">
-          <span>Project</span>
-          <input id="sec-act-project" placeholder="all projects" autocomplete="off" spellcheck="false">
-        </label>
+        <!-- Built by activity-screen.js's own secActRenderPeriod(): the SAME
+             <details>/<summary>/.menu-pop period picker the Security index's
+             own Findings-overview card uses ("Last 30 days ⌄") -- one period
+             vocabulary, one widget, replacing the row of 7/30/90-day and
+             All-time .secchip buttons this used to hold. -->
+        <div id="sec-act-period"></div>
+        <!-- The house picker (makePicker), wired once by
+             secActInitProjectPicker (ui/security/index.js's own init()) --
+             STATIC markup, like sec-repo-combo/sec-branch-combo above,
+             because it lives for the page's whole life rather than being
+             rebuilt per screen-open. Replaces the free-text
+             #sec-act-project <input>. -->
+        <div class="picker" id="sec-act-projpick">
+          <button class="picker-trigger" id="sec-act-projpick-trigger" aria-haspopup="listbox" aria-expanded="false"></button>
+          <div class="picker-pop" id="sec-act-projpick-pop" hidden>
+            <div class="picker-list" id="sec-act-projpick-list" role="listbox"></div>
+          </div>
+        </div>
+        <div class="spacer"></div>
         <button class="btn ghost" id="sec-act-reload"></button>
       </div>
 

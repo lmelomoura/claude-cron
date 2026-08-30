@@ -4210,12 +4210,12 @@ def test_findings_row_renders_analysed_strings_as_text_never_markup(srv, tmp_pat
     block = _security_js(srv)
     consts = (_const(block, "SEC_STATE_LABEL") + _const(block, "SEC_STATE_HELP")
              + _const(block, "SEV_ORDER") + _const(block, "SEC_STATES")
-             + _const(block, "ICON_HYGIENE") + _const(block, "SEC_RULE_META")
-             + _const(block, "SEC_ADVISORY_RULE"))
+             + _const(block, "ICON_HYGIENE")
+             + _const(block, "SEC_CATEGORY_LABEL") + _const(block, "SEC_CATEGORY_ICON"))
     arrows = (re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
              + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secIcon", "secHumaniseRule", "secRuleMeta", "secFindRow",
+                     ("secEl", "secIcon", "secCategoryMeta", "secFindRow",
                       "secFindDecisionControls", "secFindActionsCell"))
     script = tmp_path / "find-row.js"
     script.write_text(_INDEX_DOM_HARNESS + """
@@ -4257,12 +4257,12 @@ def test_a_fixed_finding_gets_no_decision_controls(srv, tmp_path):
     block = _security_js(srv)
     consts = (_const(block, "SEC_STATE_LABEL") + _const(block, "SEC_STATE_HELP")
              + _const(block, "SEV_ORDER") + _const(block, "SEC_STATES")
-             + _const(block, "ICON_HYGIENE") + _const(block, "SEC_RULE_META")
-             + _const(block, "SEC_ADVISORY_RULE"))
+             + _const(block, "ICON_HYGIENE")
+             + _const(block, "SEC_CATEGORY_LABEL") + _const(block, "SEC_CATEGORY_ICON"))
     arrows = (re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
              + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secIcon", "secHumaniseRule", "secRuleMeta", "secFindRow",
+                     ("secEl", "secIcon", "secCategoryMeta", "secFindRow",
                       "secFindDecisionControls", "secFindActionsCell"))
     script = tmp_path / "find-row-fixed.js"
     script.write_text(_INDEX_DOM_HARNESS + """
@@ -4345,12 +4345,12 @@ def test_the_table_excludes_rows_below_the_floor_on_this_page(srv, tmp_path):
     consts = (_const(block, "SEC_STATE_LABEL") + _const(block, "SEC_STATE_HELP")
              + _const(block, "SEV_ORDER") + _const(block, "SEC_STATES")
              + _const(block, "FIND_SORT_COLUMNS") + _const(block, "ICON_HYGIENE")
-             + _const(block, "SEC_RULE_META") + _const(block, "SEC_ADVISORY_RULE"))
+             + _const(block, "SEC_CATEGORY_LABEL") + _const(block, "SEC_CATEGORY_ICON"))
     arrows = (re.search(r"const secSevRank = .*?\};", block, re.S).group(0) + "\n"
              + re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
              + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secIcon", "secHumaniseRule", "secRuleMeta", "secFindRow",
+                     ("secEl", "secIcon", "secCategoryMeta", "secFindRow",
                       "secFindDecisionControls", "secFindActionsCell", "secFindTableSection", "secVisible"))
     script = tmp_path / "find-table-floor.js"
     script.write_text(_INDEX_DOM_HARNESS + """
@@ -4397,13 +4397,13 @@ def test_a_fixed_finding_stays_visible_and_uncounted_below_the_floor(srv, tmp_pa
     consts = (_const(block, "SEC_STATE_LABEL") + _const(block, "SEC_STATE_HELP")
              + _const(block, "SEV_ORDER") + _const(block, "SEC_STATES")
              + _const(block, "FIND_SORT_COLUMNS") + _const(block, "ICON_HYGIENE")
-             + _const(block, "SEC_RULE_META") + _const(block, "SEC_ADVISORY_RULE"))
+             + _const(block, "SEC_CATEGORY_LABEL") + _const(block, "SEC_CATEGORY_ICON"))
     arrows = (re.search(r"const secSevRank = .*?\};", block, re.S).group(0) + "\n"
              + re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
              + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
     consts = consts + _const(block, "ROW_PILL_TITLE")
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secIcon", "_secCap", "secHumaniseRule", "secRuleMeta",
+                     ("secEl", "secIcon", "_secCap", "secCategoryMeta",
                       "secFindHiddenByFloor", "secFindStrip", "secFindRow", "secFindDecisionControls", "secFindActionsCell",
                       "secFindTableSection", "secVisible"))
     script = tmp_path / "find-fixed-floor.js"
@@ -4456,12 +4456,12 @@ def test_clicking_a_sort_header_toggles_direction_then_switching_column_resets_i
     consts = (_const(block, "SEC_STATE_LABEL") + _const(block, "SEC_STATE_HELP")
              + _const(block, "SEV_ORDER") + _const(block, "SEC_STATES")
              + _const(block, "FIND_SORT_COLUMNS") + _const(block, "ICON_HYGIENE")
-             + _const(block, "SEC_RULE_META") + _const(block, "SEC_ADVISORY_RULE"))
+             + _const(block, "SEC_CATEGORY_LABEL") + _const(block, "SEC_CATEGORY_ICON"))
     arrows = (re.search(r"const secSevRank = .*?\};", block, re.S).group(0) + "\n"
              + re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
              + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secIcon", "secHumaniseRule", "secRuleMeta", "secFindRow",
+                     ("secEl", "secIcon", "secCategoryMeta", "secFindRow",
                       "secFindDecisionControls", "secFindActionsCell", "secFindTableSection", "secVisible"))
     script = tmp_path / "find-sort-click.js"
     script.write_text(_INDEX_DOM_HARNESS + """
@@ -4899,7 +4899,8 @@ def test_the_related_column_links_differently_by_event_kind(srv, tmp_path):
     (settings_changed) must show a plain dash rather than an empty cell that
     could be mistaken for a rendering bug."""
     block = _security_js(srv)
-    deps = _activity_deps(block, "secEl", "secActRow", "secActRelatedCell")
+    deps = _activity_deps(block, "secEl", "secActTimeCell", "secActWhen", "secActRow",
+                          "secActRelatedCell")
     consts = _const(block, "EVENT_KIND_LABEL") + _const(block, "ACT_ANALYSIS_KINDS")
     script = tmp_path / "act-related.js"
     script.write_text(_PROJECT_DOM_HARNESS + """
@@ -7119,14 +7120,17 @@ def _icon_names(js):
 
 
 def _rule_meta_deps(block):
-    """Everything secRuleMeta needs to run standalone: the two consts it
-    closes over (ICON_HYGIENE, SEC_RULE_META), the pattern it tests an
-    advisory id against (SEC_ADVISORY_RULE), and the one private helper it
-    calls on its "sast" branch (secHumaniseRule). Pulled together once so
-    every test below gets secRuleMeta's whole dependency set, not a
-    per-test guess at which of its branches that test happens to reach."""
+    """Everything secRuleMeta needs to run standalone: the consts it closes
+    over (ICON_HYGIENE, SEC_RULE_META, SEC_CATEGORY_ICON -- its own per-
+    category fallback icon, factored out for secCategoryMeta to share rather
+    than a second hand-typed list, see that const's own comment), the
+    pattern it tests an advisory id against (SEC_ADVISORY_RULE), and the one
+    private helper it calls on its "sast" branch (secHumaniseRule). Pulled
+    together once so every test below gets secRuleMeta's whole dependency
+    set, not a per-test guess at which of its branches that test happens to
+    reach."""
     return (_const(block, "ICON_HYGIENE") + _const(block, "SEC_RULE_META")
-            + _const(block, "SEC_ADVISORY_RULE")
+            + _const(block, "SEC_ADVISORY_RULE") + _const(block, "SEC_CATEGORY_ICON")
             + _plainfn(block, "secHumaniseRule") + _plainfn(block, "secRuleMeta"))
 
 

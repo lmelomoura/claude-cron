@@ -535,6 +535,15 @@ td .favdot .ic{width:11px;height:11px;fill:var(--warn);stroke:none}
   border-left:3px solid var(--accent);
   padding:16px 18px 16px 18px;box-shadow:var(--shadow);display:flex;flex-direction:column;
   container-type:inline-size}
+/* .card's own border above is a Jobs-board state cue -- "the thing you act
+   on" -- not a generic card look; the Activity screen's two sidebar cards
+   (secActSummaryCard/secActProjectsCard, ui/security/activity-screen.js)
+   borrowed the bare class for its padding/radius/shadow and got the accent
+   rail for free, rendering with a purple outline no other card in Security
+   wears. Scoped reset back to the plain --line every OTHER card here uses
+   (.table-card, above/below) rather than changing .card itself, which Jobs
+   still wants exactly as it is. */
+.secact-sidecard{border:1px solid var(--line);border-left:1px solid var(--line)}
 .cardbody{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
 .cardstat{min-width:0}
 /* The precheck counts, boxed. They are the densest thing on a card — a list of

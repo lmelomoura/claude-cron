@@ -287,11 +287,41 @@ export function secRuleMeta(category, rule){
   // display string than its sentence-case form, and the raw id stays one
   // hover away in the row's title -- this is what keeps the card legible
   // when a category outside the four known ones shows up (an agent is free
-  // to invent one tomorrow).
-  const label = secHumaniseRule(safe);
-  if(category === "sast") return {label, icon: "code"};
-  if(category === "secret") return {label, icon: "lock"};
-  if(category === "dependency") return {label, icon: "package"};
-  if(category === "hygiene") return {label, icon: ICON_HYGIENE};
-  return {label, icon: "shield"};
+  // to invent one tomorrow). The icon is SEC_CATEGORY_ICON's own (below) --
+  // shared with secCategoryMeta rather than a second per-category branch
+  // here that could drift from it.
+  return {label: secHumaniseRule(safe), icon: SEC_CATEGORY_ICON[category] || "shield"};
+}
+
+// The icon each of the four categories earns when nothing more specific
+// applies -- secRuleMeta's own fallback, above, factored out so
+// secCategoryMeta (below) draws the IDENTICAL icon a rule from that same
+// category would otherwise fall back to, rather than a second, hand-typed
+// list that could drift from it the next time either one changes.
+const SEC_CATEGORY_ICON = {secret: "lock", dependency: "package",
+                           hygiene: ICON_HYGIENE, sast: "code"};
+
+// The category's own fixed label -- "Secrets"/"Dependency"/"Hygiene"/"SAST",
+// the mockup's own CATEGORY column (findings-screen.js's own secFindRow),
+// coarser than secRuleMeta's per-RULE label ("Private keys committed") a
+// column to its left already shows -- the same fact at two resolutions, not
+// one duplicating the other.
+const SEC_CATEGORY_LABEL = {secret: "Secrets", dependency: "Dependency",
+                            hygiene: "Hygiene", sast: "SAST"};
+
+/* (category) -> {label, icon}, for a column that draws the ledger's own
+   CATEGORY rather than a rule's label -- secRuleMeta (above) stays the one
+   RULE resolver, untouched, for its other caller ("Top issue categories",
+   index-screen.js, which ranks rules, not categories). A category outside
+   the four the ledger writes today (ledger.py's own schema promises one
+   always arrives: `category TEXT NOT NULL`) still reads as something
+   legible -- sentence case of whatever string it actually is, `shield` for
+   its icon, the identical "never throw, never point at an unlisted icon"
+   discipline secRuleMeta's own fallback already follows. */
+export function secCategoryMeta(category){
+  const label = SEC_CATEGORY_LABEL[category];
+  if(label) return {label, icon: SEC_CATEGORY_ICON[category]};
+  const safe = String(category || "");
+  return {label: safe ? safe.charAt(0).toUpperCase() + safe.slice(1) : "Unknown",
+          icon: "shield"};
 }

@@ -19,6 +19,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The Activity screen's control row speaks the house vocabulary now, and
+  a findings table column stopped repeating its own neighbour.** Its
+  7/30/90-day and All-time chips were the last `.secchip` row of its kind on
+  a filter bar — replaced with the exact `<details>/<summary>/.menu-pop`
+  period picker ("Last 30 days ⌄") the Security index's own Findings-overview
+  card already draws, both now reading `ACT_PERIODS`'s one four-bucket
+  vocabulary. The PROJECT field was this area's last free-text filter input
+  — replaced with a `makePicker()` picker ("Project: All ⌄") matching the
+  index's own Status/Profile/Branch pickers, listing real project names with
+  their event counts for the period rather than asking a reader to already
+  know one to type. Reused rather than re-typed: `secFindTriggerLabel`/
+  `secFindPositionPop` (findings-screen.js) are now exported and shared by
+  this new period picker, which is also why it resyncs `pop.hidden` from the
+  `<details>`'s own `open` state on every toggle instead of copying
+  `secFindingsPeriodPicker`'s older pattern — THAT widget's card is torn
+  down and rebuilt whole every 5-second poll tick, which papers over a
+  `closeMenus()` race (a stray click outside hides the popover without
+  resetting `open`); the Activity screen never polls while it is open, so a
+  stray click there would have left the picker silently un-openable for
+  good, the exact race the findings browser's own Saved-filters popover hit
+  first. Refresh now right-aligns behind a `.spacer`, the same as every
+  other filter bar in the app — it used to just be the last item in a row
+  that wrapped unevenly once the period chips changed shape.
+
+  The two sidebar cards (Activity summary, Most active projects) painted
+  with a purple outline no other card in the product wears: both borrowed
+  the bare `.card` class for its padding/radius/shadow and got that class's
+  own accent-tinted border and 3px left rail — a Jobs-board "the thing you
+  act on" cue — for free. `.secact-sidecard` (ui/css/pages.css) resets just
+  the two border declarations back to the plain `--line` every other card
+  in Security already uses. TIME stopped printing a raw locale string
+  ("8/27/2026, 7:23:23 AM") and now reads the same two-line pattern this
+  area's siblings do: long-form relative on top, the exact moment beneath.
+
+  Separately: the findings table's own CATEGORY column rendered
+  `secRuleMeta`'s per-RULE label ("Private keys committed"), duplicating
+  TITLE one column to its left — a finding's own title already says that.
+  `secCategoryMeta` (ui/security/vocabulary.js) is the coarser, category-
+  level reading of the same vocabulary the mockup actually draws there
+  ("Secrets", "Dependency", "Hygiene", "SAST"; an unrecognised category
+  sentence-cases itself rather than rendering blank). Its icon comes from
+  `SEC_CATEGORY_ICON`, factored out of `secRuleMeta`'s own fallback rather
+  than a second hand-typed list that could drift from it — `secRuleMeta`
+  itself is untouched for its other caller, "Top issue categories", which
+  ranks rules, not categories.
+
 - **The findings browser now matches AllFindings.png element for element,
   not just its table.** Three earlier passes treated the mockup's header,
   stat strip, filter bar and footer as furniture around the table that

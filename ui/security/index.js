@@ -28,7 +28,7 @@ import { secAnalyse, secDownload } from "./actions.js";
 import { wireReasonDialog } from "./reason.js";
 import { secSwitchProjectTab } from "./project-screen.js";
 import { secOpenActivity, secBackFromActivity, secActReload, secActSwitchTab,
-         secActProjectChanged, secIsActivityOpen, wireActivityFindingDialog } from "./activity-screen.js";
+         secActInitProjectPicker, secIsActivityOpen, wireActivityFindingDialog } from "./activity-screen.js";
 
 function renderSecurity(){
   if(CC.currentView !== "security") return;
@@ -60,17 +60,17 @@ function init(cc){
   $("secpjt-reports").addEventListener("click", () => secSwitchProjectTab("reports"));
 
   // The Activity screen: its own back/reload, its four kind tabs, its
-  // free-text project scope, and the fingerprint dialog a decision's own row
-  // opens. See ui/security/activity-screen.js. The entry point used to be
-  // here too (#sec-reload, iconLabel'd and wired the same direct way
-  // as every id below) -- it is now one of the index header's own actions,
-  // built fresh on every repaint by ui/security/index-screen.js's own
-  // secRenderHead() (pageHeader() draws its icon and label from the actions
-  // array, so a separate iconLabel() call here would fight it), and
-  // answered by bin/dashboard.html's central delegated click listener
-  // through CCSecurity.openActivity() below, the same "rebuilt every poll,
-  // answered by id centrally" split every other page's pageHeader() action
-  // already uses. #sec-reload moved the same way, into CCSecurity.reload().
+  // PROJECT picker, and the fingerprint dialog a decision's own row opens.
+  // See ui/security/activity-screen.js. The entry point used to be here too
+  // (#sec-reload, iconLabel'd and wired the same direct way as every id
+  // below) -- it is now one of the index header's own actions, built fresh
+  // on every repaint by ui/security/index-screen.js's own secRenderHead()
+  // (pageHeader() draws its icon and label from the actions array, so a
+  // separate iconLabel() call here would fight it), and answered by
+  // bin/dashboard.html's central delegated click listener through
+  // CCSecurity.openActivity() below, the same "rebuilt every poll, answered
+  // by id centrally" split every other page's pageHeader() action already
+  // uses. #sec-reload moved the same way, into CCSecurity.reload().
   iconLabel($("sec-act-back"), "cleft", "All projects");
   iconLabel($("sec-act-reload"), "radar", "Refresh");
   iconLabel($("secactt-all"), "activity", "All activity");
@@ -83,11 +83,11 @@ function init(cc){
   $("secactt-analyses").addEventListener("click", () => secActSwitchTab("analyses"));
   $("secactt-findings").addEventListener("click", () => secActSwitchTab("findings"));
   $("secactt-settings").addEventListener("click", () => secActSwitchTab("settings"));
-  // `change`, not `input`: a fetch per keystroke would be a subprocess per
-  // keystroke on the server, the same reasoning `#sec-branch-other` below
-  // already follows.
-  $("sec-act-project").addEventListener("change", () =>
-    secActProjectChanged($("sec-act-project").value));
+  // The house picker (F4 Activity polish), replacing the free-text
+  // #sec-act-project <input> and its own `change` listener -- see
+  // secActInitProjectPicker's own comment (activity-screen.js) for why this
+  // is wired here, once, exactly like secInitLaunchCombos below.
+  secActInitProjectPicker();
   wireActivityFindingDialog();
   // The list above this row is filtered by the project's min_severity; these
   // files are not. Said here, next to the buttons, because the gap between what

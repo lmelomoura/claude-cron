@@ -91,7 +91,7 @@
 import { api, toast, fmtWhen, tableFooter, closeMenus } from "./page.js";
 import { secEl, secIcon, secFetch } from "./dom.js";
 import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP, SEV_ORDER, SEC_NEVER,
-         secMinSeverity, secSevKey, secStateKey, secVisible, secRuleMeta } from "./vocabulary.js";
+         secMinSeverity, secSevKey, secStateKey, secVisible, secCategoryMeta } from "./vocabulary.js";
 import { secAskReason } from "./reason.js";
 import { secInvalidateProject, secSwitchProjectTab } from "./project-screen.js";
 import { secShowAnalysis, secBack } from "./analysis.js";
@@ -506,8 +506,15 @@ function secFindStrip(fs, data){
    text box asking the reader to already know a branch name or an analysis
    id by heart. File path stays genuinely free text (a substring search),
    its trigger just wearing the same "Label: value ▾" look as its five
-   siblings -- opening it reveals the text input, not an enumerated list. */
-function secFindTriggerLabel(label, valueText){
+   siblings -- opening it reveals the text input, not an enumerated list.
+
+   secFindTriggerLabel/secFindPositionPop are exported (F4 Activity polish):
+   the Activity screen's own period picker (activity-screen.js) is the same
+   hand-rolled <details>/<summary>/.menu-pop shape for the identical reason
+   this file's pickers are -- a short list rebuilt whole on every pick, no
+   fit for makePicker's own boot-once registry -- so it reuses these two
+   rather than a third copy of either. */
+export function secFindTriggerLabel(label, valueText){
   const trigger = document.createElement("summary");
   trigger.className = "filterpick";
   // Found live by secFindingsPeriodPicker first (see index-screen.js's own
@@ -528,8 +535,17 @@ function secFindTriggerLabel(label, valueText){
 // it opens -- escaping `.table-card{overflow:hidden}` the same way
 // secFindSavedFilters's own popover already has to (see that function's own
 // comment, kept below, for the full reasoning: closeMenus() and this bar's
-// own repaint-from-scratch cadence both apply here identically).
-function secFindPositionPop(details, trigger, pop){
+// own repaint-from-scratch cadence both apply here identically). Also what
+// keeps `pop.hidden` resynced from `details.open` on EVERY toggle rather
+// than trusting whatever an earlier stray click outside left behind (the
+// exact race this file's own CHANGELOG entry describes finding first) --
+// the Activity screen's own period picker imports this rather than the
+// OLDER, unfixed pattern secFindingsPeriodPicker (index-screen.js) still
+// uses: that widget's own card is torn down and rebuilt whole every
+// 5-second poll tick, so the same race there self-heals within one tick:
+// the Activity screen never polls while open (secIsActivityOpen() is what
+// stops it), so nothing would ever rebuild a stuck instance for it.
+export function secFindPositionPop(details, trigger, pop){
   pop.setAttribute("role", "menu");
   pop.hidden = true;
   details.appendChild(pop);
@@ -950,14 +966,18 @@ function secFindRow(fs, f){
   }
   tr.appendChild(tdLoc);
 
-  // CATEGORY: icon + label from secRuleMeta -- the SAME (category, rule) ->
-  // {label, icon} map the index screen's own "Top issue categories" card
-  // already reads (secIndexCategories, index-screen.js), never a second one
-  // (this file's own rules: secRuleMeta for category icons/labels, never a
-  // second map). The raw rule id stays one hover away, the same "legible
-  // now, exact on demand" rule secRuleMeta's own callers already follow.
+  // CATEGORY: the ledger's own category (Secrets/Dependency/Hygiene/SAST),
+  // not a rule's per-rule label -- secRuleMeta's "Private keys committed"
+  // used to render here, duplicating TITLE one column to its left (a
+  // finding's own title says exactly that already). secCategoryMeta
+  // (vocabulary.js) is the coarser, category-level reading of the SAME
+  // vocabulary: same four icons secRuleMeta's own fallback assigns per
+  // category (one shared table, see that function's own comment), a fixed
+  // label instead of a humanised rule id. secRuleMeta stays untouched for
+  // its other caller ("Top issue categories", index-screen.js), which is
+  // ranking RULES, not categories. The raw rule id stays one hover away.
   const tdCat = document.createElement("td");
-  const meta = secRuleMeta(f.category, f.rule);
+  const meta = secCategoryMeta(f.category);
   const catWrap = secEl("div", "secfind-cat");
   catWrap.appendChild(secIcon(meta.icon));
   catWrap.appendChild(secEl("span", null, meta.label));
