@@ -1998,7 +1998,15 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secpjmeta{display:flex;flex-wrap:wrap;gap:14px 20px;font-size:12px;color:var(--muted)}
 .secpjmeta b{color:var(--ink);font-weight:650}
 .secpjbody{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
-.secpjmain{flex:1 1 480px;min-width:0}
+/* A size container: the two internal splits below (the Runs list/detail
+   pair, the Overview main/side grid) stack by @container queries against
+   THIS column's real width, not the viewport's -- the room they actually
+   have depends on the collapsible app sidebar and on whether the rail sits
+   beside or below, which no viewport breakpoint can know. A 1290px window
+   with the sidebar open used to leave this column ~660px while the
+   viewport query still said "wide": the mid column overflowed and the
+   rail painted over it. */
+.secpjmain{flex:1 1 480px;min-width:0;container-type:inline-size}
 /* A read-only stat badge -- same shape as .secchip, deliberately not
    clickable (no cursor:pointer, no hover state): the Overview tab's
    checklist counts have nowhere to filter to yet (that is the findings
@@ -2110,13 +2118,15 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    box, not a shrink target the algorithm reaches for on ordinary layouts. */
 .secpj-runsleft{flex:0 0 450px;min-width:340px}
 .secpj-runsmid{flex:1 1 480px;min-width:340px}
-/* 1280, not 900: the unshrinkable 450px list plus the mid column's own
-   340px floor need ~806px, and beside the 330px rail that is a ~1250px
-   window -- between 900 and there the mid column used to OVERFLOW the
-   main column and bleed under the rail, which painted over it. Below the
-   stack point the two go one above the other at full width, the rail
-   still beside them until .secpjside's own 900px rule wraps it under. */
-@media (max-width:1280px){
+/* A CONTAINER query against .secpjmain's own width, not a viewport media
+   query: the unshrinkable 450px list plus the mid column's own 340px floor
+   need 806px OF THIS COLUMN, and how much column a given window leaves
+   depends on the collapsible app sidebar and the 330px rail beside it --
+   every viewport breakpoint chosen for one sidebar/rail state was wrong in
+   another (the mid column overflowed and the rail, a later flex sibling,
+   painted straight over it). Below the floor the two go one above the
+   other at full width. */
+@container (max-width: 829px){
   .secpj-runslayout{flex-direction:column}
   .secpj-runsleft,.secpj-runsmid{flex:1 1 100%;width:100%}
 }
@@ -2258,7 +2268,12 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    one -- the trend card's own title wrapped into a five-line sliver beside
    its segmented control. Below the stack point everything is full width. */
 .secov-side{flex:0 1 520px;min-width:400px;display:flex;flex-direction:column;gap:16px}
-@media (max-width:1440px){
+/* The same container-not-viewport reasoning as the Runs split above (the
+   Overview pane spans the whole column -- its rail is hidden on this tab
+   -- so the container IS its real room). Below ~1160px of column the main
+   half would drop under ~740px beside the 400px-floored side column and
+   the trend card starts crushing; stacked instead, both at full width. */
+@container (max-width: 1159px){
   .secov-grid{flex-direction:column}
   /* width:100% on BOTH stacked children: the grid keeps the row layout's
      align-items:flex-start, which in a column direction makes a child hug
@@ -2739,5 +2754,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: 61d622c9838060a7cb29e83b2bbbad1a45cdb30a9304f6cb02e01bbb9c08815b */
-/* ui-sources: 1f48f9dba61fd6106484996e73cb816d41f9512aeb3f30ddb8cb784c9bd9d08e */
+/* ui-bundle: 535e24c084853fef2f7e66344b987c324e124aea1aa18a39e412a2d8a5494da4 */
+/* ui-sources: 0ce2ab9dcd1e02adbe33940a43206457c57af772a9259d6ed74cc884c33fedc9 */

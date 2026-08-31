@@ -19,6 +19,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The project screen's two internal splits now stack by CONTAINER
+  queries, not viewport breakpoints.** The Runs list/detail pair and the
+  Overview main/side grid measure the main column's own width
+  (`container-type:inline-size` on it): how much room they really have
+  depends on the collapsible app sidebar and on whether the 330px rail
+  sits beside or below, which no viewport number can know — the freshly
+  chosen 1280px breakpoint still left a band (~1281–1330px windows,
+  sidebar open) where the run card overflowed and the rail painted over
+  it. The Runs pair stacks below 830px of column (its columns' real
+  minima), the Overview grid below 1160px.
+
 - **Two more mid-width breakages on the project screen.** The Runs tab's
   two-column split stacked only below a 900px window while its list column
   is deliberately unshrinkable (450px) — between ~900 and ~1250px the
