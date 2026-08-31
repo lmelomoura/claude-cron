@@ -3672,6 +3672,24 @@ def test_the_critical_and_high_kpi_cards_flag_incomplete_contributors(srv, tmp_p
 # where the index screen's own builder functions only ever return a node to
 # their caller and never look one up themselves.
 
+# The chrome bridge's kpiCard, as a deliberately trivial stand-in for tests
+# that drive a builder composing KPI cards (the findings strip, the Overview
+# row) -- same child order as the real one: number, label, optional sub.
+_KPI_CARD_STUB = """
+function kpiCard(o){
+  const c = new FakeElement("div");
+  c.className = "kpi-card" + (o.tone ? " " + o.tone : "");
+  if(o.title) c.title = o.title;
+  const num = new FakeElement("span"); num.className = "kpi-card-num";
+  num.textContent = o.value; c.appendChild(num);
+  const lab = new FakeElement("div"); lab.className = "kpi-card-label";
+  lab.textContent = o.label; c.appendChild(lab);
+  if(o.sub){ const s = new FakeElement("div"); s.className = "kpi-card-sub";
+    s.textContent = o.sub; c.appendChild(s); }
+  return c;
+}
+"""
+
 _PROJECT_DOM_HARNESS = _INDEX_DOM_HARNESS + """
 // classList is untouched by _INDEX_DOM_HARNESS's FakeElement (nothing there
 // needed it) -- secRenderTabs toggles an "active" class on the tab buttons,
@@ -4752,11 +4770,12 @@ def test_the_strip_labels_total_and_unique_and_counts_the_floor_from_the_whole_f
     not from whatever slice of rows happens to be on THIS page -- a browser
     with several pages would otherwise undercount how much the floor hides."""
     block = _security_js(srv)
-    consts = _const(block, "SEV_ORDER") + _const(block, "ROW_PILL_TITLE")
+    consts = (_const(block, "SEV_ORDER") + _const(block, "ROW_PILL_TITLE")
+              + _const(block, "SEV_KPI_ICON") + _const(block, "SEV_KPI_TONE"))
     deps = "\n".join(_plainfn(block, n) for n in
                      ("secEl", "secIcon", "_secCap", "secFindHiddenByFloor", "secFindStrip"))
     script = tmp_path / "find-strip.js"
-    script.write_text(_INDEX_DOM_HARNESS + """
+    script.write_text(_INDEX_DOM_HARNESS + _KPI_CARD_STUB + """
     function secMinSeverity(_p){ return "medium"; }
     const fs = {project: "web"};
     """ + consts + deps + """
@@ -4770,14 +4789,13 @@ def test_the_strip_labels_total_and_unique_and_counts_the_floor_from_the_whole_f
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
     joined = " ".join(r["text"] for r in out)
-    # Total and Unique are their own DISTINCTLY-classed stat blocks now
-    # (Phase 4, AllFindings.png's own "Total findings" / "Unique issues"
-    # cards replacing the old "10 total"/"8 unique issues" text pills) --
-    # found by class rather than by a literal wording this shape no longer
-    # renders, each one's own aggregated text still carrying both its label
-    # and its number together, which is what "distinctly labelled" means.
-    total_stat = next(r for r in out if r["cls"] == "secfind-stat total")
-    unique_stat = next(r for r in out if r["cls"] == "secfind-stat unique")
+    # Total and Unique are two of the seven KPI CARDS now
+    # (ProjectFindings.png), each still carrying its marker class -- found
+    # by that marker rather than by a literal wording, each one's own
+    # aggregated text still carrying both its label and its number
+    # together, which is what "distinctly labelled" means.
+    total_stat = next(r for r in out if "secfind-stat total" in r["cls"])
+    unique_stat = next(r for r in out if "secfind-stat unique" in r["cls"])
     assert "Total findings" in total_stat["text"] and "10" in total_stat["text"], \
         f"the Total stat must carry both its label and its number: {total_stat}"
     assert "Unique issues" in unique_stat["text"] and "8" in unique_stat["text"], \
@@ -4854,13 +4872,14 @@ def test_a_fixed_finding_stays_visible_and_uncounted_below_the_floor(srv, tmp_pa
     arrows = (re.search(r"const secSevRank = .*?\};", block, re.S).group(0) + "\n"
              + re.search(r"const secSevKey = .*?;", block).group(0) + "\n"
              + re.search(r"const secStateKey = .*?;", block).group(0) + "\n")
-    consts = consts + _const(block, "ROW_PILL_TITLE")
+    consts = (consts + _const(block, "ROW_PILL_TITLE")
+              + _const(block, "SEV_KPI_ICON") + _const(block, "SEV_KPI_TONE"))
     deps = "\n".join(_plainfn(block, n) for n in
                      ("secEl", "secIcon", "_secCap", "secCategoryMeta",
                       "secFindHiddenByFloor", "secFindStrip", "secFindRow", "secFindDecisionControls", "secFindActionsCell",
                       "secFindTableSection", "secVisible"))
     script = tmp_path / "find-fixed-floor.js"
-    script.write_text(_INDEX_DOM_HARNESS + """
+    script.write_text(_INDEX_DOM_HARNESS + _KPI_CARD_STUB + """
     function fmtWhen(t){ return "w" + String(t); }
     function secMinSeverity(_p){ return "medium"; }
     const fs = {project: "web", sort: "severity", dir: "desc", page: 1};
@@ -5798,7 +5817,8 @@ def test_the_findings_strip_never_paints_a_green_all_clear_over_an_unread_projec
     words."""
     block = _security_js(srv)
     consts = (_const(block, "SEV_ORDER") + _const(block, "SEC_NEVER")
-              + _const(block, "ROW_PILL_TITLE"))
+              + _const(block, "ROW_PILL_TITLE")
+              + _const(block, "SEV_KPI_ICON") + _const(block, "SEV_KPI_TONE"))
     # `secVisible` is deliberately absent: every payload below carries an
     # empty `rows`, and secFindTableSection answers that before it ever
     # reaches the floor -- which is the case under test.
@@ -5806,7 +5826,7 @@ def test_the_findings_strip_never_paints_a_green_all_clear_over_an_unread_projec
                      ("secEl", "secIcon", "_secCap", "secFindHiddenByFloor", "secFindStrip",
                       "secFindTableSection"))
     script = tmp_path / "find-never.js"
-    script.write_text(_INDEX_DOM_HARNESS + """
+    script.write_text(_INDEX_DOM_HARNESS + _KPI_CARD_STUB + """
     function secMinSeverity(_p){ return "low"; }
     const fs = {project: "web", filters: {}};
     """ + consts + deps + """
@@ -5860,11 +5880,12 @@ def test_the_findings_strip_says_when_a_branch_behind_it_stopped_early(srv, tmp_
     them are what was reached, not what is there."""
     block = _security_js(srv)
     consts = (_const(block, "SEV_ORDER") + _const(block, "SEC_NEVER")
-              + _const(block, "ROW_PILL_TITLE"))
+              + _const(block, "ROW_PILL_TITLE")
+              + _const(block, "SEV_KPI_ICON") + _const(block, "SEV_KPI_TONE"))
     deps = "\n".join(_plainfn(block, n) for n in
                      ("secEl", "secIcon", "_secCap", "secFindHiddenByFloor", "secFindStrip"))
     script = tmp_path / "find-capped.js"
-    script.write_text(_INDEX_DOM_HARNESS + """
+    script.write_text(_INDEX_DOM_HARNESS + _KPI_CARD_STUB + """
     function secMinSeverity(_p){ return "low"; }
     const fs = {project: "web", filters: {}};
     """ + consts + deps + """
@@ -5896,13 +5917,14 @@ def test_the_two_kinds_of_severity_pill_each_say_what_they_count(srv, tmp_path):
     and left both sets of per-severity pills bare."""
     block = _security_js(srv)
     strip_consts = (_const(block, "SEV_ORDER") + _const(block, "SEC_NEVER")
-                    + _const(block, "ROW_PILL_TITLE"))
+                    + _const(block, "ROW_PILL_TITLE")
+                    + _const(block, "SEV_KPI_ICON") + _const(block, "SEV_KPI_TONE"))
     strip_deps = "\n".join(_plainfn(block, n) for n in
                            ("secEl", "secIcon", "_secCap", "secFindHiddenByFloor", "secFindStrip"))
     donut_consts = _const(block, "SEV_ORDER5") + _const(block, "DONUT_PILL_TITLE")
     donut_deps = _plainfn(block, "secIndexDonutLegend")
     script = tmp_path / "pill-scopes.js"
-    script.write_text(_INDEX_DOM_HARNESS + """
+    script.write_text(_INDEX_DOM_HARNESS + _KPI_CARD_STUB + """
     function secMinSeverity(_p){ return "low"; }
     const fs = {project: "web", filters: {}};
     """ + strip_consts + strip_deps + donut_consts + donut_deps + """
@@ -5911,11 +5933,11 @@ def test_the_two_kinds_of_severity_pill_each_say_what_they_count(srv, tmp_path):
       by_severity: sev, fixed_by_severity: {critical:0,high:0,medium:0,low:0,info:0},
       page: 1, per_page: 25, attempted: true, analysed: true}), []);
     const legend = collectAll(secIndexDonutLegend({critical: 1}), []);
-    // The strip's own Critical stat (Phase 4: a coloured-dot stat block,
-    // ".secfind-stat critical", not a ".sevpill" chip -- see secFindStrip's
-    // own comment for why; its NUMBER and its TITLE are what this test is
-    // actually about, not the exact element shape carrying them).
-    const stripStat = strip.filter(r => r.cls === "secfind-stat critical")[0] || {};
+    // The strip's own Critical stat (ProjectFindings.png: a KPI card
+    // wearing the sev-crit tone class, not a ".sevpill" chip -- its NUMBER
+    // and its TITLE are what this test is actually about, not the exact
+    // element shape carrying them).
+    const stripStat = strip.filter(r => r.cls.includes("sev-crit"))[0] || {};
     const legendPill = legend.filter(r => r.cls === "sevpill critical")[0] || {};
     console.log(JSON.stringify({strip: stripStat, legend: legendPill}));
     """)
@@ -6849,15 +6871,12 @@ _UNSTYLED_CLASS_ALLOWLIST = {
     # .secpj-caption, .secidx-catrow, ...) already carries its own full
     # styling. A wrapper that adds nothing of its own is deliberately left
     # unstyled rather than given an empty rule.
-    "secfind-strip",
     "secidx-categories",
-    # secFindStrip's own Total/Unique stat blocks (findings-screen.js):
-    # marker modifiers on ".secfind-stat" (ui/css/pages.css), which already
-    # gives both their full layout -- unlike ".critical"/".high"/... on the
-    # same base class, neither needs its own colour (see this file's own
-    # header comment above .secfind-stat for why only the five severities
-    # carry a dot). Findable by class in a test without a colour rule that
-    # would otherwise exist for no reason but to satisfy this guard.
+    # secFindStrip's Total/Unique KPI cards (findings-screen.js): pure
+    # MARKER classes appended to two .kpi-card elements whose whole layout
+    # and colour come from the shared component -- the hooks the pinned
+    # total-vs-unique test finds them by, styled by nothing on purpose.
+    "secfind-stat",
     "total",
     "unique",
 }

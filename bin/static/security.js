@@ -907,1496 +907,6 @@
     await secDownloadReport(a.id, fmt, $("sec-dl-" + fmt));
   }
 
-  // ui/security/findings-screen.js
-  var FIND_SORT_COLUMNS = [
-    ["severity", "Severity"],
-    ["title", "Title"],
-    ["category", "Category"],
-    ["branch", "Branch"],
-    ["state", "Status"],
-    ["first_seen", "First seen"]
-  ];
-  var FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene"];
-  var FIND_PER_PAGE = 10;
-  var FIND_PER_PAGE_OPTIONS = [10, 25, 50];
-  function _defaultFilters() {
-    return {
-      severity: [],
-      state: [],
-      category: [],
-      branch: "",
-      path: "",
-      q: "",
-      analysis: "",
-      show_resolved: false,
-      fingerprint: ""
-    };
-  }
-  function _newFindState(host, project) {
-    return {
-      host,
-      project,
-      gen: 0,
-      data: null,
-      error: "",
-      filters: _defaultFilters(),
-      sort: "severity",
-      dir: "desc",
-      page: 1,
-      perPage: FIND_PER_PAGE,
-      savedName: "",
-      newName: ""
-    };
-  }
-  var secFindStates = /* @__PURE__ */ new WeakMap();
-  async function renderFindings(host, project, initialFilters) {
-    let fs = secFindStates.get(host);
-    if (!fs || fs.project !== project) {
-      fs = _newFindState(host, project);
-      secFindStates.set(host, fs);
-    }
-    if (initialFilters) {
-      fs.filters = Object.assign(_defaultFilters(), initialFilters);
-      fs.page = 1;
-    }
-    await secFindLoad(fs);
-  }
-  function secFindQuery(fs) {
-    const p = new URLSearchParams();
-    p.set("project", fs.project);
-    p.set("sort", fs.sort);
-    p.set("dir", fs.dir);
-    p.set("page", String(fs.page));
-    p.set("per_page", String(fs.perPage || FIND_PER_PAGE));
-    const f = fs.filters;
-    if (f.severity.length) p.set("severity", f.severity.join(","));
-    if (f.state.length) p.set("state", f.state.join(","));
-    if (f.category.length) p.set("category", f.category.join(","));
-    if (f.branch.trim()) p.set("branch", f.branch.trim());
-    if (f.path.trim()) p.set("path", f.path.trim());
-    if (f.q.trim()) p.set("q", f.q.trim());
-    if (f.analysis.trim()) p.set("analysis", f.analysis.trim());
-    if (f.show_resolved) p.set("show_resolved", "1");
-    if (f.fingerprint.trim()) p.set("fingerprint", f.fingerprint.trim());
-    return p.toString();
-  }
-  async function secFindLoad(fs) {
-    const host = fs.host, project = fs.project;
-    if (!host || !project) return;
-    const gen = ++fs.gen;
-    if (!fs.data) {
-      host.textContent = "";
-      host.appendChild(secEl("div", "tblempty", "Loading\u2026"));
-    }
-    let data;
-    try {
-      data = await secFetch("/api/security/findings?" + secFindQuery(fs));
-    } catch (e) {
-      if (gen !== fs.gen || secFindStates.get(host) !== fs) return;
-      fs.error = e.message;
-      fs.data = null;
-      secFindPaint(fs);
-      return;
-    }
-    if (gen !== fs.gen || secFindStates.get(host) !== fs) return;
-    fs.error = "";
-    fs.data = data;
-    fs.page = data.page || 1;
-    secFindPaint(fs);
-  }
-  async function secFindRefresh(fs) {
-    await secFindLoad(fs);
-  }
-  function secFindPaint(fs) {
-    const host = fs.host;
-    if (!host) return;
-    host.textContent = "";
-    host.appendChild(secFindHeader(fs, fs.data));
-    if (fs.error) {
-      const box = secEl("div", "tblempty");
-      box.appendChild(secIcon("alert"));
-      box.appendChild(document.createTextNode("Could not read findings \u2014 " + fs.error));
-      host.appendChild(box);
-      return;
-    }
-    const data = fs.data;
-    if (!data) return;
-    host.appendChild(secFindStrip(fs, data));
-    host.appendChild(secFindFilterBar(fs, data));
-    const section = secFindTableSection(fs, data);
-    if ((section.className || "").includes("table-card")) section.appendChild(secFindPager(fs, data));
-    host.appendChild(section);
-  }
-  function secFindHeader(fs, data) {
-    const wrap = secEl("div");
-    if (((fs.filters || {}).fingerprint || "").trim()) return wrap;
-    const head = secEl("div", "secfind-head");
-    head.appendChild(secEl("span", "spacer"));
-    const actions = secEl("div", "secfind-head-actions");
-    const exportBtn = secEl("button", "btn ghost");
-    exportBtn.type = "button";
-    exportBtn.appendChild(secIcon("download"));
-    exportBtn.appendChild(document.createTextNode("Export"));
-    exportBtn.title = "Open this project's Reports tab";
-    exportBtn.onclick = () => secSwitchProjectTab("reports");
-    actions.appendChild(exportBtn);
-    actions.appendChild(secFindSavedFilters(fs, data || {}));
-    head.appendChild(actions);
-    wrap.appendChild(head);
-    return wrap;
-  }
-  function secFindHiddenByFloor(data, minSeverity) {
-    const floor = SEV_ORDER.indexOf(minSeverity);
-    const bySev = data.by_severity || {}, fixedBySev = data.fixed_by_severity || {};
-    let n = 0;
-    SEV_ORDER.forEach((sev, i) => {
-      if (i < floor) n += (bySev[sev] || 0) - (fixedBySev[sev] || 0);
-    });
-    return n;
-  }
-  var ROW_PILL_TITLE = "Rows matching the current filters \u2014 the same finding open on two branches counts twice here.";
-  function _secCap(s) {
-    s = String(s || "");
-    return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
-  }
-  function secFindStrip(fs, data) {
-    const box = secEl("div");
-    if (data.analysed === false) {
-      const line = secEl("div", "warnline bad");
-      line.appendChild(secIcon("alert"));
-      line.appendChild(secEl(
-        "span",
-        "grow",
-        data.attempted ? SEC_NEVER.attempted : SEC_NEVER.next
-      ));
-      box.appendChild(line);
-    } else if (data.capped_branches) {
-      const line = secEl("div", "warnline bad");
-      line.appendChild(secIcon("alert"));
-      line.appendChild(secEl(
-        "span",
-        "grow",
-        data.capped_branches + " of these branches had a latest analysis that stopped before covering its whole scope \u2014 what is below is what it had reached, not what is there."
-      ));
-      box.appendChild(line);
-    }
-    const fingerprintFilter = ((fs.filters || {}).fingerprint || "").trim();
-    if (fingerprintFilter) {
-      box.appendChild(secEl(
-        "div",
-        "secpj-caption",
-        "Filtered to fingerprint " + fingerprintFilter + "\u2026 \u2014 \u201CClear filters\u201D below shows this project's whole list."
-      ));
-    }
-    const strip = secEl("div", "secfind-strip");
-    const totalStat = secEl("div", "secfind-stat total");
-    totalStat.title = ROW_PILL_TITLE;
-    totalStat.appendChild(secEl("div", "secfind-stat-label", "Total findings"));
-    const totalLine = secEl("div", "secfind-stat-numline");
-    totalLine.appendChild(secEl("span", "secfind-stat-num", String(data.total || 0)));
-    const totalIc = secEl("span", "secfind-stat-ic");
-    totalIc.appendChild(secIcon("file"));
-    totalLine.appendChild(totalIc);
-    totalStat.appendChild(totalLine);
-    strip.appendChild(totalStat);
-    const bySev = data.by_severity || {};
-    const total = data.total || 0;
-    let any = false;
-    ["critical", "high", "medium", "low", "info"].forEach((sev) => {
-      any = any || !!bySev[sev];
-      const n = bySev[sev] || 0;
-      const stat = secEl("div", "secfind-stat " + sev);
-      stat.title = ROW_PILL_TITLE;
-      const label = secEl("div", "secfind-stat-label");
-      label.appendChild(secEl("span", "secfind-stat-dot"));
-      label.appendChild(secEl("span", null, _secCap(sev)));
-      stat.appendChild(label);
-      stat.appendChild(secEl("div", "secfind-stat-num", String(n)));
-      stat.appendChild(secEl("div", "secfind-stat-pct", total ? (n / total * 100).toFixed(1) + "%" : "\u2014"));
-      strip.appendChild(stat);
-    });
-    strip.appendChild(secEl("div", "secfind-strip-div"));
-    const uniqueStat = secEl("div", "secfind-stat unique");
-    uniqueStat.title = "Distinct problems (fingerprints) \u2014 the same finding open on two branches counts once here.";
-    const uLabel = secEl("div", "secfind-stat-label");
-    const uIcon = secEl("span", "secfind-stat-diamond");
-    uIcon.appendChild(secIcon("diamond"));
-    uLabel.appendChild(uIcon);
-    uLabel.appendChild(secEl("span", null, "Unique issues"));
-    uniqueStat.appendChild(uLabel);
-    uniqueStat.appendChild(secEl("div", "secfind-stat-num", String(data.unique || 0)));
-    strip.appendChild(uniqueStat);
-    box.appendChild(strip);
-    if (!any && data.analysed !== false) {
-      box.appendChild(secEl("span", "sevpill clean", "Nothing matches"));
-    }
-    const minSeverity = secMinSeverity(fs.project);
-    const hidden = secFindHiddenByFloor(data, minSeverity);
-    const note = secEl("div", "secpj-caption");
-    if (hidden > 0) {
-      note.appendChild(document.createTextNode(
-        hidden + " finding" + (hidden === 1 ? "" : "s") + " below " + minSeverity + " " + (hidden === 1 ? "is" : "are") + " hidden by this project's severity floor \u2014 recorded, not shown. "
-      ));
-    }
-    note.appendChild(secEl(
-      "b",
-      null,
-      "Downloads always contain every recorded finding, whatever the severity floor shows."
-    ));
-    box.appendChild(note);
-    return box;
-  }
-  function secFindTriggerLabel(label, valueText) {
-    const trigger = document.createElement("summary");
-    trigger.className = "filterpick";
-    trigger.onclick = (e) => e.stopPropagation();
-    if (label) trigger.appendChild(secEl("span", "pk-k", label + ":"));
-    const valueEl = secEl("span", "pk-v", valueText);
-    trigger.appendChild(valueEl);
-    trigger.appendChild(secIcon("cdown"));
-    return { trigger, valueEl };
-  }
-  function secFindPositionPop(details, trigger, pop) {
-    pop.setAttribute("role", "menu");
-    pop.hidden = true;
-    details.appendChild(pop);
-    details.ontoggle = () => {
-      pop.hidden = !details.open;
-      if (!details.open) return;
-      const r = trigger.getBoundingClientRect();
-      pop.style.position = "fixed";
-      pop.style.top = r.bottom + 6 + "px";
-      pop.style.left = r.left + "px";
-      pop.style.right = "auto";
-      pop.style.bottom = "auto";
-    };
-  }
-  function secFindMultiPicker(label, options, selected, onToggle) {
-    const field = secEl("div", "secfind-fpick");
-    const valueText = !selected.length ? "All" : selected.length === 1 ? (options.find((o) => o.v === selected[0]) || {}).label || selected[0] : selected.length + " selected";
-    const { trigger } = secFindTriggerLabel(label, valueText);
-    const details = document.createElement("details");
-    details.appendChild(trigger);
-    const pop = secEl("div", "menu-pop");
-    options.forEach((opt) => {
-      const item = document.createElement("button");
-      item.type = "button";
-      item.setAttribute("role", "menuitemcheckbox");
-      item.setAttribute("aria-checked", selected.includes(opt.v) ? "true" : "false");
-      item.appendChild(document.createTextNode(opt.label));
-      if (selected.includes(opt.v)) item.appendChild(secIcon("check2"));
-      item.onclick = (e) => {
-        e.stopPropagation();
-        onToggle(opt.v);
-      };
-      pop.appendChild(item);
-    });
-    secFindPositionPop(details, trigger, pop);
-    field.appendChild(details);
-    return field;
-  }
-  function secFindSinglePicker(label, options, selected, onPick) {
-    const field = secEl("div", "secfind-fpick");
-    const current = options.find((o) => o.v === selected);
-    const { trigger } = secFindTriggerLabel(label, selected && current ? current.label : "All");
-    const details = document.createElement("details");
-    details.appendChild(trigger);
-    const pop = secEl("div", "menu-pop");
-    const allItem = document.createElement("button");
-    allItem.type = "button";
-    allItem.setAttribute("role", "menuitem");
-    allItem.appendChild(document.createTextNode("All"));
-    if (!selected) allItem.appendChild(secIcon("check2"));
-    allItem.onclick = (e) => {
-      e.stopPropagation();
-      details.open = false;
-      onPick("");
-    };
-    pop.appendChild(allItem);
-    options.forEach((opt) => {
-      const item = document.createElement("button");
-      item.type = "button";
-      item.setAttribute("role", "menuitem");
-      item.appendChild(document.createTextNode(opt.label));
-      if (selected === opt.v) item.appendChild(secIcon("check2"));
-      item.onclick = (e) => {
-        e.stopPropagation();
-        details.open = false;
-        onPick(opt.v);
-      };
-      pop.appendChild(item);
-    });
-    secFindPositionPop(details, trigger, pop);
-    field.appendChild(details);
-    return field;
-  }
-  function secFindTextPicker(label, value, onChange) {
-    const field = secEl("div", "secfind-fpick");
-    const { trigger } = secFindTriggerLabel(label, value.trim() ? value : "All");
-    const details = document.createElement("details");
-    details.appendChild(trigger);
-    const pop = secEl("div", "menu-pop");
-    const inp = document.createElement("input");
-    inp.type = "text";
-    inp.spellcheck = false;
-    inp.autocomplete = "off";
-    inp.placeholder = "contains\u2026";
-    inp.value = value;
-    inp.onclick = (e) => e.stopPropagation();
-    inp.onchange = () => onChange(inp.value);
-    pop.appendChild(inp);
-    secFindPositionPop(details, trigger, pop);
-    field.appendChild(details);
-    return field;
-  }
-  function secFindToggleIn(list, value) {
-    const i = list.indexOf(value);
-    if (i >= 0) list.splice(i, 1);
-    else list.push(value);
-  }
-  function secFindActiveFilterCount(fs) {
-    const f = fs.filters;
-    let n = 0;
-    if (f.severity.length) n++;
-    if (f.state.length) n++;
-    if (f.category.length) n++;
-    if (f.branch.trim()) n++;
-    if (f.path.trim()) n++;
-    if (f.analysis.trim()) n++;
-    if (f.q.trim()) n++;
-    if (!f.show_resolved) n++;
-    return n;
-  }
-  function secFindClearButton(fs) {
-    const btn = secEl("button", "btn ghost");
-    btn.type = "button";
-    btn.appendChild(secIcon("x"));
-    btn.appendChild(document.createTextNode("Clear filters"));
-    btn.onclick = () => {
-      fs.filters = _defaultFilters();
-      fs.page = 1;
-      secFindRefresh(fs);
-    };
-    return btn;
-  }
-  function secFindCurrentQuery(fs) {
-    const f = fs.filters;
-    return {
-      severity: f.severity,
-      state: f.state,
-      category: f.category,
-      branch: f.branch,
-      path: f.path,
-      q: f.q,
-      analysis: f.analysis,
-      show_resolved: f.show_resolved,
-      fingerprint: f.fingerprint,
-      sort: fs.sort,
-      dir: fs.dir
-    };
-  }
-  function secFindApplyQuery(fs, q) {
-    const query = q || {};
-    fs.filters = {
-      severity: Array.isArray(query.severity) ? query.severity.slice() : [],
-      state: Array.isArray(query.state) ? query.state.slice() : [],
-      category: Array.isArray(query.category) ? query.category.slice() : [],
-      branch: typeof query.branch === "string" ? query.branch : "",
-      path: typeof query.path === "string" ? query.path : "",
-      q: typeof query.q === "string" ? query.q : "",
-      analysis: typeof query.analysis === "string" ? query.analysis : "",
-      show_resolved: !!query.show_resolved,
-      fingerprint: typeof query.fingerprint === "string" ? query.fingerprint : ""
-    };
-    fs.sort = FIND_SORT_COLUMNS.some(([key]) => key === query.sort) ? query.sort : "severity";
-    fs.dir = query.dir === "asc" ? "asc" : "desc";
-    fs.page = 1;
-    secFindRefresh(fs);
-  }
-  async function secFindSaveCurrent(fs, name) {
-    const trimmed = (name || "").trim();
-    if (!trimmed) {
-      toast("Name this filter set before saving", true);
-      return;
-    }
-    const ok = await api(
-      "security_filter_save",
-      { project: fs.project, name: trimmed, query: secFindCurrentQuery(fs) }
-    );
-    if (!ok) return;
-    toast("Filter saved", false, "check");
-    fs.savedName = trimmed;
-    fs.newName = "";
-    await secFindRefresh(fs);
-  }
-  async function secFindDeleteSaved(fs, name) {
-    if (!name) return;
-    const ok = await api("security_filter_delete", { project: fs.project, name });
-    if (!ok) return;
-    toast("Filter deleted", false, "check");
-    fs.savedName = "";
-    await secFindRefresh(fs);
-  }
-  function secFindSavedFilters(fs, data) {
-    const filters = data.filters || [];
-    if (!filters.some((f) => f.name === fs.savedName)) fs.savedName = "";
-    const details = document.createElement("details");
-    details.className = "secfind-savedpick";
-    const { trigger, valueEl } = secFindTriggerLabel(null, fs.savedName || "Saved filters");
-    details.appendChild(trigger);
-    const pop = secEl("div", "menu-pop");
-    function pick(name, query) {
-      fs.savedName = name;
-      valueEl.textContent = name || "Saved filters";
-      details.open = false;
-      if (query) secFindApplyQuery(fs, query);
-    }
-    const blank = document.createElement("button");
-    blank.type = "button";
-    blank.setAttribute("role", "menuitem");
-    blank.appendChild(document.createTextNode("\u2014 none \u2014"));
-    if (!fs.savedName) blank.appendChild(secIcon("check2"));
-    blank.onclick = (e) => {
-      e.stopPropagation();
-      pick("");
-    };
-    pop.appendChild(blank);
-    filters.forEach((f) => {
-      const row = secEl("div", "secfind-savedrow");
-      const item = document.createElement("button");
-      item.type = "button";
-      item.setAttribute("role", "menuitem");
-      item.appendChild(document.createTextNode(f.name));
-      if (f.name === fs.savedName) item.appendChild(secIcon("check2"));
-      item.onclick = (e) => {
-        e.stopPropagation();
-        pick(f.name, f.query);
-      };
-      row.appendChild(item);
-      const del = document.createElement("button");
-      del.type = "button";
-      del.className = "iconbtn";
-      del.title = "Delete this saved filter";
-      del.appendChild(secIcon("trash"));
-      del.onclick = (e) => {
-        e.stopPropagation();
-        details.open = false;
-        secFindDeleteSaved(fs, f.name);
-      };
-      row.appendChild(del);
-      pop.appendChild(row);
-    });
-    pop.appendChild(secEl("div", "sep"));
-    const nameInput = document.createElement("input");
-    nameInput.type = "text";
-    nameInput.placeholder = "Save current view as\u2026";
-    nameInput.value = fs.newName;
-    nameInput.onclick = (e) => e.stopPropagation();
-    nameInput.onchange = () => {
-      fs.newName = nameInput.value;
-    };
-    pop.appendChild(nameInput);
-    const saveBtn = document.createElement("button");
-    saveBtn.type = "button";
-    saveBtn.setAttribute("role", "menuitem");
-    saveBtn.appendChild(secIcon("check2"));
-    saveBtn.appendChild(document.createTextNode("Save"));
-    saveBtn.onclick = (e) => {
-      e.stopPropagation();
-      secFindSaveCurrent(fs, nameInput.value);
-    };
-    pop.appendChild(saveBtn);
-    secFindPositionPop(details, trigger, pop);
-    return details;
-  }
-  function secFindFilterBar(fs, data) {
-    const wrap = secEl("div", "secfind-filters");
-    const row1 = secEl("div", "secfind-filters-row");
-    const search = secEl("div", "secfind-search");
-    search.appendChild(secIcon("search"));
-    const searchInput = document.createElement("input");
-    searchInput.type = "text";
-    searchInput.placeholder = "Search by message, file, or CVE\u2026";
-    searchInput.spellcheck = false;
-    searchInput.autocomplete = "off";
-    searchInput.value = fs.filters.q;
-    searchInput.title = "Search title / rule / rationale / file";
-    searchInput.onchange = () => {
-      fs.filters.q = searchInput.value;
-      fs.page = 1;
-      secFindRefresh(fs);
-    };
-    search.appendChild(searchInput);
-    row1.appendChild(search);
-    row1.appendChild(secFindMultiPicker(
-      "Severity",
-      [...SEV_ORDER].reverse().map((s) => ({ v: s, label: _secCap(s) })),
-      fs.filters.severity,
-      (v) => {
-        secFindToggleIn(fs.filters.severity, v);
-        fs.page = 1;
-        secFindRefresh(fs);
-      }
-    ));
-    row1.appendChild(secFindMultiPicker(
-      "Status",
-      SEC_STATES.map((s) => ({ v: s, label: SEC_STATE_LABEL[s] || s })),
-      fs.filters.state,
-      (v) => {
-        secFindToggleIn(fs.filters.state, v);
-        fs.page = 1;
-        secFindRefresh(fs);
-      }
-    ));
-    row1.appendChild(secFindSinglePicker(
-      "Analysis run",
-      (data.analyses || []).map((a) => ({
-        v: String(a.id),
-        label: "#" + a.id + " (" + _secCap(a.profile) + ") \u2014 " + a.branch
-      })),
-      fs.filters.analysis,
-      (v) => {
-        fs.filters.analysis = v || "";
-        fs.page = 1;
-        secFindRefresh(fs);
-      }
-    ));
-    row1.appendChild(secFindSinglePicker(
-      "Branch",
-      (data.branches || []).map((b) => ({ v: b, label: b })),
-      fs.filters.branch,
-      (v) => {
-        fs.filters.branch = v || "";
-        fs.page = 1;
-        secFindRefresh(fs);
-      }
-    ));
-    row1.appendChild(secFindTextPicker(
-      "File path",
-      fs.filters.path,
-      (v) => {
-        fs.filters.path = v;
-        fs.page = 1;
-        secFindRefresh(fs);
-      }
-    ));
-    wrap.appendChild(row1);
-    const row2 = secEl("div", "secfind-filters-row row2");
-    row2.appendChild(secFindMultiPicker(
-      "Category",
-      FIND_CATEGORIES.map((c) => ({ v: c, label: _secCap(c) })),
-      fs.filters.category,
-      (v) => {
-        secFindToggleIn(fs.filters.category, v);
-        fs.page = 1;
-        secFindRefresh(fs);
-      }
-    ));
-    const toggleField = secEl("label", "secfind-toggle-field");
-    toggleField.title = "Fixed, accepted and false-positive rows are excluded unless this is on.";
-    const sw = secEl("span", "switch");
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = fs.filters.show_resolved;
-    cb.onchange = () => {
-      fs.filters.show_resolved = cb.checked;
-      fs.page = 1;
-      secFindRefresh(fs);
-    };
-    sw.appendChild(cb);
-    sw.appendChild(secEl("span", "track"));
-    sw.appendChild(secEl("span", "knob"));
-    toggleField.appendChild(sw);
-    toggleField.appendChild(secEl("span", null, "Show resolved findings"));
-    row2.appendChild(toggleField);
-    const right = secEl("div", "secfind-filters-right");
-    right.appendChild(secFindClearButton(fs));
-    const filtBadge = secEl("button", "btn ghost");
-    filtBadge.type = "button";
-    filtBadge.disabled = true;
-    filtBadge.appendChild(secIcon("filter"));
-    filtBadge.appendChild(document.createTextNode("Filters"));
-    filtBadge.appendChild(secEl("span", "secfind-filters-badge", String(secFindActiveFilterCount(fs))));
-    right.appendChild(filtBadge);
-    row2.appendChild(right);
-    wrap.appendChild(row2);
-    return wrap;
-  }
-  function secFindRow(fs, f) {
-    const tr = document.createElement("tr");
-    tr.className = "sev-" + secSevKey(f) + " state-" + secStateKey(f);
-    const tdSev = document.createElement("td");
-    tdSev.appendChild(secEl("span", "sevpill " + secSevKey(f), f.severity || ""));
-    tr.appendChild(tdSev);
-    const tdTitle = document.createElement("td");
-    tdTitle.appendChild(secEl("div", "sectitle", f.title || ""));
-    if ((f.rationale || "").trim()) {
-      tdTitle.appendChild(secEl("div", "secmeta clamp1", f.rationale));
-    }
-    tr.appendChild(tdTitle);
-    const tdLoc = document.createElement("td");
-    const occ = f.occurrences || [];
-    if (occ.length) {
-      const first = occ[0];
-      const where = first.line ? first.file + ":" + first.line : first.file;
-      const more = occ.length > 1 ? " (+" + (occ.length - 1) + " more)" : "";
-      const locEl = secEl("div", "secfind-loc", where + more);
-      if (occ.length > 1) {
-        locEl.title = occ.slice(1).map((o) => o.line ? o.file + ":" + o.line : o.file).join(", ");
-      }
-      tdLoc.appendChild(locEl);
-    }
-    tr.appendChild(tdLoc);
-    const tdCat = document.createElement("td");
-    const meta = secCategoryMeta(f.category);
-    const catWrap = secEl("div", "secfind-cat");
-    catWrap.appendChild(secIcon(meta.icon));
-    catWrap.appendChild(secEl("span", null, meta.label));
-    if (f.rule) catWrap.title = f.rule;
-    tdCat.appendChild(catWrap);
-    tr.appendChild(tdCat);
-    const tdRun = document.createElement("td");
-    const runWrap = secEl("div", "secfind-run");
-    const runInfo = ((fs.data || {}).analyses || []).find((a) => a.id === f.analysis_id);
-    if (f.analysis_id != null) {
-      const runBtn = document.createElement("button");
-      runBtn.type = "button";
-      runBtn.title = "Show this analysis";
-      const profileWord = runInfo && runInfo.profile ? " (" + _secCap(runInfo.profile) + ")" : "";
-      runBtn.appendChild(document.createTextNode("#" + f.analysis_id + profileWord));
-      runBtn.onclick = (e) => {
-        e.stopPropagation();
-        secSwitchProjectTab("runs");
-        secShowAnalysis(f.analysis_id, true);
-      };
-      runWrap.appendChild(runBtn);
-    }
-    if (runInfo && runInfo.started) {
-      runWrap.appendChild(secEl("div", "secmeta", fmtWhen(runInfo.started)));
-    }
-    tdRun.appendChild(runWrap);
-    tr.appendChild(tdRun);
-    const tdBranch = document.createElement("td");
-    tdBranch.textContent = f.branch || "";
-    tr.appendChild(tdBranch);
-    const tdState = document.createElement("td");
-    const stBadge = secEl("span", "secstate " + secStateKey(f), SEC_STATE_LABEL[f.state] || f.state);
-    stBadge.title = SEC_STATE_HELP[f.state] || "";
-    tdState.appendChild(stBadge);
-    tr.appendChild(tdState);
-    const tdFirst = document.createElement("td");
-    tdFirst.textContent = f.first_seen ? fmtWhen(f.first_seen) : "\u2014";
-    tr.appendChild(tdFirst);
-    tr.appendChild(secFindActionsCell(fs, f));
-    return tr;
-  }
-  function secFindDecisionControls(fs, f, onPicked) {
-    const pop = secEl("div", "menu-pop");
-    [["accepted", "Accept risk"], ["false_positive", "False positive"]].forEach(([state, label]) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.setAttribute("role", "menuitem");
-      b.appendChild(document.createTextNode(label));
-      b.onclick = (e) => {
-        e.stopPropagation();
-        if (onPicked) onPicked();
-        secFindDecide(fs, f, state, label);
-      };
-      pop.appendChild(b);
-    });
-    return pop;
-  }
-  async function secFindDecide(fs, f, state, label) {
-    const reason = await secAskReason(label, f.title);
-    if (reason === null) return;
-    const ok = await api(
-      "security_decide",
-      { project: fs.project, fingerprint: f.fingerprint, state, reason }
-    );
-    if (!ok) return;
-    toast(label + " recorded", false, "check");
-    secInvalidateProject();
-    await secFindRefresh(fs);
-  }
-  function secFindActionsCell(fs, f) {
-    const td = document.createElement("td");
-    td.className = "rowacts";
-    const view = document.createElement("button");
-    view.type = "button";
-    view.className = "iconbtn";
-    view.title = f.analysis_id != null ? "View this analysis" : "No analysis to view";
-    view.disabled = f.analysis_id == null;
-    view.appendChild(secIcon("eye"));
-    view.onclick = (e) => {
-      e.stopPropagation();
-      if (f.analysis_id == null) return;
-      secSwitchProjectTab("runs");
-      secShowAnalysis(f.analysis_id, true);
-    };
-    td.appendChild(view);
-    if (f.state !== "fixed") {
-      const kebab = document.createElement("details");
-      kebab.className = "secidx-kebab";
-      const summary = document.createElement("summary");
-      summary.className = "iconbtn";
-      summary.title = "More actions";
-      summary.appendChild(secIcon("dots"));
-      summary.onclick = (e) => {
-        e.stopPropagation();
-        closeMenus();
-      };
-      kebab.appendChild(summary);
-      const pop = secFindDecisionControls(fs, f, () => {
-        kebab.open = false;
-      });
-      kebab.appendChild(pop);
-      kebab.ontoggle = () => {
-        pop.hidden = !kebab.open;
-        if (!kebab.open) return;
-        const r = summary.getBoundingClientRect();
-        pop.style.position = "fixed";
-        pop.style.top = r.bottom + 6 + "px";
-        pop.style.left = "auto";
-        pop.style.right = window.innerWidth - r.right + "px";
-        pop.style.bottom = "auto";
-      };
-      td.appendChild(kebab);
-    }
-    return td;
-  }
-  function secFindTableSection(fs, data) {
-    const rows = data.rows || [];
-    if (!rows.length) {
-      if (data.analysed === false) {
-        return secEl(
-          "div",
-          "tblempty",
-          data.attempted ? SEC_NEVER.attempted : SEC_NEVER.next
-        );
-      }
-      return secEl("div", "tblempty", "No findings match these filters.");
-    }
-    const minSeverity = secMinSeverity(fs.project);
-    const visible = secVisible(rows, minSeverity);
-    if (!visible.length) {
-      return secEl(
-        "div",
-        "tblempty",
-        "Every finding on this page is below the " + minSeverity + " severity floor \u2014 recorded, not shown."
-      );
-    }
-    const wrap = secEl("div", "table-card");
-    const scroll = secEl("div", "table-scroll");
-    const table = document.createElement("table");
-    table.className = "secfind-table";
-    const thead = document.createElement("thead");
-    const htr = document.createElement("tr");
-    const INSERT_AFTER = { title: "Location", category: "Analysis run" };
-    function sortableHeader(key, label) {
-      const th = document.createElement("th");
-      const btn = secEl("button", "btn ghost");
-      btn.type = "button";
-      const active = fs.sort === key;
-      btn.appendChild(secEl("span", null, label + (active ? fs.dir === "asc" ? " \u25B2" : " \u25BC" : "")));
-      btn.onclick = () => {
-        if (fs.sort === key) fs.dir = fs.dir === "asc" ? "desc" : "asc";
-        else {
-          fs.sort = key;
-          fs.dir = key === "severity" ? "desc" : "asc";
-        }
-        fs.page = 1;
-        secFindRefresh(fs);
-      };
-      th.appendChild(btn);
-      return th;
-    }
-    function inertHeader(label) {
-      const th = document.createElement("th");
-      const btn = secEl("button", "btn ghost");
-      btn.type = "button";
-      btn.appendChild(secEl("span", null, label));
-      th.appendChild(btn);
-      return th;
-    }
-    FIND_SORT_COLUMNS.forEach(([key, label]) => {
-      htr.appendChild(sortableHeader(key, label));
-      if (INSERT_AFTER[key]) htr.appendChild(inertHeader(INSERT_AFTER[key]));
-    });
-    htr.appendChild(inertHeader("Actions"));
-    thead.appendChild(htr);
-    table.appendChild(thead);
-    const tbody = document.createElement("tbody");
-    visible.forEach((f) => tbody.appendChild(secFindRow(fs, f)));
-    table.appendChild(tbody);
-    scroll.appendChild(table);
-    wrap.appendChild(scroll);
-    return wrap;
-  }
-  function secFindPerPageField(fs) {
-    const field = secEl("div", "secfind-fpick secfind-perpage");
-    const current = fs.perPage || FIND_PER_PAGE;
-    const { trigger } = secFindTriggerLabel(null, current + " per page");
-    const details = document.createElement("details");
-    details.appendChild(trigger);
-    const pop = secEl("div", "menu-pop");
-    FIND_PER_PAGE_OPTIONS.forEach((n) => {
-      const item = document.createElement("button");
-      item.type = "button";
-      item.setAttribute("role", "menuitem");
-      item.appendChild(document.createTextNode(n + " per page"));
-      if (current === n) item.appendChild(secIcon("check2"));
-      item.onclick = (e) => {
-        e.stopPropagation();
-        details.open = false;
-        fs.perPage = n;
-        fs.page = 1;
-        secFindRefresh(fs);
-      };
-      pop.appendChild(item);
-    });
-    secFindPositionPop(details, trigger, pop);
-    field.appendChild(details);
-    return field;
-  }
-  function secFindPager(fs, data) {
-    const total = data.total || 0;
-    const perPage = data.per_page || fs.perPage || FIND_PER_PAGE;
-    const pages = Math.max(1, Math.ceil(total / perPage));
-    const page = data.page || 1;
-    const from = total ? (page - 1) * perPage + 1 : 0;
-    const to = Math.min(page * perPage, total);
-    const foot = tableFooter({
-      shown: { from, to },
-      total,
-      noun: "finding",
-      page,
-      pages,
-      numbered: true,
-      collapse: true
-    });
-    const nav = foot.childNodes[1];
-    if (nav) {
-      const kids = nav.childNodes || [];
-      const prev = kids[0], next = kids[kids.length - 1];
-      if (prev) prev.onclick = () => {
-        fs.page = Math.max(1, page - 1);
-        secFindRefresh(fs);
-      };
-      if (next && next !== prev) {
-        next.onclick = () => {
-          fs.page = Math.min(pages, page + 1);
-          secFindRefresh(fs);
-        };
-      }
-      kids.forEach((child) => {
-        if (child.dataset && child.dataset.page) {
-          child.onclick = () => {
-            fs.page = Number(child.dataset.page);
-            secFindRefresh(fs);
-          };
-        }
-      });
-    }
-    const wrap = secEl("div", "table-foot");
-    wrap.appendChild(foot.childNodes[0]);
-    wrap.appendChild(secFindPerPageField(fs));
-    if (nav) wrap.appendChild(nav);
-    return wrap;
-  }
-
-  // ui/security/branches-tab.js
-  var BRANCH_CAPPED_TITLE = "This analysis is INCOMPLETE: it stopped before covering the whole scope. The posture beside this badge is what it had reached, not what is there.";
-  var BRANCH_SCOPE_TITLE = "Counted once per branch \u2014 the same finding open on several branches counts once in each row here, while the rail's donut and the Total-findings card count it once for the whole project, so these rows can add up to more than either.";
-  var SEC_BRANCH_ACTIVE_DAYS = 7;
-  var SEC_BRANCH_COLS = [
-    ["branch", "Branch"],
-    ["status", "Status"],
-    ["last", "Last analysis"],
-    ["total", "Total findings"],
-    ["sev", "Severity breakdown"],
-    ["trend", "Trend (30d)"],
-    ["commit", "Last commit"],
-    ["actions", "Actions"]
-  ];
-  var SEC_BR_SEVS = ["critical", "high", "medium", "low", "info"];
-  var secBrSearch = "";
-  var secBrStatus = "";
-  var secBrDays = 0;
-  var secBrProject = null;
-  var secBrPayload = null;
-  var SEC_BR_WINDOWS = [
-    [0, "All time"],
-    [7, "Last 7 days"],
-    [30, "Last 30 days"],
-    [90, "Last 90 days"]
-  ];
-  function secBranchIsActive(r, now) {
-    return !!r.last_finished && now - r.last_finished <= SEC_BRANCH_ACTIVE_DAYS * 86400;
-  }
-  function secBrDefaultBranch() {
-    return (projById(secState.project) || {}).base || "";
-  }
-  function secRenderProjectBranches(payload) {
-    const host = $("sec-pj-branches");
-    if (!host) return;
-    secBrPayload = payload;
-    if (secBrProject !== payload.project) {
-      secBrProject = payload.project;
-      secBrSearch = "";
-      secBrStatus = "";
-      secBrDays = 0;
-    }
-    host.textContent = "";
-    const tabs = (payload || {}).tabs || {};
-    const rows = tabs.branches || [];
-    if (!rows.length) {
-      const attempted = !!(tabs.overview || {}).attempted;
-      host.appendChild(secEl(
-        "div",
-        "empty",
-        attempted ? SEC_NEVER.attempted : SEC_NEVER.next
-      ));
-      return;
-    }
-    host.appendChild(secBrKpis(rows, payload));
-    host.appendChild(secBrFilterBar(rows));
-    host.appendChild(secBrTable(rows));
-  }
-  function secBrKpis(rows, payload) {
-    const wrap = secEl("div", "kpi-grid");
-    const now = Math.floor(Date.now() / 1e3);
-    const analyzed30 = rows.filter((r) => r.last_finished && now - r.last_finished <= 30 * 86400).length;
-    wrap.appendChild(kpiCard({
-      icon: "gitbranch",
-      value: String(analyzed30),
-      label: "Branches analyzed",
-      sub: "in the last 30 days"
-    }));
-    const active = rows.filter((r) => secBranchIsActive(r, now)).length;
-    wrap.appendChild(kpiCard({
-      icon: "activity",
-      tone: "ok",
-      value: String(active),
-      label: "Active branches",
-      sub: "with recent analyses",
-      title: "A branch is active while its latest finished analysis is at most " + SEC_BRANCH_ACTIVE_DAYS + " days old \u2014 the same rule the Status column and filter read."
-    }));
-    const base = secBrDefaultBranch();
-    const baseRow = rows.find((r) => r.branch === base);
-    const crit = baseRow && baseRow.open ? String(baseRow.open.critical || 0) : "\u2014";
-    wrap.appendChild(kpiCard({
-      icon: "shield",
-      tone: "sev-crit",
-      value: crit,
-      label: "Critical findings",
-      sub: "in default branch",
-      title: crit === "\u2014" ? "The declared base (" + (base || "none declared") + ") has no finished analysis to read a posture from." : "Open critical findings in " + base + "'s latest finished analysis."
-    }));
-    const donut = (payload.sidebar || {}).donut || {};
-    wrap.appendChild(kpiCard({
-      icon: "alertcircle",
-      value: String(donut.total || 0),
-      label: "Total findings",
-      sub: "across all branches",
-      title: "Distinct problems (fingerprints) \u2014 the same finding open on two branches counts once here, while each branch's own row counts it again for itself."
-    }));
-    const covered = !baseRow || !baseRow.state ? "\u2014" : baseRow.state === "done" ? "100%" : "Partial";
-    wrap.appendChild(kpiCard({
-      icon: "covers",
-      value: covered,
-      label: "Default branch covered",
-      sub: baseRow && baseRow.last_finished ? "last analysis " + fmtAgo(baseRow.last_finished) : SEC_NEVER.short,
-      title: "100% means the default branch's latest finished analysis completed clean; Partial means it stopped before covering the whole scope (capped)."
-    }));
-    return wrap;
-  }
-  function secBrRepaint() {
-    if (secBrPayload) secRenderProjectBranches(secBrPayload);
-  }
-  function secBrPicker(labelText, valueText, options, isCurrent, onPick) {
-    const { trigger } = secFindTriggerLabel(labelText, valueText);
-    const wrap = document.createElement("details");
-    wrap.className = "secidx-periodpick";
-    wrap.appendChild(trigger);
-    const pop = secEl("div", "menu-pop");
-    options.forEach(([value, label]) => {
-      const item = document.createElement("button");
-      item.type = "button";
-      item.setAttribute("role", "menuitem");
-      item.appendChild(document.createTextNode(label));
-      if (isCurrent(value)) item.appendChild(secIcon("check2"));
-      item.onclick = (e) => {
-        e.stopPropagation();
-        onPick(value);
-      };
-      pop.appendChild(item);
-    });
-    secFindPositionPop(wrap, trigger, pop);
-    return wrap;
-  }
-  function secBrFilterBar(rows) {
-    const bar = secEl("div", "toolbar secbr-bar");
-    const box = secEl("div", "searchbox");
-    const input = document.createElement("input");
-    input.type = "search";
-    input.placeholder = "Search branches\u2026";
-    input.autocomplete = "off";
-    input.value = secBrSearch;
-    input.oninput = () => {
-      secBrSearch = input.value;
-      const host = $("sec-pj-branches");
-      const old = host && host.querySelector ? host.querySelector(".secbr-tablehost") : null;
-      if (old && secBrPayload) {
-        const fresh = secBrTable((secBrPayload.tabs || {}).branches || []);
-        old.replaceWith(fresh);
-      }
-    };
-    box.appendChild(input);
-    bar.appendChild(box);
-    bar.appendChild(secBrPicker(
-      "Status",
-      secBrStatus === "" ? "All" : secBrStatus === "active" ? "Active" : "Inactive",
-      [["", "All"], ["active", "Active"], ["inactive", "Inactive"]],
-      (v) => v === secBrStatus,
-      (v) => {
-        secBrStatus = v;
-        secBrRepaint();
-      }
-    ));
-    bar.appendChild(secBrPicker(
-      "Last analysis",
-      (SEC_BR_WINDOWS.find(([d]) => d === secBrDays) || [0, "All time"])[1],
-      SEC_BR_WINDOWS,
-      (v) => v === secBrDays,
-      (v) => {
-        secBrDays = v;
-        secBrRepaint();
-      }
-    ));
-    bar.appendChild(secEl("span", "spacer"));
-    const refresh = secEl("button", "btn ghost", "Refresh");
-    refresh.type = "button";
-    refresh.title = "Re-read this project's data";
-    refresh.onclick = () => secRefreshProject();
-    bar.appendChild(refresh);
-    return bar;
-  }
-  function secBrFiltered(rows) {
-    const now = Math.floor(Date.now() / 1e3);
-    const needle = secBrSearch.trim().toLowerCase();
-    return rows.filter((r) => {
-      if (needle && !(r.branch || "").toLowerCase().includes(needle)) return false;
-      if (secBrStatus === "active" && !secBranchIsActive(r, now)) return false;
-      if (secBrStatus === "inactive" && secBranchIsActive(r, now)) return false;
-      if (secBrDays && (!r.last_analysis || now - r.last_analysis > secBrDays * 86400)) return false;
-      return true;
-    });
-  }
-  function secBrTable(rows) {
-    const filtered = secBrFiltered(rows);
-    const hostWrap = secEl("div", "secbr-tablehost");
-    if (!filtered.length) {
-      hostWrap.appendChild(secEl(
-        "div",
-        "tblempty",
-        "No branch matches these filters."
-      ));
-      return hostWrap;
-    }
-    const wrap = secEl("div", "table-card");
-    const scroll = secEl("div", "table-scroll");
-    const table = document.createElement("table");
-    table.className = "secbr-table";
-    const thead = document.createElement("thead");
-    const htr = document.createElement("tr");
-    SEC_BRANCH_COLS.forEach(([key, label]) => {
-      const th = document.createElement("th");
-      th.textContent = label;
-      if (key === "total") th.title = BRANCH_SCOPE_TITLE;
-      if (key === "commit") {
-        th.title = "The commit the branch's newest analysis read \u2014 recorded when the analysis started, not read from git now.";
-      }
-      htr.appendChild(th);
-    });
-    thead.appendChild(htr);
-    table.appendChild(thead);
-    const tbody = document.createElement("tbody");
-    filtered.forEach((r) => tbody.appendChild(secBranchRow(r)));
-    table.appendChild(tbody);
-    scroll.appendChild(table);
-    wrap.appendChild(scroll);
-    wrap.appendChild(tableFooter({
-      shown: { from: 1, to: filtered.length },
-      total: filtered.length,
-      noun: "branch",
-      page: 1,
-      pages: 1,
-      numbered: true
-    }));
-    hostWrap.appendChild(wrap);
-    return hostWrap;
-  }
-  function secBranchRow(r) {
-    const tr = document.createElement("tr");
-    const now = Math.floor(Date.now() / 1e3);
-    const tdName = document.createElement("td");
-    const name = secEl("div", "secbr-name");
-    name.appendChild(secIcon("gitbranch"));
-    name.appendChild(secEl("span", "secbr-branch", r.branch || ""));
-    if (r.branch && r.branch === secBrDefaultBranch()) {
-      const badge = secEl("span", "pill profile", "Default");
-      badge.title = "This project's declared base branch";
-      name.appendChild(badge);
-    }
-    tdName.appendChild(name);
-    tr.appendChild(tdName);
-    const active = secBranchIsActive(r, now);
-    const tdStatus = document.createElement("td");
-    const status = secEl("span", "secbr-status " + (active ? "active" : "inactive"));
-    status.appendChild(secEl("span", "secbr-statusdot"));
-    status.appendChild(document.createTextNode(active ? "Active" : "Inactive"));
-    status.title = "Active while the latest finished analysis is at most " + SEC_BRANCH_ACTIVE_DAYS + " days old.";
-    tdStatus.appendChild(status);
-    tr.appendChild(tdStatus);
-    const tdLast = document.createElement("td");
-    if (r.last_analysis) {
-      tdLast.appendChild(secEl("div", "secbr-ago", fmtAgo(r.last_analysis)));
-      tdLast.appendChild(secEl("div", "secmeta", fmtWhen(r.last_analysis)));
-    } else {
-      tdLast.textContent = "\u2014";
-    }
-    tr.appendChild(tdLast);
-    const tdTotal = document.createElement("td");
-    tdTotal.appendChild(secEl(
-      "div",
-      "secbr-total",
-      r.open ? String(r.open.total || 0) : "\u2014"
-    ));
-    if (r.latest_state === "failed") {
-      tdTotal.appendChild(secEl(
-        "div",
-        "secmeta secbr-failed",
-        r.open ? "Latest attempt failed" : "Analysis failed"
-      ));
-    } else if (r.latest_state === "running") {
-      tdTotal.appendChild(secEl("div", "secmeta", "Analysis running\u2026"));
-    }
-    if (r.state === "capped") {
-      const badge = secEl("span", "secidx-capped", "incomplete");
-      badge.title = BRANCH_CAPPED_TITLE;
-      tdTotal.appendChild(badge);
-    }
-    tr.appendChild(tdTotal);
-    const tdSev = document.createElement("td");
-    tdSev.appendChild(secBrSevChips(r.open));
-    tr.appendChild(tdSev);
-    const tdTrend = document.createElement("td");
-    tdTrend.appendChild(secBrTrendBars(r.trend));
-    tdTrend.title = secBranchTrendText(r.trend);
-    tr.appendChild(tdTrend);
-    const tdCommit = document.createElement("td");
-    if (r.sha) {
-      tdCommit.appendChild(secEl("div", "secbr-sha", r.sha.slice(0, 7)));
-      tdCommit.appendChild(secEl("div", "secmeta", fmtWhen(r.last_analysis)));
-    } else {
-      tdCommit.textContent = "\u2014";
-    }
-    tr.appendChild(tdCommit);
-    const tdActs = document.createElement("td");
-    tdActs.className = "rowacts";
-    const view = document.createElement("button");
-    view.type = "button";
-    view.className = "btn ghost";
-    view.textContent = "View";
-    view.disabled = r.analysis_id == null;
-    view.title = r.analysis_id == null ? "No finished analysis of this branch to open yet" : "Open this branch's latest finished analysis on the Runs tab";
-    if (r.analysis_id != null) {
-      view.onclick = () => {
-        secSwitchProjectTab("runs");
-        secShowAnalysis(r.analysis_id, true);
-      };
-    }
-    tdActs.appendChild(view);
-    tdActs.appendChild(secBrKebab(r));
-    tr.appendChild(tdActs);
-    return tr;
-  }
-  function secBrSevChips(open) {
-    const wrap = secEl("div", "secbr-sev");
-    SEC_BR_SEVS.forEach((sev) => {
-      const chip = secEl("div", "secbr-sevchip");
-      if (!open) {
-        chip.appendChild(secEl("span", "secbr-sevcount none", "\u2014"));
-      } else {
-        const n = open[sev] || 0;
-        chip.appendChild(secEl(
-          "span",
-          "secbr-sevcount sev-" + sev + (n ? "" : " zero"),
-          String(n)
-        ));
-      }
-      chip.appendChild(secEl(
-        "span",
-        "secbr-sevname",
-        sev.charAt(0).toUpperCase() + sev.slice(1)
-      ));
-      wrap.appendChild(chip);
-    });
-    return wrap;
-  }
-  function secBrTrendBars(trend) {
-    const pts = (trend || []).slice(-24);
-    if (!pts.length) return secEl("span", "secbr-notrend", "\u2014");
-    const ns = "http://www.w3.org/2000/svg";
-    const W = 96, H = 28, gap = 2;
-    const svg = document.createElementNS(ns, "svg");
-    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
-    svg.setAttribute("class", "secbr-bars");
-    svg.setAttribute("role", "img");
-    const max = Math.max(1, ...pts.map((p) => p.open || 0));
-    const bw = Math.max(2, Math.min(8, (W - gap * (pts.length - 1)) / pts.length));
-    const span = pts.length * bw + (pts.length - 1) * gap;
-    const x0 = W - span;
-    pts.forEach((p, i) => {
-      const h = Math.max(2, Math.round((p.open || 0) / max * (H - 2)));
-      const rect = document.createElementNS(ns, "rect");
-      rect.setAttribute("x", String(x0 + i * (bw + gap)));
-      rect.setAttribute("y", String(H - h));
-      rect.setAttribute("width", String(bw));
-      rect.setAttribute("height", String(h));
-      rect.setAttribute("rx", "1");
-      rect.setAttribute("class", "secbr-bar" + (p.state === "capped" ? " capped" : ""));
-      svg.appendChild(rect);
-    });
-    return svg;
-  }
-  function secBrKebab(r) {
-    const kebab = document.createElement("details");
-    kebab.className = "secidx-kebab";
-    const summary = document.createElement("summary");
-    summary.className = "iconbtn";
-    summary.title = "More";
-    summary.appendChild(secIcon("dots"));
-    summary.onclick = (e) => {
-      e.stopPropagation();
-      closeMenus();
-    };
-    kebab.appendChild(summary);
-    const pop = secEl("div", "menu-pop");
-    pop.setAttribute("role", "menu");
-    const findings = document.createElement("button");
-    findings.setAttribute("role", "menuitem");
-    findings.appendChild(secIcon("filter"));
-    findings.appendChild(document.createTextNode("View findings"));
-    findings.title = "Open the findings browser filtered to this branch";
-    findings.onclick = (e) => {
-      e.stopPropagation();
-      kebab.open = false;
-      secSwitchProjectTab("findings");
-      renderFindings($("sec-pj-findings"), secState.project, { branch: r.branch });
-    };
-    pop.appendChild(findings);
-    const report = document.createElement("button");
-    report.setAttribute("role", "menuitem");
-    report.appendChild(secIcon("download"));
-    report.appendChild(document.createTextNode("Download report"));
-    report.title = r.analysis_id == null ? "No finished analysis of this branch yet" : "Download the latest finished analysis's report (Markdown)";
-    report.disabled = r.analysis_id == null;
-    report.onclick = (e) => {
-      e.stopPropagation();
-      kebab.open = false;
-      if (r.analysis_id != null) secDownloadReport(r.analysis_id, "md", report);
-    };
-    pop.appendChild(report);
-    kebab.appendChild(pop);
-    kebab.ontoggle = () => {
-      pop.hidden = !kebab.open;
-      if (!kebab.open) return;
-      const rect = summary.getBoundingClientRect();
-      pop.style.position = "fixed";
-      pop.style.top = rect.bottom + 6 + "px";
-      pop.style.right = window.innerWidth - rect.right + "px";
-      pop.style.left = "auto";
-      pop.style.bottom = "auto";
-    };
-    return kebab;
-  }
-  function secBranchTrendText(trend) {
-    const pts = trend || [];
-    if (!pts.length) return "No analyses of this branch in the last 30 days.";
-    const partial = pts.some((p) => p.state === "capped");
-    if (pts.length === 1) {
-      return pts[0].open + " open \u2014 only one analysis in the last 30 days, nothing yet to compare it against." + (partial ? " It stopped early, so that count is what it reached." : "");
-    }
-    const opens = pts.map((p) => p.open);
-    const first = opens[0], last = opens[opens.length - 1];
-    const base = first + " \u2192 " + last + " open across " + pts.length + " analyses in the last 30 days";
-    if (partial) {
-      return base + ", but at least one of them stopped before covering the whole scope \u2014 no direction is claimed across a partial read";
-    }
-    let direction = "flat";
-    for (let i = 1; i < opens.length; i++) {
-      const step = opens[i] < opens[i - 1] ? "falling" : opens[i] > opens[i - 1] ? "rising" : "flat";
-      if (step === "flat") continue;
-      if (direction === "flat") direction = step;
-      else if (direction !== step) {
-        direction = null;
-        break;
-      }
-    }
-    if (direction) return base + " (" + direction + ")";
-    const peak = Math.max(...opens), trough = Math.min(...opens);
-    if (peak > first && peak > last) return base + ", peaked at " + peak;
-    if (trough < first && trough < last) return base + ", dipped to " + trough;
-    return base;
-  }
-  function secBranchesSidebar(payload) {
-    const frag = document.createDocumentFragment();
-    const sb = (payload || {}).sidebar || {};
-    const rows = ((payload || {}).tabs || {}).branches || [];
-    const donutCard = secEl("div", "card secpj-plaincard");
-    const donutHead = secEl("div", "secpj-cardhead");
-    const donutTitle = secEl("h3", null, "Findings by severity ");
-    donutTitle.appendChild(secEl("span", "secbr-scope", "(all branches)"));
-    donutTitle.title = "Distinct problems (fingerprints) across every analysed branch \u2014 the same finding open on two branches counts once here, once per branch in the table. " + SEC_FLOOR_SCOPE_NOTE;
-    donutHead.appendChild(donutTitle);
-    donutCard.appendChild(donutHead);
-    const row = secEl("div", "secrun-donutrow");
-    row.appendChild(secIndexDonutSvg(sb.donut || {}));
-    row.appendChild(secIndexDonutLegend(
-      sb.donut || {},
-      { showPercent: true, showZero: true }
-    ));
-    donutCard.appendChild(row);
-    const capped = secCappedScopeNote(
-      sb.capped_branches || 0,
-      sb.branch_count || 0,
-      "branch"
-    );
-    if (capped) donutCard.appendChild(capped);
-    frag.appendChild(donutCard);
-    const catCard = secEl("div", "card secpj-plaincard");
-    const catHead = secEl("div", "secpj-cardhead");
-    catHead.appendChild(secEl("h3", null, "Top issue categories"));
-    catCard.appendChild(catHead);
-    catCard.appendChild(secIndexCategories(sb.categories || []));
-    const viewAll = secEl("button", "btn ghost secpj-viewallcats");
-    viewAll.type = "button";
-    viewAll.appendChild(document.createTextNode("View all findings"));
-    viewAll.appendChild(secIcon("cright"));
-    viewAll.title = "Open this project's findings browser";
-    viewAll.onclick = () => secSwitchProjectTab("findings");
-    catCard.appendChild(viewAll);
-    frag.appendChild(catCard);
-    frag.appendChild(secBrCoverageCard(rows));
-    return frag;
-  }
-  function secBrCoverageCard(rows) {
-    const card = secEl("div", "card secpj-plaincard");
-    const head = secEl("div", "secpj-cardhead");
-    head.appendChild(secEl("h3", null, "Branch coverage"));
-    card.appendChild(head);
-    const now = Math.floor(Date.now() / 1e3);
-    const analyzed = rows.filter((r) => r.last_finished && now - r.last_finished <= 30 * 86400).length;
-    const gitCount = secGitBranchCount();
-    const total = Math.max(gitCount, rows.length);
-    const pct = total ? Math.round(analyzed / total * 100) : 0;
-    const line = secEl("div", "secbr-covline");
-    line.appendChild(secEl("span", "secbr-covcount", analyzed + " / " + total + " analyzed"));
-    line.appendChild(secEl("span", "secbr-covpct", pct + "%"));
-    card.appendChild(line);
-    const barTrack = secEl("div", "secbr-covtrack");
-    const bar = secEl("div", "secbr-covbar");
-    bar.style.width = pct + "%";
-    barTrack.appendChild(bar);
-    card.appendChild(barTrack);
-    const scope = gitCount ? "of the branches the repository lists" : "of the branches ever analysed";
-    card.appendChild(secEl(
-      "div",
-      "secpj-caption",
-      !total ? "Nothing has been analysed yet." : analyzed >= total ? "All branches have been analyzed in the last 30 days." : total - analyzed + " " + scope + (total - analyzed === 1 ? " has" : " have") + " not been analyzed in the last 30 days."
-    ));
-    return card;
-  }
-
-  // ui/security/reports-tab.js
-  var SEC_REPORT_FORMATS = [
-    ["md", "Markdown"],
-    ["json", "JSON"],
-    ["html", "HTML"],
-    ["sbom", "SBOM"]
-  ];
-  function secReportsCaption() {
-    const cap = secEl("div", "secpj-caption");
-    cap.appendChild(document.createTextNode(
-      "Markdown, JSON and HTML are generated from each analysis's own checklist at the moment you download one. "
-    ));
-    cap.appendChild(secEl("b", null, "SBOM is different: "));
-    cap.appendChild(document.createTextNode(
-      "it is not a report over any analysis's checklist but the stored CycloneDX inventory itself, kept per branch with only the most recent document \u2014 so the SBOM button on an older row still downloads that branch's CURRENT document, not a snapshot of what that analysis saw."
-    ));
-    return cap;
-  }
-  function secReportRow(r) {
-    const tr = document.createElement("tr");
-    const cell = (text) => {
-      const td = document.createElement("td");
-      td.textContent = text;
-      return td;
-    };
-    tr.appendChild(cell("#" + r.analysis_id));
-    tr.appendChild(cell(r.branch || ""));
-    tr.appendChild(cell(r.started ? fmtWhen(r.started) : "\u2014"));
-    tr.appendChild(cell(r.state || ""));
-    const tdDl = document.createElement("td");
-    const row = secEl("div", "secdl");
-    SEC_REPORT_FORMATS.forEach(([fmt, label]) => {
-      const btn = secEl("button", "btn ghost");
-      btn.type = "button";
-      btn.appendChild(secIcon("file"));
-      btn.appendChild(document.createTextNode(label));
-      btn.onclick = () => secDownloadReport(r.analysis_id, fmt, btn);
-      row.appendChild(btn);
-    });
-    tdDl.appendChild(row);
-    tr.appendChild(tdDl);
-    return tr;
-  }
-  function secReportsTable(rows) {
-    if (!rows.length) {
-      return secEl("div", "tblempty", "No analyses of this project yet.");
-    }
-    const wrap = secEl("div", "tablewrap");
-    const table = document.createElement("table");
-    const thead = document.createElement("thead");
-    const htr = document.createElement("tr");
-    ["Analysis", "Branch", "Started", "State", "Downloads"].forEach((h) => {
-      const th = document.createElement("th");
-      th.textContent = h;
-      htr.appendChild(th);
-    });
-    thead.appendChild(htr);
-    table.appendChild(thead);
-    const tbody = document.createElement("tbody");
-    rows.forEach((r) => tbody.appendChild(secReportRow(r)));
-    table.appendChild(tbody);
-    wrap.appendChild(table);
-    return wrap;
-  }
-  function secRenderProjectReports(payload) {
-    const host = $("sec-pj-reports");
-    if (!host) return;
-    host.textContent = "";
-    const rows = ((payload || {}).tabs || {}).reports || [];
-    host.appendChild(secReportsCaption());
-    host.appendChild(secReportsTable(rows));
-    host.appendChild(secEl(
-      "div",
-      "secdlnote",
-      "Downloads always contain every recorded finding, whatever the severity floor shows."
-    ));
-  }
-
   // ui/security/activity-screen.js
   var ACT_TABS = [
     { key: "", label: "All activity", kinds: [] },
@@ -3369,6 +1879,1509 @@
     return box;
   }
 
+  // ui/security/findings-screen.js
+  var FIND_SORT_COLUMNS = [
+    ["severity", "Severity"],
+    ["title", "Title"],
+    ["category", "Category"],
+    ["branch", "Branch"],
+    ["state", "Status"],
+    ["first_seen", "First seen"]
+  ];
+  var FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene"];
+  var FIND_PER_PAGE = 25;
+  var FIND_PER_PAGE_OPTIONS = [10, 25, 50];
+  function _defaultFilters() {
+    return {
+      severity: [],
+      state: [],
+      category: [],
+      branch: "",
+      path: "",
+      q: "",
+      analysis: "",
+      show_resolved: false,
+      fingerprint: ""
+    };
+  }
+  function _newFindState(host, project) {
+    return {
+      host,
+      project,
+      gen: 0,
+      data: null,
+      error: "",
+      filters: _defaultFilters(),
+      sort: "severity",
+      dir: "desc",
+      page: 1,
+      perPage: FIND_PER_PAGE,
+      savedName: "",
+      newName: ""
+    };
+  }
+  var secFindStates = /* @__PURE__ */ new WeakMap();
+  async function renderFindings(host, project, initialFilters) {
+    let fs = secFindStates.get(host);
+    if (!fs || fs.project !== project) {
+      fs = _newFindState(host, project);
+      secFindStates.set(host, fs);
+    }
+    if (initialFilters) {
+      fs.filters = Object.assign(_defaultFilters(), initialFilters);
+      fs.page = 1;
+    }
+    await secFindLoad(fs);
+  }
+  function secFindQuery(fs) {
+    const p = new URLSearchParams();
+    p.set("project", fs.project);
+    p.set("sort", fs.sort);
+    p.set("dir", fs.dir);
+    p.set("page", String(fs.page));
+    p.set("per_page", String(fs.perPage || FIND_PER_PAGE));
+    const f = fs.filters;
+    if (f.severity.length) p.set("severity", f.severity.join(","));
+    if (f.state.length) p.set("state", f.state.join(","));
+    if (f.category.length) p.set("category", f.category.join(","));
+    if (f.branch.trim()) p.set("branch", f.branch.trim());
+    if (f.path.trim()) p.set("path", f.path.trim());
+    if (f.q.trim()) p.set("q", f.q.trim());
+    if (f.analysis.trim()) p.set("analysis", f.analysis.trim());
+    if (f.show_resolved) p.set("show_resolved", "1");
+    if (f.fingerprint.trim()) p.set("fingerprint", f.fingerprint.trim());
+    return p.toString();
+  }
+  async function secFindLoad(fs) {
+    const host = fs.host, project = fs.project;
+    if (!host || !project) return;
+    const gen = ++fs.gen;
+    if (!fs.data) {
+      host.textContent = "";
+      host.appendChild(secEl("div", "tblempty", "Loading\u2026"));
+    }
+    let data;
+    try {
+      data = await secFetch("/api/security/findings?" + secFindQuery(fs));
+    } catch (e) {
+      if (gen !== fs.gen || secFindStates.get(host) !== fs) return;
+      fs.error = e.message;
+      fs.data = null;
+      secFindPaint(fs);
+      return;
+    }
+    if (gen !== fs.gen || secFindStates.get(host) !== fs) return;
+    fs.error = "";
+    fs.data = data;
+    fs.page = data.page || 1;
+    secFindPaint(fs);
+  }
+  async function secFindRefresh(fs) {
+    await secFindLoad(fs);
+  }
+  function secFindPaint(fs) {
+    const host = fs.host;
+    if (!host) return;
+    host.textContent = "";
+    host.appendChild(secFindHeader(fs, fs.data));
+    if (fs.error) {
+      const box = secEl("div", "tblempty");
+      box.appendChild(secIcon("alert"));
+      box.appendChild(document.createTextNode("Could not read findings \u2014 " + fs.error));
+      host.appendChild(box);
+      return;
+    }
+    const data = fs.data;
+    if (!data) return;
+    host.appendChild(secFindStrip(fs, data));
+    host.appendChild(secFindFilterBar(fs, data));
+    const section = secFindTableSection(fs, data);
+    if ((section.className || "").includes("table-card")) section.appendChild(secFindPager(fs, data));
+    host.appendChild(section);
+  }
+  function secFindHeader(fs, data) {
+    const wrap = secEl("div");
+    if (((fs.filters || {}).fingerprint || "").trim()) return wrap;
+    const head = secEl("div", "secfind-head");
+    head.appendChild(secEl("span", "spacer"));
+    const actions = secEl("div", "secfind-head-actions");
+    const savedWrap = secFindSavedFilters(fs, data || {});
+    const saveBtn = secEl("button", "btn ghost");
+    saveBtn.type = "button";
+    saveBtn.appendChild(secIcon("plus"));
+    saveBtn.appendChild(document.createTextNode("Save filter"));
+    saveBtn.title = "Save the current filters under a name";
+    saveBtn.onclick = (e) => {
+      e.stopPropagation();
+      savedWrap.open = true;
+      if (savedWrap.ontoggle) savedWrap.ontoggle();
+    };
+    actions.appendChild(saveBtn);
+    const exportBtn = secEl("button", "btn ghost");
+    exportBtn.type = "button";
+    exportBtn.appendChild(secIcon("download"));
+    exportBtn.appendChild(document.createTextNode("Export"));
+    exportBtn.title = "Open this project's Reports tab";
+    exportBtn.onclick = () => secSwitchProjectTab("reports");
+    actions.appendChild(exportBtn);
+    actions.appendChild(savedWrap);
+    head.appendChild(actions);
+    wrap.appendChild(head);
+    return wrap;
+  }
+  function secFindHiddenByFloor(data, minSeverity) {
+    const floor = SEV_ORDER.indexOf(minSeverity);
+    const bySev = data.by_severity || {}, fixedBySev = data.fixed_by_severity || {};
+    let n = 0;
+    SEV_ORDER.forEach((sev, i) => {
+      if (i < floor) n += (bySev[sev] || 0) - (fixedBySev[sev] || 0);
+    });
+    return n;
+  }
+  var ROW_PILL_TITLE = "Rows matching the current filters \u2014 the same finding open on two branches counts twice here.";
+  function _secCap(s) {
+    s = String(s || "");
+    return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+  }
+  function secFindStrip(fs, data) {
+    const box = secEl("div");
+    if (data.analysed === false) {
+      const line = secEl("div", "warnline bad");
+      line.appendChild(secIcon("alert"));
+      line.appendChild(secEl(
+        "span",
+        "grow",
+        data.attempted ? SEC_NEVER.attempted : SEC_NEVER.next
+      ));
+      box.appendChild(line);
+    } else if (data.capped_branches) {
+      const line = secEl("div", "warnline bad");
+      line.appendChild(secIcon("alert"));
+      line.appendChild(secEl(
+        "span",
+        "grow",
+        data.capped_branches + " of these branches had a latest analysis that stopped before covering its whole scope \u2014 what is below is what it had reached, not what is there."
+      ));
+      box.appendChild(line);
+    }
+    const fingerprintFilter = ((fs.filters || {}).fingerprint || "").trim();
+    if (fingerprintFilter) {
+      box.appendChild(secEl(
+        "div",
+        "secpj-caption",
+        "Filtered to fingerprint " + fingerprintFilter + "\u2026 \u2014 \u201CClear filters\u201D below shows this project's whole list."
+      ));
+    }
+    const strip = secEl("div", "kpi-grid");
+    const totalCard = kpiCard({
+      icon: "layers",
+      value: String(data.total || 0),
+      label: "Total findings",
+      title: ROW_PILL_TITLE
+    });
+    totalCard.className += " secfind-stat total";
+    strip.appendChild(totalCard);
+    const bySev = data.by_severity || {};
+    const total = data.total || 0;
+    let any = false;
+    ["critical", "high", "medium", "low", "info"].forEach((sev) => {
+      any = any || !!bySev[sev];
+      const n = bySev[sev] || 0;
+      const card = kpiCard({
+        icon: SEV_KPI_ICON[sev],
+        tone: SEV_KPI_TONE[sev],
+        value: String(n),
+        label: _secCap(sev),
+        title: ROW_PILL_TITLE
+      });
+      card.appendChild(secEl(
+        "div",
+        "secov-delta",
+        total ? (n / total * 100).toFixed(1) + "%" : "\u2014"
+      ));
+      strip.appendChild(card);
+    });
+    const uniqueCard = kpiCard({
+      icon: "diamond",
+      value: String(data.unique || 0),
+      label: "Unique issues",
+      title: "Distinct problems (fingerprints) \u2014 the same finding open on two branches counts once here."
+    });
+    uniqueCard.className += " secfind-stat unique";
+    strip.appendChild(uniqueCard);
+    box.appendChild(strip);
+    if (!any && data.analysed !== false) {
+      box.appendChild(secEl("span", "sevpill clean", "Nothing matches"));
+    }
+    const minSeverity = secMinSeverity(fs.project);
+    const hidden = secFindHiddenByFloor(data, minSeverity);
+    const note = secEl("div", "secpj-caption");
+    if (hidden > 0) {
+      note.appendChild(document.createTextNode(
+        hidden + " finding" + (hidden === 1 ? "" : "s") + " below " + minSeverity + " " + (hidden === 1 ? "is" : "are") + " hidden by this project's severity floor \u2014 recorded, not shown. "
+      ));
+    }
+    note.appendChild(secEl(
+      "b",
+      null,
+      "Downloads always contain every recorded finding, whatever the severity floor shows."
+    ));
+    box.appendChild(note);
+    return box;
+  }
+  function secFindTriggerLabel(label, valueText) {
+    const trigger = document.createElement("summary");
+    trigger.className = "filterpick";
+    trigger.onclick = (e) => e.stopPropagation();
+    if (label) trigger.appendChild(secEl("span", "pk-k", label + ":"));
+    const valueEl = secEl("span", "pk-v", valueText);
+    trigger.appendChild(valueEl);
+    trigger.appendChild(secIcon("cdown"));
+    return { trigger, valueEl };
+  }
+  function secFindPositionPop(details, trigger, pop) {
+    pop.setAttribute("role", "menu");
+    pop.hidden = true;
+    details.appendChild(pop);
+    details.ontoggle = () => {
+      pop.hidden = !details.open;
+      if (!details.open) return;
+      const r = trigger.getBoundingClientRect();
+      pop.style.position = "fixed";
+      pop.style.top = r.bottom + 6 + "px";
+      pop.style.left = r.left + "px";
+      pop.style.right = "auto";
+      pop.style.bottom = "auto";
+    };
+  }
+  function secFindMultiPicker(label, options, selected, onToggle) {
+    const field = secEl("div", "secfind-fpick");
+    const valueText = !selected.length ? "All" : selected.length === 1 ? (options.find((o) => o.v === selected[0]) || {}).label || selected[0] : selected.length + " selected";
+    const { trigger } = secFindTriggerLabel(label, valueText);
+    const details = document.createElement("details");
+    details.appendChild(trigger);
+    const pop = secEl("div", "menu-pop");
+    options.forEach((opt) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.setAttribute("role", "menuitemcheckbox");
+      item.setAttribute("aria-checked", selected.includes(opt.v) ? "true" : "false");
+      item.appendChild(document.createTextNode(opt.label));
+      if (selected.includes(opt.v)) item.appendChild(secIcon("check2"));
+      item.onclick = (e) => {
+        e.stopPropagation();
+        onToggle(opt.v);
+      };
+      pop.appendChild(item);
+    });
+    secFindPositionPop(details, trigger, pop);
+    field.appendChild(details);
+    return field;
+  }
+  function secFindSinglePicker(label, options, selected, onPick) {
+    const field = secEl("div", "secfind-fpick");
+    const current = options.find((o) => o.v === selected);
+    const { trigger } = secFindTriggerLabel(label, selected && current ? current.label : "All");
+    const details = document.createElement("details");
+    details.appendChild(trigger);
+    const pop = secEl("div", "menu-pop");
+    const allItem = document.createElement("button");
+    allItem.type = "button";
+    allItem.setAttribute("role", "menuitem");
+    allItem.appendChild(document.createTextNode("All"));
+    if (!selected) allItem.appendChild(secIcon("check2"));
+    allItem.onclick = (e) => {
+      e.stopPropagation();
+      details.open = false;
+      onPick("");
+    };
+    pop.appendChild(allItem);
+    options.forEach((opt) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.setAttribute("role", "menuitem");
+      item.appendChild(document.createTextNode(opt.label));
+      if (selected === opt.v) item.appendChild(secIcon("check2"));
+      item.onclick = (e) => {
+        e.stopPropagation();
+        details.open = false;
+        onPick(opt.v);
+      };
+      pop.appendChild(item);
+    });
+    secFindPositionPop(details, trigger, pop);
+    field.appendChild(details);
+    return field;
+  }
+  function secFindTextPicker(label, value, onChange) {
+    const field = secEl("div", "secfind-fpick");
+    const { trigger } = secFindTriggerLabel(label, value.trim() ? value : "All");
+    const details = document.createElement("details");
+    details.appendChild(trigger);
+    const pop = secEl("div", "menu-pop");
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.spellcheck = false;
+    inp.autocomplete = "off";
+    inp.placeholder = "contains\u2026";
+    inp.value = value;
+    inp.onclick = (e) => e.stopPropagation();
+    inp.onchange = () => onChange(inp.value);
+    pop.appendChild(inp);
+    secFindPositionPop(details, trigger, pop);
+    field.appendChild(details);
+    return field;
+  }
+  function secFindToggleIn(list, value) {
+    const i = list.indexOf(value);
+    if (i >= 0) list.splice(i, 1);
+    else list.push(value);
+  }
+  function secFindActiveFilterCount(fs) {
+    const f = fs.filters;
+    let n = 0;
+    if (f.severity.length) n++;
+    if (f.state.length) n++;
+    if (f.category.length) n++;
+    if (f.branch.trim()) n++;
+    if (f.path.trim()) n++;
+    if (f.analysis.trim()) n++;
+    if (f.q.trim()) n++;
+    if (!f.show_resolved) n++;
+    return n;
+  }
+  function secFindClearButton(fs) {
+    const btn = secEl("button", "btn ghost");
+    btn.type = "button";
+    btn.appendChild(secIcon("x"));
+    btn.appendChild(document.createTextNode("Clear filters"));
+    btn.onclick = () => {
+      fs.filters = _defaultFilters();
+      fs.page = 1;
+      secFindRefresh(fs);
+    };
+    return btn;
+  }
+  function secFindCurrentQuery(fs) {
+    const f = fs.filters;
+    return {
+      severity: f.severity,
+      state: f.state,
+      category: f.category,
+      branch: f.branch,
+      path: f.path,
+      q: f.q,
+      analysis: f.analysis,
+      show_resolved: f.show_resolved,
+      fingerprint: f.fingerprint,
+      sort: fs.sort,
+      dir: fs.dir
+    };
+  }
+  function secFindApplyQuery(fs, q) {
+    const query = q || {};
+    fs.filters = {
+      severity: Array.isArray(query.severity) ? query.severity.slice() : [],
+      state: Array.isArray(query.state) ? query.state.slice() : [],
+      category: Array.isArray(query.category) ? query.category.slice() : [],
+      branch: typeof query.branch === "string" ? query.branch : "",
+      path: typeof query.path === "string" ? query.path : "",
+      q: typeof query.q === "string" ? query.q : "",
+      analysis: typeof query.analysis === "string" ? query.analysis : "",
+      show_resolved: !!query.show_resolved,
+      fingerprint: typeof query.fingerprint === "string" ? query.fingerprint : ""
+    };
+    fs.sort = FIND_SORT_COLUMNS.some(([key]) => key === query.sort) ? query.sort : "severity";
+    fs.dir = query.dir === "asc" ? "asc" : "desc";
+    fs.page = 1;
+    secFindRefresh(fs);
+  }
+  async function secFindSaveCurrent(fs, name) {
+    const trimmed = (name || "").trim();
+    if (!trimmed) {
+      toast("Name this filter set before saving", true);
+      return;
+    }
+    const ok = await api(
+      "security_filter_save",
+      { project: fs.project, name: trimmed, query: secFindCurrentQuery(fs) }
+    );
+    if (!ok) return;
+    toast("Filter saved", false, "check");
+    fs.savedName = trimmed;
+    fs.newName = "";
+    await secFindRefresh(fs);
+  }
+  async function secFindDeleteSaved(fs, name) {
+    if (!name) return;
+    const ok = await api("security_filter_delete", { project: fs.project, name });
+    if (!ok) return;
+    toast("Filter deleted", false, "check");
+    fs.savedName = "";
+    await secFindRefresh(fs);
+  }
+  function secFindSavedFilters(fs, data) {
+    const filters = data.filters || [];
+    if (!filters.some((f) => f.name === fs.savedName)) fs.savedName = "";
+    const details = document.createElement("details");
+    details.className = "secfind-savedpick";
+    const { trigger, valueEl } = secFindTriggerLabel(null, fs.savedName || "Saved filters");
+    details.appendChild(trigger);
+    const pop = secEl("div", "menu-pop");
+    function pick(name, query) {
+      fs.savedName = name;
+      valueEl.textContent = name || "Saved filters";
+      details.open = false;
+      if (query) secFindApplyQuery(fs, query);
+    }
+    const blank = document.createElement("button");
+    blank.type = "button";
+    blank.setAttribute("role", "menuitem");
+    blank.appendChild(document.createTextNode("\u2014 none \u2014"));
+    if (!fs.savedName) blank.appendChild(secIcon("check2"));
+    blank.onclick = (e) => {
+      e.stopPropagation();
+      pick("");
+    };
+    pop.appendChild(blank);
+    filters.forEach((f) => {
+      const row = secEl("div", "secfind-savedrow");
+      const item = document.createElement("button");
+      item.type = "button";
+      item.setAttribute("role", "menuitem");
+      item.appendChild(document.createTextNode(f.name));
+      if (f.name === fs.savedName) item.appendChild(secIcon("check2"));
+      item.onclick = (e) => {
+        e.stopPropagation();
+        pick(f.name, f.query);
+      };
+      row.appendChild(item);
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "iconbtn";
+      del.title = "Delete this saved filter";
+      del.appendChild(secIcon("trash"));
+      del.onclick = (e) => {
+        e.stopPropagation();
+        details.open = false;
+        secFindDeleteSaved(fs, f.name);
+      };
+      row.appendChild(del);
+      pop.appendChild(row);
+    });
+    pop.appendChild(secEl("div", "sep"));
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.placeholder = "Save current view as\u2026";
+    nameInput.value = fs.newName;
+    nameInput.onclick = (e) => e.stopPropagation();
+    nameInput.onchange = () => {
+      fs.newName = nameInput.value;
+    };
+    pop.appendChild(nameInput);
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.setAttribute("role", "menuitem");
+    saveBtn.appendChild(secIcon("check2"));
+    saveBtn.appendChild(document.createTextNode("Save"));
+    saveBtn.onclick = (e) => {
+      e.stopPropagation();
+      secFindSaveCurrent(fs, nameInput.value);
+    };
+    pop.appendChild(saveBtn);
+    secFindPositionPop(details, trigger, pop);
+    return details;
+  }
+  function secFindFilterBar(fs, data) {
+    const wrap = secEl("div", "secfind-filters");
+    const row1 = secEl("div", "secfind-filters-row");
+    const search = secEl("div", "secfind-search");
+    search.appendChild(secIcon("search"));
+    const searchInput = document.createElement("input");
+    searchInput.type = "text";
+    searchInput.placeholder = "Search by message, file, or CVE\u2026";
+    searchInput.spellcheck = false;
+    searchInput.autocomplete = "off";
+    searchInput.value = fs.filters.q;
+    searchInput.title = "Search title / rule / rationale / file";
+    searchInput.onchange = () => {
+      fs.filters.q = searchInput.value;
+      fs.page = 1;
+      secFindRefresh(fs);
+    };
+    search.appendChild(searchInput);
+    row1.appendChild(search);
+    row1.appendChild(secFindMultiPicker(
+      "Severity",
+      [...SEV_ORDER].reverse().map((s) => ({ v: s, label: _secCap(s) })),
+      fs.filters.severity,
+      (v) => {
+        secFindToggleIn(fs.filters.severity, v);
+        fs.page = 1;
+        secFindRefresh(fs);
+      }
+    ));
+    row1.appendChild(secFindMultiPicker(
+      "Status",
+      SEC_STATES.map((s) => ({ v: s, label: SEC_STATE_LABEL[s] || s })),
+      fs.filters.state,
+      (v) => {
+        secFindToggleIn(fs.filters.state, v);
+        fs.page = 1;
+        secFindRefresh(fs);
+      }
+    ));
+    row1.appendChild(secFindSinglePicker(
+      "Analysis run",
+      (data.analyses || []).map((a) => ({
+        v: String(a.id),
+        label: "#" + a.id + " (" + _secCap(a.profile) + ") \u2014 " + a.branch
+      })),
+      fs.filters.analysis,
+      (v) => {
+        fs.filters.analysis = v || "";
+        fs.page = 1;
+        secFindRefresh(fs);
+      }
+    ));
+    row1.appendChild(secFindSinglePicker(
+      "Branch",
+      (data.branches || []).map((b) => ({ v: b, label: b })),
+      fs.filters.branch,
+      (v) => {
+        fs.filters.branch = v || "";
+        fs.page = 1;
+        secFindRefresh(fs);
+      }
+    ));
+    row1.appendChild(secFindTextPicker(
+      "File path",
+      fs.filters.path,
+      (v) => {
+        fs.filters.path = v;
+        fs.page = 1;
+        secFindRefresh(fs);
+      }
+    ));
+    wrap.appendChild(row1);
+    const row2 = secEl("div", "secfind-filters-row row2");
+    row2.appendChild(secFindMultiPicker(
+      "Category",
+      FIND_CATEGORIES.map((c) => ({ v: c, label: _secCap(c) })),
+      fs.filters.category,
+      (v) => {
+        secFindToggleIn(fs.filters.category, v);
+        fs.page = 1;
+        secFindRefresh(fs);
+      }
+    ));
+    const toggleField = secEl("label", "secfind-toggle-field");
+    toggleField.title = "Fixed, accepted and false-positive rows are excluded unless this is on.";
+    const sw = secEl("span", "switch");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = fs.filters.show_resolved;
+    cb.onchange = () => {
+      fs.filters.show_resolved = cb.checked;
+      fs.page = 1;
+      secFindRefresh(fs);
+    };
+    sw.appendChild(cb);
+    sw.appendChild(secEl("span", "track"));
+    sw.appendChild(secEl("span", "knob"));
+    toggleField.appendChild(sw);
+    toggleField.appendChild(secEl("span", null, "Show resolved findings"));
+    row2.appendChild(toggleField);
+    const right = secEl("div", "secfind-filters-right");
+    right.appendChild(secFindClearButton(fs));
+    const filtBadge = secEl("button", "btn ghost");
+    filtBadge.type = "button";
+    filtBadge.disabled = true;
+    filtBadge.appendChild(secIcon("filter"));
+    filtBadge.appendChild(document.createTextNode("Filters"));
+    filtBadge.appendChild(secEl("span", "secfind-filters-badge", String(secFindActiveFilterCount(fs))));
+    right.appendChild(filtBadge);
+    row2.appendChild(right);
+    wrap.appendChild(row2);
+    return wrap;
+  }
+  function secFindRow(fs, f) {
+    const tr = document.createElement("tr");
+    tr.className = "sev-" + secSevKey(f) + " state-" + secStateKey(f);
+    const tdSev = document.createElement("td");
+    tdSev.appendChild(secEl("span", "sevpill " + secSevKey(f), f.severity || ""));
+    tr.appendChild(tdSev);
+    const tdTitle = document.createElement("td");
+    const titleEl = secEl("div", "sectitle", f.title || "");
+    titleEl.title = f.title || "";
+    tdTitle.appendChild(titleEl);
+    if ((f.rationale || "").trim()) {
+      tdTitle.appendChild(secEl("div", "secmeta clamp1", f.rationale));
+    }
+    tr.appendChild(tdTitle);
+    const tdLoc = document.createElement("td");
+    const occ = f.occurrences || [];
+    if (occ.length) {
+      const first = occ[0];
+      const where = first.line ? first.file + ":" + first.line : first.file;
+      const more = occ.length > 1 ? " (+" + (occ.length - 1) + " more)" : "";
+      const locEl = secEl("div", "secfind-loc", where + more);
+      if (occ.length > 1) {
+        locEl.title = occ.slice(1).map((o) => o.line ? o.file + ":" + o.line : o.file).join(", ");
+      }
+      tdLoc.appendChild(locEl);
+    }
+    tr.appendChild(tdLoc);
+    const tdCat = document.createElement("td");
+    const meta = secCategoryMeta(f.category);
+    const catWrap = secEl("div", "secfind-cat");
+    catWrap.appendChild(secIcon(meta.icon));
+    catWrap.appendChild(secEl("span", null, meta.label));
+    if (f.rule) catWrap.title = f.rule;
+    tdCat.appendChild(catWrap);
+    tr.appendChild(tdCat);
+    const tdRun = document.createElement("td");
+    const runWrap = secEl("div", "secfind-run");
+    const runInfo = ((fs.data || {}).analyses || []).find((a) => a.id === f.analysis_id);
+    if (f.analysis_id != null) {
+      const runBtn = document.createElement("button");
+      runBtn.type = "button";
+      runBtn.title = "Show this analysis";
+      const profileWord = runInfo && runInfo.profile ? " (" + _secCap(runInfo.profile) + ")" : "";
+      runBtn.appendChild(document.createTextNode("#" + f.analysis_id + profileWord));
+      runBtn.onclick = (e) => {
+        e.stopPropagation();
+        secSwitchProjectTab("runs");
+        secShowAnalysis(f.analysis_id, true);
+      };
+      runWrap.appendChild(runBtn);
+    }
+    if (runInfo && runInfo.started) {
+      runWrap.appendChild(secEl("div", "secmeta", fmtWhen(runInfo.started)));
+    }
+    tdRun.appendChild(runWrap);
+    tr.appendChild(tdRun);
+    const tdBranch = document.createElement("td");
+    tdBranch.textContent = f.branch || "";
+    tr.appendChild(tdBranch);
+    const tdState = document.createElement("td");
+    const stBadge = secEl("span", "secstate " + secStateKey(f), SEC_STATE_LABEL[f.state] || f.state);
+    stBadge.title = SEC_STATE_HELP[f.state] || "";
+    tdState.appendChild(stBadge);
+    tr.appendChild(tdState);
+    const tdFirst = document.createElement("td");
+    tdFirst.textContent = f.first_seen ? fmtWhen(f.first_seen) : "\u2014";
+    tr.appendChild(tdFirst);
+    tr.appendChild(secFindActionsCell(fs, f));
+    return tr;
+  }
+  function secFindDecisionControls(fs, f, onPicked) {
+    const pop = secEl("div", "menu-pop");
+    [["accepted", "Accept risk"], ["false_positive", "False positive"]].forEach(([state, label]) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.setAttribute("role", "menuitem");
+      b.appendChild(document.createTextNode(label));
+      b.onclick = (e) => {
+        e.stopPropagation();
+        if (onPicked) onPicked();
+        secFindDecide(fs, f, state, label);
+      };
+      pop.appendChild(b);
+    });
+    return pop;
+  }
+  async function secFindDecide(fs, f, state, label) {
+    const reason = await secAskReason(label, f.title);
+    if (reason === null) return;
+    const ok = await api(
+      "security_decide",
+      { project: fs.project, fingerprint: f.fingerprint, state, reason }
+    );
+    if (!ok) return;
+    toast(label + " recorded", false, "check");
+    secInvalidateProject();
+    await secFindRefresh(fs);
+  }
+  function secFindActionsCell(fs, f) {
+    const td = document.createElement("td");
+    td.className = "rowacts";
+    const view = document.createElement("button");
+    view.type = "button";
+    view.className = "iconbtn";
+    view.title = f.analysis_id != null ? "View this analysis" : "No analysis to view";
+    view.disabled = f.analysis_id == null;
+    view.appendChild(secIcon("eye"));
+    view.onclick = (e) => {
+      e.stopPropagation();
+      if (f.analysis_id == null) return;
+      secSwitchProjectTab("runs");
+      secShowAnalysis(f.analysis_id, true);
+    };
+    td.appendChild(view);
+    if (f.state !== "fixed") {
+      const kebab = document.createElement("details");
+      kebab.className = "secidx-kebab";
+      const summary = document.createElement("summary");
+      summary.className = "iconbtn";
+      summary.title = "More actions";
+      summary.appendChild(secIcon("dots"));
+      summary.onclick = (e) => {
+        e.stopPropagation();
+        closeMenus();
+      };
+      kebab.appendChild(summary);
+      const pop = secFindDecisionControls(fs, f, () => {
+        kebab.open = false;
+      });
+      kebab.appendChild(pop);
+      kebab.ontoggle = () => {
+        pop.hidden = !kebab.open;
+        if (!kebab.open) return;
+        const r = summary.getBoundingClientRect();
+        pop.style.position = "fixed";
+        pop.style.top = r.bottom + 6 + "px";
+        pop.style.left = "auto";
+        pop.style.right = window.innerWidth - r.right + "px";
+        pop.style.bottom = "auto";
+      };
+      td.appendChild(kebab);
+    }
+    return td;
+  }
+  function secFindTableSection(fs, data) {
+    const rows = data.rows || [];
+    if (!rows.length) {
+      if (data.analysed === false) {
+        return secEl(
+          "div",
+          "tblempty",
+          data.attempted ? SEC_NEVER.attempted : SEC_NEVER.next
+        );
+      }
+      return secEl("div", "tblempty", "No findings match these filters.");
+    }
+    const minSeverity = secMinSeverity(fs.project);
+    const visible = secVisible(rows, minSeverity);
+    if (!visible.length) {
+      return secEl(
+        "div",
+        "tblempty",
+        "Every finding on this page is below the " + minSeverity + " severity floor \u2014 recorded, not shown."
+      );
+    }
+    const wrap = secEl("div", "table-card");
+    const scroll = secEl("div", "table-scroll");
+    const table = document.createElement("table");
+    table.className = "secfind-table";
+    const thead = document.createElement("thead");
+    const htr = document.createElement("tr");
+    const INSERT_AFTER = { title: "Location", category: "Analysis run" };
+    function sortableHeader(key, label) {
+      const th = document.createElement("th");
+      const btn = secEl("button", "btn ghost");
+      btn.type = "button";
+      const active = fs.sort === key;
+      btn.appendChild(secEl("span", null, label + (active ? fs.dir === "asc" ? " \u25B2" : " \u25BC" : "")));
+      btn.onclick = () => {
+        if (fs.sort === key) fs.dir = fs.dir === "asc" ? "desc" : "asc";
+        else {
+          fs.sort = key;
+          fs.dir = key === "severity" ? "desc" : "asc";
+        }
+        fs.page = 1;
+        secFindRefresh(fs);
+      };
+      th.appendChild(btn);
+      return th;
+    }
+    function inertHeader(label) {
+      const th = document.createElement("th");
+      const btn = secEl("button", "btn ghost");
+      btn.type = "button";
+      btn.appendChild(secEl("span", null, label));
+      th.appendChild(btn);
+      return th;
+    }
+    FIND_SORT_COLUMNS.forEach(([key, label]) => {
+      htr.appendChild(sortableHeader(key, label));
+      if (INSERT_AFTER[key]) htr.appendChild(inertHeader(INSERT_AFTER[key]));
+    });
+    htr.appendChild(inertHeader("Actions"));
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    visible.forEach((f) => tbody.appendChild(secFindRow(fs, f)));
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    wrap.appendChild(scroll);
+    return wrap;
+  }
+  function secFindPerPageField(fs) {
+    const field = secEl("div", "secfind-fpick secfind-perpage");
+    const current = fs.perPage || FIND_PER_PAGE;
+    const { trigger } = secFindTriggerLabel(null, current + " per page");
+    const details = document.createElement("details");
+    details.appendChild(trigger);
+    const pop = secEl("div", "menu-pop");
+    FIND_PER_PAGE_OPTIONS.forEach((n) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.setAttribute("role", "menuitem");
+      item.appendChild(document.createTextNode(n + " per page"));
+      if (current === n) item.appendChild(secIcon("check2"));
+      item.onclick = (e) => {
+        e.stopPropagation();
+        details.open = false;
+        fs.perPage = n;
+        fs.page = 1;
+        secFindRefresh(fs);
+      };
+      pop.appendChild(item);
+    });
+    secFindPositionPop(details, trigger, pop);
+    field.appendChild(details);
+    return field;
+  }
+  function secFindPager(fs, data) {
+    const total = data.total || 0;
+    const perPage = data.per_page || fs.perPage || FIND_PER_PAGE;
+    const pages = Math.max(1, Math.ceil(total / perPage));
+    const page = data.page || 1;
+    const from = total ? (page - 1) * perPage + 1 : 0;
+    const to = Math.min(page * perPage, total);
+    const foot = tableFooter({
+      shown: { from, to },
+      total,
+      noun: "finding",
+      page,
+      pages,
+      numbered: true,
+      collapse: true
+    });
+    const nav = foot.childNodes[1];
+    if (nav) {
+      const kids = nav.childNodes || [];
+      const prev = kids[0], next = kids[kids.length - 1];
+      if (prev) prev.onclick = () => {
+        fs.page = Math.max(1, page - 1);
+        secFindRefresh(fs);
+      };
+      if (next && next !== prev) {
+        next.onclick = () => {
+          fs.page = Math.min(pages, page + 1);
+          secFindRefresh(fs);
+        };
+      }
+      kids.forEach((child) => {
+        if (child.dataset && child.dataset.page) {
+          child.onclick = () => {
+            fs.page = Number(child.dataset.page);
+            secFindRefresh(fs);
+          };
+        }
+      });
+    }
+    const wrap = secEl("div", "table-foot");
+    wrap.appendChild(foot.childNodes[0]);
+    wrap.appendChild(secFindPerPageField(fs));
+    if (nav) wrap.appendChild(nav);
+    return wrap;
+  }
+
+  // ui/security/branches-tab.js
+  var BRANCH_CAPPED_TITLE = "This analysis is INCOMPLETE: it stopped before covering the whole scope. The posture beside this badge is what it had reached, not what is there.";
+  var BRANCH_SCOPE_TITLE = "Counted once per branch \u2014 the same finding open on several branches counts once in each row here, while the rail's donut and the Total-findings card count it once for the whole project, so these rows can add up to more than either.";
+  var SEC_BRANCH_ACTIVE_DAYS = 7;
+  var SEC_BRANCH_COLS = [
+    ["branch", "Branch"],
+    ["status", "Status"],
+    ["last", "Last analysis"],
+    ["total", "Total findings"],
+    ["sev", "Severity breakdown"],
+    ["trend", "Trend (30d)"],
+    ["commit", "Last commit"],
+    ["actions", "Actions"]
+  ];
+  var SEC_BR_SEVS = ["critical", "high", "medium", "low", "info"];
+  var secBrSearch = "";
+  var secBrStatus = "";
+  var secBrDays = 0;
+  var secBrProject = null;
+  var secBrPayload = null;
+  var SEC_BR_WINDOWS = [
+    [0, "All time"],
+    [7, "Last 7 days"],
+    [30, "Last 30 days"],
+    [90, "Last 90 days"]
+  ];
+  function secBranchIsActive(r, now) {
+    return !!r.last_finished && now - r.last_finished <= SEC_BRANCH_ACTIVE_DAYS * 86400;
+  }
+  function secBrDefaultBranch() {
+    return (projById(secState.project) || {}).base || "";
+  }
+  function secRenderProjectBranches(payload) {
+    const host = $("sec-pj-branches");
+    if (!host) return;
+    secBrPayload = payload;
+    if (secBrProject !== payload.project) {
+      secBrProject = payload.project;
+      secBrSearch = "";
+      secBrStatus = "";
+      secBrDays = 0;
+    }
+    host.textContent = "";
+    const tabs = (payload || {}).tabs || {};
+    const rows = tabs.branches || [];
+    if (!rows.length) {
+      const attempted = !!(tabs.overview || {}).attempted;
+      host.appendChild(secEl(
+        "div",
+        "empty",
+        attempted ? SEC_NEVER.attempted : SEC_NEVER.next
+      ));
+      return;
+    }
+    host.appendChild(secBrKpis(rows, payload));
+    host.appendChild(secBrFilterBar(rows));
+    host.appendChild(secBrTable(rows));
+  }
+  function secBrKpis(rows, payload) {
+    const wrap = secEl("div", "kpi-grid");
+    const now = Math.floor(Date.now() / 1e3);
+    const analyzed30 = rows.filter((r) => r.last_finished && now - r.last_finished <= 30 * 86400).length;
+    wrap.appendChild(kpiCard({
+      icon: "gitbranch",
+      value: String(analyzed30),
+      label: "Branches analyzed",
+      sub: "in the last 30 days"
+    }));
+    const active = rows.filter((r) => secBranchIsActive(r, now)).length;
+    wrap.appendChild(kpiCard({
+      icon: "activity",
+      tone: "ok",
+      value: String(active),
+      label: "Active branches",
+      sub: "with recent analyses",
+      title: "A branch is active while its latest finished analysis is at most " + SEC_BRANCH_ACTIVE_DAYS + " days old \u2014 the same rule the Status column and filter read."
+    }));
+    const base = secBrDefaultBranch();
+    const baseRow = rows.find((r) => r.branch === base);
+    const crit = baseRow && baseRow.open ? String(baseRow.open.critical || 0) : "\u2014";
+    wrap.appendChild(kpiCard({
+      icon: "shield",
+      tone: "sev-crit",
+      value: crit,
+      label: "Critical findings",
+      sub: "in default branch",
+      title: crit === "\u2014" ? "The declared base (" + (base || "none declared") + ") has no finished analysis to read a posture from." : "Open critical findings in " + base + "'s latest finished analysis."
+    }));
+    const donut = (payload.sidebar || {}).donut || {};
+    wrap.appendChild(kpiCard({
+      icon: "alertcircle",
+      value: String(donut.total || 0),
+      label: "Total findings",
+      sub: "across all branches",
+      title: "Distinct problems (fingerprints) \u2014 the same finding open on two branches counts once here, while each branch's own row counts it again for itself."
+    }));
+    const covered = !baseRow || !baseRow.state ? "\u2014" : baseRow.state === "done" ? "100%" : "Partial";
+    wrap.appendChild(kpiCard({
+      icon: "covers",
+      value: covered,
+      label: "Default branch covered",
+      sub: baseRow && baseRow.last_finished ? "last analysis " + fmtAgo(baseRow.last_finished) : SEC_NEVER.short,
+      title: "100% means the default branch's latest finished analysis completed clean; Partial means it stopped before covering the whole scope (capped)."
+    }));
+    return wrap;
+  }
+  function secBrRepaint() {
+    if (secBrPayload) secRenderProjectBranches(secBrPayload);
+  }
+  function secBrPicker(labelText, valueText, options, isCurrent, onPick) {
+    const { trigger } = secFindTriggerLabel(labelText, valueText);
+    const wrap = document.createElement("details");
+    wrap.className = "secidx-periodpick";
+    wrap.appendChild(trigger);
+    const pop = secEl("div", "menu-pop");
+    options.forEach(([value, label]) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.setAttribute("role", "menuitem");
+      item.appendChild(document.createTextNode(label));
+      if (isCurrent(value)) item.appendChild(secIcon("check2"));
+      item.onclick = (e) => {
+        e.stopPropagation();
+        onPick(value);
+      };
+      pop.appendChild(item);
+    });
+    secFindPositionPop(wrap, trigger, pop);
+    return wrap;
+  }
+  function secBrFilterBar(rows) {
+    const bar = secEl("div", "toolbar secbr-bar");
+    const box = secEl("div", "searchbox");
+    const input = document.createElement("input");
+    input.type = "search";
+    input.placeholder = "Search branches\u2026";
+    input.autocomplete = "off";
+    input.value = secBrSearch;
+    input.oninput = () => {
+      secBrSearch = input.value;
+      const host = $("sec-pj-branches");
+      const old = host && host.querySelector ? host.querySelector(".secbr-tablehost") : null;
+      if (old && secBrPayload) {
+        const fresh = secBrTable((secBrPayload.tabs || {}).branches || []);
+        old.replaceWith(fresh);
+      }
+    };
+    box.appendChild(input);
+    bar.appendChild(box);
+    bar.appendChild(secBrPicker(
+      "Status",
+      secBrStatus === "" ? "All" : secBrStatus === "active" ? "Active" : "Inactive",
+      [["", "All"], ["active", "Active"], ["inactive", "Inactive"]],
+      (v) => v === secBrStatus,
+      (v) => {
+        secBrStatus = v;
+        secBrRepaint();
+      }
+    ));
+    bar.appendChild(secBrPicker(
+      "Last analysis",
+      (SEC_BR_WINDOWS.find(([d]) => d === secBrDays) || [0, "All time"])[1],
+      SEC_BR_WINDOWS,
+      (v) => v === secBrDays,
+      (v) => {
+        secBrDays = v;
+        secBrRepaint();
+      }
+    ));
+    bar.appendChild(secEl("span", "spacer"));
+    const refresh = secEl("button", "btn ghost", "Refresh");
+    refresh.type = "button";
+    refresh.title = "Re-read this project's data";
+    refresh.onclick = () => secRefreshProject();
+    bar.appendChild(refresh);
+    return bar;
+  }
+  function secBrFiltered(rows) {
+    const now = Math.floor(Date.now() / 1e3);
+    const needle = secBrSearch.trim().toLowerCase();
+    return rows.filter((r) => {
+      if (needle && !(r.branch || "").toLowerCase().includes(needle)) return false;
+      if (secBrStatus === "active" && !secBranchIsActive(r, now)) return false;
+      if (secBrStatus === "inactive" && secBranchIsActive(r, now)) return false;
+      if (secBrDays && (!r.last_analysis || now - r.last_analysis > secBrDays * 86400)) return false;
+      return true;
+    });
+  }
+  function secBrTable(rows) {
+    const filtered = secBrFiltered(rows);
+    const hostWrap = secEl("div", "secbr-tablehost");
+    if (!filtered.length) {
+      hostWrap.appendChild(secEl(
+        "div",
+        "tblempty",
+        "No branch matches these filters."
+      ));
+      return hostWrap;
+    }
+    const wrap = secEl("div", "table-card");
+    const scroll = secEl("div", "table-scroll");
+    const table = document.createElement("table");
+    table.className = "secbr-table";
+    const thead = document.createElement("thead");
+    const htr = document.createElement("tr");
+    SEC_BRANCH_COLS.forEach(([key, label]) => {
+      const th = document.createElement("th");
+      th.textContent = label;
+      if (key === "total") th.title = BRANCH_SCOPE_TITLE;
+      if (key === "commit") {
+        th.title = "The commit the branch's newest analysis read \u2014 recorded when the analysis started, not read from git now.";
+      }
+      htr.appendChild(th);
+    });
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    filtered.forEach((r) => tbody.appendChild(secBranchRow(r)));
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    wrap.appendChild(scroll);
+    wrap.appendChild(tableFooter({
+      shown: { from: 1, to: filtered.length },
+      total: filtered.length,
+      noun: "branch",
+      page: 1,
+      pages: 1,
+      numbered: true
+    }));
+    hostWrap.appendChild(wrap);
+    return hostWrap;
+  }
+  function secBranchRow(r) {
+    const tr = document.createElement("tr");
+    const now = Math.floor(Date.now() / 1e3);
+    const tdName = document.createElement("td");
+    const name = secEl("div", "secbr-name");
+    name.appendChild(secIcon("gitbranch"));
+    name.appendChild(secEl("span", "secbr-branch", r.branch || ""));
+    if (r.branch && r.branch === secBrDefaultBranch()) {
+      const badge = secEl("span", "pill profile", "Default");
+      badge.title = "This project's declared base branch";
+      name.appendChild(badge);
+    }
+    tdName.appendChild(name);
+    tr.appendChild(tdName);
+    const active = secBranchIsActive(r, now);
+    const tdStatus = document.createElement("td");
+    const status = secEl("span", "secbr-status " + (active ? "active" : "inactive"));
+    status.appendChild(secEl("span", "secbr-statusdot"));
+    status.appendChild(document.createTextNode(active ? "Active" : "Inactive"));
+    status.title = "Active while the latest finished analysis is at most " + SEC_BRANCH_ACTIVE_DAYS + " days old.";
+    tdStatus.appendChild(status);
+    tr.appendChild(tdStatus);
+    const tdLast = document.createElement("td");
+    if (r.last_analysis) {
+      tdLast.appendChild(secEl("div", "secbr-ago", fmtAgo(r.last_analysis)));
+      tdLast.appendChild(secEl("div", "secmeta", fmtWhen(r.last_analysis)));
+    } else {
+      tdLast.textContent = "\u2014";
+    }
+    tr.appendChild(tdLast);
+    const tdTotal = document.createElement("td");
+    tdTotal.appendChild(secEl(
+      "div",
+      "secbr-total",
+      r.open ? String(r.open.total || 0) : "\u2014"
+    ));
+    if (r.latest_state === "failed") {
+      tdTotal.appendChild(secEl(
+        "div",
+        "secmeta secbr-failed",
+        r.open ? "Latest attempt failed" : "Analysis failed"
+      ));
+    } else if (r.latest_state === "running") {
+      tdTotal.appendChild(secEl("div", "secmeta", "Analysis running\u2026"));
+    }
+    if (r.state === "capped") {
+      const badge = secEl("span", "secidx-capped", "incomplete");
+      badge.title = BRANCH_CAPPED_TITLE;
+      tdTotal.appendChild(badge);
+    }
+    tr.appendChild(tdTotal);
+    const tdSev = document.createElement("td");
+    tdSev.appendChild(secBrSevChips(r.open));
+    tr.appendChild(tdSev);
+    const tdTrend = document.createElement("td");
+    tdTrend.appendChild(secBrTrendBars(r.trend));
+    tdTrend.title = secBranchTrendText(r.trend);
+    tr.appendChild(tdTrend);
+    const tdCommit = document.createElement("td");
+    if (r.sha) {
+      tdCommit.appendChild(secEl("div", "secbr-sha", r.sha.slice(0, 7)));
+      tdCommit.appendChild(secEl("div", "secmeta", fmtWhen(r.last_analysis)));
+    } else {
+      tdCommit.textContent = "\u2014";
+    }
+    tr.appendChild(tdCommit);
+    const tdActs = document.createElement("td");
+    tdActs.className = "rowacts";
+    const view = document.createElement("button");
+    view.type = "button";
+    view.className = "btn ghost";
+    view.textContent = "View";
+    view.disabled = r.analysis_id == null;
+    view.title = r.analysis_id == null ? "No finished analysis of this branch to open yet" : "Open this branch's latest finished analysis on the Runs tab";
+    if (r.analysis_id != null) {
+      view.onclick = () => {
+        secSwitchProjectTab("runs");
+        secShowAnalysis(r.analysis_id, true);
+      };
+    }
+    tdActs.appendChild(view);
+    tdActs.appendChild(secBrKebab(r));
+    tr.appendChild(tdActs);
+    return tr;
+  }
+  function secBrSevChips(open) {
+    const wrap = secEl("div", "secbr-sev");
+    SEC_BR_SEVS.forEach((sev) => {
+      const chip = secEl("div", "secbr-sevchip");
+      if (!open) {
+        chip.appendChild(secEl("span", "secbr-sevcount none", "\u2014"));
+      } else {
+        const n = open[sev] || 0;
+        chip.appendChild(secEl(
+          "span",
+          "secbr-sevcount sev-" + sev + (n ? "" : " zero"),
+          String(n)
+        ));
+      }
+      chip.appendChild(secEl(
+        "span",
+        "secbr-sevname",
+        sev.charAt(0).toUpperCase() + sev.slice(1)
+      ));
+      wrap.appendChild(chip);
+    });
+    return wrap;
+  }
+  function secBrTrendBars(trend) {
+    const pts = (trend || []).slice(-24);
+    if (!pts.length) return secEl("span", "secbr-notrend", "\u2014");
+    const ns = "http://www.w3.org/2000/svg";
+    const W = 96, H = 28, gap = 2;
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    svg.setAttribute("class", "secbr-bars");
+    svg.setAttribute("role", "img");
+    const max = Math.max(1, ...pts.map((p) => p.open || 0));
+    const bw = Math.max(2, Math.min(8, (W - gap * (pts.length - 1)) / pts.length));
+    const span = pts.length * bw + (pts.length - 1) * gap;
+    const x0 = W - span;
+    pts.forEach((p, i) => {
+      const h = Math.max(2, Math.round((p.open || 0) / max * (H - 2)));
+      const rect = document.createElementNS(ns, "rect");
+      rect.setAttribute("x", String(x0 + i * (bw + gap)));
+      rect.setAttribute("y", String(H - h));
+      rect.setAttribute("width", String(bw));
+      rect.setAttribute("height", String(h));
+      rect.setAttribute("rx", "1");
+      rect.setAttribute("class", "secbr-bar" + (p.state === "capped" ? " capped" : ""));
+      svg.appendChild(rect);
+    });
+    return svg;
+  }
+  function secBrKebab(r) {
+    const kebab = document.createElement("details");
+    kebab.className = "secidx-kebab";
+    const summary = document.createElement("summary");
+    summary.className = "iconbtn";
+    summary.title = "More";
+    summary.appendChild(secIcon("dots"));
+    summary.onclick = (e) => {
+      e.stopPropagation();
+      closeMenus();
+    };
+    kebab.appendChild(summary);
+    const pop = secEl("div", "menu-pop");
+    pop.setAttribute("role", "menu");
+    const findings = document.createElement("button");
+    findings.setAttribute("role", "menuitem");
+    findings.appendChild(secIcon("filter"));
+    findings.appendChild(document.createTextNode("View findings"));
+    findings.title = "Open the findings browser filtered to this branch";
+    findings.onclick = (e) => {
+      e.stopPropagation();
+      kebab.open = false;
+      secSwitchProjectTab("findings");
+      renderFindings($("sec-pj-findings"), secState.project, { branch: r.branch });
+    };
+    pop.appendChild(findings);
+    const report = document.createElement("button");
+    report.setAttribute("role", "menuitem");
+    report.appendChild(secIcon("download"));
+    report.appendChild(document.createTextNode("Download report"));
+    report.title = r.analysis_id == null ? "No finished analysis of this branch yet" : "Download the latest finished analysis's report (Markdown)";
+    report.disabled = r.analysis_id == null;
+    report.onclick = (e) => {
+      e.stopPropagation();
+      kebab.open = false;
+      if (r.analysis_id != null) secDownloadReport(r.analysis_id, "md", report);
+    };
+    pop.appendChild(report);
+    kebab.appendChild(pop);
+    kebab.ontoggle = () => {
+      pop.hidden = !kebab.open;
+      if (!kebab.open) return;
+      const rect = summary.getBoundingClientRect();
+      pop.style.position = "fixed";
+      pop.style.top = rect.bottom + 6 + "px";
+      pop.style.right = window.innerWidth - rect.right + "px";
+      pop.style.left = "auto";
+      pop.style.bottom = "auto";
+    };
+    return kebab;
+  }
+  function secBranchTrendText(trend) {
+    const pts = trend || [];
+    if (!pts.length) return "No analyses of this branch in the last 30 days.";
+    const partial = pts.some((p) => p.state === "capped");
+    if (pts.length === 1) {
+      return pts[0].open + " open \u2014 only one analysis in the last 30 days, nothing yet to compare it against." + (partial ? " It stopped early, so that count is what it reached." : "");
+    }
+    const opens = pts.map((p) => p.open);
+    const first = opens[0], last = opens[opens.length - 1];
+    const base = first + " \u2192 " + last + " open across " + pts.length + " analyses in the last 30 days";
+    if (partial) {
+      return base + ", but at least one of them stopped before covering the whole scope \u2014 no direction is claimed across a partial read";
+    }
+    let direction = "flat";
+    for (let i = 1; i < opens.length; i++) {
+      const step = opens[i] < opens[i - 1] ? "falling" : opens[i] > opens[i - 1] ? "rising" : "flat";
+      if (step === "flat") continue;
+      if (direction === "flat") direction = step;
+      else if (direction !== step) {
+        direction = null;
+        break;
+      }
+    }
+    if (direction) return base + " (" + direction + ")";
+    const peak = Math.max(...opens), trough = Math.min(...opens);
+    if (peak > first && peak > last) return base + ", peaked at " + peak;
+    if (trough < first && trough < last) return base + ", dipped to " + trough;
+    return base;
+  }
+  function secBranchesSidebar(payload) {
+    const frag = document.createDocumentFragment();
+    const sb = (payload || {}).sidebar || {};
+    const rows = ((payload || {}).tabs || {}).branches || [];
+    const donutCard = secEl("div", "card secpj-plaincard");
+    const donutHead = secEl("div", "secpj-cardhead");
+    const donutTitle = secEl("h3", null, "Findings by severity ");
+    donutTitle.appendChild(secEl("span", "secbr-scope", "(all branches)"));
+    donutTitle.title = "Distinct problems (fingerprints) across every analysed branch \u2014 the same finding open on two branches counts once here, once per branch in the table. " + SEC_FLOOR_SCOPE_NOTE;
+    donutHead.appendChild(donutTitle);
+    donutCard.appendChild(donutHead);
+    const row = secEl("div", "secrun-donutrow");
+    row.appendChild(secIndexDonutSvg(sb.donut || {}));
+    row.appendChild(secIndexDonutLegend(
+      sb.donut || {},
+      { showPercent: true, showZero: true }
+    ));
+    donutCard.appendChild(row);
+    const capped = secCappedScopeNote(
+      sb.capped_branches || 0,
+      sb.branch_count || 0,
+      "branch"
+    );
+    if (capped) donutCard.appendChild(capped);
+    frag.appendChild(donutCard);
+    const catCard = secEl("div", "card secpj-plaincard");
+    const catHead = secEl("div", "secpj-cardhead");
+    catHead.appendChild(secEl("h3", null, "Top issue categories"));
+    catCard.appendChild(catHead);
+    catCard.appendChild(secIndexCategories(sb.categories || []));
+    const viewAll = secEl("button", "btn ghost secpj-viewallcats");
+    viewAll.type = "button";
+    viewAll.appendChild(document.createTextNode("View all findings"));
+    viewAll.appendChild(secIcon("cright"));
+    viewAll.title = "Open this project's findings browser";
+    viewAll.onclick = () => secSwitchProjectTab("findings");
+    catCard.appendChild(viewAll);
+    frag.appendChild(catCard);
+    frag.appendChild(secBrCoverageCard(rows));
+    return frag;
+  }
+  function secBrCoverageCard(rows) {
+    const card = secEl("div", "card secpj-plaincard");
+    const head = secEl("div", "secpj-cardhead");
+    head.appendChild(secEl("h3", null, "Branch coverage"));
+    card.appendChild(head);
+    const now = Math.floor(Date.now() / 1e3);
+    const analyzed = rows.filter((r) => r.last_finished && now - r.last_finished <= 30 * 86400).length;
+    const gitCount = secGitBranchCount();
+    const total = Math.max(gitCount, rows.length);
+    const pct = total ? Math.round(analyzed / total * 100) : 0;
+    const line = secEl("div", "secbr-covline");
+    line.appendChild(secEl("span", "secbr-covcount", analyzed + " / " + total + " analyzed"));
+    line.appendChild(secEl("span", "secbr-covpct", pct + "%"));
+    card.appendChild(line);
+    const barTrack = secEl("div", "secbr-covtrack");
+    const bar = secEl("div", "secbr-covbar");
+    bar.style.width = pct + "%";
+    barTrack.appendChild(bar);
+    card.appendChild(barTrack);
+    const scope = gitCount ? "of the branches the repository lists" : "of the branches ever analysed";
+    card.appendChild(secEl(
+      "div",
+      "secpj-caption",
+      !total ? "Nothing has been analysed yet." : analyzed >= total ? "All branches have been analyzed in the last 30 days." : total - analyzed + " " + scope + (total - analyzed === 1 ? " has" : " have") + " not been analyzed in the last 30 days."
+    ));
+    return card;
+  }
+
+  // ui/security/reports-tab.js
+  var SEC_REPORT_FORMATS = [
+    ["md", "Markdown"],
+    ["json", "JSON"],
+    ["html", "HTML"],
+    ["sbom", "SBOM"]
+  ];
+  function secReportsCaption() {
+    const cap = secEl("div", "secpj-caption");
+    cap.appendChild(document.createTextNode(
+      "Markdown, JSON and HTML are generated from each analysis's own checklist at the moment you download one. "
+    ));
+    cap.appendChild(secEl("b", null, "SBOM is different: "));
+    cap.appendChild(document.createTextNode(
+      "it is not a report over any analysis's checklist but the stored CycloneDX inventory itself, kept per branch with only the most recent document \u2014 so the SBOM button on an older row still downloads that branch's CURRENT document, not a snapshot of what that analysis saw."
+    ));
+    return cap;
+  }
+  function secReportRow(r) {
+    const tr = document.createElement("tr");
+    const cell = (text) => {
+      const td = document.createElement("td");
+      td.textContent = text;
+      return td;
+    };
+    tr.appendChild(cell("#" + r.analysis_id));
+    tr.appendChild(cell(r.branch || ""));
+    tr.appendChild(cell(r.started ? fmtWhen(r.started) : "\u2014"));
+    tr.appendChild(cell(r.state || ""));
+    const tdDl = document.createElement("td");
+    const row = secEl("div", "secdl");
+    SEC_REPORT_FORMATS.forEach(([fmt, label]) => {
+      const btn = secEl("button", "btn ghost");
+      btn.type = "button";
+      btn.appendChild(secIcon("file"));
+      btn.appendChild(document.createTextNode(label));
+      btn.onclick = () => secDownloadReport(r.analysis_id, fmt, btn);
+      row.appendChild(btn);
+    });
+    tdDl.appendChild(row);
+    tr.appendChild(tdDl);
+    return tr;
+  }
+  function secReportsTable(rows) {
+    if (!rows.length) {
+      return secEl("div", "tblempty", "No analyses of this project yet.");
+    }
+    const wrap = secEl("div", "tablewrap");
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    const htr = document.createElement("tr");
+    ["Analysis", "Branch", "Started", "State", "Downloads"].forEach((h) => {
+      const th = document.createElement("th");
+      th.textContent = h;
+      htr.appendChild(th);
+    });
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    rows.forEach((r) => tbody.appendChild(secReportRow(r)));
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    return wrap;
+  }
+  function secRenderProjectReports(payload) {
+    const host = $("sec-pj-reports");
+    if (!host) return;
+    host.textContent = "";
+    const rows = ((payload || {}).tabs || {}).reports || [];
+    host.appendChild(secReportsCaption());
+    host.appendChild(secReportsTable(rows));
+    host.appendChild(secEl(
+      "div",
+      "secdlnote",
+      "Downloads always contain every recorded finding, whatever the severity floor shows."
+    ));
+  }
+
   // ui/security/project-screen.js
   var RUN_STATES = ["running", "done", "capped", "failed"];
   var secProjectCache = null;
@@ -3469,8 +3482,11 @@
       title: "Branches",
       sub: "Security posture and recent analyses for each branch in this project."
     },
+    // `shield`, not the tab strip's own magnifier: ProjectFindings.png draws
+    // the area's shield in the title box, and the strip keeps its search
+    // glyph -- the two name the same tab at two sizes, not one icon twice.
     findings: {
-      icon: "search",
+      icon: "shield",
       title: "Findings",
       sub: "Complete list of security findings for all analyses in this project."
     },
@@ -4929,5 +4945,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: b65028e5348d3d72eb11318b59d0b84aa80329664292e4cba5fead5c9dedacc2 */
-/* ui-sources: 0ce2ab9dcd1e02adbe33940a43206457c57af772a9259d6ed74cc884c33fedc9 */
+/* ui-bundle: 66d222fd59cc7bc952e57367bcb84d927f2daa4eeae5f400fb0f90534b43ea0f */
+/* ui-sources: 3ea2e26e5ee0a9f34d3fb7f6aa07845cc40e6938fdd699a0e7ee55932bbd7e36 */

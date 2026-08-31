@@ -35,18 +35,21 @@ import { secOpenActivity } from "./activity-screen.js";
 const SEV5 = ["critical", "high", "medium", "low", "info"];
 const SEV_LABEL = {critical: "Critical", high: "High", medium: "Medium",
                    low: "Low", info: "Info"};
-// Icon per KPI card, ProjectOverview.png's own shapes: a shield for the
-// countable severities, the circled-i (this table's `alertcircle`) for the
-// two the mockup draws as an information glyph. All six exist in the page's
-// one icon table -- no bespoke glyphs drawn to chase a pixel.
-const SEV_KPI_ICON = {critical: "shield", high: "shield", medium: "alertcircle",
-                      low: "shield", info: "alertcircle"};
+// Icon per severity KPI card, ProjectOverview.png's own shapes: a shield
+// for the countable severities, the circled-i (this table's `alertcircle`)
+// for the two the mockup draws as an information glyph. All six exist in
+// the page's one icon table -- no bespoke glyphs drawn to chase a pixel.
+// Exported with the tone map below: the Findings tab's own KPI row
+// (secFindStrip, findings-screen.js) draws the same five severity cards,
+// and two copies of this table would drift.
+export const SEV_KPI_ICON = {critical: "shield", high: "shield", medium: "alertcircle",
+                             low: "shield", info: "alertcircle"};
 // .kpi-card tone class per severity -- sev-crit/sev-high already exist
 // (Phase 4's own I3 decision: severity cards wear the severity scale, never
 // err/warn); sev-med/sev-low/sev-info join them in components.css for this
 // tab's other three cards.
-const SEV_KPI_TONE = {critical: "sev-crit", high: "sev-high", medium: "sev-med",
-                      low: "sev-low", info: "sev-info"};
+export const SEV_KPI_TONE = {critical: "sev-crit", high: "sev-high", medium: "sev-med",
+                             low: "sev-low", info: "sev-info"};
 
 // [key, label] pairs, SEC_PROJECT_COLS-shaped, so
 // test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column

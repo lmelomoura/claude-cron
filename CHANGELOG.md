@@ -17,6 +17,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The Findings tab meets ProjectFindings.png.** The one-container stat
+  strip became seven house KPI cards — Total findings, the five severities
+  (each with its share of the total, wearing the same severity icon/tone
+  maps the Overview's cards read, now exported from one place so the two
+  rows cannot drift), and Unique issues — with every count's
+  what-it-counts tooltip intact (rows vs distinct fingerprints). "+ Save
+  filter" is its own button now beside Export (it opens the Saved-filters
+  popover, where the name-and-save flow already lived), the title row
+  wears the area's shield, the page size defaults to the mockup's 25, the
+  table's title cells clamp at two lines with the full sentence one hover
+  away (real titles are whole sentences where the sample says "SQL
+  Injection"), and the severity pills wear Title Case. The filter bar,
+  table columns and footer already matched — they were built to the same
+  drawing's earlier crop.
+
 ### Fixed
 
 - **The project screen's two internal splits now stack by CONTAINER

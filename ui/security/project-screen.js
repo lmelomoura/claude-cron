@@ -257,7 +257,10 @@ const SEC_TAB_TITLES = {
     sub: "Every analysis of this project, with the selected run's findings in detail."},
   branches: {icon: "gitbranch", title: "Branches",
     sub: "Security posture and recent analyses for each branch in this project."},
-  findings: {icon: "search", title: "Findings",
+  // `shield`, not the tab strip's own magnifier: ProjectFindings.png draws
+  // the area's shield in the title box, and the strip keeps its search
+  // glyph -- the two name the same tab at two sizes, not one icon twice.
+  findings: {icon: "shield", title: "Findings",
     sub: "Complete list of security findings for all analyses in this project."},
   reports: {icon: "file", title: "Reports",
     sub: "Every analysis's downloadable reports — Markdown, JSON, HTML and SBOM."},

@@ -88,10 +88,11 @@
    draws, and this file's own header list above for which names are pinned
    by tests/test_page_contract.py and must keep both their name and their
    contract. */
-import { api, toast, fmtWhen, tableFooter, closeMenus } from "./page.js";
+import { api, toast, fmtWhen, tableFooter, closeMenus, kpiCard } from "./page.js";
 import { secEl, secIcon, secFetch } from "./dom.js";
 import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP, SEV_ORDER, SEC_NEVER,
          secMinSeverity, secSevKey, secStateKey, secVisible, secCategoryMeta } from "./vocabulary.js";
+import { SEV_KPI_ICON, SEV_KPI_TONE } from "./overview-tab.js";
 import { secAskReason } from "./reason.js";
 import { secInvalidateProject, secSwitchProjectTab } from "./project-screen.js";
 import { secShowAnalysis, secBack } from "./analysis.js";
@@ -137,7 +138,9 @@ const SEC_FIND_TABLE_COLS = [
 ];
 const FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene"];
 // AllFindings.png's own default per-page selection and picker options.
-const FIND_PER_PAGE = 10;
+// 25 by default -- ProjectFindings.png's own footer reads "25 per page";
+// 10 stays pickable for a tighter read.
+const FIND_PER_PAGE = 25;
 const FIND_PER_PAGE_OPTIONS = [10, 25, 50];
 
 function _defaultFilters(){
@@ -298,6 +301,22 @@ function secFindHeader(fs, data){
   head.appendChild(secEl("span", "spacer"));
 
   const actions = secEl("div", "secfind-head-actions");
+  // "+ Save filter" out in the open (ProjectFindings.png draws it as its
+  // own button, not only a field tucked inside the Saved-filters popover):
+  // it opens that same popover -- where the name input and the save flow
+  // already live -- rather than duplicating the flow behind a second door.
+  const savedWrap = secFindSavedFilters(fs, data || {});
+  const saveBtn = secEl("button", "btn ghost");
+  saveBtn.type = "button";
+  saveBtn.appendChild(secIcon("plus"));
+  saveBtn.appendChild(document.createTextNode("Save filter"));
+  saveBtn.title = "Save the current filters under a name";
+  saveBtn.onclick = (e) => {
+    e.stopPropagation();
+    savedWrap.open = true;
+    if(savedWrap.ontoggle) savedWrap.ontoggle();
+  };
+  actions.appendChild(saveBtn);
   const exportBtn = secEl("button", "btn ghost");
   exportBtn.type = "button";
   exportBtn.appendChild(secIcon("download"));
@@ -309,7 +328,7 @@ function secFindHeader(fs, data){
   exportBtn.title = "Open this project's Reports tab";
   exportBtn.onclick = () => secSwitchProjectTab("reports");
   actions.appendChild(exportBtn);
-  actions.appendChild(secFindSavedFilters(fs, data || {}));
+  actions.appendChild(savedWrap);
   head.appendChild(actions);
   wrap.appendChild(head);
   return wrap;
@@ -396,17 +415,21 @@ function secFindStrip(fs, data){
       + "“Clear filters” below shows this project's whole list."));
   }
 
-  const strip = secEl("div", "secfind-strip");
+  // Seven KPI CARDS (ProjectFindings.png), the house kpi-grid replacing the
+  // one-container stat strip this used to be: Total findings, the five
+  // severities (each with its share of the total on the same delta line the
+  // Overview's cards use), and Unique issues. Same numbers, same titles --
+  // ROW_PILL_TITLE on everything row-counted, the fingerprint sentence on
+  // Unique -- and the same marker classes on Total/Unique the pinned tests
+  // find them by. The severity cards wear the shared severity icon/tone
+  // maps (SEV_KPI_ICON/SEV_KPI_TONE, overview-tab.js), so the two tabs'
+  // cards can never drift apart.
+  const strip = secEl("div", "kpi-grid");
 
-  const totalStat = secEl("div", "secfind-stat total");
-  totalStat.title = ROW_PILL_TITLE;
-  totalStat.appendChild(secEl("div", "secfind-stat-label", "Total findings"));
-  const totalLine = secEl("div", "secfind-stat-numline");
-  totalLine.appendChild(secEl("span", "secfind-stat-num", String(data.total || 0)));
-  const totalIc = secEl("span", "secfind-stat-ic"); totalIc.appendChild(secIcon("file"));
-  totalLine.appendChild(totalIc);
-  totalStat.appendChild(totalLine);
-  strip.appendChild(totalStat);
+  const totalCard = kpiCard({icon: "layers", value: String(data.total || 0),
+    label: "Total findings", title: ROW_PILL_TITLE});
+  totalCard.className += " secfind-stat total";
+  strip.appendChild(totalCard);
 
   const bySev = data.by_severity || {};
   const total = data.total || 0;
@@ -414,32 +437,22 @@ function secFindStrip(fs, data){
   ["critical", "high", "medium", "low", "info"].forEach(sev => {
     any = any || !!bySev[sev];
     const n = bySev[sev] || 0;
-    const stat = secEl("div", "secfind-stat " + sev);
-    stat.title = ROW_PILL_TITLE;
-    const label = secEl("div", "secfind-stat-label");
-    label.appendChild(secEl("span", "secfind-stat-dot"));
-    label.appendChild(secEl("span", null, _secCap(sev)));
-    stat.appendChild(label);
-    stat.appendChild(secEl("div", "secfind-stat-num", String(n)));
+    const card = kpiCard({icon: SEV_KPI_ICON[sev], tone: SEV_KPI_TONE[sev],
+      value: String(n), label: _secCap(sev), title: ROW_PILL_TITLE});
     // A dash, not "0.0%" -- a percentage of nothing is not a measured zero
     // share, the same distinction this app's own KPI cards already draw for
     // a rate with no denominator yet.
-    stat.appendChild(secEl("div", "secfind-stat-pct", total ? ((n / total) * 100).toFixed(1) + "%" : "—"));
-    strip.appendChild(stat);
+    card.appendChild(secEl("div", "secov-delta",
+      total ? ((n / total) * 100).toFixed(1) + "%" : "—"));
+    strip.appendChild(card);
   });
 
-  strip.appendChild(secEl("div", "secfind-strip-div"));
-
-  const uniqueStat = secEl("div", "secfind-stat unique");
-  uniqueStat.title = "Distinct problems (fingerprints) — the same finding open "
-    + "on two branches counts once here.";
-  const uLabel = secEl("div", "secfind-stat-label");
-  const uIcon = secEl("span", "secfind-stat-diamond"); uIcon.appendChild(secIcon("diamond"));
-  uLabel.appendChild(uIcon);
-  uLabel.appendChild(secEl("span", null, "Unique issues"));
-  uniqueStat.appendChild(uLabel);
-  uniqueStat.appendChild(secEl("div", "secfind-stat-num", String(data.unique || 0)));
-  strip.appendChild(uniqueStat);
+  const uniqueCard = kpiCard({icon: "diamond", value: String(data.unique || 0),
+    label: "Unique issues",
+    title: "Distinct problems (fingerprints) — the same finding open "
+      + "on two branches counts once here."});
+  uniqueCard.className += " secfind-stat unique";
+  strip.appendChild(uniqueCard);
 
   box.appendChild(strip);
   // The ok-green "nothing matches" signal (Phase 4: no longer a `.sevpill`
@@ -926,7 +939,13 @@ function secFindRow(fs, f){
   // Titles and rationale come out of analysed code, and a branch name may
   // legally contain '<', '>' and '&' -- textContent, always, the one rule
   // this whole area exists to keep (see vocabulary.js's own file comment).
-  tdTitle.appendChild(secEl("div", "sectitle", f.title || ""));
+  // Clamped to two lines by CSS (real titles run to whole sentences where
+  // the mockup's sample says "SQL Injection"), the full text one hover
+  // away -- the same treatment the Overview's Top-findings card gives the
+  // same field.
+  const titleEl = secEl("div", "sectitle", f.title || "");
+  titleEl.title = f.title || "";
+  tdTitle.appendChild(titleEl);
   if((f.rationale || "").trim()){
     tdTitle.appendChild(secEl("div", "secmeta clamp1", f.rationale));
   }

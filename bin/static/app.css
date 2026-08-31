@@ -924,6 +924,12 @@ footer{margin-top:30px;color:var(--muted);font-size:11px;text-align:center}
    "…", not wrapped onto a second line the way an occurrence path is. */
 .secfind-table td .secmeta.clamp1{display:-webkit-box;-webkit-line-clamp:1;
   -webkit-box-orient:vertical;overflow:hidden}
+/* The title itself clamps at two lines (real titles are whole sentences;
+   the full text rides the cell's own tooltip) and the severity pill wears
+   Title Case -- both ProjectFindings.png's own row density. */
+.secfind-table .sectitle{display:-webkit-box;-webkit-line-clamp:2;
+  -webkit-box-orient:vertical;overflow:hidden}
+.secfind-table .sevpill,.secov-findtable .sevpill{text-transform:capitalize}
 /* Location / Category / Analysis run cells. */
 .secfind-loc{font:11.5px/1.5 ui-monospace,"SF Mono",Menlo,monospace;color:var(--muted);
   word-break:break-all}
@@ -1828,33 +1834,14 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secfind-head-sub{margin:4px 0 0 31px;font-size:12.5px;color:var(--muted)}
 .secfind-head-actions{display:flex;gap:10px;flex:none}
 /* The stat strip -- total, five severities, unique issues, all in one card.
-   Its own shape, not `.sevpills`/`.sevpill` (the ROW-shaped chip this file
-   uses everywhere else): AllFindings.png draws a plain coloured DOT beside
-   each label, a large number beneath, and a percentage under that, closer
-   to `.kpi-card` than to a pill. flex-wrap so a narrow viewport stacks
-   rather than clipping the last stat. */
-.secfind-strip{display:flex;flex-wrap:wrap;align-items:center;gap:28px;
-  background:var(--panel);border:1px solid var(--line);border-radius:13px;
-  padding:18px 22px;margin:0 0 16px;box-shadow:var(--shadow)}
-.secfind-stat{display:flex;flex-direction:column;gap:4px;min-width:64px}
-.secfind-stat-numline{display:flex;align-items:center;gap:8px}
-.secfind-stat-label{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}
-.secfind-stat-dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--idle)}
-.secfind-stat.critical .secfind-stat-dot{background:var(--sev-crit)}
-.secfind-stat.high .secfind-stat-dot{background:var(--sev-high)}
-.secfind-stat.medium .secfind-stat-dot{background:var(--sev-med)}
-.secfind-stat.low .secfind-stat-dot{background:var(--sev-low)}
-.secfind-stat.info .secfind-stat-dot{background:var(--sev-info)}
-.secfind-stat-num{font-size:22px;font-weight:700;color:var(--ink);line-height:1.1}
-.secfind-stat-pct{font-size:11.5px;color:var(--muted)}
-/* Total findings' own doc-icon square, and the divider before Unique
-   issues -- the two stats that are not one of the five severities. */
-.secfind-stat-ic{display:inline-flex;align-items:center;justify-content:center;width:30px;
-  height:30px;border:1px solid var(--line);border-radius:9px;color:var(--muted);margin-left:8px}
-.secfind-stat-ic .ic{width:15px;height:15px}
-.secfind-strip-div{width:1px;align-self:stretch;background:var(--line);flex:none}
-.secfind-stat-diamond{color:var(--accent)}
-.secfind-stat-diamond .ic{width:15px;height:15px}
+   ProjectFindings.png redraws the old one-container stat strip as SEVEN
+   house KPI CARDS (the shared .kpi-grid/.kpi-card, built through the
+   kpiCard bridge like the Overview tab's own row) -- the layout is all the
+   shared component's; ".secfind-stat"/"total"/"unique" survive only as
+   unstyled MARKER classes on two of the cards, the hooks the pinned
+   total-vs-unique test finds them by (see _UNSTYLED_CLASS_ALLOWLIST in
+   tests/test_page_contract.py). The severity cards' colour comes from
+   their .sev-* tone class; nothing here styles them any more. */
 /* -------------------------------------------------------------- filter bar
    Two rows: wide search plus five "Label: value" pickers, then Category, the
    Show-resolved switch and, right-aligned, Clear filters + the Filters(N)
@@ -2754,5 +2741,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: 535e24c084853fef2f7e66344b987c324e124aea1aa18a39e412a2d8a5494da4 */
-/* ui-sources: 0ce2ab9dcd1e02adbe33940a43206457c57af772a9259d6ed74cc884c33fedc9 */
+/* ui-bundle: c3d946dc8b14f55c1348e5982e5cf0ed90f689b560eb17083d1ed4c223d9e575 */
+/* ui-sources: 3ea2e26e5ee0a9f34d3fb7f6aa07845cc40e6938fdd699a0e7ee55932bbd7e36 */
