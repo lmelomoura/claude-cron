@@ -19,6 +19,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Two more mid-width breakages on the project screen.** The Runs tab's
+  two-column split stacked only below a 900px window while its list column
+  is deliberately unshrinkable (450px) — between ~900 and ~1250px the
+  selected-run card overflowed the main column and the rail painted OVER
+  it; the stack point is now 1280px, matched to what the columns actually
+  need beside the rail. And the stacked Overview's cards rendered as
+  ~430px slivers with the rest of the window empty: the grid keeps the row
+  layout's `align-items:flex-start`, which in a column direction makes a
+  child hug its content width — both stacked children are now told
+  `width:100%` outright.
+
 - **Six project-screen defects called out from a narrow-window review,
   closed together.** The Branches and Top-findings tables now carry the
   min-width every other wide table already had, so below it the wrapper

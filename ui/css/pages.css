@@ -1587,7 +1587,13 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    box, not a shrink target the algorithm reaches for on ordinary layouts. */
 .secpj-runsleft{flex:0 0 450px;min-width:340px}
 .secpj-runsmid{flex:1 1 480px;min-width:340px}
-@media (max-width:900px){
+/* 1280, not 900: the unshrinkable 450px list plus the mid column's own
+   340px floor need ~806px, and beside the 330px rail that is a ~1250px
+   window -- between 900 and there the mid column used to OVERFLOW the
+   main column and bleed under the rail, which painted over it. Below the
+   stack point the two go one above the other at full width, the rail
+   still beside them until .secpjside's own 900px rule wraps it under. */
+@media (max-width:1280px){
   .secpj-runslayout{flex-direction:column}
   .secpj-runsleft,.secpj-runsmid{flex:1 1 100%;width:100%}
 }
@@ -1731,6 +1737,11 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secov-side{flex:0 1 520px;min-width:400px;display:flex;flex-direction:column;gap:16px}
 @media (max-width:1440px){
   .secov-grid{flex-direction:column}
+  /* width:100% on BOTH stacked children: the grid keeps the row layout's
+     align-items:flex-start, which in a column direction makes a child hug
+     its content width -- the trend and Top-findings cards rendered as
+     ~430px slivers with the rest of the window empty. */
+  .secov-main{width:100%}
   .secov-side{flex:1 1 auto;width:100%;min-width:0}
 }
 
