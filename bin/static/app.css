@@ -2093,6 +2093,16 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .secpj-runsleft,.secpj-runsmid{flex:1 1 100%;width:100%}
 }
 .secpj-runslistcard .secchips{margin-bottom:12px}
+/* The branch-history fold at the bottom of the run card: a quiet disclosure,
+   closed by default -- summary styled as a muted row with the house caret. */
+.sechist-fold{margin-top:14px;border-top:1px solid var(--line2);padding-top:10px}
+.sechist-fold summary{cursor:pointer;font-size:12.5px;font-weight:600;color:var(--muted);
+  list-style:none;display:flex;align-items:center;gap:6px}
+.sechist-fold summary::before{content:"";width:0;height:0;border-left:5px solid currentColor;
+  border-top:4px solid transparent;border-bottom:4px solid transparent;transition:transform .12s ease}
+.sechist-fold[open] summary::before{transform:rotate(90deg)}
+.sechist-fold summary::-webkit-details-marker{display:none}
+.sechist-fold[open] summary{margin-bottom:8px}
 /* The selected run's own row -- an accent border standing in for the
    mockup's own left rail + ring, since a `<tr>` cannot carry the same
    box-shadow a card can without breaking table-layout:fixed's own column
@@ -2516,5 +2526,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: 19682b0760a7c1a4ea867621a24adf952e5b34769c18779d75300d790a6dc5a9 */
-/* ui-sources: 4c4f0a9ae92d553ace82938ab97d7e332d4dcb6a9fa97c1d7457f426da60bb15 */
+/* ui-bundle: 444cf3ac05cd2a578d4006615351374f4a005953ee7918a40acc8ec72b802c7e */
+/* ui-sources: f47333803dcb11723eac4ab7fcbd8e96c748c97c625c7d94bfa74e96e7db162f */

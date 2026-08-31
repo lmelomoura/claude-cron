@@ -1585,6 +1585,16 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .secpj-runsleft,.secpj-runsmid{flex:1 1 100%;width:100%}
 }
 .secpj-runslistcard .secchips{margin-bottom:12px}
+/* The branch-history fold at the bottom of the run card: a quiet disclosure,
+   closed by default -- summary styled as a muted row with the house caret. */
+.sechist-fold{margin-top:14px;border-top:1px solid var(--line2);padding-top:10px}
+.sechist-fold summary{cursor:pointer;font-size:12.5px;font-weight:600;color:var(--muted);
+  list-style:none;display:flex;align-items:center;gap:6px}
+.sechist-fold summary::before{content:"";width:0;height:0;border-left:5px solid currentColor;
+  border-top:4px solid transparent;border-bottom:4px solid transparent;transition:transform .12s ease}
+.sechist-fold[open] summary::before{transform:rotate(90deg)}
+.sechist-fold summary::-webkit-details-marker{display:none}
+.sechist-fold[open] summary{margin-bottom:8px}
 /* The selected run's own row -- an accent border standing in for the
    mockup's own left rail + ring, since a `<tr>` cannot carry the same
    box-shadow a card can without breaking table-layout:fixed's own column

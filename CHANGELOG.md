@@ -1296,6 +1296,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The run card's second analysis list folds away.** "Earlier analyses of
+  this branch" rendered as a permanent block under the selected run — a
+  second list beside the one the runs table already is, and the approved
+  mockup shows no such thing. It survives as a closed-by-default disclosure
+  at the bottom of the card: the branch-scoped slice is one click away, and
+  the pinned behaviour (the history follows the analysis on screen, never
+  the picker) is untouched by the fold.
+
 - **Wide monitors get their width back.** The page wrapper capped content at
   1560px and centred it, leaving dead margins on both sides of exactly the
   screens with the most room — every approved mockup, the 2000px-wide Runs

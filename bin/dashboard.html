@@ -552,8 +552,15 @@ document.documentElement.dataset.theme =
               </div>
             </div>
 
-            <div class="secthead"><h3>Earlier analyses of this branch</h3></div>
-            <div class="sechist" id="sec-history"></div>
+            <!-- Collapsed by default: the runs LIST on the left is the
+                 project-wide history, and the approved mockup shows no second
+                 list. This one earns its keep as the BRANCH-scoped slice --
+                 the pinned behaviour (secRenderHistory follows the analysis
+                 on screen, never the picker) is untouched by the fold. -->
+            <details class="sechist-fold">
+              <summary>Earlier analyses of this branch</summary>
+              <div class="sechist" id="sec-history"></div>
+            </details>
           </div>
 
           <div class="pane" id="sec-pj-branches" hidden>
