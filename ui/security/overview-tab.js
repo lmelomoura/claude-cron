@@ -65,6 +65,12 @@ let secOvTrendSev = "total";
 let secOvSort = null;   // null = the served order (severity rank); {key, dir}
 let secOvProject = null;
 let secOvPayload = null;
+// The trend chart's mount, held between building the card (detached) and
+// drawing the SVG (after the pane is attached, when the mount finally has
+// a real width to measure) -- see secOvDrawChart.
+let secOvChartMount = null;
+let secOvChartState = null;
+let secOvResizeWired = false;
 
 export function secRenderProjectOverview(payload){
   const host = $("sec-pj-overview");
@@ -111,6 +117,41 @@ export function secRenderProjectOverview(payload){
   side.appendChild(secProjectActivity((payload.sidebar || {}).activity || []));
   grid.appendChild(side);
   host.appendChild(grid);
+  // Only now, with the pane attached and laid out, does the chart's mount
+  // have a width worth measuring -- see secOvDrawChart for why the SVG is
+  // drawn at that width instead of a fixed one.
+  secOvDrawChart();
+  secOvWireResize();
+}
+
+/* Drawn AT the mount's own measured width, one SVG unit per CSS pixel --
+   not at a fixed viewBox scaled up like an image, which is exactly what
+   made the axis text and the dots grow with the card (a 720-unit chart
+   stretched across a 1700px card renders its "11px" labels at 26px). A
+   hidden pane measures 0 and a Node test has no layout at all, so 720
+   stays the fallback; the two roads that later give the mount a real
+   width -- entering the tab (secSwitchProjectTab re-renders this pane)
+   and resizing the window (secOvWireResize below) -- both land back here
+   for a redraw at the true size. */
+function secOvDrawChart(){
+  if(!secOvChartMount || !secOvChartState) return;
+  const width = Math.round(secOvChartMount.clientWidth || 0) || 720;
+  secOvChartMount.textContent = "";
+  secOvChartMount.appendChild(
+    secOvTrendSvg(secOvChartState.points, secOvChartState.key, width));
+}
+
+function secOvWireResize(){
+  if(secOvResizeWired) return;
+  secOvResizeWired = true;
+  let timer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const host = $("sec-pj-overview");
+      if(secOvPayload && host && !host.hidden) secRenderProjectOverview(secOvPayload);
+    }, 150);
+  });
 }
 
 /* ------------------------------------------------------------- KPI cards */
@@ -183,11 +224,18 @@ function secOvTrendCard(ov){
 
   const points = ov.trend || [];
   if(!points.length){
+    secOvChartMount = null;
+    secOvChartState = null;
     card.appendChild(secEl("div", "tblempty",
       "No finished analyses in the last 7 days."));
     return card;
   }
-  card.appendChild(secOvTrendSvg(points, secOvTrendSev));
+  // An empty mount, not the SVG itself: the card is still detached here,
+  // so there is no width to draw at yet -- secOvDrawChart fills it in
+  // once the pane is in the tree. See that function's own comment.
+  secOvChartMount = secEl("div", "secov-chart");
+  secOvChartState = {points, key: secOvTrendSev};
+  card.appendChild(secOvChartMount);
   return card;
 }
 
@@ -220,9 +268,13 @@ function secOvTrendValue(point, key){
   return (point.by_severity || {})[key] || 0;
 }
 
-function secOvTrendSvg(points, key){
+function secOvTrendSvg(points, key, width){
   const ns = "http://www.w3.org/2000/svg";
-  const W = 720, H = 250, L = 38, R = 30, T = 12, B = 30;
+  // One SVG unit per CSS pixel at the width the mount actually has
+  // (secOvDrawChart measures it; 720 is the no-layout fallback) -- so the
+  // 11px axis labels and the 3.5-radius dots render at 11px and 3.5px on
+  // every card width, instead of scaling up with the card like an image.
+  const W = Math.max(480, width || 720), H = 250, L = 38, R = 30, T = 12, B = 30;
   const svg = document.createElementNS(ns, "svg");
   svg.setAttribute("viewBox", "0 0 " + W + " " + H);
   svg.setAttribute("class", "secov-trendsvg");
@@ -261,8 +313,10 @@ function secOvTrendSvg(points, key){
     t.textContent = String(Math.round(v));
     svg.appendChild(t);
   }
-  // One date label per day boundary.
-  for(let d = 0; d <= 7; d++){
+  // One date label per day boundary -- every other one on a mount too
+  // narrow to seat eight without them colliding.
+  const dayStep = W < 640 ? 2 : 1;
+  for(let d = 0; d <= 7; d += dayStep){
     const ts = x0 + d * 86400;
     const t = document.createElementNS(ns, "text");
     t.setAttribute("x", String(xFor(ts))); t.setAttribute("y", String(H - 10));

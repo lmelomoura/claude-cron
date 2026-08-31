@@ -1734,11 +1734,15 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secseg-btn:not(.on):hover{color:var(--ink)}
 .secseg-btn.on{background:var(--accent);color:var(--accent-ink)}
 
-/* The 7-day line chart -- a fixed-viewBox SVG scaling like an image, the
-   same treatment the donuts already get. Line/area/dot colours are set
-   inline per selected series (accent for Total, the severity's own token
-   otherwise); everything else reads tokens here. */
-.secov-trendsvg{display:block;width:100%;height:auto;margin-top:4px}
+/* The 7-day line chart -- drawn at the mount's own measured width, one
+   SVG unit per CSS pixel (secOvDrawChart, overview-tab.js), so axis text
+   and dots hold their size on every card width instead of scaling up with
+   the card like an image (the donuts scale; a chart with 11px labels must
+   not). Line/area/dot colours are set inline per selected series (accent
+   for Total, the severity's own token otherwise); everything else reads
+   tokens here. */
+.secov-chart{width:100%;margin-top:4px}
+.secov-trendsvg{display:block;width:100%;height:auto}
 .secov-gridline{stroke:var(--line);stroke-width:1}
 .secov-axis{fill:var(--muted);font-size:11px}
 .secov-area{opacity:.12;stroke:none}

@@ -17,6 +17,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Findings-trend chart no longer scales its type up with the card.**
+  The chart was a fixed 720-unit viewBox stretched to the card's width like
+  an image, so on a wide screen its 11px axis labels rendered at 26px and
+  the dots grew to match. It is now drawn AT the mount's measured width —
+  one SVG unit per CSS pixel, measured after the pane is attached — with a
+  redraw on window resize and on re-entering the Overview tab (a render
+  that happened while the pane was hidden measures 0 and falls back to a
+  guessed width until then). A mount too narrow to seat eight day labels
+  drops to every other one instead of letting them collide.
+
 ### Changed
 
 - **The project Overview tab is rebuilt to ProjectOverview.png.** What used

@@ -2455,6 +2455,9 @@
   var secOvSort = null;
   var secOvProject = null;
   var secOvPayload = null;
+  var secOvChartMount = null;
+  var secOvChartState = null;
+  var secOvResizeWired = false;
   function secRenderProjectOverview(payload) {
     const host = $("sec-pj-overview");
     if (!host) return;
@@ -2495,6 +2498,28 @@
     side.appendChild(secProjectActivity((payload.sidebar || {}).activity || []));
     grid.appendChild(side);
     host.appendChild(grid);
+    secOvDrawChart();
+    secOvWireResize();
+  }
+  function secOvDrawChart() {
+    if (!secOvChartMount || !secOvChartState) return;
+    const width = Math.round(secOvChartMount.clientWidth || 0) || 720;
+    secOvChartMount.textContent = "";
+    secOvChartMount.appendChild(
+      secOvTrendSvg(secOvChartState.points, secOvChartState.key, width)
+    );
+  }
+  function secOvWireResize() {
+    if (secOvResizeWired) return;
+    secOvResizeWired = true;
+    let timer = null;
+    window.addEventListener("resize", () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const host = $("sec-pj-overview");
+        if (secOvPayload && host && !host.hidden) secRenderProjectOverview(secOvPayload);
+      }, 150);
+    });
   }
   function secOvDeltaText(now, before) {
     if (before == null) return { text: "\u2014", dir: "", sub: "no previous analysis" };
@@ -2549,6 +2574,8 @@
     card.appendChild(head);
     const points = ov.trend || [];
     if (!points.length) {
+      secOvChartMount = null;
+      secOvChartState = null;
       card.appendChild(secEl(
         "div",
         "tblempty",
@@ -2556,7 +2583,9 @@
       ));
       return card;
     }
-    card.appendChild(secOvTrendSvg(points, secOvTrendSev));
+    secOvChartMount = secEl("div", "secov-chart");
+    secOvChartState = { points, key: secOvTrendSev };
+    card.appendChild(secOvChartMount);
     return card;
   }
   function secOvTrendSeg() {
@@ -2584,9 +2613,9 @@
     if (key === "total") return point.open || 0;
     return (point.by_severity || {})[key] || 0;
   }
-  function secOvTrendSvg(points, key) {
+  function secOvTrendSvg(points, key, width) {
     const ns = "http://www.w3.org/2000/svg";
-    const W = 720, H = 250, L = 38, R = 30, T = 12, B = 30;
+    const W = Math.max(480, width || 720), H = 250, L = 38, R = 30, T = 12, B = 30;
     const svg = document.createElementNS(ns, "svg");
     svg.setAttribute("viewBox", "0 0 " + W + " " + H);
     svg.setAttribute("class", "secov-trendsvg");
@@ -2619,7 +2648,8 @@
       t.textContent = String(Math.round(v));
       svg.appendChild(t);
     }
-    for (let d = 0; d <= 7; d++) {
+    const dayStep = W < 640 ? 2 : 1;
+    for (let d = 0; d <= 7; d += dayStep) {
       const ts = x0 + d * 86400;
       const t = document.createElementNS(ns, "text");
       t.setAttribute("x", String(xFor(ts)));
@@ -2981,6 +3011,7 @@
     secRenderTabs();
     if (secProjectCache) secRenderProjectSidebar(secProjectCache);
     if (secProjectTab === "findings") renderFindings($("sec-pj-findings"), secState.project);
+    if (secProjectTab === "overview" && secProjectCache) secRenderProjectOverview(secProjectCache);
     if (!fromHistory) pushNav({ view: "security", sec: { screen: "project", project: secState.project, tab: secProjectTab } });
   }
   function secCurrentProjectTab() {
@@ -4464,5 +4495,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: f678d8af082469c568f1c7cc0df8261c5b0e11c20c5892f2a46beed3a6b1ec8f */
-/* ui-sources: a89574558597467d35043982b3e0e92fb4a5905d3e761bbb5a3f4cde6754a771 */
+/* ui-bundle: 3d710bbe06bfd0d1de6fd978fbdb65a2290d2d0b274b631aca7a46ea489d0a01 */
+/* ui-sources: 1c59974b75a9e55e2cb861e638623e136185d0a210c51528844dcc0398774bba */

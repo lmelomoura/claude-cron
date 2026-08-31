@@ -158,6 +158,12 @@ export function secSwitchProjectTab(tab, fromHistory){
   // tick ONLY while it stays the active tab, never while some other tab is
   // on screen.
   if(secProjectTab === "findings") renderFindings($("sec-pj-findings"), secState.project);
+  // The Overview repaints on entry for its trend chart's sake: the chart
+  // is drawn at the pane's MEASURED width (secOvDrawChart, overview-tab.js),
+  // and a payload render that happened while this pane was hidden measured
+  // 0 and fell back to a guessed width -- entering the tab is the moment
+  // the real one exists.
+  if(secProjectTab === "overview" && secProjectCache) secRenderProjectOverview(secProjectCache);
   if(!fromHistory) pushNav({view: "security", sec: {screen: "project", project: secState.project, tab: secProjectTab}});
 }
 

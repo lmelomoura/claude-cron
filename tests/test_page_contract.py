@@ -3736,13 +3736,16 @@ def _overview_tab_deps(block):
     fns = "\n".join(_plainfn(block, n) for n in
         ("secEl", "secIcon", "secOvDeltaText", "secOvShare", "secOvKpis",
          "secOvTrendCard", "secOvTrendSeg", "secOvDay", "secOvTrendValue",
-         "secOvTrendSvg", "secOvSevToken", "secOvCategoryCard", "secOvDonutSvg",
+         "secOvTrendSvg", "secOvSevToken", "secOvDrawChart", "secOvWireResize",
+         "secOvCategoryCard", "secOvDonutSvg",
          "secOvViewAll", "secOvCap", "secOvSortedFindings", "secOvTopFindings",
          "secOvSortableHeader", "secOvFindingRow", "secProjectActivity",
          "secRenderProjectOverview"))
     stubs = """
     let secOvTrendSev = "total", secOvSort = null,
-        secOvProject = null, secOvPayload = null;
+        secOvProject = null, secOvPayload = null,
+        secOvChartMount = null, secOvChartState = null, secOvResizeWired = false;
+    const window = {addEventListener(){}};
     function kpiCard(o){
       const c = new FakeElement("div");
       c.className = "kpi-card" + (o.tone ? " " + o.tone : "");
@@ -3883,10 +3886,17 @@ def test_the_trend_chart_draws_the_selected_severitys_own_series(srv, tmp_path):
     const crit = dots(secOvTrendSvg(points, "critical"));
     console.log(JSON.stringify({total, crit,
       value: secOvTrendValue(points[0], "critical"),
-      legacy: secOvTrendValue({open: 5}, "critical")}));
+      legacy: secOvTrendValue({open: 5}, "critical"),
+      wide: secOvTrendSvg(points, "total", 1600)._attrs.viewBox,
+      fallback: secOvTrendSvg(points, "total")._attrs.viewBox}));
     """)
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
+    # Drawn at the measured width, one unit per pixel -- a 1600px card gets
+    # a 1600-unit viewBox, so the 11px axis text renders at 11px there too
+    # instead of scaling up with the card. 720 is the no-layout fallback.
+    assert out["wide"] == "0 0 1600 250", out["wide"]
+    assert out["fallback"] == "0 0 720 250", out["fallback"]
     assert [d["tip"].split(" — ")[1].split(" open")[0] for d in out["total"]] == ["2", "1"]
     assert [d["tip"].split(" — ")[1].split(" open")[0] for d in out["crit"]] == ["2", "1"]
     assert out["value"] == 2
