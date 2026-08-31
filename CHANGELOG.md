@@ -19,6 +19,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The project Overview tab is rebuilt to ProjectOverview.png.** What used
+  to be a caption, five posture pills and a row of checklist chips is now
+  the mockup's own screen: six KPI cards (total + the five severities, each
+  icon-tinted from the severity tokens, the total carrying a real
+  green/red delta against the previous finished analysis and each severity
+  its share of the total — the sample's "vs. previous analysis" sublabel
+  under numbers that were plainly shares is rendered honestly instead), a
+  "Findings trend" line chart of the last 7 days with a
+  Total/Critical/…/Info segmented control (per-severity series served by
+  `queries.trend`'s new `by_severity` per point; a capped analysis draws a
+  hollow dot saying "(incomplete)"), a "Findings by category" donut over
+  rule buckets with a counted, percented legend and an honest grey Other
+  remainder (categorical palette tokens `--cat-1…5`/`--cat-other`, sampled
+  from the mockup's own legend dots — deliberately not the severity scale),
+  a "Top findings" table (severity pill / title / location / "#N (Profile)"
+  / first seen, the same cells and the same shared `first_seen_map` the
+  findings browser reads, so the two screens can never date a finding
+  differently), and the restyled "Recent activity" card (tinted icon box,
+  kind badge on a house pill tone via the new `SEC_EVENT_META`, absolute
+  dates) that the other tabs' rail now mounts too. Every number on the pane
+  reads ONE scope — the latest finished analysis of the branch the header
+  names — computed server-side in `cmd_project_data` (`trend`, `previous`,
+  `categories`, `top_findings` ride the same payload), so the KPI total,
+  the donut centre and the Top findings rows cannot disagree. The
+  all-branch rail hides on this tab (its donut answers a different
+  question, and two donuts with two different, equally true totals an inch
+  apart is exactly the scope confusion this area keeps stamping out); the
+  shared header follows the same mockup (breadcrumb gains the active-tab
+  segment, the title icon is the area's shield in a tinted box, the green
+  always-true "Security enabled" pill gives way to the profile badge, and
+  the meta strip's bits wear their icons).
+
 - **Runs tab parity pass 2: the four remaining gaps between the Runs tab and
   ProjectRuns.png, closed.** The repo/branch/profile/Analyse strip that used
   to sit open above the two columns — never pictured in the mockup — is now

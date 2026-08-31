@@ -387,6 +387,12 @@ document.documentElement.dataset.theme =
         <button type="button" id="sec-crumb-security"></button>
         <span class="sep">›</span>
         <h3 id="sec-title"></h3>
+        <!-- The active tab, ProjectOverview.png's own third segment
+             ("Security › Minerva › Overview") — painted by secRenderTabs
+             (ui/security/project-screen.js) on every tab switch, restores
+             included. -->
+        <span class="sep">›</span>
+        <span id="sec-crumb-tab"></span>
       </nav>
 
       <!-- The mockup's own name row: project icon, bold name, the green

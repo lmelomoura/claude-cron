@@ -61,6 +61,25 @@ export const EVENT_KIND_LABEL = {
   decision_made: "Decision made", settings_changed: "Settings changed",
   report_exported: "Report exported",
 };
+/* The Recent-activity card's row furniture per kind (ProjectOverview.png):
+   the icon in its tinted box, and the kind badge on the row's right --
+   label plus which house .pill tone it wears. Tones reuse the pill
+   vocabulary components.css already defines rather than the mockup's own
+   sampled tints: `running`/`done` are the analysis-state pair (an
+   analysis_started event mirrors the state a run entered, a finished one
+   the state it closed in), `profile` is the accent tone every neutral
+   this-area badge already wears, `disabled` the grey for configuration
+   noise. One entry per EVENT_KINDS member -- a kind added there without a
+   row here falls back to the plain label with no badge, and the contract
+   test that walks EVENT_KINDS against this table is what keeps the two
+   from drifting apart in silence. */
+export const SEC_EVENT_META = {
+  analysis_started:  {icon: "play",        badge: "Started",   pill: "running"},
+  analysis_finished: {icon: "shieldcheck", badge: "Completed", pill: "done"},
+  decision_made:     {icon: "hammer",      badge: "Decision",  pill: "profile"},
+  settings_changed:  {icon: "gear",        badge: "Settings",  pill: "disabled"},
+  report_exported:   {icon: "file",        badge: "Exported",  pill: "profile"},
+};
 /* ONE wording for "nothing has ever been read here", used by every screen in
    the area that has to say it. There were six near-variants of this sentence
    across four modules -- three of them told the reader what to do next and

@@ -382,12 +382,15 @@
    `.secidx-sev3` already scope their own three-tone override rather than
    touch the base `.sevpill` (above) that other, unrelated severity surfaces
    (the single-analysis checklist, the Branches tab) still read as-is. */
-.secfind-table .sevpill.critical{background:color-mix(in srgb,var(--sev-crit) 12%,transparent);
+.secfind-table .sevpill.critical,.secov-findtable .sevpill.critical{
+  background:color-mix(in srgb,var(--sev-crit) 12%,transparent);
   color:var(--sev-crit);border-color:color-mix(in srgb,var(--sev-crit) 40%,transparent)}
-.secfind-table .sevpill.high{background:color-mix(in srgb,var(--sev-high) 14%,transparent);
+.secfind-table .sevpill.high,.secov-findtable .sevpill.high{
+  background:color-mix(in srgb,var(--sev-high) 14%,transparent);
   color:color-mix(in srgb,var(--sev-high) 80%,var(--ink) 20%);
   border-color:color-mix(in srgb,var(--sev-high) 45%,transparent)}
-.secfind-table .sevpill.medium{background:color-mix(in srgb,var(--sev-med) 16%,transparent);
+.secfind-table .sevpill.medium,.secov-findtable .sevpill.medium{
+  background:color-mix(in srgb,var(--sev-med) 16%,transparent);
   color:color-mix(in srgb,var(--sev-med) 70%,var(--ink) 30%);
   border-color:color-mix(in srgb,var(--sev-med) 50%,transparent)}
 /* Title: bold title, one-line muted rationale beneath -- `.sectitle`/
@@ -1692,6 +1695,111 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    (index-screen.js) -- present, not omitted, but read as background rather
    than a real slice of the total. */
 .secidx-legendrow.zero{opacity:.5}
+
+/* ------------------------------------------ project screen: Overview tab
+   ProjectOverview.png -- the six severity KPI cards (kpi-grid, the shared
+   component, plus this tab's own delta line), the 2/3-1/3 grid holding the
+   trend chart and Top findings on the left, the category donut and Recent
+   activity on the right. The always-on rail (#sec-pj-side) is hidden while
+   this tab is up (see secRenderTabs), so this pane owns its full width. */
+
+/* The name row's tinted icon box, and the meta strip's icon-per-bit shape
+   the same mockup gives the SHARED header (one strip serves every tab). */
+.secpjtitle-ic{display:flex;align-items:center;justify-content:center;
+  width:34px;height:34px;border-radius:10px;background:var(--accent-soft);flex:none}
+.secpjbit{display:inline-flex;align-items:center;gap:7px}
+.secpjbit>.ic{width:14px;height:14px;color:var(--muted);flex:none}
+#sec-crumb-tab{color:var(--ink);font-weight:600}
+
+/* The delta/share line a KPI card grows between its label and its sub --
+   green only for a real improvement, red only for a real regression;
+   a share of the total stays neutral. */
+.secov-delta{margin-top:6px;font-size:13px;font-weight:650;color:var(--ink)}
+.secov-delta.good{color:var(--ok)}
+.secov-delta.bad{color:var(--err)}
+
+.secov-grid{display:flex;gap:16px;align-items:flex-start;margin-top:16px}
+.secov-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:16px}
+.secov-side{flex:0 0 520px;min-width:0;display:flex;flex-direction:column;gap:16px}
+@media (max-width:1280px){
+  .secov-grid{flex-direction:column}
+  .secov-side{flex:1 1 auto;width:100%}
+}
+
+/* The Total/Critical/.../Info segmented control on the trend card. */
+.secseg{display:inline-flex;align-items:center;gap:2px;padding:3px;
+  background:var(--panel2);border:1px solid var(--line);border-radius:10px;flex:none}
+.secseg-btn{border:0;background:transparent;color:var(--muted);font:inherit;
+  font-size:12px;font-weight:600;padding:5px 12px;border-radius:8px;cursor:pointer}
+.secseg-btn:not(.on):hover{color:var(--ink)}
+.secseg-btn.on{background:var(--accent);color:var(--accent-ink)}
+
+/* The 7-day line chart -- a fixed-viewBox SVG scaling like an image, the
+   same treatment the donuts already get. Line/area/dot colours are set
+   inline per selected series (accent for Total, the severity's own token
+   otherwise); everything else reads tokens here. */
+.secov-trendsvg{display:block;width:100%;height:auto;margin-top:4px}
+.secov-gridline{stroke:var(--line);stroke-width:1}
+.secov-axis{fill:var(--muted);font-size:11px}
+.secov-area{opacity:.12;stroke:none}
+.secov-line{fill:none;stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}
+.secov-dot{stroke-width:2}
+.secov-dot.capped{fill:var(--panel)}
+
+/* The category donut and its counted, percented legend. */
+.secov-donutrow{display:flex;align-items:center;gap:20px;padding:6px 2px 2px}
+.secov-donutsvg{width:150px;height:150px;flex:none}
+.secov-donut-total{font-size:26px;font-weight:700;fill:var(--ink)}
+.secov-donut-sub{font-size:9px;fill:var(--muted)}
+.secov-legend{display:flex;flex-direction:column;gap:9px;flex:1;min-width:0}
+.secov-legendrow{display:flex;align-items:center;gap:8px;font-size:12.5px;
+  color:var(--ink);min-width:0}
+.secov-legdot{width:9px;height:9px;border-radius:50%;flex:none}
+.secov-legname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.secov-legcount{flex:none;color:var(--muted)}
+.secov-legcount b{color:var(--ink);font-weight:650}
+
+/* Top findings: five rows, six declared widths (the width test's own
+   parametrize covers this table like every other). */
+.secov-findtable{width:100%}
+.secov-findtable th:nth-child(1){width:10%}   /* Severity     */
+.secov-findtable th:nth-child(2){width:26%}   /* Title        */
+.secov-findtable th:nth-child(3){width:30%}   /* Location     */
+.secov-findtable th:nth-child(4){width:14%}   /* Analysis run */
+.secov-findtable th:nth-child(5){width:15%}   /* First seen   */
+.secov-findtable th:last-child{width:5%}      /* row chevron  */
+.secov-findtable .sectitle{font-size:13px;font-weight:650;color:var(--ink);
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.secov-findtable td:last-child{text-align:right}
+/* The two sortable headers read as plain header text with the active
+   arrow, not as boxed buttons -- ProjectOverview.png's own header row.
+   Still buttons underneath (the findings browser's own idiom, reused);
+   only the chrome flattens. */
+.secov-findtable th .btn{border:0;background:transparent;padding:0;margin:0;
+  font-size:inherit;font-weight:inherit;color:inherit;letter-spacing:inherit;
+  text-transform:inherit;box-shadow:none}
+.secov-findtable th .btn:hover{color:var(--accent)}
+/* "#8 (Deep)" as the mockup's own plain accent link, one line -- a button
+   underneath (the same drill-down the findings browser's Analysis run
+   column wires), just without the ghost box the sample never draws. */
+.secov-findtable td .btn{border:0;background:transparent;padding:0;
+  color:var(--accent);font-weight:600;white-space:nowrap;box-shadow:none}
+.secov-findtable td .btn:hover{text-decoration:underline}
+
+/* Recent activity rows: tinted icon box, bold kind + detail, the kind
+   badge and the absolute date right-aligned. In the 300px rail the right
+   cluster wraps under the title instead of crushing it. */
+.secov-actlist{display:flex;flex-direction:column}
+.secov-actrow{display:flex;align-items:center;gap:12px;padding:11px 2px;
+  border-top:1px solid var(--line2)}
+.secov-actrow:first-child{border-top:0}
+.secov-actic{display:flex;align-items:center;justify-content:center;
+  width:38px;height:38px;border-radius:11px;background:var(--accent-soft);
+  color:var(--accent);flex:none}
+.secov-actic .ic{width:17px;height:17px}
+.secov-actright{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  justify-content:flex-end;flex:none;max-width:55%}
+.secov-actright .secmeta{white-space:nowrap}
 
 /* --------------------------------------------------------- security index
    The project table, the recent-analyses feed and the severity donut all

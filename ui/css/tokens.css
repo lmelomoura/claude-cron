@@ -32,8 +32,18 @@
      approved drawing actually specifies. */
   --sev-crit:#e3302b; --sev-high:#f79b38; --sev-med:#edb425;
   --sev-low:#4478e8; --sev-info:#b9bfc9;
+  /* Categorical palette, sampled from ProjectOverview.png's own
+     "Findings by category" legend dots (x~1470, y 438/462/487/511/536/560):
+     slot N paints the Nth-largest rule bucket, --cat-other the remainder
+     slice. A CATEGORY scale, deliberately separate from the severity tokens
+     right above even where the drawing's first three hues run close to
+     them -- "Hardcoded secrets is the biggest bucket" must never be
+     mistakable for "Hardcoded secrets is critical". */
+  --cat-1:#ee5f5b; --cat-2:#fc9529; --cat-3:#f2b310;
+  --cat-4:#8abcf4; --cat-5:#826cf7; --cat-other:#aeafb8;
 }
-/* Dark mode deliberately does NOT redefine the five --sev-* tokens above:
+/* Dark mode deliberately does NOT redefine the five --sev-* tokens above
+   (nor the --cat-* palette, same policy for the same reason):
    :root[data-theme="dark"] below leaves them unset, so dark inherits the
    exact same light-mode hues rather than a second, dimmer sample -- these
    are bright enough (sampled off the mockup at full saturation) to still

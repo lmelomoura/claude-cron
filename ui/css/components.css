@@ -176,6 +176,11 @@ button.kpi-card:not(:disabled):hover{border-color:color-mix(in srgb,var(--accent
    rule either. */
 .kpi-card.sev-crit .kpi-card-ic{background:color-mix(in srgb,var(--sev-crit) 16%,transparent);color:var(--sev-crit)}
 .kpi-card.sev-high .kpi-card-ic{background:color-mix(in srgb,var(--sev-high) 16%,transparent);color:var(--sev-high)}
+/* The other three severities join for the project Overview's six-card row
+   (ProjectOverview.png) -- same idiom, same 16% tint, one rule per token. */
+.kpi-card.sev-med .kpi-card-ic{background:color-mix(in srgb,var(--sev-med) 16%,transparent);color:var(--sev-med)}
+.kpi-card.sev-low .kpi-card-ic{background:color-mix(in srgb,var(--sev-low) 16%,transparent);color:var(--sev-low)}
+.kpi-card.sev-info .kpi-card-ic{background:color-mix(in srgb,var(--sev-info) 22%,transparent);color:color-mix(in srgb,var(--sev-info) 60%,var(--ink))}
 button.kpi-card.warn:not(:disabled):hover{border-color:color-mix(in srgb,var(--warn) 42%,var(--line))}
 button.kpi-card.err:not(:disabled):hover{border-color:color-mix(in srgb,var(--err) 42%,var(--line))}
 /* Zero warnings/errors is nothing to open -- the card fades the same register

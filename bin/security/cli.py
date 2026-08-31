@@ -988,7 +988,9 @@ def cmd_project_data(args):
                        "last_analysis": 0},
             "tabs": {"overview": {"posture": queries._empty_posture(),
                                   "checklist": _empty_checklist_counts(),
-                                  "state": "", "attempted": False},
+                                  "state": "", "attempted": False,
+                                  "trend": [], "previous": None,
+                                  "categories": [], "top_findings": []},
                      "runs": [], "branches": [], "reports": []},
             "sidebar": {"donut": queries._empty_posture(), "categories": [],
                        "activity": [], "branch_count": 0,
@@ -998,12 +1000,61 @@ def cmd_project_data(args):
     branch, posture, fell_back, latest = queries.default_branch_posture(
         conn, args.project, args.base or None)
 
+    # The Overview tab's own cards beyond the posture row (ProjectOverview.png):
+    # `categories` and `top_findings` are projections of the SAME checklist
+    # already fetched for `checklist_counts` -- one branch, the same scope as
+    # `posture` above, so the KPI total, the category donut's centre and the
+    # Top findings rows can never disagree about what they count. `previous`
+    # is that same posture computed one finished analysis earlier, for the
+    # "vs. previous analysis" delta -- None (not an empty posture) when there
+    # is no previous analysis, so the page can say "no previous analysis"
+    # instead of rendering a 0% delta nothing was compared against.
     checklist_counts = _empty_checklist_counts()
+    overview_categories = []
+    top_findings = []
+    previous = None
     if latest is not None:
         _analysis, findings = queries.checklist(conn, latest["id"])
         for f in findings:
             if f["state"] in checklist_counts:
                 checklist_counts[f["state"]] += 1
+        open_findings = [f for f in findings if queries.is_open(f["state"])]
+        buckets = {}
+        for f in open_findings:
+            b = buckets.setdefault(f.get("rule") or "", {
+                "rule": f.get("rule") or "", "category": f.get("category") or "",
+                "count": 0})
+            b["count"] += 1
+        overview_categories = sorted(
+            buckets.values(), key=lambda b: (-b["count"], b["rule"]))[:5]
+        # Severity rank first, then newest first-seen -- "top" means "most
+        # severe, then most recently introduced", the same rank order the
+        # findings browser's own severity sort uses. `first_seen` comes from
+        # the same shared map `finding_rows` reads, so this card and the
+        # browser one tab over can never date the same finding differently.
+        first_seen = queries.first_seen_map(conn, args.project)
+        top = sorted(open_findings, key=lambda f: (
+            queries._SEV_RANK.get(f.get("severity"), 99),
+            -(first_seen.get(f.get("fingerprint", ""), 0) or 0)))[:5]
+        for f in top:
+            occ = f.get("occurrences") or []
+            first = occ[0] if occ else {}
+            top_findings.append({
+                "fingerprint": f.get("fingerprint", ""),
+                "severity": f.get("severity", ""),
+                "title": f.get("title") or "",
+                "rule": f.get("rule") or "",
+                "category": f.get("category") or "",
+                "file": first.get("file", ""),
+                "line": first.get("line", 0) or 0,
+                "more": max(0, len(occ) - 1),
+                "analysis_id": latest["id"],
+                "profile": latest.get("profile", ""),
+                "first_seen": first_seen.get(f.get("fingerprint", ""), 0),
+            })
+        prev_row = queries.previous_finished(conn, args.project, branch, latest["id"])
+        if prev_row is not None:
+            previous = queries.posture(conn, args.project, branch, latest=prev_row)
 
     # ONE grouped query for the whole Runs tab, replacing what used to be one
     # checklist() call per done/capped row (see this function's own
@@ -1051,7 +1102,19 @@ def cmd_project_data(args):
                                     or (runs[0]["started"] if runs else 0)},
         "tabs": {"overview": {"posture": posture, "checklist": checklist_counts,
                               "state": (latest or {}).get("state", ""),
-                              "attempted": bool(runs)},
+                              "attempted": bool(runs),
+                              # 7 days, fixed: ProjectOverview.png's own
+                              # trend card reads "over the last 7 days" --
+                              # the SHOWN branch (fell back or not; the
+                              # header names it), unlike `trend_series`,
+                              # which never falls back because a bare
+                              # sparkline has nowhere to say so.
+                              "trend": (queries.trend(conn, args.project,
+                                                      branch, days=7)
+                                        if branch else []),
+                              "previous": previous,
+                              "categories": overview_categories,
+                              "top_findings": top_findings},
                  "runs": runs,
                  "branches": queries.branch_rows(conn, args.project),
                  "reports": reports},

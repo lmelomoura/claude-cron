@@ -337,6 +337,36 @@ def test_trend_query_carries_the_id_tiebreak_in_its_order_by(conn):
         "the tiebreak belongs in the SQL text, not in however the engine breaks a tie"
 
 
+def test_trend_points_carry_a_per_severity_breakdown_that_sums_to_open(conn):
+    """The project Overview's trend chart draws one line per severity behind
+    its Total/Critical/.../Info control -- each point's `by_severity` is the
+    same open set `open` counts, split, so no severity line can ever total
+    more or less than the Total line at the same point."""
+    _analysis(conn, "main", findings=[("critical", "secret"), ("high", "sast"),
+                                      ("high", "sast2")])
+    points = queries.trend(conn, "web", "main")
+    assert len(points) == 1
+    p = points[0]
+    assert p["by_severity"]["critical"] == 1
+    assert p["by_severity"]["high"] == 2
+    assert p["by_severity"]["medium"] == 0
+    assert sum(p["by_severity"].values()) == p["open"] == 3
+
+
+def test_previous_finished_returns_the_next_older_done_or_capped_row(conn):
+    """The KPI delta's own lookup: strictly older than `before_id`, same
+    done/capped predicate as `_latest_finished` -- a failed attempt between
+    two finished analyses must not become the "previous analysis" the delta
+    compares against."""
+    a1 = _analysis(conn, "main", findings=[("high", "sast")])
+    failed = _analysis(conn, "main", findings=[], state="failed")
+    a3 = _analysis(conn, "main", findings=[("critical", "secret")])
+    prev = queries.previous_finished(conn, "web", "main", a3)
+    assert prev is not None and prev["id"] == a1, \
+        f"expected {a1} (skipping failed {failed}), got {prev}"
+    assert queries.previous_finished(conn, "web", "main", a1) is None
+
+
 # ---- Task 2 (Phase 4): the trend series comes back, this time served and
 # tested. `8c0eaf8` deleted `project_rows`'s own call to `trend()` because
 # nothing on the index screen rendered it; the render is a later task, and

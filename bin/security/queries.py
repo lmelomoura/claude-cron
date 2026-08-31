@@ -239,6 +239,20 @@ def _latest_finished(conn, project, branch, since=None):
     return dict(row) if row else None
 
 
+def previous_finished(conn, project, branch, before_id):
+    """The branch's newest finished analysis strictly OLDER than `before_id`
+    -- the "previous analysis" the project Overview's KPI cards compare the
+    current posture against. The same done/capped predicate as
+    `_latest_finished`, plus the id bound; `id`, not `started`, as the
+    ordering for the same 1-second-resolution reason `trend` orders by it (a
+    failed-then-retried pair can share a start second)."""
+    row = conn.execute(
+        "SELECT * FROM analysis WHERE project=? AND branch=?"
+        " AND state IN ('done','capped') AND id < ?"
+        " ORDER BY id DESC LIMIT 1", (project, branch, before_id)).fetchone()
+    return dict(row) if row else None
+
+
 def most_recent_started(conn, project):
     """The started-at time of `project`'s most recent analysis, ANY branch,
     ANY state -- unlike `default_branch_posture`'s own `latest`, which only
@@ -459,9 +473,19 @@ def trend(conn, project, branch, days=30):
             # trend line can silently plot them out of order.
             " ORDER BY started, id", (project, branch, since)):
         _an, findings = checklist(conn, a["id"])
+        open_findings = [f for f in findings if is_open(f["state"])]
+        # The same open set, split by severity -- the project Overview's
+        # trend chart draws one line per severity behind its Total/Critical/
+        # .../Info control, and a chart cannot derive a Critical-only series
+        # from a bare total. Counted here, in the loop that already holds the
+        # findings, rather than by a second checklist pass per point.
+        by_severity = {s: 0 for s in _SEV_RANK}
+        for f in open_findings:
+            if f["severity"] in by_severity:
+                by_severity[f["severity"]] += 1
         out.append({"analysis_id": a["id"], "started": a["started"],
-                    "state": a["state"],
-                    "open": sum(1 for f in findings if is_open(f["state"]))})
+                    "state": a["state"], "open": len(open_findings),
+                    "by_severity": by_severity})
     return out
 
 
@@ -827,6 +851,23 @@ SORTABLE = ("severity", "title", "category", "branch", "first_seen", "state")
 MAX_PER_PAGE = 100
 
 
+def first_seen_map(conn, project):
+    """fingerprint -> the `started` of the oldest DONE/CAPPED analysis
+    carrying it, in one grouped query rather than one per row -- filtered
+    exactly like `_latest_finished`, `finding_rows`'s own `branches` query
+    and `checklist`'s own `history` query (see its comment): a crashed or
+    still-running analysis can record a finding before dying, and letting
+    that count as "first seen" would make a finding look older than any
+    successful analysis ever confirmed it. Shared by `finding_rows` (the
+    findings browser's First seen column) and `cmd_project_data` (the
+    Overview tab's Top findings card) so the two screens can never disagree
+    about when the same finding was first seen."""
+    return {r["fp"]: r["first"] for r in conn.execute(
+        "SELECT f.fingerprint AS fp, MIN(a.started) AS first FROM finding f"
+        " JOIN analysis a ON a.id = f.analysis_id WHERE a.project=?"
+        " AND a.state IN ('done','capped') GROUP BY f.fingerprint", (project,))}
+
+
 def finding_rows(conn, project, filters=None, sort="severity",
                  direction="desc", page=1, per_page=25):
     """The findings browser: one checklist per branch -- the latest finished
@@ -911,7 +952,7 @@ def finding_rows(conn, project, filters=None, sort="severity",
         "SELECT DISTINCT branch FROM analysis WHERE project=?"
         " AND state IN ('done','capped')", (project,))]
 
-    rows, first_seen, capped_branches = [], {}, 0
+    rows, capped_branches = [], 0
     # The Analysis run / Branch picker options (AllFindings.png) -- collected
     # from the SAME `_latest_finished` call this loop already makes per
     # branch, not a second query: one analysis row per branch that has one,
@@ -936,18 +977,7 @@ def finding_rows(conn, project, filters=None, sort="severity",
             row["analysis_id"] = a["id"]
             rows.append(row)
 
-    # The oldest DONE/CAPPED analysis carrying each fingerprint, in one query
-    # rather than one per row -- filtered exactly like `_latest_finished`,
-    # this function's own `branches` query above, and `checklist`'s own
-    # `history` query (see its comment): a crashed or still-running analysis
-    # can record a finding before dying, and letting that count as "first
-    # seen" would make a finding look older than any successful analysis ever
-    # confirmed it.
-    for r in conn.execute(
-            "SELECT f.fingerprint AS fp, MIN(a.started) AS first FROM finding f"
-            " JOIN analysis a ON a.id = f.analysis_id WHERE a.project=?"
-            " AND a.state IN ('done','capped') GROUP BY f.fingerprint", (project,)):
-        first_seen[r["fp"]] = r["first"]
+    first_seen = first_seen_map(conn, project)
     for r in rows:
         # `rows` itself is only ever built from a done/capped analysis --
         # `a` above is `_latest_finished`, and `checklist`'s own `previous`

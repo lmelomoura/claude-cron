@@ -1867,8 +1867,12 @@ def test_the_cells_icon_rule_cannot_repaint_the_favourite_star(srv):
     (".secpj-runstable", "SEC_RUNS_COLS", "security"),
     (".secfind-table", "SEC_FIND_TABLE_COLS", "security"),
     (".secact-table", "SEC_ACT_TABLE_COLS", "security"),
+    # The project Overview's Top-findings card (overview-tab.js) -- the
+    # ninth table on this shape, same scoped-class-and-width-set rule.
+    (".secov-findtable", "SEC_OVFIND_COLS", "security"),
 ], ids=["jobs", "projects", "runs", "security-fleet", "security-recent",
-        "security-runs", "security-findings", "security-activity"])
+        "security-runs", "security-findings", "security-activity",
+        "security-top-findings"])
 def test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column(
         srv, tmp_path, view, const_name, bundle):
     """Must fail against the pre-fix CSS (Security's th:nth-child(6) has no
@@ -3720,32 +3724,266 @@ def test_the_project_header_renders_a_dash_not_zero_for_lines_of_code(srv, tmp_p
     assert "0" not in texts, f"a bare 0 rendered where a dash belongs: {texts}"
 
 
+def _overview_tab_deps(block):
+    """Everything the Overview tab's full render (overview-tab.js) reaches,
+    extracted from the bundle, plus deliberately trivial stubs for the
+    bridge and cross-module bindings the harness cannot extract (kpiCard is
+    a CCApp bridge binding; secRuleMeta/secSevKey/the three navigation
+    callees are other modules' own, not under test here)."""
+    consts = "".join(_const(block, n) for n in
+        ("SEV5", "SEV_LABEL", "SEV_KPI_ICON", "SEV_KPI_TONE", "SEC_OVFIND_COLS",
+         "SEC_NEVER", "SEC_EVENT_META", "EVENT_KIND_LABEL"))
+    fns = "\n".join(_plainfn(block, n) for n in
+        ("secEl", "secIcon", "secOvDeltaText", "secOvShare", "secOvKpis",
+         "secOvTrendCard", "secOvTrendSeg", "secOvDay", "secOvTrendValue",
+         "secOvTrendSvg", "secOvSevToken", "secOvCategoryCard", "secOvDonutSvg",
+         "secOvViewAll", "secOvCap", "secOvSortedFindings", "secOvTopFindings",
+         "secOvSortableHeader", "secOvFindingRow", "secProjectActivity",
+         "secRenderProjectOverview"))
+    stubs = """
+    let secOvTrendSev = "total", secOvSort = null,
+        secOvProject = null, secOvPayload = null;
+    function kpiCard(o){
+      const c = new FakeElement("div");
+      c.className = "kpi-card" + (o.tone ? " " + o.tone : "");
+      if(o.title) c.title = o.title;
+      const num = new FakeElement("span"); num.className = "kpi-card-num";
+      num.textContent = o.value; c.appendChild(num);
+      const lab = new FakeElement("div"); lab.className = "kpi-card-label";
+      lab.textContent = o.label; c.appendChild(lab);
+      if(o.sub){ const s = new FakeElement("div"); s.className = "kpi-card-sub";
+        s.textContent = o.sub; c.appendChild(s); }
+      return c;
+    }
+    function secRuleMeta(_cat, rule){ return {label: "L:" + (rule || ""), icon: "key"}; }
+    function secSevKey(f){ return f.severity || "info"; }
+    function secSwitchProjectTab(_t){}
+    function secShowAnalysis(_id, _pin){}
+    function secOpenActivity(_p){}
+    """
+    return consts + stubs + fns
+
+
+# A payload every field of the full Overview render reads -- the same shape
+# cmd_project_data serves, trimmed to one branch, two analyses' worth.
+_OVERVIEW_PAYLOAD = """
+    const PAYLOAD = {
+      project: "web",
+      header: {branch: "main", branch_fell_back: false},
+      tabs: {overview: {state: "capped", attempted: true,
+        posture: {critical: 1, high: 0, medium: 0, low: 0, info: 0, total: 1},
+        previous: {critical: 2, high: 0, medium: 0, low: 0, info: 0, total: 2},
+        trend: [{analysis_id: 1, started: 1700000000, state: "done", open: 2,
+                 by_severity: {critical: 2, high: 0, medium: 0, low: 0, info: 0}},
+                {analysis_id: 2, started: 1700086400, state: "capped", open: 1,
+                 by_severity: {critical: 1, high: 0, medium: 0, low: 0, info: 0}}],
+        categories: [{rule: "sql-injection", category: "sast", count: 1}],
+        top_findings: [{fingerprint: "f", severity: "critical",
+          title: "SQL injection", rule: "sql-injection", category: "sast",
+          file: "app/db.py", line: 40, more: 1, analysis_id: 2,
+          profile: "deep", first_seen: 1700000000}],
+        checklist: {}}},
+      sidebar: {activity: [{kind: "analysis_finished", detail: "done", at: 5}]},
+    };
+"""
+
+
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_a_capped_latest_analysis_renders_the_incompleteness_notice(srv, tmp_path):
     """THE SAME notice secPaint gives on the old analysis screen and the
     index screen gives on a project row -- a capped analysis is a PARTIAL
-    read, so the posture underneath is what it had reached, not what is
-    there."""
+    read, so the numbers underneath are what it had reached, not what is
+    there. Driven through the FULL Overview render (overview-tab.js), so
+    the notice's survival is checked in the pane that actually shows it."""
     block = _security_js(srv)
-    consts = (_const(block, "SEC_STATES") + _const(block, "SEC_STATE_LABEL")
-             + _const(block, "SEC_STATE_HELP"))
-    deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secIcon", "secIndexPosturePills", "secOverviewCaption",
-                      "secRenderProjectOverview"))
     script = tmp_path / "pj-capped.js"
-    script.write_text(_PROJECT_DOM_HARNESS + consts + deps + """
-    secRenderProjectOverview({
-      header: {branch: "main", branch_fell_back: false},
-      tabs: {overview: {state: "capped", attempted: true,
-        posture: {critical: 1, high: 0, medium: 0, low: 0, info: 0, total: 1},
-        checklist: {new: 0, regressed: 0, open: 1, partial: 0, pending: 0,
-                    fixed: 0, accepted: 0, false_positive: 0}}}});
+    script.write_text(_PROJECT_DOM_HARNESS + _overview_tab_deps(block)
+                      + _OVERVIEW_PAYLOAD + """
+    secRenderProjectOverview(PAYLOAD);
     console.log(JSON.stringify(collectAll(_els["sec-pj-overview"], [])));
     """)
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
     joined = " ".join(r["text"] for r in out)
     assert "INCOMPLETE" in joined, f"no incompleteness notice rendered: {joined}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_overview_kpis_count_severities_and_state_a_real_delta(srv, tmp_path):
+    """ProjectOverview.png's six cards, rendered honestly: the Total card's
+    small line is the real change against the previous finished analysis
+    (green down / red up / "no previous analysis" when there is none --
+    never a delta nothing was compared against), and each severity card's
+    line is its share of the total, labelled as exactly that. The mockup's
+    own sample prints shares under a "vs. previous analysis" sublabel its
+    numbers contradict; the layout is kept, the lie is not."""
+    block = _security_js(srv)
+    script = tmp_path / "ov-kpis.js"
+    script.write_text(_PROJECT_DOM_HARNESS + _overview_tab_deps(block) + """
+    const withPrev = secOvKpis({
+      posture: {critical: 1, high: 2, medium: 0, low: 0, info: 1, total: 4},
+      previous: {critical: 2, high: 3, medium: 0, low: 0, info: 3, total: 8}});
+    const noPrev = secOvKpis({
+      posture: {critical: 0, high: 0, medium: 0, low: 0, info: 0, total: 0},
+      previous: null});
+    const cards = withPrev.childNodes.map(c => ({cls: c.className,
+      text: collectAll(c, []).map(r => r.text).join(" ")}));
+    console.log(JSON.stringify({cards,
+      d_down: secOvDeltaText(4, 8), d_up: secOvDeltaText(8, 4),
+      d_same: secOvDeltaText(3, 3), d_none: secOvDeltaText(3, null),
+      d_fromzero: secOvDeltaText(3, 0),
+      noPrevTotal: collectAll(noPrev.childNodes[0], []).map(r => r.text).join(" "),
+      share: secOvShare(1, 4), shareNone: secOvShare(0, 0)}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    cards = out["cards"]
+    assert len(cards) == 6, f"six KPI cards, total + five severities: {len(cards)}"
+    tones = [c["cls"] for c in cards]
+    assert tones[1:] == ["kpi-card sev-crit", "kpi-card sev-high", "kpi-card sev-med",
+                         "kpi-card sev-low", "kpi-card sev-info"], \
+        f"severity cards wear the severity scale, never err/warn: {tones}"
+    # 8 -> 4 open findings is a 50% improvement, said with the green arrow.
+    assert out["d_down"] == {"text": "↓ 50%", "dir": "good", "sub": "vs. previous analysis"}
+    assert out["d_up"]["dir"] == "bad" and out["d_up"]["text"].startswith("↑")
+    assert out["d_same"]["text"] == "no change" and out["d_same"]["dir"] == ""
+    assert out["d_none"] == {"text": "—", "dir": "", "sub": "no previous analysis"}
+    # From zero there is no percentage to state -- the absolute count is.
+    assert out["d_fromzero"]["text"] == "↑ +3" and out["d_fromzero"]["dir"] == "bad"
+    assert "no previous analysis" in out["noPrevTotal"]
+    assert "vs. previous analysis" in cards[0]["text"]
+    assert "of total findings" in cards[1]["text"]
+    assert out["share"] == "25%"
+    assert out["shareNone"] == "—", "a share of a zero total is not 0%, it is nothing"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_trend_chart_draws_the_selected_severitys_own_series(srv, tmp_path):
+    """The Total/Critical/.../Info control swaps WHICH series the one line
+    draws -- each dot's tooltip carries that series' own value at that
+    analysis, and a capped point keeps the area's one honesty cue: hollow,
+    with "(incomplete)" spelled out, so a dip at a run that merely stopped
+    early cannot pass for progress."""
+    block = _security_js(srv)
+    script = tmp_path / "ov-trend.js"
+    script.write_text(_PROJECT_DOM_HARNESS + _overview_tab_deps(block)
+                      + _OVERVIEW_PAYLOAD + """
+    const dots = (svg) => {
+      const out = [];
+      (function walk(n){
+        if((n._attrs || {}).class && n._attrs.class.startsWith("secov-dot")){
+          out.push({cls: n._attrs.class, tip: n.textContent});
+        }
+        (n.childNodes || []).forEach(walk);
+      })(svg);
+      return out;
+    };
+    const points = PAYLOAD.tabs.overview.trend;
+    const total = dots(secOvTrendSvg(points, "total"));
+    const crit = dots(secOvTrendSvg(points, "critical"));
+    console.log(JSON.stringify({total, crit,
+      value: secOvTrendValue(points[0], "critical"),
+      legacy: secOvTrendValue({open: 5}, "critical")}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert [d["tip"].split(" — ")[1].split(" open")[0] for d in out["total"]] == ["2", "1"]
+    assert [d["tip"].split(" — ")[1].split(" open")[0] for d in out["crit"]] == ["2", "1"]
+    assert out["value"] == 2
+    assert out["legacy"] == 0, "a point without by_severity reads 0, never NaN"
+    capped = [d for d in out["total"] if "capped" in d["cls"]]
+    assert len(capped) == 1 and "(incomplete)" in capped[0]["tip"], \
+        f"the capped analysis's dot must carry the incompleteness cue: {out['total']}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_category_donut_legend_counts_shares_and_the_other_remainder(srv, tmp_path):
+    """The donut's centre is the SAME total the KPI row counts (one branch,
+    one checklist), each legend row states its count and share, and
+    everything past the served buckets is one honest grey "Other" row -- the
+    checklist's own remainder, absent entirely when the buckets cover the
+    total."""
+    block = _security_js(srv)
+    script = tmp_path / "ov-donut.js"
+    script.write_text(_PROJECT_DOM_HARNESS + _overview_tab_deps(block) + """
+    const card = secOvCategoryCard({
+      posture: {total: 10},
+      categories: [{rule: "a", category: "secrets", count: 5},
+                   {rule: "b", category: "sast", count: 2}]});
+    const covered = secOvCategoryCard({
+      posture: {total: 3},
+      categories: [{rule: "a", category: "secrets", count: 3}]});
+    const empty = secOvCategoryCard({posture: {total: 0}, categories: []});
+    console.log(JSON.stringify({
+      card: collectAll(card, []).map(r => r.text).join(" | "),
+      covered: collectAll(covered, []).map(r => r.text).join(" | "),
+      empty: collectAll(empty, []).map(r => r.text).join(" "),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert "5 (50%)" in out["card"] and "2 (20%)" in out["card"], out["card"]
+    assert "Other" in out["card"] and "3 (30%)" in out["card"], \
+        f"the remainder past the buckets must be one Other row: {out['card']}"
+    assert "Total findings" in out["card"] and "10" in out["card"]
+    assert "Other" not in out["covered"], \
+        "buckets covering the whole total must not render a zero Other row"
+    assert "No open findings to categorise." in out["empty"]
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_every_event_kind_has_recent_activity_furniture(srv, tmp_path):
+    """SEC_EVENT_META (vocabulary.js) walks EVENT_KINDS: every kind the
+    ledger can record gets its icon, its badge label and a house .pill tone
+    on the Recent-activity card -- a kind added to EVENT_KINDS without a
+    row here would fall back to a bare label, and this is what surfaces
+    that before a reader does."""
+    block = _security_js(srv)
+    script = tmp_path / "ov-eventmeta.js"
+    script.write_text(_const(block, "EVENT_KINDS") + _const(block, "SEC_EVENT_META")
+                      + "console.log(JSON.stringify({kinds: EVENT_KINDS, meta: SEC_EVENT_META}));")
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    for kind in out["kinds"]:
+        meta = out["meta"].get(kind)
+        assert meta, f"EVENT_KINDS member {kind!r} has no SEC_EVENT_META row"
+        assert meta.get("icon") and meta.get("badge") and meta.get("pill"), \
+            f"{kind!r}'s furniture is incomplete: {meta}"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_top_findings_rows_mirror_the_findings_browsers_cells(srv, tmp_path):
+    """The five cells the card shares with the findings browser read the
+    same way there and here: the severity pill wears the severity class,
+    the location is first-occurrence path:line with a "(+N more)" cue, the
+    run link says "#id (Profile)", and a finding first seen at 0 (the
+    defensive default) renders a dash, not a 1970 date. The default order
+    is the card's own point -- the served severity rank -- and survives
+    with no sort selected."""
+    block = _security_js(srv)
+    script = tmp_path / "ov-findrow.js"
+    script.write_text(_PROJECT_DOM_HARNESS + _overview_tab_deps(block) + """
+    const row = secOvFindingRow({severity: "high", title: "A long title",
+      rule: "private-key-committed", category: "secrets", file: "conf/id_rsa",
+      line: 3, more: 2, analysis_id: 5, profile: "deep", first_seen: 0});
+    const cells = row.childNodes.map(td => collectAll(td, []).map(r => r.text).join(" "));
+    const pill = collectAll(row, []).find(r => r.cls.startsWith("sevpill"));
+    const served = [{severity: "critical", file: "b.py", analysis_id: 2},
+                    {severity: "high", file: "a.py", analysis_id: 1}];
+    const kept = secOvSortedFindings({top_findings: served}).map(f => f.severity);
+    secOvSort = {key: "location", dir: "asc"};
+    const byLoc = secOvSortedFindings({top_findings: served}).map(f => f.file);
+    console.log(JSON.stringify({cells, pill: pill && pill.cls, kept, byLoc}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["pill"] == "sevpill high"
+    assert "conf/id_rsa:3 (+2 more)" in out["cells"][2], out["cells"]
+    assert "#5 (Deep)" in out["cells"][3], out["cells"]
+    assert "—" in out["cells"][4] and "w0" not in out["cells"][4], \
+        "first_seen 0 must render a dash, not a 1970 date"
+    assert out["kept"] == ["critical", "high"], "no sort selected keeps the served rank"
+    assert out["byLoc"] == ["a.py", "b.py"], "the Location header sorts by path"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -3763,44 +4001,62 @@ def test_switching_project_tabs_shows_one_pane_and_hides_the_other(srv, tmp_path
     let secProjectCache = null;
     """ + deps + """
     secRenderTabs();
-    const initial = {ov: _els["sec-pj-overview"].hidden, rn: _els["sec-pj-runs"].hidden};
+    const initial = {ov: _els["sec-pj-overview"].hidden, rn: _els["sec-pj-runs"].hidden,
+                     side: _els["sec-pj-side"].hidden, crumb: _els["sec-crumb-tab"].textContent};
     secSwitchProjectTab("runs");
-    const onRuns = {ov: _els["sec-pj-overview"].hidden, rn: _els["sec-pj-runs"].hidden};
+    const onRuns = {ov: _els["sec-pj-overview"].hidden, rn: _els["sec-pj-runs"].hidden,
+                    side: _els["sec-pj-side"].hidden, crumb: _els["sec-crumb-tab"].textContent};
     secSwitchProjectTab("overview");
     const backToOverview = {ov: _els["sec-pj-overview"].hidden, rn: _els["sec-pj-runs"].hidden};
     console.log(JSON.stringify({initial, onRuns, backToOverview}));
     """)
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
-    assert out["initial"] == {"ov": False, "rn": True}, "Overview must be the default pane"
-    assert out["onRuns"] == {"ov": True, "rn": False}, "switching to Runs must hide Overview"
+    assert out["initial"]["ov"] is False and out["initial"]["rn"] is True, \
+        "Overview must be the default pane"
+    assert out["onRuns"]["ov"] is True and out["onRuns"]["rn"] is False, \
+        "switching to Runs must hide Overview"
     assert out["backToOverview"] == {"ov": False, "rn": True}, \
         "switching back must hide Runs again, not leave both visible"
+    # ProjectOverview.png draws the Overview full-width with its OWN right
+    # column (one-branch scope); the all-branch rail beside it would be two
+    # donuts with two different, equally true totals an inch apart. The Runs
+    # tab keeps the rail exactly as ProjectRuns.png draws it.
+    assert out["initial"]["side"] is True, "the all-branch rail must hide on Overview"
+    assert out["onRuns"]["side"] is False, "the Runs tab must keep its rail"
+    # The breadcrumb's third segment follows the active tab.
+    assert out["initial"]["crumb"] == "Overview" and out["onRuns"]["crumb"] == "Runs"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_two_scope_captions_name_the_branch_and_the_branch_count(srv, tmp_path):
-    """Finding 1's fix: the Overview posture is ONE branch
-    (default_branch_posture's own choice); the sidebar donut/categories span
-    EVERY analysed branch. Both captions have to say so, by name and by
-    count, or a two-branch project's different totals read as a silent
-    disagreement -- and a one-branch project's caption must not imply more
-    branches exist than it has (the containment half, in the same test since
-    both captions come from the same two small functions)."""
+    """Finding 1's fix, reshaped with the Overview rebuild
+    (ProjectOverview.png): the one-branch scope cue lives in the shared
+    HEADER now -- the meta strip names the branch on every tab, and a
+    fallen-back branch gets its own warning chip there (secRenderProjectHeader)
+    -- since the old per-pane "Posture of X" caption left with the pane it
+    captioned. The sidebar caption (the rail's every-analysed-branch scope,
+    still shown on the Runs/Branches/Reports tabs) keeps its own halves:
+    postures of different branches must never be confused in silence."""
     block = _security_js(srv)
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secOverviewCaption", "secSidebarCaption"))
+                     ("secEl", "secIcon", "secHeaderBit", "secRenderProjectHeader",
+                      "secSidebarCaption"))
     deps = _const(block, "SEC_NEVER") + _const(block, "SEC_FLOOR_SCOPE_NOTE") + deps
     script = tmp_path / "pj-captions.js"
-    script.write_text(_INDEX_DOM_HARNESS + deps + """
-    const fellBack = secOverviewCaption({branch: "develop", branch_fell_back: true});
-    const plain = secOverviewCaption({branch: "main", branch_fell_back: false});
+    script.write_text(_PROJECT_DOM_HARNESS + deps + """
+    secRenderProjectHeader({header: {profile: "deep", branch: "develop",
+      branch_fell_back: true, lines_of_code: 1, last_analysis: 1}});
+    const fellBack = collectAll(_els["sec-pj-head"], []).map(r => r.text).join(" ");
+    _els["sec-pj-head"] = new FakeElement("div");
+    secRenderProjectHeader({header: {profile: "deep", branch: "main",
+      branch_fell_back: false, lines_of_code: 1, last_analysis: 1}});
+    const plain = collectAll(_els["sec-pj-head"], []).map(r => r.text).join(" ");
     const two = secSidebarCaption(2);
     const one = secSidebarCaption(1);
     const none = secSidebarCaption(0);
     console.log(JSON.stringify({
-      fellBack: collectAll(fellBack, []).map(r => r.text).join(" "),
-      plain: collectAll(plain, []).map(r => r.text).join(" "),
+      fellBack, plain,
       two: collectAll(two, []).map(r => r.text).join(" "),
       one: collectAll(one, []).map(r => r.text).join(" "),
       none: collectAll(none, []).map(r => r.text).join(" "),
@@ -3827,8 +4083,13 @@ def test_the_overview_tells_never_analysed_apart_from_never_finished(srv, tmp_pa
     Runs tab that lists real attempts."""
     block = _security_js(srv)
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secIcon", "secOverviewCaption", "secRenderProjectOverview"))
-    deps = _const(block, "SEC_NEVER") + deps
+                     ("secEl", "secIcon", "secRenderProjectOverview"))
+    # The module-local selections the render resets per project -- the
+    # never-analysed path returns before any card builder is reached, so
+    # these four lets are the only non-extracted state it touches.
+    deps = (_const(block, "SEC_NEVER")
+            + "let secOvTrendSev = 'total', secOvSort = null,"
+            + " secOvProject = null, secOvPayload = null;\n" + deps)
     script = tmp_path / "pj-attempted.js"
     script.write_text(_PROJECT_DOM_HARNESS + deps + """
     secRenderProjectOverview({header: {}, tabs: {overview: {state: "", attempted: false}}});
@@ -4648,14 +4909,18 @@ def test_switching_to_findings_hides_the_other_four_panes(srv, tmp_path):
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
-def test_the_project_sidebar_hides_for_findings_alone(srv, tmp_path):
+def test_the_project_sidebar_hides_for_findings_and_overview(srv, tmp_path):
     """AllFindings.png draws the findings browser full-width, with no
     donut/categories/recent-activity rail beside it -- that rail is a
-    summary of the other four tabs' own posture (secRenderProjectSidebar's
-    own comment), and repeating "2 critical / 8 high / ..." beside a table
-    that already lists every one of those rows individually would say the
-    same numbers twice a few inches apart. #sec-pj-side hides for Findings
-    alone; every other tab keeps it exactly as before."""
+    summary beside SOME tabs, and repeating "2 critical / 8 high / ..."
+    beside a table that already lists every one of those rows individually
+    would say the same numbers twice a few inches apart. ProjectOverview.png
+    then drew the Overview full-width too, with its OWN right column inside
+    the pane -- and that column's donut is one-branch scoped where the
+    rail's spans every analysed branch, so showing both would be two donuts
+    with two different, equally true totals an inch apart (this used to be
+    "hides for Findings alone"; the Overview rebuild is what widened it).
+    Runs/Branches/Reports keep the rail exactly as before."""
     block = _security_js(srv)
     deps = _plainfn(block, "secRenderTabs") + "\n" + _plainfn(block, "secSwitchProjectTab")
     script = tmp_path / "pj-side.js"
@@ -4679,8 +4944,8 @@ def test_the_project_sidebar_hides_for_findings_alone(srv, tmp_path):
     """)
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
-    assert out == {"onOverview": False, "onRuns": False, "onFindings": True,
-                   "onReports": False, "backToOverview": False}, out
+    assert out == {"onOverview": True, "onRuns": False, "onFindings": True,
+                   "onReports": False, "backToOverview": True}, out
 
 
 def test_the_search_field_names_what_it_actually_searches(srv):

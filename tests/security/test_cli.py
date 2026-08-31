@@ -2253,6 +2253,105 @@ def test_project_data_marks_the_overview_state_when_latest_analysis_is_capped(tm
     assert out["tabs"]["overview"]["posture"]["critical"] == 1
 
 
+def test_project_data_serves_the_overview_cards_beyond_the_posture(tmp_path):
+    """ProjectOverview.png's own cards ride the same payload: `trend` (last
+    7 days of the SHOWN branch, one point per finished analysis, each with a
+    per-severity breakdown), `categories` and `top_findings` (projections of
+    the SAME checklist `posture` reads -- one branch, one scope, so the KPI
+    total, the donut centre and the Top findings rows can never disagree),
+    and `previous` (the posture one finished analysis earlier)."""
+    db = tmp_path / "security.db"
+    aid1 = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main")
+    run(db, "report-finding", "--analysis", str(aid1), stdin=json.dumps({
+        "fingerprint": fingerprint_for("web", "main", "leak"), "category": "secrets",
+        "rule": "private-key-committed", "severity": "high", "title": "Key leak",
+        "rationale": "r",
+        "occurrences": [{"file": "conf/id_rsa", "line": 1, "snippet_hash": "h"}]}))
+    run(db, "finish", "--analysis", str(aid1), "--state", "done", "--spend", "0.1")
+
+    aid2 = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main")
+    run(db, "report-finding", "--analysis", str(aid2), stdin=json.dumps({
+        "fingerprint": fingerprint_for("web", "main", "leak"), "category": "secrets",
+        "rule": "private-key-committed", "severity": "high", "title": "Key leak",
+        "rationale": "r",
+        "occurrences": [{"file": "conf/id_rsa", "line": 1, "snippet_hash": "h"}]}))
+    run(db, "report-finding", "--analysis", str(aid2), stdin=json.dumps({
+        "fingerprint": fingerprint_for("web", "main", "sqli"), "category": "sast",
+        "rule": "sql-injection", "severity": "critical", "title": "SQL injection",
+        "rationale": "r",
+        "occurrences": [{"file": "app/db.py", "line": 40, "snippet_hash": "h"},
+                        {"file": "app/api.py", "line": 7, "snippet_hash": "h"}]}))
+    run(db, "finish", "--analysis", str(aid2), "--state", "done", "--spend", "0.1")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main",
+             "--default-profile", "")
+    ov = out["tabs"]["overview"]
+
+    # trend: one point per finished analysis, oldest first, each carrying the
+    # per-severity split of its own open count.
+    assert [p["analysis_id"] for p in ov["trend"]] == [aid1, aid2]
+    assert ov["trend"][0]["open"] == 1
+    assert ov["trend"][1]["open"] == 2
+    assert ov["trend"][1]["by_severity"]["critical"] == 1
+    assert ov["trend"][1]["by_severity"]["high"] == 1
+    assert sum(ov["trend"][1]["by_severity"].values()) == ov["trend"][1]["open"]
+
+    # previous: the posture as of aid1 -- the high alone.
+    assert ov["previous"]["total"] == 1
+    assert ov["previous"]["high"] == 1
+    assert ov["previous"]["critical"] == 0
+
+    # categories: rule buckets of the CURRENT checklist's open findings.
+    assert {c["rule"]: c["count"] for c in ov["categories"]} == {
+        "private-key-committed": 1, "sql-injection": 1}
+
+    # top findings: severity rank first (critical before high), each row
+    # carrying the fields the card renders -- location from the first
+    # occurrence, a count of the rest, the attesting analysis and first_seen.
+    assert [f["rule"] for f in ov["top_findings"]] == [
+        "sql-injection", "private-key-committed"]
+    sqli = ov["top_findings"][0]
+    assert sqli["file"] == "app/db.py" and sqli["line"] == 40 and sqli["more"] == 1
+    assert sqli["analysis_id"] == aid2
+    assert sqli["first_seen"] > 0
+    # The high was first seen by aid1 even though aid2 is what attests it now.
+    leak = ov["top_findings"][1]
+    assert leak["analysis_id"] == aid2
+    listed = run(db, "list", "--project", "web")
+    aid1_started = next(r["started"] for r in listed if r["id"] == aid1)
+    assert leak["first_seen"] == aid1_started
+
+
+def test_project_data_previous_is_none_not_zeros_without_a_prior_analysis(tmp_path):
+    """One finished analysis: there is nothing to compare against, and the
+    page must be able to say "no previous analysis" -- a zero-filled posture
+    here would render as a 0% delta that no comparison ever produced."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", severity="critical")
+    out = run(db, "project-data", "--project", "web", "--base", "main",
+             "--default-profile", "")
+    assert out["tabs"]["overview"]["previous"] is None
+    assert out["tabs"]["overview"]["trend"] != []
+
+
+def test_project_data_overview_cards_follow_the_fallen_back_branch(tmp_path):
+    """The trend/categories/top_findings scope is the SHOWN branch -- the
+    one the header names, fallen back or not -- unlike the index sparkline
+    (`trend_series`), which never falls back because it has nowhere to say
+    so. This screen does say so (the header's own fell-back chip), so its
+    cards follow it rather than rendering empty beside a posture that did."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "develop", severity="critical",
+                      rule="sql-injection")
+    out = run(db, "project-data", "--project", "web", "--base", "main",
+             "--default-profile", "")
+    assert out["header"]["branch_fell_back"] is True
+    ov = out["tabs"]["overview"]
+    assert len(ov["trend"]) == 1 and ov["trend"][0]["open"] == 1
+    assert ov["categories"][0]["rule"] == "sql-injection"
+    assert ov["top_findings"][0]["severity"] == "critical"
+
+
 def test_project_data_runs_tab_matches_the_list_verb(tmp_path):
     """The Runs tab is `cmd_list`'s own query -- same rows, same order --
     plus a `findings` count folded in, so it can be checked directly against

@@ -7,7 +7,9 @@
    `security_project`.
 
    This module owns the header (now including the name/badge/description row
-   and the breadcrumb's current segment's surrounding chrome), the tabs, the
+   and the breadcrumb's current segment's surrounding chrome), the tabs (the
+   Overview tab's own CONTENT is ui/security/overview-tab.js's, the same
+   split branches-tab.js/reports-tab.js already have), the
    Runs tab's own "Analysis runs" table and its selected run's shell (the
    Run #N head and the "Findings recorded" strip -- see secRenderRunHead/
    secRenderRunRecorded's own comments for why those two specifically live
@@ -33,11 +35,10 @@
 import { $, closeMenus, fmtAgo, fmtWhen, openLog, openProjectEditor, projById,
          tableFooter, pushNav } from "./page.js";
 import { secIcon, secEl, secFetch } from "./dom.js";
-import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP, SEC_NEVER,
-         SEC_FLOOR_SCOPE_NOTE, EVENT_KIND_LABEL, secMinSeverity,
-         secPosture, secRuleMeta, secVisible } from "./vocabulary.js";
+import { SEC_NEVER, SEC_FLOOR_SCOPE_NOTE, secMinSeverity,
+         secPosture, secVisible } from "./vocabulary.js";
 import { secState } from "./state.js";
-import { secIndexPosturePills, secIndexDonut, secIndexDonutSvg, secIndexDonutLegend,
+import { secIndexDonut, secIndexDonutSvg, secIndexDonutLegend,
          secIndexCategories, secCappedScopeNote, secIndexRunStatusPill } from "./index-screen.js";
 import { secOpen, secShowAnalysis, secOpenLaunch } from "./analysis.js";
 import { secDownloadReport } from "./actions.js";
@@ -45,12 +46,12 @@ import { secRunFor } from "./history.js";
 import { secRenderProjectBranches } from "./branches-tab.js";
 import { secRenderProjectReports } from "./reports-tab.js";
 import { renderFindings } from "./findings-screen.js";
-import { secOpenActivity } from "./activity-screen.js";
+import { secRenderProjectOverview, secProjectActivity } from "./overview-tab.js";
 
 // Every state `analysis.state` can hold (see bin/security/ledger.py's
 // `start_analysis`/`ANALYSIS_END_STATES`) -- the Runs tab's own filter row,
-// a different vocabulary from SEC_STATES above (that one is a FINDING's
-// state; this one is an ANALYSIS's).
+// a different vocabulary from vocabulary.js's SEC_STATES (that one is a
+// FINDING's state; this one is an ANALYSIS's).
 const RUN_STATES = ["running", "done", "capped", "failed"];
 
 let secProjectCache = null;
@@ -186,6 +187,12 @@ function secRenderTabs(){
   if(br) br.classList.toggle("active", secProjectTab === "branches");
   if(fd) fd.classList.toggle("active", secProjectTab === "findings");
   if(rp) rp.classList.toggle("active", secProjectTab === "reports");
+  // The breadcrumb's third segment names the ACTIVE TAB (ProjectOverview.png's
+  // own "Security › Minerva › Overview") -- repainted here because every road
+  // to a different tab passes through this function, restores included.
+  const crumb = $("sec-crumb-tab");
+  if(crumb) crumb.textContent =
+    secProjectTab.charAt(0).toUpperCase() + secProjectTab.slice(1);
   const ovPane = $("sec-pj-overview"), rnPane = $("sec-pj-runs"),
         brPane = $("sec-pj-branches"), fdPane = $("sec-pj-findings"),
         rpPane = $("sec-pj-reports");
@@ -195,50 +202,50 @@ function secRenderTabs(){
   if(fdPane) fdPane.hidden = secProjectTab !== "findings";
   if(rpPane) rpPane.hidden = secProjectTab !== "reports";
   // The donut/categories/recent-activity rail (#sec-pj-side) is a summary
-  // of the OTHER four tabs' own posture -- AllFindings.png draws the
-  // findings browser full-width, with no such rail beside it, and a rail
-  // repeating "2 critical / 8 high / ..." beside a table that already lists
-  // every one of those rows individually would be the same numbers said
-  // twice a few inches apart. Hidden for Findings alone; the other four
-  // tabs keep it exactly as before.
+  // beside SOME tabs, not all of them. AllFindings.png draws the findings
+  // browser full-width, with no rail repeating numbers the table already
+  // lists row by row; ProjectOverview.png draws the Overview full-width
+  // too, with its OWN right column (category donut + activity) inside the
+  // pane -- and that column's donut is one-branch scoped, where the rail's
+  // spans every analysed branch, so showing both would be two donuts with
+  // two different, equally true totals an inch apart. Hidden for those two
+  // tabs; Runs/Branches/Reports keep the rail exactly as before.
   const side = $("sec-pj-side");
-  if(side) side.hidden = secProjectTab === "findings";
+  if(side) side.hidden = secProjectTab === "findings" || secProjectTab === "overview";
 }
 
 /* --------------------------------------------------------------- header */
-/* The name row above the meta strip -- project icon, bold name, the green
-   "Security enabled" badge, then the project's own description -- all read
-   from projById(), the SAME client-side project object secOpen() already
-   reads for its repo picker (`secRepos(p)`) a few lines into opening this
-   very screen. Not part of `payload` (cmd_project_data's own JSON never
-   carries a project's name or description -- it is not a security-ledger
-   fact, it is projects.json's), and not worth a new field there either: the
-   page already holds this, in hand, before the fetch this function's other
-   half depends on even starts.
+/* The name row above the meta strip -- the area's shield in a tinted box,
+   bold name, the project's default-profile badge, then the project's own
+   description -- all read from projById(), the SAME client-side project
+   object secOpen() already reads for its repo picker (`secRepos(p)`) a few
+   lines into opening this very screen. Not part of `payload`
+   (cmd_project_data's own JSON never carries a project's name or
+   description -- it is not a security-ledger fact, it is projects.json's),
+   and not worth a new field there either: the page already holds this, in
+   hand, before the fetch this function's other half depends on even starts.
 
-   `folder`, not the mockup's own bespoke glyph: this area's one existing
-   icon table (bin/dashboard.html's `I`) has no shape for it, and every
-   OTHER "this is a project" icon on this bundle already reads `folder`
-   (secIndexProjectRow's own name cell) -- one icon for the one fact, not a
-   new one drawn to chase a mockup pixel nothing else on the page repeats. */
+   ProjectOverview.png reshaped this row from the older ProjectRuns.png:
+   the shield-in-a-tinted-box (the area's own icon -- this is the project's
+   SECURITY screen, and the crumb two lines up already reads "Security")
+   where a bare folder glyph stood, and the PROFILE badge where the green
+   "Security enabled" pill stood -- that pill said something true of every
+   project this screen can ever open (the index never opens a disabled one),
+   where the profile is a fact that varies. `.pill.profile`, the exact badge
+   the meta strip below and the index's own Profile column already wear for
+   the same value. */
 function secRenderProjectTitle(){
   const idHost = $("sec-pj-titleid");
   if(idHost){
     idHost.textContent = "";
     const p = projById(secState.project) || {};
-    idHost.appendChild(secIcon("folder"));
+    const ic = secEl("span", "secpjtitle-ic");
+    ic.appendChild(secIcon("shield"));
+    idHost.appendChild(ic);
     idHost.appendChild(secEl("span", "secpjtitle-name", p.name || secState.project));
-    // `.pill.on` (components.css), not secIndexProjectRow's own bare-icon
-    // .secidx-enabled badge: the mockup draws a filled green PILL reading
-    // "Security enabled", text and all, a different shape from that row's
-    // small inline checkmark -- the identical tone (.pill.on already means
-    // "this is active/enabled" everywhere else it appears), a new label on
-    // it rather than a bespoke class replicating a colour this one already
-    // carries. Unconditional: every project screen open here is, by
-    // construction, security-enabled (the Security index never opens one
-    // that is not -- see secIndexProjectRow's own identical comment).
-    const badge = secEl("span", "pill on", "Security enabled");
-    badge.title = "Security analysis is enabled for this project";
+    const profile = ((p.security || {}).default_profile) || "standard";
+    const badge = secEl("span", "pill profile", profile);
+    badge.title = "This project's default analysis profile";
     idHost.appendChild(badge);
   }
   const desc = $("sec-pj-desc");
@@ -252,10 +259,18 @@ function secRenderProjectHeader(payload){
   const h = payload.header || {};
 
   const meta = secEl("div", "secpjmeta grow");
-  const profile = secEl("span", null, "Profile: ");
+  // Icon + label + value, no colon -- ProjectOverview.png's own strip
+  // anatomy (the older ProjectRuns.png spelled "Profile: deep"; the newer
+  // mockup of the same shared strip draws a glyph per bit instead, and one
+  // strip serves every tab). Icons from the page's one table, each already
+  // meaning this fact elsewhere: `user` (a profile), `gitbranch`, `code`,
+  // `clock`.
+  const profile = secEl("span", "secpjbit");
+  profile.appendChild(secIcon("user"));
+  profile.appendChild(secEl("span", null, "Profile"));
   profile.appendChild(secEl("span", "pill profile", h.profile || "standard"));
   meta.appendChild(profile);
-  meta.appendChild(secHeaderBit("Branch", h.branch || "—"));
+  meta.appendChild(secHeaderBit("gitbranch", "Branch", h.branch || "—"));
   if(h.branch_fell_back){
     // Postures of different branches must never be confused in silence --
     // the SAME sentence the index screen's own project table gives a branch
@@ -276,12 +291,12 @@ function secRenderProjectHeader(payload){
   // that, though: a reader has no way to tell "not counted" from a repository
   // this screen is claiming is empty, so the title spells it out, the same
   // compact-density device the "Never analysed" cell beside it uses.
-  meta.appendChild(secHeaderBit("Lines of code",
+  meta.appendChild(secHeaderBit("code", "Lines of code",
     h.lines_of_code ? h.lines_of_code.toLocaleString() : "—",
     h.lines_of_code ? "" : "Not counted — this analysis predates the line "
       + "count, or nothing has been analysed yet. It is not a claim that the "
       + "repository is empty."));
-  meta.appendChild(secHeaderBit("Last analysis",
+  meta.appendChild(secHeaderBit("clock", "Last analysis",
     h.last_analysis ? fmtAgo(h.last_analysis) : SEC_NEVER.short,
     h.last_analysis ? "" : SEC_NEVER.next));
   host.appendChild(meta);
@@ -295,29 +310,15 @@ function secRenderProjectHeader(payload){
   host.appendChild(settings);
 }
 
-function secHeaderBit(label, value, title){
-  const span = secEl("span", null, label + ": ");
+function secHeaderBit(iconName, label, value, title){
+  const span = secEl("span", "secpjbit");
+  span.appendChild(secIcon(iconName));
+  span.appendChild(secEl("span", null, label));
   span.appendChild(secEl("b", null, value));
   // Only when there is something to explain -- a bare `title=""` on every
   // header bit would be noise in the markup and a no-op on screen.
   if((title || "").trim()) span.title = title;
   return span;
-}
-
-/* The Overview tab's own caption: which ONE branch its posture describes.
-   `default_branch_posture` already knows both halves of this (the branch it
-   picked, and whether it had to fall back) -- this is just the Overview
-   pane saying so out loud, in the same wording the header's own branch bit
-   and secIndexProjectRow's tdBranch already use for a fell-back branch, so a
-   reader moving between the header, this caption and the index screen never
-   has to learn a second phrasing of the same fact. */
-function secOverviewCaption(header){
-  const cap = secEl("div", "secpj-caption", "Posture of " + (header.branch || "—"));
-  if(header.branch_fell_back){
-    cap.appendChild(secEl("span", "secidx-fellback",
-      " (fell back — the declared base was never analysed)"));
-  }
-  return cap;
 }
 
 /* The sidebar's own caption: how many branches the donut/categories below
@@ -356,55 +357,6 @@ function secSidebarCaption(branchCount, attempted){
   // hover-only aside would hide rather than explain.
   cap.title = SEC_FLOOR_SCOPE_NOTE;
   return cap;
-}
-
-/* -------------------------------------------------------------- overview */
-function secRenderProjectOverview(payload){
-  const host = $("sec-pj-overview");
-  if(!host) return;
-  host.textContent = "";
-  const ov = (payload.tabs || {}).overview || {};
-
-  if(!ov.state){
-    // `attempted` tells "never analysed" apart from "analysed, nothing has
-    // finished yet" -- a project whose every analysis failed used to read
-    // exactly like one that had never been touched, even though its own
-    // Runs tab plainly lists the attempts.
-    host.appendChild(secEl("div", "empty",
-      ov.attempted ? SEC_NEVER.attempted : SEC_NEVER.next));
-    return;
-  }
-  // Which branch this posture is FOR -- default_branch_posture's own choice
-  // (the project's declared base, or the branch it fell back to). The
-  // sidebar's own donut/categories describe every analysed branch instead
-  // (see secSidebarCaption); without naming the branch here, a multi-branch
-  // project's two different, equally true totals read as a disagreement
-  // rather than two different questions answered.
-  host.appendChild(secOverviewCaption(payload.header || {}));
-  if(ov.state === "capped"){
-    // THE SAME NOTICE the index screen and the old analysis screen already
-    // give: a capped analysis is a PARTIAL read of the repository, so the
-    // posture below is what it had reached, not what is there.
-    const warn = secEl("div", "warnline bad");
-    warn.appendChild(secIcon("alert"));
-    warn.appendChild(secEl("span", "grow",
-      "This analysis is INCOMPLETE: it stopped before covering the whole "
-      + "scope. The posture below is what it had reached, not what is there."));
-    host.appendChild(warn);
-  }
-  host.appendChild(secIndexPosturePills(ov.posture || {}));
-
-  const chips = secEl("div", "secchips");
-  const checklist = ov.checklist || {};
-  SEC_STATES.forEach(state => {
-    const n = checklist[state] || 0;
-    const chip = secEl("span", "secpj-statchip" + (n ? "" : " zero"));
-    chip.title = SEC_STATE_HELP[state] || "";
-    chip.appendChild(secEl("span", null, SEC_STATE_LABEL[state] || state));
-    chip.appendChild(secEl("span", "n", String(n)));
-    chips.appendChild(chip);
-  });
-  host.appendChild(chips);
 }
 
 /* ------------------------------------------------------------------ runs */
@@ -492,8 +444,8 @@ function secRunsFilters(runs){
    different question, "what is open right now": it also carries forward
    findings that disappeared since the branch's previous analysis, marked
    fixed or pending, so its own total can run higher. Same resolution as
-   secOverviewCaption/secSidebarCaption above -- name what each number
-   counts rather than force one to match the other. */
+   secSidebarCaption above -- name what each number counts rather than
+   force one to match the other. */
 // [key, label] tuples, SEC_PROJECT_COLS-shaped (index-screen.js) --
 // test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column
 // (tests/test_page_contract.py) reads only `.length` off this, so a fifth
@@ -922,36 +874,8 @@ function secRenderProjectSidebar(payload){
     host.appendChild(secIndexDonut(sb.donut || {}, sb.categories || [],
       secCappedScopeNote(sb.capped_branches || 0, sb.branch_count || 0, "branch")));
   }
+  // The card itself is overview-tab.js's now (ProjectOverview.png owns its
+  // row anatomy); this rail mounts the identical builder so the two homes
+  // of "Recent activity" can never drift apart.
   host.appendChild(secProjectActivity(sb.activity || []));
-}
-
-function secProjectActivity(events){
-  const box = secEl("div", "card secpj-plaincard");
-  const head = secEl("div", "secpj-cardhead");
-  head.appendChild(secEl("h3", null, "Recent activity"));
-  // The Activity screen's own entry point from here: this feed is the last
-  // five events (see cmd_project_data's own `ledger.events_for(..., limit=5)`),
-  // the full screen is every event, filterable by kind, for this project.
-  const viewAll = secEl("button", "btn ghost", "View all");
-  viewAll.type = "button";
-  viewAll.onclick = () => secOpenActivity(secState.project);
-  head.appendChild(viewAll);
-  box.appendChild(head);
-  if(!events.length){
-    box.appendChild(secEl("div", "tblempty", "No activity recorded yet."));
-    return box;
-  }
-  const list = secEl("div", "seclist");
-  events.forEach(e => {
-    const row = secEl("div", "secrow");
-    row.appendChild(secIcon("activity"));
-    const grow = secEl("div", "grow");
-    grow.appendChild(secEl("div", "secname", EVENT_KIND_LABEL[e.kind] || e.kind));
-    grow.appendChild(secEl("div", "secmeta",
-      [e.detail, fmtAgo(e.at)].filter(Boolean).join(" · ")));
-    row.appendChild(grow);
-    list.appendChild(row);
-  });
-  box.appendChild(list);
-  return box;
 }
