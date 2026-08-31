@@ -287,19 +287,15 @@ function secFindHeader(fs, data){
   const wrap = secEl("div");
   if(((fs.filters || {}).fingerprint || "").trim()) return wrap;
 
-  // The breadcrumb this pane used to draw for itself moved up: the project
-  // header (project-screen.js) now carries "Security › <project>" for every
-  // tab, so a second trail here stacked two breadcrumbs on one screen. The
-  // pane keeps only its own title row below.
+  // The breadcrumb this pane used to draw for itself moved up, and now its
+  // TITLE has too: the page's own title row says "Findings" with this
+  // pane's exact sentence beneath it (SEC_TAB_TITLES, project-screen.js)
+  // the moment the tab is active, so the "All findings" heading this
+  // header used to draw underneath said the same thing twice a few lines
+  // apart. What is left here is the pane's own ACTIONS row -- Export and
+  // Saved filters are this pane's function, not its name.
   const head = secEl("div", "secfind-head");
-  const titleWrap = secEl("div");
-  const titleLine = secEl("div", "secfind-head-title");
-  titleLine.appendChild(secIcon("shield"));
-  titleLine.appendChild(secEl("span", null, "All findings"));
-  titleWrap.appendChild(titleLine);
-  titleWrap.appendChild(secEl("p", "secfind-head-sub",
-    "Complete list of security findings for all analyses in this project."));
-  head.appendChild(titleWrap);
+  head.appendChild(secEl("span", "spacer"));
 
   const actions = secEl("div", "secfind-head-actions");
   const exportBtn = secEl("button", "btn ghost");

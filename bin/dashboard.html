@@ -415,21 +415,26 @@ document.documentElement.dataset.theme =
            here. Built entirely by ui/security/project-screen.js. -->
       <div class="secpjhead" id="sec-pj-head"></div>
 
+      <!-- The same .viewtabs/.pane furniture the Overview's own Jobs/Runs/
+           Worktrees tab strip used to use, before it was removed -- a
+           self-contained pair here, switched by
+           ui/security/project-screen.js and never by the page's own
+           setView(). ABOVE .secpjbody, not inside .secpjmain: the right
+           rail is .secpjbody's flex sibling column, and with the strip
+           inside the left column the rail's first card sat level with the
+           TABS -- floating above every pane's own content -- where all
+           four mockups draw the rail level with the cards below the
+           strip. -->
+      <nav class="viewtabs" id="sec-pj-tabs">
+        <button class="viewtab" data-tab="overview" id="secpjt-overview"></button>
+        <button class="viewtab" data-tab="runs" id="secpjt-runs"></button>
+        <button class="viewtab" data-tab="branches" id="secpjt-branches"></button>
+        <button class="viewtab" data-tab="findings" id="secpjt-findings"></button>
+        <button class="viewtab" data-tab="reports" id="secpjt-reports"></button>
+      </nav>
+
       <div class="secpjbody">
         <div class="secpjmain">
-          <!-- The same .viewtabs/.pane furniture the Overview's own Jobs/Runs/
-               Worktrees tab strip used to use, before it was removed -- a
-               self-contained pair here, switched by
-               ui/security/project-screen.js and never by the page's own
-               setView(). -->
-          <nav class="viewtabs" id="sec-pj-tabs">
-            <button class="viewtab" data-tab="overview" id="secpjt-overview"></button>
-            <button class="viewtab" data-tab="runs" id="secpjt-runs"></button>
-            <button class="viewtab" data-tab="branches" id="secpjt-branches"></button>
-            <button class="viewtab" data-tab="findings" id="secpjt-findings"></button>
-            <button class="viewtab" data-tab="reports" id="secpjt-reports"></button>
-          </nav>
-
           <!-- The posture and what changed since the previous analysis (the
                checklist counts) — built by project-screen.js. -->
           <div class="pane" id="sec-pj-overview"></div>

@@ -4046,18 +4046,19 @@ def test_switching_project_tabs_shows_one_pane_and_hides_the_other(srv, tmp_path
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_two_scope_captions_name_the_branch_and_the_branch_count(srv, tmp_path):
-    """Finding 1's fix, reshaped with the Overview rebuild
-    (ProjectOverview.png): the one-branch scope cue lives in the shared
-    HEADER now -- the meta strip names the branch on every tab, and a
-    fallen-back branch gets its own warning chip there (secRenderProjectHeader)
-    -- since the old per-pane "Posture of X" caption left with the pane it
-    captioned. The sidebar caption (the rail's every-analysed-branch scope,
-    still shown on the Runs/Branches/Reports tabs) keeps its own halves:
-    postures of different branches must never be confused in silence."""
+    """Finding 1's fix, twice reshaped: the one-branch scope cue lives in
+    the shared HEADER (the meta strip names the branch; a fallen-back one
+    gets its warning chip there), and the rail's every-analysed-branch
+    sentence became secSidebarScopeNote -- a TOOLTIP on the donut block
+    that carries those numbers, after the visible caption was caught
+    floating above the tab strip and, on the Runs tab, describing the
+    all-branch scope over cards that are the selected run's own. The
+    substance is unchanged: postures of different branches (and different
+    counting rules) must never be confused in silence."""
     block = _security_js(srv)
     deps = "\n".join(_plainfn(block, n) for n in
                      ("secEl", "secIcon", "secHeaderBit", "secRenderProjectHeader",
-                      "secSidebarCaption"))
+                      "secSidebarScopeNote"))
     deps = _const(block, "SEC_NEVER") + _const(block, "SEC_FLOOR_SCOPE_NOTE") + deps
     script = tmp_path / "pj-captions.js"
     script.write_text(_PROJECT_DOM_HARNESS + deps + """
@@ -4068,26 +4069,23 @@ def test_the_two_scope_captions_name_the_branch_and_the_branch_count(srv, tmp_pa
     secRenderProjectHeader({header: {profile: "deep", branch: "main",
       branch_fell_back: false, lines_of_code: 1, last_analysis: 1}});
     const plain = collectAll(_els["sec-pj-head"], []).map(r => r.text).join(" ");
-    const two = secSidebarCaption(2);
-    const one = secSidebarCaption(1);
-    const none = secSidebarCaption(0);
     console.log(JSON.stringify({
       fellBack, plain,
-      two: collectAll(two, []).map(r => r.text).join(" "),
-      one: collectAll(one, []).map(r => r.text).join(" "),
-      none: collectAll(none, []).map(r => r.text).join(" "),
+      two: secSidebarScopeNote(2),
+      one: secSidebarScopeNote(1),
     }));
     """)
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
     assert "develop" in out["fellBack"] and "fell back" in out["fellBack"], out["fellBack"]
     assert "main" in out["plain"] and "fell back" not in out["plain"], out["plain"]
-    assert "2" in out["two"] and "branches" in out["two"], out["two"]
+    assert "all 2 analysed branches" in out["two"], out["two"]
+    assert "fingerprint" in out["two"], \
+        f"the note must say what the rollup counts: {out['two']}"
     assert "only analysed branch" in out["one"], \
         f"a single analysed branch must say so plainly: {out['one']}"
-    assert "branches" not in out["one"], \
-        f"a single-branch caption must not read as spanning several: {out['one']}"
-    assert "0" not in out["none"], f"zero branches must not render a bare 0: {out['none']}"
+    assert "branches" not in out["one"].split("fingerprint")[0], \
+        f"a single-branch note must not read as spanning several: {out['one']}"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -4468,6 +4466,47 @@ def test_the_branches_tab_tells_never_analysed_apart_from_every_attempt_failed(s
     assert "finished yet" in out["attemptedNoneFinished"], out["attemptedNoneFinished"]
     assert out["neverAttempted"] != out["attemptedNoneFinished"], \
         "never-attempted and attempted-but-failed render identically"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_every_project_tab_wears_its_own_title_and_subtitle(srv, tmp_path):
+    """Two tabs sharing one title and one subtitle read as the same screen
+    twice -- the complaint that forced SEC_TAB_TITLES to cover all five.
+    Overview keeps the project's identity (name, profile badge, the
+    mockup's own sentence with the name inside it); the other four wear
+    their tab's name and sentence. No two tabs may render the same
+    title+subtitle pair."""
+    block = _security_js(srv)
+    deps = (_const(block, "SEC_TAB_TITLES")
+            + "let secProjectTab = 'overview';\n"
+            + "function projById(_id){ return {name: 'Web', security: {default_profile: 'deep'}}; }\n"
+            + "\n".join(_plainfn(block, n) for n in
+                        ("secEl", "secIcon", "secRenderProjectTitle")))
+    script = tmp_path / "pj-titles.js"
+    script.write_text(_PROJECT_DOM_HARNESS + deps + """
+    const seen = {};
+    ["overview", "runs", "branches", "findings", "reports"].forEach(tab => {
+      secProjectTab = tab;
+      _els["sec-pj-titleid"] = new FakeElement("div");
+      _els["sec-pj-desc"] = new FakeElement("p");
+      secRenderProjectTitle();
+      seen[tab] = {title: _els["sec-pj-titleid"].textContent,
+                   sub: _els["sec-pj-desc"].textContent};
+    });
+    console.log(JSON.stringify(seen));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert "Web" in out["overview"]["title"] and "deep" in out["overview"]["title"]
+    assert "Security overview of the Web project" in out["overview"]["sub"]
+    assert out["runs"]["title"] == "Runs" and out["runs"]["sub"], \
+        f"the Runs tab must have its own title and subtitle: {out['runs']}"
+    assert out["branches"]["title"] == "Branches"
+    assert out["findings"]["title"] == "Findings"
+    assert out["reports"]["title"] == "Reports"
+    pairs = [(v["title"], v["sub"]) for v in out.values()]
+    assert len(set(pairs)) == 5, \
+        f"two tabs render the same title+subtitle pair: {out}"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -6124,10 +6163,14 @@ def test_the_severity_floors_scope_is_stated_where_the_unfloored_numbers_are(srv
     block = _security_js(srv)
     assert "export const SEC_FLOOR_SCOPE_NOTE" in block, \
         "the decision is not written down anywhere"
-    # Said on the index screen (its KPI cards, posture pills and donut are all
-    # unfloored) and on the project screen (the sidebar is a flex sibling of
-    # every tab pane, so one line there is readable from all five).
-    for fn in ("secRenderIndex", "secSidebarCaption"):
+    # Said on the index screen (its KPI cards, posture pills and donut are
+    # all unfloored) and on the project screen's rail, whose one visible
+    # caption became per-variant tooltips ON the cards that carry the
+    # numbers: secSidebarScopeNote rides the reports/other tabs' donut
+    # block, secProjectRunSidebar's own donut title carries the Runs
+    # variant, secBranchesSidebar's the Branches one.
+    for fn in ("secRenderIndex", "secSidebarScopeNote", "secProjectRunSidebar",
+               "secBranchesSidebar"):
         assert "SEC_FLOOR_SCOPE_NOTE" in _plainfn(block, fn), \
             f"{fn} shows unfloored numbers and does not say so"
 

@@ -1495,7 +1495,11 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    screen's own sidebar cards. Same look as .secthead (flex, space-between)
    without its page-level top margin, which reads as a gap bug on a header
    that opens a .card rather than a whole pane. */
-.secpj-cardhead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 9px}
+/* flex-wrap: a card head whose right side is a wide control (the trend
+   card's segmented severity picker) drops that control onto its own line
+   when the card is narrow, instead of crushing the title beside it. */
+.secpj-cardhead{display:flex;align-items:center;justify-content:space-between;
+  gap:8px;margin:0 0 9px;flex-wrap:wrap}
 /* Phase 4 Task 6: the mockup's own bold, sentence-case card title (ProjectDetails
    .png's "Project activity", FullActivity.png's "Activity summary") -- the same
    opt-out of the page's generic small-caps `h3` that `.secidx-cardhead h3`
@@ -1720,10 +1724,14 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 
 .secov-grid{display:flex;gap:16px;align-items:flex-start;margin-top:16px}
 .secov-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:16px}
-.secov-side{flex:0 0 520px;min-width:0;display:flex;flex-direction:column;gap:16px}
-@media (max-width:1280px){
+/* `0 1 520px` with a floor, and the stack point at 1440px: with the rail
+   fixed at 520 a 1300px window left the MAIN column narrower than the side
+   one -- the trend card's own title wrapped into a five-line sliver beside
+   its segmented control. Below the stack point everything is full width. */
+.secov-side{flex:0 1 520px;min-width:400px;display:flex;flex-direction:column;gap:16px}
+@media (max-width:1440px){
   .secov-grid{flex-direction:column}
-  .secov-side{flex:1 1 auto;width:100%}
+  .secov-side{flex:1 1 auto;width:100%;min-width:0}
 }
 
 /* The Total/Critical/.../Info segmented control on the trend card. */
@@ -1764,8 +1772,9 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secov-legcount b{color:var(--ink);font-weight:650}
 
 /* Top findings: five rows, six declared widths (the width test's own
-   parametrize covers this table like every other). */
-.secov-findtable{width:100%}
+   parametrize covers this table like every other). min-width is the floor
+   below which the wrapper scrolls instead of crushing the columns. */
+.secov-findtable{width:100%;min-width:760px}
 .secov-findtable th:nth-child(1){width:10%}   /* Severity     */
 .secov-findtable th:nth-child(2){width:26%}   /* Title        */
 .secov-findtable th:nth-child(3){width:30%}   /* Location     */
@@ -1857,6 +1866,10 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secbr-covtrack{height:8px;border-radius:5px;background:var(--panel2);
   border:1px solid var(--line2);overflow:hidden;margin-bottom:8px}
 .secbr-covbar{height:100%;border-radius:5px;background:var(--accent)}
+/* The floor below which .table-scroll scrolls sideways instead of crushing
+   the eight columns into unlabelled slivers -- the same rule every other
+   wide table in the product carries (#view-jobs's own comment). */
+.secbr-table{min-width:1060px}
 .secbr-table th:nth-child(1){width:18%}   /* Branch             */
 .secbr-table th:nth-child(2){width:8%}    /* Status             */
 .secbr-table th:nth-child(3){width:13%}   /* Last analysis      */

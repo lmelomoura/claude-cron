@@ -22,7 +22,7 @@
    card's own "(all branches)" each carry their half of it. */
 import { $, fmtAgo, fmtWhen, kpiCard, projById, tableFooter } from "./page.js";
 import { secEl, secIcon } from "./dom.js";
-import { SEC_NEVER } from "./vocabulary.js";
+import { SEC_NEVER, SEC_FLOOR_SCOPE_NOTE } from "./vocabulary.js";
 import { secIndexDonutSvg, secIndexDonutLegend, secIndexCategories,
          secCappedScopeNote } from "./index-screen.js";
 import { secFindTriggerLabel, secFindPositionPop, renderFindings } from "./findings-screen.js";
@@ -603,7 +603,7 @@ export function secBranchesSidebar(payload){
   donutTitle.appendChild(secEl("span", "secbr-scope", "(all branches)"));
   donutTitle.title = "Distinct problems (fingerprints) across every "
     + "analysed branch — the same finding open on two branches counts once "
-    + "here, once per branch in the table.";
+    + "here, once per branch in the table. " + SEC_FLOOR_SCOPE_NOTE;
   donutHead.appendChild(donutTitle);
   donutCard.appendChild(donutHead);
   const row = secEl("div", "secrun-donutrow");

@@ -17,6 +17,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Six project-screen defects called out from a narrow-window review,
+  closed together.** The Branches and Top-findings tables now carry the
+  min-width every other wide table already had, so below it the wrapper
+  scrolls sideways instead of crushing eight columns into unlabelled
+  slivers. Every tab wears its OWN title and subtitle (SEC_TAB_TITLES now
+  covers all five, pinned by a no-two-tabs-alike test): Overview keeps the
+  project's identity with the mockup's own sentence, Runs/Findings/Reports
+  join Branches with their tab's name and sentence — and the findings
+  pane's internal "All findings" heading, which would have said the same
+  thing twice, became a plain actions row. The tab strip moved out of the
+  left column to span the screen ABOVE the two-column body, so the rail's
+  first card sits level with the pane's cards instead of floating beside
+  the tabs. The rail's visible "Posture and categories below span…"
+  caption is gone everywhere — on the Runs tab it was flatly wrong,
+  describing the all-branch scope over cards that are the selected run's
+  own — replaced by scope tooltips on the cards that carry the numbers
+  (the Runs donut says "the selected run's own", Branches says "(all
+  branches)", the remaining tabs' donut block carries the branch-count
+  sentence), with the severity-floor note riding each one. And the
+  Overview's two-column grid stacks at 1440px instead of 1280px, with the
+  rail column allowed to shrink and card heads allowed to wrap, so a
+  ~1300px window no longer renders the trend card's title as a five-line
+  sliver beside its severity control.
+
 ### Changed
 
 - **The Branches tab is rebuilt to ProjectBranches.png.** What used to be a

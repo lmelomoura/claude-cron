@@ -243,22 +243,32 @@ function secRenderTabs(){
    where the profile is a fact that varies. `.pill.profile`, the exact badge
    the meta strip below and the index's own Profile column already wear for
    the same value. */
-/* Tabs whose own mockup titles the page with the TAB, not the project --
-   ProjectBranches.png draws a gitbranch icon, "Branches" and its own
-   sentence where the Overview's mockup draws the project's identity (the
-   project's name stays one crumb up either way). A tab absent here keeps
-   the project-identity row. */
+/* Every tab wears its OWN title row -- two tabs sharing one title and one
+   subtitle read as the same screen twice, which is exactly the complaint
+   that forced this table to cover all five. Overview is the one that keeps
+   the project's identity (ProjectOverview.png: shield, name, profile badge)
+   with the mockup's own sentence beneath it; the other four wear their tab's
+   icon, name and sentence (ProjectBranches.png set the pattern), with the
+   project's name one crumb up. Findings reuses the exact sentence its pane
+   header used to draw -- the pane keeps only its actions row now
+   (secFindHeader, findings-screen.js), so the one title is said once. */
 const SEC_TAB_TITLES = {
+  runs: {icon: "activity", title: "Runs",
+    sub: "Every analysis of this project, with the selected run's findings in detail."},
   branches: {icon: "gitbranch", title: "Branches",
     sub: "Security posture and recent analyses for each branch in this project."},
+  findings: {icon: "search", title: "Findings",
+    sub: "Complete list of security findings for all analyses in this project."},
+  reports: {icon: "file", title: "Reports",
+    sub: "Every analysis's downloadable reports — Markdown, JSON, HTML and SBOM."},
 };
 
 function secRenderProjectTitle(){
   const idHost = $("sec-pj-titleid");
   const spec = SEC_TAB_TITLES[secProjectTab];
+  const p = projById(secState.project) || {};
   if(idHost){
     idHost.textContent = "";
-    const p = projById(secState.project) || {};
     const ic = secEl("span", "secpjtitle-ic");
     ic.appendChild(secIcon(spec ? spec.icon : "shield"));
     idHost.appendChild(ic);
@@ -272,8 +282,20 @@ function secRenderProjectTitle(){
     }
   }
   const desc = $("sec-pj-desc");
-  if(desc) desc.textContent = spec ? spec.sub
-    : (projById(secState.project) || {}).description || "";
+  if(!desc) return;
+  desc.textContent = "";
+  if(spec){
+    desc.appendChild(document.createTextNode(spec.sub));
+    return;
+  }
+  // The Overview's subtitle, ProjectOverview.png's own sentence with the
+  // project's name set bold inside it. The project's free-text description
+  // stays available in the project editor; this screen's own sentence says
+  // what the SCREEN is, which is what tells it apart from the other tabs.
+  desc.appendChild(document.createTextNode("Security overview of the "));
+  desc.appendChild(secEl("b", null, p.name || secState.project));
+  desc.appendChild(document.createTextNode(
+    " project. A quick summary of the latest analysis and key metrics."));
 }
 
 function secRenderProjectHeader(payload){
@@ -345,42 +367,23 @@ function secHeaderBit(iconName, label, value, title){
   return span;
 }
 
-/* The sidebar's own caption: how many branches the donut/categories below
-   actually span. They are severity_totals/top_categories, rolled up across
-   EVERY analysed branch (see queries.py's _open_findings_by_fingerprint) --
-   a different scope from the Overview panel right above, which is one
-   branch only. A project with exactly one analysed branch says so plainly
-   rather than a phrase that could be read as implying more than one. */
-function secSidebarCaption(branchCount, attempted){
-  if(!branchCount){
-    // The SAME two sentences every other empty state in this area uses (see
-    // SEC_NEVER in vocabulary.js) -- this one used to be a seventh variant,
-    // "No finished analysis yet.", which told the reader nothing about which
-    // of the two situations they were in or what to do about either.
-    return secEl("div", "secpj-caption",
-      attempted ? SEC_NEVER.attempted : SEC_NEVER.next);
-  }
-  const scope = branchCount === 1 ? "this project's only analysed branch"
-                                  : "all " + branchCount + " analysed branches";
-  const cap = secEl("div", "secpj-caption",
-    "Posture and categories below span " + scope + ".");
-  // The sidebar is a flex SIBLING of the tab panes -- it is on screen during
-  // Overview, Runs, Branches, Findings and Reports alike -- so this is the
-  // one place on the project screen that can say what the floor does and be
-  // read from every tab. The Overview chips, the Branches tab's "Open" and
-  // the donut right below are all unfloored; the findings table one tab over
-  // is floored and says so itself. See SEC_FLOOR_SCOPE_NOTE.
-  //
-  // A `title`, not a second visible sentence (Phase 4 Task 6): none of the
-  // three mockups print this caveat as prose anywhere on the page -- the
-  // index screen's own identical note already lives in a bare tooltip on the
-  // element that carries the unfloored numbers (secRenderIndex's own
-  // `host._secCards.title`), and this is that same treatment applied here.
-  // The branch-count sentence above stays visible text: it disambiguates
-  // which of two genuinely different totals a reader is looking at, which a
-  // hover-only aside would hide rather than explain.
-  cap.title = SEC_FLOOR_SCOPE_NOTE;
-  return cap;
+/* The sentence the rail's old visible caption used to say -- how many
+   branches its donut/categories roll up (severity_totals/top_categories,
+   one count per FINGERPRINT project-wide) -- now a TOOLTIP on the block
+   that carries those numbers, never a floating line of prose above the
+   rail: the caption sat above the cards, read as page furniture, and on
+   the Runs tab it was flatly WRONG (it described the all-branch scope
+   while that tab's rail cards are the selected run's own). Each rail
+   variant now names its scope where its numbers are: the Runs cards say
+   "the selected run's own" (secProjectRunSidebar), the Branches donut
+   card says "(all branches)" in its title (secBranchesSidebar), and this
+   sentence rides the remaining tabs' donut block. */
+function secSidebarScopeNote(branchCount){
+  const scope = !branchCount ? "every analysed branch"
+    : branchCount === 1 ? "this project's only analysed branch"
+    : "all " + branchCount + " analysed branches";
+  return "Posture and categories here span " + scope + ", counted once per "
+    + "distinct problem (fingerprint). " + SEC_FLOOR_SCOPE_NOTE;
 }
 
 /* ------------------------------------------------------------------ runs */
@@ -830,7 +833,16 @@ function secProjectRunSidebar(){
 
   const donutCard = secEl("div", "card secpj-plaincard");
   const donutHead = secEl("div", "secpj-cardhead");
-  donutHead.appendChild(secEl("h3", null, "Findings by severity"));
+  const donutTitle = secEl("h3", null, "Findings by severity");
+  // The scope, on the card that carries the numbers: these are the SELECTED
+  // RUN's own open findings (secProjectRunPosture reads secState.findings,
+  // the checklist of the analysis on screen), floored like every checklist
+  // surface -- never the whole project's. The rail's old visible caption
+  // claimed the all-branch scope over these very cards.
+  donutTitle.title = "The selected run's own open findings — the checklist "
+    + "of the analysis on screen, not the whole project's. "
+    + SEC_FLOOR_SCOPE_NOTE;
+  donutHead.appendChild(donutTitle);
   donutCard.appendChild(donutHead);
   const row = secEl("div", "secrun-donutrow");
   row.appendChild(secIndexDonutSvg(donut));
@@ -840,7 +852,10 @@ function secProjectRunSidebar(){
 
   const catCard = secEl("div", "card secpj-plaincard");
   const catHead = secEl("div", "secpj-cardhead");
-  catHead.appendChild(secEl("h3", null, "Top issue categories"));
+  const catTitle = secEl("h3", null, "Top issue categories");
+  catTitle.title = "Rules producing the most open findings in the selected "
+    + "run's own checklist.";
+  catHead.appendChild(catTitle);
   catCard.appendChild(catHead);
   catCard.appendChild(secIndexCategories(secProjectRunCategories()));
   const viewAll = secEl("button", "btn ghost secpj-viewallcats", "View all categories");
@@ -888,23 +903,25 @@ function secRenderProjectSidebar(payload){
   host.textContent = "";
   const sb = payload.sidebar || {};
   // The Branches tab's rail is its own three cards (ProjectBranches.png):
-  // the all-branch donut whose TITLE carries the scope the caption says
-  // for the other tabs, Top issue categories, and Branch coverage -- no
-  // caption, no activity card, exactly the mockup's own column.
+  // the all-branch donut whose TITLE carries the scope, Top issue
+  // categories, and Branch coverage -- no caption, no activity card,
+  // exactly the mockup's own column.
   if(secProjectTab === "branches"){
     host.appendChild(secBranchesSidebar(payload));
     return;
   }
-  const attempted = !!(((payload.tabs || {}).overview) || {}).attempted;
-  host.appendChild(secSidebarCaption(sb.branch_count || 0, attempted));
   if(secProjectTab === "runs"){
     host.appendChild(secProjectRunSidebar());
   }else{
     // The donut collapses every analysed branch into one figure, so it has no
     // row to hang the `incomplete` badge off the way the Overview panel and the
-    // index table do -- it gets the same caveat as a sentence instead.
-    host.appendChild(secIndexDonut(sb.donut || {}, sb.categories || [],
-      secCappedScopeNote(sb.capped_branches || 0, sb.branch_count || 0, "branch")));
+    // index table do -- it gets the same caveat as a sentence instead. Its
+    // scope (which branches, fingerprint counting, the floor) rides the
+    // block's own tooltip -- see secSidebarScopeNote.
+    const block = secIndexDonut(sb.donut || {}, sb.categories || [],
+      secCappedScopeNote(sb.capped_branches || 0, sb.branch_count || 0, "branch"));
+    block.title = secSidebarScopeNote(sb.branch_count || 0);
+    host.appendChild(block);
   }
   // The card itself is overview-tab.js's now (ProjectOverview.png owns its
   // row anatomy); this rail mounts the identical builder so the two homes

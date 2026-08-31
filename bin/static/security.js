@@ -1031,17 +1031,7 @@
     const wrap = secEl("div");
     if (((fs.filters || {}).fingerprint || "").trim()) return wrap;
     const head = secEl("div", "secfind-head");
-    const titleWrap = secEl("div");
-    const titleLine = secEl("div", "secfind-head-title");
-    titleLine.appendChild(secIcon("shield"));
-    titleLine.appendChild(secEl("span", null, "All findings"));
-    titleWrap.appendChild(titleLine);
-    titleWrap.appendChild(secEl(
-      "p",
-      "secfind-head-sub",
-      "Complete list of security findings for all analyses in this project."
-    ));
-    head.appendChild(titleWrap);
+    head.appendChild(secEl("span", "spacer"));
     const actions = secEl("div", "secfind-head-actions");
     const exportBtn = secEl("button", "btn ghost");
     exportBtn.type = "button";
@@ -2268,7 +2258,7 @@
     const donutHead = secEl("div", "secpj-cardhead");
     const donutTitle = secEl("h3", null, "Findings by severity ");
     donutTitle.appendChild(secEl("span", "secbr-scope", "(all branches)"));
-    donutTitle.title = "Distinct problems (fingerprints) across every analysed branch \u2014 the same finding open on two branches counts once here, once per branch in the table.";
+    donutTitle.title = "Distinct problems (fingerprints) across every analysed branch \u2014 the same finding open on two branches counts once here, once per branch in the table. " + SEC_FLOOR_SCOPE_NOTE;
     donutHead.appendChild(donutTitle);
     donutCard.appendChild(donutHead);
     const row = secEl("div", "secrun-donutrow");
@@ -3469,18 +3459,33 @@
     if (side) side.hidden = secProjectTab === "findings" || secProjectTab === "overview";
   }
   var SEC_TAB_TITLES = {
+    runs: {
+      icon: "activity",
+      title: "Runs",
+      sub: "Every analysis of this project, with the selected run's findings in detail."
+    },
     branches: {
       icon: "gitbranch",
       title: "Branches",
       sub: "Security posture and recent analyses for each branch in this project."
+    },
+    findings: {
+      icon: "search",
+      title: "Findings",
+      sub: "Complete list of security findings for all analyses in this project."
+    },
+    reports: {
+      icon: "file",
+      title: "Reports",
+      sub: "Every analysis's downloadable reports \u2014 Markdown, JSON, HTML and SBOM."
     }
   };
   function secRenderProjectTitle() {
     const idHost = $("sec-pj-titleid");
     const spec = SEC_TAB_TITLES[secProjectTab];
+    const p = projById(secState.project) || {};
     if (idHost) {
       idHost.textContent = "";
-      const p = projById(secState.project) || {};
       const ic = secEl("span", "secpjtitle-ic");
       ic.appendChild(secIcon(spec ? spec.icon : "shield"));
       idHost.appendChild(ic);
@@ -3497,7 +3502,17 @@
       }
     }
     const desc = $("sec-pj-desc");
-    if (desc) desc.textContent = spec ? spec.sub : (projById(secState.project) || {}).description || "";
+    if (!desc) return;
+    desc.textContent = "";
+    if (spec) {
+      desc.appendChild(document.createTextNode(spec.sub));
+      return;
+    }
+    desc.appendChild(document.createTextNode("Security overview of the "));
+    desc.appendChild(secEl("b", null, p.name || secState.project));
+    desc.appendChild(document.createTextNode(
+      " project. A quick summary of the latest analysis and key metrics."
+    ));
   }
   function secRenderProjectHeader(payload) {
     const host = $("sec-pj-head");
@@ -3550,22 +3565,9 @@
     if ((title || "").trim()) span.title = title;
     return span;
   }
-  function secSidebarCaption(branchCount, attempted) {
-    if (!branchCount) {
-      return secEl(
-        "div",
-        "secpj-caption",
-        attempted ? SEC_NEVER.attempted : SEC_NEVER.next
-      );
-    }
-    const scope = branchCount === 1 ? "this project's only analysed branch" : "all " + branchCount + " analysed branches";
-    const cap = secEl(
-      "div",
-      "secpj-caption",
-      "Posture and categories below span " + scope + "."
-    );
-    cap.title = SEC_FLOOR_SCOPE_NOTE;
-    return cap;
+  function secSidebarScopeNote(branchCount) {
+    const scope = !branchCount ? "every analysed branch" : branchCount === 1 ? "this project's only analysed branch" : "all " + branchCount + " analysed branches";
+    return "Posture and categories here span " + scope + ", counted once per distinct problem (fingerprint). " + SEC_FLOOR_SCOPE_NOTE;
   }
   function secRenderProjectRuns(payload) {
     const host = $("sec-pj-runstable");
@@ -3833,7 +3835,9 @@
     const donut = secProjectRunPosture();
     const donutCard = secEl("div", "card secpj-plaincard");
     const donutHead = secEl("div", "secpj-cardhead");
-    donutHead.appendChild(secEl("h3", null, "Findings by severity"));
+    const donutTitle = secEl("h3", null, "Findings by severity");
+    donutTitle.title = "The selected run's own open findings \u2014 the checklist of the analysis on screen, not the whole project's. " + SEC_FLOOR_SCOPE_NOTE;
+    donutHead.appendChild(donutTitle);
     donutCard.appendChild(donutHead);
     const row = secEl("div", "secrun-donutrow");
     row.appendChild(secIndexDonutSvg(donut));
@@ -3842,7 +3846,9 @@
     frag.appendChild(donutCard);
     const catCard = secEl("div", "card secpj-plaincard");
     const catHead = secEl("div", "secpj-cardhead");
-    catHead.appendChild(secEl("h3", null, "Top issue categories"));
+    const catTitle = secEl("h3", null, "Top issue categories");
+    catTitle.title = "Rules producing the most open findings in the selected run's own checklist.";
+    catHead.appendChild(catTitle);
     catCard.appendChild(catHead);
     catCard.appendChild(secIndexCategories(secProjectRunCategories()));
     const viewAll = secEl("button", "btn ghost secpj-viewallcats", "View all categories");
@@ -3869,16 +3875,16 @@
       host.appendChild(secBranchesSidebar(payload));
       return;
     }
-    const attempted = !!((payload.tabs || {}).overview || {}).attempted;
-    host.appendChild(secSidebarCaption(sb.branch_count || 0, attempted));
     if (secProjectTab === "runs") {
       host.appendChild(secProjectRunSidebar());
     } else {
-      host.appendChild(secIndexDonut(
+      const block = secIndexDonut(
         sb.donut || {},
         sb.categories || [],
         secCappedScopeNote(sb.capped_branches || 0, sb.branch_count || 0, "branch")
-      ));
+      );
+      block.title = secSidebarScopeNote(sb.branch_count || 0);
+      host.appendChild(block);
     }
     host.appendChild(secProjectActivity(sb.activity || []));
   }
@@ -4923,5 +4929,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 9f97e4b36c8f704ae98ea54ac052e6f670344926eb537bb684b4038df5ef321a */
-/* ui-sources: 828da563e335b5bf0df6d45a6efd3eee4e7b065c302e35dce9d21e5d5447ddce */
+/* ui-bundle: b65028e5348d3d72eb11318b59d0b84aa80329664292e4cba5fead5c9dedacc2 */
+/* ui-sources: 17da5ef00f4f757133d4f36af098f9d83b90e93b84328d8d5b21d66621910878 */
