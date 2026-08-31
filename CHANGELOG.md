@@ -1272,6 +1272,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Wide monitors get their width back.** The page wrapper capped content at
+  1560px and centred it, leaving dead margins on both sides of exactly the
+  screens with the most room — every approved mockup, the 2000px-wide Runs
+  one most explicitly, anchors at the sidebar's gutter and uses the whole
+  width. The cap is gone, app-wide. On the Runs tab the analysis list also
+  stops growing (it only stretched four narrow columns of numbers) — the
+  selected run's card takes every spare pixel instead — and the right rail
+  widens to the mockup's 330px, which its own legend rows were already
+  noted as needing.
+
 - **The Findings tab stops showing two breadcrumbs.** The project header now
   carries "Security › project" for every tab, and the Findings pane still
   drew its own trail beneath it. The pane's copy — and its orphaned CSS —

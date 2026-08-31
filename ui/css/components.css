@@ -447,7 +447,9 @@ footer{margin-top:30px;color:var(--muted);font-size:11px;text-align:center}
 .tabpanes{flex:1 1 auto;min-height:0;overflow-y:auto;padding-top:14px}
 .tabpane{display:none} .tabpane.active{display:block}
 .muted{color:var(--muted);font-size:12px}
-.secpjside{flex:0 0 300px;min-width:260px;display:flex;flex-direction:column;gap:16px}
+/* 330, the mockup's own rail width -- the legend rows ("Critical 64
+   (90.1%)") were already noted as tight at 300. */
+.secpjside{flex:0 0 330px;min-width:260px;display:flex;flex-direction:column;gap:16px}
 /* An author `display` outranks the UA sheet's own `[hidden]{display:none}`
    (same trap this file's own comment already names for .secfield/.secdl/
    .warnline, ui/css/pages.css) -- without this, project-screen.js's own

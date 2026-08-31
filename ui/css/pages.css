@@ -157,7 +157,12 @@
 .side-user .signout:hover{background:var(--err-soft);color:var(--err)}
 .side-user .signout .ic{width:15px;height:15px}
 .updated{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums}
-.wrap{max-width:1560px;margin:0 auto;padding:24px 22px 70px}
+/* Full-bleed, not centred: every approved mockup -- the 2000px-wide
+   ProjectRuns.png most explicitly -- anchors content at the sidebar's
+   gutter and lets it use the whole width. The old 1560px cap centred the
+   page on wide monitors and left dead margins on BOTH sides of exactly
+   the screens with the most room. */
+.wrap{margin:0;padding:24px 22px 70px}
 .view[hidden]{display:none}
 .pane[hidden]{display:none}
 /* Fixed layout, so the columns are the widths declared here and nothing else.
@@ -1509,8 +1514,11 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    PANE already sits inside: that outer one is main-column-plus-sidebar,
    this is a split WITHIN the main column alone. */
 .secpj-runslayout{display:flex;gap:16px;align-items:flex-start;margin-top:14px}
-.secpj-runsleft{flex:1 1 360px;min-width:300px}
-.secpj-runsmid{flex:2 1 480px;min-width:340px}
+/* The mockup's proportions: the runs LIST is a fixed-width column and the
+   selected run's card takes every spare pixel -- growing the list just
+   stretches four narrow columns of numbers. */
+.secpj-runsleft{flex:0 1 380px;min-width:300px}
+.secpj-runsmid{flex:1 1 480px;min-width:340px}
 @media (max-width:900px){
   .secpj-runslayout{flex-direction:column}
   .secpj-runsleft,.secpj-runsmid{flex:1 1 100%;width:100%}

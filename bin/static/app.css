@@ -497,7 +497,9 @@ footer{margin-top:30px;color:var(--muted);font-size:11px;text-align:center}
 .tabpanes{flex:1 1 auto;min-height:0;overflow-y:auto;padding-top:14px}
 .tabpane{display:none} .tabpane.active{display:block}
 .muted{color:var(--muted);font-size:12px}
-.secpjside{flex:0 0 300px;min-width:260px;display:flex;flex-direction:column;gap:16px}
+/* 330, the mockup's own rail width -- the legend rows ("Critical 64
+   (90.1%)") were already noted as tight at 300. */
+.secpjside{flex:0 0 330px;min-width:260px;display:flex;flex-direction:column;gap:16px}
 /* An author `display` outranks the UA sheet's own `[hidden]{display:none}`
    (same trap this file's own comment already names for .secfield/.secdl/
    .warnline, ui/css/pages.css) -- without this, project-screen.js's own
@@ -663,7 +665,12 @@ footer{margin-top:30px;color:var(--muted);font-size:11px;text-align:center}
 .side-user .signout:hover{background:var(--err-soft);color:var(--err)}
 .side-user .signout .ic{width:15px;height:15px}
 .updated{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums}
-.wrap{max-width:1560px;margin:0 auto;padding:24px 22px 70px}
+/* Full-bleed, not centred: every approved mockup -- the 2000px-wide
+   ProjectRuns.png most explicitly -- anchors content at the sidebar's
+   gutter and lets it use the whole width. The old 1560px cap centred the
+   page on wide monitors and left dead margins on BOTH sides of exactly
+   the screens with the most room. */
+.wrap{margin:0;padding:24px 22px 70px}
 .view[hidden]{display:none}
 .pane[hidden]{display:none}
 /* Fixed layout, so the columns are the widths declared here and nothing else.
@@ -2015,8 +2022,11 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    PANE already sits inside: that outer one is main-column-plus-sidebar,
    this is a split WITHIN the main column alone. */
 .secpj-runslayout{display:flex;gap:16px;align-items:flex-start;margin-top:14px}
-.secpj-runsleft{flex:1 1 360px;min-width:300px}
-.secpj-runsmid{flex:2 1 480px;min-width:340px}
+/* The mockup's proportions: the runs LIST is a fixed-width column and the
+   selected run's card takes every spare pixel -- growing the list just
+   stretches four narrow columns of numbers. */
+.secpj-runsleft{flex:0 1 380px;min-width:300px}
+.secpj-runsmid{flex:1 1 480px;min-width:340px}
 @media (max-width:900px){
   .secpj-runslayout{flex-direction:column}
   .secpj-runsleft,.secpj-runsmid{flex:1 1 100%;width:100%}
@@ -2446,5 +2456,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: 27223bae54564bea5fe6a1b9e8f3366abb24e4949839b56747625995f24af405 */
-/* ui-sources: db4d393b9fa63afaac76b9c97d555a961ca919a06c70790a4496e869247c93e8 */
+/* ui-bundle: d9c4d9d4d173b36503d04986c44b61f9dd28f9b876543d0d5ebd670463613c22 */
+/* ui-sources: f8763970fdf5caa12f237669b9b3272eef119fa816c4ed0046c182cf330a34d9 */
