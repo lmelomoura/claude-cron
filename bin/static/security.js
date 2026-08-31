@@ -451,16 +451,23 @@
     if (last && SEC_PROFILES.includes(last.profile)) secProfileCombo.set(last.profile);
     await secSyncScope();
   }
+  var secGitBranches = 0;
+  function secGitBranchCount() {
+    return secGitBranches;
+  }
   async function secLoadBranches(want) {
     const seq = secState.seq;
+    secGitBranches = 0;
     secBranchCombo.set("\u2026", [{ v: "\u2026", label: "\u2026" }]);
     let branches = [];
     try {
       const j = await secFetch("/api/security/branches?project=" + encodeURIComponent(secState.project) + "&repo=" + encodeURIComponent($("sec-repo").value));
       if (seq !== secState.seq) return;
       branches = j.branches || [];
+      secGitBranches = branches.length;
     } catch (e) {
       if (seq !== secState.seq) return;
+      secGitBranches = 0;
       secBranchCombo.set("", []);
       toast("Could not list branches \u2014 " + e.message, true);
       return;
@@ -898,185 +905,6 @@
     const a = secState.analysis;
     if (!a) return;
     await secDownloadReport(a.id, fmt, $("sec-dl-" + fmt));
-  }
-
-  // ui/security/branches-tab.js
-  var BRANCH_CAPPED_TITLE = "This analysis is INCOMPLETE: it stopped before covering the whole scope. The posture beside this badge is what it had reached, not what is there.";
-  function secBranchesCaption() {
-    return secEl(
-      "div",
-      "secpj-caption",
-      "Each row is that branch's own posture \u2014 the same computation the Overview panel above uses for its one branch. A branch appears here only once one of its analyses has reached done or capped; a branch whose only analyses so far are still running or have failed already shows up in Runs and Reports but will not have a row here yet. The sidebar's donut counts a finding once for the whole project even when it is open on several branches; here it counts once per branch, so these rows can add up to more than the sidebar's own total."
-    );
-  }
-  function secBranchTrendText(trend) {
-    const pts = trend || [];
-    if (!pts.length) return "No analyses of this branch in the last 30 days.";
-    const partial = pts.some((p) => p.state === "capped");
-    if (pts.length === 1) {
-      return pts[0].open + " open \u2014 only one analysis in the last 30 days, nothing yet to compare it against." + (partial ? " It stopped early, so that count is what it reached." : "");
-    }
-    const opens = pts.map((p) => p.open);
-    const first = opens[0], last = opens[opens.length - 1];
-    const base = first + " \u2192 " + last + " open across " + pts.length + " analyses in the last 30 days";
-    if (partial) {
-      return base + ", but at least one of them stopped before covering the whole scope \u2014 no direction is claimed across a partial read";
-    }
-    let direction = "flat";
-    for (let i = 1; i < opens.length; i++) {
-      const step = opens[i] < opens[i - 1] ? "falling" : opens[i] > opens[i - 1] ? "rising" : "flat";
-      if (step === "flat") continue;
-      if (direction === "flat") direction = step;
-      else if (direction !== step) {
-        direction = null;
-        break;
-      }
-    }
-    if (direction) return base + " (" + direction + ")";
-    const peak = Math.max(...opens), trough = Math.min(...opens);
-    if (peak > first && peak > last) return base + ", peaked at " + peak;
-    if (trough < first && trough < last) return base + ", dipped to " + trough;
-    return base;
-  }
-  function secBranchRow(r) {
-    const tr = document.createElement("tr");
-    const cell = (text) => {
-      const td = document.createElement("td");
-      td.textContent = text;
-      return td;
-    };
-    tr.appendChild(cell(r.branch || ""));
-    tr.appendChild(cell(r.last_analysis ? fmtAgo(r.last_analysis) : "\u2014"));
-    const tdCount = cell(String(r.analyses || 0));
-    tdCount.className = "num";
-    tr.appendChild(tdCount);
-    const tdOpen = document.createElement("td");
-    tdOpen.appendChild(secIndexPosturePills(r.open || {}));
-    if (r.state === "capped") {
-      const badge = secEl("span", "secidx-capped", "incomplete");
-      badge.title = BRANCH_CAPPED_TITLE;
-      tdOpen.appendChild(badge);
-    }
-    tr.appendChild(tdOpen);
-    tr.appendChild(cell(r.state || "\u2014"));
-    tr.appendChild(cell(secBranchTrendText(r.trend)));
-    return tr;
-  }
-  function secBranchesTable(rows, attempted) {
-    if (!rows.length) {
-      return secEl(
-        "div",
-        "tblempty",
-        attempted ? SEC_NEVER.attempted : SEC_NEVER.next
-      );
-    }
-    const wrap = secEl("div", "tablewrap");
-    const table = document.createElement("table");
-    const thead = document.createElement("thead");
-    const htr = document.createElement("tr");
-    ["Branch", "Last analysis", "Analyses", "Open", "Last state", "Trend (30d)"].forEach((h) => {
-      const th = document.createElement("th");
-      th.textContent = h;
-      if (h === "Last state") {
-        th.title = "The state of the analysis this row's Open posture was read from. `capped` means it stopped before covering the whole scope, so those counts are what it reached, not what is there.";
-      }
-      htr.appendChild(th);
-    });
-    thead.appendChild(htr);
-    table.appendChild(thead);
-    const tbody = document.createElement("tbody");
-    rows.forEach((r) => tbody.appendChild(secBranchRow(r)));
-    table.appendChild(tbody);
-    wrap.appendChild(table);
-    return wrap;
-  }
-  function secRenderProjectBranches(payload) {
-    const host = $("sec-pj-branches");
-    if (!host) return;
-    host.textContent = "";
-    const tabs = (payload || {}).tabs || {};
-    const rows = tabs.branches || [];
-    const attempted = !!(tabs.overview || {}).attempted;
-    host.appendChild(secBranchesCaption());
-    host.appendChild(secBranchesTable(rows, attempted));
-  }
-
-  // ui/security/reports-tab.js
-  var SEC_REPORT_FORMATS = [
-    ["md", "Markdown"],
-    ["json", "JSON"],
-    ["html", "HTML"],
-    ["sbom", "SBOM"]
-  ];
-  function secReportsCaption() {
-    const cap = secEl("div", "secpj-caption");
-    cap.appendChild(document.createTextNode(
-      "Markdown, JSON and HTML are generated from each analysis's own checklist at the moment you download one. "
-    ));
-    cap.appendChild(secEl("b", null, "SBOM is different: "));
-    cap.appendChild(document.createTextNode(
-      "it is not a report over any analysis's checklist but the stored CycloneDX inventory itself, kept per branch with only the most recent document \u2014 so the SBOM button on an older row still downloads that branch's CURRENT document, not a snapshot of what that analysis saw."
-    ));
-    return cap;
-  }
-  function secReportRow(r) {
-    const tr = document.createElement("tr");
-    const cell = (text) => {
-      const td = document.createElement("td");
-      td.textContent = text;
-      return td;
-    };
-    tr.appendChild(cell("#" + r.analysis_id));
-    tr.appendChild(cell(r.branch || ""));
-    tr.appendChild(cell(r.started ? fmtWhen(r.started) : "\u2014"));
-    tr.appendChild(cell(r.state || ""));
-    const tdDl = document.createElement("td");
-    const row = secEl("div", "secdl");
-    SEC_REPORT_FORMATS.forEach(([fmt, label]) => {
-      const btn = secEl("button", "btn ghost");
-      btn.type = "button";
-      btn.appendChild(secIcon("file"));
-      btn.appendChild(document.createTextNode(label));
-      btn.onclick = () => secDownloadReport(r.analysis_id, fmt, btn);
-      row.appendChild(btn);
-    });
-    tdDl.appendChild(row);
-    tr.appendChild(tdDl);
-    return tr;
-  }
-  function secReportsTable(rows) {
-    if (!rows.length) {
-      return secEl("div", "tblempty", "No analyses of this project yet.");
-    }
-    const wrap = secEl("div", "tablewrap");
-    const table = document.createElement("table");
-    const thead = document.createElement("thead");
-    const htr = document.createElement("tr");
-    ["Analysis", "Branch", "Started", "State", "Downloads"].forEach((h) => {
-      const th = document.createElement("th");
-      th.textContent = h;
-      htr.appendChild(th);
-    });
-    thead.appendChild(htr);
-    table.appendChild(thead);
-    const tbody = document.createElement("tbody");
-    rows.forEach((r) => tbody.appendChild(secReportRow(r)));
-    table.appendChild(tbody);
-    wrap.appendChild(table);
-    return wrap;
-  }
-  function secRenderProjectReports(payload) {
-    const host = $("sec-pj-reports");
-    if (!host) return;
-    host.textContent = "";
-    const rows = ((payload || {}).tabs || {}).reports || [];
-    host.appendChild(secReportsCaption());
-    host.appendChild(secReportsTable(rows));
-    host.appendChild(secEl(
-      "div",
-      "secdlnote",
-      "Downloads always contain every recorded finding, whatever the severity floor shows."
-    ));
   }
 
   // ui/security/findings-screen.js
@@ -1984,6 +1812,599 @@
     wrap.appendChild(secFindPerPageField(fs));
     if (nav) wrap.appendChild(nav);
     return wrap;
+  }
+
+  // ui/security/branches-tab.js
+  var BRANCH_CAPPED_TITLE = "This analysis is INCOMPLETE: it stopped before covering the whole scope. The posture beside this badge is what it had reached, not what is there.";
+  var BRANCH_SCOPE_TITLE = "Counted once per branch \u2014 the same finding open on several branches counts once in each row here, while the rail's donut and the Total-findings card count it once for the whole project, so these rows can add up to more than either.";
+  var SEC_BRANCH_ACTIVE_DAYS = 7;
+  var SEC_BRANCH_COLS = [
+    ["branch", "Branch"],
+    ["status", "Status"],
+    ["last", "Last analysis"],
+    ["total", "Total findings"],
+    ["sev", "Severity breakdown"],
+    ["trend", "Trend (30d)"],
+    ["commit", "Last commit"],
+    ["actions", "Actions"]
+  ];
+  var SEC_BR_SEVS = ["critical", "high", "medium", "low", "info"];
+  var secBrSearch = "";
+  var secBrStatus = "";
+  var secBrDays = 0;
+  var secBrProject = null;
+  var secBrPayload = null;
+  var SEC_BR_WINDOWS = [
+    [0, "All time"],
+    [7, "Last 7 days"],
+    [30, "Last 30 days"],
+    [90, "Last 90 days"]
+  ];
+  function secBranchIsActive(r, now) {
+    return !!r.last_finished && now - r.last_finished <= SEC_BRANCH_ACTIVE_DAYS * 86400;
+  }
+  function secBrDefaultBranch() {
+    return (projById(secState.project) || {}).base || "";
+  }
+  function secRenderProjectBranches(payload) {
+    const host = $("sec-pj-branches");
+    if (!host) return;
+    secBrPayload = payload;
+    if (secBrProject !== payload.project) {
+      secBrProject = payload.project;
+      secBrSearch = "";
+      secBrStatus = "";
+      secBrDays = 0;
+    }
+    host.textContent = "";
+    const tabs = (payload || {}).tabs || {};
+    const rows = tabs.branches || [];
+    if (!rows.length) {
+      const attempted = !!(tabs.overview || {}).attempted;
+      host.appendChild(secEl(
+        "div",
+        "empty",
+        attempted ? SEC_NEVER.attempted : SEC_NEVER.next
+      ));
+      return;
+    }
+    host.appendChild(secBrKpis(rows, payload));
+    host.appendChild(secBrFilterBar(rows));
+    host.appendChild(secBrTable(rows));
+  }
+  function secBrKpis(rows, payload) {
+    const wrap = secEl("div", "kpi-grid");
+    const now = Math.floor(Date.now() / 1e3);
+    const analyzed30 = rows.filter((r) => r.last_finished && now - r.last_finished <= 30 * 86400).length;
+    wrap.appendChild(kpiCard({
+      icon: "gitbranch",
+      value: String(analyzed30),
+      label: "Branches analyzed",
+      sub: "in the last 30 days"
+    }));
+    const active = rows.filter((r) => secBranchIsActive(r, now)).length;
+    wrap.appendChild(kpiCard({
+      icon: "activity",
+      tone: "ok",
+      value: String(active),
+      label: "Active branches",
+      sub: "with recent analyses",
+      title: "A branch is active while its latest finished analysis is at most " + SEC_BRANCH_ACTIVE_DAYS + " days old \u2014 the same rule the Status column and filter read."
+    }));
+    const base = secBrDefaultBranch();
+    const baseRow = rows.find((r) => r.branch === base);
+    const crit = baseRow && baseRow.open ? String(baseRow.open.critical || 0) : "\u2014";
+    wrap.appendChild(kpiCard({
+      icon: "shield",
+      tone: "sev-crit",
+      value: crit,
+      label: "Critical findings",
+      sub: "in default branch",
+      title: crit === "\u2014" ? "The declared base (" + (base || "none declared") + ") has no finished analysis to read a posture from." : "Open critical findings in " + base + "'s latest finished analysis."
+    }));
+    const donut = (payload.sidebar || {}).donut || {};
+    wrap.appendChild(kpiCard({
+      icon: "alertcircle",
+      value: String(donut.total || 0),
+      label: "Total findings",
+      sub: "across all branches",
+      title: "Distinct problems (fingerprints) \u2014 the same finding open on two branches counts once here, while each branch's own row counts it again for itself."
+    }));
+    const covered = !baseRow || !baseRow.state ? "\u2014" : baseRow.state === "done" ? "100%" : "Partial";
+    wrap.appendChild(kpiCard({
+      icon: "covers",
+      value: covered,
+      label: "Default branch covered",
+      sub: baseRow && baseRow.last_finished ? "last analysis " + fmtAgo(baseRow.last_finished) : SEC_NEVER.short,
+      title: "100% means the default branch's latest finished analysis completed clean; Partial means it stopped before covering the whole scope (capped)."
+    }));
+    return wrap;
+  }
+  function secBrRepaint() {
+    if (secBrPayload) secRenderProjectBranches(secBrPayload);
+  }
+  function secBrPicker(labelText, valueText, options, isCurrent, onPick) {
+    const { trigger } = secFindTriggerLabel(labelText, valueText);
+    const wrap = document.createElement("details");
+    wrap.className = "secidx-periodpick";
+    wrap.appendChild(trigger);
+    const pop = secEl("div", "menu-pop");
+    options.forEach(([value, label]) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.setAttribute("role", "menuitem");
+      item.appendChild(document.createTextNode(label));
+      if (isCurrent(value)) item.appendChild(secIcon("check2"));
+      item.onclick = (e) => {
+        e.stopPropagation();
+        onPick(value);
+      };
+      pop.appendChild(item);
+    });
+    secFindPositionPop(wrap, trigger, pop);
+    return wrap;
+  }
+  function secBrFilterBar(rows) {
+    const bar = secEl("div", "toolbar secbr-bar");
+    const box = secEl("div", "searchbox");
+    const input = document.createElement("input");
+    input.type = "search";
+    input.placeholder = "Search branches\u2026";
+    input.autocomplete = "off";
+    input.value = secBrSearch;
+    input.oninput = () => {
+      secBrSearch = input.value;
+      const host = $("sec-pj-branches");
+      const old = host && host.querySelector ? host.querySelector(".secbr-tablehost") : null;
+      if (old && secBrPayload) {
+        const fresh = secBrTable((secBrPayload.tabs || {}).branches || []);
+        old.replaceWith(fresh);
+      }
+    };
+    box.appendChild(input);
+    bar.appendChild(box);
+    bar.appendChild(secBrPicker(
+      "Status",
+      secBrStatus === "" ? "All" : secBrStatus === "active" ? "Active" : "Inactive",
+      [["", "All"], ["active", "Active"], ["inactive", "Inactive"]],
+      (v) => v === secBrStatus,
+      (v) => {
+        secBrStatus = v;
+        secBrRepaint();
+      }
+    ));
+    bar.appendChild(secBrPicker(
+      "Last analysis",
+      (SEC_BR_WINDOWS.find(([d]) => d === secBrDays) || [0, "All time"])[1],
+      SEC_BR_WINDOWS,
+      (v) => v === secBrDays,
+      (v) => {
+        secBrDays = v;
+        secBrRepaint();
+      }
+    ));
+    bar.appendChild(secEl("span", "spacer"));
+    const refresh = secEl("button", "btn ghost", "Refresh");
+    refresh.type = "button";
+    refresh.title = "Re-read this project's data";
+    refresh.onclick = () => secRefreshProject();
+    bar.appendChild(refresh);
+    return bar;
+  }
+  function secBrFiltered(rows) {
+    const now = Math.floor(Date.now() / 1e3);
+    const needle = secBrSearch.trim().toLowerCase();
+    return rows.filter((r) => {
+      if (needle && !(r.branch || "").toLowerCase().includes(needle)) return false;
+      if (secBrStatus === "active" && !secBranchIsActive(r, now)) return false;
+      if (secBrStatus === "inactive" && secBranchIsActive(r, now)) return false;
+      if (secBrDays && (!r.last_analysis || now - r.last_analysis > secBrDays * 86400)) return false;
+      return true;
+    });
+  }
+  function secBrTable(rows) {
+    const filtered = secBrFiltered(rows);
+    const hostWrap = secEl("div", "secbr-tablehost");
+    if (!filtered.length) {
+      hostWrap.appendChild(secEl(
+        "div",
+        "tblempty",
+        "No branch matches these filters."
+      ));
+      return hostWrap;
+    }
+    const wrap = secEl("div", "table-card");
+    const scroll = secEl("div", "table-scroll");
+    const table = document.createElement("table");
+    table.className = "secbr-table";
+    const thead = document.createElement("thead");
+    const htr = document.createElement("tr");
+    SEC_BRANCH_COLS.forEach(([key, label]) => {
+      const th = document.createElement("th");
+      th.textContent = label;
+      if (key === "total") th.title = BRANCH_SCOPE_TITLE;
+      if (key === "commit") {
+        th.title = "The commit the branch's newest analysis read \u2014 recorded when the analysis started, not read from git now.";
+      }
+      htr.appendChild(th);
+    });
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    filtered.forEach((r) => tbody.appendChild(secBranchRow(r)));
+    table.appendChild(tbody);
+    scroll.appendChild(table);
+    wrap.appendChild(scroll);
+    wrap.appendChild(tableFooter({
+      shown: { from: 1, to: filtered.length },
+      total: filtered.length,
+      noun: "branch",
+      page: 1,
+      pages: 1,
+      numbered: true
+    }));
+    hostWrap.appendChild(wrap);
+    return hostWrap;
+  }
+  function secBranchRow(r) {
+    const tr = document.createElement("tr");
+    const now = Math.floor(Date.now() / 1e3);
+    const tdName = document.createElement("td");
+    const name = secEl("div", "secbr-name");
+    name.appendChild(secIcon("gitbranch"));
+    name.appendChild(secEl("span", "secbr-branch", r.branch || ""));
+    if (r.branch && r.branch === secBrDefaultBranch()) {
+      const badge = secEl("span", "pill profile", "Default");
+      badge.title = "This project's declared base branch";
+      name.appendChild(badge);
+    }
+    tdName.appendChild(name);
+    tr.appendChild(tdName);
+    const active = secBranchIsActive(r, now);
+    const tdStatus = document.createElement("td");
+    const status = secEl("span", "secbr-status " + (active ? "active" : "inactive"));
+    status.appendChild(secEl("span", "secbr-statusdot"));
+    status.appendChild(document.createTextNode(active ? "Active" : "Inactive"));
+    status.title = "Active while the latest finished analysis is at most " + SEC_BRANCH_ACTIVE_DAYS + " days old.";
+    tdStatus.appendChild(status);
+    tr.appendChild(tdStatus);
+    const tdLast = document.createElement("td");
+    if (r.last_analysis) {
+      tdLast.appendChild(secEl("div", "secbr-ago", fmtAgo(r.last_analysis)));
+      tdLast.appendChild(secEl("div", "secmeta", fmtWhen(r.last_analysis)));
+    } else {
+      tdLast.textContent = "\u2014";
+    }
+    tr.appendChild(tdLast);
+    const tdTotal = document.createElement("td");
+    tdTotal.appendChild(secEl(
+      "div",
+      "secbr-total",
+      r.open ? String(r.open.total || 0) : "\u2014"
+    ));
+    if (r.latest_state === "failed") {
+      tdTotal.appendChild(secEl(
+        "div",
+        "secmeta secbr-failed",
+        r.open ? "Latest attempt failed" : "Analysis failed"
+      ));
+    } else if (r.latest_state === "running") {
+      tdTotal.appendChild(secEl("div", "secmeta", "Analysis running\u2026"));
+    }
+    if (r.state === "capped") {
+      const badge = secEl("span", "secidx-capped", "incomplete");
+      badge.title = BRANCH_CAPPED_TITLE;
+      tdTotal.appendChild(badge);
+    }
+    tr.appendChild(tdTotal);
+    const tdSev = document.createElement("td");
+    tdSev.appendChild(secBrSevChips(r.open));
+    tr.appendChild(tdSev);
+    const tdTrend = document.createElement("td");
+    tdTrend.appendChild(secBrTrendBars(r.trend));
+    tdTrend.title = secBranchTrendText(r.trend);
+    tr.appendChild(tdTrend);
+    const tdCommit = document.createElement("td");
+    if (r.sha) {
+      tdCommit.appendChild(secEl("div", "secbr-sha", r.sha.slice(0, 7)));
+      tdCommit.appendChild(secEl("div", "secmeta", fmtWhen(r.last_analysis)));
+    } else {
+      tdCommit.textContent = "\u2014";
+    }
+    tr.appendChild(tdCommit);
+    const tdActs = document.createElement("td");
+    tdActs.className = "rowacts";
+    const view = document.createElement("button");
+    view.type = "button";
+    view.className = "btn ghost";
+    view.textContent = "View";
+    view.disabled = r.analysis_id == null;
+    view.title = r.analysis_id == null ? "No finished analysis of this branch to open yet" : "Open this branch's latest finished analysis on the Runs tab";
+    if (r.analysis_id != null) {
+      view.onclick = () => {
+        secSwitchProjectTab("runs");
+        secShowAnalysis(r.analysis_id, true);
+      };
+    }
+    tdActs.appendChild(view);
+    tdActs.appendChild(secBrKebab(r));
+    tr.appendChild(tdActs);
+    return tr;
+  }
+  function secBrSevChips(open) {
+    const wrap = secEl("div", "secbr-sev");
+    SEC_BR_SEVS.forEach((sev) => {
+      const chip = secEl("div", "secbr-sevchip");
+      if (!open) {
+        chip.appendChild(secEl("span", "secbr-sevcount none", "\u2014"));
+      } else {
+        const n = open[sev] || 0;
+        chip.appendChild(secEl(
+          "span",
+          "secbr-sevcount sev-" + sev + (n ? "" : " zero"),
+          String(n)
+        ));
+      }
+      chip.appendChild(secEl(
+        "span",
+        "secbr-sevname",
+        sev.charAt(0).toUpperCase() + sev.slice(1)
+      ));
+      wrap.appendChild(chip);
+    });
+    return wrap;
+  }
+  function secBrTrendBars(trend) {
+    const pts = (trend || []).slice(-24);
+    if (!pts.length) return secEl("span", "secbr-notrend", "\u2014");
+    const ns = "http://www.w3.org/2000/svg";
+    const W = 96, H = 28, gap = 2;
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+    svg.setAttribute("class", "secbr-bars");
+    svg.setAttribute("role", "img");
+    const max = Math.max(1, ...pts.map((p) => p.open || 0));
+    const bw = Math.max(2, Math.min(8, (W - gap * (pts.length - 1)) / pts.length));
+    const span = pts.length * bw + (pts.length - 1) * gap;
+    const x0 = W - span;
+    pts.forEach((p, i) => {
+      const h = Math.max(2, Math.round((p.open || 0) / max * (H - 2)));
+      const rect = document.createElementNS(ns, "rect");
+      rect.setAttribute("x", String(x0 + i * (bw + gap)));
+      rect.setAttribute("y", String(H - h));
+      rect.setAttribute("width", String(bw));
+      rect.setAttribute("height", String(h));
+      rect.setAttribute("rx", "1");
+      rect.setAttribute("class", "secbr-bar" + (p.state === "capped" ? " capped" : ""));
+      svg.appendChild(rect);
+    });
+    return svg;
+  }
+  function secBrKebab(r) {
+    const kebab = document.createElement("details");
+    kebab.className = "secidx-kebab";
+    const summary = document.createElement("summary");
+    summary.className = "iconbtn";
+    summary.title = "More";
+    summary.appendChild(secIcon("dots"));
+    summary.onclick = (e) => {
+      e.stopPropagation();
+      closeMenus();
+    };
+    kebab.appendChild(summary);
+    const pop = secEl("div", "menu-pop");
+    pop.setAttribute("role", "menu");
+    const findings = document.createElement("button");
+    findings.setAttribute("role", "menuitem");
+    findings.appendChild(secIcon("filter"));
+    findings.appendChild(document.createTextNode("View findings"));
+    findings.title = "Open the findings browser filtered to this branch";
+    findings.onclick = (e) => {
+      e.stopPropagation();
+      kebab.open = false;
+      secSwitchProjectTab("findings");
+      renderFindings($("sec-pj-findings"), secState.project, { branch: r.branch });
+    };
+    pop.appendChild(findings);
+    const report = document.createElement("button");
+    report.setAttribute("role", "menuitem");
+    report.appendChild(secIcon("download"));
+    report.appendChild(document.createTextNode("Download report"));
+    report.title = r.analysis_id == null ? "No finished analysis of this branch yet" : "Download the latest finished analysis's report (Markdown)";
+    report.disabled = r.analysis_id == null;
+    report.onclick = (e) => {
+      e.stopPropagation();
+      kebab.open = false;
+      if (r.analysis_id != null) secDownloadReport(r.analysis_id, "md", report);
+    };
+    pop.appendChild(report);
+    kebab.appendChild(pop);
+    kebab.ontoggle = () => {
+      pop.hidden = !kebab.open;
+      if (!kebab.open) return;
+      const rect = summary.getBoundingClientRect();
+      pop.style.position = "fixed";
+      pop.style.top = rect.bottom + 6 + "px";
+      pop.style.right = window.innerWidth - rect.right + "px";
+      pop.style.left = "auto";
+      pop.style.bottom = "auto";
+    };
+    return kebab;
+  }
+  function secBranchTrendText(trend) {
+    const pts = trend || [];
+    if (!pts.length) return "No analyses of this branch in the last 30 days.";
+    const partial = pts.some((p) => p.state === "capped");
+    if (pts.length === 1) {
+      return pts[0].open + " open \u2014 only one analysis in the last 30 days, nothing yet to compare it against." + (partial ? " It stopped early, so that count is what it reached." : "");
+    }
+    const opens = pts.map((p) => p.open);
+    const first = opens[0], last = opens[opens.length - 1];
+    const base = first + " \u2192 " + last + " open across " + pts.length + " analyses in the last 30 days";
+    if (partial) {
+      return base + ", but at least one of them stopped before covering the whole scope \u2014 no direction is claimed across a partial read";
+    }
+    let direction = "flat";
+    for (let i = 1; i < opens.length; i++) {
+      const step = opens[i] < opens[i - 1] ? "falling" : opens[i] > opens[i - 1] ? "rising" : "flat";
+      if (step === "flat") continue;
+      if (direction === "flat") direction = step;
+      else if (direction !== step) {
+        direction = null;
+        break;
+      }
+    }
+    if (direction) return base + " (" + direction + ")";
+    const peak = Math.max(...opens), trough = Math.min(...opens);
+    if (peak > first && peak > last) return base + ", peaked at " + peak;
+    if (trough < first && trough < last) return base + ", dipped to " + trough;
+    return base;
+  }
+  function secBranchesSidebar(payload) {
+    const frag = document.createDocumentFragment();
+    const sb = (payload || {}).sidebar || {};
+    const rows = ((payload || {}).tabs || {}).branches || [];
+    const donutCard = secEl("div", "card secpj-plaincard");
+    const donutHead = secEl("div", "secpj-cardhead");
+    const donutTitle = secEl("h3", null, "Findings by severity ");
+    donutTitle.appendChild(secEl("span", "secbr-scope", "(all branches)"));
+    donutTitle.title = "Distinct problems (fingerprints) across every analysed branch \u2014 the same finding open on two branches counts once here, once per branch in the table.";
+    donutHead.appendChild(donutTitle);
+    donutCard.appendChild(donutHead);
+    const row = secEl("div", "secrun-donutrow");
+    row.appendChild(secIndexDonutSvg(sb.donut || {}));
+    row.appendChild(secIndexDonutLegend(
+      sb.donut || {},
+      { showPercent: true, showZero: true }
+    ));
+    donutCard.appendChild(row);
+    const capped = secCappedScopeNote(
+      sb.capped_branches || 0,
+      sb.branch_count || 0,
+      "branch"
+    );
+    if (capped) donutCard.appendChild(capped);
+    frag.appendChild(donutCard);
+    const catCard = secEl("div", "card secpj-plaincard");
+    const catHead = secEl("div", "secpj-cardhead");
+    catHead.appendChild(secEl("h3", null, "Top issue categories"));
+    catCard.appendChild(catHead);
+    catCard.appendChild(secIndexCategories(sb.categories || []));
+    const viewAll = secEl("button", "btn ghost secpj-viewallcats");
+    viewAll.type = "button";
+    viewAll.appendChild(document.createTextNode("View all findings"));
+    viewAll.appendChild(secIcon("cright"));
+    viewAll.title = "Open this project's findings browser";
+    viewAll.onclick = () => secSwitchProjectTab("findings");
+    catCard.appendChild(viewAll);
+    frag.appendChild(catCard);
+    frag.appendChild(secBrCoverageCard(rows));
+    return frag;
+  }
+  function secBrCoverageCard(rows) {
+    const card = secEl("div", "card secpj-plaincard");
+    const head = secEl("div", "secpj-cardhead");
+    head.appendChild(secEl("h3", null, "Branch coverage"));
+    card.appendChild(head);
+    const now = Math.floor(Date.now() / 1e3);
+    const analyzed = rows.filter((r) => r.last_finished && now - r.last_finished <= 30 * 86400).length;
+    const gitCount = secGitBranchCount();
+    const total = Math.max(gitCount, rows.length);
+    const pct = total ? Math.round(analyzed / total * 100) : 0;
+    const line = secEl("div", "secbr-covline");
+    line.appendChild(secEl("span", "secbr-covcount", analyzed + " / " + total + " analyzed"));
+    line.appendChild(secEl("span", "secbr-covpct", pct + "%"));
+    card.appendChild(line);
+    const barTrack = secEl("div", "secbr-covtrack");
+    const bar = secEl("div", "secbr-covbar");
+    bar.style.width = pct + "%";
+    barTrack.appendChild(bar);
+    card.appendChild(barTrack);
+    const scope = gitCount ? "of the branches the repository lists" : "of the branches ever analysed";
+    card.appendChild(secEl(
+      "div",
+      "secpj-caption",
+      !total ? "Nothing has been analysed yet." : analyzed >= total ? "All branches have been analyzed in the last 30 days." : total - analyzed + " " + scope + (total - analyzed === 1 ? " has" : " have") + " not been analyzed in the last 30 days."
+    ));
+    return card;
+  }
+
+  // ui/security/reports-tab.js
+  var SEC_REPORT_FORMATS = [
+    ["md", "Markdown"],
+    ["json", "JSON"],
+    ["html", "HTML"],
+    ["sbom", "SBOM"]
+  ];
+  function secReportsCaption() {
+    const cap = secEl("div", "secpj-caption");
+    cap.appendChild(document.createTextNode(
+      "Markdown, JSON and HTML are generated from each analysis's own checklist at the moment you download one. "
+    ));
+    cap.appendChild(secEl("b", null, "SBOM is different: "));
+    cap.appendChild(document.createTextNode(
+      "it is not a report over any analysis's checklist but the stored CycloneDX inventory itself, kept per branch with only the most recent document \u2014 so the SBOM button on an older row still downloads that branch's CURRENT document, not a snapshot of what that analysis saw."
+    ));
+    return cap;
+  }
+  function secReportRow(r) {
+    const tr = document.createElement("tr");
+    const cell = (text) => {
+      const td = document.createElement("td");
+      td.textContent = text;
+      return td;
+    };
+    tr.appendChild(cell("#" + r.analysis_id));
+    tr.appendChild(cell(r.branch || ""));
+    tr.appendChild(cell(r.started ? fmtWhen(r.started) : "\u2014"));
+    tr.appendChild(cell(r.state || ""));
+    const tdDl = document.createElement("td");
+    const row = secEl("div", "secdl");
+    SEC_REPORT_FORMATS.forEach(([fmt, label]) => {
+      const btn = secEl("button", "btn ghost");
+      btn.type = "button";
+      btn.appendChild(secIcon("file"));
+      btn.appendChild(document.createTextNode(label));
+      btn.onclick = () => secDownloadReport(r.analysis_id, fmt, btn);
+      row.appendChild(btn);
+    });
+    tdDl.appendChild(row);
+    tr.appendChild(tdDl);
+    return tr;
+  }
+  function secReportsTable(rows) {
+    if (!rows.length) {
+      return secEl("div", "tblempty", "No analyses of this project yet.");
+    }
+    const wrap = secEl("div", "tablewrap");
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    const htr = document.createElement("tr");
+    ["Analysis", "Branch", "Started", "State", "Downloads"].forEach((h) => {
+      const th = document.createElement("th");
+      th.textContent = h;
+      htr.appendChild(th);
+    });
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
+    rows.forEach((r) => tbody.appendChild(secReportRow(r)));
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    return wrap;
+  }
+  function secRenderProjectReports(payload) {
+    const host = $("sec-pj-reports");
+    if (!host) return;
+    host.textContent = "";
+    const rows = ((payload || {}).tabs || {}).reports || [];
+    host.appendChild(secReportsCaption());
+    host.appendChild(secReportsTable(rows));
+    host.appendChild(secEl(
+      "div",
+      "secdlnote",
+      "Downloads always contain every recorded finding, whatever the severity floor shows."
+    ));
   }
 
   // ui/security/activity-screen.js
@@ -3009,6 +3430,7 @@
   function secSwitchProjectTab(tab, fromHistory) {
     secProjectTab = ["overview", "runs", "branches", "findings", "reports"].includes(tab) ? tab : "overview";
     secRenderTabs();
+    secRenderProjectTitle();
     if (secProjectCache) secRenderProjectSidebar(secProjectCache);
     if (secProjectTab === "findings") renderFindings($("sec-pj-findings"), secState.project);
     if (secProjectTab === "overview" && secProjectCache) secRenderProjectOverview(secProjectCache);
@@ -3046,22 +3468,36 @@
     const side = $("sec-pj-side");
     if (side) side.hidden = secProjectTab === "findings" || secProjectTab === "overview";
   }
+  var SEC_TAB_TITLES = {
+    branches: {
+      icon: "gitbranch",
+      title: "Branches",
+      sub: "Security posture and recent analyses for each branch in this project."
+    }
+  };
   function secRenderProjectTitle() {
     const idHost = $("sec-pj-titleid");
+    const spec = SEC_TAB_TITLES[secProjectTab];
     if (idHost) {
       idHost.textContent = "";
       const p = projById(secState.project) || {};
       const ic = secEl("span", "secpjtitle-ic");
-      ic.appendChild(secIcon("shield"));
+      ic.appendChild(secIcon(spec ? spec.icon : "shield"));
       idHost.appendChild(ic);
-      idHost.appendChild(secEl("span", "secpjtitle-name", p.name || secState.project));
-      const profile = (p.security || {}).default_profile || "standard";
-      const badge = secEl("span", "pill profile", profile);
-      badge.title = "This project's default analysis profile";
-      idHost.appendChild(badge);
+      idHost.appendChild(secEl(
+        "span",
+        "secpjtitle-name",
+        spec ? spec.title : p.name || secState.project
+      ));
+      if (!spec) {
+        const profile = (p.security || {}).default_profile || "standard";
+        const badge = secEl("span", "pill profile", profile);
+        badge.title = "This project's default analysis profile";
+        idHost.appendChild(badge);
+      }
     }
     const desc = $("sec-pj-desc");
-    if (desc) desc.textContent = (projById(secState.project) || {}).description || "";
+    if (desc) desc.textContent = spec ? spec.sub : (projById(secState.project) || {}).description || "";
   }
   function secRenderProjectHeader(payload) {
     const host = $("sec-pj-head");
@@ -3429,6 +3865,10 @@
     if (!host) return;
     host.textContent = "";
     const sb = payload.sidebar || {};
+    if (secProjectTab === "branches") {
+      host.appendChild(secBranchesSidebar(payload));
+      return;
+    }
     const attempted = !!((payload.tabs || {}).overview || {}).attempted;
     host.appendChild(secSidebarCaption(sb.branch_count || 0, attempted));
     if (secProjectTab === "runs") {
@@ -3594,18 +4034,6 @@
       sub: rate == null ? "No finished analysis yet" : "analyses completed",
       title: rate == null ? "" : "All time \u2014 a historical total, not current posture: finished analyses that completed clean, not capped or failed"
     }));
-    return wrap;
-  }
-  function secIndexPosturePills(posture) {
-    const wrap = secEl("span", "sevpills");
-    const p = posture || {};
-    if (!p.total) {
-      wrap.appendChild(secEl("span", "sevpill clean", "nothing open"));
-      return wrap;
-    }
-    ["critical", "high", "medium", "low", "info"].forEach((sev) => {
-      if (p[sev]) wrap.appendChild(secEl("span", "sevpill " + sev, p[sev] + " " + sev));
-    });
     return wrap;
   }
   var FIND_SEVS = ["critical", "high", "medium"];
@@ -4495,5 +4923,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 3d710bbe06bfd0d1de6fd978fbdb65a2290d2d0b274b631aca7a46ea489d0a01 */
-/* ui-sources: 1c59974b75a9e55e2cb861e638623e136185d0a210c51528844dcc0398774bba */
+/* ui-bundle: 9f97e4b36c8f704ae98ea54ac052e6f670344926eb537bb684b4038df5ef321a */
+/* ui-sources: 828da563e335b5bf0df6d45a6efd3eee4e7b065c302e35dce9d21e5d5447ddce */

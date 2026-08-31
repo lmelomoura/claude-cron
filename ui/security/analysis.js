@@ -175,12 +175,25 @@ export async function secOpen(project){
   await secSyncScope();
 }
 
+// How many branches git itself lists for the repo currently picked -- kept
+// from the SAME fetch that fills the launcher's branch combo below, so the
+// Branches tab's coverage card (secBranchesSidebar, branches-tab.js) can put
+// a real denominator under "X / Y analyzed" without a second git call. 0
+// until the list has ever answered for this project (the card falls back to
+// counting only the branches ever analysed, and says so).
+let secGitBranches = 0;
+export function secGitBranchCount(){ return secGitBranches; }
+
 export async function secLoadBranches(want){
   // Same generation guard as secOpen and secShowAnalysis, for the same reason:
   // this is a `git for-each-ref` on the server, and the answer for the repo
   // somebody has already navigated away from must not fill the picker of the
   // one now on screen.
   const seq = secState.seq;
+  // Zeroed before the fetch, not only on failure: between opening a project
+  // and this answer landing, the previous project's count must not pose as
+  // the new one's.
+  secGitBranches = 0;
   secBranchCombo.set("…", [{v: "…", label: "…"}]);
   let branches = [];
   try{
@@ -188,8 +201,10 @@ export async function secLoadBranches(want){
       + encodeURIComponent(secState.project) + "&repo=" + encodeURIComponent($("sec-repo").value));
     if(seq !== secState.seq) return;
     branches = j.branches || [];
+    secGitBranches = branches.length;
   }catch(e){
     if(seq !== secState.seq) return;
+    secGitBranches = 0;
     secBranchCombo.set("", []);
     toast("Could not list branches — " + e.message, true);
     return;

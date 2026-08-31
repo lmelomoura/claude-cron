@@ -293,6 +293,41 @@ def test_branch_rows_carry_the_state_their_posture_was_read_from(conn):
     assert [p["state"] for p in rows["develop"]["trend"]] == ["done"]
 
 
+def test_branch_rows_include_a_branch_whose_every_attempt_failed(conn):
+    """ProjectBranches.png draws such a row (a dash and "Analysis failed"),
+    and hiding it was hiding exactly the branches most worth a look. Its
+    posture is None -- "never read", a different claim from zero findings --
+    and the newest attempt's own state, sha and time ride along."""
+    _analysis(conn, "main", findings=[("high", "sast")])
+    failed = _analysis(conn, "broken", state="failed", findings=[])
+    rows = {r["branch"]: r for r in queries.branch_rows(conn, "web")}
+    assert "broken" in rows, "a failed-only branch must get a row, not an absence"
+    b = rows["broken"]
+    assert b["open"] is None and b["trend"] == []
+    assert b["latest_state"] == "failed" and b["analysis_id"] is None
+    assert b["last_finished"] == 0 and b["last_analysis"] > 0
+    assert b["sha"] == "sha"
+    assert rows["main"]["open"]["high"] == 1, \
+        f"the finished branch must keep its posture: {rows['main']}"
+
+
+def test_branch_rows_show_a_fresh_failure_on_top_of_a_finished_posture(conn):
+    """A branch with a finished analysis whose NEWEST attempt failed keeps
+    the finished posture (`open`, `state`, `last_finished`) -- and says the
+    failure happened (`latest_state`), with `last_analysis` moving to the
+    failed attempt's own time, so recency rules keyed on `last_finished`
+    cannot count a branch as fresher the more it fails."""
+    ok = _analysis(conn, "main", findings=[("critical", "secret")])
+    conn.execute("UPDATE analysis SET started=? WHERE id=?", (1000, ok))
+    failed = _analysis(conn, "main", state="failed", findings=[])
+    conn.execute("UPDATE analysis SET started=? WHERE id=?", (2000, failed))
+    row = queries.branch_rows(conn, "web")[0]
+    assert row["open"]["critical"] == 1 and row["state"] == "done"
+    assert row["latest_state"] == "failed"
+    assert row["last_finished"] == 1000 and row["last_analysis"] == 2000
+    assert row["analysis_id"] == ok
+
+
 def test_capped_branch_count_is_the_rollup_cue_for_every_analysed_branch(conn):
     """The sidebar donut and the findings strip roll every analysed branch
     into one number, so neither can carry the per-row `incomplete` badge the

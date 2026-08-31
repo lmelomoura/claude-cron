@@ -17,6 +17,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The Branches tab is rebuilt to ProjectBranches.png.** What used to be a
+  six-column table under a paragraph of caption prose is now the mockup's
+  screen: five KPI cards (branches analyzed in 30 days; active branches by
+  one written rule — latest finished analysis at most 7 days old, the same
+  rule the Status column and filter read, pinned by its own boundary test;
+  the declared base's critical count; total findings across all branches as
+  distinct fingerprints, agreeing with the rail donut beside it; and
+  default-branch coverage read honestly off the analysis state — 100% for a
+  clean finish, Partial for a capped one, a dash for none), a filter bar
+  (search, Status and Last-analysis pickers on the house details-popover
+  widget, Refresh), and an eight-column table: Branch with the Default badge
+  on the DECLARED base only (never a fallen-back one), Status dots, Last
+  analysis, Total findings, the five-chip severity breakdown, a 30-day bar
+  sparkline whose cell title is still secBranchTrendText's whole honest
+  sentence (hollow bars for capped reads), Last commit (the sha the newest
+  analysis recorded — the header's title says it is not read from git now),
+  and View + kebab (open the branch's latest analysis; findings browser
+  deep-linked to the branch; report download). `queries.branch_rows` now
+  includes branches whose every attempt failed — a dash and "Analysis
+  failed" instead of the absence that hid exactly the branches most worth a
+  look — carrying two timestamps (newest attempt vs newest finished) so
+  recency rules cannot count a branch as fresher the more it fails. The
+  tab's rail is its own three cards (all-branch severity donut with the
+  scope in its title, top categories with the View-all-findings door, and
+  Branch coverage against the repository's real branch list, reusing the
+  launcher's own fetch), and the page title row now follows the tab
+  (gitbranch icon, "Branches", the mockup's own sentence) with the project's
+  name one crumb up.
+
 ### Fixed
 
 - **The Findings-trend chart no longer scales its type up with the card.**

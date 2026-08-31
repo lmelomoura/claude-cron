@@ -43,7 +43,7 @@ import { secIndexDonut, secIndexDonutSvg, secIndexDonutLegend,
 import { secOpen, secShowAnalysis, secOpenLaunch } from "./analysis.js";
 import { secDownloadReport } from "./actions.js";
 import { secRunFor } from "./history.js";
-import { secRenderProjectBranches } from "./branches-tab.js";
+import { secRenderProjectBranches, secBranchesSidebar } from "./branches-tab.js";
 import { secRenderProjectReports } from "./reports-tab.js";
 import { renderFindings } from "./findings-screen.js";
 import { secRenderProjectOverview, secProjectActivity } from "./overview-tab.js";
@@ -143,6 +143,9 @@ export function secSwitchProjectTab(tab, fromHistory){
   secProjectTab = ["overview", "runs", "branches", "findings", "reports"].includes(tab)
     ? tab : "overview";
   secRenderTabs();
+  // The title row follows the tab (SEC_TAB_TITLES): Branches wears its own
+  // icon/name/sentence, every other tab the project's identity.
+  secRenderProjectTitle();
   // The right rail's own content depends on WHICH tab is active now (the
   // Runs tab reads secState.findings; every other tab reads this cache's
   // own sidebar payload -- see secRenderProjectSidebar's own comment) --
@@ -240,22 +243,37 @@ function secRenderTabs(){
    where the profile is a fact that varies. `.pill.profile`, the exact badge
    the meta strip below and the index's own Profile column already wear for
    the same value. */
+/* Tabs whose own mockup titles the page with the TAB, not the project --
+   ProjectBranches.png draws a gitbranch icon, "Branches" and its own
+   sentence where the Overview's mockup draws the project's identity (the
+   project's name stays one crumb up either way). A tab absent here keeps
+   the project-identity row. */
+const SEC_TAB_TITLES = {
+  branches: {icon: "gitbranch", title: "Branches",
+    sub: "Security posture and recent analyses for each branch in this project."},
+};
+
 function secRenderProjectTitle(){
   const idHost = $("sec-pj-titleid");
+  const spec = SEC_TAB_TITLES[secProjectTab];
   if(idHost){
     idHost.textContent = "";
     const p = projById(secState.project) || {};
     const ic = secEl("span", "secpjtitle-ic");
-    ic.appendChild(secIcon("shield"));
+    ic.appendChild(secIcon(spec ? spec.icon : "shield"));
     idHost.appendChild(ic);
-    idHost.appendChild(secEl("span", "secpjtitle-name", p.name || secState.project));
-    const profile = ((p.security || {}).default_profile) || "standard";
-    const badge = secEl("span", "pill profile", profile);
-    badge.title = "This project's default analysis profile";
-    idHost.appendChild(badge);
+    idHost.appendChild(secEl("span", "secpjtitle-name",
+      spec ? spec.title : (p.name || secState.project)));
+    if(!spec){
+      const profile = ((p.security || {}).default_profile) || "standard";
+      const badge = secEl("span", "pill profile", profile);
+      badge.title = "This project's default analysis profile";
+      idHost.appendChild(badge);
+    }
   }
   const desc = $("sec-pj-desc");
-  if(desc) desc.textContent = (projById(secState.project) || {}).description || "";
+  if(desc) desc.textContent = spec ? spec.sub
+    : (projById(secState.project) || {}).description || "";
 }
 
 function secRenderProjectHeader(payload){
@@ -869,6 +887,14 @@ function secRenderProjectSidebar(payload){
   if(!host) return;
   host.textContent = "";
   const sb = payload.sidebar || {};
+  // The Branches tab's rail is its own three cards (ProjectBranches.png):
+  // the all-branch donut whose TITLE carries the scope the caption says
+  // for the other tabs, Top issue categories, and Branch coverage -- no
+  // caption, no activity card, exactly the mockup's own column.
+  if(secProjectTab === "branches"){
+    host.appendChild(secBranchesSidebar(payload));
+    return;
+  }
   const attempted = !!(((payload.tabs || {}).overview) || {}).attempted;
   host.appendChild(secSidebarCaption(sb.branch_count || 0, attempted));
   if(secProjectTab === "runs"){

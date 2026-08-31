@@ -1870,9 +1870,11 @@ def test_the_cells_icon_rule_cannot_repaint_the_favourite_star(srv):
     # The project Overview's Top-findings card (overview-tab.js) -- the
     # ninth table on this shape, same scoped-class-and-width-set rule.
     (".secov-findtable", "SEC_OVFIND_COLS", "security"),
+    # The Branches tab's own table (branches-tab.js, ProjectBranches.png).
+    (".secbr-table", "SEC_BRANCH_COLS", "security"),
 ], ids=["jobs", "projects", "runs", "security-fleet", "security-recent",
         "security-runs", "security-findings", "security-activity",
-        "security-top-findings"])
+        "security-top-findings", "security-branches"])
 def test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column(
         srv, tmp_path, view, const_name, bundle):
     """Must fail against the pre-fix CSS (Security's th:nth-child(6) has no
@@ -4003,6 +4005,10 @@ def test_switching_project_tabs_shows_one_pane_and_hides_the_other(srv, tmp_path
     script = tmp_path / "pj-tabs.js"
     script.write_text(_PROJECT_DOM_HARNESS + """
     let secProjectTab = "overview";
+    // The title row now follows the tab (SEC_TAB_TITLES, project-screen.js)
+    // -- stubbed like renderFindings below: these tests are about pane and
+    // rail visibility, never about what the title row paints.
+    function secRenderProjectTitle(){}
     // secSwitchProjectTab now also repaints the sidebar through this cache
     // (secRenderProjectSidebar, not extracted here) -- null, exactly the
     // real module's own value before the first project-data fetch answers,
@@ -4251,41 +4257,114 @@ def test_the_project_runs_header_names_what_its_own_column_recorded(srv, tmp_pat
 # test in that file.
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def _branches_tab_deps(block):
+    """Everything the Branches tab's full render (branches-tab.js) reaches,
+    extracted from the bundle, plus trivial stubs for the bridge and
+    cross-module bindings -- the identical shape _overview_tab_deps takes
+    for its own tab."""
+    consts = "".join(_const(block, n) for n in
+        ("SEC_BRANCH_COLS", "SEC_BR_SEVS", "SEC_BR_WINDOWS",
+         "SEC_BRANCH_ACTIVE_DAYS", "BRANCH_CAPPED_TITLE", "BRANCH_SCOPE_TITLE",
+         "SEC_NEVER"))
+    fns = "\n".join(_plainfn(block, n) for n in
+        ("secEl", "secIcon", "secBranchIsActive", "secBrDefaultBranch",
+         "secBrKpis", "secBrRepaint", "secBrPicker", "secBrFilterBar",
+         "secBrFiltered", "secBrTable", "secBranchRow", "secBrSevChips",
+         "secBrTrendBars", "secBrKebab", "secBranchTrendText",
+         "secRenderProjectBranches"))
+    stubs = """
+    let secBrSearch = "", secBrStatus = "", secBrDays = 0,
+        secBrProject = null, secBrPayload = null;
+    const window = {addEventListener(){}, innerWidth: 1400};
+    function kpiCard(o){
+      const c = new FakeElement("div");
+      c.className = "kpi-card" + (o.tone ? " " + o.tone : "");
+      if(o.title) c.title = o.title;
+      const num = new FakeElement("span"); num.textContent = o.value; c.appendChild(num);
+      const lab = new FakeElement("div"); lab.textContent = o.label; c.appendChild(lab);
+      if(o.sub){ const s = new FakeElement("div"); s.textContent = o.sub; c.appendChild(s); }
+      return c;
+    }
+    function projById(_id){ return {base: "develop"}; }
+    function tableFooter(o){
+      const f = new FakeElement("footer");
+      f.textContent = "Showing " + o.shown.from + " to " + o.shown.to
+        + " of " + o.total + " " + o.noun;
+      return f;
+    }
+    function secFindTriggerLabel(label, valueText){
+      const trigger = new FakeElement("summary");
+      trigger.textContent = (label ? label + ": " : "") + valueText;
+      return {trigger};
+    }
+    function secFindPositionPop(details, _trigger, pop){ details.appendChild(pop); }
+    function renderFindings(_host, _project, _filters){}
+    function secSwitchProjectTab(_t){}
+    function secShowAnalysis(_id, _pin){}
+    function secDownloadReport(_id, _fmt, _el){}
+    function secRefreshProject(){}
+    function secGitBranchCount(){ return 0; }
+    function closeMenus(){}
+    """
+    return consts + stubs + fns
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_branches_tab_renders_one_row_per_branch_with_its_own_posture(srv, tmp_path):
-    """Two branches, each with its own last-analysis time, analysis count,
-    open posture and 30-day trend -- and the caption naming how a branch's
-    own open count relates to the sidebar's cross-branch, deduplicated
-    total, the same review-fix reasoning project-screen.js's own
-    secOverviewCaption/secSidebarCaption already carry, applied here to a
-    third number on the same screen."""
+    """Three rows through the FULL rebuilt render (ProjectBranches.png): a
+    fresh default branch (Active, Default badge, severity chips, trend bars
+    whose cell title is secBranchTrendText's own honest sentence), a stale
+    clean branch (Inactive by the 7-day rule), and a branch whose every
+    attempt failed (a dash and "Analysis failed", not an absence). The
+    per-branch-vs-fingerprint scope sentence -- the substance the old
+    caption paragraph carried -- now rides the Total-findings column
+    header's own title."""
     block = _security_js(srv)
-    deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secIndexPosturePills", "secBranchesCaption",
-                      "secBranchTrendText", "secBranchRow", "secBranchesTable",
-                      "secRenderProjectBranches"))
     script = tmp_path / "pj-branches.js"
-    script.write_text(_PROJECT_DOM_HARNESS + deps + """
-    secRenderProjectBranches({tabs: {branches: [
-      {branch: "develop", last_analysis: 1700000000, analyses: 2,
-       open: {critical: 1, high: 0, medium: 0, low: 0, info: 0, total: 1},
-       trend: [{analysis_id: 1, started: 1, open: 2}, {analysis_id: 2, started: 2, open: 1}]},
-      {branch: "main", last_analysis: 1700000100, analyses: 1,
+    script.write_text(_PROJECT_DOM_HARNESS + _branches_tab_deps(block) + """
+    const now = Math.floor(Date.now() / 1000);
+    secRenderProjectBranches({project: "web", sidebar: {donut: {total: 3}}, tabs: {
+      overview: {attempted: true},
+      branches: [
+      {branch: "develop", last_analysis: now - 3600, last_finished: now - 3600,
+       analyses: 2, state: "done", latest_state: "done", analysis_id: 9,
+       sha: "dfab1b2c333",
+       open: {critical: 1, high: 0, medium: 2, low: 0, info: 0, total: 3},
+       trend: [{analysis_id: 1, started: 1, open: 2, state: "done"},
+               {analysis_id: 9, started: 2, open: 3, state: "done"}]},
+      {branch: "main", last_analysis: now - 40 * 86400, last_finished: now - 40 * 86400,
+       analyses: 1, state: "done", latest_state: "done", analysis_id: 3, sha: "abc123999",
        open: {critical: 0, high: 0, medium: 0, low: 0, info: 0, total: 0},
        trend: []},
+      {branch: "broken", last_analysis: now - 7200, last_finished: 0,
+       analyses: 1, state: "", latest_state: "failed", analysis_id: null, sha: "beefbeef1",
+       open: null, trend: []},
     ]}});
-    console.log(JSON.stringify(collectAll(_els["sec-pj-branches"], [])));
+    const rows = collectAll(_els["sec-pj-branches"], []);
+    console.log(JSON.stringify(rows));
     """)
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
     joined = " ".join(r["text"] for r in out)
-    assert "develop" in joined and "main" in joined, f"a branch name is missing: {joined}"
-    assert "1 critical" in joined, f"the open posture pill did not render: {joined}"
-    assert "nothing open" in joined, f"the clean branch's pill did not render: {joined}"
-    assert "falling" in joined, f"the trend direction did not render: {joined}"
-    assert "No analyses of this branch in the last 30 days" in joined, \
-        f"the branch with no recent trend point got no explanation: {joined}"
-    assert "sidebar's donut" in joined, \
-        f"the caption explaining the scope difference from the sidebar is missing: {joined}"
+    titles = " ".join(r["title"] for r in out)
+    classes = " ".join(r["cls"] for r in out)
+    assert "develop" in joined and "main" in joined and "broken" in joined
+    default_badges = [r for r in out
+                      if r["cls"] == "pill profile" and r["text"] == "Default"]
+    assert len(default_badges) == 1, \
+        f"exactly the declared base wears the Default badge: {len(default_badges)}"
+    assert "Active" in joined and "Inactive" in joined, \
+        f"the 7-day activity rule must split these rows: {joined}"
+    assert "Analysis failed" in joined, \
+        "a failed-only branch must say so, not render zeros"
+    assert "secbr-sevcount sev-critical" in classes and "secbr-sevcount none" in classes
+    assert "dfab1b2" in joined and "dfab1b2c333" not in joined, \
+        "the sha renders shortened"
+    assert "2 → 3 open" in titles and "rising" in titles, \
+        f"secBranchTrendText's sentence must survive as the trend cell's title: {titles}"
+    assert "once per branch" in titles, \
+        f"the per-branch-vs-fingerprint scope note must ride a title: {titles}"
+    assert "3 branch" in joined, f"the footer must count the rows: {joined}"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -4368,16 +4447,18 @@ def test_the_branches_tab_tells_never_analysed_apart_from_every_attempt_failed(s
     distinction one tab over. A project whose every analysis failed used to
     show two sibling tabs contradicting each other."""
     block = _security_js(srv)
-    deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secIndexPosturePills", "secBranchesCaption",
-                      "secBranchTrendText", "secBranchRow", "secBranchesTable",
-                      "secRenderProjectBranches"))
-    deps = _const(block, "SEC_NEVER") + deps
+    # The empty-state path returns before any card builder is reached --
+    # only the render, its module lets and SEC_NEVER are live on it.
+    deps = (_const(block, "SEC_NEVER")
+            + "let secBrSearch = '', secBrStatus = '', secBrDays = 0,"
+            + " secBrProject = null, secBrPayload = null;\n"
+            + _plainfn(block, "secEl") + "\n"
+            + _plainfn(block, "secRenderProjectBranches"))
     script = tmp_path / "pj-branches-empty.js"
     script.write_text(_PROJECT_DOM_HARNESS + deps + """
-    secRenderProjectBranches({tabs: {overview: {attempted: false}, branches: []}});
+    secRenderProjectBranches({project: "web", tabs: {overview: {attempted: false}, branches: []}});
     const neverAttempted = _els["sec-pj-branches"].textContent;
-    secRenderProjectBranches({tabs: {overview: {attempted: true}, branches: []}});
+    secRenderProjectBranches({project: "web", tabs: {overview: {attempted: true}, branches: []}});
     const attemptedNoneFinished = _els["sec-pj-branches"].textContent;
     console.log(JSON.stringify({neverAttempted, attemptedNoneFinished}));
     """)
@@ -4387,6 +4468,34 @@ def test_the_branches_tab_tells_never_analysed_apart_from_every_attempt_failed(s
     assert "finished yet" in out["attemptedNoneFinished"], out["attemptedNoneFinished"]
     assert out["neverAttempted"] != out["attemptedNoneFinished"], \
         "never-attempted and attempted-but-failed render identically"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_a_branch_is_active_by_its_last_finished_analysis_alone(srv, tmp_path):
+    """The one rule the Status column, the Active-branches KPI and the
+    Status filter all read (SEC_BRANCH_ACTIVE_DAYS): at most 7 days since
+    the latest FINISHED analysis -- keyed to last_finished, never
+    last_analysis, so a branch whose recent attempts all fail cannot count
+    as fresher the more it fails."""
+    block = _security_js(srv)
+    deps = (_const(block, "SEC_BRANCH_ACTIVE_DAYS")
+            + _plainfn(block, "secBranchIsActive"))
+    script = tmp_path / "br-active.js"
+    script.write_text(deps + """
+    const now = 1000 * 86400;
+    console.log(JSON.stringify({
+      fresh: secBranchIsActive({last_finished: now - 7 * 86400 + 10}, now),
+      stale: secBranchIsActive({last_finished: now - 7 * 86400 - 10}, now),
+      neverFinished: secBranchIsActive(
+        {last_finished: 0, last_analysis: now - 60}, now),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert out["fresh"] is True, "just inside the window must be active"
+    assert out["stale"] is False, "just outside the window must not be"
+    assert out["neverFinished"] is False, \
+        "a fresh FAILED attempt must not make a never-finished branch active"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -4440,6 +4549,10 @@ def test_switching_to_branches_or_reports_hides_the_other_three_panes(srv, tmp_p
     script = tmp_path / "pj-tabs-4.js"
     script.write_text(_PROJECT_DOM_HARNESS + """
     let secProjectTab = "overview";
+    // The title row now follows the tab (SEC_TAB_TITLES, project-screen.js)
+    // -- stubbed like renderFindings below: these tests are about pane and
+    // rail visibility, never about what the title row paints.
+    function secRenderProjectTitle(){}
     // secSwitchProjectTab now also repaints the sidebar through this cache
     // (secRenderProjectSidebar, not extracted here) -- null, the real
     // module's own value before the first project-data fetch answers, is
@@ -4892,6 +5005,10 @@ def test_switching_to_findings_hides_the_other_four_panes(srv, tmp_path):
     script = tmp_path / "pj-tabs-5.js"
     script.write_text(_PROJECT_DOM_HARNESS + """
     let secProjectTab = "overview";
+    // The title row now follows the tab (SEC_TAB_TITLES, project-screen.js)
+    // -- stubbed like renderFindings below: these tests are about pane and
+    // rail visibility, never about what the title row paints.
+    function secRenderProjectTitle(){}
     let secProjectCache = null;
     function renderFindings(_host, _project){}
     """ + deps + """
@@ -4936,6 +5053,10 @@ def test_the_project_sidebar_hides_for_findings_and_overview(srv, tmp_path):
     script = tmp_path / "pj-side.js"
     script.write_text(_PROJECT_DOM_HARNESS + """
     let secProjectTab = "overview";
+    // The title row now follows the tab (SEC_TAB_TITLES, project-screen.js)
+    // -- stubbed like renderFindings below: these tests are about pane and
+    // rail visibility, never about what the title row paints.
+    function secRenderProjectTitle(){}
     let secProjectCache = null;
     function renderFindings(_host, _project){}
     """ + deps + """
@@ -5547,19 +5668,17 @@ def test_the_branches_tab_marks_a_branch_whose_last_analysis_stopped_early(srv, 
     Task 8 established (`secidx-capped`, "incomplete", the same explanatory
     title) plus a column of its own so a reader can scan for it."""
     block = _security_js(srv)
-    deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secIndexPosturePills", "secBranchesCaption",
-                      "secBranchTrendText", "secBranchRow", "secBranchesTable",
-                      "secRenderProjectBranches"))
-    deps = _const(block, "SEC_NEVER") + _const(block, "BRANCH_CAPPED_TITLE") + deps
     script = tmp_path / "pj-branches-capped.js"
-    script.write_text(_PROJECT_DOM_HARNESS + deps + """
-    secRenderProjectBranches({tabs: {overview: {attempted: true}, branches: [
-      {branch: "main", last_analysis: 1700000000, analyses: 2, state: "capped",
-       open: {critical: 0, high: 0, medium: 0, low: 0, info: 0, total: 0},
+    script.write_text(_PROJECT_DOM_HARNESS + _branches_tab_deps(block) + """
+    secRenderProjectBranches({project: "web", sidebar: {}, tabs: {
+      overview: {attempted: true}, branches: [
+      {branch: "main", last_analysis: 1700000000, last_finished: 1700000000,
+       analyses: 2, state: "capped", latest_state: "capped", analysis_id: 2,
+       sha: "aaaa1111", open: {critical: 0, high: 0, medium: 0, low: 0, info: 0, total: 0},
        trend: [{open: 0, state: "capped"}]},
-      {branch: "develop", last_analysis: 1700000100, analyses: 1, state: "done",
-       open: {critical: 1, high: 0, medium: 0, low: 0, info: 0, total: 1},
+      {branch: "develop", last_analysis: 1700000100, last_finished: 1700000100,
+       analyses: 1, state: "done", latest_state: "done", analysis_id: 3,
+       sha: "bbbb2222", open: {critical: 1, high: 0, medium: 0, low: 0, info: 0, total: 1},
        trend: [{open: 2, state: "done"}, {open: 1, state: "done"}]},
     ]}});
     console.log(JSON.stringify(collectAll(_els["sec-pj-branches"], [])));
@@ -5571,8 +5690,6 @@ def test_the_branches_tab_marks_a_branch_whose_last_analysis_stopped_early(srv, 
     assert badges, f"a capped branch got no incomplete cue at all: {joined}"
     assert badges[0]["text"] == "incomplete", badges[0]
     assert "stopped before covering" in badges[0]["title"].lower(), badges[0]
-    assert "capped" in joined and "done" in joined, \
-        f"the state column did not render: {joined}"
     # Containment: exactly one badge -- the done branch must not get one.
     assert len(badges) == 1, f"the cue fired over a finished branch too: {out}"
 

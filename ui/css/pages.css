@@ -1805,6 +1805,68 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   justify-content:flex-end;flex:none;max-width:55%}
 .secov-actright .secmeta{white-space:nowrap}
 
+/* ------------------------------------------ project screen: Branches tab
+   ProjectBranches.png -- five KPI cards (the shared kpi-grid), the filter
+   bar, the eight-column branches table, and the rail's own three cards.
+   Severity chips wear the severity tokens with the same color-mix tint
+   idiom the findings table's pills use; the trend bars and the coverage
+   bar read the accent. */
+.secbr-bar{margin:14px 0 12px}
+.secbr-tablehost{min-width:0}
+.secbr-name{display:flex;align-items:center;gap:8px;min-width:0}
+.secbr-name>.ic{width:14px;height:14px;color:var(--muted);flex:none}
+.secbr-branch{font-weight:650;color:var(--ink);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.secbr-status{display:inline-flex;align-items:center;gap:6px;font-size:12px;
+  font-weight:600;white-space:nowrap}
+.secbr-status .secbr-statusdot{width:7px;height:7px;border-radius:50%;flex:none}
+.secbr-status.active{color:var(--ok)}
+.secbr-status.active .secbr-statusdot{background:var(--ok)}
+.secbr-status.inactive{color:var(--muted)}
+.secbr-status.inactive .secbr-statusdot{background:var(--muted);opacity:.55}
+.secbr-ago{font-weight:650;color:var(--ink)}
+.secbr-total{font-weight:700;color:var(--ink)}
+.secbr-failed{color:var(--err)}
+.secbr-sev{display:flex;gap:10px}
+.secbr-sevchip{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:26px}
+.secbr-sevcount{display:inline-flex;align-items:center;justify-content:center;
+  min-width:24px;padding:2px 6px;border-radius:7px;font-size:12px;font-weight:650;
+  background:var(--panel2);color:var(--muted)}
+.secbr-sevcount.sev-critical{background:color-mix(in srgb,var(--sev-crit) 12%,transparent);color:var(--sev-crit)}
+.secbr-sevcount.sev-high{background:color-mix(in srgb,var(--sev-high) 14%,transparent);
+  color:color-mix(in srgb,var(--sev-high) 80%,var(--ink) 20%)}
+.secbr-sevcount.sev-medium{background:color-mix(in srgb,var(--sev-med) 16%,transparent);
+  color:color-mix(in srgb,var(--sev-med) 70%,var(--ink) 30%)}
+.secbr-sevcount.sev-low{background:color-mix(in srgb,var(--sev-low) 14%,transparent);color:var(--sev-low)}
+.secbr-sevcount.sev-info{background:color-mix(in srgb,var(--sev-info) 22%,transparent);
+  color:color-mix(in srgb,var(--sev-info) 60%,var(--ink))}
+/* A zero is tracked-and-none -- present, muted -- and a dash is never-read. */
+.secbr-sevcount.zero{background:var(--panel2);color:var(--muted);opacity:.75}
+.secbr-sevcount.none{background:transparent;color:var(--muted)}
+.secbr-sevname{font-size:9.5px;color:var(--muted);letter-spacing:.02em}
+.secbr-bars{display:block;width:96px;height:28px}
+.secbr-bars .secbr-bar{fill:var(--accent);opacity:.85}
+.secbr-bars .secbr-bar.capped{fill:transparent;stroke:var(--accent);stroke-width:1;opacity:.7}
+.secbr-notrend{color:var(--muted)}
+.secbr-sha{font:12px ui-monospace,"SF Mono",Menlo,monospace;color:var(--accent);font-weight:600}
+.secbr-scope{font-size:11.5px;font-weight:500;color:var(--muted)}
+.secbr-covline{display:flex;align-items:center;justify-content:space-between;
+  font-size:12.5px;color:var(--ink);font-weight:650;margin:2px 0 8px}
+.secbr-covcount{color:var(--ink)}
+.secbr-covpct{color:var(--ink)}
+.secbr-covtrack{height:8px;border-radius:5px;background:var(--panel2);
+  border:1px solid var(--line2);overflow:hidden;margin-bottom:8px}
+.secbr-covbar{height:100%;border-radius:5px;background:var(--accent)}
+.secbr-table th:nth-child(1){width:18%}   /* Branch             */
+.secbr-table th:nth-child(2){width:8%}    /* Status             */
+.secbr-table th:nth-child(3){width:13%}   /* Last analysis      */
+.secbr-table th:nth-child(4){width:10%}   /* Total findings     */
+.secbr-table th:nth-child(5){width:19%}   /* Severity breakdown */
+.secbr-table th:nth-child(6){width:10%}   /* Trend (30d)        */
+.secbr-table th:nth-child(7){width:13%}   /* Last commit        */
+.secbr-table th:last-child{width:9%}      /* Actions            */
+.secbr-table td.rowacts{white-space:nowrap}
+
 /* --------------------------------------------------------- security index
    The project table, the recent-analyses feed and the severity donut all
    paint into the same #sec-list host the flat project list used to fill --

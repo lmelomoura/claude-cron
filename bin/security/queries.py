@@ -791,19 +791,33 @@ def top_categories(conn, project=None, limit=5, days=0):
 
 
 def branch_rows(conn, project):
-    """One row per branch that has ever finished an analysis.
+    """One row per branch that has ever been ANALYSED -- any state, not only
+    the finished ones. A branch whose every attempt so far failed used to
+    have no row here at all, so the one screen whose entire purpose is
+    per-branch posture silently hid exactly the branches most worth a look
+    (ProjectBranches.png draws such a row: a dash and "Analysis failed",
+    not an absence). Its `open` is None -- "never read", which is not the
+    same claim as a zero-filled posture -- and its `trend` is empty.
+
+    Two timestamps per row, on purpose:
+    - `last_analysis` is the newest ATTEMPT of any state -- what the Last
+      analysis column shows and what the rows sort by, because "when did
+      anything last happen here" is that column's question;
+    - `last_finished` is the newest done/capped one -- what the posture was
+      read from, and what recency rules (the tab's Active status, its
+      analysed-in-30-days KPI) must key on, or a branch whose latest
+      attempts all fail would count as fresher the more it fails.
 
     `state` is the state of the analysis each row's `open` posture was
-    actually read from -- `done` or `capped`, the two this function's own
-    `WHERE` already admits. It used to be dropped on the floor: the rows said
-    `state IN ('done','capped')` and then returned no state at all, so a
-    branch whose last analysis stopped early presented its PARTIAL posture as
-    a finished one. That is worse here than anywhere else in the area,
-    because the Branches tab is the ONE screen whose entire purpose is
-    per-branch posture -- every other surface that shows a capped read
-    (`project_rows`'s `last_state`, `index_summary`'s `capped_projects`,
-    `secPaint`'s own banner) already says so, and this was the only posture
-    surface that could not.
+    actually read from -- `done` or `capped`. It used to be dropped on the
+    floor, so a branch whose last analysis stopped early presented its
+    PARTIAL posture as a finished one; every other surface that shows a
+    capped read already says so. `latest_state` is the newest attempt's own
+    state on top of that, so a fresh failure AFTER a finished posture is
+    visible too instead of hiding behind the older success. `analysis_id`
+    is the finished analysis behind `open` (the row's own drill-down);
+    `sha` is the commit the newest attempt read -- recorded by the analysis
+    at start, not read from git now.
     """
     out = []
     # `MAX(id) DESC` as the tiebreak, not just `last DESC`: two branches of the
@@ -813,17 +827,27 @@ def branch_rows(conn, project):
     # orders `started DESC, id DESC` rather than `started DESC` alone.
     for r in conn.execute(
             "SELECT branch, MAX(started) last, COUNT(*) n FROM analysis"
-            " WHERE project=? AND state IN ('done','capped')"
+            " WHERE project=?"
             " GROUP BY branch ORDER BY last DESC, MAX(id) DESC", (project,)):
         # Fetched once and handed to `posture`, rather than letting it run the
         # identical `_latest_finished` query a second time for the same row --
         # exactly what `default_branch_posture` already does with its own.
         latest = _latest_finished(conn, project, r["branch"])
+        newest = conn.execute(
+            "SELECT id, state, started, commit_sha FROM analysis"
+            " WHERE project=? AND branch=? ORDER BY id DESC LIMIT 1",
+            (project, r["branch"])).fetchone()
         out.append({"branch": r["branch"], "last_analysis": r["last"],
                     "analyses": r["n"],
+                    "last_finished": (latest or {}).get("started", 0),
                     "state": (latest or {}).get("state", ""),
-                    "open": posture(conn, project, r["branch"], latest=latest),
-                    "trend": trend(conn, project, r["branch"])})
+                    "analysis_id": (latest or {}).get("id"),
+                    "latest_state": newest["state"],
+                    "sha": newest["commit_sha"] or "",
+                    "open": (posture(conn, project, r["branch"], latest=latest)
+                             if latest else None),
+                    "trend": (trend(conn, project, r["branch"])
+                              if latest else [])})
     return out
 
 
