@@ -23,7 +23,8 @@ import { bindPage, $, iconLabel, CC, projById } from "./page.js";
 import { SEC_PROFILES, SEV_ORDER } from "./vocabulary.js";
 import { secState } from "./state.js";
 import { secRenderIndex, secLoadIndex } from "./index-screen.js";
-import { secBack, secEnter, secLeave, secSyncScope, secInitLaunchCombos, secInitFindBar } from "./analysis.js";
+import { secBack, secEnter, secLeave, secSyncScope, secInitLaunchCombos, secInitFindBar,
+         wireLaunchDialog } from "./analysis.js";
 import { secAnalyse, secDownload } from "./actions.js";
 import { wireReasonDialog } from "./reason.js";
 import { secSwitchProjectTab, secOpenProject, secCurrentProjectTab } from "./project-screen.js";
@@ -44,6 +45,10 @@ function init(cc){
   bindPage(cc);
   wireReasonDialog();
   iconLabel($("sr-halo"), "shield");
+  // <dialog id="seclaunch">'s own halo -- static, unlike sec-act-finding's
+  // (activity-screen.js), which is re-set on every open because ITS icon
+  // depends on what it is showing; this dialog always means the same thing.
+  iconLabel($("seclaunch-halo"), "activity");
   // The breadcrumb's own static first crumb (bin/dashboard.html's own
   // #sec-crumbs) -- plain text and its own click, wired once like every
   // other fixed label/listener in this function; #sec-title beside it is
@@ -124,6 +129,11 @@ function init(cc){
   // the equivalent behaviour -- "pick a repo, reload its branches", "choosing
   // from the list overrules the typed field" -- as each combo's own onPick.
   secInitLaunchCombos();
+  // <dialog id="seclaunch">'s own Cancel button (Runs tab parity pass 2) --
+  // wired once, at boot, exactly like the launch combos just above it now
+  // lives inside. Escape needs no listener of its own; see wireLaunchDialog's
+  // own comment (analysis.js).
+  wireLaunchDialog();
   // The Runs tab's own Search/Category/Filters bar (#sec-find-bar) -- wired
   // once, at boot, exactly like the launch combos just above; secOpen()
   // only ever resets it per project (secResetFindBar, analysis.js).

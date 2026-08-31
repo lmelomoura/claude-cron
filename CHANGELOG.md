@@ -19,6 +19,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Runs tab parity pass 2: the four remaining gaps between the Runs tab and
+  ProjectRuns.png, closed.** The repo/branch/profile/Analyse strip that used
+  to sit open above the two columns — never pictured in the mockup — is now
+  a dialog (`seclaunch`, filed in the render-contract's own `FORM_DIALOGS`
+  list) opened by a compact "Analyse" button in the "Analysis runs" card's
+  own title row; same combos, same ids, same `secAnalyse` op and its pinned
+  `test_an_analysis_is_only_ever_started_through_its_own_op`, closing itself
+  on a successful launch and staying open on a refusal, the same convention
+  `#projmodal`'s own Save button already follows. The selected run's own
+  card no longer draws an empty rounded box above "Run #N" — `#sec-status`'s
+  "nothing to show yet" placeholder rendered regardless of content, the same
+  `[hidden]`-vs-author-`display` trap `.secfield`/`.secdl`/`.warnline` were
+  already told to respect, `.secstat` was not — or the Jobs-board's own
+  accent border (missing the `.secpj-plaincard` reset its two sibling cards
+  already carry); its spend now lives in the meta grid as a sixth, labelled
+  "Cost" cell instead of dangling, unlabelled, under the Profile pill. The
+  runs list's own table no longer forces a horizontal scrollbar at every
+  viewport width: its card asked for 380px while the table demanded a
+  420px floor, a permanent overflow regardless of window size — the card is
+  now a non-shrinking 450px (so the selected run's own flexible card can
+  no longer squeeze it back down under pressure), and the table's own floor
+  is a measured 400px, its "Findings recorded" header now free to wrap
+  rather than clip and reopen the same gap from the other side.
+
 - **The project screen's shared header and its Runs tab now match the
   approved mockup: a breadcrumb, a name/badge/description row, and three
   columns instead of one long list over a single detail pane.** The old

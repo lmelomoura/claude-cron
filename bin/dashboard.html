@@ -429,79 +429,30 @@ document.documentElement.dataset.theme =
           <div class="pane" id="sec-pj-overview"></div>
 
           <div class="pane" id="sec-pj-runs" hidden>
-            <!-- Starting a new analysis: repo/branch/profile + Analyse,
-                 unchanged from before this task (secInitLaunchCombos/
-                 secLoadBranches/secScope in analysis.js, secAnalyse in
-                 actions.js). The Runs mockup this task rebuilds against does
-                 not depict this bar at all -- its place here, a thin strip
-                 above the three columns rather than inside either one, is
-                 this task's own call, named in its report rather than
-                 silently dropped: starting an analysis is surviving
-                 function, and the mockup's silence about it is not an
-                 instruction to remove it. -->
-            <div class="secbar">
-              <!-- Only shown for a project that declares several repos: with one
-                   checkout there is nothing to choose between. sec-repo/
-                   sec-branch/sec-profile (Phase 4 Task 5) are the house combo,
-                   ed-perm's exact shape (see that field's own comment) --
-                   static markup, dynamic options: secInitLaunchCombos()
-                   (ui/security/analysis.js) wires them at boot, secOpen() and
-                   secLoadBranches() feed each combo's own .set(value, options)
-                   whenever a project opens or its repo changes, exactly where
-                   this used to call secFill() on a bare <select>. Every reader
-                   of $("sec-repo").value etc. (secScope, secAnalyse, the
-                   branches fetch) is untouched -- the hidden input keeps the
-                   original id. -->
-              <div class="secfield" id="sec-repo-field" hidden>
-                <span>Repo</span>
-                <div class="combo" id="sec-repo-combo">
-                  <button type="button" class="combo-trigger" id="sec-repo-trigger" aria-haspopup="listbox" aria-expanded="false">
-                    <span class="combo-val" id="sec-repo-val"></span>
-                    <span class="combo-caret"></span>
-                  </button>
-                  <div class="combo-pop" id="sec-repo-pop" hidden>
-                    <input type="text" class="combo-search" id="sec-repo-search" placeholder="Search repos…" autocomplete="off">
-                    <ul class="combo-list" id="sec-repo-opts" role="listbox"></ul>
-                  </div>
-                  <input type="hidden" id="sec-repo">
-                </div>
-              </div>
-              <div class="secfield">
-                <span>Branch</span>
-                <div class="combo" id="sec-branch-combo">
-                  <button type="button" class="combo-trigger" id="sec-branch-trigger" aria-haspopup="listbox" aria-expanded="false">
-                    <span class="combo-val" id="sec-branch-val"></span>
-                    <span class="combo-caret"></span>
-                  </button>
-                  <div class="combo-pop" id="sec-branch-pop" hidden>
-                    <input type="text" class="combo-search" id="sec-branch-search" placeholder="Search branches…" autocomplete="off">
-                    <ul class="combo-list" id="sec-branch-opts" role="listbox"></ul>
-                  </div>
-                  <input type="hidden" id="sec-branch">
-                </div>
-              </div>
-              <!-- The picker lists what the checkout has; this is for a branch it
-                   does not — one pushed a minute ago, or one only origin knows. -->
-              <label class="secfield">
-                <span>…or type one</span>
-                <input id="sec-branch-other" placeholder="branch name" autocomplete="off" spellcheck="false">
-              </label>
-              <div class="secfield">
-                <span>Profile</span>
-                <div class="combo" id="sec-profile-combo">
-                  <button type="button" class="combo-trigger" id="sec-profile-trigger" aria-haspopup="listbox" aria-expanded="false">
-                    <span class="combo-val" id="sec-profile-val">Standard</span>
-                    <span class="combo-caret"></span>
-                  </button>
-                  <div class="combo-pop" id="sec-profile-pop" hidden>
-                    <input type="text" class="combo-search" id="sec-profile-search" placeholder="Search profiles…" autocomplete="off">
-                    <ul class="combo-list" id="sec-profile-opts" role="listbox"></ul>
-                  </div>
-                  <input type="hidden" id="sec-profile">
-                </div>
-              </div>
-              <button class="btn primary" id="sec-run">Analyse</button>
-            </div>
+            <!-- Starting a new analysis: repo/branch/profile + Analyse. This
+                 group used to sit here, unwrapped, as a thin strip above the
+                 three columns below -- ProjectRuns.png does not depict it at
+                 all, and a second look at the mockup's own crop (Runs tab
+                 parity pass 2) called that placement out directly: the
+                 function survives, moved whole into its own dialog, id
+                 `seclaunch` (grouped further down the page with this
+                 bundle's other dialogs, secreason/sec-act-finding -- its
+                 opening tag is deliberately NOT quoted here as literal
+                 markup: test_the_poll_never_reaches_into_a_form_dialog
+                 locates that dialog by the first plain-text occurrence of
+                 its own `<dialog id="…">` string in the page, and a comment
+                 up here echoing it verbatim would be found FIRST, well
+                 before the real tag, and made the test scan everything
+                 between this comment and the next unrelated dialog's own
+                 close instead). Same elements, same ids, so
+                 secInitLaunchCombos/secLoadBranches/secScope (analysis.js)
+                 and secAnalyse (actions.js), and the pinned
+                 test_an_analysis_is_only_ever_started_through_its_own_op,
+                 all stay exactly as they were. Opened by a compact "Analyse"
+                 button in this card's own title row instead
+                 (secRenderProjectRuns, project-screen.js -- the house
+                 card-header-action slot "View all analyses" and "View all"
+                 already occupy elsewhere on this bundle). -->
 
             <!-- The mockup's own three columns -- the third (the donut, the
                  categories, recent activity) is #sec-pj-side below, a flex
@@ -536,8 +487,20 @@ document.documentElement.dataset.theme =
                      does, not the checklist -- see that id's own comment in
                      project-screen.js for why the two numbers are allowed to
                      differ from sec-summary below them). -->
-                <div class="card secpj-runcard">
-                  <div class="secstat" id="sec-status"></div>
+                <div class="card secpj-plaincard secpj-runcard">
+                  <!-- `hidden` by default -- this box is ONLY the "nothing to
+                       show yet" message (loading, no branch picked, never
+                       analysed on this branch); secPaint (analysis.js) leaves
+                       it hidden whenever an analysis IS on screen, which is
+                       every state ProjectRuns.png itself draws. Before this
+                       fix `.secstat`'s own background/border/radius/padding
+                       (pages.css) rendered regardless of content -- the
+                       author `display:flex` on that class outranks the UA's
+                       `[hidden]{display:none}` the same way `.secfield`/
+                       `.secdl`/`.warnline` already had to be told to respect
+                       it explicitly -- so an analysis in view drew an empty
+                       rounded box above Run #N with nothing in it. -->
+                  <div class="secstat" id="sec-status" hidden></div>
                   <div id="sec-run-head"></div>
                   <div id="sec-run-meta"></div>
                   <div class="warnline bad" id="sec-incomplete" hidden></div>
@@ -1197,6 +1160,86 @@ document.documentElement.dataset.theme =
     <div class="spacer"></div>
     <button type="button" class="btn ghost" id="sr-cancel">Cancel</button>
     <button type="button" class="btn primary" id="sr-ok">Record</button>
+  </div>
+</dialog>
+
+<!-- Starting a new analysis of the project on screen: the repo/branch/
+     profile picker and the Analyse button the Runs tab's own "Analysis
+     runs" card used to draw as an always-open strip above its two columns
+     (Runs tab parity pass 2 -- ProjectRuns.png never pictured that strip).
+     Opened by the compact "Analyse" button in that card's own title row
+     (secOpenLaunch, analysis.js; secRenderProjectRuns, project-screen.js).
+     Every id below is unchanged from the strip it replaces: sec-repo/
+     sec-branch/sec-profile are still the house combo (Phase 4 Task 5),
+     still wired once by secInitLaunchCombos, still fed by secOpen()/
+     secLoadBranches() exactly as before; sec-branch-other keeps its own
+     `change` listener (index.js); sec-run keeps its id and its one
+     `addEventListener("click", secAnalyse)` (index.js) -- the pinned
+     test_an_analysis_is_only_ever_started_through_its_own_op reads
+     secAnalyse's own body, not this markup, and neither moved. This is a
+     FORM_DIALOG (the free-text branch field is exactly the kind of
+     mid-typing state that list exists to protect) -- filed there below,
+     and in the render-contract's own dialog-completeness test. -->
+<dialog id="seclaunch">
+  <div class="dlg-h"><div class="halo b-accent" id="seclaunch-halo"></div>
+    <div class="dlg-ht"><span>Analyse</span>
+      <span class="dlg-sub">Pick a branch and a profile, then start a new analysis of this project.</span></div></div>
+  <div class="dlg-b">
+    <!-- Only shown for a project that declares several repos: with one
+         checkout there is nothing to choose between. -->
+    <div class="secfield" id="sec-repo-field" hidden>
+      <span>Repo</span>
+      <div class="combo" id="sec-repo-combo">
+        <button type="button" class="combo-trigger" id="sec-repo-trigger" aria-haspopup="listbox" aria-expanded="false">
+          <span class="combo-val" id="sec-repo-val"></span>
+          <span class="combo-caret"></span>
+        </button>
+        <div class="combo-pop" id="sec-repo-pop" hidden>
+          <input type="text" class="combo-search" id="sec-repo-search" placeholder="Search repos…" autocomplete="off">
+          <ul class="combo-list" id="sec-repo-opts" role="listbox"></ul>
+        </div>
+        <input type="hidden" id="sec-repo">
+      </div>
+    </div>
+    <div class="secfield">
+      <span>Branch</span>
+      <div class="combo" id="sec-branch-combo">
+        <button type="button" class="combo-trigger" id="sec-branch-trigger" aria-haspopup="listbox" aria-expanded="false">
+          <span class="combo-val" id="sec-branch-val"></span>
+          <span class="combo-caret"></span>
+        </button>
+        <div class="combo-pop" id="sec-branch-pop" hidden>
+          <input type="text" class="combo-search" id="sec-branch-search" placeholder="Search branches…" autocomplete="off">
+          <ul class="combo-list" id="sec-branch-opts" role="listbox"></ul>
+        </div>
+        <input type="hidden" id="sec-branch">
+      </div>
+    </div>
+    <!-- The picker lists what the checkout has; this is for a branch it
+         does not — one pushed a minute ago, or one only origin knows. -->
+    <label class="secfield">
+      <span>…or type one</span>
+      <input id="sec-branch-other" placeholder="branch name" autocomplete="off" spellcheck="false">
+    </label>
+    <div class="secfield">
+      <span>Profile</span>
+      <div class="combo" id="sec-profile-combo">
+        <button type="button" class="combo-trigger" id="sec-profile-trigger" aria-haspopup="listbox" aria-expanded="false">
+          <span class="combo-val" id="sec-profile-val">Standard</span>
+          <span class="combo-caret"></span>
+        </button>
+        <div class="combo-pop" id="sec-profile-pop" hidden>
+          <input type="text" class="combo-search" id="sec-profile-search" placeholder="Search profiles…" autocomplete="off">
+          <ul class="combo-list" id="sec-profile-opts" role="listbox"></ul>
+        </div>
+        <input type="hidden" id="sec-profile">
+      </div>
+    </div>
+  </div>
+  <div class="dlg-f">
+    <div class="spacer"></div>
+    <button type="button" class="btn ghost" id="seclaunch-cancel">Cancel</button>
+    <button class="btn primary" id="sec-run">Analyse</button>
   </div>
 </dialog>
 
@@ -2530,8 +2573,9 @@ function renderRetained(){
    there with it; nothing in this file still reads any of them. */
 
 /* ------------------------------------------------------ the dialog contract
-   Six dialogs -- editor, projmodal, profmodal, confirm, secreason, fsmodal --
-   hold a form a person may be mid-typing into. Each is mounted once in this
+   Seven dialogs -- editor, projmodal, profmodal, confirm, secreason,
+   fsmodal, seclaunch -- hold a form a person may be mid-typing into. Each
+   is mounted once in this
    page's static markup, filled by its own "open" function, and never
    touched again until it closes: render() below, and everything it calls
    directly, must never read one of their fields -- otherwise a keystroke

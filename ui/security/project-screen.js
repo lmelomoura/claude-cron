@@ -11,14 +11,18 @@
    Runs tab's own "Analysis runs" table and its selected run's shell (the
    Run #N head and the "Findings recorded" strip -- see secRenderRunHead/
    secRenderRunRecorded's own comments for why those two specifically live
-   here rather than in analysis.js), and the sidebar. It deliberately does
-   NOT own the repo/branch/profile picker, the Analyse button, or the
-   single-analysis detail proper (the meta grid, the incomplete/coverage/
-   live-run notices, the search/category/state Filters bar, the findings
-   list with its decision controls) -- that whole flow already works, is
-   exercised by tests/test_page_contract.py, and stays exactly as it is in
+   here rather than in analysis.js), the sidebar, and (Runs tab parity pass
+   2) the compact "Analyse" button that OPENS <dialog id="seclaunch">, in the
+   "Analysis runs" card's own title row. It deliberately does NOT own the
+   repo/branch/profile picker INSIDE that dialog, or the single-analysis
+   detail proper (the meta grid, the incomplete/coverage/live-run notices,
+   the search/category/state Filters bar, the findings list with its
+   decision controls) -- that whole flow already works, is exercised by
+   tests/test_page_contract.py, and stays exactly as it is in
    ui/security/analysis.js, ui/security/actions.js, ui/security/history.js
-   and ui/security/reason.js, just re-skinned into the mockup's own card.
+   and ui/security/reason.js, just moved from an always-open strip into a
+   dialog (secLaunchButton below calls analysis.js's own secOpenLaunch,
+   nothing more than `$("seclaunch").showModal()`).
    Clicking a row in the analyses table below calls the same
    secShowAnalysis() the old "#7" buttons in "Earlier analyses of this
    branch" always did -- see that call's own comment for why it does not
@@ -35,7 +39,7 @@ import { SEC_STATES, SEC_STATE_LABEL, SEC_STATE_HELP, SEC_NEVER,
 import { secState } from "./state.js";
 import { secIndexPosturePills, secIndexDonut, secIndexDonutSvg, secIndexDonutLegend,
          secIndexCategories, secCappedScopeNote, secIndexRunStatusPill } from "./index-screen.js";
-import { secOpen, secShowAnalysis } from "./analysis.js";
+import { secOpen, secShowAnalysis, secOpenLaunch } from "./analysis.js";
 import { secDownloadReport } from "./actions.js";
 import { secRunFor } from "./history.js";
 import { secRenderProjectBranches } from "./branches-tab.js";
@@ -411,11 +415,37 @@ function secRenderProjectRuns(payload){
   const card = secEl("div", "card secpj-plaincard secpj-runslistcard");
   const cardHead = secEl("div", "secpj-cardhead");
   cardHead.appendChild(secEl("h3", null, "Analysis runs"));
+  // The launcher, moved here from the always-open strip the Runs tab used to
+  // draw above its two columns (Runs tab parity pass 2 -- ProjectRuns.png
+  // never pictured that strip): the house card-header-action slot, the same
+  // one secProjectActivity's "View all" and secViewAllAnalysesButton's "View
+  // all analyses" already occupy elsewhere on this bundle. `.btn.primary`,
+  // not `.btn.ghost` like those two -- this button starts a run rather than
+  // navigating to a read-only list, the same weight `#sec-run` itself always
+  // carried as the strip's own one primary action.
+  cardHead.appendChild(secLaunchButton());
   card.appendChild(cardHead);
   const runs = (payload.tabs || {}).runs || [];
   card.appendChild(secRunsFilters(runs));
   card.appendChild(secRunsTable(runs));
   host.appendChild(card);
+}
+
+/* Opens <dialog id="seclaunch"> (bin/dashboard.html), which now holds the
+   exact repo/branch/profile/Analyse controls the old strip did -- same
+   elements, same ids, so secOpenLaunch (analysis.js) is nothing more than
+   `$("seclaunch").showModal()`: every combo already stays in sync with the
+   project on screen regardless of the dialog's own open/closed state
+   (secOpen/secLoadBranches/secSyncScope all run whether or not anybody has
+   ever opened this dialog), so there is nothing to re-populate on open. */
+function secLaunchButton(){
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn primary";
+  btn.title = "Start a new analysis of this project";
+  btn.appendChild(document.createTextNode("Analyse"));
+  btn.onclick = () => secOpenLaunch();
+  return btn;
 }
 
 function secRunsFilters(runs){
@@ -435,7 +465,17 @@ function secRunsFilters(runs){
     const chip = secEl("button", "secchip" + (n ? "" : " zero")
       + (secRunsFilter === state ? " on" : ""));
     chip.type = "button";
-    chip.appendChild(secEl("span", null, state));
+    // Title Case ("Running"/"Done"/"Capped"/"Failed"), matching the mockup's
+    // own chip row -- ANALYSIS_END_STATES itself is lowercase (it is also a
+    // URL-safe filter value, read back by this same chip's onclick), and a
+    // bare `state` used to print that raw lowercase word here. Not
+    // SEC_RUN_STATUS_LABEL (index-screen.js): that map spells "done" as
+    // "Completed" for the STATUS pill a few pixels to the right, a
+    // deliberately friendlier word for a cell whose whole job is naming one
+    // run's state; this chip is a COUNT bucket, and the mockup's own pixels
+    // spell that same bucket "Done", not "Completed" -- a second, shorter
+    // label for the identical value, not a second copy of the pill's map.
+    chip.appendChild(secEl("span", null, state.charAt(0).toUpperCase() + state.slice(1)));
     chip.appendChild(secEl("span", "n", String(n)));
     chip.onclick = () => { secRunsFilter = state; secRenderProjectRuns(secProjectCache); };
     wrap.appendChild(chip);

@@ -5,7 +5,7 @@
    project grouping), the pulse panel and its loop band, job cards and
    everything inside one (.card, .cardline, .spark, .actions, .menu-pop),
    every dialog (#editor, #logmodal, #projmodal, #confirm, #profmodal,
-   #fsmodal, #sec-act-finding, .dlg-*, the wizard tabs, the markdown editor,
+   #fsmodal, #sec-act-finding, #seclaunch, .dlg-*, the wizard tabs, the markdown editor,
    the combobox, the terminal, profile, security and the security-project/
    security-index screens), the accessibility focus-ring floor, and every
    @media/@container query in the sheet -- responsive tweaks are kept here
@@ -317,15 +317,36 @@
    clipping into `.table-scroll`'s own horizontal scrollbar below it. */
 /* Down from eight columns to four (Phase: Runs tab rebuild) -- Profile/
    Branch/Commit/Duration moved into the selected run's own meta grid; see
-   SEC_RUNS_COLS's own comment (project-screen.js). min-width follows: the
-   old figure sized a table that needed to fit eight columns' worth of real
-   content without truncating, this one only ever holds four, in a column
-   that is itself narrower than the old single-column layout ever was. */
-.secpj-runstable{min-width:420px}
-.secpj-runstable th:nth-child(1){width:14%}   /* Run               */
-.secpj-runstable th:nth-child(2){width:20%}   /* Status            */
-.secpj-runstable th:nth-child(3){width:38%}   /* Findings recorded */
-.secpj-runstable th:nth-child(4){width:28%}   /* Date              */
+   SEC_RUNS_COLS's own comment (project-screen.js).
+
+   min-width and the four widths below were retuned in Runs tab parity pass
+   2, against real measurements in a fresh preview tab rather than eyeballed:
+   with `th{white-space:nowrap}` (this file's own base rule, above) a header
+   too wide for its column clips silently, so "Findings recorded" (123px at
+   this table's own header font, uppercase, before either column padding)
+   used to be the single biggest width this table needed -- bigger than any
+   BODY content it ever has to show, "64C 4H 3M 0L" included (92px, the
+   widest severity sub-line this project's own real data produces). That
+   phrase is also the one header on this table with an actual space in it,
+   so the `white-space:normal` below lets it break there ("Findings" /
+   "recorded") instead, which drops its OWN minimum back to its longer single
+   word (64px) -- at which point the four columns' real floor, header or
+   body whichever is bigger, plus this table's own 14px-a-side cell padding,
+   comes to Run 70px + Status 110px (the "Completed" pill, this table's own
+   longest) + Findings 120px (now body-driven) + Date 97px (its longer
+   half, "8:20:47 AM", on its own line) = 397px -- hence 400px, not the
+   420px component with no header able to wrap ever needed. The OTHER half
+   of this fix is .secpj-runsleft (above): a min-width only turns clipping
+   into `.table-scroll`'s own horizontal scrollbar (see this file's earlier
+   comment) if the column offering this table its width is wide enough to
+   ask for less than that scrollbar in the first place, which 380px+16px-ish
+   of card padding never was. */
+.secpj-runstable{min-width:400px}
+.secpj-runstable th{white-space:normal}
+.secpj-runstable th:nth-child(1){width:17%}   /* Run               */
+.secpj-runstable th:nth-child(2){width:28%}   /* Status            */
+.secpj-runstable th:nth-child(3){width:30%}   /* Findings recorded */
+.secpj-runstable th:nth-child(4){width:25%}   /* Date              */
 /* Nine columns now (Phase 4, AllFindings.png) -- Location and Analysis run
    are new, Category/Branch/First seen narrow to make room, and "State"
    becomes "Status" (SEC_FIND_TABLE_COLS's own label, findings-screen.js) --
@@ -1032,6 +1053,24 @@ textarea:focus,.dlg-b input:focus,.dlg-b select:focus{outline:none;border-color:
 #sec-act-finding[open]{display:flex;flex-direction:column;height:min(88vh,760px)}
 #sec-act-finding .dlg-h,#sec-act-finding .dlg-f{flex:none}
 #sec-act-finding .dlg-b{flex:1 1 auto;min-height:0;overflow-y:auto}
+/* The Runs tab's own launcher (Runs tab parity pass 2), moved from an
+   always-open .secbar strip into a short dialog -- a form, not a wide
+   read-only surface, so it takes #confirm/#secreason's own compact width
+   rather than #sec-act-finding's. .secfield already lays out label-over-
+   control in a column (`display:flex;flex-direction:column`, this file's
+   own launcher-bar rule above); what only made sense in that horizontal bar
+   was its own width caps (max-width:280px on the combo/input, tuned so four
+   fields fit one row) and, for the "…or type one" field specifically, that
+   it is a <label> -- which .dlg-b's own generic `label{display:block;
+   margin:...}` rule (this file, above) outranks .secfield's `display:flex`
+   on specificity alone. Both reset here, scoped to this one dialog, rather
+   than in .secfield itself, which the Activity screen's own toolbar (the
+   OTHER user of that class, and of .secbar) still wants exactly as it was. */
+#seclaunch{max-width:min(420px,92vw);width:420px}
+#seclaunch .dlg-b{display:flex;flex-direction:column;gap:14px}
+#seclaunch .secfield{display:flex;flex-direction:column;gap:5px;margin:0}
+#seclaunch .secfield[hidden]{display:none}
+#seclaunch .secfield .combo,#seclaunch .secfield input{max-width:none;width:100%}
 .fs-cur{margin:9px 20px 2px;padding:8px 11px;font:12px ui-monospace,"SF Mono",Menlo,monospace;
   background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--muted);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1360,10 +1399,12 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secbar{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;margin:0 0 14px}
 .secfield{display:flex;flex-direction:column;gap:5px;min-width:0}
 /* An author `display` outranks the UA sheet's [hidden] — the same trap the nav
-   items hit. Three things here are hidden until they have something to say
+   items hit. Four things here are hidden until they have something to say
    (the repo picker on a single-repo project, the coverage note, the download
-   row before there is an analysis), and without this they all show up empty. */
-.secfield[hidden],.secdl[hidden],.warnline[hidden]{display:none}
+   row before there is an analysis, and — Runs tab parity pass 2 — the "nothing
+   selected yet" status box once an analysis IS on screen), and without this
+   they all show up empty. */
+.secfield[hidden],.secdl[hidden],.warnline[hidden],.secstat[hidden]{display:none}
 /* An INCOMPLETE analysis is not a warning about one detail of the report -- it
    is a warning about the whole of it, so it reads hotter than the coverage
    note below it. */
@@ -1516,8 +1557,28 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secpj-runslayout{display:flex;gap:16px;align-items:flex-start;margin-top:14px}
 /* The mockup's proportions: the runs LIST is a fixed-width column and the
    selected run's card takes every spare pixel -- growing the list just
-   stretches four narrow columns of numbers. */
-.secpj-runsleft{flex:0 1 380px;min-width:300px}
+   stretches four narrow columns of numbers. 380px (Runs tab parity pass 1)
+   was too narrow for its own table: .secpj-runstable's real content needs
+   ~400px (measured live -- see that rule's own comment) and this card's
+   padding + border already ate 38-40px of any width offered to it, so the
+   table overflowed its card's own inner width by design, every time,
+   regardless of viewport -- a permanent horizontal scrollbar, not a
+   narrow-viewport edge case. Widened to fit it with a little to spare.
+
+   flex-SHRINK 0, not 1 (Runs tab parity pass 2's own second finding): this
+   comment already called the list column "fixed-width", but `flex:0 1
+   380px`'s middle `1` means shrink -- and at this pane's own real width
+   (measured live, a 1550px window: .secpj-runslayout offers ~905px, while
+   450+480+16px gap asks for 946px), the flexbox algorithm shrank BOTH
+   columns to make the difference fit, this one down to 430px -- 20px short
+   of the 450px the table above needed room for, reopening the exact
+   scrollbar the width bump was meant to close. `0 0` makes the list truly
+   fixed, so the selected run's card (already flex-grow:1) is the one that
+   absorbs a real width deficit down to ITS OWN min-width floor, exactly the
+   "takes every spare pixel" this comment already asked for -- min-width
+   here is now only a floor against some future ancestor forcing a narrower
+   box, not a shrink target the algorithm reaches for on ordinary layouts. */
+.secpj-runsleft{flex:0 0 450px;min-width:340px}
 .secpj-runsmid{flex:1 1 480px;min-width:340px}
 @media (max-width:900px){
   .secpj-runslayout{flex-direction:column}
@@ -1553,7 +1614,6 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   color:var(--muted);margin-bottom:4px}
 .secrun-metaval{font-size:13px;font-weight:650;color:var(--ink)}
 .secrun-metaval.mono{font:650 12.5px ui-monospace,"SF Mono",Menlo,monospace}
-.secrun-spend{font-size:11.5px;color:var(--muted);margin:6px 0 0}
 .secrun-notice{font-size:12px;color:var(--muted);margin:10px 0 0;line-height:1.55}
 .secrun-notice.warn{color:var(--warn)}
 

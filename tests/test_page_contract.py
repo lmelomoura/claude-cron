@@ -6542,7 +6542,12 @@ def test_the_job_disabled_pill_and_the_launchd_off_pill_use_different_classes():
 # Phase 3 is about to restyle these dialogs; this is what turns the accident
 # into a rule that moving code cannot break silently.
 
-FORM_DIALOGS = ("editor", "projmodal", "profmodal", "confirm", "secreason", "fsmodal")
+FORM_DIALOGS = ("editor", "projmodal", "profmodal", "confirm", "secreason", "fsmodal",
+                # seclaunch (Runs tab parity pass 2): the repo/branch/profile
+                # launcher, moved from an always-open strip on the Runs tab
+                # into its own dialog -- the free-text branch field is
+                # exactly the mid-typing state this tuple exists to protect.
+                "seclaunch")
 
 # wtmodal and logmodal are deliberately NOT in the list above. Both are
 # read-only surfaces that live-update BY DESIGN: logmodal tails a running

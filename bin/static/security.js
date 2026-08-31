@@ -361,6 +361,12 @@
     secProfileCombo = createCombo({ id: "sec-profile", allowNone: false, def: "standard" });
     secProfileCombo.set("standard", SEC_PROFILES.map(secProfileOpt));
   }
+  function secOpenLaunch() {
+    $("seclaunch").showModal();
+  }
+  function wireLaunchDialog() {
+    $("seclaunch-cancel").addEventListener("click", () => $("seclaunch").close());
+  }
   var secTimer = null;
   function secStopPoll() {
     if (secTimer) {
@@ -516,6 +522,7 @@
     const box = $("sec-status");
     box.textContent = "";
     box.appendChild(secEl("span", null, text));
+    box.hidden = false;
   }
   function secRenderRunMeta(a) {
     const host = $("sec-run-meta");
@@ -541,8 +548,10 @@
       a.ended && a.started ? fmtDur(Math.max(0, a.ended - a.started)) : running ? "running\u2026" : "\u2014"
     )));
     grid.appendChild(cell("Date", document.createTextNode(fmtWhen(a.started))));
+    grid.appendChild(cell("Cost", document.createTextNode(
+      a.spend_usd ? money(a.spend_usd) : "\u2014"
+    )));
     host.appendChild(grid);
-    if (a.spend_usd) host.appendChild(secEl("div", "secrun-spend", money(a.spend_usd)));
   }
   function secRenderRunNotice(a) {
     const host = $("sec-run-notice");
@@ -577,9 +586,11 @@
     secPaintRunButton();
     secSyncPoll();
     const box = $("sec-status");
+    box.hidden = true;
     box.textContent = "";
     secRefreshRunPanels();
     if (!a) {
+      box.hidden = false;
       box.appendChild(secEl(
         "span",
         null,
@@ -843,6 +854,7 @@
       });
       if (!ok) return;
       toast("Analysis started", false, "shield");
+      $("seclaunch").close();
       secState.branch = s.branch;
       secState.repo = s.repo;
       await secReload();
@@ -2617,11 +2629,21 @@
     const card = secEl("div", "card secpj-plaincard secpj-runslistcard");
     const cardHead = secEl("div", "secpj-cardhead");
     cardHead.appendChild(secEl("h3", null, "Analysis runs"));
+    cardHead.appendChild(secLaunchButton());
     card.appendChild(cardHead);
     const runs = (payload.tabs || {}).runs || [];
     card.appendChild(secRunsFilters(runs));
     card.appendChild(secRunsTable(runs));
     host.appendChild(card);
+  }
+  function secLaunchButton() {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn primary";
+    btn.title = "Start a new analysis of this project";
+    btn.appendChild(document.createTextNode("Analyse"));
+    btn.onclick = () => secOpenLaunch();
+    return btn;
   }
   function secRunsFilters(runs) {
     const wrap = secEl("div", "secchips");
@@ -2642,7 +2664,7 @@
       const n = counts[state] || 0;
       const chip = secEl("button", "secchip" + (n ? "" : " zero") + (secRunsFilter === state ? " on" : ""));
       chip.type = "button";
-      chip.appendChild(secEl("span", null, state));
+      chip.appendChild(secEl("span", null, state.charAt(0).toUpperCase() + state.slice(1)));
       chip.appendChild(secEl("span", "n", String(n)));
       chip.onclick = () => {
         secRunsFilter = state;
@@ -3907,6 +3929,7 @@
     bindPage(cc);
     wireReasonDialog();
     iconLabel($("sr-halo"), "shield");
+    iconLabel($("seclaunch-halo"), "activity");
     $("sec-crumb-security").textContent = "Security";
     $("sec-crumb-security").addEventListener("click", () => secBack());
     iconLabel($("sec-back"), "cleft", "All projects");
@@ -3946,6 +3969,7 @@
     $("sec-dl-html").addEventListener("click", () => secDownload("html"));
     $("sec-dl-sbom").addEventListener("click", () => secDownload("sbom"));
     secInitLaunchCombos();
+    wireLaunchDialog();
     secInitFindBar();
     $("sec-branch-other").addEventListener("change", () => secSyncScope());
   }
@@ -3992,5 +4016,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 4f0d7426490c938d675ea3db732991fcc89d18bd0a0d2f980150cc31023b4bba */
-/* ui-sources: f8763970fdf5caa12f237669b9b3272eef119fa816c4ed0046c182cf330a34d9 */
+/* ui-bundle: a2e4e590f9cc2da711bd778f3565d20ee690d32c6dac47e769516625cbdba29e */
+/* ui-sources: 4c4f0a9ae92d553ace82938ab97d7e332d4dcb6a9fa97c1d7457f426da60bb15 */

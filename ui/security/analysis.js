@@ -45,6 +45,29 @@ export function secInitLaunchCombos(){
   secProfileCombo.set("standard", SEC_PROFILES.map(secProfileOpt));
 }
 
+/* Runs tab parity pass 2: the three combos above (and sec-branch-other, and
+   sec-run) used to sit in an always-open strip above the Runs tab's own two
+   columns; ProjectRuns.png never pictured that strip, so it moved whole into
+   <dialog id="seclaunch"> (bin/dashboard.html), opened by a compact "Analyse"
+   button in the "Analysis runs" card's own title row (secLaunchButton,
+   project-screen.js). Nothing to populate here on open: every combo above is
+   already kept in sync with the project on screen (secOpen/secLoadBranches/
+   secSyncScope all run regardless of whether this dialog has ever been
+   opened), so showing it is the whole function. */
+export function secOpenLaunch(){ $("seclaunch").showModal(); }
+
+/* Cancel closes with no side effect -- there is nothing to discard: this
+   dialog commits nothing on its own (Analyse does, through secAnalyse,
+   actions.js, wired directly to #sec-run by index.js exactly as before this
+   task), so unlike editor/projmodal's own Cancel there is no dirty state to
+   warn about. Escape needs no listener of its own for the same reason --
+   native <dialog> Escape-to-close is exactly right here, the same minimal
+   wiring wireActivityFindingDialog's own Close button already uses
+   (activity-screen.js). */
+export function wireLaunchDialog(){
+  $("seclaunch-cancel").addEventListener("click", () => $("seclaunch").close());
+}
+
 let secTimer = null;
 export function secStopPoll(){ if(secTimer){ clearInterval(secTimer); secTimer = null; } }
 export function secSyncPoll(){
@@ -291,14 +314,28 @@ export function secStatus(text){
   const box = $("sec-status");
   box.textContent = "";
   box.appendChild(secEl("span", null, text));
+  // `.secstat`'s own background/border/radius/padding (pages.css) render
+  // regardless of content -- an author `display:flex` on that class
+  // outranks the UA's own `[hidden]{display:none}`, the exact trap
+  // `.secfield`/`.secdl`/`.warnline` are already told to ignore -- so this
+  // box must be explicitly UNhidden every time it has something to say, not
+  // just cleared. secPaint (below) is the one place that hides it again,
+  // the moment an analysis is on screen and this message is not needed.
+  box.hidden = false;
 }
 
 /* The mockup's own meta grid under the Run #N head -- Profile (a pill),
-   Branch, Commit (short sha, mono), Duration, Date. Spend rides along as a
-   small trailing line the mockup's own five-cell grid has no room for
-   (nothing in this task's own file list asked for it to disappear, and a
-   figure this screen has always shown is not dropped silently just because
-   a mockup only had five columns of width to draw). */
+   Branch, Commit (short sha, mono), Duration, Date, and (Runs tab parity
+   pass 2) Cost as a sixth labelled cell alongside them. The mockup's own
+   sample run has no spend recorded, so its five-cell grid never had to draw
+   a sixth -- that is the mockup's data being incomplete, not an instruction
+   to drop a figure this screen has always shown (nothing in this task's own
+   file list asked for it to disappear); it used to ride along instead as an
+   unlabelled trailing line below the whole grid, which on screen read as
+   dangling text under whichever cell happened to sit at the same left edge
+   (Profile, the grid's first cell). Housed here, in the grid proper, with
+   the same "—" a run before this field existed already shows for Commit/
+   Duration, rather than a trailing line at all. */
 function secRenderRunMeta(a){
   const host = $("sec-run-meta");
   host.textContent = "";
@@ -320,8 +357,9 @@ function secRenderRunMeta(a){
     a.ended && a.started ? fmtDur(Math.max(0, a.ended - a.started))
                           : (running ? "running…" : "—"))));
   grid.appendChild(cell("Date", document.createTextNode(fmtWhen(a.started))));
+  grid.appendChild(cell("Cost", document.createTextNode(
+    a.spend_usd ? money(a.spend_usd) : "—")));
   host.appendChild(grid);
-  if(a.spend_usd) host.appendChild(secEl("div", "secrun-spend", money(a.spend_usd)));
 }
 
 /* The three transient messages secPaint's old #sec-status line used to
@@ -375,8 +413,14 @@ export function secPaint(){
   // branch picked, never analysed on this branch) -- the structured Run #N
   // head/meta grid/notices below all get their OWN hosts, built only when
   // an analysis actually exists, so this box takes no visual space once one
-  // does.
+  // does. `hidden`, not just cleared: `.secstat`'s own border/radius/padding
+  // (pages.css) paint regardless of content, so an empty-but-visible box
+  // rendered above Run #N on every one of the mockup's own states (an
+  // analysis is always on screen there) until this box started hiding
+  // itself the moment it has nothing to say, same as `.secfield`/`.secdl`/
+  // `.warnline` already do.
   const box = $("sec-status");
+  box.hidden = true;
   box.textContent = "";
   // secRefreshRunPanels (project-screen.js: the Runs table's own selection
   // highlight, the Run head, the "Findings recorded" strip and the right
@@ -387,6 +431,7 @@ export function secPaint(){
   // directly.
   secRefreshRunPanels();
   if(!a){
+    box.hidden = false;
     box.appendChild(secEl("span", null,
       secState.branch ? SEC_NEVER.branch : SEC_NEVER.pickBranch));
     $("sec-run-meta").textContent = "";

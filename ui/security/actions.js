@@ -19,6 +19,15 @@ export async function secAnalyse(){
                 repo: s.repo, branch: s.branch, profile: $("sec-profile").value});
     if(!ok) return;
     toast("Analysis started", false, "shield");
+    // Closed on SUCCESS only, never on a refusal above -- the same rule
+    // bin/dashboard.html's own saveProject/deleteProjectFromModal already
+    // follow for #projmodal: a validation refusal (an empty branch, a
+    // second analysis already running) leaves the dialog open with its own
+    // fields exactly as typed, so fixing them is the very next thing a
+    // reader does, not a fresh re-open. #sec-run lives inside
+    // <dialog id="seclaunch"> as of Runs tab parity pass 2; this is the one
+    // new line that dialog needed, since nothing closed it before.
+    $("seclaunch").close();
     secState.branch = s.branch; secState.repo = s.repo;
     // The deterministic phase writes in the agent's first seconds, so polling shows
     // secrets and CVEs within seconds while the SAST is still running.
