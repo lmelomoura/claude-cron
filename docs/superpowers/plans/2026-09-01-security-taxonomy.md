@@ -773,8 +773,18 @@ git commit -m "feat(security): renaming a rule carries its findings and decision
 ### Task 6: A classificação chega à leitura e ao report
 
 **Files:**
-- Modify: `bin/security/queries.py` (`checklist`, `finding_rows`), `bin/security/report.py` (`as_json`, `as_markdown`, `as_html`)
+- Modify: `bin/security/report.py` (`as_markdown`, `as_html`)
 - Test: `tests/security/test_queries.py`, `tests/security/test_report.py`
+
+> **Corrigido durante a execução:** este plano mandava alterar
+> `bin/security/queries.py` (`checklist`, `finding_rows`) e `as_json`. Nenhum
+> deles precisou de mudança: `ledger.findings_of` usa `SELECT *` e
+> `diff.classify` e `finding_rows` copiam a linha inteira com `dict(...)`, pelo
+> que as colunas novas já atravessam a camada de leitura; `as_json` já copia os
+> dicionários sem filtrar. O implementador verificou-o antes de obedecer e
+> escreveu testes de regressão a fixar esse comportamento, em vez de forçar uma
+> alteração desnecessária. As mudanças reais ficaram confinadas a
+> `as_markdown`/`as_html`.
 
 **Interfaces:**
 - Consumes: as colunas da Task 2.
