@@ -37,6 +37,12 @@ CREATE TABLE IF NOT EXISTS finding (
   severity TEXT NOT NULL, title TEXT NOT NULL,
   rationale TEXT NOT NULL DEFAULT '', remediation TEXT NOT NULL DEFAULT '',
   partial_note TEXT NOT NULL DEFAULT '',
+  -- The classification, derived from the rule name by taxonomy.classify()
+  -- and never accepted from the agent -- see cmd_report_finding. Empty for
+  -- every deterministic category, which has no SAST rule to classify, and
+  -- for the `other` escape hatch, whose whole point is to be visibly
+  -- unclassified rather than quietly mislabelled.
+  cwe TEXT NOT NULL DEFAULT '', owasp TEXT NOT NULL DEFAULT '',
   -- The deterministic phase (cmd_prepare) and the agent's report-finding
   -- command can both record the same fingerprint into one analysis -- the
   -- agent's triage job is explicitly to RE-REPORT a deterministic finding
@@ -123,6 +129,16 @@ _ANALYSIS_COLUMNS = (
 )
 
 
+# Columns added to `finding` after the table's first shape. Same mechanism,
+# same reason, as _ANALYSIS_COLUMNS above: executescript() does nothing to a
+# table that already exists, and the dev databases on the branch's machines
+# already have `finding`.
+_FINDING_COLUMNS = (
+    ("cwe", "TEXT NOT NULL DEFAULT ''"),
+    ("owasp", "TEXT NOT NULL DEFAULT ''"),
+)
+
+
 def connect(path) -> sqlite3.Connection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -137,6 +153,12 @@ def connect(path) -> sqlite3.Connection:
             # the tuple above, and PRAGMA table_info has already said the
             # column is absent.
             conn.execute(f"ALTER TABLE analysis ADD COLUMN {name} {ddl}")
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(finding)")}
+    for name, ddl in _FINDING_COLUMNS:
+        if name not in have:
+            # Same guarantee as the analysis loop above: both halves are
+            # literals in the tuple, and PRAGMA has said the column is absent.
+            conn.execute(f"ALTER TABLE finding ADD COLUMN {name} {ddl}")
     conn.commit()
     return conn
 
@@ -197,18 +219,22 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
             fid = existing["id"]
             conn.execute(
                 "UPDATE finding SET category=?, rule=?, severity=?, title=?,"
-                " rationale=?, remediation=?, partial_note=? WHERE id=?",
+                " rationale=?, remediation=?, partial_note=?, cwe=?, owasp=?"
+                " WHERE id=?",
                 (finding["category"], finding["rule"], finding["severity"], finding["title"],
                  finding.get("rationale", ""), finding.get("remediation", ""),
-                 finding.get("partial_note", ""), fid))
+                 finding.get("partial_note", ""), finding.get("cwe", ""),
+                 finding.get("owasp", ""), fid))
             conn.execute("DELETE FROM occurrence WHERE finding_id=?", (fid,))
         else:
             cur = conn.execute(
                 "INSERT INTO finding (analysis_id, fingerprint, category, rule, severity,"
-                " title, rationale, remediation, partial_note) VALUES (?,?,?,?,?,?,?,?,?)",
+                " title, rationale, remediation, partial_note, cwe, owasp)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (analysis_id, finding["fingerprint"], finding["category"], finding["rule"],
                  finding["severity"], finding["title"], finding.get("rationale", ""),
-                 finding.get("remediation", ""), finding.get("partial_note", "")))
+                 finding.get("remediation", ""), finding.get("partial_note", ""),
+                 finding.get("cwe", ""), finding.get("owasp", "")))
             fid = cur.lastrowid
         for occ in finding.get("occurrences", []):
             conn.execute(

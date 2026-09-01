@@ -203,6 +203,62 @@ def test_a_failed_re_report_does_not_leave_the_finding_with_half_its_occurrences
     assert [o["line"] for o in got[0]["occurrences"]] == [12]
 
 
+def test_a_finding_keeps_its_classification(conn):
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc123", "standard", "run-1")
+    ledger.record_finding(conn, aid, _finding(cwe="CWE-89", owasp="A03:2021"))
+
+    got = ledger.findings_of(conn, aid)
+    assert got[0]["cwe"] == "CWE-89"
+    assert got[0]["owasp"] == "A03:2021"
+
+
+def test_a_finding_without_a_classification_stores_empty_strings(conn):
+    # Deterministic findings (secret/dependency/hygiene) have no SAST rule
+    # and therefore no CWE from the vocabulary. They must still record.
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc123", "standard", "run-1")
+    ledger.record_finding(conn, aid, _finding(category="hygiene", rule="committed_env_file"))
+
+    got = ledger.findings_of(conn, aid)
+    assert got[0]["cwe"] == ""
+    assert got[0]["owasp"] == ""
+
+
+def test_a_re_report_replaces_the_classification(conn):
+    # The agent's triage job re-reports a finding with corrected fields.
+    # The classification is one of them.
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc123", "standard", "run-1")
+    ledger.record_finding(conn, aid, _finding(rule="other", cwe="", owasp=""))
+    ledger.record_finding(conn, aid, _finding(rule="sql-injection", cwe="CWE-89", owasp="A03:2021"))
+
+    got = ledger.findings_of(conn, aid)
+    assert len(got) == 1
+    assert got[0]["cwe"] == "CWE-89"
+
+
+def test_a_database_without_the_columns_gains_them(tmp_path):
+    # The dev databases on the branch's machines predate these columns.
+    # connect() must migrate them, exactly as it does for `analysis`.
+    import sqlite3
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(str(path))
+    old.executescript("""
+      CREATE TABLE finding (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        analysis_id INTEGER NOT NULL,
+        fingerprint TEXT NOT NULL, category TEXT NOT NULL, rule TEXT NOT NULL,
+        severity TEXT NOT NULL, title TEXT NOT NULL,
+        rationale TEXT NOT NULL DEFAULT '', remediation TEXT NOT NULL DEFAULT '',
+        partial_note TEXT NOT NULL DEFAULT '',
+        UNIQUE(analysis_id, fingerprint));
+    """)
+    old.commit()
+    old.close()
+
+    conn = ledger.connect(path)
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(finding)")}
+    assert "cwe" in have and "owasp" in have
+
+
 # ------------------------------------------------------------ saved filters
 
 def test_a_saved_filter_round_trips(conn):
