@@ -457,6 +457,43 @@ def _scan_dependencies(root, components, offline: bool, ignore_paths=()):
     return cve_findings, notes
 
 
+def _scan_sbom(root, components):
+    """(document, notes) for the SBOM -- ONE producer, not two, on the same
+    terms `_scan_secrets` and `_scan_dependencies` use.
+
+    Syft's directory scan when it is installed and answers with at least one
+    component; `deps.sbom` fed by `deps.inventory`'s own five-format read
+    otherwise. `None` means neither producer found anything to list -- the
+    pre-existing behaviour for a project with no lockfile `deps.inventory`
+    can read, kept rather than replaced by an SBOM that lists zero
+    components and helps nobody who downloads it.
+
+    A STRUCTURALLY VALID BUT EMPTY SYFT ANSWER DOES NOT WIN BY DEFAULT.
+    `adapters.syft_sbom` already returns `None` for a report missing
+    `components` altogether -- which, measured against an empty checkout, is
+    exactly how Syft's own CycloneDX writer spells "nothing found" (the key
+    is absent, not `[]`). What is checked again here is `adapters.
+    syft_document`'s OWN filtering: a document that validated but whose only
+    entries were the file-digest noise it drops (see that function) collapses
+    to the same "say nothing, fall back" outcome. Either way, `deps.sbom` is
+    the one this function trusts when Syft has nothing to show for itself --
+    "a malformed or empty document must not replace a good SBOM silently".
+    Falling back also drops Syft's OWN notes (which claim Syft produced the
+    SBOM): carrying them forward would have this function's return value
+    contradict itself the moment `deps.sbom` is what actually gets stored.
+    """
+    notes = []
+    if adapters.engine_path("syft"):
+        document, syft_notes = adapters.syft_sbom(root)
+        if document is not None and document.get("components"):
+            return document, syft_notes
+        if document is None:
+            notes = syft_notes
+    if not components:
+        return None, notes
+    return deps.sbom(components), [*notes, deps.SBOM_FALLBACK_NOTE]
+
+
 def cmd_prepare(args):
     """The deterministic phases, run inside the worktree by the agent's first
     command. Seconds, and no tokens."""
@@ -527,19 +564,32 @@ def cmd_prepare(args):
 
     # `components` is read regardless of `offline` or which vulnerability
     # source runs: `deps.inventory` never touches the network, and the SBOM
-    # below is built from it either way.
+    # below is built from it whenever Syft does not.
     components = deps.inventory(root)
     dep_findings, dep_notes = _scan_dependencies(root, components, args.offline,
                                                  ignore)
     findings += dep_findings
+
+    sbom_document, sbom_notes = _scan_sbom(root, components)
+    if adapters.SYFT_SBOM_NOTE in sbom_notes and adapters.DEP_SBOM_NOTE in dep_notes:
+        # Task 3's `DEP_SBOM_NOTE` asserts the SBOM lists the five lockfile
+        # formats `deps.inventory` reads -- true only while `deps.sbom` built
+        # it. `_scan_sbom` just said (via `SYFT_SBOM_NOTE`) that Syft did
+        # instead, which makes that specific claim false: Syft reads far more
+        # than five formats. This is the one place that knows both facts at
+        # once -- which producer found the CVEs, which one built the SBOM --
+        # so it is what swaps the two notes rather than leaving the report to
+        # contradict itself.
+        dep_notes = [n for n in dep_notes if n != adapters.DEP_SBOM_NOTE]
     notes += [n for n in dep_notes if n]
+    notes += [n for n in sbom_notes if n]
     # Every phase writes into ONE channel, in phase order. The reader gets one
     # paragraph naming every blind spot this analysis has, rather than
     # whichever gap the last phase to speak happened to know about.
     note = " ".join(notes)
 
-    if components:
-        ledger.store_sbom(conn, project, repo, branch, aid, deps.sbom(components))
+    if sbom_document is not None:
+        ledger.store_sbom(conn, project, repo, branch, aid, sbom_document)
     for f in findings:
         ledger.record_finding(conn, aid, f)
     ledger.set_lines_of_code(conn, aid, tree_lines)

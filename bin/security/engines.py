@@ -56,6 +56,14 @@ PURGE = {
     # raw source lines Trivy attaches to a secret AND to a misconfiguration,
     # under `Code.Lines[]` in both.
     "trivy": ("Match", "Content", "Highlighted"),
+    # Syft produces a Software Bill of Materials, not a match report: package
+    # names, versions, licences, purls and cpes, assembled from a lockfile's
+    # own declarations rather than from a scan for a credential's or a
+    # secret's value. There is nothing here that ever carries matched
+    # content, so the empty tuple is a decision this table records, not a
+    # gap in it -- see the module docstring above for why an engine absent
+    # from `PURGE` is refused rather than assumed safe.
+    "syft": (),
 }
 
 _TIMEOUT = 600

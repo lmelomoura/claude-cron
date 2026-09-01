@@ -180,6 +180,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the category still has no closed vocabulary the way SAST rules do — its
   rule is the CVE id — so this is metadata carried across, not validated.
 
+- **Syft builds the SBOM when it is installed, and `deps.sbom` falls back
+  when it is not.** `deps.inventory` (five lockfile formats) feeding
+  `deps.sbom`'s hand-built CycloneDX was the only producer; Syft 1.51.1
+  emits CycloneDX directly and reads far more ecosystems, so it now runs
+  first. Measured on this repository: Syft's directory scan reports each
+  recognised lockfile TWICE — once as the real `library` component, and
+  once more as a `type: "file"` digest entry that carries no version and,
+  unlike every other path in the same document, the scan root's own
+  ABSOLUTE filesystem path (this machine's home directory, captured
+  verbatim in the fixture). Stored and downloaded as-is, that field would
+  have put the operator's own directory layout into a document meant for
+  whoever asked for this project's dependencies; `syft_document` drops
+  every such entry before anything is stored. Syft's own writer omits
+  `components` entirely — not `[]` — for a checkout it recognises nothing
+  in, which is read as "fall back to `deps.sbom`", not as "an SBOM with
+  zero components is the honest answer": a malformed or empty Syft
+  document must never silently replace a good one. The SBOM does NOT
+  honour `ignore_paths`, on the same terms `deps.inventory` already did
+  not — an SBOM is a promise about what the project SHIPS, a different one
+  than a findings list an operator has asked to keep quiet.
+
+- **Task 3's `DEP_SBOM_NOTE` no longer contradicts itself once Syft
+  supplies the SBOM.** That note says the SBOM lists the five lockfile
+  formats `deps.inventory` reads — true only while `deps.sbom` built it.
+  `cmd_prepare` now swaps it for a note naming Syft instead whenever Syft's
+  own document is what actually got stored, so a report never asserts two
+  different things about where its own SBOM came from.
+
 ### Fixed
 
 - **A dependency CVE keeps one identity whether or not Trivy is installed.**

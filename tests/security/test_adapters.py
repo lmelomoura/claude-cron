@@ -44,6 +44,10 @@ HAVE_TRIVY = engines.find("trivy") is not None
 needs_trivy = pytest.mark.skipif(
     not HAVE_TRIVY, reason="trivy is not installed on this machine")
 
+HAVE_SYFT = engines.find("syft") is not None
+needs_syft = pytest.mark.skipif(
+    not HAVE_SYFT, reason="syft is not installed on this machine")
+
 # Assembled at runtime so this file is not itself a credential a scanner has
 # to flag. The shape is a real one: gitleaks allowlists AWS's own
 # documentation key (AKIAIOSFODNN7EXAMPLE), so a fixture built from that
@@ -1388,3 +1392,132 @@ def test_ignore_paths_that_cannot_reach_the_command_line_still_filter():
     the post-filter is what actually enforces the scope."""
     assert "a,b" not in adapters.trivy_skip_dirs(["a,b"])
     assert adapters._out_of_scope("a,b/package-lock.json", ["a,b"])
+
+
+# --------------------------------------------------------------- the SBOM
+#
+# The fixture is a REAL syft 1.51.1 capture of this repository
+# (`syft scan dir:. -o cyclonedx-json`, this module's own `--exclude` flags
+# applied), on the same model as `trivy-fs.json` and `gitleaks-dir.json`
+# above: a fixture typed from the documentation makes the parser and the
+# test agree with each other while both disagree with the tool. It still
+# carries the leak `syft_document` exists to close -- see the two
+# `type: "file"` entries whose `name` is this machine's own absolute path --
+# because a fixture that had already been fixed by hand would not prove the
+# fix does anything.
+
+def _syft_fixture():
+    return json.loads((FIX / "syft-cyclonedx.json").read_text())
+
+
+def test_syft_document_keeps_only_the_library_components():
+    document = adapters.syft_document(_syft_fixture())
+    names = {c["name"]: c["version"] for c in document["components"]}
+    assert names == {"certifi": "2024.2.2", "evenement/evenement": "v3.0.2",
+                     "lodash": "4.17.20", "six": "1.16.0"}
+
+
+def test_syft_document_drops_the_absolute_path_the_file_entries_carry():
+    """The leak this adapter exists to close, proven against the real
+    capture rather than a hand-built one: measured on this repository,
+    Syft's OWN `type: "file"` entries name the scan root's absolute path,
+    while every other path in the identical document (`syft:location:*:path`)
+    is already root-relative. Stored and downloaded as-is, that field would
+    put the operator's home directory and username into a document handed to
+    whoever asked for this project's dependency list."""
+    document = adapters.syft_document(_syft_fixture())
+    assert not any(c.get("type") == "file" for c in document["components"])
+    assert "/Users/" not in json.dumps(document)
+
+
+def test_a_document_missing_components_entirely_is_not_usable():
+    """Syft's own CycloneDX writer omits `components` ALTOGETHER for a
+    checkout where nothing was recognised -- not an empty list. Measured
+    against an empty directory. Treated as unusable here so `cli._scan_sbom`
+    reads it as "fall back to deps.sbom", never as "an SBOM with zero
+    components is the honest answer"."""
+    assert adapters.syft_document({"bomFormat": "CycloneDX",
+                                   "specVersion": "1.5"}) is None
+
+
+def test_a_document_that_is_not_an_object_is_not_usable():
+    assert adapters.syft_document(["not", "a", "document"]) is None
+    assert adapters.syft_document("nope") is None
+
+
+def test_components_that_is_not_a_list_is_not_usable():
+    assert adapters.syft_document({"components": "oops"}) is None
+
+
+def test_a_non_dict_component_is_dropped_not_fatal():
+    """A record this parser cannot read costs that record, not the whole
+    document -- the same rule `gitleaks()` and `trivy_vulns()` apply."""
+    document = adapters.syft_document({"components": [
+        {"type": "library", "name": "x", "version": "1.0"}, "garbage", None]})
+    assert [c["name"] for c in document["components"]] == ["x"]
+
+
+@needs_syft
+def test_syft_sbom_runs_the_real_engine_and_finds_a_known_component(tmp_path):
+    """The one test in this section that runs the actual binary, the same
+    way the Gitleaks and Trivy sections above do. `package-lock.json` here is
+    this repository's own fixture -- lodash 4.17.20 -- copied alone into an
+    empty tree so the result cannot be confused with anything else Syft
+    might find scanning this repo."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    lockfile = REPO / "tests" / "security" / "fixtures" / "package-lock.json"
+    (root / "package-lock.json").write_text(lockfile.read_text())
+    document, notes = adapters.syft_sbom(root)
+    assert document is not None
+    names = {c["name"]: c["version"] for c in document["components"]}
+    assert names.get("lodash") == "4.17.20"
+    assert any("syft" in n.lower() for n in notes)
+
+
+@needs_syft
+def test_syft_sbom_drops_the_leak_on_the_real_engine_too(tmp_path):
+    """The unit test above proves the parser closes the leak against a
+    fixture; this proves the real binary's output goes through the same
+    door. A `str(root)` anywhere in the stored document would put this exact
+    machine's directory layout into a downloadable artefact."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    lockfile = REPO / "tests" / "security" / "fixtures" / "package-lock.json"
+    (root / "package-lock.json").write_text(lockfile.read_text())
+    document, _ = adapters.syft_sbom(root)
+    assert str(root) not in json.dumps(document)
+
+
+@needs_syft
+def test_syft_sbom_reports_none_when_nothing_is_found(tmp_path):
+    """No lockfile anywhere: Syft's own writer omits `components`, which
+    `syft_document` treats as unusable rather than "zero dependencies" --
+    see that function's docstring for why the difference matters to
+    `cli._scan_sbom`."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text("print('hi')\n")
+    document, notes = adapters.syft_sbom(root)
+    assert document is None
+    assert notes == [adapters.SYFT_NO_COMPONENTS_NOTE]
+
+
+@needs_syft
+@pytest.mark.parametrize("where", ["src/vendor/thing", "a/b/dist",
+                                   "node_modules/some-dep"])
+def test_syft_sbom_skips_the_same_directories_deps_inventory_always_has(
+        tmp_path, where):
+    """The same regression `adapters.py`'s module docstring warns about for
+    Gitleaks and `test_trivy_scan_skips_the_same_directories_deps_inventory_
+    always_has` pins for Trivy: a vendored copy of a lockfile `deps.inventory`
+    has never read must not start appearing in the SBOM just because the
+    producer changed."""
+    root = tmp_path / "repo"
+    vendored = root / where
+    vendored.mkdir(parents=True)
+    lockfile = REPO / "tests" / "security" / "fixtures" / "package-lock.json"
+    (vendored / "package-lock.json").write_text(lockfile.read_text())
+    assert deps.inventory(root) == [], "the fixture is not out of scope at all"
+    document, _ = adapters.syft_sbom(root)
+    assert document is None

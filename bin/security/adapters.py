@@ -944,3 +944,133 @@ def trivy_scan(root, ignore_paths=()):
             directories="directory" if go_only == 1 else "directories",
             have="has" if go_only == 1 else "have"))
     return findings, notes
+
+
+# ------------------------------------------------------------------ the SBOM
+#
+# Syft replaces `deps.inventory` + `deps.sbom` on the same terms Trivy
+# replaces `deps.inventory` + `osv.query` above: ONE producer, never both --
+# see `cli._scan_sbom`, which is where that choice is made. Syft emits
+# CycloneDX directly (`-o cyclonedx-json`), the exact format `deps.sbom`
+# builds by hand, so this adapter really is mostly a passthrough: there is no
+# per-field reconstruction the way `gitleaks()` and `trivy_vulns()` do it.
+# `THE VALUE NEVER ARRIVES`, this module's opening claim for the other two
+# categories, does not need defending here either: an SBOM is not
+# fingerprinted (`ledger.store_sbom` keeps only a branch's most recent
+# document, never a per-component identity a human accepts or dismisses), and
+# a component's own name, version and licence ARE the report -- not
+# something an engine matched inside a file that this adapter must keep out.
+#
+# ONE THING IS DROPPED, AND IT IS MEASURED, NOT GUESSED AT. Syft's directory
+# scan reports each recognised lockfile TWICE: once as the `type: "library"`
+# component an SBOM actually means (name, version, purl, a root-relative
+# `syft:location:*:path`), and once more as a `type: "file"` component that
+# carries nothing but a SHA digest and -- unlike every other path in the same
+# document -- the scan root's OWN ABSOLUTE PATH with the relative part
+# appended. Captured verbatim in this module's fixture:
+# `/Users/lfmoura/Projects/claude-cron/tests/security/fixtures/composer.lock`,
+# not `/tests/security/fixtures/composer.lock` the way the library entry for
+# the SAME file names it, two entries later in the identical array. Stored
+# and handed out through the same download route as every other SBOM in this
+# ledger, that field would put the operator's home directory and username
+# into a document meant for whoever asked for this project's dependency list
+# -- and it carries no `version` at all, which is what a reader assuming
+# every SBOM component names one (this module's own tests included) would
+# trip on the moment Syft is what built the document. `syft_document` drops
+# every `type: "file"` entry for exactly this reason; nothing else is
+# touched.
+#
+# WHY THIS DOES NOT HONOUR `ignore_paths`. `deps.inventory` -- the producer
+# this one replaces -- never has: it walks the whole tree bar its own
+# `_SKIP_DIRS` and was never given the operator's `ignore_paths` to filter
+# by, because an SBOM is a different promise than a findings list.
+# `gitleaks_scan` and `trivy_scan` apply `ignore_paths` because it is a
+# promise about what THIS ANALYSIS reports as WRONG with the project -- noise
+# an operator has decided not to see in a findings list. A software bill of
+# materials is a promise about what the project actually SHIPS, and a
+# dependency does not stop shipping because an operator finds it noisy to
+# read about there; filtering it out of the SBOM on the same grounds would
+# make the inventory describe a project that does not exist. Keeping Syft on
+# `deps.inventory`'s own terms here means the two producers cannot disagree
+# about scope depending on which one happens to be installed -- only the
+# `secrets.SKIP_DIRS`-equivalent noise below is excluded on either path,
+# exactly as it always was.
+
+SYFT_ENGINE_NOTE = "The SBOM was produced by {version}."
+
+# Said whenever Syft's document -- not `deps.sbom` -- is what got stored, so
+# a reader knows the SBOM's coverage changed along with its producer.
+# `cli.cmd_prepare` is also what this note lets `adapters.DEP_SBOM_NOTE`
+# (Task 3's note, said whenever Trivy runs) stop being true the moment it
+# appears: that one claims the SBOM lists the five lockfile formats
+# `deps.inventory` reads, which only holds while `deps.sbom` built it. See
+# `cli.cmd_prepare` for how the two notes are kept from contradicting each
+# other.
+SYFT_SBOM_NOTE = ("This SBOM was produced by Syft, which reads far more "
+                  "ecosystems than either dependency-CVE source this "
+                  "analysis can run: a component it lists may not have been "
+                  "checked for known vulnerabilities at all.")
+
+# Syft's own CycloneDX writer omits `components` ENTIRELY for a checkout
+# where its catalogers recognised nothing -- not an empty list. Measured
+# against an empty directory: the key is simply absent from the document.
+# `syft_document` treats that the same as a report this parser cannot read,
+# because `cli._scan_sbom` needs the difference between "malformed" and
+# "genuinely nothing to list" to collapse: `deps.sbom` is a complete, honest
+# answer for a project with nothing Syft's catalogers recognise, and it must
+# not be shadowed by a report this adapter cannot even confirm the shape of.
+SYFT_NO_COMPONENTS_NOTE = ("Syft wrote a document naming no `components`, "
+                           "so it was not used.")
+
+
+def syft_document(data):
+    """Syft's own CycloneDX document, its file-digest noise dropped, or None
+    when it is not a document this adapter can use.
+
+    MOSTLY A PASSTHROUGH, deliberately: Syft already emits the format
+    `deps.sbom` builds by hand, so there is no field-by-field translation to
+    do the way `gitleaks()` and `trivy_vulns()` do it. The two checks that
+    matter: `components` present and a list (see `SYFT_NO_COMPONENTS_NOTE`
+    for why its absence is not "zero dependencies"), and every `type:
+    "file"` entry removed (see the section comment above for the leak that
+    closes).
+
+    A NON-DICT ENTRY IN `components` COSTS THAT ENTRY, NOT THE DOCUMENT --
+    the same rule `gitleaks()` and `trivy_vulns()` apply to a record they
+    cannot read.
+    """
+    if not isinstance(data, dict) or not isinstance(data.get("components"), list):
+        return None
+    components = [c for c in data["components"]
+                 if isinstance(c, dict) and c.get("type") != "file"]
+    return {**data, "components": components}
+
+
+def syft_sbom(root):
+    """(document, notes): the CycloneDX SBOM Syft's directory scan produces
+    for `root`, or (None, notes) when it could not.
+
+    `None` is `cli._scan_sbom`'s signal to fall back to `deps.sbom` -- the
+    same shape `gitleaks_scan` and `trivy_scan` return for the same reason:
+    absent, unversioned, timed out, writing a report `run_json` cannot
+    parse, or (here) one `syft_document` will not use.
+
+    THE SCOPE IS `secrets.SKIP_DIRS`, EXPRESSED THE WAY SYFT WANTS IT: one
+    `--exclude '**/name'` per entry, matched at any depth without also
+    needing the bare name Trivy's matcher required (see `trivy_skip_dirs`) --
+    measured with a `package-lock.json` planted at the TOP LEVEL of a
+    `vendor/` directory, `--exclude '**/vendor'` alone excludes it. Not
+    `ignore_paths`: see the section comment above for why an SBOM does not
+    take it.
+    """
+    args = ["scan", "dir:.", "-o", "cyclonedx-json={out}", "-q"]
+    for name in sorted(secrets.SKIP_DIRS):
+        args += ["--exclude", f"**/{name}"]
+    data, note = engines.run_json("syft", args, root)
+    if data is None:
+        return None, [note] if note else []
+    document = syft_document(data)
+    if document is None:
+        return None, [SYFT_NO_COMPONENTS_NOTE]
+    version = engines.version_of("syft") or "syft"
+    return document, [SYFT_ENGINE_NOTE.format(version=version), SYFT_SBOM_NOTE]

@@ -15,6 +15,7 @@ calls `main()` in-process instead.
 import inspect
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -1817,6 +1818,147 @@ def test_render_sbom_refuses_an_analysis_that_does_not_exist(tmp_path):
     out = fails(db, "render", "--analysis", "999", "--format", "sbom")
     assert out.returncode != 0
     assert "no such analysis" in out.stderr
+
+
+# ------------------------------------------------- Syft replaces `deps.sbom`
+
+needs_syft = pytest.mark.skipif(
+    shutil.which("syft") is None, reason="syft is not installed on this machine")
+
+
+def test_prepare_prefers_syft_and_never_calls_deps_sbom(tmp_path, monkeypatch):
+    """Two producers for one SBOM is not the two-fingerprint problem
+    `_scan_secrets`/`_scan_dependencies` guard against -- an SBOM is not
+    fingerprinted at all -- but it is still ONE producer, not two: calling
+    `deps.sbom` after Syft already answered would silently overwrite Syft's
+    document with a narrower one for no reason. `deps.sbom` raising proves it
+    was never called, not merely that its result was discarded."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/syft" if name == "syft" else None)
+    monkeypatch.setattr(
+        security_cli.adapters, "syft_sbom",
+        lambda root: ({"bomFormat": "CycloneDX", "specVersion": "1.5",
+                       "components": [{"type": "library", "name": "left-pad",
+                                       "version": "1.3.0",
+                                       "purl": "pkg:npm/left-pad@1.3.0"}]},
+                      ["The SBOM was produced by syft 1.51.1.",
+                       security_cli.adapters.SYFT_SBOM_NOTE]))
+
+    def must_not_run(*_a, **_kw):
+        raise AssertionError("deps.sbom must not run once Syft has answered")
+    monkeypatch.setattr(security_cli.deps, "sbom", must_not_run)
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--offline", "--db", str(db)])
+    document = json.loads(run_text(db, "render", "--analysis", str(aid),
+                                   "--format", "sbom"))
+    assert document["components"][0]["name"] == "left-pad"
+    row = run(db, "list", "--project", "web")[0]
+    assert "Syft" in row["coverage_note"]
+
+
+def test_prepare_falls_back_to_deps_sbom_when_syft_finds_nothing_useful(
+        tmp_path, monkeypatch):
+    """The mirror of the test above: a project with a lockfile `deps.inventory`
+    reads, on a machine where Syft is installed but answers with nothing this
+    adapter can use, still gets the SBOM the pre-Syft behaviour always gave
+    it -- the fallback pair this task replaces, not removes."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "requirements.txt").write_text("requests==2.31.0\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/syft" if name == "syft" else None)
+    monkeypatch.setattr(security_cli.adapters, "syft_sbom",
+                        lambda root: (None, ["syft did not finish within "
+                                             "600s and was stopped."]))
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--offline", "--db", str(db)])
+    document = json.loads(run_text(db, "render", "--analysis", str(aid),
+                                   "--format", "sbom"))
+    assert {c["name"]: c["version"] for c in document["components"]} == {
+        "requests": "2.31.0"}
+    row = run(db, "list", "--project", "web")[0]
+    assert "did not finish" in row["coverage_note"]
+    assert "own inventory" in row["coverage_note"]
+
+
+def test_the_sbom_note_is_replaced_not_duplicated_when_syft_and_trivy_both_run(
+        tmp_path, monkeypatch):
+    """Task 3's `adapters.DEP_SBOM_NOTE` says the SBOM lists the five
+    lockfile formats `deps.inventory` reads -- true only while `deps.sbom`
+    built it. The moment Syft supplies the document instead, that specific
+    claim is false: Syft reads far more than five formats. `cmd_prepare` is
+    the one place that knows both which producer found the CVEs and which
+    one built the SBOM, so it has to swap the two notes rather than let the
+    report contradict itself."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(
+        security_cli.adapters, "engine_path",
+        lambda name: f"/usr/bin/{name}" if name in ("trivy", "syft") else None)
+    monkeypatch.setattr(
+        security_cli.adapters, "trivy_scan",
+        lambda root, ignore_paths=(): (
+            [], [security_cli.adapters.DEP_ENGINE_NOTE.format(version="trivy 0.74.0"),
+                 security_cli.adapters.DEP_ID_NOTE,
+                 security_cli.adapters.DEP_SBOM_NOTE]))
+    monkeypatch.setattr(
+        security_cli.adapters, "syft_sbom",
+        lambda root: ({"bomFormat": "CycloneDX", "specVersion": "1.5",
+                       "components": [{"type": "library", "name": "x",
+                                       "version": "1.0",
+                                       "purl": "pkg:generic/x@1.0"}]},
+                      ["The SBOM was produced by syft 1.51.1.",
+                       security_cli.adapters.SYFT_SBOM_NOTE]))
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    note = run(db, "list", "--project", "web")[0]["coverage_note"]
+    assert security_cli.adapters.DEP_SBOM_NOTE not in note
+    assert security_cli.adapters.SYFT_SBOM_NOTE in note
+    assert "Trivy" in note
+
+
+@needs_syft
+def test_prepare_stores_syfts_sbom_and_it_survives_the_download_round_trip(
+        tmp_path):
+    """The one test that matters beyond the parser: whichever producer built
+    the SBOM, `ledger.store_sbom` has to accept it and `render --format sbom`
+    has to hand it back unharmed. `test_render_sbom_hands_back_the_stored_
+    cyclonedx` above already proves this for `deps.sbom` (the suite's own
+    `CC_SECURITY_ENGINES=off` default keeps Syft out of that one); this is
+    the same round trip for the real Syft binary."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    lockfile = REPO / "tests" / "security" / "fixtures" / "package-lock.json"
+    (root / "package-lock.json").write_text(lockfile.read_text())
+    db = tmp_path / "security.db"
+    env = {**os.environ, "CC_SECURITY_ENGINES": "on"}
+    aid = open_analysis(db)
+
+    prepared = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+                   "--offline", env=env)
+    assert "Syft" in prepared["coverage_note"]
+    run(db, "finish", "--analysis", str(aid), "--state", "done", env=env)
+
+    document = json.loads(run_text(db, "render", "--analysis", str(aid),
+                                   "--format", "sbom"))
+    assert document["bomFormat"] == "CycloneDX"
+    assert not any(c.get("type") == "file" for c in document["components"])
+    names = {c["name"]: c["version"] for c in document["components"]}
+    assert names.get("lodash") == "4.17.20"
 
 
 def test_checklist_of_an_analysis_that_does_not_exist_exits_with_the_old_sentence(tmp_path):

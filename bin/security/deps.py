@@ -149,6 +149,19 @@ def inventory(root):
     return out
 
 
+# Named and worded the way `osv.FALLBACK_NOTE` is, and said by the same
+# caller for the same reason: `cli._scan_sbom` is what decides this function
+# ran instead of Syft, and it should not also be the module that explains
+# what that means to a reader. Said whenever `sbom` below is what actually
+# built the stored document -- not only when Syft is absent from the
+# machine, the same way `secrets.FALLBACK_NOTE` fires whether gitleaks was
+# never installed or merely could not answer this run.
+SBOM_FALLBACK_NOTE = ("The SBOM was built from this project's own inventory "
+                      "(package-lock.json, requirements.txt, poetry.lock, "
+                      "composer.lock, go.sum), not by Syft: a dependency in "
+                      "a format only Syft reads would not be listed.")
+
+
 def sbom(components):
     """A CycloneDX 1.5 document. Hand-built JSON -- no dependency needed."""
     components_out = []
