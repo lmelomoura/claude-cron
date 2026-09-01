@@ -4263,7 +4263,10 @@
         sub.appendChild(secEl(
           "span",
           "secidx-fellback",
-          " (fell back \u2014 the default branch was never analysed)"
+          // The SAME sentence the project header's own fell-back chip uses
+          // (secRenderProjectHeader) -- one fact, one wording, wherever it
+          // appears.
+          " (fell back \u2014 the declared base was never analysed)"
         ));
       }
       tdAnalysis.appendChild(sub);
@@ -5063,5 +5066,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 9b0f82f4c9d8ff12a86e17585c56213fdc85061fd0dd60654287919e8cff9838 */
-/* ui-sources: e3dc6f8f97a04f1023b335252a8465375f3ebbd949545deb031c3a9bc5fef0bf */
+/* ui-bundle: 5f050d9bacac2fb1c2136177d6857f7e55e619d96e340a640588c427e2f627da */
+/* ui-sources: 77dc92452c6400e5e401c6c753825ddf25d5bf618d89887f14c5e5aafd59425d */

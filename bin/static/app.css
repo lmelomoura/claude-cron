@@ -1828,10 +1828,9 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secfind-crumbs .current{color:var(--ink);font-weight:650}
 .secfind-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;
   margin:0 0 18px;flex-wrap:wrap}
-.secfind-head-title{display:flex;align-items:center;gap:10px;font-size:19px;font-weight:700;
-  color:var(--ink)}
-.secfind-head-title .ic{width:21px;height:21px;color:var(--accent)}
-.secfind-head-sub{margin:4px 0 0 31px;font-size:12.5px;color:var(--muted)}
+/* .secfind-head-title/.secfind-head-sub are gone: the pane's own heading
+   moved up into the page title row (SEC_TAB_TITLES) and the header kept
+   only its actions -- see secFindHeader's own comment. */
 .secfind-head-actions{display:flex;gap:10px;flex:none}
 /* The stat strip -- total, five severities, unique issues, all in one card.
    ProjectFindings.png redraws the old one-container stat strip as SEVEN
@@ -2768,5 +2767,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: 3b53f132e949ceec5858db7811d2b7cd6f8f889c1418250a0e357edb3b3f0a2c */
-/* ui-sources: e3dc6f8f97a04f1023b335252a8465375f3ebbd949545deb031c3a9bc5fef0bf */
+/* ui-bundle: cfe8cc764f2656112a91b320b897f548c57e5413e6144c45f7db27be07ae74ac */
+/* ui-sources: 77dc92452c6400e5e401c6c753825ddf25d5bf618d89887f14c5e5aafd59425d */

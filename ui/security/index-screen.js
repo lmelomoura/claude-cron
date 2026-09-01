@@ -557,7 +557,10 @@ function secIndexProjectRow(p){
       [p.profile, p.branch || "—"].filter(Boolean).join(" · ")));
     if(p.branch_fell_back){
       sub.appendChild(secEl("span", "secidx-fellback",
-        " (fell back — the default branch was never analysed)"));
+        // The SAME sentence the project header's own fell-back chip uses
+        // (secRenderProjectHeader) -- one fact, one wording, wherever it
+        // appears.
+        " (fell back — the declared base was never analysed)"));
     }
     tdAnalysis.appendChild(sub);
   }

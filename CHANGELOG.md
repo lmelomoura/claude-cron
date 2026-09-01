@@ -19,6 +19,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Full-system review pass: one wording for the fell-back branch, and
+  orphaned CSS pruned.** The index's fleet table said "the default branch
+  was never analysed" while the project header said "the declared base
+  was never analysed" for the identical fact — the index now uses the
+  header's sentence. The findings pane's dead header-title CSS (the
+  heading moved into the page title row) is gone. The review walked every
+  screen live at 1550px and 1100px in both themes — the four app pages,
+  the Security index, all five project tabs, the Activity screen, the
+  launch/editor/log dialogs, history navigation, filters, sorts,
+  downloads and every View-all door — with a geometry probe on each
+  (nothing outside its card, no body scroll) and a clean console
+  throughout; these two were the only defects found.
+
 - **Every donut's 12-o'clock seam is clean.** Each segment used to be a
   full circle wearing stroke-dasharray/-dashoffset, and a dash pattern
   repeats: with the dash+gap sum landing a floating-point hair under the
