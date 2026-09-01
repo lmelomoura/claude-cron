@@ -124,6 +124,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   analysis is still going: rewriting identities under a live agent makes
   its next re-report file a second row for a hole it already reported.
 
+- **Secret findings already in a ledger survive the swap to gitleaks
+  instead of being reported `fixed` and `new` in the same breath.** Every
+  hand-written secret rule changes name when the engine takes the phase
+  over — `aws_access_key` becomes `aws-access-token`, `private_key`
+  becomes `private-key` — and the name is inside the fingerprint, so
+  without a map the first analysis on a machine with gitleaks installed
+  reports every existing secret as fixed AND the identical secret as new,
+  and every human `accepted` / `false_positive` decision recorded against
+  one matches nothing ever again. `taxonomy.RULE_RENAMES` now carries the
+  six pairings, and `migrate-rules` applies them. Each was verified by
+  running gitleaks over a synthetic sample of every shape the old pattern
+  accepted and reading the RuleID back, never by matching the two names
+  up by eye: a target the engine cannot mint is the same orphan by
+  another route. `github_token` and `slack_token` are deliberately left
+  out and say so in a comment — one rule of ours is four or more
+  credential types of theirs (`ghp_` is a PAT, `gho_` an OAuth token,
+  `ghr_` a refresh token), there is no single target that is true for
+  such a finding, and a rename is a promise that the two names are one
+  rule. They report as `new` once under the engine's own name, which is
+  honest; a wrong pairing would be silent corruption in the one field a
+  human's decision hangs off. Run on this repository's own development
+  ledger: 94 findings moved across four rules and both human decisions
+  followed theirs, with zero findings left holding a fingerprint no
+  scanner can reproduce.
+
 ### Fixed
 
 - **The engine's history sweep now asks whether the history can be READ,

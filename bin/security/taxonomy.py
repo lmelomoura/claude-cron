@@ -81,20 +81,76 @@ RULE_NAMES = tuple(sorted(SAST_RULES))
 # rest; see `ledger.RENAMEABLE_CATEGORIES` for why, and `test_taxonomy.py` for
 # the invariants an entry has to satisfy.
 #
-# NOT to disambiguate the name. No rule name is shared across categories today,
-# and the four naming conventions leave little room for one: SAST rules are
-# kebab-case (the table above), secret and hygiene rules are snake_case
-# (`secrets._RULES`, and the literals hygiene.py passes to `_finding`), and a
-# dependency rule is a GHSA/CVE id. Nothing ENFORCES that, though, and a key
-# carrying the category is a key that never has to depend on it: `rename_rule`
-# matches on (category, rule) and leaves an identically named rule in the other
-# category untouched.
+# NOT to disambiguate the name -- but the naming conventions no longer keep the
+# categories apart on their own, which is why the key carries the category.
+# SAST rules are kebab-case (the table above), hygiene rules are snake_case
+# (the literals hygiene.py passes to `_finding`), and a dependency rule is a
+# GHSA/CVE id. A SECRET rule is BOTH, and which one it is says who found it:
+# snake_case from the built-in pattern scanner (`secrets._RULES`), kebab-case
+# from gitleaks, whose rule ids look exactly like the SAST table's names -- and
+# gitleaks ships around 180 of them, gaining more with every release. Nothing
+# ENFORCES that a name is unique across categories, and a key carrying the
+# category never has to depend on it: `rename_rule` matches on (category, rule)
+# and leaves an identically named rule in the other category untouched.
 #
-# Empty until the engines block renames the deterministic rules wholesale.
-# The mechanism ships first, and with tests, because writing it after the
-# rename has already happened means writing it against a ledger that is
-# already wrong.
-RULE_RENAMES: dict[tuple[str, str], str] = {}
+# THE SECRET CATEGORY HAS TWO PRODUCERS, AND ONLY ONE RUNS PER ANALYSIS.
+# Gitleaks when it is installed, the built-in scanner when it is not (see
+# `cli._scan_secrets`), and the two name their rules differently. Every entry
+# below therefore moves a finding from the scanner that is being retired ON
+# THIS MACHINE to the engine that replaced it, which is why `migrate-rules` is
+# a deliberate one-shot verb an operator runs after installing gitleaks and not
+# something an analysis does for itself: run it on a machine that then falls
+# back to the built-in scanner and the old names are minted again on the next
+# analysis, undoing it.
+#
+# Each pairing below was VERIFIED by running gitleaks 8.30.1 over a synthetic
+# sample of every shape the hand-written pattern accepts and reading the RuleID
+# back -- never by matching the two names up by eye. A target the engine will
+# never mint is precisely the orphan this mechanism exists to prevent: the
+# findings move onto an identity no scanner can reproduce, and the human
+# decisions carried across with them point at nothing for ever.
+RULE_RENAMES: dict[tuple[str, str], str] = {
+    # Both prefixes ours accepts (AKIA, ASIA) are inside gitleaks' own
+    # `aws-access-token` regex.
+    ("secret", "aws_access_key"): "aws-access-token",
+    # `sk_live_` and `rk_live_` -- the secret and the restricted key -- are two
+    # Stripe credentials that gitleaks reports under one rule. Converging, not
+    # diverging: every row under our name has exactly one place to land.
+    ("secret", "stripe_key"): "stripe-access-token",
+    # Ours is `sk-` + 32 or more; gitleaks pins the `T3BlbkFJ` marker a real
+    # OpenAI key carries, and calls anything else `generic-api-key`. Mapped
+    # anyway because both rules name ONE credential type and ours simply
+    # over-matches it: for a genuine OpenAI key the rename is exact, and for an
+    # `sk-` blob that was never one, the row is swept as `fixed` on the next
+    # analysis whether it was migrated or not.
+    ("secret", "openai_key"): "openai-api-key",
+    # Every PEM header ours accepts (RSA, EC, OPENSSH, PGP, bare) reports as
+    # `private-key`. Note gitleaks needs the BODY: a lone header line -- a doc,
+    # a diff, a fixture -- is not a gitleaks finding at all, so some rows this
+    # moves will still be reported `fixed` once. That is the scanner swap, not
+    # the rename; there is no other name for them to land on.
+    ("secret", "private_key"): "private-key",
+    # `AIza…`. Google's name for the product changed, not the credential.
+    ("secret", "google_api_key"): "gcp-api-key",
+    # The one rule on either side that matches on SHAPE alone -- keyword,
+    # assignment, high-entropy blob -- rather than on a vendor's prefix. Every
+    # keyword spelling ours accepts (password, passwd, secret, token, api_key)
+    # fires gitleaks' generic rule on the same line.
+    ("secret", "generic_secret"): "generic-api-key",
+    # DELIBERATELY UNMAPPED, both for the same reason: one rule of ours is
+    # several credential types of theirs, and a rename is a PROMISE that the
+    # two names are one rule. There is no single target that is true for such a
+    # row, and picking the commonest would relabel the rest as something they
+    # are not -- silently, in the one field a human's decision hangs off.
+    #
+    #   github_token  ghp_ -> github-pat, gho_ -> github-oauth,
+    #                 ghu_/ghs_ -> github-app-token, ghr_ -> github-refresh-token
+    #   slack_token   xoxb -> slack-bot-token, xoxp -> slack-user-token,
+    #                 xoxa/xoxr -> slack-legacy-workspace-token,
+    #                 and xoxs is not a gitleaks rule at all
+    #
+    # Both report as `new` once, under the engine's own name, which is honest.
+}
 
 
 def is_valid_rule(rule: str) -> bool:
