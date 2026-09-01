@@ -1106,11 +1106,18 @@ def test_both_producers_mint_the_same_identity_for_one_package(tmp_path):
         expected.add(osv._finding(component, f["rule"], None)["fingerprint"])
     assert {f["fingerprint"] for f in findings} == expected
 
-    # The one input the two producers cannot agree on is the advisory id
-    # itself -- Trivy says CVE-2020-28483 where OSV.dev says GHSA-2c4m-59x9-
-    # fr2g and GO-2021-0052 for the same hole -- and that is DECLARED rather
-    # than left for a reader to discover from a diff full of fixed/new pairs.
-    assert any("CVE" in n and "GHSA" in n for n in notes)
+    # The advisory id was the input this test used to call unfixable. It is
+    # not: Trivy's own record carries the publishing database's id, so what
+    # gets hashed here is the GHSA OSV.dev would have named, not the CVE
+    # OSV.dev never uses. See `test_the_advisory_id_is_osvs_own_when_trivy_
+    # publishes_it` for the alias itself.
+    assert [f["rule"] for f in findings if f["rule"].startswith("GHSA-")], (
+        [f["rule"] for f in findings])
+    # What remains is DECLARED rather than left for a reader to discover from
+    # a diff full of fixed/new pairs: OSV.dev also mints GO-2021-0052 and
+    # GO-2023-1737 for this same gin, and no alias can conjure a Trivy
+    # counterpart for a record Trivy never split out.
+    assert adapters.DEP_ID_NOTE in notes, notes
 
 
 def test_the_composer_v_prefix_is_stripped_the_way_deps_strips_it():
@@ -1213,6 +1220,191 @@ def test_two_python_lockfiles_pinning_one_package_collapse_the_way_deps_does():
     assert len(adapters.trivy_vulns(data)) == 1
 
 
+# ------------------------------------------------ the advisory id, aliased
+#
+# The fourth input, and the one this section used to declare unfixable on the
+# stated grounds that no offline mapping between the two vocabularies exists.
+# IT DOES, AND TRIVY SHIPS IT IN THE RECORD ITSELF: `VendorIDs` is the
+# publishing database's own id, which is exactly what OSV.dev names a record
+# by. Measured over one tree holding gin 1.6.3, lodash 4.17.20, certifi
+# 2024.2.2 and symfony/http-kernel 5.4.0, running BOTH producers for real:
+# 0 of 10 Trivy findings shared an identity with OSV.dev's before, 10 of 10
+# after. The committed `trivy-fs.json` fixture has carried an instance all
+# along -- `"VendorIDs": ["GHSA-35jh-r3h4-6jhm"]` on CVE-2021-23337 -- so
+# most of this is provable without the binary.
+
+def test_the_advisory_id_is_osvs_own_when_trivy_publishes_it():
+    """`VendorIDs` first: exact, structured, and Trivy's own field for the
+    id the publishing database gave this advisory. The identity built from
+    it is byte-for-byte the one `osv._finding` mints for the same package."""
+    data = json.loads((FIX / "trivy-fs.json").read_text())
+    by_rule = {f["rule"]: f for f in adapters.trivy_vulns(data)}
+    assert "GHSA-35jh-r3h4-6jhm" in by_rule, sorted(by_rule)
+    assert "CVE-2021-23337" not in by_rule, sorted(by_rule)
+    component = {"ecosystem": "npm", "name": "lodash", "version": "4.17.20",
+                 "source": "package-lock.json"}
+    assert by_rule["GHSA-35jh-r3h4-6jhm"]["fingerprint"] == osv._finding(
+        component, "GHSA-35jh-r3h4-6jhm", None)["fingerprint"]
+
+
+def test_the_cve_survives_in_the_prose_when_it_is_no_longer_the_identity():
+    """Gaining fingerprint parity must not cost the reader the id they
+    actually search for. The CVE is not a fingerprint input, so saying it in
+    the rationale costs nothing an identity depends on."""
+    data = json.loads((FIX / "trivy-fs.json").read_text())
+    f = next(f for f in adapters.trivy_vulns(data)
+             if f["rule"] == "GHSA-35jh-r3h4-6jhm")
+    assert "CVE-2021-23337" in f["rationale"]
+
+
+def test_a_ghsa_in_the_references_is_used_when_there_is_no_vendor_id():
+    """The measured second source. `composer.lock`'s CVE-2022-24894 comes
+    from `php-security-advisories`, which publishes no `VendorIDs` at all --
+    and its one reference is
+    `.../security/advisories/GHSA-h7vf-5wrv-9fhv`, precisely the id OSV.dev
+    returned for symfony/http-kernel 5.4.0."""
+    data = {"Results": [{"Target": "composer.lock", "Type": "composer",
+        "Vulnerabilities": [
+        {"VulnerabilityID": "CVE-2022-24894", "PkgName": "symfony/http-kernel",
+         "InstalledVersion": "v5.4.0", "Severity": "HIGH", "Title": "t",
+         "References": [
+             "https://symfony.com/blog/chc",
+             "https://github.com/symfony/symfony/security/advisories/GHSA-h7vf-5wrv-9fhv",
+         ]}]}]}
+    f = adapters.trivy_vulns(data)[0]
+    assert f["rule"] == "GHSA-h7vf-5wrv-9fhv"
+    assert f["fingerprint"] == fingerprint.fingerprint(
+        "dependency", "GHSA-h7vf-5wrv-9fhv", "composer.lock",
+        "symfony/http-kernel@5.4.0")
+
+
+def test_an_ambiguous_reference_list_falls_back_rather_than_guessing():
+    """THE REASON THE REFERENCE SOURCE IS A HEURISTIC AND IS TREATED AS ONE.
+    Measured on lodash 4.17.20: Trivy's CVE-2026-4800 record lists
+    `GHSA-35jh-r3h4-6jhm` FIRST -- a DIFFERENT advisory, the one belonging to
+    CVE-2021-23337 -- and its own `GHSA-r5fr-rjxr-66jc` second. "First GHSA
+    in References" would have aliased this finding onto another hole's
+    identity, which is worse than not aliasing it at all. Two distinct ids
+    means fall through to the CVE."""
+    data = {"Results": [{"Target": "package-lock.json", "Type": "npm",
+        "Vulnerabilities": [
+        {"VulnerabilityID": "CVE-2026-4800", "PkgName": "lodash",
+         "InstalledVersion": "4.17.20", "Severity": "HIGH", "Title": "t",
+         "References": [
+             "https://github.com/advisories/GHSA-35jh-r3h4-6jhm",
+             "https://github.com/lodash/lodash/security/advisories/GHSA-r5fr-rjxr-66jc",
+         ]}]}]}
+    assert adapters.trivy_vulns(data)[0]["rule"] == "CVE-2026-4800"
+
+
+def test_the_same_ghsa_repeated_across_references_is_not_ambiguous():
+    """The containment side of the rule above: it counts DISTINCT ids, so an
+    advisory linked twice (GitHub's own page and the project's) still
+    aliases. This is the shape certifi's real record has."""
+    data = {"Results": [{"Target": "poetry.lock", "Type": "poetry",
+        "Vulnerabilities": [
+        {"VulnerabilityID": "CVE-2024-39689", "PkgName": "certifi",
+         "InstalledVersion": "2024.2.2", "Severity": "LOW", "Title": "t",
+         "References": [
+             "https://github.com/advisories/GHSA-248v-346w-9cwc",
+             "https://github.com/certifi/python-certifi/security/advisories/GHSA-248v-346w-9cwc",
+         ]}]}]}
+    assert adapters.trivy_vulns(data)[0]["rule"] == "GHSA-248v-346w-9cwc"
+
+
+def test_a_vendor_id_beats_a_reference_that_disagrees_with_it():
+    """Precedence, asserted where the two sources would answer differently:
+    the structured field wins over the id scraped out of prose."""
+    data = {"Results": [{"Target": "package-lock.json", "Type": "npm",
+        "Vulnerabilities": [
+        {"VulnerabilityID": "CVE-1", "VendorIDs": ["GHSA-aaaa-bbbb-cccc"],
+         "PkgName": "x", "InstalledVersion": "1", "Severity": "HIGH",
+         "Title": "t",
+         "References": ["https://github.com/advisories/GHSA-dddd-eeee-ffff"]}]}]}
+    assert adapters.trivy_vulns(data)[0]["rule"] == "GHSA-aaaa-bbbb-cccc"
+
+
+def test_several_vendor_ids_are_resolved_by_the_set_not_by_arrival_order():
+    """`VendorIDs` is a list and Trivy documents no order for it. Indexing
+    `[0]` would let a database refresh that merely REORDERS the field
+    re-identify the finding -- which is the exact bug this whole section
+    exists to prevent, arriving by a new route. The choice therefore depends
+    on the SET, so the two orderings below have to agree."""
+    def rule_for(ids):
+        data = {"Results": [{"Target": "package-lock.json", "Type": "npm",
+            "Vulnerabilities": [
+            {"VulnerabilityID": "CVE-1", "VendorIDs": ids, "PkgName": "x",
+             "InstalledVersion": "1", "Severity": "HIGH", "Title": "t"}]}]}
+        return adapters.trivy_vulns(data)[0]["rule"]
+
+    forwards = rule_for(["GHSA-dddd-eeee-ffff", "GHSA-aaaa-bbbb-cccc"])
+    assert forwards == rule_for(["GHSA-aaaa-bbbb-cccc", "GHSA-dddd-eeee-ffff"])
+    # And one of the candidates is kept rather than none: when Trivy folds N
+    # vendor advisories into one record, OSV.dev minted N findings and this
+    # producer mints one, so at most one identity can survive either way --
+    # preserving one beats preserving none.
+    assert forwards in ("GHSA-aaaa-bbbb-cccc", "GHSA-dddd-eeee-ffff")
+
+
+def test_an_advisory_with_no_database_id_keeps_its_cve():
+    """Not a failure. A publisher that mints no id of its own left OSV.dev
+    nothing to name the record by either, so the CVE is the honest identity
+    -- and the note says so rather than implying every id now agrees."""
+    data = {"Results": [{"Target": "package-lock.json", "Type": "npm",
+        "Vulnerabilities": [
+        {"VulnerabilityID": "CVE-2020-28500", "PkgName": "x",
+         "InstalledVersion": "1", "Severity": "HIGH", "Title": "t",
+         "References": ["https://nvd.nist.gov/vuln/detail/CVE-2020-28500"]}]}]}
+    f = adapters.trivy_vulns(data)[0]
+    assert f["rule"] == "CVE-2020-28500"
+    # No alias means no addendum: the id in the prose would be the id in the
+    # title, said twice.
+    assert "matched this advisory as" not in f["rationale"]
+
+
+@pytest.mark.parametrize("vendor", [[], [""], ["   "], "GHSA-aaaa-bbbb-cccc",
+                                    None, [None, 42]])
+def test_a_vendor_ids_field_that_is_not_a_list_of_ids_falls_through(vendor):
+    """`VendorIDs` absent, empty, blank, or the wrong shape entirely: each
+    one costs the alias, never the finding. A bare string is included on
+    purpose -- it is iterable, so a loop over it would alias onto the letter
+    `G`."""
+    data = {"Results": [{"Target": "package-lock.json", "Type": "npm",
+        "Vulnerabilities": [
+        {"VulnerabilityID": "CVE-1", "VendorIDs": vendor, "PkgName": "x",
+         "InstalledVersion": "1", "Severity": "HIGH", "Title": "t"}]}]}
+    assert adapters.trivy_vulns(data)[0]["rule"] == "CVE-1"
+
+
+@pytest.mark.parametrize("reference", [
+    "https://github.com/advisories/GHSA-aaa-bbbb-cccc",       # short group
+    "https://github.com/advisories/GHSA-aaaa-bbbb-cccc-dddd",  # a group too many
+    "https://github.com/advisories/GHSA-AAAA-BBBB-CCCC",       # not how they are minted
+    "https://example.com/ghsa-aaaa-bbbb-cccc",                 # lowercased prefix
+    "https://example.com/xGHSA-aaaa-bbbb-cccc",                # glued to a token
+])
+def test_only_a_well_formed_ghsa_id_is_taken_out_of_a_reference(reference):
+    """The heuristic accepts GitHub's own id shape and nothing that merely
+    resembles it. The four-group case matters most: a `\\b` boundary would
+    have matched the first three groups of a longer token and handed back an
+    id nobody wrote down."""
+    data = {"Results": [{"Target": "package-lock.json", "Type": "npm",
+        "Vulnerabilities": [
+        {"VulnerabilityID": "CVE-1", "PkgName": "x", "InstalledVersion": "1",
+         "Severity": "HIGH", "Title": "t", "References": [reference]}]}]}
+    assert adapters.trivy_vulns(data)[0]["rule"] == "CVE-1"
+
+
+def test_a_references_field_that_is_not_a_list_of_strings_falls_through():
+    for references in (None, "GHSA-aaaa-bbbb-cccc", 42, [None, 7, {}]):
+        data = {"Results": [{"Target": "package-lock.json", "Type": "npm",
+            "Vulnerabilities": [
+            {"VulnerabilityID": "CVE-1", "PkgName": "x",
+             "InstalledVersion": "1", "Severity": "HIGH", "Title": "t",
+             "References": references}]}]}
+        assert adapters.trivy_vulns(data)[0]["rule"] == "CVE-1", references
+
+
 def test_the_remediation_names_the_release_that_fixes_it():
     """`osv._finding` says "past {version}" -- past the version you HAVE.
     Keeping that preposition while substituting `FixedVersion` told the
@@ -1303,7 +1495,12 @@ def test_trivy_scan_runs_the_real_engine_and_finds_a_known_cve(tmp_path):
     way the Gitleaks section above does for secrets. `package-lock.json`
     here is this repository's own fixture -- lodash 4.17.20, which carries
     CVE-2021-23337 -- copied alone into an empty tree so the result cannot
-    be confused with anything else Trivy might find scanning this repo."""
+    be confused with anything else Trivy might find scanning this repo.
+
+    The advisory is named GHSA-35jh-r3h4-6jhm, not CVE-2021-23337: that is
+    the id OSV.dev gives the same hole, and Trivy publishes it in the same
+    record. The CVE stays visible in the prose, because it is what a human
+    searches for even when it is not what the ledger keys on."""
     root = tmp_path / "repo"
     root.mkdir()
     lockfile = REPO / "tests" / "security" / "fixtures" / "package-lock.json"
@@ -1311,7 +1508,9 @@ def test_trivy_scan_runs_the_real_engine_and_finds_a_known_cve(tmp_path):
     findings, notes = adapters.trivy_scan(root)
     assert findings is not None
     rules = {f["rule"] for f in findings}
-    assert "CVE-2021-23337" in rules
+    assert "GHSA-35jh-r3h4-6jhm" in rules, rules
+    assert "CVE-2021-23337" not in rules, rules
+    assert any("CVE-2021-23337" in f["rationale"] for f in findings), findings
     assert any(f["occurrences"][0]["file"] == "package-lock.json" for f in findings)
     assert any("trivy" in n.lower() for n in notes)
 
@@ -1384,6 +1583,76 @@ def test_the_engine_note_does_not_say_the_version_label_twice(tmp_path):
     _, notes = adapters.trivy_scan(root)
     assert any(re.search(r"Trivy \(\d", n) for n in notes), notes
     assert not any("Version: " in n for n in notes)
+
+
+# ------------------------------------------- the coverage notes, unskippable
+#
+# `DEP_ID_NOTE` and `DEP_SBOM_NOTE` were pinned only inside `@needs_trivy`
+# tests, so on a machine without the binary NOTHING asserted `trivy_scan`
+# returns them -- the suite went green while the two sentences a report's
+# honesty rests on could have been deleted outright. `run_json` is the one
+# door the engine comes through (see `engines.py`), so stubbing it exercises
+# the real `trivy_scan` with no binary anywhere.
+
+def _stub_trivy(monkeypatch, data):
+    monkeypatch.setattr(engines, "run_json", lambda *a, **k: (data, ""))
+    monkeypatch.setattr(engines, "version_of", lambda name: "Version: 0.74.0")
+
+
+def test_the_coverage_notes_are_returned_without_the_binary(monkeypatch,
+                                                            tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _stub_trivy(monkeypatch, json.loads((FIX / "trivy-fs.json").read_text()))
+    findings, notes = adapters.trivy_scan(root)
+    assert findings, "the fixture stopped producing findings"
+    assert adapters.DEP_ID_NOTE in notes, notes
+    assert adapters.DEP_SBOM_NOTE in notes, notes
+    assert adapters.DEP_ENGINE_NOTE.format(version="0.74.0") in notes, notes
+
+
+def test_the_id_note_is_not_said_when_there_is_nothing_to_transition(
+        monkeypatch, tmp_path):
+    """`DEP_ID_NOTE` describes what happens to a dependency finding whose
+    identity was minted while OSV.dev was the source. With no dependency
+    findings in the report there is no such finding to describe, and on a
+    two-lockfile toy repo the coverage note was already running to 1100
+    characters. The SBOM note stays: it is about what the SBOM lists, which
+    is true whether or not anything was found wrong."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    _stub_trivy(monkeypatch, {"SchemaVersion": 2, "Results": []})
+    findings, notes = adapters.trivy_scan(root)
+    assert findings == []
+    assert adapters.DEP_ID_NOTE not in notes, notes
+    assert adapters.DEP_SBOM_NOTE in notes, notes
+
+
+def test_the_id_note_comes_back_the_run_a_repository_grows_its_first_cve(
+        monkeypatch, tmp_path):
+    """A property of the REPORT, not of the machine: the note is not
+    suppressed for good once a clean run has been recorded."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    _stub_trivy(monkeypatch, {"SchemaVersion": 2, "Results": []})
+    assert adapters.DEP_ID_NOTE not in adapters.trivy_scan(root)[1]
+    _stub_trivy(monkeypatch, json.loads((FIX / "trivy-fs.json").read_text()))
+    assert adapters.DEP_ID_NOTE in adapters.trivy_scan(root)[1]
+
+
+def test_the_id_note_no_longer_claims_the_mapping_does_not_exist():
+    """The finding this note was rewritten for. It used to say the two
+    producers name an advisory from different databases FULL STOP, on the
+    stated grounds that no offline mapping existed -- while Trivy shipped the
+    mapping in `VendorIDs`. It must not go back to that, and it must not
+    swing the other way into claiming the identities always agree now."""
+    note = adapters.DEP_ID_NOTE
+    assert "publishing database's own id" in note
+    assert "one record per publishing database" in note, note
+    assert "Not always" in note, note
+    for overclaim in ("no offline mapping", "no mapping", "therefore appears "
+                      "here under a different identity"):
+        assert overclaim not in note, note
 
 
 def test_ignore_paths_that_cannot_reach_the_command_line_still_filter():

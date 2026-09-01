@@ -594,13 +594,37 @@ def gitleaks_scan(root, ignore_paths=()):
 # are normalised here, through `deps.normalise_version` itself rather than a
 # second copy of the same rule, before anything is hashed.
 #
-# ONE DIVERGENCE CANNOT BE CLOSED and is therefore DECLARED, in `DEP_ID_NOTE`
-# below: `vuln_id`. Trivy names an advisory by its CVE id, OSV.dev by the id
-# of whichever database published it. Measured on `github.com/gin-gonic/gin
-# 1.6.3`: OSV.dev answers GHSA-2c4m-59x9-fr2g, GHSA-3vp4-m3rf-835h,
-# GHSA-h395-qcrw-5vmq, GO-2021-0052, GO-2023-1737; Trivy answers
-# CVE-2020-28483, CVE-2023-26125, CVE-2023-29401. Zero overlap, and no
-# offline mapping between the two vocabularies exists to build one from.
+# THE FOURTH INPUT IS `vuln_id`, AND IT IS NOT A LOST CAUSE. Trivy's headline
+# `VulnerabilityID` is a CVE id where OSV.dev names the same advisory by the
+# id of whichever database published it, so the two used to share nothing at
+# all. This comment used to say no offline mapping between the vocabularies
+# existed. IT DOES EXIST, AND IT IS IN TRIVY'S OWN RECORD -- the very example
+# quoted here as proof of the gap carries it. Measured over one tree holding
+# gin 1.6.3, lodash 4.17.20, certifi 2024.2.2 and symfony/http-kernel 5.4.0:
+#
+#   go.mod             CVE-2020-28483  VendorIDs=[GHSA-h395-qcrw-5vmq]
+#   go.mod             CVE-2023-26125  VendorIDs=[GHSA-3vp4-m3rf-835h]
+#   go.mod             CVE-2023-29401  VendorIDs=[GHSA-2c4m-59x9-fr2g]
+#   package-lock.json  CVE-2021-23337  VendorIDs=[GHSA-35jh-r3h4-6jhm]
+#   poetry.lock        CVE-2024-39689  VendorIDs=[GHSA-248v-346w-9cwc]
+#   composer.lock      CVE-2022-24894  VendorIDs=None, DataSource=php-...
+#
+# Those GHSA ids are exactly what OSV.dev answers for the same components:
+# nine of the ten findings on that tree matched on `VendorIDs` alone, and the
+# tenth -- the composer one, whose PHP data source publishes no vendor id --
+# carries `.../security/advisories/GHSA-h7vf-5wrv-9fhv` in `References`,
+# which is precisely the id OSV.dev returned. So `_trivy_advisory_id` reads
+# the alias instead of declaring the gap, and the fingerprint is built from
+# it. Shared identities over that tree: 0 of 10 before, 10 of 10 after.
+#
+# WHAT REMAINS CANNOT BE ALIASED, and `DEP_ID_NOTE` now says THAT instead.
+# OSV.dev mints one record per publishing database; Trivy mints one per hole.
+# For gin 1.6.3 that is five OSV ids against three Trivy findings --
+# GO-2021-0052 and GO-2023-1737 have no Trivy counterpart to alias onto --
+# and certifi adds PYSEC-2024-230 beside the GHSA that does match. No
+# mapping reconciles a residue that exists because one side counts
+# differently from the other; those findings are still reported `fixed` once,
+# and that is stated rather than hidden.
 
 # Trivy's own severity words, mapped to ours. The default for a word Trivy
 # did not send -- `UNKNOWN`, or a future grade this table has never heard of
@@ -636,6 +660,19 @@ _FIX = "Upgrade {name} to {fixed} or later."
 # `deps.inventory`, which dedupes a package pinned in both. A type absent
 # here (cargo, pom, jar, ...) is one `deps.inventory` never read, so there is
 # no prior identity to preserve and the version is left as Trivy spelled it.
+#
+# EVERY ABSENT TYPE MAPS TO ONE BUCKET, `""`, and that is the dedupe key's
+# second element as well as the version rule's. Cargo, pom and jar therefore
+# share a bucket: two packages of DIFFERENT unknown ecosystems with the same
+# name AND the same version would collapse into one finding, attributed to
+# whichever lockfile sorts first. Left as it is on purpose. A collision needs
+# an identical name and an identical version across two ecosystems that
+# genuinely do not share a namespace, and none was found; splitting the
+# bucket by raw `Type` instead would break the case this table exists for --
+# `pip` and `poetry` are two Trivy types for the one `PyPI` ecosystem
+# `deps.inventory` dedupes across, and keying on the raw type would report
+# that package twice. If a real collision ever turns up, the fix is a bucket
+# per unmapped type (`f"trivy:{type}"`), not a return to the raw type.
 _TRIVY_ECOSYSTEM = {
     "npm": "npm", "yarn": "npm", "pnpm": "npm", "bun": "npm",
     "pip": "PyPI", "poetry": "PyPI", "pipenv": "PyPI", "uv": "PyPI",
@@ -654,18 +691,23 @@ _TRIVY_ECOSYSTEM = {
 # 0.74.0)".
 DEP_ENGINE_NOTE = "Dependencies were scanned for known CVEs by Trivy ({version})."
 
-# The divergence the section comment above says cannot be closed. Said on
-# every Trivy-scanned report, because it is a property of the producer rather
-# than of any one repository, and because the report where it matters most is
-# the FIRST one after the engine appears -- the one that lists every OSV.dev
-# finding as fixed.
-DEP_ID_NOTE = ("Trivy names an advisory by its CVE id, where OSV.dev names "
-               "the same advisory by the id of whichever database published "
-               "it (GHSA, GO, PYSEC). A dependency finding reported while "
-               "OSV.dev was the source therefore appears here under a "
-               "different identity: it is listed as fixed and its "
-               "replacement as new, and any decision recorded against the "
-               "old one does not follow it.")
+# The RESIDUE the section comment above describes -- not the whole divergence
+# any more, which `_trivy_advisory_id` closes wherever Trivy publishes the
+# alias. Said only when this scan actually produced dependency findings (see
+# `trivy_scan`): with none, there is nothing whose identity could have moved
+# and this is 480 characters of coverage note about a transition that cannot
+# be happening. Honest in BOTH directions on purpose: it must not go back to
+# claiming the two vocabularies never meet, and it must not start claiming
+# they always do.
+DEP_ID_NOTE = ("Trivy names an advisory by the publishing database's own id "
+               "wherever its record carries one, so a dependency finding "
+               "recorded while OSV.dev was the source usually keeps its "
+               "identity. Not always: OSV.dev mints one record per "
+               "publishing database where Trivy mints one per hole, so an "
+               "OSV.dev id with no Trivy counterpart (measured: "
+               "GO-2021-0052, PYSEC-2024-230) is listed as fixed and any "
+               "decision on it does not follow. An advisory with no database "
+               "id of its own keeps its CVE id.")
 
 # The SBOM and the findings deliberately come from two different readers, and
 # a reader comparing them has to be told. `cli.cmd_prepare` builds the SBOM
@@ -685,6 +727,74 @@ GO_SUM_ONLY_GAP = ("{count} {directories} in this repository {have} a go.sum "
                    "but no go.mod: Trivy reads go.mod, so the Go "
                    "dependencies pinned there were NOT checked for known "
                    "CVEs.")
+
+
+# GitHub's own id shape: `GHSA-` and three four-character groups. Bounded by
+# lookarounds rather than `\b` because `\b` would happily match the first
+# three groups of a longer hyphenated token and hand back an id that is not
+# the one written down. Only this one vocabulary is extracted from prose: a
+# GHSA id is unambiguous wherever it appears, where a bare `GO-2021-0052` or
+# `PYSEC-2024-230` is not worth guessing at from a URL.
+_GHSA_RE = re.compile(
+    r"(?<![-\w])GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}(?![-\w])")
+
+
+def _trivy_advisory_id(vuln) -> str:
+    """The id OSV.dev would have named this advisory by, or Trivy's own
+    `VulnerabilityID` when the record carries no alias to it.
+
+    THIS IS AN IDENTITY DECISION, not a label: `vuln_id` is hashed into the
+    fingerprint, so what this returns is what a human's `accepted` /
+    `false_positive` decision hangs off. Three sources, in descending order
+    of how much they are actually claiming:
+
+    1. `VendorIDs` -- EXACT AND STRUCTURED. Trivy's own field for "the id the
+       publishing database gave this advisory", which is precisely what
+       OSV.dev names a record by. Nine of the ten findings on the tree
+       measured in the section comment above matched OSV.dev on this alone.
+
+    2. a GHSA id in `References` -- A HEURISTIC, and treated as one. It is
+       prose scraped out of a URL, so it is accepted ONLY when the whole
+       reference list yields exactly ONE distinct well-formed GHSA id. That
+       restriction is measured, not defensive: lodash's CVE-2026-4800 lists
+       `GHSA-35jh-r3h4-6jhm` FIRST and its own `GHSA-r5fr-rjxr-66jc` second,
+       so "the first GHSA in References" would have aliased that finding onto
+       a DIFFERENT advisory's identity. Ambiguity here is not a tie to break;
+       it is a reason to fall through to 3.
+
+    3. `VulnerabilityID` -- the CVE id, unchanged. Not a failure: an advisory
+       whose publisher mints no id of its own has no OSV.dev identity to
+       preserve, and the CVE is the honest name for it.
+
+    WHY `VendorIDs` IS SORTED RATHER THAN INDEXED. It is a list, and Trivy
+    documents no order for it, so `[0]` would let a database refresh that
+    merely reorders the field re-identify a finding -- the exact bug this
+    whole section exists to prevent. Sorting makes the choice depend on the
+    SET, not on the order it arrived in. Taking one of several rather than
+    refusing to alias at all is deliberate too: when Trivy folds N vendor
+    advisories into one record, OSV.dev minted N findings and this producer
+    mints one, so at most one of those identities can survive whatever we do.
+    Preserving one beats preserving none. Every record measured so far
+    carries exactly one vendor id; this is the tie-break, not the common
+    path.
+    """
+    if not isinstance(vuln, dict):
+        return ""
+    vendor = vuln.get("VendorIDs")
+    if isinstance(vendor, list):
+        ids = sorted({v.strip() for v in vendor
+                      if isinstance(v, str) and v.strip()})
+        if ids:
+            return ids[0]
+    references = vuln.get("References")
+    if isinstance(references, list):
+        found = set()
+        for reference in references:
+            if isinstance(reference, str):
+                found.update(_GHSA_RE.findall(reference))
+        if len(found) == 1:
+            return found.pop()
+    return str(vuln.get("VulnerabilityID") or "").strip()
 
 
 def _trivy_component(vuln, ecosystem: str):
@@ -756,8 +866,16 @@ def _go_sum_without_go_mod(root, ignore_paths=()) -> int:
 
 def _trivy_finding(source: str, vuln, ecosystem: str = ""):
     component = _trivy_component(vuln, ecosystem)
-    vuln_id = (str(vuln.get("VulnerabilityID") or "").strip()
-               if isinstance(vuln, dict) else "")
+    # OSV.dev's name for this advisory when Trivy's record carries it, the
+    # CVE id otherwise -- see `_trivy_advisory_id`. It replaces the CVE
+    # EVERYWHERE the id appears, not just inside the hash: `rule` is what
+    # `fingerprint()` is fed, so a finding whose rule and fingerprint were
+    # built from two different ids could not be re-derived from its own
+    # fields, and the two producers would agree on the hash while disagreeing
+    # on the row a human reads.
+    vuln_id = _trivy_advisory_id(vuln)
+    cve = (str(vuln.get("VulnerabilityID") or "").strip()
+           if isinstance(vuln, dict) else "")
     if component is None or not vuln_id:
         # No id, no package name, no installed version: this parser cannot
         # build an identity for any of the three. Costs this one record, not
@@ -780,6 +898,13 @@ def _trivy_finding(source: str, vuln, ecosystem: str = ""):
     rationale = (str(vuln.get("Title") or "").strip()
                  or str(vuln.get("Description") or "").strip()[:200]
                  or vuln_id)
+    if cve and cve != vuln_id:
+        # The CVE is not part of the identity any more, and it must not
+        # simply vanish from the report: it is the id a human searches for,
+        # and dropping it to gain the fingerprint parity above would be a
+        # regression traded for a fix. `rationale` is not a fingerprint
+        # input, so saying it here costs nothing an identity depends on.
+        rationale += f" (Trivy matched this advisory as {cve}.)"
     finding = {
         "fingerprint": fingerprint("dependency", vuln_id, source,
                                    f"{name}@{version}"),
@@ -935,8 +1060,18 @@ def trivy_scan(root, ignore_paths=()):
     # "Version: 0.74.0" -- without it the note reads "by Trivy (Version:
     # 0.74.0)", with the label said twice.
     version = (engines.version_of("trivy") or "trivy").removeprefix("Version: ")
-    notes = [DEP_ENGINE_NOTE.format(version=version), DEP_ID_NOTE,
-             DEP_SBOM_NOTE]
+    notes = [DEP_ENGINE_NOTE.format(version=version)]
+    if findings:
+        # ONLY WHEN THERE IS SOMETHING TO TRANSITION. `DEP_ID_NOTE` describes
+        # what happens to a dependency finding whose identity was minted
+        # while OSV.dev was the source; with no dependency findings in this
+        # report there is no such finding to describe, and the note is 480
+        # characters a reader has to get past to reach the gaps that ARE
+        # real. Kept as a property of the report rather than of the machine:
+        # a repository that grows its first CVE gets the note back the same
+        # run.
+        notes.append(DEP_ID_NOTE)
+    notes.append(DEP_SBOM_NOTE)
     go_only = _go_sum_without_go_mod(root, ignore_paths)
     if go_only:
         notes.append(GO_SUM_ONLY_GAP.format(

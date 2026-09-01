@@ -410,10 +410,12 @@ def _scan_dependencies(root, components, offline: bool, ignore_paths=()):
     under two fingerprints, and the checklist would carry it as two rows a
     human's decision on one never reaches. The two mint the SAME identity for
     the same advisory -- see `adapters.trivy_vulns`, which normalises Trivy's
-    inputs onto `deps.inventory`'s spelling for exactly that reason -- except
-    for the advisory id itself, which they name from different databases;
-    `adapters.DEP_ID_NOTE` states that in the report rather than leaving it to
-    be discovered from a diff.
+    inputs onto `deps.inventory`'s spelling, and `adapters._trivy_advisory_id`,
+    which reads the publishing database's id out of Trivy's own record rather
+    than hashing the CVE id OSV.dev never uses. What is left over is OSV.dev
+    minting one record per database where Trivy mints one per hole, which no
+    alias reconciles; `adapters.DEP_ID_NOTE` states that in the report rather
+    than leaving it to be discovered from a diff.
 
     The engine still falls back if it could not produce a report at all --
     absent, unversioned, timed out, or writing a format this code cannot

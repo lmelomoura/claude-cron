@@ -166,8 +166,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   source, f"{name}@{version}")`, exactly `osv._finding`'s — and the INPUTS
   to it are now normalised onto the inventory's own spelling as well, so a
   CVE this engine reports for a package OSV.dev already reported keeps its
-  identity for everything except the advisory id, which the two name from
-  different databases and the coverage note declares. `--offline` now
+  identity — the advisory id included, which is read out of Trivy's own
+  record rather than left to diverge (see *A dependency advisory keeps
+  OSV.dev's own id* below). `--offline` now
   declares Trivy's own vulnerability database unreachable as well as
   OSV.dev's, since neither exists without a network request this analysis
   was told not to make.
@@ -227,14 +228,43 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   refuses the category and no migration could be written. And it flipped per
   machine. On a tree with a `v`-prefixed Symfony and a Go module, 0 of 4
   identities matched between the two producers before and 4 of 4 after.
-  ONE divergence cannot be closed and is now DECLARED in the coverage note
-  instead: Trivy names an advisory by its CVE id where OSV.dev names the
-  same advisory by the id of whichever database published it — for
-  `gin-gonic/gin 1.6.3`, three CVEs against three GHSAs and two GO ids, with
-  no offline mapping between the vocabularies. Two smaller gaps are stated
-  the same way: a directory with a `go.sum` and no `go.mod` is invisible to
-  Trivy, and the SBOM still comes from the inventory's five formats while
-  the findings come from every format Trivy reads.
+  The fourth input, the advisory id, is closed by the entry below. Two
+  smaller gaps are stated in the coverage note rather than fixed: a
+  directory with a `go.sum` and no `go.mod` is invisible to Trivy, and the
+  SBOM still comes from the inventory's five formats while the findings come
+  from every format Trivy reads.
+
+- **A dependency advisory keeps OSV.dev's own id, so swapping in Trivy no
+  longer re-identifies every finding it names.** The three normalised inputs
+  above left a fourth diverging, and it was written down as unfixable on the
+  stated grounds that no offline mapping between the two vocabularies
+  existed. It does exist, and Trivy ships it inside the record the old
+  comment quoted as proof of the gap: `VendorIDs` is the publishing
+  database's own id, which is exactly what OSV.dev names an advisory by.
+  Nine of the ten findings on a tree holding `gin 1.6.3`, `lodash 4.17.20`,
+  `certifi 2024.2.2` and `symfony/http-kernel 5.4.0` matched OSV.dev on that
+  field alone; the tenth comes from `php-security-advisories`, which
+  publishes no vendor id, and carries `GHSA-h7vf-5wrv-9fhv` in its
+  `References` — precisely what OSV.dev returned. Running BOTH producers for
+  real over that tree: **0 of 10 shared identities before, 10 of 10 after.**
+  The reference source is treated as the heuristic it is — a GHSA id is
+  taken from `References` only when the whole list yields exactly one, since
+  lodash's `CVE-2026-4800` lists a *different* advisory's GHSA first, and
+  "the first GHSA in the list" would have aliased it onto the wrong hole.
+  `VendorIDs` is resolved by the set rather than by arrival order, because
+  indexing `[0]` would let a database refresh that merely reorders the field
+  re-identify a finding — the same bug arriving by a new route. The CVE id
+  is no longer the identity, so it is said in the finding's prose instead:
+  it is what a human searches for even when it is not what the ledger keys
+  on. What genuinely cannot be aliased is now what the coverage note
+  describes: OSV.dev mints one record per publishing database where Trivy
+  mints one per hole, so `GO-2021-0052`, `GO-2023-1737` and `PYSEC-2024-230`
+  have no Trivy counterpart to map onto and are still reported `fixed` once.
+  That note is also no longer said on every report for ever — it describes a
+  transition, so it is said only when the report actually contains
+  dependency findings, and it and the SBOM note are now pinned by tests that
+  do not need the Trivy binary (previously nothing asserted either was
+  returned on a machine without it).
 
 - **The one actionable sentence in a dependency finding no longer tells you
   to skip the release that fixes it.** `osv.py` says "Upgrade X past
