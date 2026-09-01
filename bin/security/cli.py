@@ -637,11 +637,13 @@ def cmd_prepare(args):
     # `run_json` calls above them, which this comment used to name and whose
     # order is a measured no-op (each writes its own temp file; the suite
     # passes either way). Swap either real pair and every co-located secret
-    # becomes a report about the past. Pinned on this path by
-    # test_the_working_tree_reading_wins_over_its_history_twin
-    # (tests/security/test_cli.py, fallback scanner only) and on the engine's
-    # by test_the_tree_reading_wins_over_its_history_twin_on_either_scanner
-    # (tests/security/test_adapters.py), which is the parametrised one.
+    # becomes a report about the past. Both pairs are pinned by ONE test,
+    # test_the_tree_reading_wins_over_its_history_twin_on_either_scanner
+    # (tests/security/test_adapters.py), parametrised over both scanners. The
+    # fallback-only copy that used to live in tests/security/test_cli.py was
+    # retired with it: it asserted the built-in scanner's rule name while
+    # inheriting the suite's engines-off default, so it was red in the only
+    # configuration a real analysis runs in.
     secret_findings, secret_notes, tree_lines = _scan_secrets(root, ignore)
     findings = secret_findings + hygiene.scan(root, ignore)
     notes = [n for n in secret_notes if n]

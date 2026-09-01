@@ -627,6 +627,17 @@ agrees with the engine's, and that its riskier save paths behave: they run the
 page's real functions over a stub DOM in `node`, so a save that would wipe a
 provisioning hook fails the suite rather than the operator's config.
 
+`tests/security/` is run **twice**. It is pinned to the built-in secret scanner
+(`CC_SECURITY_ENGINES=off`) so that a test planting a credential exercises one
+scanner rather than whichever binaries a laptop happens to have installed — and
+then, on a machine where `gitleaks` is installed, one test runs the whole
+security package again with `CC_SECURITY_ENGINES=on`, which is the configuration
+every real analysis uses. The second run roughly triples that package's time
+(about four minutes here, against ninety seconds). It is the price of not
+discovering in production that the suite was green only in a configuration
+nothing ships in — which is exactly what had happened: the engines-on run was
+red for the entire life of the engine path and nothing said so.
+
 Run both after touching either side.
 
 ### When a run is killed

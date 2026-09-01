@@ -84,9 +84,23 @@ def prepared_analysis(db, tmp_path, **kw):
 
 
 def test_prepare_then_report_then_finish(tmp_path):
+    """The whole shape of one analysis, on EITHER scanner.
+
+    The planted key is scaffolding -- this test is about prepare -> report ->
+    finish -> checklist, not about secret detection -- but scaffolding a
+    lifecycle test on material only one scanner reports means proving the
+    lifecycle in only one configuration. It used to plant AWS's own
+    documentation key (AKIAIOSFODNN7EXAMPLE), which gitleaks deliberately
+    allowlists: `findings >= 1` below was true on the built-in scanner and
+    false on the engine, so with `CC_SECURITY_ENGINES=on` -- what a real
+    analysis runs with -- this test failed on its second line and proved
+    nothing about the four verbs it names. The key here is shaped like a live
+    one and assembled at runtime, the way test_adapters.py's is and for the
+    same reason, so both scanners report it and the lifecycle is proved twice.
+    """
     root = tmp_path / "repo"
     (root / "sub").mkdir(parents=True)
-    (root / "prod.env").write_text("AWS_ACCESS_KEY_ID=AKIA" + "IOSFODNN7EXAMPLE\n")
+    (root / "prod.env").write_text("AWS_ACCESS_KEY_ID=AKIA" + "QYLPMN5HNXMEFRTG\n")
     db = tmp_path / "security.db"
 
     aid = open_analysis(db)
@@ -608,13 +622,25 @@ def test_a_decision_wins_over_the_derived_state(tmp_path):
 
 
 def test_findings_lists_what_the_deterministic_phase_left_for_the_agent(tmp_path):
+    """PINNED to the built-in scanner, because the fixture is one only it
+    reports: a PEM header with `xx` where the key material goes. Gitleaks is
+    right to ignore that -- its private-key rule wants a body -- so under the
+    engine `found` came back empty, `any(...)` failed and, worse,
+    `all("occurrences" in f ...)` passed vacuously over the empty list.
+
+    The `any(...)` is what stops the `all(...)` after it being vacuous here
+    too, so the two lines are a pair and neither may be dropped. The engine's
+    half of this verb is exercised in test_adapters.py, whose engine-path
+    tests read `findings` through this same CLI door."""
+    env = {**os.environ, "CC_SECURITY_ENGINES": "off"}
     root = tmp_path / "repo"
     root.mkdir()
     (root / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----\nxx\n")
     db = tmp_path / "security.db"
     aid = open_analysis(db)
-    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
-    found = run(db, "findings", "--analysis", str(aid))
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline",
+        env=env)
+    found = run(db, "findings", "--analysis", str(aid), env=env)
     assert any(f["category"] == "secret" for f in found)
     assert all("occurrences" in f for f in found)
 
@@ -1224,107 +1250,34 @@ def git_repo(root, commits):
     return root
 
 
+# AWS's own documentation key, which gitleaks allowlists on purpose. That is
+# exactly why it is still here: every test below that uses it is PINNED to the
+# built-in scanner and asserts the built-in scanner's rule names, and a fixture
+# the engine reports too would invite somebody to unpin one of them. The
+# detectable shape lives in test_adapters.py (`AKIA` + `QYLPMN5HNXMEFRTG`) and
+# in `test_prepare_then_report_then_finish`, which is engine-neutral.
 AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
 
 
-def states_by_rule(checklist):
-    return {f["rule"]: f["state"] for f in checklist["findings"]}
-
-
-def test_a_history_secret_survives_the_second_and_third_analysis(tmp_path):
-    """THE scenario the whole history sweep exists for.
-
-    A key was committed on Monday and the file deleted on Tuesday. The value
-    is still readable by anyone with a clone, which is why the finding's own
-    remediation says deleting the file is not enough -- rotate first.
-
-    The sweep used to run only on a branch's FIRST analysis, so nothing
-    re-emitted the finding afterwards: `classify` saw it in the previous
-    analysis and not in this one and reported it `fixed` -- congratulating the
-    operator for the exact act the remediation calls insufficient -- and by
-    the third analysis it had dropped out of the report entirely. It must stay
-    OPEN, run after run, until somebody rotates the credential and DECIDES it.
-    """
-    root = git_repo(tmp_path / "repo", [
-        ("add", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
-        ("remove", {"prod.env": None}),
-    ])
-    db = tmp_path / "security.db"
-
-    first = open_analysis(db)
-    run(db, "prepare", "--analysis", str(first), "--root", str(root), "--offline")
-    run(db, "finish", "--analysis", str(first), "--state", "done")
-    assert states_by_rule(run(db, "checklist", "--analysis", str(first))) == {
-        "aws_access_key": "new"}
-
-    # Nothing changed in the repository between the analyses. The finding is
-    # not new (it was here last time) and it is emphatically not fixed.
-    second = open_analysis(db)
-    run(db, "prepare", "--analysis", str(second), "--root", str(root), "--offline")
-    run(db, "finish", "--analysis", str(second), "--state", "done")
-    assert states_by_rule(run(db, "checklist", "--analysis", str(second))) == {
-        "aws_access_key": "open"}
-
-    # And the third run still knows about it: the old behaviour lost it here
-    # altogether -- neither the previous analysis nor this one carried it, so
-    # it was in no checklist at all.
-    third = open_analysis(db)
-    run(db, "prepare", "--analysis", str(third), "--root", str(root), "--offline")
-    run(db, "finish", "--analysis", str(third), "--state", "done")
-    assert states_by_rule(run(db, "checklist", "--analysis", str(third))) == {
-        "aws_access_key": "open"}
-    carried = run(db, "findings", "--analysis", str(third))
-    assert "git history" in carried[0]["rationale"]
-    assert AWS_KEY not in json.dumps(carried)
-
-
-def test_rotating_and_accepting_is_how_a_history_finding_closes(tmp_path):
-    """The other half of the lifecycle. Because the sweep never stops finding
-    it, a history finding cannot be closed by changing the code -- the only
-    honest close is a human saying the credential was rotated and the exposure
-    accepted. That decision must win over the derived `open`."""
-    root = git_repo(tmp_path / "repo", [
-        ("add", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
-        ("remove", {"prod.env": None}),
-    ])
-    db = tmp_path / "security.db"
-    first = open_analysis(db)
-    run(db, "prepare", "--analysis", str(first), "--root", str(root), "--offline")
-    fp = run(db, "findings", "--analysis", str(first))[0]["fingerprint"]
-    run(db, "finish", "--analysis", str(first), "--state", "done")
-
-    run(db, "decide", "--project", "web", "--fingerprint", fp,
-        "--state", "accepted", "--reason", "rotated at the provider on Tuesday")
-
-    second = open_analysis(db)
-    run(db, "prepare", "--analysis", str(second), "--root", str(root), "--offline")
-    run(db, "finish", "--analysis", str(second), "--state", "done")
-    assert states_by_rule(run(db, "checklist", "--analysis", str(second))) == {
-        "aws_access_key": "accepted"}
-
-
-def test_the_working_tree_reading_wins_over_its_history_twin(tmp_path):
-    """A secret in the tree AND in the history is ONE finding: same rule, same
-    path, therefore one fingerprint, and record_finding upserts.
-
-    The two readings disagree about the wording and the line: the tree knows
-    the real line number and says "in the working tree", the history says line
-    0 and "in the git history". The tree's is the one a reader can act on, so
-    it must be recorded LAST and win the upsert. The history sweep used to be
-    appended after the tree, which overwrote a live, locatable secret with a
-    line-0 report about the past.
-    """
-    root = git_repo(tmp_path / "repo", [
-        ("add", {"prod.env": f"# header\nAWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
-    ])
-    db = tmp_path / "security.db"
-    aid = open_analysis(db)
-    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
-    found = run(db, "findings", "--analysis", str(aid))
-    secret = [f for f in found if f["rule"] == "aws_access_key"]
-    assert len(secret) == 1, "the tree and history readings must be one row"
-    assert "in the working tree" in secret[0]["rationale"]
-    assert [o["line"] for o in secret[0]["occurrences"]] == [2]
+# THREE TESTS THAT USED TO SIT HERE NOW LIVE IN test_adapters.py, parametrised
+# over `ENGINE_MATRIX` so each is proved on the built-in scanner AND on
+# gitleaks:
+#
+#   test_a_history_secret_survives_the_second_and_third_analysis
+#     -> test_a_history_secret_stays_open_on_either_scanner
+#   test_rotating_and_accepting_is_how_a_history_finding_closes
+#     -> test_rotating_and_accepting_closes_it_on_either_scanner
+#   test_the_working_tree_reading_wins_over_its_history_twin
+#     -> test_the_tree_reading_wins_over_its_history_twin_on_either_scanner
+#
+# The copies here were not a second opinion, they were the same opinion in a
+# vocabulary only one scanner speaks: they planted the documentation key above
+# and asserted `aws_access_key`, while inheriting a `CC_SECURITY_ENGINES=off`
+# default they never declared. Run the suite the way production runs -- engines
+# ON -- and all three went red on a fixture gitleaks is right to ignore, having
+# proved the built-in half twice and the engine half never. The parametrised
+# versions assert the STATE and the wording rather than the rule name, which is
+# what made covering both paths possible at all.
 
 
 def test_ignore_paths_reach_the_tree_the_history_and_the_hygiene_pass(tmp_path):
@@ -1342,7 +1295,18 @@ def test_ignore_paths_reach_the_tree_the_history_and_the_hygiene_pass(tmp_path):
     its own coverage in `test_the_default_noise_filter_reaches_every_
     deterministic_phase` above; this test is about the OPERATOR's globs and
     has to keep being about only them.
+
+    PINNED to the built-in scanner, and NOT retired in favour of the engine's
+    version. `test_adapters.test_the_engine_obeys_the_ignore_paths_prepare_
+    was_given` covers the same globs on the engine path, but it filters to
+    `category == "secret"` over a tree that is not a git checkout -- so it is
+    the SECRET phase's half and only that. This test is the one that keeps the
+    promise about the HISTORY sweep and the HYGIENE pass: the bare `== []`
+    covers every phase, and the `committed_key_file` in the positive control
+    is the proof that the hygiene pass really had something to suppress. Those
+    two phases are the same code on both paths; the rule names are not.
     """
+    env = {**os.environ, "CC_SECURITY_ENGINES": "off"}
     root = git_repo(tmp_path / "repo", [
         ("fixtures", {"tests/planted/fake.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
                       "tests/planted/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nx\n"}),
@@ -1351,16 +1315,18 @@ def test_ignore_paths_reach_the_tree_the_history_and_the_hygiene_pass(tmp_path):
     db = tmp_path / "security.db"
 
     noisy = open_analysis(db)
-    run(db, "prepare", "--analysis", str(noisy), "--root", str(root), "--offline")
-    rules = {f["rule"] for f in run(db, "findings", "--analysis", str(noisy))}
+    run(db, "prepare", "--analysis", str(noisy), "--root", str(root), "--offline",
+        env=env)
+    rules = {f["rule"] for f in run(db, "findings", "--analysis", str(noisy),
+                                    env=env)}
     assert {"aws_access_key", "private_key", "committed_key_file"} <= rules, (
         f"the fixture must be noisy without the globs: {sorted(rules)}")
-    run(db, "finish", "--analysis", str(noisy), "--state", "done")
+    run(db, "finish", "--analysis", str(noisy), "--state", "done", env=env)
 
     quiet = open_analysis(db)
     run(db, "prepare", "--analysis", str(quiet), "--root", str(root), "--offline",
-        "--ignore", "tests/planted/**")
-    assert run(db, "findings", "--analysis", str(quiet)) == []
+        "--ignore", "tests/planted/**", env=env)
+    assert run(db, "findings", "--analysis", str(quiet), env=env) == []
 
 
 def test_the_default_noise_filter_is_declared_in_the_coverage_note(tmp_path):
@@ -3773,11 +3739,17 @@ def test_migrate_rules_is_refused_without_gitleaks(tmp_path):
     aid = open_analysis(db)
     run(db, "finish", "--analysis", str(aid), "--state", "done")
 
-    # The suite's own default: CC_SECURITY_ENGINES=off, which `engine_path`
-    # reports as absent whether or not the binary is on this machine -- so
-    # this test says the same thing on a laptop with gitleaks and on CI
-    # without it.
-    out = fails(db, "migrate-rules")
+    # CC_SECURITY_ENGINES=off, STATED here rather than inherited from
+    # conftest's default. `engine_path` consults the switch before it consults
+    # PATH, so an engine that is off is an engine that is absent as far as the
+    # next analysis is concerned -- which is the machine this refusal is about,
+    # and it is the same machine on a laptop with gitleaks and on CI without
+    # it. Inheriting the default instead made this test pass only while nobody
+    # ran the suite in production's configuration: with the engines on and
+    # gitleaks really installed, `migrate-rules` correctly proceeded and the
+    # refusal this test is named for was never reached.
+    env_off = {**os.environ, "CC_SECURITY_ENGINES": "off"}
+    out = fails(db, "migrate-rules", env=env_off)
     assert out.returncode != 0
     assert "gitleaks is not available" in out.stderr
     assert "nothing was migrated" in out.stderr.lower()

@@ -359,6 +359,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The security suite is no longer green only in a configuration nothing
+  ships in.** `tests/security/conftest.py` pins `CC_SECURITY_ENGINES=off` so
+  that a test planting a credential exercises one scanner rather than
+  whichever binaries a laptop happens to have. What nobody was checking is
+  the other configuration — engines **on**, which is what every real analysis
+  runs — and it had been red since the commit that first put gitleaks on the
+  secret path. Seven tests: six planted material gitleaks is deliberately
+  right to ignore (AWS's own published documentation key; a PEM header with
+  `xx` where the key body goes) and/or asserted the built-in scanner's
+  snake_case rule names against an engine that mints kebab-case ones, and the
+  seventh asserted a refusal that only the unstated ambient default produced.
+  Three of the six were superseded copies of lifecycle tests that
+  `test_adapters.py` already runs over BOTH scanners, and are deleted with a
+  pointer to their replacements; two now state the scanner they are about in
+  their own environment, as the tests around them already did; and the
+  whole-analysis lifecycle test plants a key both scanners report, so it is
+  proved on both paths instead of one. No property lost a home — each was
+  read against its replacement before the copy was removed.
+
+- **`pytest tests/security/` now runs itself a second time with the engines
+  on, and fails if that run is red.** The drift above survived for the whole
+  life of the engine path because nothing ever ran production's
+  configuration: there is no CI in this repository, so the suite is the only
+  gate, and a gate that exercises one of two configurations is a gate on half
+  the product. One test re-runs the security package with
+  `CC_SECURITY_ENGINES=on` whenever `gitleaks` is installed (where it is not,
+  on and off are the same run and it skips), and refuses a "no tests ran" as
+  a pass — pytest reports a collection failure with zero `FAILED` lines,
+  which reads exactly like success. It costs what the second configuration
+  costs: the package goes from about ninety seconds to about four minutes on
+  a machine with the engines installed.
+
 - **An operator's `ignore_paths` glob no longer narrows the Semgrep scan
   below the scope the analysis itself uses.** `semgrep_excludes` stripped the
   wildcard off every glob it was given — `docs/**` went down the command line
