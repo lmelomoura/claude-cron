@@ -1419,9 +1419,10 @@ def test_prepare_prefers_trivy_and_never_calls_osv(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(security_cli.adapters, "engine_path",
                         lambda name: "/usr/bin/trivy" if name == "trivy" else None)
     monkeypatch.setattr(security_cli.adapters, "trivy_scan",
-                        lambda root: ([_dep_finding()],
-                                      ["Dependencies were scanned for known "
-                                       "CVEs by trivy 0.74.0."]))
+                        lambda root, ignore_paths=(): (
+                            [_dep_finding()],
+                            ["Dependencies were scanned for known CVEs by "
+                             "trivy 0.74.0."]))
 
     def must_not_run(*_a, **_kw):
         raise AssertionError("osv.query must not run once Trivy has answered")
@@ -1473,8 +1474,9 @@ def test_prepare_falls_back_to_osv_when_trivy_produces_no_report(tmp_path, monke
     monkeypatch.setattr(security_cli.adapters, "engine_path",
                         lambda name: "/usr/bin/trivy" if name == "trivy" else None)
     monkeypatch.setattr(security_cli.adapters, "trivy_scan",
-                        lambda root: (None, ["trivy did not finish within 600s "
-                                             "and was stopped."]))
+                        lambda root, ignore_paths=(): (
+                            None, ["trivy did not finish within 600s and was "
+                                   "stopped."]))
     calls = []
 
     def fake_query(components, detail_cache=None, timeout=30):
@@ -1487,6 +1489,70 @@ def test_prepare_falls_back_to_osv_when_trivy_produces_no_report(tmp_path, monke
     assert calls, "osv.query must run when Trivy contributed nothing"
     row = run(db, "list", "--project", "web")[0]
     assert "did not finish" in row["coverage_note"]
+
+
+def test_the_osv_fallback_note_is_not_said_for_a_repository_with_no_lockfiles(
+        tmp_path, monkeypatch):
+    """The note claims dependencies "were checked against OSV.dev's own
+    database". With no components, `osv.query` returns before it opens a
+    socket, and saying it anyway describes a lookup that never happened."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path", lambda name: None)
+    monkeypatch.setattr(security_cli.osv, "query",
+                        lambda components, detail_cache=None, timeout=30: ([], ""))
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    note = run(db, "list", "--project", "web")[0]["coverage_note"]
+    assert "OSV.dev's own database" not in note
+
+    # ... and it IS said the moment there is something to check, or nobody
+    # learns which of the two producers scanned their dependencies.
+    (root / "package-lock.json").write_text(
+        (Path(__file__).parent / "fixtures" / "package-lock.json").read_text())
+    second = open_analysis(db)
+    security_cli.main(["prepare", "--analysis", str(second), "--root", str(root),
+                       "--db", str(db)])
+    notes = [r["coverage_note"] for r in run(db, "list", "--project", "web")]
+    assert any("OSV.dev's own database" in n for n in notes)
+
+
+def test_ignore_paths_reach_the_dependency_phase_whichever_producer_ran(
+        tmp_path, monkeypatch):
+    """`ignore_paths` is a promise about the ANALYSIS. Honouring it on the
+    engine path alone would make an operator's globs suppress a CVE on a
+    machine with Trivy installed and not on one without -- a report that
+    changes by machine, which is the same class of bug as the fingerprint
+    divergence. The inventory is untouched: the SBOM still lists the
+    lockfile."""
+    root = tmp_path / "repo"
+    (root / "examples").mkdir(parents=True)
+    (root / "examples" / "package-lock.json").write_text(
+        (Path(__file__).parent / "fixtures" / "package-lock.json").read_text())
+    db = tmp_path / "security.db"
+
+    def one_cve(components, detail_cache=None, timeout=30):
+        return [dict(_dep_finding(), occurrences=[
+            {"file": c["source"], "line": 0, "snippet_hash": ""}])
+            for c in components], ""
+    monkeypatch.setattr(security_cli.adapters, "engine_path", lambda name: None)
+    monkeypatch.setattr(security_cli.osv, "query", one_cve)
+
+    aid = open_analysis(db)
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    assert [f for f in run(db, "findings", "--analysis", str(aid))
+            if f["category"] == "dependency"]
+
+    scoped = open_analysis(db)
+    security_cli.main(["prepare", "--analysis", str(scoped), "--root", str(root),
+                       "--ignore", "examples", "--db", str(db)])
+    assert not [f for f in run(db, "findings", "--analysis", str(scoped))
+                if f["category"] == "dependency"]
 
 
 def test_offline_skips_trivy_as_well_as_osv(tmp_path, monkeypatch):

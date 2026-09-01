@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from security import adapters, engines, fingerprint, osv, secrets
+from security import adapters, deps, engines, fingerprint, osv, secrets
 
 FIX = Path(__file__).parent / "fixtures" / "engines"
 REPO = Path(__file__).resolve().parent.parent.parent
@@ -1021,12 +1021,206 @@ def test_the_default_severity_is_osvs_own_not_a_second_one_invented_here():
 
 
 def test_the_fingerprint_matches_osvs_own_recipe():
-    data = {"Results": [{"Target": "requirements.txt", "Vulnerabilities": [
+    """THE RECIPE ONLY. This test hand-writes the inputs and re-derives the
+    formula from the same literals, so it cannot fail while the recipe is
+    copied correctly -- and copying the recipe was never the hard part. What
+    the INPUTS to it are is checked by
+    `test_both_producers_mint_the_same_identity_for_one_package` below, which
+    runs both producers over one real tree instead of typing the answer."""
+    data = {"Results": [{"Target": "requirements.txt", "Type": "pip",
+        "Vulnerabilities": [
         {"VulnerabilityID": "CVE-2024-1", "PkgName": "requests",
          "InstalledVersion": "2.31.0", "Severity": "HIGH", "Title": "t"}]}]}
     f = adapters.trivy_vulns(data)[0]
     assert f["fingerprint"] == fingerprint.fingerprint(
         "dependency", "CVE-2024-1", "requirements.txt", "requests@2.31.0")
+
+
+# ------------------------------------------- the identity, input by input
+#
+# The recipe was copied correctly and the INPUTS TO IT were not, which is a
+# different bug with the same consequence: the same vulnerability gets a
+# different identity depending on whether Trivy happens to be installed. Each
+# affected finding is then reported `fixed` (its old identity is gone) AND
+# `new` (a fresh one appeared) in one report, and the human
+# `accepted`/`false_positive` decision against the old one strands for good --
+# `ledger._REFINGERPRINT` has no `dependency` entry, so `rename_rule` refuses
+# the category outright and there is no migration path to write.
+
+# A composer.lock whose one vulnerable package carries the `v` prefix that is
+# the Packagist NORM (Symfony, Doctrine, Monolog, most of Laravel), plus a Go
+# module -- the two ecosystems where `deps.py` normalises and Trivy does not.
+_COMPOSER_LOCK = json.dumps({
+    "packages": [{"name": "symfony/http-kernel", "version": "v5.4.0"}],
+    "packages-dev": [],
+})
+_GO_MOD = "module example.com/proof\n\ngo 1.21\n\nrequire github.com/gin-gonic/gin v1.6.3\n"
+_GO_SUM = (
+    "github.com/gin-gonic/gin v1.6.3 h1:ahKqKTFpO5KTPHxWZjEdPScmYaGtLo8Y4DMHoEsnp14=\n"
+    "github.com/gin-gonic/gin v1.6.3/go.mod h1:75u5sXoLsGZoRN5Sgbi1eraJ4GU3++wFwWzhwvtwp4M=\n")
+
+
+def _v_prefixed_tree(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "composer.lock").write_text(_COMPOSER_LOCK)
+    (root / "go.mod").write_text(_GO_MOD)
+    (root / "go.sum").write_text(_GO_SUM)
+    return root
+
+
+@needs_trivy
+def test_both_producers_mint_the_same_identity_for_one_package(tmp_path):
+    """BOTH PRODUCERS, ONE TREE, COMPARED AS SETS.
+
+    `deps.inventory` + `osv._finding` on one side, `trivy_scan` on the other,
+    over a tree carrying the two shapes that used to diverge: a Packagist
+    package pinned `v5.4.0` and a Go module. No network: OSV's identity for
+    an advisory is minted by `osv._finding` itself, from the component
+    `deps.inventory` actually produced, and compared against the identity
+    Trivy's own report produced for the same advisory.
+
+    Measured before the fix, on this exact tree:
+        symfony/http-kernel  osv='5.4.0'  trivy='v5.4.0'   -> two identities
+        gin-gonic/gin        osv source='go.sum'  trivy source='go.mod'
+                             osv='1.6.3'          trivy='v1.6.3'
+    Zero of the four Trivy findings shared an identity with OSV's recipe.
+    """
+    root = _v_prefixed_tree(tmp_path)
+    components = deps.inventory(root)
+    by_name = {c["name"]: c for c in components}
+    findings, notes = adapters.trivy_scan(root)
+    assert findings, "trivy found nothing to compare -- the fixture is stale"
+
+    # What OSV.dev's producer WOULD have minted for each advisory Trivy
+    # named, from its own component and its own function.
+    expected = set()
+    for f in findings:
+        component = by_name.get(f["title"].split(" ", 1)[0])
+        assert component is not None, (
+            f"{f['title']} names a package deps.inventory never saw")
+        expected.add(osv._finding(component, f["rule"], None)["fingerprint"])
+    assert {f["fingerprint"] for f in findings} == expected
+
+    # The one input the two producers cannot agree on is the advisory id
+    # itself -- Trivy says CVE-2020-28483 where OSV.dev says GHSA-2c4m-59x9-
+    # fr2g and GO-2021-0052 for the same hole -- and that is DECLARED rather
+    # than left for a reader to discover from a diff full of fixed/new pairs.
+    assert any("CVE" in n and "GHSA" in n for n in notes)
+
+
+def test_the_composer_v_prefix_is_stripped_the_way_deps_strips_it():
+    """`deps._composer` does `lstrip("v")`; Trivy's `InstalledVersion` keeps
+    the prefix. The committed `composer.lock` fixture has carried the
+    counter-example all along -- `evenement/evenement` at `v3.0.2`, recorded
+    in `trivy-fs.json` as `"Version": "v3.0.2"` -- and only failed to fire
+    because that package has no CVE."""
+    data = {"Results": [{"Target": "composer.lock", "Type": "composer",
+        "Vulnerabilities": [
+        {"VulnerabilityID": "CVE-2022-24894", "PkgName": "symfony/http-kernel",
+         "InstalledVersion": "v5.4.0", "Severity": "HIGH", "Title": "t"}]}]}
+    f = adapters.trivy_vulns(data)[0]
+    assert f["fingerprint"] == fingerprint.fingerprint(
+        "dependency", "CVE-2022-24894", "composer.lock",
+        "symfony/http-kernel@5.4.0")
+    assert "v5.4.0" not in f["title"]
+
+
+def test_a_go_module_is_identified_by_the_go_sum_beside_its_go_mod(tmp_path):
+    """Trivy reads `go.mod`; `deps.inventory` has only ever read `go.sum`.
+    BOTH inputs moved at once -- the source and the version -- so a Go CVE
+    got a fresh identity the moment the engine arrived."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "go.mod").write_text(_GO_MOD)
+    (root / "go.sum").write_text(_GO_SUM)
+    data = {"Results": [{"Target": "go.mod", "Type": "gomod",
+        "Vulnerabilities": [
+        {"VulnerabilityID": "CVE-2020-28483",
+         "PkgName": "github.com/gin-gonic/gin", "InstalledVersion": "v1.6.3",
+         "Severity": "HIGH", "Title": "t"}]}]}
+    f = adapters.trivy_vulns(data, root)[0]
+    assert f["occurrences"][0]["file"] == "go.sum"
+    assert f["fingerprint"] == fingerprint.fingerprint(
+        "dependency", "CVE-2020-28483", "go.sum",
+        "github.com/gin-gonic/gin@1.6.3")
+
+
+def test_a_go_mod_with_no_go_sum_beside_it_keeps_trivys_own_target(tmp_path):
+    """The probe is real, not assumed. With no `go.sum` there was no Go
+    component in the inventory either, so there is no identity to preserve --
+    and naming a file that is not there would send a reader to a path that
+    does not exist."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "go.mod").write_text(_GO_MOD)
+    data = {"Results": [{"Target": "go.mod", "Type": "gomod",
+        "Vulnerabilities": [
+        {"VulnerabilityID": "CVE-1", "PkgName": "github.com/gin-gonic/gin",
+         "InstalledVersion": "v1.6.3", "Severity": "HIGH", "Title": "t"}]}]}
+    assert adapters.trivy_vulns(data, root)[0]["occurrences"][0]["file"] == "go.mod"
+
+
+@needs_trivy
+def test_a_go_sum_with_no_go_mod_is_declared_not_silently_dropped(tmp_path):
+    """The divergence that CANNOT be closed from here: Trivy will not read
+    `go.sum`, so a module directory holding one with no `go.mod` produced Go
+    findings under OSV.dev and produces none at all under Trivy. Stated in
+    the coverage note, because a gap nobody is told about reads exactly like
+    a clean result."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "go.sum").write_text(_GO_SUM)
+    findings, notes = adapters.trivy_scan(root)
+    assert findings == []
+    assert any("go.sum" in n and "go.mod" in n and "NOT checked" in n
+               for n in notes), notes
+
+
+def test_one_package_pinned_in_two_lockfiles_is_one_identity_not_two():
+    """`deps.inventory` dedupes by `(ecosystem, name, version)` ACROSS files
+    and attributes the component to the first lockfile in sorted order; Trivy
+    reports once per `Target`. A monorepo pinning lodash twice was one
+    identity from one producer and two from the other."""
+    vuln = {"VulnerabilityID": "CVE-2021-23337", "PkgName": "lodash",
+            "InstalledVersion": "4.17.20", "Severity": "HIGH", "Title": "t"}
+    data = {"Results": [
+        {"Target": "web/package-lock.json", "Type": "npm",
+         "Vulnerabilities": [dict(vuln)]},
+        {"Target": "api/package-lock.json", "Type": "npm",
+         "Vulnerabilities": [dict(vuln)]},
+    ]}
+    out = adapters.trivy_vulns(data)
+    assert [f["occurrences"][0]["file"] for f in out] == ["api/package-lock.json"]
+
+
+def test_two_python_lockfiles_pinning_one_package_collapse_the_way_deps_does():
+    """`requirements.txt` is `pip` to Trivy and `poetry.lock` is `poetry`,
+    but both are `PyPI` to `deps.inventory`, which therefore dedupes across
+    them. Keyed on Trivy's raw `Type` this would have stayed two findings."""
+    vuln = {"VulnerabilityID": "CVE-2024-39689", "PkgName": "certifi",
+            "InstalledVersion": "2024.2.2", "Severity": "LOW", "Title": "t"}
+    data = {"Results": [
+        {"Target": "requirements.txt", "Type": "pip",
+         "Vulnerabilities": [dict(vuln)]},
+        {"Target": "poetry.lock", "Type": "poetry",
+         "Vulnerabilities": [dict(vuln)]},
+    ]}
+    assert len(adapters.trivy_vulns(data)) == 1
+
+
+def test_the_remediation_names_the_release_that_fixes_it():
+    """`osv._finding` says "past {version}" -- past the version you HAVE.
+    Keeping that preposition while substituting `FixedVersion` told the
+    reader to skip the one release that helps them: "Upgrade certifi past
+    2024.7.4", where 2024.7.4 IS the fix. This is the only actionable
+    sentence a dependency finding has."""
+    data = json.loads((FIX / "trivy-fs.json").read_text())
+    remediations = {f["title"].split(" ", 1)[0]: f["remediation"]
+                    for f in adapters.trivy_vulns(data)}
+    assert remediations["certifi"].startswith(
+        "Upgrade certifi to 2024.7.4 or later.")
+    assert "past 2024.7.4" not in remediations["certifi"]
 
 
 def test_cwe_ids_become_the_findings_cwe_field():
@@ -1133,18 +1327,64 @@ def test_trivy_scan_reports_no_findings_when_there_is_nothing_to_scan(tmp_path):
 
 
 @needs_trivy
-def test_trivy_scan_skips_the_same_directories_deps_inventory_always_has(tmp_path):
-    """`deps.inventory` never reads inside `secrets.SKIP_DIRS` (`node_modules`,
-    `vendor`, ...). Swapping to the engine must not start reporting a
-    vendored copy of a vulnerable lockfile the built-in inventory always
-    ignored -- that would make the report NOISIER for what is supposed to be
-    a like-for-like swap, the exact regression `adapters.py`'s own module
-    docstring warns about for Gitleaks."""
+@pytest.mark.parametrize("where", ["src/vendor/thing", "a/b/dist",
+                                   "node_modules/some-dep"])
+def test_trivy_scan_skips_the_same_directories_deps_inventory_always_has(
+        tmp_path, where):
+    """`deps.inventory` never reads inside `secrets.SKIP_DIRS`
+    (`node_modules`, `vendor`, ...) AT ANY DEPTH. Swapping to the engine must
+    not start reporting a vendored copy of a vulnerable lockfile the built-in
+    inventory always ignored -- that would make the report NOISIER for what
+    is supposed to be a like-for-like swap, the exact regression
+    `adapters.py`'s own module docstring warns about for Gitleaks.
+
+    NESTED, and that is the whole point. This test used to plant a
+    `node_modules` at the TOP LEVEL -- the one directory Trivy skips on its
+    own -- and passed with `--skip-dirs` deleted outright. Measured with the
+    bare names the flag used to carry:
+
+        src/vendor/thing/package-lock.json   deps: []   trivy: reported
+        a/b/dist/package-lock.json           deps: []   trivy: reported
+    """
     root = tmp_path / "repo"
-    root.mkdir()
-    vendored = root / "node_modules" / "some-dep"
+    vendored = root / where
     vendored.mkdir(parents=True)
     lockfile = REPO / "tests" / "security" / "fixtures" / "package-lock.json"
     (vendored / "package-lock.json").write_text(lockfile.read_text())
+    assert deps.inventory(root) == [], "the fixture is not out of scope at all"
     findings, _ = adapters.trivy_scan(root)
     assert findings == []
+
+
+@needs_trivy
+def test_ignore_paths_suppress_a_trivy_finding(tmp_path):
+    """THE SECOND LOCK, the one `gitleaks()` has and this path did not.
+    `trivy_skip_dirs` asks the engine not to read these paths; that is
+    another program's command line, and finding after finding has shown it
+    leaking. `ignore_paths` is a promise about the ANALYSIS."""
+    root = tmp_path / "repo"
+    (root / "examples").mkdir(parents=True)
+    lockfile = REPO / "tests" / "security" / "fixtures" / "package-lock.json"
+    (root / "examples" / "package-lock.json").write_text(lockfile.read_text())
+    assert adapters.trivy_scan(root)[0], "the fixture stopped being vulnerable"
+    findings, _ = adapters.trivy_scan(root, ignore_paths=["examples"])
+    assert findings == []
+
+
+@needs_trivy
+def test_the_engine_note_does_not_say_the_version_label_twice(tmp_path):
+    """Trivy's first `--version` line is the bare "Version: 0.74.0", so a
+    note built from it verbatim reads "by Trivy (Version: 0.74.0)"."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    _, notes = adapters.trivy_scan(root)
+    assert any(re.search(r"Trivy \(\d", n) for n in notes), notes
+    assert not any("Version: " in n for n in notes)
+
+
+def test_ignore_paths_that_cannot_reach_the_command_line_still_filter():
+    """A glob containing a comma cannot be expressed in `--skip-dirs`, which
+    Trivy splits on commas. Dropping it from the flag is safe only because
+    the post-filter is what actually enforces the scope."""
+    assert "a,b" not in adapters.trivy_skip_dirs(["a,b"])
+    assert adapters._out_of_scope("a,b/package-lock.json", ["a,b"])

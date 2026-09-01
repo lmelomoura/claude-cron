@@ -15,6 +15,31 @@ _SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", 
 _PURL = {"npm": "npm", "PyPI": "pypi", "Packagist": "composer",
          "Go": "golang", "RubyGems": "gem"}
 
+# The ecosystems that write a leading `v` their own resolver does not treat as
+# part of the version: Packagist (`v5.4.0` is the normal form for Symfony,
+# Doctrine, Monolog and most of Laravel) and Go (`v1.6.3` is how a module is
+# pinned). Everything else is left exactly as the lockfile spelled it.
+_V_PREFIXED = {"Packagist", "Go"}
+
+
+def normalise_version(ecosystem: str, version: str) -> str:
+    """One reading of a version string, for EVERY producer of dependency data.
+
+    Exported rather than kept private because it is not a detail of this
+    module. A dependency finding's identity is
+    `fingerprint("dependency", vuln_id, source, f"{name}@{version}")`, so a
+    second producer reading the same lockfile and spelling the version
+    differently -- `v5.4.0` where this one says `5.4.0` -- mints a SECOND
+    identity for one vulnerability. The consequence is not cosmetic: the same
+    hole is reported `fixed` (the old identity is gone) and `new` (a fresh one
+    appeared) in a single report, the human `accepted`/`false_positive`
+    decision recorded against the old one strands permanently, and
+    `ledger._REFINGERPRINT` has no `dependency` entry, so `rename_rule`
+    cannot migrate it. `adapters.trivy_vulns` calls this for that reason and
+    no other.
+    """
+    return version.lstrip("v") if ecosystem in _V_PREFIXED else version
+
 
 def _npm(path: Path):
     data = json.loads(path.read_text())
@@ -67,14 +92,15 @@ def _composer(path: Path):
         if not isinstance(pkg, dict):
             continue
         if pkg.get("name") and pkg.get("version"):
-            yield "Packagist", pkg["name"], pkg["version"].lstrip("v")
+            yield "Packagist", pkg["name"], normalise_version(
+                "Packagist", pkg["version"])
 
 
 def _gosum(path: Path):
     for line in path.read_text().splitlines():
         parts = line.split()
         if len(parts) >= 2 and not parts[1].endswith("/go.mod"):
-            yield "Go", parts[0], parts[1].lstrip("v")
+            yield "Go", parts[0], normalise_version("Go", parts[1])
 
 
 _READERS = {

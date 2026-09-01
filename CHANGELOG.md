@@ -160,16 +160,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `dependency` category; Trivy 0.74.0 now runs first when present, reading
   the same lockfiles directly and carrying `FixedVersion`, `CweIDs` and an
   advisory link OSV.dev's own record does not always have. Only ONE of the
-  two ever runs, on the same terms as the Gitleaks swap above: the
+  two ever runs, on the same terms as the Gitleaks swap above: running both
+  would report one hole as two contradictory checklist entries. The
   fingerprint recipe is unchanged — `fingerprint("dependency", vuln_id,
-  source, f"{name}@{version}")`, exactly `osv._finding`'s — so a CVE this
-  engine reports for a package OSV.dev already reported keeps its identity,
-  and a human's `accepted` or `false_positive` decision against it is not
-  orphaned by which source found it; running both would instead report one
-  hole as two contradictory checklist entries. `--offline` now declares
-  Trivy's own vulnerability database unreachable as well as OSV.dev's,
-  since neither exists without a network request this analysis was told not
-  to make.
+  source, f"{name}@{version}")`, exactly `osv._finding`'s — and the INPUTS
+  to it are now normalised onto the inventory's own spelling as well, so a
+  CVE this engine reports for a package OSV.dev already reported keeps its
+  identity for everything except the advisory id, which the two name from
+  different databases and the coverage note declares. `--offline` now
+  declares Trivy's own vulnerability database unreachable as well as
+  OSV.dev's, since neither exists without a network request this analysis
+  was told not to make.
 
 - **A CVE with no published fix is reported, not hidden.** `FixedVersion`
   empty is Trivy's own way of saying nobody has shipped a fix yet — not a
@@ -180,6 +181,70 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rule is the CVE id — so this is metadata carried across, not validated.
 
 ### Fixed
+
+- **A dependency CVE keeps one identity whether or not Trivy is installed.**
+  The fingerprint recipe was copied from `osv._finding` correctly and the
+  INPUTS to it were not, which is a different bug with the same consequence.
+  Three of them, all measured by running both producers over one tree:
+  `deps.py` strips the `v` Packagist writes and Trivy's `InstalledVersion`
+  keeps it (`5.4.0` against `v5.4.0` — and `v`-prefixed is the Packagist
+  norm: Symfony, Doctrine, Monolog, most of Laravel); the built-in inventory
+  reads `go.sum` where Trivy reads `go.mod`, moving the source AND the
+  version at once; and the inventory dedupes a package across lockfiles
+  where Trivy reports once per file, so a monorepo pinning lodash twice was
+  one identity against two. Every affected finding was reported `fixed` (its
+  old identity gone) and `new` (a fresh one) in a single report, with the
+  human `accepted`/`false_positive` decision on the old one stranded for
+  good — `ledger._REFINGERPRINT` has no `dependency` entry, so `rename_rule`
+  refuses the category and no migration could be written. And it flipped per
+  machine. On a tree with a `v`-prefixed Symfony and a Go module, 0 of 4
+  identities matched between the two producers before and 4 of 4 after.
+  ONE divergence cannot be closed and is now DECLARED in the coverage note
+  instead: Trivy names an advisory by its CVE id where OSV.dev names the
+  same advisory by the id of whichever database published it — for
+  `gin-gonic/gin 1.6.3`, three CVEs against three GHSAs and two GO ids, with
+  no offline mapping between the vocabularies. Two smaller gaps are stated
+  the same way: a directory with a `go.sum` and no `go.mod` is invisible to
+  Trivy, and the SBOM still comes from the inventory's five formats while
+  the findings come from every format Trivy reads.
+
+- **The one actionable sentence in a dependency finding no longer tells you
+  to skip the release that fixes it.** `osv.py` says "Upgrade X past
+  {version}" — past the version you HAVE. The Trivy adapter kept the
+  preposition and substituted the version that CONTAINS the fix, so a real
+  report read "Upgrade certifi past 2024.7.4" when 2024.7.4 *is* the fix. It
+  now reads "Upgrade certifi to 2024.7.4 or later", and the branch has a
+  test; only the no-fix-published branch had one before.
+
+- **The engine no longer reports lockfiles from directories the analysis has
+  never looked inside.** `--skip-dirs` was given bare names, and Trivy
+  matches those at the TOP LEVEL only, while `deps.inventory` skips
+  `SKIP_DIRS` at any depth: `src/vendor/thing/package-lock.json` and
+  `a/b/dist/package-lock.json` were both reported by the engine and by
+  nothing else — the swap making the report NOISIER, which is the exact
+  regression the module's own docstring warns about. The flag now carries
+  `**/name` as well as the bare name, and the test that was supposed to
+  catch this plants its lockfile NESTED: it used to plant a top-level
+  `node_modules`, the one directory Trivy skips unasked, and passed with
+  `--skip-dirs` deleted outright.
+
+- **`ignore_paths` is enforced on the dependency findings, not just asked
+  of the scanner.** Trivy reads formats the built-in inventory never opened
+  — yarn.lock, pnpm, Gemfile.lock, Cargo.lock, pom.xml, vendored jars — so
+  the class of finding an operator's globs have to be able to suppress got
+  materially larger with this swap, while scope was delegated entirely to
+  another program's command line. The Gitleaks adapter's second lock now
+  covers this path too, and it covers BOTH producers: honouring the globs
+  only where the engine is installed would be a report that changes by
+  machine, the same fault as the fingerprint divergence. The SBOM is
+  unaffected — the inventory still lists every lockfile in the tree.
+
+- **The OSV.dev fallback note is no longer said about a repository with no
+  dependencies.** It claimed they "were checked against OSV.dev's own
+  database" for a tree where `osv.query` returned before opening a socket.
+  The sentence also moved to `osv.py` beside `DEFAULT_SEVERITY`, on the
+  model of `secrets.FALLBACK_NOTE` its own comment cites, and the engine
+  note stopped reading "by Trivy (Version: 0.74.0)" with the label twice.
 
 - **`migrate-rules` now refuses a machine without gitleaks, instead of
   producing exactly the damage it exists to prevent.** The verb's whole

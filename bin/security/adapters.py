@@ -31,9 +31,9 @@ import os
 import re
 import subprocess
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from . import engines, osv, secrets
+from . import deps, engines, osv, secrets
 from .fingerprint import fingerprint, secret_fingerprint
 from .ignores import ignored
 
@@ -570,13 +570,37 @@ def gitleaks_scan(root, ignore_paths=()):
 # which is where that choice is actually made. Everything here is the
 # translator, not the switch.
 #
-# THE IDENTITY IS OSV'S, NOT A NEW ONE. `osv._finding` already had the
-# recipe -- `fingerprint("dependency", vuln_id, source, f"{name}@{version}")`
-# -- before Trivy existed in this module. `trivy_vulns` builds the identical
-# hash for the identical (CVE, package, version), so a dependency finding
-# OSV.dev already reported keeps its identity the moment Trivy reports it
-# instead, and a human's `accepted` or `false_positive` against it is not
-# orphaned by which source found it.
+# THE IDENTITY IS OSV'S, AND SO ARE ITS INPUTS. `osv._finding` already had
+# the recipe -- `fingerprint("dependency", vuln_id, source,
+# f"{name}@{version}")` -- before Trivy existed in this module, and copying
+# the recipe is the easy half. The hard half is that the same hash over
+# DIFFERENT INPUTS is a different identity, and Trivy spells three of those
+# inputs its own way. Measured, all three:
+#
+#   * composer.lock `symfony/http-kernel`: `deps._composer` strips the `v`
+#     Packagist writes, Trivy's `InstalledVersion` keeps it -- `5.4.0` vs
+#     `v5.4.0`, and `v`-prefixed is the Packagist NORM, not the exception.
+#   * Go: `deps._gosum` reads `go.sum` and strips the `v`; Trivy reads
+#     `go.mod`. Both the `source` and the `version` move at once.
+#   * a monorepo pinning one package in two lockfiles: `deps.inventory`
+#     dedupes by `(ecosystem, name, version)` ACROSS files, Trivy reports
+#     once per `Target` -- one identity against two.
+#
+# Each of those is a finding reported `fixed` (the old identity vanished)
+# AND `new` (a fresh one appeared) in one report, with the human decision on
+# the old one stranded and NO WAY BACK: `ledger._REFINGERPRINT` has no
+# `dependency` entry, so `rename_rule` refuses the category outright. And it
+# flips per machine -- whether Trivy happens to be installed. So the inputs
+# are normalised here, through `deps.normalise_version` itself rather than a
+# second copy of the same rule, before anything is hashed.
+#
+# ONE DIVERGENCE CANNOT BE CLOSED and is therefore DECLARED, in `DEP_ID_NOTE`
+# below: `vuln_id`. Trivy names an advisory by its CVE id, OSV.dev by the id
+# of whichever database published it. Measured on `github.com/gin-gonic/gin
+# 1.6.3`: OSV.dev answers GHSA-2c4m-59x9-fr2g, GHSA-3vp4-m3rf-835h,
+# GHSA-h395-qcrw-5vmq, GO-2021-0052, GO-2023-1737; Trivy answers
+# CVE-2020-28483, CVE-2023-26125, CVE-2023-29401. Zero overlap, and no
+# offline mapping between the two vocabularies exists to build one from.
 
 # Trivy's own severity words, mapped to ours. The default for a word Trivy
 # did not send -- `UNKNOWN`, or a future grade this table has never heard of
@@ -594,34 +618,158 @@ _TRIVY_SEVERITY = {"CRITICAL": "critical", "HIGH": "high", "MEDIUM": "medium",
 # upgrade to is still a CVE, so the remediation SAYS that instead of pointing
 # at a version that does not exist; the finding is reported either way.
 _NO_FIX = ("No fixed version has been published yet for {vuln_id} in {name} "
-          "{version}. Track the advisory and upgrade as soon as one ships.")
-_FIX = "Upgrade {name} past {fixed}."
+           "{version}. Track the advisory and upgrade as soon as one ships.")
+# NOT "past {fixed}". `osv._finding` says "past {version}" -- past the version
+# you HAVE -- and this line was written by keeping that preposition while
+# substituting the version that CONTAINS the fix, which told the reader to
+# skip the only release that helps them: "Upgrade certifi past 2024.7.4",
+# where 2024.7.4 IS the fix. This is the one actionable sentence in a
+# dependency finding.
+_FIX = "Upgrade {name} to {fixed} or later."
+
+# Trivy's `Type` for a lockfile -> the ecosystem name `deps.inventory` gives
+# the packages it reads out of the SAME file. Used for two things and nothing
+# else: which version strings need `deps.normalise_version`'s handling, and
+# which two records are the same component when two lockfiles pin it. Several
+# Trivy types collapse onto one ecosystem on purpose -- `requirements.txt` and
+# `poetry.lock` are `pip` and `poetry` to Trivy but both `PyPI` to
+# `deps.inventory`, which dedupes a package pinned in both. A type absent
+# here (cargo, pom, jar, ...) is one `deps.inventory` never read, so there is
+# no prior identity to preserve and the version is left as Trivy spelled it.
+_TRIVY_ECOSYSTEM = {
+    "npm": "npm", "yarn": "npm", "pnpm": "npm", "bun": "npm",
+    "pip": "PyPI", "poetry": "PyPI", "pipenv": "PyPI", "uv": "PyPI",
+    "composer": "Packagist", "composer-vendor": "Packagist",
+    "gomod": "Go", "golang": "Go", "gobinary": "Go",
+    "bundler": "RubyGems", "gemspec": "RubyGems",
+}
 
 # Named so a reader of a report knows which scanner produced its dependency
 # findings, the same reason `ENGINE_NOTE` exists above for secrets. Spelled
 # out as "Trivy ({version})" rather than "{version}" alone: unlike
 # gitleaks' own `--version` banner (which prints its own name), Trivy's
 # first line is bare ("Version: 0.74.0"), so a note built the same way
-# `ENGINE_NOTE` is would silently stop naming the tool.
+# `ENGINE_NOTE` is would silently stop naming the tool -- and the bare label
+# is stripped by `trivy_scan` so the sentence does not read "Trivy (Version:
+# 0.74.0)".
 DEP_ENGINE_NOTE = "Dependencies were scanned for known CVEs by Trivy ({version})."
 
+# The divergence the section comment above says cannot be closed. Said on
+# every Trivy-scanned report, because it is a property of the producer rather
+# than of any one repository, and because the report where it matters most is
+# the FIRST one after the engine appears -- the one that lists every OSV.dev
+# finding as fixed.
+DEP_ID_NOTE = ("Trivy names an advisory by its CVE id, where OSV.dev names "
+               "the same advisory by the id of whichever database published "
+               "it (GHSA, GO, PYSEC). A dependency finding reported while "
+               "OSV.dev was the source therefore appears here under a "
+               "different identity: it is listed as fixed and its "
+               "replacement as new, and any decision recorded against the "
+               "old one does not follow it.")
 
-def _trivy_finding(source: str, vuln):
+# The SBOM and the findings deliberately come from two different readers, and
+# a reader comparing them has to be told. `cli.cmd_prepare` builds the SBOM
+# from `deps.inventory` (five lockfile formats) whatever scans for CVEs; see
+# `trivy_vulns` for why reading the inventory twice is worse than this.
+DEP_SBOM_NOTE = ("The SBOM lists the five lockfile formats this project's own "
+                 "inventory reads, while these findings come from every "
+                 "format Trivy reads, so a CVE here can name a package the "
+                 "SBOM does not list.")
+
+# Trivy's Go analyser reads `go.mod`. `deps.inventory` has only ever read
+# `go.sum`, and the two are not interchangeable: a module directory with a
+# `go.sum` and no `go.mod` produced Go findings before and produces NOTHING
+# from Trivy. Unfixable from here -- Trivy will not read `go.sum` -- so it is
+# counted and stated rather than left as a silent hole.
+GO_SUM_ONLY_GAP = ("{count} {directories} in this repository {have} a go.sum "
+                   "but no go.mod: Trivy reads go.mod, so the Go "
+                   "dependencies pinned there were NOT checked for known "
+                   "CVEs.")
+
+
+def _trivy_component(vuln, ecosystem: str):
+    """`(name, version)` spelled the way `deps.inventory` would have spelled
+    them for the same package, or None when the record names no package this
+    parser can identify.
+
+    The version goes through `deps.normalise_version` -- the function the
+    lockfile readers themselves call, not a second copy of its rule -- so the
+    two producers cannot drift apart again by one of them being edited.
+    """
     if not isinstance(vuln, dict):
         return None
-    vuln_id = str(vuln.get("VulnerabilityID") or "").strip()
     name = str(vuln.get("PkgName") or "").strip()
-    version = str(vuln.get("InstalledVersion") or "").strip()
-    if not (vuln_id and name and version):
+    version = deps.normalise_version(
+        ecosystem, str(vuln.get("InstalledVersion") or "").strip())
+    return (name, version) if name and version else None
+
+
+def _trivy_scope(result, root):
+    """`(source, ecosystem)` for one `Results[]` entry.
+
+    `source` is an INPUT TO THE FINGERPRINT, so which file this project calls
+    a Go module's lockfile is an identity decision, not a label. THE CHOICE,
+    MADE HERE: `go.sum`, whenever one sits beside the `go.mod` Trivy
+    reported. `deps.inventory` has only ever read `go.sum`, so anchoring on
+    `go.mod` would re-identify every Go finding already in a ledger. The
+    probe is real rather than assumed -- a `go.mod` with no `go.sum` beside
+    it keeps Trivy's own target, because naming a file that is not there in
+    an occurrence sends a human to a path that does not exist. It is also the
+    only case where the two producers could not have collided anyway: with no
+    `go.sum`, `deps.inventory` read no Go packages at all.
+    """
+    source = str(result.get("Target") or "").strip()
+    ecosystem = _TRIVY_ECOSYSTEM.get(
+        str(result.get("Type") or "").strip().lower(), "")
+    if ecosystem == "Go" and PurePosixPath(source).name == "go.mod":
+        sibling = PurePosixPath(source).with_name("go.sum")
+        try:
+            if root is not None and (Path(root) / str(sibling)).is_file():
+                source = str(sibling)
+        except OSError:
+            pass
+    return source, ecosystem
+
+
+def _go_sum_without_go_mod(root, ignore_paths=()) -> int:
+    """How many in-scope directories hold a `go.sum` with no `go.mod` beside
+    it -- the Go packages Trivy cannot see at all. See `GO_SUM_ONLY_GAP`."""
+    try:
+        paths = sorted(Path(root).rglob("go.sum"))
+    except OSError:
+        return 0
+    count = 0
+    for path in paths:
+        try:
+            rel = str(path.relative_to(Path(root)))
+        except ValueError:
+            continue
+        if _out_of_scope(rel, ignore_paths):
+            continue
+        try:
+            if not (path.parent / "go.mod").is_file():
+                count += 1
+        except OSError:
+            continue
+    return count
+
+
+def _trivy_finding(source: str, vuln, ecosystem: str = ""):
+    component = _trivy_component(vuln, ecosystem)
+    vuln_id = (str(vuln.get("VulnerabilityID") or "").strip()
+               if isinstance(vuln, dict) else "")
+    if component is None or not vuln_id:
         # No id, no package name, no installed version: this parser cannot
         # build an identity for any of the three. Costs this one record, not
         # the phase -- see `trivy_vulns`.
         return None
+    name, version = component
     severity = _TRIVY_SEVERITY.get(str(vuln.get("Severity") or "").upper(),
                                    osv.DEFAULT_SEVERITY)
     fixed = str(vuln.get("FixedVersion") or "").strip()
     remediation = (_FIX.format(name=name, fixed=fixed) if fixed
-                  else _NO_FIX.format(vuln_id=vuln_id, name=name, version=version))
+                   else _NO_FIX.format(vuln_id=vuln_id, name=name,
+                                       version=version))
     url = str(vuln.get("PrimaryURL") or "").strip()
     if url:
         remediation += f" See {url}"
@@ -630,8 +778,8 @@ def _trivy_finding(source: str, vuln):
     # OSV's `summary`), a truncated long one second (`Description`, Trivy's
     # `details`), and the bare id only if neither is present.
     rationale = (str(vuln.get("Title") or "").strip()
-                or str(vuln.get("Description") or "").strip()[:200]
-                or vuln_id)
+                 or str(vuln.get("Description") or "").strip()[:200]
+                 or vuln_id)
     finding = {
         "fingerprint": fingerprint("dependency", vuln_id, source,
                                    f"{name}@{version}"),
@@ -655,7 +803,7 @@ def _trivy_finding(source: str, vuln):
     return finding
 
 
-def trivy_vulns(data) -> list[dict]:
+def trivy_vulns(data, root=None) -> list[dict]:
     """Trivy's `fs` report as dependency findings, one per (CVE, package).
 
     Reads `Results[].Vulnerabilities[]` only. `Results[].Packages[]` -- the
@@ -663,7 +811,8 @@ def trivy_vulns(data) -> list[dict]:
     read here: the SBOM this project hands out is still built from
     `deps.inventory` (see `cli.cmd_prepare`), and reading the inventory
     twice, from two sources, would give the two paths two chances to
-    disagree about what this repository depends on.
+    disagree about what this repository depends on. `DEP_SBOM_NOTE` states
+    the consequence rather than hiding it.
 
     Every field is CONSTRUCTED, never copied -- the same reason `gitleaks`
     above gives: a future Trivy release adding a field nobody here has read
@@ -672,17 +821,29 @@ def trivy_vulns(data) -> list[dict]:
     A record this parser cannot use (no id, no package name, no installed
     version -- see `_trivy_finding`) costs that record, not the phase: one
     malformed entry must not cost every dependency finding in the report.
+
+    `root` is what lets `_trivy_scope` tell a Go module with a `go.sum` from
+    one without; `trivy_scan` always passes it, and a caller that parses a
+    report detached from its tree gets Trivy's own `go.mod` target.
+
+    THE SORT AND THE DEDUPE ARE ABOUT IDENTITY, not tidiness: targets are
+    visited in sorted order, and a component already reported from an earlier
+    lockfile is not reported again from a later one.
+    `deps.inventory` walks `sorted(root.rglob("*"))` and dedupes by
+    `(ecosystem, name, version)` ACROSS files, so a monorepo pinning lodash
+    in two lockfiles yields ONE finding from that producer, attributed to the
+    first file. Reporting it once per `Target` here would be two identities
+    against that one.
     """
     if not isinstance(data, dict):
         return []
     results = data.get("Results")
     if not isinstance(results, list):
         return []
-    out = []
-    for result in results:
-        if not isinstance(result, dict):
-            continue
-        source = str(result.get("Target") or "").strip()
+    out, owner = [], {}
+    for result in sorted((r for r in results if isinstance(r, dict)),
+                         key=lambda r: str(r.get("Target") or "")):
+        source, ecosystem = _trivy_scope(result, root)
         vulns = result.get("Vulnerabilities")
         if not source or not isinstance(vulns, list):
             # No `Vulnerabilities` key at all is the shape a lockfile with
@@ -690,15 +851,53 @@ def trivy_vulns(data) -> list[dict]:
             # under `Packages`) -- not a malformed record.
             continue
         for vuln in vulns:
-            finding = _trivy_finding(source, vuln)
+            component = _trivy_component(vuln, ecosystem)
+            if component is not None:
+                first = owner.setdefault((ecosystem, *component), source)
+                if first != source:
+                    continue  # a later lockfile pinning what this one already did
+            finding = _trivy_finding(source, vuln, ecosystem)
             if finding is not None:
                 out.append(finding)
     return out
 
 
-def trivy_scan(root):
+def trivy_skip_dirs(ignore_paths=()) -> list[str]:
+    """The `--skip-dirs` values for a scan of this project's scope.
+
+    EVERY SKIP_DIR TWICE, bare and as `**/name`, because bare names match the
+    TOP LEVEL ONLY. Measured against `deps.inventory`, which skips them at
+    ANY depth:
+
+        src/vendor/thing/package-lock.json   deps: []   trivy: reported
+        a/b/dist/package-lock.json           deps: []   trivy: reported
+
+    -- which is the swap making the report NOISIER, the regression this
+    module's docstring warns about for Gitleaks. `**/name` alone covers the
+    top level in Trivy 0.74's matcher; the bare name is kept beside it so a
+    matcher that ever stops doing so does not reopen the hole silently.
+
+    `ignore_paths` is passed down too, the cheap way round -- the files are
+    then never read at all. It is not the guarantee: `trivy_scan` filters
+    what comes back through `_out_of_scope` as well, for the reason that
+    function's own docstring gives.
+    """
+    out = []
+    for name in sorted(secrets.SKIP_DIRS):
+        out += [name, f"**/{name}"]
+    for glob in ignore_paths or ():
+        glob = (glob or "").strip().rstrip("/*")
+        # A comma is the separator Trivy splits this list on, so a glob
+        # containing one cannot be expressed here. It is dropped from the
+        # command line only -- the post-filter still honours it.
+        if glob and "," not in glob:
+            out.append(glob)
+    return out
+
+
+def trivy_scan(root, ignore_paths=()):
     """Every dependency vulnerability Trivy's filesystem scanner finds in
-    `root`.
+    `root`, within the scope this analysis actually looks at.
 
     Returns `(findings, notes)`. `findings` is None when Trivy produced no
     report at all -- absent, unversioned, timed out, or writing a format
@@ -714,18 +913,34 @@ def trivy_scan(root):
     above), and this call exists only to replace the dependency category's
     fallback pair, not to add a second producer for a different one.
 
-    `--skip-dirs` names the same directories `deps.inventory` has always
-    skipped (`secrets.SKIP_DIRS`, the set `scope_patterns` above already
-    builds the Gitleaks scope from), so swapping which tool reads the
-    lockfiles does not also start reporting a vendored copy the built-in
-    inventory never looked inside -- the exact regression this module's own
-    docstring warns about for Gitleaks, measured there at 15 of 17 findings.
+    THE SCOPE IS LOCKED TWICE, exactly as it is for Gitleaks above.
+    `trivy_skip_dirs` asks the engine not to read these paths, which is the
+    cheap way round; `_out_of_scope` over what comes back is the correct way
+    round. Trivy reads formats `deps.inventory` never opened -- yarn.lock,
+    pnpm, Gemfile.lock, Cargo.lock, pom.xml, vendored jars -- so the class of
+    finding an operator's `ignore_paths` has to be able to suppress got
+    materially larger with this swap, and a promise about the ANALYSIS that
+    holds only while another program accepted our command line is not a
+    promise.
     """
     args = ["fs", ".", "--format", "json", "--output", "{out}",
             "--scanners", "vuln", "--quiet",
-            "--skip-dirs", ",".join(sorted(secrets.SKIP_DIRS))]
+            "--skip-dirs", ",".join(trivy_skip_dirs(ignore_paths))]
     data, note = engines.run_json("trivy", args, root)
     if data is None:
         return None, [note] if note else []
-    version = engines.version_of("trivy") or "trivy"
-    return trivy_vulns(data), [DEP_ENGINE_NOTE.format(version=version)]
+    findings = [f for f in trivy_vulns(data, root)
+                if not _out_of_scope(f["occurrences"][0]["file"], ignore_paths)]
+    # `removeprefix`, because Trivy's first `--version` line is the bare
+    # "Version: 0.74.0" -- without it the note reads "by Trivy (Version:
+    # 0.74.0)", with the label said twice.
+    version = (engines.version_of("trivy") or "trivy").removeprefix("Version: ")
+    notes = [DEP_ENGINE_NOTE.format(version=version), DEP_ID_NOTE,
+             DEP_SBOM_NOTE]
+    go_only = _go_sum_without_go_mod(root, ignore_paths)
+    if go_only:
+        notes.append(GO_SUM_ONLY_GAP.format(
+            count=go_only,
+            directories="directory" if go_only == 1 else "directories",
+            have="has" if go_only == 1 else "have"))
+    return findings, notes

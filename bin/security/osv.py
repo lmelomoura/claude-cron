@@ -36,6 +36,21 @@ _SEVERITY = {"CRITICAL": "critical", "HIGH": "high",
 # never found at all.
 DEFAULT_SEVERITY = "medium"
 
+# Named so a reader of a report knows which producer scanned that analysis's
+# dependencies, whenever it was this module rather than Trivy. Lives HERE,
+# beside the other constant this module's results are described by, on the
+# model of `secrets.FALLBACK_NOTE`: it is a sentence about what OSV.dev's
+# database is, not about a command-line flag, and the caller that says it
+# (`cli._scan_dependencies`) should not also be the module that knows what it
+# means. OSV.dev's own database, not Trivy's aggregate of GHSA, NVD, distro
+# trackers and OSV.dev together: an advisory tracked only by one of those
+# sources and never published to OSV.dev itself would not be found this way.
+FALLBACK_NOTE = ("Dependencies were checked against OSV.dev's own database, "
+                 "not Trivy: an advisory tracked only by a source Trivy "
+                 "aggregates (a distro tracker, NVD, GitHub Security "
+                 "Advisories) and never published to OSV.dev would not have "
+                 "been found.")
+
 
 def _http(url, body=None, timeout=30):
     if body is None:

@@ -41,7 +41,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from security import adapters, deps, diff, fingerprint, hygiene, ledger, osv, queries, report, secrets, taxonomy  # noqa: E402
+from security import adapters, deps, diff, fingerprint, hygiene, ignores, ledger, osv, queries, report, secrets, taxonomy  # noqa: E402
 
 REQUIRED_FINDING_KEYS = ("fingerprint", "category", "rule", "severity", "title")
 
@@ -397,38 +397,35 @@ def _scan_secrets(root, ignore):
 # unless somebody publishes it, and this analysis was told not to reach the
 # network.
 OFFLINE_DEPENDENCY_NOTE = ("Dependency CVEs were NOT checked against OSV.dev "
-                          "or Trivy's vulnerability database: this analysis "
-                          "ran with networking disabled.")
-
-# Named so a reader of a report knows which producer scanned this analysis's
-# dependencies, whenever it was OSV.dev rather than Trivy -- the same reason
-# `secrets.FALLBACK_NOTE` is said unconditionally whenever the built-in
-# secret sweep ran instead of gitleaks. OSV.dev's own database, not Trivy's
-# aggregate of GHSA, NVD, distro trackers and OSV.dev together: an advisory
-# tracked only by one of those sources and never published to OSV.dev itself
-# would not be found this way.
-OSV_FALLBACK_NOTE = ("Dependencies were checked against OSV.dev's own "
-                     "database, not Trivy: an advisory tracked only by a "
-                     "source Trivy aggregates (a distro tracker, NVD, "
-                     "GitHub Security Advisories) and never published to "
-                     "OSV.dev would not have been found.")
+                           "or Trivy's vulnerability database: this analysis "
+                           "ran with networking disabled.")
 
 
-def _scan_dependencies(root, components, offline: bool):
+def _scan_dependencies(root, components, offline: bool, ignore_paths=()):
     """(findings, notes) for the dependency phase -- ONE producer, not two.
 
     Trivy's filesystem scanner when it is installed, `osv.query` fed by
     `deps.inventory`'s output (`components`) when it is not, and never both:
     two producers in the `dependency` category would report the same CVE
-    under two fingerprints -- the fingerprint recipe is unchanged from
-    `osv._finding` (see `adapters.trivy_vulns`), so a CVE found by both
-    genuinely collides rather than merely looking alike -- and the checklist
-    would then carry it as two rows a human's decision on one never reaches.
+    under two fingerprints, and the checklist would carry it as two rows a
+    human's decision on one never reaches. The two mint the SAME identity for
+    the same advisory -- see `adapters.trivy_vulns`, which normalises Trivy's
+    inputs onto `deps.inventory`'s spelling for exactly that reason -- except
+    for the advisory id itself, which they name from different databases;
+    `adapters.DEP_ID_NOTE` states that in the report rather than leaving it to
+    be discovered from a diff.
 
     The engine still falls back if it could not produce a report at all --
     absent, unversioned, timed out, or writing a format this code cannot
     read. That is safe precisely because it produced nothing: there is no
     engine finding for OSV.dev's to collide with.
+
+    `ignore_paths` reaches BOTH producers, and that is deliberate. Filtering
+    only the engine's output would make an operator's globs suppress a
+    finding on a machine with Trivy and not on one without -- the same
+    per-machine flip that made the fingerprint divergence a bug. The
+    inventory itself is untouched: the SBOM below still lists every lockfile
+    in the tree.
 
     `components` is read by the caller regardless of `offline` or of which
     producer runs here: `deps.inventory` never touches the network, and the
@@ -437,16 +434,24 @@ def _scan_dependencies(root, components, offline: bool):
     """
     if offline:
         return [], [OFFLINE_DEPENDENCY_NOTE]
+    notes = []
     if adapters.engine_path("trivy"):
-        findings, notes = adapters.trivy_scan(root)
+        findings, notes = adapters.trivy_scan(root, ignore_paths)
         if findings is not None:
             return findings, notes
-        # The engine is here and could not answer. Say so, and let OSV.dev
-        # do the work rather than reporting no dependency findings.
-        notes = [*notes, OSV_FALLBACK_NOTE]
-    else:
-        notes = [OSV_FALLBACK_NOTE]
+        # The engine is here and could not answer. Its note is kept -- that
+        # is the "say so" -- and OSV.dev does the work rather than the phase
+        # reporting no dependency findings.
+    # Said only when there was something to check. `osv.query` returns
+    # immediately for an empty inventory, and a note claiming dependencies
+    # "were checked against OSV.dev's own database" describes a lookup that
+    # never happened.
+    if components:
+        notes.append(osv.FALLBACK_NOTE)
     cve_findings, osv_note = osv.query(components, detail_cache={})
+    cve_findings = [f for f in cve_findings
+                    if not ignores.ignored(f["occurrences"][0]["file"],
+                                           ignore_paths)]
     if osv_note:
         notes.append(osv_note)
     return cve_findings, notes
@@ -524,7 +529,8 @@ def cmd_prepare(args):
     # source runs: `deps.inventory` never touches the network, and the SBOM
     # below is built from it either way.
     components = deps.inventory(root)
-    dep_findings, dep_notes = _scan_dependencies(root, components, args.offline)
+    dep_findings, dep_notes = _scan_dependencies(root, components, args.offline,
+                                                 ignore)
     findings += dep_findings
     notes += [n for n in dep_notes if n]
     # Every phase writes into ONE channel, in phase order. The reader gets one
