@@ -3235,10 +3235,7 @@
     if (trough < first && trough < last) return base + ", dipped to " + trough;
     return base;
   }
-  function secBranchesSidebar(payload) {
-    const frag = document.createDocumentFragment();
-    const sb = (payload || {}).sidebar || {};
-    const rows = ((payload || {}).tabs || {}).branches || [];
+  function secAllBranchDonutCard(sb) {
     const donutCard = secEl("div", "card secpj-plaincard");
     const donutHead = secEl("div", "secpj-cardhead");
     const donutTitle = secEl("h3", null, "Findings by severity ");
@@ -3259,7 +3256,9 @@
       "branch"
     );
     if (capped) donutCard.appendChild(capped);
-    frag.appendChild(donutCard);
+    return donutCard;
+  }
+  function secTopCategoriesCard(sb) {
     const catCard = secEl("div", "card secpj-plaincard");
     const catHead = secEl("div", "secpj-cardhead");
     catHead.appendChild(secEl("h3", null, "Top issue categories"));
@@ -3272,7 +3271,14 @@
     viewAll.title = "Open this project's findings browser";
     viewAll.onclick = () => secSwitchProjectTab("findings");
     catCard.appendChild(viewAll);
-    frag.appendChild(catCard);
+    return catCard;
+  }
+  function secBranchesSidebar(payload) {
+    const frag = document.createDocumentFragment();
+    const sb = (payload || {}).sidebar || {};
+    const rows = ((payload || {}).tabs || {}).branches || [];
+    frag.appendChild(secAllBranchDonutCard(sb));
+    frag.appendChild(secTopCategoriesCard(sb));
     frag.appendChild(secBrCoverageCard(rows));
     return frag;
   }
@@ -3307,79 +3313,241 @@
   // ui/security/reports-tab.js
   var SEC_REPORT_FORMATS = [
     ["md", "Markdown"],
-    ["json", "JSON"],
     ["html", "HTML"],
+    ["json", "JSON"],
     ["sbom", "SBOM"]
   ];
-  function secReportsCaption() {
-    const cap = secEl("div", "secpj-caption");
-    cap.appendChild(document.createTextNode(
-      "Markdown, JSON and HTML are generated from each analysis's own checklist at the moment you download one. "
-    ));
-    cap.appendChild(secEl("b", null, "SBOM is different: "));
-    cap.appendChild(document.createTextNode(
-      "it is not a report over any analysis's checklist but the stored CycloneDX inventory itself, kept per branch with only the most recent document \u2014 so the SBOM button on an older row still downloads that branch's CURRENT document, not a snapshot of what that analysis saw."
-    ));
-    return cap;
+  var SBOM_CAVEAT = "SBOM is not a report over this analysis's checklist: it is the branch's stored CycloneDX inventory, kept with only the most recent document \u2014 so this row downloads the branch's CURRENT document, not a snapshot of what this analysis saw.";
+  var GENERATED_NOTE = "Reports are generated from each analysis's own ledger records at the moment you download one \u2014 this is when the analysis ran, which is what a report of it describes.";
+  var SEC_REPORT_COLS = [
+    ["analysis", "Analysis"],
+    ["profile", "Profile"],
+    ["branch", "Branch"],
+    ["generated", "Generated at"],
+    ["formats", "Format"],
+    ["actions", "Actions"]
+  ];
+  var secRpSortDir = "desc";
+  function secRpCap(s) {
+    return s ? s.charAt(0).toUpperCase() + s.slice(1) : "";
+  }
+  function secRpFinished(r) {
+    return r.state === "done" || r.state === "capped";
   }
   function secReportRow(r) {
     const tr = document.createElement("tr");
-    const cell = (text) => {
-      const td = document.createElement("td");
-      td.textContent = text;
-      return td;
+    const tdId = document.createElement("td");
+    const idBtn = document.createElement("button");
+    idBtn.type = "button";
+    idBtn.className = "btn ghost secrp-id";
+    idBtn.textContent = "#" + r.analysis_id;
+    idBtn.title = "Open this analysis on the Runs tab";
+    idBtn.onclick = () => {
+      secSwitchProjectTab("runs");
+      secShowAnalysis(r.analysis_id, true);
     };
-    tr.appendChild(cell("#" + r.analysis_id));
-    tr.appendChild(cell(r.branch || ""));
-    tr.appendChild(cell(r.started ? fmtWhen(r.started) : "\u2014"));
-    tr.appendChild(cell(r.state || ""));
-    const tdDl = document.createElement("td");
-    const row = secEl("div", "secdl");
-    SEC_REPORT_FORMATS.forEach(([fmt, label]) => {
-      const btn = secEl("button", "btn ghost");
-      btn.type = "button";
-      btn.appendChild(secIcon("file"));
-      btn.appendChild(document.createTextNode(label));
-      btn.onclick = () => secDownloadReport(r.analysis_id, fmt, btn);
-      row.appendChild(btn);
-    });
-    tdDl.appendChild(row);
-    tr.appendChild(tdDl);
+    tdId.appendChild(idBtn);
+    tr.appendChild(tdId);
+    const tdProfile = document.createElement("td");
+    const suffix = r.state === "capped" ? " (Capped)" : r.state === "failed" ? " (Failed)" : r.state === "running" ? " (Running)" : "";
+    tdProfile.appendChild(secEl(
+      "div",
+      "secrp-profile",
+      secRpCap(r.profile || "") + suffix
+    ));
+    tdProfile.appendChild(secEl("div", "secmeta", "Run #" + r.analysis_id));
+    tr.appendChild(tdProfile);
+    const tdBranch = document.createElement("td");
+    tdBranch.textContent = r.branch || "";
+    tr.appendChild(tdBranch);
+    const tdWhen = document.createElement("td");
+    if (r.started) {
+      tdWhen.appendChild(secEl("div", "secrp-when", fmtWhen(r.started)));
+      tdWhen.appendChild(secEl("div", "secmeta", fmtAgo(r.started)));
+    } else {
+      tdWhen.textContent = "\u2014";
+    }
+    tr.appendChild(tdWhen);
+    const tdFmt = document.createElement("td");
+    if (secRpFinished(r)) {
+      const rowEl = secEl("div", "secrp-fmts");
+      SEC_REPORT_FORMATS.forEach(([fmt, label]) => {
+        const btn = secEl("button", "secrp-fmt");
+        btn.type = "button";
+        btn.appendChild(document.createTextNode(label));
+        btn.title = fmt === "sbom" ? SBOM_CAVEAT : "Download this analysis's report as " + label;
+        btn.onclick = () => secDownloadReport(r.analysis_id, fmt, btn);
+        rowEl.appendChild(btn);
+      });
+      tdFmt.appendChild(rowEl);
+    } else {
+      tdFmt.appendChild(secEl("div", "secrp-none", "\u2014"));
+      tdFmt.appendChild(secEl(
+        "div",
+        "secmeta",
+        r.state === "failed" ? "No report generated" : "Not finished yet"
+      ));
+    }
+    tr.appendChild(tdFmt);
+    const tdActs = document.createElement("td");
+    tdActs.className = "rowacts";
+    if (secRpFinished(r)) {
+      const dl = document.createElement("button");
+      dl.type = "button";
+      dl.className = "iconbtn";
+      dl.title = "Download this analysis's report (Markdown)";
+      dl.appendChild(secIcon("download"));
+      dl.onclick = () => secDownloadReport(r.analysis_id, "md", dl);
+      tdActs.appendChild(dl);
+      tdActs.appendChild(secRpKebab(r));
+    } else {
+      tdActs.textContent = "\u2014";
+    }
+    tr.appendChild(tdActs);
     return tr;
   }
+  function secRpKebab(r) {
+    const kebab = document.createElement("details");
+    kebab.className = "secidx-kebab";
+    const summary = document.createElement("summary");
+    summary.className = "iconbtn";
+    summary.title = "More downloads";
+    summary.appendChild(secIcon("dots"));
+    summary.onclick = (e) => {
+      e.stopPropagation();
+      closeMenus();
+    };
+    kebab.appendChild(summary);
+    const pop = secEl("div", "menu-pop");
+    pop.setAttribute("role", "menu");
+    [["json", "JSON"], ["html", "HTML"], ["sbom", "SBOM"]].forEach(([fmt, label]) => {
+      const item = document.createElement("button");
+      item.setAttribute("role", "menuitem");
+      item.appendChild(secIcon("file"));
+      item.appendChild(document.createTextNode(label));
+      if (fmt === "sbom") item.title = SBOM_CAVEAT;
+      item.onclick = (e) => {
+        e.stopPropagation();
+        kebab.open = false;
+        secDownloadReport(r.analysis_id, fmt, item);
+      };
+      pop.appendChild(item);
+    });
+    kebab.appendChild(pop);
+    kebab.ontoggle = () => {
+      pop.hidden = !kebab.open;
+      if (!kebab.open) return;
+      const rect = summary.getBoundingClientRect();
+      pop.style.position = "fixed";
+      pop.style.top = rect.bottom + 6 + "px";
+      pop.style.right = window.innerWidth - rect.right + "px";
+      pop.style.left = "auto";
+      pop.style.bottom = "auto";
+    };
+    return kebab;
+  }
   function secReportsTable(rows) {
-    if (!rows.length) {
-      return secEl("div", "tblempty", "No analyses of this project yet.");
-    }
-    const wrap = secEl("div", "tablewrap");
+    const sorted = rows.slice().sort((a, b) => secRpSortDir === "asc" ? (a.started || 0) - (b.started || 0) : (b.started || 0) - (a.started || 0));
+    const wrap = secEl("div", "table-card");
+    const scroll = secEl("div", "table-scroll");
     const table = document.createElement("table");
+    table.className = "secrp-table";
     const thead = document.createElement("thead");
     const htr = document.createElement("tr");
-    ["Analysis", "Branch", "Started", "State", "Downloads"].forEach((h) => {
+    SEC_REPORT_COLS.forEach(([key, label]) => {
       const th = document.createElement("th");
-      th.textContent = h;
+      th.appendChild(document.createTextNode(label));
+      if (key === "generated") {
+        th.className = "sortable sorted";
+        th.title = GENERATED_NOTE + " Click to sort.";
+        th.setAttribute("aria-sort", secRpSortDir === "asc" ? "ascending" : "descending");
+        th.appendChild(secIcon(secRpSortDir === "asc" ? "sortasc" : "sortdesc"));
+        th.onclick = () => {
+          secRpSortDir = secRpSortDir === "asc" ? "desc" : "asc";
+          if (secRpPayload) secRenderProjectReports(secRpPayload);
+        };
+      }
+      if (key === "formats") {
+        th.title = "Each chip downloads that format, generated on the spot from the analysis's own records.";
+      }
       htr.appendChild(th);
     });
     thead.appendChild(htr);
     table.appendChild(thead);
     const tbody = document.createElement("tbody");
-    rows.forEach((r) => tbody.appendChild(secReportRow(r)));
+    sorted.forEach((r) => tbody.appendChild(secReportRow(r)));
     table.appendChild(tbody);
-    wrap.appendChild(table);
+    scroll.appendChild(table);
+    wrap.appendChild(scroll);
+    wrap.appendChild(tableFooter({
+      shown: { from: 1, to: sorted.length },
+      total: sorted.length,
+      noun: "report",
+      page: 1,
+      pages: 1,
+      numbered: true
+    }));
     return wrap;
   }
+  var secRpPayload = null;
   function secRenderProjectReports(payload) {
     const host = $("sec-pj-reports");
     if (!host) return;
+    secRpPayload = payload;
     host.textContent = "";
     const rows = ((payload || {}).tabs || {}).reports || [];
-    host.appendChild(secReportsCaption());
-    host.appendChild(secReportsTable(rows));
-    host.appendChild(secEl(
+    const card = secEl("div", "card secpj-plaincard");
+    const head = secEl("div", "secpj-cardhead");
+    const titles = secEl("div", "grow");
+    titles.appendChild(secEl("h3", null, "Reports"));
+    titles.appendChild(secEl(
+      "div",
+      "secpj-caption",
+      "Export detailed results for audits, compliance and sharing with your team."
+    ));
+    head.appendChild(titles);
+    card.appendChild(head);
+    if (!rows.length) {
+      card.appendChild(secEl("div", "tblempty", "No analyses of this project yet."));
+    } else {
+      card.appendChild(secReportsTable(rows));
+    }
+    card.appendChild(secEl(
       "div",
       "secdlnote",
       "Downloads always contain every recorded finding, whatever the severity floor shows."
     ));
+    host.appendChild(card);
+  }
+  function secReportsSidebar(payload) {
+    const frag = document.createDocumentFragment();
+    const sb = (payload || {}).sidebar || {};
+    frag.appendChild(secAllBranchDonutCard(sb));
+    frag.appendChild(secTopCategoriesCard(sb));
+    frag.appendChild(secReportsSummaryCard(((payload || {}).tabs || {}).reports || []));
+    return frag;
+  }
+  function secReportsSummaryCard(rows) {
+    const card = secEl("div", "card secpj-plaincard");
+    const head = secEl("div", "secpj-cardhead");
+    head.appendChild(secEl("h3", null, "Reports summary"));
+    card.appendChild(head);
+    const available = rows.filter(secRpFinished).length;
+    const failed = rows.filter((r) => r.state === "failed").length;
+    const line = (label, value) => {
+      const el = secEl("div", "secrp-sumline");
+      el.appendChild(secEl("span", "secrp-sumlabel", label));
+      el.appendChild(secEl("b", null, String(value)));
+      return el;
+    };
+    card.appendChild(line("Reports available", available));
+    card.appendChild(line("Failed analyses", failed));
+    card.appendChild(secEl(
+      "div",
+      "secpj-caption",
+      "Reports are generated on demand from each analysis's own ledger records \u2014 nothing is stored or expires."
+    ));
+    return card;
   }
 
   // ui/security/project-screen.js
@@ -3493,7 +3661,7 @@
     reports: {
       icon: "file",
       title: "Reports",
-      sub: "Every analysis's downloadable reports \u2014 Markdown, JSON, HTML and SBOM."
+      sub: "Generated security reports for this project and its analyses."
     }
   };
   function secRenderProjectTitle() {
@@ -3889,6 +4057,10 @@
     const sb = payload.sidebar || {};
     if (secProjectTab === "branches") {
       host.appendChild(secBranchesSidebar(payload));
+      return;
+    }
+    if (secProjectTab === "reports") {
+      host.appendChild(secReportsSidebar(payload));
       return;
     }
     if (secProjectTab === "runs") {
@@ -4945,5 +5117,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 66d222fd59cc7bc952e57367bcb84d927f2daa4eeae5f400fb0f90534b43ea0f */
-/* ui-sources: 3ea2e26e5ee0a9f34d3fb7f6aa07845cc40e6938fdd699a0e7ee55932bbd7e36 */
+/* ui-bundle: 59369d08eb6f1a85e1f3abe7f5ba27393a30dc9ba5bdac95d0895a9b470bfaad */
+/* ui-sources: ce629b79cddee3d2aa49ecf32d1f2845ae5d82a8e3633b8839b724a73382e4d5 */

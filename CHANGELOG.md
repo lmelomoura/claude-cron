@@ -19,6 +19,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The Reports tab meets ProjectReports.png.** The plain five-column
+  table became the mockup's card: the run chip opens the analysis on the
+  Runs tab, the Profile cell folds the state in ("Deep (Capped)",
+  "Standard (Failed)") with the run number beneath, Generated-at sorts
+  and carries the on-demand explanation in its tooltip, and the four
+  FORMAT chips are the downloads themselves — with the quick-Markdown +
+  kebab actions the selected run's header already wears, and a numbered
+  footer. Downloads now appear only on a FINISHED analysis: a failed row
+  says "No report generated" and a running one "Not finished yet"
+  (the mockup's rule, and the better one — a report generated over a
+  half-run reads as a complete document; the Runs tab's own
+  single-analysis downloads still cover any state). The SBOM caveat (the
+  branch's CURRENT document, not a snapshot) rides every SBOM control's
+  tooltip instead of a paragraph above the table. The rail becomes the
+  tab's own three cards — the all-branch donut and Top-issue-categories
+  shared with the Branches rail (extracted, one copy) plus a Reports
+  summary. Deliberately not drawn from the mockup, because reports are
+  generated on demand from the ledger: a SIZE column and Total-size line
+  (no file exists to weigh until the click), Export all (no aggregate
+  artifact exists), and "kept for 90 days" (nothing is stored or
+  expires — the summary card says the true version). `tabs.reports` rows
+  now carry the analysis's profile.
+
 - **The Findings tab meets ProjectFindings.png.** The one-container stat
   strip became seven house KPI cards — Total findings, the five severities
   (each with its share of the total, wearing the same severity icon/tone

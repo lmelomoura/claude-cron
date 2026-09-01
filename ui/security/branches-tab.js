@@ -592,11 +592,11 @@ function secBranchTrendText(trend){
    all-branch severity donut (title carrying its scope where the other
    tabs' rail says it in a caption), Top issue categories with the
    "View all findings" door, and Branch coverage. */
-export function secBranchesSidebar(payload){
-  const frag = document.createDocumentFragment();
-  const sb = (payload || {}).sidebar || {};
-  const rows = ((payload || {}).tabs || {}).branches || [];
-
+/* The all-branch severity donut card and the Top-issue-categories card,
+   exported on their own: the Reports tab's rail (secReportsSidebar,
+   reports-tab.js) is these two cards plus its own summary card, and a
+   second copy of either would drift from this one. */
+export function secAllBranchDonutCard(sb){
   const donutCard = secEl("div", "card secpj-plaincard");
   const donutHead = secEl("div", "secpj-cardhead");
   const donutTitle = secEl("h3", null, "Findings by severity ");
@@ -616,8 +616,10 @@ export function secBranchesSidebar(payload){
   const capped = secCappedScopeNote(sb.capped_branches || 0,
     sb.branch_count || 0, "branch");
   if(capped) donutCard.appendChild(capped);
-  frag.appendChild(donutCard);
+  return donutCard;
+}
 
+export function secTopCategoriesCard(sb){
   const catCard = secEl("div", "card secpj-plaincard");
   const catHead = secEl("div", "secpj-cardhead");
   catHead.appendChild(secEl("h3", null, "Top issue categories"));
@@ -630,8 +632,15 @@ export function secBranchesSidebar(payload){
   viewAll.title = "Open this project's findings browser";
   viewAll.onclick = () => secSwitchProjectTab("findings");
   catCard.appendChild(viewAll);
-  frag.appendChild(catCard);
+  return catCard;
+}
 
+export function secBranchesSidebar(payload){
+  const frag = document.createDocumentFragment();
+  const sb = (payload || {}).sidebar || {};
+  const rows = ((payload || {}).tabs || {}).branches || [];
+  frag.appendChild(secAllBranchDonutCard(sb));
+  frag.appendChild(secTopCategoriesCard(sb));
   frag.appendChild(secBrCoverageCard(rows));
   return frag;
 }

@@ -1091,7 +1091,8 @@ def cmd_project_data(args):
     # `analysis` -- into just what the Reports tab's downloads need. See this
     # function's own docstring for why a row survives for every state.
     reports = [{"analysis_id": r["id"], "branch": r["branch"],
-               "started": r["started"], "state": r["state"]} for r in runs]
+               "started": r["started"], "state": r["state"],
+               "profile": r["profile"]} for r in runs]
 
     print(json.dumps({
         "project": args.project,

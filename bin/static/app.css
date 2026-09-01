@@ -2416,6 +2416,35 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
 .secbr-table th:last-child{width:9%}      /* Actions            */
 .secbr-table td.rowacts{white-space:nowrap}
 
+/* ------------------------------------------- project screen: Reports tab
+   ProjectReports.png -- the one Reports card (run chip, profile with the
+   run number beneath, branch, sortable Generated-at, the four format
+   chips as the downloads, quick-download + kebab), and the rail's own
+   summary card. The donut/categories rail cards are the Branches tab's
+   own, shared. */
+.secrp-table{min-width:1030px}
+.secrp-table th:nth-child(1){width:9%}    /* Analysis     */
+.secrp-table th:nth-child(2){width:15%}   /* Profile      */
+.secrp-table th:nth-child(3){width:17%}   /* Branch       */
+.secrp-table th:nth-child(4){width:19%}   /* Generated at */
+.secrp-table th:nth-child(5){width:29%}   /* Format       */
+.secrp-table th:last-child{width:11%}     /* Actions      */
+.secrp-table td.rowacts{white-space:nowrap}
+.secrp-id{font-weight:650}
+.secrp-profile{font-weight:650;color:var(--ink)}
+.secrp-when{font-weight:650;color:var(--ink)}
+.secrp-fmts{display:flex;flex-wrap:wrap;gap:6px}
+.secrp-fmt{font:inherit;font-size:11.5px;font-weight:600;color:var(--ink);
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  padding:4px 10px;cursor:pointer;white-space:nowrap}
+.secrp-fmt:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line));
+  color:var(--accent)}
+.secrp-none{font-weight:650;color:var(--muted)}
+.secrp-sumline{display:flex;align-items:center;justify-content:space-between;
+  font-size:12.5px;color:var(--muted);padding:5px 0}
+.secrp-sumline b{color:var(--ink);font-weight:650}
+.secrp-sumlabel{min-width:0}
+
 /* --------------------------------------------------------- security index
    The project table, the recent-analyses feed and the severity donut all
    paint into the same #sec-list host the flat project list used to fill --
@@ -2741,5 +2770,5 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: c3d946dc8b14f55c1348e5982e5cf0ed90f689b560eb17083d1ed4c223d9e575 */
-/* ui-sources: 3ea2e26e5ee0a9f34d3fb7f6aa07845cc40e6938fdd699a0e7ee55932bbd7e36 */
+/* ui-bundle: 642af06f10992ae014a97128c4fbbb8f7cba2d2a20e1317a5d6e4fe00711ffcc */
+/* ui-sources: ce629b79cddee3d2aa49ecf32d1f2845ae5d82a8e3633b8839b724a73382e4d5 */

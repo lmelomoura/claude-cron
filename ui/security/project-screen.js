@@ -44,7 +44,7 @@ import { secOpen, secShowAnalysis, secOpenLaunch } from "./analysis.js";
 import { secDownloadReport } from "./actions.js";
 import { secRunFor } from "./history.js";
 import { secRenderProjectBranches, secBranchesSidebar } from "./branches-tab.js";
-import { secRenderProjectReports } from "./reports-tab.js";
+import { secRenderProjectReports, secReportsSidebar } from "./reports-tab.js";
 import { renderFindings } from "./findings-screen.js";
 import { secRenderProjectOverview, secProjectActivity } from "./overview-tab.js";
 
@@ -263,7 +263,7 @@ const SEC_TAB_TITLES = {
   findings: {icon: "shield", title: "Findings",
     sub: "Complete list of security findings for all analyses in this project."},
   reports: {icon: "file", title: "Reports",
-    sub: "Every analysis's downloadable reports — Markdown, JSON, HTML and SBOM."},
+    sub: "Generated security reports for this project and its analyses."},
 };
 
 function secRenderProjectTitle(){
@@ -911,6 +911,13 @@ function secRenderProjectSidebar(payload){
   // exactly the mockup's own column.
   if(secProjectTab === "branches"){
     host.appendChild(secBranchesSidebar(payload));
+    return;
+  }
+  // The Reports tab's rail (ProjectReports.png): the same two cards the
+  // Branches rail draws plus the Reports summary -- built in
+  // reports-tab.js from the shared card builders, no activity card.
+  if(secProjectTab === "reports"){
+    host.appendChild(secReportsSidebar(payload));
     return;
   }
   if(secProjectTab === "runs"){

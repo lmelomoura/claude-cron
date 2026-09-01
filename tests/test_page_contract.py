@@ -1872,9 +1872,11 @@ def test_the_cells_icon_rule_cannot_repaint_the_favourite_star(srv):
     (".secov-findtable", "SEC_OVFIND_COLS", "security"),
     # The Branches tab's own table (branches-tab.js, ProjectBranches.png).
     (".secbr-table", "SEC_BRANCH_COLS", "security"),
+    # The Reports tab's own table (reports-tab.js, ProjectReports.png).
+    (".secrp-table", "SEC_REPORT_COLS", "security"),
 ], ids=["jobs", "projects", "runs", "security-fleet", "security-recent",
         "security-runs", "security-findings", "security-activity",
-        "security-top-findings", "security-branches"])
+        "security-top-findings", "security-branches", "security-reports"])
 def test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column(
         srv, tmp_path, view, const_name, bundle):
     """Must fail against the pre-fix CSS (Security's th:nth-child(6) has no
@@ -4557,22 +4559,41 @@ def test_a_branch_is_active_by_its_last_finished_analysis_alone(srv, tmp_path):
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_reports_tab_renders_one_row_per_analysis_with_four_downloads(srv, tmp_path):
-    """One row per analysis regardless of state (a running one still gets a
-    row -- see cmd_project_data's own docstring), four download buttons
-    each, and the SBOM caveat spelled out: it hands back the branch's
-    CURRENT document, not a snapshot of the analysis the row is for."""
+    """One row per analysis regardless of state -- but the downloads
+    themselves only on a FINISHED one (ProjectReports.png's own rule,
+    replacing the everything-gets-buttons this tab used to have: a report
+    generated over a run that fell over, or has not finished, carries a
+    partial checklist that READS as a complete one; the Runs tab's own
+    single-analysis downloads still cover any state). A failed row says
+    "No report generated", a running one "Not finished yet". The SBOM
+    caveat -- the branch's CURRENT document, not a snapshot -- rides every
+    SBOM control's own tooltip now, and the severity-floor note survives
+    below the table."""
     block = _security_js(srv)
-    consts = _const(block, "SEC_REPORT_FORMATS")
+    consts = (_const(block, "SEC_REPORT_FORMATS") + _const(block, "SEC_REPORT_COLS")
+              + _const(block, "SBOM_CAVEAT") + _const(block, "GENERATED_NOTE"))
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("secEl", "secIcon", "secReportsCaption", "secReportRow",
+                     ("secEl", "secIcon", "secRpCap", "secRpFinished",
+                      "secReportRow", "secRpKebab",
                       "secReportsTable", "secRenderProjectReports"))
     script = tmp_path / "pj-reports.js"
     script.write_text(_PROJECT_DOM_HARNESS + """
+    let secRpSortDir = "desc", secRpPayload = null;
     function secDownloadReport(){}
+    function secShowAnalysis(_id, _pin){}
+    function secSwitchProjectTab(_t){}
+    function closeMenus(){}
+    function tableFooter(o){
+      const f = new FakeElement("footer");
+      f.textContent = "Showing " + o.shown.from + " to " + o.shown.to
+        + " of " + o.total + " " + o.noun;
+      return f;
+    }
     """ + consts + deps + """
     secRenderProjectReports({tabs: {reports: [
-      {analysis_id: 7, branch: "main", started: 1700000000, state: "done"},
-      {analysis_id: 8, branch: "develop", started: 1700000100, state: "running"},
+      {analysis_id: 7, branch: "main", started: 1700000000, state: "done", profile: "deep"},
+      {analysis_id: 8, branch: "develop", started: 1700000100, state: "running", profile: "deep"},
+      {analysis_id: 9, branch: "develop", started: 1700000200, state: "failed", profile: "standard"},
     ]}});
     const host = _els["sec-pj-reports"];
     function countButtons(n, c){
@@ -4587,12 +4608,26 @@ def test_the_reports_tab_renders_one_row_per_analysis_with_four_downloads(srv, t
     out = json.loads(subprocess.run(["node", str(script)],
                                     capture_output=True, text=True, check=True).stdout)
     joined = " ".join(r["text"] for r in out["rows"])
-    assert "#7" in joined and "#8" in joined, f"an analysis id is missing: {joined}"
+    titles = " ".join(r["title"] for r in out["rows"])
+    assert "#7" in joined and "#8" in joined and "#9" in joined, \
+        f"an analysis id is missing: {joined}"
     assert "main" in joined and "develop" in joined
-    assert "done" in joined and "running" in joined
-    assert out["buttons"] == 8, f"expected 4 download buttons per row over 2 rows: {out['buttons']}"
-    assert "CURRENT document" in joined, f"the SBOM caveat is missing: {joined}"
+    assert "Deep (Running)" in joined and "Standard (Failed)" in joined, \
+        f"the profile cell must fold the unfinished state in: {joined}"
+    # The finished row alone carries downloads: its run chip, four format
+    # chips, the quick Markdown download, the kebab summary is not a
+    # <button> -- plus its kebab's three menu items; the running and failed
+    # rows offer only their own run chip.
+    assert out["buttons"] == 1 * 3 + 4 + 1 + 3, \
+        f"only the finished row may offer downloads: {out['buttons']}"
+    assert "No report generated" in joined, \
+        f"a failed analysis must say why there is nothing to download: {joined}"
+    assert "Not finished yet" in joined, \
+        f"a running analysis must say why there is nothing to download: {joined}"
+    assert "CURRENT document" in titles, \
+        f"the SBOM caveat must ride the SBOM controls' own tooltips: {titles}"
     assert "every recorded finding" in joined, f"the severity-floor note is missing: {joined}"
+    assert "3 report" in joined, f"the footer must count the rows: {joined}"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -6188,11 +6223,12 @@ def test_the_severity_floors_scope_is_stated_where_the_unfloored_numbers_are(srv
     # Said on the index screen (its KPI cards, posture pills and donut are
     # all unfloored) and on the project screen's rail, whose one visible
     # caption became per-variant tooltips ON the cards that carry the
-    # numbers: secSidebarScopeNote rides the reports/other tabs' donut
-    # block, secProjectRunSidebar's own donut title carries the Runs
-    # variant, secBranchesSidebar's the Branches one.
+    # numbers: secSidebarScopeNote rides the leftover tabs' donut block,
+    # secProjectRunSidebar's own donut title carries the Runs variant, and
+    # secAllBranchDonutCard -- the card the Branches AND Reports rails
+    # both mount -- carries theirs.
     for fn in ("secRenderIndex", "secSidebarScopeNote", "secProjectRunSidebar",
-               "secBranchesSidebar"):
+               "secAllBranchDonutCard"):
         assert "SEC_FLOOR_SCOPE_NOTE" in _plainfn(block, fn), \
             f"{fn} shows unfloored numbers and does not say so"
 
