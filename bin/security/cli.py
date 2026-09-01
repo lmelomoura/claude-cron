@@ -256,6 +256,30 @@ def _refuse_if_secret(field, value):
                  "already does.")
 
 
+def _refuse_unknown_sast_rule(verb, rule, tail=""):
+    """Refuse a `sast` rule outside the closed vocabulary -- the one message
+    behind both doors that check it, `cmd_fingerprint`'s `--rule` and
+    `cmd_report_finding`'s `rule` payload key, so the wording cannot drift
+    between the two the way two hand-written copies eventually would.
+
+    Runs `_refuse_if_secret` on the rule FIRST, before quoting it back in
+    the refusal below -- owned HERE, not left to each call site, so a future
+    third caller cannot forget the ordering the other two already got right.
+
+    `verb` names the command doing the refusing (`fingerprint` or
+    `report-finding`); `tail` lets `report-finding` append its own sentence
+    pointing the agent at the rationale field, which `fingerprint` has no
+    equivalent of.
+    """
+    _refuse_if_secret(f"{verb}: rule", rule)
+    sys.exit(f"{verb}: {rule!r} is not a SAST rule name. "
+             "The rule is part of the fingerprint, so a second spelling "
+             "of one hole is a second identity: it reports `new` for "
+             "ever and no decision ever matches it again. Use one of: "
+             + ", ".join(taxonomy.RULE_NAMES)
+             + " — or `other` if none of them fits" + tail)
+
+
 def _spend(value):
     """The spend arrives from the run's own cost field, which is text the CLI
     produced and nothing has validated. A row left `running` for ever is a
@@ -454,19 +478,14 @@ def cmd_fingerprint(args):
     `cmd_report_finding` checks it only for that category.
     """
     if args.category == "sast" and not taxonomy.is_valid_rule(args.rule):
-        # `args.rule` is about to be quoted back below, and this verb's
-        # stderr lands in the same run log `report-finding`'s does -- scan it
-        # for a live credential first, for the reason `_refuse_if_secret`'s
-        # docstring gives for gating `report-finding`'s `category` and `rule`
-        # before their own refusals quote them: echoing a secret back to
-        # refuse it would defeat the refusal by writing it to disk anyway.
-        _refuse_if_secret("fingerprint: rule", args.rule)
-        sys.exit(f"fingerprint: {args.rule!r} is not a SAST rule name. "
-                 "The rule is part of the fingerprint, so a second spelling "
-                 "of one hole is a second identity: it reports `new` for "
-                 "ever and no decision ever matches it again. Use one of: "
-                 + ", ".join(taxonomy.RULE_NAMES)
-                 + " — or `other` if none of them fits.")
+        # See `_refuse_unknown_sast_rule`: it scans `args.rule` for a live
+        # credential before quoting it back, for the reason
+        # `_refuse_if_secret`'s docstring gives for gating `report-finding`'s
+        # `category` and `rule` before their own refusals quote them --
+        # echoing a secret back to refuse it would defeat the refusal by
+        # writing it to disk anyway. This verb's stderr lands in the same
+        # run log `report-finding`'s does, so the same care applies here.
+        _refuse_unknown_sast_rule("fingerprint", args.rule, tail=".")
     if args.category == "secret":
         # No snippet, no value: the identity of a secret finding is its TYPE
         # and its FILE, never what it says. See secret_fingerprint's own
@@ -548,14 +567,8 @@ def cmd_report_finding(args):
     # sources of truth in one row.
     if payload["category"] == "sast":
         if not taxonomy.is_valid_rule(payload["rule"]):
-            sys.exit(
-                f"report-finding: {payload['rule']!r} is not a SAST rule name. "
-                "The rule is part of the fingerprint, so a second spelling of "
-                "one hole is a second identity: it reports `new` for ever and "
-                "no decision ever matches it again. Use one of: "
-                + ", ".join(taxonomy.RULE_NAMES)
-                + " — or `other` if none of them fits, and say why in the "
-                  "rationale.")
+            _refuse_unknown_sast_rule("report-finding", payload["rule"],
+                                       tail=", and say why in the rationale.")
         payload["cwe"], payload["owasp"] = taxonomy.classify(payload["rule"])
     else:
         payload["cwe"] = payload["owasp"] = ""

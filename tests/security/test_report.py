@@ -223,11 +223,15 @@ def test_an_unclassified_finding_shows_no_classification_markup_in_html():
     # Every deterministic finding (secret, dependency, hygiene) has an empty
     # cwe/owasp. Emitting the classification wrapper with nothing inside it
     # reads as a missing value the reader should chase -- so the whole
-    # <p class='cls'> block must be absent, not just empty.
+    # <p class="cls"> block must be absent, not just empty. Narrowed to the
+    # attribute itself, not the bare substring "cls": `_CSS` carries a
+    # `.cls` rule, which also appears in the `<style>` block this renders
+    # into, and a substring check over the whole document would fail for a
+    # reason that has nothing to do with what this test asserts.
     findings = [dict(FINDINGS[0], category="hygiene", rule="committed_env_file",
                       cwe="", owasp="")]
     out = report.as_html(ANALYSIS, findings, "")
-    assert "cls" not in out
+    assert 'class="cls"' not in out
 
 
 def test_html_escapes_the_classification_fields():

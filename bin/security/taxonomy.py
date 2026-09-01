@@ -30,6 +30,11 @@ SAST_RULES = {
     "insecure-configuration":     ("CWE-16",   "A05:2021"),
     "insecure-deserialization":   ("CWE-502",  "A08:2021"),
     "insecure-randomness":        ("CWE-338",  "A02:2021"),
+    # Not on OWASP's own A04 CWE list. Kept here anyway, because a missing
+    # rate limit is a control nobody designed in, not a control built and
+    # then implemented wrong -- which is what A04 ("Insecure Design") means
+    # to capture. A judgement call: there is no published CWE-770 mapping to
+    # verify it against.
     "missing-rate-limiting":      ("CWE-770",  "A04:2021"),
     "open-redirect":              ("CWE-601",  "A01:2021"),
     "path-traversal":             ("CWE-22",   "A01:2021"),
@@ -37,6 +42,11 @@ SAST_RULES = {
     # was added in 2024 and is the correct identifier -- not CWE-77, which
     # is command injection and is what this gets mistaken for.
     "prompt-injection-in-source": ("CWE-1427", "A03:2021"),
+    # Not on OWASP's own A04 CWE list either -- the same judgement call as
+    # `missing-rate-limiting`'s: a race condition is a concurrency design
+    # left unresolved, not a correctly designed check implemented wrong,
+    # which is what A04 ("Insecure Design") means to capture. The best fit
+    # on offer, not a verified one.
     "race-condition":             ("CWE-362",  "A04:2021"),
     # A01, not A02. "Sensitive Data Exposure" was the NAME of A3:2017, and
     # the 2021 revision reused that name for the unrelated, narrower

@@ -34,7 +34,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fits nothing else: an agent forced to pick the nearest wrong name
   mislabels everything downstream of it. Markdown and HTML reports show
   the class when there is one and stay silent when there is not; JSON
-  always carries the keys.
+  always carries the keys. This has a real cost against the development
+  ledger already on disk: of its 76 `sast` findings, recorded under 32
+  distinct free-text rule names, only two (`xss` and
+  `insecure-deserialization`) already match the closed vocabulary, and
+  `migrate-rules` cannot carry the other 74 across -- a SAST fingerprint is
+  built from the code snippet, which the ledger never stored, so there is
+  no recipe left to re-run. Existing SAST findings recorded under a
+  free-text name therefore do not carry across: the first analysis after
+  this lands reports them `fixed` and the same holes `new`, the very
+  double-identity failure this vocabulary exists to prevent. This is a
+  pre-approved cost, not an oversight -- the only ledger affected is a
+  development one, disposable by the spec that authorized this change --
+  and it orphans nothing: both human decisions recorded there are on
+  `secret` findings, untouched by any of this, and there are zero
+  `decision_made` events for a rename to leave pointing at nothing.
 
 - **`claude-cron security migrate-rules` renames a rule without losing its
   history.** A rule's name feeds the fingerprint, so renaming one used to
