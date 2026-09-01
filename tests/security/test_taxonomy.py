@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -67,6 +68,24 @@ def test_the_skill_lists_every_rule_name():
     # silence otherwise: a rule added here and not there is a rule the
     # agent never uses, and one removed here but not there is an analysis
     # that fails at report time.
+    #
+    # A plain `name in text` substring check against the WHOLE document is
+    # too weak for one entry: "other" is also ordinary English, and it
+    # shows up twice in prose that predates the vocabulary block ("any
+    # other installed tree", "for any other reason"). If a future edit
+    # deleted the `other` entry -- and the escape-hatch guidance beside it
+    # -- from the vocabulary block, those two unrelated sentences would
+    # still contain the word "other" and this test would keep passing
+    # while the agent silently lost its only honest way to report an
+    # unclassified finding. So instead of searching the whole document,
+    # pull out just the fenced block that holds the vocabulary and require
+    # an exact token match inside it -- this protects every rule name
+    # uniformly, not just the one that happens to collide with prose.
     text = SKILL.read_text()
+    match = re.search(r"closed vocabulary.*?```\n(.*?)```", text, re.DOTALL)
+    assert match, "SKILL.md has no fenced vocabulary block after 'closed vocabulary'"
+    vocabulary = set(match.group(1).split())
     for name in taxonomy.RULE_NAMES:
-        assert name in text, f"SKILL.md does not mention the rule {name!r}"
+        assert name in vocabulary, (
+            f"SKILL.md's vocabulary block does not list the rule {name!r}"
+        )

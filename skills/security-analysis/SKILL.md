@@ -76,7 +76,7 @@ fingerprint: a second spelling of one hole is a second identity, reported
 broken-access-control      broken-authentication      code-injection
 command-injection          hardcoded-credentials      improper-input-validation
 insecure-configuration     insecure-deserialization   insecure-randomness
-missing-rate-limiting      open-redirect               other
+missing-rate-limiting      open-redirect              other
 path-traversal             prompt-injection-in-source race-condition
 sensitive-data-exposure    sql-injection              ssrf
 weak-cryptography          xss                        xxe
