@@ -219,20 +219,31 @@ export function secPosture(findings, minSeverity){
    pattern scanner runs, and gitleaks' rule ids (kebab-case) when the engine
    does -- see the second block below. Only ever one of the two per analysis,
    but both across a fleet, and a ledger keeps findings from both. Three more
-   categories need no entry here, for three different reasons: "dependency"
-   (bin/security/osv.py) writes the OSV.dev advisory id itself as the rule --
-   GHSA-... or CVE-... -- and an advisory id is already a name (the mockup
-   keeps "GHSA-8xcm-r25x-g524" verbatim, never translates it, see
-   SEC_ADVISORY_RULE below); "sast" is one of the two OPEN vocabularies -- the
-   analysis agent writes its own kebab-case rule id per finding, so no fixed
-   list could ever cover it, and secRuleMeta humanises it instead of looking
-   it up; "iac" (bin/security/adapters.py's `trivy_misconfigs`) is the other
-   OPEN one -- its rule is Trivy's own check id (`DS-0002`, `KSV-0001`, ...),
-   drawn from an external, unbounded vocabulary this project does not curate
-   the way it curates gitleaks' subset above, and unlike an advisory id a
-   bare check id is not self-explanatory enough to keep verbatim, so it
-   humanises the same way an unmatched "sast" rule does rather than joining
-   SEC_ADVISORY_RULE's exceptions.
+   categories need no entry here, for two different reasons: "dependency"
+   and "iac" both keep their rule verbatim as the label; "sast" alone
+   humanises. "dependency" (bin/security/osv.py) writes the OSV.dev advisory
+   id itself as the rule -- GHSA-... or CVE-... -- and an advisory id is
+   already a name (the mockup keeps "GHSA-8xcm-r25x-g524" verbatim, never
+   translates it, see SEC_ADVISORY_RULE below). "iac" (bin/security/
+   adapters.py's `_iac_finding`, called from `trivy_misconfigs`) is the SAME
+   kind of case: its rule is Trivy's own check id (`DS-0002`, `KSV-0001`,
+   `AVD-AWS-0088`, ...), drawn from an external, unbounded vocabulary this
+   project does not curate the way it curates gitleaks' subset above -- but
+   it is an opaque vendor identifier exactly like an advisory id, not a
+   sentence, which is why it earns the SAME treatment rather than the
+   opposite one an earlier version of this comment argued for: humanising a
+   check id explains nothing, it only breaks the id an operator would grep
+   the ledger for (`secHumaniseRule("DS-0002")` splits on the hyphen and
+   produces "DS 0002", which matches neither the id nor a real label). It
+   gets its own branch below rather than joining SEC_ADVISORY_RULE's --
+   that pattern names exactly two vendor prefixes, and an "iac" rule draws
+   `cpu` (SEC_CATEGORY_ICON's own entry), not the advisory branch's
+   `shield`. "sast" is the one OPEN vocabulary left -- the analysis agent
+   writes its own kebab-case rule id per finding, so no fixed list could
+   ever cover it, and secRuleMeta humanises it instead of looking it up:
+   unlike a vendor's check id, a sast rule id is a phrase this project's own
+   agent composed, and turning it into a sentence is the explanation an
+   opaque id cannot get.
 
    Every label below was written FROM the rule's own rationale in secrets.py
    or hygiene.py, not guessed from the rule's name -- both files are short;
@@ -334,13 +345,22 @@ function secHumaniseRule(rule){
         FIRST and ignores `category` when it matches: every rule a CLOSED
         engine (secrets.py, hygiene.py) can produce is in that map, labelled
         from the engine's own rationale, which a generic per-category label
-        (step 4, below) would only flatten.
+        (step 5, below) would only flatten.
      2. An advisory id (SEC_ADVISORY_RULE) keeps itself as the label.
-     3. `category === "sast"` -- the one OPEN vocabulary -- humanised.
-     4. Whatever `category` says, sensibly, for a rule from a closed engine
+     3. `category === "iac"` keeps itself as the label too -- a Trivy check
+        id is the same kind of opaque vendor identifier an advisory id is,
+        just one SEC_ADVISORY_RULE's own pattern does not recognise, so it
+        earns its own branch rather than a join onto that one, and draws
+        `cpu` (SEC_CATEGORY_ICON's own "iac" entry) rather than the
+        advisory branch's `shield`.
+     4. `category === "sast"` -- the one OPEN vocabulary left -- humanised:
+        the analysis agent composes its own rule id per finding, and turning
+        that phrase into a sentence is the explanation the opaque vendor ids
+        in steps 2 and 3 do not get.
+     5. Whatever `category` says, sensibly, for a rule from a closed engine
         this map has not been told about yet (a future secret/dependency/
         hygiene rule).
-     5. `shield`, unconditionally -- the same fallback an unrecognised
+     6. `shield`, unconditionally -- the same fallback an unrecognised
         severity or state already gets elsewhere in this file (secSevRank,
         secStateKey). */
 export function secRuleMeta(category, rule){
@@ -349,6 +369,16 @@ export function secRuleMeta(category, rule){
   const safe = (rule == null || rule === "") ? "Unknown rule" : String(rule);
   // Advisory ids ARE names -- never humanised, whatever the category says.
   if(SEC_ADVISORY_RULE.test(safe)) return {label: safe, icon: "shield"};
+  // A Trivy check id is the SAME kind of object an advisory id above is: an
+  // opaque vendor identifier, not a sentence. Humanising it explains
+  // nothing -- it only breaks the id an operator would grep the ledger for
+  // (secHumaniseRule("DS-0002") splits on the hyphen and produces
+  // "DS 0002", matching neither the id nor a real label) -- so it keeps
+  // itself verbatim too, in its own branch rather than joining
+  // SEC_ADVISORY_RULE's (that pattern names exactly two vendor prefixes),
+  // and with its own icon: `cpu`, SEC_CATEGORY_ICON's "iac" entry, not the
+  // advisory branch's `shield`.
+  if(category === "iac") return {label: safe, icon: SEC_CATEGORY_ICON.iac};
   // Every other unknown id humanises. A raw kebab/snake id is never a better
   // display string than its sentence-case form, and the raw id stays one
   // hover away in the row's title -- this is what keeps the card legible

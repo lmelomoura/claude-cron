@@ -693,6 +693,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Verified by rasterising the arcs and sampling the whole ring: five
   contiguous colour blocks in severity order, nothing out of place.
 
+- **A Trivy check id no longer gets mangled in "Top issue categories".**
+  `secRuleMeta` humanised every rule id it did not already recognise — right
+  for `sast`, where the agent composes its own kebab-case phrase, wrong for
+  `iac`: a Trivy check id (`DS-0002`, `KSV-0001`, `AVD-AWS-0088`) is an
+  opaque vendor identifier, the same kind of object a GHSA/CVE advisory id
+  already is, and splitting it on the hyphen produced neither the id an
+  operator would grep the ledger for nor a real label — `DS-0002` rendered
+  as `DS 0002` in the Security index, the project Overview tab and the
+  project screen's own open-findings-by-rule rollup, the three surfaces
+  that share this resolver. `iac` now keeps its rule verbatim, exactly like
+  `dependency` already does, with its own `cpu` icon rather than the
+  advisory branch's `shield`.
+
+- **The All Findings screen's Category filter now spells every category
+  the way the project Findings tab already does.** It capitalised the raw
+  category string (`Iac`, `Sast`) instead of reading the same label map
+  (`secCategoryMeta`) the project tab's own category picker already uses
+  (`IaC`, `SAST`) — the same five values, filtered by a different spelling
+  depending on which screen a reader had open.
+
 ### Changed
 
 - **The Reports table drops its Actions column.** The four FORMAT chips

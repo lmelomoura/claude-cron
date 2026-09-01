@@ -458,8 +458,9 @@ YOUR FIRST COMMAND, before anything else:
   claude-cron security prepare --analysis $5 --root "\$PWD" --ignore '$6'
 
 It runs the deterministic phases inside this worktree -- secrets, dependency
-CVEs, SBOM, hygiene -- in seconds and at no token cost, and prints a coverage
-note you must repeat in your final message if it is not empty.
+CVEs, SBOM, hygiene and infrastructure-as-code misconfigurations -- in seconds
+and at no token cost, and prints a coverage note you must repeat in your final
+message if it is not empty.
 
 Then read what it found with \`claude-cron security findings --analysis $5\`,
 and report yours with \`claude-cron security report-finding --analysis $5\`.
@@ -8146,8 +8147,9 @@ claude-cron — durable local scheduler for headless Claude Code runs
   claude-cron get-precheck <id>   print a job's precheck script
   claude-cron security analyze [--detach] <project> <repo> <branch> [profile]
                               analyse a branch: secrets, dependency CVEs, an
-                              SBOM and hygiene run first at no token cost, then
-                              a Claude run does the SAST and the triage.
+                              SBOM, hygiene and infrastructure-as-code
+                              misconfigurations run first at no token cost,
+                              then a Claude run does the SAST and the triage.
                               <repo> names one of the project's `repos`; a
                               project with a single checkout has none, and every
                               analysis of it is filed under the PROJECT's name

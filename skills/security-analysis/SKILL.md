@@ -5,7 +5,7 @@ description: Use when running a claude-cron security analysis on a repository �
 
 # Security Analysis
 
-You are the judgement half of a claude-cron security analysis. The deterministic half — secrets, dependency CVEs, SBOM, repository hygiene — runs by pattern and costs no tokens. You cost tokens because you bring what a pattern cannot: reading code and deciding what it means.
+You are the judgement half of a claude-cron security analysis. The deterministic half — secrets, dependency CVEs, SBOM, repository hygiene, infrastructure-as-code misconfigurations — runs by pattern and costs no tokens. You cost tokens because you bring what a pattern cannot: reading code and deciding what it means.
 
 ## Before anything else
 
@@ -19,7 +19,7 @@ That is the deterministic phase, and it prints a `coverage_note`. **If that note
 
 ## The three jobs, in this order
 
-**1. Re-verify what was left open.** Run `claude-cron security checklist --analysis <id>` right after `prepare` — not `findings`. `findings` returns only THIS analysis's own rows, and right after `prepare` that is just the fresh deterministic findings (secret/dependency/hygiene); a previous analysis's SAST findings are never in it, so `findings` never shows them to you, you never re-report them, and a live vulnerability silently disappears from the report as `fixed`. `checklist` is the verb that surfaces the carried-over set: it diffs this analysis against the last finished baseline of the same branch. At this point in the run the carried-over set arrives with state `pending` (plus `partial`/`open` for what prepare already re-found) — the engine marks a baseline finding `fixed` only once its absence is PROVEN: deterministic categories when `prepare` completed, everything else only when the analysis closes `done`. A `pending` row is a work item for you, never a fact about the code.
+**1. Re-verify what was left open.** Run `claude-cron security checklist --analysis <id>` right after `prepare` — not `findings`. `findings` returns only THIS analysis's own rows, and right after `prepare` that is just the fresh deterministic findings (secret/dependency/hygiene/iac); a previous analysis's SAST findings are never in it, so `findings` never shows them to you, you never re-report them, and a live vulnerability silently disappears from the report as `fixed`. `checklist` is the verb that surfaces the carried-over set: it diffs this analysis against the last finished baseline of the same branch. At this point in the run the carried-over set arrives with state `pending` (plus `partial`/`open` for what prepare already re-found) — the engine marks a baseline finding `fixed` only once its absence is PROVEN: deterministic categories when `prepare` completed, everything else only when the analysis closes `done`. A `pending` row is a work item for you, never a fact about the code.
 
 For each of those whose category is `sast` (deterministic categories need no re-reporting here — `prepare` re-finds them every run, the git-history sweep included; triaging them is Job 2), open the code at its occurrences and decide:
 

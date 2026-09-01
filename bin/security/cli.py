@@ -813,10 +813,14 @@ def cmd_report_finding(args):
                  "every filter the screens offer, so a second spelling of one "
                  "is a second identity nothing can select. Use one of: "
                  + ", ".join(FINDING_CATEGORIES))
-    # SAST only. The deterministic categories' rule names come from our own
-    # Python (secrets._RULES, hygiene's literals, the OSV id), and forcing
-    # them through a vocabulary written for the agent would refuse findings
-    # this program itself produced. `cwe`/`owasp` are DERIVED from the rule,
+    # SAST only. Deterministic rule names come from our own scanners, not
+    # from a vocabulary written for the agent (`cmd_fingerprint`'s own
+    # comment, above, says the same thing at the same door): secrets._RULES
+    # and hygiene's literals are OUR OWN vocabulary, while the OSV advisory
+    # id and Trivy's iac check id are a vendor's, echoed verbatim -- but none
+    # of the four is agent-supplied, so forcing any of them through a gate
+    # meant for the agent's free-text rule would refuse findings this
+    # program itself produced. `cwe`/`owasp` are DERIVED from the rule,
     # never accepted from the payload -- an agent that could send its own
     # would end up with a CWE that disagrees with the rule beside it, two
     # sources of truth in one row.

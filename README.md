@@ -889,9 +889,12 @@ diff. `quick` is there so you can look before deciding to spend.
 Secrets across the whole tree, and across the branch's whole git history on
 **every** analysis. A dependency inventory read from the lockfiles it knows
 (`package-lock.json`, `requirements.txt`, `poetry.lock`, `composer.lock`,
-`go.sum`), a CycloneDX SBOM built from that, and repository hygiene: a committed
-`.env`, a file whose first bytes are a private key, a world-writable file. All
-of it is Python over the files, so it takes seconds and costs nothing.
+`go.sum`), a CycloneDX SBOM built from that, repository hygiene (a committed
+`.env`, a file whose first bytes are a private key, a world-writable file),
+and infrastructure-as-code misconfigurations in any Dockerfile, Terraform
+module, Kubernetes manifest, Helm chart or CloudFormation template committed
+to the repository. All of it runs by pattern, so it takes seconds and costs
+nothing.
 
 It is written to the ledger **moments after the agent starts** — `prepare` is
 the agent's first command, named in the prompt and in the skill — which is why
@@ -938,7 +941,7 @@ has looked at nothing — it used to declare the entire baseline `fixed`, 43
 findings "resolved" before `prepare` had written a byte, and a `capped` run told
 the same lie at the end about the code its SAST pass never reached. A baseline
 finding missing from this analysis is `fixed` only when its absence is *proven*:
-for the deterministic categories (secrets, dependencies, hygiene) once `prepare`
+for the deterministic categories (secrets, dependencies, hygiene, IaC) once `prepare`
 has completed, for everything the agent reads only when the analysis closes
 `done` with full coverage. Anything short of that is `pending` — a statement
 about this analysis, never about the code — and it is counted with the open

@@ -7829,6 +7829,48 @@ def test_an_advisory_id_keeps_itself_as_the_label(srv, tmp_path):
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_an_iac_check_id_keeps_itself_as_the_label(srv, tmp_path):
+    """bin/security/adapters.py's `_iac_finding` writes Trivy's own check id
+    as the `rule` -- `DS-0002`, `KSV-0001`, `AVD-AWS-0088` -- and a check id
+    is the SAME kind of object an advisory id (above) is: an opaque vendor
+    identifier, not a sentence. Before this fix secRuleMeta had no branch for
+    it and fell through to secHumaniseRule, which splits on the hyphen:
+    "DS-0002" rendered as "DS 0002" in every "Top issue categories" rollup
+    (index-screen.js, overview-tab.js, project-screen.js) -- a string that
+    matches neither the id an operator would grep the ledger for nor a real
+    human label. The fix keeps the id verbatim in its own branch (not a join
+    onto SEC_ADVISORY_RULE, which recognises only GHSA/CVE) and draws the
+    iac category's own `cpu` icon rather than the advisory branch's
+    `shield`.
+
+    The containment probe is `sastControl`: the identical string under the
+    "sast" category must still humanise. The new branch is keyed on
+    `category === "iac"`, not on the shape of the rule, so a sast rule id
+    that happens to look like a Trivy check id must not start keeping
+    itself verbatim too."""
+    block = _security_js(srv)
+    deps = _rule_meta_deps(block)
+    script = tmp_path / "rule-meta-iac.js"
+    script.write_text(deps + """
+    console.log(JSON.stringify({
+      ds: secRuleMeta("iac", "DS-0002"),
+      ksv: secRuleMeta("iac", "KSV-0001"),
+      avd: secRuleMeta("iac", "AVD-AWS-0088"),
+      sastControl: secRuleMeta("sast", "DS-0002"),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["ds"] == {"label": "DS-0002", "icon": "cpu"}
+    assert out["ksv"] == {"label": "KSV-0001", "icon": "cpu"}
+    assert out["avd"] == {"label": "AVD-AWS-0088", "icon": "cpu"}
+    assert out["sastControl"] == {"label": "DS 0002", "icon": "code"}, (
+        "the iac branch must be keyed on category, not on the rule's shape "
+        f"-- a sast rule that happens to look like a check id must still "
+        f"humanise: {out['sastControl']}")
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_an_unknown_sast_rule_is_humanised_not_shown_as_a_raw_slug(srv, tmp_path):
     """sast is the one OPEN vocabulary (SEC_RULE_META's own comment): the
     analysis agent writes its own kebab-case rule id per finding, so this is
@@ -7908,6 +7950,39 @@ def test_iac_is_a_labelled_category_with_a_real_icon(srv, tmp_path):
     assert out["icon"] in icon_names, (
         f"iac points at icon {out['icon']!r}, which bin/dashboard.html's own "
         f"table does not define: {sorted(icon_names)}")
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_all_findings_category_filter_matches_the_project_tabs_own_labels(
+        srv, tmp_path):
+    """findings-screen.js's Category filter (secFindFilterBar) used to label
+    its options with `_secCap(c)` -- a bare capitalised category string
+    ("Iac", "Sast") -- while analysis.js's secFindCatPicker, the identical
+    filter on the per-project Findings tab, already reads `secCategoryMeta
+    (cat).label` ("IaC", "SAST"). Same five values, two spellings depending
+    on which screen a reader had open. This extracts the ACTUAL options
+    expression out of the live secFindFilterBar source (whichever helper it
+    currently calls) and evaluates it for real, so reverting the fix back to
+    `_secCap` fails this test rather than only reading correctly in a diff."""
+    block = _security_js(srv)
+    filter_bar_src = _plainfn(block, "secFindFilterBar")
+    m = re.search(r"FIND_CATEGORIES\.map\(c => \(\{v: c, label: [^}]*\}\)\)",
+                  filter_bar_src)
+    assert m, "could not find the Category picker's options expression in secFindFilterBar"
+    deps = (_const(block, "FIND_CATEGORIES") + _const(block, "ICON_HYGIENE")
+            + _const(block, "SEC_CATEGORY_LABEL") + _const(block, "SEC_CATEGORY_ICON")
+            + _plainfn(block, "secCategoryMeta") + _plainfn(block, "_secCap"))
+    script = tmp_path / "find-category-filter.js"
+    script.write_text(deps + f"""
+    console.log(JSON.stringify({m.group(0)}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    labels = {row["v"]: row["label"] for row in out}
+    assert labels == {"secret": "Secrets", "dependency": "Dependency",
+                       "sast": "SAST", "hygiene": "Hygiene", "iac": "IaC"}, (
+        "the All Findings Category filter must spell every category the way "
+        f"the project Findings tab's own picker does: {labels}")
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")

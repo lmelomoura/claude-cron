@@ -1165,10 +1165,10 @@ IAC_ENGINE_NOTE = ("Infrastructure-as-code misconfigurations (Dockerfile, "
 # the same reason every other gap in this module is. "found nothing" and
 # "never looked" must not be the same silence in a report.
 IAC_GAP = ("The infrastructure-as-code misconfiguration scan did not run "
-          "({reason}) -- there is no built-in scanner for this category, so "
-          "a Dockerfile, Terraform module, Kubernetes manifest, Helm chart "
-          "or CloudFormation template committed to this repository was not "
-          "checked at all this run.")
+           "({reason}) -- there is no built-in scanner for this category, so "
+           "a Dockerfile, Terraform module, Kubernetes manifest, Helm chart "
+           "or CloudFormation template committed to this repository was not "
+           "checked at all this run.")
 
 
 def _misconfig_line(record) -> int:
@@ -1305,7 +1305,7 @@ def trivy_iac_scan(root, ignore_paths=()):
     if data is None:
         return None, [note] if note else []
     findings = [f for f in trivy_misconfigs(data)
-               if not _out_of_scope(f["occurrences"][0]["file"], ignore_paths)]
+                if not _out_of_scope(f["occurrences"][0]["file"], ignore_paths)]
     version = (engines.version_of("trivy") or "trivy").removeprefix("Version: ")
     return findings, [IAC_ENGINE_NOTE.format(version=version)]
 

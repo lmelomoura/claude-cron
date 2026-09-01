@@ -270,27 +270,34 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
 #               sends one; neither can be turned back into the text
 #               `fingerprint()` normalises. NOT derivable.
 #   iac         TECHNICALLY derivable -- `fingerprint("iac", rule, target,
-#               rule)` (adapters.py's `trivy_misconfigs`) is exactly hygiene's
-#               shape, rule + path and nothing else -- and DELIBERATELY left
-#               out all the same. Hygiene's four rule names are OUR OWN
-#               literals, sitting in hygiene.py; a rename there is us
-#               changing our own vocabulary, and RULE_RENAMES exists for
-#               exactly that (its six live entries are secret's own move from
-#               snake_case names to gitleaks' kebab-case ones). An `iac` rule
-#               is never that: it is Trivy's own check id, verbatim -- the
-#               identical relationship `dependency`'s GHSA/CVE id already has
-#               to this table, which is why that comment reads "nobody
-#               renames" rather than "cannot be rebuilt" alone. Nothing here
-#               curates which check ids Trivy can emit the way `adapters.
-#               SEVERITY_BY_RULE` curates a subset of gitleaks' -- there is no
-#               vocabulary a rename target could be checked against -- so
-#               adding an entry would pass every test this table has today
-#               and still open a route with no real caller and no way to
-#               validate one. If Trivy ever renumbers a check id, the ledger
-#               reports the old finding `fixed` and the new one `new` once,
-#               the same tolerated cost `dependency`'s own entries already
-#               accept from Trivy and OSV.dev -- not a case this table exists
-#               to smooth over.
+#               rule)` (built in adapters.py's `_iac_finding`, called from
+#               `trivy_misconfigs`) is exactly hygiene's shape, rule + path
+#               and nothing else -- and DELIBERATELY left out all the same.
+#               Hygiene's four rule names are OUR OWN literals, sitting in
+#               hygiene.py; a rename there is us changing our own vocabulary,
+#               and RULE_RENAMES exists for exactly that (its six live entries
+#               are secret's own move from snake_case names to gitleaks'
+#               kebab-case ones). An `iac` rule is never that: it is Trivy's
+#               own check id, verbatim -- the identical relationship
+#               `dependency`'s GHSA/CVE id already has to this table, which is
+#               why that comment reads "nobody renames" rather than "cannot be
+#               rebuilt" alone. Nothing here curates which check ids Trivy can
+#               emit the way `adapters.SEVERITY_BY_RULE` curates a subset of
+#               gitleaks' -- there is no vocabulary a rename target could be
+#               checked against -- so adding an entry would pass every test
+#               this table has today and still open a route with no real
+#               caller and no way to validate one. If Trivy ever renumbers a
+#               check id, the ledger reports the old finding `fixed` and the
+#               new one `new` once, the same tolerated cost `dependency`'s own
+#               entries already accept from Trivy and OSV.dev -- not a case
+#               this table exists to smooth over. This is not hypothetical:
+#               Aqua has done it before (`DS002` became `DS-0002`, `KSV001`
+#               became `KSV-0001`), and the check-id space is versioned by
+#               whichever check bundle a given Trivy build ships -- so a fleet
+#               running mixed Trivy versions across its projects mints TWO
+#               identities for the same hole the moment one machine upgrades
+#               and another does not -- the concrete way this exposure
+#               arrives, not a hypothetical invented for this comment.
 _REFINGERPRINT = {
     "secret": lambda rule, path: secret_fingerprint(rule, path),
     "hygiene": lambda rule, path: compute_fingerprint("hygiene", rule, path, rule),

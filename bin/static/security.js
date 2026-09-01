@@ -218,6 +218,7 @@
     if (known) return known;
     const safe = rule == null || rule === "" ? "Unknown rule" : String(rule);
     if (SEC_ADVISORY_RULE.test(safe)) return { label: safe, icon: "shield" };
+    if (category === "iac") return { label: safe, icon: SEC_CATEGORY_ICON.iac };
     return { label: secHumaniseRule(safe), icon: SEC_CATEGORY_ICON[category] || "shield" };
   }
   var SEC_CATEGORY_ICON = {
@@ -2500,7 +2501,14 @@
     const row2 = secEl("div", "secfind-filters-row row2");
     row2.appendChild(secFindMultiPicker(
       "Category",
-      FIND_CATEGORIES.map((c) => ({ v: c, label: _secCap(c) })),
+      // secCategoryMeta's own label, not _secCap: a bare capitalised category
+      // ("Sast", "Iac") is the same word the project Findings tab's category
+      // picker (analysis.js's secFindCatPicker) does NOT show -- it reads
+      // secCategoryMeta(cat).label there ("SAST", "IaC") -- and this filter
+      // and that one name the exact same five values, so one screen spelling
+      // a value differently from the other is a second identity for a reader
+      // to notice and wonder whether it means something.
+      FIND_CATEGORIES.map((c) => ({ v: c, label: secCategoryMeta(c).label })),
       fs.filters.category,
       (v) => {
         secFindToggleIn(fs.filters.category, v);
@@ -5104,5 +5112,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 47f7a0c09371344f438c1bcd2c81809daa6686bcef3b75b6bfcbc22c259f1aa0 */
-/* ui-sources: 07e7f89dc62d2da004163785ca931cf3b95ca891efc9563d9a10242d5acc5fa5 */
+/* ui-bundle: f30a2c65b976390e5c5e96b4b29bf9ccb8199487135c7d581af8828ed0f135c8 */
+/* ui-sources: 96e385753d9a68f2949f11a0a06aadd308a2d1c92b893406cf42ff31aca6b4ab */
