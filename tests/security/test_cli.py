@@ -1117,9 +1117,31 @@ def test_fingerprint_is_allowed_under_the_agent_environment(tmp_path):
     to protect here, only a computation the agent would otherwise have to
     reproduce by hand and get wrong."""
     db = tmp_path / "security.db"
-    got = raw(db, "fingerprint", "--category", "sast", "--rule", "r",
+    got = raw(db, "fingerprint", "--category", "sast", "--rule", "sql-injection",
               "--path", "p", env=AS_AGENT)
-    assert got == compute_fingerprint("sast", "r", "p", "")
+    assert got == compute_fingerprint("sast", "sql-injection", "p", "")
+
+
+def test_fingerprint_refuses_a_sast_rule_outside_the_vocabulary(tmp_path):
+    """The same door as report-finding, saying the same thing at the same
+    time (see `cmd_fingerprint`): an agent that got a well-formed fingerprint
+    for `sqli` would build a whole payload around an identity `report-finding`
+    then refuses to store."""
+    db = tmp_path / "security.db"
+    out = fails(db, "fingerprint", "--category", "sast", "--rule", "sqli",
+               "--path", "app/db.py", "--snippet", "x")
+    assert out.returncode != 0
+    assert "sql-injection" in out.stderr
+
+
+def test_fingerprint_still_serves_deterministic_categories(tmp_path):
+    """The sast-only vocabulary gate must not reach a category whose rule
+    names come from our own scanners, not from the agent -- `aws_access_key`
+    is not a SAST rule name and must still fingerprint cleanly."""
+    db = tmp_path / "security.db"
+    got = raw(db, "fingerprint", "--category", "secret", "--rule",
+              "aws_access_key", "--path", "config/prod.env")
+    assert len(got) == 64
 
 
 # --------------------------------------------- the history sweep, every run

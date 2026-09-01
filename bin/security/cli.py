@@ -441,7 +441,32 @@ def cmd_fingerprint(args):
     Read-only and side-effect free: it never opens the database, so it is
     allowed under CC_SECURITY_AGENT (see AGENT_FORBIDDEN) even though it
     still requires --db, like every other subcommand here.
+
+    The same door as `report-finding`'s SAST-rule gate, saying the same
+    thing at the same time. Without this, an agent asks for a fingerprint
+    for `sqli`, gets back 64 well-formed hex characters, and only discovers
+    the rule is invalid when `report-finding` refuses it -- after the rest
+    of the payload has already been built around an identity it can never
+    store. `--category` is validated by argparse's `choices=` before this
+    function ever runs; `--rule` is free text for every category (deterministic
+    rule names come from our own scanners, not from a vocabulary written for
+    the agent), so only the `sast` branch is checked here, exactly as
+    `cmd_report_finding` checks it only for that category.
     """
+    if args.category == "sast" and not taxonomy.is_valid_rule(args.rule):
+        # `args.rule` is about to be quoted back below, and this verb's
+        # stderr lands in the same run log `report-finding`'s does -- scan it
+        # for a live credential first, for the reason `_refuse_if_secret`'s
+        # docstring gives for gating `report-finding`'s `category` and `rule`
+        # before their own refusals quote them: echoing a secret back to
+        # refuse it would defeat the refusal by writing it to disk anyway.
+        _refuse_if_secret("fingerprint: rule", args.rule)
+        sys.exit(f"fingerprint: {args.rule!r} is not a SAST rule name. "
+                 "The rule is part of the fingerprint, so a second spelling "
+                 "of one hole is a second identity: it reports `new` for "
+                 "ever and no decision ever matches it again. Use one of: "
+                 + ", ".join(taxonomy.RULE_NAMES)
+                 + " — or `other` if none of them fits.")
     if args.category == "secret":
         # No snippet, no value: the identity of a secret finding is its TYPE
         # and its FILE, never what it says. See secret_fingerprint's own
