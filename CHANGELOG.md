@@ -17,7 +17,57 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **A security finding now carries a CWE and an OWASP class, and its SAST
+  rule name comes from a closed vocabulary of 21.** The rule name is part
+  of a finding's fingerprint, so free text meant one hole could arrive
+  under two identities: an agent that wrote `sql-injection` on one run and
+  `sqli` on the next produced a report showing the same vulnerability as
+  both `fixed` and `new`, and an *Accept risk* decision recorded against
+  the first never matched the second again. `report-finding` and
+  `fingerprint` now refuse anything outside the vocabulary — both doors,
+  so the agent learns before it builds a payload rather than after — and
+  name the alternatives in the refusal. The classification is derived from
+  the rule and ignored if sent, because a CWE that disagrees with the rule
+  beside it is worse than none. `other` exists for a real finding that
+  fits nothing else: an agent forced to pick the nearest wrong name
+  mislabels everything downstream of it. Markdown and HTML reports show
+  the class when there is one and stay silent when there is not; JSON
+  always carries the keys.
+
+- **`claude-cron security migrate-rules` renames a rule without losing its
+  history.** A rule's name feeds the fingerprint, so renaming one used to
+  mean every finding under it changed identity — reported as `fixed` and
+  `new` at once, with every human `accepted` / `false_positive` decision
+  left pointing at an identity no analysis will produce again. The verb
+  recomputes each fingerprint the way the module that produces it does,
+  moves the decisions across in the same transaction, and is safe to run
+  twice. It refuses `sast` and `dependency` rather than guessing: their
+  identity depends on the code snippet and on the package version, which
+  the ledger does not store, so a rename there would mint an identity
+  nothing can match and say nothing about it.
+
 ### Fixed
+
+- **The running badge sits beside Runs, not Jobs.** It counts runs in
+  flight, and the Runs counter already includes them — beside the job
+  count it read as "1 of these 8 jobs is running", which is not what it
+  measures. One job can have several runs in flight, and a run in flight
+  may belong to no job at all: a security analysis runs on a derived job
+  the Jobs area deliberately never lists.
+
+- **Three doors into the security ledger stopped being one character
+  wide.** `report-finding` never validated `category`, so `Sast` with a
+  capital skipped the rule check entirely and landed a free-text rule with
+  no classification. `fingerprint --category` had the same hole, and worse:
+  `Secret` fell through to the branch that hashes the snippet, which for a
+  secret finding means hashing the credential's value — the thing
+  `secret_fingerprint` exists to avoid. Both now validate against one
+  shared set. Both verbs also scan the `rule` and `category` they quote
+  back before quoting them: a refusal is written to stderr and stderr
+  reaches the run log, so echoing a credential pasted into either field
+  would have defeated the refusal that was rejecting it.
 
 - **Full-system review pass: one wording for the fell-back branch, and
   orphaned CSS pruned.** The index's fleet table said "the default branch
