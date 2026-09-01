@@ -2587,11 +2587,11 @@ FINDINGS_SORT = ("severity", "title", "category", "branch", "first_seen", "state
 # CLI would have done with it. See security.queries.SORTABLE,
 # security.report.SEVERITIES, security.diff.DERIVED_STATES +
 # security.ledger.DECISION_STATES, and security.diff.DETERMINISTIC_CATEGORIES
-# + ("sast",) — the design spec's own finding shape names all four.
+# + ("sast",) — the design spec's own finding shape names them all.
 FINDING_SEVERITIES = ("critical", "high", "medium", "low", "info")
 FINDING_STATES = ("new", "open", "partial", "pending", "fixed", "regressed",
                   "accepted", "false_positive")
-FINDING_CATEGORIES = ("secret", "dependency", "sast", "hygiene")
+FINDING_CATEGORIES = ("secret", "dependency", "sast", "hygiene", "iac")
 MAX_FINDINGS_PER_PAGE = 100
 
 

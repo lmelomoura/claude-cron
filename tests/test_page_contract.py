@@ -7887,6 +7887,30 @@ def test_an_unknown_category_falls_back_safely(srv, tmp_path):
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_iac_is_a_labelled_category_with_a_real_icon(srv, tmp_path):
+    """The fifth category (bin/security/adapters.py's `trivy_misconfigs`,
+    diff.DETERMINISTIC_CATEGORIES) has to earn its own word here too, or a
+    checklist row using it falls through to the generic sentence-case
+    fallback ("Iac") `secCategoryMeta`'s own comment describes for a category
+    this map has not been told about."""
+    block = _security_js(srv)
+    consts = (_const(block, "ICON_HYGIENE") + _const(block, "SEC_CATEGORY_LABEL")
+             + _const(block, "SEC_CATEGORY_ICON"))
+    deps = _plainfn(block, "secCategoryMeta")
+    icon_names = _icon_names(_js(srv))
+    script = tmp_path / "cat-meta-iac.js"
+    script.write_text(consts + deps + """
+    console.log(JSON.stringify(secCategoryMeta("iac")));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["label"] == "IaC"
+    assert out["icon"] in icon_names, (
+        f"iac points at icon {out['icon']!r}, which bin/dashboard.html's own "
+        f"table does not define: {sorted(icon_names)}")
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_rendered_category_row_keeps_the_raw_rule_id_one_hover_away(srv, tmp_path):
     """secIndexCategories now shows a human label instead of the raw rule id
     -- an operator who greps the ledger by rule id must still find it, so

@@ -28,7 +28,7 @@ def _is_partial(finding) -> bool:
     return bool((finding.get("partial_note") or "").strip())
 
 
-DETERMINISTIC_CATEGORIES = ("secret", "dependency", "hygiene")
+DETERMINISTIC_CATEGORIES = ("secret", "dependency", "hygiene", "iac")
 
 
 def classify(current, previous, history, decisions,

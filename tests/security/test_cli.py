@@ -1579,6 +1579,149 @@ def test_offline_skips_trivy_as_well_as_osv(tmp_path, monkeypatch):
     assert "Trivy" in row["coverage_note"]
 
 
+# ------------------------- the IaC misconfiguration phase, Trivy-only, no fallback
+
+def _iac_finding(rule="DS-0002"):
+    return {"fingerprint": "i" * 64, "category": "iac", "rule": rule,
+            "severity": "high", "title": "t", "rationale": "r",
+            "remediation": "m", "occurrences": [{"file": "Dockerfile", "line": 0}]}
+
+
+def test_iac_is_in_the_deterministic_and_finding_category_sets():
+    """The two ledgers this project keeps of its own finding categories have
+    to agree, or a category the ledger accepts is one the checklist cannot
+    classify. `cli.FINDING_CATEGORIES` is DERIVED from `diff.
+    DETERMINISTIC_CATEGORIES`, so asserting both is checking the derivation
+    still holds, not duplicating the fact."""
+    assert "iac" in security_cli.diff.DETERMINISTIC_CATEGORIES
+    assert "iac" in security_cli.FINDING_CATEGORIES
+
+
+def test_prepare_reports_iac_findings_from_trivy(tmp_path, monkeypatch, capsys):
+    """`iac` has no built-in scanner and no fallback -- Trivy on, or nothing
+    this run. Mirrors `test_prepare_prefers_trivy_and_never_calls_osv`'s own
+    shape for the dependency phase."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/trivy" if name == "trivy" else None)
+    monkeypatch.setattr(security_cli.adapters, "trivy_iac_scan",
+                        lambda root, ignore_paths=(): (
+                            [_iac_finding()],
+                            ["Infrastructure-as-code misconfigurations were "
+                             "scanned by Trivy (0.74.0)."]))
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["findings"] >= 1
+    findings = run(db, "findings", "--analysis", str(aid))
+    iac_rules = {f["rule"] for f in findings if f["category"] == "iac"}
+    assert iac_rules == {"DS-0002"}
+    row = run(db, "list", "--project", "web")[0]
+    assert "trivy" in row["coverage_note"].lower()
+
+
+def test_iac_declares_a_gap_when_trivy_is_not_installed(tmp_path):
+    """No built-in scanner exists for `iac`, unlike secrets or dependencies --
+    so the absence has to be SAID, not silently reported as zero findings."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    assert not [f for f in run(db, "findings", "--analysis", str(aid))
+                if f["category"] == "iac"]
+    row = run(db, "list", "--project", "web")[0]
+    assert "infrastructure-as-code" in row["coverage_note"].lower()
+
+
+def test_iac_gap_is_declared_when_trivy_produces_no_report(tmp_path, monkeypatch):
+    """Trivy is on the machine but could not answer -- `adapters.
+    trivy_iac_scan` signals that with `None`, exactly as `trivy_scan` does
+    for dependencies. There is nothing to fall back to, so the gap is what
+    the report shows instead of a silent zero."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/trivy" if name == "trivy" else None)
+    monkeypatch.setattr(security_cli.adapters, "trivy_iac_scan",
+                        lambda root, ignore_paths=(): (
+                            None, ["trivy did not finish within 600s and was "
+                                   "stopped."]))
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    row = run(db, "list", "--project", "web")[0]
+    assert "did not finish" in row["coverage_note"]
+
+
+def test_offline_skips_iac_scanning_too(tmp_path, monkeypatch):
+    """`--offline` turns Trivy's misconfiguration scan off exactly as it
+    turns the dependency and SAST phases off: its checks bundle is fetched
+    from Trivy's own registry, and this analysis was told not to reach the
+    network."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    def must_not_run(*_a, **_kw):
+        raise AssertionError("trivy_iac_scan must not run while --offline")
+    monkeypatch.setattr(security_cli.adapters, "trivy_iac_scan", must_not_run)
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--offline", "--db", str(db)])
+    row = run(db, "list", "--project", "web")[0]
+    assert "infrastructure-as-code" in row["coverage_note"].lower()
+
+
+def test_ignore_paths_reach_the_iac_phase(tmp_path, monkeypatch):
+    """The same promise `ignore_paths` makes to every other phase: it is
+    about the ANALYSIS, and `_scan_iac` has to pass it down."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    seen = {}
+
+    def fake_scan(root, ignore_paths=()):
+        seen["ignore_paths"] = ignore_paths
+        return [], []
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/trivy" if name == "trivy" else None)
+    monkeypatch.setattr(security_cli.adapters, "trivy_iac_scan", fake_scan)
+
+    aid = open_analysis(db)
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--ignore", "examples,dist", "--db", str(db)])
+    assert seen["ignore_paths"] == ["examples", "dist"]
+
+
+def test_report_finding_accepts_the_iac_category(tmp_path):
+    """The vocabulary gate is for `sast` only -- an `iac` rule is Trivy's own
+    check id, produced by our own Python during `prepare`, not the agent's
+    `report-finding` door in the ordinary run. Still has to be usable through
+    it: an operator debugging a stuck analysis, or a future manual repair,
+    types the same command every other category already accepts."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "d" * 64, "category": "iac", "rule": "DS-0002",
+        "severity": "high", "title": "t"}))
+    row = _finding_row(db, aid)
+    assert row["category"] == "iac"
+    assert row["rule"] == "DS-0002"
+    assert row["cwe"] == "" and row["owasp"] == ""
+
+
 # ------------------------------- an analysis that never ran its own phases
 
 def test_finishing_done_without_prepare_is_downgraded_to_capped(tmp_path):

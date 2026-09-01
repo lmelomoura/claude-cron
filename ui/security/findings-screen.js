@@ -136,7 +136,7 @@ const SEC_FIND_TABLE_COLS = [
   ["category", "Category"], [null, "Analysis run"], ["branch", "Branch"],
   ["state", "Status"], ["first_seen", "First seen"], [null, "Actions"],
 ];
-const FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene"];
+const FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene", "iac"];
 // AllFindings.png's own default per-page selection and picker options.
 // 25 by default -- ProjectFindings.png's own footer reads "25 per page";
 // 10 stays pickable for a tighter read.

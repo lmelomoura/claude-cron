@@ -131,9 +131,10 @@ export const SEC_FLOOR_SCOPE_NOTE =
   + "each of those says how many rows it is holding back — it never narrows "
   + "a posture total.";
 
-/* The deterministic phase (secrets, dependencies, CVEs, hygiene) writes its
-   findings before the agent is even launched, so a poll this quick shows real
-   results within seconds of pressing Analyse while the SAST is still running. */
+/* The deterministic phase (secrets, dependencies, CVEs, hygiene, IaC
+   misconfigurations) writes its findings before the agent is even launched,
+   so a poll this quick shows real results within seconds of pressing Analyse
+   while the SAST is still running. */
 export const SEC_POLL_MS = 4000;
 /* An analysis row is opened moments BEFORE the run that carries it starts, so
    the two stamps are seconds apart and never equal. A project analyses one
@@ -217,15 +218,21 @@ export function secPosture(findings, minSeverity){
    bin/security/secrets.py's own `_RULES` (snake_case) when the built-in
    pattern scanner runs, and gitleaks' rule ids (kebab-case) when the engine
    does -- see the second block below. Only ever one of the two per analysis,
-   but both across a fleet, and a ledger keeps findings from both. Two more
-   categories are closed too and still need no entry here: "dependency"
+   but both across a fleet, and a ledger keeps findings from both. Three more
+   categories need no entry here, for three different reasons: "dependency"
    (bin/security/osv.py) writes the OSV.dev advisory id itself as the rule --
    GHSA-... or CVE-... -- and an advisory id is already a name (the mockup
    keeps "GHSA-8xcm-r25x-g524" verbatim, never translates it, see
-   SEC_ADVISORY_RULE below); "sast" is the one OPEN vocabulary -- the
+   SEC_ADVISORY_RULE below); "sast" is one of the two OPEN vocabularies -- the
    analysis agent writes its own kebab-case rule id per finding, so no fixed
    list could ever cover it, and secRuleMeta humanises it instead of looking
-   it up.
+   it up; "iac" (bin/security/adapters.py's `trivy_misconfigs`) is the other
+   OPEN one -- its rule is Trivy's own check id (`DS-0002`, `KSV-0001`, ...),
+   drawn from an external, unbounded vocabulary this project does not curate
+   the way it curates gitleaks' subset above, and unlike an advisory id a
+   bare check id is not self-explanatory enough to keep verbatim, so it
+   humanises the same way an unmatched "sast" rule does rather than joining
+   SEC_ADVISORY_RULE's exceptions.
 
    Every label below was written FROM the rule's own rationale in secrets.py
    or hygiene.py, not guessed from the rule's name -- both files are short;
@@ -352,27 +359,30 @@ export function secRuleMeta(category, rule){
   return {label: secHumaniseRule(safe), icon: SEC_CATEGORY_ICON[category] || "shield"};
 }
 
-// The icon each of the four categories earns when nothing more specific
+// The icon each of the five categories earns when nothing more specific
 // applies -- secRuleMeta's own fallback, above, factored out so
 // secCategoryMeta (below) draws the IDENTICAL icon a rule from that same
 // category would otherwise fall back to, rather than a second, hand-typed
-// list that could drift from it the next time either one changes.
+// list that could drift from it the next time either one changes. "iac"
+// draws `cpu`: the closest thing this page's own icon table (bin/
+// dashboard.html's `const I={...}`) has to infrastructure, with nothing
+// naming a server, a container or a cloud.
 const SEC_CATEGORY_ICON = {secret: "lock", dependency: "package",
-                           hygiene: ICON_HYGIENE, sast: "code"};
+                           hygiene: ICON_HYGIENE, sast: "code", iac: "cpu"};
 
-// The category's own fixed label -- "Secrets"/"Dependency"/"Hygiene"/"SAST",
-// the mockup's own CATEGORY column (findings-screen.js's own secFindRow),
-// coarser than secRuleMeta's per-RULE label ("Private keys committed") a
-// column to its left already shows -- the same fact at two resolutions, not
-// one duplicating the other.
+// The category's own fixed label -- "Secrets"/"Dependency"/"Hygiene"/"SAST"/
+// "IaC", the mockup's own CATEGORY column (findings-screen.js's own
+// secFindRow), coarser than secRuleMeta's per-RULE label ("Private keys
+// committed") a column to its left already shows -- the same fact at two
+// resolutions, not one duplicating the other.
 const SEC_CATEGORY_LABEL = {secret: "Secrets", dependency: "Dependency",
-                            hygiene: "Hygiene", sast: "SAST"};
+                            hygiene: "Hygiene", sast: "SAST", iac: "IaC"};
 
 /* (category) -> {label, icon}, for a column that draws the ledger's own
    CATEGORY rather than a rule's label -- secRuleMeta (above) stays the one
    RULE resolver, untouched, for its other caller ("Top issue categories",
    index-screen.js, which ranks rules, not categories). A category outside
-   the four the ledger writes today (ledger.py's own schema promises one
+   the five the ledger writes today (ledger.py's own schema promises one
    always arrives: `category TEXT NOT NULL`) still reads as something
    legible -- sentence case of whatever string it actually is, `shield` for
    its icon, the identical "never throw, never point at an unlisted icon"

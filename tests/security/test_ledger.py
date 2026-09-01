@@ -661,3 +661,23 @@ def test_the_renameable_categories_are_the_two_with_a_derivable_identity(conn):
     recipe that matches how that category actually builds its fingerprint is
     the one mistake this whole function exists to prevent."""
     assert set(ledger.RENAMEABLE_CATEGORIES) == {"secret", "hygiene"}
+
+
+def test_renaming_an_iac_rule_is_refused(conn):
+    """TECHNICALLY derivable -- `fingerprint("iac", rule, path, rule)` is
+    exactly hygiene's shape -- and refused all the same: an `iac` rule is
+    Trivy's own check id, verbatim, the identical relationship `dependency`'s
+    GHSA/CVE id already has to this table. There is no vocabulary this
+    project curates for Trivy's check ids to validate a rename target
+    against, so a `RULE_RENAMES` entry here would have nothing to check it
+    against -- the same reasoning `_REFINGERPRINT`'s own comment gives for
+    excluding it."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "c1", "standard", "r1")
+    ledger.record_finding(conn, aid, {
+        "fingerprint": fp_mod.fingerprint("iac", "DS-0002", "Dockerfile", "DS-0002"),
+        "category": "iac", "rule": "DS-0002", "severity": "high", "title": "t",
+        "rationale": "r", "remediation": "add a USER",
+        "occurrences": [{"file": "Dockerfile", "line": 0}]})
+
+    with pytest.raises(ValueError, match="iac"):
+        ledger.rename_rule(conn, "iac", "DS-0002", "avd-ds-0002")

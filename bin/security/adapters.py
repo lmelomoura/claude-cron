@@ -864,6 +864,16 @@ def _go_sum_without_go_mod(root, ignore_paths=()) -> int:
     return count
 
 
+def _trivy_severity(record) -> str:
+    """Trivy's own `Severity` word, mapped to ours -- shared by a
+    vulnerability record and a misconfiguration record alike (`_trivy_
+    finding` below and `_iac_finding` in the IaC section further down), so
+    the two categories cannot grade the same word differently by one of them
+    drifting from a copy of this table."""
+    return _TRIVY_SEVERITY.get(str(record.get("Severity") or "").upper(),
+                               osv.DEFAULT_SEVERITY)
+
+
 def _trivy_finding(source: str, vuln, ecosystem: str = ""):
     component = _trivy_component(vuln, ecosystem)
     # OSV.dev's name for this advisory when Trivy's record carries it, the
@@ -882,8 +892,7 @@ def _trivy_finding(source: str, vuln, ecosystem: str = ""):
         # the phase -- see `trivy_vulns`.
         return None
     name, version = component
-    severity = _TRIVY_SEVERITY.get(str(vuln.get("Severity") or "").upper(),
-                                   osv.DEFAULT_SEVERITY)
+    severity = _trivy_severity(vuln)
     fixed = str(vuln.get("FixedVersion") or "").strip()
     remediation = (_FIX.format(name=name, fixed=fixed) if fixed
                    else _NO_FIX.format(vuln_id=vuln_id, name=name,
@@ -1079,6 +1088,226 @@ def trivy_scan(root, ignore_paths=()):
             directories="directory" if go_only == 1 else "directories",
             have="has" if go_only == 1 else "have"))
     return findings, notes
+
+
+# --------------------------------------------- the IaC misconfiguration scan
+#
+# `iac`, the first finding category this module has added since it was
+# built. Trivy's misconfiguration scanner reads Dockerfiles, Terraform,
+# Kubernetes manifests, Helm charts and CloudFormation templates for
+# known-bad patterns -- nothing in this project has ever scanned for this,
+# so there is no built-in fallback the way `osv.query` is for `trivy_vulns`:
+# `trivy_iac_scan` returning `None` costs the whole phase, not a producer
+# swap. See `cli._scan_iac`.
+#
+# THE REPORT SHAPE IS `trivy_vulns`'s OWN SIBLING. Trivy's `fs` report nests
+# both categories under the identical `Results[]` array -- `Vulnerabilities`
+# for a lockfile, `Misconfigurations` for a Dockerfile or a manifest -- so
+# `trivy_misconfigs` reads it the way `trivy_vulns` reads its own half: one
+# record costs itself, not the phase, and `engines.PURGE["trivy"]` already
+# strips `Content`/`Highlighted` at any depth -- which is exactly where they
+# sit here too, one level further down under `Misconfigurations[].
+# CauseMetadata.Code.Lines[]` rather than under a secret's own `Match`
+# (measured; see `test_purge_strips_the_source_lines_from_a_trivy_
+# misconfiguration` in test_engines.py, which predates this task and needed
+# no change for it).
+#
+# A SEPARATE INVOCATION, not a second read of the JSON `trivy_scan` fetches
+# for dependencies. `trivy_scan` returns `(findings, notes)`, a shape
+# `cli._scan_dependencies` and every test in the section above already
+# depends on; folding a second category's findings into that return would
+# touch every one of them for a category with nothing to do with
+# dependencies. `trivy_iac_scan` asks for `--scanners misconfig` alone, so
+# the extra process this costs on a machine with Trivy installed does not
+# also re-walk the dependency graph a second time.
+#
+# ONE FINDING PER (CHECK, FILE), MEASURED RATHER THAN ASSUMED -- exactly
+# `gitleaks()`'s and `semgrep_findings()`'s own grouping, and NOT `trivy_
+# vulns`'s. A Terraform module or a Kubernetes manifest routinely defines
+# several resources in one file, and Trivy evaluates each one against every
+# check: two Pods in one manifest both missing a security control produced
+# TWO `Misconfigurations[]` ENTRIES under the identical `ID` and the
+# identical `Target`, one per resource, each with its own `CauseMetadata.
+# StartLine` (measured against a planted two-Pod manifest: `KSV-0001` twice,
+# at lines 7 and 17). There is no separate per-resource identity to preserve
+# the way `trivy_vulns` preserves one per (package, version) -- only per
+# (check, file) -- so `trivy_misconfigs` groups on exactly that pair and
+# folds every `StartLine` into one finding's occurrences.
+#
+# THE IDENTITY IS CHOSEN FROM SCRATCH. There is no prior `iac` finding
+# anywhere to match, unlike the Trivy dependency swap above, which had to
+# reproduce an identity `osv._finding` already minted. `(check id, file)` is
+# the whole of it -- the same shape `hygiene._finding` uses and for the
+# identical reason: stable across runs (a check id does not move when the
+# code does) and across machines (it is Trivy's own vocabulary, not a path
+# this machine happened to invoke the scan from), and never built from a
+# StartLine or a per-instance `Message` naming one specific resource, either
+# of which would mint a fresh identity the moment an unrelated resource was
+# added above it in the file. Unlike `sast`'s check-id-as-fourth-argument
+# (this module's SAST section, above), which stands in for a code snippet
+# the ledger can never store, `iac`'s identity does not need a code snippet
+# at all -- a misconfiguration is a property of the FILE, not of a matched
+# line -- so nothing is lost by making it fully derivable from (rule, path)
+# alone. THAT DERIVABILITY DOES NOT EARN IT A `ledger._REFINGERPRINT` ENTRY,
+# though, and deliberately: unlike hygiene's four rule names, which are OUR
+# OWN literals, a check id here is Trivy's own vocabulary, verbatim -- the
+# identical relationship `dependency`'s GHSA/CVE id already has to that
+# table. See `_REFINGERPRINT`'s own comment for why "can the fingerprint be
+# rebuilt" is necessary but not sufficient on its own.
+
+IAC_ENGINE_NOTE = ("Infrastructure-as-code misconfigurations (Dockerfile, "
+                   "Kubernetes, Terraform, CloudFormation and Helm) were "
+                   "scanned by Trivy ({version}).")
+
+# The gap, in the same shape as `SAST_GAP`: unlike the secret and dependency
+# categories, `iac` has no built-in scanner to fall back to, so a Trivy this
+# analysis could not use costs the WHOLE phase -- and that has to be said,
+# the same reason every other gap in this module is. "found nothing" and
+# "never looked" must not be the same silence in a report.
+IAC_GAP = ("The infrastructure-as-code misconfiguration scan did not run "
+          "({reason}) -- there is no built-in scanner for this category, so "
+          "a Dockerfile, Terraform module, Kubernetes manifest, Helm chart "
+          "or CloudFormation template committed to this repository was not "
+          "checked at all this run.")
+
+
+def _misconfig_line(record) -> int:
+    cause = record.get("CauseMetadata")
+    line = cause.get("StartLine") if isinstance(cause, dict) else None
+    if isinstance(line, bool) or not isinstance(line, (int, float)):
+        return 0
+    return int(line)
+
+
+def _iac_finding(check_id: str, target: str, record, lines) -> dict:
+    # `Title`/`Description`/`Resolution`/`Severity`/`PrimaryURL` are
+    # properties of the CHECK, not of the resource it fired on -- every
+    # `Misconfigurations[]` entry this finding groups agrees on them (they
+    # come from the same Rego policy), so reading them off one representative
+    # record is not the tie-break `semgrep_findings`' severity pick is: there
+    # is nothing here for two occurrences of one check to disagree about.
+    severity = _trivy_severity(record)
+    title = str(record.get("Title") or "").strip() or check_id
+    description = str(record.get("Description") or "").strip()
+    rationale = description[:200] if description else title
+    resolution = str(record.get("Resolution") or "").strip()
+    remediation = resolution or f"Review {check_id} and fix it in {target}."
+    url = str(record.get("PrimaryURL") or "").strip()
+    if url:
+        remediation += f" See {url}"
+    return {
+        # Identity is (check id, file) alone -- see the section comment
+        # above, and `ledger._REFINGERPRINT`'s own comment for why this
+        # recipe, though it is exactly `hygiene._finding`'s shape, still does
+        # not make the category renameable. The fourth argument is the check
+        # id again, the same constant-not-content choice `hygiene._finding`
+        # makes and for the identical reason: nothing here may shift with
+        # wording, formatting, or which resource in the file happened to be
+        # scanned first.
+        "fingerprint": fingerprint("iac", check_id, target, check_id),
+        "category": "iac",
+        "rule": check_id,
+        "severity": severity,
+        "title": f"{target}: {title}",
+        "rationale": rationale,
+        "remediation": remediation,
+        "occurrences": [{"file": target, "line": line, "snippet_hash": ""}
+                        for line in sorted(lines)],
+    }
+
+
+def trivy_misconfigs(data) -> list[dict]:
+    """Trivy's `fs` report as `iac` findings, one per (check id, file).
+
+    Reads `Results[].Misconfigurations[]` only -- `trivy_vulns`'s own
+    sibling, reading the other key a `Results[]` entry can carry. A `Target`
+    with no `Misconfigurations` key at all is the shape a file with nothing
+    wrong in it actually produces (Trivy still lists it, under
+    `MisconfSummary` alone -- measured against a clean Terraform module: the
+    entry for `Target: "."` carries `MisconfSummary: {Successes: 53,
+    Failures: 0}` and no `Misconfigurations` key whatsoever), not a
+    malformed record -- exactly `test_a_result_with_no_vulnerabilities_is_
+    not_an_error`'s own shape on the dependency side.
+
+    `Status` is checked for `"FAIL"` defensively: this project never passes
+    `--include-non-failures`, so nothing measured has ever produced anything
+    else in this array, and the check costs nothing against the day someone
+    adds that flag.
+
+    NO `root` PARAMETER, unlike `trivy_vulns`. That function takes one to
+    resolve a Go module's `go.sum` sibling -- a dependency-only ambiguity
+    with nothing to match here: a misconfiguration's `Target` is already the
+    file Trivy fired on, exactly as reported, with no second producer's own
+    name for the same file to reconcile against.
+
+    Every field is CONSTRUCTED, never copied, for the reason `trivy_vulns`'s
+    own docstring gives: a future Trivy release must not be able to put a
+    field nobody here has read into the ledger unexamined.
+
+    A record this parser cannot use (no `ID`, no `Target`) costs that record,
+    not the phase.
+    """
+    if not isinstance(data, dict):
+        return []
+    results = data.get("Results")
+    if not isinstance(results, list):
+        return []
+    groups = {}
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        target = str(result.get("Target") or "").strip()
+        misconfigs = result.get("Misconfigurations")
+        if not target or not isinstance(misconfigs, list):
+            continue
+        for record in misconfigs:
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("Status") or "").upper() != "FAIL":
+                continue
+            check_id = str(record.get("ID") or "").strip()
+            if not check_id:
+                continue
+            key = (check_id, target)
+            group = groups.setdefault(key, {"record": record, "lines": set()})
+            group["lines"].add(_misconfig_line(record))
+    return [_iac_finding(check_id, target, group["record"], group["lines"])
+            for (check_id, target), group in groups.items()]
+
+
+def trivy_iac_scan(root, ignore_paths=()):
+    """Every infrastructure-as-code misconfiguration Trivy's filesystem
+    scanner finds in `root`, within the scope this analysis actually looks
+    at.
+
+    Returns `(findings, notes)`. `findings` is `None` when Trivy produced no
+    report at all -- absent, unversioned, timed out, or writing a format
+    this parser cannot read -- and unlike `trivy_scan`'s and `gitleaks_
+    scan`'s own `None`, there is nothing for `cli._scan_iac` to fall back to:
+    `iac` has no built-in scanner, so `None` costs the whole phase. An empty
+    `Results` section (or one with nothing but `MisconfSummary` in it) is a
+    real, completed report -- `findings` is `[]`, never `None`.
+
+    `--scanners misconfig` ALONE, not `vuln,misconfig`: see the section
+    comment above for why this is a separate invocation from `trivy_scan`
+    rather than a second read of its report.
+
+    THE SCOPE IS LOCKED TWICE, exactly as `trivy_scan` locks it for
+    dependencies: `trivy_skip_dirs` -- reused, not reimplemented, since the
+    scope this analysis honours does not change by category -- asks the
+    engine not to read these paths, and `_out_of_scope` over what comes back
+    is the correct way round.
+    """
+    args = ["fs", ".", "--format", "json", "--output", "{out}",
+            "--scanners", "misconfig", "--quiet",
+            "--skip-dirs", ",".join(trivy_skip_dirs(ignore_paths))]
+    data, note = engines.run_json("trivy", args, root)
+    if data is None:
+        return None, [note] if note else []
+    findings = [f for f in trivy_misconfigs(data)
+               if not _out_of_scope(f["occurrences"][0]["file"], ignore_paths)]
+    version = (engines.version_of("trivy") or "trivy").removeprefix("Version: ")
+    return findings, [IAC_ENGINE_NOTE.format(version=version)]
 
 
 # ------------------------------------------------------------------ the SBOM

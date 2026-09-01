@@ -890,6 +890,24 @@ def test_the_findings_route_refuses_an_unknown_category(srv, monkeypatch):
     assert "category" in payload["error"]
 
 
+def test_the_findings_route_accepts_the_iac_category(srv, monkeypatch):
+    """`FINDING_CATEGORIES` is this file's own duplicate of `security.diff.
+    DETERMINISTIC_CATEGORIES + ("sast",)` (see that tuple's own comment) --
+    a category the CLI's closed set grows must grow here too, or the
+    findings-screen filter that already offers it 400s the moment somebody
+    picks it."""
+    seen = {}
+
+    def fake(args, stdin=None):
+        seen["args"] = args
+        return True, json.dumps({"rows": [], "total": 0, "unique": 0,
+                                 "by_severity": {}, "page": 1, "per_page": 25})
+    monkeypatch.setattr(srv, "cc", fake)
+    code, _ = srv.security_findings({"project": "web", "category": "iac"})
+    assert code == 200
+    assert seen["args"][seen["args"].index("--category") + 1] == "iac"
+
+
 def test_the_findings_route_refuses_a_non_integer_analysis_id(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")

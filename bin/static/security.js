@@ -224,13 +224,15 @@
     secret: "lock",
     dependency: "package",
     hygiene: ICON_HYGIENE,
-    sast: "code"
+    sast: "code",
+    iac: "cpu"
   };
   var SEC_CATEGORY_LABEL = {
     secret: "Secrets",
     dependency: "Dependency",
     hygiene: "Hygiene",
-    sast: "SAST"
+    sast: "SAST",
+    iac: "IaC"
   };
   function secCategoryMeta(category) {
     const label = SEC_CATEGORY_LABEL[category];
@@ -687,7 +689,7 @@
     btn.title = running ? "An analysis of this project is already running \u2014 one at a time." : "Analyse the selected branch";
     btn.textContent = running ? "Analysing\u2026" : "Analyse";
   }
-  var SEC_FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene"];
+  var SEC_FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene", "iac"];
   var secFindSearch = "";
   var secFindCategory = "";
   var secFindCatPicker = null;
@@ -1919,7 +1921,7 @@
     ["state", "Status"],
     ["first_seen", "First seen"]
   ];
-  var FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene"];
+  var FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene", "iac"];
   var FIND_PER_PAGE = 25;
   var FIND_PER_PAGE_OPTIONS = [10, 25, 50];
   function _defaultFilters() {
@@ -5102,5 +5104,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 3ac5c70146f8500c93bb96b5a7173c0bcf60c33cd31cc2c7f12ec1869ad7dcc1 */
-/* ui-sources: 27f48a5749a96f31b98e504363d1df4464dca5193b1993b56c2470158e71a382 */
+/* ui-bundle: 47f7a0c09371344f438c1bcd2c81809daa6686bcef3b75b6bfcbc22c259f1aa0 */
+/* ui-sources: 07e7f89dc62d2da004163785ca931cf3b95ca891efc9563d9a10242d5acc5fa5 */

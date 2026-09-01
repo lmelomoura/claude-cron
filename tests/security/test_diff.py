@@ -113,3 +113,15 @@ def test_a_sast_absence_stays_pending_until_the_analysis_closes_done():
     assert out[0]["state"] == "pending", "a capped run never finished looking"
     out = classify([], prev, {"aa"}, {}, analysis_state="done", prepared=True)
     assert out[0]["state"] == "fixed"
+
+
+def test_iac_is_deterministic_and_fixed_once_prepare_completed():
+    """Trivy's misconfiguration scan runs inside `prepare`, the same as
+    secrets/dependencies/hygiene -- never inside the agent's own SAST pass --
+    so an `iac` finding absent from `current` is provably gone the moment
+    `prepare` finished, whatever `analysis_state` the run is still in."""
+    prev = [dict(f("cc"), category="iac")]
+    out = classify([], prev, {"cc"}, {}, analysis_state="running", prepared=True)
+    assert out[0]["state"] == "fixed"
+    out = classify([], prev, {"cc"}, {}, analysis_state="running", prepared=False)
+    assert out[0]["state"] == "pending"

@@ -68,7 +68,7 @@ FINGERPRINT_PREFIX_RE = re.compile(r"^[0-9a-f]{1,64}$")
 MAX_TEXT = 10000
 TEXT_KEYS = ("title", "rationale", "remediation", "partial_note")
 
-# The closed set of finding categories: the three the deterministic phases
+# The closed set of finding categories: the four the deterministic phases
 # produce, plus the agent's own `sast`. ONE tuple, read by everything that
 # has an opinion about this field -- `report-finding`'s door, `fingerprint`'s
 # flag and `findings-page`'s filter -- because a category accepted on the way
@@ -542,6 +542,42 @@ def _scan_sbom(root, components):
     return deps.sbom(components), [*notes, deps.SBOM_FALLBACK_NOTE]
 
 
+# Trivy's misconfiguration checks are fetched from its own registry, the same
+# shape `OFFLINE_SAST_NOTE` takes for Semgrep's rule pack -- so `--offline`
+# has to refuse this phase too, named separately for the identical reason
+# `OFFLINE_SAST_NOTE` is not folded into `OFFLINE_DEPENDENCY_NOTE`: a reader
+# has to be able to tell which half of the report went unchecked.
+OFFLINE_IAC_NOTE = ("Infrastructure-as-code misconfigurations were NOT "
+                    "checked: Trivy's misconfiguration checks are fetched "
+                    "from its own registry, and this analysis ran with "
+                    "networking disabled.")
+
+
+def _scan_iac(root, offline: bool, ignore_paths=()):
+    """(findings, notes) for the IaC misconfiguration phase.
+
+    UNLIKE EVERY PHASE ABOVE IT, THERE IS NOTHING TO FALL BACK TO AND NOTHING
+    TO REPLACE. `_scan_secrets` and `_scan_dependencies` each choose one
+    producer because a built-in scanner already covers the category; `iac`
+    has never had one -- Trivy's misconfiguration scanner is the first and
+    only source this project has ever had for it. So a Trivy this analysis
+    could not use costs the WHOLE phase, not a producer swap: `findings` is
+    `[]` and the gap is declared, the same shape `_scan_sast` uses when
+    Semgrep is unavailable, for the identical reason -- "found nothing" and
+    "never looked" must not be the same silence in a report.
+    """
+    if offline:
+        return [], [OFFLINE_IAC_NOTE]
+    if not adapters.engine_path("trivy"):
+        return [], [adapters.IAC_GAP.format(
+            reason="trivy is not available to this analysis")]
+    findings, notes = adapters.trivy_iac_scan(root, ignore_paths)
+    if findings is None:
+        reason = (notes[0] if notes else "trivy produced no report").rstrip(".")
+        return [], [adapters.IAC_GAP.format(reason=reason)]
+    return findings, notes
+
+
 def cmd_prepare(args):
     """The deterministic phases, run inside the worktree by the agent's first
     command. Seconds, and no tokens."""
@@ -631,6 +667,10 @@ def cmd_prepare(args):
         dep_notes = [n for n in dep_notes if n != adapters.DEP_SBOM_NOTE]
     notes += [n for n in dep_notes if n]
     notes += [n for n in sbom_notes if n]
+
+    iac_findings, iac_notes = _scan_iac(root, args.offline, ignore)
+    findings += iac_findings
+    notes += [n for n in iac_notes if n]
 
     # LAST of the phases, because it is the only one that does not stand
     # alone: what it produces is a pre-pass the agent's own SAST pass then

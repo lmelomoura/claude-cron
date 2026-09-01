@@ -1665,6 +1665,281 @@ def test_ignore_paths_that_cannot_reach_the_command_line_still_filter():
     assert adapters._out_of_scope("a,b/package-lock.json", ["a,b"])
 
 
+# --------------------------------------------- the IaC misconfiguration scan
+#
+# `iac`, the first finding category this module has added since it was
+# built. Trivy's misconfiguration scanner reads Dockerfiles, Terraform,
+# Kubernetes manifests, Helm charts and CloudFormation templates for
+# known-bad patterns -- nothing in this project has ever scanned for this,
+# so `trivy_misconfigs` has no built-in twin the way `trivy_vulns` has
+# `osv._finding`, and no fallback the way `_scan_dependencies` has OSV.dev.
+#
+# THE FIXTURE IS A REAL TRIVY 0.74.0 CAPTURE, not typed from documentation --
+# this module's own guardrail, quoted in its opening docstring, for exactly
+# this trap. Built from a throwaway Dockerfile written to violate five real
+# Aqua Security checks (a ':latest' tag, the 'root' user, port 22 exposed, no
+# HEALTHCHECK, apt-get without --no-install-recommends), scanned with
+# `trivy fs . --scanners misconfig`, purged through `engines.purge` before it
+# was written -- the same discipline `trivy-fs.json` above follows.
+
+def test_trivy_misconfigurations_become_iac_findings():
+    data = json.loads((FIX / "trivy-misconfig.json").read_text())
+    out = adapters.trivy_misconfigs(data)
+    assert len(out) == 5, [f["rule"] for f in out]
+    for f in out:
+        assert f["category"] == "iac"
+        assert f["severity"] in ("critical", "high", "medium", "low", "info")
+        assert f["occurrences"][0]["file"] == "Dockerfile"
+    assert {f["rule"] for f in out} == {
+        "DS-0001", "DS-0002", "DS-0004", "DS-0026", "DS-0029"}
+
+
+def test_an_iac_title_names_the_file_and_the_checks_own_title():
+    data = json.loads((FIX / "trivy-misconfig.json").read_text())
+    f = next(f for f in adapters.trivy_misconfigs(data) if f["rule"] == "DS-0002")
+    assert f["title"] == "Dockerfile: Image user should not be 'root'"
+
+
+def test_the_remediation_uses_trivys_own_resolution_and_link():
+    data = json.loads((FIX / "trivy-misconfig.json").read_text())
+    f = next(f for f in adapters.trivy_misconfigs(data) if f["rule"] == "DS-0004")
+    assert "Remove 'EXPOSE 22'" in f["remediation"]
+    assert "https://avd.aquasec.com/misconfig/ds-0004" in f["remediation"]
+
+
+def test_the_iac_severity_words_map_to_ours():
+    """The exact table `trivy_vulns` uses -- see `test_the_default_iac_
+    severity_is_reused_not_reinvented` below for the shared function itself,
+    `_trivy_severity`."""
+    for trivy, ours in (("CRITICAL", "critical"), ("HIGH", "high"),
+                        ("MEDIUM", "medium"), ("LOW", "low"),
+                        ("UNKNOWN", "medium")):
+        data = {"Results": [{"Target": "Dockerfile", "Misconfigurations": [
+            {"ID": "X-1", "Status": "FAIL", "Severity": trivy, "Title": "t"}]}]}
+        assert adapters.trivy_misconfigs(data)[0]["severity"] == ours
+
+
+def test_the_default_iac_severity_is_reused_not_reinvented():
+    """No `Severity` at all has to fall on the exact constant `osv.py`
+    already uses, reused by `_trivy_severity` rather than a fresh "medium"
+    typed a second time for this category -- see `_trivy_finding`'s own use
+    of the identical helper for a vulnerability."""
+    data = {"Results": [{"Target": "Dockerfile", "Misconfigurations": [
+        {"ID": "X-1", "Status": "FAIL", "Title": "t"}]}]}
+    assert adapters.trivy_misconfigs(data)[0]["severity"] == osv.DEFAULT_SEVERITY
+
+
+def test_the_iac_fingerprint_recipe():
+    """Chosen from scratch -- there is no prior `iac` finding anywhere to
+    match. (check id, file) alone, the same shape `hygiene._finding` uses for
+    the identical reason: both are stable across runs and across machines,
+    and neither shifts with a StartLine or a Message that names a specific
+    resource. See `ledger._REFINGERPRINT`'s own comment for why this shape,
+    though it matches hygiene's, still does not make `iac` renameable --
+    unlike hygiene's four literals, a check id here is Trivy's own
+    vocabulary, verbatim."""
+    data = {"Results": [{"Target": "Dockerfile", "Misconfigurations": [
+        {"ID": "DS-0002", "Status": "FAIL", "Severity": "HIGH", "Title": "t"}]}]}
+    f = adapters.trivy_misconfigs(data)[0]
+    assert f["fingerprint"] == fingerprint.fingerprint(
+        "iac", "DS-0002", "Dockerfile", "DS-0002")
+
+
+def test_multiple_resources_failing_one_check_become_one_finding():
+    """MEASURED, not assumed. A two-Pod Kubernetes manifest failing the same
+    check produced two `Misconfigurations[]` entries under the identical
+    `ID` and the identical `Target`, one per resource -- `KSV-0001` twice,
+    at lines 7 and 17 -- not one entry Trivy had already folded together.
+    `trivy_misconfigs` has to group that back into one finding the way
+    `gitleaks()` groups several hits of one rule in one file, or a
+    two-resource manifest reports the SAME hole as two rows a human's
+    decision on one never reaches. Confirmed against the real engine by
+    `test_trivy_iac_scan_groups_a_real_multi_resource_manifest` below."""
+    data = {"Results": [{"Target": "two-pods.yaml", "Misconfigurations": [
+        {"ID": "KSV-0001", "Status": "FAIL", "Severity": "MEDIUM", "Title": "t",
+         "CauseMetadata": {"StartLine": 7, "EndLine": 10}},
+        {"ID": "KSV-0001", "Status": "FAIL", "Severity": "MEDIUM", "Title": "t",
+         "CauseMetadata": {"StartLine": 17, "EndLine": 20}},
+    ]}]}
+    out = adapters.trivy_misconfigs(data)
+    assert len(out) == 1, out
+    assert [o["line"] for o in out[0]["occurrences"]] == [7, 17]
+
+
+def test_a_target_with_no_misconfigurations_key_is_not_an_error():
+    """The shape a clean file actually produces -- measured against a
+    Terraform module with zero failures: the `Target` entry carries only
+    `MisconfSummary` and no `Misconfigurations` key at all, the identical
+    shape `test_a_result_with_no_vulnerabilities_is_not_an_error` pins for
+    a clean lockfile on the dependency side."""
+    data = {"Results": [{"Target": ".", "Type": "terraform",
+                         "MisconfSummary": {"Successes": 53, "Failures": 0}}]}
+    assert adapters.trivy_misconfigs(data) == []
+
+
+def test_a_misconfiguration_with_no_id_is_dropped_not_fatal():
+    data = {"Results": [{"Target": "Dockerfile", "Misconfigurations": [
+        {"Status": "FAIL", "Severity": "HIGH", "Title": "t"},
+        {"ID": "DS-0002", "Status": "FAIL", "Severity": "HIGH", "Title": "t"},
+    ]}]}
+    out = adapters.trivy_misconfigs(data)
+    assert len(out) == 1
+    assert out[0]["rule"] == "DS-0002"
+
+
+def test_a_non_failing_status_is_not_reported():
+    """Defensive rather than observed: this project never passes
+    `--include-non-failures`, so nothing measured has ever produced anything
+    but `FAIL` in this array. The check costs nothing against the day
+    someone adds that flag."""
+    data = {"Results": [{"Target": "Dockerfile", "Misconfigurations": [
+        {"ID": "DS-0001", "Status": "PASS", "Severity": "LOW", "Title": "t"}]}]}
+    assert adapters.trivy_misconfigs(data) == []
+
+
+def test_a_misconfiguration_with_no_startline_defaults_to_line_zero():
+    """Measured: `DS-0002` ("Image user should not be 'root'") carries a
+    `CauseMetadata` with no `StartLine` at all in the real capture -- there
+    is no single line that names a missing `USER` statement."""
+    data = json.loads((FIX / "trivy-misconfig.json").read_text())
+    f = next(f for f in adapters.trivy_misconfigs(data) if f["rule"] == "DS-0002")
+    assert f["occurrences"] == [{"file": "Dockerfile", "line": 0, "snippet_hash": ""}]
+
+
+def test_a_misconfigurations_report_that_is_not_a_list_is_no_findings_not_a_crash():
+    assert adapters.trivy_misconfigs({"Results": "nope"}) == []
+    assert adapters.trivy_misconfigs("nope") == []
+    assert adapters.trivy_misconfigs(None) == []
+
+
+def test_a_misconfiguration_record_that_is_not_an_object_is_dropped_not_fatal():
+    data = {"Results": [{"Target": "Dockerfile",
+                         "Misconfigurations": ["not-a-dict", None]}]}
+    assert adapters.trivy_misconfigs(data) == []
+
+
+@needs_trivy
+def test_trivy_iac_scan_runs_the_real_engine_and_finds_a_known_misconfiguration(
+        tmp_path):
+    """The one test in this section that runs the actual binary, on the same
+    model as `test_trivy_scan_runs_the_real_engine_and_finds_a_known_cve`
+    above: a throwaway Dockerfile that violates a real, well-known Aqua
+    Security check (the 'root' user), scanned for real rather than simulated."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "Dockerfile").write_text(
+        "FROM ubuntu:22.04\nRUN apt-get update\nCMD [\"/bin/bash\"]\n")
+    findings, notes = adapters.trivy_iac_scan(root)
+    assert findings is not None
+    rules = {f["rule"] for f in findings}
+    assert "DS-0002" in rules, rules
+    assert all(f["category"] == "iac" for f in findings)
+    assert any(f["occurrences"][0]["file"] == "Dockerfile" for f in findings)
+    assert any("trivy" in n.lower() for n in notes)
+
+
+@needs_trivy
+def test_trivy_iac_scan_reports_no_findings_when_there_is_nothing_to_scan(tmp_path):
+    """An empty tree is a real report with nothing wrong in it, not a
+    failure -- `findings` must be `[]`, never `None`, so `cli._scan_iac`
+    does not mistake "found nothing" for "the engine could not run"."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text("print('hi')\n")
+    findings, notes = adapters.trivy_iac_scan(root)
+    assert findings == []
+    assert any("trivy" in n.lower() for n in notes)
+
+
+@needs_trivy
+def test_trivy_iac_scan_groups_a_real_multi_resource_manifest(tmp_path):
+    """The real engine, not a simulated shape: two Pods in one manifest
+    failing the same check must still land as ONE finding with several
+    occurrences -- closing the loop `test_multiple_resources_failing_one_
+    check_become_one_finding` above only simulates."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "two-pods.yaml").write_text(
+        "apiVersion: v1\nkind: Pod\nmetadata:\n  name: pod-one\nspec:\n"
+        "  containers:\n    - name: app\n      image: nginx:latest\n"
+        "      securityContext:\n        privileged: true\n"
+        "---\n"
+        "apiVersion: v1\nkind: Pod\nmetadata:\n  name: pod-two\nspec:\n"
+        "  containers:\n    - name: app\n      image: nginx:latest\n"
+        "      securityContext:\n        privileged: true\n")
+    findings, _ = adapters.trivy_iac_scan(root)
+    assert findings, "the fixture stopped being vulnerable"
+    by_rule = {}
+    for f in findings:
+        by_rule.setdefault(f["rule"], []).append(f)
+    for rule, group in by_rule.items():
+        assert len(group) == 1, (
+            f"{rule} landed as {len(group)} findings, not grouped into one: "
+            f"{group}")
+    multi = [f for f in findings if len(f["occurrences"]) >= 2]
+    assert multi, "no check fired on both pods -- the fixture is stale"
+    assert [o["line"] for o in multi[0]["occurrences"]] == sorted(
+        o["line"] for o in multi[0]["occurrences"])
+
+
+@needs_trivy
+def test_ignore_paths_suppress_a_trivy_iac_finding(tmp_path):
+    """THE SECOND LOCK, exactly the one `test_ignore_paths_suppress_a_trivy_
+    finding` pins for dependencies: `trivy_skip_dirs` is another program's
+    command line, and `ignore_paths` is a promise about the ANALYSIS."""
+    root = tmp_path / "repo"
+    (root / "examples").mkdir(parents=True)
+    (root / "examples" / "Dockerfile").write_text(
+        "FROM ubuntu:22.04\nCMD [\"/bin/bash\"]\n")
+    assert adapters.trivy_iac_scan(root)[0], "the fixture stopped being vulnerable"
+    findings, _ = adapters.trivy_iac_scan(root, ignore_paths=["examples"])
+    assert findings == []
+
+
+@needs_trivy
+def test_trivy_iac_scan_skips_the_same_directories_deps_inventory_always_has(
+        tmp_path):
+    root = tmp_path / "repo"
+    vendored = root / "src" / "vendor" / "thing"
+    vendored.mkdir(parents=True)
+    (vendored / "Dockerfile").write_text(
+        "FROM ubuntu:22.04\nCMD [\"/bin/bash\"]\n")
+    findings, _ = adapters.trivy_iac_scan(root)
+    assert findings == []
+
+
+@needs_trivy
+def test_the_iac_engine_note_names_trivy(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _, notes = adapters.trivy_iac_scan(root)
+    assert any(re.search(r"Trivy \(\d", n) for n in notes), notes
+    assert not any("Version: " in n for n in notes)
+
+
+def test_trivy_iac_scan_returns_none_when_the_engine_cannot_answer(
+        monkeypatch, tmp_path):
+    """`None` here costs the WHOLE phase, unlike `trivy_scan`'s own `None`:
+    there is no built-in scanner for `iac` to fall back to."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    monkeypatch.setattr(engines, "run_json", lambda *a, **k: (
+        None, "trivy did not finish within 600s and was stopped."))
+    findings, notes = adapters.trivy_iac_scan(root)
+    assert findings is None
+    assert notes == ["trivy did not finish within 600s and was stopped."]
+
+
+def test_trivy_iac_scan_reports_empty_results_as_no_findings_not_none(
+        monkeypatch, tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    _stub_trivy(monkeypatch, {"SchemaVersion": 2, "Results": []})
+    findings, notes = adapters.trivy_iac_scan(root)
+    assert findings == []
+    assert any("trivy" in n.lower() for n in notes)
+
+
 # --------------------------------------------------------------- the SBOM
 #
 # The fixture is a REAL syft 1.51.1 capture of this repository

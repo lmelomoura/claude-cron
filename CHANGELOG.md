@@ -253,6 +253,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   hits of one check in one file are ONE finding with several occurrences —
   without the code there is no per-hit identity to give.
 
+- **A new finding category, `iac`: Trivy's misconfiguration scanner now
+  checks Dockerfiles, Terraform, Kubernetes manifests, Helm charts and
+  CloudFormation templates for known-bad patterns.** Nothing in this
+  project has ever scanned for this, so there was no coverage of it at all
+  until now — a Dockerfile running as root or a Terraform bucket left
+  unencrypted was invisible to every earlier phase. `iac` is the first
+  category added to the finding vocabulary since this module was built, so
+  it had to be threaded through every place that has an opinion about the
+  set of categories: `diff.DETERMINISTIC_CATEGORIES` (and `cli.
+  FINDING_CATEGORIES`, which derives from it), the control server's own
+  duplicate of that set, and the findings screen's category filter and
+  labels. A finding's identity is `(check id, file)` alone — chosen from
+  scratch, since there was no prior `iac` finding to match, on the model of
+  `hygiene`'s own (rule, path) recipe rather than a snippet or a resource
+  name, so it stays stable across runs and across machines. Deliberately
+  NOT made renameable despite that recipe matching hygiene's shape exactly:
+  a check id is Trivy's own vocabulary, verbatim, not a name this project
+  curates, so there is nothing a rename target could be validated against —
+  the same reasoning that already keeps `dependency` out of that set.
+  Multiple resources in one file failing the same check (two Kubernetes
+  Pods both missing a security control, say) produce several
+  `Misconfigurations[]` entries under the identical check id and file —
+  measured against a real two-Pod manifest, not assumed — so they fold into
+  ONE finding with several occurrences, the same grouping `gitleaks` and
+  Semgrep already use for repeated hits of one rule in one file. There is
+  no built-in scanner for this category, so a Trivy this analysis cannot
+  use costs the whole phase rather than falling back to anything, and
+  `--offline` refuses it outright: the misconfiguration checks are fetched
+  from Trivy's own registry.
+
 ### Fixed
 
 - **A dependency CVE keeps one identity whether or not Trivy is installed.**
