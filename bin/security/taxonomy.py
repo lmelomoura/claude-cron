@@ -57,6 +57,27 @@ SAST_RULES = {
 RULE_NAMES = tuple(sorted(SAST_RULES))
 
 
+# (category, old rule name) -> the rule's current name. Every entry here is a
+# promise that a finding recorded under the old name is the SAME finding as
+# one recorded under the new one, and that a human decision about it still
+# applies. Do not use this to merge two rules that meant different things:
+# that is a new finding, and it should be reported as one.
+#
+# Keyed by CATEGORY as well as name because a rule name is only unique within
+# its category -- `private_key` is both a secret type and a hygiene check --
+# and because the fingerprint's fourth argument, and therefore whether a
+# rename is possible at all, is decided by the category. `ledger.rename_rule`
+# accepts `secret` and `hygiene` and refuses the rest; see
+# `ledger.RENAMEABLE_CATEGORIES` for why, and `test_taxonomy.py` for the
+# invariants an entry has to satisfy.
+#
+# Empty until the engines block renames the deterministic rules wholesale.
+# The mechanism ships first, and with tests, because writing it after the
+# rename has already happened means writing it against a ledger that is
+# already wrong.
+RULE_RENAMES: dict[tuple[str, str], str] = {}
+
+
 def is_valid_rule(rule: str) -> bool:
     return rule in SAST_RULES
 

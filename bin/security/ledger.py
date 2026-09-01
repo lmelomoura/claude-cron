@@ -10,6 +10,12 @@ import sqlite3
 import time
 from pathlib import Path
 
+# Aliased on the way in: `fingerprint` is a PARAMETER name throughout this
+# module (`set_decision`, `record_finding`'s payload key), so importing the
+# function under its own name would be shadowed inside exactly the functions
+# most likely to want it.
+from .fingerprint import fingerprint as compute_fingerprint, secret_fingerprint
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS analysis (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -240,6 +246,124 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
             conn.execute(
                 "INSERT INTO occurrence (finding_id, file, line, snippet_hash) VALUES (?,?,?,?)",
                 (fid, occ.get("file", ""), int(occ.get("line", 0)), occ.get("snippet_hash", "")))
+
+
+# How to rebuild a finding's fingerprint after its rule has been renamed, per
+# category. The fourth argument to `fingerprint()` differs by source, and it
+# is what decides whether a rename is possible at all -- so the recipe lives
+# here, beside the list of categories that HAVE one, rather than in an `if`
+# somewhere downstream that could drift from the source that mints them:
+#
+#   secret      `secret_fingerprint(rule, path)` -- there is no fourth
+#               argument (fingerprint.py). Derivable from rule + path.
+#   hygiene     `fingerprint("hygiene", rule, rel, rule)` -- the fourth
+#               argument IS the rule (hygiene.py). Derivable from rule + path.
+#               NOTE it is the RULE, not the occurrence's `snippet_hash`:
+#               hygiene occurrences carry an empty hash, so using it here
+#               would mint a fingerprint hygiene.py can never emit.
+#   dependency  `f"{name}@{version}"` (osv.py) -- recoverable only by parsing
+#               the title back, and the `rule` is a GHSA/CVE id that nobody
+#               renames. No case to serve, and a fragile way to serve it.
+#   sast        the actual code snippet -- which the ledger NEVER stores. The
+#               `occurrence.snippet_hash` column is "" from every
+#               deterministic source and an opaque digest when the agent
+#               sends one; neither can be turned back into the text
+#               `fingerprint()` normalises. NOT derivable.
+_REFINGERPRINT = {
+    "secret": lambda rule, path: secret_fingerprint(rule, path),
+    "hygiene": lambda rule, path: compute_fingerprint("hygiene", rule, path, rule),
+}
+
+# Derived from the recipes above, deliberately: a category becomes renameable
+# by someone writing down how its fingerprint is rebuilt, never by being added
+# to a list.
+RENAMEABLE_CATEGORIES = tuple(sorted(_REFINGERPRINT))
+
+
+def rename_rule(conn, category: str, old: str, new: str) -> int:
+    """Move every `category` finding from rule `old` to rule `new`, keeping
+    its identity and the human decision attached to it.
+
+    The rule name is an INPUT TO THE FINGERPRINT, so renaming the rule without
+    recomputing the fingerprint leaves a finding whose stored identity no
+    longer matches what the scanner will produce for it: the next analysis
+    reports the same hole `fixed` (the old identity vanished) and `new` (a
+    fresh one appeared) in one report, and the old row is never matched again.
+
+    The `decision` table is keyed by fingerprint, and that is why this is not
+    a one-line UPDATE: a human's `accepted`/`false_positive` call -- permanent,
+    project-wide, and carrying a written reason it was mandatory to type --
+    has to follow the finding to its new identity or it is silently lost. The
+    update is NOT scoped to a project: the same fingerprint can be decided in
+    several projects, and they all move together.
+
+    Returns the number of findings moved. Idempotent: a second run finds
+    nothing under `old` and returns 0.
+
+    ONE TRANSACTION, for the reason `record_finding` uses one. A rename that
+    stopped halfway is a ledger where some findings answer to the new name
+    and some to the old, with decisions stranded between them -- worse than
+    one that never ran. Two collisions can abort it, and both leave the
+    ledger untouched rather than half-migrated: renaming onto a name the same
+    analysis already holds at the same path violates
+    `UNIQUE(analysis_id, fingerprint)`, and moving a decision onto a
+    fingerprint the same project has already decided violates
+    `decision`'s primary key. Both are the "merging two rules that meant
+    different things" case, which RULE_RENAMES' own comment forbids, and
+    SQLite refusing loudly is the right answer to it.
+
+    Refuses any category whose fingerprint cannot be rebuilt from what the
+    ledger stores -- see `_REFINGERPRINT` above. A rename that silently
+    produced a wrong fingerprint would orphan the finding and leave its human
+    decision pointing at an identity no future analysis will ever produce
+    again: worse than refusing, because nothing would tell anyone it happened.
+    """
+    recompute = _REFINGERPRINT.get(category)
+    if recompute is None:
+        raise ValueError(
+            f"cannot rename a {category!r} rule: its fingerprint cannot be "
+            f"rebuilt from the ledger. Only {', '.join(RENAMEABLE_CATEGORIES)} "
+            "derive their identity from the rule and the path alone -- a "
+            "dependency rule is a vulnerability id nobody renames, and a sast "
+            "fingerprint is built from the code snippet itself, which the "
+            "ledger never stores (only an opaque snippet_hash). Renaming one "
+            "anyway would write an identity no future analysis can reproduce, "
+            "orphaning the finding and pointing its decision at a fingerprint "
+            "nothing will ever match again.")
+    with conn:
+        rows = conn.execute(
+            "SELECT id, fingerprint FROM finding WHERE category=? AND rule=?"
+            " ORDER BY id", (category, old)).fetchall()
+        for row in rows:
+            # The FIRST occurrence's file. Both renameable categories put the
+            # path in their identity and can only ever have occurrences in the
+            # one file that identity names -- several matches of one secret
+            # type in one file are one finding with several occurrences (see
+            # secret_fingerprint), and a hygiene finding is about a single
+            # path.
+            occ = conn.execute(
+                "SELECT file FROM occurrence WHERE finding_id=? ORDER BY id LIMIT 1",
+                (row["id"],)).fetchone()
+            if occ is None:
+                # No occurrence means no path, and the path is half of the
+                # identity. `report-finding` treats occurrences as optional,
+                # so this is reachable. Refusing is the same call as refusing
+                # `sast`: guessing "" here mints an identity no scanner will
+                # ever emit, and says nothing about having done so.
+                raise ValueError(
+                    f"finding {row['id']} ({category}/{old}) has no occurrence, "
+                    "so it has no path -- and the path is half of its identity. "
+                    "Its fingerprint cannot be rebuilt; renaming it would "
+                    "orphan it.")
+            new_fp = recompute(new, occ["file"])
+            conn.execute("UPDATE finding SET rule=?, fingerprint=? WHERE id=?",
+                         (new, new_fp, row["id"]))
+            # Keyed off the STORED fingerprint, not a recomputed one: that is
+            # what any decision was filed against, even if the row's identity
+            # was minted by hand rather than by the scanner.
+            conn.execute("UPDATE decision SET fingerprint=? WHERE fingerprint=?",
+                         (new_fp, row["fingerprint"]))
+    return len(rows)
 
 
 def findings_of(conn, analysis_id) -> list:

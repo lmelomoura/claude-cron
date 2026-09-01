@@ -1178,7 +1178,17 @@ timeout, and leave the row `running` for ever with the agent orphaned behind it.
 The rest of the vocabulary is the ledger's own and belongs to the agent and the
 page. The agent's half is `prepare`, `findings`, `fingerprint`,
 `report-finding`, `checklist`, `render` and `finish`; the engine's and the
-operator's are `open-analysis`, `decide`, `rename-project`, `list` and `event`.
+operator's are `open-analysis`, `decide`, `rename-project`, `migrate-rules`,
+`list` and `event`. `migrate-rules` is the one that is run after a release
+rather than during an analysis: a rule's name is part of every finding's
+fingerprint, so renaming a detector's rule would report each finding under it
+as fixed *and* new in the same report and strand every human decision on an
+identity nothing will produce again. `taxonomy.RULE_RENAMES` records that the
+two names are one rule and this verb walks the ledger, carrying each finding
+and its decision to the new identity. It takes no arguments, it is safe to run
+twice, and it is refused for the categories whose fingerprint cannot be rebuilt
+from what the ledger stores — `sast` (built from the code snippet, which is
+never stored) and `dependency` (a CVE id nobody renames).
 Each of the four screens has one read verb behind it — `index-data`,
 `project-data`, `findings-page`, `activity-data` — answering that whole screen in
 a single call, plus `analysis`, `events` and `filters list` for the smaller

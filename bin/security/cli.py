@@ -869,6 +869,55 @@ def cmd_rename_project(args):
     print(json.dumps({"analyses": analyses, "decisions": decisions, "sboms": sboms}))
 
 
+def cmd_migrate_rules(args):
+    """Apply `taxonomy.RULE_RENAMES` to the ledger. Safe to run twice.
+
+    A rule name is part of a finding's fingerprint, so renaming one in the
+    scanner without moving the history behind it reports every finding under
+    the old name as `fixed` AND `new` in the same report, and strands every
+    human decision on an identity nothing will ever produce again. This verb
+    is how the two are kept in step: the scanner changes the name, the map
+    records that the two names are one rule, and this walks the ledger.
+
+    The WHOLE MAP is validated before any of it is applied. `rename_rule`
+    wraps each entry in its own transaction, so an entry it refuses partway
+    through the map would leave the ledger half-migrated -- exactly the state
+    that transaction exists to prevent, reintroduced one level up. The
+    pre-flight makes the map all-or-nothing too.
+
+    Deliberately absent from AGENT_FORBIDDEN: it takes no arguments. Unlike
+    `decide` or `rename-project`, there is no target for a caller to choose --
+    it can only ever apply the map the repository itself declares, so an agent
+    running it produces exactly what a human running it produces.
+    """
+    renames = [(category, old, new)
+               for (category, old), new in taxonomy.RULE_RENAMES.items()]
+    for category, old, _new in renames:
+        if category not in ledger.RENAMEABLE_CATEGORIES:
+            sys.exit(f"migrate-rules: {category}/{old} cannot be migrated — "
+                     "a rename is only possible where the fingerprint can be "
+                     "rebuilt from what the ledger stores, which is "
+                     + ", ".join(ledger.RENAMEABLE_CATEGORIES)
+                     + " (see ledger.rename_rule). Nothing was migrated.")
+    conn = _conn(args)
+    applied, total = [], 0
+    for category, old, new in renames:
+        try:
+            moved = ledger.rename_rule(conn, category, old, new)
+        except (ValueError, sqlite3.Error) as exc:
+            # Same doctrine as `report-finding`: a sentence on stderr, not a
+            # traceback. `rename_rule` rolled its own transaction back, so the
+            # entry that failed changed nothing -- but entries BEFORE it in
+            # the map committed, and the operator has to be told which.
+            sys.exit(f"migrate-rules: {category}/{old} -> {new} failed: {exc}"
+                     + (f" (already applied: {len(applied)})" if applied else ""))
+        if moved:
+            applied.append({"category": category, "from": old, "to": new,
+                            "findings": moved})
+        total += moved
+    print(json.dumps({"renamed": applied, "findings": total}))
+
+
 def cmd_list(args):
     rows = _conn(args).execute(
         "SELECT * FROM analysis WHERE project=? ORDER BY id DESC LIMIT 100",
@@ -1503,6 +1552,14 @@ def main(argv=None):
         de.add_argument(f"--{flag}", required=True)
     de.add_argument("--state", required=True, choices=ledger.DECISION_STATES)
     de.add_argument("--by", default="")
+
+    # No flags at all, deliberately -- and that is also why it is absent from
+    # AGENT_FORBIDDEN: the migration it applies is `taxonomy.RULE_RENAMES`,
+    # declared in this repository's own source. A `--from`/`--to` pair here
+    # would turn a replayable, reviewed migration into an arbitrary rewrite of
+    # any finding's identity, which is a thing `decide` and `rename-project`
+    # are refused the agent for being.
+    mgr = sub.add_parser("migrate-rules", parents=[dbflag]); mgr.set_defaults(fn=cmd_migrate_rules)
 
     mv = sub.add_parser("rename-project", parents=[dbflag]); mv.set_defaults(fn=cmd_rename_project)
     mv.add_argument("--from", required=True)

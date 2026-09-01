@@ -21,9 +21,12 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from security.fingerprint import fingerprint as compute_fingerprint, secret_fingerprint
 from security import cli as security_cli
 from security import ledger as security_ledger
+from security import taxonomy as security_taxonomy
 
 REPO = Path(__file__).resolve().parent.parent.parent
 CLI = REPO / "bin" / "security" / "cli.py"
@@ -3135,3 +3138,115 @@ def test_the_skill_does_not_claim_a_read_verb_is_refused(tmp_path):
         assert verb not in security_cli.AGENT_FORBIDDEN
         assert f"`{verb}`" in skill, \
             f"the skill does not say `{verb}` stays reachable"
+
+
+# ---- migrate-rules: applying taxonomy.RULE_RENAMES to the ledger.
+#
+# RULE_RENAMES is empty, so the verb is a no-op against the shipped map. The
+# tests that need a rename to happen monkeypatch the map and drive `main()`
+# in-process, the same exception this file's docstring already makes for the
+# ledger-write-failure group: a subprocess cannot see a monkeypatch.
+
+def test_migrate_rules_reports_nothing_when_there_is_nothing_to_rename(tmp_path):
+    """The shipped map is empty and the verb must still be runnable and say so
+    -- an operator running it after pulling a release should get a plain
+    "nothing moved", not an error and not silence."""
+    db = tmp_path / "security.db"
+    open_analysis(db)
+    out = run(db, "migrate-rules")
+    assert out == {"renamed": [], "findings": 0}
+
+
+def test_migrate_rules_carries_findings_and_decisions_to_the_new_name(
+        tmp_path, monkeypatch, capsys):
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    path = "config/prod.env"
+    old_fp = secret_fingerprint("aws_access_key", path)
+    new_fp = secret_fingerprint("aws-access-token", path)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": old_fp, "category": "secret", "rule": "aws_access_key",
+        "severity": "critical", "title": "t", "rationale": "r",
+        "remediation": "rotate",
+        "occurrences": [{"file": path, "line": 3, "snippet_hash": ""}]}))
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    run(db, "decide", "--project", "web", "--fingerprint", old_fp,
+        "--state", "accepted", "--reason", "rotated already", "--by", "luiz")
+
+    monkeypatch.setattr(security_taxonomy, "RULE_RENAMES",
+                        {("secret", "aws_access_key"): "aws-access-token"})
+    security_cli.main(["migrate-rules", "--db", str(db)])
+    printed = json.loads(capsys.readouterr().out)
+
+    assert printed == {"renamed": [{"category": "secret", "from": "aws_access_key",
+                                    "to": "aws-access-token", "findings": 1}],
+                       "findings": 1}
+    # Checked over a fresh subprocess, so the monkeypatch above cannot mask it.
+    moved = [f for f in run(db, "findings", "--analysis", str(aid))
+             if f["category"] == "secret"]
+    assert [f["rule"] for f in moved] == ["aws-access-token"]
+    assert [f["fingerprint"] for f in moved] == [new_fp]
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT fingerprint FROM decision").fetchall() == [(new_fp,)]
+
+
+def test_migrate_rules_is_safe_to_run_twice(tmp_path, monkeypatch, capsys):
+    """It is a migration an operator may run on every deploy, and a second run
+    has to be a no-op rather than a second rewrite of the same rows."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    path = "config/prod.env"
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": secret_fingerprint("aws_access_key", path),
+        "category": "secret", "rule": "aws_access_key", "severity": "critical",
+        "title": "t", "rationale": "r", "remediation": "rotate",
+        "occurrences": [{"file": path, "line": 3, "snippet_hash": ""}]}))
+    monkeypatch.setattr(security_taxonomy, "RULE_RENAMES",
+                        {("secret", "aws_access_key"): "aws-access-token"})
+
+    security_cli.main(["migrate-rules", "--db", str(db)])
+    assert json.loads(capsys.readouterr().out)["findings"] == 1
+    security_cli.main(["migrate-rules", "--db", str(db)])
+    assert json.loads(capsys.readouterr().out) == {"renamed": [], "findings": 0}
+
+
+def test_migrate_rules_refuses_the_whole_map_before_applying_any_of_it(
+        tmp_path, monkeypatch):
+    """A map with an unapplicable entry is refused as a unit. Applying the
+    entries up to the bad one and then dying leaves the ledger half-migrated
+    -- the exact state `rename_rule`'s own transaction exists to prevent, put
+    back one level up."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    path = "config/prod.env"
+    old_fp = secret_fingerprint("aws_access_key", path)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": old_fp, "category": "secret", "rule": "aws_access_key",
+        "severity": "critical", "title": "t", "rationale": "r",
+        "remediation": "rotate",
+        "occurrences": [{"file": path, "line": 3, "snippet_hash": ""}]}))
+    monkeypatch.setattr(security_taxonomy, "RULE_RENAMES", {
+        ("secret", "aws_access_key"): "aws-access-token",
+        ("sast", "sql-injection"): "sqli",
+    })
+
+    with pytest.raises(SystemExit) as exc:
+        security_cli.main(["migrate-rules", "--db", str(db)])
+    assert "sast" in str(exc.value.code)
+
+    # The good entry that came FIRST in the map must not have been applied.
+    still = [f for f in run(db, "findings", "--analysis", str(aid))
+             if f["category"] == "secret"]
+    assert [f["fingerprint"] for f in still] == [old_fp]
+
+
+def test_migrate_rules_is_not_refused_the_agent(tmp_path):
+    """Containment probe, the same reasoning as `fingerprint`'s absence from
+    AGENT_FORBIDDEN: the verb takes no arguments. It can only ever apply the
+    map the repository itself declares, so an agent running it produces
+    exactly what a human running it produces -- there is no target for it to
+    choose and nothing here for the flag to protect."""
+    db = tmp_path / "security.db"
+    open_analysis(db)
+    assert "migrate-rules" not in security_cli.AGENT_FORBIDDEN
+    assert run(db, "migrate-rules", env=AS_AGENT) == {"renamed": [], "findings": 0}

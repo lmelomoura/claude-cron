@@ -8229,13 +8229,15 @@ case "${1:-}" in
                # verbatim from its prompt; decide, rename-project,
                # open-analysis, event and `filters save`/`filters delete` are
                # the operator's (AGENT_FORBIDDEN refuses all of those to the
-               # agent); and index-data, project-data, findings-page,
-               # activity-data and `filters list` are the dashboard's own
-               # screens fetching through this same door, never typed by a
-               # human at all -- listed here anyway so this message names
-               # every verb the door actually accepts, not just the subset
-               # any one caller uses.
-               "")      die "usage: claude-cron security <analyze|prepare|findings|fingerprint|report-finding|finish|checklist|render|decide|rename-project|open-analysis|list|index-data|project-data|findings-page|activity-data|analysis|event|events|filters> …" ;;
+               # agent); migrate-rules is the operator's too, though NOT
+               # refused the agent -- it takes no arguments and can only
+               # apply the rename map this repository declares; and
+               # index-data, project-data, findings-page, activity-data and
+               # `filters list` are the dashboard's own screens fetching
+               # through this same door, never typed by a human at all --
+               # listed here anyway so this message names every verb the door
+               # actually accepts, not just the subset any one caller uses.
+               "")      die "usage: claude-cron security <analyze|prepare|findings|fingerprint|report-finding|finish|checklist|render|decide|rename-project|migrate-rules|open-analysis|list|index-data|project-data|findings-page|activity-data|analysis|event|events|filters> …" ;;
                *)       security_py "$@" ;;
              esac ;;
   security-branches) [ $# -ge 3 ] || die "usage: claude-cron security-branches <project> <repo>"

@@ -2,7 +2,7 @@ import re
 from pathlib import Path
 
 import pytest
-from security import taxonomy
+from security import ledger, taxonomy
 
 SKILL = (Path(__file__).resolve().parent.parent.parent
          / "skills" / "security-analysis" / "SKILL.md")
@@ -89,3 +89,59 @@ def test_the_skill_lists_every_rule_name():
         assert name in vocabulary, (
             f"SKILL.md's vocabulary block does not list the rule {name!r}"
         )
+
+
+# ---- RULE_RENAMES: the declared history of every rule name that changed.
+#
+# The map is EMPTY today and these tests are therefore vacuous today. That is
+# the point of writing them now: the block that replaces the hand-written
+# detectors renames every secret rule at once, and the first entry added to
+# this map has to land on tests that already say what a legal entry looks
+# like. Written afterwards, they would be written against whatever the
+# migration happened to do.
+
+def test_a_rename_is_keyed_by_category_and_old_rule():
+    # The rule name is unique only within its category, and the recompute
+    # recipe differs between categories -- so the key has to carry both.
+    for key, new in taxonomy.RULE_RENAMES.items():
+        assert isinstance(key, tuple) and len(key) == 2, \
+            f"{key!r} is not a (category, old_rule) pair"
+        category, old = key
+        assert isinstance(new, str) and new.strip(), f"{key!r} renames to nothing"
+        assert old != new, f"{key!r} renames a rule to itself"
+
+
+def test_every_rename_is_in_a_category_the_ledger_can_actually_rename():
+    # `rename_rule` refuses `sast` and `dependency` -- their fingerprints
+    # cannot be rebuilt from the ledger. An entry here in one of those
+    # categories is a `migrate-rules` run that dies partway through the map,
+    # having already applied whatever came before it.
+    for category, old in taxonomy.RULE_RENAMES:
+        assert category in ledger.RENAMEABLE_CATEGORIES, (
+            f"{category}/{old} is in a category the ledger refuses to rename")
+
+
+def test_no_rename_source_is_still_a_valid_rule():
+    # If a name is both a live rule and a rename source, the migration would
+    # move findings off a name that is still in use -- the next analysis
+    # reports them under the old name again and the rename undoes itself on
+    # every run. `is_valid_rule` is the SAST vocabulary, which is also the one
+    # category that can never appear here; the assertion is kept because a
+    # rename source colliding with a live rule name is the failure it names,
+    # whichever vocabulary the name comes from.
+    for _, old in taxonomy.RULE_RENAMES:
+        assert not taxonomy.is_valid_rule(old)
+
+
+def test_renames_do_not_chain():
+    # `migrate-rules` walks the map ONCE, in insertion order. With a -> b and
+    # b -> c both present, a's findings land on b and are then swept on to c
+    # if the entries are ordered one way, and stop at b if they are ordered
+    # the other -- the result depends on dict order, which is not a thing a
+    # ledger's identities should depend on. A rule renamed twice is recorded
+    # as one hop from the oldest name to the current one.
+    targets = {(category, new) for (category, _), new in taxonomy.RULE_RENAMES.items()}
+    for key in taxonomy.RULE_RENAMES:
+        assert key not in targets, (
+            f"{key[1]!r} is both a rename source and a rename target in "
+            f"{key[0]}: collapse the chain into one entry")
