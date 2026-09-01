@@ -41,7 +41,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from security import deps, diff, fingerprint, hygiene, ledger, osv, queries, report, secrets, taxonomy  # noqa: E402
+from security import adapters, deps, diff, fingerprint, hygiene, ledger, osv, queries, report, secrets, taxonomy  # noqa: E402
 
 REQUIRED_FINDING_KEYS = ("fingerprint", "category", "rule", "severity", "title")
 
@@ -354,6 +354,42 @@ def _refuse_root_outside_run(root):
                  "its own run created, not any other checkout on the machine.")
 
 
+def _scan_secrets(root, ignore):
+    """(findings, notes, lines) for the secret phase -- ONE scanner, not two.
+
+    Gitleaks when it is installed, the built-in pattern scanner when it is
+    not, and never both. Two scanners in one category find the same hole and
+    report it under two fingerprints, because the fingerprint contains the
+    RULE and the two name their rules differently -- the checklist then shows
+    one credential as two entries whose remediations contradict each other,
+    and a human's decision about one never matches the other.
+
+    The engine still falls back if it could not produce a report at all --
+    absent, unversioned, timed out, or writing a format this code cannot
+    read. That is safe precisely because it produced nothing: there is no
+    engine finding for a built-in one to collide with.
+
+    `lines` is `lines_of_code`, which used to arrive as a by-product of the
+    built-in sweep's read. It is counted separately on the engine path
+    (`secrets.count_lines`, the same walk over the same files) rather than
+    lost -- the project header renders 0 as "not counted", which no analysis
+    that actually ran should ever claim.
+    """
+    if adapters.engine_path("gitleaks"):
+        findings, notes = adapters.gitleaks_scan(root, ignore)
+        if findings is not None:
+            return findings, notes, secrets.count_lines(root, ignore)
+        # The engine is here and could not answer. Say so, and let the
+        # built-in scanner do the work rather than reporting no secrets.
+        notes = [*notes, secrets.FALLBACK_NOTE]
+    else:
+        notes = [secrets.FALLBACK_NOTE]
+    history_findings, history_note = secrets.scan_history(root, None, ignore)
+    tree_findings, tree_note, lines = secrets.scan_tree(root, ignore)
+    return (history_findings + tree_findings,
+            [history_note, tree_note, *notes], lines)
+
+
 def cmd_prepare(args):
     """The deterministic phases, run inside the worktree by the agent's first
     command. Seconds, and no tokens."""
@@ -401,10 +437,9 @@ def cmd_prepare(args):
     # the past. Both readings share one remediation ("rotate first, deleting
     # the line is not enough"), so nothing is lost by letting the tree's
     # wording win.
-    history_findings, history_note = secrets.scan_history(root, None, ignore)
-    tree_findings, tree_note, tree_lines = secrets.scan_tree(root, ignore)
-    findings = history_findings + tree_findings + hygiene.scan(root, ignore)
-    notes = [n for n in (history_note, tree_note) if n]
+    secret_findings, secret_notes, tree_lines = _scan_secrets(root, ignore)
+    findings = secret_findings + hygiene.scan(root, ignore)
+    notes = [n for n in secret_notes if n]
 
     components = deps.inventory(root)
     if args.offline:

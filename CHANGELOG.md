@@ -19,6 +19,53 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Gitleaks does the secret scanning when it is installed, and the
+  built-in scanner says so when it is not.** The eight hand-written
+  regexes in `secrets.py` found eight shapes of credential; gitleaks
+  8.30.1 knows around 180, so a Datadog key, a Twilio token or a GCP
+  service account sat in a repository unreported and the report gave no
+  hint the question had never been asked. Only ONE of the two ever runs:
+  the fingerprint contains the rule name, the two scanners name their
+  rules differently, and two scanners in one category would report one
+  credential as two contradictory checklist entries. The coverage note
+  now names whichever did the work, because "secrets were scanned" is a
+  different claim depending on who scanned them. The engine reads the
+  git history as well as the tree — a credential that was ever committed
+  stays compromised — and a root that is not a checkout is reported as a
+  gap rather than as a clean history: `gitleaks git` outside a repository
+  writes `[]` and exits 0, which is the same answer it gives for a
+  repository with nothing to find.
+
+- **The scope an analysis looks in now reaches the engine, and is
+  enforced again on what comes back.** Gitleaks scans the FILESYSTEM,
+  not the versioned tree, and knows nothing about `SKIP_DIRS` or the
+  project's `ignore_paths`. Measured on this repository before the
+  configuration existed: 17 findings, 15 of them under `.superpowers/`,
+  `__pycache__/` and `data/logs/` — swapping in the better engine would
+  have made the report noisier than the scanner it replaced. The same
+  17 now come back as 14 with `SKIP_DIRS` alone and 2 once the project's
+  own globs are set. `ignore_paths` is filtered twice on purpose: once
+  as engine configuration so the files are never read, and once on the
+  parsed findings, because a promise about the analysis that holds only
+  while another program accepted our command line is not a promise.
+
+- **A secret's identity did not change, deliberately.** Gitleaks emits
+  its own `Fingerprint` — path, rule and line — and adopting it would
+  have been free and wrong twice over: it would have re-identified every
+  secret already in the ledger, orphaning the human `accepted` and
+  `false_positive` decisions recorded against them, and it anchors on a
+  line number, so an untouched, already-triaged secret would resurrect
+  as `new` the moment an unrelated line was added above it. Identity
+  stays `secret_fingerprint(rule, path)`: the credential's type and the
+  file it lives in.
+
+- **`CC_SECURITY_ENGINES=off` falls back to the built-in scanner without
+  uninstalling anything.** A parser is written against a format, and when
+  an engine's output stops matching it an operator needs a way back that
+  does not involve removing a binary the rest of the machine shares. It
+  is also what stops the test suite from testing two different products
+  depending on whether somebody has run `brew install gitleaks`.
+
 - **External scanners run through one door that cannot leak what they
   found.** Gitleaks returns the credential it matched, Semgrep returns
   the source line, Trivy's secret scanner returns both — and this
