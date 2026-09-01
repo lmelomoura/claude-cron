@@ -6,10 +6,23 @@
 # Behaviour is steered by two env vars the harness sets:
 #   FAKE_SESSION  the session id to report in the init event
 #   FAKE_MODE     complete | undeclared | dirty | hang
+#   FAKE_SKIP_PREPARE  set to skip `security prepare` inside a security run,
+#                      i.e. to play the agent that ignored its first command
 set -u
 
 sid="${FAKE_SESSION:-sess-fake-0001}"
 mode="${FAKE_MODE:-complete}"
+
+# A SECURITY RUN'S FIRST COMMAND. The real agent is told to run this by the
+# analysis prompt and by skills/security-analysis/SKILL.md, and the engine
+# refuses to close an analysis `done` without it -- so a stand-in that never
+# ran it would only ever exercise that refusal, never the happy path.
+# CC_SECURITY_ANALYSIS_ID is exported into the run by cmd_security_analyze and
+# is the one signal here that this is an analysis rather than an ordinary job.
+if [ -n "${CC_SECURITY_ANALYSIS_ID:-}" ] && [ -z "${FAKE_SKIP_PREPARE:-}" ]; then
+  "$(cd "$(dirname "$0")/../bin" && pwd)/claude-cron" security prepare \
+    --analysis "$CC_SECURITY_ANALYSIS_ID" --root "$PWD" --offline >/dev/null 2>&1 || true
+fi
 
 # The init event, deliberately fat: a real one carries the whole tool roster,
 # which is what used to overflow an 8 KB read on both sides.

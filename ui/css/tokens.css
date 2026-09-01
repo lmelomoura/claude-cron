@@ -1,0 +1,60 @@
+/* Design tokens: the two custom-property sets dashboard.html used to carry
+   inline, moved out unchanged. Everything below is `:root` or
+   `:root[data-theme="dark"]` -- variable definitions only, nothing else.
+   No rule here ever styles an element directly, so this file never needs
+   to change when a page or a component does. */
+:root{
+  --bg:#f6f7f9; --panel:#ffffff; --panel2:#fbfbfc; --ink:#16181d; --muted:#697077;
+  --term-bg:#fbfbfd; --term-brd:#d7d9e0; --term-tool:#c2410c; --term-sys:#0f766e;
+  --line:#e4e7ec; --line2:#eef0f4; --accent:#4f46e5; --accent-soft:#eef0ff;
+  --accent-ink:#ffffff; --ok:#0f9d63; --ok-soft:#e6f7ef; --warn:#c77700;
+  --warn-soft:#fdf3e2; --err:#d92d20; --err-soft:#feecea; --idle:#8b919a;
+  --shadow:0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.08);
+  --shadow-lg:0 12px 32px rgba(16,24,40,.16);
+  /* Severity hues, sampled from the approved Security mockup's own pixels
+     (legend dots at 1307,665/687/708 of Security.png): these are the
+     drawing's colours, not a designer's memory of them. Statuses keep
+     ok/warn/err; severity is its own scale and now has its own tokens.
+     --sev-info differs from both --sev-low and --line on purpose: the donut
+     must never paint a severity in the empty track's colour.
+
+     --sev-low (Phase 4, AllFindings.png): Security.png never sampled this
+     one distinctly -- the comment above only names three coordinates
+     (critical/high/medium) -- so it shipped as a guess, the same muted grey
+     as --sev-info, and every screen that draws Low ever since (this findings
+     browser's own strip, the index screen's donut and its legend) drew it
+     that way too. AllFindings.png's own five-dot legend (sampled at
+     494,653,822,983,1135 / y~163) shows Low as a clearly saturated blue
+     (~#4478e8), a fifth hue distinct from every other severity AND from
+     Info's own grey -- not a substitution this dialect chose, a value this
+     token never actually had. Corrected here, once, so every reader of
+     --sev-low (not just this task's own screen) draws the colour the
+     approved drawing actually specifies. */
+  --sev-crit:#e3302b; --sev-high:#f79b38; --sev-med:#edb425;
+  --sev-low:#4478e8; --sev-info:#b9bfc9;
+  /* Categorical palette, sampled from ProjectOverview.png's own
+     "Findings by category" legend dots (x~1470, y 438/462/487/511/536/560):
+     slot N paints the Nth-largest rule bucket, --cat-other the remainder
+     slice. A CATEGORY scale, deliberately separate from the severity tokens
+     right above even where the drawing's first three hues run close to
+     them -- "Hardcoded secrets is the biggest bucket" must never be
+     mistakable for "Hardcoded secrets is critical". */
+  --cat-1:#ee5f5b; --cat-2:#fc9529; --cat-3:#f2b310;
+  --cat-4:#8abcf4; --cat-5:#826cf7; --cat-other:#aeafb8;
+}
+/* Dark mode deliberately does NOT redefine the five --sev-* tokens above
+   (nor the --cat-* palette, same policy for the same reason):
+   :root[data-theme="dark"] below leaves them unset, so dark inherits the
+   exact same light-mode hues rather than a second, dimmer sample -- these
+   are bright enough (sampled off the mockup at full saturation) to still
+   read correctly against the dark panel background, the same reasoning the
+   mockup itself never needed a separate dark palette for severity. */
+:root[data-theme="dark"]{
+  --bg:#0d1017; --panel:#151a23; --panel2:#11151d; --ink:#e8eaee; --muted:#98a0ab;
+  --term-bg:#0b0e14; --term-brd:#2b3444; --term-tool:#fb923c; --term-sys:#5eead4;
+  --line:#242b37; --line2:#1c222d; --accent:#818cf8; --accent-soft:#232848;
+  --accent-ink:#0d1017; --ok:#34d399; --ok-soft:#0e2b22; --warn:#fbbf24;
+  --warn-soft:#33270e; --err:#f87171; --err-soft:#391716; --idle:#6b7280;
+  --shadow:0 1px 2px rgba(0,0,0,.35);
+  --shadow-lg:0 16px 44px rgba(0,0,0,.55);
+}

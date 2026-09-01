@@ -52,6 +52,47 @@ RUNS_FILE = DATA_DIR / "runs.ndjson"
 TOKEN_FILE = CONFIG_DIR / "control.token"
 DB_FILE = DATA_DIR / "index.db"
 CLAUDE_CRON = str(BIN_DIR / "claude-cron")
+# Built from ui/ by build/build-ui.sh and COMMITTED. Installing claude-cron
+# needs jq, python3 and curl; Node is a developer dependency and never a
+# runtime one, which only works if the output ships in git.
+STATIC_DIR = BIN_DIR / "static"
+STATIC_TYPES = {".js": "application/javascript; charset=utf-8",
+                ".css": "text/css; charset=utf-8"}
+
+
+def static_asset(name):
+    """One flat directory, one segment, known extensions. No traversal, no
+    subdirectories, nothing clever -- a static route is not the place to be
+    clever.
+
+    The name arrives exactly as it came off the wire, undecoded: decoding is
+    what turns `..%2F` into a directory to climb, and there is nothing in this
+    directory whose name needs it.
+
+    Everything past the extension check runs inside the try, including
+    `is_file()`: a pathologically long name makes stat() raise OSError
+    (ENAMETOOLONG is not one of the errnos pathlib swallows on its own), and a
+    file that is there but not valid UTF-8 makes `read_text()` raise
+    UnicodeDecodeError -- a ValueError. Either one used to be a crash this
+    route had no answer for instead of a plain miss.
+    """
+    if "/" in name or "\\" in name or name.startswith(".") or ".." in name:
+        return None, None
+    path = STATIC_DIR / name
+    ctype = STATIC_TYPES.get(path.suffix)
+    if not ctype:
+        return None, None
+    try:
+        # Resolved and re-anchored under STATIC_DIR: a symlink sitting in the
+        # directory (x.js -> /etc/passwd) would otherwise be followed and
+        # handed back with whatever Content-Type its own extension claims.
+        # Requiring the resolved parent to still be the resolved STATIC_DIR
+        # keeps this route inside the one directory it was ever meant to read.
+        if path.resolve().parent != STATIC_DIR.resolve() or not path.is_file():
+            return None, None
+        return path.read_text(), ctype
+    except (OSError, ValueError):
+        return None, None
 
 PORT = int(os.environ.get("CLAUDE_CRON_PORT", "8787"))
 PLIST_LABEL = "com.claude-cron.tick"
@@ -89,9 +130,43 @@ ALLOWED_ORIGINS = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
 # reload, and — the case that actually bit — editing the page while a tab held
 # the old JavaScript in memory looked identical to nothing having happened,
 # because the 5s poll refreshes DATA and never the code.
+#
+# And RECOMPUTED lazily (current_build_id, below) rather than fixed at import:
+# this id used to be assigned once, to a module-level BUILD, when the process
+# first started, which answered "what does this SERVER know about" rather than
+# "what is on DISK right now" -- two different things the moment `git pull`
+# touches this tree under a server that is still running (a KeepAlive launchd
+# agent restarts only on a crash). Every page load after that pull kept
+# stamping `?v=` with the OLD id, so a browser kept serving the stale cached
+# bundle against markup that had just changed underneath it — dead listeners,
+# broken layout, fixed only by finding and restarting the process by hand.
+# `current_build_id()` re-stats the identical set every request and only pays
+# for a real re-hash when that stat has actually moved, so a plain reload is
+# now enough: see that function's own comment.
+def _build_sources():
+    """Every file `_build_id` hashes, and the exact set `current_build_id`'s
+    own cheap stat check has to watch -- one list, not two kept in step by
+    hand, so a file added to either job is a file the other sees for free.
+
+    Everything this directory is ALLOWED to serve, not a second list of
+    extensions kept in step by hand. The page asks for each asset with
+    `?v=<this id>`, so a servable file the id cannot see is a file an open
+    tab keeps out of cache forever. This globbed "*.js" while the Security
+    bundle was the only asset; the stylesheet that joined it in the same
+    directory would have been invisible."""
+    served = sorted(p for p in STATIC_DIR.iterdir()
+                    if p.suffix in STATIC_TYPES) if STATIC_DIR.is_dir() else []
+    # The bundles too, not just the page: the Security area's JavaScript moved
+    # out of dashboard.html, and a build id derived from the page alone would
+    # have stopped changing when that code changed -- which is the whole job of
+    # this id. An open tab would keep last week's bundle and never learn, and
+    # the `?v=` on the script tag would keep asking for the same cached URL.
+    return (PAGE_FILE, Path(__file__), *served)
+
+
 def _build_id() -> str:
     h = hashlib.sha256()
-    for f in (PAGE_FILE, Path(__file__)):
+    for f in _build_sources():
         try:
             h.update(f.read_bytes())
         except OSError:
@@ -102,7 +177,56 @@ def _build_id() -> str:
     return h.hexdigest()[:12]
 
 
-# BUILD is assigned once PAGE_FILE is known (see below).
+def _build_stat():
+    """A cheap fingerprint of `_build_sources()`: (path, mtime_ns, size) per
+    file, stat()-only -- no content read, so this is a handful of syscalls
+    even for a directory of bundles.
+
+    NEVER the id itself, and never will be: mtime alone lies across a fresh
+    clone (git does not record it, and a checkout writes every path in index
+    order, so the sources are ALWAYS newer than a bundle built from them --
+    this repository already learned that the hard way once, see build/
+    ui-digest.sh's own comment on exactly this). It is only the trigger that
+    decides whether `current_build_id` below is worth paying for a real
+    content hash this request, never a substitute for one."""
+    stat = []
+    for f in _build_sources():
+        try:
+            st = f.stat()
+            stat.append((str(f), st.st_mtime_ns, st.st_size))
+        except OSError:
+            stat.append((str(f), None, None))
+    return tuple(stat)
+
+
+_build_cache = {"stat": None, "id": None}
+
+
+def current_build_id() -> str:
+    """The id `render_page` and `/api/data` actually serve: `_build_id()`'s
+    same content hash, but recomputed only when `_build_stat()` says
+    something in `_build_sources()` moved since the last call -- see the
+    comment above `_build_id` for the bug this replaces (an id fixed at
+    import, oblivious to a `git pull` landing under a running server).
+
+    A handful of stat() calls run on EVERY call, cheap enough to afford once
+    per page load; the sha256 over full file contents -- the real work --
+    only runs again once the stat map has actually changed, so an unpulled,
+    unedited install pays for that hash exactly once, still, no matter how
+    many pages it serves."""
+    stat = _build_stat()
+    if stat != _build_cache["stat"]:
+        _build_cache["id"] = _build_id()
+        _build_cache["stat"] = stat
+    return _build_cache["id"]
+
+
+# current_build_id's cache is primed once PAGE_FILE is known (see below), the
+# same point the id used to be assigned to a module-level BUILD once and for
+# all -- keeping that one eager call preserves the fail-fast property a
+# broken read had before (the server refuses to start rather than serving a
+# first page that discovers the problem), while every call after this one
+# re-checks and re-hashes on its own, per current_build_id's own comment.
 
 _SELF_FILE = Path(__file__).resolve()
 _SELF_DIGEST = hashlib.sha256(_SELF_FILE.read_bytes()).hexdigest()
@@ -713,7 +837,12 @@ def _upsert(conn, fts, rec, preserve=None):
         "INSERT OR REPLACE INTO runs (key, job, start, status, duration, cost, session,"
         " log, forced, precheck_note, result_json, stream, precheck_txt, stderr, doc, project,"
         " model, model_id, note, resumed_from, cause, pruned)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        # 22 columns, 22 placeholders. This line shipped with 21 once (the
+        # `cause` column arrived without its `?`), and the failure mode was
+        # vicious: nothing broke until the FIRST new journal line reached this
+        # code, then every ingest raised, load_data's except swallowed it, and
+        # the dashboard said "No runs recorded yet" over an intact journal.
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (key, rec.get("id", ""), rec.get("start", 0), rec.get("status", ""),
          rec.get("duration", 0), rec.get("cost", 0), rec.get("session", ""),
          rec.get("log", ""), 1 if rec.get("forced") else 0,
@@ -1756,7 +1885,13 @@ def load_data():
                          "resumed_from": row["resumed_from"] or "",
                          "cause": row["cause"] or ""})
         conn.close()
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        # Degrade to an empty list so the page still paints — but SAY SO.
+        # This except once hid a broken INSERT for a whole morning: the page
+        # showed "No runs recorded yet" over 223 intact journal lines and
+        # nothing anywhere named the exception.
+        print(f"claude-cron-server: run listing failed, showing none: {exc!r}",
+              flush=True)
         runs = []
     db_bytes = 0
     for p in (DB_FILE, Path(str(DB_FILE) + "-wal"), Path(str(DB_FILE) + "-shm")):
@@ -1769,10 +1904,31 @@ def load_data():
     # every one of those 5-second polls.
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     checks, ticks = checks_24h()
-    return {"generated": now, "launchd_loaded": launchd_loaded(), "build": BUILD,
+    # current_build_id(), not a fixed BUILD: this is what an ALREADY-OPEN tab
+    # polls every 5s to notice the server moved on and reload itself once
+    # (bin/dashboard.html compares this against the id its own page was
+    # rendered with) -- a static value here would never move, so a pull under
+    # a running server would still need a manual refresh for any tab that was
+    # already open, even though a brand new page load now gets the fresh id
+    # from render_page() immediately. The handful of stat() calls this costs
+    # is the same one render_page() already pays per load, just paid again
+    # per poll tick -- see current_build_id's own comment on why that stays
+    # cheap.
+    return {"generated": now, "launchd_loaded": launchd_loaded(), "build": current_build_id(),
             "config_sig": config_sig(),
             "state": state, "runs": runs,
-            "active_runs": {j.get("id"): active_runs_for(j.get("id")) for j in jobs},
+            # Job ids PLUS the derived security jobs. Those never appear in
+            # jobs.json -- that is the isolation property doing its job -- but
+            # their runs are as real as any other, and this map is the only way
+            # the page sees a LIVE run: without the union, a running analysis
+            # had no "Open the run" button and the Security page's dead-run
+            # warning fired against every healthy run after three minutes.
+            "active_runs": {i: active_runs_for(i) for i in
+                            ([j.get("id") for j in jobs]
+                             + sorted(d.name for d in (DATA_DIR / "locks").iterdir()
+                                      if d.is_dir() and d.name.startswith("security-"))
+                             if (DATA_DIR / "locks").is_dir()
+                             else [j.get("id") for j in jobs])},
             "retained_worktrees": retained_worktrees(),
             "db_bytes": db_bytes, "checks": checks, "ticks": ticks}
 
@@ -2140,6 +2296,595 @@ def list_dirs(path):
     return {"path": base, "parent": (None if parent == base else parent), "dirs": dirs}
 
 
+# ---------------------------------------------------------------- security
+# Module-level and testable without an HTTP round trip, like the rest of this
+# file's business logic — see tests/test_security_api.py.
+REPORT_FORMATS = {"json": "application/json", "md": "text/markdown",
+                  "html": "text/html; charset=utf-8",
+                  # The stored CycloneDX inventory, not a report over the
+                  # checklist. It was write-only until now: `prepare` built one
+                  # on every analysis and nothing could read it back, which for
+                  # a document whose only job is to be handed to somebody else
+                  # is the same as not having built it.
+                  "sbom": "application/json"}
+# Where the download's file extension differs from the format's own name.
+# `.cdx.json` is the conventional CycloneDX suffix, and the tools that consume
+# one recognise a file by it; `analysis-7.sbom` is a file nothing will open.
+REPORT_EXTENSIONS = {"sbom": "cdx.json"}
+# A branch name reaches git through `claude-cron security analyze` (bin/claude-cron).
+# Anything outside this set is refused HERE, at the edge, rather than quoted
+# somewhere downstream and hoped about. The charset alone is not enough: '-'
+# and '.' are both in it, so a leading '-' (which sits in an option position
+# next to plumbing) and '..' (path/ref traversal) are refused explicitly below
+# even though both match it.
+BRANCH_OK = re.compile(r"^[A-Za-z0-9._/-]{1,255}$")
+PROFILES = ("quick", "standard", "deep")
+
+
+def _branch_ok(branch):
+    # `fullmatch`, not `match`: with `$`, `re.match` anchors only the start and
+    # `$` itself matches just before a trailing "\n" (not only at the true end
+    # of string), so "main\n" would pass a `.match` check here even though it
+    # is not a valid branch name. `fullmatch` requires the whole string to be
+    # consumed, trailing newline included.
+    return bool(BRANCH_OK.fullmatch(branch)) and not branch.startswith("-") and ".." not in branch
+
+
+def _analysis_id(raw):
+    """The `analysis` query/body param as an int, or None when it is not one.
+
+    Checked here so a non-numeric value is a 400 at this edge, not int()'s
+    ValueError two calls downstream, and not an argparse failure inside the
+    CLI that the caller would only ever see as an opaque 500.
+    """
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def security_report_guard(fmt):
+    if fmt not in REPORT_FORMATS:
+        return 400, {"error": f"format must be one of {sorted(REPORT_FORMATS)}"}
+    return 200, None
+
+
+def security_report(analysis_id, fmt):
+    """The rendered report body and its download header for one analysis.
+
+    Only ever called once the id is a real int and the format has already
+    passed `security_report_guard` — this function trusts both. The filename
+    is built from that validated int and that validated format alone; no
+    string the caller typed reaches this header.
+    """
+    ok, out = cc(["security", "render", "--analysis", str(int(analysis_id)),
+                  "--format", fmt])
+    if not ok:
+        raise RuntimeError(out)
+    # From a literal dict keyed by the already-validated format, never from the
+    # caller's string: the same rule the int id above follows.
+    ext = REPORT_EXTENSIONS.get(fmt, fmt)
+    # The route (see `/api/security/report`) only ever receives the id and the
+    # format the page's own fetch call sends (dashboard.html's `secDownload`)
+    # -- never the project name -- so the export event this download earns is
+    # filed under a project read back out of the ledger. `analysis --id` is a
+    # lightweight verb that prints only the row: `checklist` used to be asked
+    # here for the same single string, and it pays for a full diff/classify
+    # pass (two `findings_of` calls, a `latest_analysis` query, a history
+    # query across every prior analysis, `decisions_for`) to answer it. Best
+    # effort: a project the CLI could not name (a stray warning on stdout, a
+    # row gone between the render above and this lookup) must not turn an
+    # otherwise successful download into a 500 -- the file the caller asked
+    # for has already been rendered by the time this runs.
+    ok2, meta = cc(["security", "analysis", "--id", str(int(analysis_id))])
+    project = None
+    if ok2:
+        try:
+            project = json.loads(meta)["project"]
+        except (ValueError, KeyError, TypeError):
+            project = None
+    if project:
+        cc(["security", "event", "--project", project,
+            "--kind", "report_exported",
+            "--detail", f"{fmt} report for analysis {int(analysis_id)}",
+            "--related", str(int(analysis_id))])
+    return out, {"Content-Disposition":
+                 f'attachment; filename="security-analysis-{int(analysis_id)}.{ext}"'}
+
+
+def _json_or_500(ok, out, what):
+    """`out` decoded as JSON, or a 500 that says which call and why.
+
+    `cc()` merges the CLI's stdout and stderr (see `cc`), so a warning printed
+    on an otherwise successful run (rc 0) lands in `out` right alongside the
+    clean JSON the CLI intends as its actual payload. Left unguarded,
+    `json.loads` on that turns into an uncaught `JSONDecodeError` -- a dropped
+    connection instead of a 500, and (for the caller polling for a restart) a
+    stale check that silently never completes. A non-zero exit is already a
+    500 with the CLI's own message; this is the same verdict for the rc-0
+    case where the message just never reaches the page.
+    """
+    if not ok:
+        return 500, {"error": out}
+    try:
+        return 200, json.loads(out)
+    except ValueError:
+        return 500, {"error": f"{what} produced output that was not valid JSON: {out!r}"}
+
+
+def security_list(project):
+    project = str(project or "").strip()
+    if not project:
+        # Mirrors /api/search's own refusal of a blank `q`: a missing project
+        # used to reach the CLI as `--project ''`, which matches no analysis
+        # and comes back a silent `200 []` -- indistinguishable from "this
+        # project genuinely has none" rather than "you forgot the parameter".
+        return 400, {"error": "project required"}
+    ok, out = cc(["security", "list", "--project", project])
+    return _json_or_500(ok, out, "security list")
+
+
+def security_checklist(analysis_raw):
+    aid = _analysis_id(analysis_raw)
+    if aid is None:
+        return 400, {"error": "analysis must be an integer"}
+    ok, out = cc(["security", "checklist", "--analysis", str(aid)])
+    return _json_or_500(ok, out, "security checklist")
+
+
+def security_branches(project, repo):
+    ok, out = cc(["security-branches", str(project), str(repo)])
+    if not ok:
+        return 500, {"error": out}
+    return 200, {"branches": [b for b in out.splitlines() if b.strip()]}
+
+
+def _security_projects():
+    """Every security-enabled project, as the three fields
+    `queries.project_rows` needs -- read fresh from projects.json on every
+    call, the same file `load_config` already serves to the page whole. The
+    ledger has no notion of a project's configuration (name, base branch,
+    description), only of what has been recorded under a project's name, so
+    this is the one place that bridges the two before `index-data` ever runs.
+
+    Filtered to `security.enabled` exactly as `secEnabled` filters the old
+    per-project list client-side (see ui/security/vocabulary.js): a project
+    that has never turned analysis on has no posture to show, only an "off"
+    row nothing on this screen computes for it.
+    """
+    out = []
+    for p in read_json(PROJECTS_FILE, {}).get("projects", []):
+        sec = p.get("security")
+        enabled = isinstance(sec, dict) and sec.get("enabled") in (True, "true")
+        if not enabled:
+            continue
+        out.append({"name": p.get("name", ""), "base": p.get("base", ""),
+                   "description": p.get("description", "")})
+    return out
+
+
+def _project_meta(name):
+    """One project's own configuration the ledger does not know -- its
+    declared base branch and default security profile -- read fresh from
+    projects.json, the same file `_security_projects()` reads for the whole
+    fleet. A name matching nothing (never configured, or renamed) gets the
+    same empty defaults `_security_projects()`'s exclusion already implies:
+    nothing declared, so the CLI falls back to its own defaults."""
+    for p in read_json(PROJECTS_FILE, {}).get("projects", []):
+        if p.get("name") == name:
+            sec = p.get("security") if isinstance(p.get("security"), dict) else {}
+            return {"base": p.get("base", "") or "",
+                   "default_profile": sec.get("default_profile", "") or ""}
+    return {"base": "", "default_profile": ""}
+
+
+def security_project(project):
+    project = str(project or "").strip()
+    if not project:
+        return 400, {"error": "project required"}
+    meta = _project_meta(project)
+    ok, out = cc(["security", "project-data", "--project", project,
+                  "--base", meta["base"], "--default-profile", meta["default_profile"]])
+    return _json_or_500(ok, out, "project data")
+
+
+SECURITY_INDEX_DEFAULT_WINDOW_DAYS = 30  # the mockup's own "Last 30 days"
+
+
+def security_index(params=None):
+    """Every panel the Security index screen draws, in ONE call to the CLI.
+
+    The old per-project list (ui/security/projects.js) cost two subprocesses
+    PER PROJECT on every load and every Refresh: one `security list`, and —
+    for whichever project had a finished analysis — one `security checklist`
+    on top. `index-data` computes the same ground (and more: the fleet-wide
+    summary, recent analyses, the severity donut and its categories) as a
+    single subprocess, however many projects are configured.
+
+    `_json_or_500` is the same guard `security_list`/`security_checklist`
+    already use for a non-zero exit AND for rc-0 chatter that is not valid
+    JSON (`cc()` merges stdout and stderr) -- this used to be a second copy
+    of that exact try/except.
+
+    `params` is optional (`None` reads as no query string at all, exactly
+    the polling and test call sites that predate this parameter) and carries
+    two independent knobs:
+
+    `days` -- the Findings-overview card's own period, forwarded to
+    `queries.severity_totals`/`top_categories` (see their own docstrings for
+    what a real window means now). ABSENT defaults to
+    `SECURITY_INDEX_DEFAULT_WINDOW_DAYS` rather than those functions' own
+    all-time default, so a caller that never asks for a period still gets
+    the mockup's own "Last 30 days"; EXPLICIT, including `0` ("All time",
+    the period picker's own `ACT_PERIODS` vocabulary), is passed straight
+    through. Collapsing "absent" and "explicit 0" into one case would make
+    "All time" silently mean "30 days" instead -- the identical trap
+    `security_activity`'s own `since` parameter already refuses.
+
+    `recent_page` -- the Recent-analyses table's own page, forwarded as
+    `index-data`'s `--recent-page` (`queries.recent_analyses` pages the SQL
+    itself; see that function's own docstring for why). Absent or invalid
+    reads as page 1, the same clamp-not-reject treatment `security_activity`
+    gives its own `page`.
+    """
+    params = params or {}
+    raw_days = _param(params, "days", None)
+    if raw_days is None:
+        days = SECURITY_INDEX_DEFAULT_WINDOW_DAYS
+    else:
+        try:
+            days = int(raw_days or 0)
+        except (TypeError, ValueError):
+            return 400, {"error": "days must be an integer"}
+        if days < 0:
+            days = 0
+
+    try:
+        recent_page = int(_param(params, "recent_page", "1") or 1)
+    except (TypeError, ValueError):
+        return 400, {"error": "recent_page must be an integer"}
+    recent_page = max(1, recent_page)
+
+    ok, out = cc(["security", "index-data",
+                 "--projects", json.dumps(_security_projects()),
+                 "--days", str(days), "--recent-page", str(recent_page)])
+    return _json_or_500(ok, out, "index data")
+
+
+def security_analyze(body):
+    project = str(body.get("project", "")).strip()
+    repo = str(body.get("repo", "")).strip()
+    branch = str(body.get("branch", "")).strip()
+    profile = str(body.get("profile", "standard")).strip()
+    if not project or not repo:
+        return 400, {"error": "project and repo are required"}
+    if not _branch_ok(branch):
+        return 400, {"error": "branch name has characters that are not allowed"}
+    if profile not in PROFILES:
+        return 400, {"error": f"profile must be one of {PROFILES}"}
+    # --detach, and NOT cc(..., background=True). An analysis is minutes of
+    # work and cc() gives a command 30 seconds before subprocess.run SIGKILLs
+    # it: run inline this route timed out, and the killed shell never reached
+    # the close, so the analysis stayed `running` for ever, the page's Analyse
+    # button stayed disabled for that project and the agent was orphaned.
+    # Backgrounding the WHOLE call would fix the timeout and lose the point of
+    # the route: every refusal the CLI makes — security not enabled, no such
+    # branch, one already running — is a sentence this page shows, and a
+    # fire-and-forget Popen can only ever answer "started". --detach keeps the
+    # synchronous half (the refusals, the analysis row, the request file) and
+    # detaches only the run, so `output` carries the id of a row that really
+    # exists.
+    ok, out = cc(["security", "analyze", "--detach", project, repo, branch, profile])
+    return (200, {"ok": True, "output": out}) if ok else (500, {"error": out})
+
+
+FINDINGS_SORT = ("severity", "title", "category", "branch", "first_seen", "state")
+# Every value below mirrors a closed set defined in bin/security/ — duplicated
+# here, not imported, for the same reason PROFILES/BRANCH_OK/the literal
+# state list in security_decide already are: this file shells out to the CLI
+# rather than importing security/queries.py, so a bad value is refused at
+# this edge BEFORE a subprocess is ever spawned, independently of whatever the
+# CLI would have done with it. See security.queries.SORTABLE,
+# security.report.SEVERITIES, security.diff.DERIVED_STATES +
+# security.ledger.DECISION_STATES, and security.diff.DETERMINISTIC_CATEGORIES
+# + ("sast",) — the design spec's own finding shape names all four.
+FINDING_SEVERITIES = ("critical", "high", "medium", "low", "info")
+FINDING_STATES = ("new", "open", "partial", "pending", "fixed", "regressed",
+                  "accepted", "false_positive")
+FINDING_CATEGORIES = ("secret", "dependency", "sast", "hygiene")
+MAX_FINDINGS_PER_PAGE = 100
+
+
+def _param(params, key, default=""):
+    """One value for `key`, whether `params` holds it as a bare string (every
+    test in this file that calls a route function directly) or as a list
+    (what `parse_qs()` on a real query string hands the route) -- the first
+    element wins for a list, exactly like `(q.get(...) or [""])[0]` already
+    does at every other GET route in this file."""
+    raw = params.get(key, default)
+    if isinstance(raw, list):
+        return raw[0] if raw else default
+    return raw
+
+
+def _param_list(params, key):
+    """Every value for `key`, comma-split and flattened. Covers three shapes
+    with the one pass: a raw `parse_qs()` list from repeated query params
+    (`?severity=critical&severity=high`), a single comma-joined value (this
+    page's own checkbox filters, joined client-side before the request goes
+    out), and a bare string a test hands in directly, skipping the query
+    string layer entirely. An absent key is an empty list, not `[""]`."""
+    raw = params.get(key)
+    if raw is None:
+        return []
+    items = raw if isinstance(raw, list) else [raw]
+    out = []
+    for item in items:
+        out.extend(v.strip() for v in str(item).split(",") if v.strip())
+    return out
+
+
+def _checked_list(params, key, known):
+    """`_param_list`'s values, refused as a whole the moment one of them is
+    not in `known` -- severity/state/category are closed vocabularies, and a
+    value outside them is not a filter that matches nothing, it is a typo (or
+    an injection attempt) that deserves a sentence, not a silently empty
+    result."""
+    values = _param_list(params, key)
+    bad = [v for v in values if v not in known]
+    if bad:
+        return None, {"error": f"{key} must be one of {sorted(known)}, got {bad[0]!r}"}
+    return values, None
+
+
+def security_findings(params):
+    """`GET /api/security/findings` — every row `queries.finding_rows` (Task
+    6) draws for one project, plus that project's saved filters
+    (`ledger.saved_filters`, Task 4) in the same payload; see
+    `bin/security/cli.py`'s `findings-page`, which bundles both the same way
+    `index-data`/`project-data` already bundle a whole screen's panels into
+    one call.
+
+    `sort`/`direction` are an allowlist refused here, at the edge, before a
+    subprocess is ever spawned -- `sort` is interpolated by nature inside
+    `queries.finding_rows`'s own ORDER-adjacent logic (see that function's
+    docstring), the one thing a query parameter cannot protect on its own.
+    `page`/`per_page` are shape-checked (a non-integer is a 400) and then
+    CLAMPED, not refused for being out of range -- exactly the treatment
+    `queries.finding_rows` itself gives them, so a value this route would
+    clamp anyway never reaches argv, where it is one more thing visible to
+    anyone reading the process list. `severity`/`state`/`category` are
+    checked against their closed vocabularies; `branch`/`path`/`q` are free
+    text and travel as a single argv element each, never as shell -- `cc()`
+    always calls `subprocess.run` with a list, never a shell string, so
+    nothing about their CONTENT needs escaping, only their shape (a list of
+    strings) needs to stay a list.
+    """
+    project = str(_param(params, "project")).strip()
+    if not project:
+        return 400, {"error": "project required"}
+
+    sort = str(_param(params, "sort", "severity") or "severity").strip()
+    if sort not in FINDINGS_SORT:
+        return 400, {"error": f"sort must be one of {FINDINGS_SORT}"}
+    direction = str(_param(params, "dir", "desc") or "desc").strip()
+    if direction not in ("asc", "desc"):
+        return 400, {"error": "dir must be asc or desc"}
+
+    try:
+        page = int(_param(params, "page", "1") or 1)
+    except (TypeError, ValueError):
+        return 400, {"error": "page must be an integer"}
+    page = max(1, page)
+    try:
+        per_page = int(_param(params, "per_page", "25") or 25)
+    except (TypeError, ValueError):
+        return 400, {"error": "per_page must be an integer"}
+    per_page = max(1, min(per_page, MAX_FINDINGS_PER_PAGE))
+
+    severity, err = _checked_list(params, "severity", FINDING_SEVERITIES)
+    if err:
+        return 400, err
+    state, err = _checked_list(params, "state", FINDING_STATES)
+    if err:
+        return 400, err
+    category, err = _checked_list(params, "category", FINDING_CATEGORIES)
+    if err:
+        return 400, err
+
+    branch = str(_param(params, "branch")).strip()
+    path = str(_param(params, "path")).strip()
+    q = str(_param(params, "q")).strip()
+    show_resolved = str(_param(params, "show_resolved")).strip().lower() in ("1", "true", "yes")
+
+    # A PREFIX, not the full 64-character shape `security_report`-adjacent
+    # code enforces on a written fingerprint -- this is Task 12's Activity
+    # screen linking a decision's `related` (only ever 12 characters) into
+    # this browser, "filtered to it". Shape-checked here, at the edge, the
+    # same reasoning severity/state/category already get: a value that is
+    # not lowercase hex is a typo, not a filter that legitimately matches
+    # nothing.
+    fingerprint = str(_param(params, "fingerprint")).strip().lower()
+    if fingerprint and not re.fullmatch(r"[0-9a-f]{1,64}", fingerprint):
+        return 400, {"error": "fingerprint must be lowercase hex"}
+
+    analysis_ids = []
+    for raw in _param_list(params, "analysis"):
+        try:
+            analysis_ids.append(int(raw))
+        except ValueError:
+            return 400, {"error": f"analysis must be a list of integers, got {raw!r}"}
+
+    args = ["security", "findings-page", "--project", project,
+           "--sort", sort, "--dir", direction,
+           "--page", str(page), "--per-page", str(per_page)]
+    for s in severity:
+        args += ["--severity", s]
+    for s in state:
+        args += ["--state", s]
+    for s in category:
+        args += ["--category", s]
+    if branch:
+        args += ["--branch", branch]
+    for a in analysis_ids:
+        args += ["--analysis", str(a)]
+    if path:
+        args += ["--path", path]
+    if q:
+        args += ["--q", q]
+    if show_resolved:
+        args.append("--show-resolved")
+    if fingerprint:
+        args += ["--fingerprint", fingerprint]
+
+    ok, out = cc(args)
+    return _json_or_500(ok, out, "findings page")
+
+
+# Duplicated from `security.ledger.EVENT_KINDS`, not imported -- same
+# reasoning as FINDING_SEVERITIES/FINDING_STATES/FINDING_CATEGORIES above:
+# this file shells out to the CLI rather than importing security/ledger.py,
+# so a typo'd kind is refused at THIS edge, before a subprocess is ever
+# spawned, independently of whatever the CLI's own `choices=` would have
+# done with it.
+ACTIVITY_KINDS = ("analysis_started", "analysis_finished", "decision_made",
+                  "settings_changed", "report_exported")
+ACTIVITY_MAX_PER_PAGE = 500  # mirrors ledger.events_for's own ceiling
+ACTIVITY_DEFAULT_WINDOW_DAYS = 30
+
+
+def security_activity(params):
+    """`GET /api/security/activity` -- every event `ledger.events_for` (Task
+    3) returns for the period and kind(s) asked, the per-kind counts
+    `queries.activity_summary` (Task 5) gives the SAME period, and which
+    projects were busiest in it. See `bin/security/cli.py`'s `activity-data`.
+
+    `kind` is validated against the closed vocabulary above, the same
+    treatment `security_findings` gives severity/state/category: a typo is
+    not a filter that matches nothing, it is a mistake worth a sentence.
+
+    `since` ABSENT (the key missing from `params` entirely) defaults to
+    `ACTIVITY_DEFAULT_WINDOW_DAYS` ago rather than `ledger.events_for`'s own
+    "no lower bound" -- so a caller that never asks for a period still gets a
+    legible, bounded one, the same window `queries.activity_summary`'s own
+    default describes, so the table and the sidebar's per-kind counts agree
+    on what period they are both showing unless the caller deliberately
+    widens it.
+
+    `since` EXPLICIT, including `0` or any negative value, is passed straight
+    through as "no lower bound" -- `ledger.events_for`'s own contract. This is
+    the only way the client can ask for everything: the screen's "All time"
+    period (`secActSince()`, ui/security/activity-screen.js) always sends a
+    `since` parameter, and for "All time" that value is `0`, on purpose, to
+    reach exactly this branch. Collapsing "absent" and "explicit 0" into one
+    case (as this route used to) makes "All time" silently mean "30 days"
+    instead -- the request is present on the wire, it is simply never told
+    apart from a caller who asked for nothing. `page`/`per_page` are
+    shape-checked then clamped, exactly like `security_findings`'s own.
+    """
+    project = str(_param(params, "project")).strip()
+
+    kinds, err = _checked_list(params, "kind", ACTIVITY_KINDS)
+    if err:
+        return 400, err
+
+    raw_since = _param(params, "since", None)
+    if raw_since is None:
+        since = int(time.time()) - ACTIVITY_DEFAULT_WINDOW_DAYS * 86400
+    else:
+        try:
+            since = int(raw_since or 0)
+        except (TypeError, ValueError):
+            return 400, {"error": "since must be an integer"}
+        if since < 0:
+            since = 0
+
+    try:
+        page = int(_param(params, "page", "1") or 1)
+    except (TypeError, ValueError):
+        return 400, {"error": "page must be an integer"}
+    page = max(1, page)
+    try:
+        per_page = int(_param(params, "per_page", "25") or 25)
+    except (TypeError, ValueError):
+        return 400, {"error": "per_page must be an integer"}
+    per_page = max(1, min(per_page, ACTIVITY_MAX_PER_PAGE))
+
+    args = ["security", "activity-data", "--since", str(since),
+           "--page", str(page), "--per-page", str(per_page)]
+    if project:
+        args += ["--project", project]
+    for k in kinds:
+        args += ["--kind", k]
+
+    ok, out = cc(args)
+    return _json_or_500(ok, out, "activity data")
+
+
+def security_filter_save(body):
+    project = str(body.get("project", "")).strip()
+    name = str(body.get("name", "")).strip()
+    if not project:
+        return 400, {"error": "project required"}
+    if not name:
+        # Mirrors ledger.save_filter's own refusal (bin/security/ledger.py),
+        # checked here too so the page gets a usable message instead of a 500
+        # from a CLI that exited non-zero.
+        return 400, {"error": "a saved filter needs a name"}
+    query = body.get("query")
+    if not isinstance(query, dict):
+        # Same shape check report-finding/filters-save already make on their
+        # own JSON body: a caller that forgot the current filter set, or sent
+        # something that is not an object, saves an empty query rather than
+        # failing the whole request over one field.
+        query = {}
+    ok, out = cc(["security", "filters", "save", "--project", project, "--name", name],
+                stdin=json.dumps(query))
+    return (200, {"ok": True}) if ok else (500, {"error": out})
+
+
+def security_filter_delete(body):
+    project = str(body.get("project", "")).strip()
+    name = str(body.get("name", "")).strip()
+    if not project or not name:
+        return 400, {"error": "project and name are required"}
+    ok, out = cc(["security", "filters", "delete", "--project", project, "--name", name])
+    return _json_or_500(ok, out, "filters delete")
+
+
+def security_decide(body):
+    project = str(body.get("project", "")).strip()
+    fingerprint = str(body.get("fingerprint", "")).strip()
+    state = body.get("state")
+    reason = str(body.get("reason", ""))
+    if not project or not fingerprint:
+        return 400, {"error": "project and fingerprint are required"}
+    # The identity shape `report-finding` already enforces on a written
+    # fingerprint (bin/security/cli.py's FINGERPRINT_RE), applied at the route
+    # too -- not merely non-empty. A malformed value used to write a decision
+    # row AND a `decision_made` event, so the Activity screen told the
+    # operator the risk had been accepted while the finding stayed open on
+    # every other screen, since no finding can ever carry that identity. The
+    # CLI refuses it as well; both doors, because neither is the only one.
+    if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+        return 400, {"error": "fingerprint must be 64 lowercase hex characters"}
+    if not reason.strip():
+        # Mirrors the ledger's own refusal (bin/security/ledger.py:set_decision),
+        # checked here too so the page gets a usable message instead of a 500
+        # from a CLI that exited non-zero.
+        return 400, {"error": "a decision needs a reason"}
+    if state not in ("accepted", "false_positive"):
+        return 400, {"error": "state must be accepted or false_positive"}
+    ok, out = cc(["security", "decide",
+                  "--project", project, "--fingerprint", fingerprint,
+                  "--state", str(state), "--reason", reason,
+                  # Never taken from the request body: the agent under review
+                  # reaches this same door, and a name it supplied itself would
+                  # let it sign its own suppression.
+                  "--by", (load_user() or {}).get("name", "")])
+    return (200, {"ok": True}) if ok else (500, {"error": out})
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "claude-cron/3"
 
@@ -2147,7 +2892,8 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     # ---- helpers -------------------------------------------------------
-    def _send(self, code, body, ctype="application/json; charset=utf-8", cookie=None):
+    def _send(self, code, body, ctype="application/json; charset=utf-8", cookie=None,
+              extra_headers=None):
         if isinstance(body, (dict, list)):
             body = json.dumps(body)
         data = body.encode("utf-8") if isinstance(body, str) else body
@@ -2158,6 +2904,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         if cookie:
             self.send_header("Set-Cookie", cookie)
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
         self.end_headers()
         try:
             self.wfile.write(data)
@@ -2258,6 +3007,15 @@ class Handler(BaseHTTPRequestHandler):
                                     "authenticated": bool(sess),
                                     "keep": bool(sess and sess["keep"]),
                                     "user": load_user() if sess else None})
+        # Before the gate on purpose. The bundle is not secret -- it ships in
+        # git, in every install -- and the page that draws the LOGIN card is the
+        # same page the dashboard is, so gating this would leave a signed-out
+        # browser holding a page whose code it is not allowed to fetch.
+        if path.startswith("/static/"):
+            body, ctype = static_asset(path[len("/static/"):])
+            if body is None:
+                return self._send(404, {"error": "not found"})
+            return self._send(200, body, ctype)
         # One gate for every remaining endpoint, rather than a check per route
         # that a new route can forget to copy.
         if path.startswith("/api/"):
@@ -2291,6 +3049,49 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, list_models())
             except Exception as e:  # noqa: BLE001
                 return self._send(500, {"error": str(e)})
+        if path == "/api/security":
+            q = parse_qs(urlparse(self.path).query)
+            code, payload = security_list((q.get("project") or [""])[0])
+            return self._send(code, payload)
+        if path == "/api/security/index":
+            q = parse_qs(urlparse(self.path).query)
+            code, payload = security_index(q)
+            return self._send(code, payload)
+        if path == "/api/security/project":
+            q = parse_qs(urlparse(self.path).query)
+            code, payload = security_project((q.get("project") or [""])[0])
+            return self._send(code, payload)
+        if path == "/api/security/findings":
+            q = parse_qs(urlparse(self.path).query)
+            code, payload = security_findings(q)
+            return self._send(code, payload)
+        if path == "/api/security/activity":
+            q = parse_qs(urlparse(self.path).query)
+            code, payload = security_activity(q)
+            return self._send(code, payload)
+        if path == "/api/security/checklist":
+            q = parse_qs(urlparse(self.path).query)
+            code, payload = security_checklist((q.get("analysis") or [""])[0])
+            return self._send(code, payload)
+        if path == "/api/security/branches":
+            q = parse_qs(urlparse(self.path).query)
+            code, payload = security_branches((q.get("project") or [""])[0],
+                                              (q.get("repo") or [""])[0])
+            return self._send(code, payload)
+        if path == "/api/security/report":
+            q = parse_qs(urlparse(self.path).query)
+            fmt = (q.get("format") or [""])[0]
+            code, err = security_report_guard(fmt)
+            if err:
+                return self._send(code, err)
+            aid = _analysis_id((q.get("analysis") or [""])[0])
+            if aid is None:
+                return self._send(400, {"error": "analysis must be an integer"})
+            try:
+                body, headers = security_report(aid, fmt)
+            except RuntimeError as exc:
+                return self._send(500, {"error": str(exc)})
+            return self._send(200, body, REPORT_FORMATS[fmt], extra_headers=headers)
         if path == "/api/fs":
             p = (parse_qs(urlparse(self.path).query).get("path") or [""])[0]
             try:
@@ -2448,6 +3249,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "missing project name"})
             ok, out = cc(["project-delete", name])
             return self._send(200 if ok else 500, {"ok": ok, "output": out})
+        # Keyed by project (+fingerprint for a decision), not by a job id —
+        # handled here, alongside the other project-keyed ops, before the id
+        # check below would otherwise refuse them for having no "id".
+        if op == "security_analyze":
+            return self._send(*security_analyze(body))
+        if op == "security_decide":
+            return self._send(*security_decide(body))
+        if op == "security_filter_save":
+            return self._send(*security_filter_save(body))
+        if op == "security_filter_delete":
+            return self._send(*security_filter_delete(body))
 
         # Reorder carries a LIST of ids rather than one — handle it before the
         # single-id check below. Jobs outside the list keep their positions, so
@@ -2608,7 +3420,7 @@ class Handler(BaseHTTPRequestHandler):
 # entirely self-contained (same package, no CDN, nothing fetched at runtime),
 # and `node --check` can be pointed straight at its script block.
 PAGE_FILE = BIN_DIR / "dashboard.html"
-BUILD = _build_id()   # content-derived; needs PAGE_FILE
+current_build_id()   # primes the cache now that PAGE_FILE is known -- see its own comment
 _page_cache = {"mtime": None, "text": ""}
 
 
@@ -2637,9 +3449,13 @@ def render_page(boot: str = "boot-authed") -> str:
     still writing the response, so it says so and the first frame is right.
     Answering wrongly is not a leak either way: every endpoint behind the gate
     still refuses, and the page corrects itself the moment the session lands.
+
+    `current_build_id()`, not a fixed BUILD: this runs on every request, so a
+    `git pull` landing under a running server is visible on the very next
+    load -- see that function's own comment.
     """
     return (_page_source().replace("__TOKEN__", TOKEN)
-                .replace("__BUILD__", BUILD)
+                .replace("__BUILD__", current_build_id())
                 .replace("__BOOT__", boot)
                 .replace("__FAVICON__", FAVICON))
 

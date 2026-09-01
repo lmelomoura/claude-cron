@@ -100,3 +100,21 @@ def _alive(pid):
         return True
     except OSError:
         return False
+
+
+def test_a_new_journal_line_actually_reaches_the_runs_table(srv, clean_data):
+    """The regression that emptied the dashboard: _upsert's INSERT shipped with
+    22 columns and 21 placeholders, so the FIRST new journal line after the
+    server picked the code up made every ingest raise, load_data swallowed it,
+    and the page said "No runs recorded yet" over an intact journal. This walks
+    one real line through ingest() and reads it back."""
+    import json
+    srv.RUNS_FILE.write_text(json.dumps({
+        "id": "j1", "status": "success", "start": 1700000000, "end": 1700000100,
+        "duration": 100, "cost": 0.5, "session": "s-1", "log": "/nope.json",
+        "note": "", "cause": ""}) + "\n")
+    srv.ingest()
+    conn = srv.db_conn()
+    rows = conn.execute("SELECT job, status, cost FROM runs").fetchall()
+    conn.close()
+    assert [(r["job"], r["status"], r["cost"]) for r in rows] == [("j1", "success", 0.5)]

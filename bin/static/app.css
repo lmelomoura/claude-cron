@@ -1,0 +1,2771 @@
+/* Design tokens: the two custom-property sets dashboard.html used to carry
+   inline, moved out unchanged. Everything below is `:root` or
+   `:root[data-theme="dark"]` -- variable definitions only, nothing else.
+   No rule here ever styles an element directly, so this file never needs
+   to change when a page or a component does. */
+:root{
+  --bg:#f6f7f9; --panel:#ffffff; --panel2:#fbfbfc; --ink:#16181d; --muted:#697077;
+  --term-bg:#fbfbfd; --term-brd:#d7d9e0; --term-tool:#c2410c; --term-sys:#0f766e;
+  --line:#e4e7ec; --line2:#eef0f4; --accent:#4f46e5; --accent-soft:#eef0ff;
+  --accent-ink:#ffffff; --ok:#0f9d63; --ok-soft:#e6f7ef; --warn:#c77700;
+  --warn-soft:#fdf3e2; --err:#d92d20; --err-soft:#feecea; --idle:#8b919a;
+  --shadow:0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.08);
+  --shadow-lg:0 12px 32px rgba(16,24,40,.16);
+  /* Severity hues, sampled from the approved Security mockup's own pixels
+     (legend dots at 1307,665/687/708 of Security.png): these are the
+     drawing's colours, not a designer's memory of them. Statuses keep
+     ok/warn/err; severity is its own scale and now has its own tokens.
+     --sev-info differs from both --sev-low and --line on purpose: the donut
+     must never paint a severity in the empty track's colour.
+
+     --sev-low (Phase 4, AllFindings.png): Security.png never sampled this
+     one distinctly -- the comment above only names three coordinates
+     (critical/high/medium) -- so it shipped as a guess, the same muted grey
+     as --sev-info, and every screen that draws Low ever since (this findings
+     browser's own strip, the index screen's donut and its legend) drew it
+     that way too. AllFindings.png's own five-dot legend (sampled at
+     494,653,822,983,1135 / y~163) shows Low as a clearly saturated blue
+     (~#4478e8), a fifth hue distinct from every other severity AND from
+     Info's own grey -- not a substitution this dialect chose, a value this
+     token never actually had. Corrected here, once, so every reader of
+     --sev-low (not just this task's own screen) draws the colour the
+     approved drawing actually specifies. */
+  --sev-crit:#e3302b; --sev-high:#f79b38; --sev-med:#edb425;
+  --sev-low:#4478e8; --sev-info:#b9bfc9;
+  /* Categorical palette, sampled from ProjectOverview.png's own
+     "Findings by category" legend dots (x~1470, y 438/462/487/511/536/560):
+     slot N paints the Nth-largest rule bucket, --cat-other the remainder
+     slice. A CATEGORY scale, deliberately separate from the severity tokens
+     right above even where the drawing's first three hues run close to
+     them -- "Hardcoded secrets is the biggest bucket" must never be
+     mistakable for "Hardcoded secrets is critical". */
+  --cat-1:#ee5f5b; --cat-2:#fc9529; --cat-3:#f2b310;
+  --cat-4:#8abcf4; --cat-5:#826cf7; --cat-other:#aeafb8;
+}
+/* Dark mode deliberately does NOT redefine the five --sev-* tokens above
+   (nor the --cat-* palette, same policy for the same reason):
+   :root[data-theme="dark"] below leaves them unset, so dark inherits the
+   exact same light-mode hues rather than a second, dimmer sample -- these
+   are bright enough (sampled off the mockup at full saturation) to still
+   read correctly against the dark panel background, the same reasoning the
+   mockup itself never needed a separate dark palette for severity. */
+:root[data-theme="dark"]{
+  --bg:#0d1017; --panel:#151a23; --panel2:#11151d; --ink:#e8eaee; --muted:#98a0ab;
+  --term-bg:#0b0e14; --term-brd:#2b3444; --term-tool:#fb923c; --term-sys:#5eead4;
+  --line:#242b37; --line2:#1c222d; --accent:#818cf8; --accent-soft:#232848;
+  --accent-ink:#0d1017; --ok:#34d399; --ok-soft:#0e2b22; --warn:#fbbf24;
+  --warn-soft:#33270e; --err:#f87171; --err-soft:#391716; --idle:#6b7280;
+  --shadow:0 1px 2px rgba(0,0,0,.35);
+  --shadow-lg:0 16px 44px rgba(0,0,0,.55);
+}
+/* Shared vocabulary: the widgets more than one page draws on, plus the
+   handful of generic element rules (*, html, body, table, th, td, code,
+   footer) that apply everywhere rather than to one screen. Named groups,
+   in the order they appear below: generic elements and the .ic icon/.muted
+   text utilities; the required-field marker (.req) and pills (.pill); the
+   h3 eyebrow and paneblurb; the shared table-row furniture (.rowoff,
+   .rowacts, .jobcell, .favstar, .isopill, td .cap/.nowrap/.projtag,
+   .tblempty); the page header (.page-header) and the KPI card
+   (.kpi-grid, .kpi-card); buttons and icon buttons (.btn, .iconbtn); the
+   filter bar (.picker, .activefilters, .perpage, .toolbar, .searchbox); the
+   table card itself (.tablewrap, table/th/td, sortable headers, status
+   cells, .pager, .empty); the tab strip (.tabs, .tab, .tabpanes, .tabpane);
+   and the project-screen / activity-screen right rail (.secpjside).
+   Nothing here names one page or one dialog. A rule that only makes sense
+   on a single screen -- the sidebar, a dialog, a job card, the pulse panel,
+   any @media/@container query -- belongs in pages.css instead, even where
+   it overrides a selector defined here (pages.css is concatenated after
+   this file, so the override still wins). */
+*{box-sizing:border-box}
+html{color-scheme:light} :root[data-theme="dark"]{color-scheme:dark}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:13.5px/1.55 ui-sans-serif,-apple-system,"SF Pro Text",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased}
+.ic{width:16px;height:16px;flex:none;vertical-align:-3px}
+.req{color:var(--err);margin-left:3px;font-weight:700}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:20px;
+  font-size:11px;font-weight:600;letter-spacing:.02em}
+.pill .ic{width:12px;height:12px}
+.pill.on{background:var(--ok-soft);color:var(--ok)}
+/* .pill.off is a FAULT colour, not "the thing is switched off" -- the
+   topbar's launchd pill is its only user, where off genuinely means the
+   scheduler service failed to load and red is correct. A job someone
+   disabled on purpose is not a fault, so it never gets this class; it gets
+   .pill.disabled below, which is grey. Collapsing the two back into one
+   class is exactly the regression this split exists to prevent -- see
+   test_the_job_disabled_pill_and_the_launchd_off_pill_use_different_classes
+   in tests/test_page_contract.py. */
+.pill.off{background:var(--err-soft);color:var(--err)}
+.pill.idle{background:var(--warn-soft);color:var(--warn)}
+/* Neutral, not a warning: a job nobody enabled is not "finished but not
+   done" (that's .idle, amber) and not a fault (that's .off, red). Same
+   grey-on-panel2 treatment .sevpill.low/.sevpill.info already use for "not
+   urgent" elsewhere on this page. */
+.pill.disabled{background:var(--panel2);color:var(--muted)}
+/* Not a status -- the Security index table's own Profile column (Phase 4
+   Task 3, ui/security/index-screen.js) is a fixed choice (Deep/Standard/
+   Quick), never on/off/idle/disabled, so it gets the same accent tint
+   .isopill.auto already uses for "this is a mode, not a state" rather than
+   any of the tones above. */
+.pill.profile{background:var(--accent-soft);color:var(--accent)}
+/* An ANALYSIS's own state (Phase 4 Task 4, the Security index's Recent
+   analyses table) -- RUN_STATES's own four values (project-screen.js),
+   Title-Cased as "Completed"/"Capped"/"Failed"/"Running". New modifiers
+   rather than reusing `.pill.on`/`.pill.off`: those two are reserved for a
+   PROJECT's own active/launchd-fault reading (see `.pill.off`'s own comment
+   above), and a historical analysis run is a third, unrelated fact that
+   happens to want the same four tone families -- ok/warn/err/accent, the
+   identical set `.pill.on`/`.idle`/`.off`/`.profile` already draw from --
+   not the same two classes repurposed for a different question.*/
+.pill.done{background:var(--ok-soft);color:var(--ok)}
+.pill.capped{background:var(--warn-soft);color:var(--warn)}
+.pill.failed{background:var(--err-soft);color:var(--err)}
+.pill.running{background:var(--accent-soft);color:var(--accent)}
+h3{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
+  margin:0;display:flex;align-items:center;gap:7px}
+h3 .ic{width:14px;height:14px}
+/* -------------------------------------------------------- jobs as a table
+   Same table furniture as Runs; only the columns differ. */
+/* A disabled row reads as dormant WITHOUT a blanket opacity. `opacity:.62` on
+   the whole cell washed out everything it contained — the status pill and the
+   favourite star came out pale pink and pale amber, which next to the same pill
+   and the same star on the dashboard looked like two different colours for one
+   thing. Mute the prose; leave anything that carries meaning by its colour at
+   full strength. */
+.rowoff .jobcell code{color:var(--muted)}
+.rowoff td .snip,.rowoff td.nowrap,.rowoff td.num{color:var(--muted)}
+.rowoff td .projtag{opacity:.75}
+.rowacts .iconbtn{width:26px;height:26px}
+.rowacts .iconbtn.danger:hover{background:var(--err-soft);color:var(--err)}
+/* The robot mark, same as on the card, so a job id reads as a job wherever it
+   appears rather than as one more monospaced string in a row of them. */
+.jobcell{display:inline-flex;align-items:center;gap:7px}
+/* DIRECT child only. The cell also holds the favourite star, whose icon
+   fills with currentColor so the BUTTON's colour can say off (--line) or
+   on (--warn). A descendant selector here set color on that nested .ic
+   directly, which currentColor then read -- both stars painted accent,
+   identical in either state, and clicking one changed the class but not a
+   single pixel. */
+.jobcell > .ic{width:14px;height:14px;flex:none;color:var(--accent)}
+.rowoff .jobcell > .ic{color:var(--muted)}
+td.nowrap{white-space:nowrap}
+td .cap{color:var(--muted);font-weight:400}
+td .projtag{white-space:nowrap}
+/* The star on a project row. Same amber, same filled-not-outlined treatment as
+   the one in the Jobs table. */
+.favstar{display:inline-flex;border:0;background:transparent;padding:2px;margin-left:4px;
+  border-radius:5px;color:var(--line);cursor:pointer}
+.favstar .ic{width:13px;height:13px;stroke:none;fill:currentColor}
+.favstar:hover{color:var(--warn)}
+.favstar.on{color:var(--warn)}
+.isopill{display:inline-flex;font-size:11px;font-weight:600;border-radius:20px;padding:2px 9px}
+.isopill.on{background:var(--ok-soft);color:var(--ok)}
+.isopill.off{background:var(--err-soft);color:var(--err)}
+.isopill.auto{background:var(--accent-soft);color:var(--accent)}
+.tblempty{text-align:center;color:var(--muted);padding:34px 12px}
+.tblempty .ic{width:22px;height:22px;vertical-align:-5px;margin-right:8px;opacity:.6}
+.paneblurb{margin:0 0 14px;font-size:12.5px;color:var(--muted);max-width:96ch;line-height:1.6}
+.secthead{display:flex;align-items:center;justify-content:space-between;margin:26px 0 12px}
+td .projtag{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--muted)}
+/* `flex:none`, the same protection .jobcell's own icon already has above --
+   without it, a name too long for the column (.projtag-name, pages.css)
+   shrank this icon right along with the text under flex-shrink instead of
+   leaving it alone at its natural 12px. */
+td .projtag .ic{width:12px;height:12px;color:var(--accent);flex:none}
+/* ------------------------------------------------------------- page header
+   Icon, title, one sentence, actions trailing on the right -- pageHeader()
+   in ui/app/overview.js is the only place that builds one, so every page
+   this redesign touches opens the same way. The icon sits in its own flex
+   item rather than inline with the title text so a 27px glyph and a 27px/700
+   heading line up on their tops, not their (very different) baselines. */
+.page-header{display:flex;align-items:flex-start;gap:14px;margin:4px 0 22px}
+.page-header-ic{display:flex;flex:none;color:var(--accent)}
+.page-header-ic .ic{width:27px;height:27px}
+.page-header-body{flex:1 1 auto;min-width:0}
+.page-header-body h1{margin:0 0 4px;font-size:27px;font-weight:700;letter-spacing:-.02em}
+.page-header-body p{margin:0;font-size:13px;color:var(--muted)}
+.page-header-actions{display:flex;align-items:center;gap:8px;flex:none;margin-top:3px}
+
+/* ------------------------------------------------------------------ KPI card
+   Five numbers, one card each: a tinted icon square (the tint carries the
+   tone -- accent by default, warn/err/ok for a card that wants a different
+   one) and the NUMBER share the first line at 27px/700 -- the number is what the
+   eye should land on beside the icon, not the caption -- then the label at
+   13.5px/600, then a muted sublabel at 12.5px. The second number of a pair
+   belongs in that sublabel, never beside the first -- see pulseKpis's own
+   comment on the rule this design exists to hold, which an earlier phase of
+   this project broke six times.
+   Only a door (Warnings/Errors) is ever a <button>: kpiCard() disables one
+   with nowhere to go (see its own comment), and a disabled button is the
+   one element that is natively unclickable and untabbable without a second
+   attribute to keep in sync. A card that was never a door (Checks/Woke a
+   run/Spent today) is a plain, always-full-contrast element instead --
+   hence `button.` on the hover/cursor rules below, so a <div> (never
+   `:disabled`, so `:not(:disabled)` is always true for one) cannot pick up
+   a hover style that implies it is clickable. */
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+  gap:12px;margin:0 0 20px}
+.kpi-card{display:flex;flex-direction:column;gap:8px;text-align:left;font:inherit;
+  background:var(--panel);border:1px solid var(--line);border-radius:13px;
+  padding:16px 18px;box-shadow:var(--shadow)}
+.kpi-card:disabled{cursor:default}
+button.kpi-card:not(:disabled){cursor:pointer}
+button.kpi-card:not(:disabled):hover{border-color:color-mix(in srgb,var(--accent) 42%,var(--line))}
+.kpi-card-h{display:flex;align-items:center;gap:10px}
+.kpi-card-ic{display:flex;align-items:center;justify-content:center;width:30px;height:30px;
+  border-radius:9px;background:var(--accent-soft);color:var(--accent);flex:none}
+.kpi-card-ic .ic{width:15px;height:15px}
+.kpi-card.warn .kpi-card-ic{background:var(--warn-soft);color:var(--warn)}
+.kpi-card.err .kpi-card-ic{background:var(--err-soft);color:var(--err)}
+/* `ok` joins warn/err for the Security index's own Success-rate card (Phase
+   4 Task 1) -- a plain, never-a-door card, unlike every warn/err card before
+   it (Warnings/Errors, Critical/High), so only the icon tint applies: the
+   hover/disabled rules below are for a card that doubles as a filter link,
+   which this one never does. */
+.kpi-card.ok .kpi-card-ic{background:var(--ok-soft);color:var(--ok)}
+/* I3 (Phase 4 final review), DECIDED: the Security index's own Critical/High
+   cards COUNT severities, not statuses -- they wear the severity scale
+   (`--sev-crit`/`--sev-high`, ui/css/tokens.css), never `err`/`warn`, which
+   stay reserved for a card that reports a STATUS (Warnings/Errors, and this
+   same screen's own Success-rate). No `-soft` companion token exists for a
+   severity hue the way `--warn-soft`/`--err-soft` do for their own tones,
+   so the icon square's tint is `color-mix()` of the token itself instead --
+   the identical idiom `.secidx-sev3`'s own chips already use for the same
+   reason (ui/css/pages.css). Plain `<div>` cards like `ok` above, never a
+   door (neither Security KPI card passes `door: true`), so no hover-border
+   rule either. */
+.kpi-card.sev-crit .kpi-card-ic{background:color-mix(in srgb,var(--sev-crit) 16%,transparent);color:var(--sev-crit)}
+.kpi-card.sev-high .kpi-card-ic{background:color-mix(in srgb,var(--sev-high) 16%,transparent);color:var(--sev-high)}
+/* The other three severities join for the project Overview's six-card row
+   (ProjectOverview.png) -- same idiom, same 16% tint, one rule per token. */
+.kpi-card.sev-med .kpi-card-ic{background:color-mix(in srgb,var(--sev-med) 16%,transparent);color:var(--sev-med)}
+.kpi-card.sev-low .kpi-card-ic{background:color-mix(in srgb,var(--sev-low) 16%,transparent);color:var(--sev-low)}
+.kpi-card.sev-info .kpi-card-ic{background:color-mix(in srgb,var(--sev-info) 22%,transparent);color:color-mix(in srgb,var(--sev-info) 60%,var(--ink))}
+button.kpi-card.warn:not(:disabled):hover{border-color:color-mix(in srgb,var(--warn) 42%,var(--line))}
+button.kpi-card.err:not(:disabled):hover{border-color:color-mix(in srgb,var(--err) 42%,var(--line))}
+/* Zero warnings/errors is nothing to open -- the card fades the same register
+   .iconbtn:disabled already uses for "nothing this button can do". The other
+   three cards are plain elements, never disabled, never dimmed -- they were
+   never doors, so full contrast is the correct and only reading. */
+.kpi-card.warn:disabled,.kpi-card.err:disabled{opacity:.6}
+.kpi-card-num{font-size:27px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.kpi-card-label{font-size:13.5px;font-weight:600}
+.kpi-card-sub{font-size:12.5px;color:var(--muted);line-height:1.4}
+.btn{display:inline-flex;align-items:center;gap:7px;font:inherit;font-size:12.5px;font-weight:560;
+  padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);
+  color:var(--ink);cursor:pointer;transition:.13s;text-decoration:none}
+.btn .ic{width:14px;height:14px}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn:active{transform:translateY(1px)}
+.btn:disabled{opacity:.45;cursor:progress}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.primary:hover{filter:brightness(1.08);color:var(--accent-ink)}
+.btn.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 35%,var(--line))}
+.btn.danger:hover{background:var(--err-soft);border-color:var(--err)}
+.btn.ghost{background:transparent}
+/* An author `display` beats the browser's own rule for [hidden], so every button
+   class that sets one has to say this. Written once for the class rather than
+   per id: `#bulk-all[hidden]` was the id-shaped version, and the next two
+   buttons that needed it (both Clear filters) shipped visible-when-empty
+   because nobody remembered the rule existed. */
+.btn[hidden],.burger[hidden],.iconbtn[hidden]{display:none}
+.iconbtn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;
+  border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--muted);
+  cursor:pointer;transition:.13s}
+.iconbtn:hover{color:var(--accent);border-color:var(--accent)}
+/* NOT display:flex. A <td> made into a flex container leaves the table's row box
+   and sizes to its own content, so its border-bottom lands above every other
+   cell's and the row separator visibly breaks under the action column. It went
+   unnoticed while every cell in these tables was one line tall — the jobs table,
+   whose first cell carries a description underneath, is where a 36px step
+   appeared. The cell stays a cell; the buttons space themselves. */
+.rowacts{text-align:right;white-space:nowrap;vertical-align:middle}
+.rowacts > *{vertical-align:middle;margin-left:5px}
+.rowacts > :first-child{margin-left:0}
+/* An action that cannot apply to this row keeps its column and loses its button.
+   Four icons with three permanently greyed out read as a broken toolbar. */
+.iconbtn.live{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
+.iconbtn.retry{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 35%,var(--line))}
+.iconbtn.retry:hover:not(:disabled){color:var(--warn);border-color:var(--warn);background:var(--warn-soft)}
+.iconbtn:disabled{opacity:.28;cursor:default;color:var(--muted);border-color:var(--line);background:transparent}
+.iconbtn .ic{width:15px;height:15px}
+.toolbar{display:flex;align-items:center;gap:10px;margin:0 0 10px;flex-wrap:wrap}
+.searchbox{display:flex;align-items:center;gap:8px;flex:1;min-width:230px;background:var(--panel);
+  border:1px solid var(--line);border-radius:9px;padding:7px 12px;box-shadow:var(--shadow)}
+.searchbox:focus-within{border-color:var(--accent)}
+.searchbox .ic{color:var(--muted)}
+.searchbox input{flex:1;border:0;outline:0;background:transparent;color:var(--ink);font:inherit}
+.searchbox .clear{display:flex;border:0;background:transparent;color:var(--muted);cursor:pointer;padding:0}
+.searchbox .clear[hidden]{display:none}
+.searchbox .clear:hover{color:var(--err)}
+/* ------------------------------------------------------------ filter pickers
+   A dropdown that states what it is filtering ("Project: web") rather than
+   showing a bare value, because two of these sit side by side and a row of
+   naked names says nothing about which axis each one is. */
+.picker{position:relative;flex:none}
+.picker-trigger{display:inline-flex;align-items:center;gap:8px;font:inherit;font-size:13px;
+  background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:9px;
+  padding:7px 12px;cursor:pointer;box-shadow:var(--shadow);max-width:260px}
+.picker-trigger:hover{border-color:var(--muted)}
+.picker.open .picker-trigger{border-color:var(--accent)}
+.picker-trigger .ic{width:15px;height:15px;color:var(--muted);flex:none}
+.picker-trigger .pk-k{color:var(--muted);flex:none}
+.picker-trigger .pk-v{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.picker-trigger .pk-caret{margin-left:2px;display:flex;color:var(--muted);transition:transform .15s}
+.picker.open .pk-caret{transform:rotate(180deg)}
+.picker-pop{position:absolute;z-index:20;top:calc(100% + 5px);left:0;min-width:270px;
+  background:var(--panel);border:1px solid var(--line);border-radius:11px;
+  box-shadow:var(--shadow-lg);overflow:hidden}
+.picker-pop[hidden]{display:none}
+.picker-search{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line2)}
+.picker-search .ic{width:15px;height:15px;color:var(--muted);flex:none}
+.picker-search input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:var(--ink);font:inherit;font-size:12.5px}
+/* Capped and scrollable: All projects pages in as you scroll, and a list that
+   grew the popover instead would walk off the bottom of the window. The cap is
+   deliberately shorter than one page of rows, so the first five overflow and
+   there is always something to scroll — see the top-up in paintList(). */
+.picker-list{max-height:196px;overflow-y:auto;padding:5px 0}
+.picker-sec{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
+  padding:8px 13px 4px}
+.pk-row{display:flex;align-items:center;gap:9px;width:100%;border:0;background:transparent;
+  color:var(--ink);font:inherit;font-size:12.5px;text-align:left;padding:7px 13px;cursor:pointer}
+.pk-row:hover,.pk-row.active{background:var(--panel2)}
+.pk-row.sel{color:var(--accent);font-weight:600}
+.pk-row .ic{width:15px;height:15px;color:var(--muted);flex:none}
+.pk-row.sel .ic{color:var(--accent)}
+.pk-row .pk-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pk-row .pk-n{flex:none;font-size:11px;color:var(--muted);background:var(--panel2);
+  border:1px solid var(--line);border-radius:20px;padding:0 7px;line-height:17px;
+  font-variant-numeric:tabular-nums}
+.pk-empty{padding:14px 13px;font-size:12px;color:var(--muted);text-align:center}
+.picker-foot{padding:8px 13px;border-top:1px solid var(--line2);font-size:11px;color:var(--muted);
+  text-align:center;font-variant-numeric:tabular-nums}
+.daterange{display:grid;gap:9px;padding:11px 13px;border-top:1px solid var(--line2)}
+.daterange label{display:flex;flex-direction:column;gap:5px;font-size:10.5px;text-transform:uppercase;
+  letter-spacing:.05em;color:var(--muted)}
+.daterange input{font:inherit;font-size:12.5px;color:var(--ink);background:var(--panel2);
+  border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+/* What is actually filtering the list, spelled out and removable one at a time.
+   The pickers alone could not say this: a trigger reading "All projects" and a
+   trigger reading "Disabled" do not add up to "you are looking at a subset". */
+.activefilters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 14px}
+.activefilters[hidden]{display:none}
+.activefilters .aflabel{font-size:11.5px;color:var(--muted)}
+.afchip{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:550;
+  background:var(--accent-soft);color:var(--accent);border-radius:20px;padding:4px 6px 4px 11px}
+.afchip button{display:flex;border:0;background:transparent;color:inherit;cursor:pointer;
+  padding:2px;border-radius:50%;opacity:.75}
+.afchip button:hover{opacity:1;background:color-mix(in srgb,var(--accent) 18%,transparent)}
+.afchip .ic{width:12px;height:12px}
+.perpage{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}
+.perpage select{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);
+  border-radius:7px;padding:5px 8px}
+.tablewrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:13px;
+  box-shadow:var(--shadow)}
+/* ------------------------------------------------------------- the table card
+   tableCard()/tableFooter() (ui/app/chrome.js): the same border/background/
+   13px-radius/shadow `.tablewrap` already gives a bare table, but with a
+   footer glued to the bottom of the SAME box instead of `.tablewrap`'s job
+   of being just a scroller. `.table-card` owns the chrome and clips to its
+   own rounded corners (`overflow:hidden`); `.table-scroll` inside it is
+   `.tablewrap` stripped down to only the one property that has to sit on
+   the part that actually scrolls, so a wide table drags itself sideways
+   without dragging the footer under it along too. Deliberately a NEW pair
+   of classes rather than a new trick for `.tablewrap` itself: that class is
+   used bare -- no footer, no wrapper -- by Runs, Projects, the Sessions
+   dialog and six ui/security/*.js screens, and changing what it means would
+   restyle all of them at once. */
+.table-card{background:var(--panel);border:1px solid var(--line);border-radius:13px;
+  box-shadow:var(--shadow);overflow:hidden}
+.table-scroll{overflow-x:auto}
+/* Defense in depth, not the fix itself: the actual bug that made the
+   Security column's pill spill into Projects' own actions column was a
+   missing per-column width in pages.css (see #view-projects's own comment),
+   fixed there. This rule is what keeps the SAME class of mistake from ever
+   again reading as a collision -- a cell with too little width can still end
+   up here (a column added to Jobs or Runs later, its own pages.css rules
+   forgotten the same way), and a table cell has no overflow control of its
+   own by default, so its content would keep spilling into the next one.
+   Scoped to `.table-card` specifically -- the one wrapper tableCard()
+   (chrome.js) always renders around Jobs', Projects' and (once it converts)
+   Runs' own tables -- so a future column miscount there is caught by
+   degrading to a clipped cell, never a pill hiding behind a row's own edit
+   and delete buttons. */
+.table-card td,.table-card th{overflow:hidden}
+.table-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:11px 14px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);
+  font-variant-numeric:tabular-nums}
+.table-foot-info{white-space:nowrap}
+.table-foot-pager{display:flex;gap:8px;align-items:center}
+/* The numbered "‹ 1 2 3 ›" pager (Phase 4 Task 5, tableFooter's own opt-in --
+   see its comment, ui/app/chrome.js) -- Jobs/Projects/Runs never pass
+   `numbered`, so `.table-foot-pager` bare (no `.numbered`) and its two
+   `.btn.ghost` children above are exactly what they always were. */
+.table-foot-pager.numbered{gap:4px}
+.pagebtn{display:inline-flex;align-items:center;justify-content:center;min-width:30px;
+  height:30px;padding:0 8px;border-radius:8px;border:1px solid transparent;
+  background:none;color:var(--muted);font:inherit;font-size:12.5px;font-weight:600;
+  font-variant-numeric:tabular-nums;cursor:pointer;transition:.13s}
+.pagebtn:hover:not(.active){background:var(--panel2);color:var(--ink)}
+.pagebtn.active{background:var(--accent);color:var(--accent-ink);cursor:default}
+/* The "…" gap in a COLLAPSED numbered pager (tableFooter's own `collapse`
+   option, this file below) -- AllFindings.png's own "‹ 1 2 3 4 5 … 19 ›" at
+   19 pages, where a bare `.pagebtn` per page (the plain `numbered` variant
+   above) would draw nineteen buttons in a row. A `<span>`, never a
+   `<button>`: it stands for pages that are not individually reachable from
+   here, so it must not look pressable, take focus, or answer a click. */
+.pagebtn-ellipsis{display:inline-flex;align-items:center;justify-content:center;
+  min-width:20px;height:30px;color:var(--muted);font-size:12.5px;user-select:none}
+/* A checkbox styled as an on/off switch -- AllFindings.png's own "Show
+   resolved findings" control (ui/security/findings-screen.js). No house
+   switch existed before this: every other on/off control in this app is
+   either a plain checkbox (a job's own bulk-enable icon button) or the job
+   editor's segmented control (a hidden checkbox behind two full buttons,
+   the wrong shape for a single inline toggle beside one sentence of label
+   text) -- neither fits "flip this filter, nothing else". Still a real
+   `<input type=checkbox>` under the paint: focus, Space-to-toggle and form
+   semantics all come from the browser for free the moment the native box is
+   only hidden, never removed, the same "keep the control, repaint it" idiom
+   this app's own combo/segmented-control widgets already rely on. */
+.switch{position:relative;display:inline-flex;align-items:center;flex:none;
+  width:34px;height:20px;cursor:pointer}
+.switch input{position:absolute;inset:0;margin:0;opacity:0;cursor:pointer}
+.switch .track{position:absolute;inset:0;background:var(--line);border-radius:999px;
+  transition:background-color .15s ease}
+.switch .knob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
+  background:var(--panel);box-shadow:var(--shadow);transition:transform .15s ease}
+.switch input:checked ~ .track{background:var(--accent)}
+.switch input:checked ~ .knob{transform:translateX(14px)}
+.switch input:focus-visible ~ .track{outline:2px solid var(--accent);outline-offset:2px}
+.switch input:disabled ~ .track{opacity:.5;cursor:default}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th{text-align:left;font-weight:600;color:var(--muted);font-size:10.5px;text-transform:uppercase;
+  letter-spacing:.05em;padding:11px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
+/* Sortable columns say so AT REST. The caret used to be invisible until hover,
+   which on a trackpad means never: the only column that looked sortable was
+   whichever one already was, so the other five may as well not have existed. */
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:var(--ink)}
+th.sortable .ic{width:12px;height:12px;vertical-align:-2px;margin-left:4px;opacity:.28;
+  transition:opacity .12s}
+th.sortable:hover .ic{opacity:.6}
+th.sortable.sorted{color:var(--ink)}
+th.sortable.sorted .ic{opacity:1;color:var(--accent)}
+/* Middle, not top: every approved drawing -- Security.png and the four
+   artboards -- centres a cell's content in its row, and a tall two-line
+   identity cell beside a one-line duration reads staggered when the short
+   one hugs the top. */
+td{padding:10px 14px;border-bottom:1px solid var(--line2);vertical-align:middle}
+/* When: relative reads at a glance, the exact stamp is one hover away. */
+.when-rel{font-variant-numeric:tabular-nums;cursor:help;border-bottom:1px dotted var(--line)}
+/* align-items must be stated: the default `stretch` made the job id's <code>
+   background run the whole width of the column. */
+tr:last-child td{border-bottom:none}
+tbody tr{transition:.1s}
+tbody tr:hover{background:var(--panel2)}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.stat-cell{display:inline-flex;align-items:center;gap:6px;font-weight:560}
+.stat-cell .ic{width:14px;height:14px}
+.s-success{color:var(--ok)} .s-warning{color:var(--warn)} .s-error{color:var(--err)}
+.s-idle{color:var(--idle)} .s-running{color:var(--warn)}
+/* `stopped` is a decision, not a fault — its own colour so it never reads as a
+   failure in a column of them. */
+.s-stopped{color:var(--accent)}
+code{font:11.5px ui-monospace,"SF Mono",Menlo,monospace;
+  background:color-mix(in srgb,var(--ink) 6%,transparent);padding:1px 6px;border-radius:5px}
+.snip{font-size:11px;color:var(--muted);margin-top:3px;max-width:420px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.trigger-badge{font-size:10px;color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 40%,var(--line));
+  border-radius:5px;padding:1px 6px;margin-left:7px;vertical-align:1px}
+/* a run that continued an earlier one — hover to see which */
+.trigger-badge.resumed{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,var(--line));cursor:help}
+.runningbadge{display:inline-flex;align-items:center;gap:7px;color:var(--warn);font-weight:600}
+.runningbadge .pulse{width:8px;height:8px;border-radius:50%;background:var(--warn);
+  animation:ccpulse 1.2s ease-in-out infinite}
+@keyframes ccpulse{0%,100%{opacity:.35;transform:scale(.85)}50%{opacity:1;transform:scale(1.2)}}
+/* A kill has been asked for and the wrapper is winding down. Its own colour so
+   the row does not keep claiming to be running after you told it to stop. */
+.runningbadge.stopping{color:var(--err)}
+.runningbadge.stopping .pulse{background:var(--err)}
+.pager{display:flex;gap:12px;align-items:center;justify-content:flex-end;margin-top:12px;
+  font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.empty{padding:34px;text-align:center;color:var(--muted);font-size:13px}
+.empty .ic{width:22px;height:22px;display:block;margin:0 auto 8px;opacity:.6}
+footer{margin-top:30px;color:var(--muted);font-size:11px;text-align:center}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:14px 0 0;flex:none;
+  overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{padding:8px 12px;font:inherit;font-size:12.5px;font-weight:550;color:var(--muted);cursor:pointer;
+  border:0;background:transparent;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap;
+  display:inline-flex;align-items:center;gap:6px}
+.tab .ic{width:14px;height:14px}
+.tab:hover{color:var(--ink)}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+/* The one thing a tabbed FORM must not do is hide a consequence. A dot appears
+   on a tab only when that section holds something changing how the job behaves
+   right now — no prompt, no precheck, a backoff in effect, a cap already hit —
+   so nothing that matters can sit unseen behind a tab. Never decorative: if
+   there is nothing to report, there is no dot. */
+.tab .dot{width:6px;height:6px;border-radius:50%;flex:none}
+.tab .dot.warn{background:var(--warn)}
+.tab .dot.err{background:var(--err)}
+.tabpanes{flex:1 1 auto;min-height:0;overflow-y:auto;padding-top:14px}
+.tabpane{display:none} .tabpane.active{display:block}
+.muted{color:var(--muted);font-size:12px}
+/* 330, the mockup's own rail width -- the legend rows ("Critical 64
+   (90.1%)") were already noted as tight at 300. */
+.secpjside{flex:0 0 330px;min-width:260px;display:flex;flex-direction:column;gap:16px}
+/* An author `display` outranks the UA sheet's own `[hidden]{display:none}`
+   (same trap this file's own comment already names for .secfield/.secdl/
+   .warnline, ui/css/pages.css) -- without this, project-screen.js's own
+   `#sec-pj-side.hidden = true` (Findings tab, Phase 4) sets the attribute
+   but the rail keeps its `display:flex` and stays on screen regardless. */
+.secpjside[hidden]{display:none}
+/* Everything that is not shared vocabulary: the app shell (.shell, the
+   sidebar, the topbar, the "coming soon" placeholder), first run and login
+   (.setup, .checkrow), the Jobs/Runs/Projects view furniture that is
+   specific to those tables (#view-jobs, #view-projects, .viewtabs, the
+   project grouping), the pulse panel and its loop band, job cards and
+   everything inside one (.card, .cardline, .spark, .actions, .menu-pop),
+   every dialog (#editor, #logmodal, #projmodal, #confirm, #profmodal,
+   #fsmodal, #sec-act-finding, #seclaunch, .dlg-*, the wizard tabs, the markdown editor,
+   the combobox, the terminal, profile, security and the security-project/
+   security-index screens), the accessibility focus-ring floor, and every
+   @media/@container query in the sheet -- responsive tweaks are kept here
+   even where they adjust a components.css selector, since this file loads
+   after components.css and the override still applies.
+   No rule here is meant to be reused outside the one page or dialog it is
+   written for; a rule that is now finds its home in components.css instead. */
+/* ------------------------------------------------------------------- shell
+   Five destinations do not fit in a row of tabs, so navigation moved into a
+   left rail and the tabs are gone. The sidebar is a column of the page rather
+   than an overlay, so the content still scrolls under its own sticky topbar. */
+.shell{display:flex;align-items:flex-start;min-height:100vh}
+.shell-main{flex:1 1 auto;min-width:0}
+.sidebar{position:sticky;top:0;z-index:6;flex:none;width:236px;height:100vh;
+  display:flex;flex-direction:column;padding:14px 12px;background:var(--panel);
+  border-right:1px solid var(--line);transition:width .18s ease}
+.side-h{display:flex;align-items:center;gap:10px;padding:2px 2px 14px}
+.brand{display:flex;align-items:center;gap:11px;flex:1 1 auto;min-width:0}
+/* No tile behind it any more: the old mark was white line art and needed the
+   indigo square to be legible, the logo brings its own colour and shape. */
+.brand .mark{width:34px;height:34px;align-items:center;justify-content:center;flex:none}
+.brand .mark svg{width:100%;height:100%}
+/* Expanded is the lockup's state, so the square mark stands down here and comes
+   back in the rail rules below. Its own viewBox sets the height. */
+.brand .mark{display:none}
+.brand .brandlock{display:block;width:172px;max-width:100%;height:auto;flex:none;color:var(--ink)}
+/* The words are on screen as artwork, so the heading is hidden from sight only —
+   removing it would take the page's <h1> with it. */
+.brand .btext{position:absolute;width:1px;height:1px;margin:-1px;padding:0;
+  overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.brand h1{font-size:15px;margin:0;letter-spacing:-.01em;white-space:nowrap}
+.brand .tag{font-size:11px;color:var(--muted);letter-spacing:.02em;white-space:nowrap}
+/* The hamburger. It stays inside the menu it collapses, so it is still there —
+   and still the way back — once the rail is 64px wide and label-less. */
+.burger{display:flex;align-items:center;justify-content:center;flex:none;width:30px;height:30px;
+  border:0;border-radius:8px;background:transparent;color:var(--muted);cursor:pointer}
+.burger:hover{background:var(--accent-soft);color:var(--accent)}
+.burger .ic{width:18px;height:18px}
+.sidenav{display:flex;flex-direction:column;gap:2px;flex:1 1 auto;min-height:0;overflow-y:auto}
+.navitem{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border:0;border-radius:9px;
+  background:transparent;color:var(--muted);cursor:pointer;font:inherit;font-size:13px;font-weight:600;
+  text-align:left;transition:background .12s,color .12s}
+/* The author `display` above outranks the UA sheet's [hidden], so hiding a nav
+   item needs saying twice or the attribute does nothing. */
+.navitem[hidden]{display:none}
+.navitem .ic{width:16px;height:16px}
+.navitem .navlabel{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.navitem:hover{background:var(--panel2);color:var(--ink)}
+.navitem.active{background:var(--accent-soft);color:var(--accent)}
+.navitem .ncount{flex:none;font-size:11px;font-weight:600;color:var(--muted);background:var(--panel2);
+  border:1px solid var(--line);border-radius:20px;padding:0 7px;line-height:18px;
+  font-variant-numeric:tabular-nums}
+.navitem.active .ncount{background:var(--panel);border-color:transparent;color:var(--accent)}
+/* Who is running this install. No menu hangs off it: everything it could have
+   offered lives in Settings, one click away in the list right above it. */
+.side-user{display:flex;align-items:center;gap:10px;flex:none;margin-top:8px;padding:12px 6px 2px;
+  border-top:1px solid var(--line)}
+/* The whole block opens the profile, so it has to look like it does. Not the
+   sign-out button inside it, which has its own hover and its own job. */
+.side-user:not(.unset){cursor:pointer;border-radius:0 0 9px 9px}
+.side-user:not(.unset):hover .who b{color:var(--accent)}
+.side-user .signout{cursor:pointer}
+.side-user .avatar{width:32px;height:32px;border-radius:50%;flex:none;background:var(--accent);
+  color:var(--accent-ink);font-size:11.5px;font-weight:700;object-fit:cover;
+  display:flex;align-items:center;justify-content:center}
+.side-user.unset .avatar{background:var(--line2);color:var(--muted);border:1px solid var(--line)}
+.side-user .who{min-width:0;line-height:1.35}
+.side-user .who b{display:block;font-size:12.5px;font-weight:640;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.side-user .who span{display:block;font-size:11px;color:var(--muted);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* ------------------------------------------------------------ collapsed rail
+   Only above the drawer breakpoint: below it the sidebar is already off-canvas,
+   and a rail inside a drawer is a 64px slab of icons over a dimmed page. */
+@media (min-width:901px){
+  .sidebar.rail{width:64px;padding:14px 8px}
+  .sidebar.rail .side-h{flex-direction:column;gap:8px;padding-bottom:12px}
+  .sidebar.rail .brand{flex:none;justify-content:center}
+  /* 48px of usable width here — the lockup cannot shrink to that, so the square
+     mark takes over. The swap is the whole reason both exist. */
+  .sidebar.rail .brand .brandlock{display:none}
+  .sidebar.rail .brand .mark{display:flex}
+  .sidebar.rail .navitem{justify-content:center;padding:9px 0}
+  .sidebar.rail .navitem .navlabel,.sidebar.rail .navitem .ncount,
+  .sidebar.rail .navitem .runningbadge{display:none}
+  .sidebar.rail .side-user{justify-content:center;padding:12px 0 2px}
+  .sidebar.rail .side-user .who{display:none}
+}
+.side-scrim{position:fixed;inset:0;z-index:5;background:rgba(16,24,40,.45)}
+.topbar{position:sticky;top:0;z-index:4;display:flex;align-items:center;gap:12px;
+  padding:12px 22px;background:color-mix(in srgb,var(--panel) 82%,transparent);
+  backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+.topbar .burger{display:none}
+.topright{display:flex;align-items:center;gap:12px;margin-left:auto}
+/* A destination the menu offers but that has no page yet. Saying so beats an
+   empty panel that reads as a load that failed. */
+.soon{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);
+  padding:44px 22px;text-align:center;margin-top:26px}
+.soon .ic{width:26px;height:26px;color:var(--muted);opacity:.6}
+.soon b{display:block;font-size:14.5px;font-weight:640;margin:10px 0 5px}
+.soon p{margin:0 auto;max-width:52ch;font-size:12.5px;color:var(--muted);line-height:1.6}
+/* --------------------------------------------------------------- first run
+   No profile on this install → nothing else is reachable. Not a <dialog>: this
+   must not be dismissible with Escape, and it covers the page rather than
+   floating over a dashboard the operator cannot use yet. */
+.setup{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;
+  padding:24px;background:var(--bg);overflow:auto}
+/* The overlays are put up by applyGates(), which cannot run until /api/session
+   answers — a whole round-trip during which the shell behind them is on screen.
+   That read as the dashboard flashing past on every refresh of the login page.
+   The server already knows the answer when it serves the page, so it says so in
+   a class on <html> and the first frame is already right. applyGates() drops the
+   class once it has the real answer, and everything below goes back to normal.
+   The [hidden] in the selectors is what outranks `.setup[hidden]{display:none}`
+   without depending on which rule comes last. */
+.boot-login .shell,.boot-setup .shell{display:none}
+.boot-login #login[hidden],.boot-setup #setup[hidden]{display:flex}
+/* An author `display` beats the browser's own rule for [hidden], so without
+   this the overlay stays up forever — the profile gets created and the screen
+   that asked for it never goes away. Same reason .view[hidden] exists. */
+.setup[hidden]{display:none}
+.setup-card{width:100%;max-width:404px;background:var(--panel);border:1px solid var(--line);
+  border-radius:16px;box-shadow:var(--shadow-lg);padding:26px 24px}
+/* The lockup is ~3.5:1, so it is sized by WIDTH and lets its own ratio set
+   the height — a fixed height would letterbox or squash it. */
+.setup-card .mark.lockup{width:240px;max-width:100%;height:auto;display:block}
+.setup-card .mark.lockup svg{width:100%;height:auto;display:block}
+.setup-card h2{font-size:17px;margin:14px 0 6px;letter-spacing:-.01em}
+.setup-card .lede{margin:0 0 18px;font-size:12.5px;color:var(--muted);line-height:1.6}
+.setup-card label{display:block;font-size:11.5px;font-weight:600;color:var(--muted);margin:0 0 5px}
+/* Which fields are required, said on the field rather than only in the error
+   that comes back after submitting one empty. */
+.setup-card input{width:100%;font:inherit;font-size:13px;padding:8px 11px;border-radius:9px;
+  border:1px solid var(--line);background:var(--panel2);color:var(--ink);margin:0 0 13px}
+.setup-card input:focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+.setup-card .hintline{margin:-9px 0 13px;font-size:11px;color:var(--muted)}
+.setup-card .btn{width:100%;justify-content:center;margin-top:4px}
+.setup-err{background:var(--err-soft);color:var(--err);border-radius:9px;padding:8px 11px;
+  font-size:12px;font-weight:550;margin:0 0 13px}
+.checkrow{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:550;
+  color:var(--ink);margin:2px 0 16px;cursor:pointer}
+.checkrow input{width:auto;margin:0;accent-color:var(--accent)}
+.checkrow .sub{display:block;font-size:11px;font-weight:400;color:var(--muted)}
+/* Sign out. A single button, not a menu — the account menu is exactly what the
+   sidebar was asked not to grow. */
+.side-user .signout{flex:none;display:flex;align-items:center;justify-content:center;
+  width:26px;height:26px;margin-left:auto;border:0;border-radius:7px;background:transparent;
+  color:var(--muted);cursor:pointer}
+.side-user .signout:hover{background:var(--err-soft);color:var(--err)}
+.side-user .signout .ic{width:15px;height:15px}
+.updated{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+/* Full-bleed, not centred: every approved mockup -- the 2000px-wide
+   ProjectRuns.png most explicitly -- anchors content at the sidebar's
+   gutter and lets it use the whole width. The old 1560px cap centred the
+   page on wide monitors and left dead margins on BOTH sides of exactly
+   the screens with the most room. */
+.wrap{margin:0;padding:24px 22px 70px}
+.view[hidden]{display:none}
+.pane[hidden]{display:none}
+/* Fixed layout, so the columns are the widths declared here and nothing else.
+   With the default `auto`, the content sets the minimums: a `max-width:300px` on
+   the description column was only a hint, the seven other columns added their
+   own content widths on top, and the table came out 1106px inside a 983px box —
+   scrolling sideways, with the actions past the right edge and the header
+   ending somewhere the rows did not. A table that has to align cannot let its
+   contents vote on the width.
+   EVERY column is a percentage, so they hold their proportions at any width.
+   Leaving Job undeclared made it the only elastic one, so it swallowed all the
+   slack: 64px in a narrow window and 730px in a wide one, where a job's
+   description ran on for half the table while six columns stayed cramped.
+   min-width is the floor below which the wrapper scrolls instead of crushing
+   the action buttons. */
+#view-jobs table{table-layout:fixed;min-width:1000px}
+#view-jobs th:nth-child(1){width:26%}   /* Job      */
+#view-jobs th:nth-child(2){width:13%}   /* Project  */
+#view-jobs th:nth-child(3){width:9%}    /* Status   */
+#view-jobs th:nth-child(4){width:11%}   /* Schedule */
+#view-jobs th:nth-child(5){width:9%}    /* Last run */
+#view-jobs th:nth-child(6){width:8%}    /* Next     */
+#view-jobs th:nth-child(7){width:11%}   /* Today    */
+#view-jobs th:last-child{width:13%}     /* actions  */
+#view-jobs .rowacts{padding-left:4px;padding-right:10px}
+/* Job takes whatever is left; the description truncates rather than pushing.
+   Was `#jobrows td:first-child`/`#jobrows td .projtag` -- Phase 2 Task 3
+   moved the Jobs table's tbody into tableCard() (ui/app/chrome.js), which
+   builds it with no id at all, so both rules stopped matching anything the
+   moment they shipped. `#jobrows td:first-child{overflow:hidden}` was
+   already fully subsumed by `.table-card td,.table-card th{overflow:hidden}`
+   (components.css) even before that -- every table-card cell already got
+   the same property -- so it is dropped outright rather than retargeted.
+   `.projtag`'s rule is not redundant: nothing else gives it a max-width, so
+   a long project name filled the flex box out to its natural width and got
+   HARD-clipped at the table-card cell's own overflow:hidden with no
+   ellipsis, on both Jobs and Runs (the two tables that render one) --
+   retargeted below rather than dropped. `#jobrows td:first-child .snip`
+   (the job description) is dropped the same way as the first rule: it
+   only ever tightened `.snip`'s own max-width:420px (components.css) to
+   the column's exact width, a refinement nobody has reported missing, not
+   a hard-clip like `.projtag`'s.
+
+   Retargeting alone still did not ellipsise anything -- proved by actually
+   rendering it, not by re-reading the rule: `.projtag` is
+   `display:inline-flex` (components.css, for the icon/name alignment), and
+   `text-overflow` has no effect on a flex container's own box, only on a
+   block one -- max-width:100% here still does useful work (it stops the
+   flex box outgrowing the cell) but the cut stayed a hard clip, no `…`.
+   `.projtag-name` is the actual fix: a span the name's text node now has
+   (ui/app/jobs-table.js, ui/app/runs.js) purely so ellipsis has an
+   element's box to apply to, `flex:1 1 auto` and `min-width:0` so IT
+   shrinks under the row's own flex layout instead of the icon beside it
+   (which has `flex:none` for exactly that reason -- components.css). */
+.table-card td .projtag{overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.table-card td .projtag-name{overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;min-width:0;flex:1 1 auto}
+/* A path is read from the end — that is where the repo name is. */
+.pathcell{display:block;direction:rtl;text-align:left;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;font-size:11.5px;color:var(--muted)}
+/* Seven columns, not six: PRJ_COLS (ui/app/projects.js) grew a Security
+   column and this rule set was never updated to match, which left the new
+   th:nth-child(6) with no declared width at all. Under table-layout:fixed
+   that is not "auto-sized" -- the five nth-child rules plus th:last-child
+   already summed to 100%, so the undeclared column got NOTHING, computed to
+   a hair over 0px. Its pill (white-space:nowrap, no overflow of its own)
+   still rendered at full size and spilled rightward, landing on top of the
+   actions column's icon buttons -- "Never analysed"/"Disabled" reading as
+   half-hidden behind Edit/Delete. min-width goes from 900 to 1000 (matching
+   #view-jobs below) for the same reason #view-jobs already sits at 1000: a
+   Security pill needs more room than the 900px floor budgeted for six
+   columns ever had to give it. See
+   test_the_jobs_and_projects_tables_declare_a_width_for_every_column
+   (tests/test_page_contract.py) for the guard that now fails the moment a
+   th count and a rule count next drift apart, in either table. */
+#view-projects table{table-layout:fixed;min-width:1000px}
+#view-projects th:nth-child(1){width:25%}   /* Project           */
+#view-projects th:nth-child(2){width:8%}    /* Jobs              */
+#view-projects th:nth-child(3){width:20%}   /* Working directory */
+#view-projects th:nth-child(4){width:10%}   /* Repos             */
+#view-projects th:nth-child(5){width:11%}   /* Isolation         */
+#view-projects th:nth-child(6){width:16%}   /* Security          */
+#view-projects th:last-child{width:10%}     /* actions           */
+#view-projects .rowacts{padding-left:4px;padding-right:10px}
+/* Eight columns (RUN_COLS, ui/app/runs.js) -- min-width matches the other
+   two tables for the same reason: a status pill plus its cause tag plus a
+   resumed badge needs more room than a narrower floor budgeted for. See
+   test_the_jobs_and_projects_tables_declare_a_width_for_every_column
+   (tests/test_page_contract.py), extended to this view in Phase 2 Task 7
+   for the identical reason it already guards Jobs and Projects: an eighth
+   column with no width rule computes to a hair over 0px under
+   table-layout:fixed and spills into whichever comes after it. */
+#view-runs table{table-layout:fixed;min-width:1000px}
+#view-runs th:nth-child(1){width:20%}   /* When     */
+#view-runs th:nth-child(2){width:13%}   /* Job      */
+#view-runs th:nth-child(3){width:11%}   /* Project  */
+#view-runs th:nth-child(4){width:16%}   /* Status   */
+#view-runs th:nth-child(5){width:9%}    /* Duration */
+#view-runs th:nth-child(6){width:9%}    /* Cost     */
+#view-runs th:nth-child(7){width:9%}    /* Session  */
+#view-runs th:last-child{width:13%}     /* actions  */
+#view-runs .rowacts{padding-left:4px;padding-right:10px}
+/* Eight columns (SEC_PROJECT_COLS, ui/security/index-screen.js) -- same
+   guard, same reason, as the three tables above: an undeclared column
+   computes to a hair over 0px under table-layout:fixed and spills into
+   whichever comes after it (Projects' own Security column lived that bug
+   once -- see this file's earlier comment on #view-projects). Phase 4 Task
+   3, extending test_the_jobs_projects_and_runs_tables_declare_a_width_for_
+   every_column (tests/test_page_contract.py) to this fourth table. */
+#view-security table{table-layout:fixed}
+/* Only the fleet needs a floor -- eight columns with a sparkline. The
+   recent-analyses table lives in a half-width card and must fit it. */
+.secidx-fleet{min-width:1000px}
+/* SCOPED to each table, not to the view: #view-security holds TWO tables
+   (the fleet and Recent analyses), and one shared nth-child set gave the
+   recent table the fleet's widths -- its RUN column wore Project's 22%,
+   Status and Date were crushed off the edge, and the card scrolled
+   sideways for no reason. Each table declares its own set; the width test
+   checks them separately. */
+.secidx-fleet th:nth-child(1){width:22%}   /* Project        */
+.secidx-fleet th:nth-child(2){width:15%}   /* Last analysis  */
+.secidx-fleet th:nth-child(3){width:8%}    /* Profile        */
+.secidx-fleet th:nth-child(4){width:11%}   /* Last run       */
+.secidx-fleet th:nth-child(5){width:13%}   /* Findings       */
+.secidx-fleet th:nth-child(6){width:13%}   /* Trend (30d)    */
+.secidx-fleet th:nth-child(7){width:7%}    /* Status         */
+.secidx-recent th:nth-child(1){width:8%}    /* Run     */
+.secidx-recent th:nth-child(2){width:20%}   /* Project */
+.secidx-recent th:nth-child(3){width:12%}   /* Profile */
+.secidx-recent th:nth-child(4){width:16%}   /* Branch  */
+.secidx-recent th:nth-child(5){width:19%}   /* Findings*/
+.secidx-recent th:nth-child(6){width:12%}   /* Status  */
+.secidx-recent th:nth-child(7){width:13%}   /* Date    */
+.secidx-fleet th:last-child{width:11%}     /* actions        */
+/* Three more tables joined onto the same #view-security table{table-layout:
+   fixed} (above) by Phase 4 Task 6's own footer work -- the Runs tab's
+   analyses table, the findings browser's table and the Activity table each
+   get their OWN scoped class and width set, never a view-wide nth-child rule,
+   for the exact reason the comment above already gives: one shared set once
+   gave the recent-analyses table the fleet's own widths. Each joins
+   test_the_jobs_projects_and_runs_tables_declare_a_width_for_every_column's
+   own parametrize (tests/test_page_contract.py). */
+/* Both tables below carry a min-width, the same `.secidx-fleet{min-width:
+   1000px}` safety net right above -- measured live (a fresh preview tab,
+   1280px-wide window) against real header LABEL text: at this view's own
+   .secpjmain flex width (~660px with the sidebar beside it), several of
+   these headers' natural width did not fit their own percentage share and
+   silently clipped ("Findings recorded" to "Findings reco", "Severity" to
+   "Sever") -- `table-layout:fixed` gives a clipped header no visual sign
+   this happened, unlike a body cell, which still wraps. The min-width does
+   not change what any of these tables looks like above it; it only turns
+   clipping into `.table-scroll`'s own horizontal scrollbar below it. */
+/* Down from eight columns to four (Phase: Runs tab rebuild) -- Profile/
+   Branch/Commit/Duration moved into the selected run's own meta grid; see
+   SEC_RUNS_COLS's own comment (project-screen.js).
+
+   min-width and the four widths below were retuned in Runs tab parity pass
+   2, against real measurements in a fresh preview tab rather than eyeballed:
+   with `th{white-space:nowrap}` (this file's own base rule, above) a header
+   too wide for its column clips silently, so "Findings recorded" (123px at
+   this table's own header font, uppercase, before either column padding)
+   used to be the single biggest width this table needed -- bigger than any
+   BODY content it ever has to show, "64C 4H 3M 0L" included (92px, the
+   widest severity sub-line this project's own real data produces). That
+   phrase is also the one header on this table with an actual space in it,
+   so the `white-space:normal` below lets it break there ("Findings" /
+   "recorded") instead, which drops its OWN minimum back to its longer single
+   word (64px) -- at which point the four columns' real floor, header or
+   body whichever is bigger, plus this table's own 14px-a-side cell padding,
+   comes to Run 70px + Status 110px (the "Completed" pill, this table's own
+   longest) + Findings 120px (now body-driven) + Date 97px (its longer
+   half, "8:20:47 AM", on its own line) = 397px -- hence 400px, not the
+   420px component with no header able to wrap ever needed. The OTHER half
+   of this fix is .secpj-runsleft (above): a min-width only turns clipping
+   into `.table-scroll`'s own horizontal scrollbar (see this file's earlier
+   comment) if the column offering this table its width is wide enough to
+   ask for less than that scrollbar in the first place, which 380px+16px-ish
+   of card padding never was. */
+.secpj-runstable{min-width:400px}
+.secpj-runstable th{white-space:normal}
+.secpj-runstable th:nth-child(1){width:17%}   /* Run               */
+.secpj-runstable th:nth-child(2){width:28%}   /* Status            */
+.secpj-runstable th:nth-child(3){width:30%}   /* Findings recorded */
+.secpj-runstable th:nth-child(4){width:25%}   /* Date              */
+/* Nine columns now (Phase 4, AllFindings.png) -- Location and Analysis run
+   are new, Category/Branch/First seen narrow to make room, and "State"
+   becomes "Status" (SEC_FIND_TABLE_COLS's own label, findings-screen.js) --
+   see that const's own comment for why the width test still reads it as a
+   hand-maintained, standalone 9-tuple rather than something the render path
+   itself walks. */
+.secfind-table{min-width:1180px}
+.secfind-table th:nth-child(1){width:8%}    /* Severity     */
+.secfind-table th:nth-child(2){width:18%}   /* Title        */
+.secfind-table th:nth-child(3){width:16%}   /* Location     */
+.secfind-table th:nth-child(4){width:9%}    /* Category     */
+.secfind-table th:nth-child(5){width:11%}   /* Analysis run */
+.secfind-table th:nth-child(6){width:8%}    /* Branch       */
+.secfind-table th:nth-child(7){width:8%}    /* Status       */
+.secfind-table th:nth-child(8){width:11%}   /* First seen   */
+.secfind-table th:nth-child(9){width:11%}   /* Actions      */
+/* The coloured left edge (AllFindings.png's own per-row bar) -- on the
+   ROW's first cell, not on `tr` itself: `table{border-collapse:collapse}`
+   (ui/css/components.css) makes a `<tr>`'s own border inconsistent across
+   engines (collapse only ever promised to reconcile CELL borders), where a
+   `<td>` border is exactly what the table already collapses predictably.
+   `sev-*` is the SAME class secFindRow already sets for its severity-scoped
+   CSS (secfinding.sev-critical and friends, above) -- reused here rather
+   than a second severity-to-class map. */
+.secfind-table tr.sev-critical>td:first-child{border-left:3px solid var(--sev-crit)}
+.secfind-table tr.sev-high>td:first-child{border-left:3px solid var(--sev-high)}
+.secfind-table tr.sev-medium>td:first-child{border-left:3px solid var(--sev-med)}
+.secfind-table tr.sev-low>td:first-child{border-left:3px solid var(--sev-low)}
+.secfind-table tr.sev-info>td:first-child,
+.secfind-table tr.sev-unknown>td:first-child{border-left:3px solid var(--sev-info)}
+/* The row's own Severity PILL, all five tones distinct (AllFindings.png) --
+   scoped to this table alone, the same reasoning `.secfind-sev3`/
+   `.secidx-sev3` already scope their own three-tone override rather than
+   touch the base `.sevpill` (above) that other, unrelated severity surfaces
+   (the single-analysis checklist, the Branches tab) still read as-is. */
+.secfind-table .sevpill.critical,.secov-findtable .sevpill.critical{
+  background:color-mix(in srgb,var(--sev-crit) 12%,transparent);
+  color:var(--sev-crit);border-color:color-mix(in srgb,var(--sev-crit) 40%,transparent)}
+.secfind-table .sevpill.high,.secov-findtable .sevpill.high{
+  background:color-mix(in srgb,var(--sev-high) 14%,transparent);
+  color:color-mix(in srgb,var(--sev-high) 80%,var(--ink) 20%);
+  border-color:color-mix(in srgb,var(--sev-high) 45%,transparent)}
+.secfind-table .sevpill.medium,.secov-findtable .sevpill.medium{
+  background:color-mix(in srgb,var(--sev-med) 16%,transparent);
+  color:color-mix(in srgb,var(--sev-med) 70%,var(--ink) 30%);
+  border-color:color-mix(in srgb,var(--sev-med) 50%,transparent)}
+/* Title: bold title, one-line muted rationale beneath -- `.sectitle`/
+   `.secmeta` (above) are this exact "bold line, muted line" pair already,
+   reused rather than a second one. `.secmeta` alone (no extra class) is
+   `-webkit-line-clamp`'d to one line here, where its other callers let it
+   wrap freely, because the mockup's own rationale line is truncated with
+   "…", not wrapped onto a second line the way an occurrence path is. */
+.secfind-table td .secmeta.clamp1{display:-webkit-box;-webkit-line-clamp:1;
+  -webkit-box-orient:vertical;overflow:hidden}
+/* The title itself clamps at two lines (real titles are whole sentences;
+   the full text rides the cell's own tooltip) and the severity pill wears
+   Title Case -- both ProjectFindings.png's own row density. */
+.secfind-table .sectitle{display:-webkit-box;-webkit-line-clamp:2;
+  -webkit-box-orient:vertical;overflow:hidden}
+.secfind-table .sevpill,.secov-findtable .sevpill{text-transform:capitalize}
+/* Location / Category / Analysis run cells. */
+.secfind-loc{font:11.5px/1.5 ui-monospace,"SF Mono",Menlo,monospace;color:var(--muted);
+  word-break:break-all}
+.secfind-loc-more{font-family:inherit;color:var(--muted)}
+.secfind-cat{display:flex;align-items:center;gap:7px}
+.secfind-cat .ic{width:15px;height:15px;color:var(--muted);flex:none}
+.secfind-run{display:flex;flex-direction:column;align-items:flex-start;gap:2px}
+.secfind-run button{font:inherit;font-size:inherit;color:var(--accent);background:none;
+  border:0;padding:0;cursor:pointer;font-weight:600}
+.secfind-run button:hover{text-decoration:underline}
+.secact-table th:nth-child(1){width:13%}   /* Time    */
+.secact-table th:nth-child(2){width:16%}   /* Event   */
+.secact-table th:nth-child(3){width:32%}   /* Detail  */
+.secact-table th:nth-child(4){width:15%}   /* Project */
+.secact-table th:nth-child(5){width:24%}   /* Related */
+/* NOT display:flex -- that turns the td into a flex box, which stops
+   being a table cell: vertical-align:middle is then ignored and the
+   buttons ride the top of a tall row. The cell stays a cell (the shared
+   td rule centres it); the kebab's <details> just has to sit inline
+   beside View instead of stacking as a block. */
+#view-security .rowacts{padding-left:4px;padding-right:10px}
+#view-security .rowacts > details{display:inline-flex;vertical-align:middle}
+/* Filled, not outlined. The icon set draws with `stroke:currentColor`, and the
+   folder rule beside it paints the row's icons accent — so an amber fill came
+   out under a 2px indigo outline, which at 11px is not amber and not indigo but
+   a muddy pink. A star this small has room for one of the two. */
+td .favdot{display:inline-flex;margin-left:5px}
+td .favdot .ic{width:11px;height:11px;fill:var(--warn);stroke:none}
+.view > .secthead:first-child,.view > .pulsepanel:first-child{margin-top:4px}
+/* The Overview once had its own strip of these reaching Jobs and Runs a
+   second way, beside the sidebar that already goes there -- removed along
+   with the pane furniture underneath it (see bin/dashboard.html's own
+   history). What is left is the Security area's own sub-navigation: a
+   project's Overview/Runs/Branches/Findings/Reports tabs and the Activity
+   screen's kind filter, each switched by its own function in
+   ui/security/, never by the page's setView(). */
+.viewtabs{display:flex;gap:4px;margin:22px 0 16px;border-bottom:1px solid var(--line)}
+.viewtabs[hidden]{display:none}
+.viewtab{display:inline-flex;align-items:center;gap:8px;font:inherit;font-size:13px;font-weight:600;
+  padding:9px 15px;border:0;background:transparent;color:var(--muted);cursor:pointer;
+  border-bottom:2px solid transparent;margin-bottom:-1px}
+.viewtab:hover{color:var(--ink)}
+.viewtab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.viewtab .ic{width:15px;height:15px}
+.projgroup{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  box-shadow:var(--shadow);margin:0 0 14px;overflow:hidden}
+.projgroup-h{display:flex;align-items:center;gap:10px;padding:13px 18px;cursor:pointer;
+  user-select:none;transition:background .12s}
+.projgroup-h:hover{background:var(--panel2)}
+/* THE DESCRIPTION IS THE ONLY THING IN THIS ROW THAT MAY GIVE. Everything else
+   is flex:none: a flex child shrinks by default, so as soon as the description
+   became greedy the count badge got squeezed under its own text and "3 jobs"
+   wrapped into a two-line blob. */
+.projgroup-h > *{flex:none}
+.projgroup-h .pgh-ic{width:18px;height:18px;color:var(--accent)}
+.projgroup-h .pgh-name{font-size:14px;font-weight:640;letter-spacing:-.01em;white-space:nowrap}
+.projgroup-h .pgh-name.standalone{color:var(--muted);font-weight:600}
+.projgroup-h .pgh-count{font-size:11px;font-weight:600;color:var(--muted);background:var(--accent-soft);
+  border-radius:20px;padding:2px 9px;white-space:nowrap}
+/* The description used to be capped at 340px while ~700px of the header sat
+   empty. Let it take the room that is actually there — and only it. */
+.projgroup-h .pgh-desc{flex:1 1 auto;font-size:12px;color:var(--muted);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.projgroup-h .spacer{flex:1}
+/* when there IS a description it takes the slack; the spacer only has a job on
+   a header that has none */
+.projgroup-h .pgh-desc + .spacer{flex:0 0 0}
+/* The star lives on the card, not in the project dropdown: it is a property of
+   the project, and the place you form the opinion is the place you are looking
+   at its jobs. A starred project's card sorts to the top of the list. */
+.projgroup-h .pgh-star{display:flex;border:0;background:transparent;color:var(--muted);cursor:pointer;
+  padding:5px;border-radius:7px}
+.projgroup-h .pgh-star:hover{background:var(--warn-soft);color:var(--warn)}
+.projgroup-h .pgh-star.on{color:var(--warn)}
+.projgroup-h .pgh-star .ic{width:16px;height:16px}
+.projgroup-h .pgh-star.on .ic{fill:var(--warn)}
+.projgroup-h .pgh-edit{display:flex;border:0;background:transparent;color:var(--muted);cursor:pointer;
+  padding:5px;border-radius:7px}
+.projgroup-h .pgh-edit:hover{color:var(--accent);background:var(--accent-soft)}
+.projgroup-h .pgh-edit .ic{width:15px;height:15px}
+.projgroup-h .pgh-bulk{display:flex;align-items:center;gap:6px;border:1px solid var(--line);
+  background:transparent;color:var(--muted);cursor:pointer;font:inherit;font-size:11px;
+  font-weight:600;padding:4px 9px;border-radius:7px;white-space:nowrap}
+.projgroup-h .pgh-bulk:hover{color:var(--ink);border-color:var(--muted);background:var(--panel)}
+.projgroup-h .pgh-bulk .ic{width:13px;height:13px}
+.projgroup-h .pgh-chevron{color:var(--muted);display:flex;transition:transform .28s ease}
+.projgroup-h .pgh-chevron .ic{width:18px;height:18px}
+.projgroup.collapsed .pgh-chevron{transform:rotate(-90deg)}
+/* animate open/close via grid-template-rows 1fr<->0fr (no fixed height needed) */
+.projgroup-body{display:grid;grid-template-rows:1fr;transition:grid-template-rows .28s ease}
+.projgroup.collapsed .projgroup-body{grid-template-rows:0fr}
+.projgroup-body > .pgb-inner{overflow:hidden;min-height:0}
+.projgroup-body .grid{padding:2px 16px 16px}
+/* ------------------------------------------------------------ the loop band
+   The product is a loop, so the top of the page is the loop's last 24 hours
+   rather than six tiles of mostly zeros. One column per 15 minutes, stacked by
+   what the scheduler decided: woke a run, found nothing, hit a cap, was already
+   running, or could not probe at all. */
+/* `pulsepanel`, not `pulse`: the running badge's dot is a `.pulse` too, and a
+   bare `.pulse` here dressed that 8px dot in this panel's padding and border. */
+/* The bottom margin is the page's own 20px section gap, the same one
+   .kpi-grid carries above this panel. Without it the job groups butt straight
+   up against the band -- the panel used to be the last thing in the Overview's
+   top block, so nothing below it needed clearing. */
+.pulsepanel{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  padding:16px 20px;margin:0 0 20px;box-shadow:var(--shadow)}
+/* Full width now: the KPI cards that used to share this panel (as a `.tiles`
+   column and a `.pulse-f` footer strip) are their own cards above, in
+   ui/css/components.css -- a time series with nothing left to compete with
+   it for the room. */
+.pulse-t{font-size:13.5px;font-weight:640;letter-spacing:-.01em;margin:0 0 2px}
+/* The floor matters: without it the bars hang in an empty box and the eye has
+   nothing to read them against. */
+.band{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:1px;
+  height:56px;margin:13px 0 0;align-items:end;border-bottom:1px solid var(--line)}
+.bk{display:flex;flex-direction:column;justify-content:flex-end;height:100%;
+  border-radius:2px 2px 0 0;overflow:hidden;min-width:0}
+.bk i{display:block;width:100%;min-height:1px}
+.bk:hover{outline:1px solid var(--accent);outline-offset:1px}
+.k-woke{background:var(--accent)}
+.k-idle{background:color-mix(in srgb,var(--muted) 32%,transparent)}
+.causetag{margin-left:5px;font-size:10.5px;font-weight:600;letter-spacing:.02em;
+  color:var(--muted);background:var(--panel2);border:1px solid var(--line);
+  border-radius:20px;padding:0 6px;line-height:16px;cursor:help;vertical-align:1px}
+.k-capped{background:var(--warn)}
+/* A spent usage window is a wait, not a decision the operator made — warmer
+   than `capped` so the two do not read as the same thing at a glance. */
+.k-rate_limited{background:color-mix(in srgb,var(--warn) 70%,var(--err))}
+.k-blocked{background:color-mix(in srgb,var(--warn) 42%,transparent)}
+.k-failed{background:var(--err)}
+/* A day with no ticks at all is the normal state of a fresh install. Draw the
+   floor it would have stood on and say why it is empty, instead of a blank box
+   that reads as a broken chart. */
+.band.asleep{display:flex;align-items:center;justify-content:center;
+  border-bottom:1px dashed var(--line);height:56px}
+.band.asleep span{font-size:12px;color:var(--muted);text-align:center;padding:0 10px}
+.axis{display:flex;justify-content:space-between;margin:6px 0 0;font-size:10.5px;
+  color:var(--muted);font-variant-numeric:tabular-nums}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin:11px 0 0;font-size:11px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:9px;height:9px;border-radius:2px;flex:none}
+.b-accent{background:var(--accent-soft);color:var(--accent)}
+.b-ok{background:var(--ok-soft);color:var(--ok)}
+.b-warn{background:var(--warn-soft);color:var(--warn)}
+.b-err{background:var(--err-soft);color:var(--err)}
+/* wider cards, two per row; standalone jobs reuse the same grid outside a group */
+/* auto-fit against a real minimum rather than a fixed three columns. A card
+   carries a status column and a precheck panel side by side, and three columns
+   of a 1230px content area is 380px each — under the width where that split is
+   readable, so it silently stacked. Now the count follows from how many cards
+   of a usable size fit, which on a wide screen is still three or four. */
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(430px,1fr))}
+@media (max-width:720px){.grid{grid-template-columns:1fr}}
+#jobs > .grid{margin-bottom:14px}   /* standalone grid rendered bare */
+/* container-type so the body below can split on the CARD's width rather than
+   the window's: the same card is ~460px in a three-column grid and ~700px in a
+   two-column one, and only the card knows which it is in. */
+/* The border carries the accent. A board of grey rectangles reads as chrome
+   rather than as the thing you came to look at.
+   State is the LEFT edge, and it is a real border-left — see below. */
+.card{position:relative;background:var(--panel);border-radius:13px;
+  border:1px solid color-mix(in srgb,var(--accent) 42%,var(--line));
+  border-left:3px solid var(--accent);
+  padding:16px 18px 16px 18px;box-shadow:var(--shadow);display:flex;flex-direction:column;
+  container-type:inline-size}
+/* .card's own border above is a Jobs-board state cue -- "the thing you act
+   on" -- not a generic card look; the Activity screen's two sidebar cards
+   (secActSummaryCard/secActProjectsCard, ui/security/activity-screen.js)
+   borrowed the bare class for its padding/radius/shadow and got the accent
+   rail for free, rendering with a purple outline no other card in Security
+   wears. Scoped reset back to the plain --line every OTHER card here uses
+   (.table-card, above/below) rather than changing .card itself, which Jobs
+   still wants exactly as it is. */
+.secact-sidecard{border:1px solid var(--line);border-left:1px solid var(--line)}
+.cardbody{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
+.cardstat{min-width:0}
+/* The precheck counts, boxed. They are the densest thing on a card — a list of
+   numbers trailing off the end of the "probed 7h ago" line was where the answer
+   went to hide. */
+.checkpanel{min-width:0;border-radius:9px;background:var(--panel2);
+  border:1px solid color-mix(in srgb,var(--accent) 28%,var(--line));
+  padding:9px 11px;align-self:start}
+.card.st-off .checkpanel{background:var(--panel)}
+.checkpanel .cp-h{font-size:10px;text-transform:uppercase;letter-spacing:.07em;
+  color:var(--muted);font-weight:600;margin:0 0 6px}
+.checkpanel .checklist{margin:0}
+@container (min-width:400px){
+  .cardbody.has-checks{grid-template-columns:minmax(0,1fr) minmax(0,17rem)}
+}
+.projgroup .card{box-shadow:none}
+/* State is the card's left edge — twenty-one cards' worth is legible in one
+   sweep, instead of hunting for a pill in each top-right corner.
+   A real border-left, not an absolutely positioned strip. The strip sat ON the
+   1px border inside a 13px radius, so at the two left corners its square end and
+   the border's curve did not meet and the edge came out visibly broken. A
+   border cannot disagree with itself. */
+/* The thick edge is the accent — the same indigo as Run now, the card's primary
+   action. It marks the card as the thing you act on. State is NOT on this edge
+   any more: it is the pill in the top-right corner, which says the word rather
+   than asking you to learn four colours. */
+/* A disabled job should read as dormant. It used to carry a filled primary
+   button and full-contrast text, so a board of 21 disabled jobs looked busy. */
+.card.st-off{background:var(--panel2)}
+.card.st-off h2 .jobname{color:var(--muted)}
+.card.st-off h2 .jobname .ic{color:var(--muted)}
+.card.st-off .desc,.card.st-off .cfgline,.card.st-off .cardline{opacity:.85}
+/* drag to reorder: the card being dragged fades, the drop target is outlined */
+.card[draggable="true"] h2 .jobname{cursor:grab}
+.card.dragging{opacity:.45}
+.card.dragover{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 35%,transparent)}
+.card h2{font-size:14px;margin:0 0 2px;display:flex;align-items:center;gap:9px;justify-content:space-between}
+.card h2 .jobname{display:flex;align-items:center;gap:8px}
+.warnline{display:flex;align-items:flex-start;gap:7px;margin:2px 0 8px;padding:7px 9px;
+  border:1px solid color-mix(in srgb,var(--warn) 40%,var(--line));border-radius:8px;
+  background:var(--warn-soft);color:var(--warn);font-size:11.5px;line-height:1.45}
+.warnline .ic{width:13px;height:13px;flex:none;margin-top:1px}
+/* A warnline that also carries a Resume button (a kept session, on the job
+   card) needs its text to claim the row so the button lands at the trailing
+   edge instead of stuck right after the last word -- same rule as .cardline
+   .grow, one selector over. */
+.warnline .grow{flex:1 1 auto;min-width:0}
+.warnline .btn,.warnline .runningbadge{flex:none;align-self:center}
+.card h2 .jobname .ic{width:15px;height:15px;color:var(--accent)}
+.card .desc{color:var(--muted);font-size:12px;margin:0 0 12px}
+/* ---- card body: the pulse, what it last saw, what it cost, how it is set up.
+   The ten-row definition list this replaces said the same nine things on every
+   card; only the last one, the config, still lists settings — and only the ones
+   that differ from the project's. */
+.cardline{display:flex;align-items:center;gap:10px;font-size:12px;margin:0 0 9px;min-width:0}
+/* the probe line can carry a checklist under it, so its icon sits at the top */
+.cardline.top{align-items:flex-start}
+.cardline.top .ic{margin-top:2px}
+.cardline .ic{width:13px;height:13px;flex:none;color:var(--muted)}
+.cardline .grow{flex:1 1 auto;min-width:0}
+.cardline .lbl{color:var(--muted);flex:none}
+/* The worktrees card's own rows (CCApp.worktreesCard, ui/app/overview.js):
+   a job id that can run long beside a size that must not wrap onto its own
+   line -- the id gives way, the size stays put and lines its digits up. */
+.wtrow-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wtrow-size{flex:none;font-variant-numeric:tabular-nums}
+.spark{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:1px;align-items:end;
+  height:20px;width:110px;flex:none}
+.spark i{background:color-mix(in srgb,var(--muted) 30%,transparent);border-radius:1px;min-height:1px}
+.spark i.w{background:var(--accent)}
+.spark.flat{display:flex;align-items:flex-end;border-bottom:1px dashed var(--line);height:20px}
+.sparkn{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sparkn b{color:var(--ink);font-weight:650}
+.spend{margin:0 0 11px}
+.spendbar{height:4px;border-radius:3px;background:var(--line2);overflow:hidden}
+.spendbar i{display:block;height:100%;border-radius:3px;background:var(--accent);
+  transition:width .3s ease}
+.spendbar.near i{background:var(--warn)}
+.spendbar.over i{background:var(--err)}
+.spendtxt{display:flex;justify-content:space-between;gap:10px;font-size:11.5px;
+  color:var(--muted);font-variant-numeric:tabular-nums;margin:5px 0 0}
+.spendtxt .cap{color:var(--ink);font-weight:600}
+.spendtxt .s-error{font-weight:650}
+/* Settings, one line. Anything this job overrides on top of its project is
+   inked; everything it merely inherits stays quiet. */
+.cfgline{display:flex;flex-wrap:wrap;gap:3px 9px;font-size:11.5px;color:var(--muted);
+  margin:2px 0 13px;font-variant-numeric:tabular-nums}
+.cfgline .o{color:var(--ink);font-weight:600}
+.cfgline .cfgi{display:inline-flex;align-items:center;gap:5px}
+.cfgline .cfgi .ic{width:12px;height:12px;flex:none;opacity:.7}
+.cfgline .warn{color:var(--warn);font-weight:600}
+/* card body in two internal columns; each column its own kv list */
+.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:12.5px;margin:2px 0 13px;align-content:start}
+.kv dt{color:var(--muted);display:flex;align-items:center;gap:6px;white-space:nowrap}
+.kv dt .ic{width:13px;height:13px}
+.kv dd{margin:0;font-variant-numeric:tabular-nums;min-width:0}
+.checklist{margin:6px 0 2px;padding:0 0 0 17px;display:flex;flex-direction:column;gap:2px;
+  font-variant-numeric:normal}
+.checklist li{font-size:11.5px;color:var(--muted)}
+.checklist li::marker{color:var(--accent)}
+.checklist .ck-v{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+.actions{display:flex;align-items:stretch;gap:6px;border-top:1px solid var(--line2);padding-top:12px;
+  margin-top:auto}
+/* The three everyday actions share the row in equal parts — `flex:1` with a zero
+   basis, so the widths come out identical regardless of label length, and
+   `min-width:0` lets them shrink instead of wrapping on a narrow card. Delete
+   is not one of them: it lives in the overflow, where an irreversible action
+   cannot be hit by aiming one button off. */
+.actions .btn{padding:6px 8px;font-size:12px;gap:5px;flex:1 1 0;min-width:0;
+  white-space:nowrap;justify-content:center}
+.actions .btn .ic{width:13px;height:13px}
+.actions .menu{position:relative;flex:none;display:flex}
+.actions .menu > .iconbtn{width:32px;height:auto;align-self:stretch}
+.menu-pop{position:absolute;right:0;bottom:calc(100% + 6px);z-index:20;min-width:186px;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  box-shadow:var(--shadow-lg);padding:6px}
+.menu-pop[hidden]{display:none}
+.menu-pop button{display:flex;align-items:center;gap:9px;width:100%;font:inherit;font-size:12.5px;
+  padding:8px 10px;border:0;border-radius:7px;background:transparent;color:var(--ink);
+  cursor:pointer;text-align:left;white-space:nowrap}
+.menu-pop button .ic{width:14px;height:14px;flex:none}
+.menu-pop button:hover{background:var(--panel2)}
+.menu-pop button.danger{color:var(--err)}
+.menu-pop button.danger:hover{background:var(--err-soft)}
+.menu-pop .sep{height:1px;background:var(--line2);margin:5px 4px}
+/* hover tooltip — the bubble is fixed-position and lives on <body>, because the
+   table wrapper's overflow would otherwise clip it. */
+.tipbadge{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;
+  margin-left:7px;border-radius:50%;border:1px solid color-mix(in srgb,var(--warn) 45%,var(--line));
+  color:var(--warn);background:var(--warn-soft);font-size:9.5px;font-weight:800;cursor:help;
+  line-height:1;vertical-align:middle;flex:none;transition:transform .12s ease}
+.tipbadge:hover{transform:scale(1.14)}
+#tipbubble{position:fixed;z-index:90;max-width:330px;padding:11px 13px;border-radius:11px;
+  background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow-lg);
+  font-size:12px;line-height:1.5;color:var(--ink);pointer-events:none;
+  opacity:0;transform:translateY(-4px);transition:opacity .15s ease,transform .15s ease}
+#tipbubble.show{opacity:1;transform:translateY(0)}
+#tipbubble .tt-h{display:flex;align-items:center;gap:7px;font-weight:650;font-size:12.5px;
+  margin:0 0 7px;padding-bottom:7px;border-bottom:1px solid var(--line2)}
+#tipbubble .tt-h .ic{width:14px;height:14px;color:var(--accent)}
+#tipbubble .tt-row{display:flex;gap:14px;justify-content:space-between;align-items:baseline;margin-top:4px}
+#tipbubble .tt-k{color:var(--muted);white-space:nowrap}
+#tipbubble .tt-v{font-variant-numeric:tabular-nums;text-align:right}
+#tipbubble code{font:11px ui-monospace,"SF Mono",Menlo,monospace;background:var(--panel2);
+  border:1px solid var(--line2);border-radius:5px;padding:1px 5px}
+#tipbubble .tt-foot{margin-top:8px;padding-top:7px;border-top:1px solid var(--line2);
+  color:var(--muted);font-size:11px}
+/* live-tail indicator in the log modal */
+/* Interactive terminal, styled after the Claude CLI. Always dark, whatever the
+   dashboard theme: it is a terminal. Only the transcript scrolls — the prompt
+   bar stays pinned at the bottom, so it never drifts away while output pours in. */
+.tabpanes.termmode{overflow:hidden;display:flex;flex-direction:column}
+.tabpanes.termmode > .tabpane.active{flex:1 1 auto;min-height:0;display:flex}
+.termwrap{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;width:100%}
+.term{flex:1 1 auto;min-height:0;overflow-y:auto;padding:14px 16px;border-radius:10px;
+  background:#181818;border:1px solid #2e2a27;color:#d8d4d0;
+  font:12.5px/1.7 ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  white-space:pre-wrap;word-break:break-word}
+.term::-webkit-scrollbar{width:9px}
+.term::-webkit-scrollbar-thumb{background:#3a3532;border-radius:5px}
+.term .t-you{color:#d97757;font-weight:600}
+.term .t-agent{color:#d8d4d0}
+.term .t-tool{color:#8a837d}
+.term .t-tool b{color:#d97757;font-weight:600}
+.term .t-sys{color:#6f8f88}
+.term .row{margin:0 0 9px}
+.term .row:last-child{margin-bottom:0}
+/* The transcript above is a terminal; this bar is part of the app, so it follows
+   the dashboard theme rather than being a black box in a light UI. */
+.termbar{flex:none;display:flex;align-items:center;gap:10px;margin-top:10px;padding:9px 10px 9px 13px;
+  border:1px solid var(--line);border-radius:10px;background:var(--panel2)}
+.termbar:focus-within{border-color:var(--accent)}
+.termbar .caret{color:var(--accent);font:13px ui-monospace,Menlo,monospace;flex:none;font-weight:700}
+.termbar input{flex:1 1 auto;min-width:0;border:0;background:transparent;color:var(--ink);
+  font:12.5px ui-monospace,"SF Mono",Menlo,monospace;padding:4px 0}
+.termbar input:focus{outline:none}
+.termbar input::placeholder{color:var(--muted)}
+.termbar .hint{flex:none;font-size:10.5px;color:var(--muted)}
+.termbar .btn{flex:none;padding:6px 13px;font-size:12px}
+.termnote{flex:none;margin-top:10px;font-size:11.5px;color:var(--muted)}
+.termnote code{background:var(--panel2);border:1px solid var(--line2);border-radius:5px;padding:1px 5px}
+#lg-live{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px;font-weight:400}
+#lg-live:empty{display:none}
+.livedot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none;
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 22%,transparent);
+  animation:ccpulse 1.4s ease-in-out infinite}
+.livetxt{color:var(--ok);font-weight:650;letter-spacing:.02em}
+#lg-live .muted{font-size:11.5px}
+/* While any modal is open the page behind must be inert: a native <dialog>
+   blocks clicks but NOT the wheel, so scrolling over it used to scroll the page
+   underneath. Lock the page, and contain scrolling inside each scrollable area
+   so reaching its end never chains outwards.
+   The lock goes on <html> ALONE. Its overflow is what propagates to the
+   viewport, so this is already the whole lock — and adding <body> to it does
+   real damage: a body with its own overflow is a scroll container, which makes
+   it the nearest scrollport for every `position:sticky` descendant. The sidebar
+   and the topbar would then stick to a box scrolled to 0 while the page behind
+   sits at scrollY, so opening a modal on a scrolled list dropped the sidebar
+   scrollY pixels down the page. */
+html.modal-open{overflow:hidden!important}
+dialog .dlg-b, dialog .tabpanes, dialog .term, dialog .combo-list,
+dialog .fs-list, dialog textarea, dialog pre{overscroll-behavior:contain}
+dialog{overscroll-behavior:contain}
+dialog{border:1px solid var(--line);border-radius:14px;background:var(--panel);color:var(--ink);
+  padding:0;box-shadow:var(--shadow-lg)}
+dialog::backdrop{background:rgba(9,11,16,.55);backdrop-filter:blur(3px)}
+/* Tall modals: fixed header + footer, scrollable middle. The [open] guard is
+   essential — a bare `display:flex` would override the UA's
+   `dialog:not([open]){display:none}` and the modal would never hide (Close
+   would appear to do nothing). The log modal takes a fixed default size and
+   scrolls its content; the editor grows with its form up to the viewport. */
+/* The project modal was missing from this rule, so its header and footer were
+   not pinned: the dialog itself scrolled, and Save project sat ~700px below the
+   fold on open — the modal's whole point, off screen. */
+#editor[open],#logmodal[open],#projmodal[open]{display:flex;flex-direction:column}
+#logmodal[open]{height:min(90vh,860px)}
+/* Both editors take a FIXED height rather than growing with their form. With
+   tabbed panes a max-height would resize the window on every tab click — the
+   schedule pane is a fifth of the height of the prompt pane — and a modal that
+   jumps under the cursor is worse than a pane with room to spare at the bottom. */
+/* Tuned to the tallest pane rather than to the viewport: the prompt pane wants
+   the room, the schedule pane needs 143px, and a fixed height keeps Save in a
+   constant place. Room to spare at the bottom of a short settings pane is not a
+   defect; a Save button that moves every time you change tab is. */
+#editor[open]{height:min(88vh,640px)}
+#projmodal[open]{height:min(88vh,640px)}
+#editor{max-width:min(880px,94vw);width:880px}
+#projmodal{max-width:min(880px,94vw);width:880px}
+/* the <form> is the dialog's only flex child — it must itself be the scroll
+   column, or the body never scrolls and the footer overflows below the modal */
+#editor>form,#projmodal>form{display:flex;flex-direction:column;min-height:0;flex:1 1 auto;overflow:hidden}
+#logmodal{max-width:min(1000px,95vw);width:1000px}
+#confirm{max-width:min(460px,92vw);width:460px}
+/* Narrower than the editors: this is six short fields, and stretching them to
+   880px makes a name box the width of the screen. */
+#profmodal{max-width:min(520px,94vw);width:520px}
+#editor .dlg-h,#editor .dlg-f,#logmodal .dlg-h,#logmodal .dlg-f,
+#projmodal .dlg-h,#projmodal .dlg-f{flex:none}
+/* The body is now the tab column, not the scroller: the strip stays put and
+   only the active pane moves. */
+#editor .dlg-b,#projmodal .dlg-b{flex:1 1 auto;min-height:0;display:flex;
+  flex-direction:column;overflow:hidden;padding-top:0}
+/* log modal: fixed metadata + tab bar, only the active pane scrolls */
+#lg-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+#lg-body .loginfo{flex:none}
+/* overflow-y must be stated: with only overflow-x:auto, the `visible` y-axis
+   computes to `auto` too and the tab strip grows a stray vertical scrollbar. */
+/* A pane whose content should fill the height instead of sitting at the top —
+   the prompt and the precheck script, which spent their life as 230px windows
+   inside three screens of scrolling. */
+/* min-height, not height: the pane still fills the dialog when the boxes are
+   small, but a drag that asks for more than fits makes the pane taller and the
+   dialog body scroll — rather than the two boxes fighting over a fixed budget
+   until one hits its minimum and the handle goes dead again. */
+.tabpane.fill.active{display:flex;flex-direction:column;min-height:100%}
+/* flex-basis AUTO, not 0. With a basis of 0 the box's own height is ignored
+   entirely, so the resize grip — which works by writing an inline height —
+   dragged and did nothing at all: a handle drawn on a box that cannot be
+   resized. With `auto` the height IS the basis, so a drag moves it and the
+   other box gives up the space (down to its min-height), while grow still
+   shares out whatever the dialog has spare. */
+/* The bases are deliberately SMALLER than the space available, so `grow` fills
+   the rest exactly and the pane needs no scrollbar until you drag for one. */
+.tabpane.fill > .mdedit{flex:2 1 auto;min-height:120px;height:180px;resize:vertical}
+.tabpane.fill > textarea{flex:1 1 auto;min-height:90px;height:110px}
+.tabpane.fill > label{flex:none}
+.dlg-h{display:flex;align-items:center;gap:11px;padding:17px 20px 0;font-size:14.5px;font-weight:640}
+.dlg-h .halo{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex:none}
+.dlg-h .halo .ic{width:18px;height:18px}
+.dlg-ht{display:flex;flex-direction:column;gap:2px;min-width:0}
+.dlg-sub{font-size:12px;font-weight:400;color:var(--muted)}
+.dlg-sub:empty{display:none}
+.dlg-x{margin-left:auto;display:flex;align-items:center;justify-content:center;flex:none;
+  width:30px;height:30px;border:0;border-radius:8px;background:transparent;color:var(--muted);cursor:pointer}
+.dlg-x:hover{background:var(--panel2);color:var(--ink)}
+.dlg-x .ic{width:17px;height:17px}
+/* ------------------------------------------------------------- the wizard
+   Creating a job is five decisions in order, so it is walked rather than
+   browsed: the strip becomes a numbered path, each step is reachable only once
+   the ones before it are valid, and the primary button names where it goes. */
+.tabs.wiz{gap:0;justify-content:space-between;border-bottom:0;margin:16px 0 4px}
+.tabs.wiz .tab{flex:1 1 0;justify-content:flex-start;gap:9px;padding:8px 4px 12px;
+  border-bottom:2px solid var(--line);margin-bottom:0;cursor:default}
+.tabs.wiz .tab .stepn{display:flex;align-items:center;justify-content:center;flex:none;
+  width:22px;height:22px;border-radius:50%;background:var(--panel2);border:1px solid var(--line);
+  font-size:11px;font-weight:650;color:var(--muted)}
+.tabs.wiz .tab .stepn .ic{width:12px;height:12px}
+.tabs.wiz .tab.done{color:var(--ink);cursor:pointer}
+.tabs.wiz .tab.done .stepn{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.tabs.wiz .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tabs.wiz .tab.active .stepn{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.dlg-f .spacer{flex:1}
+/* The reason a step will not advance, next to the button that refused. A toast
+   would have said it somewhere else on the screen, after the dialog had already
+   taken the eye. */
+.dlg-err{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:550;
+  color:var(--err);background:var(--err-soft);border-radius:8px;padding:6px 11px;margin-right:auto}
+.dlg-err[hidden]{display:none}
+.dlg-err .ic{width:14px;height:14px;flex:none}
+/* Editing commits nothing until the button is pressed, and with five steps the
+   change is usually not on the step you are looking at. */
+.dlg-dirty{display:inline-flex;align-items:center;font-size:11.5px;font-weight:600;
+  color:var(--warn);background:var(--warn-soft);border-radius:20px;padding:4px 11px;margin-right:auto}
+.dlg-dirty[hidden]{display:none}
+/* A step that refused, and a step you have edited. Both are on the step itself:
+   a sentence in the footer cannot say WHICH of the five it means. */
+.tabs.wiz .tab.bad{color:var(--err);border-bottom-color:var(--err)}
+.tabs.wiz .tab.bad .stepn{background:var(--err);border-color:var(--err);color:#fff}
+.tabs.wiz .tab.edited .stepn::after{content:"";position:absolute;top:-1px;right:-1px;
+  width:7px;height:7px;border-radius:50%;background:var(--warn);border:1.5px solid var(--panel)}
+.tabs.wiz .tab .stepn{position:relative}
+/* Editing has no stepn circle to redden or put the dirty-dot on -- the flat
+   tab carries both cues itself instead. A failed save can gotoStep() into a
+   tab you are not looking at while editing exactly as it can while creating
+   (saveEditor/saveProject validate every step, not only the current one),
+   and a changed step needs the same "something here is unsaved" signal
+   .edited gives the numbered strip above, just without a circle to badge. */
+.tabs:not(.wiz) .tab.bad{color:var(--err);border-bottom-color:var(--err)}
+.tabs:not(.wiz) .tab.edited::after{content:"";display:inline-block;width:6px;height:6px;
+  border-radius:50%;background:var(--warn);margin-left:1px}
+.dlg-b{padding:13px 20px}
+.dlg-b label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--muted);margin:14px 0 6px}
+textarea,.dlg-b input,.dlg-b select{width:100%;font:inherit;font-size:13px;padding:11px 13px;
+  border:1px solid var(--line);border-radius:9px;background:var(--panel2);color:var(--ink);resize:vertical}
+textarea{min-height:170px;font-family:ui-monospace,"SF Mono",Menlo,monospace;line-height:1.5}
+/* Prose, not code: the description is a sentence about the job, so it takes the
+   page's own font and three lines rather than a 170px slab of monospace sized
+   for a prompt. */
+textarea.shorttext{min-height:78px;font-family:inherit;font-size:13px}
+/* What the field is for, under the field. A label can only afford three words;
+   the sentence that stops you filling it in wrongly goes here. */
+.fieldhelp{font-size:11.5px;font-style:italic;color:var(--muted);margin:6px 0 0;line-height:1.5}
+.dlg-b .row2 .fieldhelp{margin-bottom:0}
+textarea:focus,.dlg-b input:focus,.dlg-b select:focus{outline:none;border-color:var(--accent)}
+/* The prompt editor renders its own Markdown. A highlight layer sits exactly
+   under a transparent textarea: you keep native editing, selection, caret and
+   scrolling, and the bytes handed to the agent are still literally what you
+   typed. Both layers MUST share font, size, line-height, padding and border —
+   any difference and the text drifts out of register. Monospace makes bold safe
+   (same advance width), which is why headings can be bold without shifting. */
+.mdedit{position:relative;min-height:170px;height:230px;resize:vertical;overflow:hidden;
+  border:1px solid var(--line);border-radius:8px;background:var(--panel2)}
+.mdedit:focus-within{border-color:var(--accent)}
+.mdedit > .mdedit-hl,
+.mdedit > textarea{position:absolute;inset:0;margin:0;width:100%;height:100%;
+  padding:9px 11px;border:0;border-radius:8px;background:transparent;
+  font:13px/1.5 ui-monospace,"SF Mono",Menlo,monospace;
+  /* a textarea wraps with overflow-wrap only; `word-break: break-word` makes a
+     <pre> break in different places and the two layers drift apart mid-text */
+  white-space:pre-wrap;overflow-wrap:break-word;word-break:normal;
+  overflow-y:auto;overscroll-behavior:contain}
+/* The textarea's scrollbar steals ~15px of text width, so it wraps earlier than
+   the layer would. Reserving the same gutter here keeps both wrapping at the
+   very same column — without it the two drift apart a few lines in. */
+.mdedit > .mdedit-hl{pointer-events:none;overflow-y:hidden;scrollbar-gutter:stable;color:var(--ink)}
+.mdedit > textarea{color:transparent;caret-color:var(--accent);resize:none;min-height:0}
+.mdedit > textarea::selection{background:color-mix(in srgb,var(--accent) 30%,transparent)}
+.mdedit > textarea:focus{outline:none}
+/* the rendered marks */
+.mdedit-hl .h{font-weight:700;color:var(--accent)}
+.mdedit-hl .b{font-weight:700}
+.mdedit-hl .i{font-style:italic}
+.mdedit-hl .c{color:var(--term-tool,#c2410c)}
+.mdedit-hl .fence{color:var(--muted)}
+.mdedit-hl .bullet{color:var(--accent);font-weight:700}
+.mdedit-hl .mark{color:var(--muted)}
+/* searchable project select (combobox) */
+.combo{position:relative}
+.combo-trigger{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;
+  font:inherit;font-size:13px;padding:9px 11px;border:1px solid var(--line);border-radius:8px;
+  background:var(--panel2);color:var(--ink);cursor:pointer;text-align:left}
+.combo-trigger:hover{border-color:var(--muted)}
+.combo.open .combo-trigger{border-color:var(--accent)}
+.combo-val{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.combo-val.none{color:var(--muted)}
+.combo-caret{color:var(--muted);flex:none;display:flex;transition:transform .18s ease}
+.combo-caret .ic{width:16px;height:16px}
+.combo.open .combo-caret{transform:rotate(180deg)}
+.combo-pop{position:absolute;z-index:30;top:calc(100% + 4px);left:0;right:0;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow-lg);padding:7px}
+.combo-search{width:100%;font:inherit;font-size:12.5px;padding:7px 9px;margin:0 0 6px;
+  border:1px solid var(--line);border-radius:7px;background:var(--panel2);color:var(--ink)}
+.combo-search:focus{outline:none;border-color:var(--accent)}
+.combo-list{list-style:none;margin:0;padding:0;max-height:200px;overflow-y:auto}
+.combo-list li{padding:8px 10px;border-radius:6px;font-size:12.5px;cursor:pointer;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:8px}
+.combo-list li .ic{width:13px;height:13px;color:var(--muted);flex:none}
+.combo-list li.active,.combo-list li:hover{background:var(--accent-soft);color:var(--accent)}
+/* A group heading. Not selectable, so it must not take the hover or the
+   highlight the options do. */
+.combo-list li.combo-sec{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--muted);cursor:default;padding:9px 10px 3px;border-radius:0}
+.combo-list li.combo-sec:hover{background:transparent;color:var(--muted)}
+.combo-list li.sel{font-weight:650}
+.combo-list li.none{color:var(--muted)}
+.combo-empty{padding:9px 10px;font-size:12px;color:var(--muted)}
+/* cwd input + Browse button, and the system folder picker */
+.cwdrow{display:flex;gap:8px;align-items:stretch}
+.cwdrow input{flex:1 1 auto;min-width:0}
+.cwd-browse{flex:none;white-space:nowrap}
+.checkline{display:flex!important;align-items:center;gap:9px;text-transform:none;letter-spacing:0;font-size:12.5px;color:var(--ink);cursor:pointer;margin-bottom:6px}
+.checkline input{width:auto!important;margin:0}
+/* A two-way choice as equal halves rather than a checkbox -- the project
+   editor's Security pane (Enabled/Disabled) is its only user today. Paints a
+   hidden checkbox's state; see paintSecEnabled and its click listener in
+   bin/dashboard.html, which is what actually owns the value. */
+.segctl{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+.segctl-opt{flex:1;height:38px;border:0;border-right:1px solid var(--line);background:var(--panel2);
+  font:inherit;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer}
+.segctl-opt:last-child{border-right:0}
+.segctl-opt.on{background:var(--accent-soft);color:var(--accent)}
+/* Field notes: set apart from the control they explain (the negative top margin
+   used to glue them to it), italic, and a step softer than --muted — mixed
+   towards the panel so it dims in dark mode instead of getting brighter. */
+.dlg-b .hint{font-size:11.5px;font-style:italic;line-height:1.55;
+  /* 72% measured 2.91:1 against white — under the 3:1 floor for auxiliary text.
+     82% keeps it clearly a step softer than --muted while staying readable. */
+  color:color-mix(in srgb,var(--muted) 82%,var(--panel));
+  margin:9px 0 18px}
+/* ------------------------------------------------------- editor structure
+   Fifteen fields in one flat scroll — 1670px of form inside a 626px window,
+   2.7 screens — put the controls a screen apart from each other. They live on
+   tabs now (the same strip the log modal uses), and a note that runs longer
+   than a line folds away behind its own summary. Open it when you need it, and
+   the form stays a form. */
+.sechint{margin:0 0 4px;font-size:11.5px;line-height:1.55;
+  color:color-mix(in srgb,var(--muted) 82%,var(--panel))}
+.sechint code{font-size:11px}
+/* the pane already has the strip's breathing room above it */
+.tabpane > *:first-child,.tabpane > *:first-child > label:first-child{margin-top:0}
+.tabpane.fill > p{flex:none}
+/* effort slider — Faster ↔ Smarter, mirroring Claude Code's control */
+/* A repo row is a row of labelled fields, not a row of bare boxes. The delete
+   button aligns to the inputs rather than to the labels above them. */
+.repo-row{display:flex;gap:10px;align-items:flex-end;margin-bottom:10px}
+.repo-f{display:flex;flex-direction:column;gap:5px;min-width:0}
+.repo-f-name{flex:1}
+.repo-f-path{flex:2.2}
+.repo-f-base{flex:1.2}
+.repo-f > label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--muted);white-space:nowrap}
+.repo-row .rp-del{flex:none;margin-bottom:1px}
+.repo-row .cwdrow{display:flex;gap:6px;min-width:0}
+.repo-row .cwdrow input{min-width:0;flex:1}
+
+/* The focus ring paints OUTSIDE the border box (2px outline + 2px offset), so a
+   field sitting flush against a scroll container has its ring sliced off on that
+   side — visible on every tab of the project editor, where the panes clip at
+   padding 0. Reserving the ring's width as padding costs nothing when nothing is
+   focused and stops the clipping everywhere at once, rather than per field. */
+.tabpanes,#pj-tabs,#projmodal,.projgroup,.pgb-inner{padding-left:4px;padding-right:4px}
+.tabpanes{scroll-padding:4px}
+.efflabel{margin-left:8px;color:var(--accent);font-weight:700;text-transform:none;letter-spacing:0}
+.effslider{-webkit-appearance:none;appearance:none;width:100%;height:26px;background:transparent;
+  cursor:pointer;padding:0;border:0;margin:1px 0 0}
+.effslider::-webkit-slider-runnable-track{height:4px;border-radius:3px;background:var(--line);
+  border:0}
+.effslider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:16px;height:16px;
+  border-radius:50%;background:var(--accent);border:2px solid var(--panel);margin-top:-6px;
+  box-shadow:0 1px 4px rgba(0,0,0,.28)}
+.effslider:focus{outline:none}
+.effslider:focus::-webkit-slider-thumb{box-shadow:0 0 0 4px var(--accent-soft)}
+.effends{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:-2px}
+.cwd-ro{cursor:pointer}
+.cwd-ro:hover:not(:disabled){border-color:var(--muted)}
+/* inherited from a project: shown, but plainly not yours to edit here */
+.cwdrow input:disabled{cursor:default;color:var(--muted);background:var(--panel);
+  border-style:dashed;opacity:1}
+.cwdrow .btn:disabled{opacity:.4;cursor:default}
+#fsmodal{max-width:min(560px,94vw);width:560px}
+#fsmodal[open]{display:flex;flex-direction:column;height:min(78vh,600px)}
+#fsmodal .dlg-h,#fsmodal .fs-cur,#fsmodal .dlg-f{flex:none}
+#fsmodal .dlg-b{flex:1 1 auto;min-height:0;overflow-y:auto;padding:8px 0}
+/* A full findings-browser table, not a form: wide like #logmodal, tall and
+   scrollable like #fsmodal/#editor -- see ui/security/activity-screen.js. */
+#sec-act-finding{max-width:min(1000px,95vw);width:1000px}
+#sec-act-finding[open]{display:flex;flex-direction:column;height:min(88vh,760px)}
+#sec-act-finding .dlg-h,#sec-act-finding .dlg-f{flex:none}
+#sec-act-finding .dlg-b{flex:1 1 auto;min-height:0;overflow-y:auto}
+/* The Runs tab's own launcher (Runs tab parity pass 2), moved from an
+   always-open .secbar strip into a short dialog -- a form, not a wide
+   read-only surface, so it takes #confirm/#secreason's own compact width
+   rather than #sec-act-finding's. .secfield already lays out label-over-
+   control in a column (`display:flex;flex-direction:column`, this file's
+   own launcher-bar rule above); what only made sense in that horizontal bar
+   was its own width caps (max-width:280px on the combo/input, tuned so four
+   fields fit one row) and, for the "…or type one" field specifically, that
+   it is a <label> -- which .dlg-b's own generic `label{display:block;
+   margin:...}` rule (this file, above) outranks .secfield's `display:flex`
+   on specificity alone. Both reset here, scoped to this one dialog, rather
+   than in .secfield itself, which the Activity screen's own toolbar (the
+   OTHER user of that class, and of .secbar) still wants exactly as it was. */
+#seclaunch{max-width:min(420px,92vw);width:420px}
+#seclaunch .dlg-b{display:flex;flex-direction:column;gap:14px}
+#seclaunch .secfield{display:flex;flex-direction:column;gap:5px;margin:0}
+#seclaunch .secfield[hidden]{display:none}
+#seclaunch .secfield .combo,#seclaunch .secfield input{max-width:none;width:100%}
+.fs-cur{margin:9px 20px 2px;padding:8px 11px;font:12px ui-monospace,"SF Mono",Menlo,monospace;
+  background:var(--panel2);border:1px solid var(--line);border-radius:7px;color:var(--muted);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fs-list{list-style:none;margin:0;padding:0}
+.fs-list li{display:flex;align-items:center;gap:10px;padding:9px 20px;cursor:pointer;font-size:13px}
+.fs-list li:hover{background:var(--panel2)}
+.fs-list li .ic{width:15px;height:15px;color:var(--accent);flex:none}
+.fs-list li.fs-up{color:var(--muted)}
+.fs-list li.fs-up .ic{color:var(--muted)}
+.fs-list li.fs-empty{color:var(--muted);font-size:12.5px;cursor:default}
+.fs-list li.fs-empty:hover{background:transparent}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.stepper{display:flex;align-items:stretch;border:1px solid var(--line);border-radius:8px;
+  background:var(--panel2);overflow:hidden}
+.stepper input{flex:1;border:0;background:transparent;text-align:center;font:inherit;font-size:13px;
+  color:var(--ink);padding:9px 4px;appearance:textfield;-moz-appearance:textfield;min-width:0}
+.stepper input::-webkit-outer-spin-button,.stepper input::-webkit-inner-spin-button{
+  -webkit-appearance:none;margin:0}
+.stepper input:focus{outline:none}
+.stepper:focus-within{border-color:var(--accent)}
+.step-btn{width:36px;border:0;background:transparent;color:var(--muted);cursor:pointer;
+  font-size:16px;font-weight:600;transition:.12s;display:flex;align-items:center;justify-content:center}
+.step-btn:hover{background:var(--accent-soft);color:var(--accent)}
+.step-btn:first-child{border-right:1px solid var(--line)}
+.step-btn:last-child{border-left:1px solid var(--line)}
+.daypick{display:flex;gap:6px;flex-wrap:wrap}
+.day-btn{font:inherit;font-size:12px;font-weight:600;padding:7px 0;width:46px;text-align:center;
+  border:1px solid var(--line);border-radius:8px;background:var(--panel2);color:var(--muted);
+  cursor:pointer;transition:.12s}
+.day-btn:hover{border-color:var(--accent);color:var(--accent)}
+.day-btn.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.moneyin{display:flex;align-items:center;border:1px solid var(--line);border-radius:8px;
+  background:var(--panel2);overflow:hidden}
+.moneyin .cur{padding:0 0 0 11px;color:var(--muted);font-size:13px}
+.moneyin input{flex:1;border:0;background:transparent;font:inherit;font-size:13px;color:var(--ink);
+  padding:9px 11px 9px 6px;min-width:0}
+.moneyin input:focus{outline:none}
+.moneyin:focus-within{border-color:var(--accent)}
+.timerow{display:flex;align-items:center;gap:9px}
+.timerow input[type=time]{flex:1}
+.timerow .sep{color:var(--muted);font-size:12px}
+.dlg-f{display:flex;justify-content:flex-end;gap:9px;padding:13px 20px 19px}
+/* ---- dialog forms ----
+   The job and project editors' approved artboards (JobEditor.dc.html,
+   ProjectEditor.dc.html): 40px/9px controls, 13px/600 labels, one 12.5px
+   grey help line per field, pill day-buttons, and a tab strip sized like
+   the rest of the app. `.fieldhelp` and the bare `.dlg-b label`/`input`/
+   `select` rules above are shared with every OTHER dialog too (profile,
+   the log modal, the finding-reason box), so their restyle below is
+   scoped to `#editor`/`#projmodal` rather than rewritten in place -- a
+   bare rule here would have reskinned dialogs this phase never looked at.
+   `.row2`, `.combo-trigger`, `.stepper`, `.moneyin`, `.day-btn` and
+   `.tabs.wiz` need no such scoping: nothing outside these two dialogs'
+   shared wizard (`makeWizard`) ever uses them. Task 4 (the project editor)
+   only ever ADDS `#projmodal` to a selector already here -- the furniture
+   is Task 3's, unchanged. */
+
+/* labels: a field title, not a small-caps caption -- .req (components.css)
+   already paints the required marker in --err, untouched here */
+#editor .dlg-b label,#projmodal .dlg-b label{
+  font-size:13px;font-weight:600;text-transform:none;letter-spacing:0;
+}
+/* the repo rows are a compact, repeated mini-table -- NAME/PATH/BASE BRANCH
+   stay the small-caps column-header scale (th's own recipe, one property
+   short of it: weight 600 already reaches these from the rule above), not
+   the field-label size, or two repos on screen doubles in height */
+#projmodal .repo-f>label{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em}
+
+/* one grey help line, not a hint paragraph -- the italic read as a
+   footnote, the opposite of "the sentence that stops you filling the
+   field in wrongly" */
+#editor .fieldhelp,#projmodal .fieldhelp{font-size:12.5px;font-style:normal;line-height:1.45;margin:5px 0 0}
+
+/* controls: one height and one radius for every single-line field -- a
+   text input, a time input, the combo trigger -- so nothing in a .row2
+   pair sits shorter than the field beside it. The effort range keeps its
+   own 26px track (.effslider) and a checkbox its native size, so both are
+   excluded rather than fought with a second, later override. */
+#editor .dlg-b input:not([type=checkbox]):not([type=range]),
+#editor .combo-trigger,
+#projmodal .dlg-b input:not([type=checkbox]):not([type=range]),
+#projmodal .combo-trigger{
+  height:40px;padding:0 13px;border-radius:9px;
+}
+/* the stepper and the money field are one visible control wearing two
+   elements -- the border and the radius belong to the wrapper, so the
+   wrapper takes the fixed height and the input inside just fills it.
+   Job-editor only -- the project editor has neither. */
+#editor .stepper,#editor .moneyin{height:40px;border-radius:9px}
+#editor .stepper input,#editor .moneyin input{height:100%;padding-top:0;padding-bottom:0}
+
+/* pairs: 18px apart, not 12 -- enough that a stepper's own border and the
+   time row next to it read as two fields, not one smudged block */
+.row2{gap:18px}
+
+/* the day picker, as pill buttons -- the accent-filled `.on` state above
+   is unchanged, only the shape is new */
+.day-btn{border-radius:999px}
+
+/* the tab strip, sized like the rest of the app's own (13px/600, the same
+   scale a KPI card's label uses) rather than the smaller size every other
+   tab strip in this file still carries */
+.tabs.wiz .tab{font-size:13px;font-weight:600}
+/* ------------------------------------------------------------------- profile */
+.pf-photo{display:flex;align-items:center;gap:15px;margin-top:2px}
+.pf-face{width:64px;height:64px;border-radius:50%;flex:none;background:var(--accent);
+  color:var(--accent-ink);display:flex;align-items:center;justify-content:center;
+  font-size:22px;font-weight:640;letter-spacing:.02em;overflow:hidden}
+/* cover, not fill: a photo that is not square is cropped rather than stretched */
+.pf-face img{width:100%;height:100%;object-fit:cover;display:block}
+.pf-photo-a{display:flex;gap:8px;flex-wrap:wrap}
+/* Fields are spaced by the label above them, so the three password boxes — one
+   label between them — sat flush against each other. */
+#profmodal .dlg-b input + input{margin-top:8px}
+.confirm-msg{font-size:13px;color:var(--muted);margin:4px 0 0}
+.confirm-mono{font:11.5px/1.6 ui-monospace,"SF Mono",Menlo,monospace;background:var(--panel2);
+  border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin:12px 0 0;
+  white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto}
+.loginfo{grid-template-columns:auto 1fr;gap:5px 16px;margin:0 0 4px}
+.logsec{margin-top:16px}
+.logsec h4{margin:0 0 7px;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--muted);display:flex;align-items:center;gap:6px}
+.logsec h4 .ic{width:13px;height:13px}
+pre.log{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:11px 13px;margin:0;
+  font:11.5px/1.6 ui-monospace,"SF Mono",Menlo,monospace;white-space:pre-wrap;word-break:break-word;
+  max-height:300px;overflow:auto}
+.md{font-size:12.5px;line-height:1.6}
+.md p{margin:0 0 8px} .md p:last-child{margin-bottom:0}
+.md ul,.md ol{margin:0 0 8px;padding-left:20px} .md li{margin:2px 0}
+.md code{font:11.5px ui-monospace,"SF Mono",Menlo,monospace;
+  background:color-mix(in srgb,var(--ink) 8%,transparent);padding:1px 5px;border-radius:4px;word-break:break-word}
+.md pre.log{margin:8px 0}
+.md a{color:var(--accent);text-decoration:none} .md a:hover{text-decoration:underline}
+.md strong{font-weight:650} .md em{font-style:italic}
+.md .md-h{margin:11px 0 5px;font-weight:650;font-size:13px;color:var(--ink);
+  text-transform:none;letter-spacing:0}
+.denials{margin:0;padding-left:18px} .denials li{margin:2px 0}
+.timeline{margin:0;padding:0;list-style:none;border:1px solid var(--line);border-radius:9px;
+  background:var(--panel2)}  /* scroll handled by the tab pane */
+.timeline li{padding:8px 13px;border-bottom:1px solid var(--line2);font-size:12px;line-height:1.55}
+.timeline li:last-child{border-bottom:none}
+.timeline .tn{color:var(--muted);font-variant-numeric:tabular-nums;margin-right:8px;font-weight:600}
+.timeline .tool{font:11px ui-monospace,"SF Mono",Menlo,monospace;background:var(--accent-soft);
+  color:var(--accent);border-radius:5px;padding:1px 7px;margin-right:6px;white-space:nowrap}
+.timeline .thint{font:11px ui-monospace,"SF Mono",Menlo,monospace;color:var(--muted);word-break:break-all}
+.timeline .ttext{display:block;margin-top:3px}
+#toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(6px);
+  display:flex;align-items:center;gap:9px;background:var(--ink);color:var(--bg);
+  padding:10px 17px;border-radius:10px;font-size:13px;opacity:0;pointer-events:none;
+  transition:.22s;z-index:9;box-shadow:var(--shadow-lg)}
+#toast .ic{width:15px;height:15px}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+#toast.err{background:var(--err);color:#fff}
+.spacer{flex:1}
+/* ---------------------------------------------------------------- security
+   Its own page, because an analysis is a thing you come here FOR. The list is
+   PROJECTS, not jobs: a project can be registered for this and have no job at
+   all. Everything a finding carries — its title, its file paths, the branch it
+   was found on — is written as text and never as markup, so the meaning markup
+   would have carried has to live here, in the styling. */
+.seclist{display:flex;flex-direction:column;gap:9px}
+.secrow{display:flex;align-items:center;gap:13px;width:100%;text-align:left;font:inherit;
+  color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:13px 16px;box-shadow:var(--shadow)}
+button.secrow{cursor:pointer;transition:border-color .12s,background .12s}
+button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
+/* Every icon on this page arrives inside one of these: the block that draws
+   the page never touches innerHTML except to put an icon in a .secico. */
+.secico{display:inline-flex;align-items:center;flex:none}
+.secrow > .secico .ic{width:17px;height:17px;color:var(--accent)}
+.secrow.off{background:var(--panel2)}
+.secrow.off > .secico .ic{color:var(--muted)}
+.secrow .grow{flex:1 1 auto;min-width:0}
+.secname{font-size:13.5px;font-weight:650}
+.secmeta{color:var(--muted);font-size:11.5px;margin-top:3px;line-height:1.5}
+.sevpills{display:flex;flex-wrap:wrap;gap:6px;align-items:center;flex:none}
+.sevpill{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-size:11px;
+  font-weight:650;border-radius:20px;padding:2px 10px;border:1px solid transparent}
+.sevpill.critical,.sevpill.high{background:var(--err-soft);color:var(--err)}
+.sevpill.critical{border-color:color-mix(in srgb,var(--err) 45%,transparent)}
+.sevpill.medium{background:var(--warn-soft);color:var(--warn)}
+/* Blue, via --sev-low -- see that token's own comment (ui/css/tokens.css)
+   for why this used to be the same flat grey as .info: the token itself was
+   a guess, not a sampled colour, until AllFindings.png's own five-dot legend
+   pinned it down. Fixed at the TOKEN, so every reader of it (this pill,
+   .secidx-legendrow.low's dot, the donut) draws the corrected hue once,
+   rather than a second, findings-only override living beside a base rule
+   that still disagreed with it. */
+.sevpill.low{background:color-mix(in srgb,var(--sev-low) 14%,transparent);color:var(--sev-low);
+  border-color:color-mix(in srgb,var(--sev-low) 40%,transparent)}
+.sevpill.info{background:var(--panel2);color:var(--muted)}
+.sevpill.clean{background:var(--ok-soft);color:var(--ok)}
+/* The findings browser's own top-strip severity pills (Phase 4 Task 6) --
+   AllFindings.png paints the same crit-red/high-orange/medium-amber the index
+   screen's own .secidx-sev3 already gives its two tables, for the identical
+   reason (see that class's own comment above .secidx-sev3 for why `.critical`/
+   `.medium` need no override and only `.high` does -- this design's tokens
+   have only `--err`/`--warn` as hue tokens, so `high` alone needs the
+   in-between colour-mix). Scoped separately here rather than reused: that
+   class is named for, and stays, the index screen's own vocabulary.
+   `.low` needs no override of its own any more either, now that the base
+   `.sevpill.low` rule (above) already reads the corrected --sev-low --
+   only `.info` still opts out of colour here, the one severity this design's
+   tokens still leave a plain neutral grey everywhere it appears. */
+.secfind-sev3 .sevpill.critical{background:color-mix(in srgb,var(--sev-crit) 12%,transparent);
+  color:var(--sev-crit);border-color:color-mix(in srgb,var(--sev-crit) 40%,transparent)}
+.secfind-sev3 .sevpill.high{background:color-mix(in srgb,var(--sev-high) 14%,transparent);
+  color:color-mix(in srgb,var(--sev-high) 80%,var(--ink) 20%);
+  border-color:color-mix(in srgb,var(--sev-high) 45%,transparent)}
+.secfind-sev3 .sevpill.medium{background:color-mix(in srgb,var(--sev-med) 16%,transparent);
+  color:color-mix(in srgb,var(--sev-med) 70%,var(--ink) 30%);
+  border-color:color-mix(in srgb,var(--sev-med) 50%,transparent)}
+.secfind-sev3 .sevpill.info{border-color:var(--line)}
+/* -------------------------------------------------------- AllFindings.png
+   The findings browser's own header (Phase 4): a breadcrumb, the shield
+   title, and the two right-aligned buttons -- built entirely by
+   findings-screen.js's own secFindHeader, self-contained inside
+   #sec-pj-findings the same way every other element on this pane is (see
+   that file's own "ONE MODULE, TWO HOMES" comment): it does not reach into
+   or replace project-screen.js's own shared #sec-back/#sec-title/tab strip,
+   which still renders above it exactly as it does for the other four tabs. */
+.secfind-crumbs .sep .ic{width:13px;height:13px}
+.secfind-crumbs .current{color:var(--ink);font-weight:650}
+.secfind-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;
+  margin:0 0 18px;flex-wrap:wrap}
+/* .secfind-head-title/.secfind-head-sub are gone: the pane's own heading
+   moved up into the page title row (SEC_TAB_TITLES) and the header kept
+   only its actions -- see secFindHeader's own comment. */
+.secfind-head-actions{display:flex;gap:10px;flex:none}
+/* The stat strip -- total, five severities, unique issues, all in one card.
+   ProjectFindings.png redraws the old one-container stat strip as SEVEN
+   house KPI CARDS (the shared .kpi-grid/.kpi-card, built through the
+   kpiCard bridge like the Overview tab's own row) -- the layout is all the
+   shared component's; ".secfind-stat"/"total"/"unique" survive only as
+   unstyled MARKER classes on two of the cards, the hooks the pinned
+   total-vs-unique test finds them by (see _UNSTYLED_CLASS_ALLOWLIST in
+   tests/test_page_contract.py). The severity cards' colour comes from
+   their .sev-* tone class; nothing here styles them any more. */
+/* -------------------------------------------------------------- filter bar
+   Two rows: wide search plus five "Label: value" pickers, then Category, the
+   Show-resolved switch and, right-aligned, Clear filters + the Filters(N)
+   badge -- see secFindFilterBar's own comment (findings-screen.js) for why
+   these replace the old chip rows and plain text fields with the SAME
+   <details>/<summary>/.menu-pop shape secFindSavedFilters already used
+   (`makePicker`, below, needs STATIC boot-once markup this constantly
+   rebuilt bar cannot give it -- see that function's own comment). */
+.secfind-filters{display:flex;flex-direction:column;gap:10px;margin:0 0 16px}
+.secfind-filters-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.secfind-search{display:flex;align-items:center;gap:8px;flex:1 1 260px;min-width:200px;
+  border:1px solid var(--line);border-radius:9px;background:var(--panel2);padding:0 12px}
+.secfind-search .ic{width:15px;height:15px;color:var(--muted);flex:none}
+.secfind-search input{flex:1 1 auto;min-width:0;border:0;background:none;font:inherit;
+  font-size:13px;color:var(--ink);padding:9px 0}
+.secfind-search input:focus{outline:none}
+/* The picker trigger: .filterpick's own established look (this file, the
+   saved-filters popover's own trigger) plus a "Label:" bit styled the same
+   as makePicker's own .pk-k/.pk-v (ui/css/components.css) -- scoped here
+   rather than widening THAT rule's own `.picker-trigger` selector, since
+   this trigger's class is `.filterpick`, not `.picker-trigger` (see this
+   file's own comment above .filterpick for why the two names stay distinct:
+   one is the full makePicker widget, the other every hand-rolled
+   <details>-based popover on this page). */
+/* flex-grow:0 -- a picker's own trigger text ("Severity: All") never needs
+   more than its own content width, so all of row 1's remaining space (once
+   five fixed-width pickers and their gaps are subtracted) goes to the wide
+   search field beside them instead of six items growing evenly and, at
+   this row's own real width, six abreast wrapping the sixth by a handful
+   of rounding pixels. */
+.secfind-fpick{flex:0 1 150px;min-width:130px}
+.secfind-fpick > .filterpick{width:100%;justify-content:space-between}
+.secfind-fpick .pk-k{color:var(--muted);flex:none}
+.secfind-fpick .pk-v{font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;flex:1 1 auto;text-align:left}
+.secfind-fpick .menu-pop{top:calc(100% + 6px);bottom:auto;min-width:200px;max-height:280px;
+  overflow-y:auto}
+.secfind-fpick .menu-pop button{justify-content:space-between}
+/* The path picker's own text field, inside its popover rather than a plain
+   .secfield beside it -- still free-text substring search
+   (queries.finding_rows's own `path` filter), only the trigger changed
+   shape to match its five siblings. */
+.secfind-fpick .menu-pop input{width:100%;font:inherit;font-size:12.5px;padding:7px 9px;
+  border:1px solid var(--line);border-radius:7px;background:var(--panel2);color:var(--ink);
+  margin-bottom:4px}
+/* The per-page picker: shortest label of the bunch ("25 per page"), so it
+   sits at its own content width in the footer rather than stretching the
+   way its five siblings above (flex: 1 1 ...) do. */
+.secfind-perpage{flex:0 0 auto}
+/* One saved-filter row inside the Saved-filters popover: its own name
+   (clickable, picks it) beside a small trash icon (deletes it) -- these
+   used to be two always-visible fields further down the old bottom bar; both
+   now live inside the ONE popover that opens them (secFindSavedFilters's own
+   comment). */
+.secfind-savedrow{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.secfind-savedrow button[role="menuitem"]{flex:1 1 auto}
+.secfind-toggle-field{display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--ink)}
+.secfind-filters-row.row2{justify-content:space-between}
+.secfind-filters-row.row2 > .secfind-fpick{flex:0 1 200px}
+.secfind-filters-right{display:flex;align-items:center;gap:10px;margin-left:auto}
+/* Filters(N): a read-only count, not a second control -- see
+   secFindFilterCount's own comment for what it counts. Same shape as
+   `.btn.ghost` (border, radius, padding) so it sits at the same height as
+   Clear filters beside it, plus a small solid badge for the number. */
+.secfind-filters-badge{display:inline-flex;align-items:center;justify-content:center;
+  min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--accent);
+  color:var(--accent-ink);font-size:10.5px;font-weight:700;font-variant-numeric:tabular-nums}
+.secbar{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;margin:0 0 14px}
+.secfield{display:flex;flex-direction:column;gap:5px;min-width:0}
+/* An author `display` outranks the UA sheet's [hidden] — the same trap the nav
+   items hit. Four things here are hidden until they have something to say
+   (the repo picker on a single-repo project, the coverage note, the download
+   row before there is an analysis, and — Runs tab parity pass 2 — the "nothing
+   selected yet" status box once an analysis IS on screen), and without this
+   they all show up empty. */
+.secfield[hidden],.secdl[hidden],.warnline[hidden],.secstat[hidden]{display:none}
+/* An INCOMPLETE analysis is not a warning about one detail of the report -- it
+   is a warning about the whole of it, so it reads hotter than the coverage
+   note below it. */
+.warnline.bad{border-color:color-mix(in srgb,var(--err) 40%,var(--line));
+  background:var(--err-soft);color:var(--err)}
+.secfield > span{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.secfield input{font:inherit;font-size:13px;padding:8px 11px;min-width:160px;
+  max-width:280px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);color:var(--ink)}
+.secfield input:focus{outline:none;border-color:var(--accent)}
+/* sec-repo/sec-branch/sec-profile are the house combo now (Phase 4 Task 5),
+   not a bare <select> -- .combo-trigger (above) already carries its own
+   border/padding/background, so this only bounds the WRAPPER's width the
+   way the old select/input rule above did, rather than doubling the box. */
+.secfield .combo{min-width:160px;max-width:280px}
+.secstat{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--muted);
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 13px;margin:0 0 12px}
+.secstat b{color:var(--ink);font-weight:650}
+.secstat .secico .ic{width:14px;height:14px;color:var(--accent)}
+.secchips{display:flex;flex-wrap:wrap;gap:7px;margin:0 0 14px}
+.secchip{display:inline-flex;align-items:center;gap:7px;font:inherit;font-size:11.5px;font-weight:600;
+  color:var(--muted);background:var(--panel);border:1px solid var(--line);border-radius:20px;
+  padding:4px 12px;cursor:pointer}
+.secchip:hover{border-color:var(--accent);color:var(--ink)}
+.secchip.on{background:var(--accent-soft);border-color:transparent;color:var(--accent)}
+.secchip .n{font-variant-numeric:tabular-nums;font-weight:700}
+.secchip.zero{opacity:.5}
+.secdl{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 16px}
+.secdlnote{font-size:12px;color:var(--muted)}
+.secfinding{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--idle);
+  border-radius:11px;padding:13px 16px;margin:0 0 9px;box-shadow:var(--shadow)}
+.secfinding.sev-critical,.secfinding.sev-high{border-left-color:var(--err)}
+.secfinding.sev-medium{border-left-color:var(--warn)}
+.secfinding.state-fixed{border-left-color:var(--ok)}
+.secfinding.state-accepted,.secfinding.state-false_positive{opacity:.72}
+.secfinding h4{margin:0;font-size:13px;display:flex;align-items:center;gap:9px;flex-wrap:wrap;line-height:1.5}
+.secfinding h4 .sectitle{flex:1 1 auto;min-width:0}
+.secstate{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;
+  border-radius:20px;padding:2px 9px;background:var(--panel2);color:var(--muted);
+  border:1px solid var(--line);white-space:nowrap}
+.secstate.new,.secstate.regressed{background:var(--err-soft);color:var(--err);border-color:transparent}
+.secstate.partial{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.secstate.fixed{background:var(--ok-soft);color:var(--ok);border-color:transparent}
+.secwhere{margin:9px 0 0;padding-left:18px;font:11.5px/1.65 ui-monospace,"SF Mono",Menlo,monospace;
+  color:var(--muted);word-break:break-all}
+.secfinding p{margin:8px 0 0;font-size:12.5px;line-height:1.6}
+.secfinding p.secfix,.secfinding p.secwhy{color:var(--muted)}
+.secfp{margin:9px 0 0;font:11px ui-monospace,"SF Mono",Menlo,monospace;color:var(--muted);word-break:break-all}
+.secactions{display:flex;gap:8px;margin-top:11px;flex-wrap:wrap}
+.sechist{display:flex;flex-direction:column;gap:7px}
+.sechrow{display:flex;align-items:center;gap:11px;flex-wrap:wrap;font-size:12px;
+  background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 13px}
+.sechrow.on{border-color:var(--accent)}
+.sechrow .grow{flex:1 1 auto;min-width:0;color:var(--muted)}
+@media (max-width:700px){
+  .secfield{flex:1 1 100%}
+  .secfield .combo,.secfield input{max-width:none;width:100%}
+}
+/* -------------------------------------------------------- project screen
+   The header strip, the Overview/Runs tabs (viewtabs/pane, the same
+   furniture the Overview page's own Jobs/Runs/Worktrees tabs use) and the
+   sidebar -- see ui/security/project-screen.js. */
+.secpjhead{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin:0 0 16px;
+  background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:14px 16px;box-shadow:var(--shadow)}
+.secpjmeta{display:flex;flex-wrap:wrap;gap:14px 20px;font-size:12px;color:var(--muted)}
+.secpjmeta b{color:var(--ink);font-weight:650}
+.secpjbody{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
+/* A size container: the two internal splits below (the Runs list/detail
+   pair, the Overview main/side grid) stack by @container queries against
+   THIS column's real width, not the viewport's -- the room they actually
+   have depends on the collapsible app sidebar and on whether the rail sits
+   beside or below, which no viewport breakpoint can know. A 1290px window
+   with the sidebar open used to leave this column ~660px while the
+   viewport query still said "wide": the mid column overflowed and the
+   rail painted over it. */
+.secpjmain{flex:1 1 480px;min-width:0;container-type:inline-size}
+/* A read-only stat badge -- same shape as .secchip, deliberately not
+   clickable (no cursor:pointer, no hover state): the Overview tab's
+   checklist counts have nowhere to filter to yet (that is the findings
+   browser, a later screen), so the affordance would promise a click that
+   does nothing. */
+.secpj-statchip{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:600;
+  color:var(--muted);background:var(--panel);border:1px solid var(--line);border-radius:20px;
+  padding:4px 12px}
+.secpj-statchip .n{font-variant-numeric:tabular-nums;font-weight:700;color:var(--ink)}
+.secpj-statchip.zero{opacity:.55}
+/* The Overview/sidebar scope captions -- which branch the posture above is
+   for, and how many branches the donut/categories below span. Same register
+   as .secidx-note: a small, muted line, not a warning. */
+.secpj-caption{font-size:11px;color:var(--muted);line-height:1.5;margin:0 0 8px}
+/* A card's own h3 plus one action, right-aligned -- the project sidebar's
+   "Recent activity" -> "View all" link into the Activity screen, and that
+   screen's own sidebar cards. Same look as .secthead (flex, space-between)
+   without its page-level top margin, which reads as a gap bug on a header
+   that opens a .card rather than a whole pane. */
+/* flex-wrap: a card head whose right side is a wide control (the trend
+   card's segmented severity picker) drops that control onto its own line
+   when the card is narrow, instead of crushing the title beside it. */
+.secpj-cardhead{display:flex;align-items:center;justify-content:space-between;
+  gap:8px;margin:0 0 9px;flex-wrap:wrap}
+/* Phase 4 Task 6: the mockup's own bold, sentence-case card title (ProjectDetails
+   .png's "Project activity", FullActivity.png's "Activity summary") -- the same
+   opt-out of the page's generic small-caps `h3` that `.secidx-cardhead h3`
+   (below) already gives the index screen's own two bottom cards, so a reader
+   moving between the three screens never sees the SAME kind of card title in
+   two different registers. */
+.secpj-cardhead h3{margin:0;font-size:15px;font-weight:650;color:var(--ink);
+  text-transform:none;letter-spacing:normal}
+@media (max-width:900px){
+  .secpjside{flex:1 1 100%}
+}
+/* ---------------------------------------------- project screen: Runs tab
+   rebuild (ProjectRuns.png) -- the breadcrumb that replaces the old
+   #sec-title/#sec-back pairing, the name/badge/description row above the
+   meta strip, the Runs tab's own two-column layout (the third column is
+   #sec-pj-side, a flex sibling shared by every tab already, untouched
+   here), and the selected run's own card. All new classes; .secthead
+   itself (the Activity screen's own back row, among others) is untouched. */
+.secpj-crumbs{display:flex;align-items:center;gap:8px;margin:14px 0 0;font-size:12.5px;color:var(--muted)}
+.secpj-crumbs button{font:inherit;font-size:inherit;color:var(--muted);
+  background:none;border:0;padding:0;cursor:pointer}
+.secpj-crumbs button:hover{color:var(--accent)}
+.secpj-crumbs .sep{color:var(--muted);opacity:.6}
+.secpj-crumbs h3{margin:0;font-size:inherit;font-weight:600;color:var(--ink);
+  text-transform:none;letter-spacing:normal}
+.secpjtitle{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:10px 0 4px}
+.secpjtitle-id{display:flex;align-items:center;gap:10px;min-width:0}
+.secpjtitle-id .ic{width:22px;height:22px;color:var(--accent);flex:none}
+.secpjtitle-name{font-size:20px;font-weight:700;color:var(--ink);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.secpjdesc{margin:0 0 16px;color:var(--muted);font-size:12.5px}
+.secpj-fellback{display:inline-flex;align-items:center;gap:6px;color:var(--warn);white-space:nowrap}
+.secpj-fellback .ic{width:13px;height:13px}
+/* `.card`'s own accent border-left is a Jobs-board state cue, not a generic
+   card look (see that class's own comment) -- activity-screen.js already
+   resets it back to plain --line for its two sidebar cards under the name
+   `.secact-sidecard`; this is the identical one-line reset under a name
+   that does not claim an activity-screen origin for the three NEW/changed
+   cards that need it here (the Runs tab's own "Analysis runs" list and its
+   right rail's "Findings by severity"/"Top issue categories"), rather than
+   borrowing a name about a different screen for what is purely a border
+   colour. */
+.secpj-plaincard{border:1px solid var(--line);border-left:1px solid var(--line)}
+/* Stacked, not side-by-side: secIndexDonutLegend's own showPercent rows
+   ("Critical  64 (90.1%)") need more width than the 300px .secpjside
+   (components.css) has left over once the 150px donut sits beside it --
+   exactly why the shared secIndexDonut's OWN default (this same sidebar's
+   other four tabs) already stacks the donut ABOVE its legend rather than
+   beside it, and only flips to a row inside the wider, 424px-flex-basis
+   .secidx-findcard the index screen's own Findings-overview card uses (see
+   .secidx-findbody's own comment). Found live: without this, "Critical"/
+   "Medium"/"Low" truncated to "Crit…"/"M…"/"L…" behind their own ellipsis. */
+.secrun-donutrow{display:flex;flex-direction:column;align-items:center;gap:10px;margin-top:4px}
+.secrun-donutrow .secidx-findlegend{width:100%}
+.secpj-viewallcats{width:100%;justify-content:center;margin-top:14px}
+
+/* The Runs tab's own two columns -- the "Analysis runs" card (fixed,
+   narrower) and the selected run's own card (grows to fill the rest). A
+   plain flex row rather than the .secpjbody/.secpjmain grid the whole
+   PANE already sits inside: that outer one is main-column-plus-sidebar,
+   this is a split WITHIN the main column alone. */
+.secpj-runslayout{display:flex;gap:16px;align-items:flex-start;margin-top:14px}
+/* The mockup's proportions: the runs LIST is a fixed-width column and the
+   selected run's card takes every spare pixel -- growing the list just
+   stretches four narrow columns of numbers. 380px (Runs tab parity pass 1)
+   was too narrow for its own table: .secpj-runstable's real content needs
+   ~400px (measured live -- see that rule's own comment) and this card's
+   padding + border already ate 38-40px of any width offered to it, so the
+   table overflowed its card's own inner width by design, every time,
+   regardless of viewport -- a permanent horizontal scrollbar, not a
+   narrow-viewport edge case. Widened to fit it with a little to spare.
+
+   flex-SHRINK 0, not 1 (Runs tab parity pass 2's own second finding): this
+   comment already called the list column "fixed-width", but `flex:0 1
+   380px`'s middle `1` means shrink -- and at this pane's own real width
+   (measured live, a 1550px window: .secpj-runslayout offers ~905px, while
+   450+480+16px gap asks for 946px), the flexbox algorithm shrank BOTH
+   columns to make the difference fit, this one down to 430px -- 20px short
+   of the 450px the table above needed room for, reopening the exact
+   scrollbar the width bump was meant to close. `0 0` makes the list truly
+   fixed, so the selected run's card (already flex-grow:1) is the one that
+   absorbs a real width deficit down to ITS OWN min-width floor, exactly the
+   "takes every spare pixel" this comment already asked for -- min-width
+   here is now only a floor against some future ancestor forcing a narrower
+   box, not a shrink target the algorithm reaches for on ordinary layouts. */
+.secpj-runsleft{flex:0 0 450px;min-width:340px}
+.secpj-runsmid{flex:1 1 480px;min-width:340px}
+/* A CONTAINER query against .secpjmain's own width, not a viewport media
+   query: the unshrinkable 450px list plus the mid column's own 340px floor
+   need 806px OF THIS COLUMN, and how much column a given window leaves
+   depends on the collapsible app sidebar and the 330px rail beside it --
+   every viewport breakpoint chosen for one sidebar/rail state was wrong in
+   another (the mid column overflowed and the rail, a later flex sibling,
+   painted straight over it). Below the floor the two go one above the
+   other at full width. */
+@container (max-width: 829px){
+  .secpj-runslayout{flex-direction:column}
+  .secpj-runsleft,.secpj-runsmid{flex:1 1 100%;width:100%}
+}
+.secpj-runslistcard .secchips{margin-bottom:12px}
+/* The branch-history fold at the bottom of the run card: a quiet disclosure,
+   closed by default -- summary styled as a muted row with the house caret. */
+.sechist-fold{margin-top:14px;border-top:1px solid var(--line2);padding-top:10px}
+.sechist-fold summary{cursor:pointer;font-size:12.5px;font-weight:600;color:var(--muted);
+  list-style:none;display:flex;align-items:center;gap:6px}
+.sechist-fold summary::before{content:"";width:0;height:0;border-left:5px solid currentColor;
+  border-top:4px solid transparent;border-bottom:4px solid transparent;transition:transform .12s ease}
+.sechist-fold[open] summary::before{transform:rotate(90deg)}
+.sechist-fold summary::-webkit-details-marker{display:none}
+.sechist-fold[open] summary{margin-bottom:8px}
+/* The selected run's own row -- an accent border standing in for the
+   mockup's own left rail + ring, since a `<tr>` cannot carry the same
+   box-shadow a card can without breaking table-layout:fixed's own column
+   widths. box-shadow (inset) rather than a border, so it never nudges the
+   row's own height or the columns beside it by a border-width. */
+.secpj-runstable tr.secrun-selected{background:var(--accent-soft)}
+.secpj-runstable tr.secrun-selected td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+.secrun-sevline{display:flex;gap:7px;margin-top:3px;font-size:10.5px;
+  font-variant-numeric:tabular-nums;color:var(--muted)}
+.secrun-sevbit.sev-critical{color:var(--sev-crit)}
+.secrun-sevbit.sev-high{color:var(--sev-high)}
+.secrun-sevbit.sev-medium{color:var(--sev-med)}
+.secrun-sevbit.sev-low{color:var(--sev-low)}
+.secrun-findtotal{font-weight:650;color:var(--ink)}
+
+/* The selected run's own card. */
+.secpj-runcard{padding:16px}
+.secrun-head{display:flex;align-items:center;justify-content:space-between;
+  gap:12px;padding-bottom:13px;margin-bottom:13px;border-bottom:1px solid var(--line)}
+.secrun-headtitle{display:flex;align-items:center;gap:10px;min-width:0}
+.secrun-headid{margin:0;font-size:17px;font-weight:700;color:var(--ink);
+  text-transform:none;letter-spacing:normal}
+.secrun-headactions{display:flex;align-items:center;gap:8px;flex:none}
+.secrun-metagrid{display:flex;flex-wrap:wrap;gap:16px 28px;margin-bottom:4px}
+.secrun-metacell{min-width:70px}
+.secrun-metalabel{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--muted);margin-bottom:4px}
+.secrun-metaval{font-size:13px;font-weight:650;color:var(--ink)}
+.secrun-metaval.mono{font:650 12.5px ui-monospace,"SF Mono",Menlo,monospace}
+.secrun-notice{font-size:12px;color:var(--muted);margin:10px 0 0;line-height:1.55}
+.secrun-notice.warn{color:var(--warn)}
+
+/* "Findings recorded": a bold label, the total, then one dot-pill per
+   severity -- zero ones muted rather than omitted (the mockup's own "0
+   Low"/"0 Info"), the SAME five-severity, tokens-only colour vocabulary
+   SEV_STROKE/.secidx-legendrow already draw from (index-screen.js), never a
+   second palette for a third place severity gets a colour. */
+.secrun-recorded{display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;
+  margin:14px 0;font-size:12.5px}
+.secrun-recorded-label{font-weight:650;color:var(--ink)}
+.secrun-recorded-total{color:var(--muted)}
+.secrun-recpill{display:inline-flex;align-items:center;gap:6px;font-weight:600}
+.secrun-recpill.zero{color:var(--muted);opacity:.6;font-weight:500}
+.secrun-recdot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--muted)}
+.secrun-recpill.sev-critical{color:var(--sev-crit)}
+.secrun-recpill.sev-critical .secrun-recdot{background:var(--sev-crit)}
+.secrun-recpill.sev-high{color:var(--sev-high)}
+.secrun-recpill.sev-high .secrun-recdot{background:var(--sev-high)}
+.secrun-recpill.sev-medium{color:var(--sev-med)}
+.secrun-recpill.sev-medium .secrun-recdot{background:var(--sev-med)}
+.secrun-recpill.sev-low{color:var(--sev-low)}
+.secrun-recpill.sev-low .secrun-recdot{background:var(--sev-low)}
+.secrun-recpill.sev-info{color:var(--sev-info)}
+.secrun-recpill.sev-info .secrun-recdot{background:var(--sev-info)}
+/* A zero pill keeps its muted grey text (the rule above) but its dot still
+   carries the severity's own colour, faded -- a reader glancing at the row
+   of dots alone can still tell which is which. */
+.secrun-recpill.zero .secrun-recdot{opacity:.55}
+
+/* Search + Category + the Filters popover -- .toolbar/.searchbox/.picker
+   are all shared (components.css); only the Filters button's own popover
+   shape and the checklist chips' new vertical stack inside it are new. */
+.secpj-findbar{margin:0 0 4px}
+.secrun-filterpick{position:relative;display:inline-flex}
+.secrun-filterpick > summary{list-style:none;cursor:pointer}
+.secrun-filterpick > summary::-webkit-details-marker{display:none}
+.secrun-filterpop{top:calc(100% + 6px);bottom:auto;left:auto;right:0;min-width:230px;
+  max-height:min(360px, 70vh);overflow-y:auto}
+.secrun-filterpop .secchips{flex-direction:column;flex-wrap:nowrap;gap:4px;margin:0}
+.secrun-filterpop .secchip{width:100%;justify-content:space-between;border-radius:8px}
+.secpj-caption[id="sec-summary"]:empty{display:none}
+/* The old always-visible four-format download row -- MD/JSON/HTML/SBOM,
+   directly under the checklist -- is now the run head's own download icon
+   (Markdown, one click) plus its kebab (the other three formats): same
+   ids, same secDownload("<fmt>") calls (still pinned -- see
+   test_every_download_the_server_offers_has_a_button), same #sec-dl-note
+   sentence, just redundant with the new controls above it now, not
+   removed from the DOM. An id selector, not `.secdl` (reports-tab.js
+   builds its OWN, unrelated elements under that same class, one row per
+   analysis -- hiding the class would hide those too). */
+#sec-dl{display:none}
+
+/* A mono code-snippet block, when a finding carries one (secFindingRow,
+   analysis.js) -- dark-on-panel2, the same register `code`/`pre` already
+   read elsewhere on this page, with an optional language tag borrowed from
+   the mockup's own "sql:" prefix. */
+.secsnippet{margin:9px 0 0;padding:9px 11px;background:var(--panel2);
+  border:1px solid var(--line);border-radius:8px;overflow-x:auto}
+.secsnippet-lang{display:inline-block;margin-right:8px;font-size:10.5px;
+  text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.secsnippet code{font:12px ui-monospace,"SF Mono",Menlo,monospace;color:var(--ink);
+  white-space:pre-wrap;word-break:break-word}
+
+/* A zero-count row in secIndexDonutLegend's own opt-in showZero branch
+   (index-screen.js) -- present, not omitted, but read as background rather
+   than a real slice of the total. */
+.secidx-legendrow.zero{opacity:.5}
+
+/* ------------------------------------------ project screen: Overview tab
+   ProjectOverview.png -- the six severity KPI cards (kpi-grid, the shared
+   component, plus this tab's own delta line), the 2/3-1/3 grid holding the
+   trend chart and Top findings on the left, the category donut and Recent
+   activity on the right. The always-on rail (#sec-pj-side) is hidden while
+   this tab is up (see secRenderTabs), so this pane owns its full width. */
+
+/* The name row's tinted icon box, and the meta strip's icon-per-bit shape
+   the same mockup gives the SHARED header (one strip serves every tab). */
+.secpjtitle-ic{display:flex;align-items:center;justify-content:center;
+  width:34px;height:34px;border-radius:10px;background:var(--accent-soft);flex:none}
+.secpjbit{display:inline-flex;align-items:center;gap:7px}
+.secpjbit>.ic{width:14px;height:14px;color:var(--muted);flex:none}
+#sec-crumb-tab{color:var(--ink);font-weight:600}
+
+/* The delta/share line a KPI card grows between its label and its sub --
+   green only for a real improvement, red only for a real regression;
+   a share of the total stays neutral. */
+.secov-delta{margin-top:6px;font-size:13px;font-weight:650;color:var(--ink)}
+.secov-delta.good{color:var(--ok)}
+.secov-delta.bad{color:var(--err)}
+
+.secov-grid{display:flex;gap:16px;align-items:flex-start;margin-top:16px}
+.secov-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:16px}
+/* `0 1 520px` with a floor, and the stack point at 1440px: with the rail
+   fixed at 520 a 1300px window left the MAIN column narrower than the side
+   one -- the trend card's own title wrapped into a five-line sliver beside
+   its segmented control. Below the stack point everything is full width. */
+.secov-side{flex:0 1 520px;min-width:400px;display:flex;flex-direction:column;gap:16px}
+/* The same container-not-viewport reasoning as the Runs split above (the
+   Overview pane spans the whole column -- its rail is hidden on this tab
+   -- so the container IS its real room). Below ~1160px of column the main
+   half would drop under ~740px beside the 400px-floored side column and
+   the trend card starts crushing; stacked instead, both at full width. */
+@container (max-width: 1159px){
+  .secov-grid{flex-direction:column}
+  /* width:100% on BOTH stacked children: the grid keeps the row layout's
+     align-items:flex-start, which in a column direction makes a child hug
+     its content width -- the trend and Top-findings cards rendered as
+     ~430px slivers with the rest of the window empty. */
+  .secov-main{width:100%}
+  .secov-side{flex:1 1 auto;width:100%;min-width:0}
+}
+
+/* The Total/Critical/.../Info segmented control on the trend card. */
+.secseg{display:inline-flex;align-items:center;gap:2px;padding:3px;
+  background:var(--panel2);border:1px solid var(--line);border-radius:10px;flex:none}
+.secseg-btn{border:0;background:transparent;color:var(--muted);font:inherit;
+  font-size:12px;font-weight:600;padding:5px 12px;border-radius:8px;cursor:pointer}
+.secseg-btn:not(.on):hover{color:var(--ink)}
+.secseg-btn.on{background:var(--accent);color:var(--accent-ink)}
+
+/* The 7-day line chart -- drawn at the mount's own measured width, one
+   SVG unit per CSS pixel (secOvDrawChart, overview-tab.js), so axis text
+   and dots hold their size on every card width instead of scaling up with
+   the card like an image (the donuts scale; a chart with 11px labels must
+   not). Line/area/dot colours are set inline per selected series (accent
+   for Total, the severity's own token otherwise); everything else reads
+   tokens here. */
+.secov-chart{width:100%;margin-top:4px}
+.secov-trendsvg{display:block;width:100%;height:auto}
+.secov-gridline{stroke:var(--line);stroke-width:1}
+.secov-axis{fill:var(--muted);font-size:11px}
+.secov-area{opacity:.12;stroke:none}
+.secov-line{fill:none;stroke-width:2.5;stroke-linejoin:round;stroke-linecap:round}
+.secov-dot{stroke-width:2}
+.secov-dot.capped{fill:var(--panel)}
+
+/* The category donut and its counted, percented legend. */
+.secov-donutrow{display:flex;align-items:center;gap:20px;padding:6px 2px 2px}
+.secov-donutsvg{width:150px;height:150px;flex:none}
+.secov-donut-total{font-size:26px;font-weight:700;fill:var(--ink)}
+.secov-donut-sub{font-size:9px;fill:var(--muted)}
+.secov-legend{display:flex;flex-direction:column;gap:9px;flex:1;min-width:0}
+.secov-legendrow{display:flex;align-items:center;gap:8px;font-size:12.5px;
+  color:var(--ink);min-width:0}
+.secov-legdot{width:9px;height:9px;border-radius:50%;flex:none}
+.secov-legname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.secov-legcount{flex:none;color:var(--muted)}
+.secov-legcount b{color:var(--ink);font-weight:650}
+
+/* Top findings: five rows, six declared widths (the width test's own
+   parametrize covers this table like every other). min-width is the floor
+   below which the wrapper scrolls instead of crushing the columns. */
+.secov-findtable{width:100%;min-width:760px}
+.secov-findtable th:nth-child(1){width:10%}   /* Severity     */
+.secov-findtable th:nth-child(2){width:26%}   /* Title        */
+.secov-findtable th:nth-child(3){width:30%}   /* Location     */
+.secov-findtable th:nth-child(4){width:14%}   /* Analysis run */
+.secov-findtable th:nth-child(5){width:15%}   /* First seen   */
+.secov-findtable th:last-child{width:5%}      /* row chevron  */
+.secov-findtable .sectitle{font-size:13px;font-weight:650;color:var(--ink);
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.secov-findtable td:last-child{text-align:right}
+/* The two sortable headers read as plain header text with the active
+   arrow, not as boxed buttons -- ProjectOverview.png's own header row.
+   Still buttons underneath (the findings browser's own idiom, reused);
+   only the chrome flattens. */
+.secov-findtable th .btn{border:0;background:transparent;padding:0;margin:0;
+  font-size:inherit;font-weight:inherit;color:inherit;letter-spacing:inherit;
+  text-transform:inherit;box-shadow:none}
+.secov-findtable th .btn:hover{color:var(--accent)}
+/* "#8 (Deep)" as the mockup's own plain accent link, one line -- a button
+   underneath (the same drill-down the findings browser's Analysis run
+   column wires), just without the ghost box the sample never draws. */
+.secov-findtable td .btn{border:0;background:transparent;padding:0;
+  color:var(--accent);font-weight:600;white-space:nowrap;box-shadow:none}
+.secov-findtable td .btn:hover{text-decoration:underline}
+
+/* Recent activity rows: tinted icon box, bold kind + detail, the kind
+   badge and the absolute date right-aligned. In the 300px rail the right
+   cluster wraps under the title instead of crushing it. */
+.secov-actlist{display:flex;flex-direction:column}
+.secov-actrow{display:flex;align-items:center;gap:12px;padding:11px 2px;
+  border-top:1px solid var(--line2)}
+.secov-actrow:first-child{border-top:0}
+.secov-actic{display:flex;align-items:center;justify-content:center;
+  width:38px;height:38px;border-radius:11px;background:var(--accent-soft);
+  color:var(--accent);flex:none}
+.secov-actic .ic{width:17px;height:17px}
+.secov-actright{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  justify-content:flex-end;flex:none;max-width:55%}
+.secov-actright .secmeta{white-space:nowrap}
+
+/* ------------------------------------------ project screen: Branches tab
+   ProjectBranches.png -- five KPI cards (the shared kpi-grid), the filter
+   bar, the eight-column branches table, and the rail's own three cards.
+   Severity chips wear the severity tokens with the same color-mix tint
+   idiom the findings table's pills use; the trend bars and the coverage
+   bar read the accent. */
+.secbr-bar{margin:14px 0 12px}
+.secbr-tablehost{min-width:0}
+.secbr-name{display:flex;align-items:center;gap:8px;min-width:0}
+.secbr-name>.ic{width:14px;height:14px;color:var(--muted);flex:none}
+.secbr-branch{font-weight:650;color:var(--ink);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.secbr-status{display:inline-flex;align-items:center;gap:6px;font-size:12px;
+  font-weight:600;white-space:nowrap}
+.secbr-status .secbr-statusdot{width:7px;height:7px;border-radius:50%;flex:none}
+.secbr-status.active{color:var(--ok)}
+.secbr-status.active .secbr-statusdot{background:var(--ok)}
+.secbr-status.inactive{color:var(--muted)}
+.secbr-status.inactive .secbr-statusdot{background:var(--muted);opacity:.55}
+.secbr-ago{font-weight:650;color:var(--ink)}
+.secbr-total{font-weight:700;color:var(--ink)}
+.secbr-failed{color:var(--err)}
+.secbr-sev{display:flex;gap:10px}
+.secbr-sevchip{display:flex;flex-direction:column;align-items:center;gap:3px;min-width:26px}
+.secbr-sevcount{display:inline-flex;align-items:center;justify-content:center;
+  min-width:24px;padding:2px 6px;border-radius:7px;font-size:12px;font-weight:650;
+  background:var(--panel2);color:var(--muted)}
+.secbr-sevcount.sev-critical{background:color-mix(in srgb,var(--sev-crit) 12%,transparent);color:var(--sev-crit)}
+.secbr-sevcount.sev-high{background:color-mix(in srgb,var(--sev-high) 14%,transparent);
+  color:color-mix(in srgb,var(--sev-high) 80%,var(--ink) 20%)}
+.secbr-sevcount.sev-medium{background:color-mix(in srgb,var(--sev-med) 16%,transparent);
+  color:color-mix(in srgb,var(--sev-med) 70%,var(--ink) 30%)}
+.secbr-sevcount.sev-low{background:color-mix(in srgb,var(--sev-low) 14%,transparent);color:var(--sev-low)}
+.secbr-sevcount.sev-info{background:color-mix(in srgb,var(--sev-info) 22%,transparent);
+  color:color-mix(in srgb,var(--sev-info) 60%,var(--ink))}
+/* A zero is tracked-and-none -- present, muted -- and a dash is never-read. */
+.secbr-sevcount.zero{background:var(--panel2);color:var(--muted);opacity:.75}
+.secbr-sevcount.none{background:transparent;color:var(--muted)}
+.secbr-sevname{font-size:9.5px;color:var(--muted);letter-spacing:.02em}
+.secbr-bars{display:block;width:96px;height:28px}
+.secbr-bars .secbr-bar{fill:var(--accent);opacity:.85}
+.secbr-bars .secbr-bar.capped{fill:transparent;stroke:var(--accent);stroke-width:1;opacity:.7}
+.secbr-notrend{color:var(--muted)}
+.secbr-sha{font:12px ui-monospace,"SF Mono",Menlo,monospace;color:var(--accent);font-weight:600}
+.secbr-scope{font-size:11.5px;font-weight:500;color:var(--muted)}
+.secbr-covline{display:flex;align-items:center;justify-content:space-between;
+  font-size:12.5px;color:var(--ink);font-weight:650;margin:2px 0 8px}
+.secbr-covcount{color:var(--ink)}
+.secbr-covpct{color:var(--ink)}
+.secbr-covtrack{height:8px;border-radius:5px;background:var(--panel2);
+  border:1px solid var(--line2);overflow:hidden;margin-bottom:8px}
+.secbr-covbar{height:100%;border-radius:5px;background:var(--accent)}
+/* The floor below which .table-scroll scrolls sideways instead of crushing
+   the eight columns into unlabelled slivers -- the same rule every other
+   wide table in the product carries (#view-jobs's own comment). */
+.secbr-table{min-width:1060px}
+.secbr-table th:nth-child(1){width:18%}   /* Branch             */
+.secbr-table th:nth-child(2){width:8%}    /* Status             */
+.secbr-table th:nth-child(3){width:13%}   /* Last analysis      */
+.secbr-table th:nth-child(4){width:10%}   /* Total findings     */
+.secbr-table th:nth-child(5){width:19%}   /* Severity breakdown */
+.secbr-table th:nth-child(6){width:10%}   /* Trend (30d)        */
+.secbr-table th:nth-child(7){width:13%}   /* Last commit        */
+.secbr-table th:last-child{width:9%}      /* Actions            */
+.secbr-table td.rowacts{white-space:nowrap}
+
+/* ------------------------------------------- project screen: Reports tab
+   ProjectReports.png -- the one Reports card (run chip, profile with the
+   run number beneath, branch, sortable Generated-at, the four format
+   chips as the downloads, quick-download + kebab), and the rail's own
+   summary card. The donut/categories rail cards are the Branches tab's
+   own, shared. */
+.secrp-table{min-width:860px}
+.secrp-table th:nth-child(1){width:10%}   /* Analysis     */
+.secrp-table th:nth-child(2){width:17%}   /* Profile      */
+.secrp-table th:nth-child(3){width:20%}   /* Branch       */
+.secrp-table th:nth-child(4){width:20%}   /* Generated at */
+.secrp-table th:last-child{width:33%}     /* Format       */
+.secrp-id{font-weight:650}
+.secrp-profile{font-weight:650;color:var(--ink)}
+.secrp-when{font-weight:650;color:var(--ink)}
+.secrp-fmts{display:flex;flex-wrap:wrap;gap:5px}
+.secrp-fmt{font:inherit;font-size:11px;font-weight:600;color:var(--ink);
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  padding:3px 8px;cursor:pointer;white-space:nowrap}
+.secrp-fmt:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line));
+  color:var(--accent)}
+.secrp-none{font-weight:650;color:var(--muted)}
+.secrp-sumline{display:flex;align-items:center;justify-content:space-between;
+  font-size:12.5px;color:var(--muted);padding:5px 0}
+.secrp-sumline b{color:var(--ink);font-weight:650}
+.secrp-sumlabel{min-width:0}
+
+/* --------------------------------------------------------- security index
+   The project table, the recent-analyses feed and the severity donut all
+   paint into the same #sec-list host the flat project list used to fill --
+   see ui/security/index-screen.js. The five KPI cards used to be here too
+   (.secidx-kpis/.secidx-card and friends) until Phase 4 Task 1 moved them
+   onto the shared .kpi-grid/.kpi-card (ui/css/components.css) every other
+   page's own KPI row already uses -- see secIndexCards's own comment. */
+/* The mockup's two bottom cards bottom-align: the row stretches its
+   children to one height, each section is a column, and the left card's
+   footer rides at the bottom with the table filling the middle. Scoped to
+   the index's own row -- .secpjbody elsewhere (the project screen) keeps
+   its flex-start. */
+.secidx-bottom{align-items:stretch}
+/* The row's REAL children are .secpjmain (wrapping the Recent card) and
+   .secidx-findcard (the card itself). The first cut of this rule targeted
+   a .secidx-section child that does not exist -- the wrapper stretched,
+   the card inside did not, and whichever side was shorter stopped visibly
+   above the other. Scratch data hid it: the left side happened to be the
+   tall one there. */
+.secidx-bottom > .secpjmain{display:flex;flex-direction:column}
+.secidx-bottom > .secpjmain > .table-card{flex:1;display:flex;flex-direction:column}
+.secidx-bottom .table-card > .table-scroll{flex:1}
+.secidx-section{display:flex;flex-direction:column;gap:9px}
+.secidx-section h3{margin:0;font-size:13px}
+/* Two lines, then an ellipsis -- the mockup's own Project column, a fixed
+   22% of the table, would otherwise let a longer description grow the row
+   as tall as it likes. Only user here (grep before reusing elsewhere). */
+.secidx-desc{font-size:11.5px;color:var(--muted);margin-top:2px;font-weight:400;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.secidx-fellback{color:var(--warn);font-size:11.5px;margin-left:6px}
+/* -------------------------------------------------- projects table + bar
+   Phase 4 Task 3: the 8-column table's own cells (secIndexProjectRow,
+   ui/security/index-screen.js) and the filter bar mounted above it
+   (secProjectsFilterBar, same file). */
+.secidx-pname{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:650;min-width:0}
+/* Direct-child combinator, not a descendant one -- .secidx-enabled's own
+   badge icon (nested one level deeper, inside that span) must NOT inherit
+   this accent tint, or a security-enabled badge would repaint the same
+   accent purple as the folder icon beside it instead of staying green. This
+   is the exact mistake test_the_cells_icon_rule_cannot_repaint_the_
+   favourite_star (tests/test_page_contract.py) already pins for .jobcell --
+   same shape, same fix, a different cell. */
+.secidx-pname > .ic{width:15px;height:15px;color:var(--accent);flex:none}
+.secidx-pname-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.secidx-enabled{display:inline-flex;color:var(--ok);flex:none}
+.secidx-enabled .ic{width:15px;height:15px}
+.secidx-sub{color:var(--muted);font-size:11.5px;margin-top:3px;line-height:1.5}
+.secidx-findcell{display:flex;flex-direction:column;gap:4px;align-items:flex-start}
+.secidx-findtotal{font-size:11px;color:var(--muted)}
+/* Three DISTINCT chip tones for this screen alone (Phase 4 Task 5) -- the
+   mockup's own crit-red/high-orange/medium-amber, in place of the two-tone
+   `.sevpill.critical,.sevpill.high{background:var(--err-soft)}` grouping
+   every OTHER severity-chipped surface in the app still uses (the findings
+   browser, the branches tab, a project's own Overview) and this task does
+   not touch. Scoped to `.secidx-sev3` (both this screen's tables wrap their
+   chips in it -- the fleet table's own Findings cell and the Recent-
+   analyses row beside it) rather than changed at `.sevpill`'s own source,
+   so this stays exactly this screen's own vocabulary. `color-mix()` here
+   tints each token's own hue into a soft chip background/border, the same
+   idiom `.sevpill.critical`'s own border-color already uses -- it is not
+   standing in for a missing hue any more: `--sev-crit`/`--sev-high`/
+   `--sev-med` (ui/css/tokens.css) are their own dedicated tokens, sampled
+   from the approved mockup's own pixels (see that file's own comment), the
+   identical tokens SEV_STROKE (ui/security/index-screen.js) and
+   `.secidx-legendrow.high` (above) both read, the one vocabulary this
+   screen now keeps everywhere severity has a colour. `.critical`/`.medium`
+   need their own tokens named explicitly below for the same reason `.high`
+   does -- none of the three reads `--err`/`--warn` any more, not even
+   `.critical`: `--sev-crit` (`#e3302b`) is its own close-but-distinct red
+   from `--err` (`#d92d20`), sampled from the mockup rather than borrowed
+   from the status scale it used to share a hue with by coincidence. */
+.secidx-sev3 .sevpill.critical{background:color-mix(in srgb,var(--sev-crit) 12%,transparent);
+  color:var(--sev-crit);border-color:color-mix(in srgb,var(--sev-crit) 40%,transparent)}
+.secidx-sev3 .sevpill.high{background:color-mix(in srgb,var(--sev-high) 14%,transparent);
+  color:color-mix(in srgb,var(--sev-high) 80%,var(--ink) 20%);
+  border-color:color-mix(in srgb,var(--sev-high) 45%,transparent)}
+.secidx-sev3 .sevpill.medium{background:color-mix(in srgb,var(--sev-med) 16%,transparent);
+  color:color-mix(in srgb,var(--sev-med) 70%,var(--ink) 30%);
+  border-color:color-mix(in srgb,var(--sev-med) 50%,transparent)}
+/* `.low` needs no override here either -- see .secfind-sev3's identical
+   comment above (this file) for why: the base `.sevpill.low` rule now reads
+   the corrected --sev-low itself. */
+.secidx-sev3 .sevpill.info{border-color:var(--line)}
+.secidx-spark-svg{width:100%;max-width:150px;height:32px;display:block}
+.secidx-rowlink{cursor:pointer}
+#view-security tbody tr.secidx-rowlink:hover{background:var(--panel2)}
+/* The kebab: <details>/<summary> rather than a click-toggled div (see
+   secIndexProjectRow's own comment) -- .menu-pop (above, job-card block)
+   already draws the popup itself; only the anchor and the open direction
+   are this table's own. Pops DOWNWARD (top, not .menu-pop's own upward
+   bottom) -- a job card sits at the bottom of a grid, a table row can be
+   anywhere, including the very first one, where popping up would clip
+   against the table's own header. */
+.secidx-kebab{position:relative;display:inline-flex}
+.secidx-kebab > summary{list-style:none;cursor:pointer}
+.secidx-kebab > summary::-webkit-details-marker{display:none}
+.secidx-kebab .menu-pop{top:calc(100% + 6px);bottom:auto}
+/* The trigger look shared by every <details>/<summary>/.menu-pop popover on
+   this page that is not the full makePicker/createCombo widget --
+   secFindingsPeriodPicker's own (index-screen.js) and secFindSavedFilters'
+   (findings-screen.js). It used to also be secProjectsFilterBar's own three
+   filter triggers, copying .picker-trigger's look by hand around a plain
+   <select> (ui/app/chrome.js's own filterBar comment explains the widget
+   this was standing in for); Phase 4 Task 5 gave that bar the real
+   `.picker`/`.picker-pop` instead (see that function's own comment), so
+   `.filterpick` is scoped to the two <details> triggers now. */
+.filterpick{display:inline-flex;align-items:center;gap:8px;font:inherit;font-size:12.5px;
+  padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:var(--panel);
+  color:var(--ink);cursor:pointer}
+.filterpick:hover{border-color:var(--muted)}
+.filterpick .ic{width:15px;height:15px;color:var(--muted);flex:none}
+/* A capped analysis is a PARTIAL read (see secIndexProjectRow) -- flagged the
+   same register as .sevpill.medium (warn tokens, not a new colour) so the
+   badge reads as a caution beside the pills it sits next to, not decoration. */
+.secidx-capped{display:inline-flex;align-items:center;margin-left:6px;padding:2px 7px;
+  border-radius:999px;font-size:10.5px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.03em;background:var(--warn-soft);color:var(--warn);
+  border:1px solid color-mix(in srgb,var(--warn) 45%,transparent)}
+.secidx-recentrow{width:100%}
+.secidx-donutwrap{display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start;
+  background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:16px 18px;box-shadow:var(--shadow)}
+.secidx-donutcol{display:flex;flex-direction:column;align-items:center;gap:12px;flex:none}
+/* C1 (Phase 4 final review): the capped/fell-back warnline is `.secidx-
+   donutwrap`'s own third flex child now, a sibling of `.secidx-donutcol`/
+   `.secidx-catcol`, never nested inside either -- see secIndexDonut's own
+   comment (ui/security/index-screen.js) for why. `flex:1 1 100%` forces it
+   onto its own line regardless of how much room the two columns beside it
+   took (`.secidx-donutwrap`'s own `flex-wrap:wrap`); `min-width:0` is what
+   actually lets `.warnline`'s own text wrap at that width instead of
+   reasserting its unwrapped content width one level up, the same overflow
+   this class exists to close. */
+.secidx-donutwarn{flex:1 1 100%;min-width:0}
+.secidx-donut-svg{width:150px;height:150px}
+.secidx-donut-total{font:700 20px/1 ui-sans-serif,system-ui,sans-serif;fill:var(--ink)}
+.secidx-catcol{flex:1 1 260px;min-width:220px}
+/* "Top issue categories" (Phase 4 Task 4) -- a section title now, not the
+   eyebrow label the old "Rules producing the most open findings" caption
+   wore (that sentence explained what the numbers below it were; the new,
+   shorter one is just its name, the mockup's own register). Small-caps goes
+   with it, the same reasoning `.secidx-cardhead h3` (below) opts the two
+   bottom-row card titles out of the page's generic uppercase `h3`. */
+.secidx-cathead{font-size:13px;font-weight:650;color:var(--ink);margin:0 0 10px}
+/* Icon, name, right-aligned count -- no bar (Phase 4 Task 4 dropped the
+   width-scaled fill the mockup never drew here). `.secidx-catname` no
+   longer reserves a fixed 140px for itself: with nothing to its right but
+   the count, it grows to fill the row instead. */
+.secidx-catrow{display:flex;align-items:center;gap:10px;margin:0 0 10px;font-size:12.5px}
+.secidx-catrow:last-child{margin-bottom:0}
+.secidx-catrow .ic{width:15px;height:15px;color:var(--muted);flex:none}
+.secidx-catname{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.secidx-catcount{flex:none;font-variant-numeric:tabular-nums;font-weight:650;color:var(--ink);min-width:20px;text-align:right}
+@media (max-width:700px){
+  .secidx-donutwrap{flex-direction:column;align-items:center}
+}
+/* ---------------------------------------------- recent analyses / findings
+   Phase 4 Task 4: the index's own bottom row, side by side like the mockup
+   -- Recent analyses in `.secpjmain` (ui/css/components.css, the project
+   screen's own main column, reused as-is), Findings overview in
+   `.secidx-findcard` below. A fixed flex-basis rather than the project
+   screen's own 300px `.secpjside`: that width suits a donut stacked ABOVE
+   its own legend (the project sidebar's own layout, untouched by any of
+   this), but this card puts the donut BESIDE its legend (`.secidx-findbody`
+   below) and asks for more room to do it -- narrower than `.secpjmain`
+   still leaves it read, at a glance, as the SIDE column of the row. */
+/* The mockup's own proportions: the donut card holds ~424px of a 1248px
+   content row and does NOT grow -- the analyses table takes the rest.
+   flex-grow:1 here made the two cards split the row almost evenly, twice
+   the drawing's width. */
+.secidx-findcard{flex:0 1 424px;min-width:320px}
+@media (max-width:900px){
+  .secidx-findcard{flex:1 1 100%}
+}
+/* A card's own title row -- bold, sentence case, one optional grey sub-line,
+   one trailing action -- for BOTH bottom-row cards (secIndexCardHead,
+   ui/security/index-screen.js). `h3` is uppercase small caps everywhere
+   else on this page (the table headers, `.secidx-cathead` above) -- an
+   eyebrow style for a label sitting ABOVE a busier panel, not the mockup's
+   own bold, sentence-case reading for "Recent analyses"/"Findings
+   overview". Scoped to opt OUT of that inherited rule rather than the rule
+   itself losing its transform for every other `h3` still wanting it. */
+.secidx-cardhead{display:flex;align-items:flex-start;justify-content:space-between;
+  gap:16px;padding:18px 20px 14px}
+.secidx-cardhead-text{min-width:0}
+.secidx-cardhead h3{margin:0;font-size:15px;font-weight:650;color:var(--ink);
+  text-transform:none;letter-spacing:normal;display:block}
+.secidx-cardhead-sub{margin:4px 0 0;font-size:12px;color:var(--muted)}
+.secidx-cardhead .btn{flex:none}
+/* The house combo (Phase 4 Task 4's own period picker) -- the identical
+   <details>/<summary>/.menu-pop popover secIndexProjectRow's own kebab
+   already draws, `position:fixed` recompute on open included (both clip
+   against this same `.table-card{overflow:hidden}`), styled as a trigger
+   with `.filterpick`'s own look (this file, above) so it reads as the same
+   kind of control as the projects table's own pickers three inches away. */
+.secidx-periodpick{position:relative;display:inline-flex}
+.secidx-periodpick > summary{list-style:none;cursor:pointer}
+.secidx-periodpick > summary::-webkit-details-marker{display:none}
+.secidx-periodpick .menu-pop{top:calc(100% + 6px);bottom:auto;min-width:168px}
+.secidx-periodpick .menu-pop button{justify-content:space-between}
+/* The findings browser's own saved-filters picker (Phase 4 Task 5,
+   findings-screen.js) -- the identical <details>/<summary>/.menu-pop shape
+   as .secidx-periodpick just above, for the identical reason (see
+   secFindSavedFilters's own comment): a short, dynamically-populated list
+   that gets rebuilt far too often, and can be mounted twice at once, for
+   makePicker's own once-per-page-life PICKERS registry. */
+.secfind-savedpick{position:relative;display:inline-flex}
+.secfind-savedpick > summary{list-style:none;cursor:pointer}
+.secfind-savedpick > summary::-webkit-details-marker{display:none}
+.secfind-savedpick .menu-pop{top:calc(100% + 6px);bottom:auto;min-width:168px}
+.secfind-savedpick .menu-pop button{justify-content:space-between}
+/* The shared donut+legend+categories block (secIndexDonut), planted inside
+   THIS card's own box instead of bare in a sidebar -- `.secidx-donutwrap`'s
+   own background/border/shadow/padding is for the latter (project-screen.js
+   plants it with no card of its own around it) and would double this card's
+   chrome if left in place here, so it is stripped back out, scoped to this
+   one wrapper rather than changed at the source. The donut sits BESIDE its
+   legend here (`flex-direction:row`, not the shared rule's own column) and
+   the categories list drops to its own full-width row below both --
+   `.secidx-findbody` is index-screen.js's own wrapper, so neither change
+   reaches the project screen's sidebar, which this task's mockup says
+   nothing about. */
+.secidx-findbody{padding:2px 20px 16px}
+.secidx-findbody .secidx-donutwrap{background:none;border:none;box-shadow:none;padding:0}
+.secidx-findbody .secidx-donutcol{flex-direction:row;align-items:center;gap:16px}
+.secidx-findbody .secidx-donut-svg{flex:none}
+.secidx-findbody .secidx-catcol{flex:1 1 100%}
+/* The legend, the mockup's own row -- a coloured dot, the severity's name,
+   a right-aligned "count (pct%)" -- its own element (Phase 4 Task 5), not a
+   `.sevpill` wearing a percentage the way this screen first built it (see
+   secIndexDonutLegend's own comment, ui/security/index-screen.js, for why
+   that shape was replaced: the pinned pill tests hold `.sevpill` to what it
+   already means elsewhere on this screen, and this legend needed to say
+   something a pill's own shape has no room for). Each row is
+   `justify-content:space-between` so the count+percentage lands flush right
+   against the card's own edge, the mockup's own alignment. */
+.secidx-findlegend{display:flex;flex-direction:column;gap:9px;flex:1 1 auto;min-width:0}
+.secidx-legendrow{display:flex;align-items:center;justify-content:space-between;
+  gap:14px;width:100%;font-size:12.5px}
+.secidx-legenddot{width:8px;height:8px;border-radius:50%;flex:none}
+/* The SAME three-tone vocabulary SEV_STROKE and .secidx-sev3 use (this
+   file, below, and ui/security/index-screen.js's own comment on SEV_STROKE)
+   -- one set of colours for the donut wedges, the findings chips AND this
+   legend's own dots, never a fourth palette of its own. */
+.secidx-legendrow.critical .secidx-legenddot{background:var(--sev-crit)}
+.secidx-legendrow.high .secidx-legenddot{background:var(--sev-high)}
+.secidx-legendrow.medium .secidx-legenddot{background:var(--sev-med)}
+.secidx-legendrow.low .secidx-legenddot{background:var(--sev-low)}
+.secidx-legendrow.info .secidx-legenddot{background:var(--sev-info)}
+.secidx-legendname{flex:1 1 auto;min-width:0;font-weight:600;color:var(--ink);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.secidx-legendcount{flex:none;color:var(--muted);font-variant-numeric:tabular-nums;
+  white-space:nowrap}
+/* Full-width, centred -- the mockup's own "View full report" -- rather than
+   the inline-flex `.btn` shrinking to its own label's width and sitting
+   flush left under a card this wide. */
+.secidx-reportbtn{display:flex;justify-content:center;margin:4px 20px 20px}
+/* --------------------------------------------------------------- a11y floor
+   One ring, everywhere, and only for keyboard users — :focus-visible keeps it
+   off a mouse click. The custom widgets (day picker, chips, tabs, steppers,
+   combo triggers, the folder list) had no focus style at all, so tabbing
+   through the editor was invisible. */
+:where(a,button,input,select,textarea,summary,[tabindex]):focus-visible,
+.fs-list li:focus-visible,.combo-list li:focus-visible{
+  outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+.btn:focus-visible,.iconbtn:focus-visible,.pk-row:focus-visible,
+.day-btn:focus-visible,.navitem:focus-visible,.tab:focus-visible{outline-offset:2px}
+/* These have to out-specify the `.dlg-b input:focus{outline:none}` above, which
+   replaced the ring with a 1px border-colour change — the only focus signal the
+   editor had, and (0,1,1) beats the (0,1,0) of the shared rule regardless of
+   which comes later in the file. */
+.dlg-b input:focus-visible,.dlg-b select:focus-visible,.dlg-b textarea:focus-visible,
+.combo-search:focus-visible,.fs-list li:focus-visible{
+  outline:2px solid var(--accent);outline-offset:2px}
+/* Inputs draw their ring on the wrapper that carries the visible border, so the
+   ring hugs the control instead of the bare input inside it. */
+.searchbox:focus-within,.stepper:focus-within,.moneyin:focus-within,
+.termbar:focus-within,.mdedit:focus-within{outline:2px solid var(--accent);outline-offset:1px}
+.searchbox input:focus-visible,.stepper input:focus-visible,.moneyin input:focus-visible,
+.termbar input:focus-visible,.mdedit > textarea:focus-visible{outline:none}
+/* Nothing here is worth making somebody motion-sick over: the run pulse becomes
+   a steady dot, and every transition collapses to an instant state change. */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;
+    transition-duration:.001ms!important;scroll-behavior:auto!important}
+  .runningbadge .pulse,.livedot{opacity:1;transform:none}
+}
+/* ------------------------------------------------------------------ narrow
+   Everything below used to have exactly one breakpoint between them, so the
+   page ran wider than the viewport on a phone: the stat labels were `nowrap`,
+   the four card buttons were `nowrap` and unwrapping, and three flex rows had
+   no `flex-wrap`. */
+@media (max-width:900px){
+  .band{height:44px}
+  .legend{gap:10px}
+  /* A 236px rail out of a 760px viewport is a quarter of the page spent on
+     navigation, so here the menu leaves the flow and slides in over it. The
+     topbar grows the only hamburger that is visible at this width. */
+  .sidebar{position:fixed;left:0;top:0;bottom:0;height:100dvh;
+    transform:translateX(-100%);transition:transform .2s ease}
+  .sidebar.open{transform:none;box-shadow:var(--shadow-lg)}
+  .topbar .burger{display:flex}
+}
+@media (max-width:640px){
+  .topbar{padding:10px 14px}
+  .wrap{padding:18px 14px 60px}
+  .brand .tag{display:none}
+  .pulsepanel{padding:13px 14px 12px}
+  .band{gap:0}
+  .axis span:nth-child(2),.axis span:nth-child(4){display:none}
+  /* Icon, title, sentence and two actions in one row is tight below 640px --
+     let the actions drop to their own line rather than squeezing the title. */
+  .page-header{flex-wrap:wrap}
+  .page-header-actions{margin-left:41px}
+  .secthead{flex-wrap:wrap}
+  .secthead .btn{flex:1 1 auto;justify-content:center}
+  .projgroup-h{flex-wrap:wrap}
+  /* its own row, still one line: these descriptions are whole prompt contracts,
+     and unwrapping one turned a header into forty lines of text */
+  .projgroup-h .pgh-desc{order:9;flex:1 1 100%}
+  .actions{flex-wrap:wrap}
+  .actions .btn{flex:1 1 calc(50% - 19px)}
+  .toolbar .perpage{flex:1 1 auto;justify-content:flex-end}
+  .row2{grid-template-columns:1fr}
+  .spark{width:88px}
+}
+/* ui-bundle: cfe8cc764f2656112a91b320b897f548c57e5413e6144c45f7db27be07ae74ac */
+/* ui-sources: 77dc92452c6400e5e401c6c753825ddf25d5bf618d89887f14c5e5aafd59425d */

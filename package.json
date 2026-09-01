@@ -1,0 +1,6 @@
+{
+  "name": "claude-cron-ui",
+  "private": true,
+  "scripts": { "build": "bash build/build-ui.sh" },
+  "devDependencies": { "esbuild": "0.25.0" }
+}

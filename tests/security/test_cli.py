@@ -1,0 +1,2921 @@
+"""The one door between the engine and the ledger.
+
+Everything an analysis does -- opening the row, the deterministic phases, the
+agent's own findings, closing it, the checklist, the reports -- goes through
+`bin/security/cli.py`. These tests drive it as a subprocess, the same way the
+agent and bash do, because the process boundary IS the contract: an exit code
+and a line of JSON on stdout.
+
+One test group near the bottom (the ledger-write-failure tests) is the
+exception: it needs to monkeypatch `ledger.record_event` mid-call, which a
+subprocess boundary cannot see, so it imports `security.cli` directly and
+calls `main()` in-process instead.
+"""
+
+import inspect
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+from security.fingerprint import fingerprint as compute_fingerprint, secret_fingerprint
+from security import cli as security_cli
+from security import ledger as security_ledger
+
+REPO = Path(__file__).resolve().parent.parent.parent
+CLI = REPO / "bin" / "security" / "cli.py"
+
+# What `cmd_security_analyze` exports into the analysis run, and therefore what
+# every command the agent types from its own tool shell arrives with.
+AS_AGENT = {**os.environ, "CC_SECURITY_AGENT": "1"}
+
+
+def run(db, *args, stdin=None, env=None):
+    out = subprocess.run(
+        [sys.executable, str(CLI), *args, "--db", str(db)],
+        capture_output=True, text=True, input=stdin, check=False, env=env)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout) if out.stdout.strip() else None
+
+
+def fails(db, *args, stdin=None, env=None):
+    return subprocess.run(
+        [sys.executable, str(CLI), *args, "--db", str(db)],
+        capture_output=True, text=True, input=stdin, check=False, env=env)
+
+
+def raw(db, *args, env=None):
+    """Like `run`, but for a verb whose stdout is not JSON -- `fingerprint`
+    prints a bare hex string so it can be captured directly in `$(...)`."""
+    out = subprocess.run(
+        [sys.executable, str(CLI), *args, "--db", str(db)],
+        capture_output=True, text=True, check=False, env=env)
+    assert out.returncode == 0, out.stderr
+    return out.stdout.strip()
+
+
+def open_analysis(db, project="web", repo="web", branch="main", commit="abc",
+                  profile="quick", run_id="r1"):
+    return run(db, "open-analysis", "--project", project, "--repo", repo,
+               "--branch", branch, "--commit", commit, "--profile", profile,
+               "--run-id", run_id)["analysis_id"]
+
+
+def prepared_analysis(db, tmp_path, **kw):
+    """An analysis whose deterministic phases have actually run.
+
+    `finish --state done` is DOWNGRADED to `capped` for an analysis that never
+    ran `prepare` (see cmd_finish), so a test about what a close does has to
+    start from a prepared row or it is quietly testing that guard instead of
+    the thing it names.
+    """
+    aid = open_analysis(db, **kw)
+    root = tmp_path / f"repo-{aid}"
+    root.mkdir(parents=True, exist_ok=True)
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    return aid
+
+
+def test_prepare_then_report_then_finish(tmp_path):
+    root = tmp_path / "repo"
+    (root / "sub").mkdir(parents=True)
+    (root / "prod.env").write_text("AWS_ACCESS_KEY_ID=AKIA" + "IOSFODNN7EXAMPLE\n")
+    db = tmp_path / "security.db"
+
+    aid = open_analysis(db)
+    prepared = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+                   "--offline")
+    assert prepared["findings"] >= 1
+
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "b" * 64, "category": "sast", "rule": "sql-injection",
+        "severity": "high", "title": "t", "rationale": "r", "remediation": "m",
+        "occurrences": [{"file": "app.py", "line": 1, "snippet_hash": "h"}]}))
+    run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "0.5")
+
+    checklist = run(db, "checklist", "--analysis", str(aid))
+    states = {f["state"] for f in checklist["findings"]}
+    assert states == {"new"}
+
+
+def test_the_agent_cannot_report_a_finding_without_a_fingerprint(tmp_path):
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    aid = open_analysis(db, commit="a", run_id="r")
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    out = fails(db, "report-finding", "--analysis", str(aid),
+                stdin=json.dumps({"rule": "x"}))
+    assert out.returncode != 0
+    assert "fingerprint" in out.stderr
+
+
+def test_a_fingerprint_that_is_not_a_string_is_refused(tmp_path):
+    """SQLite's type affinity would store a numeric fingerprint as a number,
+    and compare it as one -- it could never match the same finding recorded
+    as text by an earlier analysis, so the checklist would report it `fixed`
+    and `new` again on every single run."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": 12345, "category": "sast", "rule": "r",
+        "severity": "high", "title": "t"}))
+    assert out.returncode != 0
+    assert "fingerprint" in out.stderr
+
+
+def test_the_agent_cannot_invent_a_severity(tmp_path):
+    """`report-finding` is the agent's only door, and the agent is not
+    deterministic: a severity outside the contract would land in the ledger
+    and be silently dropped from every report's severity table."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "c" * 64, "category": "sast", "rule": "r",
+        "severity": "catastrophic", "title": "t"}))
+    assert out.returncode != 0
+    assert "severity" in out.stderr
+
+
+def test_the_agent_cannot_report_into_an_analysis_that_does_not_exist(tmp_path):
+    db = tmp_path / "security.db"
+    open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", "999", stdin=json.dumps({
+        "fingerprint": "d" * 64, "category": "sast", "rule": "r",
+        "severity": "high", "title": "t"}))
+    assert out.returncode != 0
+    assert "999" in out.stderr
+
+
+AWS = "AKIA" + "IOSFODNN7EXAMPLE"
+
+
+def test_a_finding_whose_rationale_contains_a_live_looking_key_is_refused(tmp_path):
+    """The deterministic categories cannot leak a value by construction --
+    no column, no return, no argument for it. A SAST finding's free text used
+    to be validated for shape only (required keys, severity, MAX_TEXT), never
+    for content, so nothing at the door stopped an agent from writing a
+    matched credential straight into a rationale. The refusal must name the
+    field and the rule, and the key's text must appear NOWHERE in stdout or
+    stderr -- a refusal that echoes the secret back would defeat itself."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "e" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "severity": "high", "title": "t",
+        "rationale": f"Found a live credential: {AWS}"}))
+    assert out.returncode != 0
+    assert "rationale" in out.stderr
+    assert "aws_access_key" in out.stderr
+    assert AWS not in out.stdout
+    assert AWS not in out.stderr
+
+
+def test_a_finding_whose_title_contains_a_live_looking_key_is_refused(tmp_path):
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "f" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "severity": "high", "title": f"Key exposed: {AWS}"}))
+    assert out.returncode != 0
+    assert "title" in out.stderr
+    assert AWS not in out.stdout
+    assert AWS not in out.stderr
+
+
+def test_a_finding_whose_remediation_contains_a_live_looking_key_is_refused(tmp_path):
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "1" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "severity": "high", "title": "t", "rationale": "r",
+        "remediation": f"Rotate {AWS} immediately"}))
+    assert out.returncode != 0
+    assert "remediation" in out.stderr
+    assert AWS not in out.stdout
+    assert AWS not in out.stderr
+
+
+def test_a_finding_that_describes_a_credential_instead_of_quoting_it_is_accepted(tmp_path):
+    """The control: the check must not make the tool unusable for the normal
+    case of writing ABOUT a credential without reproducing it."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "2" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "severity": "high", "title": "Hardcoded AWS key",
+        "rationale": "An AWS access key is hardcoded in config/prod.env at line 12."}))
+
+
+def test_a_finding_whose_rationale_names_an_obvious_placeholder_is_accepted(tmp_path):
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "3" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "severity": "high", "title": "t",
+        "rationale": 'Default credential left in place: '
+                     'password = "changeme12345678901234"'}))
+
+
+def test_the_agent_cannot_send_something_that_is_not_json(tmp_path):
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin="not json")
+    assert out.returncode != 0
+    assert "JSON" in out.stderr
+
+
+def test_offline_mode_declares_the_gap(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "requirements.txt").write_text("requests==2.31.0\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db, commit="a", run_id="r")
+    prepared = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+                   "--offline")
+    assert "OSV" in prepared["coverage_note"]
+
+
+def test_finishing_does_not_erase_the_coverage_note(tmp_path):
+    """`finish_analysis` writes coverage_note unconditionally, and neither
+    caller of `finish` carries it: the agent never saw it, and the engine's
+    close-out knows only the run's status and cost. An empty --note must
+    therefore keep what `prepare` recorded, or the one line of the report
+    that says what was NOT looked at disappears at the last step."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "requirements.txt").write_text("requests==2.31.0\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline")["coverage_note"]
+    assert note
+    run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "0")
+    rendered = json.loads(run_text(db, "render", "--analysis", str(aid),
+                                   "--format", "json"))
+    assert note in rendered["coverage"]
+
+
+def run_text(db, *args):
+    out = subprocess.run(
+        [sys.executable, str(CLI), *args, "--db", str(db)],
+        capture_output=True, text=True, check=False)
+    assert out.returncode == 0, out.stderr
+    return out.stdout
+
+
+def test_a_note_given_explicitly_is_added_to_the_stored_one(tmp_path):
+    """The coverage note is the list of this report's blind spots, and the two
+    callers of `finish` each know a different one: `prepare` recorded that
+    OSV.dev was never asked, and the close-out knows the agent stopped early.
+    Substituting one for the other publishes a report that names half of what
+    it did not look at -- so the note is APPENDED, never replaced."""
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    aid = open_analysis(db)
+    stored = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+                 "--offline")["coverage_note"]
+    assert stored
+    run(db, "finish", "--analysis", str(aid), "--state", "failed",
+        "--note", "the agent never reached the SAST phase")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["coverage_note"] == f"{stored} the agent never reached the SAST phase"
+
+
+def test_the_same_note_twice_is_not_stored_twice(tmp_path):
+    """A row can be closed more than once (the agent, then the engine). The
+    note must not grow a copy of itself every time."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "failed",
+        "--note", "the run never started")
+    run(db, "finish", "--analysis", str(aid), "--state", "failed",
+        "--note", "the run never started")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["coverage_note"] == "the run never started"
+
+
+def test_finish_if_running_does_not_reopen_a_closed_analysis(tmp_path):
+    """The engine sweeps for a row left `running` by a run that never reached
+    its close-out (the slot gate, a missing cwd). That sweep must be a no-op
+    for the ordinary case where the run really happened and already closed
+    the row -- otherwise every analysis would end up `failed`."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "1.25")
+    run(db, "finish", "--analysis", str(aid), "--state", "failed", "--if-running")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert row["spend_usd"] == 1.25
+
+
+def test_finish_if_running_closes_a_row_the_run_never_reached(tmp_path):
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "failed", "--if-running",
+        "--note", "the run never started")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "failed"
+
+
+def test_a_malformed_spend_does_not_lose_the_close(tmp_path):
+    """The spend arrives from the run's own cost field, which the engine
+    already treats as untrusted text elsewhere. A row left `running` for
+    ever is a far worse outcome than a cost recorded as zero."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "n/a")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert row["spend_usd"] == 0
+
+
+def test_render_produces_all_three_formats(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db, commit="a", run_id="r")
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "0")
+    for fmt in ("json", "md", "html"):
+        out = subprocess.run(
+            [sys.executable, str(CLI), "render", "--analysis", str(aid),
+             "--format", fmt, "--db", str(db)],
+            capture_output=True, text=True, check=False)
+        assert out.returncode == 0 and out.stdout.strip()
+
+
+def test_the_db_flag_is_accepted_before_the_subcommand_too(tmp_path):
+    """bash passes it first (`security_py finish --analysis N`), the agent and
+    these tests pass it last. Both have to work, or one of the two callers
+    breaks the moment the other's form is the one that was tested."""
+    db = tmp_path / "security.db"
+    out = subprocess.run(
+        [sys.executable, str(CLI), "--db", str(db), "open-analysis",
+         "--project", "web", "--repo", "web", "--branch", "main",
+         "--commit", "a", "--profile", "quick", "--run-id", "r"],
+        capture_output=True, text=True, check=False)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout)["analysis_id"] == 1
+
+
+def test_no_db_at_all_is_refused_rather_than_guessed(tmp_path):
+    out = subprocess.run(
+        [sys.executable, str(CLI), "list", "--project", "web"],
+        capture_output=True, text=True, check=False)
+    assert out.returncode != 0
+    assert "--db" in out.stderr
+
+
+# ---------------------------------------------------------------- the checklist
+
+def two_analyses(db, before, after):
+    """One finding, reported with `before`'s occurrences and then with
+    `after`'s, and the checklist state the second analysis gives it."""
+    finding = {"fingerprint": "e" * 64, "category": "sast", "rule": "r",
+               "severity": "high", "title": "t", "occurrences": before}
+    first = open_analysis(db, run_id="r1")
+    run(db, "report-finding", "--analysis", str(first), stdin=json.dumps(finding))
+    run(db, "finish", "--analysis", str(first), "--state", "done")
+
+    finding["occurrences"] = after
+    second = open_analysis(db, commit="def", run_id="r2")
+    run(db, "report-finding", "--analysis", str(second), stdin=json.dumps(finding))
+    run(db, "finish", "--analysis", str(second), "--state", "done")
+    return [f["state"] for f in run(db, "checklist", "--analysis", str(second))["findings"]]
+
+
+def test_a_finding_that_lost_a_file_is_partial_not_open(tmp_path):
+    """`diff.classify` takes `closed_occurrences` as its OBJECTIVE half of
+    the partial signal -- the anchor two runs cannot disagree about. Nothing
+    persists that number, and the checklist is the only place the two analyses
+    meet, so it is computed there or the branch is dead and `partial` can only
+    ever come from the agent's own note."""
+    assert two_analyses(tmp_path / "security.db",
+                        [{"file": "a.py", "line": 1}, {"file": "b.py", "line": 2}],
+                        [{"file": "a.py", "line": 1}]) == ["partial"]
+
+
+def test_a_finding_that_did_not_shrink_is_open(tmp_path):
+    assert two_analyses(tmp_path / "security.db",
+                        [{"file": "a.py", "line": 1}],
+                        [{"file": "a.py", "line": 1}]) == ["open"]
+
+
+def test_progress_is_measured_in_files_closed_not_in_hits_counted(tmp_path):
+    """Both directions of the same mistake -- subtracting two counts.
+
+    Two hits in one file dropping to one is NOT progress: the file still
+    holds the hole, and someone deleting a duplicate line would be reported
+    as a partial fix nobody made. And one hit in `auth.py` becoming one hit
+    in `admin.py` IS progress on one place (and a new place opened), which a
+    count of 1 against a count of 1 cannot see at all.
+    """
+    assert two_analyses(tmp_path / "one-file.db",
+                        [{"file": "a.py", "line": 1}, {"file": "a.py", "line": 9}],
+                        [{"file": "a.py", "line": 1}]) == ["open"]
+    assert two_analyses(tmp_path / "moved.db",
+                        [{"file": "auth.py", "line": 1}],
+                        [{"file": "admin.py", "line": 1}]) == ["partial"]
+
+
+def test_a_decision_is_refused_without_a_reason(tmp_path):
+    db = tmp_path / "security.db"
+    # Closed first: `decide` refuses outright while an analysis is running (see
+    # cmd_decide), and a test about the REASON must not be answered by that.
+    run(db, "finish", "--analysis", str(open_analysis(db)), "--state", "failed")
+    out = fails(db, "decide", "--project", "web", "--fingerprint", "f" * 64,
+                "--state", "accepted", "--reason", "   ", "--by", "me")
+    assert out.returncode != 0
+    assert "reason" in out.stderr
+
+
+def test_a_decision_wins_over_the_derived_state(tmp_path):
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "a" * 64, "category": "sast", "rule": "r",
+        "severity": "high", "title": "t"}))
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+        "--state", "false_positive", "--reason", "the sink is parameterised",
+        "--by", "luiz")
+    checklist = run(db, "checklist", "--analysis", str(aid))
+    assert checklist["findings"][0]["state"] == "false_positive"
+
+
+def test_findings_lists_what_the_deterministic_phase_left_for_the_agent(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----\nxx\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    found = run(db, "findings", "--analysis", str(aid))
+    assert any(f["category"] == "secret" for f in found)
+    assert all("occurrences" in f for f in found)
+
+
+# ------------------------------------------------------- renaming a project
+
+def test_renaming_a_project_carries_its_history(tmp_path):
+    """The ledger keys an analysis by the project NAME it was opened under.
+    `claude-cron project-rename` changes that name in the config, and without
+    this every past analysis, every accepted risk and the SBOM would stay
+    behind under a name no project has any more."""
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "requirements.txt").write_text("requests==2.31.0\n")
+    aid = open_analysis(db, project="web")
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+        "--state", "accepted", "--reason", "internal only", "--by", "luiz")
+
+    moved = run(db, "rename-project", "--from", "web", "--to", "web-two")
+    assert moved["analyses"] == 1
+
+    assert run(db, "list", "--project", "web") == []
+    assert len(run(db, "list", "--project", "web-two")) == 1
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT count(*) FROM decision WHERE project='web-two'"
+                        ).fetchone()[0] == 1
+    assert conn.execute("SELECT count(*) FROM sbom WHERE project='web-two'"
+                        ).fetchone()[0] == 1
+
+
+def test_a_decision_left_behind_by_a_deleted_project_does_not_block_the_rename(tmp_path):
+    """(project, fingerprint) is the decision table's primary key, and rows
+    outlive the project they were made under -- `project-delete` leaves them.
+    Renaming a live project onto that dead name must not fail on the
+    conflict, and the live project's own judgement is the one that survives."""
+    db = tmp_path / "security.db"
+    run(db, "decide", "--project", "gone", "--fingerprint", "a" * 64,
+        "--state", "accepted", "--reason", "an old call nobody owns", "--by", "x")
+    run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+        "--state", "false_positive", "--reason", "the live project's call",
+        "--by", "luiz")
+    run(db, "rename-project", "--from", "web", "--to", "gone")
+    conn = sqlite3.connect(str(db))
+    rows = conn.execute("SELECT state, reason FROM decision WHERE project='gone'"
+                        ).fetchall()
+    assert rows == [("false_positive", "the live project's call")]
+
+
+def test_renaming_a_project_with_no_history_is_a_no_op(tmp_path):
+    db = tmp_path / "security.db"
+    moved = run(db, "rename-project", "--from", "web", "--to", "web-two")
+    assert moved == {"analyses": 0, "decisions": 0, "sboms": 0}
+
+
+# ------------------------------------------- the agent does not judge itself
+
+def test_the_agent_cannot_dismiss_the_finding_it_just_reported(tmp_path):
+    """`decide` writes a permanent, project-wide suppression that outlives
+    every future analysis -- and the agent reaches it through the identical
+    command an operator does. Reproduced before this guard: from the agent's
+    own cwd, `security decide --state false_positive` retired a committed AWS
+    key and signed the ledger's `decided_by` as "security team"."""
+    db = tmp_path / "security.db"
+    open_analysis(db)
+    out = fails(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+                "--state", "false_positive", "--reason", "I checked it myself",
+                "--by", "security team", env=AS_AGENT)
+    assert out.returncode != 0
+    assert "CC_SECURITY_AGENT" in out.stderr
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT count(*) FROM decision").fetchone()[0] == 0
+
+
+def test_the_agent_cannot_move_the_ledger_out_from_under_the_project(tmp_path):
+    db = tmp_path / "security.db"
+    open_analysis(db, project="web")
+    out = fails(db, "rename-project", "--from", "web", "--to", "mine",
+                env=AS_AGENT)
+    assert out.returncode != 0
+    assert len(run(db, "list", "--project", "web")) == 1
+
+
+def test_the_agent_cannot_open_an_analysis_the_engine_will_never_close(tmp_path):
+    """The engine opens the row before the run and closes it after; a row the
+    agent minted itself has no run behind it and nothing to close it, so it
+    sits `running` for ever and blocks every later baseline."""
+    db = tmp_path / "security.db"
+    out = fails(db, "open-analysis", "--project", "web", "--repo", "web",
+                "--branch", "main", "--commit", "a", "--profile", "quick",
+                "--run-id", "r", env=AS_AGENT)
+    assert out.returncode != 0
+    assert run(db, "list", "--project", "web") == []
+
+
+def test_the_work_the_agent_is_there_to_do_still_works_under_the_flag(tmp_path):
+    """The flag is on for the WHOLE run, including `security_close_analysis`,
+    which runs inside run_job after the agent. Refusing more than the three
+    named verbs would break the analysis it is supposed to protect."""
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text("print('hi')\n")
+    aid = open_analysis(db)
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline",
+        env=AS_AGENT)
+    run(db, "report-finding", "--analysis", str(aid), env=AS_AGENT,
+        stdin=json.dumps({"fingerprint": "b" * 64, "category": "sast",
+                          "rule": "r", "severity": "high", "title": "t"}))
+    run(db, "findings", "--analysis", str(aid), env=AS_AGENT)
+    run(db, "checklist", "--analysis", str(aid), env=AS_AGENT)
+    run(db, "finish", "--analysis", str(aid), "--state", "done", env=AS_AGENT)
+    assert run(db, "list", "--project", "web")[0]["state"] == "done"
+
+
+# ------------------------------------------------ closing an analysis once
+
+def test_a_close_never_upgrades_a_capped_analysis_to_done(tmp_path):
+    """The agent's `finish --state capped` is the one honest thing it can say
+    about a run it knows was cut short. The engine closes the same row again
+    with the RUN's verdict, and `success` there means only that the process
+    exited cleanly -- overwriting `capped` with `done` published a truncated
+    analysis as a finished one and made it the next run's baseline."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "capped",
+        "--note", "I stopped before the SAST phase")
+    run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "2.5")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "capped"
+    # The verdict is refused; the run's real cost is still a fact.
+    assert row["spend_usd"] == 2.5
+
+
+def test_a_close_never_upgrades_a_failed_analysis_to_done(tmp_path):
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "failed")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    assert run(db, "list", "--project", "web")[0]["state"] == "failed"
+
+
+def test_a_close_may_still_lower_a_done_analysis(tmp_path):
+    """The direction that has to keep working: the agent claims it finished,
+    and the engine -- which can see that the run was cut off mid-sentence --
+    downgrades it. That claim is the one fact here nothing can verify."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    run(db, "finish", "--analysis", str(aid), "--state", "capped")
+    assert run(db, "list", "--project", "web")[0]["state"] == "capped"
+    second = open_analysis(db, commit="def", run_id="r2")
+    run(db, "finish", "--analysis", str(second), "--state", "done")
+    run(db, "finish", "--analysis", str(second), "--state", "failed")
+    assert run(db, "list", "--project", "web")[0]["state"] == "failed"
+
+
+def test_a_running_analysis_accepts_any_verdict(tmp_path):
+    db = tmp_path / "security.db"
+    for state in ("done", "capped", "failed"):
+        aid = prepared_analysis(db, tmp_path, commit=state)
+        run(db, "finish", "--analysis", str(aid), "--state", state)
+        rows = {r["id"]: r for r in run(db, "list", "--project", "web")}
+        assert rows[aid]["state"] == state
+
+
+# ------------------------------------------- writing into a closed analysis
+
+def test_a_closed_analysis_refuses_a_new_finding(tmp_path):
+    """A closed analysis is the baseline the NEXT one is diffed against.
+    A finding written into it after the fact rewrites what the previous run
+    is remembered as having found."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "a" * 64, "category": "sast", "rule": "r",
+        "severity": "high", "title": "t"}))
+    assert out.returncode != 0
+    assert "closed" in out.stderr
+    assert run(db, "findings", "--analysis", str(aid)) == []
+
+
+def test_a_closed_analysis_refuses_a_second_prepare(tmp_path):
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----\nxx\n")
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "failed")
+    out = fails(db, "prepare", "--analysis", str(aid), "--root", str(root),
+                "--offline")
+    assert out.returncode != 0
+    assert "closed" in out.stderr
+    assert run(db, "findings", "--analysis", str(aid)) == []
+
+
+# --------------------------------------------------- the baseline's history
+
+def test_a_failed_first_attempt_does_not_make_everything_regressed(tmp_path):
+    """`latest_analysis` refuses a failed analysis as a baseline, so the
+    checklist's `history` -- what separates `new` from "fixed and came back"
+    -- has to refuse it too. Without the filter, the first analysis after a
+    failed one reports every finding the failed attempt happened to reach as
+    `regressed`: news that a hole was fixed and returned, about a hole that
+    never left."""
+    db = tmp_path / "security.db"
+    finding = {"fingerprint": "e" * 64, "category": "sast", "rule": "r",
+               "severity": "high", "title": "t",
+               "occurrences": [{"file": "a.py", "line": 1}]}
+    first = open_analysis(db, run_id="r1")
+    run(db, "report-finding", "--analysis", str(first), stdin=json.dumps(finding))
+    run(db, "finish", "--analysis", str(first), "--state", "failed")
+
+    second = open_analysis(db, commit="def", run_id="r2")
+    run(db, "report-finding", "--analysis", str(second), stdin=json.dumps(finding))
+    run(db, "finish", "--analysis", str(second), "--state", "done")
+
+    checklist = run(db, "checklist", "--analysis", str(second))
+    assert [f["state"] for f in checklist["findings"]] == ["new"]
+
+
+def test_a_finding_that_really_did_come_back_is_still_regressed(tmp_path):
+    """The other side of the filter: a DONE analysis still feeds history, so
+    a finding that was fixed and returned is not quietly downgraded to new."""
+    db = tmp_path / "security.db"
+    finding = {"fingerprint": "e" * 64, "category": "sast", "rule": "r",
+               "severity": "high", "title": "t",
+               "occurrences": [{"file": "a.py", "line": 1}]}
+    first = open_analysis(db, run_id="r1")
+    run(db, "report-finding", "--analysis", str(first), stdin=json.dumps(finding))
+    run(db, "finish", "--analysis", str(first), "--state", "done")
+    second = open_analysis(db, commit="def", run_id="r2")   # fixed: not reported
+    run(db, "finish", "--analysis", str(second), "--state", "done")
+    third = open_analysis(db, commit="ghi", run_id="r3")
+    run(db, "report-finding", "--analysis", str(third), stdin=json.dumps(finding))
+    run(db, "finish", "--analysis", str(third), "--state", "done")
+    checklist = run(db, "checklist", "--analysis", str(third))
+    assert [f["state"] for f in checklist["findings"]] == ["regressed"]
+
+
+# ------------------------------------------------- the shape of a finding
+
+def test_a_fingerprint_that_is_not_a_sha256_is_refused(tmp_path):
+    """The fingerprint is the identity a later analysis matches this finding
+    on. One the agent invents ("aws-key-in-prod-env") is a fresh identity on
+    every run: the same hole is reported `new` for ever, never `open`, never
+    `fixed`, and a decision recorded against it never matches again."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    for bad in ("aws-key-in-prod-env", "A" * 64, "abc123", "f" * 63, "f" * 65,
+                " " + "f" * 63):
+        out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+            "fingerprint": bad, "category": "sast", "rule": "r",
+            "severity": "high", "title": "t"}))
+        assert out.returncode != 0, bad
+        assert "fingerprint" in out.stderr
+    assert run(db, "findings", "--analysis", str(aid)) == []
+
+
+def test_a_finding_cannot_paste_a_whole_file_into_the_ledger(tmp_path):
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    for key in ("title", "rationale", "remediation", "partial_note"):
+        payload = {"fingerprint": "a" * 64, "category": "sast", "rule": "r",
+                   "severity": "high", "title": "t", key: "x" * 10001}
+        out = fails(db, "report-finding", "--analysis", str(aid),
+                    stdin=json.dumps(payload))
+        assert out.returncode != 0, key
+        assert key in out.stderr
+    assert run(db, "findings", "--analysis", str(aid)) == []
+
+
+def test_a_line_number_too_large_to_be_one_is_a_sentence_not_a_traceback(tmp_path):
+    """`1e999` parses as JSON infinity, and `int(inf)` raises OverflowError,
+    which is not a ValueError: the agent got a Python traceback and no
+    sentence telling it what was wrong with its finding."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "a" * 64, "category": "sast", "rule": "r",
+        "severity": "high", "title": "t",
+        "occurrences": [{"file": "a.py", "line": 1e999}]}))
+    assert out.returncode != 0
+    assert "Traceback" not in out.stderr
+    assert "report-finding" in out.stderr
+    assert run(db, "findings", "--analysis", str(aid)) == []
+
+
+def test_deeply_nested_json_on_stdin_gives_a_sentence_not_a_traceback_for_report_finding(tmp_path):
+    """A deeply nested JSON body raises RecursionError; the door must catch it
+    and exit with a sentence rather than a Python traceback."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    # Create a deeply nested structure (~20000 levels) that triggers RecursionError
+    malformed = '{"a":' * 20000 + "1" + "}" * 20000
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=malformed)
+    assert out.returncode != 0
+    assert "Traceback" not in out.stderr
+    assert "report-finding" in out.stderr
+    assert run(db, "findings", "--analysis", str(aid)) == []
+
+
+def test_deeply_nested_json_on_stdin_gives_a_sentence_not_a_traceback_for_filters_save(tmp_path):
+    """Same guard for `filters save`: deeply nested JSON raises RecursionError."""
+    db = tmp_path / "security.db"
+    # Create a deeply nested structure that triggers RecursionError
+    malformed = '{"a":' * 20000 + "1" + "}" * 20000
+    out = fails(db, "filters", "save", "--project", "web", "--name", "test",
+                stdin=malformed)
+    assert out.returncode != 0
+    assert "Traceback" not in out.stderr
+    assert "filters save" in out.stderr
+
+
+def test_report_finding_refuses_stdin_over_the_byte_cap(tmp_path):
+    """A body over MAX_STDIN_BYTES is refused before parsing."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    # Create a body larger than 1MB
+    oversized = "x" * (1_000_001)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=oversized)
+    assert out.returncode != 0
+    assert "1000000" in out.stderr or "1_000_000" in out.stderr.replace("_", "")
+    assert "Traceback" not in out.stderr
+
+
+def test_filters_save_refuses_stdin_over_the_byte_cap(tmp_path):
+    """A body over MAX_STDIN_BYTES is refused before parsing."""
+    db = tmp_path / "security.db"
+    # Create a body larger than 1MB
+    oversized = "x" * (1_000_001)
+    out = fails(db, "filters", "save", "--project", "web", "--name", "test",
+                stdin=oversized)
+    assert out.returncode != 0
+    assert "1000000" in out.stderr or "1_000_000" in out.stderr.replace("_", "")
+    assert "Traceback" not in out.stderr
+
+
+def test_report_finding_with_normal_body_still_works(tmp_path):
+    """The control: small, normal JSON still parses and works."""
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    aid = open_analysis(db)
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "a" * 64, "category": "sast", "rule": "r",
+        "severity": "high", "title": "t"}))
+    found = run(db, "findings", "--analysis", str(aid))
+    assert any(f["rule"] == "r" for f in found)
+
+
+def test_filters_save_with_normal_body_still_works(tmp_path):
+    """The control: small, normal JSON still parses and works."""
+    db = tmp_path / "security.db"
+    run(db, "filters", "save", "--project", "web", "--name", "test",
+        stdin=json.dumps({"category": "sast", "severity": "high"}))
+    saved = run(db, "filters", "list", "--project", "web")
+    assert any(f["name"] == "test" for f in saved)
+
+
+def test_prepare_refuses_to_scan_the_whole_machine(tmp_path):
+    """`--root` is typed by the agent, from inside a worktree it did not
+    choose. Pointed at `/` or at $HOME, the deterministic phases read every
+    file the operator owns -- ssh keys, other people's repositories -- and
+    file them as findings OF THIS PROJECT in a ledger the report publishes."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    for root in ("/", str(Path.home()), str(Path.home() / "." / ""), "/srv/../"):
+        out = fails(db, "prepare", "--analysis", str(aid), "--root", root,
+                    "--offline")
+        assert out.returncode != 0, root
+        assert "--root" in out.stderr
+    assert run(db, "findings", "--analysis", str(aid)) == []
+
+
+# ---------------------------------- --root is anchored to the run's own worktree
+
+def _isolated_env(manifest_path):
+    """What `run_job` exports into an isolated run (see bin/claude-cron and
+    bin/worktree-lib.sh:wt_setup) -- CC_SECURITY_AGENT marks the whole run as
+    the agent under review, and CC_RUN_MANIFEST names that run's own
+    `.run.json`, written into the run's own directory before the agent ever
+    starts."""
+    return {**os.environ, "CC_SECURITY_AGENT": "1",
+            "CC_RUN_MANIFEST": str(manifest_path)}
+
+
+def test_prepare_root_outside_the_runs_worktree_is_refused_when_isolated(tmp_path):
+    """Reproduced before the guard: an agent pointing `--root` at ANY other
+    valid checkout on the machine got a clean scan of code nobody asked about,
+    `prepare` marked the row `prepared=1`, and the analysis closed `done` with
+    clean findings having never looked at its own scope at all."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run_dir = tmp_path / "run-dir"
+    run_dir.mkdir()
+    manifest = run_dir / ".run.json"
+    manifest.write_text("{}")
+    elsewhere = tmp_path / "some-other-checkout"
+    elsewhere.mkdir()
+    out = fails(db, "prepare", "--analysis", str(aid), "--root", str(elsewhere),
+                "--offline", env=_isolated_env(manifest))
+    assert out.returncode != 0
+    assert "own worktree" in out.stderr
+    assert run(db, "findings", "--analysis", str(aid)) == []
+
+
+def test_prepare_root_prefix_collision_with_the_run_dir_is_still_refused(tmp_path):
+    """The nearest neighbour to the boundary just closed: a SIBLING directory
+    whose name merely starts with the run dir's own name (`run-dir-evil`
+    starts with `run-dir`). A check written as a string prefix comparison
+    would wrongly accept it; path containment must be exact."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run_dir = tmp_path / "run-dir"
+    run_dir.mkdir()
+    manifest = run_dir / ".run.json"
+    manifest.write_text("{}")
+    sibling = tmp_path / "run-dir-evil"
+    sibling.mkdir()
+    out = fails(db, "prepare", "--analysis", str(aid), "--root", str(sibling),
+                "--offline", env=_isolated_env(manifest))
+    assert out.returncode != 0
+    assert "own worktree" in out.stderr
+
+
+def test_prepare_root_inside_the_runs_worktree_is_accepted(tmp_path):
+    """The control: the genuine case -- `--root` naming the checkout the
+    engine actually built for this run -- must still work."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run_dir = tmp_path / "run-dir"
+    checkout = run_dir / "web"
+    checkout.mkdir(parents=True)
+    manifest = run_dir / ".run.json"
+    manifest.write_text("{}")
+    out = run(db, "prepare", "--analysis", str(aid), "--root", str(checkout),
+              "--offline", env=_isolated_env(manifest))
+    assert out["findings"] == 0
+
+
+def test_prepare_root_check_is_unchanged_without_the_run_manifest(tmp_path):
+    """A human running `prepare` by hand, outside any run, carries neither
+    CC_SECURITY_AGENT nor CC_RUN_MANIFEST -- the anchor must refuse nothing
+    new for that case."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    anywhere = tmp_path / "any-checkout-at-all"
+    anywhere.mkdir()
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("CC_SECURITY_AGENT", "CC_RUN_MANIFEST")}
+    out = run(db, "prepare", "--analysis", str(aid), "--root", str(anywhere),
+              "--offline", env=env)
+    assert out["findings"] == 0
+
+
+def test_prepare_root_check_is_unchanged_when_agent_flag_is_set_without_a_manifest(tmp_path):
+    """CC_SECURITY_AGENT alone (no CC_RUN_MANIFEST) is what
+    `test_the_work_the_agent_is_there_to_do_still_works_under_the_flag`
+    already exercises for a normal analysis; this pins the same for an
+    arbitrary root, so the new guard is provably keyed on BOTH variables, not
+    either one alone."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    anywhere = tmp_path / "any-checkout-at-all"
+    anywhere.mkdir()
+    env = {k: v for k, v in os.environ.items() if k != "CC_RUN_MANIFEST"}
+    env["CC_SECURITY_AGENT"] = "1"
+    out = run(db, "prepare", "--analysis", str(aid), "--root", str(anywhere),
+              "--offline", env=env)
+    assert out["findings"] == 0
+
+
+# ---------------------------------------------------- the fingerprint verb
+
+def test_fingerprint_matches_the_library_for_a_sast_finding(tmp_path):
+    """The agent must never hand-compute a fingerprint (see FINGERPRINT_RE's
+    comment): this verb is the one place it can get a real one instead, so it
+    has to agree with the exact function `report-finding` is validated
+    against, not merely produce something 64 hex characters long."""
+    db = tmp_path / "security.db"
+    got = raw(db, "fingerprint", "--category", "sast", "--rule", "sql-injection",
+              "--path", "app/db.py", "--snippet", "cursor.execute(query)")
+    assert got == compute_fingerprint("sast", "sql-injection", "app/db.py",
+                                      "cursor.execute(query)")
+
+
+def test_fingerprint_defaults_the_snippet_to_empty(tmp_path):
+    db = tmp_path / "security.db"
+    got = raw(db, "fingerprint", "--category", "hygiene", "--rule", "world-writable",
+              "--path", "deploy.sh")
+    assert got == compute_fingerprint("hygiene", "world-writable", "deploy.sh", "")
+
+
+def test_fingerprint_of_a_secret_uses_secret_fingerprint_semantics(tmp_path):
+    """No snippet, no value: a secret's identity is its type and its file,
+    never what it says -- see secret_fingerprint's own docstring."""
+    db = tmp_path / "security.db"
+    got = raw(db, "fingerprint", "--category", "secret", "--rule", "aws_access_key",
+              "--path", "config/prod.env")
+    assert got == secret_fingerprint("aws_access_key", "config/prod.env")
+
+
+def test_fingerprint_of_a_secret_ignores_a_snippet_if_one_is_given(tmp_path):
+    """A caller looping over occurrences uniformly may pass --snippet for
+    every category; a secret's identity must not change because of it."""
+    db = tmp_path / "security.db"
+    with_snippet = raw(db, "fingerprint", "--category", "secret", "--rule", "aws_access_key",
+                       "--path", "config/prod.env", "--snippet", "AKIAIOSFODNN7EXAMPLE")
+    without_snippet = raw(db, "fingerprint", "--category", "secret", "--rule", "aws_access_key",
+                          "--path", "config/prod.env")
+    assert with_snippet == without_snippet == secret_fingerprint("aws_access_key", "config/prod.env")
+
+
+def test_fingerprint_is_allowed_under_the_agent_environment(tmp_path):
+    """It never opens the database -- there is nothing for CC_SECURITY_AGENT
+    to protect here, only a computation the agent would otherwise have to
+    reproduce by hand and get wrong."""
+    db = tmp_path / "security.db"
+    got = raw(db, "fingerprint", "--category", "sast", "--rule", "r",
+              "--path", "p", env=AS_AGENT)
+    assert got == compute_fingerprint("sast", "r", "p", "")
+
+
+# --------------------------------------------- the history sweep, every run
+
+def git_repo(root, commits):
+    """A throwaway repo. `commits` is a list of (message, {path: text|None});
+    None deletes the file.
+
+    Carries its own `.gitignore` from the start -- these fixtures are not
+    about the `missing_gitignore` advisory (see hygiene.py), and without one
+    every one of them would trip it, adding an unrelated finding to tests
+    that assert exact finding counts or exact checklist state maps.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    (root / ".gitignore").write_text(".env\n")
+    run_git = lambda *a: subprocess.run(a, cwd=root, check=True, capture_output=True)
+    run_git("git", "init", "-q")
+    run_git("git", "config", "user.email", "t@example.com")
+    run_git("git", "config", "user.name", "t")
+    for message, files in commits:
+        for rel, text in files.items():
+            target = root / rel
+            if text is None:
+                target.unlink()
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text)
+        run_git("git", "add", "-A")
+        run_git("git", "commit", "-qm", message)
+    return root
+
+
+AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+
+
+def states_by_rule(checklist):
+    return {f["rule"]: f["state"] for f in checklist["findings"]}
+
+
+def test_a_history_secret_survives_the_second_and_third_analysis(tmp_path):
+    """THE scenario the whole history sweep exists for.
+
+    A key was committed on Monday and the file deleted on Tuesday. The value
+    is still readable by anyone with a clone, which is why the finding's own
+    remediation says deleting the file is not enough -- rotate first.
+
+    The sweep used to run only on a branch's FIRST analysis, so nothing
+    re-emitted the finding afterwards: `classify` saw it in the previous
+    analysis and not in this one and reported it `fixed` -- congratulating the
+    operator for the exact act the remediation calls insufficient -- and by
+    the third analysis it had dropped out of the report entirely. It must stay
+    OPEN, run after run, until somebody rotates the credential and DECIDES it.
+    """
+    root = git_repo(tmp_path / "repo", [
+        ("add", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
+        ("remove", {"prod.env": None}),
+    ])
+    db = tmp_path / "security.db"
+
+    first = open_analysis(db)
+    run(db, "prepare", "--analysis", str(first), "--root", str(root), "--offline")
+    run(db, "finish", "--analysis", str(first), "--state", "done")
+    assert states_by_rule(run(db, "checklist", "--analysis", str(first))) == {
+        "aws_access_key": "new"}
+
+    # Nothing changed in the repository between the analyses. The finding is
+    # not new (it was here last time) and it is emphatically not fixed.
+    second = open_analysis(db)
+    run(db, "prepare", "--analysis", str(second), "--root", str(root), "--offline")
+    run(db, "finish", "--analysis", str(second), "--state", "done")
+    assert states_by_rule(run(db, "checklist", "--analysis", str(second))) == {
+        "aws_access_key": "open"}
+
+    # And the third run still knows about it: the old behaviour lost it here
+    # altogether -- neither the previous analysis nor this one carried it, so
+    # it was in no checklist at all.
+    third = open_analysis(db)
+    run(db, "prepare", "--analysis", str(third), "--root", str(root), "--offline")
+    run(db, "finish", "--analysis", str(third), "--state", "done")
+    assert states_by_rule(run(db, "checklist", "--analysis", str(third))) == {
+        "aws_access_key": "open"}
+    carried = run(db, "findings", "--analysis", str(third))
+    assert "git history" in carried[0]["rationale"]
+    assert AWS_KEY not in json.dumps(carried)
+
+
+def test_rotating_and_accepting_is_how_a_history_finding_closes(tmp_path):
+    """The other half of the lifecycle. Because the sweep never stops finding
+    it, a history finding cannot be closed by changing the code -- the only
+    honest close is a human saying the credential was rotated and the exposure
+    accepted. That decision must win over the derived `open`."""
+    root = git_repo(tmp_path / "repo", [
+        ("add", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
+        ("remove", {"prod.env": None}),
+    ])
+    db = tmp_path / "security.db"
+    first = open_analysis(db)
+    run(db, "prepare", "--analysis", str(first), "--root", str(root), "--offline")
+    fp = run(db, "findings", "--analysis", str(first))[0]["fingerprint"]
+    run(db, "finish", "--analysis", str(first), "--state", "done")
+
+    run(db, "decide", "--project", "web", "--fingerprint", fp,
+        "--state", "accepted", "--reason", "rotated at the provider on Tuesday")
+
+    second = open_analysis(db)
+    run(db, "prepare", "--analysis", str(second), "--root", str(root), "--offline")
+    run(db, "finish", "--analysis", str(second), "--state", "done")
+    assert states_by_rule(run(db, "checklist", "--analysis", str(second))) == {
+        "aws_access_key": "accepted"}
+
+
+def test_the_working_tree_reading_wins_over_its_history_twin(tmp_path):
+    """A secret in the tree AND in the history is ONE finding: same rule, same
+    path, therefore one fingerprint, and record_finding upserts.
+
+    The two readings disagree about the wording and the line: the tree knows
+    the real line number and says "in the working tree", the history says line
+    0 and "in the git history". The tree's is the one a reader can act on, so
+    it must be recorded LAST and win the upsert. The history sweep used to be
+    appended after the tree, which overwrote a live, locatable secret with a
+    line-0 report about the past.
+    """
+    root = git_repo(tmp_path / "repo", [
+        ("add", {"prod.env": f"# header\nAWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
+    ])
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    found = run(db, "findings", "--analysis", str(aid))
+    secret = [f for f in found if f["rule"] == "aws_access_key"]
+    assert len(secret) == 1, "the tree and history readings must be one row"
+    assert "in the working tree" in secret[0]["rationale"]
+    assert [o["line"] for o in secret[0]["occurrences"]] == [2]
+
+
+def test_ignore_paths_reach_the_tree_the_history_and_the_hygiene_pass(tmp_path):
+    """`ignore_paths` is a promise about the ANALYSIS, not about one phase.
+
+    A fixtures directory holding a deliberately fake key was excluded from the
+    working-tree sweep and reported in full by the history sweep and by the
+    hygiene pass -- so the operator set the option, saw the noise disappear
+    from one section of the report and stay in two others.
+    """
+    root = git_repo(tmp_path / "repo", [
+        ("fixtures", {"tests/fixtures/fake.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
+                      "tests/fixtures/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nx\n"}),
+        ("delete the env", {"tests/fixtures/fake.env": None}),
+    ])
+    db = tmp_path / "security.db"
+
+    noisy = open_analysis(db)
+    run(db, "prepare", "--analysis", str(noisy), "--root", str(root), "--offline")
+    rules = {f["rule"] for f in run(db, "findings", "--analysis", str(noisy))}
+    assert {"aws_access_key", "private_key", "committed_key_file"} <= rules, (
+        f"the fixture must be noisy without the globs: {sorted(rules)}")
+    run(db, "finish", "--analysis", str(noisy), "--state", "done")
+
+    quiet = open_analysis(db)
+    run(db, "prepare", "--analysis", str(quiet), "--root", str(root), "--offline",
+        "--ignore", "tests/fixtures/**")
+    assert run(db, "findings", "--analysis", str(quiet)) == []
+
+
+def test_a_history_sweep_that_could_not_run_says_so_in_the_coverage_note(tmp_path):
+    """`scan_history` used to answer a failure with `[]` -- the identical
+    value it answers "this history is clean" with. The one failure mode that
+    hides the findings it exists to produce was reported as the best news
+    available. Here the root is not a git checkout at all, which is the
+    commonest way for the sweep to produce nothing."""
+    root = tmp_path / "not-a-repo"
+    root.mkdir()
+    (root / "app.py").write_text("print('hi')\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline")["coverage_note"]
+    assert "history sweep did not complete" in note
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    rendered = run_text(db, "render", "--analysis", str(aid), "--format", "md")
+    assert "history sweep did not complete" in rendered
+
+
+def test_every_phase_gap_reaches_the_one_coverage_note(tmp_path):
+    """The note is a single channel with several writers. A run that could not
+    sweep the history AND could not ask OSV.dev has two blind spots, and a
+    reader who is told about one of them is worse off than one told about
+    both."""
+    root = tmp_path / "not-a-repo"
+    root.mkdir()
+    (root / "requirements.txt").write_text("requests==2.31.0\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline")["coverage_note"]
+    assert "history sweep did not complete" in note
+    assert "OSV.dev" in note
+
+
+# ------------------------------- an analysis that never ran its own phases
+
+def test_finishing_done_without_prepare_is_downgraded_to_capped(tmp_path):
+    """Nothing engine-side runs `prepare`: it is the agent's first command,
+    named in the prompt and in the skill, and an agent that simply skipped it
+    exited cleanly and had its row closed `done`. The result was a report with
+    zero findings, an empty coverage note and no banner anywhere saying the
+    repository had never been scanned -- and that report then became the
+    BASELINE the next analysis is diffed against, so everything the next run
+    legitimately found arrived as `new`."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "finish", "--analysis", str(aid), "--state", "done")
+    assert out.returncode == 0, out.stderr
+    assert "never ran `prepare`" in out.stderr
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "capped"
+    assert "deterministic phases never ran" in row["coverage_note"]
+
+
+def test_the_downgrade_reaches_the_report_as_an_incomplete_banner(tmp_path):
+    """`capped` is what the report already prints its INCOMPLETE banner for,
+    which is the reason the guard downgrades rather than refusing: the reader
+    of the downloaded file learns it from the file itself."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    rendered = run_text(db, "render", "--analysis", str(aid), "--format", "md")
+    assert "INCOMPLETE" in rendered
+    assert "deterministic phases never ran" in rendered
+
+
+def test_an_analysis_that_did_prepare_still_closes_done(tmp_path):
+    """The control. A guard that downgraded every close would be indis-
+    tinguishable, from the page, from one that worked."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert "deterministic phases never ran" not in row["coverage_note"]
+
+
+def test_prepare_marks_the_row_only_after_its_findings_are_stored(tmp_path):
+    """`prepared` has to mean "the deterministic phases ran AND their findings
+    are in the ledger", not "prepare was invoked"."""
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    aid = open_analysis(db)
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    assert conn.execute("SELECT prepared FROM analysis WHERE id=?",
+                        (aid,)).fetchone()["prepared"] == 0
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    assert conn.execute("SELECT prepared FROM analysis WHERE id=?",
+                        (aid,)).fetchone()["prepared"] == 1
+
+
+def test_the_downgrade_note_is_not_stored_twice_when_the_row_closes_twice(tmp_path):
+    """A row is closed twice by design -- the agent, then the engine with the
+    run's real verdict and cost. Both closes hit the guard."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "1.5")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["coverage_note"].count("deterministic phases never ran") == 1
+    assert row["spend_usd"] == 1.5
+
+
+def test_the_prepared_column_is_added_to_a_database_that_predates_it(tmp_path):
+    """The feature has never shipped, so there is no installed base -- but the
+    branch's own dev databases exist, and `CREATE TABLE IF NOT EXISTS` does
+    nothing to a table that is already there. connect() adds the column with
+    ALTER TABLE, guarded by PRAGMA table_info."""
+    db = tmp_path / "security.db"
+    old = sqlite3.connect(str(db))
+    old.executescript(
+        "CREATE TABLE analysis (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " project TEXT NOT NULL, repo TEXT NOT NULL, branch TEXT NOT NULL,"
+        " commit_sha TEXT NOT NULL, profile TEXT NOT NULL,"
+        " started INTEGER NOT NULL, ended INTEGER, state TEXT NOT NULL,"
+        " spend_usd REAL NOT NULL DEFAULT 0, run_id TEXT NOT NULL DEFAULT '',"
+        " coverage_note TEXT NOT NULL DEFAULT '');")
+    old.execute("INSERT INTO analysis (project, repo, branch, commit_sha, profile,"
+                " started, state) VALUES ('web','web','main','abc','quick',1,'done')")
+    old.commit()
+    old.close()
+
+    rows = run(db, "list", "--project", "web")
+    assert len(rows) == 1
+    assert rows[0]["prepared"] == 0, "a row from before the column is unprepared"
+
+
+# ------------------------------- a decision is not taken while a run is live
+
+def test_decide_is_refused_while_the_projects_latest_analysis_is_running(tmp_path):
+    """The environment guard is a guardrail against MISTAKE: CC_SECURITY_AGENT
+    lives in the agent's own environment and the agent has a shell, so
+    `env -u CC_SECURITY_AGENT ...` walks past it. This check does not depend on
+    the environment at all -- while an analysis of the project is `running`, an
+    agent of that project is alive, and that is exactly the window in which a
+    decision would be one."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+                "--state", "accepted", "--reason", "I checked it", "--by", "luiz")
+    assert out.returncode != 0
+    assert "still running" in out.stderr
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT count(*) FROM decision").fetchone()[0] == 0
+
+    # And it is the ANALYSIS, not the environment, that closed the door.
+    out = fails(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+                "--state", "accepted", "--reason", "I checked it", "--by", "luiz",
+                env={k: v for k, v in os.environ.items() if k != "CC_SECURITY_AGENT"})
+    assert out.returncode != 0
+    assert "still running" in out.stderr
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+        "--state", "accepted", "--reason", "I checked it", "--by", "luiz")
+    assert conn.execute("SELECT count(*) FROM decision").fetchone()[0] == 1
+
+
+def test_a_run_on_another_project_does_not_block_a_decision(tmp_path):
+    """Keyed on the project being decided about. A fleet analysing four
+    projects at once must not freeze everybody's triage."""
+    db = tmp_path / "security.db"
+    open_analysis(db, project="other", repo="other")
+    run(db, "finish", "--analysis", str(open_analysis(db, project="web")),
+        "--state", "done")
+    run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+        "--state", "accepted", "--reason", "unreachable in production", "--by", "luiz")
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT count(*) FROM decision").fetchone()[0] == 1
+
+
+def test_an_older_running_analysis_still_blocks_a_decision(tmp_path):
+    """ANY analysis of the project, not only the latest one.
+
+    This used to be keyed on the project's latest analysis alone, which had a
+    two-command bypass: open a SECOND analysis of the same project and close
+    it, and the latest analysis reads `done` while an older one -- the one an
+    agent might still be alive inside of -- sits `running`, unseen by a query
+    that only ever looked at the newest row. See
+    `test_the_agent_cannot_dismiss_its_finding_via_a_second_analysis` for the
+    exact bypass reproduced end to end. A row left `running` by a run that
+    genuinely died is not a permanent lock either: the engine's own preflight
+    sweep (`cmd_security_analyze` in bin/claude-cron) closes those before the
+    project's next analysis opens."""
+    db = tmp_path / "security.db"
+    open_analysis(db)                       # older, still says running
+    run(db, "finish", "--analysis", str(open_analysis(db, commit="def")),
+        "--state", "done")
+    out = fails(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+                "--state", "accepted", "--reason", "reviewed by hand", "--by", "luiz")
+    assert out.returncode != 0
+    assert "still running" in out.stderr
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT count(*) FROM decision").fetchone()[0] == 0
+
+
+def test_the_agent_cannot_dismiss_its_finding_via_a_second_analysis(tmp_path):
+    """The merge-verification pass's exact bypass of the running-analysis
+    refusal above. `decide`'s check used to look only at the project's LATEST
+    analysis: from its own shell (the CC_SECURITY_AGENT flag only ever guards
+    `decide`, `rename-project` and `open-analysis`, never `finish` or a second
+    `open-analysis` run once the flag is off -- see `_refuse_if_agent`), the
+    agent could `open-analysis` a second analysis of the SAME project and
+    `finish` it right away. The project's latest analysis then read `done`
+    while the ORIGINAL analysis -- the one whose finding it wants to dismiss --
+    was still `running`, and the old latest-row-only query never saw it."""
+    db = tmp_path / "security.db"
+    original = open_analysis(db, project="web", commit="orig", run_id="r1")
+    second = open_analysis(db, project="web", commit="def", run_id="r2")
+    run(db, "finish", "--analysis", str(second), "--state", "done")
+    # The bypass's premise: the project's LATEST analysis is now closed --
+    # `done` if it had run `prepare`, `capped` here since it did not (see
+    # cmd_finish's own `prepared` guard), either way NOT `running`, which is
+    # all the old latest-row-only check ever looked at.
+    assert run(db, "list", "--project", "web")[0]["state"] != "running"
+    out = fails(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+                "--state", "false_positive", "--reason", "I checked it myself",
+                "--by", "the agent")
+    assert out.returncode != 0
+    assert "still running" in out.stderr
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT count(*) FROM decision").fetchone()[0] == 0
+    # The original, still-running analysis is the one that must be named --
+    # not the closed second one that made the latest row look clear.
+    assert f"analysis {original} of 'web'" in out.stderr
+
+
+# --------------------------------------------------- the SBOM is downloadable
+
+def test_render_sbom_hands_back_the_stored_cyclonedx(tmp_path):
+    """`prepare` built an SBOM on every analysis with a lockfile in it and
+    nothing anywhere could read it back -- not the CLI, not the API, not the
+    page. An inventory nobody can download does not exist for the one job an
+    SBOM has, which is being handed to somebody else."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "requirements.txt").write_text("requests==2.31.0\nurllib3==2.0.7\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+
+    doc = json.loads(run_text(db, "render", "--analysis", str(aid), "--format", "sbom"))
+    assert doc["bomFormat"] == "CycloneDX"
+    names = {c["name"]: c["version"] for c in doc["components"]}
+    assert names == {"requests": "2.31.0", "urllib3": "2.0.7"}
+
+
+def test_render_sbom_says_so_when_there_is_none_rather_than_printing_nothing(tmp_path):
+    """A project with no lockfile the inventory can read stores no SBOM. An
+    empty stdout there is a zero-byte download and a puzzle; the refusal names
+    the formats that would have produced one."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text("print('hi')\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    out = fails(db, "render", "--analysis", str(aid), "--format", "sbom")
+    assert out.returncode != 0
+    assert "no SBOM recorded" in out.stderr
+    assert "package-lock.json" in out.stderr
+    assert out.stdout.strip() == ""
+
+
+def test_render_sbom_refuses_an_analysis_that_does_not_exist(tmp_path):
+    db = tmp_path / "security.db"
+    open_analysis(db)
+    out = fails(db, "render", "--analysis", "999", "--format", "sbom")
+    assert out.returncode != 0
+    assert "no such analysis" in out.stderr
+
+
+def test_checklist_of_an_analysis_that_does_not_exist_exits_with_the_old_sentence(tmp_path):
+    """`queries.checklist` now raises `AnalysisNotFound` instead of calling
+    `sys.exit` itself (a library must not exit the process -- a future
+    server route needs to catch this and answer 404, not go down with it).
+    `cmd_checklist` catches it and must still exit non-zero with the exact
+    sentence the command line always printed, byte for byte -- driven as a
+    subprocess, the same way the agent and bash call this command."""
+    db = tmp_path / "security.db"
+    open_analysis(db)
+    out = fails(db, "checklist", "--analysis", "999")
+    assert out.returncode != 0
+    assert out.stderr.strip() == "no such analysis: 999"
+    assert out.stdout.strip() == ""
+
+
+def test_render_of_an_analysis_that_does_not_exist_exits_with_the_old_sentence(tmp_path):
+    """Same guarantee as `checklist` above, for `render`'s non-sbom path
+    (which also calls `queries.checklist`) -- `render --format sbom` has its
+    own refusal (tested above) that never goes through `queries.checklist`
+    at all, so it needed no change and is untouched by this fix."""
+    db = tmp_path / "security.db"
+    open_analysis(db)
+    out = fails(db, "render", "--analysis", "999", "--format", "md")
+    assert out.returncode != 0
+    assert out.stderr.strip() == "no such analysis: 999"
+    assert out.stdout.strip() == ""
+
+
+def test_the_door_accepts_info_as_a_severity(tmp_path):
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    aid = run(db, "open-analysis", "--project", "web", "--repo", "web",
+              "--branch", "main", "--commit", "a", "--profile", "quick",
+              "--run-id", "r")["analysis_id"]
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "c" * 64, "category": "sast", "rule": "observation",
+        "severity": "info", "title": "worth knowing", "rationale": "r",
+        "remediation": "none needed", "occurrences": []}))
+
+
+# ------------------------------------------------------------ the event log
+
+def test_opening_and_finishing_an_analysis_files_events(tmp_path):
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    aid = run(db, "open-analysis", "--project", "web", "--repo", "web",
+              "--branch", "main", "--commit", "a", "--profile", "quick",
+              "--run-id", "r")["analysis_id"]
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    kinds = [e["kind"] for e in run(db, "events", "--project", "web")]
+    assert "analysis_started" in kinds
+    assert "analysis_finished" in kinds
+
+
+def test_a_decision_files_an_event_carrying_its_reason(tmp_path):
+    db = tmp_path / "security.db"
+    run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+        "--state", "accepted", "--reason", "reviewed with the team")
+    ev = [e for e in run(db, "events", "--project", "web")
+          if e["kind"] == "decision_made"]
+    assert len(ev) == 1
+    assert "reviewed with the team" in ev[0]["detail"]
+
+
+# ---------------------------------------- activity-data, the Activity screen
+
+def test_activity_data_does_not_create_a_ledger_that_does_not_exist(tmp_path):
+    """Read-only, via `queries.read_only` -- same reasoning `index-data`/
+    `project-data`/`findings-page` already follow: a screen that only LOOKS
+    must not conjure the ledger file it is asking about into existence."""
+    db = tmp_path / "security.db"
+    out = run(db, "activity-data")
+    assert out == {"events": [], "summary": {k: 0 for k in security_ledger.EVENT_KINDS},
+                   "projects": [], "page": 1, "per_page": 25}
+    assert not db.exists()
+
+
+def test_activity_data_bundles_events_summary_and_projects(tmp_path):
+    db = tmp_path / "security.db"
+    run(db, "event", "--project", "web", "--kind", "analysis_started",
+        "--detail", "quick on main", "--related", "1")
+    run(db, "event", "--project", "web", "--kind", "decision_made",
+        "--detail", "accepted: reviewed", "--related", "abc123def456")
+    run(db, "event", "--project", "api", "--kind", "settings_changed")
+
+    out = run(db, "activity-data", "--since", "0")
+    kinds = [e["kind"] for e in out["events"]]
+    assert set(kinds) == {"analysis_started", "decision_made", "settings_changed"}
+    assert out["summary"]["analysis_started"] == 1
+    assert out["summary"]["decision_made"] == 1
+    assert out["summary"]["settings_changed"] == 1
+    assert out["summary"]["report_exported"] == 0
+    assert {p["project"]: p["count"] for p in out["projects"]} == {"web": 2, "api": 1}
+
+
+def test_activity_data_kind_narrows_the_events_only(tmp_path):
+    """The sidebar's per-kind counts and the most-active-projects list both
+    describe the WHOLE period, regardless of which kind the table is
+    filtered to -- narrowing the table to one tab must not also zero out
+    the sidebar's other counts (see cmd_activity_data's own docstring)."""
+    db = tmp_path / "security.db"
+    run(db, "event", "--project", "web", "--kind", "analysis_started")
+    run(db, "event", "--project", "web", "--kind", "decision_made")
+
+    out = run(db, "activity-data", "--since", "0", "--kind", "decision_made")
+    assert [e["kind"] for e in out["events"]] == ["decision_made"]
+    # The summary is NOT narrowed to the same kind -- both counts are real.
+    assert out["summary"]["analysis_started"] == 1
+    assert out["summary"]["decision_made"] == 1
+    assert {p["project"] for p in out["projects"]} == {"web"}
+
+
+def test_activity_data_project_narrows_every_panel(tmp_path):
+    """Unlike `kind`, `project` is a real scope change and narrows the
+    events, the summary AND the projects list alike."""
+    db = tmp_path / "security.db"
+    run(db, "event", "--project", "web", "--kind", "analysis_started")
+    run(db, "event", "--project", "api", "--kind", "decision_made")
+
+    out = run(db, "activity-data", "--since", "0", "--project", "web")
+    assert [e["project"] for e in out["events"]] == ["web"]
+    assert out["summary"]["analysis_started"] == 1
+    assert out["summary"]["decision_made"] == 0
+    assert [p["project"] for p in out["projects"]] == ["web"]
+
+
+def test_activity_data_refuses_an_unknown_kind_at_the_cli_edge(tmp_path):
+    """`--kind` carries `choices=` for the same reason `findings-page`'s own
+    severity/state/category do: CLI-direct use gets the identical validation
+    the server's own route independently performs."""
+    db = tmp_path / "security.db"
+    out = fails(db, "activity-data", "--kind", "findings_viewed")
+    assert out.returncode != 0
+    assert "invalid choice" in out.stderr
+
+
+# --------------------------------------- findings-page's own --fingerprint
+#
+# Its siblings -- --severity, --state, --category -- get shape validation for
+# free from argparse's own `choices=`: a closed set, refused with "invalid
+# choice" the instant a typo reaches it. --fingerprint cannot use `choices=`
+# (it is a PREFIX -- 1 to 64 lowercase hex characters, not one value out of a
+# fixed set), so before this it accepted anything at all: a mistyped value
+# silently matched zero rows instead of refusing with a sentence, the exact
+# failure this module's own docstring says every verb here exists to avoid.
+# The server's own route (`security_findings`, bin/claude-cron-server) already
+# validates this shape at its edge -- these two tests are the CLI's own,
+# independent copy of that guard, the same relationship
+# test_activity_data_refuses_an_unknown_kind_at_the_cli_edge above has to
+# `security_activity`'s.
+
+def test_findings_page_refuses_a_malformed_fingerprint_at_the_cli_edge(tmp_path):
+    db = tmp_path / "security.db"
+    out = fails(db, "findings-page", "--project", "web", "--fingerprint", "not-hex!")
+    assert out.returncode != 0
+    assert "fingerprint" in out.stderr
+    assert "lowercase hex" in out.stderr
+
+
+def test_findings_page_refuses_a_fingerprint_over_64_characters(tmp_path):
+    db = tmp_path / "security.db"
+    out = fails(db, "findings-page", "--project", "web", "--fingerprint", "a" * 65)
+    assert out.returncode != 0
+    assert "fingerprint" in out.stderr
+
+
+def test_findings_page_accepts_a_genuine_fingerprint_prefix(tmp_path):
+    """Containment probe: a real prefix -- lowercase hex, any length from 1
+    to 64 -- must still be accepted. Exactly what the Activity screen's own
+    deep link sends: the first 12 characters of a decision's fingerprint
+    (see ui/security/activity-screen.js's own file comment)."""
+    db = tmp_path / "security.db"
+    out = run(db, "findings-page", "--project", "web", "--fingerprint", "abc123def456")
+    assert out["rows"] == []
+    assert out["total"] == 0
+
+
+def test_activity_data_paginates_with_page_and_per_page(tmp_path):
+    db = tmp_path / "security.db"
+    for i in range(3):
+        run(db, "event", "--project", "web", "--kind", "analysis_started",
+            "--detail", f"run {i}")
+    page1 = run(db, "activity-data", "--since", "0", "--page", "1", "--per-page", "2")
+    page2 = run(db, "activity-data", "--since", "0", "--page", "2", "--per-page", "2")
+    assert len(page1["events"]) == 2
+    assert len(page2["events"]) == 1
+    assert page1["page"] == 1 and page2["page"] == 2
+    ids = {e["detail"] for e in page1["events"]} | {e["detail"] for e in page2["events"]}
+    assert ids == {"run 0", "run 1", "run 2"}
+
+
+def test_activity_data_since_zero_summarises_the_whole_history(tmp_path):
+    """A bare `--since 0` (no lower bound, `ledger.events_for`'s own default)
+    only reaches this verb from a direct command-line call -- the server
+    always resolves a real timestamp first. The summary must still answer
+    with a real count rather than a day window that excludes an event
+    recorded a moment ago."""
+    db = tmp_path / "security.db"
+    run(db, "event", "--project", "web", "--kind", "report_exported")
+    out = run(db, "activity-data", "--since", "0")
+    assert out["summary"]["report_exported"] == 1
+
+
+def test_activity_data_events_carry_no_user_or_ip_field(tmp_path):
+    db = tmp_path / "security.db"
+    run(db, "event", "--project", "web", "--kind", "settings_changed")
+    out = run(db, "activity-data", "--since", "0")
+    assert "user" not in out["events"][0]
+    assert "ip" not in out["events"][0]
+
+
+# -------------------------------------------- a ledger hiccup is never fatal
+
+def test_open_analysis_survives_a_ledger_write_failure(tmp_path, monkeypatch, capsys):
+    """Reproduced before the guard: `record_event` used to run unguarded in
+    `cmd_open_analysis`. The kind passed there is a literal, so `ValueError`
+    can never fire -- but the INSERT can still raise `sqlite3.OperationalError`
+    (`security.db` is shared across every project, and `connect()` takes the
+    default 5s busy timeout), and `main()` has no top-level guard, so that
+    propagated as a traceback with NO stdout. The `running` row above is
+    already committed by the time it happens, so the worst case was real:
+    `cmd_security_analyze`'s `| jq -r '.analysis_id'` read empty, `aid` became
+    "", and `security analyze` died with "could not open an analysis" while
+    the ledger held an orphaned `running` row for an analysis that, in fact,
+    had opened.
+
+    Driven in-process (not via the `run`/`fails` subprocess helpers) because
+    the point is to monkeypatch `record_event` mid-call, which a subprocess
+    boundary cannot see."""
+    db = tmp_path / "security.db"
+
+    def boom(*_a, **_kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(security_ledger, "record_event", boom)
+    security_cli.main([
+        "open-analysis", "--project", "web", "--repo", "web", "--branch", "main",
+        "--commit", "a", "--profile", "quick", "--run-id", "r", "--db", str(db)])
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["analysis_id"] == 1
+    # Not merely the printed id: the row itself is real, checked over a fresh
+    # subprocess so the still-broken monkeypatch above cannot mask a failure.
+    row = run(db, "list", "--project", "web")[0]
+    assert row["id"] == 1
+    assert row["state"] == "running"
+
+
+def test_finish_survives_a_ledger_write_failure(tmp_path, monkeypatch):
+    """Same failure, second call site: `finish_analysis` above already closed
+    the row with its real verdict and spend when `record_event` raises, and
+    that close must not be undone by a hiccup recording it happened."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+
+    def boom(*_a, **_kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(security_ledger, "record_event", boom)
+    security_cli.main(["finish", "--analysis", str(aid), "--state", "done",
+                       "--spend", "1.5", "--db", str(db)])
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert row["spend_usd"] == 1.5
+
+
+def test_decide_survives_a_ledger_write_failure(tmp_path, monkeypatch):
+    """Third call site: the decision itself is the thing that must survive a
+    ledger hiccup recording it -- a suppression that silently failed to save
+    because its OWN audit trail could not be written would be worse than one
+    that saved and went unrecorded."""
+    db = tmp_path / "security.db"
+    run(db, "finish", "--analysis", str(open_analysis(db)), "--state", "done")
+
+    def boom(*_a, **_kw):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(security_ledger, "record_event", boom)
+    security_cli.main(["decide", "--project", "web", "--fingerprint", "a" * 64,
+                       "--state", "accepted", "--reason", "reviewed",
+                       "--by", "luiz", "--db", str(db)])
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT state FROM decision WHERE fingerprint=?",
+                        ("a" * 64,)).fetchone()[0] == "accepted"
+
+
+# ------------------------------------------- the agent cannot forge an event
+
+def test_the_agent_cannot_write_an_event_by_hand(tmp_path):
+    """`event` is the standalone write into the one record of what actually
+    happened. Both audit-worthy things the agent causes are already filed as
+    side effects -- `analysis_started` by `open-analysis` (which it cannot
+    call) and `analysis_finished` by `finish` (which files the event itself)
+    -- so the agent has no legitimate use for this verb, while a forged
+    `settings_changed` or `decision_made` would corrupt the ledger's own
+    audit trail."""
+    db = tmp_path / "security.db"
+    # open_analysis's own analysis_started already puts one row in `event`,
+    # so the assertion below is a before/after count, not "the table is
+    # empty" -- otherwise this test would fail for a reason that has nothing
+    # to do with the refusal it names.
+    open_analysis(db)
+    conn = sqlite3.connect(str(db))
+    before = conn.execute("SELECT count(*) FROM event").fetchone()[0]
+    out = fails(db, "event", "--project", "web", "--kind", "settings_changed",
+                "--detail", "forged", env=AS_AGENT)
+    assert out.returncode != 0
+    assert "CC_SECURITY_AGENT" in out.stderr
+    assert conn.execute("SELECT count(*) FROM event").fetchone()[0] == before
+
+
+def test_the_agent_can_still_read_events(tmp_path):
+    """`events` is read-only and stays allowed under the flag -- the control
+    for the refusal above: there is nothing here for CC_SECURITY_AGENT to
+    protect, only a query the agent may legitimately want to see."""
+    db = tmp_path / "security.db"
+    run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
+        "--state", "accepted", "--reason", "reviewed")
+    out = run(db, "events", "--project", "web", env=AS_AGENT)
+    assert any(e["kind"] == "decision_made" for e in out)
+
+
+# --------------------------------------------- the analysis verb: one row only
+
+def test_analysis_prints_the_row_and_nothing_else(tmp_path):
+    db = tmp_path / "security.db"
+    aid = open_analysis(db, project="web", commit="a", run_id="r")
+    row = run(db, "analysis", "--id", str(aid))
+    assert row["id"] == aid
+    assert row["project"] == "web"
+    assert row["state"] == "running"
+
+
+def test_analysis_refuses_an_unknown_id(tmp_path):
+    db = tmp_path / "security.db"
+    open_analysis(db)
+    out = fails(db, "analysis", "--id", "999")
+    assert out.returncode != 0
+    assert "999" in out.stderr
+
+
+def test_analysis_is_allowed_under_the_agent_environment(tmp_path):
+    """Read-only, like `findings`, `list` and `checklist`: nothing here for
+    CC_SECURITY_AGENT to protect."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    row = run(db, "analysis", "--id", str(aid), env=AS_AGENT)
+    assert row["id"] == aid
+
+
+# ------------------------------------------------------------ saved filters
+
+def test_filters_save_then_list_round_trips(tmp_path):
+    db = tmp_path / "security.db"
+    run(db, "filters", "save", "--project", "web", "--name", "criticals only",
+        stdin=json.dumps({"severity": "critical"}))
+    got = run(db, "filters", "list", "--project", "web")
+    assert len(got) == 1
+    assert got[0]["name"] == "criticals only"
+    assert got[0]["query"] == {"severity": "critical"}
+
+
+def test_filters_save_replaces_a_filter_of_the_same_name(tmp_path):
+    db = tmp_path / "security.db"
+    run(db, "filters", "save", "--project", "web", "--name", "mine",
+        stdin=json.dumps({"severity": "critical"}))
+    run(db, "filters", "save", "--project", "web", "--name", "mine",
+        stdin=json.dumps({"severity": "high"}))
+    got = run(db, "filters", "list", "--project", "web")
+    assert len(got) == 1
+    assert got[0]["query"] == {"severity": "high"}
+
+
+def test_filters_list_is_scoped_to_its_project(tmp_path):
+    db = tmp_path / "security.db"
+    run(db, "filters", "save", "--project", "web", "--name", "mine",
+        stdin=json.dumps({"severity": "critical"}))
+    assert run(db, "filters", "list", "--project", "other") == []
+
+
+def test_filters_delete_reports_whether_it_existed(tmp_path):
+    db = tmp_path / "security.db"
+    run(db, "filters", "save", "--project", "web", "--name", "mine",
+        stdin=json.dumps({}))
+    assert run(db, "filters", "delete", "--project", "web",
+              "--name", "mine")["deleted"] is True
+    assert run(db, "filters", "delete", "--project", "web",
+              "--name", "mine")["deleted"] is False
+
+
+def test_filters_save_refuses_a_blank_name(tmp_path):
+    db = tmp_path / "security.db"
+    out = fails(db, "filters", "save", "--project", "web", "--name", "   ",
+                stdin=json.dumps({}))
+    assert out.returncode != 0
+    assert "name" in out.stderr
+
+
+def test_filters_save_refuses_stdin_that_is_not_json(tmp_path):
+    db = tmp_path / "security.db"
+    out = fails(db, "filters", "save", "--project", "web", "--name", "mine",
+                stdin="not json")
+    assert out.returncode != 0
+    assert "JSON" in out.stderr
+
+
+def test_filters_save_accepts_a_name_of_exactly_80_characters(tmp_path):
+    db = tmp_path / "security.db"
+    name = "x" * 80
+    run(db, "filters", "save", "--project", "web", "--name", name,
+        stdin=json.dumps({}))
+    got = run(db, "filters", "list", "--project", "web")
+    assert got[0]["name"] == name
+
+
+def test_filters_save_refuses_a_name_over_80_characters(tmp_path):
+    """The root-cause fix: `save_filter` used to truncate a name over 80
+    characters to `name[:80]` before the primary key ever saw it, so a name
+    this long could be saved but never deleted by what the user actually
+    typed. It is now refused outright, naming the limit."""
+    db = tmp_path / "security.db"
+    out = fails(db, "filters", "save", "--project", "web", "--name", "x" * 81,
+                stdin=json.dumps({}))
+    assert out.returncode != 0
+    assert "80" in out.stderr
+    assert run(db, "filters", "list", "--project", "web") == []
+
+
+def test_filters_save_refuses_json_that_is_not_an_object(tmp_path):
+    """`cmd_filters` used to catch only a parse error, never the shape --
+    unlike `report-finding`'s `isinstance(payload, dict)` check. A number, a
+    bare list, `null` and a string all parse as valid JSON and would have
+    been stored as `query` untouched, which the page's filter-spreading logic
+    would then choke on."""
+    db = tmp_path / "security.db"
+    for bad in ("5", "null", "[1, 2]", '"just a string"'):
+        out = fails(db, "filters", "save", "--project", "web", "--name", "mine",
+                    stdin=bad)
+        assert out.returncode != 0, bad
+        assert "JSON object" in out.stderr, bad
+    assert run(db, "filters", "list", "--project", "web") == []
+
+
+# ------------------------ the agent works from its own view, never edits it
+
+def test_the_agent_cannot_save_a_filter(tmp_path):
+    """A saved filter is a working set a human curates -- not something an
+    analysis decides to leave behind for whoever opens the page next."""
+    db = tmp_path / "security.db"
+    out = fails(db, "filters", "save", "--project", "web", "--name", "mine",
+                stdin=json.dumps({"severity": "critical"}), env=AS_AGENT)
+    assert out.returncode != 0
+    assert "CC_SECURITY_AGENT" in out.stderr
+    assert run(db, "filters", "list", "--project", "web") == []
+
+
+def test_the_agent_cannot_delete_a_filter(tmp_path):
+    db = tmp_path / "security.db"
+    run(db, "filters", "save", "--project", "web", "--name", "mine",
+        stdin=json.dumps({}))
+    out = fails(db, "filters", "delete", "--project", "web", "--name", "mine",
+                env=AS_AGENT)
+    assert out.returncode != 0
+    assert "CC_SECURITY_AGENT" in out.stderr
+    assert len(run(db, "filters", "list", "--project", "web")) == 1
+
+
+def test_the_agent_can_still_list_filters(tmp_path):
+    """`filters list` is read-only, the same reasoning that keeps `findings`,
+    `events` and `analysis` open under the flag -- there is nothing here for
+    CC_SECURITY_AGENT to protect, only a view the agent may legitimately
+    want."""
+    db = tmp_path / "security.db"
+    run(db, "filters", "save", "--project", "web", "--name", "mine",
+        stdin=json.dumps({"severity": "high"}))
+    got = run(db, "filters", "list", "--project", "web", env=AS_AGENT)
+    assert got[0]["name"] == "mine"
+
+
+# ------------------------------------------------ the dispatch generalises
+
+def test_main_computes_the_agent_key_with_no_hardcoded_special_case():
+    """The whole point of moving `filters` to `dest="action"` (see
+    AGENT_FORBIDDEN's docstring and `main`'s dispatch key) is that the NEXT
+    nested verb following the same convention needs no code change here --
+    only a tuple entry. A structural assertion, not a behavioural one: it is
+    what stops a future edit from reintroducing `if key == "filters"` (or any
+    other verb) as a one-off special case that the next nested verb then
+    silently fails to get, exactly the failure mode the reviewer named.
+    """
+    src = inspect.getsource(security_cli.main)
+    assert 'if key == "' not in src
+    assert "args.filters_action" not in src
+
+
+# ------------------------------------------------------------ the index screen
+
+def finished_analysis(db, tmp_path, project, branch, severity="high", rule="r"):
+    """A `done` analysis of `project`/`branch` carrying one reported finding.
+
+    Uses `prepared_analysis` so `finish --state done` is not silently
+    downgraded to `capped` (see `cmd_finish`) -- a test about current posture
+    has to start from a row the close actually accepted as done."""
+    aid = prepared_analysis(db, tmp_path, project=project, repo=project, branch=branch)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": fingerprint_for(project, branch, rule), "category": "sast",
+        "rule": rule, "severity": severity, "title": "t", "rationale": "r"}))
+    run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "0.5")
+    return aid
+
+
+def capped_analysis(db, tmp_path, project, branch, severity="high", rule="r"):
+    """A `capped` analysis of `project`/`branch` -- it stopped before covering
+    its whole scope, carrying one reported finding from before it stopped.
+
+    Uses `prepared_analysis` for the same reason `finished_analysis` does --
+    `finish --state capped` is the agent's own honest statement that it ran
+    out of room, not a downgrade `cmd_finish` applies on its behalf, and a
+    test about how the index screen treats this state has to start from a
+    row that really carries it."""
+    aid = prepared_analysis(db, tmp_path, project=project, repo=project, branch=branch)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": fingerprint_for(project, branch, rule), "category": "sast",
+        "rule": rule, "severity": severity, "title": "t", "rationale": "r"}))
+    run(db, "finish", "--analysis", str(aid), "--state", "capped", "--spend", "0.3")
+    return aid
+
+
+def fingerprint_for(*parts):
+    return compute_fingerprint("sast", "-".join(parts), "app.py", "")
+
+
+def test_index_data_survives_a_ledger_that_does_not_exist_yet(tmp_path):
+    """Nobody has run an analysis of anything -- `index-data` must not create
+    the ledger file just to answer the index screen, and the screen it hands
+    back is empty with a sentence, not a 500."""
+    db = tmp_path / "security.db"
+    assert not db.exists()
+    out = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": "d"}]))
+    assert not db.exists()
+    assert out["summary"] == {"projects": 1, "analyses": 0, "critical": 0,
+                              "high": 0, "capped_projects": 0,
+                              "fell_back_projects": 0, "success_rate": None}
+    assert out["projects"] == [{
+        "name": "web", "description": "d", "branch": "main",
+        "branch_fell_back": False,
+        "posture": {"critical": 0, "high": 0, "medium": 0, "low": 0,
+                    "info": 0, "total": 0},
+        "profile": "", "last_started": 0, "last_duration": 0, "last_state": "",
+        "analyses": 0, "trend": []}]
+    assert out["recent"] == {"rows": [], "total": 0}
+    assert out["donut"] == {"critical": 0, "high": 0, "medium": 0, "low": 0,
+                            "info": 0, "total": 0}
+    assert out["categories"] == []
+
+
+def test_index_data_reports_current_posture_for_the_projects_given(tmp_path):
+    db = tmp_path / "security.db"
+    aid = finished_analysis(db, tmp_path, "web", "main", severity="high", rule="sql-injection")
+
+    out = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": "d"}]))
+
+    assert out["summary"] == {"projects": 1, "analyses": 1, "critical": 0,
+                              "high": 1, "capped_projects": 0,
+                              "fell_back_projects": 0, "success_rate": 1.0}
+    row = out["projects"][0]
+    assert row["name"] == "web"
+    assert row["branch"] == "main"
+    assert row["branch_fell_back"] is False
+    assert row["posture"]["high"] == 1
+    assert row["analyses"] == 1
+    assert [r["id"] for r in out["recent"]["rows"]] == [aid]
+    assert out["recent"]["total"] == 1
+    assert out["recent"]["rows"][0]["open"] == 1
+    assert out["recent"]["rows"][0]["severities"] == \
+        {"critical": 0, "high": 1, "medium": 0}
+    assert out["donut"]["high"] == 1
+    assert out["donut"]["total"] == 1
+    assert out["categories"] == [{"rule": "sql-injection", "count": 1, "category": "sast"}]
+
+
+def test_index_data_shows_the_branch_it_fell_back_to(tmp_path):
+    """The project's declared base (`main`) was never analysed -- only
+    `develop` was. The row must carry `develop`, the branch it actually
+    fell back to, and say so, rather than silently showing one branch's
+    posture as if it belonged to another."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "develop", severity="critical")
+
+    out = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]))
+
+    row = out["projects"][0]
+    assert row["branch"] == "develop"
+    assert row["branch_fell_back"] is True
+    assert row["posture"]["critical"] == 1
+    # The declared base (`main`) has no history of its own -- the sparkline
+    # has no cell to say "fell back to develop" the way this row's own
+    # `branch_fell_back` does for its posture, so it shows nothing rather
+    # than silently plot `develop`'s history under `main`'s name.
+    assert row["trend"] == []
+
+
+def test_index_data_marks_a_project_row_whose_latest_analysis_is_capped(tmp_path):
+    """A capped analysis is a PARTIAL read of the repository -- the identical
+    notice `secPaint` already gives on the analysis screen ("critical: 0"
+    there means "none found before it stopped," not "none"). The index
+    screen used to render that posture with no cue at all, because the row
+    data it painted from never carried the state to begin with -- this is
+    that data-layer half; the rendering half lives in
+    tests/test_page_contract.py."""
+    db = tmp_path / "security.db"
+    capped_analysis(db, tmp_path, "web", "main", severity="critical")
+
+    out = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]))
+
+    row = out["projects"][0]
+    assert row["last_state"] == "capped", f"row does not carry the capped state: {row}"
+    assert row["posture"]["critical"] == 1
+    assert out["summary"]["capped_projects"] == 1, \
+        "the KPI cards' contributing-project count did not see the capped analysis"
+
+
+def test_index_data_summary_is_scoped_to_the_projects_given(tmp_path):
+    """Two projects have analyses in the ledger, but only one is passed in
+    `--projects` -- every panel must count only that one, not everything the
+    ledger has ever recorded (see queries.index_summary's own docstring).
+
+    `donut`, `categories` and `recent` used to be the three panels left
+    reading the WHOLE ledger while `summary`/`projects` were already scoped:
+    `gone`'s critical finding, on a distinct rule, surfaced in all three even
+    though the other half of this very screen already says `gone` does not
+    exist. This fixture was already exactly the one that would catch that --
+    it only ever asserted on `summary`."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", severity="high")
+    aid_gone = finished_analysis(db, tmp_path, "gone", "main", severity="critical",
+                                 rule="hardcoded-secret")
+
+    out = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]))
+
+    assert out["summary"]["projects"] == 1
+    assert out["summary"]["analyses"] == 1
+    assert out["summary"]["critical"] == 0
+    assert out["summary"]["high"] == 1
+    assert [p["name"] for p in out["projects"]] == ["web"]
+    assert out["donut"]["critical"] == 0, "gone's critical finding leaked into the donut"
+    assert out["donut"]["high"] == 1
+    assert [c["rule"] for c in out["categories"]] == ["r"], \
+        "gone's rule leaked into the category rollup: " + repr(out["categories"])
+    assert aid_gone not in [a["id"] for a in out["recent"]["rows"]], \
+        "gone's analysis leaked into the recent-analyses feed"
+
+
+def test_index_data_days_narrows_the_donut_and_categories(tmp_path):
+    """`--days` (default 30 when omitted) reaches `queries.severity_totals`/
+    `top_categories` for real now -- see those functions' own docstrings.
+    An analysis backdated to 60 days ago must vanish from a narrower window
+    and reappear once the window widens back past it, proving the CLI flag
+    is actually wired through rather than accepted and dropped."""
+    db = tmp_path / "security.db"
+    aid = finished_analysis(db, tmp_path, "web", "main", severity="critical",
+                            rule="hardcoded-secret")
+    conn = sqlite3.connect(str(db))
+    sixty_days_ago = int(time.time()) - 60 * 86400
+    conn.execute("UPDATE analysis SET started=?, ended=? WHERE id=?",
+                 (sixty_days_ago, sixty_days_ago, aid))
+    conn.commit()
+    conn.close()
+
+    narrow = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]), "--days", "30")
+    wide = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]), "--days", "90")
+
+    assert narrow["donut"]["critical"] == 0, \
+        "a 30-day window must not see an analysis 60 days old"
+    assert narrow["categories"] == []
+    assert wide["donut"]["critical"] == 1, \
+        "widening past the analysis's own age must restore it"
+    assert wide["categories"] == [{"rule": "hardcoded-secret", "count": 1, "category": "sast"}]
+
+
+def test_index_data_recent_page_pages_server_side_with_a_true_total(tmp_path):
+    """`--recent-page` (default 1) pages `recent_analyses` in the database
+    itself -- see that function's own docstring for why. Seven analyses,
+    five per page: page 1 carries the five newest, page 2 carries the
+    remaining two, and `total` says 7 on both pages."""
+    db = tmp_path / "security.db"
+    ids = [finished_analysis(db, tmp_path, "web", "main") for _ in range(7)]
+    newest_first = list(reversed(ids))
+
+    page1 = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]), "--recent-page", "1")
+    page2 = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]), "--recent-page", "2")
+
+    assert [r["id"] for r in page1["recent"]["rows"]] == newest_first[0:5]
+    assert page1["recent"]["total"] == 7
+    assert [r["id"] for r in page2["recent"]["rows"]] == newest_first[5:7]
+    assert page2["recent"]["total"] == 7
+
+
+def test_index_data_refuses_projects_that_is_not_json(tmp_path):
+    db = tmp_path / "security.db"
+    out = fails(db, "index-data", "--projects", "not json")
+    assert out.returncode != 0
+    assert "JSON" in out.stderr
+
+
+def test_index_data_refuses_projects_that_is_not_a_list_of_objects(tmp_path):
+    db = tmp_path / "security.db"
+    for bad in ("5", "null", '"just a string"', "[1, 2]"):
+        out = fails(db, "index-data", "--projects", bad)
+        assert out.returncode != 0, bad
+        assert "--projects" in out.stderr, bad
+
+
+def test_index_data_is_read_only_and_reachable_by_the_agent(tmp_path):
+    """Not in AGENT_FORBIDDEN -- the same reasoning as `findings`, `list`,
+    `analysis` and `checklist`: it opens the ledger read-only and writes
+    nothing, so there is nothing here for CC_SECURITY_AGENT to guard."""
+    db = tmp_path / "security.db"
+    out = run(db, "index-data", "--projects", "[]", env=AS_AGENT)
+    assert out["summary"]["projects"] == 0
+
+
+# ---------------------------------------------------------- project-data
+
+def test_project_data_survives_a_ledger_that_does_not_exist_yet(tmp_path):
+    """Nobody has run an analysis of anything -- `project-data` must not
+    create the ledger file just to answer the project screen, and the screen
+    it hands back is empty with a sentence, not a 500."""
+    db = tmp_path / "security.db"
+    assert not db.exists()
+    out = run(db, "project-data", "--project", "web", "--base", "main",
+             "--default-profile", "deep")
+    assert not db.exists()
+    assert out["project"] == "web"
+    assert out["header"] == {"profile": "deep", "branch": "main",
+                             "branch_fell_back": False, "lines_of_code": 0,
+                             "last_analysis": 0}
+    assert out["tabs"]["overview"]["posture"] == {
+        "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0, "total": 0}
+    assert out["tabs"]["overview"]["state"] == ""
+    assert out["tabs"]["overview"]["attempted"] is False, \
+        "nothing has ever been analysed -- attempted must be false, not just state==''"
+    assert out["tabs"]["runs"] == []
+    assert out["tabs"]["branches"] == []
+    assert out["tabs"]["reports"] == []
+    assert out["sidebar"]["donut"]["total"] == 0
+    assert out["sidebar"]["categories"] == []
+    assert out["sidebar"]["activity"] == []
+    assert out["sidebar"]["branch_count"] == 0
+
+
+def test_project_data_defaults_the_profile_when_none_is_declared(tmp_path):
+    db = tmp_path / "security.db"
+    out = run(db, "project-data", "--project", "web", "--base", "", "--default-profile", "")
+    assert out["header"]["profile"] == "standard"
+    assert out["header"]["branch"] == ""
+
+
+def test_project_data_reports_current_posture_and_checklist_counts(tmp_path):
+    db = tmp_path / "security.db"
+    aid = finished_analysis(db, tmp_path, "web", "main", severity="high", rule="sql-injection")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main",
+             "--default-profile", "standard")
+
+    assert out["header"]["branch"] == "main"
+    assert out["header"]["branch_fell_back"] is False
+    assert out["header"]["last_analysis"] > 0
+    assert out["tabs"]["overview"]["posture"]["high"] == 1
+    assert out["tabs"]["overview"]["state"] == "done"
+    # First analysis of this branch: nothing to compare against, so the one
+    # finding it reported is "new" and every other state is empty.
+    assert out["tabs"]["overview"]["checklist"]["new"] == 1
+    assert sum(out["tabs"]["overview"]["checklist"].values()) == 1
+    assert [r["id"] for r in out["tabs"]["runs"]] == [aid]
+    assert out["tabs"]["runs"][0]["findings"] == 1
+    assert out["sidebar"]["donut"]["high"] == 1
+    assert out["sidebar"]["categories"] == [{"rule": "sql-injection", "count": 1, "category": "sast"}]
+    assert out["sidebar"]["branch_count"] == 1
+    assert out["tabs"]["overview"]["attempted"] is True
+
+
+def test_project_data_lines_of_code_is_a_property_of_the_latest_analysis(tmp_path):
+    """Every analysis before the column existed carries 0 -- the CLI hands
+    that raw number back untouched; the dash for "not counted" is the page's
+    own call (see ui/security/project-screen.js), not this verb's."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main")
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+    assert out["header"]["lines_of_code"] == 0
+
+
+def test_project_data_shows_the_branch_it_fell_back_to(tmp_path):
+    """The project's declared base (`main`) was never analysed -- only
+    `develop` was. The header must carry `develop`, the branch it actually
+    fell back to, and say so."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "develop", severity="critical")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    assert out["header"]["branch"] == "develop"
+    assert out["header"]["branch_fell_back"] is True
+    assert out["tabs"]["overview"]["posture"]["critical"] == 1
+
+
+def test_project_data_marks_the_overview_state_when_latest_analysis_is_capped(tmp_path):
+    """A capped analysis is a PARTIAL read of the repository -- the identical
+    notice the index screen and the old analysis screen already give. The
+    Overview tab has to carry the state so the screen can show the same cue,
+    not silently present a partial posture as a finished one."""
+    db = tmp_path / "security.db"
+    capped_analysis(db, tmp_path, "web", "main", severity="critical")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    assert out["tabs"]["overview"]["state"] == "capped"
+    assert out["tabs"]["overview"]["posture"]["critical"] == 1
+
+
+def test_project_data_serves_the_overview_cards_beyond_the_posture(tmp_path):
+    """ProjectOverview.png's own cards ride the same payload: `trend` (last
+    7 days of the SHOWN branch, one point per finished analysis, each with a
+    per-severity breakdown), `categories` and `top_findings` (projections of
+    the SAME checklist `posture` reads -- one branch, one scope, so the KPI
+    total, the donut centre and the Top findings rows can never disagree),
+    and `previous` (the posture one finished analysis earlier)."""
+    db = tmp_path / "security.db"
+    aid1 = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main")
+    run(db, "report-finding", "--analysis", str(aid1), stdin=json.dumps({
+        "fingerprint": fingerprint_for("web", "main", "leak"), "category": "secrets",
+        "rule": "private-key-committed", "severity": "high", "title": "Key leak",
+        "rationale": "r",
+        "occurrences": [{"file": "conf/id_rsa", "line": 1, "snippet_hash": "h"}]}))
+    run(db, "finish", "--analysis", str(aid1), "--state", "done", "--spend", "0.1")
+
+    aid2 = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main")
+    run(db, "report-finding", "--analysis", str(aid2), stdin=json.dumps({
+        "fingerprint": fingerprint_for("web", "main", "leak"), "category": "secrets",
+        "rule": "private-key-committed", "severity": "high", "title": "Key leak",
+        "rationale": "r",
+        "occurrences": [{"file": "conf/id_rsa", "line": 1, "snippet_hash": "h"}]}))
+    run(db, "report-finding", "--analysis", str(aid2), stdin=json.dumps({
+        "fingerprint": fingerprint_for("web", "main", "sqli"), "category": "sast",
+        "rule": "sql-injection", "severity": "critical", "title": "SQL injection",
+        "rationale": "r",
+        "occurrences": [{"file": "app/db.py", "line": 40, "snippet_hash": "h"},
+                        {"file": "app/api.py", "line": 7, "snippet_hash": "h"}]}))
+    run(db, "finish", "--analysis", str(aid2), "--state", "done", "--spend", "0.1")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main",
+             "--default-profile", "")
+    ov = out["tabs"]["overview"]
+
+    # trend: one point per finished analysis, oldest first, each carrying the
+    # per-severity split of its own open count.
+    assert [p["analysis_id"] for p in ov["trend"]] == [aid1, aid2]
+    assert ov["trend"][0]["open"] == 1
+    assert ov["trend"][1]["open"] == 2
+    assert ov["trend"][1]["by_severity"]["critical"] == 1
+    assert ov["trend"][1]["by_severity"]["high"] == 1
+    assert sum(ov["trend"][1]["by_severity"].values()) == ov["trend"][1]["open"]
+
+    # previous: the posture as of aid1 -- the high alone.
+    assert ov["previous"]["total"] == 1
+    assert ov["previous"]["high"] == 1
+    assert ov["previous"]["critical"] == 0
+
+    # categories: rule buckets of the CURRENT checklist's open findings.
+    assert {c["rule"]: c["count"] for c in ov["categories"]} == {
+        "private-key-committed": 1, "sql-injection": 1}
+
+    # top findings: severity rank first (critical before high), each row
+    # carrying the fields the card renders -- location from the first
+    # occurrence, a count of the rest, the attesting analysis and first_seen.
+    assert [f["rule"] for f in ov["top_findings"]] == [
+        "sql-injection", "private-key-committed"]
+    sqli = ov["top_findings"][0]
+    assert sqli["file"] == "app/db.py" and sqli["line"] == 40 and sqli["more"] == 1
+    assert sqli["analysis_id"] == aid2
+    assert sqli["first_seen"] > 0
+    # The high was first seen by aid1 even though aid2 is what attests it now.
+    leak = ov["top_findings"][1]
+    assert leak["analysis_id"] == aid2
+    listed = run(db, "list", "--project", "web")
+    aid1_started = next(r["started"] for r in listed if r["id"] == aid1)
+    assert leak["first_seen"] == aid1_started
+
+
+def test_project_data_previous_is_none_not_zeros_without_a_prior_analysis(tmp_path):
+    """One finished analysis: there is nothing to compare against, and the
+    page must be able to say "no previous analysis" -- a zero-filled posture
+    here would render as a 0% delta that no comparison ever produced."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", severity="critical")
+    out = run(db, "project-data", "--project", "web", "--base", "main",
+             "--default-profile", "")
+    assert out["tabs"]["overview"]["previous"] is None
+    assert out["tabs"]["overview"]["trend"] != []
+
+
+def test_project_data_overview_cards_follow_the_fallen_back_branch(tmp_path):
+    """The trend/categories/top_findings scope is the SHOWN branch -- the
+    one the header names, fallen back or not -- unlike the index sparkline
+    (`trend_series`), which never falls back because it has nowhere to say
+    so. This screen does say so (the header's own fell-back chip), so its
+    cards follow it rather than rendering empty beside a posture that did."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "develop", severity="critical",
+                      rule="sql-injection")
+    out = run(db, "project-data", "--project", "web", "--base", "main",
+             "--default-profile", "")
+    assert out["header"]["branch_fell_back"] is True
+    ov = out["tabs"]["overview"]
+    assert len(ov["trend"]) == 1 and ov["trend"][0]["open"] == 1
+    assert ov["categories"][0]["rule"] == "sql-injection"
+    assert ov["top_findings"][0]["severity"] == "critical"
+
+
+def test_project_data_runs_tab_matches_the_list_verb(tmp_path):
+    """The Runs tab is `cmd_list`'s own query -- same rows, same order --
+    plus a `findings` count folded in, so it can be checked directly against
+    `claude-cron security list --project <name>`."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", rule="a")
+    open_analysis(db, project="web", repo="web", branch="develop", run_id="r2")
+
+    listed = run(db, "list", "--project", "web")
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    assert [r["id"] for r in out["tabs"]["runs"]] == [r["id"] for r in listed]
+    assert [r["state"] for r in out["tabs"]["runs"]] == [r["state"] for r in listed]
+    # The running row (no finished baseline) reports no findings count yet.
+    running = next(r for r in out["tabs"]["runs"] if r["state"] == "running")
+    assert running["findings"] is None
+
+
+def test_project_data_sidebar_activity_carries_the_projects_own_events(tmp_path):
+    db = tmp_path / "security.db"
+    open_analysis(db, project="web", repo="web", branch="main", run_id="r1")
+    run(db, "event", "--project", "web", "--kind", "decision_made",
+        "--detail", "accepted: reviewed", "--related", "abc")
+    run(db, "event", "--project", "other", "--kind", "decision_made",
+        "--detail", "accepted: unrelated", "--related", "xyz")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    kinds = [e["kind"] for e in out["sidebar"]["activity"]]
+    details = [e["detail"] for e in out["sidebar"]["activity"]]
+    assert "analysis_started" in kinds
+    assert "decision_made" in kinds
+    assert "accepted: unrelated" not in details, "another project's event leaked into the sidebar"
+
+
+def test_project_data_is_read_only_and_reachable_by_the_agent(tmp_path):
+    """Not in AGENT_FORBIDDEN -- the same reasoning as `index-data`: it opens
+    the ledger read-only through `queries.read_only` and writes nothing."""
+    db = tmp_path / "security.db"
+    out = run(db, "project-data", "--project", "web", "--base", "", "--default-profile", "",
+             env=AS_AGENT)
+    assert out["project"] == "web"
+
+
+# ---- review fix: two different "posture" numbers on one screen, with
+# nothing saying why they differ. The Overview posture is ONE branch
+# (default_branch_posture's own choice); the sidebar donut/categories span
+# EVERY analysed branch. `branch_count` is the number the sidebar's own
+# caption names.
+
+def test_project_data_sidebar_names_how_many_branches_it_spans(tmp_path):
+    """A two-branch project: the Overview posture (main) and the sidebar
+    donut (both branches) are DIFFERENT, equally true totals -- this asserts
+    the number that lets the page say so, rather than the two panels
+    disagreeing with nothing on screen explaining why."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", severity="critical", rule="a")
+    finished_analysis(db, tmp_path, "web", "develop", severity="low", rule="b")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    assert out["header"]["branch"] == "main"
+    assert out["tabs"]["overview"]["posture"] == {
+        "critical": 1, "high": 0, "medium": 0, "low": 0, "info": 0, "total": 1}
+    assert out["sidebar"]["donut"] == {
+        "critical": 1, "high": 0, "medium": 0, "low": 1, "info": 0, "total": 2}
+    assert out["sidebar"]["branch_count"] == 2
+
+
+def test_project_data_sidebar_branch_count_is_one_for_a_single_branch_project(tmp_path):
+    """Containment probe: a project with only one analysed branch must not
+    report a count that could be misread as spanning more than it does."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", severity="high", rule="a")
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+    assert out["sidebar"]["branch_count"] == 1
+
+
+# ---- review fix: the Runs table's FINDINGS column used to cost one
+# checklist() call per done/capped row (findings_of x2, a history scan,
+# decisions_for) -- scaling with total findings across every historical
+# analysis. It is now a plain COUNT(*), grouped once for the whole project
+# (queries.finding_counts_by_analysis) -- which also means the number is no
+# longer filtered by is_open, only by what the ledger actually recorded.
+
+def test_project_data_findings_count_is_a_raw_total_not_an_open_filter(tmp_path):
+    """Before this fix, the Runs tab's count came from checklist()'s
+    is_open filter -- so accepting a finding's risk made an already-closed
+    analysis's own historical row silently shrink its findings count, even
+    though nothing about what that run recorded had changed. FAILS before
+    the fix (the old `open` computation drops to 0 once the decision is
+    recorded) and PASSES after (a plain COUNT(*) never moves)."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", severity="high", rule="r")
+
+    before = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+    assert before["tabs"]["runs"][0]["findings"] == 1
+
+    fp = fingerprint_for("web", "main", "r")
+    run(db, "decide", "--project", "web", "--fingerprint", fp,
+        "--state", "accepted", "--reason", "risk accepted")
+
+    after = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+    assert after["tabs"]["runs"][0]["findings"] == 1, \
+        "the run's own findings count must not shrink because a later decision accepted it"
+    # The Overview's checklist counts, by contrast, DO move -- proving this
+    # is a deliberate split (findings vs. current posture), not a broken
+    # decision flow.
+    assert after["tabs"]["overview"]["checklist"]["accepted"] == 1
+
+
+def test_project_data_runs_findings_count_is_per_analysis_not_shared(tmp_path):
+    """Two separate done analyses of the SAME branch, each with its own
+    findings recorded directly against its own row -- `findings` must be
+    each analysis's OWN count, not the grouped query bleeding a later
+    analysis's rows into an earlier one's total."""
+    db = tmp_path / "security.db"
+    a1 = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main", run_id="r1")
+    run(db, "report-finding", "--analysis", str(a1), stdin=json.dumps({
+        "fingerprint": fingerprint_for("web", "main", "r1a"), "category": "sast",
+        "rule": "r1a", "severity": "high", "title": "t"}))
+    run(db, "report-finding", "--analysis", str(a1), stdin=json.dumps({
+        "fingerprint": fingerprint_for("web", "main", "r1b"), "category": "sast",
+        "rule": "r1b", "severity": "low", "title": "t"}))
+    run(db, "finish", "--analysis", str(a1), "--state", "done")
+
+    a2 = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main", run_id="r2")
+    run(db, "report-finding", "--analysis", str(a2), stdin=json.dumps({
+        "fingerprint": fingerprint_for("web", "main", "r1a"), "category": "sast",
+        "rule": "r1a", "severity": "high", "title": "t"}))
+    run(db, "finish", "--analysis", str(a2), "--state", "done")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+    by_id = {r["id"]: r["findings"] for r in out["tabs"]["runs"]}
+    assert by_id[a1] == 2, f"a1 recorded 2 findings: {by_id}"
+    assert by_id[a2] == 1, f"a2 recorded 1 finding (r1b was fixed): {by_id}"
+
+    # The Runs tab's own per-severity sub-line rides on the same rows, gated
+    # the same way, and sums back to the plain total above -- see
+    # queries.finding_severity_by_analysis's own docstring for why this is a
+    # second field, not a reshape of `findings`.
+    by_sev = {r["id"]: r["findings_by_severity"] for r in out["tabs"]["runs"]}
+    assert by_sev[a1] == {"high": 1, "low": 1}, by_sev
+    assert by_sev[a2] == {"high": 1}, by_sev
+    assert sum(by_sev[a1].values()) == by_id[a1]
+    assert sum(by_sev[a2].values()) == by_id[a2]
+
+
+def test_project_data_runs_findings_by_severity_is_null_for_an_unfinished_analysis(tmp_path):
+    """The breakdown must not look like a real (empty) answer for a run that
+    has not finished recording findings yet -- the same `None`, not `{}`,
+    gate `findings` itself already uses."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main")
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+    row = next(r for r in out["tabs"]["runs"] if r["id"] == aid)
+    assert row["findings"] is None
+    assert row["findings_by_severity"] is None, \
+        "a running analysis must not report a (misleadingly empty) breakdown"
+
+
+# ---- review fix (MINOR): "Never analysed" was shown to a project whose
+# analyses all failed, even though its own Runs tab plainly lists the
+# attempts. `attempted` distinguishes never-attempted from
+# attempted-and-never-finished; `header.last_analysis` falls back to the
+# most recent attempt of any state when there is no finished baseline.
+
+def test_project_data_marks_a_project_as_attempted_when_every_analysis_failed(tmp_path):
+    db = tmp_path / "security.db"
+    aid = open_analysis(db, project="web", repo="web", branch="main", run_id="r1")
+    run(db, "finish", "--analysis", str(aid), "--state", "failed")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    assert out["tabs"]["overview"]["state"] == "", \
+        "no finished analysis exists -- state must stay empty"
+    assert out["tabs"]["overview"]["attempted"] is True, \
+        "a failed analysis is still an attempt, not silence"
+    assert out["header"]["last_analysis"] > 0, \
+        "the header must show WHEN the failed attempt happened, not read as never analysed"
+    assert [r["id"] for r in out["tabs"]["runs"]] == [aid]
+
+
+def test_project_data_a_project_with_no_analyses_of_its_own_is_not_marked_attempted(tmp_path):
+    """Containment probe: a DIFFERENT project having analyses in the same
+    ledger must not make this one look attempted."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db, project="other", repo="other", branch="main", run_id="r1")
+    run(db, "finish", "--analysis", str(aid), "--state", "failed")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    assert out["tabs"]["overview"]["attempted"] is False
+    assert out["header"]["last_analysis"] == 0
+    assert out["tabs"]["runs"] == []
+
+
+# ---- Task 10: the Branches and Reports tabs. `tabs.branches` is exactly
+# `queries.branch_rows`'s own rows (already proven against `posture`/`trend`
+# in tests/security/test_queries.py); these two pin the CLI's own JSON
+# contract, since test_security_api.py's own coverage of `security_project`
+# only ever mocks `cc` and never runs this verb for real.
+
+def test_project_data_branches_tab_matches_branch_rows(tmp_path):
+    """Two branches of the same project, each with its own posture and its
+    own analysis count -- `branches` must carry both, newest last-analysed
+    first, with each row's own open counts (not the sidebar's cross-branch,
+    fingerprint-deduplicated total)."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", severity="low", rule="a")
+    finished_analysis(db, tmp_path, "web", "develop", severity="critical", rule="b")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    branches = out["tabs"]["branches"]
+    assert [r["branch"] for r in branches] == ["develop", "main"], \
+        "develop was analysed more recently (higher analysis id) and must sort first"
+    develop = next(r for r in branches if r["branch"] == "develop")
+    main = next(r for r in branches if r["branch"] == "main")
+    assert develop["open"]["critical"] == 1
+    assert main["open"]["low"] == 1
+    assert develop["analyses"] == 1 and main["analyses"] == 1
+    assert develop["last_analysis"] > 0 and main["last_analysis"] > 0
+    assert "trend" in develop and "trend" in main
+
+
+def test_project_data_branches_tab_lists_every_branch_ever_analysed_not_only_the_default(tmp_path):
+    """Containment probe: `branches` is not scoped to the project's declared
+    base the way the Overview posture is -- a branch never declared as the
+    base still gets its own row once it has been analysed."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "feature/x", severity="medium", rule="a")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    assert out["header"]["branch"] == "feature/x", "the header itself falls back to it"
+    assert [r["branch"] for r in out["tabs"]["branches"]] == ["feature/x"]
+
+
+def test_project_data_reports_tab_is_one_row_per_analysis(tmp_path):
+    """`reports` gathers the four downloads that used to be reachable only
+    from whichever single analysis was on screen -- one row per analysis,
+    same set and same order as `runs` (newest first), projected down to just
+    what a download needs: which analysis, which branch, when, and its
+    state (a running or failed analysis still gets a row -- the single
+    analysis view already lets you download over either, see secPaint)."""
+    db = tmp_path / "security.db"
+    done_id = finished_analysis(db, tmp_path, "web", "main", rule="a")
+    running_id = open_analysis(db, project="web", repo="web", branch="develop", run_id="r2")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main", "--default-profile", "")
+
+    assert [r["id"] for r in out["tabs"]["runs"]] == [r["analysis_id"] for r in out["tabs"]["reports"]]
+    by_id = {r["analysis_id"]: r for r in out["tabs"]["reports"]}
+    assert by_id[done_id]["branch"] == "main"
+    assert by_id[done_id]["state"] == "done"
+    assert by_id[done_id]["started"] > 0
+    assert by_id[running_id]["branch"] == "develop"
+    assert by_id[running_id]["state"] == "running"
+
+
+def test_project_data_reports_tab_is_built_from_runs_not_a_second_query(tmp_path):
+    """Structural: `cmd_project_data`'s own source must build `reports` by
+    projecting the `runs` rows it already fetched -- not a second `SELECT *
+    FROM analysis` -- the same reuse `_CachingConnection` gives `checklist()`
+    within one request (see tests/security/test_queries.py), applied here to
+    a plain Python loop instead of a cache."""
+    src = inspect.getsource(security_cli.cmd_project_data)
+    assert src.count("FROM analysis WHERE project=?") == 1, \
+        "reports must not run a second SELECT over the analysis table: " + src
+    assert "for r in runs" in src, \
+        "reports must be derived from the runs rows already in hand, not refetched"
+
+
+# ---- final whole-branch review, CRITICAL 1: the index screen's two halves
+# resolved DIFFERENT branches. `cmd_index_data` stripped `base` out of the
+# project dicts before calling `index_summary`, so the cards' own
+# `default_branch_posture(conn, name, None)` ALWAYS took the fallback path
+# while `project_rows`, handed the dicts whole, honoured the declared base.
+# Every existing `index_summary` fixture is single-branch, which is exactly
+# why nothing here caught it -- this one is deliberately not.
+
+def test_index_data_cards_and_table_resolve_the_same_branch(tmp_path):
+    """`web` declares `main` as its base. `main`'s latest analysis is
+    `capped` and carries a high finding; `develop` was analysed later and
+    found nothing. The cards used to read "High 0" (develop, the fallback)
+    while the table three inches below read "High 1" on `main` with an
+    `incomplete` badge -- and `capped_projects` resolved develop too, so the
+    undercount warning never fired even though the base branch's latest
+    analysis IS capped."""
+    db = tmp_path / "security.db"
+    capped_analysis(db, tmp_path, "web", "main", severity="high", rule="a")
+    finished_analysis(db, tmp_path, "web", "develop", severity="low", rule="b")
+
+    out = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]))
+
+    row = out["projects"][0]
+    assert row["branch"] == "main", "the table honours the declared base"
+    assert row["posture"]["high"] == 1
+    assert out["summary"]["high"] == row["posture"]["high"], (
+        "the cards and the table disagree about the same project: "
+        f"summary={out['summary']} row={row}")
+    assert out["summary"]["capped_projects"] == 1, (
+        "the base branch's latest analysis is capped and the undercount "
+        f"warning would not fire: {out['summary']}")
+
+
+def test_index_data_summary_says_when_it_had_to_fall_back(tmp_path):
+    """The table names a fallback branch out loud (`branch_fell_back`); the
+    cards, summing the same postures, said nothing -- and the spec requires
+    a fallback branch never be silent. `fell_back_projects` is that count."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "develop", severity="critical", rule="a")
+
+    out = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]))
+
+    assert out["projects"][0]["branch_fell_back"] is True
+    assert out["summary"]["fell_back_projects"] == 1, (
+        "the cards sum a branch nobody declared and say nothing: "
+        f"{out['summary']}")
+    assert out["summary"]["critical"] == 1
+
+
+def test_index_data_summary_reports_no_fallback_when_the_base_was_analysed(tmp_path):
+    """Containment probe for the counter above: a project whose declared base
+    really was analysed must not be reported as fallen back."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", severity="high", rule="a")
+
+    out = run(db, "index-data", "--projects", json.dumps(
+        [{"name": "web", "base": "main", "description": ""}]))
+
+    assert out["summary"]["fell_back_projects"] == 0
+    assert out["projects"][0]["branch_fell_back"] is False
+
+
+# ---- final whole-branch review, CRITICAL 3: the Branches tab could not
+# express `capped` at all. `branch_rows` selected `state IN ('done','capped')`
+# and returned no state, so a branch whose last analysis stopped early showed
+# its PARTIAL posture as a finished one -- on the single screen whose whole
+# purpose is per-branch posture.
+
+def test_project_data_branches_tab_carries_the_state_its_posture_came_from(tmp_path):
+    db = tmp_path / "security.db"
+    capped_analysis(db, tmp_path, "web", "main", severity="high", rule="a")
+    finished_analysis(db, tmp_path, "web", "develop", severity="low", rule="b")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main",
+              "--default-profile", "")
+
+    by_branch = {r["branch"]: r for r in out["tabs"]["branches"]}
+    assert by_branch["main"]["state"] == "capped", (
+        "a branch whose last analysis stopped early presents as finished: "
+        f"{by_branch['main']}")
+    assert by_branch["develop"]["state"] == "done"
+    assert [p.get("state") for p in by_branch["main"]["trend"]] == ["capped"], (
+        "the trend points carry no state, so the trend line cannot refuse a "
+        f"direction across a capped endpoint: {by_branch['main']['trend']}")
+
+
+# ---- final whole-branch review, CRITICAL 2: the Findings tab showed a green
+# all-clear for a project never analysed. `findings-page` carried no
+# never-analysed signal at all, so the strip rendered "nothing matches" in
+# the ok-green clean pill beside `0 total` and the table blamed filters the
+# reader never set. Overview and Branches both draw the distinction from
+# `tabs.overview.attempted`, one module away.
+
+def test_findings_page_says_a_project_was_never_analysed(tmp_path):
+    db = tmp_path / "security.db"
+    out = run(db, "findings-page", "--project", "web")
+    assert out["attempted"] is False, f"no never-analysed signal in the payload: {out}"
+    assert out["analysed"] is False
+    assert out["total"] == 0
+
+
+def test_findings_page_tells_attempted_apart_from_never_analysed(tmp_path):
+    """The same two-way distinction Overview and Branches already draw: a
+    project whose every analysis failed is not a project nobody ever
+    touched."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db, project="web", repo="web", branch="main", run_id="r1")
+    run(db, "finish", "--analysis", str(aid), "--state", "failed")
+
+    out = run(db, "findings-page", "--project", "web")
+
+    assert out["attempted"] is True, f"a failed attempt is still an attempt: {out}"
+    assert out["analysed"] is False, "nothing has finished, so nothing was read"
+
+
+def test_findings_page_of_an_analysed_project_is_analysed(tmp_path):
+    """Containment probe: a project with a finished analysis must report
+    both flags true, or the screens above would draw a never-analysed
+    notice over a real, genuinely empty result."""
+    db = tmp_path / "security.db"
+    finished_analysis(db, tmp_path, "web", "main", severity="high", rule="a")
+    out = run(db, "findings-page", "--project", "web")
+    assert out["attempted"] is True and out["analysed"] is True
+    assert out["total"] == 1
+
+
+def test_findings_page_of_a_ledger_that_does_not_exist_is_never_analysed(tmp_path):
+    """The `read_only is None` branch has to answer the same shape, or the
+    screen falls back to the green all-clear on the very install where
+    nothing has ever run."""
+    db = tmp_path / "security.db"
+    out = run(db, "findings-page", "--project", "web")
+    assert not db.exists()
+    assert out["attempted"] is False and out["analysed"] is False
+
+
+# ---- final whole-branch review, IMPORTANT 8: the findings strip carried no
+# capped cue, unlike the rows and cards beside it.
+
+def test_findings_page_counts_branches_whose_latest_analysis_is_capped(tmp_path):
+    db = tmp_path / "security.db"
+    capped_analysis(db, tmp_path, "web", "main", severity="high", rule="a")
+    finished_analysis(db, tmp_path, "web", "develop", severity="low", rule="b")
+
+    out = run(db, "findings-page", "--project", "web")
+
+    assert out["capped_branches"] == 1, (
+        "the strip has no way to say one of these branches was read only "
+        f"partially: {out}")
+
+
+def test_project_data_sidebar_counts_branches_whose_latest_analysis_is_capped(tmp_path):
+    """The sidebar donut spans every analysed branch, so it needs the same
+    cue the Overview panel already gives its one branch."""
+    db = tmp_path / "security.db"
+    capped_analysis(db, tmp_path, "web", "main", severity="high", rule="a")
+
+    out = run(db, "project-data", "--project", "web", "--base", "main",
+              "--default-profile", "")
+
+    assert out["sidebar"]["capped_branches"] == 1, (
+        f"the sidebar cannot say its donut is a partial read: {out['sidebar']}")
+
+
+# ---- final whole-branch review, IMPORTANT 7: Activity printed raw state
+# tokens. `cmd_decide` built the event detail as f"{state}: {reason}", so the
+# Activity screen showed `false_positive: duplicate...` where every other
+# screen in the area shows `False positive`.
+
+def test_decide_files_its_event_with_the_state_word_a_reader_sees(tmp_path):
+    db = tmp_path / "security.db"
+    fp = "d" * 64
+    run(db, "decide", "--project", "web", "--fingerprint", fp,
+        "--state", "false_positive", "--reason", "duplicate of the other one")
+
+    events = run(db, "events", "--project", "web")
+    detail = events[0]["detail"]
+    assert "false_positive" not in detail, (
+        f"the raw state token reached the audit trail: {detail!r}")
+    assert detail.startswith("False positive: "), detail
+    assert "duplicate of the other one" in detail
+
+
+def test_decide_files_an_accepted_event_with_the_same_vocabulary(tmp_path):
+    db = tmp_path / "security.db"
+    fp = "e" * 64
+    run(db, "decide", "--project", "web", "--fingerprint", fp,
+        "--state", "accepted", "--reason", "risk accepted for Q3")
+    events = run(db, "events", "--project", "web")
+    assert events[0]["detail"].startswith("Accepted: "), events[0]["detail"]
+
+
+# ---- final whole-branch review, IMPORTANT 2: `decide --fingerprint` had no
+# shape validation at all, so a malformed fingerprint wrote BOTH a decision
+# row and a `decision_made` event reading "accepted: risk accepted for Q3" --
+# Activity telling the operator the risk was accepted while the finding stays
+# open, since nothing will ever match that identity.
+
+def test_decide_refuses_a_fingerprint_that_is_not_the_identity_shape(tmp_path):
+    db = tmp_path / "security.db"
+    for bad in ("aws-key in prod.env", "ABC123", "a" * 63, "a" * 65, "", "  "):
+        out = fails(db, "decide", "--project", "web", "--fingerprint", bad,
+                    "--state", "accepted", "--reason", "risk accepted for Q3")
+        assert out.returncode != 0, f"{bad!r} was accepted: {out.stdout}"
+        assert "64 lowercase hex" in out.stderr, out.stderr
+    # ...and neither the decision nor its event was written.
+    assert run(db, "events", "--project", "web") == []
+
+
+def test_decide_still_accepts_a_real_fingerprint(tmp_path):
+    """Containment probe: the shape check must not refuse the identity
+    `report-finding` actually mints."""
+    db = tmp_path / "security.db"
+    fp = compute_fingerprint("sast", "r", "app.py", "")
+    run(db, "decide", "--project", "web", "--fingerprint", fp,
+        "--state", "accepted", "--reason", "known and accepted")
+    assert len(run(db, "events", "--project", "web")) == 1
+
+
+# ---- final whole-branch review, IMPORTANT 1: `finish --note` was the one
+# agent-writable free-text channel with no `looks_like_a_secret` guard on it,
+# even though the near-identically-named `partial_note` is covered and
+# `finish` is deliberately allowed to the agent. A credential written there
+# reaches all four report formats and the page.
+
+def test_finish_refuses_a_note_that_looks_like_a_live_credential(tmp_path):
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main")
+    out = fails(db, "finish", "--analysis", str(aid), "--state", "done",
+                "--note", "could not scan with AKIAIOSFODNN7EXAMPLE in the env",
+                env=AS_AGENT)
+    assert out.returncode != 0, "the note was accepted"
+    assert "live credential" in out.stderr, out.stderr
+    assert "AKIAIOSFODNN7EXAMPLE" not in out.stderr, \
+        "the refusal echoed the secret back, defeating itself"
+    assert "AKIAIOSFODNN7EXAMPLE" not in out.stdout
+
+
+def test_a_refused_note_leaves_the_analysis_open_rather_than_half_closed(tmp_path):
+    """The refusal happens BEFORE `finish_analysis`, so nothing is written --
+    the agent can close again with a note that says the same thing without
+    quoting the credential."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main")
+    fails(db, "finish", "--analysis", str(aid), "--state", "done",
+          "--note", "leaked AKIAIOSFODNN7EXAMPLE", env=AS_AGENT)
+    rows = run(db, "list", "--project", "web")
+    assert rows[0]["state"] == "running", rows[0]
+    assert "AKIAIOSFODNN7EXAMPLE" not in (rows[0]["coverage_note"] or "")
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done",
+        "--note", "an AWS access key is hardcoded in the env file")
+    rows = run(db, "list", "--project", "web")
+    assert rows[0]["state"] == "done"
+
+
+def test_finish_still_accepts_an_ordinary_coverage_note(tmp_path):
+    """Containment probe: the guard must not refuse the notes the engine and
+    the agent legitimately write."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main")
+    run(db, "finish", "--analysis", str(aid), "--state", "capped",
+        "--note", "I stopped before the SAST phase")
+    rows = run(db, "list", "--project", "web")
+    assert "I stopped before the SAST phase" in rows[0]["coverage_note"]
+
+
+# ---- final whole-branch review, IMPORTANT 4: the skill -- which is what the
+# AGENT reads -- still listed three of the six refused verbs. The README had
+# been updated to all six and the skill had not, so an agent meeting `event`,
+# `filters save` or `filters delete` met a hard mid-run exit its own
+# instructions told it could not happen. Pinned against the tuple itself so
+# the two cannot drift apart again in either direction.
+
+def test_the_skill_names_every_verb_the_door_refuses_the_agent(tmp_path):
+    skill = (REPO / "skills" / "security-analysis" / "SKILL.md").read_text()
+    for verb in security_cli.AGENT_FORBIDDEN:
+        assert f"`{verb}`" in skill, (
+            f"the agent's own instructions never mention `{verb}`, which the "
+            "door refuses it mid-run")
+
+
+def test_the_skill_does_not_claim_a_read_verb_is_refused(tmp_path):
+    """Containment probe: `events` and `filters list` are deliberately NOT in
+    AGENT_FORBIDDEN, and telling the agent otherwise costs it a query it may
+    legitimately want."""
+    skill = (REPO / "skills" / "security-analysis" / "SKILL.md").read_text()
+    for verb in ("events", "filters list"):
+        assert verb not in security_cli.AGENT_FORBIDDEN
+        assert f"`{verb}`" in skill, \
+            f"the skill does not say `{verb}` stays reachable"

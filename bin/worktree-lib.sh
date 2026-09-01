@@ -103,6 +103,36 @@ wt_isolation_enabled() { # <project> <canonical_cwd>
 # what is already local and say so in the tick log.
 wt_base_ref() { # <canonical> <base> [fetch-timeout] -> prints a ref; non-zero if nothing resolves
   local repo="${1:-}" base="${2:-}" ref
+  # A security analysis picks its branch at run time, not from the project's
+  # declared base. Refuse a branch that does not resolve rather than fall
+  # through to the base: silently analysing `main` when the user asked for
+  # `release/2.1` produces a report that is correct about the wrong code.
+  #
+  # No fetch here, unlike the declared-base path below: the caller already
+  # knows the branch resolves before it ever sets CC_BASE_OVERRIDE (a security
+  # analysis pre-validates the branch it was asked to analyse), so there is
+  # nothing for this block to fetch on its own behalf -- it only has to find a
+  # ref that is already on disk, remote-tracking refs included.
+  if [ -n "${CC_BASE_OVERRIDE:-}" ]; then
+    # Refuse anything shaped like a flag before it ever reaches rev-parse. The
+    # bare candidate below (unlike the two refs/... ones) is CC_BASE_OVERRIDE
+    # verbatim, so a value starting with `-` would sit in an argument position
+    # next to git plumbing -- empirically safe today, since `rev-parse
+    # --verify --quiet` does not treat it specially, but defence in depth
+    # against whatever this call site looks like after its next refactor.
+    case "$CC_BASE_OVERRIDE" in -*) return 1 ;; esac
+    local ov
+    # Remote first: a security analysis targets whatever was just pushed, and
+    # the remote is the source of truth for that -- a local branch of the same
+    # name that has since diverged (an operator's own stale checkout) must
+    # lose to it, not win by coming first in the list.
+    for ov in "refs/remotes/origin/$CC_BASE_OVERRIDE" "refs/heads/$CC_BASE_OVERRIDE" "$CC_BASE_OVERRIDE"; do
+      if git -C "$1" rev-parse --verify --quiet "$ov" >/dev/null 2>&1; then
+        printf '%s\n' "$ov"; return 0
+      fi
+    done
+    return 1
+  fi
   # A remote that accepts the TCP connection and then goes quiet does not fail —
   # it hangs, and this runs before the watchdog exists, so it would hold the
   # run's slot for as long as the network stayed broken. Bound it: a stale base
@@ -368,11 +398,15 @@ wt_setup() { # <id> <project> <canonical_cwd> <stamp> [port_base]
   : > "$tsv"
   while IFS="$(printf '\t')" read -r name repo wt base; do
     [ -n "$name" ] || continue
-    if ! wt_provision up "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base"; then
-      log_tick "$id: provisioning failed for $name — aborting the run"
-      rm -f "$tsv"; printf 'done\n' > "$run_dir/.ended" 2>/dev/null || true
-      wt_teardown "$id" "$project" "$run_dir"
-      return 1
+    # Reading code needs no .env and no containers, and a security analysis must
+    # not pay for -- or be blocked by -- a project's provisioning.
+    if [ "${CC_SKIP_PROVISION:-}" != "1" ]; then
+      if ! wt_provision up "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base"; then
+        log_tick "$id: provisioning failed for $name — aborting the run"
+        rm -f "$tsv"; printf 'done\n' > "$run_dir/.ended" 2>/dev/null || true
+        wt_teardown "$id" "$project" "$run_dir"
+        return 1
+      fi
     fi
     # A failed wt_dirt_sha here (git could not read the tree moments after
     # provisioning just succeeded in it) records an empty snapshot, same as
@@ -514,6 +548,29 @@ wt_down_all() { # <id> <project> <run dir>
   [ -f "$mf" ] || return 0
   [ -f "$run_dir/.down" ] && return 0
   : > "$run_dir/.down"
+  # A DERIVED SECURITY JOB NEVER RAN `up`, SO IT MUST NEVER RUN `down`. The
+  # analysis is launched with CC_SKIP_PROVISION=1 precisely so it does not run
+  # the project's .env writing, container and service hooks over a tree it is
+  # only ever going to read. Teardown had no such guard, so the ONE half of
+  # provisioning an analysis was promised not to touch ran anyway: `down` on a
+  # stack this run never brought up stops the containers, releases the ports
+  # and unlinks the services of whatever IS up on that project -- the
+  # developer's own environment, torn down by a read-only code review.
+  #
+  # Checked by IDENTITY, not by environment, for the same reason the reattach
+  # path is (see run_job): CC_SKIP_PROVISION is an env var on the original
+  # invocation, and teardown can happen from a later process entirely -- the
+  # orphan sweep, an explicit worktree drop -- where it is long gone. The id is
+  # the one thing that survives. `${...:-security-}` because this file declares
+  # itself sourceable on its own and runs under `set -u`; the prefix's home is
+  # bin/claude-cron.
+  case "$id" in
+    "${SECURITY_JOB_PREFIX:-security-}"*)
+      # `.down` is still written above: the marker means "teardown has decided
+      # about this run", and an analysis that decided to run nothing must not
+      # be reconsidered by the next sweep.
+      return 0 ;;
+  esac
   while IFS="$(printf '\t')" read -r name repo wt base; do
     [ -n "$wt" ] && [ -d "$wt" ] || continue
     wt_provision down "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base" || true

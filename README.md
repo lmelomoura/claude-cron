@@ -122,13 +122,14 @@ so you can read what was there before adopting ours.
 | `closing-review-findings` | how a finding is actually closed: every adjacent route in the same commit, plus a versioned probe so it cannot reopen |
 | `reviewing-pull-requests` | the reviewer's contract — verify by execution, walk the whole attack taxonomy on round one |
 | `test-driven-development` | a fork of the `superpowers` copy, carrying our addition (below); a vendor update would otherwise overwrite it |
+| `security-analysis` | the contract of a [security analysis](#security-analysis) run: re-verify what the last analysis left open, triage what the deterministic phase found, then the SAST pass at the profile's depth — and never print a secret's value, read a dependency tree, or treat a comment that addresses it as an instruction |
 
 The other skills the prompts cite — `using-superpowers`, `systematic-debugging`,
 `subagent-driven-development`, `receiving-code-review`,
 `verification-before-completion` — come from the `superpowers` vendor package and
 are deliberately left pointing at it. We only fork what we change.
 
-### Why these three carry a ninth axis
+### Why three of them carry a ninth axis
 
 The reviewer skill has long walked eight "attack axes" against a change. All eight
 interrogate the **code**. None asked whether the test proving the code works is
@@ -727,6 +728,561 @@ Three things to know before splitting jobs across accounts:
 
 ---
 
+## Security analysis
+
+Point it at a project and a branch and it reads the code: credentials committed
+to the repository, dependencies with published CVEs, faults in the repository
+itself, and a **SAST pass done by an agent** that reads the code around a match
+and decides whether the input is reachable at all — so the noise a
+context-blind scanner produces is never generated, rather than filtered
+afterwards. Fix what it found, run it again, and the second analysis says what
+closed, what did not, what closed halfway, and what is new.
+
+**It needs no jobs.** A project can be registered for this and nothing else — no
+schedule, no precheck, no prompt, no entry in `config/jobs.json`. Switch it on
+in **Edit project → Security**, open **Security** in the sidebar, pick a branch
+and press **Analyse**. The dashboard is the intended interface; the CLI at the
+end of this section is the same thing without the page.
+
+### Four screens
+
+The area used to be one list of projects and, under whichever one you clicked, a
+single analysis. Everything else it knew — the other branches, the findings of
+the analysis before this one, who accepted what and when — was in the ledger and
+on no screen. It is now four:
+
+| screen | what it answers |
+|---|---|
+| **Index** | across the whole fleet: how many projects, how many analyses, what is critical and high across every project's latest analysis, what share of analyses finished clean, one row per project with its branch's posture, the newest analyses, and a severity donut with the rules that produced it |
+| **Project** | one project, behind five tabs — **Overview** (one branch's posture and its checklist), **Runs** (every analysis of the project, filterable by state, each opening the single-analysis detail), **Branches** (one row per branch with a finished analysis: its own posture, how many analyses, a 30-day trend), **Findings**, **Reports** (one row per analysis, whatever its state, with all four downloads) — plus a sidebar with the project-wide donut and the last five things that happened |
+| **Findings** | every finding of the project in one filterable, paginated table: severity, state, category, branch, analysis, path and free text over title/rule/rationale/file |
+| **Activity** | what happened and when, every project or one, filterable by kind |
+
+**Each screen fills itself from one request** — `/api/security/index`,
+`/api/security/project`, `/api/security/findings`, `/api/security/activity`, each
+behind one CLI verb. The project's header, its sidebar and four of its five tabs
+come back in that single call; the findings browser keeps its own, because its
+sorting, filtering and paging are all resolved server-side. What this replaces is
+a page that spent one `security list` per project on every load and every
+refresh, plus a `security checklist` for each one that had ever finished — a
+subprocess per project, mostly to redraw numbers that had not moved.
+
+Findings is the one of the four that is not its own destination: it is a single
+module mounted where it is needed, so the project's Findings tab and the
+dialog that opens when you click a decision's fingerprint on Activity are the
+same browser, filtered differently, and not two tables to drift apart. Both can
+be open at once, and each keeps its own filters.
+
+`total` and `unique` are shown as two labelled numbers above it, never collapsed
+into one: the same finding open on `main` and on `develop` is two rows and one
+problem, so 189 findings can be 93 problems, and a single number silently
+answers whichever question you were not asking.
+
+**Saved filters.** The view somebody works from every day — say critical and
+high, secrets only, resolved hidden, sorted by branch — is saved under a name per
+project, sort column and direction included, and restored in one click.
+Re-saving a name replaces it rather than leaving the old version behind under the
+same label, and a name longer than 80 characters is *refused* rather than
+truncated: truncation used to run before the key saw it, so two different names
+sharing their first 80 characters overwrote each other, and neither could be
+deleted by what you had actually typed.
+
+### Every number on those screens is current posture
+
+Not a running total of everything ever found — that only grows, and a number
+that only grows says nothing about whether you are winning. Every count is read
+off the **latest finished analysis** of the scope it describes, with three
+stated exceptions, all honest all-time totals: the index's *Analyses* card
+(which says so on the card itself), the *Analyses* column of the index's
+project table (`queries.project_rows`, a `COUNT(*)` over every analysis of the
+project regardless of state), and the *Analyses* column of the Branches tab
+(`queries.branch_rows`, a `COUNT(*)` over every finished analysis of that
+branch, ever — not just the latest).
+
+**Open** means every state that is not `fixed`, `accepted` or `false_positive` —
+so `new`, `open`, `partial`, `regressed` **and `pending`**. A finding nobody
+re-checked is exposure nobody closed, and filing it with the resolved would be
+the same lie as a premature `fixed`.
+
+**Success rate** is `done` over *finished*, where finished is `done` + `capped` +
+`failed`. A `capped` analysis reached its ceiling and a `failed` one did not
+complete, so neither is a success; a `running` one is not a verdict yet and is in
+neither half. With nothing finished the card shows a **dash, never `0%`** — no
+finished analysis and a zero-percent success rate are different facts.
+
+**A screen can show two different postures, and both are right.** The project's
+Overview panel describes **one branch** (the project's declared base, or the
+branch it fell back to, named either way). The sidebar's donut and its category
+ranking describe **every analysed branch**, collapsed to one entry per
+fingerprint — because a secret reachable on `main` and on `develop` is one
+rotation, not two. The Branches tab counts the same finding once *per branch*,
+because that is what "this branch's posture" means. Each of the three says which
+question it is answering rather than being forced to agree with the others.
+
+**Lines of code** sits in the project header, and is a by-product of the
+deterministic walk rather than a second pass over the tree: the secret scan is
+already reading every file, so it counts the lines of the ones it actually
+opened. A file that was skipped — too big, unreadable, or matched by
+`ignore_paths` — contributes nothing, so the number describes what was analysed,
+not what is on disk. It is a count and never the text: nothing about it can put a
+file's contents into the ledger. An analysis that never counted (every analysis
+older than the column) shows a **dash**, not `0`, which would read as an empty
+repository.
+
+### The event log, and why it has no user column
+
+Five things are recorded, each with the project, a one-line detail and what it
+relates to:
+
+| kind | filed when |
+|---|---|
+| `analysis_started` | the ledger row is opened, naming the profile and branch |
+| `analysis_finished` | the row is closed, naming how (`done · standard on main`) |
+| `decision_made` | *Accept risk* / *False positive*, carrying the written reason and the first 12 characters of the fingerprint |
+| `settings_changed` | a project is saved **and has security enabled** — a save on a project this area knows nothing about is not this area's history |
+| `report_exported` | a Markdown, JSON, HTML or SBOM report is actually rendered — filed after the render succeeds, never on the click |
+
+**There is no user column and no IP column**, and that is a decision rather than
+an omission. This install has exactly one operator — `app.db` enforces it with a
+`CHECK (id = 1)` — so a `who` column could only ever hold one value, and a column
+with one value teaches nothing while looking like it teaches something. The
+server binds loopback only, so there is no address worth recording either. For
+the same reason the Activity screen has no "most active users" panel; it ranks
+the busiest **projects** instead, which is a question with more than one possible
+answer.
+
+Filing an event is best-effort at every one of those five sites: a busy ledger
+must never turn a successful decision, or a successful close, into a traceback.
+The audit trail is not the thing being audited.
+
+### The branch is chosen per analysis, and the worktree is cut clean
+
+Every other run takes its base from the project's declared config. An analysis
+targets whatever is under review — `main` today, `release/2.1` tomorrow — so the
+branch is a choice made when you run it, not a field written into the project
+beforehand. The picker lists what the checkout actually has, local heads and
+`origin/` alike, with a free-text field beside it for a branch pushed a minute
+ago. A branch that resolves to nothing is refused before anything is cut:
+analysing `main` when you asked for `release/2.1` would produce a report that
+reads as correct and is about the wrong code entirely.
+
+The worktree is cut from that branch and **nothing is provisioned** — reading
+code needs no `.env`, no `vendor/`, no containers, so an analysis neither pays
+for a project's `up` hook nor is stopped by one that fails. The canonical
+checkout is read to cut from and never modified, as in every other run, and the
+tree is removed when the analysis ends.
+
+The profile decides how far the **agent** reads. The deterministic half below
+runs in full in all three:
+
+| profile | the SAST pass covers |
+|---|---|
+| `quick` | only code that touches external input — HTTP handlers, CLI entry points, queue consumers, deserialisation, SQL, `exec`/`eval` |
+| `standard` | that, plus the code those reachable paths call, following the calls in depth |
+| `deep` | all versioned code, including paths nothing currently invokes |
+
+A monorepo's baseline is the expensive analysis; the ones after it are mostly a
+diff. `quick` is there so you can look before deciding to spend.
+
+### What is found before the agent is even launched
+
+Secrets across the whole tree, and across the branch's whole git history on
+**every** analysis. A dependency inventory read from the lockfiles it knows
+(`package-lock.json`, `requirements.txt`, `poetry.lock`, `composer.lock`,
+`go.sum`), a CycloneDX SBOM built from that, and repository hygiene: a committed
+`.env`, a file whose first bytes are a private key, a world-writable file. All
+of it is Python over the files, so it takes seconds and costs nothing.
+
+It is written to the ledger **moments after the agent starts** — `prepare` is
+the agent's first command, named in the prompt and in the skill — which is why
+the page fills with secrets and CVEs within seconds of the click while the SAST
+pass is still going. Nothing engine-side runs it, so the engine checks instead
+that it ran: an analysis whose deterministic phases never happened is closed
+**`capped`, never `done`**, with a coverage note saying so. A report with
+nothing behind it must not become the baseline the next analysis is diffed
+against.
+
+The agent's own contract is versioned rather than typed into a prompt
+(`skills/security-analysis/SKILL.md`) and it does three things in this order:
+re-verify the findings the previous analysis left open — the cheapest of the
+three and the most valuable, so it goes first — triage what the deterministic
+phase found (is that "secret" an example in the documentation? is that CVE on a
+path anything reaches?), then the SAST pass at the profile's depth. It never
+writes to the database: every finding goes through `claude-cron security
+report-finding`, which validates before it stores. The agent is
+non-deterministic, and the history that produces the checklist cannot be only as
+trustworthy as the last JSON it happened to type.
+
+### The checklist: eight states, six of them derived
+
+| state | what it says |
+|---|---|
+| `new` | not in the previous analysis of this branch |
+| `open` | it was here last time too, unchanged |
+| `partial` | some of its places are gone, or the agent recorded it as mitigated but not eliminated |
+| `pending` | it was here last time and **this** analysis has not re-checked it yet |
+| `fixed` | gone since the previous analysis, *and* the phase that would have re-found it finished |
+| `regressed` | it was fixed once, and it is back |
+| `accepted` | you accepted the risk |
+| `false_positive` | you said it is not real |
+
+The first six are **derived** by comparing this analysis with the previous
+*finished* one of the same branch, and not one of them is stored — a stored
+state is a state that can end up disagreeing with the findings it describes. The
+last two are the only judgements the ledger keeps, because they are the only
+ones a human made.
+
+**`pending` is the state that keeps `fixed` honest.** Absence is only evidence
+once the looking has finished, and a checklist rendered nine seconds into a run
+has looked at nothing — it used to declare the entire baseline `fixed`, 43
+findings "resolved" before `prepare` had written a byte, and a `capped` run told
+the same lie at the end about the code its SAST pass never reached. A baseline
+finding missing from this analysis is `fixed` only when its absence is *proven*:
+for the deterministic categories (secrets, dependencies, hygiene) once `prepare`
+has completed, for everything the agent reads only when the analysis closes
+`done` with full coverage. Anything short of that is `pending` — a statement
+about this analysis, never about the code — and it is counted with the open
+exposure, never with the resolved.
+
+**`regressed` is the row that earns its keep.** Without it the finding comes back
+as `new`, and `new` hides exactly what you need: this was closed once and it has
+returned, which usually means the fix closed the symptom and not the route. It
+needs no stored state to derive — the fingerprint reappears, and an older
+analysis of this branch already carried it.
+
+`partial` has an objective half and a judged half. The objective half is a set
+difference over the **files**, never a subtraction of two counts: three hits in
+one file dropping to two is the same file still holding the same hole, while one
+hit moving from `auth.py` to `admin.py` is one place genuinely closed and
+another opened — and counting calls the first progress and the second nothing at
+all. The judged half is the agent's note, which catches the fix that makes the
+pattern disappear without closing the hole.
+
+### A fact belongs to a branch; a decision belongs to the project
+
+Comparing `main` against `develop` would report half a repository as new, so
+findings are only ever compared **within one branch**. But dismissing a false
+positive on `develop` and watching it resurrect on `main` would make the area
+unusable, so a **decision** — *Accept risk* or *False positive* — is recorded
+against the **project** and follows that finding onto every branch and every
+analysis after it.
+
+**A decision needs a written reason.** The dialog asks for one and the API
+refuses a blank one, so the refusal is never how somebody discovers the rule. In
+three months that sentence is the only thing that says whether this was a
+judgement or a slip. Who decided is taken from the signed-in operator, never
+from the request body.
+
+**Change the code around a decided finding and it comes back as `new`.** A
+finding's identity is a sha256 over its category, rule, path and a
+whitespace-normalised snippet — so reformatting a file does not resurrect the
+whole report, and the line number is left out so that an import added above a
+finding does not either. Change what the code actually *says* and it is
+different code, which deserves a fresh judgement rather than an inherited one.
+Surprising the first time it happens; correct.
+
+### A secret's value is never stored, and never shown
+
+Not in the ledger, and not in any of the report formats it renders from it.
+Not masked, not truncated, not partially quoted. (The run's live stream is the
+agent's own output and this engine does not filter it — the contract that the
+agent never prints a value is in `skills/security-analysis/SKILL.md`, not in
+code. What the code owns is the ledger and everything generated from it.) What you get is the
+credential's type, the file, the line and a fingerprint — enough to act on, and
+nothing worth leaking. The identity of a secret finding is deliberately its
+**type and its file**: hashing the value would put a weak but real oracle for
+the secret into a database, and anchoring on a position would make an untouched
+credential look `fixed` and `new` again the moment an unrelated line moved above
+it.
+
+**Rotating the credential is human work, and the report says so.** Deleting the
+line does not help while the value is still reachable in the history — which is
+why the history is swept on **every** analysis, not only the first. A key
+committed on Monday and deleted on Tuesday is still compromised, it is the case
+that leaks most often, and it is precisely the one a working-tree scan cannot
+see.
+
+**A history finding never becomes `fixed`, because git history does not
+shrink.** It is reported `new` once and `open` on every analysis after it, for
+as long as the commit exists — deleting the file changes nothing about it, and
+a checklist that said `fixed` there would be congratulating you for the exact
+act the remediation calls insufficient. The only honest close is the human one:
+rotate the credential at the provider, then *Accept risk* with that as the
+written reason. (The sweep is `git log -p` and plain Python: seconds, and no
+tokens. The old reasoning — that re-reading commits already read is wasted
+wall-clock — was right about the seconds and wrong about the report: nothing
+re-emitted the finding, so it read as `fixed` on the second analysis and
+vanished from the third.)
+
+A secret that is in the working tree **and** in the history is one finding, not
+two — same rule, same path, therefore one identity. The working-tree reading is
+the one you see, because it carries the real line number; the remediation is
+the history's either way.
+
+### CVEs need OSV.dev, and every way of missing it says so
+
+Everything else here runs on your machine. A vulnerability database does not
+exist unless somebody publishes it, so the inventory is queried against the
+public OSV.dev API: **package names and versions leave the machine; code never
+does.** No dependency's source is read at all — not `node_modules/`, not
+`vendor/` — it is noise, and it is the only code in a checkout that nobody there
+wrote.
+
+Whichever way OSV.dev goes unconsulted, **the analysis carries on** rather than
+failing outright, and the report opens with the gap in writing — three distinct
+wordings for three distinct cases, never one generic warning standing in for
+all of them:
+
+- **Deliberately offline** (`prepare --offline`, networking disabled on
+  purpose): *"Dependency CVEs were NOT checked against OSV.dev: this analysis
+  ran with networking disabled."*
+- **Unreachable outright** — no chunk of the inventory got a usable answer:
+  *"Dependency CVEs were NOT checked: the OSV.dev lookup did not complete
+  (`{reason}`). Everything else in this report is complete."*
+- **Stopped partway** — some chunks answered before one failed, and their
+  findings are kept, not discarded: *"OSV.dev stopped answering partway
+  (`{reason}`): `{checked}` of `{total}` components were checked and their
+  findings are included; the remaining `{total - checked}` were NOT checked."*
+
+Each names the source that did not answer rather than leaving you to guess
+which question the report cannot be asked. A stated gap is useful; a silent one
+makes you trust a report that never looked at your dependencies. The same
+channel carries every other kind of incompleteness — an analysis that hits its
+ceiling closes as `capped` and says what it did not reach, instead of
+presenting a partial read as coverage.
+
+### The `security` block on a project
+
+```json
+"security": {
+  "enabled": true,
+  "model": "opus",
+  "effort": "",
+  "permission_mode": "bypassPermissions",
+  "claude_config_dir": "",
+  "default_profile": "standard",
+  "max_budget_usd": 5,
+  "daily_budget_usd": 20,
+  "min_severity": "medium",
+  "ignore_paths": ["tests/fixtures/**"]
+}
+```
+
+The **Security** tab of the project editor writes all of it. A project with no
+block gets no analysis, and no derived job either.
+
+The engine reads `enabled`, `model`, `effort`, `permission_mode`,
+`claude_config_dir`, `max_budget_usd`, `daily_budget_usd` and `ignore_paths` —
+`permission_mode` defaults to `bypassPermissions` when absent (an unrecognised
+value falls back to it too, with a warning) and is carried onto the derived
+job the same way. `default_profile` and `min_severity` belong to the
+**dashboard** alone — the profile Analyse offers first, and a display floor —
+and no part of the engine looks at either.
+
+`model` left empty means the `opus` family; `effort` left empty leaves the
+decision to the CLI, as in a job. `claude_config_dir` is carried on the derived
+job — the only place an analysis has to carry it, there being no jobs.json row
+to edit — and the job's own value is what a run resolves first; left empty it
+inherits the project's, which inherits the install's — see [Which Claude account
+a run signs in as](#which-claude-account-a-run-signs-in-as). Set it here only
+when the analysis itself should sign in as somebody else.
+
+**`ignore_paths` and `min_severity` are two different filters, and confusing
+them is expensive.** `ignore_paths` excludes globs from the **analysis**: the
+working-tree secret scan, the git-history secret sweep and the hygiene pass all
+obey the same globs, so a fixtures directory full of deliberately fake
+credentials never becomes a finding at all — from any of the three. The one
+deterministic phase it deliberately does **not** filter is the dependency
+inventory: a lockfile under an ignored glob still declares packages this project
+ships, and a CVE against one of them is real wherever the file sits. `min_severity`
+filters only what is **shown**: everything found is kept in the ledger whatever
+its severity, so lowering the floor later reveals what was recorded all along
+instead of forcing a re-analysis, and the page says how many findings it is
+holding back. A `fixed` finding is shown whatever the floor — the one job of a
+checklist is to say what closed. **The downloads are not filtered at all**:
+every recorded finding is in the file whatever the floor on screen shows, and
+the page says so next to the buttons.
+
+**`info` is the floor's whole point.** Below `low` there is a fifth severity for
+findings that are advice rather than exposure — nothing is leaking, but this is
+how the next thing leaks. The deterministic phase emits exactly one today: a
+repository with **no `.gitignore` at all**, because without one the first `.env`,
+key or credential file somebody adds is committed by default. The agent may
+report at `info` too, and the ledger takes it like any other severity. It sits
+below every floor the editor resolves to on its own — a new project starts at
+Medium, and an existing project that never set one reads as Low — so an
+informational finding is recorded, kept, and stays out of the way until you drop
+the floor to **Info** and go looking for it. That is the arrangement worth
+having: recording it costs nothing, and a report that opens with a `.gitignore`
+lecture above a committed private key is a report nobody finishes reading.
+
+**The per-analysis cap is the one that actually bites.** An analysis always runs
+forced, the way **Run now** does, so it skips the usage gate, the daily cap and
+the global cap: `max_budget_usd` is the only ceiling left standing over it. That
+is also why a `max_budget_usd` the engine cannot read as a number is not simply
+dropped the way an unusable `daily_budget_usd` is — it falls back to a
+conservative **$2** and says so in `tick.log`, because dropping it would run the
+analysis with no ceiling at all.
+
+### An analysis is a run, with no job behind it
+
+A project with security enabled has a job **derived in memory** the moment
+anything asks to run one, with the id `security-<project>`. It is not in
+`config/jobs.json` and never will be: the tick, the dashboard's Jobs area and
+every write of the jobs file read that file directly, so none of them can see a
+derived job — not by discipline, but because those paths never meet one. Delete
+the security block and the job is gone with it.
+
+What that buys is everything a run already has: the watchdog, the spending caps,
+the live stream, the timeline with one line per agent turn, and full-text
+search. **An analysis that goes strange is investigated in Recent runs, beside
+everything else** — there is no second place to learn to look, and each analysis
+on the Security page links straight to its run.
+
+Two consequences worth knowing:
+
+- **One analysis per project at a time.** The derived job carries
+  `max_parallel: 1`, and `security analyze` refuses a second one with a sentence
+  on your terminal rather than a line in the tick log and a silent exit 0.
+  Different projects analyse in parallel, taking engine slots like any other
+  run: an analysis has no priority over the jobs, nor they over it.
+- **The `security-` prefix is reserved.** `create` and `rename` refuse it, so a
+  real job can never collide with a derived one, and every by-id write —
+  `delete`, `enable`/`disable`, `toggle-many`, `reorder`, `set-prompt`,
+  `set-field`, `set-precheck` — refuses a derived id and tells you to configure
+  it on the project instead. `run`, `resume`, `stop` and `say` are untouched: a
+  derived job exists to be run.
+
+**A project with one checkout keeps one history.** An analysis is filed under a
+`repo`, and a single-repo project declares no `repos` rows, so the argument
+names nothing — the label is normalised to the project's own name, in the page
+and in the terminal alike. Without that, one hand-typed spelling opens a second,
+parallel history the dashboard never shows beside the first.
+
+### From the terminal
+
+```bash
+claude-cron security analyze [--detach] <project> <repo> <branch> [profile]
+```
+
+`<repo>` is the project's own name when it declares a single checkout — anything
+else is normalised to it — and `[profile]` defaults to `standard`. Without
+`--detach` the analysis runs in the foreground. With it, every refusal (security
+not enabled, no such branch, one already running) still happens synchronously,
+then the run is handed to a background process and the command prints
+`{"analysis_id": n}` and returns. That is the path the dashboard's **Analyse**
+button takes: the control server gives a CLI call thirty seconds before it kills
+it, and an analysis is minutes of work — the button used to spin, report a
+timeout, and leave the row `running` for ever with the agent orphaned behind it.
+
+The rest of the vocabulary is the ledger's own and belongs to the agent and the
+page. The agent's half is `prepare`, `findings`, `fingerprint`,
+`report-finding`, `checklist`, `render` and `finish`; the engine's and the
+operator's are `open-analysis`, `decide`, `rename-project`, `list` and `event`.
+Each of the four screens has one read verb behind it — `index-data`,
+`project-data`, `findings-page`, `activity-data` — answering that whole screen in
+a single call, plus `analysis`, `events` and `filters list` for the smaller
+reads. `filters save` and `filters delete` are writes, not reads — they are in
+`AGENT_FORBIDDEN` for exactly that reason. `claude-cron security render
+--analysis <id> --format md|json|html|sbom` is what the four download buttons
+call.
+`sbom` is the odd one out: it is not a report over the checklist but the stored
+CycloneDX inventory itself, downloaded as `.cdx.json` — the suffix the tools
+that consume one recognise. It is kept per branch with the most recent
+analysis's document, so asking an older analysis for it hands back the current
+one for that branch rather than a reconstruction of what the tree held that
+day, and a project with no lockfile the inventory can read has none to give and
+says so. During an
+analysis run, `decide`, `rename-project`, `open-analysis`, `event`, `filters
+save` and `filters delete` are refused — the agent that reports a finding does
+not get to dismiss it, rename the ledger out from under the project, open
+analyses of its own, write straight into the audit trail that exists to say what
+it did, or edit the working set a human curated. The read verbs beside them
+(`events`, `filters list`) are deliberately *not* refused: there is nothing there
+for the flag to protect, only a query the agent may legitimately want.
+
+**That refusal is a guardrail against mistake, not a boundary against malice,
+and it is worth saying which.** It works off `CC_SECURITY_AGENT`, a variable in
+the agent's own environment, and the agent has a shell: `env -u
+CC_SECURITY_AGENT claude-cron security decide …` walks straight past it. What
+it stops is the failure that actually happens — a model deciding, in good
+faith, that retiring the finding it just filed is the helpful thing to do — and
+it stops that cold. Nothing here is load-bearing against an agent that is
+trying. The one check that does not depend on the environment is `decide`'s
+own: **while any analysis of the project is `running` — not only the newest
+one — a decision is refused whoever is asking.** That window is exactly when
+an agent of that project is alive, and it costs a human nothing to wait — the
+checklist is rebuilt when the analysis closes, so a decision taken mid-run
+would not have changed that run's report anyway. Still a guardrail, not a
+lock nothing can pick: an agent with direct access to the ledger file could
+write a decision without going through this door at all.
+
+### Changing the UI: `ui/` is the source, and the built files are committed
+
+`ui/` holds three kinds of source, one per built artifact. The four security
+screens are ES modules under **`ui/security/`**, bundled into
+**`bin/static/security.js`**. The Overview's renderers are ES modules under
+**`ui/app/`**, bundled into **`bin/static/app.js`** — both by the same pinned
+esbuild. The stylesheet itself is plain CSS under **`ui/css/`**
+(`tokens.css`, `components.css`, `pages.css`), and becomes
+**`bin/static/app.css`** by concatenation, not a bundle: CSS has no imports and
+no module graph for esbuild to resolve, so running it through a bundler would
+buy nothing but a minifier's opinions on a diff that should stay readable. The
+three files are concatenated in the order a reader would need them — tokens
+first, since everything below reads them; components before pages, so a page
+rule wins a tie against the component it specialises.
+
+**All three built files are committed to the repository.** That is the whole
+trade: installing claude-cron still needs only **jq, python3 and curl** — Node
+is a developer dependency, and the day it becomes an install dependency is the
+day this stops being worth it.
+
+The price of a build output in git is that it can be forgotten, and a stale
+artifact is a dashboard silently running last week's code — or last week's
+styles — with nothing on screen to say so. So:
+
+```bash
+bash build/build-ui.sh          # in the SAME change as any edit under ui/
+node --check bin/static/security.js
+node --check bin/static/app.js
+```
+
+and `claude-cron selftest` refuses a tree where that did not happen, for each
+of the three artifacts in turn. The assertion is **"the committed UI artifact
+matches the sources it was built from, and has not been touched since"**; the
+first half fails with `bin/static/app.css is stale — run build/build-ui.sh` (or
+whichever of the three drifted), the second with `...has been MODIFIED since it
+was built`. It works off two content fingerprints that `build/build-ui.sh`
+stamps onto each artifact's last two lines as block comments — `/* ui-sources:
+<sha256> */` and `/* ui-bundle: <sha256> */` — block, not `//`, because
+`bin/static/` holds CSS as well as JavaScript and CSS has no line comment; `/*
+… */` is valid in both, ignored by every browser, and greppable without parsing
+anything. `ui-sources` is what the artifact was built **from**, recomputed by
+the selftest with `build/ui-digest.sh`; `ui-bundle` is a hash of the artifact's
+**own body**, taken before either stamp is appended, recomputed with
+`build/ui-bundle-digest.sh` — the one that catches code injected straight into
+the committed bytes with every source left untouched. Two definitions, each
+read from two sides: written twice, the day either drifted from its reader the
+check would be reporting on nothing.
+
+Two details of that fingerprint are load-bearing. It hashes each file's **path as
+well as its bytes**, so a module added, renamed or deleted changes the answer
+even when the total content has not. And it hashes `build/build-ui.sh` and
+`package.json` alongside **every file under `ui/`** — not a `*.js` glob, so
+`ui/css/*.css` counts too — because those are inputs to the build too: a
+changed `--target`, a changed `--format` or a bumped esbuild pin changes what
+the committed bytes should be without touching a single source file, and
+hashing only some of the sources would let any of them land under a green
+"matches its sources".
+
+It is **content, never mtime**. Git does not record mtimes, and a checkout writes
+paths in index order — every `bin/…` before every `ui/…` — so on a fresh clone
+the sources are always newer than the artifacts built from them. An mtime rule
+would fail for every person who had changed nothing at all, which is the
+fastest way to teach everybody to ignore a selftest.
+
+---
+
 ## Dashboard
 
 - **Jobs** — one card each: schedule, last check (with the precheck's output),
@@ -745,6 +1301,10 @@ Three things to know before splitting jobs across accounts:
   was cut short or still holds work that exists on no remote; see [Sessions
   that are still open](#sessions-that-are-still-open). Size, age and time left
   per row, and **Discard** ends one early.
+- **Security** — the four screens of the [security analysis](#four-screens)
+  area: the fleet index, a project with its five tabs, the findings browser and
+  the activity log. It needs no jobs, and nothing here appears until a project
+  turns it on.
 - **Theme** — light/dark toggle in the header.
 
 ### Signing in
@@ -793,6 +1353,9 @@ claude-cron project-list | project-delete <name>
 claude-cron provision-set <project> up|down   # worktree provisioning script (stdin)
 claude-cron provision-get <project> up|down
 claude-cron worktree-drop <id> <stamp>   # discard a preserved run dir for good
+claude-cron security analyze [--detach] <project> <repo> <branch> [profile]
+                               #   run an analysis (see Security analysis)
+claude-cron security-branches <project> <repo>   # branches that checkout has
 claude-cron resolve-models     # refresh which model each family points at
 claude-cron skills             # show / link the skills the agent prompts require
 claude-cron selftest           # offline checks of the logic that can kill a run
@@ -823,6 +1386,18 @@ it holds your profile, your live sessions and the dashboard's preferences. Delet
 `index.db` and it rebuilds from the journal; delete `app.db` and the next load
 asks you to create a profile again. Back it up with the rest of `data/`.
 
+**`data/security.db`** is the [security analysis](#security-analysis) ledger, and
+is not derived either: every analysis with the branch and commit it read (and
+how many lines of it were walked), the findings and the places each one was
+found, the decisions you recorded (keyed by the project, so they outlive a
+branch), the [event log](#the-event-log-and-why-it-has-no-user-column), your
+saved filters, and one SBOM per repo and branch — the
+latest, replaced on every analysis, because it is the only large artefact here
+while the analyses themselves are tiny and all kept. **Reports are not files**:
+Markdown, JSON and HTML are generated from the ledger at the moment you download
+one, so a risk accepted after the analysis ran shows as accepted in the file you
+get, instead of a frozen artefact that disagrees with the page you have open.
+
 **Logs.** `data/tick.log` (scheduler decisions) and `data/exec.log` (detached
 runner and provisioning-hook output) are append-only and are rotated by the tick
 once either passes `CLAUDE_CRON_LOG_MAX` (4 MiB). Exactly one previous
@@ -839,9 +1414,14 @@ are rejected and a custom header forces a CORS preflight the server refuses — 
 no web page open in your browser can drive your agents. Every mutation shells out
 to the `claude-cron` CLI, so the bash engine stays the single source of truth.
 
-On top of that the page requires a **signed-in operator**: every endpoint but
-`/api/session` and `/api/login` refuses until there is one, and the sign-in and
-first-run screens are what you get instead. Passwords are PBKDF2-HMAC-SHA256 at
+On top of that the page requires a **signed-in operator**: every `/api/*`
+endpoint but `/api/session` and `/api/login` refuses until there is one, and the
+sign-in and first-run screens are what you get instead. Two routes answer
+before that gate is even checked: `/health` always has, and `/static/*` does
+too, deliberately — the bundle it serves is not secret (it ships in git, in
+every install) and it is the same page that draws the login screen, so gating
+it would leave a signed-out browser holding a page whose own code it is not
+allowed to fetch. Passwords are PBKDF2-HMAC-SHA256 at
 600k rounds; the session cookie is `HttpOnly` and `SameSite=Strict`, and the table
 stores only its SHA-256 digest, so reading `app.db` hands over no live session.
 None of this defends against someone who can already run commands as you — they
@@ -858,7 +1438,7 @@ a `daily_budget_usd`, watch the run log, and use the kill switch
 
 ## Changing this scheduler
 
-Other people run this on their own projects, so two rules hold for every change
+Other people run this on their own projects, so three rules hold for every change
 that reaches `main`:
 
 1. **Fill in `CHANGELOG.md` in the same commit as the code.** Not afterwards, not
@@ -878,10 +1458,19 @@ that reaches `main`:
    an unversioned `~/.claude/skills`. Versioned code, an injected prompt contract,
    or a `selftest` assertion — never prompt prose in a personal config file.
 
+3. **Edit `ui/`, rebuild `bin/static/` in the same commit.** All three built
+   files — the Security bundle, the Overview bundle and the stylesheet — are
+   build output that lives in git so that installing needs no Node — see
+   [Changing the UI](#changing-the-ui-ui-is-the-source-and-the-built-files-are-committed).
+   `claude-cron selftest` names the enforcer out loud: *the committed UI
+   artifact matches the sources it was built from*.
+
 Run the checks before pushing:
 
 ```bash
-claude-cron selftest      # includes test/round-cap.test.sh
+claude-cron selftest        # includes test/round-cap.test.sh and the artifact check
+python3 -m pytest tests/
+bash build/build-ui.sh      # only if you touched ui/ — then commit bin/static/
 ```
 
 **Contributions are welcome.** Fork it, branch, and open a pull request against
@@ -899,6 +1488,19 @@ claude-cron/
 ├── bin/claude-cron-server     # the dashboard control server (python, stdlib)
 ├── bin/worktree-lib.sh        # worktree setup, teardown and provisioning
 ├── bin/provision-lib.sh       # helpers a provisioning hook sources (ports, dotenv, gitignored files)
+├── bin/security/              # the security analysis engines (python, stdlib): secrets, deps +
+│                              #   SBOM, OSV lookups, hygiene, fingerprints, the ledger, the
+│                              #   checklist diff, the reports — behind cli.py, its one door
+├── bin/dashboard.html         # the dashboard page (Overview, Jobs, Runs, Projects, the editors)
+├── bin/static/security.js     # the Security area, BUILT from ui/security/ and COMMITTED — see
+│                              #   `Changing the UI` above
+├── bin/static/app.js          # the Overview's renderers, BUILT from ui/app/ and COMMITTED
+├── bin/static/app.css         # the stylesheet, CONCATENATED from ui/css/ and COMMITTED
+├── ui/security/               # the source of security.js: the four screens, as ES modules
+├── ui/app/                    # the source of app.js: the Overview's renderers, as ES modules
+├── ui/css/                    # the source of app.css: tokens.css, components.css, pages.css
+├── build/build-ui.sh          # rebuilds all three (pinned esbuild); run it with any ui/ edit
+├── build/ui-digest.sh         # the content fingerprint build and selftest both read
 ├── config/
 │   ├── jobs.json              # your jobs (created from the example on install)
 │   ├── jobs.example.json      # a disabled demo job
@@ -907,8 +1509,10 @@ claude-cron/
 │   ├── prechecks/<id>.sh      # one precheck per job
 │   ├── provision/<project>.{up,down}.sh   # per-repo worktree provisioning
 │   └── control.token          # dashboard secret (chmod 600, generated)
-├── data/                      # index.db (derived), app.db (profile + sessions), journal, logs
+├── data/                      # index.db (derived), app.db (profile + sessions),
+│                              #   security.db (the analysis ledger), journal, logs
 ├── skills/                    # the skills the agent loop requires, linked into ~/.claude/skills
+│   └── security-analysis/     # the contract every security analysis run follows
 ├── test/round-cap.test.sh     # behavioural suite, run by `claude-cron selftest`
 ├── install.sh · uninstall.sh
 ├── CHANGELOG.md

@@ -1,0 +1,463 @@
+/* Shared vocabulary: the widgets more than one page draws on, plus the
+   handful of generic element rules (*, html, body, table, th, td, code,
+   footer) that apply everywhere rather than to one screen. Named groups,
+   in the order they appear below: generic elements and the .ic icon/.muted
+   text utilities; the required-field marker (.req) and pills (.pill); the
+   h3 eyebrow and paneblurb; the shared table-row furniture (.rowoff,
+   .rowacts, .jobcell, .favstar, .isopill, td .cap/.nowrap/.projtag,
+   .tblempty); the page header (.page-header) and the KPI card
+   (.kpi-grid, .kpi-card); buttons and icon buttons (.btn, .iconbtn); the
+   filter bar (.picker, .activefilters, .perpage, .toolbar, .searchbox); the
+   table card itself (.tablewrap, table/th/td, sortable headers, status
+   cells, .pager, .empty); the tab strip (.tabs, .tab, .tabpanes, .tabpane);
+   and the project-screen / activity-screen right rail (.secpjside).
+   Nothing here names one page or one dialog. A rule that only makes sense
+   on a single screen -- the sidebar, a dialog, a job card, the pulse panel,
+   any @media/@container query -- belongs in pages.css instead, even where
+   it overrides a selector defined here (pages.css is concatenated after
+   this file, so the override still wins). */
+*{box-sizing:border-box}
+html{color-scheme:light} :root[data-theme="dark"]{color-scheme:dark}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:13.5px/1.55 ui-sans-serif,-apple-system,"SF Pro Text",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased}
+.ic{width:16px;height:16px;flex:none;vertical-align:-3px}
+.req{color:var(--err);margin-left:3px;font-weight:700}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:20px;
+  font-size:11px;font-weight:600;letter-spacing:.02em}
+.pill .ic{width:12px;height:12px}
+.pill.on{background:var(--ok-soft);color:var(--ok)}
+/* .pill.off is a FAULT colour, not "the thing is switched off" -- the
+   topbar's launchd pill is its only user, where off genuinely means the
+   scheduler service failed to load and red is correct. A job someone
+   disabled on purpose is not a fault, so it never gets this class; it gets
+   .pill.disabled below, which is grey. Collapsing the two back into one
+   class is exactly the regression this split exists to prevent -- see
+   test_the_job_disabled_pill_and_the_launchd_off_pill_use_different_classes
+   in tests/test_page_contract.py. */
+.pill.off{background:var(--err-soft);color:var(--err)}
+.pill.idle{background:var(--warn-soft);color:var(--warn)}
+/* Neutral, not a warning: a job nobody enabled is not "finished but not
+   done" (that's .idle, amber) and not a fault (that's .off, red). Same
+   grey-on-panel2 treatment .sevpill.low/.sevpill.info already use for "not
+   urgent" elsewhere on this page. */
+.pill.disabled{background:var(--panel2);color:var(--muted)}
+/* Not a status -- the Security index table's own Profile column (Phase 4
+   Task 3, ui/security/index-screen.js) is a fixed choice (Deep/Standard/
+   Quick), never on/off/idle/disabled, so it gets the same accent tint
+   .isopill.auto already uses for "this is a mode, not a state" rather than
+   any of the tones above. */
+.pill.profile{background:var(--accent-soft);color:var(--accent)}
+/* An ANALYSIS's own state (Phase 4 Task 4, the Security index's Recent
+   analyses table) -- RUN_STATES's own four values (project-screen.js),
+   Title-Cased as "Completed"/"Capped"/"Failed"/"Running". New modifiers
+   rather than reusing `.pill.on`/`.pill.off`: those two are reserved for a
+   PROJECT's own active/launchd-fault reading (see `.pill.off`'s own comment
+   above), and a historical analysis run is a third, unrelated fact that
+   happens to want the same four tone families -- ok/warn/err/accent, the
+   identical set `.pill.on`/`.idle`/`.off`/`.profile` already draw from --
+   not the same two classes repurposed for a different question.*/
+.pill.done{background:var(--ok-soft);color:var(--ok)}
+.pill.capped{background:var(--warn-soft);color:var(--warn)}
+.pill.failed{background:var(--err-soft);color:var(--err)}
+.pill.running{background:var(--accent-soft);color:var(--accent)}
+h3{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
+  margin:0;display:flex;align-items:center;gap:7px}
+h3 .ic{width:14px;height:14px}
+/* -------------------------------------------------------- jobs as a table
+   Same table furniture as Runs; only the columns differ. */
+/* A disabled row reads as dormant WITHOUT a blanket opacity. `opacity:.62` on
+   the whole cell washed out everything it contained — the status pill and the
+   favourite star came out pale pink and pale amber, which next to the same pill
+   and the same star on the dashboard looked like two different colours for one
+   thing. Mute the prose; leave anything that carries meaning by its colour at
+   full strength. */
+.rowoff .jobcell code{color:var(--muted)}
+.rowoff td .snip,.rowoff td.nowrap,.rowoff td.num{color:var(--muted)}
+.rowoff td .projtag{opacity:.75}
+.rowacts .iconbtn{width:26px;height:26px}
+.rowacts .iconbtn.danger:hover{background:var(--err-soft);color:var(--err)}
+/* The robot mark, same as on the card, so a job id reads as a job wherever it
+   appears rather than as one more monospaced string in a row of them. */
+.jobcell{display:inline-flex;align-items:center;gap:7px}
+/* DIRECT child only. The cell also holds the favourite star, whose icon
+   fills with currentColor so the BUTTON's colour can say off (--line) or
+   on (--warn). A descendant selector here set color on that nested .ic
+   directly, which currentColor then read -- both stars painted accent,
+   identical in either state, and clicking one changed the class but not a
+   single pixel. */
+.jobcell > .ic{width:14px;height:14px;flex:none;color:var(--accent)}
+.rowoff .jobcell > .ic{color:var(--muted)}
+td.nowrap{white-space:nowrap}
+td .cap{color:var(--muted);font-weight:400}
+td .projtag{white-space:nowrap}
+/* The star on a project row. Same amber, same filled-not-outlined treatment as
+   the one in the Jobs table. */
+.favstar{display:inline-flex;border:0;background:transparent;padding:2px;margin-left:4px;
+  border-radius:5px;color:var(--line);cursor:pointer}
+.favstar .ic{width:13px;height:13px;stroke:none;fill:currentColor}
+.favstar:hover{color:var(--warn)}
+.favstar.on{color:var(--warn)}
+.isopill{display:inline-flex;font-size:11px;font-weight:600;border-radius:20px;padding:2px 9px}
+.isopill.on{background:var(--ok-soft);color:var(--ok)}
+.isopill.off{background:var(--err-soft);color:var(--err)}
+.isopill.auto{background:var(--accent-soft);color:var(--accent)}
+.tblempty{text-align:center;color:var(--muted);padding:34px 12px}
+.tblempty .ic{width:22px;height:22px;vertical-align:-5px;margin-right:8px;opacity:.6}
+.paneblurb{margin:0 0 14px;font-size:12.5px;color:var(--muted);max-width:96ch;line-height:1.6}
+.secthead{display:flex;align-items:center;justify-content:space-between;margin:26px 0 12px}
+td .projtag{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--muted)}
+/* `flex:none`, the same protection .jobcell's own icon already has above --
+   without it, a name too long for the column (.projtag-name, pages.css)
+   shrank this icon right along with the text under flex-shrink instead of
+   leaving it alone at its natural 12px. */
+td .projtag .ic{width:12px;height:12px;color:var(--accent);flex:none}
+/* ------------------------------------------------------------- page header
+   Icon, title, one sentence, actions trailing on the right -- pageHeader()
+   in ui/app/overview.js is the only place that builds one, so every page
+   this redesign touches opens the same way. The icon sits in its own flex
+   item rather than inline with the title text so a 27px glyph and a 27px/700
+   heading line up on their tops, not their (very different) baselines. */
+.page-header{display:flex;align-items:flex-start;gap:14px;margin:4px 0 22px}
+.page-header-ic{display:flex;flex:none;color:var(--accent)}
+.page-header-ic .ic{width:27px;height:27px}
+.page-header-body{flex:1 1 auto;min-width:0}
+.page-header-body h1{margin:0 0 4px;font-size:27px;font-weight:700;letter-spacing:-.02em}
+.page-header-body p{margin:0;font-size:13px;color:var(--muted)}
+.page-header-actions{display:flex;align-items:center;gap:8px;flex:none;margin-top:3px}
+
+/* ------------------------------------------------------------------ KPI card
+   Five numbers, one card each: a tinted icon square (the tint carries the
+   tone -- accent by default, warn/err/ok for a card that wants a different
+   one) and the NUMBER share the first line at 27px/700 -- the number is what the
+   eye should land on beside the icon, not the caption -- then the label at
+   13.5px/600, then a muted sublabel at 12.5px. The second number of a pair
+   belongs in that sublabel, never beside the first -- see pulseKpis's own
+   comment on the rule this design exists to hold, which an earlier phase of
+   this project broke six times.
+   Only a door (Warnings/Errors) is ever a <button>: kpiCard() disables one
+   with nowhere to go (see its own comment), and a disabled button is the
+   one element that is natively unclickable and untabbable without a second
+   attribute to keep in sync. A card that was never a door (Checks/Woke a
+   run/Spent today) is a plain, always-full-contrast element instead --
+   hence `button.` on the hover/cursor rules below, so a <div> (never
+   `:disabled`, so `:not(:disabled)` is always true for one) cannot pick up
+   a hover style that implies it is clickable. */
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+  gap:12px;margin:0 0 20px}
+.kpi-card{display:flex;flex-direction:column;gap:8px;text-align:left;font:inherit;
+  background:var(--panel);border:1px solid var(--line);border-radius:13px;
+  padding:16px 18px;box-shadow:var(--shadow)}
+.kpi-card:disabled{cursor:default}
+button.kpi-card:not(:disabled){cursor:pointer}
+button.kpi-card:not(:disabled):hover{border-color:color-mix(in srgb,var(--accent) 42%,var(--line))}
+.kpi-card-h{display:flex;align-items:center;gap:10px}
+.kpi-card-ic{display:flex;align-items:center;justify-content:center;width:30px;height:30px;
+  border-radius:9px;background:var(--accent-soft);color:var(--accent);flex:none}
+.kpi-card-ic .ic{width:15px;height:15px}
+.kpi-card.warn .kpi-card-ic{background:var(--warn-soft);color:var(--warn)}
+.kpi-card.err .kpi-card-ic{background:var(--err-soft);color:var(--err)}
+/* `ok` joins warn/err for the Security index's own Success-rate card (Phase
+   4 Task 1) -- a plain, never-a-door card, unlike every warn/err card before
+   it (Warnings/Errors, Critical/High), so only the icon tint applies: the
+   hover/disabled rules below are for a card that doubles as a filter link,
+   which this one never does. */
+.kpi-card.ok .kpi-card-ic{background:var(--ok-soft);color:var(--ok)}
+/* I3 (Phase 4 final review), DECIDED: the Security index's own Critical/High
+   cards COUNT severities, not statuses -- they wear the severity scale
+   (`--sev-crit`/`--sev-high`, ui/css/tokens.css), never `err`/`warn`, which
+   stay reserved for a card that reports a STATUS (Warnings/Errors, and this
+   same screen's own Success-rate). No `-soft` companion token exists for a
+   severity hue the way `--warn-soft`/`--err-soft` do for their own tones,
+   so the icon square's tint is `color-mix()` of the token itself instead --
+   the identical idiom `.secidx-sev3`'s own chips already use for the same
+   reason (ui/css/pages.css). Plain `<div>` cards like `ok` above, never a
+   door (neither Security KPI card passes `door: true`), so no hover-border
+   rule either. */
+.kpi-card.sev-crit .kpi-card-ic{background:color-mix(in srgb,var(--sev-crit) 16%,transparent);color:var(--sev-crit)}
+.kpi-card.sev-high .kpi-card-ic{background:color-mix(in srgb,var(--sev-high) 16%,transparent);color:var(--sev-high)}
+/* The other three severities join for the project Overview's six-card row
+   (ProjectOverview.png) -- same idiom, same 16% tint, one rule per token. */
+.kpi-card.sev-med .kpi-card-ic{background:color-mix(in srgb,var(--sev-med) 16%,transparent);color:var(--sev-med)}
+.kpi-card.sev-low .kpi-card-ic{background:color-mix(in srgb,var(--sev-low) 16%,transparent);color:var(--sev-low)}
+.kpi-card.sev-info .kpi-card-ic{background:color-mix(in srgb,var(--sev-info) 22%,transparent);color:color-mix(in srgb,var(--sev-info) 60%,var(--ink))}
+button.kpi-card.warn:not(:disabled):hover{border-color:color-mix(in srgb,var(--warn) 42%,var(--line))}
+button.kpi-card.err:not(:disabled):hover{border-color:color-mix(in srgb,var(--err) 42%,var(--line))}
+/* Zero warnings/errors is nothing to open -- the card fades the same register
+   .iconbtn:disabled already uses for "nothing this button can do". The other
+   three cards are plain elements, never disabled, never dimmed -- they were
+   never doors, so full contrast is the correct and only reading. */
+.kpi-card.warn:disabled,.kpi-card.err:disabled{opacity:.6}
+.kpi-card-num{font-size:27px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.kpi-card-label{font-size:13.5px;font-weight:600}
+.kpi-card-sub{font-size:12.5px;color:var(--muted);line-height:1.4}
+.btn{display:inline-flex;align-items:center;gap:7px;font:inherit;font-size:12.5px;font-weight:560;
+  padding:6px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);
+  color:var(--ink);cursor:pointer;transition:.13s;text-decoration:none}
+.btn .ic{width:14px;height:14px}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn:active{transform:translateY(1px)}
+.btn:disabled{opacity:.45;cursor:progress}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.primary:hover{filter:brightness(1.08);color:var(--accent-ink)}
+.btn.danger{color:var(--err);border-color:color-mix(in srgb,var(--err) 35%,var(--line))}
+.btn.danger:hover{background:var(--err-soft);border-color:var(--err)}
+.btn.ghost{background:transparent}
+/* An author `display` beats the browser's own rule for [hidden], so every button
+   class that sets one has to say this. Written once for the class rather than
+   per id: `#bulk-all[hidden]` was the id-shaped version, and the next two
+   buttons that needed it (both Clear filters) shipped visible-when-empty
+   because nobody remembered the rule existed. */
+.btn[hidden],.burger[hidden],.iconbtn[hidden]{display:none}
+.iconbtn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;
+  border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--muted);
+  cursor:pointer;transition:.13s}
+.iconbtn:hover{color:var(--accent);border-color:var(--accent)}
+/* NOT display:flex. A <td> made into a flex container leaves the table's row box
+   and sizes to its own content, so its border-bottom lands above every other
+   cell's and the row separator visibly breaks under the action column. It went
+   unnoticed while every cell in these tables was one line tall — the jobs table,
+   whose first cell carries a description underneath, is where a 36px step
+   appeared. The cell stays a cell; the buttons space themselves. */
+.rowacts{text-align:right;white-space:nowrap;vertical-align:middle}
+.rowacts > *{vertical-align:middle;margin-left:5px}
+.rowacts > :first-child{margin-left:0}
+/* An action that cannot apply to this row keeps its column and loses its button.
+   Four icons with three permanently greyed out read as a broken toolbar. */
+.iconbtn.live{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
+.iconbtn.retry{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 35%,var(--line))}
+.iconbtn.retry:hover:not(:disabled){color:var(--warn);border-color:var(--warn);background:var(--warn-soft)}
+.iconbtn:disabled{opacity:.28;cursor:default;color:var(--muted);border-color:var(--line);background:transparent}
+.iconbtn .ic{width:15px;height:15px}
+.toolbar{display:flex;align-items:center;gap:10px;margin:0 0 10px;flex-wrap:wrap}
+.searchbox{display:flex;align-items:center;gap:8px;flex:1;min-width:230px;background:var(--panel);
+  border:1px solid var(--line);border-radius:9px;padding:7px 12px;box-shadow:var(--shadow)}
+.searchbox:focus-within{border-color:var(--accent)}
+.searchbox .ic{color:var(--muted)}
+.searchbox input{flex:1;border:0;outline:0;background:transparent;color:var(--ink);font:inherit}
+.searchbox .clear{display:flex;border:0;background:transparent;color:var(--muted);cursor:pointer;padding:0}
+.searchbox .clear[hidden]{display:none}
+.searchbox .clear:hover{color:var(--err)}
+/* ------------------------------------------------------------ filter pickers
+   A dropdown that states what it is filtering ("Project: web") rather than
+   showing a bare value, because two of these sit side by side and a row of
+   naked names says nothing about which axis each one is. */
+.picker{position:relative;flex:none}
+.picker-trigger{display:inline-flex;align-items:center;gap:8px;font:inherit;font-size:13px;
+  background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:9px;
+  padding:7px 12px;cursor:pointer;box-shadow:var(--shadow);max-width:260px}
+.picker-trigger:hover{border-color:var(--muted)}
+.picker.open .picker-trigger{border-color:var(--accent)}
+.picker-trigger .ic{width:15px;height:15px;color:var(--muted);flex:none}
+.picker-trigger .pk-k{color:var(--muted);flex:none}
+.picker-trigger .pk-v{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.picker-trigger .pk-caret{margin-left:2px;display:flex;color:var(--muted);transition:transform .15s}
+.picker.open .pk-caret{transform:rotate(180deg)}
+.picker-pop{position:absolute;z-index:20;top:calc(100% + 5px);left:0;min-width:270px;
+  background:var(--panel);border:1px solid var(--line);border-radius:11px;
+  box-shadow:var(--shadow-lg);overflow:hidden}
+.picker-pop[hidden]{display:none}
+.picker-search{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line2)}
+.picker-search .ic{width:15px;height:15px;color:var(--muted);flex:none}
+.picker-search input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:var(--ink);font:inherit;font-size:12.5px}
+/* Capped and scrollable: All projects pages in as you scroll, and a list that
+   grew the popover instead would walk off the bottom of the window. The cap is
+   deliberately shorter than one page of rows, so the first five overflow and
+   there is always something to scroll — see the top-up in paintList(). */
+.picker-list{max-height:196px;overflow-y:auto;padding:5px 0}
+.picker-sec{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
+  padding:8px 13px 4px}
+.pk-row{display:flex;align-items:center;gap:9px;width:100%;border:0;background:transparent;
+  color:var(--ink);font:inherit;font-size:12.5px;text-align:left;padding:7px 13px;cursor:pointer}
+.pk-row:hover,.pk-row.active{background:var(--panel2)}
+.pk-row.sel{color:var(--accent);font-weight:600}
+.pk-row .ic{width:15px;height:15px;color:var(--muted);flex:none}
+.pk-row.sel .ic{color:var(--accent)}
+.pk-row .pk-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pk-row .pk-n{flex:none;font-size:11px;color:var(--muted);background:var(--panel2);
+  border:1px solid var(--line);border-radius:20px;padding:0 7px;line-height:17px;
+  font-variant-numeric:tabular-nums}
+.pk-empty{padding:14px 13px;font-size:12px;color:var(--muted);text-align:center}
+.picker-foot{padding:8px 13px;border-top:1px solid var(--line2);font-size:11px;color:var(--muted);
+  text-align:center;font-variant-numeric:tabular-nums}
+.daterange{display:grid;gap:9px;padding:11px 13px;border-top:1px solid var(--line2)}
+.daterange label{display:flex;flex-direction:column;gap:5px;font-size:10.5px;text-transform:uppercase;
+  letter-spacing:.05em;color:var(--muted)}
+.daterange input{font:inherit;font-size:12.5px;color:var(--ink);background:var(--panel2);
+  border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+/* What is actually filtering the list, spelled out and removable one at a time.
+   The pickers alone could not say this: a trigger reading "All projects" and a
+   trigger reading "Disabled" do not add up to "you are looking at a subset". */
+.activefilters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 14px}
+.activefilters[hidden]{display:none}
+.activefilters .aflabel{font-size:11.5px;color:var(--muted)}
+.afchip{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:550;
+  background:var(--accent-soft);color:var(--accent);border-radius:20px;padding:4px 6px 4px 11px}
+.afchip button{display:flex;border:0;background:transparent;color:inherit;cursor:pointer;
+  padding:2px;border-radius:50%;opacity:.75}
+.afchip button:hover{opacity:1;background:color-mix(in srgb,var(--accent) 18%,transparent)}
+.afchip .ic{width:12px;height:12px}
+.perpage{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}
+.perpage select{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);
+  border-radius:7px;padding:5px 8px}
+.tablewrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:13px;
+  box-shadow:var(--shadow)}
+/* ------------------------------------------------------------- the table card
+   tableCard()/tableFooter() (ui/app/chrome.js): the same border/background/
+   13px-radius/shadow `.tablewrap` already gives a bare table, but with a
+   footer glued to the bottom of the SAME box instead of `.tablewrap`'s job
+   of being just a scroller. `.table-card` owns the chrome and clips to its
+   own rounded corners (`overflow:hidden`); `.table-scroll` inside it is
+   `.tablewrap` stripped down to only the one property that has to sit on
+   the part that actually scrolls, so a wide table drags itself sideways
+   without dragging the footer under it along too. Deliberately a NEW pair
+   of classes rather than a new trick for `.tablewrap` itself: that class is
+   used bare -- no footer, no wrapper -- by Runs, Projects, the Sessions
+   dialog and six ui/security/*.js screens, and changing what it means would
+   restyle all of them at once. */
+.table-card{background:var(--panel);border:1px solid var(--line);border-radius:13px;
+  box-shadow:var(--shadow);overflow:hidden}
+.table-scroll{overflow-x:auto}
+/* Defense in depth, not the fix itself: the actual bug that made the
+   Security column's pill spill into Projects' own actions column was a
+   missing per-column width in pages.css (see #view-projects's own comment),
+   fixed there. This rule is what keeps the SAME class of mistake from ever
+   again reading as a collision -- a cell with too little width can still end
+   up here (a column added to Jobs or Runs later, its own pages.css rules
+   forgotten the same way), and a table cell has no overflow control of its
+   own by default, so its content would keep spilling into the next one.
+   Scoped to `.table-card` specifically -- the one wrapper tableCard()
+   (chrome.js) always renders around Jobs', Projects' and (once it converts)
+   Runs' own tables -- so a future column miscount there is caught by
+   degrading to a clipped cell, never a pill hiding behind a row's own edit
+   and delete buttons. */
+.table-card td,.table-card th{overflow:hidden}
+.table-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:11px 14px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);
+  font-variant-numeric:tabular-nums}
+.table-foot-info{white-space:nowrap}
+.table-foot-pager{display:flex;gap:8px;align-items:center}
+/* The numbered "‹ 1 2 3 ›" pager (Phase 4 Task 5, tableFooter's own opt-in --
+   see its comment, ui/app/chrome.js) -- Jobs/Projects/Runs never pass
+   `numbered`, so `.table-foot-pager` bare (no `.numbered`) and its two
+   `.btn.ghost` children above are exactly what they always were. */
+.table-foot-pager.numbered{gap:4px}
+.pagebtn{display:inline-flex;align-items:center;justify-content:center;min-width:30px;
+  height:30px;padding:0 8px;border-radius:8px;border:1px solid transparent;
+  background:none;color:var(--muted);font:inherit;font-size:12.5px;font-weight:600;
+  font-variant-numeric:tabular-nums;cursor:pointer;transition:.13s}
+.pagebtn:hover:not(.active){background:var(--panel2);color:var(--ink)}
+.pagebtn.active{background:var(--accent);color:var(--accent-ink);cursor:default}
+/* The "…" gap in a COLLAPSED numbered pager (tableFooter's own `collapse`
+   option, this file below) -- AllFindings.png's own "‹ 1 2 3 4 5 … 19 ›" at
+   19 pages, where a bare `.pagebtn` per page (the plain `numbered` variant
+   above) would draw nineteen buttons in a row. A `<span>`, never a
+   `<button>`: it stands for pages that are not individually reachable from
+   here, so it must not look pressable, take focus, or answer a click. */
+.pagebtn-ellipsis{display:inline-flex;align-items:center;justify-content:center;
+  min-width:20px;height:30px;color:var(--muted);font-size:12.5px;user-select:none}
+/* A checkbox styled as an on/off switch -- AllFindings.png's own "Show
+   resolved findings" control (ui/security/findings-screen.js). No house
+   switch existed before this: every other on/off control in this app is
+   either a plain checkbox (a job's own bulk-enable icon button) or the job
+   editor's segmented control (a hidden checkbox behind two full buttons,
+   the wrong shape for a single inline toggle beside one sentence of label
+   text) -- neither fits "flip this filter, nothing else". Still a real
+   `<input type=checkbox>` under the paint: focus, Space-to-toggle and form
+   semantics all come from the browser for free the moment the native box is
+   only hidden, never removed, the same "keep the control, repaint it" idiom
+   this app's own combo/segmented-control widgets already rely on. */
+.switch{position:relative;display:inline-flex;align-items:center;flex:none;
+  width:34px;height:20px;cursor:pointer}
+.switch input{position:absolute;inset:0;margin:0;opacity:0;cursor:pointer}
+.switch .track{position:absolute;inset:0;background:var(--line);border-radius:999px;
+  transition:background-color .15s ease}
+.switch .knob{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
+  background:var(--panel);box-shadow:var(--shadow);transition:transform .15s ease}
+.switch input:checked ~ .track{background:var(--accent)}
+.switch input:checked ~ .knob{transform:translateX(14px)}
+.switch input:focus-visible ~ .track{outline:2px solid var(--accent);outline-offset:2px}
+.switch input:disabled ~ .track{opacity:.5;cursor:default}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th{text-align:left;font-weight:600;color:var(--muted);font-size:10.5px;text-transform:uppercase;
+  letter-spacing:.05em;padding:11px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
+/* Sortable columns say so AT REST. The caret used to be invisible until hover,
+   which on a trackpad means never: the only column that looked sortable was
+   whichever one already was, so the other five may as well not have existed. */
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:var(--ink)}
+th.sortable .ic{width:12px;height:12px;vertical-align:-2px;margin-left:4px;opacity:.28;
+  transition:opacity .12s}
+th.sortable:hover .ic{opacity:.6}
+th.sortable.sorted{color:var(--ink)}
+th.sortable.sorted .ic{opacity:1;color:var(--accent)}
+/* Middle, not top: every approved drawing -- Security.png and the four
+   artboards -- centres a cell's content in its row, and a tall two-line
+   identity cell beside a one-line duration reads staggered when the short
+   one hugs the top. */
+td{padding:10px 14px;border-bottom:1px solid var(--line2);vertical-align:middle}
+/* When: relative reads at a glance, the exact stamp is one hover away. */
+.when-rel{font-variant-numeric:tabular-nums;cursor:help;border-bottom:1px dotted var(--line)}
+/* align-items must be stated: the default `stretch` made the job id's <code>
+   background run the whole width of the column. */
+tr:last-child td{border-bottom:none}
+tbody tr{transition:.1s}
+tbody tr:hover{background:var(--panel2)}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.stat-cell{display:inline-flex;align-items:center;gap:6px;font-weight:560}
+.stat-cell .ic{width:14px;height:14px}
+.s-success{color:var(--ok)} .s-warning{color:var(--warn)} .s-error{color:var(--err)}
+.s-idle{color:var(--idle)} .s-running{color:var(--warn)}
+/* `stopped` is a decision, not a fault — its own colour so it never reads as a
+   failure in a column of them. */
+.s-stopped{color:var(--accent)}
+code{font:11.5px ui-monospace,"SF Mono",Menlo,monospace;
+  background:color-mix(in srgb,var(--ink) 6%,transparent);padding:1px 6px;border-radius:5px}
+.snip{font-size:11px;color:var(--muted);margin-top:3px;max-width:420px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.trigger-badge{font-size:10px;color:var(--warn);border:1px solid color-mix(in srgb,var(--warn) 40%,var(--line));
+  border-radius:5px;padding:1px 6px;margin-left:7px;vertical-align:1px}
+/* a run that continued an earlier one — hover to see which */
+.trigger-badge.resumed{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,var(--line));cursor:help}
+.runningbadge{display:inline-flex;align-items:center;gap:7px;color:var(--warn);font-weight:600}
+.runningbadge .pulse{width:8px;height:8px;border-radius:50%;background:var(--warn);
+  animation:ccpulse 1.2s ease-in-out infinite}
+@keyframes ccpulse{0%,100%{opacity:.35;transform:scale(.85)}50%{opacity:1;transform:scale(1.2)}}
+/* A kill has been asked for and the wrapper is winding down. Its own colour so
+   the row does not keep claiming to be running after you told it to stop. */
+.runningbadge.stopping{color:var(--err)}
+.runningbadge.stopping .pulse{background:var(--err)}
+.pager{display:flex;gap:12px;align-items:center;justify-content:flex-end;margin-top:12px;
+  font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.empty{padding:34px;text-align:center;color:var(--muted);font-size:13px}
+.empty .ic{width:22px;height:22px;display:block;margin:0 auto 8px;opacity:.6}
+footer{margin-top:30px;color:var(--muted);font-size:11px;text-align:center}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:14px 0 0;flex:none;
+  overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{padding:8px 12px;font:inherit;font-size:12.5px;font-weight:550;color:var(--muted);cursor:pointer;
+  border:0;background:transparent;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap;
+  display:inline-flex;align-items:center;gap:6px}
+.tab .ic{width:14px;height:14px}
+.tab:hover{color:var(--ink)}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+/* The one thing a tabbed FORM must not do is hide a consequence. A dot appears
+   on a tab only when that section holds something changing how the job behaves
+   right now — no prompt, no precheck, a backoff in effect, a cap already hit —
+   so nothing that matters can sit unseen behind a tab. Never decorative: if
+   there is nothing to report, there is no dot. */
+.tab .dot{width:6px;height:6px;border-radius:50%;flex:none}
+.tab .dot.warn{background:var(--warn)}
+.tab .dot.err{background:var(--err)}
+.tabpanes{flex:1 1 auto;min-height:0;overflow-y:auto;padding-top:14px}
+.tabpane{display:none} .tabpane.active{display:block}
+.muted{color:var(--muted);font-size:12px}
+/* 330, the mockup's own rail width -- the legend rows ("Critical 64
+   (90.1%)") were already noted as tight at 300. */
+.secpjside{flex:0 0 330px;min-width:260px;display:flex;flex-direction:column;gap:16px}
+/* An author `display` outranks the UA sheet's own `[hidden]{display:none}`
+   (same trap this file's own comment already names for .secfield/.secdl/
+   .warnline, ui/css/pages.css) -- without this, project-screen.js's own
+   `#sec-pj-side.hidden = true` (Findings tab, Phase 4) sets the attribute
+   but the rail keeps its `display:flex` and stays on screen regardless. */
+.secpjside[hidden]{display:none}
