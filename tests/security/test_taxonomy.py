@@ -44,3 +44,14 @@ def test_prompt_injection_is_in_the_vocabulary():
     # is not in the vocabulary, report-finding refuses the one finding the
     # skill explicitly asks for.
     assert taxonomy.is_valid_rule("prompt-injection-in-source") is True
+    # Pinned exactly: CWE-1427 is routinely mistaken for CWE-77 (command
+    # injection). A silent revert to CWE-77 must fail this test.
+    assert taxonomy.classify("prompt-injection-in-source") == ("CWE-1427", "A03:2021")
+
+
+def test_sensitive_data_exposure_maps_to_broken_access_control():
+    # Pinned exactly: OWASP's own mapping table lists CWE-200 under
+    # A01:2021 (Broken Access Control), not A02:2021 (Cryptographic
+    # Failures) -- even though "Sensitive Data Exposure" was the NAME of
+    # A3:2017. A silent "correction" back to A02 must fail this test.
+    assert taxonomy.classify("sensitive-data-exposure") == ("CWE-200", "A01:2021")

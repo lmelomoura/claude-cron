@@ -38,7 +38,12 @@ SAST_RULES = {
     # is command injection and is what this gets mistaken for.
     "prompt-injection-in-source": ("CWE-1427", "A03:2021"),
     "race-condition":             ("CWE-362",  "A04:2021"),
-    "sensitive-data-exposure":    ("CWE-200",  "A02:2021"),
+    # A01, not A02. "Sensitive Data Exposure" was the NAME of A3:2017, and
+    # the 2021 revision reused that name for the unrelated, narrower
+    # cryptographic-failures category -- while CWE-200 itself stayed under
+    # Broken Access Control, where OWASP's own mapping table lists it. The
+    # familiar name is the trap here.
+    "sensitive-data-exposure":    ("CWE-200",  "A01:2021"),
     "sql-injection":              ("CWE-89",   "A03:2021"),
     "ssrf":                       ("CWE-918",  "A10:2021"),
     "weak-cryptography":          ("CWE-327",  "A02:2021"),
