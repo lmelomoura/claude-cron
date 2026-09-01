@@ -210,3 +210,35 @@ def test_an_unclassified_finding_says_nothing_rather_than_an_empty_label():
                       cwe="", owasp="")]
     out = report.as_markdown(ANALYSIS, findings, "")
     assert "CWE" not in out
+
+
+def test_html_shows_the_classification():
+    findings = [dict(FINDINGS[1], cwe="CWE-89", owasp="A03:2021")]
+    out = report.as_html(ANALYSIS, findings, "")
+    assert "CWE-89" in out
+    assert "A03:2021" in out
+
+
+def test_an_unclassified_finding_shows_no_classification_markup_in_html():
+    # Every deterministic finding (secret, dependency, hygiene) has an empty
+    # cwe/owasp. Emitting the classification wrapper with nothing inside it
+    # reads as a missing value the reader should chase -- so the whole
+    # <p class='cls'> block must be absent, not just empty.
+    findings = [dict(FINDINGS[0], category="hygiene", rule="committed_env_file",
+                      cwe="", owasp="")]
+    out = report.as_html(ANALYSIS, findings, "")
+    assert "cls" not in out
+
+
+def test_html_escapes_the_classification_fields():
+    """The adversarial test for the classification block. `cwe` and `owasp`
+    come from analysed code same as any other finding field, and report.py's
+    only defence is the `e()` (html.escape) wrapper -- nothing else would
+    catch a future edit that dropped it from this one block."""
+    findings = [dict(FINDINGS[1], cwe="<script>alert(1)</script>",
+                      owasp='A03" onmouseover="x')]
+    htm = report.as_html(ANALYSIS, findings, "")
+    assert "<script>alert(1)</script>" not in htm
+    assert "&lt;script&gt;" in htm
+    assert 'onmouseover="x' not in htm
+    assert "&quot;" in htm
