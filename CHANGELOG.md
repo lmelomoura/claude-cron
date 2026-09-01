@@ -19,6 +19,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The Reports table drops its Actions column.** The four FORMAT chips
+  already ARE the downloads, so the quick-download icon and the kebab
+  beside them were the same four files behind a second door — a
+  redundancy the mockup drew and the user called out. Five columns now;
+  the table fits a 1550px window with no inner scroll, and the format
+  chips sit on one line.
+
 - **The Reports tab meets ProjectReports.png.** The plain five-column
   table became the mockup's card: the run chip opens the analysis on the
   Runs tab, the Profile cell folds the state in ("Deep (Capped)",

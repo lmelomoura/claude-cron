@@ -2,12 +2,15 @@
    ProjectReports.png, element by element: one "Reports" card holding the
    table -- Analysis (the run chip, a door to the Runs tab's drill-down),
    Profile with the run number beneath, Branch, Generated at (sortable),
-   the four FORMAT chips as the downloads themselves, and the quick-download
-   + kebab actions the selected run's own header already wears -- plus,
-   through secReportsSidebar (mounted by project-screen.js's rail), the
-   tab's own three rail cards: the all-branch severity donut and Top issue
+   and the four FORMAT chips as the downloads themselves -- plus, through
+   secReportsSidebar (mounted by project-screen.js's rail), the tab's own
+   three rail cards: the all-branch severity donut and Top issue
    categories (shared with the Branches tab's rail, imported from
-   branches-tab.js rather than copied) and the Reports summary card.
+   branches-tab.js rather than copied) and the Reports summary card. The
+   mockup's trailing ACTIONS column (a quick-download icon and a kebab of
+   the same formats) is deliberately not drawn -- user call: the chips
+   already ARE the downloads, and that column was the same four files
+   behind a second door.
 
    One row per analysis, whatever its state -- but the downloads themselves
    only on a FINISHED one (done or capped). The mockup draws a failed row
@@ -40,7 +43,7 @@
    chip on an OLDER analysis's row still downloads that branch's CURRENT
    document. That caveat rides every SBOM control's own tooltip now, no
    longer a paragraph above the table. */
-import { $, fmtAgo, fmtWhen, tableFooter, closeMenus } from "./page.js";
+import { $, fmtAgo, fmtWhen, tableFooter } from "./page.js";
 import { secEl, secIcon } from "./dom.js";
 import { secDownloadReport } from "./actions.js";
 import { secAllBranchDonutCard, secTopCategoriesCard } from "./branches-tab.js";
@@ -61,10 +64,12 @@ const GENERATED_NOTE = "Reports are generated from each analysis's own "
 
 // [key, label] tuples, SEC_PROJECT_COLS-shaped -- the width test's own
 // parametrize covers this table like every other (`.secrp-table`,
-// ui/css/pages.css).
+// ui/css/pages.css). No Actions column, deliberately against the mockup
+// (user call): the FORMAT chips ARE the downloads, and a quick-download +
+// kebab beside them was the same four files behind a second door.
 const SEC_REPORT_COLS = [
   ["analysis", "Analysis"], ["profile", "Profile"], ["branch", "Branch"],
-  ["generated", "Generated at"], ["formats", "Format"], ["actions", "Actions"],
+  ["generated", "Generated at"], ["formats", "Format"],
 ];
 
 // The Generated-at column's own sort -- client-side over the rows already
@@ -146,63 +151,7 @@ function secReportRow(r){
       r.state === "failed" ? "No report generated" : "Not finished yet"));
   }
   tr.appendChild(tdFmt);
-
-  // The selected run's own header anatomy (secRenderRunHead,
-  // project-screen.js): one-click Markdown, the rest behind the kebab.
-  const tdActs = document.createElement("td");
-  tdActs.className = "rowacts";
-  if(secRpFinished(r)){
-    const dl = document.createElement("button");
-    dl.type = "button";
-    dl.className = "iconbtn";
-    dl.title = "Download this analysis's report (Markdown)";
-    dl.appendChild(secIcon("download"));
-    dl.onclick = () => secDownloadReport(r.analysis_id, "md", dl);
-    tdActs.appendChild(dl);
-    tdActs.appendChild(secRpKebab(r));
-  }else{
-    tdActs.textContent = "—";
-  }
-  tr.appendChild(tdActs);
   return tr;
-}
-
-function secRpKebab(r){
-  const kebab = document.createElement("details");
-  kebab.className = "secidx-kebab";
-  const summary = document.createElement("summary");
-  summary.className = "iconbtn";
-  summary.title = "More downloads";
-  summary.appendChild(secIcon("dots"));
-  summary.onclick = (e) => { e.stopPropagation(); closeMenus(); };
-  kebab.appendChild(summary);
-  const pop = secEl("div", "menu-pop");
-  pop.setAttribute("role", "menu");
-  [["json", "JSON"], ["html", "HTML"], ["sbom", "SBOM"]].forEach(([fmt, label]) => {
-    const item = document.createElement("button");
-    item.setAttribute("role", "menuitem");
-    item.appendChild(secIcon("file"));
-    item.appendChild(document.createTextNode(label));
-    if(fmt === "sbom") item.title = SBOM_CAVEAT;
-    item.onclick = (e) => {
-      e.stopPropagation();
-      kebab.open = false;
-      secDownloadReport(r.analysis_id, fmt, item);
-    };
-    pop.appendChild(item);
-  });
-  kebab.appendChild(pop);
-  kebab.ontoggle = () => {
-    pop.hidden = !kebab.open;
-    if(!kebab.open) return;
-    const rect = summary.getBoundingClientRect();
-    pop.style.position = "fixed";
-    pop.style.top = (rect.bottom + 6) + "px";
-    pop.style.right = (window.innerWidth - rect.right) + "px";
-    pop.style.left = "auto";
-    pop.style.bottom = "auto";
-  };
-  return kebab;
 }
 
 function secReportsTable(rows){

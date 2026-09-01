@@ -3324,8 +3324,7 @@
     ["profile", "Profile"],
     ["branch", "Branch"],
     ["generated", "Generated at"],
-    ["formats", "Format"],
-    ["actions", "Actions"]
+    ["formats", "Format"]
   ];
   var secRpSortDir = "desc";
   function secRpCap(s) {
@@ -3389,62 +3388,7 @@
       ));
     }
     tr.appendChild(tdFmt);
-    const tdActs = document.createElement("td");
-    tdActs.className = "rowacts";
-    if (secRpFinished(r)) {
-      const dl = document.createElement("button");
-      dl.type = "button";
-      dl.className = "iconbtn";
-      dl.title = "Download this analysis's report (Markdown)";
-      dl.appendChild(secIcon("download"));
-      dl.onclick = () => secDownloadReport(r.analysis_id, "md", dl);
-      tdActs.appendChild(dl);
-      tdActs.appendChild(secRpKebab(r));
-    } else {
-      tdActs.textContent = "\u2014";
-    }
-    tr.appendChild(tdActs);
     return tr;
-  }
-  function secRpKebab(r) {
-    const kebab = document.createElement("details");
-    kebab.className = "secidx-kebab";
-    const summary = document.createElement("summary");
-    summary.className = "iconbtn";
-    summary.title = "More downloads";
-    summary.appendChild(secIcon("dots"));
-    summary.onclick = (e) => {
-      e.stopPropagation();
-      closeMenus();
-    };
-    kebab.appendChild(summary);
-    const pop = secEl("div", "menu-pop");
-    pop.setAttribute("role", "menu");
-    [["json", "JSON"], ["html", "HTML"], ["sbom", "SBOM"]].forEach(([fmt, label]) => {
-      const item = document.createElement("button");
-      item.setAttribute("role", "menuitem");
-      item.appendChild(secIcon("file"));
-      item.appendChild(document.createTextNode(label));
-      if (fmt === "sbom") item.title = SBOM_CAVEAT;
-      item.onclick = (e) => {
-        e.stopPropagation();
-        kebab.open = false;
-        secDownloadReport(r.analysis_id, fmt, item);
-      };
-      pop.appendChild(item);
-    });
-    kebab.appendChild(pop);
-    kebab.ontoggle = () => {
-      pop.hidden = !kebab.open;
-      if (!kebab.open) return;
-      const rect = summary.getBoundingClientRect();
-      pop.style.position = "fixed";
-      pop.style.top = rect.bottom + 6 + "px";
-      pop.style.right = window.innerWidth - rect.right + "px";
-      pop.style.left = "auto";
-      pop.style.bottom = "auto";
-    };
-    return kebab;
   }
   function secReportsTable(rows) {
     const sorted = rows.slice().sort((a, b) => secRpSortDir === "asc" ? (a.started || 0) - (b.started || 0) : (b.started || 0) - (a.started || 0));
@@ -5117,5 +5061,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 59369d08eb6f1a85e1f3abe7f5ba27393a30dc9ba5bdac95d0895a9b470bfaad */
-/* ui-sources: ce629b79cddee3d2aa49ecf32d1f2845ae5d82a8e3633b8839b724a73382e4d5 */
+/* ui-bundle: cbbc0b39528b104e1083f4dfed328cc3218a34c139458b0f2b8d83e1aec4cde2 */
+/* ui-sources: d46c39d6f410efb55cd1982d21208224135b546e1847712f8d3e68b6e75d31d2 */

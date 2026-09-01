@@ -4574,7 +4574,7 @@ def test_the_reports_tab_renders_one_row_per_analysis_with_four_downloads(srv, t
               + _const(block, "SBOM_CAVEAT") + _const(block, "GENERATED_NOTE"))
     deps = "\n".join(_plainfn(block, n) for n in
                      ("secEl", "secIcon", "secRpCap", "secRpFinished",
-                      "secReportRow", "secRpKebab",
+                      "secReportRow",
                       "secReportsTable", "secRenderProjectReports"))
     script = tmp_path / "pj-reports.js"
     script.write_text(_PROJECT_DOM_HARNESS + """
@@ -4582,7 +4582,6 @@ def test_the_reports_tab_renders_one_row_per_analysis_with_four_downloads(srv, t
     function secDownloadReport(){}
     function secShowAnalysis(_id, _pin){}
     function secSwitchProjectTab(_t){}
-    function closeMenus(){}
     function tableFooter(o){
       const f = new FakeElement("footer");
       f.textContent = "Showing " + o.shown.from + " to " + o.shown.to
@@ -4614,11 +4613,10 @@ def test_the_reports_tab_renders_one_row_per_analysis_with_four_downloads(srv, t
     assert "main" in joined and "develop" in joined
     assert "Deep (Running)" in joined and "Standard (Failed)" in joined, \
         f"the profile cell must fold the unfinished state in: {joined}"
-    # The finished row alone carries downloads: its run chip, four format
-    # chips, the quick Markdown download, the kebab summary is not a
-    # <button> -- plus its kebab's three menu items; the running and failed
-    # rows offer only their own run chip.
-    assert out["buttons"] == 1 * 3 + 4 + 1 + 3, \
+    # The finished row alone carries downloads -- its four format chips are
+    # the only download controls (no Actions column: the chips already ARE
+    # the downloads); every row keeps its own run chip.
+    assert out["buttons"] == 1 * 3 + 4, \
         f"only the finished row may offer downloads: {out['buttons']}"
     assert "No report generated" in joined, \
         f"a failed analysis must say why there is nothing to download: {joined}"

@@ -1899,21 +1899,19 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    chips as the downloads, quick-download + kebab), and the rail's own
    summary card. The donut/categories rail cards are the Branches tab's
    own, shared. */
-.secrp-table{min-width:1030px}
-.secrp-table th:nth-child(1){width:9%}    /* Analysis     */
-.secrp-table th:nth-child(2){width:15%}   /* Profile      */
-.secrp-table th:nth-child(3){width:17%}   /* Branch       */
-.secrp-table th:nth-child(4){width:19%}   /* Generated at */
-.secrp-table th:nth-child(5){width:29%}   /* Format       */
-.secrp-table th:last-child{width:11%}     /* Actions      */
-.secrp-table td.rowacts{white-space:nowrap}
+.secrp-table{min-width:860px}
+.secrp-table th:nth-child(1){width:10%}   /* Analysis     */
+.secrp-table th:nth-child(2){width:17%}   /* Profile      */
+.secrp-table th:nth-child(3){width:20%}   /* Branch       */
+.secrp-table th:nth-child(4){width:20%}   /* Generated at */
+.secrp-table th:last-child{width:33%}     /* Format       */
 .secrp-id{font-weight:650}
 .secrp-profile{font-weight:650;color:var(--ink)}
 .secrp-when{font-weight:650;color:var(--ink)}
-.secrp-fmts{display:flex;flex-wrap:wrap;gap:6px}
-.secrp-fmt{font:inherit;font-size:11.5px;font-weight:600;color:var(--ink);
+.secrp-fmts{display:flex;flex-wrap:wrap;gap:5px}
+.secrp-fmt{font:inherit;font-size:11px;font-weight:600;color:var(--ink);
   background:var(--panel);border:1px solid var(--line);border-radius:8px;
-  padding:4px 10px;cursor:pointer;white-space:nowrap}
+  padding:3px 8px;cursor:pointer;white-space:nowrap}
 .secrp-fmt:hover{border-color:color-mix(in srgb,var(--accent) 45%,var(--line));
   color:var(--accent)}
 .secrp-none{font-weight:650;color:var(--muted)}
