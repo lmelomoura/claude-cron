@@ -78,13 +78,31 @@ def test_ignored_paths_are_skipped(tmp_path):
     """`ignore_paths` is a promise about the whole analysis. A fixtures
     directory excluded from the secret sweeps was still reported here, so the
     setting removed the noise from one section of the report and left it in
-    another."""
+    another.
+
+    Planted in `tests/planted/` and NOT in the `tests/fixtures/` this test
+    used to use: `ignores.DEFAULT_IGNORE_DIRS` now suppresses a `fixtures`
+    directory with no configuration at all, so the old path would make the
+    `== []` below pass without the glob ever being read -- the vacuous
+    positive this suite guards against everywhere else."""
+    planted = tmp_path / "tests" / "planted"
+    planted.mkdir(parents=True)
+    (planted / ".env").write_text("DB_HOST=localhost\n")
+    (planted / "fake.pem").write_text("-----BEGIN RSA PRIVATE KEY-----\nx\n")
+    assert [f["rule"] for f in scan(tmp_path)] != []
+    assert scan(tmp_path, ["tests/planted/**"]) == []
+
+
+def test_the_default_noise_filter_reaches_the_hygiene_pass_too(tmp_path):
+    """`tests/fixtures/id_rsa` "looks like a key file" was the example this
+    module's own docstring gave for a setting one phase of three ignored. It
+    now takes no setting at all."""
     fixtures = tmp_path / "tests" / "fixtures"
     fixtures.mkdir(parents=True)
     (fixtures / ".env").write_text("DB_HOST=localhost\n")
     (fixtures / "fake.pem").write_text("-----BEGIN RSA PRIVATE KEY-----\nx\n")
-    assert [f["rule"] for f in scan(tmp_path)] != []
-    assert scan(tmp_path, ["tests/fixtures/**"]) == []
+    assert scan(tmp_path) == []
+    assert [f["rule"] for f in scan(tmp_path, ["!defaults"])] != []
 
 
 def test_a_repository_with_no_gitignore_gets_an_advisory_finding(tmp_path):

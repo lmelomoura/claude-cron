@@ -330,17 +330,93 @@ def test_an_ignored_path_is_dropped_even_when_the_engine_reports_it():
     assert [f["occurrences"][0]["file"] for f in out] == ["app.env"]
 
 
+# ------------------------------------------------- the default noise filter
+#
+# The ENGINE half of Task 7. Every assertion here has a twin in
+# test_secrets.py driving the same case through the built-in scanner: a
+# default only one of the two honours is a repository whose report changes
+# with whichever binaries the machine happens to have, which is the
+# per-machine divergence this block has already had to fix twice.
+
+def test_the_engine_drops_a_fixture_finding_with_no_ignore_paths_set():
+    data = [{"RuleID": "aws-access-token", "File": "tests/fixtures/fake.env",
+             "StartLine": 1},
+            {"RuleID": "aws-access-token", "File": "pkg/testdata/dump.env",
+             "StartLine": 1},
+            {"RuleID": "aws-access-token", "File": "app.env", "StartLine": 1}]
+    out = adapters.gitleaks(data, root=".")
+    assert [f["occurrences"][0]["file"] for f in out] == ["app.env"]
+
+
+def test_the_engine_drops_a_secret_reported_from_a_sample_file():
+    """A4.14 on the engine path. Gitleaks has no idea that `.env.example` is
+    a template, and the file-level rule has to be ours on both paths or the
+    same `.env.example` is a finding on one laptop and not on the next."""
+    data = [{"RuleID": "aws-access-token", "File": ".env.example",
+             "StartLine": 1},
+            {"RuleID": "aws-access-token", "File": "k8s/values.yaml.template",
+             "StartLine": 1},
+            {"RuleID": "aws-access-token", "File": "app.env", "StartLine": 1}]
+    out = adapters.gitleaks(data, root=".")
+    assert [f["occurrences"][0]["file"] for f in out] == ["app.env"]
+
+
+def test_the_engine_reports_them_again_once_the_project_turns_the_default_off():
+    data = [{"RuleID": "aws-access-token", "File": "tests/fixtures/fake.env",
+             "StartLine": 1},
+            {"RuleID": "aws-access-token", "File": ".env.example",
+             "StartLine": 1}]
+    out = adapters.gitleaks(data, root=".", ignore_paths=[ignores.DEFAULTS_OFF])
+    assert sorted(f["occurrences"][0]["file"] for f in out) == [
+        ".env.example", "tests/fixtures/fake.env"]
+
+
+def test_the_scope_config_carries_the_default_fixture_directories():
+    """The cheap way round, so the engine never reads them at all. It is not
+    the guarantee -- `gitleaks()` filters what comes back regardless -- but
+    an engine that reads them anyway is engine time spent on findings this
+    analysis is going to throw away."""
+    toml = adapters.gitleaks_config()
+    for directory in ignores.DEFAULT_IGNORE_DIRS:
+        assert directory in toml, directory
+    assert "example" in toml
+
+
+def test_the_scope_config_drops_the_defaults_when_the_project_turns_them_off():
+    """Otherwise the engine's command line would go on suppressing what the
+    operator just asked to see -- a decision undone by a pre-filter."""
+    toml = adapters.gitleaks_config(ignore_paths=[ignores.DEFAULTS_OFF])
+    assert "testdata" not in toml
+    assert "example" not in toml
+
+
+def test_the_engine_pre_filters_all_carry_the_default_fixture_directories():
+    """Three engines, three command-line dialects, one scope. Trivy needs the
+    bare name AND `**/name` (its bare name matches the top level only);
+    semgrep matches either form at any depth."""
+    for name in ignores.DEFAULT_IGNORE_DIRS:
+        assert f"**/{name}" in adapters.trivy_skip_dirs()
+        assert f"**/{name}" in adapters.semgrep_excludes()
+
+
 # ------------------------------------------- the scope, against the real tool
 
 def plant(root, key=AWS_KEY):
     """A tree with one real secret and two the analysis has been told to
     ignore: one under a directory the hand-written sweep skips, one under a
-    glob the operator set."""
+    glob the operator set.
+
+    `tests/planted/`, NOT `tests/fixtures/`, which is what this helper used
+    to write. `ignores.DEFAULT_IGNORE_DIRS` now suppresses a `fixtures`
+    directory with no configuration at all, so the operator-glob half of
+    every test below would have gone on passing with `ignore_paths` deleted
+    -- the vacuous positive. The default's own coverage is up in "the default
+    noise filter"; this helper is for the globs."""
     (root / "__pycache__").mkdir(parents=True, exist_ok=True)
-    (root / "tests" / "fixtures").mkdir(parents=True, exist_ok=True)
+    (root / "tests" / "planted").mkdir(parents=True, exist_ok=True)
     (root / "app.env").write_text(f"AWS_ACCESS_KEY_ID={key}\n")
     (root / "__pycache__" / "cached.env").write_text(f"AWS_ACCESS_KEY_ID={key}\n")
-    (root / "tests" / "fixtures" / "fake.env").write_text(
+    (root / "tests" / "planted" / "fake.env").write_text(
         f"AWS_ACCESS_KEY_ID={key}\n")
     return root
 
@@ -373,12 +449,40 @@ def test_the_scope_actually_narrows_what_the_engine_reports(tmp_path):
     before = raw_gitleaks(root)
     config = root / "scope.toml"
     config.write_text(adapters.gitleaks_config(
-        root=root, ignore_paths=["tests/fixtures/**"]))
+        root=root, ignore_paths=["tests/planted/**"]))
     after = raw_gitleaks(root, config)
 
     assert len(before) == 3, [f["File"] for f in before]
     assert len(after) == 1, [f["File"] for f in after]
     assert after[0]["File"] == "app.env"
+
+
+@needs_gitleaks
+def test_the_default_narrows_the_real_engine_with_nothing_configured(tmp_path):
+    """The acceptance test of TASK 7, against the real binary and with an
+    EMPTY `ignore_paths` -- which is what almost every project actually has.
+
+    Both halves of the default in one tree: a fixtures directory, and a
+    committed template of a configuration file. Gitleaks reports all three
+    keys; the analysis reports the one that is really a leak. The `before`
+    half is the control -- `== ["app.env"]` on its own would pass on an
+    engine that had crashed and reported nothing at all."""
+    root = tmp_path / "repo"
+    (root / "tests" / "fixtures").mkdir(parents=True)
+    (root / "app.env").write_text(f"AWS_ACCESS_KEY_ID={AWS_KEY}\n")
+    (root / "tests" / "fixtures" / "fake.env").write_text(
+        f"AWS_ACCESS_KEY_ID={AWS_KEY}\n")
+    (root / ".env.example").write_text(f"AWS_ACCESS_KEY_ID={AWS_KEY}\n")
+
+    assert len(raw_gitleaks(root)) == 3, "the tree must be noisy to the engine"
+
+    loud, _ = adapters.gitleaks_scan(root, [ignores.DEFAULTS_OFF])
+    assert sorted(f["occurrences"][0]["file"] for f in loud) == [
+        ".env.example", "app.env", "tests/fixtures/fake.env"], loud
+
+    quiet, notes = adapters.gitleaks_scan(root)
+    assert [f["occurrences"][0]["file"] for f in quiet] == ["app.env"], quiet
+    assert notes, "the scan still has to describe itself"
 
 
 @needs_gitleaks
@@ -783,11 +887,11 @@ def test_the_engine_obeys_the_ignore_paths_prepare_was_given(tmp_path):
     # `plant` writes three copies of one key. Two survive without the globs --
     # the third is under `__pycache__`, which SKIP_DIRS excludes on every run.
     assert {f["occurrences"][0]["file"] for f in noisy} == {
-        "app.env", "tests/fixtures/fake.env"}, noisy
+        "app.env", "tests/planted/fake.env"}, noisy
 
     quiet = open_analysis(db)
     cli_json(db, "prepare", "--analysis", str(quiet), "--root", str(root),
-             "--offline", "--ignore", "app.env,tests/fixtures/**", env=env)
+             "--offline", "--ignore", "app.env,tests/planted/**", env=env)
     findings = cli_json(db, "findings", "--analysis", str(quiet), env=env)
     assert [f for f in findings if f["category"] == "secret"] == []
 

@@ -33,7 +33,7 @@ import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 
-from . import deps, engines, osv, report, secrets, taxonomy
+from . import deps, engines, ignores, osv, report, secrets, taxonomy
 from .fingerprint import fingerprint, secret_fingerprint
 from .ignores import ignored
 
@@ -167,17 +167,33 @@ def _glob_to_regexp(glob: str) -> str:
 def scope_patterns(skip_dirs=None, ignore_paths=()) -> list[str]:
     """The path patterns gitleaks must not report from.
 
-    Two sources, and they mean different things. `skip_dirs` are directories
-    no analysis has ever looked inside -- caches, vendored trees, build
-    output -- matched at any depth. `ignore_paths` is the operator's own
-    decision, matched the way `ignores.ignored` matches it: literally, and
-    with everything underneath it, so `tests/fixtures` and
+    Three sources, and they mean different things. `skip_dirs` are
+    directories no analysis has ever looked inside -- caches, vendored trees,
+    build output -- matched at any depth. The default noise filter
+    (`ignores.default_dirs`, plus the sample-file suffixes this engine's
+    category is the one that cares about) is matched the same way, and drops
+    out entirely when the project switched it off. `ignore_paths` is the
+    operator's own decision, matched the way `ignores.ignored` matches it:
+    literally, and with everything underneath it, so `tests/fixtures` and
     `tests/fixtures/**` both exclude the directory's contents.
+
+    All three are the CHEAP way round -- the engine never reads the file --
+    and none of them is the guarantee. `gitleaks()` puts everything that
+    comes back through the same two filters again, for the reason
+    `_out_of_scope` gives.
     """
     if skip_dirs is None:
         skip_dirs = secrets.SKIP_DIRS
-    patterns = [rf"(^|/){re.escape(d)}/" for d in sorted(skip_dirs)]
-    for glob in ignore_paths or ():
+    directories = sorted(set(skip_dirs) | set(ignores.default_dirs(ignore_paths)))
+    patterns = [rf"(^|/){re.escape(d)}/" for d in directories]
+    if ignores.defaults_apply(ignore_paths):
+        # Anchored at the END of the path only: `.env.example` is a template
+        # and `a.example.json` is not, so the suffix has to be the last thing
+        # in the name. Unanchored at the front because gitleaks SEARCHES an
+        # allowlist path pattern rather than matching it whole.
+        patterns += [rf"{re.escape(suffix)}$"
+                     for suffix in ignores.SAMPLE_SUFFIXES]
+    for glob in ignores.globs(ignore_paths):
         glob = (glob or "").strip()
         if not glob:
             continue
@@ -223,8 +239,8 @@ def gitleaks_config(root=None, ignore_paths=(), skip_dirs=None) -> str:
     lines.append(f"path = '''{own}'''" if own is not None
                  else "useDefault = true")
     lines += ["", "[allowlist]",
-              'description = "the scope claude-cron analyses: SKIP_DIRS and '
-              'the project\'s ignore_paths"',
+              'description = "the scope claude-cron analyses: SKIP_DIRS, the '
+              'default noise filter and the project\'s ignore_paths"',
               "paths = ["]
     # An apostrophe would close the TOML literal string it sits in and break
     # the whole config -- which costs the SCAN, not the one pattern. Dropping
@@ -288,6 +304,13 @@ def _out_of_scope(path: str, ignore_paths) -> bool:
     differently, or a rule with an allowlist of its own would each quietly
     turn `ignore_paths` back into a suggestion -- and `ignore_paths` is a
     promise about the ANALYSIS, not about one scanner's command line.
+
+    `ignores.ignored` carries the DEFAULT noise filter as well as the
+    operator's globs, so this is also where a fixtures directory an
+    unconfigured project never asked about stops being reported. That has to
+    happen on this side of the engine and not only in the config: a default
+    only the built-in scanner honoured would make the same repository report
+    differently depending on which binaries the machine has installed.
     """
     return (any(part in secrets.SKIP_DIRS for part in Path(path).parts)
             or ignored(path, ignore_paths))
@@ -323,7 +346,15 @@ def gitleaks(data, root, historical: bool = False, ignore_paths=()) -> list[dict
         if not rule or not path:
             continue
         path = _relative(path, root)
-        if _out_of_scope(path, ignore_paths):
+        # `sample_file` is applied HERE and not inside `_out_of_scope`,
+        # because `_out_of_scope` is the filter every category shares and
+        # this rule belongs to the secret category alone: a CVE against
+        # `package-lock.json.example` or a world-writable
+        # `config.yml.template` is a true statement about a file that really
+        # is in the repository. Only "a credential is committed here" is the
+        # wrong reading of a template.
+        if _out_of_scope(path, ignore_paths) or ignores.sample_file(
+                path, ignore_paths):
             continue
         group = groups.setdefault((rule, path), {"lines": [], "commits": set()})
         line = record.get("StartLine")
@@ -1011,15 +1042,22 @@ def trivy_skip_dirs(ignore_paths=()) -> list[str]:
     top level in Trivy 0.74's matcher; the bare name is kept beside it so a
     matcher that ever stops doing so does not reopen the hole silently.
 
+    The default noise filter's fixture directories go down the same way and
+    for the same reason -- they are directory names matched at any depth, not
+    globs -- and they disappear from the list entirely when the project
+    switched the default off, so a decision the operator took is not undone
+    by a command line.
+
     `ignore_paths` is passed down too, the cheap way round -- the files are
     then never read at all. It is not the guarantee: `trivy_scan` filters
     what comes back through `_out_of_scope` as well, for the reason that
     function's own docstring gives.
     """
     out = []
-    for name in sorted(secrets.SKIP_DIRS):
+    for name in sorted(set(secrets.SKIP_DIRS)
+                       | set(ignores.default_dirs(ignore_paths))):
         out += [name, f"**/{name}"]
-    for glob in ignore_paths or ():
+    for glob in ignores.globs(ignore_paths):
         glob = (glob or "").strip().rstrip("/*")
         # A comma is the separator Trivy splits this list on, so a glob
         # containing one cannot be expressed here. It is dropped from the
@@ -1671,9 +1709,16 @@ def semgrep_excludes(ignore_paths=()) -> list[str]:
     the analysis wants is skipped any more.
     """
     out = []
-    for name in sorted(secrets.SKIP_DIRS):
+    # The default noise filter's fixture directories join `SKIP_DIRS` here
+    # rather than the operator's globs below, because that is what they are:
+    # directory names matched at any depth, not paths from the scan root. The
+    # anchoring rule that follows would narrow them exactly the way it used to
+    # narrow `docs/**`. They drop out when the project switched the default
+    # off, so an operator's decision is never undone by a command line.
+    for name in sorted(set(secrets.SKIP_DIRS)
+                       | set(ignores.default_dirs(ignore_paths))):
         out += [name, f"**/{name}"]
-    for glob in ignore_paths or ():
+    for glob in ignores.globs(ignore_paths):
         glob = (glob or "").strip()
         # A leading `/` or `./` is stripped before the `./` goes back on, so
         # an operator writing `/docs` or `./docs` does not produce `.//docs`

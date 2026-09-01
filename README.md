@@ -1090,6 +1090,22 @@ inherits the project's, which inherits the install's — see [Which Claude accou
 a run signs in as](#which-claude-account-a-run-signs-in-as). Set it here only
 when the analysis itself should sign in as somebody else.
 
+**Some noise is filtered before you configure anything.** A `fixtures`,
+`__fixtures__` or `testdata` directory — at any depth — is outside the analysis
+by default, and so are secrets in files ending `.example`, `.sample`,
+`.template` or `.dist`, which are committed templates of a configuration rather
+than a leak. Both defaults reach every phase and both scanners, and the coverage
+note says so on every report, because "nothing was found there" and "we never
+looked there" are the same silence otherwise. **`tests/**` is deliberately not
+covered:** a credential hard-coded in a test file is in the repository and
+readable by everyone with a clone, so it is still reported. A project that keeps
+real credentials in a fixture it *wants* reported adds the entry `!defaults` to
+`ignore_paths` and gets both halves back — it cancels the built-in default only,
+never the globs you wrote yourself. Note that turning the default on for the
+first time makes any fixture finding already in the ledger show up as `fixed`
+once, and a human decision recorded against one is only reachable again with
+`!defaults` set.
+
 **`ignore_paths` and `min_severity` are two different filters, and confusing
 them is expensive.** `ignore_paths` excludes globs from the **analysis**: the
 working-tree secret scan, the git-history secret sweep and the hygiene pass all

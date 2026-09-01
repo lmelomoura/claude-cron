@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 
 from .fingerprint import secret_fingerprint
-from .ignores import ignored
+from .ignores import ignored, sample_file
 
 # Each rule is (name, severity, compiled pattern, minimum entropy of group 1).
 # Entropy 0 means the shape alone is conclusive.
@@ -254,6 +254,16 @@ def scan_tree(root, ignore):
     skipped = {"too_big": 0, "unreadable": 0}
     for rel, text in _readable_files(root, ignore, skipped):
         lines += _lines_in(text)
+        # A committed TEMPLATE of a configuration file is read like any other
+        # file -- it counts towards `lines`, because this sweep did open it --
+        # and its shaped matches are not reported. `_is_placeholder` guards
+        # the VALUE and only for the one generic rule, so a `.env.example`
+        # carrying `AKIAIOSFODNN7EXAMPLE` came back as a committed AWS key:
+        # the shaped rules have no placeholder gate at all. Filtered HERE and
+        # not in `_readable_files` on purpose -- doing it there would silently
+        # shrink `lines_of_code` too, and the file really was analysed.
+        if sample_file(rel, ignore):
+            continue
         # One finding per credential TYPE per file -- not per match. The
         # fingerprint (type + path) cannot depend on a position, so several
         # matches of one type collapse into one finding with several
@@ -391,7 +401,10 @@ def scan_history(root, since_sha, ignore=()):
             # deliberately fake credentials was excluded from the working-tree
             # findings and reported in full from the history -- the operator
             # set `ignore_paths` and got the noise anyway, one report later.
-            skip_path = ignored(path, ignore)
+            # The default filter and the sample-file rule ride in the same
+            # decision for the same reason: a default honoured by one of the
+            # two sweeps and not the other reopens exactly that hole.
+            skip_path = ignored(path, ignore) or sample_file(path, ignore)
             continue
         if skip_path:
             continue

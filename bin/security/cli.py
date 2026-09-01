@@ -646,6 +646,16 @@ def cmd_prepare(args):
     findings = secret_findings + hygiene.scan(root, ignore)
     notes = [n for n in secret_notes if n]
 
+    # FIRST in the paragraph, because it qualifies every phase below it and
+    # not just the one that happens to be speaking. The default noise filter
+    # suppresses findings in a repository nobody has configured, which is
+    # exactly the repository whose reader has no way of knowing it was
+    # applied -- "we found nothing there" and "we did not look there" are the
+    # same silence otherwise. Emitted whichever scanner ran, because the
+    # filter is `ignores.ignored` and both of them consult it.
+    if ignores.defaults_apply(ignore):
+        notes.insert(0, ignores.DEFAULT_NOTE)
+
     # `components` is read regardless of `offline` or which vulnerability
     # source runs: `deps.inventory` never touches the network, and the SBOM
     # below is built from it whenever Syft does not.

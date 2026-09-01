@@ -305,3 +305,75 @@ def test_the_line_count_skips_what_the_scan_skips(tmp_path):
     (tmp_path / "ignored.py").write_text("1\n2\n3\n4\n")
     _f, _n, lines = scan_tree(tmp_path, ["ignored.py"])
     assert lines == 2
+
+
+# ------------------------------------------------- the default noise filter
+#
+# The FALLBACK half of Task 7. Every assertion below has a twin in
+# test_adapters.py driving the same case through gitleaks, because a default
+# only one of the two scanners honours is a repository that reports
+# differently depending on which binaries the machine happens to have.
+
+def test_a_fixtures_directory_needs_no_ignore_paths_any_more(tmp_path):
+    """Before this, a project that had not hand-written `ignore_paths` got
+    every deliberately fake credential in its fixtures on every analysis."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "fixtures").mkdir()
+    (tmp_path / "tests" / "fixtures" / "fake.env").write_text(f"KEY={AWS}\n")
+    assert scan_tree(tmp_path, []) == ([], "", 0)
+
+
+def test_the_default_suppression_can_be_turned_off_per_project(tmp_path):
+    """A project that keeps real credentials in a fixture it wants reported
+    says so once, in the config that travels with the repository."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "fixtures").mkdir()
+    (tmp_path / "tests" / "fixtures" / "fake.env").write_text(f"KEY={AWS}\n")
+    found, _note, _lines = scan_tree(tmp_path, ["!defaults"])
+    assert [f["rule"] for f in found] == ["aws_access_key"]
+
+
+def test_a_realistic_key_in_an_env_example_is_not_reported(tmp_path):
+    """A4.14. `_is_placeholder` gates the VALUE and only for the generic rule,
+    so `AKIAIOSFODNN7EXAMPLE` in a `.env.example` -- a shaped match with no
+    entropy gate at all -- was reported as a committed AWS key. The file is
+    still READ: it counts towards lines_of_code like any other file this
+    analysis looked at."""
+    (tmp_path / ".env.example").write_text(f"AWS_ACCESS_KEY_ID={AWS}\n")
+    found, note, lines = scan_tree(tmp_path, [])
+    assert found == []
+    assert note == ""
+    assert lines == 1, "the file was read; only its secrets were not reported"
+
+
+def test_a_sample_file_is_reported_again_when_the_default_is_off(tmp_path):
+    (tmp_path / ".env.example").write_text(f"AWS_ACCESS_KEY_ID={AWS}\n")
+    found, _note, _lines = scan_tree(tmp_path, ["!defaults"])
+    assert [f["rule"] for f in found] == ["aws_access_key"]
+
+
+def test_the_history_sweep_obeys_the_default_too(tmp_path):
+    """The scar this whole module already carries once: `ignore_paths`
+    excluded a fixtures directory from the tree sweep and the history sweep
+    reported every fake credential in it anyway, one report later. A default
+    honoured by only one of the two sweeps reopens exactly that hole."""
+    run = lambda *a: subprocess.run(a, cwd=tmp_path, check=True,
+                                    capture_output=True)
+    run("git", "init", "-q")
+    run("git", "config", "user.email", "t@example.com")
+    run("git", "config", "user.name", "t")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "fixtures").mkdir()
+    (tmp_path / "tests" / "fixtures" / "fake.env").write_text(f"KEY={AWS}\n")
+    (tmp_path / ".env.example").write_text(f"KEY={GITHUB}\n")
+    (tmp_path / "prod.env").write_text(f"KEY={GITHUB}\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "add")
+
+    filtered, note = scan_history(tmp_path, None)
+    assert note == ""
+    assert [f["occurrences"][0]["file"] for f in filtered] == ["prod.env"]
+
+    everything, _ = scan_history(tmp_path, None, ["!defaults"])
+    assert sorted(f["occurrences"][0]["file"] for f in everything) == [
+        ".env.example", "prod.env", "tests/fixtures/fake.env"]

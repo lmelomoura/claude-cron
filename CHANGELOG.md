@@ -19,6 +19,55 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Test fixtures are suppressed by default, without anybody having to
+  write `ignore_paths` first.** A `fixtures`, `__fixtures__` or `testdata`
+  directory, at any depth, is now outside the analysis on every project —
+  the secret sweeps, the git-history sweep, the hygiene pass, the
+  dependency scan and the SAST pre-pass all read the same filter, so it
+  cannot be honoured by one phase and ignored by the next. `ignore_paths`
+  could always express this and almost nobody wrote it, so every project
+  was told about its own deliberately fake credentials on every single
+  analysis. Measured on this repository, which has no `ignore_paths` set:
+  the dependency category goes from 6 findings to 0 — five CVEs against a
+  `package-lock.json` and one against a `poetry.lock` that exist only as
+  captured test fixtures. **`tests/**` is deliberately NOT suppressed.** A
+  credential hard-coded in a test file is in the repository and readable by
+  everyone with a clone; "looks like a test" is a heuristic, and a default
+  broad enough to hide a real key on a project nobody has configured is
+  worse than no default at all.
+
+- **`.example`, `.sample`, `.template` and `.dist` files are excluded from
+  the secret scan.** `hygiene.py` has always known that a committed
+  template of your configuration is the correct thing to ship; the secret
+  scanner did not. It filtered the *value* through `_is_placeholder`, which
+  guards only the one generic `password = ...` rule — so a `.env.example`
+  carrying `AKIAIOSFODNN7EXAMPLE` matched the shaped AWS rule, which has no
+  entropy gate and no placeholder gate at all, and was reported as a
+  committed key. The four suffixes now live in one place (`ignores.py`) and
+  both passes read them, instead of hygiene holding its own copy. The file
+  is still **read** — it counts towards `lines_of_code` like anything else
+  the sweep opened; only the claim "a credential is committed here" is
+  dropped.
+
+- **Both defaults apply to the engine and to the built-in scanner, and both
+  can be turned off per project.** The filter lives in `ignores.ignored`,
+  which gitleaks' output, Trivy's, Semgrep's and the fallback sweeps all go
+  through, so the same repository does not report differently depending on
+  which binaries a laptop happens to have. A project that keeps real
+  credentials in a fixture it wants reported adds **`!defaults`** to its
+  `ignore_paths` and gets both halves back. It is per-project and not an
+  environment variable on purpose: "does this project want its fixtures
+  scanned" is a fact about the repository, and a switch living on one
+  machine is the per-machine divergence this block has already had to fix
+  twice. The switch cancels the built-in default only — an operator who
+  also wrote `docs/**` still means it.
+
+- **The coverage note says the default is in effect, every time.** "Nothing
+  was found in the fixtures" and "the fixtures were never looked at" are
+  the same silence otherwise, and the reader who needs to know the filter
+  exists is exactly the reader who has not configured anything. The
+  sentence names the directories, the suffixes and the way back out.
+
 - **Gitleaks does the secret scanning when it is installed, and the
   built-in scanner says so when it is not.** The eight hand-written
   regexes in `secrets.py` found eight shapes of credential; gitleaks
@@ -287,6 +336,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   use costs the whole phase rather than falling back to anything, and
   `--offline` refuses it outright: the misconfiguration checks are fetched
   from Trivy's own registry.
+
+### Changed
+
+- **A finding that was being reported from a fixtures directory is now
+  reported `fixed` on the next analysis, and nothing was fixed.** This is
+  the honest cost of the two defaults above, and it is stated here rather
+  than left to be discovered from a diff. `diff.classify` marks a
+  deterministic finding `fixed` when it was in the previous analysis and is
+  absent from this one, and a suppressed finding is absent. Worse, a human
+  `accepted` or `false_positive` decision on such a finding becomes
+  unreachable: decisions are only ever applied to findings the CURRENT
+  analysis produced, so a suppressed one takes the `fixed` branch without
+  its decision being consulted at all. The decision **row is not deleted** —
+  identity is rule + path and neither moved, so setting `!defaults` in the
+  project's `ignore_paths` brings the finding back under its original
+  fingerprint and the decision attaches to it again. A project holding
+  triaged fixture findings it wants to keep visible should set `!defaults`
+  **before** its next analysis. The first analysis after this change will
+  report those findings as `fixed` exactly once, which is a one-off in the
+  checklist and not a regression in the ledger.
 
 ### Fixed
 

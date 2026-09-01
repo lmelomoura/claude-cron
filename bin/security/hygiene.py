@@ -3,6 +3,7 @@
 import fnmatch
 from pathlib import Path
 
+from . import ignores
 from .fingerprint import fingerprint
 from .ignores import ignored
 
@@ -10,7 +11,14 @@ _SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", 
 _KEY_TEXT_SUFFIXES = (".pem", ".key")
 _KEY_BINARY_SUFFIXES = (".p12", ".pfx", ".jks")
 _KEY_SNIFF_BYTES = 4096
-_ENV_ALLOWED = ("*.example", "*.sample", "*.template", "*.dist")
+# The same four suffixes the secret scan now excludes (see
+# `ignores.SAMPLE_SUFFIXES`), read from the one place they are written down
+# rather than kept as a second copy here. This rule and that one are about
+# the same fact -- a committed template of a configuration file is the
+# documented, correct thing to ship -- and a repository where the two lists
+# disagreed would report `.env.dist` in one section of the report and not in
+# the other.
+_ENV_ALLOWED = tuple(f"*{suffix}" for suffix in ignores.SAMPLE_SUFFIXES)
 # .envrc is a direnv config -- a script that sets up a shell environment, not
 # an env file -- and it is routinely and correctly committed. It only trips
 # the `.env` prefix check by coincidence of naming.

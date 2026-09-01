@@ -1334,11 +1334,19 @@ def test_ignore_paths_reach_the_tree_the_history_and_the_hygiene_pass(tmp_path):
     working-tree sweep and reported in full by the history sweep and by the
     hygiene pass -- so the operator set the option, saw the noise disappear
     from one section of the report and stay in two others.
+
+    Planted in `tests/planted/` and NOT in the `tests/fixtures/` this test
+    used to use: `ignores.DEFAULT_IGNORE_DIRS` now suppresses a `fixtures`
+    directory with no configuration at all, so the old path would make the
+    `== []` below pass without `--ignore` ever being read. The default has
+    its own coverage in `test_the_default_noise_filter_reaches_every_
+    deterministic_phase` above; this test is about the OPERATOR's globs and
+    has to keep being about only them.
     """
     root = git_repo(tmp_path / "repo", [
-        ("fixtures", {"tests/fixtures/fake.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
-                      "tests/fixtures/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nx\n"}),
-        ("delete the env", {"tests/fixtures/fake.env": None}),
+        ("fixtures", {"tests/planted/fake.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
+                      "tests/planted/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nx\n"}),
+        ("delete the env", {"tests/planted/fake.env": None}),
     ])
     db = tmp_path / "security.db"
 
@@ -1351,8 +1359,75 @@ def test_ignore_paths_reach_the_tree_the_history_and_the_hygiene_pass(tmp_path):
 
     quiet = open_analysis(db)
     run(db, "prepare", "--analysis", str(quiet), "--root", str(root), "--offline",
-        "--ignore", "tests/fixtures/**")
+        "--ignore", "tests/planted/**")
     assert run(db, "findings", "--analysis", str(quiet)) == []
+
+
+def test_the_default_noise_filter_is_declared_in_the_coverage_note(tmp_path):
+    """A default suppression a reader cannot see is a report that cannot be
+    read: "nothing was found in the fixtures" and "the fixtures were never
+    looked at" are the same silence otherwise. The sentence also has to carry
+    the way back out, because the reader who needs it is the one who just
+    discovered the filter exists."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text("print('hi')\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline")["coverage_note"]
+    assert "default noise filter" in note
+    assert "!defaults" in note
+
+
+def test_the_note_goes_away_when_the_project_turns_the_default_off(tmp_path):
+    """Nothing was suppressed, so there is no gap to declare -- and a note
+    that kept claiming one would be the mirror image of the bug above."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text("print('hi')\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline", "--ignore", "!defaults")["coverage_note"]
+    assert "default noise filter" not in note
+
+
+def test_the_default_noise_filter_reaches_every_deterministic_phase(tmp_path):
+    """One filter, every phase -- the promise `ignore_paths` already made,
+    now made without anybody having to write the globs. The positive control
+    is the same tree with the default switched off: `== []` on its own passes
+    identically on an analysis that scanned nothing at all.
+
+    PINNED to the built-in scanner rather than left to the machine, because
+    the rule names below are the built-in scanner's. The ENGINE's half of
+    the same default is
+    `test_adapters.test_the_default_narrows_the_real_engine_with_nothing_
+    configured`, which drives the real gitleaks binary -- a default only one
+    of the two honoured is the per-machine divergence this whole block keeps
+    having to fix."""
+    env = {**os.environ, "CC_SECURITY_ENGINES": "off"}
+    root = git_repo(tmp_path / "repo", [
+        ("fixtures", {
+            "tests/fixtures/fake.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
+            "tests/fixtures/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nx\n",
+            ".env.example": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
+        ("delete the env", {"tests/fixtures/fake.env": None}),
+    ])
+    db = tmp_path / "security.db"
+
+    loud = open_analysis(db)
+    run(db, "prepare", "--analysis", str(loud), "--root", str(root), "--offline",
+        "--ignore", "!defaults", env=env)
+    rules = {f["rule"] for f in run(db, "findings", "--analysis", str(loud), env=env)}
+    assert {"aws_access_key", "private_key", "committed_key_file"} <= rules, (
+        f"the tree must be noisy with the default switched off: {sorted(rules)}")
+    run(db, "finish", "--analysis", str(loud), "--state", "done", env=env)
+
+    quiet = open_analysis(db)
+    run(db, "prepare", "--analysis", str(quiet), "--root", str(root), "--offline",
+        env=env)
+    assert run(db, "findings", "--analysis", str(quiet), env=env) == []
 
 
 def test_a_history_sweep_that_could_not_run_says_so_in_the_coverage_note(tmp_path):
