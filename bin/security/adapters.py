@@ -33,7 +33,7 @@ import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 
-from . import deps, engines, osv, secrets
+from . import deps, engines, osv, report, secrets, taxonomy
 from .fingerprint import fingerprint, secret_fingerprint
 from .ignores import ignored
 
@@ -1209,3 +1209,544 @@ def syft_sbom(root):
         return None, [SYFT_NO_COMPONENTS_NOTE]
     version = engines.version_of("syft") or "syft"
     return document, [SYFT_ENGINE_NOTE.format(version=version), SYFT_SBOM_NOTE]
+
+
+# ------------------------------------------------------------ the SAST pre-pass
+#
+# SEMGREP REPLACES NOTHING, and that is what makes this section different from
+# the three above it. Gitleaks, Trivy and Syft each take a category over from a
+# producer this project wrote; Semgrep does not, because the measurement says
+# it cannot. On this repository, `p/owasp-top-ten` ran 223 rules over 89 files
+# in 6 seconds and the split by language was:
+#
+#     python 147    javascript 65    json 3    bash 1    html 1
+#
+# ONE RULE FOR SHELL, and the core of this product is 8,263 lines of bash. So
+# the agent's SAST pass stays primary and this is a PRE-PASS whose output it
+# triages -- `cli._scan_sast` adds these findings, it never swaps anything out,
+# and the coverage note carries the per-language spread because "Semgrep ran"
+# is true here and misleading.
+#
+# THE IDENTITY CANNOT BE SHARED WITH THE PASS THAT FOLLOWS, AND THAT IS
+# DECLARED RATHER THAN FAKED. A SAST finding's identity is
+# `fingerprint("sast", rule, path, snippet)` and the fourth argument is THE
+# CODE -- which `engines.purge` drops out of `extra.lines` before this module
+# ever sees it, deliberately, because a rule that fires on a hardcoded
+# credential returns the credential there. There is no way back: the ledger
+# stores an opaque `snippet_hash` and nothing else, and `ledger.rename_rule`
+# refuses the `sast` category outright for exactly this reason (`_REFINGERPRINT`
+# has no entry for it), so a wrong identity minted here could never be migrated
+# afterwards. The fourth argument is therefore Semgrep's own `check_id`, chosen
+# for what it has to do rather than for looking like the recipe:
+#
+#   * stable run to run -- the check id does not move when the code does,
+#     which a line number would;
+#   * it keeps two checks in one file apart. `""` would not: every unmapped
+#     finding in a file collapses onto ONE `other` row whose rationale names
+#     whichever was parsed last, merging unrelated problems.
+#
+# What it does NOT do is match what the SAST pass mints for the same weakness.
+# One hole found by both is listed twice, under two identities, and a decision
+# taken on one does not reach the other. `SAST_IDENTITY_NOTE` says so in the
+# report; the previous task in this block shipped a divergence by assuming a
+# recipe carried over, and the fix for this one is to state it, not to hash
+# something that merely looks right.
+
+# The published rule pack this pre-pass runs. Pinned rather than configurable:
+# `taxonomy.py`'s OWASP codes are the 2021 Top Ten because that is the edition
+# this pack targets, and a different pack would quietly break that alignment.
+SEMGREP_CONFIG = "p/owasp-top-ten"
+
+# Semgrep's own severity words, mapped to ours -- and NONE of them reaches
+# `critical`. That is the deliberate part. Semgrep's severity is a property of
+# the RULE (how confident its author is that the pattern is worth flagging),
+# not of this repository's exposure: an `ERROR` from a linter says the pattern
+# matched cleanly, never that anything reaches the code it matched. Measured
+# here: all three findings on this repository are false positives of the kind
+# only context resolves -- cache keys and ETags, one beside a comment that
+# literally reads "cheap fingerprint of the file head". `critical` is what the
+# report's headline counts and the default `min_severity` floor are built
+# around, so a pattern match nobody has read the surrounding code for may not
+# open one on its own. The triage that follows can RAISE any of these, and that
+# is a judgement somebody made.
+_SEMGREP_SEVERITY = {"ERROR": "high", "WARNING": "medium", "INFO": "info"}
+
+# For a word Semgrep did not send, or a future grade this table has never heard
+# of. NOT `info`, which sits below the default floor: an ungraded finding is one
+# nobody has assessed, not one that does not matter, and filing it out of sight
+# is the same mistake `_TRIVY_SEVERITY`'s default exists to avoid.
+SAST_DEFAULT_SEVERITY = "medium"
+
+# CWE -> the one rule in our closed vocabulary that carries it. A REVERSE of
+# `taxonomy.SAST_RULES`, built here rather than stored there so the vocabulary
+# stays the single source: adding a rule to `taxonomy.py` teaches this lookup
+# without a second edit. `other` is excluded by the empty-CWE test -- it is the
+# escape hatch, and it carries no CWE precisely so an unclassified finding is
+# visibly unclassified.
+#
+# Two rules sharing a CWE would collapse silently into whichever was written
+# last. Pinned by `test_every_cwe_in_the_vocabulary_names_exactly_one_rule`.
+_RULE_BY_CWE = {cwe: rule for rule, (cwe, _owasp) in taxonomy.SAST_RULES.items()
+                if cwe}
+
+# `CWE-327` out of `"CWE-327: Use of a Broken or Risky Cryptographic
+# Algorithm"`. `\d+` is greedy, which is what stops a longer identifier being
+# truncated into a shorter one that happens to be in the vocabulary: `CWE-327`
+# is never read as the `CWE-32` nothing reported.
+_CWE_RE = re.compile(r"CWE-\d+")
+
+# The 2021 entry out of `["A03:2017 - ...", "A02:2021 - ...", "A04:2025 -
+# ...']`. THE EDITION MATTERS: `taxonomy.py` maps the 2021 Top Ten, and the
+# names repeat across editions with different meanings -- "Sensitive Data
+# Exposure" was A3:2017 and the 2021 revision reused the phrase for the
+# narrower cryptographic-failures category. Taking `[0]` would file a finding
+# under a code from a Top Ten this project does not speak.
+_OWASP_2021_RE = re.compile(r"A\d{2}:2021")
+
+SAST_ENGINE_NOTE = ("The SAST pre-pass was run by Semgrep {version} over "
+                    "{files} files, with {rules} rules loaded from {config}.")
+
+# The sentence this whole section exists for. Semgrep's coverage is not even
+# across languages and the report has to say by how much, or a repository whose
+# logic lives in shell reads a clean pre-pass as a clean bill of health.
+#
+# "loaded", not "ran", in both sentences -- see `semgrep_languages` for the
+# measurement behind that word.
+SAST_LANGUAGE_NOTE = ("Those rules are not spread evenly across languages — "
+                      "the number loaded for each was {breakdown} — so a "
+                      "language near the end of that list was barely examined, "
+                      "however little this report shows for it.")
+
+# A file Semgrep could not parse was not analysed, whatever the rule count says
+# about its language. The engine's own message for it is NEVER quoted back:
+# that message is the file's source (see `engines.PURGE`).
+SAST_PARSE_NOTE = ("{count} {files} could not be fully parsed by Semgrep, so "
+                   "part of what {they} hold was not analysed at all.")
+
+SAST_PREPASS_NOTE = ("Semgrep is a pre-pass here, not the SAST pass: it "
+                     "matched patterns, and the analysis that follows is what "
+                     "reads the surrounding code and decides what they mean.")
+
+# Said only when this pre-pass actually produced findings -- the same rule
+# `DEP_ID_NOTE` follows: with nothing found there is no identity that could
+# have diverged, and this is characters a reader has to get past to reach the
+# gaps that ARE real.
+SAST_IDENTITY_NOTE = ("A finding from this pre-pass is identified by the rule, "
+                      "the file and Semgrep's own check id — never by the code "
+                      "it matched, which this analysis deliberately never "
+                      "records. The SAST pass identifies its own findings BY "
+                      "that code, so one weakness found by both is listed "
+                      "twice, under two identities, and a decision taken on "
+                      "one does not reach the other.")
+
+# The gap, in the same shape as `TREE_GAP` and `HISTORY_GAP`: a pass that did
+# not run has to be said, because "found nothing" and "never looked" are the
+# same silence in a report otherwise. It is also the one gap in this module
+# that is NOT a hole in the category: the SAST pass has always been this
+# category's primary source, and it is unaffected.
+SAST_GAP = ("The SAST pre-pass did not run ({reason}) — the SAST pass itself "
+            "is unaffected, since it has always been this category's primary "
+            "source.")
+
+# What `semgrep_failure` hands back as the reason. It names the error TYPES
+# semgrep gave and nothing else: `errors[].message` is the file semgrep could
+# not read, and it is purged before this module sees it.
+SAST_FAILED = ("semgrep reported an error of its own ({types}), so the report "
+               "it wrote describes a scan that did not really run")
+
+
+def semgrep_excludes(ignore_paths=()) -> list[str]:
+    """The `--exclude` values for a scan of this project's scope.
+
+    EVERY SKIP_DIR TWICE, bare and as `**/name` -- and here that is
+    REDUNDANCY, not necessity, which is the opposite of what the same pair
+    means in `trivy_skip_dirs`. Measured against a tree holding the same
+    weakness at `keep/x.py`, `a/b/keep/x.py` and `top.py`: Semgrep reports all
+    three unexcluded, and `--exclude keep` ALONE or `--exclude '**/keep'`
+    ALONE leaves only `top.py`. Both forms already match at any depth, where
+    Trivy's bare name matched the top level only. The pair is kept because it
+    costs nothing and neither form can then be the one a future matcher
+    narrows, but nobody should read it here as a hole that was found.
+
+    `ignore_paths` goes down too, the cheap way round -- those files are then
+    never read. It is not the guarantee: `semgrep_findings` filters what comes
+    back through `_out_of_scope` as well.
+    """
+    out = []
+    for name in sorted(secrets.SKIP_DIRS):
+        out += [name, f"**/{name}"]
+    for glob in ignore_paths or ():
+        glob = (glob or "").strip().rstrip("/*")
+        if glob:
+            out.append(glob)
+    return out
+
+
+def _semgrep_metadata(record) -> dict:
+    extra = record.get("extra")
+    metadata = extra.get("metadata") if isinstance(extra, dict) else None
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _semgrep_cwes(record) -> list[str]:
+    """Every CWE identifier the record names, in the order Semgrep wrote them.
+
+    Order is preserved for the RATIONALE only. Nothing that decides the rule
+    depends on it -- see `semgrep_rule`.
+    """
+    listed = _semgrep_metadata(record).get("cwe")
+    if isinstance(listed, str):
+        listed = [listed]
+    if not isinstance(listed, list):
+        return []
+    out = []
+    for entry in listed:
+        if not isinstance(entry, str):
+            continue
+        found = _CWE_RE.search(entry)
+        if found and found.group(0) not in out:
+            out.append(found.group(0))
+    return out
+
+
+def semgrep_owasp(record) -> str:
+    """The 2021 OWASP code Semgrep put on this rule, or "".
+
+    NOT the first entry: `extra.metadata.owasp` carries several editions at
+    once (`A03:2017`, `A02:2021`, `A04:2025` on the very rule this
+    repository's own capture fired), and 2021 is the edition `taxonomy.py`
+    maps. Sorted rather than indexed for the same reason `_trivy_advisory_id`
+    sorts `VendorIDs`: the answer must depend on the SET, not on the order it
+    arrived in.
+    """
+    listed = _semgrep_metadata(record).get("owasp")
+    if isinstance(listed, str):
+        listed = [listed]
+    if not isinstance(listed, list):
+        return ""
+    codes = sorted({found.group(0) for entry in listed
+                    if isinstance(entry, str)
+                    for found in [_OWASP_2021_RE.search(entry)] if found})
+    return codes[0] if codes else ""
+
+
+def semgrep_rule(record) -> str:
+    """The rule name from OUR closed vocabulary, mapped by CWE.
+
+    `report-finding` refuses a SAST rule outside `taxonomy.SAST_RULES`, and
+    `cmd_prepare` writes straight to the ledger without passing that door --
+    so a name invented here would land as a rule no filter selects, no
+    `taxonomy.classify` can grade, and no agent can ever re-report.
+
+    NOT `cwe[0]`. The field is a list, the rule is a FINGERPRINT INPUT, and
+    indexing it would let a registry refresh that merely reorders the field
+    re-identify the finding -- the trap `_trivy_advisory_id` documents for
+    `VendorIDs`. Every entry is read instead, and the answer depends on the
+    SET:
+
+      one vocabulary rule named   -> that rule, whatever position it was in;
+      none                        -> `other`;
+      TWO OR MORE                 -> `other` as well, and deliberately. Two
+        different rules in one record is genuine ambiguity, and picking one
+        (even deterministically) relabels the finding as something it is half
+        not, in the one field a human's decision hangs off. `other` is the
+        escape hatch `taxonomy.py` documents for exactly this: an unclassified
+        finding must be VISIBLY unclassified rather than quietly mislabelled,
+        and the rationale names every CWE the record carried.
+    """
+    named = {_RULE_BY_CWE[cwe] for cwe in _semgrep_cwes(record)
+             if cwe in _RULE_BY_CWE}
+    return named.pop() if len(named) == 1 else "other"
+
+
+def _semgrep_severity(record) -> str:
+    extra = record.get("extra")
+    word = extra.get("severity") if isinstance(extra, dict) else ""
+    return _SEMGREP_SEVERITY.get(str(word or "").strip().upper(),
+                                 SAST_DEFAULT_SEVERITY)
+
+
+def _semgrep_line(record) -> int:
+    start = record.get("start")
+    line = start.get("line") if isinstance(start, dict) else 0
+    if isinstance(line, bool) or not isinstance(line, (int, float)):
+        return 0
+    return int(line)
+
+
+def _sast_finding(path, check, rule, severity, lines, cwes, owasp) -> dict:
+    short = check.rsplit(".", 1)[-1]
+    rationale = (f"Semgrep's {check} matched here. This is a pre-pass finding: "
+                 "the pattern fired, and nothing has yet read the surrounding "
+                 "code to say whether it is really exposed.")
+    if rule == "other":
+        # The escape hatch has to stay actionable, so everything that WOULD
+        # have classified it is written out: the check id above, the CWEs
+        # nothing in the vocabulary carries, and the 2021 OWASP category
+        # Semgrep itself put it in. `cwe` and `owasp` stay empty on the row --
+        # they are `taxonomy.classify`'s to fill, and a row whose columns
+        # disagreed with its rule would be two sources of truth in one line.
+        named = ", ".join(cwes) if cwes else "no CWE at all"
+        rationale += (f" No rule in this project's vocabulary carries "
+                      f"{named}, so it is filed as `other`")
+        rationale += (f"; Semgrep places it under OWASP {owasp}." if owasp
+                      else ".")
+    remediation = (
+        "Read the code at each location and decide whether the pattern "
+        "Semgrep matched is a real weakness here — it matched syntax, not a "
+        "path it proved anything reaches. If it is real, close it at every "
+        "location listed. The rule is documented at "
+        # BUILT, not copied out of `extra.metadata.source`, which is this
+        # exact URL. Nothing an engine wrote reaches a finding here, and the
+        # rule that keeps that true is worth more than one saved f-string.
+        f"https://semgrep.dev/r/{check}")
+    cwe, owasp_code = taxonomy.classify(rule)
+    return {
+        # The check id, not the code -- see this section's opening comment for
+        # why the recipe's fourth argument cannot be what it names here.
+        "fingerprint": fingerprint("sast", rule, path, check),
+        "category": "sast",
+        "rule": rule,
+        "severity": severity,
+        "title": f"{rule.replace('-', ' ')}: {short} in {path}",
+        "rationale": rationale,
+        "remediation": remediation,
+        # `cwe`/`owasp` are DERIVED from the rule, exactly as
+        # `cmd_report_finding` derives them -- never read from the engine's
+        # own metadata, which would give one row two classifications.
+        "cwe": cwe,
+        "owasp": owasp_code,
+        "occurrences": [{"file": path, "line": line, "snippet_hash": ""}
+                        for line in lines],
+    }
+
+
+def semgrep_findings(data, root=None, ignore_paths=()) -> list[dict]:
+    """Semgrep's JSON report as `sast` findings, one per (file, check id).
+
+    ONE FINDING PER CHECK PER FILE, with an occurrence per hit. Without the
+    matched code there is no per-hit identity to give -- see this section's
+    opening comment -- so several matches of one check in one file are one
+    finding with several occurrences, the same grouping `gitleaks()` uses for
+    the same reason. Measured on this repository: three md5 calls in
+    `bin/claude-cron-server`, one finding, three occurrences.
+
+    Every field is CONSTRUCTED, never copied. `engines.purge` has already
+    dropped `lines`, the metavariable bindings, the autofix, the dataflow
+    trace and `message`; building the record from scratch is the second lock,
+    and the one that still holds when a future Semgrep puts the matched source
+    in a field nobody here has heard of.
+
+    A record this parser cannot read costs that record, not the phase.
+    """
+    if not isinstance(data, dict):
+        return []
+    results = data.get("results")
+    if not isinstance(results, list):
+        return []
+    groups = {}
+    for record in results:
+        if not isinstance(record, dict):
+            continue
+        check = str(record.get("check_id") or "").strip()
+        path = str(record.get("path") or "").strip()
+        if not check or not path:
+            continue
+        path = _relative(path, root) if root is not None else path
+        if _out_of_scope(path, ignore_paths):
+            continue
+        group = groups.setdefault((path, check), {
+            "lines": [], "rule": semgrep_rule(record),
+            "cwes": _semgrep_cwes(record), "owasp": semgrep_owasp(record),
+            "severities": set()})
+        line = _semgrep_line(record)
+        if line not in group["lines"]:
+            group["lines"].append(line)
+        group["severities"].add(_semgrep_severity(record))
+    out = []
+    for (path, check), group in groups.items():
+        # Every hit of one check shares one rule and one severity, so this is
+        # a tie-break that should never fire -- taken by SET rather than by
+        # arrival order so that it cannot depend on which hit was parsed
+        # first if a future Semgrep ever grades two matches of one rule
+        # differently. Most severe wins.
+        severity = min(group["severities"],
+                       key=lambda s: report.SEVERITIES.index(s))
+        out.append(_sast_finding(path, check, group["rule"], severity,
+                                 sorted(group["lines"]), group["cwes"],
+                                 group["owasp"]))
+    return out
+
+
+def semgrep_languages(data) -> list[tuple[str, int]]:
+    """`[(language, rules loaded), ...]`, most rules first.
+
+    Read out of `time.rules`, which `--time` fills with the id of every rule
+    Semgrep loaded for this tree -- and a registry rule id is namespaced by its
+    language (`python.lang.security…`, `bash.curl…`), so the first component IS
+    the language. Verified against Semgrep's own per-language table on this
+    repository: python 147, javascript 61 + typescript 4 = the 65 it prints for
+    "js", bash 1, json 3, html 1. Every language row matches exactly.
+
+    "LOADED" AND NOT "RAN", because the two numbers differ and the report must
+    not quietly pick the flattering one. Semgrep's own summary line for the
+    same scan says "Rules run: 223" where `time.rules` holds 244, and the whole
+    21 sits in the namespaces that are not languages: its table folds them into
+    one `<multilang> 6` row, while the ids carry `generic` (15),
+    `package_managers` (5) and the pattern-mode `java`/`scala`/`ruby` rules (7)
+    that load whatever the tree contains -- 26 of them load over an empty
+    directory. No language row is affected, and the word says which count this
+    is.
+
+    THE TABLE ITSELF IS NOT AVAILABLE. Semgrep prints it on STDERR, and
+    `engines.run_json` never hands stderr back -- an engine that fails while
+    reading a file puts that file's bytes in it, which is the whole reason that
+    rule exists. `time.rules` is the machine-readable equivalent, and `--time`
+    is what fills it.
+
+    Semgrep filters the pack by the languages it finds: 560 rules in
+    `p/owasp-top-ten` became 244 here and 26 over an empty directory -- which
+    is why a namespace can appear with a handful of rules and no file of that
+    language anywhere.
+
+    An empty list when `time.rules` is absent: the breakdown is lost, never the
+    phase.
+    """
+    rules = data.get("time") if isinstance(data, dict) else None
+    rules = rules.get("rules") if isinstance(rules, dict) else None
+    if not isinstance(rules, list):
+        return []
+    counts = {}
+    for rule_id in rules:
+        if not isinstance(rule_id, str) or not rule_id.strip():
+            continue
+        language = rule_id.split(".", 1)[0]
+        counts[language] = counts.get(language, 0) + 1
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+def _semgrep_unparsed(data) -> int:
+    """How many distinct files Semgrep reported an error against.
+
+    The PATHS are counted, never the messages: `errors[].message` quotes the
+    file it could not parse (see `engines.PURGE`), which is why the note says
+    a number and not a reason.
+    """
+    errors = data.get("errors") if isinstance(data, dict) else None
+    if not isinstance(errors, list):
+        return 0
+    return len({e.get("path") for e in errors
+                if isinstance(e, dict) and isinstance(e.get("path"), str)
+                and e.get("path").strip()})
+
+
+def semgrep_failure(data) -> str:
+    """Why this report describes a scan that did not really run, or "".
+
+    THE SAME SCAR THIS PROJECT ALREADY CARRIES ON THE OTHER ENGINE, and here
+    the trigger is a normal state rather than an exotic one. `gitleaks git`
+    outside a repository writes `[]` and exits 0 -- the identical answer it
+    gives for a clean history -- which is why `history_state` exists. Semgrep
+    does it too: pointed at a rule pack it cannot fetch it writes a
+    well-formed report with `results: []` and `paths.scanned: []` and exits 7.
+    Measured, verbatim, against a pack that does not exist:
+
+        {"errors": [{"code": 2, "level": "error", "type": "SemgrepError",
+                     "message": "Failed to download configuration from
+                                 https://semgrep.dev/c/… HTTP 404."}, …],
+         "results": [], "paths": {"scanned": []}}
+
+    `run_json` checks that a report was WRITTEN, not what the exit code said,
+    so without this that lands as a clean pre-pass -- and the pack is fetched
+    from the registry, so any machine without a network reaches it the moment
+    nobody passes `--offline`.
+
+    THE LINE IS `level`, and semgrep draws it where this needs it: a file it
+    could not parse is `warn` (three of them in this repository's own capture,
+    with 86 files still scanned around them), and `error` is kept for what
+    stopped it. So an `error` refuses the whole report and a `warn` costs only
+    the note `SAST_PARSE_NOTE` makes of it. Fails closed on purpose: a report
+    this module cannot vouch for is a declared gap, never a clean bill of
+    health.
+    """
+    errors = data.get("errors") if isinstance(data, dict) else None
+    if not isinstance(errors, list):
+        return ""
+    types = sorted({str(e.get("type") or "error") for e in errors
+                    if isinstance(e, dict)
+                    and str(e.get("level") or "").lower() == "error"})
+    return SAST_FAILED.format(types=", ".join(types)) if types else ""
+
+
+def semgrep_notes(data, version: str, findings) -> list[str]:
+    """Everything this pre-pass has to declare about its own coverage.
+
+    Split out of `semgrep_scan` so the sentences are testable without the
+    binary: pinned only inside a `@needs_semgrep` test, they could be deleted
+    outright and the suite would stay green on a machine without Semgrep --
+    the failure `test_the_coverage_notes_are_returned_without_the_binary`
+    exists for one section up.
+    """
+    paths = data.get("paths") if isinstance(data, dict) else None
+    scanned = paths.get("scanned") if isinstance(paths, dict) else None
+    files = len(scanned) if isinstance(scanned, list) else 0
+    languages = semgrep_languages(data)
+    notes = [SAST_ENGINE_NOTE.format(version=version, files=files,
+                                     rules=sum(n for _, n in languages),
+                                     config=SEMGREP_CONFIG)]
+    if languages:
+        notes.append(SAST_LANGUAGE_NOTE.format(
+            breakdown=", ".join(f"{lang} {n}" for lang, n in languages)))
+    unparsed = _semgrep_unparsed(data)
+    if unparsed:
+        notes.append(SAST_PARSE_NOTE.format(
+            count=unparsed, files="file" if unparsed == 1 else "files",
+            they="it" if unparsed == 1 else "they"))
+    notes.append(SAST_PREPASS_NOTE)
+    if findings:
+        notes.append(SAST_IDENTITY_NOTE)
+    return notes
+
+
+def semgrep_scan(root, ignore_paths=()):
+    """Every weakness Semgrep's OWASP pack matches in `root`, as pre-pass
+    findings, plus what has to be said about how little that is.
+
+    Returns `(findings, notes)`, and `findings` is None when Semgrep produced
+    no report at all -- absent, unversioned, timed out, or writing a format
+    this parser cannot read. UNLIKE the three sections above, that is not a
+    signal to fall back to anything: nothing here was replaced, so the only
+    consequence is the gap `cli._scan_sast` declares.
+
+    `--time` is what fills `time.rules`, and the language breakdown is the
+    point of this pass being honest -- see `semgrep_languages`. It costs
+    output: Semgrep writes one timing per (file, rule) pair, half a megabyte
+    for this repository's 89 files, and it grows with both. Paid because the
+    alternative is a report that says "Semgrep ran" over a shell repository and
+    lets a reader take it for a clean bill of health.
+
+    THE SCOPE IS LOCKED TWICE, exactly as it is for Gitleaks and Trivy above:
+    `--exclude` so the files are never read, and `_out_of_scope` over what
+    comes back, because `ignore_paths` is a promise about the ANALYSIS and not
+    about one scanner's command line.
+    """
+    args = ["--config", SEMGREP_CONFIG, "--metrics=off", "--json", "--time",
+            "--output", "{out}", "--quiet",
+            # Nothing here reads the banner, and the check is a network call an
+            # analysis has no use for.
+            "--disable-version-check"]
+    for pattern in semgrep_excludes(ignore_paths):
+        args += ["--exclude", pattern]
+    args.append(".")
+    data, note = engines.run_json("semgrep", args, root)
+    if data is None:
+        return None, [note] if note else []
+    # Before anything is parsed: semgrep writes a well-formed, EMPTY report
+    # when it could not fetch its rule pack, and an empty report is what a
+    # clean repository also produces. See `semgrep_failure`.
+    failure = semgrep_failure(data)
+    if failure:
+        return None, [failure]
+    findings = semgrep_findings(data, root, ignore_paths)
+    version = engines.version_of("semgrep") or "semgrep"
+    return findings, semgrep_notes(data, version, findings)

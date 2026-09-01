@@ -30,7 +30,9 @@ from pathlib import Path
 
 import pytest
 
-from security import adapters, deps, engines, fingerprint, osv, secrets
+from security import (adapters, deps, engines, fingerprint, osv, report,
+                      secrets, taxonomy)
+from security import cli as security_cli
 
 FIX = Path(__file__).parent / "fixtures" / "engines"
 REPO = Path(__file__).resolve().parent.parent.parent
@@ -1790,3 +1792,603 @@ def test_syft_sbom_skips_the_same_directories_deps_inventory_always_has(
     assert deps.inventory(root) == [], "the fixture is not out of scope at all"
     document, _ = adapters.syft_sbom(root)
     assert document is None
+
+
+# ------------------------------------------------------------ the SAST pre-pass
+#
+# The fixture is a REAL semgrep 1.175.0 capture of this repository
+# (`semgrep --config=p/owasp-top-ten --metrics=off --json --time`), on the same
+# model as the three above -- and unlike them it is committed UNPURGED. The
+# tests below put it through `engines.purge` exactly as production does, so the
+# purge is proven to remove something rather than assumed to have been applied
+# by hand before the file was written.
+#
+# TRIMMED IN TWO PLACES, both recorded here so nobody reads the file as
+# verbatim: one of the three parse errors is kept and its `message` cut after
+# 220 characters (each of the three is ~2kB of this repository's own source --
+# see `test_the_capture_carries_this_repositorys_own_source`), and
+# `time.targets` is emptied, because it is one float per (file, rule) pair and
+# nothing in this module reads it.
+#
+# SEMGREP DOES NOT REPLACE THE SAST PASS, which is what makes this section
+# different from the three above it. Measured on this repository: 223 rules ran,
+# 147 of them for Python, 65 for JavaScript and ONE for shell -- and the core of
+# this product is 8,263 lines of bash. "Semgrep ran" is true here and
+# misleading, so the coverage note carries the spread.
+
+HAVE_SEMGREP = engines.find("semgrep") is not None
+needs_semgrep = pytest.mark.skipif(
+    not HAVE_SEMGREP, reason="semgrep is not installed on this machine")
+
+
+def _semgrep_raw():
+    """The capture exactly as semgrep wrote it -- NOT purged."""
+    return json.loads((FIX / "semgrep-owasp.json").read_text())
+
+
+def _semgrep_fixture():
+    """The capture as the adapter actually receives it: through the one door."""
+    return engines.purge("semgrep", _semgrep_raw())
+
+
+# The three editions the real capture carries, in the real order -- the 2021
+# one is neither first nor last, which is the whole point of it being here.
+OWASP_EDITIONS = ["A03:2017 - Sensitive Data Exposure",
+                  "A02:2021 - Cryptographic Failures",
+                  "A04:2025 - Cryptographic Failures"]
+CWE_327 = "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+
+
+def _result(check_id="python.lang.security.x.insecure-thing", path="app.py",
+            line=3, severity="WARNING", cwe=(CWE_327,), owasp=OWASP_EDITIONS,
+            **extra):
+    """One `results[]` entry in the shape the real capture has."""
+    return {"check_id": check_id, "path": path,
+            "start": {"line": line, "col": 1}, "end": {"line": line, "col": 9},
+            "extra": {"severity": severity,
+                      "metadata": {"cwe": list(cwe), "owasp": list(owasp)},
+                      **extra}}
+
+
+def _report(*results):
+    return {"results": list(results), "paths": {"scanned": ["app.py"]}}
+
+
+def test_semgrep_results_become_sast_findings():
+    out = adapters.semgrep_findings(_semgrep_fixture(), root=".")
+    assert out, "the captured fixture must contain at least one finding"
+    f = out[0]
+    assert f["category"] == "sast"
+    assert f["severity"] in report.SEVERITIES
+    assert len(f["fingerprint"]) == 64
+    assert f["occurrences"][0]["file"] == "bin/claude-cron-server"
+
+
+def test_every_rule_this_adapter_mints_is_in_the_closed_vocabulary():
+    """`report-finding` refuses a SAST rule outside `taxonomy.SAST_RULES`, and
+    `cmd_prepare` writes straight to the ledger WITHOUT passing that door -- so
+    a name this adapter invented would land in the ledger as a rule no filter
+    selects, no `classify` can grade, and no agent can ever re-report."""
+    for f in adapters.semgrep_findings(_semgrep_fixture(), root="."):
+        assert taxonomy.is_valid_rule(f["rule"]), f["rule"]
+
+
+def test_the_rule_is_looked_up_by_the_cwe_semgrep_reported():
+    out = adapters.semgrep_findings(_semgrep_fixture(), root=".")
+    assert {f["rule"] for f in out} == {"weak-cryptography"}
+
+
+def test_the_cwe_and_owasp_come_from_our_taxonomy_not_from_semgrep():
+    """One source of truth per row. `report-finding` DERIVES both fields from
+    the rule and ignores anything the caller sends; a finding written straight
+    into the ledger has to arrive already agreeing with that, or the same rule
+    carries two classifications depending on who reported it."""
+    f = adapters.semgrep_findings(_semgrep_fixture(), root=".")[0]
+    assert (f["cwe"], f["owasp"]) == taxonomy.classify(f["rule"])
+    assert (f["cwe"], f["owasp"]) == ("CWE-327", "A02:2021")
+
+
+def test_a_cwe_our_vocabulary_does_not_carry_is_filed_as_other():
+    """`other` is the escape hatch taxonomy.py documents: an unclassified
+    finding must be VISIBLY unclassified, never quietly filed under the
+    nearest wrong name. The check id goes in the rationale so the row is
+    still actionable."""
+    data = _report(_result(check_id="js.express.cookie-missing-httponly",
+                           cwe=["CWE-1004: Sensitive Cookie Without HttpOnly"]))
+    f = adapters.semgrep_findings(data, root=".")[0]
+    assert f["rule"] == "other"
+    assert "js.express.cookie-missing-httponly" in f["rationale"]
+    assert (f["cwe"], f["owasp"]) == ("", "")
+
+
+def test_the_owasp_edition_taken_is_2021_not_whichever_came_first():
+    """`extra.metadata.owasp` carries SEVERAL editions -- A03:2017, A02:2021
+    and A04:2025 on the very rule this repository's own capture fired.
+    `taxonomy.py` maps the 2021 Top Ten, so `[0]` would file the finding
+    under a code from an edition this project does not speak."""
+    data = _report(_result(cwe=["CWE-9999: nothing we carry"]))
+    f = adapters.semgrep_findings(data, root=".")[0]
+    assert "A02:2021" in f["rationale"], f["rationale"]
+    assert "A03:2017" not in f["rationale"]
+    assert "A04:2025" not in f["rationale"]
+
+
+def test_the_order_of_the_cwe_list_does_not_decide_the_rule():
+    """`cwe` is a LIST and the rule is a FINGERPRINT INPUT, so `[0]` would let
+    a registry refresh that merely reorders the field re-identify the finding
+    -- the same trap `_trivy_advisory_id` documents for `VendorIDs`."""
+    both = ["CWE-1004: Sensitive Cookie Without HttpOnly", CWE_327]
+    a = adapters.semgrep_findings(_report(_result(cwe=both)), root=".")[0]
+    b = adapters.semgrep_findings(_report(_result(cwe=both[::-1])), root=".")[0]
+    assert a["rule"] == b["rule"] == "weak-cryptography"
+    assert a["fingerprint"] == b["fingerprint"]
+
+
+def test_a_record_naming_two_of_our_rules_is_other_not_a_coin_flip():
+    """Two DIFFERENT vocabulary rules in one record is genuine ambiguity, and
+    picking one relabels the finding as something it is half not -- silently,
+    in the one field a human's decision hangs off. `other` says so instead,
+    and the rationale names both CWEs."""
+    data = _report(_result(cwe=[CWE_327, "CWE-89: SQL Injection"]))
+    f = adapters.semgrep_findings(data, root=".")[0]
+    assert f["rule"] == "other"
+    assert "CWE-327" in f["rationale"] and "CWE-89" in f["rationale"]
+
+
+def test_a_record_with_no_cwe_at_all_is_other_not_a_crash():
+    f = adapters.semgrep_findings(_report(_result(cwe=[])), root=".")[0]
+    assert f["rule"] == "other"
+    f = adapters.semgrep_findings(_report(_result(cwe="oops")), root=".")[0]
+    assert f["rule"] == "other"
+
+
+def test_every_cwe_in_the_vocabulary_names_exactly_one_rule():
+    """The lookup is a REVERSE of `taxonomy.SAST_RULES`. Built as a dict, two
+    rules sharing a CWE would collapse into whichever was written last, and
+    every Semgrep finding carrying that CWE would be filed under a rule
+    nobody chose -- silently, and only for as long as nobody looked."""
+    cwes = [cwe for cwe, _ in taxonomy.SAST_RULES.values() if cwe]
+    assert len(cwes) == len(set(cwes))
+
+
+# ------------------------------------------------------- the value never lands
+
+def test_the_capture_carries_this_repositorys_own_source():
+    """MEASURED, not anticipated. Semgrep puts the FILE'S CONTENT into the
+    message of a parse error -- ~2kB of `bin/claude-cron` in this capture --
+    and it interpolates a rule's metavariables into `extra.message`, which for
+    a rule that fires ON a hardcoded credential IS the credential. Neither is
+    `extra.lines`, and neither was in the purge table before this adapter
+    existed."""
+    raw = json.dumps(_semgrep_raw())
+    assert "#!/bin/bash" in raw, "the fixture is no longer the raw capture"
+    assert "durable local scheduler" in raw
+    clean = json.dumps(_semgrep_fixture())
+    assert "#!/bin/bash" not in clean
+    assert "durable local scheduler" not in clean
+
+
+SEMGREP_SECRET = "sk-live-" + "THEACTUALVALUEHERE"
+
+
+def _leaky_report():
+    """Every field of a semgrep result that can carry what it matched,
+    populated the way the real tool populates them."""
+    return _report(_result(
+        check_id="python.lang.security.hardcoded-key",
+        lines=f"KEY = '{SEMGREP_SECRET}'",
+        message=f"Hardcoded credential {SEMGREP_SECRET} detected",
+        fix=f"os.environ['KEY']  # was {SEMGREP_SECRET}",
+        rendered_fix=f"KEY = {SEMGREP_SECRET!r}",
+        metavars={"$KEY": {"start": {"line": 3}, "abstract_content": SEMGREP_SECRET,
+                           "propagated_value": {
+                               "svalue_abstract_content": SEMGREP_SECRET}}},
+        dataflow_trace={"taint_source": ["CliLoc", {"path": "app.py"},
+                                         f"KEY = '{SEMGREP_SECRET}'"]}))
+
+
+def test_a_semgrep_finding_carries_no_code_anywhere():
+    """The production path: purge, then parse."""
+    out = adapters.semgrep_findings(engines.purge("semgrep", _leaky_report()),
+                                    root=".")
+    assert out, "the record must still parse into a finding"
+    blob = json.dumps(out)
+    assert SEMGREP_SECRET not in blob
+    assert "KEY" not in blob, "the matched line reached the finding"
+
+
+def test_the_purge_and_the_adapter_are_two_locks_on_semgrep_too():
+    """Each door is enough ON ITS OWN, so a refactor that leans on one still
+    has the other standing. Above: the purge ran. Here: it did not, and every
+    field of a finding is CONSTRUCTED rather than copied, so nothing rides in."""
+    blob = json.dumps(adapters.semgrep_findings(_leaky_report(), root="."))
+    assert SEMGREP_SECRET not in blob
+    assert "KEY" not in blob
+    assert SEMGREP_SECRET not in json.dumps(engines.purge("semgrep",
+                                                          _leaky_report()))
+
+
+# ---------------------------------------------------------------- the identity
+
+def test_three_hits_of_one_check_in_one_file_are_one_finding():
+    """No snippet means no per-hit identity, so several matches of one check in
+    one file are ONE finding with several occurrences -- the same grouping
+    `gitleaks()` uses for the same reason. This repository's capture is
+    exactly that case: three md5 calls in `bin/claude-cron-server`."""
+    out = adapters.semgrep_findings(_semgrep_fixture(), root=".")
+    assert len(out) == 1, out
+    assert [o["line"] for o in out[0]["occurrences"]] == [351, 656, 1845]
+
+
+def test_two_different_checks_in_one_file_stay_two_findings():
+    """Both of these map to `weak-cryptography` at the same path: without the
+    check id in the identity they would be ONE row whose rationale names
+    whichever was parsed last, and every unmapped finding in a file would
+    collapse onto a single `other`."""
+    data = _report(_result(check_id="python.x.md5"),
+                   _result(check_id="python.x.des"))
+    out = adapters.semgrep_findings(data, root=".")
+    assert len(out) == 2
+    assert len({f["fingerprint"] for f in out}) == 2
+
+
+def test_the_identity_does_not_move_when_the_code_moves_down_the_file():
+    a = adapters.semgrep_findings(_report(_result(line=3)), root=".")[0]
+    b = adapters.semgrep_findings(_report(_result(line=930)), root=".")[0]
+    assert a["fingerprint"] == b["fingerprint"]
+
+
+def test_a_semgrep_identity_is_the_check_id_and_says_so():
+    """THE decision of this task, written down. `fingerprint("sast", rule,
+    path, snippet)` takes the CODE as its fourth argument, and `engines.purge`
+    drops the code before this module ever sees it -- deliberately, because a
+    rule firing on a hardcoded credential returns the credential there. There
+    is no way back: the ledger keeps only an opaque `snippet_hash`, and
+    `ledger.rename_rule` refuses `sast` for exactly this reason. So the fourth
+    argument is Semgrep's own check id: stable run to run, and it keeps two
+    checks in one file apart."""
+    data = _report(_result(check_id="python.x.md5", path="app.py"))
+    f = adapters.semgrep_findings(data, root=".")[0]
+    assert f["fingerprint"] == fingerprint.fingerprint(
+        "sast", "weak-cryptography", "app.py", "python.x.md5")
+    # And it is NOT what the SAST pass mints for the same weakness, whatever
+    # snippet it passes -- including none at all.
+    for snippet in ("hashlib.md5(body)", ""):
+        assert f["fingerprint"] != fingerprint.fingerprint(
+            "sast", "weak-cryptography", "app.py", snippet)
+
+
+# ---------------------------------------------------------------- the severity
+
+@pytest.mark.parametrize("word,ours", [("ERROR", "high"), ("WARNING", "medium"),
+                                       ("INFO", "info")])
+def test_the_semgrep_severity_words_map_to_ours(word, ours):
+    f = adapters.semgrep_findings(_report(_result(severity=word)), root=".")[0]
+    assert f["severity"] == ours
+
+
+def test_no_semgrep_severity_alone_can_mint_a_critical():
+    """An ERROR from a linter is a statement about the RULE's confidence, not
+    about this repository's exposure. Measured here: all three of Semgrep's
+    findings on this repository are false positives of the kind only context
+    resolves. `critical` is what the report's headline counts and the default
+    `min_severity` floor are built around, so the pre-pass may not open a
+    finding at the top of the report on its own -- the triage that follows can
+    raise it, and that is a judgement somebody made."""
+    for word in ("ERROR", "WARNING", "INFO", "SOMETHING-NEW", ""):
+        f = adapters.semgrep_findings(_report(_result(severity=word)),
+                                      root=".")[0]
+        assert f["severity"] != "critical", word
+
+
+def test_a_severity_word_we_have_never_heard_of_is_not_hidden_below_the_floor():
+    """`info` sits below the default floor, so grading an ungraded finding
+    there files it out of sight -- the same argument `_TRIVY_SEVERITY`'s
+    default makes."""
+    f = adapters.semgrep_findings(_report(_result(severity="CATASTROPHE")),
+                                  root=".")[0]
+    assert f["severity"] == adapters.SAST_DEFAULT_SEVERITY == "medium"
+
+
+# ------------------------------------------------------------------- the scope
+
+def test_an_ignored_path_is_dropped_even_when_semgrep_reports_it():
+    data = _report(_result(path="tests/fixtures/sample.py"))
+    assert adapters.semgrep_findings(
+        data, root=".", ignore_paths=["tests/fixtures/**"]) == []
+
+
+def test_a_skipped_directory_is_dropped_even_when_semgrep_reports_it():
+    data = _report(_result(path="node_modules/thing/index.js"))
+    assert adapters.semgrep_findings(data, root=".") == []
+
+
+def test_the_exclusions_carry_the_skip_dirs_and_the_operators_globs():
+    excludes = adapters.semgrep_excludes(["docs/**"])
+    for name in secrets.SKIP_DIRS:
+        assert name in excludes and f"**/{name}" in excludes
+    assert "docs" in excludes
+
+
+# ----------------------------------------------------------- the coverage note
+
+def test_the_note_says_how_many_rules_ran_for_each_language():
+    languages = dict(adapters.semgrep_languages(_semgrep_fixture()))
+    assert languages["python"] == 147
+    assert languages["javascript"] == 61
+    assert languages["bash"] == 1
+
+
+def test_a_shell_repository_cannot_read_like_a_python_one():
+    """"Semgrep ran" is true here and misleading: the core of this product is
+    8,263 lines of bash, and the OWASP ruleset carries ONE rule for it against
+    147 for Python. Without the spread in the note, a clean shell report reads
+    as a clean bill of health."""
+    note = " ".join(adapters.semgrep_notes(_semgrep_fixture(), "1.175.0", []))
+    assert "python 147" in note, note
+    assert "bash 1" in note, note
+    assert "javascript 61" in note, note
+
+
+def test_the_note_counts_the_files_semgrep_could_not_parse():
+    """A file Semgrep could not parse was not analysed, whatever the rule
+    count says about its language. It is a gap, so it is stated -- and the
+    engine's own message for it is NOT quoted back, because that message is
+    the file's source."""
+    note = " ".join(adapters.semgrep_notes(_semgrep_fixture(), "1.175.0", []))
+    assert "1 file" in note, note
+    assert "parse" in note, note
+    assert "#!/bin/bash" not in note
+
+
+def test_the_identity_note_is_said_only_when_there_is_something_to_identify():
+    """The same rule `DEP_ID_NOTE` follows: with nothing found, there is no
+    finding whose identity could diverge, and the sentence is characters a
+    reader has to get past to reach the gaps that ARE real."""
+    empty = adapters.semgrep_notes(_semgrep_fixture(), "1.175.0", [])
+    found = adapters.semgrep_notes(_semgrep_fixture(), "1.175.0", [{"a": 1}])
+    assert adapters.SAST_IDENTITY_NOTE not in empty
+    assert adapters.SAST_IDENTITY_NOTE in found
+
+
+def test_the_identity_note_says_the_two_passes_do_not_share_an_identity():
+    """The previous task in this block shipped a fingerprint divergence by
+    assuming a recipe carried over. This one cannot be closed -- the snippet
+    is gone by design -- so it is DECLARED rather than papered over with a
+    hash that merely looks right."""
+    note = adapters.SAST_IDENTITY_NOTE
+    assert "twice" in note
+    assert "check id" in note or "check_id" in note
+
+
+def test_the_note_says_semgrep_does_not_replace_the_sast_pass():
+    assert adapters.SAST_PREPASS_NOTE in adapters.semgrep_notes(
+        _semgrep_fixture(), "1.175.0", [])
+
+
+# -------------------------------------------------------------- the robustness
+
+def test_a_semgrep_report_that_is_not_an_object_is_no_findings_not_a_crash():
+    assert adapters.semgrep_findings(["nope"], root=".") == []
+    assert adapters.semgrep_findings(None, root=".") == []
+
+
+def test_semgrep_results_that_are_not_a_list_is_no_findings_not_a_crash():
+    assert adapters.semgrep_findings({"results": "oops"}, root=".") == []
+
+
+def test_a_semgrep_record_this_parser_cannot_use_is_dropped_not_fatal():
+    data = {"results": ["garbage", None, {"path": "a.py"}, {"check_id": "c"},
+                        _result()]}
+    assert len(adapters.semgrep_findings(data, root=".")) == 1
+
+
+def test_a_report_with_no_time_block_still_produces_a_note():
+    """`--time` is what fills `time.rules`, and a semgrep that stops emitting
+    it must cost the language breakdown, not the whole phase."""
+    notes = adapters.semgrep_notes({"results": []}, "1.175.0", [])
+    assert notes
+    assert adapters.SAST_PREPASS_NOTE in notes
+
+
+# --------------------------------------------- the pre-pass, against the tool
+
+@needs_semgrep
+def test_semgrep_scan_runs_the_real_engine_and_finds_a_planted_weakness(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text(
+        "import hashlib\n\n\ndef etag(body):\n"
+        "    return hashlib.md5(body).hexdigest()\n")
+    findings, notes = adapters.semgrep_scan(root)
+    assert findings is not None, notes
+    assert [f["rule"] for f in findings] == ["weak-cryptography"], findings
+    assert findings[0]["occurrences"][0]["file"] == "app.py"
+    assert any("Semgrep" in n for n in notes), notes
+
+
+@needs_semgrep
+def test_the_real_engine_never_hands_back_the_line_it_matched(tmp_path):
+    """The unit tests above prove the parser drops the value; this proves the
+    real binary's output goes through the same door -- including the notes,
+    which are the one thing here that is printed."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    key = "sk-" + "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
+    (root / "app.py").write_text(
+        f"import hashlib\nAPI_KEY = {key!r}\n\n"
+        "def etag(body):\n    return hashlib.md5(body).hexdigest()\n")
+    findings, notes = adapters.semgrep_scan(root)
+    assert findings is not None
+    assert key not in json.dumps(findings)
+    assert key not in " ".join(notes)
+
+
+@needs_semgrep
+def test_the_real_engine_declares_how_little_it_runs_for_shell(tmp_path):
+    """The measurement this whole section exists for, re-taken on a tree that
+    is nothing but shell."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "run.sh").write_text("#!/bin/bash\nset -eu\necho \"$1\"\n")
+    findings, notes = adapters.semgrep_scan(root)
+    assert findings is not None, notes
+    note = " ".join(notes)
+    assert "bash 1" in note, note
+    assert "python" not in note, note
+
+
+@needs_semgrep
+def test_the_real_engine_is_not_asked_to_read_what_is_out_of_scope(tmp_path):
+    """The scope is locked twice here too: `--exclude` so the files are never
+    read, and `_out_of_scope` over what comes back, because a promise about
+    the ANALYSIS that holds only while another program accepted our command
+    line is not a promise."""
+    root = tmp_path / "repo"
+    (root / "node_modules" / "dep").mkdir(parents=True)
+    (root / "docs").mkdir()
+    weak = ("import hashlib\n\n\ndef etag(body):\n"
+            "    return hashlib.md5(body).hexdigest()\n")
+    (root / "app.py").write_text(weak)
+    (root / "node_modules" / "dep" / "vendored.py").write_text(weak)
+    (root / "docs" / "sample.py").write_text(weak)
+    findings, _ = adapters.semgrep_scan(root, ignore_paths=["docs/**"])
+    assert {f["occurrences"][0]["file"] for f in findings} == {"app.py"}
+
+
+# ------------------------------------------------- the pre-pass, through prepare
+
+@needs_semgrep
+def test_prepare_records_the_pre_pass_as_sast_findings(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text(
+        "import hashlib\n\n\ndef etag(body):\n"
+        "    return hashlib.md5(body).hexdigest()\n")
+    db = tmp_path / "security.db"
+    env = {**os.environ, "CC_SECURITY_ENGINES": "on"}
+    aid = open_analysis(db)
+    note = cli_json(db, "prepare", "--analysis", str(aid), "--root", str(root),
+                    env=env)["coverage_note"]
+    findings = cli_json(db, "findings", "--analysis", str(aid), env=env)
+    sast = [f for f in findings if f["category"] == "sast"]
+    assert [f["rule"] for f in sast] == ["weak-cryptography"], findings
+    assert sast[0]["cwe"] == "CWE-327" and sast[0]["owasp"] == "A02:2021"
+    assert "Semgrep" in note
+
+
+def test_prepare_declares_the_pre_pass_it_did_not_run(tmp_path):
+    """"Found nothing" and "never looked" are the same silence in a report,
+    and a missing pre-pass must not read as a clean SAST result."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    env = {**os.environ, "CC_SECURITY_ENGINES": "off"}
+    aid = open_analysis(db)
+    note = cli_json(db, "prepare", "--analysis", str(aid), "--root", str(root),
+                    env=env)["coverage_note"]
+    assert "SAST pre-pass did not run" in note, note
+
+
+def test_the_pre_pass_does_not_run_offline(tmp_path):
+    """The rule set is fetched from Semgrep's registry. An analysis told not
+    to touch the network must not reach for it, and must say why it did not
+    -- the same shape `--offline` already takes for dependency CVEs."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    env = {**os.environ, "CC_SECURITY_ENGINES": "on"}
+    aid = open_analysis(db)
+    note = cli_json(db, "prepare", "--analysis", str(aid), "--root", str(root),
+                    "--offline", env=env)["coverage_note"]
+    assert security_cli.OFFLINE_SAST_NOTE in note, note
+    assert adapters.SAST_PREPASS_NOTE not in note, note
+
+
+def test_a_malformed_paths_block_costs_the_file_count_not_the_phase():
+    """Every claim in the note is read out of the report, and a report shaped
+    differently from the one this parser expects must cost the sentence, not
+    the analysis."""
+    for broken in ({"paths": "oops"}, {"paths": {"scanned": "oops"}},
+                   {"paths": ["a"]}, {}):
+        notes = adapters.semgrep_notes(broken, "1.175.0", [])
+        assert adapters.SAST_PREPASS_NOTE in notes
+
+
+def test_the_note_says_rules_LOADED_and_not_rules_that_ran():
+    """The two numbers differ and the report must not quietly pick the
+    flattering one. Semgrep's own summary for the scan this fixture came from
+    says "Rules run: 223" where `time.rules` holds 244 -- the 21 are the
+    namespaces its table folds into one `<multilang>` row. Every language row
+    matches exactly, so the breakdown stands; only the word for the total has
+    to be the honest one."""
+    note = " ".join(adapters.semgrep_notes(_semgrep_fixture(), "1.175.0", []))
+    assert "244 rules loaded" in note, note
+    assert "244 rules ran" not in note
+
+
+# ---------------------------------- a report of a scan that did not happen
+
+# VERBATIM, from `semgrep --config=p/<a pack that does not exist> --json
+# --time --output=… .` on a tree holding one Python file. Semgrep exits 7 and
+# still WRITES a well-formed report: `results: []`, `paths.scanned: []`. That
+# is the identical answer it gives for a tree with nothing wrong in it -- and
+# it is what a machine with no network produces when nobody passed
+# `--offline`, because the rule pack is fetched from the registry. `run_json`
+# checks that a report was written, not what the engine's exit code said, so
+# without a guard this lands as a clean SAST pre-pass.
+SEMGREP_404 = {
+    "version": "1.175.0", "results": [],
+    "errors": [
+        {"code": 2, "level": "error", "type": "SemgrepError",
+         "message": "Failed to download configuration from "
+                    "https://semgrep.dev/c/p/nope HTTP 404."},
+        {"code": 7, "level": "error", "type": "SemgrepError",
+         "message": "invalid configuration file found (1 configs were invalid)"}],
+    "paths": {"scanned": []}, "engine_requested": "OSS", "skipped_rules": [],
+    "profiling_results": []}
+
+
+def test_a_report_semgrep_wrote_while_failing_is_not_a_clean_pre_pass(
+        monkeypatch, tmp_path):
+    """The scar this project already carries once, on the other engine:
+    `gitleaks git` outside a repository writes `[]` and exits 0, which is the
+    same answer it gives for a clean history. Semgrep does it too, and worse
+    -- an unreachable registry is a NORMAL state, not an exotic one."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    monkeypatch.setattr(engines, "run_json",
+                        lambda *a, **k: (engines.purge("semgrep", SEMGREP_404), ""))
+    monkeypatch.setattr(engines, "version_of", lambda name: "1.175.0")
+    findings, notes = adapters.semgrep_scan(root)
+    assert findings is None, findings
+    assert notes and "did not really" in notes[0], notes
+
+
+def test_a_file_semgrep_could_not_parse_does_not_condemn_the_whole_report():
+    """Semgrep grades a recoverable problem `warn` and keeps the reason for
+    `error`. All three parse errors in this repository's own capture are
+    warnings, and the 86 files that DID parse are a real result -- refusing
+    them would throw away the pass over one unparseable shell script."""
+    assert adapters.semgrep_failure(_semgrep_fixture()) == ""
+    assert adapters.semgrep_findings(_semgrep_fixture(), root=".")
+
+
+def test_the_failure_reason_never_quotes_the_engines_own_message():
+    """`errors[].message` is the file semgrep could not read -- it is purged
+    before this module sees it, and the reason is built from `level` and
+    `type` so it could not be quoted even if it were not."""
+    reason = adapters.semgrep_failure(SEMGREP_404)
+    assert "HTTP 404" not in reason
+    assert "SemgrepError" in reason
+
+
+def test_prepare_declares_a_pre_pass_that_failed_rather_than_recording_nothing(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(adapters.engines, "run_json",
+                        lambda *a, **k: (engines.purge("semgrep", SEMGREP_404), ""))
+    monkeypatch.setattr(adapters, "engine_path", lambda name: "/usr/bin/semgrep"
+                        if name == "semgrep" else None)
+    findings, notes = security_cli._scan_sast(tmp_path, offline=False)
+    assert findings == []
+    assert len(notes) == 1 and notes[0].startswith("The SAST pre-pass did not run")

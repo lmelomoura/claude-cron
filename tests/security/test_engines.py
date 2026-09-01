@@ -163,6 +163,36 @@ def test_purge_strips_the_dataflow_trace_from_semgrep():
     assert secret not in json.dumps(engines.purge("semgrep", raw))
 
 
+def test_purge_strips_the_file_content_semgrep_puts_in_an_error():
+    # MEASURED on this repository, not anticipated: semgrep 1.175.0 reports a
+    # file it cannot parse as an `errors[]` entry whose `message` QUOTES THE
+    # FILE -- ~2kB of `bin/claude-cron` in the capture this project's fixture
+    # was taken from. It is the very hazard `run_json` already refuses to
+    # quote stderr for, arriving through the report instead.
+    source = "PASSWORD = 'the-actual-value-in-the-file'"
+    raw = {"results": [], "errors": [
+        {"code": 3, "level": "warn", "type": "Syntax error",
+         "path": "app.py",
+         "message": f"Syntax error at line app.py:1:\n `{source}\n...`"}]}
+    clean = engines.purge("semgrep", raw)
+    assert source not in json.dumps(clean)
+    assert clean["errors"][0]["path"] == "app.py"
+
+
+def test_purge_strips_the_metavariable_semgrep_interpolated_into_a_message():
+    # `extra.message` is the RULE's own sentence -- until the rule writes `$X`
+    # in it, which semgrep substitutes with what the metavariable bound to. For
+    # a rule that fires ON a hardcoded credential, that is the credential, in
+    # the one field that reads like harmless engine prose.
+    secret = "ghp_THE_ACTUAL_VALUE"
+    raw = {"results": [{"check_id": "hardcoded-token", "path": "a.py",
+                        "extra": {"severity": "ERROR",
+                                  "message": f"Hardcoded token {secret} found"}}]}
+    clean = engines.purge("semgrep", raw)
+    assert secret not in json.dumps(clean)
+    assert clean["results"][0]["extra"]["severity"] == "ERROR"
+
+
 def test_purge_strips_the_source_lines_trivy_attaches_to_a_secret():
     # Trivy does not stop at `Match`: it attaches the surrounding source in
     # `Code.Lines[]`, as plain `Content` and again ANSI-coloured in

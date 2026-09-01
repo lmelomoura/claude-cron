@@ -459,6 +459,52 @@ def _scan_dependencies(root, components, offline: bool, ignore_paths=()):
     return cve_findings, notes
 
 
+# Semgrep's rule pack is fetched from its registry, so the pre-pass is a
+# network call and `--offline` has to refuse it -- the same shape
+# `OFFLINE_DEPENDENCY_NOTE` takes one phase up. Named separately rather than
+# folded into that sentence because the two gaps are different facts: an
+# analysis can have a dependency source and no rule pack, and a reader has to
+# be able to tell which half of the report was affected.
+OFFLINE_SAST_NOTE = ("The Semgrep SAST pre-pass did NOT run: its rule pack is "
+                     "fetched from Semgrep's registry, and this analysis ran "
+                     "with networking disabled.")
+
+
+def _scan_sast(root, offline: bool, ignore_paths=()):
+    """(findings, notes) for the SAST pre-pass -- an ADDITION, never a swap.
+
+    THE ONE PHASE HERE THAT REPLACES NOTHING. `_scan_secrets`,
+    `_scan_dependencies` and `_scan_sbom` all choose ONE producer per category
+    because two would report one hole under two fingerprints. This one has no
+    such choice to make: the agent's own SAST pass is the primary source of
+    the `sast` category and stays so, because Semgrep's coverage is not
+    remotely even -- 147 rules for Python against ONE for shell, measured, and
+    the core of this product is 8,263 lines of bash. So these findings are
+    added beside whatever the agent reports, and `adapters.SAST_IDENTITY_NOTE`
+    states in the report that a weakness found by both is listed twice.
+
+    A missing engine costs the pre-pass and NOT the phase, which is why this
+    returns `[]` rather than the `None` its three neighbours use to ask for a
+    fallback: there is nothing to fall back to and nothing was lost. The gap
+    is declared all the same -- "found nothing" and "never looked" are the
+    same silence in a report otherwise.
+    """
+    if offline:
+        return [], [OFFLINE_SAST_NOTE]
+    if not adapters.engine_path("semgrep"):
+        # `engine_path` answers None for a machine without the binary AND for
+        # one with `CC_SECURITY_ENGINES=off`, and the note says the same thing
+        # for both on purpose: as far as this analysis goes they are the same
+        # machine.
+        return [], [adapters.SAST_GAP.format(
+            reason="semgrep is not available to this analysis")]
+    findings, notes = adapters.semgrep_scan(root, ignore_paths)
+    if findings is None:
+        reason = (notes[0] if notes else "semgrep produced no report").rstrip(".")
+        return [], [adapters.SAST_GAP.format(reason=reason)]
+    return findings, notes
+
+
 def _scan_sbom(root, components):
     """(document, notes) for the SBOM -- ONE producer, not two, on the same
     terms `_scan_secrets` and `_scan_dependencies` use.
@@ -585,6 +631,14 @@ def cmd_prepare(args):
         dep_notes = [n for n in dep_notes if n != adapters.DEP_SBOM_NOTE]
     notes += [n for n in dep_notes if n]
     notes += [n for n in sbom_notes if n]
+
+    # LAST of the phases, because it is the only one that does not stand
+    # alone: what it produces is a pre-pass the agent's own SAST pass then
+    # triages, so its sentences read after everything the deterministic half
+    # settled by itself.
+    sast_findings, sast_notes = _scan_sast(root, args.offline, ignore)
+    findings += sast_findings
+    notes += [n for n in sast_notes if n]
     # Every phase writes into ONE channel, in phase order. The reader gets one
     # paragraph naming every blind spot this analysis has, rather than
     # whichever gap the last phase to speak happened to know about.

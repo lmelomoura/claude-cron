@@ -209,6 +209,50 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   own document is what actually got stored, so a report never asserts two
   different things about where its own SBOM came from.
 
+- **Semgrep runs a SAST pre-pass when it is installed — and the report says
+  how little of a shell repository it can see.** `prepare` now records what
+  Semgrep's `p/owasp-top-ten` pack matches as `sast` findings, mapped onto
+  this project's closed rule vocabulary by CWE (`CWE-327` →
+  `weak-cryptography`), or `other` with Semgrep's own check id in the
+  rationale when nothing carries that CWE. It REPLACES NOTHING: unlike the
+  three engines above it, this one is added beside the analysis's own SAST
+  pass, because the coverage is not remotely even. Measured on this
+  repository: 223 rules over 89 files in 6 seconds, 147 of them for Python,
+  65 for JavaScript and **one** for shell — and the core of this product is
+  8,263 lines of bash. "Semgrep ran" is true here and misleading, so the
+  coverage note carries the per-language spread, plus how many files Semgrep
+  could not fully parse (3 here, all of them shell). Nothing Semgrep grades
+  can open a `critical` on its own: an `ERROR` from a linter is a statement
+  about the rule's confidence, not about this repository's exposure — all
+  three findings here are false positives of the kind only context resolves
+  — so `ERROR`/`WARNING`/`INFO` land as `high`/`medium`/`info` and the
+  triage that follows is what raises them. `--offline` refuses the pass
+  outright and says why: the rule pack is fetched from Semgrep's registry.
+  And an unreachable registry is declared, not swallowed — measured against
+  a pack that does not exist, Semgrep exits 7 and still writes a well-formed
+  report with `results: []` and `paths.scanned: []`, which is the identical
+  answer it gives for a repository with nothing wrong in it. That is the
+  same shape as `gitleaks git` writing `[]` outside a checkout, and reached
+  by any machine with no network the moment nobody passed `--offline`, so a
+  report carrying an `errors[]` entry at `level: "error"` is refused whole.
+  A file Semgrep could only partly parse is graded `warn` and costs the note
+  it earns, not the pass.
+
+- **A Semgrep finding cannot share an identity with an agent-reported one,
+  and the report says so rather than pretending otherwise.** A SAST
+  finding's identity is `fingerprint("sast", rule, path, snippet)` and the
+  fourth argument is the CODE — which the engine door strips out of
+  `extra.lines` before this project ever sees it, deliberately, because a
+  rule firing on a hardcoded credential returns the credential there. The
+  ledger keeps only an opaque `snippet_hash`, so there is no way back, and
+  `rename_rule` refuses the `sast` category outright for that same reason: a
+  wrong identity minted here could never be migrated afterwards. The
+  pre-pass therefore hashes Semgrep's own check id, which is stable run to
+  run and keeps two checks in one file apart, and the coverage note states
+  plainly that one weakness found by both passes is listed twice. Several
+  hits of one check in one file are ONE finding with several occurrences —
+  without the code there is no per-hit identity to give.
+
 ### Fixed
 
 - **A dependency CVE keeps one identity whether or not Trivy is installed.**
@@ -460,6 +504,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binding IS the credential), its `fix`, `rendered_fix` and
   `dataflow_trace`, and Trivy's `Code.Lines[].Content` and `Highlighted` —
   the raw source lines it attaches to secrets and misconfigurations alike.
+
+- **Semgrep put this repository's own source in a field the purge table did
+  not name, and now it does.** Found by capturing the fixture for the SAST
+  pre-pass rather than by reading the documentation: semgrep 1.175.0 reports
+  a file it cannot fully parse as an `errors[]` entry whose `message` QUOTES
+  THE FILE — roughly 2kB of `bin/claude-cron` in the capture taken here,
+  three such entries in one report. It is exactly the hazard the door
+  already refuses to quote stderr for, arriving through the report instead.
+  The same field name carries a second one: `results[].extra.message` is the
+  rule's own sentence only until the rule writes `$X` in it, which semgrep
+  substitutes with what the metavariable bound to — so the field that reads
+  like harmless engine prose carries the same credential `abstract_content`
+  does. `message` is stripped at every depth now, which takes both, and the
+  SAST adapter wanted neither: it builds its rationale from the check id and
+  the CWE.
 
 - **The running badge sits beside Runs, not Jobs.** It counts runs in
   flight, and the Runs counter already includes them — beside the job

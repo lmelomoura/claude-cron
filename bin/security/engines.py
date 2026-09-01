@@ -50,8 +50,21 @@ PURGE = {
     # hardcoded credential, that IS the credential. `fix` / `rendered_fix`
     # quote the source back in order to rewrite it, and `dataflow_trace`
     # carries a snippet for every step of the path.
+    #
+    # `message` was added when the SAST adapter measured what semgrep 1.175.0
+    # actually writes, and it is the entry a reader is most likely to think is
+    # over-stripping. It is not, on either of the two paths it arrives by.
+    # `errors[].message` QUOTES THE FILE semgrep could not parse -- ~2kB of
+    # `bin/claude-cron` in this repository's own capture -- which is the hazard
+    # `run_json` already refuses to quote stderr for, arriving through the
+    # report instead. And `results[].extra.message` is the rule's own sentence
+    # only until the rule writes `$X` in it: semgrep substitutes the
+    # metavariable's binding, so the field beside `abstract_content` carries
+    # the same credential in prose. Depth-agnostic stripping takes both, and
+    # the adapter wanted neither -- it builds its rationale from the check id
+    # and the CWE.
     "semgrep": ("lines", "abstract_content", "svalue_abstract_content",
-                "fix", "rendered_fix", "dataflow_trace"),
+                "fix", "rendered_fix", "dataflow_trace", "message"),
     # `Match` is the secret scanner's. `Content` and `Highlighted` are the
     # raw source lines Trivy attaches to a secret AND to a misconfiguration,
     # under `Code.Lines[]` in both.
