@@ -7720,6 +7720,30 @@ def test_every_deterministic_rule_resolves_its_pinned_label_and_a_real_icon(srv,
         "stripe_key":          "Stripe live key committed",
         "openai_key":          "OpenAI API key committed",
         "google_api_key":      "Google API key committed",
+        # The same credential types under gitleaks' OWN rule ids. The engine
+        # writes its id into the finding (the fingerprint contains the rule,
+        # so re-spelling it would orphan every recorded decision), and without
+        # these keys every secret on an engine-scanned project drew the
+        # generic humanised label instead of the curated one. One rule of ours
+        # is several of theirs -- five GitHub token kinds, seven Slack ones.
+        "aws-access-token":          "AWS access key committed",
+        "github-pat":                "GitHub token committed",
+        "github-fine-grained-pat":   "GitHub token committed",
+        "github-oauth":              "GitHub OAuth token committed",
+        "github-app-token":          "GitHub app token committed",
+        "github-refresh-token":      "GitHub refresh token committed",
+        "slack-bot-token":           "Slack token committed",
+        "slack-user-token":          "Slack token committed",
+        "slack-app-token":           "Slack token committed",
+        "slack-config-access-token": "Slack token committed",
+        "slack-legacy-bot-token":    "Slack token committed",
+        "slack-legacy-token":        "Slack token committed",
+        "slack-webhook-url":         "Slack webhook URL committed",
+        "stripe-access-token":       "Stripe live key committed",
+        "openai-api-key":            "OpenAI API key committed",
+        "gcp-api-key":               "Google API key committed",
+        "private-key":               "Private keys committed",
+        "generic-api-key":           "Hardcoded secrets",
         "committed_env_file":  ".env file committed",
         "committed_key_file":  "Private key file committed",
         "missing_gitignore":   "No .gitignore in the repository",
@@ -7738,6 +7762,46 @@ def test_every_deterministic_rule_resolves_its_pinned_label_and_a_real_icon(srv,
     # scanner found it.
     by_rule = {row["rule"]: row["icon"] for row in out}
     assert by_rule["private_key"] == by_rule["committed_key_file"] == "key"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_every_rule_the_engine_grades_has_a_curated_label(srv, tmp_path):
+    """The two lists that name gitleaks' rules must not drift apart.
+
+    bin/security/adapters.py's `SEVERITY_BY_RULE` is the set of engine rules
+    this project has an OPINION about -- each one carried across from a
+    `secrets._RULES` judgement so the scanner swap does not re-grade a
+    repository's backlog. Every one of them therefore has a curated label
+    waiting for it here; a rule graded in Python and humanised on screen is
+    exactly the half-done state this test exists to catch, and it is invisible
+    otherwise (the label still renders, just genericly).
+
+    The other direction is deliberately NOT asserted: gitleaks ships ~180
+    rules and gains more every release, and adapters.DEFAULT_SEVERITY exists
+    precisely so an unmapped one is still graded. Those humanise on screen, as
+    they should.
+    """
+    import sys
+    sys.path.insert(0, str(REPO / "bin"))
+    try:
+        from security import adapters
+    finally:
+        sys.path.pop(0)
+
+    block = _security_js(srv)
+    deps = _rule_meta_deps(block)
+    script = tmp_path / "rule-meta-engine.js"
+    script.write_text(deps + """
+    console.log(JSON.stringify(Object.keys(SEC_RULE_META)));
+    """)
+    known = set(json.loads(subprocess.run(["node", str(script)],
+                                          capture_output=True, text=True,
+                                          check=True).stdout))
+    missing = sorted(set(adapters.SEVERITY_BY_RULE) - known)
+    assert not missing, (
+        f"adapters.SEVERITY_BY_RULE grades these gitleaks rules, but "
+        f"SEC_RULE_META has no label for them, so they render as the generic "
+        f"humanised slug: {missing}")
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")

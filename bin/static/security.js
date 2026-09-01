@@ -160,6 +160,42 @@
     stripe_key: { label: "Stripe live key committed", icon: "lock" },
     openai_key: { label: "OpenAI API key committed", icon: "lock" },
     google_api_key: { label: "Google API key committed", icon: "lock" },
+    /* secret, again -- gitleaks' OWN rule ids, for the same credential types.
+         bin/security/adapters.py runs gitleaks instead of secrets.py whenever the
+         binary is installed, and it writes the ENGINE's rule id into the finding
+         (`aws-access-token`, not `aws_access_key`) because the fingerprint
+         contains the rule and re-spelling it would orphan every decision recorded
+         against the old identity. Without these keys every secret on an
+         engine-scanned project fell through to secHumaniseRule -- "Aws access
+         token" with the generic category icon, instead of the curated label above.
+         The snake_case keys STAY: the built-in scanner still emits them wherever
+         gitleaks is absent or switched off, and both vocabularies are live at once
+         across a fleet of projects.
+    
+         Paired with adapters.SEVERITY_BY_RULE, which maps the same ids -- one
+         rule of ours is routinely several of theirs (five GitHub token kinds,
+         seven Slack ones), and each gets the label its own credential type earns
+         rather than a shared one that would flatten them back together. Anything
+         outside this list is one of gitleaks' ~180 other rules and humanises, as
+         it did before. */
+    "aws-access-token": { label: "AWS access key committed", icon: "lock" },
+    "github-pat": { label: "GitHub token committed", icon: "lock" },
+    "github-fine-grained-pat": { label: "GitHub token committed", icon: "lock" },
+    "github-oauth": { label: "GitHub OAuth token committed", icon: "lock" },
+    "github-app-token": { label: "GitHub app token committed", icon: "lock" },
+    "github-refresh-token": { label: "GitHub refresh token committed", icon: "lock" },
+    "slack-bot-token": { label: "Slack token committed", icon: "lock" },
+    "slack-user-token": { label: "Slack token committed", icon: "lock" },
+    "slack-app-token": { label: "Slack token committed", icon: "lock" },
+    "slack-config-access-token": { label: "Slack token committed", icon: "lock" },
+    "slack-legacy-bot-token": { label: "Slack token committed", icon: "lock" },
+    "slack-legacy-token": { label: "Slack token committed", icon: "lock" },
+    "slack-webhook-url": { label: "Slack webhook URL committed", icon: "lock" },
+    "stripe-access-token": { label: "Stripe live key committed", icon: "lock" },
+    "openai-api-key": { label: "OpenAI API key committed", icon: "lock" },
+    "gcp-api-key": { label: "Google API key committed", icon: "lock" },
+    "private-key": { label: "Private keys committed", icon: "key" },
+    "generic-api-key": { label: "Hardcoded secrets", icon: "lock" },
     // hygiene -- bin/security/hygiene.py's four findings. Labels say what each
     // rule's own rationale says it detects, not what its name suggests:
     // missing_gitignore's rationale is "the first .env, key or credential file
@@ -5066,5 +5102,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 5f050d9bacac2fb1c2136177d6857f7e55e619d96e340a640588c427e2f627da */
-/* ui-sources: 77dc92452c6400e5e401c6c753825ddf25d5bf618d89887f14c5e5aafd59425d */
+/* ui-bundle: 3ac5c70146f8500c93bb96b5a7173c0bcf60c33cd31cc2c7f12ec1869ad7dcc1 */
+/* ui-sources: 27f48a5749a96f31b98e504363d1df4464dca5193b1993b56c2470158e71a382 */

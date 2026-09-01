@@ -23,6 +23,7 @@ disagree with the tool.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -59,11 +60,69 @@ def test_gitleaks_findings_become_secret_findings():
 
 
 def test_a_gitleaks_finding_carries_no_value_anywhere():
-    # The promise, asserted over the whole record rather than field by
-    # field: nothing this adapter emits may contain the matched text.
-    data = json.loads((FIX / "gitleaks-dir.json").read_text())
-    blob = json.dumps(adapters.gitleaks(data, root="."))
-    assert "Secret" not in blob and "Match" not in blob
+    """THE promise of this module, asserted against a record that still has
+    the value in it.
+
+    This test used to read the PURGED fixture and grep the output for the
+    strings "Secret" and "Match" -- the engine's KEY NAMES, in a blob built
+    from a record those keys had already been stripped from. It could not
+    fail: it would have passed unchanged if the adapter had copied
+    `record["Match"]` into a field called `snippet`.
+
+    So the record here arrives UNPURGED, exactly as gitleaks writes it before
+    `engines.purge` runs, and the assertion is about the credential's VALUE.
+    `adapters.gitleaks` builds every field of a finding from scratch, which is
+    the second lock behind the purge and the one that still holds when a
+    future gitleaks moves the value into a field nobody here has heard of --
+    `Snippet` below stands for exactly that field.
+
+    No binary needed, so it runs on every machine. The one real value
+    assertion this file had lived in a `@needs_gitleaks` test and was skipped
+    wherever gitleaks is absent -- which is precisely where nothing else was
+    checking the parser's guarantee.
+    """
+    data = [{
+        "RuleID": "aws-access-token", "File": "prod.env", "StartLine": 4,
+        "Commit": "a" * 40,
+        # The three fields that carry the matched text, populated the way the
+        # real tool populates them.
+        "Match": f"AWS_ACCESS_KEY_ID={AWS_KEY}",
+        "Secret": AWS_KEY,
+        "Snippet": f"export AWS_ACCESS_KEY_ID={AWS_KEY}",
+        # And the metadata a commit's author can write anything into.
+        "Author": "Ada", "Email": "ada@example.com",
+        "Message": f"oops, committing {AWS_KEY}",
+    }]
+    out = adapters.gitleaks(data, root=".")
+    assert out, "the record must still parse into a finding"
+    blob = json.dumps(out)
+    assert AWS_KEY not in blob, "the credential itself reached the finding"
+    assert "AWS_ACCESS_KEY_ID" not in blob, "the matched line reached the finding"
+    assert "ada@example.com" not in blob and "Ada" not in blob
+    assert "oops" not in blob, "a commit message can say anything"
+    # The finding is real, not empty -- an adapter that dropped the record
+    # entirely would satisfy every assertion above.
+    assert out[0]["rule"] == "aws-access-token"
+    assert out[0]["occurrences"][0]["file"] == "prod.env"
+    assert out[0]["occurrences"][0]["line"] == 4
+
+
+def test_the_purge_and_the_adapter_are_two_locks_not_one():
+    """The containment side of the test above: the value must not survive
+    EITHER door on its own.
+
+    `engines.purge` drops `Match` and `Secret` at the parse; the adapter
+    rebuilds every field rather than copying. The test above proves the
+    adapter alone is enough. This proves the purge alone is enough for the
+    fields it names -- so a future refactor that leans on one of them has the
+    other still standing, and a regression in either is a red test rather
+    than a silent halving of the guarantee.
+    """
+    raw = [{"RuleID": "aws-access-token", "File": "prod.env", "StartLine": 4,
+            "Match": f"AWS_ACCESS_KEY_ID={AWS_KEY}", "Secret": AWS_KEY}]
+    purged = engines.purge("gitleaks", raw)
+    assert AWS_KEY not in json.dumps(purged)
+    assert purged[0]["RuleID"] == "aws-access-token"
 
 
 def test_the_fingerprint_matches_our_own_recipe():
@@ -357,6 +416,264 @@ def git(root, *args):
                    capture_output=True, text=True)
 
 
+# ------------------------------------------- the history has to be READABLE
+#
+# `is_git_checkout` asked git `rev-parse --git-dir` -- "is this a repository"
+# -- and every OTHER way of failing to read a history sailed past it. Inside a
+# real checkout `gitleaks git` then exits 0, writes `[]`, and is
+# indistinguishable from a clean history, while the coverage note goes on
+# claiming the full history was scanned. Reproduced on a repository with a
+# secret in a deleted file and `.git/objects` emptied: `git log` exits 128
+# with "fatal: bad object HEAD", the old guard said True, the finding was
+# lost, and the note said it had been looked for.
+#
+# `history_state` asks whether the history can be WALKED instead. One probe
+# per route below, plus the two controls that matter: a healthy repository
+# still claims the full history, and a repository with no commits yet is NOT
+# reported as a gap -- an unborn history has nothing to miss, and a rule that
+# cried gap on every freshly-initialised checkout would be broken the other
+# way.
+
+def history_repo(root):
+    """A checkout whose only secret is in a file that was later deleted --
+    findable in the history and nowhere else, so a history sweep that did not
+    really run reports zero and looks clean."""
+    root.mkdir(parents=True)
+    git(root, "init", "-q")
+    git(root, "config", "user.email", "t@example.com")
+    git(root, "config", "user.name", "t")
+    (root / "prod.env").write_text(f"AWS_ACCESS_KEY_ID={AWS_KEY}\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "add")
+    (root / "prod.env").unlink()
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "remove")
+    return root
+
+
+def break_objects(root):
+    """Empty `.git/objects`. The reviewer's own reproduction: the refs still
+    name commits, and not one of them can be read."""
+    for child in (root / ".git" / "objects").iterdir():
+        shutil.rmtree(child) if child.is_dir() else child.unlink()
+    return root
+
+
+def break_ref(root):
+    """Point the checked-out branch at a sha that was never written."""
+    head = (root / ".git" / "HEAD").read_text().strip()
+    ref = head.split(" ", 1)[1] if head.startswith("ref: ") else "refs/heads/main"
+    (root / ".git" / ref).write_text("d" * 40 + "\n")
+    return root
+
+
+def notes_say_history_gap(notes):
+    return any("history sweep did not complete" in n for n in notes)
+
+
+def notes_claim_full_history(notes):
+    return any(adapters.FULL_HISTORY in n for n in notes)
+
+
+@pytest.mark.parametrize("break_it", [break_objects, break_ref],
+                         ids=["unreadable-objects", "broken-ref"])
+def test_a_history_git_cannot_walk_is_not_a_readable_history(tmp_path, break_it):
+    """The unit the guard is built on, asked without any binary at all."""
+    root = break_it(history_repo(tmp_path / "repo"))
+    state, reason = adapters.history_state(root)
+    assert state == adapters.HISTORY_GONE, (state, reason)
+    assert reason, "a declared gap has to carry git's own reason"
+
+
+def test_an_unreadable_git_directory_is_not_a_readable_history(tmp_path):
+    root = history_repo(tmp_path / "repo")
+    (root / ".git").chmod(0o000)
+    try:
+        state, _reason = adapters.history_state(root)
+    finally:
+        (root / ".git").chmod(0o755)
+    assert state == adapters.HISTORY_GONE
+
+
+def test_a_directory_that_is_no_repository_at_all_is_not_a_readable_history(tmp_path):
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    assert adapters.history_state(loose)[0] == adapters.HISTORY_GONE
+
+
+def test_a_shallow_clone_is_readable_but_not_full(tmp_path):
+    """Its own state, not a failure: the sweep runs and what it reports is
+    real. Only the word "full" has to go."""
+    deep = history_repo(tmp_path / "deep")
+    shallow = tmp_path / "shallow"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{deep}",
+                    str(shallow)], check=True, capture_output=True, text=True)
+    assert adapters.history_state(shallow)[0] == adapters.HISTORY_SHALLOW
+    assert adapters.history_state(deep)[0] == adapters.HISTORY_OK
+
+
+def test_a_repository_with_no_commits_yet_is_a_readable_history(tmp_path):
+    """THE containment probe for this whole guard.
+
+    Widening "is there a .git" to "can the history be walked" is a widening,
+    and the nearest thing on the other side of the new boundary is a
+    repository that was just `git init`-ed. `git log` fails there ("does not
+    have any commits yet") -- so a guard written on `git log`'s return code
+    would declare a history gap on every new checkout, a blind spot that does
+    not exist. `rev-list --all` exits 0 with empty output instead, which is
+    the honest answer: the history is readable and there is none of it.
+    """
+    root = tmp_path / "fresh"
+    root.mkdir()
+    git(root, "init", "-q")
+    (root / "app.env").write_text(f"AWS_ACCESS_KEY_ID={AWS_KEY}\n")
+    assert adapters.history_state(root)[0] == adapters.HISTORY_OK
+
+
+@needs_gitleaks
+@pytest.mark.parametrize("break_it", [break_objects, break_ref],
+                         ids=["unreadable-objects", "broken-ref"])
+def test_an_unreadable_history_is_a_declared_gap_not_a_clean_report(tmp_path,
+                                                                   break_it):
+    """The end-to-end shape of the regression, through the real binary.
+
+    Before the fix: `gitleaks git` exits 0 with `[]`, the history finding is
+    lost, and the note says "over the working tree and the full git history".
+    A reader cannot tell that from a repository whose history is genuinely
+    clean -- which is the exact silence `secrets.scan_history` was fixed for,
+    reopened through a neighbouring door.
+    """
+    root = break_it(history_repo(tmp_path / "repo"))
+    findings, notes = adapters.gitleaks_scan(root)
+    assert findings is not None, notes
+    assert notes_say_history_gap(notes), notes
+    assert not notes_claim_full_history(notes), notes
+
+
+@needs_gitleaks
+def test_a_shallow_clone_never_claims_the_full_history(tmp_path):
+    """A depth-1 clone carries one commit. `gitleaks git` reads exactly that,
+    reports nothing, and exits 0 -- and the note used to call it the full
+    history. Verified: the deleted-file secret is genuinely absent here."""
+    deep = history_repo(tmp_path / "deep")
+    shallow = tmp_path / "shallow"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{deep}",
+                    str(shallow)], check=True, capture_output=True, text=True)
+    findings, notes = adapters.gitleaks_scan(shallow)
+    assert findings is not None, notes
+    assert not notes_claim_full_history(notes), notes
+    assert any("shallow clone" in n for n in notes), notes
+
+
+@needs_gitleaks
+def test_a_readable_history_still_says_it_read_the_full_history(tmp_path):
+    """The control for every probe above. The fix widened what counts as a
+    gap, and a guard that now declares one everywhere would be broken the
+    other way -- silently, because a gap note reads like diligence."""
+    root = history_repo(tmp_path / "repo")
+    findings, notes = adapters.gitleaks_scan(root)
+    assert findings is not None, notes
+    assert [f for f in findings if f["historical"]], f"the finding is gone: {notes}"
+    assert notes_claim_full_history(notes), notes
+    assert not notes_say_history_gap(notes), notes
+    assert not any("shallow clone" in n for n in notes), notes
+
+
+@needs_gitleaks
+def test_a_repository_with_no_commits_declares_no_history_gap(tmp_path):
+    """The containment probe again, this time through the whole scan: a
+    freshly-initialised checkout must not be told its history is a blind
+    spot."""
+    root = plant(tmp_path / "fresh")
+    git(root, "init", "-q")
+    findings, notes = adapters.gitleaks_scan(root)
+    assert findings is not None, notes
+    assert any(f["rule"] == "aws-access-token" for f in findings)
+    assert not notes_say_history_gap(notes), notes
+
+
+@needs_gitleaks
+def test_an_unreadable_history_still_keeps_the_working_tree_findings(tmp_path):
+    """A gap in one half is not a reason to lose the other half."""
+    root = break_objects(history_repo(tmp_path / "repo"))
+    (root / "app.env").write_text(f"AWS_ACCESS_KEY_ID={AWS_KEY}\n")
+    findings, notes = adapters.gitleaks_scan(root)
+    assert findings is not None, notes
+    assert any(not f["historical"] and f["occurrences"][0]["file"] == "app.env"
+               for f in findings), findings
+    assert notes_say_history_gap(notes), notes
+
+
+def test_when_neither_pass_ran_both_reasons_are_reported(monkeypatch, tmp_path):
+    """`history_note` used to be dropped on the floor here: when both passes
+    failed only the TREE's sentence was appended, so a run whose history was
+    unreadable AND whose tree pass could not run reported one of the two
+    faults -- whichever happened to be second."""
+    root = break_objects(history_repo(tmp_path / "repo"))
+    # The tree pass fails for its own, different reason.
+    monkeypatch.setattr(engines, "run_json",
+                        lambda *a, **k: (None, "gitleaks is not installed."))
+    findings, notes = adapters.gitleaks_scan(root)
+    assert findings is None, findings
+    blob = " ".join(notes)
+    assert "not installed" in blob, notes
+    assert "fatal" in blob or "history" in blob, notes
+
+
+def test_neither_pass_ran_says_one_reason_once(monkeypatch, tmp_path):
+    """The containment side: the commonest failure by far is the binary being
+    absent, which fails BOTH passes with the identical sentence. Saying it
+    twice reads like two separate faults."""
+    root = history_repo(tmp_path / "repo")
+    monkeypatch.setattr(engines, "run_json",
+                        lambda *a, **k: (None, "gitleaks is not installed."))
+    _findings, notes = adapters.gitleaks_scan(root)
+    assert notes.count("gitleaks is not installed.") == 1, notes
+
+
+# ------------------------------------- the analysed repository's own config
+
+@needs_gitleaks
+def test_a_project_config_that_silences_the_scan_is_declared(tmp_path):
+    """`gitleaks_config` extends the analysed project's own `.gitleaks.toml`,
+    which is gitleaks' own default and is a defensible decision. The
+    over-claim was not: a repository can write an allowlist matching
+    everything and turn the whole secret phase off, and the note went on
+    saying the tree and the history were scanned.
+
+    Measured both ways here, in one test, so the pair cannot drift: the same
+    tree with and without the file, and the note has to tell them apart.
+    """
+    root = plant(tmp_path / "repo")
+    loud, loud_notes = adapters.gitleaks_scan(root)
+    assert loud, "the planted tree must be noisy without the project's config"
+    assert not any("gitleaks.toml" in n for n in loud_notes), loud_notes
+
+    (root / ".gitleaks.toml").write_text(
+        "[extend]\nuseDefault = true\n\n"
+        "[allowlist]\nregexes = ['''.*''']\npaths = ['''.*''']\n")
+    quiet, quiet_notes = adapters.gitleaks_scan(root)
+    assert quiet == [], f"the project's own allowlist should have silenced it: {quiet}"
+    assert any("gitleaks.toml" in n for n in quiet_notes), (
+        f"a repository that told the scanner not to look must be declared, "
+        f"otherwise 'we found nothing' and 'we were told not to look' read "
+        f"identically: {quiet_notes}")
+
+
+def test_the_config_note_names_the_file_that_was_actually_extended(tmp_path):
+    """The note and the config read the same file through one function, so a
+    note claiming an extension that did not happen is not expressible."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    assert adapters.project_config(root) is None
+    assert "useDefault = true" in adapters.gitleaks_config(root=root)
+
+    own = root / ".gitleaks.toml"
+    own.write_text("[extend]\nuseDefault = true\n")
+    assert adapters.project_config(root) == own
+    assert str(own) in adapters.gitleaks_config(root=root)
+
+
 # ------------------------------------------------------- one engine, or none
 
 def open_analysis(db):
@@ -400,15 +717,154 @@ def test_the_engine_obeys_the_ignore_paths_prepare_was_given(tmp_path):
     """`ignore_paths` is a promise about the ANALYSIS. It reached the tree
     sweep, the history sweep and the hygiene pass; it has to reach the
     engine too, or the operator sets the option and gets the noise anyway
-    one report later."""
+    one report later.
+
+    The POSITIVE CONTROL comes first, and it is the half that makes the
+    assertion mean anything: `== []` on its own passes identically on the
+    fallback path, on a broken engine, and on an analysis that scanned
+    nothing at all. The same tree, same engine, no globs, must be noisy --
+    and noisy with the ENGINE's rule id, which is what proves the engine ran.
+    """
     root = plant(tmp_path / "repo")
     db = tmp_path / "security.db"
     env = {**os.environ, "CC_SECURITY_ENGINES": "on"}
-    aid = open_analysis(db)
-    cli_json(db, "prepare", "--analysis", str(aid), "--root", str(root),
+
+    loud = open_analysis(db)
+    cli_json(db, "prepare", "--analysis", str(loud), "--root", str(root),
+             "--offline", env=env)
+    noisy = [f for f in cli_json(db, "findings", "--analysis", str(loud), env=env)
+             if f["category"] == "secret"]
+    assert {f["rule"] for f in noisy} == {"aws-access-token"}, noisy
+    # `plant` writes three copies of one key. Two survive without the globs --
+    # the third is under `__pycache__`, which SKIP_DIRS excludes on every run.
+    assert {f["occurrences"][0]["file"] for f in noisy} == {
+        "app.env", "tests/fixtures/fake.env"}, noisy
+
+    quiet = open_analysis(db)
+    cli_json(db, "prepare", "--analysis", str(quiet), "--root", str(root),
              "--offline", "--ignore", "app.env,tests/fixtures/**", env=env)
-    findings = cli_json(db, "findings", "--analysis", str(aid), env=env)
+    findings = cli_json(db, "findings", "--analysis", str(quiet), env=env)
     assert [f for f in findings if f["category"] == "secret"] == []
+
+
+# ---------------------------------------- the lifecycle, on BOTH scanner paths
+#
+# Three properties this project already holds the built-in scanner to
+# (tests/security/test_cli.py, "the history sweep, every run") had no
+# engine-path equivalent, and tests/security/conftest.py pins the whole suite
+# to CC_SECURITY_ENGINES=off -- so on a machine with gitleaks installed, which
+# is production going forward, the suite proved none of them.
+#
+# The third one is the reason this is not merely tidiness. "The tree reading
+# wins over its history twin" is guaranteed ONLY by the order of the two
+# `run_json` calls in adapters.gitleaks_scan: swap those two lines and every
+# co-located secret becomes a report about the past, with nothing red
+# anywhere. Parametrised over both scanners, both orders are now pinned.
+
+ENGINE_MATRIX = [False, pytest.param(True, marks=needs_gitleaks)]
+
+
+def analysis_with(db, root, engines_on, aid=None):
+    """One `prepare` over `root` with the scanner switched explicitly."""
+    env = {**os.environ, "CC_SECURITY_ENGINES": "on" if engines_on else "off"}
+    aid = open_analysis(db) if aid is None else aid
+    cli_json(db, "prepare", "--analysis", str(aid), "--root", str(root),
+             "--offline", env=env)
+    return aid, env
+
+
+def secret_states(db, aid, env):
+    checklist = cli_json(db, "checklist", "--analysis", str(aid), env=env)
+    return {f["state"] for f in checklist["findings"] if f["category"] == "secret"}
+
+
+@pytest.mark.parametrize("engines_on", ENGINE_MATRIX)
+def test_a_history_secret_stays_open_on_either_scanner(tmp_path, engines_on):
+    """THE scenario the history sweep exists for, now on both paths.
+
+    A key was committed on Monday and the file deleted on Tuesday. It must
+    stay OPEN run after run -- never `fixed`, which would congratulate the
+    operator for the exact act the finding's own remediation calls
+    insufficient.
+    """
+    root = history_repo(tmp_path / f"repo-{engines_on}")
+    db = tmp_path / f"life-{engines_on}.db"
+
+    first, env = analysis_with(db, root, engines_on)
+    cli_json(db, "finish", "--analysis", str(first), "--state", "done", env=env)
+    assert secret_states(db, first, env) == {"new"}
+
+    second, _ = analysis_with(db, root, engines_on)
+    cli_json(db, "finish", "--analysis", str(second), "--state", "done", env=env)
+    assert secret_states(db, second, env) == {"open"}
+
+    third, _ = analysis_with(db, root, engines_on)
+    cli_json(db, "finish", "--analysis", str(third), "--state", "done", env=env)
+    assert secret_states(db, third, env) == {"open"}
+
+    carried = cli_json(db, "findings", "--analysis", str(third), env=env)
+    assert any("git history" in f["rationale"] for f in carried), carried
+    assert AWS_KEY not in json.dumps(carried)
+
+
+@pytest.mark.parametrize("engines_on", ENGINE_MATRIX)
+def test_rotating_and_accepting_closes_it_on_either_scanner(tmp_path, engines_on):
+    """The other half of the lifecycle. Because the sweep never stops finding
+    it, the only honest close is a human saying the credential was rotated --
+    and that decision has to win over the derived `open` on both paths."""
+    root = history_repo(tmp_path / f"repo-{engines_on}")
+    db = tmp_path / f"close-{engines_on}.db"
+
+    first, env = analysis_with(db, root, engines_on)
+    secret = [f for f in cli_json(db, "findings", "--analysis", str(first), env=env)
+              if f["category"] == "secret"]
+    assert len(secret) == 1, secret
+    cli_json(db, "finish", "--analysis", str(first), "--state", "done", env=env)
+    cli_json(db, "decide", "--project", "web",
+             "--fingerprint", secret[0]["fingerprint"], "--state", "accepted",
+             "--reason", "rotated at the provider on Tuesday", env=env)
+
+    second, _ = analysis_with(db, root, engines_on)
+    cli_json(db, "finish", "--analysis", str(second), "--state", "done", env=env)
+    assert secret_states(db, second, env) == {"accepted"}
+
+
+@pytest.mark.parametrize("engines_on", ENGINE_MATRIX)
+def test_the_tree_reading_wins_over_its_history_twin_on_either_scanner(
+        tmp_path, engines_on):
+    """A secret in the tree AND in the history is ONE finding: same rule, same
+    path, therefore one fingerprint, and `record_finding` upserts.
+
+    The two readings disagree, and the tree's is the one a reader can act on:
+    it says "in the working tree" and carries the line the secret is on RIGHT
+    NOW, where the history's says "in the git history" and points into a
+    commit. So the history is recorded FIRST and the tree wins the upsert.
+
+    On the engine path that ordering is two adjacent lines in
+    `adapters.gitleaks_scan` and nothing else. This is the test that fails if
+    they are ever swapped -- the wording AND the line number, because a
+    history reading of a co-located secret carries a plausible-looking line
+    of its own and asserting only on the line would not catch the swap.
+    """
+    root = tmp_path / f"repo-{engines_on}"
+    root.mkdir()
+    git(root, "init", "-q")
+    git(root, "config", "user.email", "t@example.com")
+    git(root, "config", "user.name", "t")
+    # Two lines of padding, so the tree's line number (3) is one no history
+    # reading of this file would produce by coincidence.
+    (root / "prod.env").write_text(f"# header\n# header\nAWS_ACCESS_KEY_ID={AWS_KEY}\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "add")
+
+    aid, env = analysis_with(db := tmp_path / f"twin-{engines_on}.db", root,
+                             engines_on)
+    secret = [f for f in cli_json(db, "findings", "--analysis", str(aid), env=env)
+              if f["category"] == "secret"]
+    assert len(secret) == 1, "the tree and history readings must be one row"
+    assert "in the working tree" in secret[0]["rationale"], secret[0]["rationale"]
+    assert "git history" not in secret[0]["rationale"], secret[0]["rationale"]
+    assert [o["line"] for o in secret[0]["occurrences"]] == [3], secret[0]
 
 
 def test_prepare_falls_back_to_the_hand_written_scanner_and_says_which_ran(tmp_path):

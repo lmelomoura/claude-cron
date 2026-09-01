@@ -126,6 +126,78 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The engine's history sweep now asks whether the history can be READ,
+  not whether a `.git` exists — and the coverage note stops claiming a
+  sweep that never happened.** The guard ran `git rev-parse --git-dir`,
+  which answers "is this a repository". Every other way of failing to read
+  a history sailed past it: inside a real checkout `gitleaks git` then
+  exits 0, writes `[]`, and is indistinguishable from a clean history,
+  while the note went on saying the scan covered "the working tree and the
+  full git history". Reproduced on a repository whose only secret was in a
+  deleted file, with `.git/objects` emptied: `git log` exits 128 with
+  "fatal: bad object HEAD", the guard said yes, the history finding was
+  lost, and the report said it had been looked for. **This was a
+  regression against the scanner being replaced** — `secrets.scan_history`
+  checks git's return code and says so; the module already carries this
+  scar from the days it answered failures with `[]`, and the engine path
+  reopened it through a neighbouring door. The question is now `git
+  rev-list -n1 --all`, which WALKS the refs, so unreadable objects, a
+  broken ref, an unreadable `.git` and git being absent altogether are all
+  declared gaps. A repository with no commits yet is deliberately NOT one:
+  `rev-list` exits 0 there, an unborn history has nothing to miss, and
+  crying gap on every freshly-initialised checkout would be the same
+  dishonesty pointing the other way. A **shallow clone** is its own answer
+  — a depth-1 clone reads cleanly and carries one commit, so the sweep
+  runs and what it reports is real, but the note says "the commits this
+  shallow clone carries" instead of "the full git history" and adds the
+  gap out loud. Verified: a depth-1 clone misses the deleted-file secret,
+  and the note used to be unchanged.
+
+- **A repository can no longer silence the whole secret phase without the
+  report saying so.** `gitleaks_config` extends the analysed project's own
+  `.gitleaks.toml`, which is gitleaks' own default and stays — that file
+  is the project telling the tool what it considers noise. Extending it
+  *silently* does not: measured on a planted tree, 2 findings without the
+  file and 0 with `[allowlist] regexes=['.*'] paths=['.*']`, and the same
+  "the working tree and the full git history" note both times. The note
+  now declares the extension, so a reader can tell "we found nothing" from
+  "the repository told the scanner not to look".
+
+- **When neither engine pass produced a report, both reasons are given.**
+  Only the tree pass's sentence was appended and the history pass's was
+  dropped, so a run whose history was unreadable *and* whose tree sweep
+  could not run reported whichever fault happened to be second. Both are
+  reported now, deduplicated — the commonest case by far, a missing
+  binary, fails both passes with the identical sentence, and saying it
+  twice reads like two separate faults.
+
+- **Secrets found by gitleaks get their curated label and icon back on the
+  dashboard.** `SEC_RULE_META` was keyed only on the eight snake_case rule
+  names the built-in scanner emits, so with the engine running every
+  secret fell through to the generic humaniser — "Aws access token" with a
+  category icon, instead of "AWS access key committed" with a lock. The
+  engine's own rule ids are keyed alongside the old ones, which stay: the
+  built-in scanner still emits them wherever gitleaks is absent, and a
+  ledger holds findings from both. A test now fails if a rule
+  `adapters.SEVERITY_BY_RULE` grades has no label waiting for it.
+
+- **The test named after this module's most important promise now proves
+  it.** `test_a_gitleaks_finding_carries_no_value_anywhere` read an
+  already-purged fixture and grepped the output for the strings "Secret"
+  and "Match" — the engine's KEY NAMES, in a blob those keys had been
+  stripped from. It could not fail, and would have passed unchanged if the
+  adapter had copied `record["Match"]` into a field called `snippet`. It
+  now passes an UNPURGED record carrying a credential-shaped value and
+  asserts the value itself is absent from the result — no binary needed,
+  so it runs everywhere, where the file's only real value assertion used
+  to be skipped on any machine without gitleaks. The engine path's three
+  load-bearing lifecycle properties gained coverage too: a history secret
+  stays `open` and is never reported `fixed`, rotating and accepting is
+  the only way it closes, and the working-tree reading wins over its
+  history twin — the last of which is guaranteed *only* by the order of
+  two adjacent lines, and on a machine with gitleaks installed the suite
+  proved none of them.
+
 - **The one door to an external scanner stopped raising, in the exact case
   its own comment anticipated.** `subprocess.run(..., text=True)` decodes
   strictly, so an engine that writes raw bytes to stderr — precisely what

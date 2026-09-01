@@ -85,6 +85,41 @@ DEFAULT_SEVERITY = "high"
 # and honest about which of the two sweeps actually ran.
 ENGINE_NOTE = "Secrets were scanned by {version}, over {scope}."
 
+# What `{scope}` says about the history half, and why there are two spellings.
+# "the full git history" is a CLAIM, and on a shallow clone it is false: a
+# depth-1 clone carries one commit, `gitleaks git` reads exactly that, and a
+# credential committed and deleted before the cut-off is absent from the
+# report with nothing saying so. Measured: a depth-1 clone of a repository
+# whose secret lives only in a deleted file reports zero history findings.
+FULL_HISTORY = "the full git history"
+SHALLOW_HISTORY = "the commits this shallow clone carries"
+
+# The shallow clone's gap, said in the same shape as every other gap here:
+# the sweep RAN, so this is not `HISTORY_GAP`, but what it could see was
+# bounded by the clone rather than by the repository.
+SHALLOW_GAP = ("This is a shallow clone, so the history sweep saw only the "
+               "commits it carries — a credential committed before the "
+               "clone's cut-off would not appear in this report.")
+
+# Why the history pass was skipped, when git itself cannot read the history.
+# Written as a whole sentence because it is used two ways: on its own when
+# NEITHER pass produced a report, and inside `HISTORY_GAP`'s parentheses when
+# the tree pass survived.
+HISTORY_UNREADABLE = "gitleaks was not asked to read the history: {reason}"
+
+# `gitleaks_config` extends a `.gitleaks.toml` the analysed project ships,
+# which is gitleaks' own default and defensible -- that file is the project
+# telling the tool what it considers noise. What is NOT defensible is
+# extending it silently: a repository can write `[allowlist] regexes=['.*']`
+# and turn the whole secret phase off, and the coverage note would still say
+# the tree and the history were scanned. Measured on a planted tree: 2
+# findings without the file, 0 with it, and the same note both times. A
+# reader has to be able to tell "we found nothing" from "the repository told
+# the scanner not to look".
+PROJECT_CONFIG_NOTE = ("The repository's own .gitleaks.toml was extended, so "
+                       "a rule or allowlist it defines may have suppressed "
+                       "secrets this report would otherwise show.")
+
 # The working tree's half of `secrets.HISTORY_GAP`, and the same shape: a
 # sweep that did not run has to be said, because "found nothing" and "never
 # looked" are the same silence in a report otherwise.
@@ -151,6 +186,23 @@ def scope_patterns(skip_dirs=None, ignore_paths=()) -> list[str]:
     return patterns
 
 
+def project_config(root):
+    """The analysed project's own `.gitleaks.toml`, or None.
+
+    One reader for a file that is consulted twice: `gitleaks_config` extends
+    it, and `gitleaks_scan` has to SAY that it did. Two separate `is_file()`
+    checks would be free to disagree -- a note that names a file the config
+    did not actually extend is worse than no note.
+    """
+    if root is None:
+        return None
+    own = Path(root) / ".gitleaks.toml"
+    try:
+        return own if own.is_file() else None
+    except OSError:
+        return None
+
+
 def gitleaks_config(root=None, ignore_paths=(), skip_dirs=None) -> str:
     """A gitleaks TOML that keeps its rules and adds our scope.
 
@@ -159,10 +211,16 @@ def gitleaks_config(root=None, ignore_paths=(), skip_dirs=None) -> str:
     project that wrote one has already told the tool what it considers
     noise, so ours extends it instead of discarding it; with no such file we
     extend the default rule set.
+
+    Honouring the project's file is gitleaks' own default and is deliberate.
+    It is also a hole a repository can drive through -- an `[allowlist]`
+    matching everything silences the phase -- so `gitleaks_scan` declares
+    the extension in the coverage note (`PROJECT_CONFIG_NOTE`). The decision
+    stays; the silence does not.
     """
-    own = Path(root) / ".gitleaks.toml" if root is not None else None
+    own = project_config(root)
     lines = ["[extend]"]
-    lines.append(f"path = '''{own}'''" if own is not None and own.is_file()
+    lines.append(f"path = '''{own}'''" if own is not None
                  else "useDefault = true")
     lines += ["", "[allowlist]",
               'description = "the scope claude-cron analyses: SKIP_DIRS and '
@@ -282,28 +340,75 @@ def gitleaks(data, root, historical: bool = False, ignore_paths=()) -> list[dict
 
 # ------------------------------------------------------------- the whole run
 
-def is_git_checkout(root) -> bool:
-    """Whether `gitleaks git` has a history to read here.
+# The three states a repository's history can be in, as far as any honest
+# sentence about a sweep of it goes.
+HISTORY_OK = "ok"          # git walked it; whatever gitleaks reports is complete
+HISTORY_SHALLOW = "shallow"  # git walked what there is, and there is not all of it
+HISTORY_GONE = "gone"      # git cannot walk it at all; the sweep must not run
+
+
+def _git(root, *args):
+    """`git -C root ...`, or None when git will not run at all."""
+    try:
+        return subprocess.run(["git", "-C", str(root), *args],
+                              capture_output=True, text=True, errors="replace",
+                              timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def history_state(root) -> tuple[str, str]:
+    """(state, reason): whether the history can actually be READ here.
 
     Asked BEFORE the engine runs, because the engine will not say. Pointed at
-    a directory that is not a checkout, `gitleaks git` logs `fatal: not a git
-    repository` to stderr, exits 0 under `--exit-code 0`, and writes a report
-    containing `[]` -- the identical answer it gives for a repository whose
-    history is clean. That silence is the exact failure this project already
-    has a scar from: `scan_history` used to return `[]` on error, so the one
-    failure mode that hides the findings it exists to produce was reported as
-    the best possible news.
+    a history it cannot read, `gitleaks git` logs `fatal: ...` to stderr,
+    exits 0 under `--exit-code 0`, and writes a report containing `[]` -- the
+    identical answer it gives for a repository whose history is clean. That
+    silence is the exact failure this project already has a scar from:
+    `scan_history` used to return `[]` on error, so the one failure mode that
+    hides the findings it exists to produce was reported as the best possible
+    news.
 
-    Fails CLOSED. Anything that stops git from answering is read as "no
-    history here", which costs a note saying the sweep did not run instead of
-    a report that quietly claims it did.
+    THE QUESTION IS "CAN THE HISTORY BE READ", NOT "IS THERE A .git". This
+    used to run `rev-parse --git-dir`, which answers the second one -- so a
+    real checkout whose objects were unreadable passed the guard, `gitleaks
+    git` exited 0 with `[]`, and the coverage note went on claiming the full
+    history had been scanned. Reproduced on a repository with a secret in a
+    deleted file and `.git/objects` emptied: `git log` exits 128 with "fatal:
+    bad object HEAD", the old guard said True, and the history finding was
+    lost under a note that said it had been looked for. The same door is open
+    to a broken ref, an unreadable `.git`, and git being absent altogether.
+
+    `rev-list -n1 --all` is the question asked instead: it WALKS the refs, so
+    it fails on exactly the repositories whose history cannot be read, and it
+    is the cheapest walk that does -- `-n1` stops at the first commit. It also
+    draws the boundary in the right place: a repository with no commits yet
+    exits 0 with empty output, because an unborn history is not a gap. There
+    is nothing to miss, and reporting one would be a false alarm on every
+    freshly-initialised checkout.
+
+    Shallow is its own answer, not an error. A depth-1 clone reads cleanly
+    and carries one commit, so the sweep runs and the report is real -- it is
+    only the word "full" that has to go (see `SHALLOW_GAP`).
+
+    Fails CLOSED. Anything that stops git from answering is HISTORY_GONE,
+    which costs a note saying the sweep did not run instead of a report that
+    quietly claims it did.
     """
-    try:
-        proc = subprocess.run(["git", "-C", str(root), "rev-parse", "--git-dir"],
-                              capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return proc.returncode == 0
+    walked = _git(root, "rev-list", "-n1", "--all")
+    if walked is None:
+        return HISTORY_GONE, "git could not be run"
+    if walked.returncode != 0:
+        # Only git's FIRST stderr line, the same way `secrets.scan_history`
+        # quotes it: the rest is advice addressed to a human at a terminal.
+        first = (walked.stderr or "").strip().splitlines()
+        return HISTORY_GONE, (first[0] if first
+                              else f"git exited {walked.returncode}")
+    shallow = _git(root, "rev-parse", "--is-shallow-repository")
+    if shallow is not None and shallow.returncode == 0 \
+            and shallow.stdout.strip() == "true":
+        return HISTORY_SHALLOW, ""
+    return HISTORY_OK, ""
 
 
 def gitleaks_scan(root, ignore_paths=()):
@@ -319,14 +424,28 @@ def gitleaks_scan(root, ignore_paths=()):
     THE HISTORY IS NOT OPTIONAL. A credential that was ever committed stays
     compromised however thoroughly the file was later deleted, which is what
     this finding's remediation says and what the hand-written sweep reads
-    `git log -p` for. The history pass runs FIRST so that a secret present
-    in both is recorded by the tree pass last: the two readings share one
-    fingerprint, `record_finding` upserts, and the tree's reading is the one
-    that carries a line number a reader can act on.
+    `git log -p` for.
+
+    THE ORDER OF THE TWO `run_json` CALLS IS THE MECHANISM, not a detail.
+    The history pass runs FIRST so that a secret present in both is recorded
+    by the tree pass LAST: the two readings share one fingerprint,
+    `record_finding` upserts, and the tree's is the reading a human can act
+    on -- it says "in the working tree" and points at the line the credential
+    is on right now, where the history's points into a commit. Swap these two
+    lines and every co-located secret becomes a report about the past, with
+    nothing red anywhere to say so. Pinned by
+    test_the_tree_reading_wins_over_its_history_twin_on_either_scanner.
+
+    EVERY CLAIM IN `notes` IS SPELLED FROM WHAT WAS ACTUALLY DONE. The scope
+    sentence is assembled from `history_state` and from which passes returned
+    a report -- never from an assumption that pointing gitleaks at a checkout
+    means its history was read. `gitleaks git` exits 0 and writes `[]` for a
+    history it could not read, so a note built on "we ran the command" would
+    be a note that cannot tell a clean repository from a broken one.
     """
     root = Path(root)
     notes = []
-    checkout = is_git_checkout(root)
+    state, why = history_state(root)
     with tempfile.TemporaryDirectory() as tmp:
         config = Path(tmp) / "scope.toml"
         config.write_text(gitleaks_config(root=root, ignore_paths=ignore_paths))
@@ -339,12 +458,23 @@ def gitleaks_scan(root, ignore_paths=()):
                   # name the files it is scanning.
                   "--log-level", "error"]
         history, history_note = (
-            engines.run_json("gitleaks", ["git", ".", *common], root)
-            if checkout else (None, "the root is not a git checkout"))
+            (None, HISTORY_UNREADABLE.format(reason=why))
+            if state == HISTORY_GONE
+            else engines.run_json("gitleaks", ["git", ".", *common], root))
         tree, tree_note = engines.run_json("gitleaks", ["dir", ".", *common], root)
 
     if history is None and tree is None:
-        notes.append(tree_note)
+        # BOTH reasons, not just the tree's. They are routinely different --
+        # an unreadable history and a tree pass that crashed are two separate
+        # facts -- and `history_note` used to be dropped on the floor here, so
+        # the one sentence that survived was about whichever pass happened to
+        # be second. Deduplicated because the commonest case by far (the
+        # binary is absent, or will not report a version) fails both passes
+        # with the identical sentence, and saying it twice reads like two
+        # faults. Not wrapped in the gap templates: nothing is missing yet --
+        # `_scan_secrets` reads a None here as "the engine contributed
+        # nothing" and runs the built-in scanner over both halves instead.
+        notes += [n for n in dict.fromkeys((history_note, tree_note)) if n]
         return None, notes
 
     findings = []
@@ -355,14 +485,26 @@ def gitleaks_scan(root, ignore_paths=()):
     else:
         findings += gitleaks(history, root, historical=True,
                              ignore_paths=ignore_paths)
+        if state == HISTORY_SHALLOW:
+            notes.append(SHALLOW_GAP)
     if tree is None:
         notes.append(TREE_GAP.format(reason=tree_note.rstrip(".")))
     else:
         findings += gitleaks(tree, root, historical=False,
                              ignore_paths=ignore_paths)
+    # The history half of the claim is spelled from what git said, never
+    # assumed: "the full git history" is a promise, and on a shallow clone it
+    # is a false one.
+    history_scope = (SHALLOW_HISTORY if state == HISTORY_SHALLOW
+                     else FULL_HISTORY)
     scope = " and ".join(
         [s for s in ("the working tree" if tree is not None else "",
-                     "the full git history" if history is not None else "") if s])
+                     history_scope if history is not None else "") if s])
     notes.append(ENGINE_NOTE.format(
         version=engines.version_of("gitleaks") or "gitleaks", scope=scope))
+    # Said after the scan is described, because it qualifies that description:
+    # the sweep ran, and the analysed repository had a say in what it looked
+    # for.
+    if project_config(root) is not None:
+        notes.append(PROJECT_CONFIG_NOTE)
     return findings, notes

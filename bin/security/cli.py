@@ -431,12 +431,22 @@ def cmd_prepare(args):
     # tree and in the history shares one fingerprint (rule + path, see
     # secret_fingerprint), so record_finding upserts the two into one row and
     # the LAST writer's wording survives. The tree reading is the one that has
-    # to win: it carries the real line numbers and says "in the working tree",
-    # where the history reading says line 0 and "in the git history" -- a
-    # secret sitting in the file right now, reported at line 0 as a thing of
-    # the past. Both readings share one remediation ("rotate first, deleting
-    # the line is not enough"), so nothing is lost by letting the tree's
-    # wording win.
+    # to win: it says "in the working tree", where the history reading says
+    # "in the git history" -- a secret sitting in the file right now, reported
+    # as a thing of the past. The line differs too, and by how much depends on
+    # which scanner ran: the built-in sweep files every history finding at
+    # line 0 (secrets.scan_history, which reads a diff and has no line to
+    # give), while gitleaks reports the commit's own StartLine -- a real
+    # number, but a number in a commit rather than in the file as it stands.
+    # Both readings share one remediation ("rotate first, deleting the line is
+    # not enough"), so nothing is lost by letting the tree's wording win.
+    #
+    # ORDERING IS THE WHOLE MECHANISM, on both paths. `_scan_secrets` returns
+    # history before tree, and `adapters.gitleaks_scan` runs its two
+    # `run_json` calls in that same order; swap either pair and every
+    # co-located secret becomes a report about the past. Pinned by
+    # test_the_working_tree_reading_wins_over_its_history_twin, parametrised
+    # over both scanners.
     secret_findings, secret_notes, tree_lines = _scan_secrets(root, ignore)
     findings = secret_findings + hygiene.scan(root, ignore)
     notes = [n for n in secret_notes if n]

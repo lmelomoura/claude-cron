@@ -211,9 +211,13 @@ export function secPosture(findings, minSeverity){
    that can drift from this one.
 
    SEC_RULE_META covers exactly the CLOSED rule vocabularies: category
-   "secret" (bin/security/secrets.py's own `_RULES`) and category "hygiene"
-   (bin/security/hygiene.py's own findings) -- both fixed lists, because the
-   engine that writes them ships a fixed list of its own. Two more
+   "secret" and category "hygiene" (bin/security/hygiene.py's own findings)
+   -- fixed lists, because the engine that writes them ships a fixed list of
+   its own. "secret" has TWO such lists, because two scanners can write it:
+   bin/security/secrets.py's own `_RULES` (snake_case) when the built-in
+   pattern scanner runs, and gitleaks' rule ids (kebab-case) when the engine
+   does -- see the second block below. Only ever one of the two per analysis,
+   but both across a fleet, and a ledger keeps findings from both. Two more
    categories are closed too and still need no entry here: "dependency"
    (bin/security/osv.py) writes the OSV.dev advisory id itself as the rule --
    GHSA-... or CVE-... -- and an advisory id is already a name (the mockup
@@ -241,6 +245,42 @@ export const SEC_RULE_META = {
   stripe_key:          {label: "Stripe live key committed",       icon: "lock"},
   openai_key:          {label: "OpenAI API key committed",        icon: "lock"},
   google_api_key:      {label: "Google API key committed",        icon: "lock"},
+  /* secret, again -- gitleaks' OWN rule ids, for the same credential types.
+     bin/security/adapters.py runs gitleaks instead of secrets.py whenever the
+     binary is installed, and it writes the ENGINE's rule id into the finding
+     (`aws-access-token`, not `aws_access_key`) because the fingerprint
+     contains the rule and re-spelling it would orphan every decision recorded
+     against the old identity. Without these keys every secret on an
+     engine-scanned project fell through to secHumaniseRule -- "Aws access
+     token" with the generic category icon, instead of the curated label above.
+     The snake_case keys STAY: the built-in scanner still emits them wherever
+     gitleaks is absent or switched off, and both vocabularies are live at once
+     across a fleet of projects.
+
+     Paired with adapters.SEVERITY_BY_RULE, which maps the same ids -- one
+     rule of ours is routinely several of theirs (five GitHub token kinds,
+     seven Slack ones), and each gets the label its own credential type earns
+     rather than a shared one that would flatten them back together. Anything
+     outside this list is one of gitleaks' ~180 other rules and humanises, as
+     it did before. */
+  "aws-access-token":          {label: "AWS access key committed",    icon: "lock"},
+  "github-pat":                {label: "GitHub token committed",      icon: "lock"},
+  "github-fine-grained-pat":   {label: "GitHub token committed",      icon: "lock"},
+  "github-oauth":              {label: "GitHub OAuth token committed", icon: "lock"},
+  "github-app-token":          {label: "GitHub app token committed",  icon: "lock"},
+  "github-refresh-token":      {label: "GitHub refresh token committed", icon: "lock"},
+  "slack-bot-token":           {label: "Slack token committed",       icon: "lock"},
+  "slack-user-token":          {label: "Slack token committed",       icon: "lock"},
+  "slack-app-token":           {label: "Slack token committed",       icon: "lock"},
+  "slack-config-access-token": {label: "Slack token committed",       icon: "lock"},
+  "slack-legacy-bot-token":    {label: "Slack token committed",       icon: "lock"},
+  "slack-legacy-token":        {label: "Slack token committed",       icon: "lock"},
+  "slack-webhook-url":         {label: "Slack webhook URL committed", icon: "lock"},
+  "stripe-access-token":       {label: "Stripe live key committed",   icon: "lock"},
+  "openai-api-key":            {label: "OpenAI API key committed",    icon: "lock"},
+  "gcp-api-key":               {label: "Google API key committed",    icon: "lock"},
+  "private-key":               {label: "Private keys committed",      icon: "key"},
+  "generic-api-key":           {label: "Hardcoded secrets",           icon: "lock"},
   // hygiene -- bin/security/hygiene.py's four findings. Labels say what each
   // rule's own rationale says it detects, not what its name suggests:
   // missing_gitignore's rationale is "the first .env, key or credential file
