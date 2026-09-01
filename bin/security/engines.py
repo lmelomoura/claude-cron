@@ -81,6 +81,32 @@ PURGE = {
 
 _TIMEOUT = 600
 
+# The largest report this module will read off disk, in bytes.
+#
+# WHY A CEILING EXISTS AT ALL. `run_json` reads the file WHOLE, `json.loads`
+# builds a Python object graph from it, and `_strip` then walks that graph
+# building a second one -- so the peak cost is several times the file, and
+# none of it is bounded by anything the engine was asked for. The handler
+# below catches `ValueError, OSError, RecursionError`; `MemoryError` is none
+# of those, so the one failure a big report actually produces is the one that
+# would escape as an exception instead of a note. An analysis never dies
+# because a scanner did.
+#
+# WHY 64 MiB. Semgrep's `--time` is the growth this was measured on: it
+# writes one timing per (file, rule) pair, and this repository's own capture
+# is 651 KB for 89 files -- 612 KB of it `time.targets`, which nothing reads.
+# That is ~7 KB per file at 244 rules, so 64 MiB is on the order of 9,000
+# files at this repository's rule count, and a tree that large has other
+# problems (the 600s timeout above reaches first). It is deliberately not
+# tight: the ceiling is here to stop an unbounded read, not to second-guess a
+# scanner's output size.
+#
+# NOT SEMGREP-ONLY, on purpose. Trivy's filesystem scan over a monorepo and
+# Syft's SBOM over a large image both grow with the tree in the same way, and
+# a guard written into one adapter is a guard the next engine does not get --
+# this module exists precisely so nothing has to be remembered per engine.
+MAX_REPORT_BYTES = 64 * 1024 * 1024
+
 
 class UnknownEngine(LookupError):
     """`purge` was asked about an engine `PURGE` does not name.
@@ -172,7 +198,8 @@ def run_json(name: str, args, cwd, timeout: int = _TIMEOUT):
 
     Returns (None, note) for every failure: not installed, not in the purge
     table, will not report a version, timed out, exited badly, wrote
-    nothing, or wrote something that is not JSON. An analysis never dies
+    nothing, wrote more than `MAX_REPORT_BYTES`, or wrote something that is
+    not JSON. An analysis never dies
     because a scanner did; it says what it could not check. That includes
     the failures `purge` raises on: this function is the one door, and a
     door that throws is a dead analysis.
@@ -217,6 +244,21 @@ def run_json(name: str, args, cwd, timeout: int = _TIMEOUT):
             # file can put that file's bytes in its error message.
             return None, (f"{name} exited {proc.returncode} without writing a "
                           f"report, so its phase did not run.")
+        try:
+            size = out_file.stat().st_size
+        except OSError:
+            return None, f"{name} wrote a report this version cannot read."
+        if size > MAX_REPORT_BYTES:
+            # BEFORE `read_text`, which is the whole point: once the file is
+            # in memory the cost is already paid, and the failure it produces
+            # is a `MemoryError` the handler below does not catch. The number
+            # is stated because a ceiling nobody can see is a truncation --
+            # this is a declared gap, in the same shape every other failure
+            # here returns, not a phase that quietly found nothing.
+            return None, (f"{name} wrote a {size // (1024 * 1024)}MB report and "
+                          f"the ceiling this analysis reads is "
+                          f"{MAX_REPORT_BYTES // (1024 * 1024)}MB, so its phase "
+                          f"was skipped rather than read whole.")
         try:
             data = json.loads(out_file.read_text())
         except (ValueError, OSError, RecursionError):

@@ -217,11 +217,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rationale when nothing carries that CWE. It REPLACES NOTHING: unlike the
   three engines above it, this one is added beside the analysis's own SAST
   pass, because the coverage is not remotely even. Measured on this
-  repository: 223 rules over 89 files in 6 seconds, 147 of them for Python,
-  65 for JavaScript and **one** for shell — and the core of this product is
-  8,263 lines of bash. "Semgrep ran" is true here and misleading, so the
-  coverage note carries the per-language spread, plus how many files Semgrep
-  could not fully parse (3 here, all of them shell). Nothing Semgrep grades
+  repository: 244 rules loaded over 89 files in 6 seconds, 147 of them for
+  Python, 61 for JavaScript (65 counting the TypeScript rules Semgrep's own
+  summary folds in with them) and **one** for shell — and the core of this
+  product is 8,263 lines of bash. The note says "loaded" and not "ran"
+  because the two numbers differ and it must not pick the flattering one:
+  Semgrep's own summary line for the same scan says "Rules run: 223" where
+  `time.rules` holds the 244 it loaded. "Semgrep ran" is true here and
+  misleading, so the coverage note carries the per-language spread, plus how
+  many files Semgrep could not fully parse (3 here, all of them shell).
+  Nothing Semgrep grades
   can open a `critical` on its own: an `ERROR` from a linter is a statement
   about the rule's confidence, not about this repository's exposure — all
   three findings here are false positives of the kind only context resolves
@@ -284,6 +289,100 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   from Trivy's own registry.
 
 ### Fixed
+
+- **An operator's `ignore_paths` glob no longer narrows the Semgrep scan
+  below the scope the analysis itself uses.** `semgrep_excludes` stripped the
+  wildcard off every glob it was given — `docs/**` went down the command line
+  as `docs` — and Semgrep matches a bare `--exclude` at ANY DEPTH, where the
+  Trivy helper this was copied from matches the top level only. Measured:
+  with `ignore_paths=["docs/**"]`, `src/docs/b.py` was never read, while the
+  analysis's own reading of the same glob (`ignores.ignored`) answers that
+  the file is IN SCOPE. Nothing declared the loss, and the second scope lock
+  cannot undo it — it only ever removes more. Every operator glob is now
+  anchored (`./docs/**`), which the same measurement shows keeps
+  `src/docs/b.py` and still drops `docs/a.py`. The one error left runs the
+  safe way: a glob whose wildcard crosses `/` in `fnmatch` costs Semgrep some
+  reading it need not have done, and the finding is dropped afterwards
+  anyway.
+
+- **A Semgrep report that scanned nothing is now declared instead of landing
+  as a clean pre-pass.** The guard added with the pre-pass refused a report
+  carrying an `errors[]` entry at `level: "error"` — the unfetchable-pack
+  case, exit 7. Its sibling has no `errors[]` at all: a rule pack that is
+  well-formed and parses to no rule exits **0** and writes the identical
+  `results: []` / `paths.scanned: []` a clean repository produces. Measured
+  verbatim over a tree of six files. `paths.scanned` being present, a list
+  and empty is now a declared gap, on this project's own precedent — the
+  gitleaks `[]` scar that `history_state` exists for. Two adjacent routes
+  went with it: an `errors[]` entry whose `level` is missing, or is a word
+  this parser has never heard of, now refuses the report instead of passing
+  as recoverable (the list is of the words that mean Semgrep KEPT GOING, not
+  of the words that mean it stopped); and the error type quoted into the note
+  is now constrained to look like a *name*, because Semgrep writes
+  `type: ["PartialParsing", [{"path": …}]]` for a partial parse and `str()`
+  of that would have put this repository's own file paths into the coverage
+  note.
+
+- **The coverage note no longer reports a number the report never carried as
+  zero.** Both counts in its first sentence came from the length of something
+  that could be missing, so a scan captured without `--time` read "over 89
+  files, with **0 rules loaded** from p/owasp-top-ten" for a scan that loaded
+  244, and a `paths` block this parser could not read read "over 0 files".
+  Zero rules loaded and an unknown number of rules loaded are opposite facts
+  — the first says nothing was checked — and this is the one sentence the
+  whole pre-pass exists for. Each clause is now either a number the report
+  carries or a phrase saying it does not. Semgrep itself conflates the two
+  (measured: it writes `time.rules: []` whenever `--time` was not passed,
+  over a tree it scanned perfectly well), which is why the empty-scan refusal
+  above reads what was *scanned* rather than what was loaded.
+
+- **The per-language breakdown no longer presents non-languages as
+  languages.** `p/owasp-top-ten` loads a floor of rules over any directory at
+  all — measured, a directory holding one `.txt` file loads `java 3`,
+  `scala 3`, `ruby 1`, `generic 15` — and the note printed them beside
+  `python 147` on a repository with no Java, Scala or Ruby in it. The whole
+  sentence is read as a statement about how much of *this* tree was examined,
+  so that misleads in the one direction it exists to prevent. The rows a
+  scanned file evidences are now the coverage list; the rest are stated in a
+  separate sentence that says what they are. They are not deleted: this
+  tree's own shell lives in an extensionless `bin/claude-cron`, and a
+  repository whose shell is all extensionless would otherwise lose `bash 1`
+  from the one note that exists to say shell got a single rule.
+
+- **A scanner's report is no longer read whole without a ceiling.**
+  `engines.run_json` read the file, parsed it and then deep-copied it through
+  the purge, so its peak cost is a multiple of the file and nothing bounded
+  it — and the failure that produces is a `MemoryError`, the one exception
+  neither handler in that function names, escaping a door documented to
+  return a note for every failure. Semgrep's `--time` is the growth it was
+  measured on: one timing per (file, rule) pair, 651 KB for this repository's
+  89 files, of which 612 KB is a `time.targets` block nothing reads. Anything
+  over 64 MB is now a declared gap in the same shape as every other failure
+  there, checked before the read and stated with its own number. It sits in
+  the one door rather than in the Semgrep adapter, so every engine gets it.
+
+- **The analysis agent can no longer be told to mint a second identity for a
+  finding it already has.** The skill's rule against recomputing a pre-pass
+  fingerprint keyed off "a `sast` finding whose rationale starts
+  'Semgrep's …'" — and `rationale` is a field a re-report OVERWRITES, which
+  is exactly what the same skill's triage job instructs. So after any run
+  where the agent triaged a pre-pass finding and Semgrep did not run the next
+  time (offline, absent, or its report refused), the row arrived carrying the
+  agent's own rationale, the marker was gone, and the `--snippet` branch
+  minted the second identity that rule existed to prevent — permanently, since
+  `rename-rule` refuses the `sast` category and no migration can be written.
+  The branch is gone rather than the marker improved: a carried-over `sast`
+  fingerprint is now never recomputed, it is copied from what `checklist`
+  printed, and nothing is lost because `checklist` prints one for every row.
+
+- **The agent is now told to fold its own finding into the pre-pass row that
+  already lists the same weakness.** The two passes cannot share an identity
+  — the pre-pass never records the code its identity would need — and the
+  report has always declared that one weakness found by both is listed twice.
+  But the declaration reaches the *reader*, while the agent is the only actor
+  who can prevent the duplicate, and its instructions said nothing about it:
+  on a Python-heavy repository the doubling was guaranteed every run, for
+  every weakness both passes see.
 
 - **A dependency CVE keeps one identity whether or not Trivy is installed.**
   The fingerprint recipe was copied from `osv._finding` correctly and the

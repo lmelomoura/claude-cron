@@ -30,8 +30,8 @@ from pathlib import Path
 
 import pytest
 
-from security import (adapters, deps, engines, fingerprint, osv, report,
-                      secrets, taxonomy)
+from security import (adapters, deps, engines, fingerprint, ignores, osv,
+                      report, secrets, taxonomy)
 from security import cli as security_cli
 
 FIX = Path(__file__).parent / "fixtures" / "engines"
@@ -2095,6 +2095,12 @@ HAVE_SEMGREP = engines.find("semgrep") is not None
 needs_semgrep = pytest.mark.skipif(
     not HAVE_SEMGREP, reason="semgrep is not installed on this machine")
 
+# What `semgrep_excludes` emits for `SKIP_DIRS` alone, whatever globs it is
+# also given -- the part the operator's globs are checked against by
+# subtraction, so a test about anchoring cannot accidentally pass by matching
+# one of these.
+_SKIP_DIR_EXCLUDES = frozenset(adapters.semgrep_excludes())
+
 
 def _semgrep_raw():
     """The capture exactly as semgrep wrote it -- NOT purged."""
@@ -2382,7 +2388,56 @@ def test_the_exclusions_carry_the_skip_dirs_and_the_operators_globs():
     excludes = adapters.semgrep_excludes(["docs/**"])
     for name in secrets.SKIP_DIRS:
         assert name in excludes and f"**/{name}" in excludes
-    assert "docs" in excludes
+    assert "./docs/**" in excludes
+
+
+def test_an_operators_glob_is_never_handed_over_as_a_bare_name():
+    """THE NARROWING THIS TEST EXISTS FOR. `glob.rstrip("/*")` turned `docs/**`
+    into `docs`, and semgrep matches a bare `--exclude` at ANY DEPTH -- so
+    `src/docs/b.py` was never read, while `ignores.ignored("src/docs/b.py",
+    ["docs/**"])` answers False, i.e. the analysis considers it IN SCOPE.
+    `_out_of_scope` cannot put it back; it only ever removes more.
+
+    It was copied from `trivy_skip_dirs`, where it is near-correct because
+    Trivy's bare name matches the top level only."""
+    for glob in ("docs/**", "docs", "docs/", "./docs", "/docs", "tests/fixtures/**"):
+        for pattern in adapters.semgrep_excludes([glob]):
+            if pattern in _SKIP_DIR_EXCLUDES:
+                continue
+            assert pattern.startswith("./"), (glob, pattern)
+            assert not pattern.startswith(".//"), (glob, pattern)
+
+
+def test_the_skip_dirs_still_go_down_at_any_depth():
+    """The anchoring above is for the OPERATOR's globs only. `SKIP_DIRS` are
+    matched at any depth by `_out_of_scope` itself, so anchoring them would be
+    the mirror-image bug: the engine reading `a/b/node_modules` on every run
+    for findings that are then thrown away."""
+    excludes = adapters.semgrep_excludes()
+    assert "node_modules" in excludes and "**/node_modules" in excludes
+    assert "./node_modules" not in excludes
+
+
+@needs_semgrep
+def test_the_real_engine_is_not_narrowed_below_what_the_operator_asked_for(
+        tmp_path):
+    """The reproduction, against the binary. `docs/**` must cost `docs/a.py`
+    and NOT `src/docs/b.py` -- the file the analysis's own reading of the same
+    glob keeps."""
+    root = tmp_path / "repo"
+    (root / "docs").mkdir(parents=True)
+    (root / "src" / "docs").mkdir(parents=True)
+    weak = ("import hashlib\n\n\ndef etag(body):\n"
+            "    return hashlib.md5(body).hexdigest()\n")
+    for rel in ("docs/a.py", "src/docs/b.py", "top.py"):
+        (root / rel).write_text(weak)
+    # What the ANALYSIS says about the same three paths, which is the standard
+    # the engine's command line has to meet.
+    assert not ignores.ignored("src/docs/b.py", ["docs/**"])
+    assert ignores.ignored("docs/a.py", ["docs/**"])
+    findings, _ = adapters.semgrep_scan(root, ignore_paths=["docs/**"])
+    assert {f["occurrences"][0]["file"] for f in findings} == {
+        "src/docs/b.py", "top.py"}
 
 
 # ----------------------------------------------------------- the coverage note
@@ -2403,6 +2458,53 @@ def test_a_shell_repository_cannot_read_like_a_python_one():
     assert "python 147" in note, note
     assert "bash 1" in note, note
     assert "javascript 61" in note, note
+
+
+def test_a_language_this_tree_holds_no_file_of_is_not_shown_as_coverage():
+    """The whole note is read as a statement about how much of THIS tree was
+    examined, and `p/owasp-top-ten` loads a FLOOR of rules over any directory
+    at all -- measured, a directory holding one `.txt` file loads `java 3`,
+    `scala 3`, `ruby 1`. The shipped note printed them beside `python 147` on
+    a repository with no Java, no Scala and no Ruby in it."""
+    coverage, unplaced = adapters.semgrep_breakdown(_semgrep_fixture())
+    assert dict(coverage) == {"python": 147, "javascript": 61, "json": 3,
+                              "bash": 1, "html": 1}
+    assert dict(unplaced) == {"generic": 15, "package_managers": 5,
+                              "typescript": 4, "java": 3, "scala": 3,
+                              "ruby": 1}
+    # Together they are still exactly the measurement: the split moves rows
+    # between two sentences, it never loses one.
+    assert sorted(coverage + unplaced) == sorted(
+        adapters.semgrep_languages(_semgrep_fixture()))
+
+
+def test_an_unevidenced_row_is_labelled_rather_than_deleted():
+    """Deleting the row is the obvious fix and it opens a worse hole: this
+    tree's own shell lives in `bin/claude-cron`, which has NO EXTENSION --
+    Semgrep reads its shebang and this table cannot -- so a repository whose
+    shell is all extensionless would lose `bash 1` from the one note that
+    exists to say shell got a single rule. Stated and labelled teaches both
+    facts; hidden teaches neither."""
+    note = " ".join(adapters.semgrep_notes(_semgrep_fixture(), "1.175.0", []))
+    assert "java 3" in note, note
+    assert "no file in this tree is written in" in note, note
+    # And it is NOT in the sentence that lists coverage.
+    coverage_sentence = next(n for n in adapters.semgrep_notes(
+        _semgrep_fixture(), "1.175.0", []) if "not spread evenly" in n)
+    # "java 3" and not "java": `javascript 61` is in this sentence and must be.
+    assert "java 3" not in coverage_sentence, coverage_sentence
+    assert "javascript 61" in coverage_sentence, coverage_sentence
+
+
+def test_a_namespace_this_project_has_never_heard_of_is_left_alone():
+    """Absence cannot be proven from a table nobody has updated. A namespace
+    with no entry is SHOWN, because dropping it would hide a language that was
+    barely examined -- the dangerous direction."""
+    data = {"paths": {"scanned": ["a.py"]},
+            "time": {"rules": ["python.a.b", "brandnewlang.a.b"]}}
+    coverage, unplaced = adapters.semgrep_breakdown(data)
+    assert ("brandnewlang", 1) in coverage
+    assert unplaced == []
 
 
 def test_the_note_counts_the_files_semgrep_could_not_parse():
@@ -2460,10 +2562,47 @@ def test_a_semgrep_record_this_parser_cannot_use_is_dropped_not_fatal():
 
 def test_a_report_with_no_time_block_still_produces_a_note():
     """`--time` is what fills `time.rules`, and a semgrep that stops emitting
-    it must cost the language breakdown, not the whole phase."""
-    notes = adapters.semgrep_notes({"results": []}, "1.175.0", [])
+    it must cost the language breakdown, not the whole phase.
+
+    THE ASSERTION USED TO BE "a note exists", AND IT PASSED ON A LIE. The
+    count came from `sum(n for _, n in languages)`, so a lost breakdown printed
+    "with 0 rules loaded from p/owasp-top-ten" -- captured verbatim, on a scan
+    that had loaded 244 -- in the one sentence this whole pass exists for. A
+    note existed, so the test was green."""
+    notes = adapters.semgrep_notes(
+        {"results": [], "paths": {"scanned": ["a.py"] * 89}}, "1.175.0", [])
     assert notes
     assert adapters.SAST_PREPASS_NOTE in notes
+    note = " ".join(notes)
+    assert "0 rules" not in note, note
+    assert "does not say how many rules" in note, note
+    # The file count is a number the report DID carry, so it is still there.
+    assert "over 89 files" in note, note
+
+
+def test_the_rule_count_is_dropped_rather_than_reported_as_zero():
+    """A zero from semgrep is never evidence that zero rules loaded: measured,
+    1.175.0 writes `time.rules: []` WITHOUT `--time`, over a tree it scanned
+    perfectly well. Zero rules loaded and an unknown number of rules loaded are
+    opposite facts -- the first says nothing was checked -- so only a positive
+    count is printed."""
+    for time_block in ({}, {"rules": []}, {"rules": "oops"}, {"rules": [""]}):
+        note = " ".join(adapters.semgrep_notes(
+            {"paths": {"scanned": ["a.py"]}, "time": time_block},
+            "1.175.0", []))
+        assert "0 rules" not in note, (time_block, note)
+        assert "does not say how many rules" in note, (time_block, note)
+
+
+def test_a_file_count_the_report_does_not_carry_is_not_printed_as_zero():
+    """The same lie one clause earlier: a `paths` block this parser cannot
+    read printed "over 0 files". The sentence costs the number, never invents
+    one."""
+    for broken in ({"paths": "oops"}, {"paths": {"scanned": "oops"}},
+                   {"paths": ["a"]}, {}):
+        note = " ".join(adapters.semgrep_notes(broken, "1.175.0", []))
+        assert "over 0 files" not in note, note
+        assert "does not count" in note, note
 
 
 # --------------------------------------------- the pre-pass, against the tool
@@ -2656,6 +2795,137 @@ def test_the_failure_reason_never_quotes_the_engines_own_message():
     reason = adapters.semgrep_failure(SEMGREP_404)
     assert "HTTP 404" not in reason
     assert "SemgrepError" in reason
+
+
+# ------------------------------- the same silence, with no errors[] to read
+#
+# VERBATIM, from `semgrep --config=<a pack that is `rules: []`> --json --time
+# --output=… .` over a tree of six files. Exit 0. `errors` is EMPTY, which is
+# what makes this the sibling `semgrep_failure` cannot see: a pack that loads
+# and parses to no rule selects no target, so it writes the identical
+# `results: []` / `paths.scanned: []` a clean repository produces and says
+# nothing at all about why.
+SEMGREP_ZERO_RULES = {
+    "version": "1.175.0", "results": [], "errors": [],
+    "paths": {"scanned": []}, "time": {"rules": [], "targets": []},
+    "engine_requested": "OSS", "skipped_rules": []}
+
+
+def test_a_report_of_a_scan_that_looked_at_nothing_is_not_a_clean_pre_pass(
+        monkeypatch, tmp_path):
+    """Exit 7 was closed and its zero-rules sibling was not. `errors: []` means
+    `semgrep_failure` answers "" for this, and it landed as a clean pre-pass
+    over a tree with six files in it -- the third time this project has met the
+    shape (`history_state`, the gitleaks `[]` scar, and the exit-7 report
+    above). "Found nothing" and "never looked" are the same silence."""
+    assert adapters.semgrep_failure(SEMGREP_ZERO_RULES) == ""
+    root = tmp_path / "repo"
+    root.mkdir()
+    monkeypatch.setattr(engines, "run_json", lambda *a, **k: (
+        engines.purge("semgrep", SEMGREP_ZERO_RULES), ""))
+    monkeypatch.setattr(engines, "version_of", lambda name: "1.175.0")
+    findings, notes = adapters.semgrep_scan(root)
+    assert findings is None, findings
+    assert notes and "did not really" in notes[0], notes
+    assert "scanned no file" in notes[0], notes
+
+
+def test_the_empty_scan_guard_reads_what_was_scanned_not_what_was_loaded():
+    """`time.rules: []` looks like the more direct evidence and is not evidence
+    at all: measured, semgrep writes it whenever `--time` was not passed, over
+    a tree it scanned perfectly well. A guard on it would refuse a healthy scan
+    the day a flag moved."""
+    scanned_without_time = {"paths": {"scanned": ["a.py", "b.py"]},
+                            "time": {"rules": []}, "results": []}
+    assert adapters.semgrep_empty_scan(scanned_without_time) == ""
+    assert adapters.semgrep_empty_scan({"paths": {"scanned": []}}) != ""
+
+
+def test_a_paths_block_this_parser_cannot_read_is_not_read_as_a_zero():
+    """A malformed `paths` block costs the file count and not the phase, so an
+    absent or unreadable one must not reach the refusal above as "no file was
+    scanned" -- that is a claim only a well-formed empty list can make."""
+    for shape in ({}, {"paths": "oops"}, {"paths": {"scanned": "oops"}},
+                  {"paths": ["a"]}, {"paths": {}}):
+        assert adapters.semgrep_empty_scan(shape) == "", shape
+
+
+@needs_semgrep
+def test_the_real_engine_writing_an_empty_report_is_declared_not_swallowed(
+        tmp_path):
+    """The reproduction, against the binary: a rule pack that is well-formed
+    YAML and parses to no rule."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text(
+        "import hashlib\n\n\ndef etag(body):\n"
+        "    return hashlib.md5(body).hexdigest()\n")
+    pack = tmp_path / "empty-pack.yaml"
+    pack.write_text("rules: []\n")
+    findings, notes = _semgrep_scan_with_config(root, str(pack))
+    assert findings is None, findings
+    assert notes and "did not really" in notes[0], notes
+
+
+def _semgrep_scan_with_config(root, config):
+    """`semgrep_scan` against a different rule pack, for the one test that
+    needs a pack this project does not ship. `SEMGREP_CONFIG` is pinned rather
+    than configurable on purpose -- `taxonomy.py`'s OWASP codes are the edition
+    that pack targets -- so this swaps the constant rather than adding an
+    argument nothing in production would ever pass."""
+    saved = adapters.SEMGREP_CONFIG
+    adapters.SEMGREP_CONFIG = config
+    try:
+        return adapters.semgrep_scan(root)
+    finally:
+        adapters.SEMGREP_CONFIG = saved
+
+
+# ---------------------------------------------- what the reason may contain
+
+def test_an_error_level_this_parser_has_never_heard_of_refuses_the_report():
+    """The list is of the words that mean semgrep RECOVERED, not of the words
+    that mean it failed. Testing `level == "error"` let every other word
+    through as harmless: a `fatal` or `critical` a future version introduces,
+    and an entry carrying no level at all, were each read as recoverable."""
+    for level in ("fatal", "critical", "", None):
+        entry = {"type": "SemgrepError", "message": "x"}
+        if level is not None:
+            entry["level"] = level
+        assert adapters.semgrep_failure({"errors": [entry]}) != "", level
+    for level in ("warn", "WARN", "warning", "info"):
+        assert adapters.semgrep_failure(
+            {"errors": [{"level": level, "type": "Syntax error"}]}) == "", level
+
+
+def test_a_structured_error_type_cannot_put_a_path_into_the_note():
+    """`SAST_FAILED` promises the note names the error TYPES and nothing else,
+    and `str(entry["type"])` did not keep it: real semgrep writes
+    `["PartialParsing", [{"path": …}]]`, whose `str()` carries this
+    repository's own file paths -- through a field `engines.PURGE` cannot help
+    with, since a path is not matched content. Not reachable at `level:
+    "error"` in 1.175.0; closed by construction rather than by knowing that."""
+    reason = adapters.semgrep_failure({"errors": [{
+        "level": "error",
+        "type": ["PartialParsing", [{"path": "bin/claude-cron",
+                                     "start": {"line": 1}}]]}]})
+    assert "PartialParsing" in reason, reason
+    assert "bin/claude-cron" not in reason, reason
+    assert "path" not in reason, reason
+
+
+@pytest.mark.parametrize("kind", [
+    "/etc/passwd", "bin/claude-cron", "a.py", {"path": "x"}, 7, None, "",
+    ["/etc/passwd"], [["nested"]], "x" * 200])
+def test_an_error_type_that_is_not_a_name_becomes_the_word_error(kind):
+    """Whatever shape a future version invents, what reaches the note is
+    something `_ERROR_TYPE_RE` accepts -- a name -- and a filesystem path
+    cannot be one, since it needs a `/` or a `.` to be a path. The report is
+    still refused: the sentence says so with or without a name."""
+    reason = adapters.semgrep_failure(
+        {"errors": [{"level": "error", "type": kind}]})
+    assert reason != ""
+    assert "(error)" in reason, reason
 
 
 def test_prepare_declares_a_pre_pass_that_failed_rather_than_recording_nothing(

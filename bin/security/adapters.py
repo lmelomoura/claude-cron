@@ -1445,10 +1445,15 @@ def syft_sbom(root):
 # SEMGREP REPLACES NOTHING, and that is what makes this section different from
 # the three above it. Gitleaks, Trivy and Syft each take a category over from a
 # producer this project wrote; Semgrep does not, because the measurement says
-# it cannot. On this repository, `p/owasp-top-ten` ran 223 rules over 89 files
-# in 6 seconds and the split by language was:
+# it cannot. On this repository, `p/owasp-top-ten` LOADED 244 rules over 89
+# files in 6 seconds -- semgrep's own summary line says "Rules run: 223" for the
+# same scan, and `semgrep_languages` explains where the 21 sit -- and the split
+# by language was:
 #
 #     python 147    javascript 65    json 3    bash 1    html 1
+#
+# (61 `javascript` rule ids plus the 4 `typescript` ones semgrep's own table
+# folds into the "js" row it prints.)
 #
 # ONE RULE FOR SHELL, and the core of this product is 8,263 lines of bash. So
 # the agent's SAST pass stays primary and this is a PRE-PASS whose output it
@@ -1532,8 +1537,28 @@ _CWE_RE = re.compile(r"CWE-\d+")
 # under a code from a Top Ten this project does not speak.
 _OWASP_2021_RE = re.compile(r"A\d{2}:2021")
 
-SAST_ENGINE_NOTE = ("The SAST pre-pass was run by Semgrep {version} over "
-                    "{files} files, with {rules} rules loaded from {config}.")
+SAST_ENGINE_NOTE = ("The SAST pre-pass was run by Semgrep {version} {files}, "
+                    "with {rules} rules loaded from {config}.")
+
+# The same sentence for a report that does not say how many rules loaded --
+# `--time` not given, or a Semgrep that has stopped filling the block in.
+# `semgrep_languages` promises "the breakdown is lost, never the phase", and
+# the COUNT went with the breakdown: summing an empty breakdown printed "with 0
+# rules loaded from p/owasp-top-ten" over a scan that had loaded 244 of them.
+# Zero rules loaded and an unknown number of rules loaded are opposite facts --
+# the first one says nothing was checked at all -- and the single sentence this
+# whole pass exists for may not report the second as the first. The clause is
+# dropped and the loss is stated instead.
+SAST_ENGINE_NOTE_NO_RULES = (
+    "The SAST pre-pass was run by Semgrep {version} {files}, from {config} — "
+    "this report does not say how many rules that loaded.")
+
+# The file count, as a phrase, for the same reason and with the same rule: a
+# number that is in the report, or a clause that says it is not. "over 0 files"
+# was printed for a `paths` block this parser could not read -- the identical
+# lie the rule count told, one clause earlier.
+SAST_FILES_PHRASE = "over {count} {files}"
+SAST_FILES_UNKNOWN = "over a set of files this report does not count"
 
 # The sentence this whole section exists for. Semgrep's coverage is not even
 # across languages and the report has to say by how much, or a repository whose
@@ -1541,16 +1566,26 @@ SAST_ENGINE_NOTE = ("The SAST pre-pass was run by Semgrep {version} over "
 #
 # "loaded", not "ran", in both sentences -- see `semgrep_languages` for the
 # measurement behind that word.
-SAST_LANGUAGE_NOTE = ("Those rules are not spread evenly across languages — "
-                      "the number loaded for each was {breakdown} — so a "
-                      "language near the end of that list was barely examined, "
-                      "however little this report shows for it.")
+SAST_LANGUAGE_NOTE = ("Those rules are not spread evenly across the languages "
+                      "this tree holds — the number loaded for each was "
+                      "{breakdown} — so a language near the end of that list "
+                      "was barely examined, however little this report shows "
+                      "for it.")
+
+# The rules that loaded under a namespace no file here is written in. They are
+# NOT presented as coverage and they are NOT hidden either -- see
+# `semgrep_breakdown` for why both halves matter.
+SAST_UNPLACED_NOTE = ("A further {count} {rules} loaded under namespaces no "
+                      "file in this tree is written in ({breakdown}): Semgrep's "
+                      "pack loads a floor of rules over any directory at all, "
+                      "including an empty one, so those are not coverage of "
+                      "anything here.")
 
 # A file Semgrep could not parse was not analysed, whatever the rule count says
 # about its language. The engine's own message for it is NEVER quoted back:
 # that message is the file's source (see `engines.PURGE`).
 SAST_PARSE_NOTE = ("{count} {files} could not be fully parsed by Semgrep, so "
-                   "part of what {they} hold was not analysed at all.")
+                   "part of what {they} {hold} was not analysed at all.")
 
 SAST_PREPASS_NOTE = ("Semgrep is a pre-pass here, not the SAST pass: it "
                      "matched patterns, and the analysis that follows is what "
@@ -1578,10 +1613,17 @@ SAST_GAP = ("The SAST pre-pass did not run ({reason}) — the SAST pass itself "
             "source.")
 
 # What `semgrep_failure` hands back as the reason. It names the error TYPES
-# semgrep gave and nothing else: `errors[].message` is the file semgrep could
-# not read, and it is purged before this module sees it.
+# semgrep gave and nothing else -- `errors[].message` is the file semgrep could
+# not read, and it is purged before this module sees it -- and
+# `_semgrep_error_type` is what makes "and nothing else" true by construction
+# rather than merely intended.
 SAST_FAILED = ("semgrep reported an error of its own ({types}), so the report "
                "it wrote describes a scan that did not really run")
+
+# How a report says, in its own numbers rather than in an `errors[]` entry,
+# that it looked at nothing. See `semgrep_empty_scan`.
+SAST_NO_FILES = ("semgrep scanned no file at all, so the report it wrote "
+                 "describes a scan that did not really run")
 
 
 def semgrep_excludes(ignore_paths=()) -> list[str]:
@@ -1593,21 +1635,57 @@ def semgrep_excludes(ignore_paths=()) -> list[str]:
     weakness at `keep/x.py`, `a/b/keep/x.py` and `top.py`: Semgrep reports all
     three unexcluded, and `--exclude keep` ALONE or `--exclude '**/keep'`
     ALONE leaves only `top.py`. Both forms already match at any depth, where
-    Trivy's bare name matched the top level only. The pair is kept because it
-    costs nothing and neither form can then be the one a future matcher
-    narrows, but nobody should read it here as a hole that was found.
+    Trivy's bare name matched the top level only. That is what `SKIP_DIRS`
+    wants -- `_out_of_scope` drops those names at any depth too -- so the pair
+    is kept because it costs nothing and neither form can then be the one a
+    future matcher narrows, but nobody should read it here as a hole.
 
-    `ignore_paths` goes down too, the cheap way round -- those files are then
-    never read. It is not the guarantee: `semgrep_findings` filters what comes
-    back through `_out_of_scope` as well.
+    THE OPERATOR'S GLOBS ARE ANCHORED, AND THE `rstrip("/*")` THAT USED TO BE
+    HERE WAS A NARROWING. It was copied from `trivy_skip_dirs`, where it is
+    near-correct because Trivy's bare name matches the TOP LEVEL only. Semgrep
+    matches a bare name at ANY DEPTH, so `docs/**` became `docs` and took
+    `src/docs/b.py` with it -- a file `ignores.ignored("src/docs/b.py",
+    ["docs/**"])` answers `False` for, i.e. one this analysis considers IN
+    SCOPE. `_out_of_scope` cannot put it back; it only ever removes more. The
+    scan was quietly narrower than the operator asked for and nothing said so.
+
+    Measured, semgrep 1.175.0, against `docs/a.py`, `src/docs/b.py`, `top.py`:
+
+        --exclude docs        scanned: top.py                 <- the bug
+        --exclude ./docs      scanned: src/docs/b.py top.py
+        --exclude ./docs/**   scanned: src/docs/b.py top.py
+
+    A pattern containing `/` is matched against the path from the scan root; a
+    pattern without one matches any component at any depth. So every glob goes
+    down with a `./` in front of it, which is the form that says "from the root
+    of this scan" in both cases.
+
+    THE ERROR THAT REMAINS RUNS THE SAFE WAY. A glob whose wildcard crosses `/`
+    in `fnmatch` -- `*.md`, which `ignores.ignored` matches at any depth --
+    anchors to the top level here, so semgrep still READS `sub/note.md`. That
+    costs engine time and nothing else: `semgrep_findings` puts everything that
+    comes back through `_out_of_scope`, which applies `ignores.ignored`
+    itself, so the finding is dropped anyway. Excluding LESS than the analysis
+    ignores is recoverable; excluding more is the loss this docstring opens
+    with, and there is nothing to declare in the coverage note because no file
+    the analysis wants is skipped any more.
     """
     out = []
     for name in sorted(secrets.SKIP_DIRS):
         out += [name, f"**/{name}"]
     for glob in ignore_paths or ():
-        glob = (glob or "").strip().rstrip("/*")
+        glob = (glob or "").strip()
+        # A leading `/` or `./` is stripped before the `./` goes back on, so
+        # an operator writing `/docs` or `./docs` does not produce `.//docs`
+        # -- a pattern semgrep matches nothing with, which would silently
+        # widen the scan instead of narrowing it. Paths in `ignore_paths` are
+        # repository-relative by definition, so a leading `/` means the root
+        # of the repository and not the root of the filesystem.
+        while glob.startswith("./"):
+            glob = glob[2:]
+        glob = glob.lstrip("/")
         if glob:
-            out.append(glob)
+            out.append(f"./{glob}")
     return out
 
 
@@ -1839,19 +1917,150 @@ def semgrep_languages(data) -> list[tuple[str, int]]:
     language anywhere.
 
     An empty list when `time.rules` is absent: the breakdown is lost, never the
-    phase.
+    phase. `semgrep_rule_count` says which of the two happened, because an
+    empty breakdown and a breakdown of zeroes are opposite facts.
+
+    RAW, and filtered by nobody. What reaches the note goes through
+    `semgrep_breakdown` first, which is where "this namespace is a language
+    this tree is actually written in" is decided. This function stays the
+    measurement.
+    """
+    counts = {}
+    for rule_id in _semgrep_rule_ids(data) or ():
+        language = rule_id.split(".", 1)[0]
+        counts[language] = counts.get(language, 0) + 1
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+def _semgrep_rule_ids(data):
+    """The rule ids `time.rules` holds, or None when there is no such block.
+
+    None and `[]` are different answers -- see `semgrep_rule_count`.
     """
     rules = data.get("time") if isinstance(data, dict) else None
     rules = rules.get("rules") if isinstance(rules, dict) else None
     if not isinstance(rules, list):
-        return []
-    counts = {}
-    for rule_id in rules:
-        if not isinstance(rule_id, str) or not rule_id.strip():
-            continue
-        language = rule_id.split(".", 1)[0]
-        counts[language] = counts.get(language, 0) + 1
-    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        return None
+    return [r for r in rules if isinstance(r, str) and r.strip()]
+
+
+def semgrep_rule_count(data):
+    """How many rules Semgrep loaded, or None when the report does not say.
+
+    NONE IS NOT ZERO, and this function exists because summing the breakdown
+    could not tell them apart: `sum(n for _, n in semgrep_languages(data))` is
+    `0` both for a scan that loaded nothing and for a report that never said,
+    and it printed "with 0 rules loaded from p/owasp-top-ten" over a scan that
+    had loaded 244.
+
+    A ZERO FROM SEMGREP IS NEVER EVIDENCE THAT ZERO RULES LOADED. Measured,
+    1.175.0, same tree, six files: WITHOUT `--time` semgrep still writes a
+    `time` block and still writes `time.rules` -- as `[]`. So the engine itself
+    conflates "no rule" with "not asked", and nothing downstream can undo that.
+    Hence the rule this module follows: only a POSITIVE count is a fact the
+    note may print (`semgrep_notes`), and the report that genuinely scanned
+    nothing is caught by what it scanned rather than by what it loaded
+    (`semgrep_empty_scan`).
+    """
+    ids = _semgrep_rule_ids(data)
+    return None if ids is None else len(ids)
+
+
+# A registry rule id's first component is a NAMESPACE, and this is what a file
+# of that namespace looks like on disk.
+#
+# WHY THE TABLE EXISTS. The namespace alone is not evidence of anything.
+# `p/owasp-top-ten` loads a FLOOR of rules over any directory at all --
+# measured on a directory holding one `.txt` file: `java 3`, `scala 3`,
+# `ruby 1`, `generic 15`, `package_managers 4` -- and the shipped note printed
+# them as languages. "Semgrep loaded 3 Java rules" on a repository with no Java
+# misleads in the one direction this note exists to prevent, since the whole
+# sentence is read as a statement about how much of THIS tree was examined.
+#
+# THREE KINDS OF ENTRY, and the third is why this is a table and not an `if`:
+#
+#   mapped to extensions   a language. The row is shown as coverage only when
+#                          a scanned file carries one of them. A BARE NAME in
+#                          that tuple (`dockerfile`, `gemfile`) is matched
+#                          against the filename instead, for the languages
+#                          whose canonical file has no extension at all.
+#   mapped to ()           NOT a language: `generic` is Semgrep's
+#                          language-agnostic matching mode and
+#                          `package_managers` is its lockfile pack. Neither can
+#                          ever be evidenced by a file, and neither is a
+#                          language a reader could be written in.
+#   not named here         SHOWN as coverage. Absence cannot be proven from a
+#                          table nobody has updated: a namespace this project
+#                          has never heard of is one whose files this project
+#                          cannot recognise either, and dropping its row would
+#                          hide a language that WAS barely examined -- the
+#                          dangerous direction. A new namespace costs a row
+#                          that is merely unfiltered.
+_NAMESPACE_FILES = {
+    "generic": (), "package_managers": (),
+    "python": (".py", ".pyi"),
+    "javascript": (".js", ".jsx", ".mjs", ".cjs", ".vue"),
+    "typescript": (".ts", ".tsx", ".mts", ".cts"),
+    "java": (".java",),
+    "scala": (".scala", ".sc"),
+    "ruby": (".rb", ".rake", ".gemspec", "gemfile", "rakefile"),
+    "go": (".go",),
+    "php": (".php", ".phtml", ".php5", ".php7"),
+    "csharp": (".cs",),
+    "kotlin": (".kt", ".kts"),
+    "swift": (".swift",),
+    "rust": (".rs",),
+    "c": (".c", ".h"),
+    "cpp": (".cc", ".cpp", ".cxx", ".hpp", ".hh"),
+    "bash": (".sh", ".bash", ".zsh", ".ksh"),
+    "html": (".html", ".htm"),
+    "json": (".json",),
+    "yaml": (".yaml", ".yml"),
+    "terraform": (".tf", ".tfvars"),
+    "dockerfile": (".dockerfile", "dockerfile"),
+    "solidity": (".sol",),
+    "elixir": (".ex", ".exs"),
+    "ocaml": (".ml", ".mli"),
+    "lua": (".lua",),
+    "dart": (".dart",),
+    "clojure": (".clj", ".cljs", ".cljc"),
+}
+
+
+def semgrep_breakdown(data):
+    """`(coverage, unplaced)` -- the language rows, split by what this tree holds.
+
+    `coverage` is the part of `semgrep_languages` a file in the scanned set
+    evidences; `unplaced` is the rest. Both are `[(namespace, rules), ...]`,
+    most rules first, and together they are exactly `semgrep_languages`.
+
+    NOTHING IS DROPPED, and that is deliberate. The obvious fix for `java 3` on
+    a repository with no Java is to delete the row, and it opens a worse hole
+    than it closes: this tree's own shell lives in `bin/claude-cron`, which has
+    NO EXTENSION -- Semgrep reads its shebang and this table cannot -- so a
+    repository whose shell is all extensionless would lose `bash 1` from a note
+    whose entire purpose is to say that shell got one rule. A row that is
+    hidden teaches nothing; a row that is stated and labelled as not-coverage
+    teaches the reader both facts. So the unevidenced rows are printed too, in
+    a sentence that says what they are (`SAST_UNPLACED_NOTE`).
+
+    The evidence is the SCANNED SET, not the repository: `paths.scanned` is the
+    files Semgrep actually opened, so a language that lives entirely under an
+    excluded directory is correctly not counted as coverage of this scan.
+    """
+    languages = semgrep_languages(data)
+    paths = data.get("paths") if isinstance(data, dict) else None
+    scanned = paths.get("scanned") if isinstance(paths, dict) else None
+    # The extension, or the bare filename when there is none -- so a scanned
+    # `Dockerfile` evidences `dockerfile` the way `main.py` evidences `python`.
+    marks = {Path(p).suffix.lower() or Path(p).name.lower() for p in scanned
+             if isinstance(p, str)} if isinstance(scanned, list) else set()
+    coverage, unplaced = [], []
+    for namespace, count in languages:
+        known = _NAMESPACE_FILES.get(namespace)
+        placed = known is None or bool(marks.intersection(known))
+        (coverage if placed else unplaced).append((namespace, count))
+    return coverage, unplaced
 
 
 def _semgrep_unparsed(data) -> int:
@@ -1867,6 +2076,51 @@ def _semgrep_unparsed(data) -> int:
     return len({e.get("path") for e in errors
                 if isinstance(e, dict) and isinstance(e.get("path"), str)
                 and e.get("path").strip()})
+
+
+# The `errors[].level` words that mean Semgrep RECOVERED and kept scanning.
+# Listed rather than listing their opposite, so that a word this table has
+# never heard of -- and an entry carrying no level at all -- refuses the
+# report instead of passing as harmless. See `semgrep_failure`.
+_SEMGREP_RECOVERABLE_LEVELS = ("warn", "warning", "info")
+
+# What an error TYPE is allowed to look like before it is quoted into the
+# coverage note: a name. A letter, then letters, digits, spaces, `_` or `-`,
+# and at most 64 characters -- which "SemgrepError" and "Syntax error" both
+# are, and which no filesystem path can be, since a path needs a `/` or a `.`
+# to be one. That is the point: see `_semgrep_error_type`.
+_ERROR_TYPE_RE = re.compile(r"[A-Za-z][A-Za-z0-9 _-]{0,63}\Z")
+
+
+def _semgrep_error_type(entry) -> str:
+    """One `errors[]` entry's TYPE, as a name and never as a structure.
+
+    `SAST_FAILED` promises the note names "the error types and nothing else",
+    and `str(entry.get("type"))` did not keep that promise. THE FIELD IS NOT
+    ALWAYS A STRING: real semgrep writes
+
+        "type": ["PartialParsing", [{"path": "bin/claude-cron", …}]]
+
+    for a file it could only partly parse, and `str()` of that puts the
+    repository's own file paths into the coverage note -- through the one field
+    `engines.PURGE` cannot help with, since a path is not matched content and
+    is not stripped. It is not reachable at `level: "error"` in 1.175.0, where
+    a partial parse is a `warn`; the promise was still an over-claim, and a
+    promise that holds only while another program keeps grading its own errors
+    the way it does today is the kind this module does not make.
+
+    UNREACHABLE BY CONSTRUCTION, not by knowing the shape. The leading element
+    is taken when the field is a list, because that is where semgrep puts the
+    name -- but what is RETURNED is only ever something `_ERROR_TYPE_RE`
+    accepts, and a filesystem path cannot be, whatever shape a future version
+    invents. Anything else becomes the literal `error`: this sentence exists to
+    say the report is refused, and it says that with or without a name.
+    """
+    kind = entry.get("type")
+    if isinstance(kind, list) and kind:
+        kind = kind[0]
+    kind = kind.strip() if isinstance(kind, str) else ""
+    return kind if _ERROR_TYPE_RE.match(kind) else "error"
 
 
 def semgrep_failure(data) -> str:
@@ -1893,18 +2147,70 @@ def semgrep_failure(data) -> str:
     THE LINE IS `level`, and semgrep draws it where this needs it: a file it
     could not parse is `warn` (three of them in this repository's own capture,
     with 86 files still scanned around them), and `error` is kept for what
-    stopped it. So an `error` refuses the whole report and a `warn` costs only
-    the note `SAST_PARSE_NOTE` makes of it. Fails closed on purpose: a report
-    this module cannot vouch for is a declared gap, never a clean bill of
-    health.
+    stopped it. So a `warn` costs only the note `SAST_PARSE_NOTE` makes of it.
+
+    IT IS THE `warn` SIDE THAT IS LISTED, not the `error` side, and that is the
+    fail-closed half. Testing `level == "error"` let every OTHER word through
+    as harmless -- an entry with no `level` at all, and a `fatal` or `critical`
+    a future Semgrep introduces, would each have been read as recoverable and
+    the report taken as clean. `_SEMGREP_RECOVERABLE_LEVELS` names the words
+    that are known to mean "kept going"; anything else, including nothing,
+    refuses the report. A report this module cannot vouch for is a declared
+    gap, never a clean bill of health.
     """
     errors = data.get("errors") if isinstance(data, dict) else None
     if not isinstance(errors, list):
         return ""
-    types = sorted({str(e.get("type") or "error") for e in errors
+    types = sorted({_semgrep_error_type(e) for e in errors
                     if isinstance(e, dict)
-                    and str(e.get("level") or "").lower() == "error"})
+                    and str(e.get("level") or "").strip().lower()
+                    not in _SEMGREP_RECOVERABLE_LEVELS})
     return SAST_FAILED.format(types=", ".join(types)) if types else ""
+
+
+def semgrep_empty_scan(data) -> str:
+    """Why this report describes a scan that looked at nothing, or "".
+
+    THE SIBLING `semgrep_failure` DOES NOT CATCH, and the one that arrives with
+    nothing in `errors[]` to give it away. That guard closed the exit-7 route:
+    an unfetchable pack writes `results: []` and `paths.scanned: []` AND an
+    `errors[]` entry at `level: "error"`. Its neighbour writes the first two
+    and NOT the third. Measured, verbatim, semgrep 1.175.0 against a pack that
+    is well-formed YAML and parses to no rule (`rules: []`), over a tree with
+    six files in it:
+
+        exit 0
+        {"errors": [], "results": [], "paths": {"scanned": []},
+         "time": {"rules": [], …}}
+
+    -- which `semgrep_failure` answers `""` for, and which then lands as a
+    clean pre-pass. It is the same silence this project has already been bitten
+    by twice: `gitleaks git` outside a repository writing `[]` (see
+    `history_state`), and the exit-7 report above. "Found nothing" and "never
+    looked" are the same silence in a report, and this module's rule is that
+    the second one has to say so.
+
+    THE NUMBER READ IS WHAT WAS SCANNED, NOT WHAT WAS LOADED, and that is a
+    correction the measurement forced. `time.rules: []` looks like the more
+    direct evidence -- no rule loaded, nothing checked -- and it is not
+    evidence at all: semgrep writes `time.rules: []` whenever `--time` was not
+    passed, over a tree it scanned perfectly well (measured, six files). A
+    guard on it would refuse a healthy scan the day a flag moved. What semgrep
+    does NOT do is claim to have scanned files it did not, so `paths.scanned`
+    is the number that can be trusted in this direction, and a pack with no
+    rule in it selects no target: `scanned: []` is the shape it lands in.
+
+    `paths.scanned` must be PRESENT and a LIST to be read as zero. A `paths`
+    block this parser cannot read costs the file count and not the phase (see
+    `semgrep_notes`), so an absent or malformed one is never read as a zero.
+    An empty repository reaches this honestly, and a declared gap is the right
+    answer there too: nothing was examined.
+    """
+    if not isinstance(data, dict):
+        return ""
+    paths = data.get("paths")
+    scanned = paths.get("scanned") if isinstance(paths, dict) else None
+    return SAST_NO_FILES if isinstance(scanned, list) and not scanned else ""
 
 
 def semgrep_notes(data, version: str, findings) -> list[str]:
@@ -1915,22 +2221,39 @@ def semgrep_notes(data, version: str, findings) -> list[str]:
     outright and the suite would stay green on a machine without Semgrep --
     the failure `test_the_coverage_notes_are_returned_without_the_binary`
     exists for one section up.
+
+    EVERY NUMBER HERE IS ONE THE REPORT ACTUALLY CARRIES. Where it does not
+    carry one, the clause goes and the loss is stated -- the number is never
+    filled in with a zero, which is a different claim entirely: "over 0 files,
+    with 0 rules loaded" was printed for a scan of 89 files with 244 rules,
+    because both counts fell back to the length of something that was missing.
+    A zero rule count is never a fact here even when semgrep writes one -- see
+    `semgrep_rule_count` -- so only a POSITIVE count is printed.
     """
     paths = data.get("paths") if isinstance(data, dict) else None
     scanned = paths.get("scanned") if isinstance(paths, dict) else None
-    files = len(scanned) if isinstance(scanned, list) else 0
-    languages = semgrep_languages(data)
-    notes = [SAST_ENGINE_NOTE.format(version=version, files=files,
-                                     rules=sum(n for _, n in languages),
-                                     config=SEMGREP_CONFIG)]
-    if languages:
+    files = (SAST_FILES_PHRASE.format(
+        count=len(scanned), files="file" if len(scanned) == 1 else "files")
+        if isinstance(scanned, list) else SAST_FILES_UNKNOWN)
+    rules = semgrep_rule_count(data) or None
+    engine = SAST_ENGINE_NOTE if rules else SAST_ENGINE_NOTE_NO_RULES
+    notes = [engine.format(version=version, files=files, rules=rules,
+                           config=SEMGREP_CONFIG)]
+    coverage, unplaced = semgrep_breakdown(data)
+    if coverage:
         notes.append(SAST_LANGUAGE_NOTE.format(
-            breakdown=", ".join(f"{lang} {n}" for lang, n in languages)))
+            breakdown=", ".join(f"{lang} {n}" for lang, n in coverage)))
+    if unplaced:
+        total = sum(n for _, n in unplaced)
+        notes.append(SAST_UNPLACED_NOTE.format(
+            count=total, rules="rule" if total == 1 else "rules",
+            breakdown=", ".join(f"{lang} {n}" for lang, n in unplaced)))
     unparsed = _semgrep_unparsed(data)
     if unparsed:
         notes.append(SAST_PARSE_NOTE.format(
             count=unparsed, files="file" if unparsed == 1 else "files",
-            they="it" if unparsed == 1 else "they"))
+            they="it" if unparsed == 1 else "they",
+            hold="holds" if unparsed == 1 else "hold"))
     notes.append(SAST_PREPASS_NOTE)
     if findings:
         notes.append(SAST_IDENTITY_NOTE)
@@ -1973,7 +2296,14 @@ def semgrep_scan(root, ignore_paths=()):
     # Before anything is parsed: semgrep writes a well-formed, EMPTY report
     # when it could not fetch its rule pack, and an empty report is what a
     # clean repository also produces. See `semgrep_failure`.
-    failure = semgrep_failure(data)
+    #
+    # BOTH GUARDS, because they catch different reports. `semgrep_failure`
+    # reads `errors[]`; `semgrep_empty_scan` reads the numbers, and a pack that
+    # parses to no rule at all exits 0 with an EMPTY `errors[]` -- so the first
+    # one answers "" for it and it would land as a clean pre-pass. The failure
+    # is asked first because it can say WHY, where the second can only say that
+    # nothing was looked at.
+    failure = semgrep_failure(data) or semgrep_empty_scan(data)
     if failure:
         return None, [failure]
     findings = semgrep_findings(data, root, ignore_paths)

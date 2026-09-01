@@ -390,6 +390,56 @@ def test_run_json_drops_a_report_that_parses_but_is_too_deep_to_purge(
     assert "too deeply nested to purge" in note
 
 
+def test_run_json_refuses_a_report_bigger_than_the_ceiling(
+        tmp_path, monkeypatch):
+    """A report is read WHOLE, parsed into an object graph and then walked
+    into a second one, so its peak cost is a multiple of the file -- and
+    nothing bounded it. The failure that produces is a `MemoryError`, which is
+    neither a ValueError, an OSError nor a RecursionError: the one exception
+    the handler below the read does not name, escaping a function documented
+    to return `(None, note)` for every failure.
+
+    Semgrep's `--time` is the growth this was measured on: one timing per
+    (file, rule) pair, 651 KB for this repository's 89 files, and it grows
+    with both."""
+    monkeypatch.setattr(engines, "MAX_REPORT_BYTES", 2048)
+    fake_engine(tmp_path, monkeypatch, "gitleaks",
+                body='open(out, "w").write("[" + "0," * 4096 + "0]")')
+    data, note = engines.run_json("gitleaks", ["--out", "{out}"], tmp_path)
+    assert data is None
+    assert "ceiling" in note, note
+    # The same shape every other failure here returns, and a stated number:
+    # a ceiling nobody can see is a truncation nobody can audit.
+    assert "gitleaks" in note
+
+
+def test_a_report_under_the_ceiling_is_read_normally(tmp_path, monkeypatch):
+    """The guard is a ceiling, not a budget: the size it refuses is measured
+    before the read, and everything below it goes through untouched."""
+    monkeypatch.setattr(engines, "MAX_REPORT_BYTES", 2048)
+    fake_engine(tmp_path, monkeypatch, "gitleaks",
+                body='json.dump([{"RuleID": "aws-access-token"}], open(out, "w"))')
+    data, note = engines.run_json("gitleaks", ["--out", "{out}"], tmp_path)
+    assert note == ""
+    assert data == [{"RuleID": "aws-access-token"}]
+
+
+def test_the_ceiling_is_checked_before_the_report_is_read(tmp_path, monkeypatch):
+    """BEFORE `read_text`, which is the whole point of the guard: once the
+    file is in memory the cost is already paid. Proven by making the read
+    itself explode -- if the size check did not come first, this raises."""
+    monkeypatch.setattr(engines, "MAX_REPORT_BYTES", 2048)
+
+    def boom(*a, **k):
+        raise AssertionError("the report was read before its size was checked")
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    fake_engine(tmp_path, monkeypatch, "gitleaks",
+                body='open(out, "w").write(" " * 4096)')
+    data, note = engines.run_json("gitleaks", ["--out", "{out}"], tmp_path)
+    assert data is None and "ceiling" in note
+
+
 def test_run_json_survives_an_engine_that_writes_raw_bytes_to_stderr(
         tmp_path, monkeypatch):
     # The scenario the module's own comment anticipates: "an engine that
