@@ -4302,9 +4302,15 @@ function paintNav(){
     $(id).innerHTML = icon + '<span class="navlabel">' + label + "</span>"
       + (count == null ? "" : '<span class="ncount">' + count + "</span>") + (extra || "");
   item("nav-overview", I.grid, "Overview", null);
-  item("nav-jobs", I.zap, "Jobs", jobs,
+  item("nav-jobs", I.zap, "Jobs", jobs);
+  // The badge belongs beside Runs, not Jobs: `live` counts RUNS in flight,
+  // and `runs` above already includes them. Beside the job count it read as
+  // "1 of these 8 jobs is running", which is not what it measures -- one job
+  // can have several runs in flight, and a run in flight may belong to no
+  // job at all (a security analysis runs on a derived job that the Jobs area
+  // deliberately never shows).
+  item("nav-runs", I.activity, "Runs", runs,
        live ? '<span class="runningbadge"><span class="pulse"></span>' + live + "</span>" : "");
-  item("nav-runs", I.activity, "Runs", runs);
   item("nav-projects", I.folder, "Projects", projects);
   // No counter: the number that would belong here is how much is still open,
   // and that costs a round trip per project to know. It is on the page itself,
