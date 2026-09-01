@@ -19,6 +19,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **External scanners run through one door that cannot leak what they
+  found.** Gitleaks returns the credential it matched, Semgrep returns
+  the source line, Trivy's secret scanner returns both — and this
+  repository's own run logs already carry a 1,546-character private key,
+  printed by a masking command the agent wrote and then forgot to pipe
+  through. Engines now write their JSON to a file this code names, never
+  to a stream the run transcript captures, and the forbidden fields are
+  stripped recursively in the function that parses them, not at the call
+  sites that would each have to remember.
+
 - **A security finding now carries a CWE and an OWASP class, and its SAST
   rule name comes from a closed vocabulary of 21.** The rule name is part
   of a finding's fingerprint, so free text meant one hole could arrive
