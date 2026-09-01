@@ -93,6 +93,31 @@ def test_checklist_raises_analysisnotfound_instead_of_exiting(conn):
         queries.checklist(conn, 999)
 
 
+def test_checklist_carries_a_findings_cwe_and_owasp_class(conn):
+    aid = ledger.start_analysis(conn, "web", "web", "main", "s", "quick", "r")
+    ledger.record_finding(conn, aid, {
+        "fingerprint": "f" * 64, "category": "sast", "rule": "sql-injection",
+        "severity": "high", "title": "t", "cwe": "CWE-89", "owasp": "A03:2021",
+        "occurrences": [{"file": "a.py", "line": 1, "snippet_hash": "h"}]})
+    ledger.mark_prepared(conn, aid)
+    ledger.finish_analysis(conn, aid, "done")
+
+    _analysis_row, findings = queries.checklist(conn, aid)
+    assert findings[0]["cwe"] == "CWE-89"
+    assert findings[0]["owasp"] == "A03:2021"
+
+
+def test_a_deterministic_finding_with_no_classification_carries_empty_strings(conn):
+    """Every deterministic finding (secret, dependency, hygiene) has no CWE or
+    OWASP class -- `_analysis`'s helper findings never set one -- so this pins
+    the empty-string default the ledger already gives that column, read back
+    through the checklist rather than through `ledger` directly."""
+    aid = _analysis(conn, "main", findings=[("high", "secret")])
+    _analysis_row, findings = queries.checklist(conn, aid)
+    assert findings[0]["cwe"] == ""
+    assert findings[0]["owasp"] == ""
+
+
 def test_posture_counts_open_findings_of_the_latest_finished_analysis(conn):
     _analysis(conn, "main", findings=[("critical", "secret"), ("low", "hygiene")])
     _analysis(conn, "main", findings=[("critical", "secret")])
@@ -1194,6 +1219,20 @@ def test_unique_counts_fingerprints_not_rows(conn):
     got = queries.finding_rows(conn, "web")
     assert got["total"] == 2
     assert got["unique"] == 1
+
+
+def test_finding_rows_carries_a_findings_cwe_and_owasp_class(conn):
+    aid = ledger.start_analysis(conn, "web", "web", "main", "s", "quick", "r")
+    ledger.record_finding(conn, aid, {
+        "fingerprint": "f" * 64, "category": "sast", "rule": "sql-injection",
+        "severity": "high", "title": "t", "cwe": "CWE-89", "owasp": "A03:2021",
+        "occurrences": [{"file": "a.py", "line": 1, "snippet_hash": "h"}]})
+    ledger.mark_prepared(conn, aid)
+    ledger.finish_analysis(conn, aid, "done")
+
+    got = queries.finding_rows(conn, "web")
+    assert got["rows"][0]["cwe"] == "CWE-89"
+    assert got["rows"][0]["owasp"] == "A03:2021"
 
 
 def test_first_seen_is_the_oldest_analysis_carrying_the_fingerprint(conn):

@@ -41,7 +41,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from security import deps, diff, fingerprint, hygiene, ledger, osv, queries, report, secrets  # noqa: E402
+from security import deps, diff, fingerprint, hygiene, ledger, osv, queries, report, secrets, taxonomy  # noqa: E402
 
 REQUIRED_FINDING_KEYS = ("fingerprint", "category", "rule", "severity", "title")
 
@@ -67,6 +67,15 @@ FINGERPRINT_PREFIX_RE = re.compile(r"^[0-9a-f]{1,64}$")
 # out of the ledger and renders it into the report page.
 MAX_TEXT = 10000
 TEXT_KEYS = ("title", "rationale", "remediation", "partial_note")
+
+# The closed set of finding categories: the three the deterministic phases
+# produce, plus the agent's own `sast`. ONE tuple, read by everything that
+# has an opinion about this field -- `report-finding`'s door, `fingerprint`'s
+# flag and `findings-page`'s filter -- because a category accepted on the way
+# in that no filter can select on the way out is a row nobody can find, and a
+# fingerprint computed under one spelling of a category and reported under
+# another is two identities for one hole.
+FINDING_CATEGORIES = diff.DETERMINISTIC_CATEGORIES + ("sast",)
 
 # The word a reader sees for a decision state, mirroring
 # `SEC_STATE_LABEL` in ui/security/vocabulary.js -- the vocabulary every
@@ -207,19 +216,24 @@ def _refuse_if_secret(field, value):
     """Refuse free text the agent wrote if it carries a live credential.
 
     ONE implementation, two doors. `report-finding` gates `title`,
-    `rationale`, `remediation` and `partial_note` with this; `finish --note`
-    -- which lands in `coverage_note`, reaches all four report formats and
-    the analysis page, and is deliberately reachable by the agent (see
-    `_refuse_if_agent`: closing the row is the one thing that must always
-    work) -- had no gate at all, even though it is the near-identical twin of
-    the `partial_note` already covered. An agent describing what it could not
-    scan is exactly as likely to quote the credential it found as one
-    describing what it did.
+    `rationale`, `remediation` and `partial_note` with this -- and `category`
+    and `rule` as well, which are not free prose but ARE agent-written, are
+    stored verbatim, and are quoted back by their own refusals (see
+    `cmd_report_finding`). The second door is `finish --note`, which lands in
+    `coverage_note`, reaches all four report formats and the analysis page,
+    and is deliberately reachable by the agent (see `_refuse_if_agent`:
+    closing the row is the one thing that must always work) -- it had no gate
+    at all, even though it is the near-identical twin of the `partial_note`
+    already covered. An agent describing what it could not scan is exactly as
+    likely to quote the credential it found as one describing what it did.
 
-    The deterministic categories cannot leak a secret's value by
-    construction -- the `occurrence` table has no column for it,
+    The deterministic categories cannot leak a secret's value THROUGH THEIR
+    EVIDENCE by construction -- the `occurrence` table has no column for it,
     `secrets.py` never returns matched text, `secret_fingerprint` takes no
-    value argument. Agent-written free text has no such structural
+    value argument. That guarantee belongs to the columns the scanners
+    fill, not to the payload the agent hands in: `rule` arrives from the
+    agent under every category, deterministic ones included, which is why it
+    is gated here too. Agent-written free text has no such structural
     guarantee, and until this check existed the only thing stopping a live
     credential from landing in one was a sentence in the skill telling the
     agent not to -- in exactly the scenario the feature exists for, an agent
@@ -240,6 +254,30 @@ def _refuse_if_secret(field, value):
                  "instead of quoting it -- e.g. \"an AWS access key is "
                  "hardcoded here\" -- the way a secret-category finding "
                  "already does.")
+
+
+def _refuse_unknown_sast_rule(verb, rule, tail=""):
+    """Refuse a `sast` rule outside the closed vocabulary -- the one message
+    behind both doors that check it, `cmd_fingerprint`'s `--rule` and
+    `cmd_report_finding`'s `rule` payload key, so the wording cannot drift
+    between the two the way two hand-written copies eventually would.
+
+    Runs `_refuse_if_secret` on the rule FIRST, before quoting it back in
+    the refusal below -- owned HERE, not left to each call site, so a future
+    third caller cannot forget the ordering the other two already got right.
+
+    `verb` names the command doing the refusing (`fingerprint` or
+    `report-finding`); `tail` lets `report-finding` append its own sentence
+    pointing the agent at the rationale field, which `fingerprint` has no
+    equivalent of.
+    """
+    _refuse_if_secret(f"{verb}: rule", rule)
+    sys.exit(f"{verb}: {rule!r} is not a SAST rule name. "
+             "The rule is part of the fingerprint, so a second spelling "
+             "of one hole is a second identity: it reports `new` for "
+             "ever and no decision ever matches it again. Use one of: "
+             + ", ".join(taxonomy.RULE_NAMES)
+             + " — or `other` if none of them fits" + tail)
 
 
 def _spend(value):
@@ -427,7 +465,27 @@ def cmd_fingerprint(args):
     Read-only and side-effect free: it never opens the database, so it is
     allowed under CC_SECURITY_AGENT (see AGENT_FORBIDDEN) even though it
     still requires --db, like every other subcommand here.
+
+    The same door as `report-finding`'s SAST-rule gate, saying the same
+    thing at the same time. Without this, an agent asks for a fingerprint
+    for `sqli`, gets back 64 well-formed hex characters, and only discovers
+    the rule is invalid when `report-finding` refuses it -- after the rest
+    of the payload has already been built around an identity it can never
+    store. `--category` is validated by argparse's `choices=` before this
+    function ever runs; `--rule` is free text for every category (deterministic
+    rule names come from our own scanners, not from a vocabulary written for
+    the agent), so only the `sast` branch is checked here, exactly as
+    `cmd_report_finding` checks it only for that category.
     """
+    if args.category == "sast" and not taxonomy.is_valid_rule(args.rule):
+        # See `_refuse_unknown_sast_rule`: it scans `args.rule` for a live
+        # credential before quoting it back, for the reason
+        # `_refuse_if_secret`'s docstring gives for gating `report-finding`'s
+        # `category` and `rule` before their own refusals quote them --
+        # echoing a secret back to refuse it would defeat the refusal by
+        # writing it to disk anyway. This verb's stderr lands in the same
+        # run log `report-finding`'s does, so the same care applies here.
+        _refuse_unknown_sast_rule("fingerprint", args.rule, tail=".")
     if args.category == "secret":
         # No snippet, no value: the identity of a secret finding is its TYPE
         # and its FILE, never what it says. See secret_fingerprint's own
@@ -473,6 +531,47 @@ def cmd_report_finding(args):
                  "is reported `new` for ever and can never be decided on")
     if payload["severity"] not in report.SEVERITIES:
         sys.exit(f"report-finding: severity must be one of {report.SEVERITIES}")
+    # `category` and `rule` are QUOTED BACK by the two refusals below, and
+    # neither field is in TEXT_KEYS, so neither has been through the scanner
+    # the free-text fields go through. `report-finding`'s stderr is kept in
+    # the run log: an agent that pasted a credential into one of these would
+    # have the refusal itself write the secret to disk -- precisely what
+    # `_refuse_if_secret`'s own docstring forbids ("the message names the
+    # FIELD and the RULE, never the text that matched"). Scanning them HERE,
+    # before either gate can quote one, also keeps a credential out of the
+    # stored `rule` column: `rule` is agent-written for EVERY category, the
+    # deterministic ones included, so "cannot leak by construction" was only
+    # ever true of the columns, never of this one.
+    _refuse_if_secret("report-finding: category", payload["category"])
+    _refuse_if_secret("report-finding: rule", payload["rule"])
+    # The category decides which of the two rule regimes below applies, and
+    # an exact `== "sast"` on unvalidated text is one character away from
+    # skipping the vocabulary altogether: `"Sast"`, `"sasT"` or `"sast "`
+    # used to fall through to the `else` branch and land a free-text rule
+    # with a blank classification in the ledger -- the identity instability
+    # the vocabulary exists to prevent, reached by the one route around it.
+    # The quoted value is what makes a whitespace typo visible; it is safe to
+    # quote because the scan above has already cleared it.
+    if payload["category"] not in FINDING_CATEGORIES:
+        sys.exit(f"report-finding: {payload['category']!r} is not a finding "
+                 "category. The category is part of the fingerprint and of "
+                 "every filter the screens offer, so a second spelling of one "
+                 "is a second identity nothing can select. Use one of: "
+                 + ", ".join(FINDING_CATEGORIES))
+    # SAST only. The deterministic categories' rule names come from our own
+    # Python (secrets._RULES, hygiene's literals, the OSV id), and forcing
+    # them through a vocabulary written for the agent would refuse findings
+    # this program itself produced. `cwe`/`owasp` are DERIVED from the rule,
+    # never accepted from the payload -- an agent that could send its own
+    # would end up with a CWE that disagrees with the rule beside it, two
+    # sources of truth in one row.
+    if payload["category"] == "sast":
+        if not taxonomy.is_valid_rule(payload["rule"]):
+            _refuse_unknown_sast_rule("report-finding", payload["rule"],
+                                       tail=", and say why in the rationale.")
+        payload["cwe"], payload["owasp"] = taxonomy.classify(payload["rule"])
+    else:
+        payload["cwe"] = payload["owasp"] = ""
     for key in TEXT_KEYS:
         value = payload.get(key)
         if not isinstance(value, str):
@@ -781,6 +880,97 @@ def cmd_rename_project(args):
         sboms = conn.execute("UPDATE OR REPLACE sbom SET project=? WHERE project=?",
                              (args.to, getattr(args, "from"))).rowcount
     print(json.dumps({"analyses": analyses, "decisions": decisions, "sboms": sboms}))
+
+
+def cmd_migrate_rules(args):
+    """Apply `taxonomy.RULE_RENAMES` to the ledger. Safe to run twice.
+
+    A rule name is part of a finding's fingerprint, so renaming one in the
+    scanner without moving the history behind it reports every finding under
+    the old name as `fixed` AND `new` in the same report, and strands every
+    human decision on an identity nothing will ever produce again. This verb
+    is how the two are kept in step: the scanner changes the name, the map
+    records that the two names are one rule, and this walks the ledger.
+
+    Every entry's CATEGORY is checked before any of the map is applied, and
+    that check alone is all-or-nothing: it needs nothing from the ledger, so an
+    entry naming a category `rename_rule` refuses is caught before the first
+    row moves rather than after the entries above it have already committed.
+
+    THE REST IS NOT. `rename_rule` wraps each entry in its own transaction, and
+    the two failures it can only discover while walking -- a finding with no
+    path (`ValueError`) and a new fingerprint that collides with one the same
+    analysis or project already holds (`IntegrityError`) -- fire mid-map. The
+    failing entry itself rolls back whole, but the entries applied BEFORE it
+    stay applied: this verb is atomic per entry, not per map. That is why the
+    refusal below names them rather than counting them, and why a failed run
+    means "read the message and fix the map", never "nothing happened".
+    Pre-flighting those two would mean doing the walk to find out, which is the
+    thing that cannot be undone.
+
+    Refused while ANY analysis in the ledger is `running`, for `cmd_decide`'s
+    reason applied to a bigger blast radius. `decide` writes one row keyed to
+    an identity; this REWRITES identities, and mid-analysis that lands under an
+    agent still holding the old ones: findings it already reported get new
+    fingerprints, its re-report of one then misses the `(analysis_id,
+    fingerprint)` upsert key and INSERTs a second row instead, and one hole
+    becomes two contradictory checklist entries -- which is the exact outcome
+    that UNIQUE constraint exists to prevent. Not scoped to a project, unlike
+    `decide`'s: this verb takes no project and walks every row in the ledger,
+    so any live analysis anywhere is a live analysis this could pull the ground
+    out from under. A `running` row left by a run that died is not a permanent
+    lock: the engine's preflight sweep closes those before it opens the next
+    analysis of that project (see `cmd_security_analyze` in `bin/claude-cron`).
+
+    Deliberately absent from AGENT_FORBIDDEN: it takes no arguments. Unlike
+    `decide` or `rename-project`, there is no target for a caller to choose --
+    it can only ever apply the map the repository itself declares, so an agent
+    running it produces exactly what a human running it produces. The guard
+    above is what actually covers the agent case, and it does not depend on the
+    environment variable to do it.
+    """
+    renames = [(category, old, new)
+               for (category, old), new in taxonomy.RULE_RENAMES.items()]
+    for category, old, _new in renames:
+        if category not in ledger.RENAMEABLE_CATEGORIES:
+            sys.exit(f"migrate-rules: {category}/{old} cannot be migrated — "
+                     "a rename is only possible where the fingerprint can be "
+                     "rebuilt from what the ledger stores, which is "
+                     + ", ".join(ledger.RENAMEABLE_CATEGORIES)
+                     + " (see ledger.rename_rule). Nothing was migrated.")
+    conn = _conn(args)
+    live = conn.execute(
+        "SELECT id, project FROM analysis WHERE state='running' "
+        "ORDER BY id ASC LIMIT 1").fetchone()
+    if live is not None:
+        sys.exit(f"migrate-rules: analysis {live['id']} of '{live['project']}' "
+                 "is still running — this rewrites the fingerprints of findings "
+                 "that analysis has already recorded, while the agent is still "
+                 "holding the old ones. Its next re-report of one would miss "
+                 "the upsert key and file a SECOND row for the same hole. Wait "
+                 "for the run to end; nothing was migrated.")
+    applied, total = [], 0
+    for category, old, new in renames:
+        try:
+            moved = ledger.rename_rule(conn, category, old, new)
+        except (ValueError, sqlite3.Error) as exc:
+            # Same doctrine as `report-finding`: a sentence on stderr, not a
+            # traceback. `rename_rule` rolled its own transaction back, so the
+            # entry that failed changed nothing -- but entries BEFORE it in the
+            # map committed, and the operator has to be told WHICH, not how
+            # many: a count sends them to diff the ledger against a map to work
+            # out where it stopped. Entries that moved 0 findings are absent
+            # because they changed nothing there is anything to undo.
+            done = "; ".join(f"{a['category']}/{a['from']} -> {a['to']} "
+                             f"({a['findings']} finding(s))" for a in applied)
+            sys.exit(f"migrate-rules: {category}/{old} -> {new} failed: {exc}"
+                     + (f" — ALREADY APPLIED and not rolled back: {done}"
+                        if applied else " — nothing had been applied yet."))
+        if moved:
+            applied.append({"category": category, "from": old, "to": new,
+                            "findings": moved})
+        total += moved
+    print(json.dumps({"renamed": applied, "findings": total}))
 
 
 def cmd_list(args):
@@ -1383,7 +1573,13 @@ def main(argv=None):
     # so there is nothing here for the agent to abuse -- only a computation
     # it would otherwise be tempted to reproduce by hand and get wrong.
     fp = sub.add_parser("fingerprint", parents=[dbflag]); fp.set_defaults(fn=cmd_fingerprint)
-    fp.add_argument("--category", required=True)
+    # `choices=` for the same reason `report-finding` validates the identical
+    # field: this verb MINTS the identity that verb then stores, and
+    # `cmd_fingerprint` branches on `args.category == "secret"` exactly as
+    # narrowly. A category the door would refuse must not be able to produce
+    # a fingerprint here first -- the agent would compute an identity it can
+    # never report under.
+    fp.add_argument("--category", required=True, choices=FINDING_CATEGORIES)
     fp.add_argument("--rule", required=True)
     fp.add_argument("--path", required=True)
     fp.add_argument("--snippet", default="")
@@ -1411,6 +1607,14 @@ def main(argv=None):
         de.add_argument(f"--{flag}", required=True)
     de.add_argument("--state", required=True, choices=ledger.DECISION_STATES)
     de.add_argument("--by", default="")
+
+    # No flags at all, deliberately -- and that is also why it is absent from
+    # AGENT_FORBIDDEN: the migration it applies is `taxonomy.RULE_RENAMES`,
+    # declared in this repository's own source. A `--from`/`--to` pair here
+    # would turn a replayable, reviewed migration into an arbitrary rewrite of
+    # any finding's identity, which is a thing `decide` and `rename-project`
+    # are refused the agent for being.
+    mgr = sub.add_parser("migrate-rules", parents=[dbflag]); mgr.set_defaults(fn=cmd_migrate_rules)
 
     mv = sub.add_parser("rename-project", parents=[dbflag]); mv.set_defaults(fn=cmd_rename_project)
     mv.add_argument("--from", required=True)
@@ -1451,7 +1655,7 @@ def main(argv=None):
     fpg.add_argument("--state", action="append", default=None,
                      choices=diff.DERIVED_STATES + ledger.DECISION_STATES)
     fpg.add_argument("--category", action="append", default=None,
-                     choices=diff.DETERMINISTIC_CATEGORIES + ("sast",))
+                     choices=FINDING_CATEGORIES)
     fpg.add_argument("--branch", action="append", default=None)
     fpg.add_argument("--analysis", action="append", type=int, default=None)
     fpg.add_argument("--q", default="")

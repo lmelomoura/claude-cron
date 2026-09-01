@@ -67,9 +67,32 @@ fp="$(claude-cron security fingerprint --category secret --rule aws_access_key -
 
 **Never hand-compute a fingerprint.** The door checks that it is 64 lowercase hex characters, not that it was computed the right way — a string you invent yourself passes that check and still breaks everything downstream of it: it is a fresh identity on every run, so the same hole is reported `new` for ever, never `open`, never `fixed`, and no decision anyone records against it ever matches again. `claude-cron security fingerprint` is the only source of a real one; never type one yourself, never reuse one from a previous finding, never guess.
 
+**The SAST rule name comes from a closed vocabulary.** `report-finding` and
+`fingerprint` both refuse anything else, because the rule name is part of the
+fingerprint: a second spelling of one hole is a second identity, reported
+`new` for ever, and no decision anyone recorded ever matches it again.
+
+```
+broken-access-control      broken-authentication      code-injection
+command-injection          hardcoded-credentials      improper-input-validation
+insecure-configuration     insecure-deserialization   insecure-randomness
+missing-rate-limiting      open-redirect              other
+path-traversal             prompt-injection-in-source race-condition
+sensitive-data-exposure    sql-injection              ssrf
+weak-cryptography          xss                        xxe
+```
+
+If none of them fits what you found, use `other` and say in the `rationale`
+what it is. Do NOT pick the nearest wrong name to get past the door — a
+mislabelled finding is worse than an honestly unclassified one, because
+everything downstream believes the label.
+
+You do not send `cwe` or `owasp`. They are derived from the rule name, and
+anything you send in those fields is ignored.
+
 **Never print a secret's value.** Not in a finding, not in a rationale, not in your own reasoning out loud — not masked, not truncated, not partially shown. You may say a credential of a given type is at a given file and line. Describe it; never quote it.
 
-The door enforces this now, not only this sentence. `report-finding` runs `title`, `rationale`, `remediation` and `partial_note` through the same shaped patterns the secret scanner uses, and refuses the finding if any of them looks like a live credential — naming the field and the rule that matched, never echoing the text back. If a finding of yours is refused this way, the fix is not to reformat, truncate or mask the value: remove it and describe the credential instead — "an AWS access key is hardcoded here" passes; the key itself never will.
+The door enforces this now, not only this sentence. `report-finding` runs `title`, `rationale`, `remediation`, `partial_note`, `category` and `rule` through the same shaped patterns the secret scanner uses, and refuses the finding if any of them looks like a live credential — naming the field and the rule that matched, never echoing the text back. If a finding of yours is refused this way, the fix is not to reformat, truncate or mask the value: remove it and describe the credential instead — "an AWS access key is hardcoded here" passes; the key itself never will.
 
 **Never read dependency trees.** Nothing under `node_modules/`, `vendor/`, `.venv/`, or any other installed tree. It is noise, and it is the only code in the repository nobody here wrote.
 

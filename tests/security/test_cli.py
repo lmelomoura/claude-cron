@@ -21,9 +21,12 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from security.fingerprint import fingerprint as compute_fingerprint, secret_fingerprint
 from security import cli as security_cli
 from security import ledger as security_ledger
+from security import taxonomy as security_taxonomy
 
 REPO = Path(__file__).resolve().parent.parent.parent
 CLI = REPO / "bin" / "security" / "cli.py"
@@ -140,11 +143,166 @@ def test_the_agent_cannot_invent_a_severity(tmp_path):
     assert "severity" in out.stderr
 
 
+def _finding_row(db, analysis_id):
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    return conn.execute("SELECT * FROM finding WHERE analysis_id=?",
+                        (analysis_id,)).fetchone()
+
+
+def test_report_finding_refuses_a_sast_rule_outside_the_vocabulary(tmp_path):
+    """The rule name is part of the fingerprint's identity (see
+    taxonomy.py's own docstring): a SAST rule outside the closed vocabulary
+    is refused before it ever reaches the ledger, and the error names the
+    vocabulary entry the agent should have used instead."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "d" * 64, "category": "sast", "rule": "sqli",
+        "severity": "high", "title": "t"}))
+    assert out.returncode != 0
+    assert "sqli" in out.stderr
+    assert "sql-injection" in out.stderr  # tells the agent what to use instead
+    # The escape hatch has to be IN the refusal, not only in the docstring:
+    # an agent that found something real and unlisted reads this sentence and
+    # nothing else, and a refusal it cannot act on costs a whole paid run.
+    # Backticks, not the bare word: `other` is also a member of the joined
+    # vocabulary list, so asserting on the bare word would stay green even if
+    # the sentence that TELLS the agent it may use it were deleted.
+    assert "`other`" in out.stderr
+
+
+def test_report_finding_accepts_other_as_the_escape_hatch(tmp_path):
+    """The refusal above advertises `other`; this is the proof it works.
+
+    `other` carries no CWE and no OWASP class on purpose (see taxonomy.py):
+    an unlisted finding is visibly unclassified rather than quietly filed
+    under the nearest wrong rule."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "4" * 64, "category": "sast", "rule": "other",
+        "severity": "high", "title": "t",
+        "rationale": "Nothing in the vocabulary fits: it is a logic flaw in "
+                     "the refund path."}))
+    row = _finding_row(db, aid)
+    assert row["rule"] == "other"
+    assert row["cwe"] == ""
+    assert row["owasp"] == ""
+
+
+def test_report_finding_refuses_a_category_outside_the_closed_set(tmp_path):
+    """The vocabulary gate keys off `category == "sast"`, so an unvalidated
+    category was one character away from skipping it entirely: `"Sast"` fell
+    through to the deterministic branch and landed a free-text rule with a
+    blank classification in the ledger -- the identity instability the
+    vocabulary exists to prevent, reached by the one route around it."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    for bogus in ("Sast", "sast ", "sasT", "secrets"):
+        out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+            "fingerprint": "5" * 64, "category": bogus, "rule": "sqli",
+            "severity": "high", "title": "t"}))
+        assert out.returncode != 0, f"{bogus!r} was accepted"
+        assert "sast" in out.stderr and "hygiene" in out.stderr
+    # Nothing reached the ledger under any of the four spellings.
+    assert _finding_row(db, aid) is None
+
+
+def test_report_finding_does_not_echo_an_unscanned_rule_that_looks_like_a_key(tmp_path):
+    """The vocabulary refusal QUOTES the rule it rejected, and `rule` is not
+    one of the free-text fields the secret scanner already covers. stderr from
+    `report-finding` is kept in the run log, so a rule carrying a credential
+    would be written to disk by the very refusal meant to keep it out."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "6" * 64, "category": "sast", "rule": AWS,
+        "severity": "high", "title": "t"}))
+    assert out.returncode != 0
+    assert "rule" in out.stderr
+    assert AWS not in out.stdout
+    assert AWS not in out.stderr
+
+
+def test_report_finding_does_not_echo_an_unscanned_category_that_looks_like_a_key(tmp_path):
+    """`category` is quoted back by its own vocabulary refusal exactly as
+    `rule` is (see the test above and cmd_report_finding's own comment on
+    why both are scanned before either gate can quote them): a credential
+    pasted into `category` would otherwise be written to the run log by the
+    very refusal meant to keep it out."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "8" * 64, "category": AWS, "rule": "r",
+        "severity": "high", "title": "t"}))
+    assert out.returncode != 0
+    assert "category" in out.stderr
+    assert AWS not in out.stdout
+    assert AWS not in out.stderr
+
+
+def test_report_finding_refuses_a_deterministic_rule_that_carries_a_credential(tmp_path):
+    """`rule` is agent-written for EVERY category, deterministic ones
+    included -- it is stored verbatim and rendered on the report page. The
+    "cannot leak by construction" guarantee was only ever true of the
+    occurrence columns, never of this one."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "7" * 64, "category": "hygiene", "rule": AWS,
+        "severity": "high", "title": "t"}))
+    assert out.returncode != 0
+    assert AWS not in out.stdout
+    assert AWS not in out.stderr
+    assert _finding_row(db, aid) is None
+
+
+def test_report_finding_derives_the_classification_from_the_rule(tmp_path):
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "e" * 64, "category": "sast", "rule": "sql-injection",
+        "severity": "high", "title": "t"}))
+    row = _finding_row(db, aid)
+    assert row["cwe"] == "CWE-89"
+    assert row["owasp"] == "A03:2021"
+
+
+def test_report_finding_ignores_a_classification_sent_by_the_agent(tmp_path):
+    """Two sources of truth in one row is how a CWE ends up disagreeing with
+    the rule beside it. The vocabulary wins, always -- whatever the agent
+    sends for `cwe`/`owasp` is overwritten by what the rule derives to."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "f" * 64, "category": "sast", "rule": "sql-injection",
+        "severity": "high", "title": "t",
+        "cwe": "CWE-79", "owasp": "A01:2021"}))
+    row = _finding_row(db, aid)
+    assert row["cwe"] == "CWE-89"
+    assert row["owasp"] == "A03:2021"
+
+
+def test_report_finding_accepts_a_deterministic_rule_unchanged(tmp_path):
+    """The vocabulary is for SAST only. A hygiene rule name is produced by our
+    own Python and must not be forced through a vocabulary written for the
+    agent."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "0" * 64, "category": "hygiene",
+        "rule": "committed_env_file", "severity": "high", "title": "t"}))
+    row = _finding_row(db, aid)
+    assert row["cwe"] == ""
+    assert row["owasp"] == ""
+
+
 def test_the_agent_cannot_report_into_an_analysis_that_does_not_exist(tmp_path):
     db = tmp_path / "security.db"
     open_analysis(db)
     out = fails(db, "report-finding", "--analysis", "999", stdin=json.dumps({
-        "fingerprint": "d" * 64, "category": "sast", "rule": "r",
+        "fingerprint": "d" * 64, "category": "hygiene", "rule": "r",
         "severity": "high", "title": "t"}))
     assert out.returncode != 0
     assert "999" in out.stderr
@@ -164,7 +322,7 @@ def test_a_finding_whose_rationale_contains_a_live_looking_key_is_refused(tmp_pa
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "e" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "fingerprint": "e" * 64, "category": "sast", "rule": "hardcoded-credentials",
         "severity": "high", "title": "t",
         "rationale": f"Found a live credential: {AWS}"}))
     assert out.returncode != 0
@@ -178,7 +336,7 @@ def test_a_finding_whose_title_contains_a_live_looking_key_is_refused(tmp_path):
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "f" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "fingerprint": "f" * 64, "category": "sast", "rule": "hardcoded-credentials",
         "severity": "high", "title": f"Key exposed: {AWS}"}))
     assert out.returncode != 0
     assert "title" in out.stderr
@@ -190,7 +348,7 @@ def test_a_finding_whose_remediation_contains_a_live_looking_key_is_refused(tmp_
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "1" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "fingerprint": "1" * 64, "category": "sast", "rule": "hardcoded-credentials",
         "severity": "high", "title": "t", "rationale": "r",
         "remediation": f"Rotate {AWS} immediately"}))
     assert out.returncode != 0
@@ -205,7 +363,7 @@ def test_a_finding_that_describes_a_credential_instead_of_quoting_it_is_accepted
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "2" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "fingerprint": "2" * 64, "category": "sast", "rule": "hardcoded-credentials",
         "severity": "high", "title": "Hardcoded AWS key",
         "rationale": "An AWS access key is hardcoded in config/prod.env at line 12."}))
 
@@ -214,7 +372,7 @@ def test_a_finding_whose_rationale_names_an_obvious_placeholder_is_accepted(tmp_
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "3" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "fingerprint": "3" * 64, "category": "sast", "rule": "hardcoded-credentials",
         "severity": "high", "title": "t",
         "rationale": 'Default credential left in place: '
                      'password = "changeme12345678901234"'}))
@@ -376,7 +534,7 @@ def test_no_db_at_all_is_refused_rather_than_guessed(tmp_path):
 def two_analyses(db, before, after):
     """One finding, reported with `before`'s occurrences and then with
     `after`'s, and the checklist state the second analysis gives it."""
-    finding = {"fingerprint": "e" * 64, "category": "sast", "rule": "r",
+    finding = {"fingerprint": "e" * 64, "category": "hygiene", "rule": "r",
                "severity": "high", "title": "t", "occurrences": before}
     first = open_analysis(db, run_id="r1")
     run(db, "report-finding", "--analysis", str(first), stdin=json.dumps(finding))
@@ -438,7 +596,7 @@ def test_a_decision_wins_over_the_derived_state(tmp_path):
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "a" * 64, "category": "sast", "rule": "r",
+        "fingerprint": "a" * 64, "category": "hygiene", "rule": "r",
         "severity": "high", "title": "t"}))
     run(db, "finish", "--analysis", str(aid), "--state", "done")
     run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
@@ -565,7 +723,7 @@ def test_the_work_the_agent_is_there_to_do_still_works_under_the_flag(tmp_path):
     run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline",
         env=AS_AGENT)
     run(db, "report-finding", "--analysis", str(aid), env=AS_AGENT,
-        stdin=json.dumps({"fingerprint": "b" * 64, "category": "sast",
+        stdin=json.dumps({"fingerprint": "b" * 64, "category": "hygiene",
                           "rule": "r", "severity": "high", "title": "t"}))
     run(db, "findings", "--analysis", str(aid), env=AS_AGENT)
     run(db, "checklist", "--analysis", str(aid), env=AS_AGENT)
@@ -634,7 +792,7 @@ def test_a_closed_analysis_refuses_a_new_finding(tmp_path):
     aid = open_analysis(db)
     run(db, "finish", "--analysis", str(aid), "--state", "done")
     out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "a" * 64, "category": "sast", "rule": "r",
+        "fingerprint": "a" * 64, "category": "hygiene", "rule": "r",
         "severity": "high", "title": "t"}))
     assert out.returncode != 0
     assert "closed" in out.stderr
@@ -665,7 +823,7 @@ def test_a_failed_first_attempt_does_not_make_everything_regressed(tmp_path):
     `regressed`: news that a hole was fixed and returned, about a hole that
     never left."""
     db = tmp_path / "security.db"
-    finding = {"fingerprint": "e" * 64, "category": "sast", "rule": "r",
+    finding = {"fingerprint": "e" * 64, "category": "hygiene", "rule": "r",
                "severity": "high", "title": "t",
                "occurrences": [{"file": "a.py", "line": 1}]}
     first = open_analysis(db, run_id="r1")
@@ -684,7 +842,7 @@ def test_a_finding_that_really_did_come_back_is_still_regressed(tmp_path):
     """The other side of the filter: a DONE analysis still feeds history, so
     a finding that was fixed and returned is not quietly downgraded to new."""
     db = tmp_path / "security.db"
-    finding = {"fingerprint": "e" * 64, "category": "sast", "rule": "r",
+    finding = {"fingerprint": "e" * 64, "category": "hygiene", "rule": "r",
                "severity": "high", "title": "t",
                "occurrences": [{"file": "a.py", "line": 1}]}
     first = open_analysis(db, run_id="r1")
@@ -711,7 +869,7 @@ def test_a_fingerprint_that_is_not_a_sha256_is_refused(tmp_path):
     for bad in ("aws-key-in-prod-env", "A" * 64, "abc123", "f" * 63, "f" * 65,
                 " " + "f" * 63):
         out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-            "fingerprint": bad, "category": "sast", "rule": "r",
+            "fingerprint": bad, "category": "hygiene", "rule": "r",
             "severity": "high", "title": "t"}))
         assert out.returncode != 0, bad
         assert "fingerprint" in out.stderr
@@ -722,7 +880,7 @@ def test_a_finding_cannot_paste_a_whole_file_into_the_ledger(tmp_path):
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     for key in ("title", "rationale", "remediation", "partial_note"):
-        payload = {"fingerprint": "a" * 64, "category": "sast", "rule": "r",
+        payload = {"fingerprint": "a" * 64, "category": "hygiene", "rule": "r",
                    "severity": "high", "title": "t", key: "x" * 10001}
         out = fails(db, "report-finding", "--analysis", str(aid),
                     stdin=json.dumps(payload))
@@ -738,7 +896,7 @@ def test_a_line_number_too_large_to_be_one_is_a_sentence_not_a_traceback(tmp_pat
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "a" * 64, "category": "sast", "rule": "r",
+        "fingerprint": "a" * 64, "category": "hygiene", "rule": "r",
         "severity": "high", "title": "t",
         "occurrences": [{"file": "a.py", "line": 1e999}]}))
     assert out.returncode != 0
@@ -805,7 +963,7 @@ def test_report_finding_with_normal_body_still_works(tmp_path):
     aid = open_analysis(db)
     run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "a" * 64, "category": "sast", "rule": "r",
+        "fingerprint": "a" * 64, "category": "hygiene", "rule": "r",
         "severity": "high", "title": "t"}))
     found = run(db, "findings", "--analysis", str(aid))
     assert any(f["rule"] == "r" for f in found)
@@ -979,9 +1137,60 @@ def test_fingerprint_is_allowed_under_the_agent_environment(tmp_path):
     to protect here, only a computation the agent would otherwise have to
     reproduce by hand and get wrong."""
     db = tmp_path / "security.db"
-    got = raw(db, "fingerprint", "--category", "sast", "--rule", "r",
+    got = raw(db, "fingerprint", "--category", "sast", "--rule", "sql-injection",
               "--path", "p", env=AS_AGENT)
-    assert got == compute_fingerprint("sast", "r", "p", "")
+    assert got == compute_fingerprint("sast", "sql-injection", "p", "")
+
+
+def test_fingerprint_refuses_a_sast_rule_outside_the_vocabulary(tmp_path):
+    """The same door as report-finding, saying the same thing at the same
+    time (see `cmd_fingerprint`): an agent that got a well-formed fingerprint
+    for `sqli` would build a whole payload around an identity `report-finding`
+    then refuses to store."""
+    db = tmp_path / "security.db"
+    out = fails(db, "fingerprint", "--category", "sast", "--rule", "sqli",
+               "--path", "app/db.py", "--snippet", "x")
+    assert out.returncode != 0
+    assert "sql-injection" in out.stderr
+
+
+def test_fingerprint_still_serves_deterministic_categories(tmp_path):
+    """The sast-only vocabulary gate must not reach a category whose rule
+    names come from our own scanners, not from the agent -- `aws_access_key`
+    is not a SAST rule name and must still fingerprint cleanly."""
+    db = tmp_path / "security.db"
+    got = raw(db, "fingerprint", "--category", "secret", "--rule",
+              "aws_access_key", "--path", "config/prod.env")
+    assert len(got) == 64
+
+
+def test_fingerprint_does_not_echo_an_unscanned_rule_that_looks_like_a_key(tmp_path):
+    """The same door as report-finding's rule refusal, scanned for the same
+    reason (see cmd_fingerprint's own docstring): this verb's SAST-rule
+    refusal quotes `args.rule` back into stderr, and that stderr lands in
+    the same run log report-finding's does. A rule shaped like a live
+    credential must be refused before that refusal can quote it."""
+    db = tmp_path / "security.db"
+    out = fails(db, "fingerprint", "--category", "sast", "--rule", AWS,
+               "--path", "app/db.py")
+    assert out.returncode != 0
+    assert AWS not in out.stdout
+    assert AWS not in out.stderr
+
+
+def test_fingerprint_refuses_a_category_outside_the_closed_set(tmp_path):
+    """`--category` has had `choices=FINDING_CATEGORIES` since the argparse
+    constraint was added: before it existed, `--category Secret` (a
+    spelling one character off from the real `secret`) fell through to the
+    snippet-hashing path in `cmd_fingerprint`'s `else` branch, hashing a
+    credential's value into the fingerprint -- the exact thing
+    `secret_fingerprint` exists to avoid. argparse itself enforces the
+    closed set here, with its own usage message, not one of ours."""
+    db = tmp_path / "security.db"
+    out = fails(db, "fingerprint", "--category", "Secret", "--rule", "r",
+               "--path", "app.py")
+    assert out.returncode == 2
+    assert "invalid choice" in out.stderr
 
 
 # --------------------------------------------- the history sweep, every run
@@ -1458,7 +1667,7 @@ def test_the_door_accepts_info_as_a_severity(tmp_path):
               "--run-id", "r")["analysis_id"]
     run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "c" * 64, "category": "sast", "rule": "observation",
+        "fingerprint": "c" * 64, "category": "hygiene", "rule": "observation",
         "severity": "info", "title": "worth knowing", "rationale": "r",
         "remediation": "none needed", "occurrences": []}))
 
@@ -1921,21 +2130,29 @@ def test_main_computes_the_agent_key_with_no_hardcoded_special_case():
 
 # ------------------------------------------------------------ the index screen
 
-def finished_analysis(db, tmp_path, project, branch, severity="high", rule="r"):
+def finished_analysis(db, tmp_path, project, branch, severity="high", rule="r",
+                      category="hygiene"):
     """A `done` analysis of `project`/`branch` carrying one reported finding.
+
+    `category` defaults to a deterministic one, not `sast` -- most callers
+    pass an opaque placeholder `rule` that means nothing beyond "some rule
+    string", and the closed SAST vocabulary would refuse it. A caller that
+    wants a real SAST rule (to exercise the classification it derives) passes
+    `category="sast"` together with a rule the vocabulary actually has.
 
     Uses `prepared_analysis` so `finish --state done` is not silently
     downgraded to `capped` (see `cmd_finish`) -- a test about current posture
     has to start from a row the close actually accepted as done."""
     aid = prepared_analysis(db, tmp_path, project=project, repo=project, branch=branch)
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": fingerprint_for(project, branch, rule), "category": "sast",
+        "fingerprint": fingerprint_for(project, branch, rule), "category": category,
         "rule": rule, "severity": severity, "title": "t", "rationale": "r"}))
     run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "0.5")
     return aid
 
 
-def capped_analysis(db, tmp_path, project, branch, severity="high", rule="r"):
+def capped_analysis(db, tmp_path, project, branch, severity="high", rule="r",
+                    category="hygiene"):
     """A `capped` analysis of `project`/`branch` -- it stopped before covering
     its whole scope, carrying one reported finding from before it stopped.
 
@@ -1946,7 +2163,7 @@ def capped_analysis(db, tmp_path, project, branch, severity="high", rule="r"):
     row that really carries it."""
     aid = prepared_analysis(db, tmp_path, project=project, repo=project, branch=branch)
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": fingerprint_for(project, branch, rule), "category": "sast",
+        "fingerprint": fingerprint_for(project, branch, rule), "category": category,
         "rule": rule, "severity": severity, "title": "t", "rationale": "r"}))
     run(db, "finish", "--analysis", str(aid), "--state", "capped", "--spend", "0.3")
     return aid
@@ -1983,7 +2200,8 @@ def test_index_data_survives_a_ledger_that_does_not_exist_yet(tmp_path):
 
 def test_index_data_reports_current_posture_for_the_projects_given(tmp_path):
     db = tmp_path / "security.db"
-    aid = finished_analysis(db, tmp_path, "web", "main", severity="high", rule="sql-injection")
+    aid = finished_analysis(db, tmp_path, "web", "main", severity="high",
+                            rule="sql-injection", category="sast")
 
     out = run(db, "index-data", "--projects", json.dumps(
         [{"name": "web", "base": "main", "description": "d"}]))
@@ -2090,7 +2308,7 @@ def test_index_data_days_narrows_the_donut_and_categories(tmp_path):
     is actually wired through rather than accepted and dropped."""
     db = tmp_path / "security.db"
     aid = finished_analysis(db, tmp_path, "web", "main", severity="critical",
-                            rule="hardcoded-secret")
+                            rule="hardcoded-credentials", category="sast")
     conn = sqlite3.connect(str(db))
     sixty_days_ago = int(time.time()) - 60 * 86400
     conn.execute("UPDATE analysis SET started=?, ended=? WHERE id=?",
@@ -2108,7 +2326,7 @@ def test_index_data_days_narrows_the_donut_and_categories(tmp_path):
     assert narrow["categories"] == []
     assert wide["donut"]["critical"] == 1, \
         "widening past the analysis's own age must restore it"
-    assert wide["categories"] == [{"rule": "hardcoded-secret", "count": 1, "category": "sast"}]
+    assert wide["categories"] == [{"rule": "hardcoded-credentials", "count": 1, "category": "sast"}]
 
 
 def test_index_data_recent_page_pages_server_side_with_a_true_total(tmp_path):
@@ -2193,7 +2411,8 @@ def test_project_data_defaults_the_profile_when_none_is_declared(tmp_path):
 
 def test_project_data_reports_current_posture_and_checklist_counts(tmp_path):
     db = tmp_path / "security.db"
-    aid = finished_analysis(db, tmp_path, "web", "main", severity="high", rule="sql-injection")
+    aid = finished_analysis(db, tmp_path, "web", "main", severity="high",
+                            rule="sql-injection", category="sast")
 
     out = run(db, "project-data", "--project", "web", "--base", "main",
              "--default-profile", "standard")
@@ -2263,7 +2482,7 @@ def test_project_data_serves_the_overview_cards_beyond_the_posture(tmp_path):
     db = tmp_path / "security.db"
     aid1 = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main")
     run(db, "report-finding", "--analysis", str(aid1), stdin=json.dumps({
-        "fingerprint": fingerprint_for("web", "main", "leak"), "category": "secrets",
+        "fingerprint": fingerprint_for("web", "main", "leak"), "category": "secret",
         "rule": "private-key-committed", "severity": "high", "title": "Key leak",
         "rationale": "r",
         "occurrences": [{"file": "conf/id_rsa", "line": 1, "snippet_hash": "h"}]}))
@@ -2271,7 +2490,7 @@ def test_project_data_serves_the_overview_cards_beyond_the_posture(tmp_path):
 
     aid2 = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main")
     run(db, "report-finding", "--analysis", str(aid2), stdin=json.dumps({
-        "fingerprint": fingerprint_for("web", "main", "leak"), "category": "secrets",
+        "fingerprint": fingerprint_for("web", "main", "leak"), "category": "secret",
         "rule": "private-key-committed", "severity": "high", "title": "Key leak",
         "rationale": "r",
         "occurrences": [{"file": "conf/id_rsa", "line": 1, "snippet_hash": "h"}]}))
@@ -2471,16 +2690,16 @@ def test_project_data_runs_findings_count_is_per_analysis_not_shared(tmp_path):
     db = tmp_path / "security.db"
     a1 = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main", run_id="r1")
     run(db, "report-finding", "--analysis", str(a1), stdin=json.dumps({
-        "fingerprint": fingerprint_for("web", "main", "r1a"), "category": "sast",
+        "fingerprint": fingerprint_for("web", "main", "r1a"), "category": "hygiene",
         "rule": "r1a", "severity": "high", "title": "t"}))
     run(db, "report-finding", "--analysis", str(a1), stdin=json.dumps({
-        "fingerprint": fingerprint_for("web", "main", "r1b"), "category": "sast",
+        "fingerprint": fingerprint_for("web", "main", "r1b"), "category": "hygiene",
         "rule": "r1b", "severity": "low", "title": "t"}))
     run(db, "finish", "--analysis", str(a1), "--state", "done")
 
     a2 = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main", run_id="r2")
     run(db, "report-finding", "--analysis", str(a2), stdin=json.dumps({
-        "fingerprint": fingerprint_for("web", "main", "r1a"), "category": "sast",
+        "fingerprint": fingerprint_for("web", "main", "r1a"), "category": "hygiene",
         "rule": "r1a", "severity": "high", "title": "t"}))
     run(db, "finish", "--analysis", str(a2), "--state", "done")
 
@@ -2919,3 +3138,237 @@ def test_the_skill_does_not_claim_a_read_verb_is_refused(tmp_path):
         assert verb not in security_cli.AGENT_FORBIDDEN
         assert f"`{verb}`" in skill, \
             f"the skill does not say `{verb}` stays reachable"
+
+
+# ---- migrate-rules: applying taxonomy.RULE_RENAMES to the ledger.
+#
+# RULE_RENAMES is empty, so the verb is a no-op against the shipped map. The
+# tests that need a rename to happen monkeypatch the map and drive `main()`
+# in-process, the same exception this file's docstring already makes for the
+# ledger-write-failure group: a subprocess cannot see a monkeypatch.
+
+def test_migrate_rules_reports_nothing_when_there_is_nothing_to_rename(tmp_path):
+    """The shipped map is empty and the verb must still be runnable and say so
+    -- an operator running it after pulling a release should get a plain
+    "nothing moved", not an error and not silence."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    # Closed first: the verb refuses while any analysis is running, and this
+    # test is about the empty map, not about that guard.
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    out = run(db, "migrate-rules")
+    assert out == {"renamed": [], "findings": 0}
+
+
+def test_migrate_rules_carries_findings_and_decisions_to_the_new_name(
+        tmp_path, monkeypatch, capsys):
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    path = "config/prod.env"
+    old_fp = secret_fingerprint("aws_access_key", path)
+    new_fp = secret_fingerprint("aws-access-token", path)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": old_fp, "category": "secret", "rule": "aws_access_key",
+        "severity": "critical", "title": "t", "rationale": "r",
+        "remediation": "rotate",
+        "occurrences": [{"file": path, "line": 3, "snippet_hash": ""}]}))
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    run(db, "decide", "--project", "web", "--fingerprint", old_fp,
+        "--state", "accepted", "--reason", "rotated already", "--by", "luiz")
+
+    monkeypatch.setattr(security_taxonomy, "RULE_RENAMES",
+                        {("secret", "aws_access_key"): "aws-access-token"})
+    security_cli.main(["migrate-rules", "--db", str(db)])
+    printed = json.loads(capsys.readouterr().out)
+
+    assert printed == {"renamed": [{"category": "secret", "from": "aws_access_key",
+                                    "to": "aws-access-token", "findings": 1}],
+                       "findings": 1}
+    # Checked over a fresh subprocess, so the monkeypatch above cannot mask it.
+    moved = [f for f in run(db, "findings", "--analysis", str(aid))
+             if f["category"] == "secret"]
+    assert [f["rule"] for f in moved] == ["aws-access-token"]
+    assert [f["fingerprint"] for f in moved] == [new_fp]
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT fingerprint FROM decision").fetchall() == [(new_fp,)]
+
+
+def test_migrate_rules_is_safe_to_run_twice(tmp_path, monkeypatch, capsys):
+    """It is a migration an operator may run on every deploy, and a second run
+    has to be a no-op rather than a second rewrite of the same rows."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    path = "config/prod.env"
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": secret_fingerprint("aws_access_key", path),
+        "category": "secret", "rule": "aws_access_key", "severity": "critical",
+        "title": "t", "rationale": "r", "remediation": "rotate",
+        "occurrences": [{"file": path, "line": 3, "snippet_hash": ""}]}))
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    monkeypatch.setattr(security_taxonomy, "RULE_RENAMES",
+                        {("secret", "aws_access_key"): "aws-access-token"})
+
+    security_cli.main(["migrate-rules", "--db", str(db)])
+    assert json.loads(capsys.readouterr().out)["findings"] == 1
+    security_cli.main(["migrate-rules", "--db", str(db)])
+    assert json.loads(capsys.readouterr().out) == {"renamed": [], "findings": 0}
+
+
+def test_migrate_rules_carries_the_decision_event_to_the_new_fingerprint(
+        tmp_path, monkeypatch, capsys):
+    """End-to-end over the real `decide`, which is the point: `cmd_decide`
+    files the `decision_made` event with `fingerprint[:12]` and the Activity
+    screen deep-links from that prefix by LIKE-match into the findings browser.
+    `rename_rule` has to produce the identical slice of the new fingerprint or
+    the audit record of the human's call links to zero findings while still
+    saying the risk was accepted. Driven through the CLI so the two `[:12]`s
+    are compared as they actually run, not as this test imagines them."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    path = "config/prod.env"
+    old_fp = secret_fingerprint("aws_access_key", path)
+    new_fp = secret_fingerprint("aws-access-token", path)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": old_fp, "category": "secret", "rule": "aws_access_key",
+        "severity": "critical", "title": "t", "rationale": "r",
+        "remediation": "rotate",
+        "occurrences": [{"file": path, "line": 3, "snippet_hash": ""}]}))
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    run(db, "decide", "--project", "web", "--fingerprint", old_fp,
+        "--state", "accepted", "--reason", "rotated already", "--by", "luiz")
+    conn = sqlite3.connect(str(db))
+    assert conn.execute(
+        "SELECT related FROM event WHERE kind='decision_made'").fetchall() == [
+            (old_fp[:12],)]
+
+    monkeypatch.setattr(security_taxonomy, "RULE_RENAMES",
+                        {("secret", "aws_access_key"): "aws-access-token"})
+    security_cli.main(["migrate-rules", "--db", str(db)])
+    capsys.readouterr()
+
+    related = conn.execute(
+        "SELECT related FROM event WHERE kind='decision_made'").fetchone()[0]
+    assert related == new_fp[:12]
+    # The query the Activity screen's link actually runs, and it has to come
+    # back with the finding rather than empty.
+    assert conn.execute("SELECT fingerprint FROM finding WHERE fingerprint LIKE ?",
+                        (related + "%",)).fetchall() == [(new_fp,)]
+
+
+def test_migrate_rules_names_the_entries_it_already_applied_when_one_fails(
+        tmp_path, monkeypatch):
+    """The mid-map failure the docstring must not claim is impossible. Only the
+    CATEGORY of every entry is pre-flighted; a finding with no path is found by
+    WALKING, so the entry that hits it rolls back alone while everything before
+    it in the map stays committed. The operator therefore has to be told WHICH
+    entries landed -- a count leaves them diffing the ledger against the map to
+    find out where it stopped."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    path = "config/prod.env"
+    good_fp = secret_fingerprint("aws_access_key", path)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": good_fp, "category": "secret", "rule": "aws_access_key",
+        "severity": "critical", "title": "t", "rationale": "r",
+        "remediation": "rotate",
+        "occurrences": [{"file": path, "line": 3, "snippet_hash": ""}]}))
+    # Occurrences are optional to `report-finding`, so this is a payload the
+    # agent can really send -- and a finding with no path cannot be renamed.
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "e" * 64, "category": "secret", "rule": "github_token",
+        "severity": "critical", "title": "t", "rationale": "r",
+        "remediation": "rotate", "occurrences": []}))
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    monkeypatch.setattr(security_taxonomy, "RULE_RENAMES", {
+        ("secret", "aws_access_key"): "aws-access-token",
+        ("secret", "github_token"): "gh-token",
+    })
+
+    with pytest.raises(SystemExit) as exc:
+        security_cli.main(["migrate-rules", "--db", str(db)])
+
+    message = str(exc.value.code)
+    assert "secret/github_token -> gh-token failed" in message
+    # The entry that DID land, named -- not counted.
+    assert "secret/aws_access_key -> aws-access-token (1 finding(s))" in message
+    # And it really did land: the run was not all-or-nothing, which is exactly
+    # what the message has to make true rather than deny.
+    moved = [f for f in run(db, "findings", "--analysis", str(aid))
+             if f["rule"] == "aws-access-token"]
+    assert [f["fingerprint"] for f in moved] == [
+        secret_fingerprint("aws-access-token", path)]
+
+
+def test_migrate_rules_refuses_the_whole_map_before_applying_any_of_it(
+        tmp_path, monkeypatch):
+    """A map with an unapplicable entry is refused as a unit. Applying the
+    entries up to the bad one and then dying leaves the ledger half-migrated
+    -- the exact state `rename_rule`'s own transaction exists to prevent, put
+    back one level up."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    path = "config/prod.env"
+    old_fp = secret_fingerprint("aws_access_key", path)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": old_fp, "category": "secret", "rule": "aws_access_key",
+        "severity": "critical", "title": "t", "rationale": "r",
+        "remediation": "rotate",
+        "occurrences": [{"file": path, "line": 3, "snippet_hash": ""}]}))
+    monkeypatch.setattr(security_taxonomy, "RULE_RENAMES", {
+        ("secret", "aws_access_key"): "aws-access-token",
+        ("sast", "sql-injection"): "sqli",
+    })
+
+    with pytest.raises(SystemExit) as exc:
+        security_cli.main(["migrate-rules", "--db", str(db)])
+    assert "sast" in str(exc.value.code)
+
+    # The good entry that came FIRST in the map must not have been applied.
+    still = [f for f in run(db, "findings", "--analysis", str(aid))
+             if f["category"] == "secret"]
+    assert [f["fingerprint"] for f in still] == [old_fp]
+
+
+def test_migrate_rules_is_not_refused_the_agent(tmp_path):
+    """Containment probe, the same reasoning as `fingerprint`'s absence from
+    AGENT_FORBIDDEN: the verb takes no arguments. It can only ever apply the
+    map the repository itself declares, so an agent running it produces
+    exactly what a human running it produces -- there is no target for it to
+    choose and nothing here for the flag to protect. What DOES stop an agent
+    running it at the moment it would do damage is the running-analysis guard
+    below, which does not depend on the flag -- so this asserts the agent
+    reaches the verb once no analysis is live, not that it may run it during
+    one."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    assert "migrate-rules" not in security_cli.AGENT_FORBIDDEN
+    assert run(db, "migrate-rules", env=AS_AGENT) == {"renamed": [], "findings": 0}
+
+
+def test_migrate_rules_is_refused_while_an_analysis_is_running(tmp_path):
+    """`decide` refuses while an analysis is live and this rewrites far more
+    than `decide` does. Mid-analysis, findings the agent has already recorded
+    get NEW fingerprints while it still holds the old ones: its next re-report
+    of one -- the triage pass's whole job -- misses the `(analysis_id,
+    fingerprint)` upsert key and INSERTs a second row, so one hole becomes two
+    contradictory checklist entries. That UNIQUE constraint exists to prevent
+    exactly that."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+
+    out = fails(db, "migrate-rules")
+
+    assert out.returncode != 0
+    assert f"analysis {aid}" in out.stderr and "still running" in out.stderr
+    assert "nothing was migrated" in out.stderr.lower()
+    # The refusal is not scoped to a project: this verb takes none and walks
+    # every row in the ledger, so an analysis of ANOTHER project is still a
+    # live analysis it could pull the ground out from under.
+    other = open_analysis(db, project="api", repo="api", run_id="r2")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    out = fails(db, "migrate-rules")
+    assert out.returncode != 0 and f"analysis {other}" in out.stderr
+
+    run(db, "finish", "--analysis", str(other), "--state", "done")
+    assert run(db, "migrate-rules") == {"renamed": [], "findings": 0}
