@@ -390,6 +390,68 @@ def _scan_secrets(root, ignore):
             [history_note, tree_note, *notes], lines)
 
 
+# Named so `test_offline_mode_declares_the_gap` (and every reader of a
+# downloaded report) sees which sources were never asked, not just that
+# "dependency CVEs" in the abstract were skipped -- `--offline` disables
+# BOTH: a vulnerability database, Trivy's own or OSV.dev's, does not exist
+# unless somebody publishes it, and this analysis was told not to reach the
+# network.
+OFFLINE_DEPENDENCY_NOTE = ("Dependency CVEs were NOT checked against OSV.dev "
+                          "or Trivy's vulnerability database: this analysis "
+                          "ran with networking disabled.")
+
+# Named so a reader of a report knows which producer scanned this analysis's
+# dependencies, whenever it was OSV.dev rather than Trivy -- the same reason
+# `secrets.FALLBACK_NOTE` is said unconditionally whenever the built-in
+# secret sweep ran instead of gitleaks. OSV.dev's own database, not Trivy's
+# aggregate of GHSA, NVD, distro trackers and OSV.dev together: an advisory
+# tracked only by one of those sources and never published to OSV.dev itself
+# would not be found this way.
+OSV_FALLBACK_NOTE = ("Dependencies were checked against OSV.dev's own "
+                     "database, not Trivy: an advisory tracked only by a "
+                     "source Trivy aggregates (a distro tracker, NVD, "
+                     "GitHub Security Advisories) and never published to "
+                     "OSV.dev would not have been found.")
+
+
+def _scan_dependencies(root, components, offline: bool):
+    """(findings, notes) for the dependency phase -- ONE producer, not two.
+
+    Trivy's filesystem scanner when it is installed, `osv.query` fed by
+    `deps.inventory`'s output (`components`) when it is not, and never both:
+    two producers in the `dependency` category would report the same CVE
+    under two fingerprints -- the fingerprint recipe is unchanged from
+    `osv._finding` (see `adapters.trivy_vulns`), so a CVE found by both
+    genuinely collides rather than merely looking alike -- and the checklist
+    would then carry it as two rows a human's decision on one never reaches.
+
+    The engine still falls back if it could not produce a report at all --
+    absent, unversioned, timed out, or writing a format this code cannot
+    read. That is safe precisely because it produced nothing: there is no
+    engine finding for OSV.dev's to collide with.
+
+    `components` is read by the caller regardless of `offline` or of which
+    producer runs here: `deps.inventory` never touches the network, and the
+    SBOM this project hands out (`ledger.store_sbom`) is built from it
+    whether or not either vulnerability source ran.
+    """
+    if offline:
+        return [], [OFFLINE_DEPENDENCY_NOTE]
+    if adapters.engine_path("trivy"):
+        findings, notes = adapters.trivy_scan(root)
+        if findings is not None:
+            return findings, notes
+        # The engine is here and could not answer. Say so, and let OSV.dev
+        # do the work rather than reporting no dependency findings.
+        notes = [*notes, OSV_FALLBACK_NOTE]
+    else:
+        notes = [OSV_FALLBACK_NOTE]
+    cve_findings, osv_note = osv.query(components, detail_cache={})
+    if osv_note:
+        notes.append(osv_note)
+    return cve_findings, notes
+
+
 def cmd_prepare(args):
     """The deterministic phases, run inside the worktree by the agent's first
     command. Seconds, and no tokens."""
@@ -451,24 +513,13 @@ def cmd_prepare(args):
     findings = secret_findings + hygiene.scan(root, ignore)
     notes = [n for n in secret_notes if n]
 
+    # `components` is read regardless of `offline` or which vulnerability
+    # source runs: `deps.inventory` never touches the network, and the SBOM
+    # below is built from it either way.
     components = deps.inventory(root)
-    if args.offline:
-        # Names OSV.dev, not just "CVEs". The coverage note is the one line a
-        # reader has to judge the report's blind spots by, and "dependency
-        # CVEs were not checked" leaves them guessing whether some other
-        # source covered them; naming the source that did not answer says
-        # exactly which question this report cannot be asked.
-        notes.append("Dependency CVEs were NOT checked against OSV.dev: this "
-                     "analysis ran with networking disabled.")
-    else:
-        # One cache for the whole call: several components of one project
-        # routinely share an advisory, and osv.query never raises -- whatever
-        # it could not reach comes back as prose in `note`, not as an
-        # exception that would lose the secrets and hygiene findings above.
-        cve_findings, osv_note = osv.query(components, detail_cache={})
-        findings += cve_findings
-        if osv_note:
-            notes.append(osv_note)
+    dep_findings, dep_notes = _scan_dependencies(root, components, args.offline)
+    findings += dep_findings
+    notes += [n for n in dep_notes if n]
     # Every phase writes into ONE channel, in phase order. The reader gets one
     # paragraph naming every blind spot this analysis has, rather than
     # whichever gap the last phase to speak happened to know about.

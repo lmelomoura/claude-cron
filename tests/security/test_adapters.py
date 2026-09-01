@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from security import adapters, engines, fingerprint, secrets
+from security import adapters, engines, fingerprint, osv, secrets
 
 FIX = Path(__file__).parent / "fixtures" / "engines"
 REPO = Path(__file__).resolve().parent.parent.parent
@@ -39,6 +39,10 @@ CLI = REPO / "bin" / "security" / "cli.py"
 HAVE_GITLEAKS = engines.find("gitleaks") is not None
 needs_gitleaks = pytest.mark.skipif(
     not HAVE_GITLEAKS, reason="gitleaks is not installed on this machine")
+
+HAVE_TRIVY = engines.find("trivy") is not None
+needs_trivy = pytest.mark.skipif(
+    not HAVE_TRIVY, reason="trivy is not installed on this machine")
 
 # Assembled at runtime so this file is not itself a credential a scanner has
 # to flag. The shape is a real one: gitleaks allowlists AWS's own
@@ -902,10 +906,199 @@ def test_the_engines_can_be_switched_off_without_uninstalling_them(monkeypatch):
     """An off switch that does not depend on `PATH`. A parser is written
     against a format; when an engine's output stops matching it, the
     operator needs a way to fall back that does not involve removing a
-    binary other tools on the machine share."""
+    binary other tools on the machine share.
+
+    Checked for both engines this module knows about: the switch is a
+    single environment variable read by `engine_path` itself, not something
+    each caller has to wire up on its own."""
     monkeypatch.setenv("CC_SECURITY_ENGINES", "off")
     assert adapters.engine_path("gitleaks") is None
+    assert adapters.engine_path("trivy") is None
     monkeypatch.setenv("CC_SECURITY_ENGINES", "on")
     assert (adapters.engine_path("gitleaks") is not None) == HAVE_GITLEAKS
+    assert (adapters.engine_path("trivy") is not None) == HAVE_TRIVY
     monkeypatch.delenv("CC_SECURITY_ENGINES")
     assert (adapters.engine_path("gitleaks") is not None) == HAVE_GITLEAKS
+    assert (adapters.engine_path("trivy") is not None) == HAVE_TRIVY
+
+
+# ------------------------------------------------------- the dependency scan
+#
+# Trivy replaces `deps.inventory` + `osv.query` on the same terms the
+# Gitleaks section above replaces the built-in secret sweep: THE VALUE NEVER
+# ARRIVES is not at stake here (a CVE id is public, not a secret), but THE
+# IDENTITY IS OURS still is. `osv._finding` already had the recipe --
+# `fingerprint("dependency", vuln_id, source, f"{name}@{version}")` -- before
+# Trivy existed in this module, and `trivy_vulns` has to build the identical
+# hash for the identical (CVE, package, version) or every dependency finding
+# OSV.dev ever reported grows a second identity the moment Trivy reports it
+# too, orphaning whatever a human decided about the first one.
+
+def test_trivy_vulnerabilities_become_dependency_findings():
+    data = json.loads((FIX / "trivy-fs.json").read_text())
+    out = adapters.trivy_vulns(data)
+    assert out
+    f = out[0]
+    assert f["category"] == "dependency"
+    assert f["severity"] in ("critical", "high", "medium", "low", "info")
+
+
+def test_a_cve_without_a_published_fix_is_marked_not_hidden():
+    data = {"Results": [{"Target": "package-lock.json", "Type": "npm",
+        "Vulnerabilities": [{"VulnerabilityID": "CVE-1", "PkgName": "x",
+            "InstalledVersion": "1.0", "Severity": "HIGH", "Status": "affected",
+            "Title": "t"}]}]}
+    f = adapters.trivy_vulns(data)[0]
+    assert "no fixed version" in f["remediation"].lower()
+
+
+def test_the_severity_words_map_to_ours():
+    for trivy, ours in (("CRITICAL", "critical"), ("HIGH", "high"),
+                        ("MEDIUM", "medium"), ("LOW", "low"),
+                        ("UNKNOWN", "medium")):
+        data = {"Results": [{"Target": "t", "Type": "npm", "Vulnerabilities": [
+            {"VulnerabilityID": "CVE-1", "PkgName": "x", "InstalledVersion": "1",
+             "Severity": trivy, "Title": "t"}]}]}
+        assert adapters.trivy_vulns(data)[0]["severity"] == ours
+
+
+def test_the_default_severity_is_osvs_own_not_a_second_one_invented_here():
+    """`UNKNOWN` above is one way to reach the default; a `Severity` word
+    Trivy has never sent before (a future release, a distro-specific grade)
+    is another. Both have to fall on the exact constant `osv.py` already
+    uses -- not a fresh "medium" typed a second time here -- or the two
+    sources start disagreeing about what an unassessed CVE is worth."""
+    data = {"Results": [{"Target": "t", "Vulnerabilities": [
+        {"VulnerabilityID": "CVE-1", "PkgName": "x", "InstalledVersion": "1",
+         "Title": "t"}]}]}  # no Severity at all
+    assert adapters.trivy_vulns(data)[0]["severity"] == osv.DEFAULT_SEVERITY
+
+
+def test_the_fingerprint_matches_osvs_own_recipe():
+    data = {"Results": [{"Target": "requirements.txt", "Vulnerabilities": [
+        {"VulnerabilityID": "CVE-2024-1", "PkgName": "requests",
+         "InstalledVersion": "2.31.0", "Severity": "HIGH", "Title": "t"}]}]}
+    f = adapters.trivy_vulns(data)[0]
+    assert f["fingerprint"] == fingerprint.fingerprint(
+        "dependency", "CVE-2024-1", "requirements.txt", "requests@2.31.0")
+
+
+def test_cwe_ids_become_the_findings_cwe_field():
+    """The dependency category has no closed vocabulary -- its rule is the
+    CVE id -- so `CweIDs` is metadata to carry, not something to validate
+    against a table the way `taxonomy.py` does for SAST rules."""
+    data = {"Results": [{"Target": "t", "Vulnerabilities": [
+        {"VulnerabilityID": "CVE-1", "PkgName": "x", "InstalledVersion": "1",
+         "Severity": "HIGH", "Title": "t", "CweIDs": ["CWE-94", "CWE-77"]}]}]}
+    assert adapters.trivy_vulns(data)[0]["cwe"] == "CWE-94, CWE-77"
+
+
+def test_a_vulnerability_with_no_cwe_ids_leaves_the_field_unset():
+    """`CweIDs` may be an empty list or absent altogether -- both are Trivy
+    telling us nothing was classified, not a parser failure, so nothing
+    fabricates a value the report would then have to explain."""
+    data = {"Results": [{"Target": "t", "Vulnerabilities": [
+        {"VulnerabilityID": "CVE-1", "PkgName": "x", "InstalledVersion": "1",
+         "Severity": "HIGH", "Title": "t", "CweIDs": []},
+        {"VulnerabilityID": "CVE-2", "PkgName": "y", "InstalledVersion": "1",
+         "Severity": "HIGH", "Title": "t"}]}]}
+    for f in adapters.trivy_vulns(data):
+        assert "cwe" not in f
+
+
+def test_a_record_missing_a_required_field_is_dropped_not_fatal():
+    """No id, no package name, no installed version: this parser cannot
+    build an identity for any of the three, and a malformed record must cost
+    only itself, not the whole dependency phase."""
+    data = {"Results": [{"Target": "t", "Vulnerabilities": [
+        {"PkgName": "x", "InstalledVersion": "1", "Severity": "HIGH"},
+        {"VulnerabilityID": "CVE-1", "InstalledVersion": "1", "Severity": "HIGH"},
+        {"VulnerabilityID": "CVE-2", "PkgName": "x", "Severity": "HIGH"},
+        {"VulnerabilityID": "CVE-3", "PkgName": "x", "InstalledVersion": "1",
+         "Severity": "HIGH", "Title": "t"},
+    ]}]}
+    out = adapters.trivy_vulns(data)
+    assert [f["rule"] for f in out] == ["CVE-3"]
+
+
+def test_a_result_without_a_target_is_dropped():
+    data = {"Results": [{"Vulnerabilities": [
+        {"VulnerabilityID": "CVE-1", "PkgName": "x", "InstalledVersion": "1",
+         "Severity": "HIGH", "Title": "t"}]}]}
+    assert adapters.trivy_vulns(data) == []
+
+
+def test_a_report_that_is_not_an_object_is_no_findings_not_a_crash():
+    for bogus in ([], "not json", None, 42):
+        assert adapters.trivy_vulns(bogus) == []
+
+
+def test_results_that_is_not_a_list_is_no_findings_not_a_crash():
+    assert adapters.trivy_vulns({"Results": "nope"}) == []
+
+
+def test_a_result_that_is_not_an_object_is_skipped_not_fatal():
+    data = {"Results": [None, "nope", {"Target": "t", "Vulnerabilities": [
+        {"VulnerabilityID": "CVE-1", "PkgName": "x", "InstalledVersion": "1",
+         "Severity": "HIGH", "Title": "t"}]}]}
+    assert [f["rule"] for f in adapters.trivy_vulns(data)] == ["CVE-1"]
+
+
+def test_a_result_with_no_vulnerabilities_is_not_an_error():
+    """The shape a lockfile with nothing wrong in it actually produces: a
+    `Target` and a `Packages` list, no `Vulnerabilities` key at all."""
+    data = json.loads((FIX / "trivy-fs.json").read_text())
+    composer = next(r for r in data["Results"] if r["Target"] == "composer.lock")
+    assert "Vulnerabilities" not in composer
+    assert adapters.trivy_vulns({"Results": [composer]}) == []
+
+
+@needs_trivy
+def test_trivy_scan_runs_the_real_engine_and_finds_a_known_cve(tmp_path):
+    """The one test in this section that runs the actual binary, the same
+    way the Gitleaks section above does for secrets. `package-lock.json`
+    here is this repository's own fixture -- lodash 4.17.20, which carries
+    CVE-2021-23337 -- copied alone into an empty tree so the result cannot
+    be confused with anything else Trivy might find scanning this repo."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    lockfile = REPO / "tests" / "security" / "fixtures" / "package-lock.json"
+    (root / "package-lock.json").write_text(lockfile.read_text())
+    findings, notes = adapters.trivy_scan(root)
+    assert findings is not None
+    rules = {f["rule"] for f in findings}
+    assert "CVE-2021-23337" in rules
+    assert any(f["occurrences"][0]["file"] == "package-lock.json" for f in findings)
+    assert any("trivy" in n.lower() for n in notes)
+
+
+@needs_trivy
+def test_trivy_scan_reports_no_findings_when_there_is_nothing_to_scan(tmp_path):
+    """An empty tree is a real report with an empty `Results`, not a failure
+    -- `findings` must be `[]`, never `None`, so `_scan_dependencies` does
+    not mistake "found nothing" for "the engine could not run" and fall back
+    to OSV.dev on top of a Trivy pass that already completed."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text("print('hi')\n")
+    findings, notes = adapters.trivy_scan(root)
+    assert findings == []
+    assert any("trivy" in n.lower() for n in notes)
+
+
+@needs_trivy
+def test_trivy_scan_skips_the_same_directories_deps_inventory_always_has(tmp_path):
+    """`deps.inventory` never reads inside `secrets.SKIP_DIRS` (`node_modules`,
+    `vendor`, ...). Swapping to the engine must not start reporting a
+    vendored copy of a vulnerable lockfile the built-in inventory always
+    ignored -- that would make the report NOISIER for what is supposed to be
+    a like-for-like swap, the exact regression `adapters.py`'s own module
+    docstring warns about for Gitleaks."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    vendored = root / "node_modules" / "some-dep"
+    vendored.mkdir(parents=True)
+    lockfile = REPO / "tests" / "security" / "fixtures" / "package-lock.json"
+    (vendored / "package-lock.json").write_text(lockfile.read_text())
+    findings, _ = adapters.trivy_scan(root)
+    assert findings == []

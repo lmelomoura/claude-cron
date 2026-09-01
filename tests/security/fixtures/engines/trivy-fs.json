@@ -1,0 +1,189 @@
+{
+  "SchemaVersion": 2,
+  "Trivy": {
+    "Version": "0.74.0"
+  },
+  "ArtifactName": "tests/security/fixtures",
+  "ArtifactType": "filesystem",
+  "Results": [
+    {
+      "Target": "composer.lock",
+      "Class": "lang-pkgs",
+      "Type": "composer",
+      "Packages": [
+        {
+          "ID": "evenement/evenement@v3.0.2",
+          "Name": "evenement/evenement",
+          "Identifier": {
+            "PURL": "pkg:composer/evenement/evenement@v3.0.2",
+            "UID": "230d629467410695"
+          },
+          "Version": "v3.0.2",
+          "Licenses": ["MIT"],
+          "Locations": [{"StartLine": 9, "EndLine": 55}],
+          "AnalyzedBy": "composer"
+        }
+      ]
+    },
+    {
+      "Target": "package-lock.json",
+      "Class": "lang-pkgs",
+      "Type": "npm",
+      "Packages": [
+        {
+          "ID": "lodash@4.17.20",
+          "Name": "lodash",
+          "Identifier": {
+            "PURL": "pkg:npm/lodash@4.17.20",
+            "UID": "ef6e91b5289c512a"
+          },
+          "Version": "4.17.20",
+          "Licenses": ["MIT"],
+          "Relationship": "direct",
+          "Locations": [{"StartLine": 11, "EndLine": 16}],
+          "AnalyzedBy": "npm"
+        }
+      ],
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2021-23337",
+          "VendorIDs": ["GHSA-35jh-r3h4-6jhm"],
+          "PkgID": "lodash@4.17.20",
+          "PkgName": "lodash",
+          "PkgIdentifier": {
+            "PURL": "pkg:npm/lodash@4.17.20",
+            "UID": "ef6e91b5289c512a"
+          },
+          "InstalledVersion": "4.17.20",
+          "FixedVersion": "4.17.21",
+          "Status": "fixed",
+          "SeveritySource": "ghsa",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2021-23337",
+          "DataSource": {
+            "ID": "ghsa",
+            "Name": "GitHub Security Advisory npm",
+            "URL": "https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"
+          },
+          "Title": "nodejs-lodash: command injection via template",
+          "Description": "Lodash versions prior to 4.17.21 are vulnerable to Command Injection via the template function.",
+          "Severity": "HIGH",
+          "CweIDs": ["CWE-94"],
+          "VendorSeverity": {"ghsa": 3, "nvd": 3},
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H",
+              "V3Score": 7.2
+            }
+          },
+          "References": [
+            "https://github.com/advisories/GHSA-35jh-r3h4-6jhm",
+            "https://nvd.nist.gov/vuln/detail/CVE-2021-23337"
+          ],
+          "PublishedDate": "2021-02-15T13:15:12.56Z",
+          "LastModifiedDate": "2026-06-17T03:38:34.773Z"
+        },
+        {
+          "VulnerabilityID": "CVE-2026-2950",
+          "VendorIDs": ["GHSA-f23m-r3pf-42rh"],
+          "PkgID": "lodash@4.17.20",
+          "PkgName": "lodash",
+          "PkgIdentifier": {
+            "PURL": "pkg:npm/lodash@4.17.20",
+            "UID": "ef6e91b5289c512a"
+          },
+          "InstalledVersion": "4.17.20",
+          "FixedVersion": "4.18.0",
+          "Status": "fixed",
+          "SeveritySource": "ghsa",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2026-2950",
+          "DataSource": {
+            "ID": "ghsa",
+            "Name": "GitHub Security Advisory npm",
+            "URL": "https://github.com/advisories?query=type%3Areviewed+ecosystem%3Anpm"
+          },
+          "Title": "lodash: Lodash: Prototype pollution allows deletion of built-in prototype properties via array path bypass",
+          "Description": "Lodash versions 4.17.23 and earlier are vulnerable to prototype pollution in the _.unset and _.omit functions via array-wrapped path segments, allowing deletion of properties from built-in prototypes such as Object.prototype.",
+          "Severity": "MEDIUM",
+          "CweIDs": ["CWE-1321"],
+          "VendorSeverity": {"ghsa": 2, "nvd": 2},
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N",
+              "V3Score": 5.3
+            }
+          },
+          "References": [
+            "https://github.com/lodash/lodash/security/advisories/GHSA-f23m-r3pf-42rh"
+          ],
+          "PublishedDate": "2026-03-31T20:16:26.207Z",
+          "LastModifiedDate": "2026-07-24T20:10:00.147Z"
+        }
+      ]
+    },
+    {
+      "Target": "poetry.lock",
+      "Class": "lang-pkgs",
+      "Type": "poetry",
+      "Packages": [
+        {
+          "ID": "certifi@2024.2.2",
+          "Name": "certifi",
+          "Identifier": {
+            "PURL": "pkg:pypi/certifi@2024.2.2",
+            "UID": "9fd0755423d972c"
+          },
+          "Version": "2024.2.2",
+          "AnalyzedBy": "poetry"
+        },
+        {
+          "ID": "six@1.16.0",
+          "Name": "six",
+          "Identifier": {
+            "PURL": "pkg:pypi/six@1.16.0",
+            "UID": "f7d63f1c424619d3"
+          },
+          "Version": "1.16.0",
+          "AnalyzedBy": "poetry"
+        }
+      ],
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2024-39689",
+          "VendorIDs": ["GHSA-248v-346w-9cwc"],
+          "PkgID": "certifi@2024.2.2",
+          "PkgName": "certifi",
+          "PkgIdentifier": {
+            "PURL": "pkg:pypi/certifi@2024.2.2",
+            "UID": "9fd0755423d972c"
+          },
+          "InstalledVersion": "2024.2.2",
+          "FixedVersion": "2024.7.4",
+          "Status": "fixed",
+          "SeveritySource": "ghsa",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2024-39689",
+          "DataSource": {
+            "ID": "ghsa",
+            "Name": "GitHub Security Advisory pip",
+            "URL": "https://github.com/advisories?query=type%3Areviewed+ecosystem%3Apip"
+          },
+          "Title": "python-certifi: Remove root certificates from `GLOBALTRUST` from the root store",
+          "Description": "Certifi starting in 2021.5.30 and prior to 2024.7.4 recognized root certificates from GLOBALTRUST, which are being removed pursuant to an investigation into unresolved compliance issues.",
+          "Severity": "LOW",
+          "CweIDs": ["CWE-345"],
+          "VendorSeverity": {"ghsa": 1, "nvd": 3},
+          "CVSS": {
+            "nvd": {
+              "V3Vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:H/A:N",
+              "V3Score": 7.5
+            }
+          },
+          "References": [
+            "https://github.com/certifi/python-certifi/security/advisories/GHSA-248v-346w-9cwc"
+          ],
+          "PublishedDate": "2024-07-05T19:15:10.247Z",
+          "LastModifiedDate": "2026-06-17T07:42:28.64Z"
+        }
+      ]
+    }
+  ]
+}

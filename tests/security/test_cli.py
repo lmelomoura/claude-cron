@@ -1389,6 +1389,129 @@ def test_every_phase_gap_reaches_the_one_coverage_note(tmp_path):
     assert "OSV.dev" in note
 
 
+# --------------------------- the dependency engine, Trivy vs OSV.dev, never both
+#
+# `osv.query` makes a real HTTP call to api.osv.dev, and this suite must never
+# depend on that network being reachable (test_osv.py itself never lets a real
+# request through -- every test there monkeypatches `osv._http`). These tests
+# drive `security_cli.main()` IN-PROCESS rather than through the `run`/`fails`
+# subprocess helpers for exactly that reason: the point is to stub
+# `security_cli.osv.query` and `security_cli.adapters` mid-call, which a
+# subprocess boundary cannot see (the same exception the module docstring
+# already names for the ledger-write-failure tests below).
+
+def _dep_finding(rule="CVE-9999"):
+    return {"fingerprint": "f" * 64, "category": "dependency", "rule": rule,
+            "severity": "high", "title": "t", "rationale": "r",
+            "remediation": "m", "occurrences": []}
+
+
+def test_prepare_prefers_trivy_and_never_calls_osv(tmp_path, monkeypatch, capsys):
+    """Two producers in the `dependency` category would report one CVE under
+    two fingerprints. `osv.query` raising proves it was never even called --
+    a plain call-counter could pass by accident if an early return happened
+    to skip it for an unrelated reason."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/trivy" if name == "trivy" else None)
+    monkeypatch.setattr(security_cli.adapters, "trivy_scan",
+                        lambda root: ([_dep_finding()],
+                                      ["Dependencies were scanned for known "
+                                       "CVEs by trivy 0.74.0."]))
+
+    def must_not_run(*_a, **_kw):
+        raise AssertionError("osv.query must not run once Trivy has answered")
+    monkeypatch.setattr(security_cli.osv, "query", must_not_run)
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["findings"] >= 1
+    findings = run(db, "findings", "--analysis", str(aid))
+    dep_rules = {f["rule"] for f in findings if f["category"] == "dependency"}
+    assert dep_rules == {"CVE-9999"}
+    row = run(db, "list", "--project", "web")[0]
+    assert "trivy" in row["coverage_note"].lower()
+
+
+def test_prepare_falls_back_to_osv_when_trivy_is_not_installed(tmp_path, monkeypatch):
+    """The mirror of the test above: with no engine on the machine, OSV.dev
+    still does the work -- the fallback pair this task replaces, not
+    removes."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path", lambda name: None)
+    calls = []
+
+    def fake_query(components, detail_cache=None, timeout=30):
+        calls.append(components)
+        return [], ""
+    monkeypatch.setattr(security_cli.osv, "query", fake_query)
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    assert calls, "osv.query was never called"
+
+
+def test_prepare_falls_back_to_osv_when_trivy_produces_no_report(tmp_path, monkeypatch):
+    """Trivy is on the machine but could not answer -- absent a version,
+    timed out, whatever `adapters.trivy_scan` signals with `None`. That is
+    safe to fall back from precisely because it produced nothing: there is
+    no engine finding for OSV.dev's to collide with."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/trivy" if name == "trivy" else None)
+    monkeypatch.setattr(security_cli.adapters, "trivy_scan",
+                        lambda root: (None, ["trivy did not finish within 600s "
+                                             "and was stopped."]))
+    calls = []
+
+    def fake_query(components, detail_cache=None, timeout=30):
+        calls.append(components)
+        return [], ""
+    monkeypatch.setattr(security_cli.osv, "query", fake_query)
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    assert calls, "osv.query must run when Trivy contributed nothing"
+    row = run(db, "list", "--project", "web")[0]
+    assert "did not finish" in row["coverage_note"]
+
+
+def test_offline_skips_trivy_as_well_as_osv(tmp_path, monkeypatch):
+    """`--offline` turns off BOTH: a vulnerability database, Trivy's own or
+    OSV.dev's, does not exist unless somebody publishes it, and this
+    analysis was told not to reach the network. Both stubs raise, so a
+    regression that let either one run mid-flight fails the test instead of
+    quietly making a real network call."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    def must_not_run(*_a, **_kw):
+        raise AssertionError("neither engine may run while --offline")
+    monkeypatch.setattr(security_cli.adapters, "trivy_scan", must_not_run)
+    monkeypatch.setattr(security_cli.osv, "query", must_not_run)
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--offline", "--db", str(db)])
+    row = run(db, "list", "--project", "web")[0]
+    assert "OSV" in row["coverage_note"]
+    assert "Trivy" in row["coverage_note"]
+
+
 # ------------------------------- an analysis that never ran its own phases
 
 def test_finishing_done_without_prepare_is_downgraded_to_capped(tmp_path):

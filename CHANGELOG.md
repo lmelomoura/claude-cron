@@ -149,6 +149,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   followed theirs, with zero findings left holding a fingerprint no
   scanner can reproduce.
 
+- **Trivy scans dependencies for known CVEs when it is installed, and the
+  hand-written lockfile inventory plus OSV.dev's own lookup fall back when
+  it is not.** `deps.inventory` (five lockfile formats) feeding
+  `osv.query`'s `/v1/querybatch` call was the only producer in the
+  `dependency` category; Trivy 0.74.0 now runs first when present, reading
+  the same lockfiles directly and carrying `FixedVersion`, `CweIDs` and an
+  advisory link OSV.dev's own record does not always have. Only ONE of the
+  two ever runs, on the same terms as the Gitleaks swap above: the
+  fingerprint recipe is unchanged — `fingerprint("dependency", vuln_id,
+  source, f"{name}@{version}")`, exactly `osv._finding`'s — so a CVE this
+  engine reports for a package OSV.dev already reported keeps its identity,
+  and a human's `accepted` or `false_positive` decision against it is not
+  orphaned by which source found it; running both would instead report one
+  hole as two contradictory checklist entries. `--offline` now declares
+  Trivy's own vulnerability database unreachable as well as OSV.dev's,
+  since neither exists without a network request this analysis was told not
+  to make.
+
+- **A CVE with no published fix is reported, not hidden.** `FixedVersion`
+  empty is Trivy's own way of saying nobody has shipped a fix yet — not a
+  gap in the parser to paper over — so the remediation says exactly that
+  instead of naming a version that does not exist. A dependency finding's
+  `CweIDs` fills the ledger's existing `cwe` column when Trivy sent one;
+  the category still has no closed vocabulary the way SAST rules do — its
+  rule is the CVE id — so this is metadata carried across, not validated.
+
 ### Fixed
 
 - **The engine's history sweep now asks whether the history can be READ,

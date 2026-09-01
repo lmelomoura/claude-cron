@@ -33,8 +33,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from . import engines, secrets
-from .fingerprint import secret_fingerprint
+from . import engines, osv, secrets
+from .fingerprint import fingerprint, secret_fingerprint
 from .ignores import ignored
 
 # Gitleaks emits no severity of its own -- it reports that a pattern matched
@@ -508,3 +508,171 @@ def gitleaks_scan(root, ignore_paths=()):
     if project_config(root) is not None:
         notes.append(PROJECT_CONFIG_NOTE)
     return findings, notes
+
+
+# ------------------------------------------------------- the dependency scan
+#
+# Trivy replaces `deps.inventory` + `osv.query` on the same terms as above:
+# ONE producer per category, never both -- see `cli._scan_dependencies`,
+# which is where that choice is actually made. Everything here is the
+# translator, not the switch.
+#
+# THE IDENTITY IS OSV'S, NOT A NEW ONE. `osv._finding` already had the
+# recipe -- `fingerprint("dependency", vuln_id, source, f"{name}@{version}")`
+# -- before Trivy existed in this module. `trivy_vulns` builds the identical
+# hash for the identical (CVE, package, version), so a dependency finding
+# OSV.dev already reported keeps its identity the moment Trivy reports it
+# instead, and a human's `accepted` or `false_positive` against it is not
+# orphaned by which source found it.
+
+# Trivy's own severity words, mapped to ours. The default for a word Trivy
+# did not send -- `UNKNOWN`, or a future grade this table has never heard of
+# -- is `osv.DEFAULT_SEVERITY` itself, not a fresh "medium" typed a second
+# time here: swapping which source scans a project's dependencies must not
+# also change what a shared severity word means. An advisory neither source
+# has assessed is a CVE nobody has graded, not one that does not matter, and
+# grading it `info` would let it slip under the default `min_severity` floor
+# as though it had never been found.
+_TRIVY_SEVERITY = {"CRITICAL": "critical", "HIGH": "high", "MEDIUM": "medium",
+                   "LOW": "low"}
+
+# `FixedVersion` empty is Trivy's own way of saying nobody has published a
+# fix yet -- not a gap in this parser to paper over. A CVE with nowhere to
+# upgrade to is still a CVE, so the remediation SAYS that instead of pointing
+# at a version that does not exist; the finding is reported either way.
+_NO_FIX = ("No fixed version has been published yet for {vuln_id} in {name} "
+          "{version}. Track the advisory and upgrade as soon as one ships.")
+_FIX = "Upgrade {name} past {fixed}."
+
+# Named so a reader of a report knows which scanner produced its dependency
+# findings, the same reason `ENGINE_NOTE` exists above for secrets. Spelled
+# out as "Trivy ({version})" rather than "{version}" alone: unlike
+# gitleaks' own `--version` banner (which prints its own name), Trivy's
+# first line is bare ("Version: 0.74.0"), so a note built the same way
+# `ENGINE_NOTE` is would silently stop naming the tool.
+DEP_ENGINE_NOTE = "Dependencies were scanned for known CVEs by Trivy ({version})."
+
+
+def _trivy_finding(source: str, vuln):
+    if not isinstance(vuln, dict):
+        return None
+    vuln_id = str(vuln.get("VulnerabilityID") or "").strip()
+    name = str(vuln.get("PkgName") or "").strip()
+    version = str(vuln.get("InstalledVersion") or "").strip()
+    if not (vuln_id and name and version):
+        # No id, no package name, no installed version: this parser cannot
+        # build an identity for any of the three. Costs this one record, not
+        # the phase -- see `trivy_vulns`.
+        return None
+    severity = _TRIVY_SEVERITY.get(str(vuln.get("Severity") or "").upper(),
+                                   osv.DEFAULT_SEVERITY)
+    fixed = str(vuln.get("FixedVersion") or "").strip()
+    remediation = (_FIX.format(name=name, fixed=fixed) if fixed
+                  else _NO_FIX.format(vuln_id=vuln_id, name=name, version=version))
+    url = str(vuln.get("PrimaryURL") or "").strip()
+    if url:
+        remediation += f" See {url}"
+    # The same precedence `osv._finding` reads `summary` and `details` with:
+    # a short one-line description first (`Title`, Trivy's equivalent of
+    # OSV's `summary`), a truncated long one second (`Description`, Trivy's
+    # `details`), and the bare id only if neither is present.
+    rationale = (str(vuln.get("Title") or "").strip()
+                or str(vuln.get("Description") or "").strip()[:200]
+                or vuln_id)
+    finding = {
+        "fingerprint": fingerprint("dependency", vuln_id, source,
+                                   f"{name}@{version}"),
+        "category": "dependency",
+        "rule": vuln_id,
+        "severity": severity,
+        "title": f"{name} {version}: {vuln_id}",
+        "rationale": rationale,
+        "remediation": remediation,
+        "occurrences": [{"file": source, "line": 0, "snippet_hash": ""}],
+    }
+    # The dependency category has no closed vocabulary -- its rule is the
+    # CVE id -- so `CweIDs` is metadata to carry when Trivy sent it, not
+    # something to validate the way `taxonomy.py` does for SAST rules. Left
+    # unset (never an empty string) when Trivy sent nothing to classify.
+    cwe_ids = vuln.get("CweIDs")
+    if isinstance(cwe_ids, list):
+        cwe = ", ".join(c for c in cwe_ids if isinstance(c, str) and c)
+        if cwe:
+            finding["cwe"] = cwe
+    return finding
+
+
+def trivy_vulns(data) -> list[dict]:
+    """Trivy's `fs` report as dependency findings, one per (CVE, package).
+
+    Reads `Results[].Vulnerabilities[]` only. `Results[].Packages[]` -- the
+    full inventory Trivy also reports for a lockfile it recognises -- is not
+    read here: the SBOM this project hands out is still built from
+    `deps.inventory` (see `cli.cmd_prepare`), and reading the inventory
+    twice, from two sources, would give the two paths two chances to
+    disagree about what this repository depends on.
+
+    Every field is CONSTRUCTED, never copied -- the same reason `gitleaks`
+    above gives: a future Trivy release adding a field nobody here has read
+    must not be able to ride into the ledger unexamined.
+
+    A record this parser cannot use (no id, no package name, no installed
+    version -- see `_trivy_finding`) costs that record, not the phase: one
+    malformed entry must not cost every dependency finding in the report.
+    """
+    if not isinstance(data, dict):
+        return []
+    results = data.get("Results")
+    if not isinstance(results, list):
+        return []
+    out = []
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        source = str(result.get("Target") or "").strip()
+        vulns = result.get("Vulnerabilities")
+        if not source or not isinstance(vulns, list):
+            # No `Vulnerabilities` key at all is the shape a lockfile with
+            # nothing wrong in it actually produces (Trivy still lists it
+            # under `Packages`) -- not a malformed record.
+            continue
+        for vuln in vulns:
+            finding = _trivy_finding(source, vuln)
+            if finding is not None:
+                out.append(finding)
+    return out
+
+
+def trivy_scan(root):
+    """Every dependency vulnerability Trivy's filesystem scanner finds in
+    `root`.
+
+    Returns `(findings, notes)`. `findings` is None when Trivy produced no
+    report at all -- absent, unversioned, timed out, or writing a format
+    this parser cannot read -- which is `cli._scan_dependencies`'s signal to
+    fall back to `deps.inventory` + `osv.query`. It may only do so while
+    Trivy has contributed nothing: see `trivy_vulns` for why the two must
+    never both produce findings for the same repository. An empty `Results`
+    section is a real, completed report -- `findings` is `[]`, not `None`,
+    and no fallback follows it.
+
+    `--scanners vuln` keeps Trivy's own secret and misconfiguration scanners
+    off: this project already has an engine for secrets (`gitleaks_scan`
+    above), and this call exists only to replace the dependency category's
+    fallback pair, not to add a second producer for a different one.
+
+    `--skip-dirs` names the same directories `deps.inventory` has always
+    skipped (`secrets.SKIP_DIRS`, the set `scope_patterns` above already
+    builds the Gitleaks scope from), so swapping which tool reads the
+    lockfiles does not also start reporting a vendored copy the built-in
+    inventory never looked inside -- the exact regression this module's own
+    docstring warns about for Gitleaks, measured there at 15 of 17 findings.
+    """
+    args = ["fs", ".", "--format", "json", "--output", "{out}",
+            "--scanners", "vuln", "--quiet",
+            "--skip-dirs", ",".join(sorted(secrets.SKIP_DIRS))]
+    data, note = engines.run_json("trivy", args, root)
+    if data is None:
+        return None, [note] if note else []
+    version = engines.version_of("trivy") or "trivy"
+    return trivy_vulns(data), [DEP_ENGINE_NOTE.format(version=version)]
