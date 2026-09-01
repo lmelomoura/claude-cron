@@ -1324,6 +1324,33 @@ const SEV_STROKE = {critical: "var(--sev-crit)", high: "var(--sev-high)",
                     medium: "var(--sev-med)", low: "var(--sev-low)",
                     info: "var(--sev-info)"};
 
+/* One ring segment as a REAL arc path, from fraction f0 to f1 of the
+   circle (0 = 12 o'clock, clockwise). Every donut segment used to be a
+   full <circle> wearing stroke-dasharray/-dashoffset -- and a dash
+   PATTERN repeats: with the dash+gap sum landing a floating-point hair
+   under the circumference, each segment painted a sliver of its next
+   repetition back at the 12 o'clock seam, on top of its neighbours --
+   the mangled red/grey knuckle the user photographed on every donut. An
+   arc has no pattern to repeat: it starts and ends exactly where its
+   fractions say. A segment that IS the whole circle degenerates as a
+   single arc (start == end draws nothing), so it becomes two half-circle
+   arcs instead. Exported for overview-tab.js's category donut, which had
+   copied the identical dasharray technique and its identical seam. */
+export function secDonutArc(cx, cy, r, f0, f1){
+  if(f1 - f0 >= 0.9999){
+    const top = (cy - r).toFixed(3), bottom = (cy + r).toFixed(3);
+    return "M" + cx + " " + top
+      + " A" + r + " " + r + " 0 1 1 " + cx + " " + bottom
+      + " A" + r + " " + r + " 0 1 1 " + cx + " " + top;
+  }
+  const a0 = -Math.PI / 2 + f0 * 2 * Math.PI;
+  const a1 = -Math.PI / 2 + f1 * 2 * Math.PI;
+  const x0 = (cx + r * Math.cos(a0)).toFixed(3), y0 = (cy + r * Math.sin(a0)).toFixed(3);
+  const x1 = (cx + r * Math.cos(a1)).toFixed(3), y1 = (cy + r * Math.sin(a1)).toFixed(3);
+  const large = (f1 - f0) > 0.5 ? 1 : 0;
+  return "M" + x0 + " " + y0 + " A" + r + " " + r + " 0 " + large + " 1 " + x1 + " " + y1;
+}
+
 export function secIndexDonutSvg(donut){
   const total = SEV_ORDER5.reduce((n, s) => n + (donut[s] || 0), 0);
   const ns = "http://www.w3.org/2000/svg";
@@ -1331,7 +1358,7 @@ export function secIndexDonutSvg(donut){
   svg.setAttribute("viewBox", "0 0 120 120");
   svg.setAttribute("class", "secidx-donut-svg");
   svg.setAttribute("role", "img");
-  const r = 50, c = 60, circumference = 2 * Math.PI * r;
+  const r = 50, c = 60;
 
   const track = document.createElementNS(ns, "circle");
   track.setAttribute("cx", String(c));
@@ -1346,20 +1373,14 @@ export function secIndexDonutSvg(donut){
   SEV_ORDER5.forEach(sev => {
     const n = donut[sev] || 0;
     if(!n || !total) return;
-    const len = (n / total) * circumference;
-    const seg = document.createElementNS(ns, "circle");
-    seg.setAttribute("cx", String(c));
-    seg.setAttribute("cy", String(c));
-    seg.setAttribute("r", String(r));
+    const frac = n / total;
+    const seg = document.createElementNS(ns, "path");
+    seg.setAttribute("d", secDonutArc(c, c, r, offset, offset + frac));
     seg.setAttribute("fill", "none");
     seg.setAttribute("stroke-width", "14");
-    seg.setAttribute("stroke-dasharray", len + " " + (circumference - len));
-    seg.setAttribute("stroke-dashoffset", String(-offset));
-    // Segments start at 12 o'clock rather than a bare circle's 3 o'clock.
-    seg.setAttribute("transform", "rotate(-90 " + c + " " + c + ")");
     seg.style.stroke = SEV_STROKE[sev] || "var(--muted)";
     svg.appendChild(seg);
-    offset += len;
+    offset += frac;
   });
 
   const label = document.createElementNS(ns, "text");

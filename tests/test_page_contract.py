@@ -3759,7 +3759,7 @@ def _overview_tab_deps(block):
         ("secEl", "secIcon", "secOvDeltaText", "secOvShare", "secOvKpis",
          "secOvTrendCard", "secOvTrendSeg", "secOvDay", "secOvTrendValue",
          "secOvTrendSvg", "secOvSevToken", "secOvDrawChart", "secOvWireResize",
-         "secOvCategoryCard", "secOvDonutSvg",
+         "secOvCategoryCard", "secOvDonutSvg", "secDonutArc",
          "secOvViewAll", "secOvCap", "secOvSortedFindings", "secOvTopFindings",
          "secOvSortableHeader", "secOvFindingRow", "secProjectActivity",
          "secRenderProjectOverview"))
@@ -5706,7 +5706,7 @@ def test_the_index_donut_carries_the_same_capped_cue_the_cards_do(srv, tmp_path)
     cue at all while the cards and the table rows beside it both did."""
     block = _security_js(srv)
     deps = _index_screen_deps(block, "secEl", "secIcon", "secCappedScopeNote",
-                              "secIndexDonutSvg", "secIndexDonutLegend",
+                              "secDonutArc", "secIndexDonutSvg", "secIndexDonutLegend",
                               "secIndexCategories", "secIndexDonut")
     consts = (_const(block, "SEV_ORDER5") + _const(block, "SEV_STROKE")
               + _const(block, "DONUT_PILL_TITLE"))
@@ -5737,7 +5737,7 @@ def test_the_donut_paints_info_in_a_colour_that_is_not_the_empty_track(srv, tmp_
     grouping this table exists to mirror."""
     block = _security_js(srv)
     consts = _const(block, "SEV_ORDER5") + _const(block, "SEV_STROKE")
-    deps = _index_screen_deps(block, "secIndexDonutSvg")
+    deps = _index_screen_deps(block, "secDonutArc", "secIndexDonutSvg")
     script = tmp_path / "donut-info-colour.js"
     script.write_text(_INDEX_DOM_HARNESS + consts + deps + """
     const svg = secIndexDonutSvg({critical: 0, high: 0, medium: 0, low: 0, info: 3});

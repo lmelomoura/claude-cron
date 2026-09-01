@@ -27,6 +27,7 @@ import { $, fmtWhen, kpiCard } from "./page.js";
 import { secEl, secIcon } from "./dom.js";
 import { SEC_NEVER, EVENT_KIND_LABEL, SEC_EVENT_META, secRuleMeta,
          secSevKey } from "./vocabulary.js";
+import { secDonutArc } from "./index-screen.js";
 import { secState } from "./state.js";
 import { secSwitchProjectTab } from "./project-screen.js";
 import { secShowAnalysis } from "./analysis.js";
@@ -435,7 +436,7 @@ function secOvDonutSvg(slices, total){
   svg.setAttribute("viewBox", "0 0 120 120");
   svg.setAttribute("class", "secov-donutsvg");
   svg.setAttribute("role", "img");
-  const r = 50, c = 60, circumference = 2 * Math.PI * r;
+  const r = 50, c = 60;
   const track = document.createElementNS(ns, "circle");
   track.setAttribute("cx", String(c)); track.setAttribute("cy", String(c));
   track.setAttribute("r", String(r));
@@ -443,21 +444,19 @@ function secOvDonutSvg(slices, total){
   track.setAttribute("stroke-width", "14");
   track.style.stroke = "var(--line)";
   svg.appendChild(track);
+  // Real arc paths, not dasharray circles -- see secDonutArc's own comment
+  // (index-screen.js) for the repeating-pattern seam artifact this closes.
   let offset = 0;
   slices.forEach(s => {
     if(!s.count || !total) return;
-    const len = (s.count / total) * circumference;
-    const seg = document.createElementNS(ns, "circle");
-    seg.setAttribute("cx", String(c)); seg.setAttribute("cy", String(c));
-    seg.setAttribute("r", String(r));
+    const frac = s.count / total;
+    const seg = document.createElementNS(ns, "path");
+    seg.setAttribute("d", secDonutArc(c, c, r, offset, offset + frac));
     seg.setAttribute("fill", "none");
     seg.setAttribute("stroke-width", "14");
-    seg.setAttribute("stroke-dasharray", len + " " + (circumference - len));
-    seg.setAttribute("stroke-dashoffset", String(-offset));
-    seg.setAttribute("transform", "rotate(-90 " + c + " " + c + ")");
     seg.style.stroke = s.color;
     svg.appendChild(seg);
-    offset += len;
+    offset += frac;
   });
   const num = document.createElementNS(ns, "text");
   num.setAttribute("x", String(c)); num.setAttribute("y", "56");

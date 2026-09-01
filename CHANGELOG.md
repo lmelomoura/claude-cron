@@ -17,6 +17,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every donut's 12-o'clock seam is clean.** Each segment used to be a
+  full circle wearing stroke-dasharray/-dashoffset, and a dash pattern
+  repeats: with the dash+gap sum landing a floating-point hair under the
+  circumference, each segment painted a sliver of its next repetition
+  back at the seam, on top of its neighbours — the mangled red/grey
+  knuckle visible at the top of every donut. Segments are real arc paths
+  now (one shared secDonutArc, used by the severity donut everywhere and
+  the Overview's category donut alike; a 100% segment becomes two
+  half-circle arcs, since a full-circle arc degenerates to nothing).
+  Verified by rasterising the arcs and sampling the whole ring: five
+  contiguous colour blocks in severity order, nothing out of place.
+
 ### Changed
 
 - **The Reports table drops its Actions column.** The four FORMAT chips

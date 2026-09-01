@@ -1674,7 +1674,7 @@
     svg.setAttribute("viewBox", "0 0 120 120");
     svg.setAttribute("class", "secov-donutsvg");
     svg.setAttribute("role", "img");
-    const r = 50, c = 60, circumference = 2 * Math.PI * r;
+    const r = 50, c = 60;
     const track = document.createElementNS(ns, "circle");
     track.setAttribute("cx", String(c));
     track.setAttribute("cy", String(c));
@@ -1686,19 +1686,14 @@
     let offset = 0;
     slices.forEach((s) => {
       if (!s.count || !total) return;
-      const len = s.count / total * circumference;
-      const seg = document.createElementNS(ns, "circle");
-      seg.setAttribute("cx", String(c));
-      seg.setAttribute("cy", String(c));
-      seg.setAttribute("r", String(r));
+      const frac = s.count / total;
+      const seg = document.createElementNS(ns, "path");
+      seg.setAttribute("d", secDonutArc(c, c, r, offset, offset + frac));
       seg.setAttribute("fill", "none");
       seg.setAttribute("stroke-width", "14");
-      seg.setAttribute("stroke-dasharray", len + " " + (circumference - len));
-      seg.setAttribute("stroke-dashoffset", String(-offset));
-      seg.setAttribute("transform", "rotate(-90 " + c + " " + c + ")");
       seg.style.stroke = s.color;
       svg.appendChild(seg);
-      offset += len;
+      offset += frac;
     });
     const num = document.createElementNS(ns, "text");
     num.setAttribute("x", String(c));
@@ -4784,6 +4779,18 @@
     low: "var(--sev-low)",
     info: "var(--sev-info)"
   };
+  function secDonutArc(cx, cy, r, f0, f1) {
+    if (f1 - f0 >= 0.9999) {
+      const top = (cy - r).toFixed(3), bottom = (cy + r).toFixed(3);
+      return "M" + cx + " " + top + " A" + r + " " + r + " 0 1 1 " + cx + " " + bottom + " A" + r + " " + r + " 0 1 1 " + cx + " " + top;
+    }
+    const a0 = -Math.PI / 2 + f0 * 2 * Math.PI;
+    const a1 = -Math.PI / 2 + f1 * 2 * Math.PI;
+    const x0 = (cx + r * Math.cos(a0)).toFixed(3), y0 = (cy + r * Math.sin(a0)).toFixed(3);
+    const x1 = (cx + r * Math.cos(a1)).toFixed(3), y1 = (cy + r * Math.sin(a1)).toFixed(3);
+    const large = f1 - f0 > 0.5 ? 1 : 0;
+    return "M" + x0 + " " + y0 + " A" + r + " " + r + " 0 " + large + " 1 " + x1 + " " + y1;
+  }
   function secIndexDonutSvg(donut) {
     const total = SEV_ORDER5.reduce((n, s) => n + (donut[s] || 0), 0);
     const ns = "http://www.w3.org/2000/svg";
@@ -4791,7 +4798,7 @@
     svg.setAttribute("viewBox", "0 0 120 120");
     svg.setAttribute("class", "secidx-donut-svg");
     svg.setAttribute("role", "img");
-    const r = 50, c = 60, circumference = 2 * Math.PI * r;
+    const r = 50, c = 60;
     const track = document.createElementNS(ns, "circle");
     track.setAttribute("cx", String(c));
     track.setAttribute("cy", String(c));
@@ -4804,19 +4811,14 @@
     SEV_ORDER5.forEach((sev) => {
       const n = donut[sev] || 0;
       if (!n || !total) return;
-      const len = n / total * circumference;
-      const seg = document.createElementNS(ns, "circle");
-      seg.setAttribute("cx", String(c));
-      seg.setAttribute("cy", String(c));
-      seg.setAttribute("r", String(r));
+      const frac = n / total;
+      const seg = document.createElementNS(ns, "path");
+      seg.setAttribute("d", secDonutArc(c, c, r, offset, offset + frac));
       seg.setAttribute("fill", "none");
       seg.setAttribute("stroke-width", "14");
-      seg.setAttribute("stroke-dasharray", len + " " + (circumference - len));
-      seg.setAttribute("stroke-dashoffset", String(-offset));
-      seg.setAttribute("transform", "rotate(-90 " + c + " " + c + ")");
       seg.style.stroke = SEV_STROKE[sev] || "var(--muted)";
       svg.appendChild(seg);
-      offset += len;
+      offset += frac;
     });
     const label = document.createElementNS(ns, "text");
     label.setAttribute("x", String(c));
@@ -5061,5 +5063,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: cbbc0b39528b104e1083f4dfed328cc3218a34c139458b0f2b8d83e1aec4cde2 */
-/* ui-sources: d46c39d6f410efb55cd1982d21208224135b546e1847712f8d3e68b6e75d31d2 */
+/* ui-bundle: 9b0f82f4c9d8ff12a86e17585c56213fdc85061fd0dd60654287919e8cff9838 */
+/* ui-sources: e3dc6f8f97a04f1023b335252a8465375f3ebbd949545deb031c3a9bc5fef0bf */
