@@ -1,5 +1,10 @@
+from pathlib import Path
+
 import pytest
 from security import taxonomy
+
+SKILL = (Path(__file__).resolve().parent.parent.parent
+         / "skills" / "security-analysis" / "SKILL.md")
 
 
 def test_a_known_rule_classifies_to_its_cwe_and_owasp():
@@ -55,3 +60,13 @@ def test_sensitive_data_exposure_maps_to_broken_access_control():
     # Failures) -- even though "Sensitive Data Exposure" was the NAME of
     # A3:2017. A silent "correction" back to A02 must fail this test.
     assert taxonomy.classify("sensitive-data-exposure") == ("CWE-200", "A01:2021")
+
+
+def test_the_skill_lists_every_rule_name():
+    # The vocabulary and the document that teaches it drift apart in
+    # silence otherwise: a rule added here and not there is a rule the
+    # agent never uses, and one removed here but not there is an analysis
+    # that fails at report time.
+    text = SKILL.read_text()
+    for name in taxonomy.RULE_NAMES:
+        assert name in text, f"SKILL.md does not mention the rule {name!r}"
