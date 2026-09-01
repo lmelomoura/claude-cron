@@ -140,11 +140,73 @@ def test_the_agent_cannot_invent_a_severity(tmp_path):
     assert "severity" in out.stderr
 
 
+def _finding_row(db, analysis_id):
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    return conn.execute("SELECT * FROM finding WHERE analysis_id=?",
+                        (analysis_id,)).fetchone()
+
+
+def test_report_finding_refuses_a_sast_rule_outside_the_vocabulary(tmp_path):
+    """The rule name is part of the fingerprint's identity (see
+    taxonomy.py's own docstring): a SAST rule outside the closed vocabulary
+    is refused before it ever reaches the ledger, and the error names the
+    vocabulary entry the agent should have used instead."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "d" * 64, "category": "sast", "rule": "sqli",
+        "severity": "high", "title": "t"}))
+    assert out.returncode != 0
+    assert "sqli" in out.stderr
+    assert "sql-injection" in out.stderr  # tells the agent what to use instead
+
+
+def test_report_finding_derives_the_classification_from_the_rule(tmp_path):
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "e" * 64, "category": "sast", "rule": "sql-injection",
+        "severity": "high", "title": "t"}))
+    row = _finding_row(db, aid)
+    assert row["cwe"] == "CWE-89"
+    assert row["owasp"] == "A03:2021"
+
+
+def test_report_finding_ignores_a_classification_sent_by_the_agent(tmp_path):
+    """Two sources of truth in one row is how a CWE ends up disagreeing with
+    the rule beside it. The vocabulary wins, always -- whatever the agent
+    sends for `cwe`/`owasp` is overwritten by what the rule derives to."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "f" * 64, "category": "sast", "rule": "sql-injection",
+        "severity": "high", "title": "t",
+        "cwe": "CWE-79", "owasp": "A01:2021"}))
+    row = _finding_row(db, aid)
+    assert row["cwe"] == "CWE-89"
+    assert row["owasp"] == "A03:2021"
+
+
+def test_report_finding_accepts_a_deterministic_rule_unchanged(tmp_path):
+    """The vocabulary is for SAST only. A hygiene rule name is produced by our
+    own Python and must not be forced through a vocabulary written for the
+    agent."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "0" * 64, "category": "hygiene",
+        "rule": "committed_env_file", "severity": "high", "title": "t"}))
+    row = _finding_row(db, aid)
+    assert row["cwe"] == ""
+    assert row["owasp"] == ""
+
+
 def test_the_agent_cannot_report_into_an_analysis_that_does_not_exist(tmp_path):
     db = tmp_path / "security.db"
     open_analysis(db)
     out = fails(db, "report-finding", "--analysis", "999", stdin=json.dumps({
-        "fingerprint": "d" * 64, "category": "sast", "rule": "r",
+        "fingerprint": "d" * 64, "category": "hygiene", "rule": "r",
         "severity": "high", "title": "t"}))
     assert out.returncode != 0
     assert "999" in out.stderr
@@ -164,7 +226,7 @@ def test_a_finding_whose_rationale_contains_a_live_looking_key_is_refused(tmp_pa
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "e" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "fingerprint": "e" * 64, "category": "hygiene", "rule": "hardcoded-secret",
         "severity": "high", "title": "t",
         "rationale": f"Found a live credential: {AWS}"}))
     assert out.returncode != 0
@@ -178,7 +240,7 @@ def test_a_finding_whose_title_contains_a_live_looking_key_is_refused(tmp_path):
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "f" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "fingerprint": "f" * 64, "category": "hygiene", "rule": "hardcoded-secret",
         "severity": "high", "title": f"Key exposed: {AWS}"}))
     assert out.returncode != 0
     assert "title" in out.stderr
@@ -190,7 +252,7 @@ def test_a_finding_whose_remediation_contains_a_live_looking_key_is_refused(tmp_
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "1" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "fingerprint": "1" * 64, "category": "hygiene", "rule": "hardcoded-secret",
         "severity": "high", "title": "t", "rationale": "r",
         "remediation": f"Rotate {AWS} immediately"}))
     assert out.returncode != 0
@@ -205,7 +267,7 @@ def test_a_finding_that_describes_a_credential_instead_of_quoting_it_is_accepted
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "2" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "fingerprint": "2" * 64, "category": "hygiene", "rule": "hardcoded-secret",
         "severity": "high", "title": "Hardcoded AWS key",
         "rationale": "An AWS access key is hardcoded in config/prod.env at line 12."}))
 
@@ -214,7 +276,7 @@ def test_a_finding_whose_rationale_names_an_obvious_placeholder_is_accepted(tmp_
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "3" * 64, "category": "sast", "rule": "hardcoded-secret",
+        "fingerprint": "3" * 64, "category": "hygiene", "rule": "hardcoded-secret",
         "severity": "high", "title": "t",
         "rationale": 'Default credential left in place: '
                      'password = "changeme12345678901234"'}))
@@ -376,7 +438,7 @@ def test_no_db_at_all_is_refused_rather_than_guessed(tmp_path):
 def two_analyses(db, before, after):
     """One finding, reported with `before`'s occurrences and then with
     `after`'s, and the checklist state the second analysis gives it."""
-    finding = {"fingerprint": "e" * 64, "category": "sast", "rule": "r",
+    finding = {"fingerprint": "e" * 64, "category": "hygiene", "rule": "r",
                "severity": "high", "title": "t", "occurrences": before}
     first = open_analysis(db, run_id="r1")
     run(db, "report-finding", "--analysis", str(first), stdin=json.dumps(finding))
@@ -438,7 +500,7 @@ def test_a_decision_wins_over_the_derived_state(tmp_path):
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "a" * 64, "category": "sast", "rule": "r",
+        "fingerprint": "a" * 64, "category": "hygiene", "rule": "r",
         "severity": "high", "title": "t"}))
     run(db, "finish", "--analysis", str(aid), "--state", "done")
     run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
@@ -565,7 +627,7 @@ def test_the_work_the_agent_is_there_to_do_still_works_under_the_flag(tmp_path):
     run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline",
         env=AS_AGENT)
     run(db, "report-finding", "--analysis", str(aid), env=AS_AGENT,
-        stdin=json.dumps({"fingerprint": "b" * 64, "category": "sast",
+        stdin=json.dumps({"fingerprint": "b" * 64, "category": "hygiene",
                           "rule": "r", "severity": "high", "title": "t"}))
     run(db, "findings", "--analysis", str(aid), env=AS_AGENT)
     run(db, "checklist", "--analysis", str(aid), env=AS_AGENT)
@@ -634,7 +696,7 @@ def test_a_closed_analysis_refuses_a_new_finding(tmp_path):
     aid = open_analysis(db)
     run(db, "finish", "--analysis", str(aid), "--state", "done")
     out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "a" * 64, "category": "sast", "rule": "r",
+        "fingerprint": "a" * 64, "category": "hygiene", "rule": "r",
         "severity": "high", "title": "t"}))
     assert out.returncode != 0
     assert "closed" in out.stderr
@@ -665,7 +727,7 @@ def test_a_failed_first_attempt_does_not_make_everything_regressed(tmp_path):
     `regressed`: news that a hole was fixed and returned, about a hole that
     never left."""
     db = tmp_path / "security.db"
-    finding = {"fingerprint": "e" * 64, "category": "sast", "rule": "r",
+    finding = {"fingerprint": "e" * 64, "category": "hygiene", "rule": "r",
                "severity": "high", "title": "t",
                "occurrences": [{"file": "a.py", "line": 1}]}
     first = open_analysis(db, run_id="r1")
@@ -684,7 +746,7 @@ def test_a_finding_that_really_did_come_back_is_still_regressed(tmp_path):
     """The other side of the filter: a DONE analysis still feeds history, so
     a finding that was fixed and returned is not quietly downgraded to new."""
     db = tmp_path / "security.db"
-    finding = {"fingerprint": "e" * 64, "category": "sast", "rule": "r",
+    finding = {"fingerprint": "e" * 64, "category": "hygiene", "rule": "r",
                "severity": "high", "title": "t",
                "occurrences": [{"file": "a.py", "line": 1}]}
     first = open_analysis(db, run_id="r1")
@@ -711,7 +773,7 @@ def test_a_fingerprint_that_is_not_a_sha256_is_refused(tmp_path):
     for bad in ("aws-key-in-prod-env", "A" * 64, "abc123", "f" * 63, "f" * 65,
                 " " + "f" * 63):
         out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-            "fingerprint": bad, "category": "sast", "rule": "r",
+            "fingerprint": bad, "category": "hygiene", "rule": "r",
             "severity": "high", "title": "t"}))
         assert out.returncode != 0, bad
         assert "fingerprint" in out.stderr
@@ -722,7 +784,7 @@ def test_a_finding_cannot_paste_a_whole_file_into_the_ledger(tmp_path):
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     for key in ("title", "rationale", "remediation", "partial_note"):
-        payload = {"fingerprint": "a" * 64, "category": "sast", "rule": "r",
+        payload = {"fingerprint": "a" * 64, "category": "hygiene", "rule": "r",
                    "severity": "high", "title": "t", key: "x" * 10001}
         out = fails(db, "report-finding", "--analysis", str(aid),
                     stdin=json.dumps(payload))
@@ -738,7 +800,7 @@ def test_a_line_number_too_large_to_be_one_is_a_sentence_not_a_traceback(tmp_pat
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "a" * 64, "category": "sast", "rule": "r",
+        "fingerprint": "a" * 64, "category": "hygiene", "rule": "r",
         "severity": "high", "title": "t",
         "occurrences": [{"file": "a.py", "line": 1e999}]}))
     assert out.returncode != 0
@@ -805,7 +867,7 @@ def test_report_finding_with_normal_body_still_works(tmp_path):
     aid = open_analysis(db)
     run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "a" * 64, "category": "sast", "rule": "r",
+        "fingerprint": "a" * 64, "category": "hygiene", "rule": "r",
         "severity": "high", "title": "t"}))
     found = run(db, "findings", "--analysis", str(aid))
     assert any(f["rule"] == "r" for f in found)
@@ -1458,7 +1520,7 @@ def test_the_door_accepts_info_as_a_severity(tmp_path):
               "--run-id", "r")["analysis_id"]
     run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "c" * 64, "category": "sast", "rule": "observation",
+        "fingerprint": "c" * 64, "category": "hygiene", "rule": "observation",
         "severity": "info", "title": "worth knowing", "rationale": "r",
         "remediation": "none needed", "occurrences": []}))
 
@@ -1921,21 +1983,29 @@ def test_main_computes_the_agent_key_with_no_hardcoded_special_case():
 
 # ------------------------------------------------------------ the index screen
 
-def finished_analysis(db, tmp_path, project, branch, severity="high", rule="r"):
+def finished_analysis(db, tmp_path, project, branch, severity="high", rule="r",
+                      category="hygiene"):
     """A `done` analysis of `project`/`branch` carrying one reported finding.
+
+    `category` defaults to a deterministic one, not `sast` -- most callers
+    pass an opaque placeholder `rule` that means nothing beyond "some rule
+    string", and the closed SAST vocabulary would refuse it. A caller that
+    wants a real SAST rule (to exercise the classification it derives) passes
+    `category="sast"` together with a rule the vocabulary actually has.
 
     Uses `prepared_analysis` so `finish --state done` is not silently
     downgraded to `capped` (see `cmd_finish`) -- a test about current posture
     has to start from a row the close actually accepted as done."""
     aid = prepared_analysis(db, tmp_path, project=project, repo=project, branch=branch)
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": fingerprint_for(project, branch, rule), "category": "sast",
+        "fingerprint": fingerprint_for(project, branch, rule), "category": category,
         "rule": rule, "severity": severity, "title": "t", "rationale": "r"}))
     run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "0.5")
     return aid
 
 
-def capped_analysis(db, tmp_path, project, branch, severity="high", rule="r"):
+def capped_analysis(db, tmp_path, project, branch, severity="high", rule="r",
+                    category="hygiene"):
     """A `capped` analysis of `project`/`branch` -- it stopped before covering
     its whole scope, carrying one reported finding from before it stopped.
 
@@ -1946,7 +2016,7 @@ def capped_analysis(db, tmp_path, project, branch, severity="high", rule="r"):
     row that really carries it."""
     aid = prepared_analysis(db, tmp_path, project=project, repo=project, branch=branch)
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": fingerprint_for(project, branch, rule), "category": "sast",
+        "fingerprint": fingerprint_for(project, branch, rule), "category": category,
         "rule": rule, "severity": severity, "title": "t", "rationale": "r"}))
     run(db, "finish", "--analysis", str(aid), "--state", "capped", "--spend", "0.3")
     return aid
@@ -1983,7 +2053,8 @@ def test_index_data_survives_a_ledger_that_does_not_exist_yet(tmp_path):
 
 def test_index_data_reports_current_posture_for_the_projects_given(tmp_path):
     db = tmp_path / "security.db"
-    aid = finished_analysis(db, tmp_path, "web", "main", severity="high", rule="sql-injection")
+    aid = finished_analysis(db, tmp_path, "web", "main", severity="high",
+                            rule="sql-injection", category="sast")
 
     out = run(db, "index-data", "--projects", json.dumps(
         [{"name": "web", "base": "main", "description": "d"}]))
@@ -2090,7 +2161,7 @@ def test_index_data_days_narrows_the_donut_and_categories(tmp_path):
     is actually wired through rather than accepted and dropped."""
     db = tmp_path / "security.db"
     aid = finished_analysis(db, tmp_path, "web", "main", severity="critical",
-                            rule="hardcoded-secret")
+                            rule="hardcoded-credentials", category="sast")
     conn = sqlite3.connect(str(db))
     sixty_days_ago = int(time.time()) - 60 * 86400
     conn.execute("UPDATE analysis SET started=?, ended=? WHERE id=?",
@@ -2108,7 +2179,7 @@ def test_index_data_days_narrows_the_donut_and_categories(tmp_path):
     assert narrow["categories"] == []
     assert wide["donut"]["critical"] == 1, \
         "widening past the analysis's own age must restore it"
-    assert wide["categories"] == [{"rule": "hardcoded-secret", "count": 1, "category": "sast"}]
+    assert wide["categories"] == [{"rule": "hardcoded-credentials", "count": 1, "category": "sast"}]
 
 
 def test_index_data_recent_page_pages_server_side_with_a_true_total(tmp_path):
@@ -2193,7 +2264,8 @@ def test_project_data_defaults_the_profile_when_none_is_declared(tmp_path):
 
 def test_project_data_reports_current_posture_and_checklist_counts(tmp_path):
     db = tmp_path / "security.db"
-    aid = finished_analysis(db, tmp_path, "web", "main", severity="high", rule="sql-injection")
+    aid = finished_analysis(db, tmp_path, "web", "main", severity="high",
+                            rule="sql-injection", category="sast")
 
     out = run(db, "project-data", "--project", "web", "--base", "main",
              "--default-profile", "standard")
@@ -2471,16 +2543,16 @@ def test_project_data_runs_findings_count_is_per_analysis_not_shared(tmp_path):
     db = tmp_path / "security.db"
     a1 = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main", run_id="r1")
     run(db, "report-finding", "--analysis", str(a1), stdin=json.dumps({
-        "fingerprint": fingerprint_for("web", "main", "r1a"), "category": "sast",
+        "fingerprint": fingerprint_for("web", "main", "r1a"), "category": "hygiene",
         "rule": "r1a", "severity": "high", "title": "t"}))
     run(db, "report-finding", "--analysis", str(a1), stdin=json.dumps({
-        "fingerprint": fingerprint_for("web", "main", "r1b"), "category": "sast",
+        "fingerprint": fingerprint_for("web", "main", "r1b"), "category": "hygiene",
         "rule": "r1b", "severity": "low", "title": "t"}))
     run(db, "finish", "--analysis", str(a1), "--state", "done")
 
     a2 = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main", run_id="r2")
     run(db, "report-finding", "--analysis", str(a2), stdin=json.dumps({
-        "fingerprint": fingerprint_for("web", "main", "r1a"), "category": "sast",
+        "fingerprint": fingerprint_for("web", "main", "r1a"), "category": "hygiene",
         "rule": "r1a", "severity": "high", "title": "t"}))
     run(db, "finish", "--analysis", str(a2), "--state", "done")
 

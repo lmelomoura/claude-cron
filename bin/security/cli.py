@@ -41,7 +41,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from security import deps, diff, fingerprint, hygiene, ledger, osv, queries, report, secrets  # noqa: E402
+from security import deps, diff, fingerprint, hygiene, ledger, osv, queries, report, secrets, taxonomy  # noqa: E402
 
 REQUIRED_FINDING_KEYS = ("fingerprint", "category", "rule", "severity", "title")
 
@@ -473,6 +473,26 @@ def cmd_report_finding(args):
                  "is reported `new` for ever and can never be decided on")
     if payload["severity"] not in report.SEVERITIES:
         sys.exit(f"report-finding: severity must be one of {report.SEVERITIES}")
+    # SAST only. The deterministic categories' rule names come from our own
+    # Python (secrets._RULES, hygiene's literals, the OSV id), and forcing
+    # them through a vocabulary written for the agent would refuse findings
+    # this program itself produced. `cwe`/`owasp` are DERIVED from the rule,
+    # never accepted from the payload -- an agent that could send its own
+    # would end up with a CWE that disagrees with the rule beside it, two
+    # sources of truth in one row.
+    if payload["category"] == "sast":
+        if not taxonomy.is_valid_rule(payload["rule"]):
+            sys.exit(
+                f"report-finding: {payload['rule']!r} is not a SAST rule name. "
+                "The rule is part of the fingerprint, so a second spelling of "
+                "one hole is a second identity: it reports `new` for ever and "
+                "no decision ever matches it again. Use one of: "
+                + ", ".join(taxonomy.RULE_NAMES)
+                + " — or `other` if none of them fits, and say why in the "
+                  "rationale.")
+        payload["cwe"], payload["owasp"] = taxonomy.classify(payload["rule"])
+    else:
+        payload["cwe"] = payload["owasp"] = ""
     for key in TEXT_KEYS:
         value = payload.get(key)
         if not isinstance(value, str):
