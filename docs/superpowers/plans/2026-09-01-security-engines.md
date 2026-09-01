@@ -16,11 +16,11 @@
 - **`CHANGELOG.md` no MESMO commit que o código.** O ficheiro pede-o explicitamente ("in the same change as the code, so the entry is written while the reason is still known"), e o bloco 1 não o fez. O `selftest` falha se o CHANGELOG for mais antigo que o último commit em `bin/`.
 - **Severidades:** `("critical", "high", "medium", "low", "info")`, em `report.SEVERITIES`.
 - **Categorias:** `secret`, `dependency`, `hygiene`, `sast`, e a nova `iac`. Estão em `diff.DETERMINISTIC_CATEGORIES` e em `cli.FINDING_CATEGORIES` — as duas têm de concordar.
-- **Testes:** `rtk proxy python3 -m pytest tests/security/ -v`. 477 passam hoje; nenhum pode partir.
+- **Testes:** `rtk proxy python3.13 -m pytest tests/security/ -v`. 477 passam hoje; nenhum pode partir.
 
 ### Como ler ficheiros neste repositório — não negociável
 
-**Usa a ferramenta `Read` e `rtk proxy grep`. Nunca `cat`, `head`, `sed -n` ou `grep` directos.** O hook `PreToolUse` reescreve todo o Bash através do `rtk`, que **trunca por desenho** (linhas a 80 caracteres, 200 resultados) sem marcador visível, e cujo sumarizador de pytest devolve **"No tests collected"** em execuções com `-k` ou node-id — que se lê exactamente como uma passagem limpa. Corre sempre os testes como `rtk proxy python3 -m pytest`. Isto já produziu conclusões falsas sobre este módulo.
+**Usa a ferramenta `Read` e `rtk proxy grep`. Nunca `cat`, `head`, `sed -n` ou `grep` directos.** O hook `PreToolUse` reescreve todo o Bash através do `rtk`, que **trunca por desenho** (linhas a 80 caracteres, 200 resultados) sem marcador visível, e cujo sumarizador de pytest devolve **"No tests collected"** em execuções com `-k` ou node-id — que se lê exactamente como uma passagem limpa. Corre sempre os testes como `rtk proxy python3.13 -m pytest` — nesta maquina `python3` e o 3.14 e nao tem pytest instalado. Isto já produziu conclusões falsas sobre este módulo.
 
 ### A regra dos campos proibidos
 
@@ -119,7 +119,7 @@ def test_run_json_reports_a_missing_binary_as_a_note_not_an_exception(tmp_path):
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `rtk proxy python3 -m pytest tests/security/test_engines.py -v`
+Run: `rtk proxy python3.13 -m pytest tests/security/test_engines.py -v`
 Expected: FAIL — `ModuleNotFoundError` / `ImportError`.
 
 - [ ] **Step 3: Write the implementation**
@@ -259,7 +259,7 @@ def run_json(name: str, args, cwd, timeout: int = _TIMEOUT):
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `rtk proxy python3 -m pytest tests/security/test_engines.py -v`
+Run: `rtk proxy python3.13 -m pytest tests/security/test_engines.py -v`
 Expected: PASS, 6 passed
 
 - [ ] **Step 5: Commit, with the CHANGELOG in the same commit**
@@ -360,7 +360,7 @@ json.dump(d[:6], open('tests/security/fixtures/engines/gitleaks-dir.json','w'), 
 "
 ```
 
-Depois confirma, com os olhos, que o ficheiro não contém nenhum valor. Run: `rtk proxy python3 -m pytest tests/security/test_adapters.py -v` → FAIL (`ImportError`).
+Depois confirma, com os olhos, que o ficheiro não contém nenhum valor. Run: `rtk proxy python3.13 -m pytest tests/security/test_adapters.py -v` → FAIL (`ImportError`).
 
 - [ ] **Step 3: Implement the adapter**
 
@@ -378,7 +378,7 @@ Passa-lhe o âmbito: os `_SKIP_DIRS` e os `ignore_paths` do projecto.
 
 - [ ] **Step 5: Run the whole suite**
 
-Run: `rtk proxy python3 -m pytest tests/security/ -v` → 477 + os novos, nenhum partido.
+Run: `rtk proxy python3.13 -m pytest tests/security/ -v` → 477 + os novos, nenhum partido.
 
 - [ ] **Step 6: Commit with the CHANGELOG entry**
 
