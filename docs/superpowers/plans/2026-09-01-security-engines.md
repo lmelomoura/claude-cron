@@ -480,6 +480,18 @@ Ambos se aplicam ao motor **e** ao fallback — o filtro vive em `ignores.py`, q
 
 ### Task 8: A primeira renomeação real
 
+> **REORDENADA DURANTE A EXECUÇÃO — esta tarefa é PRÉ-REQUISITO, não seguimento.**
+> Foi escrita como última por assumir que a renomeação podia esperar. Não pode.
+> A Task 2 mostrou porquê: assim que o Gitleaks está presente, **todas** as
+> regras de segredo mudam de nome, e o nome está dentro do fingerprint. Enquanto
+> `RULE_RENAMES` estiver vazio, a primeira análise numa máquina com Gitleaks
+> reporta cada segredo antigo como `fixed` e o mesmo segredo como `new`, e as
+> duas decisões humanas do ledger de desenvolvimento (ambas sobre `private_key`)
+> deixam de casar com o que quer que seja.
+>
+> **Esta tarefa tem de aterrar antes de uma análise real correr com motores.**
+> Não depende das Tasks 3–7 e pode ser feita a seguir à 2.
+
 **Files:** `bin/security/taxonomy.py`, `CHANGELOG.md`
 
 As regras de segredos mudam todas de nome quando o Gitleaks substitui `secrets._RULES`: `aws_access_key` → `aws-access-token`, `github_token` → `github-pat`, e assim por diante. **Preenche `RULE_RENAMES` com o mapeamento real**, lendo os `RuleID` que o Gitleaks emite (a captura da Task 2 tem-nos) e emparelhando-os com `secrets._RULES`.
