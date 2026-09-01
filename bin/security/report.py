@@ -100,7 +100,11 @@ def as_markdown(analysis, findings, coverage_note):
     out += ["", "## Findings", ""]
     for f in findings:
         out += [f"### [{f['severity']}] {f['title']} — `{f['state']}`", "",
-                f"**Rule:** `{f['rule']}` ({f['category']})", ""]
+                f"**Rule:** `{f['rule']}` ({f['category']})"]
+        if f.get("cwe"):
+            out.append(f"  - Class: {f['cwe']}"
+                       + (f" · OWASP {f['owasp']}" if f.get("owasp") else ""))
+        out.append("")
         for occ in f["occurrences"]:
             out.append(f"- `{occ['file']}`" + (f":{occ['line']}" if occ["line"] else ""))
         out += ["", f["rationale"], "", f"**Remediation:** {f['remediation']}", ""]
@@ -144,10 +148,14 @@ def as_html(analysis, findings, coverage_note):
         locs = "".join(
             f"<li><code>{e(o['file'])}{':' + e(str(o['line'])) if o['line'] else ''}</code></li>"
             for o in f["occurrences"])
+        cls = (f"<p class='cls'>{e(f['cwe'])}"
+               + (f" · OWASP {e(f['owasp'])}" if f.get("owasp") else "")
+               + "</p>") if f.get("cwe") else ""
         parts.append(
             f'<div class="f {e(f["severity"])}">'
             f"<h3>[{e(f['severity'])}] {e(f['title'])} — {e(f['state'])}</h3>"
             f"<p>Rule <code>{e(f['rule'])}</code> ({e(f['category'])})</p>"
+            f"{cls}"
             f"<ul>{locs}</ul><p>{e(f['rationale'])}</p>"
             f"<p><strong>Remediation:</strong> {e(f['remediation'])}</p></div>")
     return "".join(parts)

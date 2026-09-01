@@ -187,3 +187,26 @@ def test_the_report_names_exactly_the_states_the_engine_can_produce():
 def test_info_is_a_severity_and_sorts_below_low():
     assert "info" in report.SEVERITIES
     assert report.SEVERITIES.index("info") > report.SEVERITIES.index("low")
+
+
+def test_json_carries_the_classification():
+    findings = [dict(FINDINGS[1], cwe="CWE-89", owasp="A03:2021")]
+    doc = json.loads(report.as_json(ANALYSIS, findings, ""))
+    assert doc["findings"][0]["cwe"] == "CWE-89"
+    assert doc["findings"][0]["owasp"] == "A03:2021"
+
+
+def test_markdown_shows_the_classification():
+    findings = [dict(FINDINGS[1], cwe="CWE-89", owasp="A03:2021")]
+    out = report.as_markdown(ANALYSIS, findings, "")
+    assert "CWE-89" in out
+    assert "A03:2021" in out
+
+
+def test_an_unclassified_finding_says_nothing_rather_than_an_empty_label():
+    # A hygiene finding has no CWE. Rendering "CWE: " with nothing after it
+    # reads as a missing value the reader should chase.
+    findings = [dict(FINDINGS[0], category="hygiene", rule="committed_env_file",
+                      cwe="", owasp="")]
+    out = report.as_markdown(ANALYSIS, findings, "")
+    assert "CWE" not in out
