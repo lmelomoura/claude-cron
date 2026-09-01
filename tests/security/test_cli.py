@@ -222,6 +222,23 @@ def test_report_finding_does_not_echo_an_unscanned_rule_that_looks_like_a_key(tm
     assert AWS not in out.stderr
 
 
+def test_report_finding_does_not_echo_an_unscanned_category_that_looks_like_a_key(tmp_path):
+    """`category` is quoted back by its own vocabulary refusal exactly as
+    `rule` is (see the test above and cmd_report_finding's own comment on
+    why both are scanned before either gate can quote them): a credential
+    pasted into `category` would otherwise be written to the run log by the
+    very refusal meant to keep it out."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "8" * 64, "category": AWS, "rule": "r",
+        "severity": "high", "title": "t"}))
+    assert out.returncode != 0
+    assert "category" in out.stderr
+    assert AWS not in out.stdout
+    assert AWS not in out.stderr
+
+
 def test_report_finding_refuses_a_deterministic_rule_that_carries_a_credential(tmp_path):
     """`rule` is agent-written for EVERY category, deterministic ones
     included -- it is stored verbatim and rendered on the report page. The
@@ -1142,6 +1159,35 @@ def test_fingerprint_still_serves_deterministic_categories(tmp_path):
     got = raw(db, "fingerprint", "--category", "secret", "--rule",
               "aws_access_key", "--path", "config/prod.env")
     assert len(got) == 64
+
+
+def test_fingerprint_does_not_echo_an_unscanned_rule_that_looks_like_a_key(tmp_path):
+    """The same door as report-finding's rule refusal, scanned for the same
+    reason (see cmd_fingerprint's own docstring): this verb's SAST-rule
+    refusal quotes `args.rule` back into stderr, and that stderr lands in
+    the same run log report-finding's does. A rule shaped like a live
+    credential must be refused before that refusal can quote it."""
+    db = tmp_path / "security.db"
+    out = fails(db, "fingerprint", "--category", "sast", "--rule", AWS,
+               "--path", "app/db.py")
+    assert out.returncode != 0
+    assert AWS not in out.stdout
+    assert AWS not in out.stderr
+
+
+def test_fingerprint_refuses_a_category_outside_the_closed_set(tmp_path):
+    """`--category` has had `choices=FINDING_CATEGORIES` since the argparse
+    constraint was added: before it existed, `--category Secret` (a
+    spelling one character off from the real `secret`) fell through to the
+    snippet-hashing path in `cmd_fingerprint`'s `else` branch, hashing a
+    credential's value into the fingerprint -- the exact thing
+    `secret_fingerprint` exists to avoid. argparse itself enforces the
+    closed set here, with its own usage message, not one of ours."""
+    db = tmp_path / "security.db"
+    out = fails(db, "fingerprint", "--category", "Secret", "--rule", "r",
+               "--path", "app.py")
+    assert out.returncode == 2
+    assert "invalid choice" in out.stderr
 
 
 # --------------------------------------------- the history sweep, every run
