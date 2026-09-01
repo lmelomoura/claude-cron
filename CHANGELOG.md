@@ -126,6 +126,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The one door to an external scanner stopped raising, in the exact case
+  its own comment anticipated.** `subprocess.run(..., text=True)` decodes
+  strictly, so an engine that writes raw bytes to stderr — precisely what
+  the code foresees, "an engine that fails while reading a file can put
+  that file's bytes in its error message" — raised `UnicodeDecodeError`.
+  That is a `ValueError`, so it slipped past both handlers and killed the
+  analysis instead of degrading it: a repository holding a binary blob, a
+  truncated multibyte sequence or a filename that is not valid UTF-8 was
+  enough, and the `--version` probe had the same hole. Both call sites now
+  decode with `errors="replace"`, which costs nothing, because stderr is
+  never quoted back. A report nested deeper than `json.loads` will descend
+  escaped the same way — `RecursionError` is a `RuntimeError`, not a
+  `ValueError` — and is now the "wrote a report this version cannot read"
+  gap it always should have been. That one had a second exit a line
+  further on, outside every handler: `json.loads` descends in C and
+  tolerates thousands of levels while the purge is a Python walk that stops
+  around 995, so a report could parse cleanly and then blow up on the way
+  through the strip. It is dropped now, rather than returned unstripped.
+  `run_json` has seven ways out and six of
+  them, the happy path included, were untested; each has a test now, and so
+  do the two promises that were asserted by comment only: that stderr never
+  reaches the note or the result, and that the temporary directory does not
+  survive the call. The tests run a real misbehaving engine placed on
+  `PATH`, not a stubbed `subprocess.run` that can only behave the way the
+  test author imagined.
+
+- **An engine name the purge table does not know is refused, not trusted.**
+  `purge()` returned the engine's output untouched for any name it did not
+  recognise, so `purge("gitleaks-git", …)` and `purge("Gitleaks", …)` both
+  handed the credential straight back — and the gitleaks adapter calls this
+  module twice, once for the working tree and once for the history, so one
+  misspelling was a silent leak from one of the two sweeps. Unknown names
+  now raise, and `run_json` refuses to run such an engine at all, before
+  the version probe rather than after the scan; an engine that genuinely
+  returns nothing it matched is registered with an empty tuple, so "nothing
+  to strip" is a decision on the record instead of the accident of a name
+  nobody added. The table also gained the fields the real engines emit and
+  it did not list: Semgrep's `abstract_content` and its propagated twin
+  (for a rule that fires ON a hardcoded credential, the metavariable
+  binding IS the credential), its `fix`, `rendered_fix` and
+  `dataflow_trace`, and Trivy's `Code.Lines[].Content` and `Highlighted` —
+  the raw source lines it attaches to secrets and misconfigurations alike.
+
 - **The running badge sits beside Runs, not Jobs.** It counts runs in
   flight, and the Runs counter already includes them — beside the job
   count it read as "1 of these 8 jobs is running", which is not what it
