@@ -503,12 +503,19 @@ def cmd_prepare(args):
     # Both readings share one remediation ("rotate first, deleting the line is
     # not enough"), so nothing is lost by letting the tree's wording win.
     #
-    # ORDERING IS THE WHOLE MECHANISM, on both paths. `_scan_secrets` returns
-    # history before tree, and `adapters.gitleaks_scan` runs its two
-    # `run_json` calls in that same order; swap either pair and every
-    # co-located secret becomes a report about the past. Pinned by
-    # test_the_working_tree_reading_wins_over_its_history_twin, parametrised
-    # over both scanners.
+    # ORDERING IS THE WHOLE MECHANISM, on both paths, and on each path it is a
+    # different pair of statements. Here, `_scan_secrets` returns history
+    # before tree. On the engine path it is the two RECORDING blocks in
+    # `adapters.gitleaks_scan` -- the `if history is None:` / `if tree is
+    # None:` pair that appends each report to `findings`, NOT the two
+    # `run_json` calls above them, which this comment used to name and whose
+    # order is a measured no-op (each writes its own temp file; the suite
+    # passes either way). Swap either real pair and every co-located secret
+    # becomes a report about the past. Pinned on this path by
+    # test_the_working_tree_reading_wins_over_its_history_twin
+    # (tests/security/test_cli.py, fallback scanner only) and on the engine's
+    # by test_the_tree_reading_wins_over_its_history_twin_on_either_scanner
+    # (tests/security/test_adapters.py), which is the parametrised one.
     secret_findings, secret_notes, tree_lines = _scan_secrets(root, ignore)
     findings = secret_findings + hygiene.scan(root, ignore)
     notes = [n for n in secret_notes if n]
@@ -993,6 +1000,18 @@ def cmd_migrate_rules(args):
     entry naming a category `rename_rule` refuses is caught before the first
     row moves rather than after the entries above it have already committed.
 
+    Refused, for the same all-or-nothing reason, on a machine where
+    `adapters.engine_path("gitleaks")` is falsy while the map holds a `secret`
+    entry -- the binary absent, or the engines switched off with
+    `CC_SECURITY_ENGINES`. Every secret rename moves findings from the built-in
+    pattern scanner's snake_case names to gitleaks' kebab-case ones, and
+    `_scan_secrets` runs the built-in scanner on exactly the machines this
+    check catches. Migrating there does not merely fail to help: the next
+    analysis re-mints every old name, so each secret is reported `fixed` (the
+    migrated row, under a name nothing produced) AND `new` (the re-minted one)
+    in one report, and both human decisions strand -- which is the precise
+    failure this verb exists to prevent, reached through its own front door.
+
     THE REST IS NOT. `rename_rule` wraps each entry in its own transaction, and
     the two failures it can only discover while walking -- a finding with no
     path (`ValueError`) and a new fingerprint that collides with one the same
@@ -1034,6 +1053,19 @@ def cmd_migrate_rules(args):
                      "rebuilt from what the ledger stores, which is "
                      + ", ".join(ledger.RENAMEABLE_CATEGORIES)
                      + " (see ledger.rename_rule). Nothing was migrated.")
+    # Asked before the ledger is opened, like the category check above and for
+    # the same reason: it needs nothing from the ledger, so it refuses before
+    # the first row moves rather than halfway down the map.
+    if any(category == "secret" for category, _old in taxonomy.RULE_RENAMES) \
+            and not adapters.engine_path("gitleaks"):
+        sys.exit("migrate-rules: gitleaks is not available here — the secret "
+                 "renames move findings onto ITS rule names, and without it "
+                 "the next analysis falls back to the built-in scanner and "
+                 "mints the old names again. Every migrated secret would then "
+                 "be reported fixed AND new in the same report, with both "
+                 "human decisions stranded. Install gitleaks (and leave "
+                 "CC_SECURITY_ENGINES on) before migrating; nothing was "
+                 "migrated.")
     conn = _conn(args)
     live = conn.execute(
         "SELECT id, project FROM analysis WHERE state='running' "
@@ -1710,7 +1742,21 @@ def main(argv=None):
     # would turn a replayable, reviewed migration into an arbitrary rewrite of
     # any finding's identity, which is a thing `decide` and `rename-project`
     # are refused the agent for being.
-    mgr = sub.add_parser("migrate-rules", parents=[dbflag]); mgr.set_defaults(fn=cmd_migrate_rules)
+    # The one `description` in this parser, because this is the one verb whose
+    # PRECONDITION an operator has to know before typing it. The other verbs
+    # refuse a bad call; this one refuses a bad MACHINE, and the reason is not
+    # guessable from the name.
+    mgr = sub.add_parser(
+        "migrate-rules", parents=[dbflag],
+        description="Apply taxonomy.RULE_RENAMES to the ledger. Takes no "
+                    "arguments and is safe to run twice. Requires gitleaks to "
+                    "be installed and CC_SECURITY_ENGINES on: the secret "
+                    "renames move findings onto gitleaks' rule names, and a "
+                    "machine that falls back to the built-in scanner mints "
+                    "the old names again on the next analysis, reporting "
+                    "every migrated secret as fixed AND new at once. Also "
+                    "refused while any analysis is running.")
+    mgr.set_defaults(fn=cmd_migrate_rules)
 
     mv = sub.add_parser("rename-project", parents=[dbflag]); mv.set_defaults(fn=cmd_rename_project)
     mv.add_argument("--from", required=True)

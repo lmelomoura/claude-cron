@@ -389,7 +389,10 @@ def history_state(root) -> tuple[str, str]:
 
     Shallow is its own answer, not an error. A depth-1 clone reads cleanly
     and carries one commit, so the sweep runs and the report is real -- it is
-    only the word "full" that has to go (see `SHALLOW_GAP`).
+    only the word "full" that has to go (see `SHALLOW_GAP`). Asked by
+    `_is_shallow`, which does not take a git too old to understand the
+    question as a vote for "not shallow": the version that cannot answer
+    would otherwise be the one making the strongest claim.
 
     Fails CLOSED. Anything that stops git from answering is HISTORY_GONE,
     which costs a note saying the sweep did not run instead of a report that
@@ -404,11 +407,51 @@ def history_state(root) -> tuple[str, str]:
         first = (walked.stderr or "").strip().splitlines()
         return HISTORY_GONE, (first[0] if first
                               else f"git exited {walked.returncode}")
-    shallow = _git(root, "rev-parse", "--is-shallow-repository")
-    if shallow is not None and shallow.returncode == 0 \
-            and shallow.stdout.strip() == "true":
+    if _is_shallow(root):
         return HISTORY_SHALLOW, ""
     return HISTORY_OK, ""
+
+
+def _is_shallow(root) -> bool:
+    """Whether this checkout carries only part of its history.
+
+    ASKED TWO WAYS, because the first one is younger than the claim it
+    guards. `rev-parse --is-shallow-repository` landed in git 2.15 (2017),
+    and `rev-parse` ECHOES a dashed argument it does not recognise instead
+    of failing: on an older git this exits 0 and prints
+    `--is-shallow-repository` back. Read as "not true", that is a silent
+    vote for HISTORY_OK -- and HISTORY_OK is what makes the coverage note
+    say "the full git history", so the one machine that cannot answer the
+    question would be the one making the strongest claim about it.
+
+    So only a literal `true`/`false` counts as an answer. Anything else --
+    the echo, a non-zero exit, git missing -- falls through to the marker
+    file every shallow clone has had since the feature existed: `shallow`
+    inside the git directory, which `--git-dir` locates on any version.
+    Relative output (`.git`, the usual answer from the top level) is
+    resolved against `root`, and a worktree or submodule whose `.git` is a
+    FILE is handled too, because `--git-dir` follows it to the real
+    directory rather than being told to guess.
+
+    Fails towards SHALLOW only on evidence, never on doubt: with neither
+    question answered the caller keeps HISTORY_OK, which is the pre-existing
+    behaviour and not a new claim.
+    """
+    asked = _git(root, "rev-parse", "--is-shallow-repository")
+    answer = (asked.stdout.strip()
+              if asked is not None and asked.returncode == 0 else "")
+    if answer in ("true", "false"):
+        return answer == "true"
+    located = _git(root, "rev-parse", "--git-dir")
+    if located is None or located.returncode != 0:
+        return False
+    gitdir = located.stdout.strip()
+    if not gitdir or gitdir.startswith("-"):
+        return False
+    marker = Path(gitdir)
+    if not marker.is_absolute():
+        marker = Path(root) / marker
+    return (marker / "shallow").exists()
 
 
 def gitleaks_scan(root, ignore_paths=()):
@@ -426,15 +469,25 @@ def gitleaks_scan(root, ignore_paths=()):
     this finding's remediation says and what the hand-written sweep reads
     `git log -p` for.
 
-    THE ORDER OF THE TWO `run_json` CALLS IS THE MECHANISM, not a detail.
-    The history pass runs FIRST so that a secret present in both is recorded
-    by the tree pass LAST: the two readings share one fingerprint,
-    `record_finding` upserts, and the tree's is the reading a human can act
-    on -- it says "in the working tree" and points at the line the credential
-    is on right now, where the history's points into a commit. Swap these two
-    lines and every co-located secret becomes a report about the past, with
-    nothing red anywhere to say so. Pinned by
+    THE ORDER OF THE TWO RECORDING BLOCKS IS THE MECHANISM, not a detail --
+    the two `if history is None:` / `if tree is None:` blocks below, where
+    each pass's report is appended to `findings`. The history is recorded
+    FIRST so that a secret present in both is recorded by the tree pass LAST:
+    the two readings share one fingerprint, `record_finding` upserts, and the
+    tree's is the reading a human can act on -- it says "in the working tree"
+    and points at the line the credential is on right now, where the
+    history's points into a commit. Swap those two blocks and every
+    co-located secret becomes a report about the past, with nothing red
+    anywhere to say so. Pinned by
     test_the_tree_reading_wins_over_its_history_twin_on_either_scanner.
+
+    NOT the order of the two `run_json` CALLS, which this comment used to
+    name. Swapping those is a measured no-op: each writes to its own temp
+    report file and neither touches `findings`, so the whole suite passes
+    with them in either order. Naming the wrong pair is worse than naming
+    none -- a maintainer moving the recording blocks ("report the tree first,
+    it's more relevant") would read this warning, see it was about the calls,
+    and make the dangerous change believing it was covered.
 
     EVERY CLAIM IN `notes` IS SPELLED FROM WHAT WAS ACTUALLY DONE. The scope
     sentence is assembled from `history_state` and from which passes returned

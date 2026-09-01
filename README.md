@@ -1189,6 +1189,13 @@ and its decision to the new identity. It takes no arguments, it is safe to run
 twice, and it is refused for the categories whose fingerprint cannot be rebuilt
 from what the ledger stores — `sast` (built from the code snippet, which is
 never stored) and `dependency` (a CVE id nobody renames).
+It is also refused on a machine without gitleaks, or with
+`CC_SECURITY_ENGINES` switched off. The secret renames exist to move findings
+onto *gitleaks'* rule names, and such a machine falls back to the built-in
+pattern scanner, which mints the old names again on the very next analysis:
+every migrated secret would then be reported fixed *and* new in one report,
+with the human decision on each side stranded — the exact damage this verb
+exists to prevent. Install gitleaks first, then migrate.
 Each of the four screens has one read verb behind it — `index-data`,
 `project-data`, `findings-page`, `activity-data` — answering that whole screen in
 a single call, plus `analysis`, `events` and `filters list` for the smaller

@@ -104,14 +104,26 @@ RULE_NAMES = tuple(sorted(SAST_RULES))
 # analysis, undoing it.
 #
 # Each pairing below was VERIFIED by running gitleaks 8.30.1 over a synthetic
-# sample of every shape the hand-written pattern accepts and reading the RuleID
+# sample of the shapes the hand-written pattern accepts and reading the RuleID
 # back -- never by matching the two names up by eye. A target the engine will
 # never mint is precisely the orphan this mechanism exists to prevent: the
 # findings move onto an identity no scanner can reproduce, and the human
-# decisions carried across with them point at nothing for ever.
+# decisions carried across with them point at nothing for ever. Where our
+# pattern is the LOOSER of the two -- where it accepts shapes the engine's
+# regex rejects, so a sample can be built that ours matches and gitleaks
+# reports nothing for -- the pairing is still made, and the over-match is
+# written down on the entry rather than left for a reader to discover.
 RULE_RENAMES: dict[tuple[str, str], str] = {
     # Both prefixes ours accepts (AKIA, ASIA) are inside gitleaks' own
-    # `aws-access-token` regex.
+    # `aws-access-token` regex. Ours over-matches the BODY, though: gitleaks
+    # wants base32 (`[A-Z2-7]{16}`) where ours takes `[0-9A-Z]{16}`, so the
+    # four characters base32 has no digit for -- 0, 1, 8, 9 -- are ours alone.
+    # Measured: `AKIAQWERTYUIOPASDFGH` reports as `aws-access-token`, and
+    # `AKIAUJZDE8GXD6NCF10E` reports as nothing at all. Mapped anyway, on
+    # `openai_key`'s terms: a real AWS key id IS base32, so for every finding
+    # that is one the rename is exact, and a row that never was one is swept
+    # as `fixed` on the next analysis whether it was migrated or not. There is
+    # no narrower target to prefer.
     ("secret", "aws_access_key"): "aws-access-token",
     # `sk_live_` and `rk_live_` -- the secret and the restricted key -- are two
     # Stripe credentials that gitleaks reports under one rule. Converging, not
@@ -147,7 +159,17 @@ RULE_RENAMES: dict[tuple[str, str], str] = {
     #                 ghu_/ghs_ -> github-app-token, ghr_ -> github-refresh-token
     #   slack_token   xoxb -> slack-bot-token, xoxp -> slack-user-token,
     #                 xoxa/xoxr -> slack-legacy-workspace-token,
-    #                 and xoxs is not a gitleaks rule at all
+    #                 xoxs -> slack-legacy-token
+    #
+    # Five prefixes on four rules, not five on three: `xoxs` IS a gitleaks rule
+    # (`slack-legacy-token`, keywords `xoxo`/`xoxs`), and this comment used to
+    # say it was not. Measured, on the sample the earlier claim was measured
+    # against being too short to fire it:
+    # `xoxs-2-511111111-31111111111-d72c34ab4dbabc0f` reports as
+    # `slack-legacy-token`, our own `slack_token` regex accepts that same
+    # string, and the rule is graded in `adapters.SEVERITY_BY_RULE`. The fourth
+    # target makes `slack_token` MORE unmappable, not less -- one more true
+    # answer among four that a single rename could only pick one of.
     #
     # Both report as `new` once, under the engine's own name, which is honest.
 }

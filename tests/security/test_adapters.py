@@ -516,6 +516,41 @@ def test_a_shallow_clone_is_readable_but_not_full(tmp_path):
     assert adapters.history_state(deep)[0] == adapters.HISTORY_OK
 
 
+def test_a_git_too_old_to_answer_still_does_not_claim_the_full_history(
+        tmp_path, monkeypatch):
+    """`rev-parse --is-shallow-repository` landed in git 2.15, and `rev-parse`
+    ECHOES a dashed argument it does not know rather than failing -- so on an
+    older git the question comes back as its own text, exit 0. Read as "not
+    true", that silently votes for HISTORY_OK, and HISTORY_OK is what makes
+    the coverage note promise "the full git history": the one machine that
+    cannot answer would be the one making the strongest claim.
+
+    Simulated by intercepting exactly that one question, which is what an old
+    git changes and all it changes; every other `git` call is the real one.
+    """
+    deep = history_repo(tmp_path / "deep")
+    shallow = tmp_path / "shallow"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{deep}",
+                    str(shallow)], check=True, capture_output=True, text=True)
+
+    real = adapters._git
+
+    def old_git(root, *args):
+        if args[:2] == ("rev-parse", "--is-shallow-repository"):
+            # Verbatim pre-2.15 behaviour: the flag echoed back, exit 0.
+            return subprocess.CompletedProcess(
+                args=list(args), returncode=0,
+                stdout="--is-shallow-repository\n", stderr="")
+        return real(root, *args)
+
+    monkeypatch.setattr(adapters, "_git", old_git)
+
+    # The marker file inside the git directory is the fallback, and it is as
+    # old as the feature -- so the answer is unchanged on both repositories.
+    assert adapters.history_state(shallow)[0] == adapters.HISTORY_SHALLOW
+    assert adapters.history_state(deep)[0] == adapters.HISTORY_OK
+
+
 def test_a_repository_with_no_commits_yet_is_a_readable_history(tmp_path):
     """THE containment probe for this whole guard.
 
@@ -761,9 +796,13 @@ def test_the_engine_obeys_the_ignore_paths_prepare_was_given(tmp_path):
 #
 # The third one is the reason this is not merely tidiness. "The tree reading
 # wins over its history twin" is guaranteed ONLY by the order of the two
-# `run_json` calls in adapters.gitleaks_scan: swap those two lines and every
-# co-located secret becomes a report about the past, with nothing red
-# anywhere. Parametrised over both scanners, both orders are now pinned.
+# RECORDING blocks in adapters.gitleaks_scan -- the `if history is None:` /
+# `if tree is None:` pair that appends each report to `findings`: swap those
+# two blocks and every co-located secret becomes a report about the past, with
+# nothing red anywhere. Not the two `run_json` calls above them, which this
+# comment used to name: each writes to its own temp report file and neither
+# touches `findings`, so swapping them is a measured no-op the whole suite
+# passes. Parametrised over both scanners, both orders are now pinned.
 
 ENGINE_MATRIX = [False, pytest.param(True, marks=needs_gitleaks)]
 
@@ -844,11 +883,18 @@ def test_the_tree_reading_wins_over_its_history_twin_on_either_scanner(
     NOW, where the history's says "in the git history" and points into a
     commit. So the history is recorded FIRST and the tree wins the upsert.
 
-    On the engine path that ordering is two adjacent lines in
-    `adapters.gitleaks_scan` and nothing else. This is the test that fails if
-    they are ever swapped -- the wording AND the line number, because a
-    history reading of a co-located secret carries a plausible-looking line
-    of its own and asserting only on the line would not catch the swap.
+    On the engine path that ordering is the two RECORDING blocks in
+    `adapters.gitleaks_scan` -- the `if history is None:` / `if tree is None:`
+    pair that appends each report to `findings` -- and nothing else. This is
+    the test that fails if they are ever swapped (verified: swapping them
+    fails this test's engine parametrisation on the rationale assertion
+    below). It is specifically NOT the two `run_json` calls above them, which
+    the comments here used to point at: they write to separate temp files and
+    swapping them passes the whole suite.
+
+    Asserts the wording AND the line number, because a history reading of a
+    co-located secret carries a plausible-looking line of its own and
+    asserting only on the line would not catch the swap.
     """
     root = tmp_path / f"repo-{engines_on}"
     root.mkdir()

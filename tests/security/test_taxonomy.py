@@ -95,12 +95,12 @@ def test_the_skill_lists_every_rule_name():
 
 # ---- RULE_RENAMES: the declared history of every rule name that changed.
 #
-# The map is EMPTY today and these tests are therefore vacuous today. That is
-# the point of writing them now: the block that replaces the hand-written
-# detectors renames every secret rule at once, and the first entry added to
-# this map has to land on tests that already say what a legal entry looks
-# like. Written afterwards, they would be written against whatever the
-# migration happened to do.
+# These were written while the map was still EMPTY, and therefore vacuous, on
+# purpose: the block that replaced the hand-written detectors renamed every
+# secret rule at once, and the first entries added had to land on tests that
+# already said what a legal entry looks like. Written afterwards, they would
+# have been written against whatever the migration happened to do. The map now
+# carries the six secret pairings, so every assertion below is live.
 
 def test_a_rename_is_keyed_by_category_and_old_rule():
     # The rule name is unique only within its category, and the recompute
@@ -151,6 +151,19 @@ def test_every_rename_is_in_a_category_the_ledger_can_actually_rename():
 # might emit. The retired vocabulary is not thrown away: it is what
 # `test_every_secret_rename_source_is_a_name_the_built_in_scanner_minted`
 # checks the sources against.
+#
+# WHERE THIS GUARD'S STRENGTH COMES FROM, precisely. `SEVERITY_BY_RULE` is
+# HAND-MAINTAINED, and nothing checks it against the engine -- so a typo in
+# THAT list would be accepted here as a legal rename target by the very test
+# built to catch typos in targets. Deliberate: verifying it would mean
+# requiring the gitleaks binary in CI, and the suite pins itself to
+# CC_SECURITY_ENGINES=off precisely so it does not. The choice is safe because
+# the two lists are written and reviewed together and the check runs in the
+# safe direction -- a subset of what the engine emits -- so what it actually
+# guarantees is "this target is a name a human here wrote down on purpose",
+# not "this target is a name gitleaks 8.30.1 ships". Its 18 entries were
+# verified against the binary by hand when they were added; a new entry there
+# deserves the same, because this test will not do it.
 #
 # `hygiene` has one producer and no such list. Its rule names are string
 # literals passed to `_finding()` inside `scan()`, and at RUNTIME each one is

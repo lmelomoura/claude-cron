@@ -134,13 +134,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and every human `accepted` / `false_positive` decision recorded against
   one matches nothing ever again. `taxonomy.RULE_RENAMES` now carries the
   six pairings, and `migrate-rules` applies them. Each was verified by
-  running gitleaks over a synthetic sample of every shape the old pattern
+  running gitleaks over a synthetic sample of the shapes the old pattern
   accepted and reading the RuleID back, never by matching the two names
   up by eye: a target the engine cannot mint is the same orphan by
-  another route. `github_token` and `slack_token` are deliberately left
+  another route. Where our pattern is the looser of the two — the AWS body
+  is base32 to gitleaks and merely alphanumeric to us — the pairing still
+  stands and the over-match is written down on the entry. `github_token`
+  and `slack_token` are deliberately left
   out and say so in a comment — one rule of ours is four or more
   credential types of theirs (`ghp_` is a PAT, `gho_` an OAuth token,
-  `ghr_` a refresh token), there is no single target that is true for
+  `ghr_` a refresh token; `xoxb`, `xoxp`, `xoxa`/`xoxr` and `xoxs` are four
+  Slack rules), there is no single target that is true for
   such a finding, and a rename is a promise that the two names are one
   rule. They report as `new` once under the engine's own name, which is
   honest; a wrong pairing would be silent corruption in the one field a
@@ -176,6 +180,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rule is the CVE id — so this is metadata carried across, not validated.
 
 ### Fixed
+
+- **`migrate-rules` now refuses a machine without gitleaks, instead of
+  producing exactly the damage it exists to prevent.** The verb's whole
+  purpose is to stop one hole arriving under two identities, and running it
+  where the engine is absent — or where `CC_SECURITY_ENGINES` is off — did
+  precisely that: the secret renames move findings onto *gitleaks'* rule
+  names, `_scan_secrets` falls back to the built-in scanner on such a
+  machine, and the very next analysis re-mints every snake_case name. Every
+  migrated secret was then reported `fixed` (its new name, which nothing on
+  that machine produces) *and* `new` (the re-minted old one) in one report,
+  with the human `accepted` / `false_positive` decision on each side
+  stranded. The limit was written down in `taxonomy.py` and nowhere an
+  operator looks; it is now a fourth refusal beside the three the verb
+  already made, stated in `--help`, in the README paragraph and in the
+  refusal itself, which names the damage rather than only the missing
+  binary.
+
+- **A git too old for `--is-shallow-repository` no longer makes the coverage
+  note claim "the full git history".** That question landed in git 2.15, and
+  `git rev-parse` echoes a dashed argument it does not recognise back at the
+  caller instead of failing — so on an older git the answer arrived as its
+  own text with exit 0, was read as "not shallow", and the one machine that
+  could not answer the question became the one making the strongest claim
+  about it. Only a literal `true`/`false` now counts as an answer; anything
+  else falls back to the `shallow` marker file inside the git directory,
+  which every shallow clone has had for as long as the feature has existed.
+
+- **Three comments that recorded MEASURED facts were wrong, in code whose
+  doctrine is "measure, never guess".** `taxonomy.py` said `xoxs` "is not a
+  gitleaks rule at all" — it is `slack-legacy-token`, which this project
+  already grades; the original sample was simply too short to fire it, so
+  `slack_token` is five prefixes across four rules and *more* unmappable,
+  not less. The same file claimed every shape our AWS pattern accepts was
+  confirmed to land, where gitleaks wants a base32 body and ours also takes
+  `0`, `1`, `8` and `9` (`AKIAUJZDE8GXD6NCF10E` reports nothing); the
+  pairing stands and now carries the caveat `openai_key` and `private_key`
+  already had. And four places warned that the tree-wins-over-history
+  ordering was the two `run_json` calls — swapping those is a measured
+  no-op — when it is the two recording blocks below them. That last one is
+  the one that mattered: a maintainer reordering the recording blocks would
+  have read the warning, seen it was about a different pair, and made the
+  dangerous change believing it was covered.
 
 - **The engine's history sweep now asks whether the history can be READ,
   not whether a `.git` exists — and the coverage note stops claiming a

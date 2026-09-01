@@ -3265,22 +3265,119 @@ def test_the_skill_does_not_claim_a_read_verb_is_refused(tmp_path):
 
 # ---- migrate-rules: applying taxonomy.RULE_RENAMES to the ledger.
 #
-# RULE_RENAMES is empty, so the verb is a no-op against the shipped map. The
-# tests that need a rename to happen monkeypatch the map and drive `main()`
-# in-process, the same exception this file's docstring already makes for the
-# ledger-write-failure group: a subprocess cannot see a monkeypatch.
+# The shipped map now carries the six secret pairings, so the verb is a no-op
+# against a ledger that holds no findings under the old names rather than a
+# no-op by construction. The tests that need a rename to actually happen
+# monkeypatch the map and drive `main()` in-process, the same exception this
+# file's docstring already makes for the ledger-write-failure group: a
+# subprocess cannot see a monkeypatch.
+#
+# EVERY TEST THAT GETS PAST THE GUARDS NEEDS `gitleaks` VISIBLE. The verb
+# refuses a machine where `adapters.engine_path("gitleaks")` is falsy while
+# the map holds a `secret` entry, and this suite pins CC_SECURITY_ENGINES=off
+# (see conftest.py) -- so without the two helpers below every one of these
+# would be testing the refusal instead of what it was written for.
+
+
+def _gitleaks_stub(tmp_path):
+    """A directory holding an executable file called `gitleaks`, and nothing
+    more.
+
+    `adapters.engine_path` is `shutil.which` behind an env switch, and
+    `migrate-rules` never RUNS the engine -- it asks only whether the NEXT
+    analysis would find one, because a machine without it re-mints the old
+    snake_case names and undoes the migration. So a stub is not a shortcut
+    here, it is the honest fixture: requiring the real binary would make
+    these tests pass or fail on whether the reviewer had run `brew install`.
+    """
+    binroot = tmp_path / "stub-bin"
+    binroot.mkdir(exist_ok=True)
+    stub = binroot / "gitleaks"
+    stub.write_text("#!/bin/sh\nexit 0\n")
+    stub.chmod(0o755)
+    return binroot
+
+
+def with_gitleaks(tmp_path, base=None):
+    """Env for a SUBPROCESS run that has to get past the gitleaks guard."""
+    base = os.environ if base is None else base
+    return {**base, "CC_SECURITY_ENGINES": "on",
+            "PATH": f"{_gitleaks_stub(tmp_path)}{os.pathsep}{base['PATH']}"}
+
+
+def pretend_gitleaks_is_installed(monkeypatch, tmp_path):
+    """The same, for the tests that drive `main()` IN-PROCESS."""
+    monkeypatch.setenv("CC_SECURITY_ENGINES", "on")
+    monkeypatch.setenv(
+        "PATH", f"{_gitleaks_stub(tmp_path)}{os.pathsep}{os.environ['PATH']}")
+
 
 def test_migrate_rules_reports_nothing_when_there_is_nothing_to_rename(tmp_path):
-    """The shipped map is empty and the verb must still be runnable and say so
-    -- an operator running it after pulling a release should get a plain
-    "nothing moved", not an error and not silence."""
+    """A ledger holding no findings under any old name must still leave the
+    verb runnable and saying so -- an operator running it after pulling a
+    release should get a plain "nothing moved", not an error and not
+    silence."""
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     # Closed first: the verb refuses while any analysis is running, and this
-    # test is about the empty map, not about that guard.
+    # test is about the empty result, not about that guard.
     run(db, "finish", "--analysis", str(aid), "--state", "done")
-    out = run(db, "migrate-rules")
+    out = run(db, "migrate-rules", env=with_gitleaks(tmp_path))
     assert out == {"renamed": [], "findings": 0}
+
+
+def test_migrate_rules_is_refused_without_gitleaks(tmp_path):
+    """The failure this verb EXISTS to prevent, reached through its own front
+    door.
+
+    Every secret rename moves findings from the built-in pattern scanner's
+    snake_case names onto gitleaks' kebab-case ones. Run it on a machine with
+    no gitleaks -- or with the engines switched off -- and `_scan_secrets`
+    falls back to that same built-in scanner on the very next analysis and
+    mints the old names again. The migrated row is then reported `fixed`
+    (nothing produces its new name) and the re-minted one `new`, in ONE
+    report, and the human decision on each side strands: precisely the
+    double-identity damage `migrate-rules` was written to stop.
+
+    Refused before the ledger is opened, like the category check and for the
+    same reason -- it needs nothing from the ledger, so it cannot leave a map
+    half-applied.
+    """
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+
+    # The suite's own default: CC_SECURITY_ENGINES=off, which `engine_path`
+    # reports as absent whether or not the binary is on this machine -- so
+    # this test says the same thing on a laptop with gitleaks and on CI
+    # without it.
+    out = fails(db, "migrate-rules")
+    assert out.returncode != 0
+    assert "gitleaks is not available" in out.stderr
+    assert "nothing was migrated" in out.stderr.lower()
+    # It names the damage, not just the missing binary: an operator who is
+    # told only "gitleaks not found" installs nothing and runs it anyway.
+    assert "fixed AND new" in out.stderr
+
+    # And the same machine with the engine visible gets through to the work.
+    assert run(db, "migrate-rules", env=with_gitleaks(tmp_path)) == {
+        "renamed": [], "findings": 0}
+
+
+def test_migrate_rules_refuses_a_machine_with_the_engines_switched_off(tmp_path):
+    """`CC_SECURITY_ENGINES=off` is not a lesser version of "not installed":
+    it is the same machine as far as the next analysis is concerned, because
+    `engine_path` consults the switch before it consults PATH. An operator who
+    installed gitleaks and left the switch off would otherwise migrate onto
+    names their own analyses will never mint."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+
+    # gitleaks IS on PATH here -- only the switch is off.
+    env = {**with_gitleaks(tmp_path), "CC_SECURITY_ENGINES": "off"}
+    out = fails(db, "migrate-rules", env=env)
+    assert out.returncode != 0 and "gitleaks is not available" in out.stderr
 
 
 def test_migrate_rules_carries_findings_and_decisions_to_the_new_name(
@@ -3301,6 +3398,7 @@ def test_migrate_rules_carries_findings_and_decisions_to_the_new_name(
 
     monkeypatch.setattr(security_taxonomy, "RULE_RENAMES",
                         {("secret", "aws_access_key"): "aws-access-token"})
+    pretend_gitleaks_is_installed(monkeypatch, tmp_path)
     security_cli.main(["migrate-rules", "--db", str(db)])
     printed = json.loads(capsys.readouterr().out)
 
@@ -3330,6 +3428,7 @@ def test_migrate_rules_is_safe_to_run_twice(tmp_path, monkeypatch, capsys):
     run(db, "finish", "--analysis", str(aid), "--state", "done")
     monkeypatch.setattr(security_taxonomy, "RULE_RENAMES",
                         {("secret", "aws_access_key"): "aws-access-token"})
+    pretend_gitleaks_is_installed(monkeypatch, tmp_path)
 
     security_cli.main(["migrate-rules", "--db", str(db)])
     assert json.loads(capsys.readouterr().out)["findings"] == 1
@@ -3366,6 +3465,7 @@ def test_migrate_rules_carries_the_decision_event_to_the_new_fingerprint(
 
     monkeypatch.setattr(security_taxonomy, "RULE_RENAMES",
                         {("secret", "aws_access_key"): "aws-access-token"})
+    pretend_gitleaks_is_installed(monkeypatch, tmp_path)
     security_cli.main(["migrate-rules", "--db", str(db)])
     capsys.readouterr()
 
@@ -3406,6 +3506,7 @@ def test_migrate_rules_names_the_entries_it_already_applied_when_one_fails(
         ("secret", "aws_access_key"): "aws-access-token",
         ("secret", "github_token"): "gh-token",
     })
+    pretend_gitleaks_is_installed(monkeypatch, tmp_path)
 
     with pytest.raises(SystemExit) as exc:
         security_cli.main(["migrate-rules", "--db", str(db)])
@@ -3466,7 +3567,9 @@ def test_migrate_rules_is_not_refused_the_agent(tmp_path):
     aid = open_analysis(db)
     run(db, "finish", "--analysis", str(aid), "--state", "done")
     assert "migrate-rules" not in security_cli.AGENT_FORBIDDEN
-    assert run(db, "migrate-rules", env=AS_AGENT) == {"renamed": [], "findings": 0}
+    assert run(db, "migrate-rules",
+               env=with_gitleaks(tmp_path, base=AS_AGENT)) == {
+        "renamed": [], "findings": 0}
 
 
 def test_migrate_rules_is_refused_while_an_analysis_is_running(tmp_path):
@@ -3479,8 +3582,11 @@ def test_migrate_rules_is_refused_while_an_analysis_is_running(tmp_path):
     exactly that."""
     db = tmp_path / "security.db"
     aid = prepared_analysis(db, tmp_path)
+    # gitleaks visible throughout, so what is being measured here is the
+    # running-analysis guard and not the engine guard ahead of it.
+    env = with_gitleaks(tmp_path)
 
-    out = fails(db, "migrate-rules")
+    out = fails(db, "migrate-rules", env=env)
 
     assert out.returncode != 0
     assert f"analysis {aid}" in out.stderr and "still running" in out.stderr
@@ -3490,8 +3596,8 @@ def test_migrate_rules_is_refused_while_an_analysis_is_running(tmp_path):
     # live analysis it could pull the ground out from under.
     other = open_analysis(db, project="api", repo="api", run_id="r2")
     run(db, "finish", "--analysis", str(aid), "--state", "done")
-    out = fails(db, "migrate-rules")
+    out = fails(db, "migrate-rules", env=env)
     assert out.returncode != 0 and f"analysis {other}" in out.stderr
 
     run(db, "finish", "--analysis", str(other), "--state", "done")
-    assert run(db, "migrate-rules") == {"renamed": [], "findings": 0}
+    assert run(db, "migrate-rules", env=env) == {"renamed": [], "findings": 0}
