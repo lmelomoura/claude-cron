@@ -160,6 +160,82 @@ def test_report_finding_refuses_a_sast_rule_outside_the_vocabulary(tmp_path):
     assert out.returncode != 0
     assert "sqli" in out.stderr
     assert "sql-injection" in out.stderr  # tells the agent what to use instead
+    # The escape hatch has to be IN the refusal, not only in the docstring:
+    # an agent that found something real and unlisted reads this sentence and
+    # nothing else, and a refusal it cannot act on costs a whole paid run.
+    # Backticks, not the bare word: `other` is also a member of the joined
+    # vocabulary list, so asserting on the bare word would stay green even if
+    # the sentence that TELLS the agent it may use it were deleted.
+    assert "`other`" in out.stderr
+
+
+def test_report_finding_accepts_other_as_the_escape_hatch(tmp_path):
+    """The refusal above advertises `other`; this is the proof it works.
+
+    `other` carries no CWE and no OWASP class on purpose (see taxonomy.py):
+    an unlisted finding is visibly unclassified rather than quietly filed
+    under the nearest wrong rule."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "4" * 64, "category": "sast", "rule": "other",
+        "severity": "high", "title": "t",
+        "rationale": "Nothing in the vocabulary fits: it is a logic flaw in "
+                     "the refund path."}))
+    row = _finding_row(db, aid)
+    assert row["rule"] == "other"
+    assert row["cwe"] == ""
+    assert row["owasp"] == ""
+
+
+def test_report_finding_refuses_a_category_outside_the_closed_set(tmp_path):
+    """The vocabulary gate keys off `category == "sast"`, so an unvalidated
+    category was one character away from skipping it entirely: `"Sast"` fell
+    through to the deterministic branch and landed a free-text rule with a
+    blank classification in the ledger -- the identity instability the
+    vocabulary exists to prevent, reached by the one route around it."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    for bogus in ("Sast", "sast ", "sasT", "secrets"):
+        out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+            "fingerprint": "5" * 64, "category": bogus, "rule": "sqli",
+            "severity": "high", "title": "t"}))
+        assert out.returncode != 0, f"{bogus!r} was accepted"
+        assert "sast" in out.stderr and "hygiene" in out.stderr
+    # Nothing reached the ledger under any of the four spellings.
+    assert _finding_row(db, aid) is None
+
+
+def test_report_finding_does_not_echo_an_unscanned_rule_that_looks_like_a_key(tmp_path):
+    """The vocabulary refusal QUOTES the rule it rejected, and `rule` is not
+    one of the free-text fields the secret scanner already covers. stderr from
+    `report-finding` is kept in the run log, so a rule carrying a credential
+    would be written to disk by the very refusal meant to keep it out."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "6" * 64, "category": "sast", "rule": AWS,
+        "severity": "high", "title": "t"}))
+    assert out.returncode != 0
+    assert "rule" in out.stderr
+    assert AWS not in out.stdout
+    assert AWS not in out.stderr
+
+
+def test_report_finding_refuses_a_deterministic_rule_that_carries_a_credential(tmp_path):
+    """`rule` is agent-written for EVERY category, deterministic ones
+    included -- it is stored verbatim and rendered on the report page. The
+    "cannot leak by construction" guarantee was only ever true of the
+    occurrence columns, never of this one."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "7" * 64, "category": "hygiene", "rule": AWS,
+        "severity": "high", "title": "t"}))
+    assert out.returncode != 0
+    assert AWS not in out.stdout
+    assert AWS not in out.stderr
+    assert _finding_row(db, aid) is None
 
 
 def test_report_finding_derives_the_classification_from_the_rule(tmp_path):
@@ -226,7 +302,7 @@ def test_a_finding_whose_rationale_contains_a_live_looking_key_is_refused(tmp_pa
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "e" * 64, "category": "hygiene", "rule": "hardcoded-secret",
+        "fingerprint": "e" * 64, "category": "sast", "rule": "hardcoded-credentials",
         "severity": "high", "title": "t",
         "rationale": f"Found a live credential: {AWS}"}))
     assert out.returncode != 0
@@ -240,7 +316,7 @@ def test_a_finding_whose_title_contains_a_live_looking_key_is_refused(tmp_path):
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "f" * 64, "category": "hygiene", "rule": "hardcoded-secret",
+        "fingerprint": "f" * 64, "category": "sast", "rule": "hardcoded-credentials",
         "severity": "high", "title": f"Key exposed: {AWS}"}))
     assert out.returncode != 0
     assert "title" in out.stderr
@@ -252,7 +328,7 @@ def test_a_finding_whose_remediation_contains_a_live_looking_key_is_refused(tmp_
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "1" * 64, "category": "hygiene", "rule": "hardcoded-secret",
+        "fingerprint": "1" * 64, "category": "sast", "rule": "hardcoded-credentials",
         "severity": "high", "title": "t", "rationale": "r",
         "remediation": f"Rotate {AWS} immediately"}))
     assert out.returncode != 0
@@ -267,7 +343,7 @@ def test_a_finding_that_describes_a_credential_instead_of_quoting_it_is_accepted
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "2" * 64, "category": "hygiene", "rule": "hardcoded-secret",
+        "fingerprint": "2" * 64, "category": "sast", "rule": "hardcoded-credentials",
         "severity": "high", "title": "Hardcoded AWS key",
         "rationale": "An AWS access key is hardcoded in config/prod.env at line 12."}))
 
@@ -276,7 +352,7 @@ def test_a_finding_whose_rationale_names_an_obvious_placeholder_is_accepted(tmp_
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
-        "fingerprint": "3" * 64, "category": "hygiene", "rule": "hardcoded-secret",
+        "fingerprint": "3" * 64, "category": "sast", "rule": "hardcoded-credentials",
         "severity": "high", "title": "t",
         "rationale": 'Default credential left in place: '
                      'password = "changeme12345678901234"'}))
@@ -2335,7 +2411,7 @@ def test_project_data_serves_the_overview_cards_beyond_the_posture(tmp_path):
     db = tmp_path / "security.db"
     aid1 = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main")
     run(db, "report-finding", "--analysis", str(aid1), stdin=json.dumps({
-        "fingerprint": fingerprint_for("web", "main", "leak"), "category": "secrets",
+        "fingerprint": fingerprint_for("web", "main", "leak"), "category": "secret",
         "rule": "private-key-committed", "severity": "high", "title": "Key leak",
         "rationale": "r",
         "occurrences": [{"file": "conf/id_rsa", "line": 1, "snippet_hash": "h"}]}))
@@ -2343,7 +2419,7 @@ def test_project_data_serves_the_overview_cards_beyond_the_posture(tmp_path):
 
     aid2 = prepared_analysis(db, tmp_path, project="web", repo="web", branch="main")
     run(db, "report-finding", "--analysis", str(aid2), stdin=json.dumps({
-        "fingerprint": fingerprint_for("web", "main", "leak"), "category": "secrets",
+        "fingerprint": fingerprint_for("web", "main", "leak"), "category": "secret",
         "rule": "private-key-committed", "severity": "high", "title": "Key leak",
         "rationale": "r",
         "occurrences": [{"file": "conf/id_rsa", "line": 1, "snippet_hash": "h"}]}))

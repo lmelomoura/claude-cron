@@ -68,6 +68,15 @@ FINGERPRINT_PREFIX_RE = re.compile(r"^[0-9a-f]{1,64}$")
 MAX_TEXT = 10000
 TEXT_KEYS = ("title", "rationale", "remediation", "partial_note")
 
+# The closed set of finding categories: the three the deterministic phases
+# produce, plus the agent's own `sast`. ONE tuple, read by everything that
+# has an opinion about this field -- `report-finding`'s door, `fingerprint`'s
+# flag and `findings-page`'s filter -- because a category accepted on the way
+# in that no filter can select on the way out is a row nobody can find, and a
+# fingerprint computed under one spelling of a category and reported under
+# another is two identities for one hole.
+FINDING_CATEGORIES = diff.DETERMINISTIC_CATEGORIES + ("sast",)
+
 # The word a reader sees for a decision state, mirroring
 # `SEC_STATE_LABEL` in ui/security/vocabulary.js -- the vocabulary every
 # screen in the area renders. Written INTO the event detail rather than
@@ -207,19 +216,24 @@ def _refuse_if_secret(field, value):
     """Refuse free text the agent wrote if it carries a live credential.
 
     ONE implementation, two doors. `report-finding` gates `title`,
-    `rationale`, `remediation` and `partial_note` with this; `finish --note`
-    -- which lands in `coverage_note`, reaches all four report formats and
-    the analysis page, and is deliberately reachable by the agent (see
-    `_refuse_if_agent`: closing the row is the one thing that must always
-    work) -- had no gate at all, even though it is the near-identical twin of
-    the `partial_note` already covered. An agent describing what it could not
-    scan is exactly as likely to quote the credential it found as one
-    describing what it did.
+    `rationale`, `remediation` and `partial_note` with this -- and `category`
+    and `rule` as well, which are not free prose but ARE agent-written, are
+    stored verbatim, and are quoted back by their own refusals (see
+    `cmd_report_finding`). The second door is `finish --note`, which lands in
+    `coverage_note`, reaches all four report formats and the analysis page,
+    and is deliberately reachable by the agent (see `_refuse_if_agent`:
+    closing the row is the one thing that must always work) -- it had no gate
+    at all, even though it is the near-identical twin of the `partial_note`
+    already covered. An agent describing what it could not scan is exactly as
+    likely to quote the credential it found as one describing what it did.
 
-    The deterministic categories cannot leak a secret's value by
-    construction -- the `occurrence` table has no column for it,
+    The deterministic categories cannot leak a secret's value THROUGH THEIR
+    EVIDENCE by construction -- the `occurrence` table has no column for it,
     `secrets.py` never returns matched text, `secret_fingerprint` takes no
-    value argument. Agent-written free text has no such structural
+    value argument. That guarantee belongs to the columns the scanners
+    fill, not to the payload the agent hands in: `rule` arrives from the
+    agent under every category, deterministic ones included, which is why it
+    is gated here too. Agent-written free text has no such structural
     guarantee, and until this check existed the only thing stopping a live
     credential from landing in one was a sentence in the skill telling the
     agent not to -- in exactly the scenario the feature exists for, an agent
@@ -473,6 +487,33 @@ def cmd_report_finding(args):
                  "is reported `new` for ever and can never be decided on")
     if payload["severity"] not in report.SEVERITIES:
         sys.exit(f"report-finding: severity must be one of {report.SEVERITIES}")
+    # `category` and `rule` are QUOTED BACK by the two refusals below, and
+    # neither field is in TEXT_KEYS, so neither has been through the scanner
+    # the free-text fields go through. `report-finding`'s stderr is kept in
+    # the run log: an agent that pasted a credential into one of these would
+    # have the refusal itself write the secret to disk -- precisely what
+    # `_refuse_if_secret`'s own docstring forbids ("the message names the
+    # FIELD and the RULE, never the text that matched"). Scanning them HERE,
+    # before either gate can quote one, also keeps a credential out of the
+    # stored `rule` column: `rule` is agent-written for EVERY category, the
+    # deterministic ones included, so "cannot leak by construction" was only
+    # ever true of the columns, never of this one.
+    _refuse_if_secret("report-finding: category", payload["category"])
+    _refuse_if_secret("report-finding: rule", payload["rule"])
+    # The category decides which of the two rule regimes below applies, and
+    # an exact `== "sast"` on unvalidated text is one character away from
+    # skipping the vocabulary altogether: `"Sast"`, `"sasT"` or `"sast "`
+    # used to fall through to the `else` branch and land a free-text rule
+    # with a blank classification in the ledger -- the identity instability
+    # the vocabulary exists to prevent, reached by the one route around it.
+    # The quoted value is what makes a whitespace typo visible; it is safe to
+    # quote because the scan above has already cleared it.
+    if payload["category"] not in FINDING_CATEGORIES:
+        sys.exit(f"report-finding: {payload['category']!r} is not a finding "
+                 "category. The category is part of the fingerprint and of "
+                 "every filter the screens offer, so a second spelling of one "
+                 "is a second identity nothing can select. Use one of: "
+                 + ", ".join(FINDING_CATEGORIES))
     # SAST only. The deterministic categories' rule names come from our own
     # Python (secrets._RULES, hygiene's literals, the OSV id), and forcing
     # them through a vocabulary written for the agent would refuse findings
@@ -1403,7 +1444,13 @@ def main(argv=None):
     # so there is nothing here for the agent to abuse -- only a computation
     # it would otherwise be tempted to reproduce by hand and get wrong.
     fp = sub.add_parser("fingerprint", parents=[dbflag]); fp.set_defaults(fn=cmd_fingerprint)
-    fp.add_argument("--category", required=True)
+    # `choices=` for the same reason `report-finding` validates the identical
+    # field: this verb MINTS the identity that verb then stores, and
+    # `cmd_fingerprint` branches on `args.category == "secret"` exactly as
+    # narrowly. A category the door would refuse must not be able to produce
+    # a fingerprint here first -- the agent would compute an identity it can
+    # never report under.
+    fp.add_argument("--category", required=True, choices=FINDING_CATEGORIES)
     fp.add_argument("--rule", required=True)
     fp.add_argument("--path", required=True)
     fp.add_argument("--snippet", default="")
@@ -1471,7 +1518,7 @@ def main(argv=None):
     fpg.add_argument("--state", action="append", default=None,
                      choices=diff.DERIVED_STATES + ledger.DECISION_STATES)
     fpg.add_argument("--category", action="append", default=None,
-                     choices=diff.DETERMINISTIC_CATEGORIES + ("sast",))
+                     choices=FINDING_CATEGORIES)
     fpg.add_argument("--branch", action="append", default=None)
     fpg.add_argument("--analysis", action="append", type=int, default=None)
     fpg.add_argument("--q", default="")
