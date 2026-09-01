@@ -560,6 +560,36 @@ def test_a_decision_follows_the_finding_in_every_project_that_made_one(conn):
     assert ledger.decisions_for(conn, "api")[new_fp]["reason"] == "a fixture"
 
 
+def test_the_decision_event_follows_the_decision_to_the_new_identity(conn):
+    """`cmd_decide` files a `decision_made` event whose `related` is the
+    fingerprint's first 12 characters, and the Activity screen deep-links from
+    that prefix into the findings browser. A rename that moved the decision and
+    left the event behind keeps the human's call and destroys the record that
+    it was taken about this finding: the link resolves to zero findings while
+    the row still says the risk was accepted."""
+    old_fp = fp_mod.secret_fingerprint("aws_access_key", "config/prod.env")
+    new_fp = fp_mod.secret_fingerprint("aws-access-token", "config/prod.env")
+    aid = ledger.start_analysis(conn, "web", "web", "main", "c1", "standard", "r1")
+    ledger.record_finding(conn, aid, _secret_finding("aws_access_key"))
+    ledger.set_decision(conn, "web", old_fp, "accepted", "rotated", "luiz")
+    ledger.record_event(conn, "web", "decision_made", "Accepted: rotated",
+                        old_fp[:12])
+    # An event of another kind whose `related` is an analysis id, to prove the
+    # update is scoped to the one kind that carries a fingerprint prefix.
+    ledger.record_event(conn, "web", "analysis_finished", "done", str(aid))
+
+    ledger.rename_rule(conn, "secret", "aws_access_key", "aws-access-token")
+
+    events = {e["kind"]: e for e in ledger.events_for(conn, "web")}
+    assert events["decision_made"]["related"] == new_fp[:12]
+    assert events["analysis_finished"]["related"] == str(aid)
+    # The link the Activity screen follows resolves to the finding again.
+    linked = conn.execute(
+        "SELECT fingerprint FROM finding WHERE fingerprint LIKE ?",
+        (events["decision_made"]["related"] + "%",)).fetchall()
+    assert [r["fingerprint"] for r in linked] == [new_fp]
+
+
 def test_a_finding_with_no_occurrence_is_refused_rather_than_guessed(conn):
     """`report-finding` accepts a finding with no occurrences (they are
     optional there), and the path is half of a secret's identity. With no
@@ -576,6 +606,35 @@ def test_a_finding_with_no_occurrence_is_refused_rather_than_guessed(conn):
         ledger.rename_rule(conn, "secret", "aws_access_key", "aws-access-token")
 
     assert ledger.findings_of(conn, aid)[0]["fingerprint"] == "e" * 64
+
+
+def test_an_occurrence_with_no_file_is_refused_the_same_as_no_occurrence(conn):
+    """The near-miss of the test above, and the one that actually gets through
+    a guard written as `if occ is None`. `report-finding` validates only that
+    each occurrence is an OBJECT, and `record_finding` writes
+    `occ.get("file", "")` -- so `{"line": 3}` is a reachable, accepted payload
+    that produces an occurrence ROW with an empty path. The row exists, so the
+    no-occurrence branch does not fire, and the recompute one line later mints
+    `secret_fingerprint(new, "")`: exactly the identity no scanner will ever
+    emit that the guard above refuses to guess, arrived at silently."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "c1", "standard", "r1")
+    ledger.record_finding(conn, aid, {
+        "fingerprint": "e" * 64, "category": "secret", "rule": "aws_access_key",
+        "severity": "critical", "title": "t", "rationale": "r",
+        "remediation": "rotate", "occurrences": [{"line": 3}]})
+    # The payload really did reach the ledger as a row with an empty path --
+    # otherwise this test would be asserting about a state that cannot exist.
+    assert ledger.findings_of(conn, aid)[0]["occurrences"] == [
+        {"file": "", "line": 3, "snippet_hash": ""}]
+
+    with pytest.raises(ValueError, match="occurrence"):
+        ledger.rename_rule(conn, "secret", "aws_access_key", "aws-access-token")
+
+    row = ledger.findings_of(conn, aid)[0]
+    assert row["fingerprint"] == "e" * 64
+    assert row["rule"] == "aws_access_key"
+    # Named explicitly: the value a silent guess would have written.
+    assert row["fingerprint"] != fp_mod.secret_fingerprint("aws-access-token", "")
 
 
 def test_a_colliding_rename_rolls_the_whole_thing_back(conn):

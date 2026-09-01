@@ -879,16 +879,42 @@ def cmd_migrate_rules(args):
     is how the two are kept in step: the scanner changes the name, the map
     records that the two names are one rule, and this walks the ledger.
 
-    The WHOLE MAP is validated before any of it is applied. `rename_rule`
-    wraps each entry in its own transaction, so an entry it refuses partway
-    through the map would leave the ledger half-migrated -- exactly the state
-    that transaction exists to prevent, reintroduced one level up. The
-    pre-flight makes the map all-or-nothing too.
+    Every entry's CATEGORY is checked before any of the map is applied, and
+    that check alone is all-or-nothing: it needs nothing from the ledger, so an
+    entry naming a category `rename_rule` refuses is caught before the first
+    row moves rather than after the entries above it have already committed.
+
+    THE REST IS NOT. `rename_rule` wraps each entry in its own transaction, and
+    the two failures it can only discover while walking -- a finding with no
+    path (`ValueError`) and a new fingerprint that collides with one the same
+    analysis or project already holds (`IntegrityError`) -- fire mid-map. The
+    failing entry itself rolls back whole, but the entries applied BEFORE it
+    stay applied: this verb is atomic per entry, not per map. That is why the
+    refusal below names them rather than counting them, and why a failed run
+    means "read the message and fix the map", never "nothing happened".
+    Pre-flighting those two would mean doing the walk to find out, which is the
+    thing that cannot be undone.
+
+    Refused while ANY analysis in the ledger is `running`, for `cmd_decide`'s
+    reason applied to a bigger blast radius. `decide` writes one row keyed to
+    an identity; this REWRITES identities, and mid-analysis that lands under an
+    agent still holding the old ones: findings it already reported get new
+    fingerprints, its re-report of one then misses the `(analysis_id,
+    fingerprint)` upsert key and INSERTs a second row instead, and one hole
+    becomes two contradictory checklist entries -- which is the exact outcome
+    that UNIQUE constraint exists to prevent. Not scoped to a project, unlike
+    `decide`'s: this verb takes no project and walks every row in the ledger,
+    so any live analysis anywhere is a live analysis this could pull the ground
+    out from under. A `running` row left by a run that died is not a permanent
+    lock: the engine's preflight sweep closes those before it opens the next
+    analysis of that project (see `cmd_security_analyze` in `bin/claude-cron`).
 
     Deliberately absent from AGENT_FORBIDDEN: it takes no arguments. Unlike
     `decide` or `rename-project`, there is no target for a caller to choose --
     it can only ever apply the map the repository itself declares, so an agent
-    running it produces exactly what a human running it produces.
+    running it produces exactly what a human running it produces. The guard
+    above is what actually covers the agent case, and it does not depend on the
+    environment variable to do it.
     """
     renames = [(category, old, new)
                for (category, old), new in taxonomy.RULE_RENAMES.items()]
@@ -900,6 +926,16 @@ def cmd_migrate_rules(args):
                      + ", ".join(ledger.RENAMEABLE_CATEGORIES)
                      + " (see ledger.rename_rule). Nothing was migrated.")
     conn = _conn(args)
+    live = conn.execute(
+        "SELECT id, project FROM analysis WHERE state='running' "
+        "ORDER BY id ASC LIMIT 1").fetchone()
+    if live is not None:
+        sys.exit(f"migrate-rules: analysis {live['id']} of '{live['project']}' "
+                 "is still running — this rewrites the fingerprints of findings "
+                 "that analysis has already recorded, while the agent is still "
+                 "holding the old ones. Its next re-report of one would miss "
+                 "the upsert key and file a SECOND row for the same hole. Wait "
+                 "for the run to end; nothing was migrated.")
     applied, total = [], 0
     for category, old, new in renames:
         try:
@@ -907,10 +943,16 @@ def cmd_migrate_rules(args):
         except (ValueError, sqlite3.Error) as exc:
             # Same doctrine as `report-finding`: a sentence on stderr, not a
             # traceback. `rename_rule` rolled its own transaction back, so the
-            # entry that failed changed nothing -- but entries BEFORE it in
-            # the map committed, and the operator has to be told which.
+            # entry that failed changed nothing -- but entries BEFORE it in the
+            # map committed, and the operator has to be told WHICH, not how
+            # many: a count sends them to diff the ledger against a map to work
+            # out where it stopped. Entries that moved 0 findings are absent
+            # because they changed nothing there is anything to undo.
+            done = "; ".join(f"{a['category']}/{a['from']} -> {a['to']} "
+                             f"({a['findings']} finding(s))" for a in applied)
             sys.exit(f"migrate-rules: {category}/{old} -> {new} failed: {exc}"
-                     + (f" (already applied: {len(applied)})" if applied else ""))
+                     + (f" — ALREADY APPLIED and not rolled back: {done}"
+                        if applied else " — nothing had been applied yet."))
         if moved:
             applied.append({"category": category, "from": old, "to": new,
                             "findings": moved})

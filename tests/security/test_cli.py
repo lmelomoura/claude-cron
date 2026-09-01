@@ -3152,7 +3152,10 @@ def test_migrate_rules_reports_nothing_when_there_is_nothing_to_rename(tmp_path)
     -- an operator running it after pulling a release should get a plain
     "nothing moved", not an error and not silence."""
     db = tmp_path / "security.db"
-    open_analysis(db)
+    aid = open_analysis(db)
+    # Closed first: the verb refuses while any analysis is running, and this
+    # test is about the empty map, not about that guard.
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
     out = run(db, "migrate-rules")
     assert out == {"renamed": [], "findings": 0}
 
@@ -3201,6 +3204,7 @@ def test_migrate_rules_is_safe_to_run_twice(tmp_path, monkeypatch, capsys):
         "category": "secret", "rule": "aws_access_key", "severity": "critical",
         "title": "t", "rationale": "r", "remediation": "rotate",
         "occurrences": [{"file": path, "line": 3, "snippet_hash": ""}]}))
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
     monkeypatch.setattr(security_taxonomy, "RULE_RENAMES",
                         {("secret", "aws_access_key"): "aws-access-token"})
 
@@ -3208,6 +3212,91 @@ def test_migrate_rules_is_safe_to_run_twice(tmp_path, monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["findings"] == 1
     security_cli.main(["migrate-rules", "--db", str(db)])
     assert json.loads(capsys.readouterr().out) == {"renamed": [], "findings": 0}
+
+
+def test_migrate_rules_carries_the_decision_event_to_the_new_fingerprint(
+        tmp_path, monkeypatch, capsys):
+    """End-to-end over the real `decide`, which is the point: `cmd_decide`
+    files the `decision_made` event with `fingerprint[:12]` and the Activity
+    screen deep-links from that prefix by LIKE-match into the findings browser.
+    `rename_rule` has to produce the identical slice of the new fingerprint or
+    the audit record of the human's call links to zero findings while still
+    saying the risk was accepted. Driven through the CLI so the two `[:12]`s
+    are compared as they actually run, not as this test imagines them."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    path = "config/prod.env"
+    old_fp = secret_fingerprint("aws_access_key", path)
+    new_fp = secret_fingerprint("aws-access-token", path)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": old_fp, "category": "secret", "rule": "aws_access_key",
+        "severity": "critical", "title": "t", "rationale": "r",
+        "remediation": "rotate",
+        "occurrences": [{"file": path, "line": 3, "snippet_hash": ""}]}))
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    run(db, "decide", "--project", "web", "--fingerprint", old_fp,
+        "--state", "accepted", "--reason", "rotated already", "--by", "luiz")
+    conn = sqlite3.connect(str(db))
+    assert conn.execute(
+        "SELECT related FROM event WHERE kind='decision_made'").fetchall() == [
+            (old_fp[:12],)]
+
+    monkeypatch.setattr(security_taxonomy, "RULE_RENAMES",
+                        {("secret", "aws_access_key"): "aws-access-token"})
+    security_cli.main(["migrate-rules", "--db", str(db)])
+    capsys.readouterr()
+
+    related = conn.execute(
+        "SELECT related FROM event WHERE kind='decision_made'").fetchone()[0]
+    assert related == new_fp[:12]
+    # The query the Activity screen's link actually runs, and it has to come
+    # back with the finding rather than empty.
+    assert conn.execute("SELECT fingerprint FROM finding WHERE fingerprint LIKE ?",
+                        (related + "%",)).fetchall() == [(new_fp,)]
+
+
+def test_migrate_rules_names_the_entries_it_already_applied_when_one_fails(
+        tmp_path, monkeypatch):
+    """The mid-map failure the docstring must not claim is impossible. Only the
+    CATEGORY of every entry is pre-flighted; a finding with no path is found by
+    WALKING, so the entry that hits it rolls back alone while everything before
+    it in the map stays committed. The operator therefore has to be told WHICH
+    entries landed -- a count leaves them diffing the ledger against the map to
+    find out where it stopped."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    path = "config/prod.env"
+    good_fp = secret_fingerprint("aws_access_key", path)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": good_fp, "category": "secret", "rule": "aws_access_key",
+        "severity": "critical", "title": "t", "rationale": "r",
+        "remediation": "rotate",
+        "occurrences": [{"file": path, "line": 3, "snippet_hash": ""}]}))
+    # Occurrences are optional to `report-finding`, so this is a payload the
+    # agent can really send -- and a finding with no path cannot be renamed.
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "e" * 64, "category": "secret", "rule": "github_token",
+        "severity": "critical", "title": "t", "rationale": "r",
+        "remediation": "rotate", "occurrences": []}))
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    monkeypatch.setattr(security_taxonomy, "RULE_RENAMES", {
+        ("secret", "aws_access_key"): "aws-access-token",
+        ("secret", "github_token"): "gh-token",
+    })
+
+    with pytest.raises(SystemExit) as exc:
+        security_cli.main(["migrate-rules", "--db", str(db)])
+
+    message = str(exc.value.code)
+    assert "secret/github_token -> gh-token failed" in message
+    # The entry that DID land, named -- not counted.
+    assert "secret/aws_access_key -> aws-access-token (1 finding(s))" in message
+    # And it really did land: the run was not all-or-nothing, which is exactly
+    # what the message has to make true rather than deny.
+    moved = [f for f in run(db, "findings", "--analysis", str(aid))
+             if f["rule"] == "aws-access-token"]
+    assert [f["fingerprint"] for f in moved] == [
+        secret_fingerprint("aws-access-token", path)]
 
 
 def test_migrate_rules_refuses_the_whole_map_before_applying_any_of_it(
@@ -3245,8 +3334,41 @@ def test_migrate_rules_is_not_refused_the_agent(tmp_path):
     AGENT_FORBIDDEN: the verb takes no arguments. It can only ever apply the
     map the repository itself declares, so an agent running it produces
     exactly what a human running it produces -- there is no target for it to
-    choose and nothing here for the flag to protect."""
+    choose and nothing here for the flag to protect. What DOES stop an agent
+    running it at the moment it would do damage is the running-analysis guard
+    below, which does not depend on the flag -- so this asserts the agent
+    reaches the verb once no analysis is live, not that it may run it during
+    one."""
     db = tmp_path / "security.db"
-    open_analysis(db)
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
     assert "migrate-rules" not in security_cli.AGENT_FORBIDDEN
     assert run(db, "migrate-rules", env=AS_AGENT) == {"renamed": [], "findings": 0}
+
+
+def test_migrate_rules_is_refused_while_an_analysis_is_running(tmp_path):
+    """`decide` refuses while an analysis is live and this rewrites far more
+    than `decide` does. Mid-analysis, findings the agent has already recorded
+    get NEW fingerprints while it still holds the old ones: its next re-report
+    of one -- the triage pass's whole job -- misses the `(analysis_id,
+    fingerprint)` upsert key and INSERTs a second row, so one hole becomes two
+    contradictory checklist entries. That UNIQUE constraint exists to prevent
+    exactly that."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+
+    out = fails(db, "migrate-rules")
+
+    assert out.returncode != 0
+    assert f"analysis {aid}" in out.stderr and "still running" in out.stderr
+    assert "nothing was migrated" in out.stderr.lower()
+    # The refusal is not scoped to a project: this verb takes none and walks
+    # every row in the ledger, so an analysis of ANOTHER project is still a
+    # live analysis it could pull the ground out from under.
+    other = open_analysis(db, project="api", repo="api", run_id="r2")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    out = fails(db, "migrate-rules")
+    assert out.returncode != 0 and f"analysis {other}" in out.stderr
+
+    run(db, "finish", "--analysis", str(other), "--state", "done")
+    assert run(db, "migrate-rules") == {"renamed": [], "findings": 0}

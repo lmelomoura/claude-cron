@@ -42,11 +42,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `new` at once, with every human `accepted` / `false_positive` decision
   left pointing at an identity no analysis will produce again. The verb
   recomputes each fingerprint the way the module that produces it does,
-  moves the decisions across in the same transaction, and is safe to run
-  twice. It refuses `sast` and `dependency` rather than guessing: their
-  identity depends on the code snippet and on the package version, which
-  the ledger does not store, so a rename there would mint an identity
-  nothing can match and say nothing about it.
+  moves the decisions — and the `decision_made` events that record a human
+  took them, whose Activity link would otherwise resolve to nothing —
+  across in the same transaction, and is safe to run twice. It refuses
+  `sast` and `dependency` rather than guessing: their identity depends on
+  the code snippet and on the package version, which the ledger does not
+  store, so a rename there would mint an identity nothing can match and
+  say nothing about it. It also refuses a finding whose occurrence carries
+  no path, for the same reason, and refuses to run at all while any
+  analysis is still going: rewriting identities under a live agent makes
+  its next re-report file a second row for a hole it already reported.
 
 ### Fixed
 

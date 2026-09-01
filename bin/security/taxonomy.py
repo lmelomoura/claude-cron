@@ -63,13 +63,22 @@ RULE_NAMES = tuple(sorted(SAST_RULES))
 # applies. Do not use this to merge two rules that meant different things:
 # that is a new finding, and it should be reported as one.
 #
-# Keyed by CATEGORY as well as name because a rule name is only unique within
-# its category -- `private_key` is both a secret type and a hygiene check --
-# and because the fingerprint's fourth argument, and therefore whether a
-# rename is possible at all, is decided by the category. `ledger.rename_rule`
-# accepts `secret` and `hygiene` and refuses the rest; see
-# `ledger.RENAMEABLE_CATEGORIES` for why, and `test_taxonomy.py` for the
-# invariants an entry has to satisfy.
+# Keyed by CATEGORY as well as name because the category is what DECIDES the
+# rename: the fingerprint's fourth argument differs by source, so the category
+# picks the recipe the new identity is rebuilt with -- and picks whether a
+# rename is possible at all. `ledger.rename_rule` dispatches on it (see
+# `_REFINGERPRINT` there), accepting `secret` and `hygiene` and refusing the
+# rest; see `ledger.RENAMEABLE_CATEGORIES` for why, and `test_taxonomy.py` for
+# the invariants an entry has to satisfy.
+#
+# NOT to disambiguate the name. No rule name is shared across categories today,
+# and the four naming conventions leave little room for one: SAST rules are
+# kebab-case (the table above), secret and hygiene rules are snake_case
+# (`secrets._RULES`, and the literals hygiene.py passes to `_finding`), and a
+# dependency rule is a GHSA/CVE id. Nothing ENFORCES that, though, and a key
+# carrying the category is a key that never has to depend on it: `rename_rule`
+# matches on (category, rule) and leaves an identically named rule in the other
+# category untouched.
 #
 # Empty until the engines block renames the deterministic rules wholesale.
 # The mechanism ships first, and with tests, because writing it after the

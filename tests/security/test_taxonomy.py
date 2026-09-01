@@ -1,11 +1,13 @@
+import ast
 import re
 from pathlib import Path
 
 import pytest
-from security import ledger, taxonomy
+from security import ledger, secrets, taxonomy
 
-SKILL = (Path(__file__).resolve().parent.parent.parent
-         / "skills" / "security-analysis" / "SKILL.md")
+REPO = Path(__file__).resolve().parent.parent.parent
+SKILL = REPO / "skills" / "security-analysis" / "SKILL.md"
+HYGIENE = REPO / "bin" / "security" / "hygiene.py"
 
 
 def test_a_known_rule_classifies_to_its_cwe_and_owasp():
@@ -121,16 +123,98 @@ def test_every_rename_is_in_a_category_the_ledger_can_actually_rename():
             f"{category}/{old} is in a category the ledger refuses to rename")
 
 
-def test_no_rename_source_is_still_a_valid_rule():
-    # If a name is both a live rule and a rename source, the migration would
-    # move findings off a name that is still in use -- the next analysis
-    # reports them under the old name again and the rename undoes itself on
-    # every run. `is_valid_rule` is the SAST vocabulary, which is also the one
-    # category that can never appear here; the assertion is kept because a
-    # rename source colliding with a live rule name is the failure it names,
-    # whichever vocabulary the name comes from.
-    for _, old in taxonomy.RULE_RENAMES:
-        assert not taxonomy.is_valid_rule(old)
+# What each renameable category's PRODUCER can actually emit.
+#
+# Both remaining questions about an entry -- is the source still live, is the
+# target a name that will ever be minted -- are asked of the CATEGORY's own
+# vocabulary. `taxonomy.is_valid_rule` cannot answer either: it tests
+# membership in SAST_RULES, and the test above guarantees every legal key is
+# `secret` or `hygiene`, neither of which ever appears there.
+#
+# `secret` is enumerable directly: `secrets._RULES` is a module-level list and
+# every secret finding's rule name is the first field of one of its entries.
+#
+# `hygiene` has no such list. Its rule names are string literals passed to
+# `_finding()` inside `scan()`, and at RUNTIME each one is reachable only by
+# making that rule's own condition fire -- a world-writable mode bit, an absent
+# .gitignore beside a real `.git`, a PEM marker in a sniffed file. Enumerating
+# them by running the scanner over a fixture tree would therefore produce the
+# set of rules THAT FIXTURE triggers, not the set the module can emit, and a
+# correct rename of a rule the fixture cannot provoke would be failed as a
+# bogus name. So they are read from the source instead, through the single
+# constructor every hygiene finding goes through. That couples this helper to
+# `_finding` existing and to its first argument being the rule name -- which is
+# why a call site it cannot read as a literal is a loud failure below and not a
+# quiet skip: a vocabulary that silently shrinks turns both tests underneath it
+# vacuous, which is precisely the hole the removed
+# `test_every_rename_target_is_a_real_rule` left behind.
+
+def _hygiene_rule_names():
+    names = set()
+    for node in ast.walk(ast.parse(HYGIENE.read_text())):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "_finding"):
+            continue
+        rule = node.args[0] if node.args else None
+        assert isinstance(rule, ast.Constant) and isinstance(rule.value, str), (
+            "hygiene.py has a _finding() call whose rule name this test cannot "
+            "read as a literal, so the hygiene vocabulary below is incomplete "
+            "and the rename checks that use it would pass by not looking")
+        names.add(rule.value)
+    assert names, "no _finding() call sites found in hygiene.py"
+    return names
+
+
+def _producer_vocabulary(category):
+    if category == "secret":
+        return {name for name, *_ in secrets._RULES}
+    if category == "hygiene":
+        return _hygiene_rule_names()
+    raise AssertionError(
+        f"{category!r} is renameable but this file has no vocabulary for it -- "
+        "add one beside the other two, or the two tests below stop checking "
+        "anything for entries in that category")
+
+
+def test_the_two_renameable_categories_both_have_a_vocabulary_here():
+    # The helper above is only as complete as `RENAMEABLE_CATEGORIES`. A third
+    # category becoming renameable without a vocabulary beside it would make
+    # both tests below raise on its first entry -- this says so up front,
+    # against the ledger's own list rather than against whatever happens to be
+    # in the map.
+    for category in ledger.RENAMEABLE_CATEGORIES:
+        assert _producer_vocabulary(category), f"{category} has no rule names"
+
+
+def test_every_rename_target_is_a_name_its_scanner_can_emit():
+    # The highest-blast-radius mistake this map can hold, and the only check
+    # that catches it. A typo in a TARGET migrates every finding under that
+    # rule onto an identity no scanner will ever mint again: the next analysis
+    # reports the same holes as `new`, the migrated rows are never matched by
+    # anything, and every human decision carried across with them points at
+    # nothing -- the exact orphan `rename_rule` refuses `sast` to avoid,
+    # reached instead through its front door. It matters most for the block
+    # this mechanism was built for, which renames every secret rule at once.
+    for (category, old), new in taxonomy.RULE_RENAMES.items():
+        vocabulary = _producer_vocabulary(category)
+        assert new in vocabulary, (
+            f"{category}/{old} renames to {new!r}, which no {category} finding "
+            f"can ever carry -- {category} emits: {sorted(vocabulary)}")
+
+
+def test_no_rename_source_is_still_live_in_its_own_category():
+    # If a name is both a live rule and a rename source, the migration moves
+    # findings off a name the scanner still emits: the next analysis reports
+    # them under the old name again, and the rename undoes itself on every run.
+    # Asked of the category's OWN vocabulary. This assertion used to read
+    # `not is_valid_rule(old)`, which tested the SAST vocabulary -- the one
+    # vocabulary a legal entry's name can never come from -- so it passed for
+    # every entry that could ever exist while promising, by its name, to catch
+    # this.
+    for category, old in taxonomy.RULE_RENAMES:
+        assert old not in _producer_vocabulary(category), (
+            f"{category}/{old} is still a live {category} rule: the scanner "
+            "re-emits it on the next analysis and the rename undoes itself")
 
 
 def test_renames_do_not_chain():

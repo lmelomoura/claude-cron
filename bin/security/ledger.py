@@ -297,6 +297,13 @@ def rename_rule(conn, category: str, old: str, new: str) -> int:
     update is NOT scoped to a project: the same fingerprint can be decided in
     several projects, and they all move together.
 
+    The `decision_made` EVENT moves too, for the same reason one step further
+    on: the decision is the fact, and the event is the record that a human took
+    it about this finding. Its `related` column holds the fingerprint's first
+    12 characters and the Activity screen deep-links from that prefix into the
+    findings browser, so a rename that moved the decision and not the event
+    would leave an audit trail whose one link resolves to nothing.
+
     Returns the number of findings moved. Idempotent: a second run finds
     nothing under `old` and returns 0.
 
@@ -344,17 +351,23 @@ def rename_rule(conn, category: str, old: str, new: str) -> int:
             occ = conn.execute(
                 "SELECT file FROM occurrence WHERE finding_id=? ORDER BY id LIMIT 1",
                 (row["id"],)).fetchone()
-            if occ is None:
-                # No occurrence means no path, and the path is half of the
-                # identity. `report-finding` treats occurrences as optional,
-                # so this is reachable. Refusing is the same call as refusing
-                # `sast`: guessing "" here mints an identity no scanner will
-                # ever emit, and says nothing about having done so.
+            if occ is None or not occ["file"]:
+                # NO occurrence, or an occurrence with an EMPTY path: the same
+                # thing for this purpose, because the path is half of the
+                # identity. Both are reachable. `report-finding` treats
+                # occurrences as optional, and it validates only that each one
+                # is an object -- `{"line": 3}` passes that check, and
+                # `record_finding` stores its `file` as `occ.get("file", "")`.
+                # Testing only for the missing ROW would let the empty PATH
+                # through to `secret_fingerprint(new, "")`: a well-formed
+                # identity no scanner will ever emit, minted silently by the
+                # branch two lines below the guard that refuses to guess it.
+                # Refusing is the same call as refusing `sast`.
                 raise ValueError(
-                    f"finding {row['id']} ({category}/{old}) has no occurrence, "
-                    "so it has no path -- and the path is half of its identity. "
-                    "Its fingerprint cannot be rebuilt; renaming it would "
-                    "orphan it.")
+                    f"finding {row['id']} ({category}/{old}) has no occurrence "
+                    "carrying a file path -- and the path is half of its "
+                    "identity. Its fingerprint cannot be rebuilt; renaming it "
+                    "would orphan it.")
             new_fp = recompute(new, occ["file"])
             conn.execute("UPDATE finding SET rule=?, fingerprint=? WHERE id=?",
                          (new, new_fp, row["id"]))
@@ -363,6 +376,21 @@ def rename_rule(conn, category: str, old: str, new: str) -> int:
             # was minted by hand rather than by the scanner.
             conn.execute("UPDATE decision SET fingerprint=? WHERE fingerprint=?",
                          (new_fp, row["fingerprint"]))
+            # The decision moved, so the audit record of the decision moves
+            # with it. `cmd_decide` files a `decision_made` event whose
+            # `related` column holds the fingerprint's first 12 characters, and
+            # the Activity screen deep-links from that prefix into the findings
+            # browser (`secActOpenFinding`). Left behind, it is a row saying a
+            # human accepted this risk that now matches no finding at all: the
+            # decision survives the rename and the evidence that it was taken
+            # about THIS finding does not. The same `[:12]` slice as
+            # `cmd_decide`, deliberately -- it is what makes the two agree.
+            # Scoped to `decision_made` because that is the only kind whose
+            # `related` is a fingerprint prefix; the other three carry an
+            # analysis id.
+            conn.execute(
+                "UPDATE event SET related=? WHERE kind='decision_made' AND related=?",
+                (new_fp[:12], row["fingerprint"][:12]))
     return len(rows)
 
 
