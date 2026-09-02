@@ -827,10 +827,189 @@ def test_the_mark_is_never_cleared_by_a_later_re_report(conn):
     something a subsequent one can undo."""
     aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
     ledger.record_finding(conn, aid, _finding(producer="semgrep"))
-    ledger.record_finding(conn, aid, _finding(producer=ledger.AGENT, severity="low"))
+    ledger.record_finding(conn, aid, _finding(
+        producer=ledger.AGENT, severity="low",
+        rationale="read the call site: the input is a literal"))
     assert ledger.findings_of(conn, aid)[0]["triaged"] == 1
     ledger.record_finding(conn, aid, _finding(producer="", severity="info"))
     assert ledger.findings_of(conn, aid)[0]["triaged"] == 1
+
+
+def _scanner_row(conn, aid, **over):
+    """A dependency finding as a producer minted it, with a location and a
+    sentence of its own -- the row every rubber-stamp test below lands on."""
+    base = dict(category="dependency", rule="CVE-1", severity="high",
+                producer="trivy", rationale="Trivy read the lockfile",
+                occurrences=[{"file": "yarn.lock", "line": 4,
+                              "snippet_hash": ""}])
+    base.update(over)
+    ledger.record_finding(conn, aid, _finding(**base))
+
+
+# ---------------------------------------------- what the mark has to cost
+#
+# The mark above is derived rather than accepted as a field, which was supposed
+# to make it unforgeable. It did not: for as long as ARRIVAL was the whole test,
+# a payload echoing the scanner's own rule, severity and title back set
+# `triaged=1` and closed `done` -- and the cheapest such payload, carrying no
+# occurrences, ALSO left the row with none, because the upsert replaces them.
+# The stamp that proved nothing also destroyed the file and line the gate's own
+# note reads back. The three tests below are those three payloads.
+
+def test_the_cheapest_rubber_stamp_is_refused_and_the_evidence_survives_it(conn):
+    """A payload with no rationale and no occurrences: the whole of Job 2 for
+    the price of one JSON object. It must not mark the row, and -- the half
+    that is easy to miss -- it must not cost the row its occurrences either. A
+    stamp that erased the file and line would be worse than no stamp: the note
+    `cmd_finish` writes names the finding by rule AND file, and there would be
+    no file left to name."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    _scanner_row(conn, aid)
+
+    with pytest.raises(ValueError) as exc:
+        ledger.record_finding(conn, aid, {
+            "fingerprint": "a" * 64, "category": "dependency", "rule": "CVE-1",
+            "severity": "high", "title": "String-built SQL",
+            "producer": ledger.AGENT})
+    assert "rubber stamp" in str(exc.value)
+    assert "no rationale" in str(exc.value), "the refusal says which one it was"
+
+    got = ledger.findings_of(conn, aid)
+    assert len(got) == 1
+    assert got[0]["triaged"] == 0
+    assert got[0]["rationale"] == "Trivy read the lockfile", (
+        "the refused write must not have been applied at all")
+    assert [o["file"] for o in got[0]["occurrences"]] == ["yarn.lock"], (
+        "and above all it must not have stripped the evidence")
+
+
+def test_a_re_report_that_hands_the_producers_own_sentence_back_is_refused(conn):
+    """The next cheapest stamp, and the one the skill names in as many words:
+    copying the scanner's rationale back verbatim. It is a payload that has
+    read the ledger, not the code."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    _scanner_row(conn, aid)
+
+    with pytest.raises(ValueError) as exc:
+        ledger.record_finding(conn, aid, _finding(
+            category="dependency", rule="CVE-1", severity="high",
+            producer=ledger.AGENT, rationale="Trivy read the lockfile",
+            occurrences=[{"file": "yarn.lock", "line": 4, "snippet_hash": ""}]))
+    assert "byte for byte" in str(exc.value)
+    assert ledger.findings_of(conn, aid)[0]["triaged"] == 0
+
+
+def test_a_re_report_that_names_no_location_is_refused(conn):
+    """A rationale with nothing to attach it to. The row would come out of
+    triage naming no file, which is the one thing the reader of the report
+    needs in order to go and look."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    _scanner_row(conn, aid)
+
+    with pytest.raises(ValueError) as exc:
+        ledger.record_finding(conn, aid, _finding(
+            category="dependency", rule="CVE-1", severity="high",
+            producer=ledger.AGENT, occurrences=[],
+            rationale="the dev dependency never reaches a request"))
+    assert "no occurrences" in str(exc.value)
+    got = ledger.findings_of(conn, aid)
+    assert got[0]["triaged"] == 0
+    assert [o["file"] for o in got[0]["occurrences"]] == ["yarn.lock"]
+
+
+def test_a_re_report_that_keeps_the_scanners_severity_still_counts(conn):
+    """THE CONTROL, and the boundary the three refusals above must not cross.
+    Agreeing with the scanner is a legitimate -- probably the commonest --
+    outcome of reading the code, so the test for a stamp is what the agent
+    SAID, never whether it moved the number. A check that demanded a changed
+    severity would teach the agent to move numbers instead of reading."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    _scanner_row(conn, aid)
+
+    ledger.record_finding(conn, aid, _finding(
+        category="dependency", rule="CVE-1", severity="high",
+        producer=ledger.AGENT,
+        rationale="reachable from the upload handler — high is right",
+        occurrences=[{"file": "yarn.lock", "line": 4, "snippet_hash": ""}]))
+
+    got = ledger.findings_of(conn, aid)
+    assert got[0]["triaged"] == 1
+    assert got[0]["severity"] == "high", "unchanged, and that is not a stamp"
+    assert got[0]["producer"] == "trivy"
+
+
+def test_a_repeat_of_a_re_report_that_already_counted_is_not_refused(conn):
+    """Only the 0 -> 1 transition is gated. Once the reading is recorded, a
+    second write from the agent is a retry or a correction, not a stamp on
+    unread work -- and it repeats its OWN sentence, which the echo test would
+    otherwise catch."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    _scanner_row(conn, aid)
+    read = _finding(
+        category="dependency", rule="CVE-1", severity="low",
+        producer=ledger.AGENT, rationale="not reachable from any request",
+        occurrences=[{"file": "yarn.lock", "line": 4, "snippet_hash": ""}])
+
+    ledger.record_finding(conn, aid, read)
+    ledger.record_finding(conn, aid, read)
+
+    got = ledger.findings_of(conn, aid)
+    assert len(got) == 1
+    assert got[0]["triaged"] == 1
+
+
+def test_a_row_no_producer_claims_is_never_marked_triaged(conn):
+    """`minted_by not in ("", AGENT)`, and the empty string is half of it.
+
+    A row with no producer is one written before that column existed. "Somebody
+    unknown produced this and the agent read it" is a fact the ledger has no
+    evidence for, so the mark is withheld -- and relaxing the exclusion to a
+    plain `!= AGENT` passes every other test in this file.
+
+    IT ALSO INTERLOCKS WITH `cli._untriaged`, which excludes the same two
+    producers, and the pair is what makes `cmd_finish` safe in NOT running its
+    note past `_refuse_if_secret`: while both stand, a `triaged=0` row that the
+    gate can name has never had agent text written into its `rule` or its
+    occurrences -- an agent write onto such a row either earns the mark (and
+    leaves the query) or is refused outright by the three tests above. Relax
+    either exclusion and the note starts quoting agent free text at a reader.
+    """
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    _scanner_row(conn, aid, producer="")
+
+    ledger.record_finding(conn, aid, _finding(
+        category="dependency", rule="CVE-1", severity="low",
+        producer=ledger.AGENT, rationale="read it: the call site is dead code",
+        occurrences=[{"file": "yarn.lock", "line": 4, "snippet_hash": ""}]))
+
+    got = ledger.findings_of(conn, aid)
+    assert got[0]["triaged"] == 0, (
+        "an unknown minter's row cannot be marked read by anybody")
+    assert got[0]["rationale"] == "read it: the call site is dead code", (
+        "the write still lands -- it is the MARK that is withheld, not the row")
+
+
+def test_the_mark_does_not_carry_into_the_next_analysis(conn):
+    """THE INVARIANT THAT MAKES THE GATE MEAN ANYTHING RUN TO RUN. Findings are
+    keyed by `analysis_id`, so triaging a finding in analysis N leaves analysis
+    N+1's copy of it -- re-minted by the scanner, same fingerprint -- unread. A
+    ledger that carried the mark across would let one honest triage close every
+    `done` after it for as long as the finding survived."""
+    first = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r1")
+    _scanner_row(conn, first)
+    ledger.record_finding(conn, first, _finding(
+        category="dependency", rule="CVE-1", severity="low",
+        producer=ledger.AGENT, rationale="read it: the call site is dead code",
+        occurrences=[{"file": "yarn.lock", "line": 4, "snippet_hash": ""}]))
+    assert ledger.findings_of(conn, first)[0]["triaged"] == 1
+
+    second = ledger.start_analysis(conn, "web", "web", "main", "def", "standard", "r2")
+    _scanner_row(conn, second)
+
+    assert ledger.findings_of(conn, second)[0]["triaged"] == 0, (
+        "the next analysis starts owing the reading again")
+    assert ledger.findings_of(conn, first)[0]["triaged"] == 1, (
+        "and the analysis that did the work keeps its record of it")
 
 
 def test_the_triaged_column_is_added_to_a_finding_table_that_predates_it(tmp_path):

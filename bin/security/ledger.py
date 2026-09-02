@@ -95,10 +95,11 @@ CREATE TABLE IF NOT EXISTS finding (
   -- reads the surrounding code, not by heuristics.
   --
   -- WRITTEN AS AN EVENT, NEVER READ FROM A PAYLOAD (see `record_finding`): a
-  -- finding is triaged because a re-report with its own severity and
-  -- rationale landed on it, which is the only trace the reading leaves. A
-  -- `triaged: true` field the agent could send would be exactly the same
-  -- unverified claim as the `done` that `cmd_finish` reads this column to
+  -- finding is triaged because a re-report carrying the agent's OWN rationale
+  -- and the occurrences it read landed on it, which is the only trace the
+  -- reading leaves. The agent can reach this column -- the re-report is how --
+  -- but not for the price of a `triaged: true` key, which would be exactly the
+  -- same unverified claim as the `done` that `cmd_finish` reads this column to
   -- check. Measured cost of not having it: analyses 9 and 10 on Minerva each
   -- closed `done` having triaged ZERO of the ~40 deterministic findings
   -- waiting for them, and the reports said nothing about it.
@@ -313,7 +314,75 @@ def finish_analysis(conn, analysis_id, state, spend_usd=0.0, coverage_note="",
     conn.commit()
 
 
+def _not_a_reading(existing_rationale: str, finding: dict) -> str:
+    """Why this re-report is a rubber stamp -- '' when it is a real reading.
+
+    Three payloads, each one a way of stamping a scanner's finding `triaged`
+    without having read it. The sentence returned is quoted straight into the
+    refusal, so it says which of the three arrived and what a reading would
+    have carried instead.
+    """
+    rationale = (finding.get("rationale") or "").strip()
+    if not rationale:
+        return ("it carries no rationale, and a finding nobody explained is a "
+                "finding nobody read")
+    if rationale == (existing_rationale or "").strip():
+        return ("its rationale is the producer's own sentence handed back "
+                "byte for byte, which is what a rubber stamp looks like from "
+                "here -- your reading, not the scanner's, is what was missing")
+    if not finding.get("occurrences"):
+        return ("it carries no occurrences, so the row it would leave behind "
+                "names no file and no line for the reader of the report to "
+                "open")
+    return ""
+
+
 def record_finding(conn, analysis_id, finding: dict) -> None:
+    """Record a finding, upserting the one this analysis already holds.
+
+    WHAT AN AGENT'S RE-REPORT HAS TO CARRY BEFORE IT COUNTS AS A READING.
+    `triaged` (see the block below) is derived from who minted the row against
+    who is writing it now, and the first version of that derivation was
+    satisfied by the mere ARRIVAL of an agent payload on a scanner's
+    fingerprint. That made the mark free: a JSON object echoing the scanner's
+    own rule, severity and title back -- no rationale, no occurrences -- set
+    `triaged=1` and let `cmd_finish` record `done`. The cheapest such payload
+    also DESTROYED the finding it stamped, because the upsert REPLACES
+    occurrences and replacing them with none leaves a row carrying no file and
+    no line: the note the gate writes could not then even name what had been
+    skipped.
+
+    A reading leaves two traces and no fewer -- a sentence the agent wrote
+    about this finding, and the locations it read. So a re-report by the AGENT
+    onto a row a SCANNER minted is REFUSED outright, with nothing about the row
+    changed, when `_not_a_reading` above recognises it: no rationale, a
+    rationale that is the stored one byte for byte, or no occurrences. The
+    severity is deliberately not part of that test: keeping the scanner's
+    severity is a legitimate outcome of triage -- often the commonest one --
+    and a check that demanded a changed severity would teach the agent to move
+    numbers rather than to read code.
+
+    REFUSED, not silently left unmarked. The failure this gate was written
+    after is an agent that believed it had done Job 2; a `report-finding` that
+    exits non-zero naming which of the three payloads arrived teaches that in
+    the one place the agent is looking, while a payload accepted and quietly
+    not counted produces a `capped` verdict it cannot account for.
+
+    WHICH IS ALSO THE ANSWER TO WHAT A STAMP DOES TO THE EVIDENCE: nothing at
+    all. The refusal is raised before the UPDATE and inside the transaction, so
+    the occurrences the scanner recorded survive a stamp intact -- a mark that
+    erased the file and line would be worse than no mark, because the gate's
+    own note is built by reading them back. A write that IS applied still
+    replaces the occurrence list rather than appending to it, which is what
+    lets a re-report narrow five locations to the two still affected (the
+    `partial` half of the skill's Job 3). The erasure route was the stamp, not
+    the replacement.
+
+    ONLY THE 0 -> 1 TRANSITION IS GATED. A row already marked has had its
+    reading recorded; a later write from the agent -- a retry, or a correction
+    that happens to repeat its own earlier sentence -- is not a stamp on unread
+    work, and refusing it would punish the analyses that did the job.
+    """
     # A finding and its occurrences are one unit: without this transaction
     # boundary, an occurrence that fails to insert midway (a non-numeric
     # line, say) would leave the finding row committed by whatever later
@@ -356,12 +425,21 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
     # NAME. The re-report described two paragraphs up is not merely a better
     # row: it is the only evidence that exists that anybody READ the scanner's
     # finding before the analysis closed, and `cmd_finish` refuses to record
-    # `done` without it. So the mark is derived here, from who minted the row
-    # against who is writing it now, rather than accepted as a field -- a
-    # `triaged: true` an agent could send would be the same unverified claim as
-    # the `done` it is checked against.
+    # `done` without it. So the mark is derived here -- from who minted the row
+    # against who is writing it now, and from whether what that writer sent is
+    # a reading at all -- rather than accepted as a field.
     #
-    # Three conditions, each one a case that must NOT count as triage:
+    # NOT because there is no field the agent can send to say it looked: the
+    # re-report IS that field, and the docstring above is the price list. The
+    # difference is what the two cost. A `triaged: true` costs one JSON key and
+    # asserts something no reader can check -- the same unverified claim as the
+    # `done` it would be checked against. The mark derived here costs the
+    # smallest honest output of the job itself: the agent's own sentence about
+    # this finding, and the lines it read. That is the most a ledger can verify
+    # without reading the code, and it is the difference between a gate that
+    # measures work and one that measures a keystroke.
+    #
+    # Four conditions, each one a case that must NOT count as triage:
     #   - the writer is the agent. `prepare` writes through this same function,
     #     and a second deterministic phase landing on a fingerprint the first
     #     one recorded has read a file, not a finding.
@@ -371,18 +449,36 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
     #   - the minting producer is known at all. '' is a row from before the
     #     `producer` column existed, and "somebody unknown looked" is not a
     #     fact this column is allowed to invent.
+    #   - the payload is a reading rather than an echo of the row it lands on.
+    #     See the docstring: this one is a refusal, not a silent 0, because it
+    #     is the only one of the four the agent can correct.
     # MAX(triaged, ?) rather than a plain assignment, because a row is written
     # more than twice in a real analysis and a later write that happens not to
     # qualify must not erase the reading that already happened.
     with conn:
         existing = conn.execute(
-            "SELECT id, producer FROM finding WHERE analysis_id=? AND fingerprint=?",
+            "SELECT id, producer, rationale, triaged FROM finding"
+            " WHERE analysis_id=? AND fingerprint=?",
             (analysis_id, finding["fingerprint"])).fetchone()
         if existing is not None:
             fid = existing["id"]
             minted_by = (existing["producer"] or "").strip()
             written_by = (finding.get("producer") or "").strip()
-            triaged = int(written_by == AGENT and minted_by not in ("", AGENT))
+            triaged = 0
+            if (written_by == AGENT and minted_by not in ("", AGENT)
+                    and not existing["triaged"]):
+                stamp = _not_a_reading(existing["rationale"], finding)
+                if stamp:
+                    # Inside `with conn:`, so this rolls back: "nothing was
+                    # recorded" is a statement about the database, not a hope.
+                    raise ValueError(
+                        f"this re-report of {minted_by}'s finding is a rubber "
+                        f"stamp rather than a triage — {stamp}. The re-report "
+                        "IS the mark that this finding was read, and the close "
+                        "is verified against it, so it has to carry your own "
+                        "rationale and the occurrences you read. Nothing was "
+                        "recorded.")
+                triaged = 1
             conn.execute(
                 "UPDATE finding SET category=?, rule=?, severity=?, title=?,"
                 " rationale=?, remediation=?, partial_note=?, cwe=?, owasp=?,"

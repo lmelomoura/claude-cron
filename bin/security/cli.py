@@ -1453,6 +1453,14 @@ def cmd_finish(args):
     # our own scanners and by Trivy/OSV, never by the agent's free text, and a
     # refusal here would leave the row `running`, which is the one outcome
     # this guard exists to avoid.
+    #
+    # THAT IS TRUE ONLY BECAUSE OF THREE RULES ELSEWHERE, and it stops being
+    # true if any of them is relaxed: `_untriaged` excludes rows the agent
+    # minted AND rows minted by nobody (`producer<>''`), and `record_finding`
+    # REFUSES an agent write onto an unread scanner row rather than applying it
+    # (see its docstring), so a row this query returns has never had a byte of
+    # agent text written into its `rule` or its occurrences. All three are
+    # pinned by tests that name this paragraph.
     untriaged_note = ""
     triage_phase = None
     if state == "done":

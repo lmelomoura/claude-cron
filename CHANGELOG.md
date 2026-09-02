@@ -19,6 +19,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The triage mark now costs a reading, and the cheapest rubber stamp can no
+  longer strip a finding of its evidence.** The gate that lowers `done` to
+  `capped` when a scanner finding at `medium` or above was never read takes its
+  mark from `ledger.record_finding`: an agent re-report landing on a row a
+  producer minted IS the triage, because it is the only trace reading one
+  leaves. Arrival was the whole test, so a JSON object echoing the scanner's own
+  rule, severity and title back — no rationale, no occurrences — set `triaged=1`
+  and closed `done`. And because the upsert REPLACES a finding's occurrences,
+  that same cheapest payload left the row with none: the note the gate writes
+  about a skipped finding could no longer name the file to open it at. Such a
+  re-report is now refused outright, with nothing about the row changed, when it
+  carries no rationale, hands the producer's own sentence back byte for byte, or
+  names no location. The severity is deliberately not part of that test —
+  agreeing with the scanner is a legitimate, probably the commonest, outcome of
+  reading the code, and a check that demanded a changed severity would teach the
+  agent to move numbers instead. Refused rather than silently uncounted: the
+  failure this gate was written after is an agent that believed it had done
+  Job 2, so `report-finding` now exits non-zero saying which of the three
+  payloads arrived. **What it cost not to have this:** one JSON key was the
+  entire price of the gate shipped two commits ago, and paying it also destroyed
+  the evidence — a `capped` verdict naming "CVE-2024-1234 (no file recorded)" is
+  a scold the reader cannot act on. Six pinning tests travel with it, for rules
+  that were documented at length and tested nowhere: the two exclusions a
+  mutation could delete with the whole suite still green
+  (`minted_by not in ("", AGENT)` and `_untriaged`'s `f.producer<>''`, which
+  together with the refusal above are what let the gate's note quote a rule and
+  a path without running them past the secret scanner), the mark resetting per
+  analysis, the note's one-finding and two/three-finding wordings, and
+  `TRIAGE_BLOCKING` as a slice of `report.SEVERITIES` that a reordering of that
+  tuple would silently change.
+
 - **Job 2 of the security skill no longer selects rows the close cannot count,
   and no longer blanks the scanner's own remediation.** Its step 2 took "every
   row whose producer is not `agent`" off the checklist and called them "the ones

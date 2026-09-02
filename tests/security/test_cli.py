@@ -2122,13 +2122,23 @@ def _scanner_finding(db, aid, *, rule, severity, category="dependency",
     return fp
 
 
-def _triage(db, aid, fp, *, rule, category="dependency", severity="low"):
+def _triage(db, aid, fp, *, rule, category="dependency", severity="low",
+            file="yarn.lock",
+            rationale="read the call site: it is not reachable from a request"):
     """What Job 2 looks like from the ledger's side: the agent re-reporting a
-    deterministic finding under its own severity and rationale."""
+    deterministic finding under its own severity, rationale and occurrences.
+
+    THE OCCURRENCES ARE NOT DECORATION HERE. `ledger.record_finding` refuses a
+    re-report that carries no rationale of its own, echoes the producer's back
+    verbatim, or names no location -- the three shapes a rubber stamp takes --
+    so a helper that omitted them would be modelling the payload the gate is
+    built to reject and calling it triage.
+    """
     run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
         "fingerprint": fp, "category": category, "rule": rule,
         "severity": severity, "title": f"{rule}, read in context",
-        "rationale": "read the call site: it is not reachable from a request"}),
+        "rationale": rationale,
+        "occurrences": [{"file": file, "line": 0, "snippet_hash": ""}]}),
         env=AS_AGENT)
 
 
@@ -2270,6 +2280,131 @@ def test_the_untriaged_downgrade_reaches_the_report_as_an_incomplete_banner(tmp_
     rendered = run_text(db, "render", "--analysis", str(aid), "--format", "md")
     assert "INCOMPLETE" in rendered
     assert "never triaged" in rendered
+
+
+def test_a_rubber_stamp_through_the_real_door_neither_marks_nor_strips(tmp_path):
+    """The gate's cheapest bypass, driven end to end through `report-finding`.
+
+    A payload echoing the scanner's own rule, severity and title back -- with
+    no rationale and no occurrences -- used to set `triaged=1` and close
+    `done`. It also left the row with NO occurrences, because the upsert
+    replaces them, so the note the gate writes about a skipped finding could
+    not even name the file. Both halves are asserted here: the close is still
+    downgraded, and the note still names `yarn.lock`, which only exists if the
+    scanner's occurrence survived the stamp."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+
+    stamp = fails(db, "report-finding", "--analysis", str(aid),
+                  stdin=json.dumps({
+                      "fingerprint": fp, "category": "dependency",
+                      "rule": "CVE-1", "severity": "high",
+                      "title": "CVE-1 in yarn.lock"}), env=AS_AGENT)
+    assert stamp.returncode != 0, stamp.stdout
+    assert "rubber stamp" in stamp.stderr, stamp.stderr
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "capped"
+    assert "CVE-1 (yarn.lock)" in row["coverage_note"], (
+        "the stamp must not have taken the finding's only location with it")
+
+
+def test_a_re_report_that_agrees_with_the_scanner_still_satisfies_the_gate(tmp_path):
+    """The control for the refusal above, and the case it must never catch: an
+    agent that read the code and concluded the scanner was right. The severity
+    it sends is the scanner's own -- only the rationale is new -- and that is a
+    triage."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    _triage(db, aid, fp, rule="CVE-1", severity="high",
+            rationale="reachable from the upload handler; high is right")
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert "triaged" not in row["coverage_note"]
+
+
+def test_a_finding_no_producer_claims_does_not_block_the_close(tmp_path):
+    """`_untriaged`'s `f.producer<>''` clause, which no other test touches --
+    deleting it leaves the whole triage suite green while downgrading every
+    honest `done` on a ledger written before the `producer` column existed.
+
+    Those rows carry `producer=''`, and "an unknown scanner produced this and
+    nobody read it" is an accusation the query has no evidence for. It is also
+    half of an interlock: together with the `producer<>?` exclusion of the
+    agent's own rows, and with `record_finding` refusing an agent write onto an
+    unread scanner row, it is what lets `cmd_finish` build its note from `rule`
+    and `file` WITHOUT running it past `_refuse_if_secret`. Every row this
+    query can return was written by a producer, so no agent free text can reach
+    the note. Relax any one of the three and that stops being true."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, aid, rule="CVE-1", severity="critical", producer="")
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert "triaged" not in row["coverage_note"]
+
+
+def test_the_note_says_it_is_when_exactly_one_finding_was_skipped(tmp_path):
+    """Singular all the way through -- "1 deterministic finding WAS never
+    triaged ... IT IS". The n=4 wording is what every other test here
+    exercises, and a note that said "1 findings were" over the one thing
+    somebody has to go and look at reads as a bug in the report rather than a
+    fact about the analysis."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, aid, rule="CVE-1", severity="high")
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    note = run(db, "list", "--project", "web")[0]["coverage_note"]
+    assert "1 deterministic finding was never triaged" in note, note
+    assert "It is: CVE-1 (yarn.lock)." in note, note
+
+
+def test_the_note_says_they_are_and_names_all_of_them_below_four(tmp_path):
+    """Two and three take the middle wording: plural, but the whole list, not
+    "the first three" of three. The `> 3` boundary is the one an off-by-one
+    lands on, and it is invisible at n=4."""
+    db = tmp_path / "security.db"
+    two = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, two, rule="CVE-1", severity="high")
+    _scanner_finding(db, two, rule="CVE-2", severity="medium", file="pom.xml")
+    run(db, "finish", "--analysis", str(two), "--state", "done")
+    note = run(db, "list", "--project", "web")[0]["coverage_note"]
+    assert "2 deterministic findings were never triaged" in note, note
+    assert "They are: CVE-1 (yarn.lock); CVE-2 (pom.xml)." in note, note
+
+    three = prepared_analysis(db, tmp_path, run_id="r2")
+    _scanner_finding(db, three, rule="CVE-3", severity="critical")
+    _scanner_finding(db, three, rule="CVE-4", severity="high", file="pom.xml")
+    _scanner_finding(db, three, rule="CVE-5", severity="medium", file="go.sum")
+    run(db, "finish", "--analysis", str(three), "--state", "done")
+    note = [r for r in run(db, "list", "--project", "web")
+            if r["id"] == three][0]["coverage_note"]
+    assert "3 deterministic findings were never triaged" in note, note
+    assert "The first three" not in note, "three IS all of them"
+    assert "They are: CVE-3 (yarn.lock); CVE-4 (pom.xml); CVE-5 (go.sum)." \
+        in note, note
+
+
+def test_the_blocking_severities_are_the_slice_at_and_above_the_floor():
+    """`TRIAGE_BLOCKING` is a SLICE of `report.SEVERITIES`, so it is only
+    correct while that tuple stays ordered worst first. Reordering it -- or
+    inserting a severity between two existing ones -- silently changes which
+    findings can hold a `done` open, and nothing else in this suite would
+    notice: the derived tuple itself was never asserted, only the floor it is
+    derived from."""
+    assert security_cli.report.SEVERITIES == (
+        "critical", "high", "medium", "low", "info"), (
+        "the slice below reads this order; changing it changes the gate")
+    assert security_cli.TRIAGE_FLOOR == "medium"
+    assert security_cli.TRIAGE_BLOCKING == ("critical", "high", "medium")
 
 
 # ------------------------------------------ the coverage note gains structure
