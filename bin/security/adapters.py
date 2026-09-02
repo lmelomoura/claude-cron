@@ -177,6 +177,13 @@ def scope_patterns(skip_dirs=None, ignore_paths=()) -> list[str]:
     it, so `tests/fixtures` and `tests/fixtures/**` both exclude the
     directory's contents.
 
+    A MULTI-SEGMENT SKIP_DIR GOES DOWN WHOLE, and that is load-bearing rather
+    than incidental. `re.escape` leaves `/` alone, so `data/logs` becomes
+    `(^|/)data/logs/` -- the contiguous run at any depth, which is exactly
+    what `secrets.skipped` matches on this side. Emitting `(^|/)logs/` for it
+    would hand the engine a scope wider than the analysis has, and gitleaks
+    would stop reading an analysed project's real application-log directory.
+
     THE SAMPLE SUFFIXES ARE NOT HERE ANY MORE, and their absence is the fix
     rather than an omission. A gitleaks `[allowlist] paths` entry silences
     EVERY rule for the file it matches, so `\\.example$` in this list stopped
@@ -313,9 +320,12 @@ def _out_of_scope(path: str, ignore_paths) -> bool:
     happen on this side of the engine and not only in the config: a default
     only the built-in scanner honoured would make the same repository report
     differently depending on which binaries the machine has installed.
+
+    The skip-directory half is `secrets.skipped`, not a local reading of
+    `secrets.SKIP_DIRS`, so a multi-segment entry means here what it means to
+    the built-in sweep and to `scope_patterns`.
     """
-    return (any(part in secrets.SKIP_DIRS for part in Path(path).parts)
-            or ignored(path, ignore_paths))
+    return secrets.skipped(path) or ignored(path, ignore_paths)
 
 
 def gitleaks(data, root, historical: bool = False, ignore_paths=()) -> list[dict]:
@@ -1201,6 +1211,11 @@ def trivy_skip_dirs(ignore_paths=()) -> list[str]:
     switched the default off, so a decision the operator took is not undone
     by a command line.
 
+    A multi-segment entry (`data/logs`) goes down verbatim in both forms, so
+    the pair reads `data/logs` (Trivy's top level) and `**/data/logs` (any
+    depth) -- the same run of components `secrets.skipped` matches, never the
+    last component on its own.
+
     `ignore_paths` is passed down too, the cheap way round -- the files are
     then never read at all. It is not the guarantee: `trivy_scan` filters
     what comes back through `_out_of_scope` as well, for the reason that
@@ -1639,7 +1654,9 @@ def syft_sbom(root):
     `--exclude '**/name'` per entry, matched at any depth without also
     needing the bare name Trivy's matcher required (see `trivy_skip_dirs`) --
     measured with a `package-lock.json` planted at the TOP LEVEL of a
-    `vendor/` directory, `--exclude '**/vendor'` alone excludes it. Not
+    `vendor/` directory, `--exclude '**/vendor'` alone excludes it. A
+    multi-segment entry goes down whole -- `**/data/logs`, not `**/logs` --
+    which is the run of components `secrets.skipped` matches. Not
     `ignore_paths`: see the section comment above for why an SBOM does not
     take it.
     """
@@ -1854,7 +1871,10 @@ def semgrep_excludes(ignore_paths=()) -> list[str]:
     Trivy's bare name matched the top level only. That is what `SKIP_DIRS`
     wants -- `_out_of_scope` drops those names at any depth too -- so the pair
     is kept because it costs nothing and neither form can then be the one a
-    future matcher narrows, but nobody should read it here as a hole.
+    future matcher narrows, but nobody should read it here as a hole. A
+    multi-segment entry keeps the pair as well: `data/logs` (which semgrep
+    anchors, because it contains a `/`) beside `**/data/logs` (any depth),
+    which together say what `secrets.skipped` says.
 
     THE OPERATOR'S GLOBS ARE ANCHORED, AND THE `rstrip("/*")` THAT USED TO BE
     HERE WAS A NARROWING. It was copied from `trivy_skip_dirs`, where it is

@@ -474,22 +474,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **The built-in secret scanner stopped reading its own agents' workspace as
-  if it were the project.** `secrets.SKIP_DIRS` never listed `.superpowers`
-  or `logs`, so a repository's own `.superpowers/` (where this repository's
-  agents write review diffs and run reports) and `data/logs/` (where run
-  transcripts land) were read like any other source directory — both
-  git-ignored, both routinely full of credential-shaped text that belongs to
-  neither the project nor a leak. Measured on the Minerva checkout
+  if it were the project — and `SKIP_DIRS` learned to say a path, so it did
+  not go blind to an analysed project's logs on the way.**
+  `secrets.SKIP_DIRS` never listed `.superpowers`, so a repository's own
+  `.superpowers/` (where this repository's agents write review diffs and run
+  reports) was read like any other source directory — git-ignored, and
+  routinely full of credential-shaped text that belongs to neither the
+  project nor a leak. Measured on the Minerva checkout
   (dev-knowledge-platform): 22 `generic_secret` occurrences from
   `.superpowers/` alone, none of them real, out of 57 total; after the fix,
-  0 under `.superpowers/` and the `src/`, `services/`, `scripts/` counts are
-  unchanged (3 and 4 occurrences respectively, in both cases). `SKIP_DIRS`
-  is read by twelve call sites across `adapters.py`, `deps.py`, `hygiene.py`
-  and `ignores.py` — including `adapters.gitleaks_config`'s `scope_patterns`
-  — so the one change reaches the built-in scanner and gitleaks alike. Both
-  new entries are bare path components matched at any depth, the same
-  convention every existing entry already uses, so `logs` also reaches an
-  equivalent transcript directory in whatever project is being analysed.
+  35 occurrences, 0 under `.superpowers/`, and the `src/`, `services/`,
+  `scripts/` counts unchanged (0, 3 and 4 occurrences respectively, in both
+  cases). This repository's own transcript directory is skipped too, as the
+  full path **`data/logs`, not a bare `logs`**. Every entry used to be a
+  single path component matched at any depth, and a bare `logs` would have
+  exempted *every* directory of that name, in every analysed project, from
+  *every* phase — the secret sweep, the hygiene key-file and
+  committed-`.env` checks, the dependency inventory and all four engine
+  scopes. On Minerva that is `martis-app/storage/logs/`, Laravel's real
+  application-log directory and a well-known place for a stack trace to
+  spill a database password: silently unscanned for ever, and for nothing,
+  since Minerva has no `data/logs` and the entire measured reduction was
+  `.superpowers`. So `SKIP_DIRS` now accepts multi-segment entries and
+  `secrets.skipped()` is the one matcher every reader goes through: a
+  single-segment entry still means that component at any depth, a
+  multi-segment one means that contiguous run of components, also at any
+  depth (`src/data/logs/f` is skipped; `storage/logs/f` is not). It is read
+  by `secrets.py`, `deps.py`, `hygiene.py` and `adapters._out_of_scope`
+  alike, and the engine scopes spell the entry out in full —
+  `(^|/)data/logs/` for gitleaks, `**/data/logs` for trivy, syft and
+  semgrep — so the built-in scanner and every engine cover the same tree.
 
 - **A maintainer's home directory is out of the repository, and
   `claude-cron selftest` now fails if one comes back.**

@@ -36,24 +36,75 @@ _RULES = [
 # output; `adapters.gitleaks_config` turns this set into the engine's scope, so
 # whichever scanner runs, both agree on where an analysis looks.
 #
-# `.superpowers` and `logs` were added after a measurement on the Minerva
-# checkout (dev-knowledge-platform) turned up 22 `generic_secret` hits from
-# `.superpowers/` alone, none of them a leak. `.superpowers/` is git-ignored
-# and is where this repository's own agents write review diffs and run
-# reports -- not the analysed project, but routinely full of
-# credential-shaped text (a captured key in a review diff, a planted secret
-# in a transcript). `data/logs/` -- where run transcripts land -- is the
-# same kind of noise for the same reason, which is why `logs` is listed here
-# rather than the full `data/logs` path: every entry in this set is a bare
-# path COMPONENT matched at any depth (see `ignores.DEFAULT_IGNORE_DIRS` for
-# the same convention), not a path from the root, so `logs` alone reaches
-# `data/logs` and any equivalent log directory in whatever project is being
-# analysed. This lines up with the earlier measurement recorded in
+# AN ENTRY MAY BE A PATH, NOT ONLY A NAME. `skipped()` below is the one
+# matcher every reader goes through: a single-segment entry means that
+# component at any depth (the old convention, see `ignores.DEFAULT_IGNORE_DIRS`
+# for the same one), a multi-segment entry means that exact run of components.
+#
+# `.superpowers` was added after a measurement on the Minerva checkout
+# (dev-knowledge-platform) turned up 22 `generic_secret` hits from
+# `.superpowers/` alone, none of them a leak. It is git-ignored and is where
+# this repository's own agents write review diffs and run reports -- not the
+# analysed project, but routinely full of credential-shaped text (a captured
+# key in a review diff, a planted secret in a transcript).
+#
+# `data/logs` -- where this repository's run transcripts land -- is the same
+# kind of noise, and it is SPELLED IN FULL. A bare `logs` was tried first,
+# because at the time every reader could only express a bare component; it
+# would have exempted EVERY directory named `logs`, in any analysed project,
+# from every phase -- the secret sweep, the hygiene key-file and
+# committed-`.env` checks, the dependency inventory and all four engine
+# scopes. On Minerva that is `martis-app/storage/logs/`, Laravel's real
+# application-log directory: a classic place for a stack trace to spill a
+# database password, and precisely the untracked material this scanner walks
+# the raw filesystem to reach. It also bought nothing -- Minerva has no
+# `data/logs`, so the entire measured 57 -> 35 was `.superpowers`. The
+# matcher was widened instead; a scanner does not widen its blind spot to fit
+# its matching code.
+#
+# This lines up with the earlier measurement recorded in
 # `adapters.gitleaks_config`'s module docstring: before that config's scope
 # existed, gitleaks reported 17 findings on this repository, 15 of them
 # under `.superpowers/`, `__pycache__/` and `data/logs/`.
 SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", "build",
-             ".superpowers", "logs"}
+             ".superpowers", "data/logs"}
+
+
+def skipped(rel) -> bool:
+    """True when `rel` is, or lies under, a `SKIP_DIRS` entry.
+
+    THE ONE MATCHER, and it is public for the same reason `SKIP_DIRS` is.
+    Every reader used to carry its own `any(part in SKIP_DIRS for part in
+    ...)`, which can only ever express a bare component -- and that is how a
+    bare `logs` came to be preferred over `data/logs`, exempting an analysed
+    project's real application-log directory from every phase because the
+    matcher could not say the narrower thing.
+
+    ANY DEPTH, FOR ONE SEGMENT AND FOR MANY. A single-segment entry matches
+    that component wherever it appears, exactly as before. A multi-segment
+    entry matches its segments as a CONTIGUOUS RUN, also wherever it appears:
+    `data/logs` covers `data/logs/x/f` and `sub/data/logs/f`, and never
+    `storage/logs/f`. Any-depth is not a taste; it is the only reading the
+    engines can be held to. `adapters.scope_patterns` emits
+    `(^|/)data/logs/`, and trivy, syft and semgrep are each handed
+    `**/data/logs` -- every one of them an any-depth matcher. A root-anchored
+    predicate here would leave the built-in sweep reading a tree the engines
+    are told to skip, so the same repository would report differently
+    depending on which binaries the machine has installed: the exact
+    divergence this shared set exists to prevent.
+    """
+    parts = Path(rel).parts
+    for entry in SKIP_DIRS:
+        segments = tuple(s for s in str(entry).split("/") if s)
+        if not segments:
+            continue
+        span = len(segments)
+        if any(parts[i:i + span] == segments
+               for i in range(len(parts) - span + 1)):
+            return True
+    return False
+
+
 _MAX_BYTES = 2 * 1024 * 1024
 
 # ONE sentence, whichever scanner found the credential -- `adapters` emits it
@@ -202,37 +253,39 @@ def _skip_note(too_big, unreadable):
             f"{'' if total == 1 else 's'} ({', '.join(parts)}).")
 
 
-def _readable_files(root, ignore, skipped):
+def _readable_files(root, ignore, unread):
     """Yield (relative path, text) for every file a sweep may read.
 
     ONE walk, shared by the two callers below. `scan_tree` needs the text to
     match patterns against and `count_lines` needs it to count -- and when an
     engine does the secret detection instead, the line count still has to
     come from somewhere, from the same set of files, or the two numbers would
-    describe different repositories. `skipped` is a mutable dict the walk
+    describe different repositories. `unread` is a mutable dict the walk
     reports into, because a generator's return value is not reachable through
-    a `for`.
+    a `for`. It counts only the files this walk OPENED AND COULD NOT READ --
+    a path excluded by `skipped` or by `ignore` was never in scope and is not
+    a coverage gap to declare.
     """
     root = Path(root)
     for p in sorted(root.rglob("*")):
         if not p.is_file() or p.is_symlink():
             continue
-        if any(part in SKIP_DIRS for part in p.relative_to(root).parts):
+        if skipped(p.relative_to(root)):
             continue
         rel = str(p.relative_to(root))
         if ignored(rel, ignore):
             continue
         try:
             if p.stat().st_size > _MAX_BYTES:
-                skipped["too_big"] += 1
+                unread["too_big"] += 1
                 continue
         except OSError:
-            skipped["unreadable"] += 1
+            unread["unreadable"] += 1
             continue
         try:
             text = p.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
-            skipped["unreadable"] += 1
+            unread["unreadable"] += 1
             continue
         yield rel, text
 
@@ -269,8 +322,8 @@ def scan_tree(root, ignore):
     contents into the ledger, a report or a log.
     """
     out, lines = [], 0
-    skipped = {"too_big": 0, "unreadable": 0}
-    for rel, text in _readable_files(root, ignore, skipped):
+    unread = {"too_big": 0, "unreadable": 0}
+    for rel, text in _readable_files(root, ignore, unread):
         lines += _lines_in(text)
         # One finding per credential TYPE per file -- not per match. The
         # fingerprint (type + path) cannot depend on a position, so several
@@ -292,7 +345,7 @@ def scan_tree(root, ignore):
             group["lines"].append(line)
         for rule, group in by_rule.items():
             out.append(_finding(rule, group["severity"], rel, group["lines"], False))
-    return out, _skip_note(skipped["too_big"], skipped["unreadable"]), lines
+    return out, _skip_note(unread["too_big"], unread["unreadable"]), lines
 
 
 _DIFF_HEADER_PREFIX = "diff --git a/"
