@@ -217,17 +217,25 @@ PEM = (f"-----BEGIN RSA PRIVATE KEY-----\n{PEM_BODY_LINE}\n"
        "-----END RSA PRIVATE KEY-----\n")
 COMPOSITE = "gitleaks+secrets"
 
-# THE SHAPE ONLY THE BUILT-IN SEES, measured with gitleaks 8.30.1 rather than
+# THE TOKEN ONLY THE BUILT-IN SEES, measured with gitleaks 8.30.1 rather than
 # assumed. `SHAPED` above is reported by both scanners (`generic-api-key`), so
 # it could not stand for the built-in's recall. Minerva's seed token -- 48
 # characters, entropy 3.8-4.1, lowercase words joined by `_` with digits at the
-# end, assigned to a `*_TOKEN` name -- is what gitleaks discards, and the
-# reason is the SHAPE, not the entropy or a stopword: nine snake_case values
-# with and without words like `test`/`seed`/`dev` all reported nothing, and the
-# very same letters without the underscores reported `generic-api-key`.
-# Gitleaks' generic rule reads a snake_case value as an identifier; the
-# built-in's entropy gate (4.26 here) does not, and that difference is the
-# one genuine recall the union exists for.
+# end, assigned to a `*_TOKEN` name -- is what gitleaks discards, and this
+# fixture shares its fate. WHY, measured on 20 values: gitleaks' generic rule
+# discards it through its STOPWORD LIST (1,446 entries, many with a trailing
+# separator; `harbour_` and `falcon_` below contain the entries `our_` and
+# `con_`), not by entropy and not by shape. Entropy was never it: 4.26 here,
+# the seed tokens 3.8-4.1, all above the rule's 3.5. Shape was not it either,
+# and the probes that discriminate say so:
+# `harbop_violet_saffron_meadow_copper_falcom_ivy_2026` -- the same snake_case
+# shape with no stopword in it -- IS reported; `ab_our_ef_ghijklmnopqrstuvwxyz0123`
+# -- a value gitleaks reported, with `our_` inserted -- is discarded; a
+# camelCase value carrying `dev_` is discarded. The earlier reading here said
+# SHAPE on the strength of one probe, the same letters without underscores
+# being reported -- which removes `our_` along with the `_`, so it could not
+# tell the two apart. The built-in's entropy gate has no stopword list, and
+# that difference is the one genuine recall the union exists for.
 SNAKE_CASE_TOKEN = 'token = "harbour_violet_saffron_meadow_copper_falcon_ivy_2026"\n'
 
 HAVE_GITLEAKS = engines.find("gitleaks") is not None

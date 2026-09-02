@@ -791,9 +791,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   still proven by the union, and a row both saw is `pending`, never `fixed`,
   on a machine that later loses gitleaks. **What it cost not to have this:**
   measured on Minerva with the product filters applied to both, gitleaks saw 2
-  secret identities and the built-in 30; the one credential gitleaks discards
-  by entropy — a seed token shared by a script, a test helper and a Postman
-  collection — was found by nothing on any machine with gitleaks installed.
+  secret identities and the built-in 30; the one credential gitleaks' generic
+  rule discards through its stopword list (`our_` and `con_` are entries), not
+  by entropy and not by shape — a seed token shared by a script, a test helper
+  and a Postman collection — was found by nothing on any machine with gitleaks
+  installed.
   The coverage paragraph now says how many findings both saw and how many only
   one did, and — when a `github_token` or `slack_token` row is present, the two
   types the rename map deliberately leaves out — that such a credential may be

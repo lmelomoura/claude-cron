@@ -72,6 +72,13 @@ exemplos com forma de chave em documentação, matéria de triagem, não de padr
 Também o motivo do descarte dos tokens de seed foi medido: o Gitleaks
 descarta-os pela **forma snake_case** (palavras minúsculas unidas por `_`, com
 dígitos no fim), não pela entropia — as mesmas letras sem `_` são assinaladas.
+Uma medição posterior (gitleaks 8.30.1, 20 valores) mostrou que a causa é a
+**lista de stopwords** da regra genérica (1 446 entradas, muitas com separador
+final — `our_` e `con_` são entradas), não a forma: a mesma forma snake_case
+sem stopword é assinalada, um valor antes assinalado passa a descartado quando
+se lhe insere `our_`, e a sonda de retirar os `_` não discriminava porque
+retirava também o `our_`; a entropia nunca foi o motivo (4,26 na fixture,
+3,8–4,1 nos tokens de seed, todos acima do limiar 3,5 da regra).
 
 ### Terceira leitura: porque é que 69% é `low`/`info`
 

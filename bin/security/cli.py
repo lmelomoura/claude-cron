@@ -584,8 +584,10 @@ def _scan_secrets(root, ignore):
     pass having written a report over the ceiling and been discarded, see
     `adapters.TREE_GONE` -- the built-in 30, and they shared 1.
     The built-in's surplus is mostly test fixtures and documentation examples,
-    and among the rest is the one credential gitleaks discards by entropy --
-    a seed token shared by a script, a test helper and a Postman collection.
+    and among the rest is the one credential gitleaks' generic rule discards
+    through its stopword list (`our_` and `con_` are entries), not by entropy
+    and not by shape -- a seed token shared by a script, a test helper and a
+    Postman collection.
     The union is the built-in's recall with the engine's identities.
 
     The engine still yields the whole phase to the built-in scanner if it

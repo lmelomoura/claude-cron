@@ -314,16 +314,24 @@ def test_the_history_sweep_runs_on_the_engines_time_budget(tmp_path, monkeypatch
     """One constant, `engines.SCAN_TIMEOUT`, for the built-in's `git log -p`
     and for every engine pass. The two used to be 300 s against 600 s, so on a
     large repository gitleaks' history pass could finish while this one timed
-    out, and the secret row -- which needs both -- read `warning`."""
+    out, and the secret row -- which needs both -- read `warning`.
+
+    The fake answers `rev-list -n1 --all` with a commit. An empty stdout
+    there is `HISTORY_EMPTY_NOTE`, and `scan_history` returns before `git log
+    -p` is ever run -- which is what the first version of this test did: it
+    saw one call, never the one it names, and `timeout=300` on the `git log`
+    call kept it green. Both calls are asserted, in order, each on the
+    budget."""
     seen = []
 
     def fake_run(cmd, **kw):
         seen.append(kw.get("timeout"))
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        stdout = "abc\n" if cmd[3] == "rev-list" else ""
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     scan_history(tmp_path, None)
-    assert seen and set(seen) == {engines.SCAN_TIMEOUT}, seen
+    assert seen == [engines.SCAN_TIMEOUT, engines.SCAN_TIMEOUT], seen
     assert (inspect.signature(engines.run_json).parameters["timeout"].default
             == engines.SCAN_TIMEOUT == 600)
 
