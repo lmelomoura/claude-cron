@@ -16,7 +16,7 @@ JSON document beside the prose:
     {"phases": [{"name": "iac", "status": "skipped", "by": null,
                  "note": "Infrastructure-as-code ... was NOT checked ..."}]}
 
-A table of eight lines answers "who looked, who did not, and with what" in one
+A table of nine lines answers "who looked, who did not, and with what" in one
 glance; the prose is still there, unchanged byte for byte, for the reader who
 then asks why.
 
@@ -58,9 +58,17 @@ SKIPPED = "skipped"
 STATUSES = (RAN, WARNING, SKIPPED)
 
 # THE PHASES, in the order every renderer prints them. Scope first because it
-# decides what all the others were even allowed to look at; triage last because
-# it is the only one written by `cmd_finish`, after everything else has already
-# happened.
+# decides what all the others were even allowed to look at. The last two are
+# the agent's -- its own SAST pass, then the triage of what the deterministic
+# half produced -- and both are written by `cmd_finish`, after everything else
+# has already happened: `prepare` files the first seven, the close files these.
+#
+# `SAST_AGENT` is spelled "sast" because that is the finding CATEGORY the
+# agent's pass mints into (`cli.FINDING_CATEGORIES`), where "sast-prepass" is
+# the Semgrep pass that runs ahead of it and is a `warning` by construction.
+# Two rows, not one, for the reason `_scan_sast` gives at length: the pre-pass
+# is an addition to the agent's pass, never a substitute for it, so a single
+# row could not say which of the two looked.
 #
 # A CLOSED SET, checked by `phase()`. A typo'd name would sort to the end of
 # the table and read as a phase this project does not have, which is a worse
@@ -72,9 +80,10 @@ DEPENDENCIES = "dependencies"
 SBOM = "sbom"
 IAC = "iac"
 SAST_PREPASS = "sast-prepass"
+SAST_AGENT = "sast"
 TRIAGE = "triage"
 PHASE_ORDER = (SCOPE, SECRETS, HYGIENE, DEPENDENCIES, SBOM, IAC, SAST_PREPASS,
-               TRIAGE)
+               SAST_AGENT, TRIAGE)
 
 
 def phase(name, status, by="", note="") -> dict:
@@ -87,9 +96,15 @@ def phase(name, status, by="", note="") -> dict:
     never has to tell an empty producer from a missing key.
 
     `note` takes a string or a list of them and joins them with one space --
-    the identical join `cmd_prepare` uses to build the whole paragraph, so a
-    phase's own prose here is character-for-character the substring of
-    `coverage_note` that belongs to it.
+    the identical join `cmd_prepare` uses to build the whole paragraph. That
+    join is HALF of what makes a phase's prose a character-for-character
+    substring of `coverage_note`; the other half is `cmd_prepare` emitting
+    each phase's sentences ADJACENTLY in the paragraph, in the order the row
+    carries them -- the two sentences shared by `dependencies` and `sbom` sit
+    at the boundary between the two so both rows stay contiguous. Neither
+    half is enforced here (this function sees one row at a time); the whole
+    property is pinned, for every phase in `PHASE_ORDER`, by
+    test_every_phases_prose_is_a_substring_of_the_paragraph.
     """
     if name not in PHASE_ORDER:
         raise ValueError(f"unknown coverage phase: {name}")

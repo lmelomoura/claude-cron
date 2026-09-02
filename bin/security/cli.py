@@ -402,6 +402,19 @@ PRODUCER_HYGIENE = "hygiene"
 PRODUCER_TRIVY_IAC = "trivy-iac"  # Trivy's misconfiguration scan
 PRODUCER_SEMGREP = "semgrep"      # the SAST pre-pass
 
+# The two producers of the SBOM DOCUMENT, named in the same vocabulary so the
+# coverage table's `by` column speaks one language -- but NOT part of the
+# identity vocabulary above: neither mints a finding, neither joins the
+# `produced` set, and `diff._proven` never reads either. They name who built
+# the file a reader downloads, on the same terms `_scan_sbom` chooses between
+# them: Syft's directory scan when it answers with a component, this project's
+# own five-format read (`deps.inventory` -> `deps.sbom`) otherwise. The
+# fallback has a name here because a row reading `warning | —` says "somebody
+# built this and nobody will say who", when `deps.SBOM_FALLBACK_NOTE` beside
+# it says exactly who.
+PRODUCER_SYFT = "syft"
+PRODUCER_INVENTORY = "inventory"  # deps.inventory, the built-in SBOM producer
+
 
 def _produced_by(findings, producer, produced):
     """Stamp the producer that MINTED these findings, and record that it ran.
@@ -460,12 +473,30 @@ def _scan_secrets(root, ignore):
     "the secret phase found nothing" means materially less on that path. It is
     the identical distinction `producer` draws for `diff._proven`, said in the
     one place a human reads instead of the one a diff does.
+
+    AND ON THE ENGINE PATH, `ran` IS EARNED BY THE HISTORY, NOT BY THE BINARY.
+    This phase means the working tree AND the git history -- a credential
+    that was ever committed stays compromised however thoroughly the file was
+    later deleted, which is why `cmd_prepare` sweeps the whole history on
+    every analysis. `adapters.gitleaks_scan` reports what its history sweep
+    actually covered (`HISTORY_OK`, `HISTORY_SHALLOW`, `HISTORY_GONE`), and
+    only the first is the whole of what this phase means: a shallow clone's
+    sweep saw the commits it carries and nothing before the cut-off, and a
+    history git could not walk -- or a pass that produced no report -- was not
+    swept at all. Both are `warning` by that word's own definition in
+    `coverage.py` ("something looked, but not the whole of what this phase
+    means"), and the sentence beside the row is the one the notes already
+    carry for the same gap (`adapters.SHALLOW_GAP`, `secrets.HISTORY_GAP`).
+    This row used to read `ran` over either of them, which is the table
+    contradicting its own paragraph.
     """
     if adapters.engine_path("gitleaks"):
-        findings, notes = adapters.gitleaks_scan(root, ignore)
+        findings, notes, history = adapters.gitleaks_scan(root, ignore)
         if findings is not None:
             return (findings, notes, secrets.count_lines(root, ignore),
-                    PRODUCER_GITLEAKS, coverage.RAN)
+                    PRODUCER_GITLEAKS,
+                    coverage.RAN if history == adapters.HISTORY_OK
+                    else coverage.WARNING)
         # The engine is here and could not answer. Say so, and let the
         # built-in scanner do the work rather than reporting no secrets.
         notes = [*notes, secrets.FALLBACK_NOTE]
@@ -980,13 +1011,27 @@ def cmd_prepare(args):
         dep_notes = [n for n in dep_notes if n != adapters.DEP_SBOM_NOTE]
     dep_notes = [n for n in dep_notes if n]
     sbom_notes = [n for n in sbom_notes if n]
-    notes += dep_notes
-    notes += sbom_notes
-    # After both, because it is about the gap BETWEEN them: what the SBOM
-    # lists and what the dependency phase actually looked up.
+    # THE SBOM SENTENCE THE DEPENDENCY PRODUCER SAYS IS SAID LAST BY IT, so it
+    # sits on the boundary between this phase's notes and the SBOM's. It is
+    # filed under both rows below, and a shared sentence can only be a
+    # contiguous part of two rows' prose if it stands where the two meet.
+    # `trivy_scan` already appends it after everything but the go.sum gap, so
+    # this is a no-op on every path measured; it is enforced here rather than
+    # relied on because the boundary is THIS function's invariant, not the
+    # adapter's.
+    shared_sbom = [n for n in dep_notes if n == adapters.DEP_SBOM_NOTE]
+    dep_notes = [n for n in dep_notes if n != adapters.DEP_SBOM_NOTE] + shared_sbom
+    # BETWEEN the dependency notes and the SBOM's, because it is about the gap
+    # between them -- what the SBOM lists against what the dependency phase
+    # actually looked up -- and because it is filed under both rows: emitted
+    # after the SBOM notes, as it used to be, the dependency row's own prose
+    # (its notes, then this sentence) was not a substring of the paragraph
+    # the moment the SBOM had a sentence of its own.
     unfiltered = _unfiltered_sbom_note(components, ignore)
-    if unfiltered:
-        notes.append(unfiltered)
+    both = [unfiltered] if unfiltered else []
+    notes += dep_notes
+    notes += both
+    notes += sbom_notes
 
     iac_findings, iac_notes, iac_producer, iac_status = _scan_iac(
         root, args.offline, ignore)
@@ -1009,12 +1054,14 @@ def cmd_prepare(args):
     note = " ".join(notes)
 
     # THE SAME SENTENCES, ATTRIBUTED. Nothing is re-worded and nothing is
-    # dropped: `note` above is written byte for byte as it always was, and
-    # every list below is one of the very lists it was concatenated from, so
-    # each phase's prose is a substring of the paragraph a reader can still
-    # read whole. What this adds is WHICH PHASE each sentence belongs to, and
-    # the status that sentence was written to explain -- taken from what the
-    # `_scan_*` functions RETURNED, never from looking for a string in a note.
+    # dropped: every list below is one of the very lists `note` was
+    # concatenated from, IN THE ORDER it was concatenated, so each phase's
+    # prose is a contiguous substring of the paragraph a reader can still read
+    # whole -- pinned for every phase by
+    # test_every_phases_prose_is_a_substring_of_the_paragraph. What this adds
+    # is WHICH PHASE each sentence belongs to, and the status that sentence
+    # was written to explain -- taken from what the `_scan_*` functions
+    # RETURNED, never from looking for a string in a note.
     #
     # TWO SENTENCES GENUINELY BELONG TO TWO PHASES, and both are filed under
     # both rather than under whichever one runs first:
@@ -1034,11 +1081,17 @@ def cmd_prepare(args):
     #     the other half of the contradiction invisible from the row that
     #     states it.
     #
+    # BOTH SIT ON THE BOUNDARY, AND THAT IS WHAT MAKES DUAL FILING HONEST. The
+    # paragraph reads `dep_notes | DEP_SBOM_NOTE unfiltered | sbom_notes`, so
+    # the dependency row (`dep_notes` ending in DEP_SBOM_NOTE, then
+    # `unfiltered`) and the SBOM row (DEP_SBOM_NOTE, `unfiltered`, then
+    # `sbom_notes`) are each one contiguous run of it. Move either shared
+    # sentence off the boundary and one of the two rows stops being a
+    # substring of the paragraph it claims to be quoting.
+    #
     # DEP_ID_NOTE -- Trivy and OSV.dev minting one record per database against
     # one per hole -- is NOT one of those. Both producers it names are this
     # one phase's, so it stays under `dependencies` alone.
-    shared_sbom = [n for n in dep_notes if n == adapters.DEP_SBOM_NOTE]
-    both = [unfiltered] if unfiltered else []
     phases = [
         # `by` is None: the scope is this analysis's own configuration, not
         # something a producer did, and `warning` is reserved for the case an
@@ -1057,12 +1110,15 @@ def cmd_prepare(args):
         coverage.phase(coverage.HYGIENE, coverage.RAN, PRODUCER_HYGIENE),
         coverage.phase(coverage.DEPENDENCIES, dep_status, dep_producer,
                        dep_notes + both),
-        # `by` follows the DOCUMENT, not the CVE producer above: Syft's own
-        # note says who built it when Syft did, and `deps.sbom` is this
-        # project's own inventory rather than a named engine.
+        # `by` follows the DOCUMENT, not the CVE producer above: Syft built
+        # it when the status is `ran`, this project's own inventory when it
+        # is `warning` (`deps.SBOM_FALLBACK_NOTE` beside it says so), and
+        # nobody when there is no document to download at all.
         coverage.phase(coverage.SBOM, sbom_status,
-                       "syft" if sbom_status == coverage.RAN else "",
-                       shared_sbom + sbom_notes + both),
+                       PRODUCER_SYFT if sbom_status == coverage.RAN
+                       else PRODUCER_INVENTORY if sbom_status == coverage.WARNING
+                       else "",
+                       shared_sbom + both + sbom_notes),
         coverage.phase(coverage.IAC, iac_status, iac_producer, iac_notes),
         coverage.phase(coverage.SAST_PREPASS, sast_status, sast_producer,
                        sast_notes),
@@ -1362,6 +1418,35 @@ def _triaged_count(conn, analysis_id) -> int:
     return row["n"] if row else 0
 
 
+def _decided_count(conn, analysis_id, project) -> int:
+    """How many scanner findings at or above TRIAGE_FLOOR the gate did NOT
+    count because the operator had already decided on them.
+
+    THE INVERSE OF `_untriaged`'s FOURTH EXCLUSION, over the same rows: this
+    analysis's, minted by a scanner, unread by the agent, at the floor or
+    above -- and covered by a `decision` of this project where `_untriaged`
+    requires them not to be. It exists because the triage row's prose used to
+    describe those rows as absent. An analysis whose one `high` the operator
+    accepted, with no agent re-report, closes `done` -- correctly -- and its
+    triage row read "No deterministic finding at medium or above was waiting
+    to be triaged". One was. It was exempted by a human decision, not absent,
+    and a reader of the table could not tell the two apart.
+
+    `triaged=0` is kept deliberately: a decided row the agent ALSO re-reported
+    is counted by `_triaged_count` as read, and saying it "was not counted"
+    would be false.
+    """
+    placeholders = ",".join("?" * len(TRIAGE_BLOCKING))
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM finding f"
+        " WHERE f.analysis_id=? AND f.triaged=0 AND f.producer<>''"
+        f" AND f.producer<>? AND f.severity IN ({placeholders})"
+        " AND EXISTS (SELECT 1 FROM decision d WHERE d.project=?"
+        "             AND d.fingerprint=f.fingerprint)",
+        (analysis_id, diff.AGENT, *TRIAGE_BLOCKING, project)).fetchone()
+    return row["n"] if row else 0
+
+
 # The `triage` phase's own prose, for the two outcomes that are NOT a
 # downgrade. The third -- findings nobody read -- writes `untriaged_note`,
 # which is the sentence the report already prints and the one that names
@@ -1372,6 +1457,15 @@ TRIAGE_NOTHING_NOTE = ("No deterministic finding at {floor} or above was "
 TRIAGE_ALL_READ_NOTE = ("The agent re-reported {count} deterministic "
                         "finding{s} and left none at {floor} or above unread.")
 
+# Said beside either of the above -- or INSTEAD of `TRIAGE_NOTHING_NOTE`, when
+# the only reason nothing was waiting is that a human had already ruled --
+# whenever `_decided_count` is non-zero. The gate is right not to count a
+# decided row (see `_untriaged`); the row is wrong to hide that it did.
+# Written into `coverage_note` too, so the triage row stays a substring of the
+# paragraph in the one case this sentence is the whole of its prose.
+TRIAGE_DECIDED_NOTE = ("{count} deterministic finding{s} at {floor} or above "
+                       "carried an operator decision and {were} not counted.")
+
 # Said when the close never reached the triage check at all -- the caller
 # closed `capped` or `failed`, so `done`'s precondition was never evaluated.
 # `skipped`, not `ran`: nothing looked, exactly as it means for every
@@ -1381,27 +1475,35 @@ TRIAGE_UNVERIFIED_NOTE = ("This analysis did not close `done`, so nothing "
                           "ever read.")
 
 
-def _triage_phase(conn, analysis_id, untriaged, untriaged_note):
+def _triage_phase(conn, analysis_id, untriaged, untriaged_note, decided_note):
     """The `triage` row of the coverage table.
 
-    THE ONE PHASE THE AGENT PERFORMS, and therefore the one whose status is
-    the answer to a question the deterministic half cannot ask itself: the
-    scanners are noisy on purpose (see `cmd_finish`), and the noise is meant to
-    be sorted by something that reads the surrounding code. Until this row
-    existed, an analysis's table would have shown seven phases that ran and
-    said nothing at all about the job the whole design rests on.
+    THE ONE PHASE THE AGENT PERFORMS ON THE SCANNERS' OUTPUT, and therefore
+    the one whose status is the answer to a question the deterministic half
+    cannot ask itself: the scanners are noisy on purpose (see `cmd_finish`),
+    and the noise is meant to be sorted by something that reads the
+    surrounding code. Until this row existed, an analysis's table would have
+    shown eight phases that ran and said nothing at all about the job the
+    whole design rests on.
+
+    `decided_note` is `TRIAGE_DECIDED_NOTE` formatted, or "" when no decided
+    row was exempted. It rides beside the count sentence in every case but
+    one: with nothing read and nothing waiting EXCEPT what a human ruled on,
+    it replaces `TRIAGE_NOTHING_NOTE`, because that sentence would be false.
     """
     if untriaged:
         return coverage.phase(coverage.TRIAGE, coverage.WARNING, diff.AGENT,
-                              untriaged_note)
+                              [untriaged_note, decided_note])
     read = _triaged_count(conn, analysis_id)
     if not read:
-        return coverage.phase(coverage.TRIAGE, coverage.RAN, diff.AGENT,
-                              TRIAGE_NOTHING_NOTE.format(floor=TRIAGE_FLOOR))
+        return coverage.phase(
+            coverage.TRIAGE, coverage.RAN, diff.AGENT,
+            decided_note or TRIAGE_NOTHING_NOTE.format(floor=TRIAGE_FLOOR))
     return coverage.phase(
         coverage.TRIAGE, coverage.RAN, diff.AGENT,
-        TRIAGE_ALL_READ_NOTE.format(count=read, floor=TRIAGE_FLOOR,
-                                    s="s" if read != 1 else ""))
+        [TRIAGE_ALL_READ_NOTE.format(count=read, floor=TRIAGE_FLOOR,
+                                     s="s" if read != 1 else ""),
+         decided_note])
 
 
 def cmd_finish(args):
@@ -1485,9 +1587,57 @@ def cmd_finish(args):
     # agent text written into its `rule` or its occurrences. All three are
     # pinned by tests that name this paragraph.
     untriaged_note = ""
+    unprepared_note = ""
+    decided_note = ""
     triage_phase = None
-    if state == "done":
+    # `done` REQUIRES that the deterministic phases actually ran. Nothing
+    # engine-side runs `prepare` -- it is the agent's first command, named in
+    # the prompt and in the skill -- so an agent that simply skipped it exited
+    # cleanly, the engine closed the row `done`, and the result was a report
+    # with zero findings, an empty coverage note and no banner anywhere saying
+    # the repository had never been scanned. Worse than useless: that report
+    # becomes the BASELINE the next analysis is diffed against, so everything
+    # the next run legitimately finds arrives as `new` and everything a
+    # previous run had found reads as `fixed`.
+    #
+    # Downgraded to `capped` rather than refused outright, for the same reason
+    # the close-out can only ever lower a verdict: leaving the row `running`
+    # for ever is a worse outcome than an honest "incomplete", and `capped` is
+    # the state the report already prints an INCOMPLETE banner for.
+    #
+    # ASKED FIRST, BEFORE THE TRIAGE CHECK, AND THE TRIAGE ROW IS FILED FROM
+    # INSIDE THE BRANCH THAT KNOWS THE ANSWER. The triage of what the
+    # scanners produced is a question about `prepare`'s output; with no
+    # `prepare`, `_untriaged` answers "nothing waiting" for want of rows, and
+    # the triage row used to be built from that answer -- a green `triage |
+    # ran` over a paragraph saying nothing ran, for exactly the analysis this
+    # guard was written after. So a never-prepared close files BOTH agent-side
+    # rows `skipped`, carrying the sentence the paragraph is about to carry
+    # for the same fact, and never evaluates the triage at all.
+    if state == "done" and not row["prepared"]:
+        state = "capped"
+        unprepared_note = (
+            "The deterministic phases never ran for this analysis: no secret "
+            "sweep, no dependency inventory, no hygiene pass, no "
+            "infrastructure-as-code check, no SAST pre-pass. Nothing here was "
+            "looked at by them, so an absent finding means nothing was checked.")
+        print(f"finish: analysis {args.analysis} never ran `prepare` — closing "
+              "it capped instead of done; a report with no deterministic "
+              "phase behind it must not become the next analysis's baseline",
+              file=sys.stderr)
+        triage_phase = coverage.phase(coverage.TRIAGE, coverage.SKIPPED,
+                                      note=unprepared_note)
+    elif state == "done":
         skipped = _untriaged(conn, args.analysis, row["project"])
+        # The rows the gate rightly did not count because a human already
+        # ruled on them -- said out loud, because "nothing was waiting" and
+        # "what was waiting had been decided" are different facts and the
+        # triage row used to state the first in both cases.
+        decided = _decided_count(conn, args.analysis, row["project"])
+        if decided:
+            decided_note = TRIAGE_DECIDED_NOTE.format(
+                count=decided, s="s" if decided != 1 else "",
+                floor=TRIAGE_FLOOR, were="were" if decided != 1 else "was")
         if skipped:
             state = "capped"
             named = "; ".join(f"{r['rule']} ({r['file'] or 'no file recorded'})"
@@ -1505,37 +1655,11 @@ def cmd_finish(args):
                   "triaged — closing it capped instead of done; triaging what "
                   "the deterministic phases produced is the job, not a "
                   "postscript to it", file=sys.stderr)
-        # Built from the SAME query result the downgrade was decided on, so
+        # Built from the SAME query results the downgrade was decided on, so
         # the table and the verdict can never tell different stories about
         # one close.
         triage_phase = _triage_phase(conn, args.analysis, skipped,
-                                     untriaged_note)
-    # `done` REQUIRES that the deterministic phases actually ran. Nothing
-    # engine-side runs `prepare` -- it is the agent's first command, named in
-    # the prompt and in the skill -- so an agent that simply skipped it exited
-    # cleanly, the engine closed the row `done`, and the result was a report
-    # with zero findings, an empty coverage note and no banner anywhere saying
-    # the repository had never been scanned. Worse than useless: that report
-    # becomes the BASELINE the next analysis is diffed against, so everything
-    # the next run legitimately finds arrives as `new` and everything a
-    # previous run had found reads as `fixed`.
-    #
-    # Downgraded to `capped` rather than refused outright, for the same reason
-    # the close-out can only ever lower a verdict: leaving the row `running`
-    # for ever is a worse outcome than an honest "incomplete", and `capped` is
-    # the state the report already prints an INCOMPLETE banner for.
-    unprepared_note = ""
-    if state == "done" and not row["prepared"]:
-        state = "capped"
-        unprepared_note = (
-            "The deterministic phases never ran for this analysis: no secret "
-            "sweep, no dependency inventory, no hygiene pass, no "
-            "infrastructure-as-code check, no SAST pre-pass. Nothing here was "
-            "looked at by them, so an absent finding means nothing was checked.")
-        print(f"finish: analysis {args.analysis} never ran `prepare` — closing "
-              "it capped instead of done; a report with no deterministic "
-              "phase behind it must not become the next analysis's baseline",
-              file=sys.stderr)
+                                     untriaged_note, decided_note)
     # finish_analysis writes coverage_note unconditionally, and neither caller
     # of `finish` carries the note `prepare` printed: the agent never saw it,
     # and the engine's close-out knows only the run's status and cost. An
@@ -1548,14 +1672,15 @@ def cmd_finish(args):
     # equality guard keeps a row closed twice with the same sentence from
     # accumulating it twice.
     #
-    # A THIRD AND FOURTH writer, from the two guards above: the reason the
-    # verdict was lowered belongs in the report next to every other thing this
-    # analysis did not do. Both can fire on one close -- an analysis that never
-    # ran `prepare` has no findings to leave untriaged, but that is a fact
-    # about today's phases and not an invariant this loop should rely on.
+    # A THIRD, FOURTH AND FIFTH writer, from the two guards above: the reason
+    # the verdict was lowered belongs in the report next to every other thing
+    # this analysis did not do, and so does the count of rows a human decision
+    # exempted from the gate -- the one sentence of the triage row's prose that
+    # has to be in the paragraph for the row to be quoting it.
     stored = row["coverage_note"] or ""
     note = ""
-    for part in (stored, args.note or "", unprepared_note, untriaged_note):
+    for part in (stored, args.note or "", unprepared_note, untriaged_note,
+                 decided_note):
         part = part.strip()
         # `not in`, not `!=`: a row is closed twice (the agent, then the
         # engine) and each close re-reads the note it already wrote. Without
@@ -1563,26 +1688,58 @@ def cmd_finish(args):
         if part and part not in note:
             note = f"{note} {part}".strip()
     # THE STRUCTURED HALF OF THE SAME APPEND. `prepare` wrote seven phases;
-    # this close adds the eighth, the one nothing deterministic can report on
-    # itself. `coverage.merge` REPLACES a triage row rather than appending
-    # one, which is the structured twin of the `part not in note` guard above
-    # and exists for the identical reason: this function runs twice on one
-    # analysis.
+    # this close adds the eighth and the ninth -- the agent's own SAST pass and
+    # the triage of what the scanners produced, the two nothing deterministic
+    # can report on itself. `coverage.merge` REPLACES a row of the same name
+    # rather than appending one, which is the structured twin of the `part not
+    # in note` guard above and exists for the identical reason: this function
+    # runs twice on one analysis.
+    #
+    # THE SAST ROW FOLLOWS THE VERDICT, because the verdict is the only
+    # evidence there is about the agent's own pass: `ran` on `done`, `warning`
+    # on anything less -- the run was cut off (`capped`) or broke (`failed`),
+    # and the pass that was underway is at best part of what this row means --
+    # and `skipped` when `prepare` never ran, on the same reasoning as the
+    # triage row above: an agent that never ran its first command is not an
+    # agent whose pass this table can vouch for. Its prose is the agent's own
+    # `--note`, the one sentence about its coverage this close already carries
+    # into the paragraph; a close that brings none keeps the sentence a
+    # previous close stored, so the engine's second, note-less close does not
+    # blank what the agent said.
+    #
+    # THIS IS THE ONE ROW THE ENGINE'S SECOND CLOSE IS ALLOWED TO LOWER. The
+    # triage row is protected from it (below): the triage check is a fact
+    # about the ledger, and a `capped` from the engine says nothing about
+    # whether the findings were read. The agent's SAST pass is the opposite
+    # case -- a `capped` from the engine is precisely the statement that the
+    # run making the claim was cut short, so `ran` there would be the table
+    # trusting the one fact this docstring says nothing can verify.
     #
     # A close that never reached the triage check leaves whatever `prepare`
-    # stored alone and files the phase as `skipped` -- never as `ran`. The one
+    # stored alone and files that phase as `skipped` -- never as `ran`. The one
     # thing this must not do is let the engine's second close, which closes
     # `capped` and skips the check, overwrite a `ran` the agent's own close
-    # had earned; `merge` on a phase that is not built is simply not called.
+    # had earned; `merge` on a triage row that is not built is simply not
+    # called.
     phases = coverage.phases_of(row)
+    prior_sast = next((p.get("note") or "" for p in phases
+                       if p.get("name") == coverage.SAST_AGENT), "")
+    if not row["prepared"]:
+        sast_phase = coverage.phase(coverage.SAST_AGENT, coverage.SKIPPED,
+                                    note=unprepared_note or prior_sast)
+    else:
+        sast_phase = coverage.phase(
+            coverage.SAST_AGENT,
+            coverage.RAN if state == "done" else coverage.WARNING,
+            diff.AGENT, (args.note or "").strip() or prior_sast)
     if triage_phase is None and not any(
             p.get("name") == coverage.TRIAGE for p in phases):
         triage_phase = coverage.phase(coverage.TRIAGE, coverage.SKIPPED,
                                       note=TRIAGE_UNVERIFIED_NOTE)
-    if triage_phase is not None:
-        phases = coverage.merge(phases, [triage_phase])
+    phases = coverage.merge(
+        phases, [sast_phase] + ([triage_phase] if triage_phase else []))
     ledger.finish_analysis(conn, args.analysis, state, _spend(args.spend), note,
-                           coverage.encode(phases) if phases else "")
+                           coverage.encode(phases))
     # `row`'s own project and branch, never a flag the caller passed: `finish`
     # has two callers and neither one necessarily agrees with the row about
     # what it is closing, so the event has to come from the row itself.

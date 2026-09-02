@@ -2565,25 +2565,67 @@ def test_every_phases_prose_is_a_substring_of_the_paragraph(tmp_path):
     reports and three screens have always read `coverage_note`, and every
     analysis written before the `coverage` column has only that. The
     structured half re-uses the SAME strings -- nothing reworded, nothing
-    summarised -- so a phase's note is always findable in the paragraph a
-    reader can still read whole."""
+    summarised -- so a phase's WHOLE note is always one contiguous run of the
+    paragraph a reader can still read whole.
+
+    STAGED ON THE CASE THAT USED TO BREAK IT. A lockfile under a directory the
+    default filter excludes gives the SBOM a component the dependency phase
+    never looked up, so `SBOM_UNFILTERED_NOTE` fires -- and the SBOM has a
+    sentence of its own. That sentence used to be emitted AFTER the SBOM's,
+    while the dependency row carried it right after its own notes: the row
+    was not a substring of the paragraph, and the only test of the property
+    put the lockfile at the root, where the sentence is never said at all.
+    Asserted for every phase `prepare` files -- all of `PHASE_ORDER` but the
+    two the close adds -- and then again after the close, for the two it adds.
+
+    THE ONE DELIBERATE EXCEPTION is the triage row's two summary sentences
+    (`TRIAGE_NOTHING_NOTE`, `TRIAGE_ALL_READ_NOTE`): they describe what the
+    agent did, not a gap, and the paragraph is the list of gaps. The row's
+    other sentences -- findings never read, a decision that exempted one, a
+    `prepare` that never ran -- are gaps, and the close writes each of them
+    into the paragraph too.
+    """
     db = tmp_path / "security.db"
     root = tmp_path / "repo"
-    root.mkdir()
-    (root / "requirements.txt").write_text("requests==2.31.0\n")
+    (root / "fixtures").mkdir(parents=True)
+    (root / "fixtures" / "requirements.txt").write_text("requests==2.31.0\n")
     aid = open_analysis(db)
     note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
                "--offline")["coverage_note"]
     _, phases = _coverage_phases(db, aid)
-    assert any(p["note"] for p in phases), "no phase carried any prose at all"
+    by_name = {p["name"]: p for p in phases}
+    # The case is reached: the unfiltered sentence is said once, filed under
+    # both rows, and the SBOM row has a sentence of its own beside it --
+    # whichever producer built the document in this configuration.
+    unfiltered = "No vulnerability was looked up for"
+    assert note.count(unfiltered) == 1, note
+    assert unfiltered in by_name["dependencies"]["note"]
+    assert unfiltered in by_name["sbom"]["note"]
+    assert any(own in by_name["sbom"]["note"] for own in (
+        security_cli.deps.SBOM_FALLBACK_NOTE,
+        security_cli.adapters.SYFT_SBOM_NOTE)), by_name["sbom"]["note"]
+    # Every phase `prepare` writes, and each one's whole prose.
+    assert [p["name"] for p in phases] == \
+        list(security_cli.coverage.PHASE_ORDER[:-2])
     for p in phases:
-        if p["note"]:
-            assert p["note"] in note, \
-                f"{p['name']}'s note is not in the paragraph: {p['note']}"
+        assert p["note"] in note, \
+            f"{p['name']}'s note is not in the paragraph: {p['note']!r}"
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done",
+        "--note", "I stopped before the SAST phase")
+    row, phases = _coverage_phases(db, aid)
+    assert [p["name"] for p in phases] == list(security_cli.coverage.PHASE_ORDER)
+    for p in phases:
+        if p["name"] == "triage":
+            assert p["note"] == security_cli.TRIAGE_NOTHING_NOTE.format(
+                floor=security_cli.TRIAGE_FLOOR)
+            continue
+        assert p["note"] in row["coverage_note"], \
+            f"{p['name']}'s note is not in the paragraph: {p['note']!r}"
 
 
 def test_the_close_adds_a_triage_phase_carrying_the_count(tmp_path):
-    """The eighth phase, and the only one no deterministic pass can report on
+    """The ninth phase, and the one no deterministic pass can report on
     itself: whether anybody READ what the scanners produced. `warning` with
     the same sentence the downgrade already writes -- the count and the first
     three by rule and file."""
@@ -2698,9 +2740,13 @@ def test_a_sentence_about_two_phases_is_filed_under_both(tmp_path, monkeypatch,
 
     monkeypatch.setattr(security_cli.adapters, "engine_path",
                         lambda name: "/usr/bin/trivy" if name == "trivy" else None)
+    # A sentence BEFORE the SBOM one, as the real `trivy_scan` always has: the
+    # boundary assertion below is vacuous against a one-note dependency phase.
     monkeypatch.setattr(security_cli.adapters, "trivy_scan",
                         lambda root, ignore_paths=(): (
-                            [], [security_cli.adapters.DEP_SBOM_NOTE]))
+                            [], [security_cli.adapters.DEP_ENGINE_NOTE.format(
+                                     version="0.74.0"),
+                                 security_cli.adapters.DEP_SBOM_NOTE]))
     security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
                        "--db", str(db)])
     note = json.loads(capsys.readouterr().out)["coverage_note"]
@@ -2715,11 +2761,22 @@ def test_a_sentence_about_two_phases_is_filed_under_both(tmp_path, monkeypatch,
     assert security_cli.adapters.DEP_SBOM_NOTE in by_name["sbom"]
     assert unfiltered in by_name["dependencies"], by_name["dependencies"]
     assert unfiltered in by_name["sbom"], by_name["sbom"]
-    # And the paragraph still says each of them exactly once, where it always
-    # did. Filing a sentence under two phases must not duplicate it in the
-    # text three reports and three screens have always read.
+    # And the paragraph still says each of them exactly once. Filing a
+    # sentence under two phases must not duplicate it in the text three
+    # reports and three screens have always read.
     assert note.count(security_cli.adapters.DEP_SBOM_NOTE) == 1
     assert note.count(unfiltered) == 1
+    # BOTH ROWS ARE WHOLE SUBSTRINGS AT ONCE, which is only possible because
+    # the two shared sentences sit on the boundary between them: the paragraph
+    # reads `dep notes | SBOM sentence, unfiltered | SBOM's own notes`. This
+    # is the assertion the test above makes for the OSV path, on the Trivy
+    # path, where the dependency producer is the one saying the SBOM sentence.
+    for name, prose in by_name.items():
+        assert prose in note, f"{name}'s note is not in the paragraph: {prose!r}"
+    assert (note.index(security_cli.adapters.DEP_ENGINE_NOTE.format(version="0.74.0"))
+            < note.index(security_cli.adapters.DEP_SBOM_NOTE)
+            < note.index(unfiltered)
+            < note.index(security_cli.deps.SBOM_FALLBACK_NOTE)), note
 
 
 def test_the_sbom_sentence_disappears_from_both_phases_when_there_is_no_sbom(
@@ -2762,10 +2819,243 @@ def test_the_downloaded_report_opens_with_the_phase_table(tmp_path):
     assert "| Phase | Status | By |" in md
     assert md.index("| Phase | Status | By |") < md.index("## Checklist")
     assert "| iac | skipped | — |" in md
+    assert "| sast | ran | agent |" in md
     assert "| triage | ran | agent |" in md
+    assert md.index("| sast | ran | agent |") < md.index("| triage | ran | agent |")
     doc = json.loads(run_text(db, "render", "--analysis", str(aid),
                               "--format", "json"))
     assert [p["name"] for p in doc["coverage"]["phases"]][-1] == "triage"
+
+
+# -------------------------------- the two rows the close writes, and when not
+
+def test_a_never_prepared_close_files_the_agents_rows_skipped_and_nothing_ran(tmp_path):
+    """THE MINERVA 9/10 SHAPE, on the table. An analysis whose `prepare` never
+    ran closes `capped` under a paragraph saying nothing ran -- and its triage
+    row used to read `ran`, because the row was built from `_untriaged`'s
+    answer BEFORE the `prepared` guard asked its question, and a ledger with
+    no scanner rows has nothing waiting. Both agent-side rows are `skipped`,
+    under the paragraph's own sentence, and no row in the table reads `ran`."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row, phases = _coverage_phases(db, aid)
+    by_name = {p["name"]: p for p in phases}
+    assert row["state"] == "capped"
+    assert by_name["triage"]["status"] == "skipped"
+    assert by_name["sast"]["status"] == "skipped"
+    assert by_name["triage"]["by"] is None and by_name["sast"]["by"] is None
+    assert not [p for p in phases if p["status"] == "ran"], phases
+    for name in ("triage", "sast"):
+        assert "deterministic phases never ran" in by_name[name]["note"]
+        assert by_name[name]["note"] in row["coverage_note"]
+    # The engine's second close -- `capped`, with the spend -- keeps both rows
+    # and both sentences: it brings no note of its own and must not blank
+    # theirs.
+    run(db, "finish", "--analysis", str(aid), "--state", "capped", "--spend", "1")
+    row, phases = _coverage_phases(db, aid)
+    assert {p["status"] for p in phases} == {"skipped"}, phases
+    assert all("deterministic phases never ran" in p["note"] for p in phases), phases
+
+
+def test_the_close_files_the_agents_own_sast_pass_by_the_verdict(tmp_path):
+    """The eighth row: the agent's own SAST pass had a row for its Semgrep
+    PRE-pass and none for itself, so the table said nothing about the primary
+    source of the `sast` category. `ran` on `done`, `warning` on `capped` --
+    the verdict is the only evidence there is about the pass -- and its prose
+    is the agent's own `--note`, the one sentence about its coverage the close
+    already carries into the paragraph."""
+    db = tmp_path / "security.db"
+    done = prepared_analysis(db, tmp_path)
+    run(db, "finish", "--analysis", str(done), "--state", "done")
+    _, phases = _coverage_phases(db, done)
+    assert [p["name"] for p in phases] == list(security_cli.coverage.PHASE_ORDER)
+    sast = [p for p in phases if p["name"] == "sast"][0]
+    assert sast == {"name": "sast", "status": "ran", "by": "agent", "note": ""}
+
+    capped = prepared_analysis(db, tmp_path)
+    run(db, "finish", "--analysis", str(capped), "--state", "capped",
+        "--note", "I stopped before the SAST phase")
+    row, phases = _coverage_phases(db, capped)
+    sast = [p for p in phases if p["name"] == "sast"][0]
+    assert sast["status"] == "warning" and sast["by"] == "agent"
+    assert sast["note"] == "I stopped before the SAST phase"
+    assert sast["note"] in row["coverage_note"]
+
+
+def test_the_engines_capped_lowers_the_sast_row_and_leaves_the_triage_row(tmp_path):
+    """The one asymmetry between the two rows the close writes, and it is
+    deliberate. The triage check is a fact about the ledger, and the engine's
+    `capped` says nothing about whether the findings were read -- so that row
+    keeps the `ran` the agent's close earned (pinned above). The agent's SAST
+    pass is the opposite case: the engine's `capped` is precisely the
+    statement that the run making the `done` claim was cut short, so its row
+    is lowered to `warning`. The agent's sentence is carried forward, because
+    the engine's close brings none of its own."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    _triage(db, aid, fp, rule="CVE-1")
+    run(db, "finish", "--analysis", str(aid), "--state", "done",
+        "--note", "the SAST pass covered every entry point")
+    run(db, "finish", "--analysis", str(aid), "--state", "capped", "--spend", "2")
+    row, phases = _coverage_phases(db, aid)
+    by_name = {p["name"]: p for p in phases}
+    assert row["state"] == "capped"
+    assert by_name["sast"]["status"] == "warning"
+    assert by_name["sast"]["note"] == "the SAST pass covered every entry point"
+    assert by_name["triage"]["status"] == "ran"
+    assert len([p for p in phases if p["name"] == "sast"]) == 1, phases
+
+
+def test_the_triage_row_says_when_a_decision_and_not_absence_left_nothing_waiting(tmp_path):
+    """`_untriaged` rightly excludes a fingerprint the operator decided on --
+    and the triage row then read "No deterministic finding at medium or above
+    was waiting to be triaged". One was. It was exempted by a human, not
+    absent, and the two are different facts about the same close."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="aws_secret_key", severity="high",
+                          category="secret", producer="secrets",
+                          file="config/legacy.env")
+    _decide(db, fp)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row, phases = _coverage_phases(db, aid)
+    triage = [p for p in phases if p["name"] == "triage"][0]
+    assert row["state"] == "done"
+    assert triage["status"] == "ran"
+    assert triage["note"] == ("1 deterministic finding at medium or above "
+                              "carried an operator decision and was not counted.")
+    assert "was waiting to be triaged" not in triage["note"]
+    assert triage["note"] in row["coverage_note"]
+
+
+def test_the_triage_row_names_the_undecided_one_and_counts_the_decided_one(tmp_path):
+    """The sibling: one decided, one not. The close lowers to `capped` for the
+    undecided row and names it; the decided count rides beside that sentence
+    rather than replacing it, and both are in the paragraph."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    decided = _scanner_finding(db, aid, rule="CVE-1", severity="critical")
+    _scanner_finding(db, aid, rule="CVE-2", severity="high", file="pom.xml")
+    _decide(db, decided)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row, phases = _coverage_phases(db, aid)
+    triage = [p for p in phases if p["name"] == "triage"][0]
+    assert row["state"] == "capped"
+    assert triage["status"] == "warning"
+    assert "1 deterministic finding was never triaged" in triage["note"]
+    assert "CVE-2 (pom.xml)" in triage["note"]
+    assert "CVE-1" not in triage["note"]
+    assert ("1 deterministic finding at medium or above carried an operator "
+            "decision and was not counted.") in triage["note"]
+    assert triage["note"] in row["coverage_note"]
+
+
+def test_a_decided_row_the_agent_also_read_is_counted_as_read_not_as_decided(tmp_path):
+    """`triaged=0` in `_decided_count` is load-bearing: a decided row the agent
+    re-reported anyway -- here at its original severity, so the floor alone
+    would not drop it -- is in `_triaged_count`, and "was not counted" would
+    be false of it."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    _decide(db, fp)
+    _triage(db, aid, fp, rule="CVE-1", severity="high")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    _, phases = _coverage_phases(db, aid)
+    triage = [p for p in phases if p["name"] == "triage"][0]
+    assert "re-reported 1 deterministic finding" in triage["note"]
+    assert "operator decision" not in triage["note"]
+
+
+# ------------------------------ the secret row is earned by the history sweep
+#
+# In-process, like the Trivy group above: the gitleaks path has to be staged
+# without depending on the binary, and the adapter's own third return value is
+# what is being threaded through here. The adapter is proved against real
+# repositories in tests/security/test_adapters.py.
+
+@pytest.mark.parametrize("history, gap", [
+    (security_cli.adapters.HISTORY_SHALLOW, security_cli.adapters.SHALLOW_GAP),
+    (security_cli.adapters.HISTORY_GONE,
+     security_cli.secrets.HISTORY_GAP.format(reason="fatal: bad object HEAD")),
+], ids=["shallow", "gone"])
+def test_the_secret_row_is_a_warning_when_the_history_was_not_swept_in_full(
+        tmp_path, monkeypatch, capsys, history, gap):
+    """`_scan_secrets` used to answer `ran` on the gitleaks path whatever the
+    history sweep had covered, so a shallow clone -- or a history git could not
+    walk at all -- got a green row over a paragraph saying the sweep saw only
+    part of the history, or none of it. The row reads `warning` for anything
+    short of the full history, beside the very sentence the paragraph carries
+    for that gap."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    engine_note = security_cli.adapters.ENGINE_NOTE.format(
+        version="gitleaks 8.21.0", scope="the working tree")
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/gitleaks" if name == "gitleaks" else None)
+    monkeypatch.setattr(security_cli.adapters, "gitleaks_scan",
+                        lambda root, ignore_paths=(): ([], [gap, engine_note], history))
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db), "--offline"])
+    note = json.loads(capsys.readouterr().out)["coverage_note"]
+    _, phases = _coverage_phases(db, aid)
+    secret = [p for p in phases if p["name"] == "secrets"][0]
+    assert secret["status"] == "warning"
+    assert secret["by"] == "gitleaks"
+    assert gap in secret["note"]
+    assert secret["note"] in note
+
+
+def test_the_secret_row_is_ran_only_when_the_full_history_was_swept(
+        tmp_path, monkeypatch, capsys):
+    """The control: the engine over a full clone, and the one state that earns
+    the row a `ran`."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    engine_note = security_cli.adapters.ENGINE_NOTE.format(
+        version="gitleaks 8.21.0",
+        scope=f"the working tree and {security_cli.adapters.FULL_HISTORY}")
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/gitleaks" if name == "gitleaks" else None)
+    monkeypatch.setattr(security_cli.adapters, "gitleaks_scan",
+                        lambda root, ignore_paths=(): (
+                            [], [engine_note], security_cli.adapters.HISTORY_OK))
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db), "--offline"])
+    capsys.readouterr()
+    _, phases = _coverage_phases(db, aid)
+    secret = [p for p in phases if p["name"] == "secrets"][0]
+    assert secret["status"] == "ran"
+    assert secret["by"] == "gitleaks"
+
+
+def test_the_fallback_sbom_names_the_inventory_that_built_it(tmp_path, monkeypatch,
+                                                            capsys):
+    """`warning | —` over a document that exists said "somebody built this
+    and nobody will say who", while the sentence beside it named this
+    project's own inventory. The row names it too. In-process with every
+    engine absent, so the fallback is what runs in both configurations of
+    this suite."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "requirements.txt").write_text("requests==2.31.0\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    monkeypatch.setattr(security_cli.adapters, "engine_path", lambda name: None)
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db), "--offline"])
+    capsys.readouterr()
+    _, phases = _coverage_phases(db, aid)
+    sbom = [p for p in phases if p["name"] == "sbom"][0]
+    assert sbom["status"] == "warning"
+    assert sbom["by"] == security_cli.PRODUCER_INVENTORY == "inventory"
+    assert security_cli.deps.SBOM_FALLBACK_NOTE in sbom["note"]
 
 
 # ------------------------------- a decision is not taken while a run is live

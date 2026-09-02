@@ -159,7 +159,7 @@ def as_markdown(analysis, findings, coverage_note):
     # THE TABLE COMES FIRST, AND THAT ORDER IS THE POINT OF IT. The prose
     # below is every gap this analysis has, sentence by sentence, and on a
     # real run it is about two thousand characters of it -- true throughout
-    # and unreadable as a block. Eight lines of "who looked, who did not, and
+    # and unreadable as a block. Nine lines of "who looked, who did not, and
     # with what" answer the question a reader actually opens the file with;
     # the paragraph is then there for the one who asks why.
     rows = _phase_rows(analysis)
@@ -212,7 +212,19 @@ border-radius:3px}@media print{.f{break-inside:avoid}}
 .cov{border-collapse:collapse;margin:1rem 0}
 .cov th,.cov td{border:1px solid #e5e5e5;padding:.3rem .6rem;text-align:left}
 .cov th{background:#f4f4f5;font-weight:600}
-.cov .ran{color:#15803d}.cov .warning{color:#b45309}.cov .skipped{color:#b91c1c}"""
+.cov .cov-ok{color:#15803d}.cov .cov-warn{color:#b45309}.cov .cov-gap{color:#b91c1c}"""
+
+# The CSS class a status cell carries, DELIBERATELY NOT SPELLED LIKE THE
+# STATUS. The class used to be the status word itself, and the test that
+# checked a `skipped` row was rendered passed on a page with no such row --
+# the word was in the stylesheet's `.cov .skipped`. None of these three
+# contains the status it colours, so a test that finds the word in the output
+# has found it in a cell. A status this table does not know gets no class at
+# all: a word with no colour is what an unknown status should look like, and
+# a class attribute built from an unknown value would be a second sink beside
+# the text.
+_STATUS_CLASS = {coverage.RAN: "cov-ok", coverage.WARNING: "cov-warn",
+                 coverage.SKIPPED: "cov-gap"}
 
 
 def as_html(analysis, findings, coverage_note):
@@ -225,19 +237,22 @@ def as_html(analysis, findings, coverage_note):
              f"<p>Branch <code>{e(analysis['branch'])}</code> at "
              f"<code>{e(analysis['commit_sha'][:12])}</code> · profile "
              f"{e(analysis['profile'])} · {e(when)}</p>"]
-    # Before the prose, for the reason `as_markdown` gives at length. The
-    # status is also the class, so a reader scanning the table sees three
-    # colours rather than three words -- and `e()` is on it like every other
-    # value here, because a class attribute built from a database column is
-    # exactly as much of a sink as the text beside it.
+    # Before the prose, for the reason `as_markdown` gives at length -- and
+    # pinned there by test_html_opens_with_the_phase_table_before_the_prose,
+    # which reads the two tags' positions rather than trusting this comment.
+    # The status picks the cell's class through `_STATUS_CLASS`, so a reader
+    # scanning the table sees three colours rather than three words, and the
+    # class is one of three literals this module owns rather than a value
+    # read out of a database column.
     rows = _phase_rows(analysis)
     if rows:
         parts.append('<h2>Coverage</h2><table class="cov">'
                      "<tr><th>Phase</th><th>Status</th><th>By</th></tr>")
-        parts += [f"<tr><td>{e(name)}</td>"
-                  f'<td class="{e(status)}">{e(status)}</td>'
-                  f"<td>{e(by)}</td></tr>"
-                  for name, status, by in rows]
+        for name, status, by in rows:
+            cls = _STATUS_CLASS.get(status)
+            cell = (f'<td class="{cls}">{e(status)}</td>' if cls
+                    else f"<td>{e(status)}</td>")
+            parts.append(f"<tr><td>{e(name)}</td>{cell}<td>{e(by)}</td></tr>")
         parts.append("</table>")
     for note in _coverage(analysis, coverage_note):
         parts.append(f'<p class="note">{e(note)}</p>')

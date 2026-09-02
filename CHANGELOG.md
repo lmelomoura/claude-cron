@@ -184,8 +184,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **The coverage note is now a table of phases before it is a paragraph.** An
   analysis records, beside the prose it always wrote, one row per phase —
-  `scope`, `secrets`, `hygiene`, `dependencies`, `sbom`, `iac`, `sast-prepass`
-  and `triage` — each with a status (`ran` / `warning` / `skipped`), the
+  `scope`, `secrets`, `hygiene`, `dependencies`, `sbom`, `iac`, `sast-prepass`,
+  `sast` and `triage` — each with a status (`ran` / `warning` / `skipped`), the
   producer that answered, and that phase's own sentences. The downloaded
   Markdown and HTML reports open with that table, the JSON carries it under
   `coverage.phases`, and the analysis screen draws one line per phase with a
@@ -207,17 +207,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   middle case that used to be invisible — a fallback producer whose coverage is
   narrower than the engine it replaced (the built-in secret scanner against
   gitleaks' rule set, OSV.dev's five lockfile formats against Trivy's many), or
-  a Semgrep pre-pass that ran perfectly and still is not the SAST pass.
-  **`triage` is the eighth row and the only one `finish` writes:** it carries
-  the count from the close — `warning` with the findings nobody read, `ran`
-  with how many the agent re-reported, `skipped` when the close never reached
-  the check at all — so the one phase the deterministic half cannot report on
-  itself is no longer missing from the table. A row closed twice (the agent,
-  then the engine) replaces that line rather than growing a second,
-  contradicting one, and the engine's later `capped` never overwrites a
-  triage the agent's own close had earned. The Runs list deliberately does not
-  ship the new column: it is polled every four seconds over up to a hundred
-  rows, and no column of that table reads either half of the coverage.
+  a Semgrep pre-pass that ran perfectly and still is not the SAST pass. **The
+  secret row earns `ran` from the history, not from the binary:** gitleaks
+  over a shallow clone, or over a history git could not walk, reads `warning`
+  beside the same sentence the paragraph already carried for that gap — the
+  tree was scanned, the whole of what the phase means was not. **The SBOM row
+  names who built the document** — `syft`, or `inventory` for this project's
+  own five-format read — instead of showing a dash over a file that exists.
+  **`sast` and `triage` are the eighth and ninth rows, and the two `finish`
+  writes.** `sast` is the agent's own pass, and its status follows the verdict
+  because the verdict is the only evidence there is about it: `ran` on `done`,
+  `warning` on `capped` or `failed`, with the agent's own `--note` as its
+  prose. `triage` carries the count from the close — `warning` with the
+  findings nobody read, `ran` with how many the agent re-reported, `skipped`
+  when the close never reached the check at all — and when an operator
+  decision exempted a finding from that count it says so ("1 deterministic
+  finding at medium or above carried an operator decision and was not
+  counted") rather than reporting that nothing was waiting. An analysis that
+  never ran `prepare` files both rows `skipped` under the very sentence the
+  paragraph carries for it, never `ran`. A row closed twice (the agent, then
+  the engine) replaces these lines rather than growing second, contradicting
+  ones; the engine's later `capped` never overwrites a triage the agent's own
+  close had earned, and does lower the `sast` row, because a run cut short is
+  precisely what that row cannot vouch for. The Runs list deliberately does
+  not ship the new column: it is polled every four seconds over up to a
+  hundred rows, and no column of that table reads either half of the
+  coverage.
 
 - **An analysis can no longer close `done` over findings nobody read.**
   `finish --state done` now counts the findings a SCANNER produced that are
@@ -628,6 +643,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   from Trivy's own registry.
 
 ### Changed
+
+- **The JSON report's `coverage` key is an object, not an array.** It used to
+  be the list of coverage sentences; it is now `{"notes": [...], "phases":
+  [...]}`, where `notes` is that same list, unchanged and in the same order,
+  and `phases` is the structured table the Markdown and HTML reports open
+  with. A consumer that read `coverage` as a list has to read `coverage.notes`
+  instead. `phases` is always present — `[]` for an analysis recorded before
+  the column existed — so a consumer can tell "this analysis predates the
+  table" from "this is an older report format" without special-casing either.
 
 - **A security analysis is now launched with the `Agent` tool closed, and it
   cost $51.44 to learn that asking was not enough.** The design of this module

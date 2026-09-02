@@ -385,12 +385,62 @@ def test_a_skipped_phase_is_named_even_with_no_prose_of_its_own():
     """A phase whose sentence somebody deleted is still a phase that did not
     run, and the row is what says so. This is the whole reason the status
     comes off the scanner's own return value and not off the presence of a
-    note: the two can disagree, and when they do the fact is the status."""
+    note: the two can disagree, and when they do the fact is the status.
+
+    THE HTML ASSERTION IS ON A CELL. It used to be `"skipped" in html`, which
+    passed on a page with no such row: the word was in the stylesheet, as the
+    class `.cov .skipped`. The class is now spelled differently from the
+    status (`_STATUS_CLASS`), and what is asserted is the rendered `<td>`."""
     silent = dict(ANALYSIS, coverage=coverage.encode(
         [coverage.phase(coverage.IAC, coverage.SKIPPED)]))
     md = report.as_markdown(silent, FINDINGS, "")
     assert "| iac | skipped | — |" in md
-    assert "skipped" in report.as_html(silent, FINDINGS, "")
+    html = report.as_html(silent, FINDINGS, "")
+    assert '<td class="cov-gap">skipped</td>' in html
+    # And the word appears ONLY in that cell: strip the cell and it is gone.
+    assert "skipped" not in html.replace('<td class="cov-gap">skipped</td>', "")
+
+
+def test_no_status_class_spells_the_status_it_colours():
+    """The rule that keeps the assertion above honest for good: a test that
+    finds a status word in the HTML has found it in a cell, never in a class
+    name. Every status has a class, and a status this table does not know
+    renders as a bare word with no class at all -- nothing for a hostile value
+    to ride into an attribute on."""
+    assert set(report._STATUS_CLASS) == set(coverage.STATUSES)
+    for status, cls in report._STATUS_CLASS.items():
+        assert status not in cls, (status, cls)
+    odd = dict(ANALYSIS, coverage=json.dumps({"phases": [
+        {"name": "iac", "status": "quantum", "by": None, "note": ""}]}))
+    assert "<td>quantum</td>" in report.as_html(odd, FINDINGS, "")
+
+
+def test_html_opens_with_the_phase_table_before_the_prose():
+    """The HTML twin of the Markdown test above, and it was missing: the table
+    could be moved below the paragraph with every test still green. Pinned on
+    the TAGS' positions -- the table's opening tag before the first prose
+    element's -- not on a word that could appear in either."""
+    html = report.as_html(WITH_PHASES, FINDINGS, "OSV was not reached")
+    table = html.index('<table class="cov">')
+    assert table < html.index('<p class="note">'), \
+        "the phase table must come BEFORE the coverage prose, not after it"
+    assert table < html.index("<h2>Checklist</h2>")
+    assert '<td class="cov-ok">ran</td>' in html
+    assert '<td class="cov-warn">warning</td>' in html
+
+
+def test_the_agents_own_sast_pass_has_a_row_between_the_pre_pass_and_the_triage():
+    """Nine rows, not eight. The Semgrep pre-pass is an ADDITION to the
+    agent's own SAST pass (see `cli._scan_sast`), so a table with a row for
+    the pre-pass and none for the pass said nothing about the primary source
+    of the `sast` category. The row is named for that category, and it sits
+    where the pass happens: after everything `prepare` filed, before the
+    triage that closes the analysis."""
+    order = coverage.PHASE_ORDER
+    assert len(order) == 9
+    assert coverage.SAST_AGENT == "sast"
+    assert order.index(coverage.SAST_AGENT) == order.index(coverage.SAST_PREPASS) + 1
+    assert order[-1] == coverage.TRIAGE
 
 
 def test_an_analysis_with_no_structured_coverage_renders_exactly_as_before():

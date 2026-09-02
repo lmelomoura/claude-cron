@@ -506,12 +506,25 @@ def _is_shallow(root) -> bool:
 def gitleaks_scan(root, ignore_paths=()):
     """Every secret gitleaks can find in `root`, tree and history.
 
-    Returns `(findings, notes)`. `findings` is None when NEITHER pass
-    produced a report -- the caller's signal that the built-in scanner
+    Returns `(findings, notes, history)`. `findings` is None when NEITHER
+    pass produced a report -- the caller's signal that the built-in scanner
     should do the work after all. It may only do so while the engine has
     contributed nothing: two scanners in one category report one hole under
     two fingerprints, and the checklist then shows the same secret as two
     entries that contradict each other.
+
+    `history` IS WHAT THE HISTORY SWEEP ACTUALLY COVERED, one of the three
+    `HISTORY_*` states above, and it is the value `cli._scan_secrets` turns
+    into the secret phase's status in the coverage table. `HISTORY_OK` only
+    when the sweep ran over a full clone; `HISTORY_SHALLOW` when it ran over
+    what a shallow clone carries; `HISTORY_GONE` when no history report exists
+    at all -- because git could not walk the history OR because the pass was
+    attempted and produced nothing. The second route matters: `history_state`
+    can answer OK and `gitleaks git` can still fail to write a report, and a
+    caller reading the pre-scan state alone would file the phase as `ran`
+    under a note saying the sweep did not complete. The notes already say all
+    of this in prose; this value says it in the vocabulary the table reads,
+    so the two cannot drift.
 
     THE HISTORY IS NOT OPTIONAL. A credential that was ever committed stays
     compromised however thoroughly the file was later deleted, which is what
@@ -577,13 +590,16 @@ def gitleaks_scan(root, ignore_paths=()):
         # `_scan_secrets` reads a None here as "the engine contributed
         # nothing" and runs the built-in scanner over both halves instead.
         notes += [n for n in dict.fromkeys((history_note, tree_note)) if n]
-        return None, notes
+        return None, notes, HISTORY_GONE
 
     findings = []
     if history is None:
         # The same sentence the built-in sweep uses for the same gap, so a
         # reader is not asked to learn two vocabularies for one blind spot.
         notes.append(secrets.HISTORY_GAP.format(reason=history_note.rstrip(".")))
+        # Whatever git said beforehand, no history was swept: the table has
+        # to read this the same way it reads a history git could not walk.
+        state = HISTORY_GONE
     else:
         findings += gitleaks(history, root, historical=True,
                              ignore_paths=ignore_paths)
@@ -609,7 +625,7 @@ def gitleaks_scan(root, ignore_paths=()):
     # for.
     if project_config(root) is not None:
         notes.append(PROJECT_CONFIG_NOTE)
-    return findings, notes
+    return findings, notes, state
 
 
 # ------------------------------------------------------- the dependency scan
