@@ -167,32 +167,34 @@ def _glob_to_regexp(glob: str) -> str:
 def scope_patterns(skip_dirs=None, ignore_paths=()) -> list[str]:
     """The path patterns gitleaks must not report from.
 
-    Three sources, and they mean different things. `skip_dirs` are
-    directories no analysis has ever looked inside -- caches, vendored trees,
-    build output -- matched at any depth. The default noise filter
-    (`ignores.default_dirs`, plus the sample-file suffixes this engine's
-    category is the one that cares about) is matched the same way, and drops
-    out entirely when the project switched it off. `ignore_paths` is the
-    operator's own decision, matched the way `ignores.ignored` matches it:
-    literally, and with everything underneath it, so `tests/fixtures` and
-    `tests/fixtures/**` both exclude the directory's contents.
+    Two sources, and they mean different things. `skip_dirs` are directories
+    no analysis has ever looked inside -- caches, vendored trees, build output
+    -- matched at any depth, and the default noise filter's fixture
+    directories (`ignores.default_dirs`) join them because that is what they
+    are; they drop out entirely when the project switched the default off.
+    `ignore_paths` is the operator's own decision, matched the way
+    `ignores.ignored` matches it: literally, and with everything underneath
+    it, so `tests/fixtures` and `tests/fixtures/**` both exclude the
+    directory's contents.
 
-    All three are the CHEAP way round -- the engine never reads the file --
-    and none of them is the guarantee. `gitleaks()` puts everything that
-    comes back through the same two filters again, for the reason
+    THE SAMPLE SUFFIXES ARE NOT HERE ANY MORE, and their absence is the fix
+    rather than an omission. A gitleaks `[allowlist] paths` entry silences
+    EVERY rule for the file it matches, so `\\.example$` in this list stopped
+    the engine reporting a real `openssl genrsa` key in
+    `certs/server.key.example` -- the exact material the template default was
+    never allowed to hide. Whether a template's finding is noise depends on
+    WHICH RULE matched, which a path allowlist cannot express, so the decision
+    moved wholly to `ignores.sample_suppressed` over what comes back.
+
+    Both remaining sources are the CHEAP way round -- the engine never reads
+    the file -- and neither is the guarantee. `gitleaks()` puts everything
+    that comes back through the same filters again, for the reason
     `_out_of_scope` gives.
     """
     if skip_dirs is None:
         skip_dirs = secrets.SKIP_DIRS
     directories = sorted(set(skip_dirs) | set(ignores.default_dirs(ignore_paths)))
     patterns = [rf"(^|/){re.escape(d)}/" for d in directories]
-    if ignores.defaults_apply(ignore_paths):
-        # Anchored at the END of the path only: `.env.example` is a template
-        # and `a.example.json` is not, so the suffix has to be the last thing
-        # in the name. Unanchored at the front because gitleaks SEARCHES an
-        # allowlist path pattern rather than matching it whole.
-        patterns += [rf"{re.escape(suffix)}$"
-                     for suffix in ignores.SAMPLE_SUFFIXES]
     for glob in ignores.globs(ignore_paths):
         glob = (glob or "").strip()
         if not glob:
@@ -346,15 +348,21 @@ def gitleaks(data, root, historical: bool = False, ignore_paths=()) -> list[dict
         if not rule or not path:
             continue
         path = _relative(path, root)
-        # `sample_file` is applied HERE and not inside `_out_of_scope`,
+        # The template rule is applied HERE and not inside `_out_of_scope`,
         # because `_out_of_scope` is the filter every category shares and
         # this rule belongs to the secret category alone: a CVE against
         # `package-lock.json.example` or a world-writable
         # `config.yml.template` is a true statement about a file that really
-        # is in the repository. Only "a credential is committed here" is the
-        # wrong reading of a template.
-        if _out_of_scope(path, ignore_paths) or ignores.sample_file(
-                path, ignore_paths):
+        # is in the repository.
+        #
+        # And it is applied PER RULE, through the same `sample_suppressed` the
+        # built-in scanner reads. Gitleaks' `private-key` on a
+        # `certs/server.key.example` holding a real `openssl genrsa` key is
+        # not the wrong reading of a template; `generic-api-key` and
+        # `aws-access-token` on the same file are. A file-level skip could not
+        # tell those apart and dropped both.
+        if _out_of_scope(path, ignore_paths) or ignores.sample_suppressed(
+                path, rule, ignore_paths):
             continue
         group = groups.setdefault((rule, path), {"lines": [], "commits": set()})
         line = record.get("StartLine")

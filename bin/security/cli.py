@@ -459,6 +459,45 @@ def _scan_dependencies(root, components, offline: bool, ignore_paths=()):
     return cve_findings, notes
 
 
+def _unfiltered_sbom_note(components, ignore_paths) -> str:
+    """`ignores.SBOM_UNFILTERED_NOTE` for this repository, or "".
+
+    THE ONE PLACE THAT KNOWS BOTH HALVES OF A CONTRADICTION THE REPORT USED TO
+    MAKE. `deps.inventory` deliberately does not read `ignore_paths` -- an
+    SBOM is a statement about what the repository CONTAINS, and one whose
+    contents changed with a settings field would answer differently for the
+    same commit while being handed to consumers who cannot see that field --
+    but `_scan_dependencies` above filters the FINDINGS from those same
+    lockfiles. Measured on this repository: 4 of 4 SBOM components come from
+    `tests/security/fixtures/`, and the dependency category goes 6 -> 0. A
+    consumer reading the published SBOM beside the report saw "this project
+    ships lodash 4.17.20" and "no dependency findings".
+
+    That state used to require an operator to write `ignore_paths`, and they
+    knew what they had written. With the fixtures default it is what an
+    unconfigured project gets, so it is said out loud.
+
+    MEASURED, not standing policy, which is why it is a function and not a
+    constant beside `DEFAULT_NOTE`: it names a count and real paths, so a
+    project with no lockfile under a filtered path never reads it. Counted
+    from `deps.inventory`, the one producer whose components carry the file
+    they were read from; Syft's SBOM does not filter either, so the closing
+    sentence is true whichever producer built the document.
+    """
+    hidden = [c for c in components
+              if ignores.ignored(c.get("source", ""), ignore_paths)]
+    if not hidden:
+        return ""
+    # The FILES, not the components: three lockfiles is a readable sentence
+    # where "23 components" would need a directory listing to be actionable.
+    sources = sorted({c.get("source", "") for c in hidden})
+    shown = ", ".join(sources[:3])
+    if len(sources) > 3:
+        shown += f" and {len(sources) - 3} more"
+    return ignores.SBOM_UNFILTERED_NOTE.format(
+        count=len(hidden), total=len(components), sources=shown)
+
+
 # Semgrep's rule pack is fetched from its registry, so the pre-pass is a
 # network call and `--offline` has to refuse it -- the same shape
 # `OFFLINE_DEPENDENCY_NOTE` takes one phase up. Named separately rather than
@@ -658,6 +697,21 @@ def cmd_prepare(args):
     if ignores.defaults_apply(ignore):
         notes.insert(0, ignores.DEFAULT_NOTE)
 
+    # AHEAD OF EVERYTHING, including the default's own sentence: it says a
+    # switch the operator typed did nothing, so it explains why the sentence
+    # below it is there at all. `!defaults` is an exact token, and a project
+    # that wrote `!default` or `!defaults/**` believes its fixtures are being
+    # scanned. They are not, and nothing used to say so -- the entry was
+    # silently kept as a path glob and shipped to three engine command lines.
+    unknown_switch = ignores.unknown_switch_note(ignore)
+    if unknown_switch:
+        notes.insert(0, unknown_switch)
+        # And on stderr too. `prepare` runs unattended inside a worktree, so
+        # the note in the report is the durable channel -- but an operator who
+        # has just edited the field and is running this by hand should not
+        # have to open a report to find out the edit did nothing.
+        print(f"prepare: {unknown_switch}", file=sys.stderr)
+
     # `components` is read regardless of `offline` or which vulnerability
     # source runs: `deps.inventory` never touches the network, and the SBOM
     # below is built from it whenever Syft does not.
@@ -679,6 +733,11 @@ def cmd_prepare(args):
         dep_notes = [n for n in dep_notes if n != adapters.DEP_SBOM_NOTE]
     notes += [n for n in dep_notes if n]
     notes += [n for n in sbom_notes if n]
+    # After both, because it is about the gap BETWEEN them: what the SBOM
+    # lists and what the dependency phase actually looked up.
+    unfiltered = _unfiltered_sbom_note(components, ignore)
+    if unfiltered:
+        notes.append(unfiltered)
 
     iac_findings, iac_notes = _scan_iac(root, args.offline, ignore)
     findings += iac_findings
@@ -941,7 +1000,8 @@ def cmd_finish(args):
         state = "capped"
         unprepared_note = (
             "The deterministic phases never ran for this analysis: no secret "
-            "sweep, no dependency inventory, no hygiene pass. Nothing here was "
+            "sweep, no dependency inventory, no hygiene pass, no "
+            "infrastructure-as-code check, no SAST pre-pass. Nothing here was "
             "looked at by them, so an absent finding means nothing was checked.")
         print(f"finish: analysis {args.analysis} never ran `prepare` — closing "
               "it capped instead of done; a report with no deterministic "

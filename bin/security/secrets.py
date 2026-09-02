@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 
 from .fingerprint import secret_fingerprint
-from .ignores import ignored, sample_file
+from .ignores import ignored, sample_suppressed
 
 # Each rule is (name, severity, compiled pattern, minimum entropy of group 1).
 # Entropy 0 means the shape alone is conclusive.
@@ -254,16 +254,6 @@ def scan_tree(root, ignore):
     skipped = {"too_big": 0, "unreadable": 0}
     for rel, text in _readable_files(root, ignore, skipped):
         lines += _lines_in(text)
-        # A committed TEMPLATE of a configuration file is read like any other
-        # file -- it counts towards `lines`, because this sweep did open it --
-        # and its shaped matches are not reported. `_is_placeholder` guards
-        # the VALUE and only for the one generic rule, so a `.env.example`
-        # carrying `AKIAIOSFODNN7EXAMPLE` came back as a committed AWS key:
-        # the shaped rules have no placeholder gate at all. Filtered HERE and
-        # not in `_readable_files` on purpose -- doing it there would silently
-        # shrink `lines_of_code` too, and the file really was analysed.
-        if sample_file(rel, ignore):
-            continue
         # One finding per credential TYPE per file -- not per match. The
         # fingerprint (type + path) cannot depend on a position, so several
         # matches of one type collapse into one finding with several
@@ -271,6 +261,15 @@ def scan_tree(root, ignore):
         # deterministic).
         by_rule = {}
         for rule, severity, line in _hits(text):
+            # A committed TEMPLATE of a configuration file is read like any
+            # other file -- it counts towards `lines`, because this sweep did
+            # open it -- and the two rules that over-fire on a template are
+            # dropped from it. PER RULE and not per file: this used to skip
+            # the whole file, and a real `openssl genrsa` key in
+            # `certs/server.key.example` was then reported by nothing at all.
+            # See `ignores.SAMPLE_SUPPRESSED_RULES`.
+            if sample_suppressed(rel, rule, ignore):
+                continue
             group = by_rule.setdefault(rule, {"severity": severity, "lines": []})
             group["lines"].append(line)
         for rule, group in by_rule.items():
@@ -401,16 +400,21 @@ def scan_history(root, since_sha, ignore=()):
             # deliberately fake credentials was excluded from the working-tree
             # findings and reported in full from the history -- the operator
             # set `ignore_paths` and got the noise anyway, one report later.
-            # The default filter and the sample-file rule ride in the same
-            # decision for the same reason: a default honoured by one of the
-            # two sweeps and not the other reopens exactly that hole.
-            skip_path = ignored(path, ignore) or sample_file(path, ignore)
+            # The default filter rides in the same decision for the same
+            # reason: a default honoured by one of the two sweeps and not the
+            # other reopens exactly that hole. The TEMPLATE rule rides one
+            # level down, per rule, exactly as `scan_tree` applies it -- so a
+            # private key committed in a `.example` file is reported from the
+            # history too, and only the two template-noisy rules are not.
+            skip_path = ignored(path, ignore)
             continue
         if skip_path:
             continue
         if not line.startswith("+") or line.startswith("+++"):
             continue
         for rule, severity, _ in _hits(line[1:]):
+            if sample_suppressed(path, rule, ignore):
+                continue
             key = (rule, path)
             group = groups.setdefault(key, {"severity": severity, "commits": set()})
             if commit_sha is not None:

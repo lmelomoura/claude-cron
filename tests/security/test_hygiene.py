@@ -50,6 +50,36 @@ def test_an_envrc_file_is_not_a_finding(tmp_path):
     assert scan(tmp_path) == []
 
 
+def test_a_shouted_env_example_is_not_a_finding_either(tmp_path):
+    """The suffix list was matched with `fnmatch`, chosen on the argument that
+    it normalises case -- which `os.path.normcase` does not do on POSIX. So
+    `.ENV.EXAMPLE` was reported as a committed env file."""
+    (tmp_path / ".ENV.EXAMPLE").write_text("DB_HOST=\n")
+    assert scan(tmp_path) == []
+
+
+def test_a_real_key_committed_as_a_TEMPLATE_is_still_a_finding(tmp_path):
+    """The suffix test did not see past `.example`, so `server.key.example`
+    was never sniffed -- and with the secret scan skipping the file whole, a
+    real `openssl genrsa` key committed under that name was reported by
+    nothing in this project at all."""
+    (tmp_path / "server.key.example").write_text(
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIEow...\n"
+        "-----END RSA PRIVATE KEY-----\n")
+    rules = [f["rule"] for f in scan(tmp_path)]
+    assert "committed_key_file" in rules
+
+
+def test_a_PLACEHOLDER_key_template_is_still_not_a_finding(tmp_path):
+    """And this is why the template is sniffed UNDER PROOF rather than with
+    the conservative default a real `.key` gets. For `server.key` the likelier
+    error is staying quiet; for `server.key.example` a placeholder body is the
+    normal case, so the finding is made only when the PEM marker is really
+    there."""
+    (tmp_path / "server.key.example").write_text("<paste your private key here>\n")
+    assert scan(tmp_path) == []
+
+
 def test_a_cert_only_pem_is_not_a_finding(tmp_path):
     (tmp_path / "fullchain.pem").write_text(
         "-----BEGIN CERTIFICATE-----\n"

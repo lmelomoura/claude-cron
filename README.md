@@ -630,13 +630,27 @@ provisioning hook fails the suite rather than the operator's config.
 `tests/security/` is run **twice**. It is pinned to the built-in secret scanner
 (`CC_SECURITY_ENGINES=off`) so that a test planting a credential exercises one
 scanner rather than whichever binaries a laptop happens to have installed — and
-then, on a machine where `gitleaks` is installed, one test runs the whole
-security package again with `CC_SECURITY_ENGINES=on`, which is the configuration
-every real analysis uses. The second run roughly triples that package's time
-(about four minutes here, against ninety seconds). It is the price of not
-discovering in production that the suite was green only in a configuration
-nothing ships in — which is exactly what had happened: the engines-on run was
-red for the entire life of the engine path and nothing said so.
+then, on a machine where **any** of `gitleaks`, `trivy`, `semgrep` or `syft` is
+installed, one test runs the whole security package again with
+`CC_SECURITY_ENGINES=on`, which is the configuration every real analysis uses.
+All four are gated by the same switch — it decides the secret scanner, the
+dependency source, the SAST pre-pass, the IaC phase and the SBOM producer — so
+the second configuration is real on a machine with only one of them. The second
+run roughly triples that package's time (about four minutes here, against ninety
+seconds). It is the price of not discovering in production that the suite was
+green only in a configuration nothing ships in — which is exactly what had
+happened: the engines-on run was red for the entire life of the engine path and
+nothing said so.
+
+While iterating on that package, deselect the second run rather than switching
+it off — there is deliberately **no** opt-out environment variable, because that
+is the kind of switch that gets exported once and silently disables the only
+gate this repository has:
+
+```bash
+python3 -m pytest tests/security/ -q \
+  --deselect tests/security/test_both_configurations.py::test_the_security_suite_is_green_with_the_engines_on
+```
 
 Run both after touching either side.
 
@@ -1102,29 +1116,42 @@ a run signs in as](#which-claude-account-a-run-signs-in-as). Set it here only
 when the analysis itself should sign in as somebody else.
 
 **Some noise is filtered before you configure anything.** A `fixtures`,
-`__fixtures__` or `testdata` directory — at any depth — is outside the analysis
-by default, and so are secrets in files ending `.example`, `.sample`,
-`.template` or `.dist`, which are committed templates of a configuration rather
-than a leak. Both defaults reach every phase and both scanners, and the coverage
-note says so on every report, because "nothing was found there" and "we never
-looked there" are the same silence otherwise. **`tests/**` is deliberately not
+`__fixtures__` or `testdata` directory — at any depth, and whatever its case —
+is outside the analysis by default. In a file ending `.example`, `.sample`,
+`.template` or `.dist` — a committed template of a configuration rather than a
+leak — the **two rules that over-fire on templates** are held back: the generic
+`password = <blob>` rule and the AWS access-key rule, which is what
+`AKIAIOSFODNN7EXAMPLE` in a `.env.example` trips. **Every other credential
+shape is still reported from a template, a private key included** — a PEM body
+is not a placeholder, and a real key committed as `server.key.example` is a real
+leak. Both defaults reach every phase and both scanners, and the coverage note
+says so on every report, because "nothing was found there" and "we never looked
+there" are the same silence otherwise. **`tests/**` is deliberately not
 covered:** a credential hard-coded in a test file is in the repository and
 readable by everyone with a clone, so it is still reported. A project that keeps
 real credentials in a fixture it *wants* reported adds the entry `!defaults` to
 `ignore_paths` and gets both halves back — it cancels the built-in default only,
-never the globs you wrote yourself. Note that turning the default on for the
-first time makes any fixture finding already in the ledger show up as `fixed`
-once, and a human decision recorded against one is only reachable again with
-`!defaults` set.
+never the globs you wrote yourself. `!defaults` is the **only** `!` entry that
+means anything: any capitalisation of it works, and anything else beginning with
+`!` (`!default`, `!defaults/**`) is dropped, never treated as a path, and named
+in the coverage note as having done nothing — the default is still on. Note that
+turning the default on for the first time makes any fixture finding already in
+the ledger show up as `fixed` once, and a human decision recorded against one is
+only reachable again with `!defaults` set.
 
 **`ignore_paths` and `min_severity` are two different filters, and confusing
 them is expensive.** `ignore_paths` excludes globs from the **analysis**: the
-working-tree secret scan, the git-history secret sweep and the hygiene pass all
-obey the same globs, so a fixtures directory full of deliberately fake
-credentials never becomes a finding at all — from any of the three. The one
-deterministic phase it deliberately does **not** filter is the dependency
-inventory: a lockfile under an ignored glob still declares packages this project
-ships, and a CVE against one of them is real wherever the file sits. `min_severity`
+working-tree secret scan, the git-history secret sweep, the hygiene pass and the
+infrastructure-as-code check all obey the same globs, so a fixtures directory
+full of deliberately fake credentials never becomes a finding at all — from any
+of the four. The one deterministic phase it deliberately does **not** filter is
+the dependency **inventory**: a lockfile under an ignored glob still declares
+packages this project ships, so the SBOM stays complete wherever the file sits.
+The *findings* from that lockfile **are** filtered, which is a real gap between
+two things you can download — an SBOM listing lodash 4.17.20 beside a report
+with no dependency findings does **not** mean lodash 4.17.20 is clean. When it
+happens the coverage note says so, with the count and the lockfiles.
+`min_severity`
 filters only what is **shown**: everything found is kept in the ledger whatever
 its severity, so lowering the floor later reveals what was recorded all along
 instead of forcing a re-analysis, and the page says how many findings it is

@@ -346,6 +346,41 @@ def test_a_realistic_key_in_an_env_example_is_not_reported(tmp_path):
     assert lines == 1, "the file was read; only its secrets were not reported"
 
 
+def test_a_PRIVATE_KEY_in_a_sample_file_is_STILL_reported(tmp_path):
+    """THE HOLE THE FIRST VERSION OF THIS DEFAULT OPENED, and the reason the
+    gate is per RULE and not per FILE.
+
+    A `.example` file used to be skipped whole, on the reasoning that "the
+    value in a template is a shape, not a secret". A PEM body is never a
+    shape. Measured with a real `openssl genrsa 2048` key in
+    `certs/server.key.example`: reported by NOTHING -- not this scanner, not
+    gitleaks through `adapters.gitleaks`, not `hygiene._is_key_material`
+    (whose suffix test does not see past `.example`) -- while gitleaks on its
+    own reported it. This project's own argument for not suppressing
+    `tests/**` applies word for word: it is in the repository and readable by
+    everyone with a clone."""
+    (tmp_path / "certs").mkdir()
+    (tmp_path / "certs" / "server.key.example").write_text(
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIEow...\n"
+        "-----END RSA PRIVATE KEY-----\n")
+    found, _note, _lines = scan_tree(tmp_path, [])
+    assert [f["rule"] for f in found] == ["private_key"]
+    assert found[0]["occurrences"][0]["file"] == "certs/server.key.example"
+
+
+def test_a_template_silences_ONLY_the_two_template_noisy_rules(tmp_path):
+    """The set is an ALLOWLIST, so a rule nobody has thought about reports.
+
+    One file, three shapes. The AWS rule and the generic rule are the two
+    that genuinely over-fire on a template (neither has a placeholder gate
+    that survives a realistic-looking value); a GitHub PAT in a committed
+    template is a GitHub PAT."""
+    (tmp_path / "config.yml.template").write_text(
+        f"aws: {AWS}\npassword = 'hunter2hunter2hunter2xyz'\ntoken: {GITHUB}\n")
+    found, _note, _lines = scan_tree(tmp_path, [])
+    assert [f["rule"] for f in found] == ["github_token"]
+
+
 def test_a_sample_file_is_reported_again_when_the_default_is_off(tmp_path):
     (tmp_path / ".env.example").write_text(f"AWS_ACCESS_KEY_ID={AWS}\n")
     found, _note, _lines = scan_tree(tmp_path, ["!defaults"])
@@ -356,7 +391,12 @@ def test_the_history_sweep_obeys_the_default_too(tmp_path):
     """The scar this whole module already carries once: `ignore_paths`
     excluded a fixtures directory from the tree sweep and the history sweep
     reported every fake credential in it anyway, one report later. A default
-    honoured by only one of the two sweeps reopens exactly that hole."""
+    honoured by only one of the two sweeps reopens exactly that hole.
+
+    BOTH HALVES, because the template rule is now per rule here too: the AWS
+    key in `.env.example` is dropped and the GitHub PAT beside it is not, and
+    a history sweep that disagreed with the tree sweep about either one would
+    be the same bug in the other direction."""
     run = lambda *a: subprocess.run(a, cwd=tmp_path, check=True,
                                     capture_output=True)
     run("git", "init", "-q")
@@ -365,15 +405,16 @@ def test_the_history_sweep_obeys_the_default_too(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "fixtures").mkdir()
     (tmp_path / "tests" / "fixtures" / "fake.env").write_text(f"KEY={AWS}\n")
-    (tmp_path / ".env.example").write_text(f"KEY={GITHUB}\n")
+    (tmp_path / ".env.example").write_text(f"AWS={AWS}\nGH={GITHUB}\n")
     (tmp_path / "prod.env").write_text(f"KEY={GITHUB}\n")
     run("git", "add", "-A")
     run("git", "commit", "-qm", "add")
 
     filtered, note = scan_history(tmp_path, None)
     assert note == ""
-    assert [f["occurrences"][0]["file"] for f in filtered] == ["prod.env"]
+    assert sorted((f["occurrences"][0]["file"], f["rule"]) for f in filtered) == [
+        (".env.example", "github_token"), ("prod.env", "github_token")]
 
     everything, _ = scan_history(tmp_path, None, ["!defaults"])
-    assert sorted(f["occurrences"][0]["file"] for f in everything) == [
+    assert sorted({f["occurrences"][0]["file"] for f in everything}) == [
         ".env.example", "prod.env", "tests/fixtures/fake.env"]

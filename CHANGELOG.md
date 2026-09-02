@@ -36,18 +36,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   broad enough to hide a real key on a project nobody has configured is
   worse than no default at all.
 
-- **`.example`, `.sample`, `.template` and `.dist` files are excluded from
-  the secret scan.** `hygiene.py` has always known that a committed
-  template of your configuration is the correct thing to ship; the secret
-  scanner did not. It filtered the *value* through `_is_placeholder`, which
-  guards only the one generic `password = ...` rule — so a `.env.example`
-  carrying `AKIAIOSFODNN7EXAMPLE` matched the shaped AWS rule, which has no
-  entropy gate and no placeholder gate at all, and was reported as a
-  committed key. The four suffixes now live in one place (`ignores.py`) and
-  both passes read them, instead of hygiene holding its own copy. The file
-  is still **read** — it counts towards `lines_of_code` like anything else
-  the sweep opened; only the claim "a credential is committed here" is
-  dropped.
+- **In `.example`, `.sample`, `.template` and `.dist` files, the two rules
+  that over-fire on a template are held back — and only those two.**
+  `hygiene.py` has always known that a committed template of your
+  configuration is the correct thing to ship; the secret scanner did not. It
+  filtered the *value* through `_is_placeholder`, which guards only the one
+  generic `password = ...` rule — so a `.env.example` carrying
+  `AKIAIOSFODNN7EXAMPLE` matched the shaped AWS rule, which has no entropy
+  gate and no placeholder gate at all, and was reported as a committed key.
+  Those are the two rules now gated: the generic one and the AWS one, on
+  both scanners (`generic_secret`/`aws_access_key`, and gitleaks'
+  `generic-api-key`/`aws-access-token`). **Every other credential shape is
+  still reported from a template, a private key included** — see Fixed
+  below for why that is not a detail. The four suffixes live in one place
+  (`ignores.py`) and every pass reads them, instead of hygiene holding its
+  own copy. The file is still **read** — it counts towards `lines_of_code`
+  like anything else the sweep opened.
 
 - **Both defaults apply to the engine and to the built-in scanner, and both
   can be turned off per project.** The filter lives in `ignores.ignored`,
@@ -358,6 +362,95 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   checklist and not a regression in the ledger.
 
 ### Fixed
+
+- **A real private key committed as `server.key.example` is reported again.
+  For one commit, it was reported by nothing at all.** The template default
+  above started life as a *file*-level exclusion, on the reasoning that "the
+  value in a template is a shape, not a secret". That is true of the generic
+  `password =` rule and of the AWS rule; a PEM body is never a shape.
+  Measured end to end with a genuine `openssl genrsa 2048` key and a
+  live-shaped AWS key, on both scanners:
+  `certs/server.key.example` → reported by NOTHING, while `certs/server.key`
+  beside it → `private_key` / `private-key`. Gitleaks on its own reported
+  both. `hygiene`'s key-file rule missed it too: its suffix test does not see
+  past `.example`, so the file was never even sniffed. The gate moved from
+  the file to the **rule** — an allowlist of the two rules that genuinely
+  over-fire, so a rule nobody has thought about reports rather than falls
+  silent — and `hygiene` now looks past a template suffix and sniffs *under
+  proof*: `server.key.example` is a finding when it really holds a PEM body,
+  and still not one when it holds a placeholder. This project's own argument
+  for not suppressing `tests/**` applies to a template word for word: it is
+  in the repository and readable by everyone with a clone.
+
+- **`!defaults` is no longer an exact-match magic string that failed
+  silently in the unsafe direction.** `['!Defaults']` left the default
+  **on** — the switch appeared to be accepted and was not — and then went on
+  to three engine command lines as a path to exclude: `trivy --skip-dirs
+  '!Defaults'`, `semgrep --exclude './!Defaults'`, and a pair of gitleaks
+  allowlist regexes, which is exactly what `ignores.globs()` exists to
+  prevent. `!DEFAULTS`, `!default` and `!defaults/**` were all silent no-ops.
+  A project that keeps real credentials in a fixture and typed the switch
+  believed it was being scanned. Now: the sentinel is recognised in any
+  capitalisation, **every** leading `!` entry is dropped from every command
+  line and from the path matcher, and anything beginning with `!` that is not
+  the switch is named in the coverage note and on stderr — "it was ignored
+  entirely, so the default noise filter is STILL IN EFFECT" — rather than
+  guessed at.
+
+- **The SBOM and the dependency findings disagree by design, and the report
+  now says so.** `deps.inventory` deliberately does not read `ignore_paths`,
+  because an SBOM is a statement about what the repository *contains* and one
+  whose contents changed with a settings field would answer differently for
+  the same commit. Measured on this repository: 4 of 4 SBOM components come
+  from `tests/security/fixtures/`, and the dependency category goes 6 → 0 — a
+  consumer holding both files reads "this project ships lodash 4.17.20"
+  beside "no dependency findings". That used to require an operator to write
+  `ignore_paths`, and they knew what they had written; with the fixtures
+  default it is what every unconfigured project gets. The SBOM stays
+  complete; the report stops making the unqualified claim, naming the count
+  and the lockfiles: *an absent dependency finding is not a clean bill of
+  health for a component the SBOM shows.*
+
+- **The engines-on guard no longer skips on a machine that has trivy and
+  semgrep but not gitleaks.** It skipped unless `gitleaks` was installed,
+  reasoning that otherwise "engines on and off are the same run".
+  `adapters.engine_path` is one switch over four binaries, and it gates the
+  dependency phase, the SAST pre-pass, the IaC phase and the SBOM producer as
+  well as the secret phase — so on such a machine the guard silently proved
+  nothing while the two configurations genuinely differed, which is the
+  precise failure it exists to end. It now skips only when **none** of
+  gitleaks, trivy, semgrep or syft is installed. Its second skip also stopped
+  reading `== "on"`: the product treats anything not in `{off,0,no,false,
+  none}` as on, so `CC_SECURITY_ENGINES=ON` was an engines-on run that did not
+  recognise itself and spent 166 seconds spawning the configuration it was
+  already running. There is deliberately still **no opt-out variable** — it
+  is the kind of switch that gets exported once and never unset, turning a
+  loud cost into a silent gap; the README documents the deselect instead.
+
+- **The escape hatch is visible where `ignore_paths` is written.** The
+  Security tab's field said "Paths excluded from analysis — one glob per
+  line", offered `tests/fixtures/**` as its placeholder (now redundant: it is
+  the default), and said nothing about a default being in force or about
+  `!defaults` — which is not a glob, so the label denied it existed. The
+  overridability argument leaned on "`ignore_paths` is already written by the
+  Security tab", and the Security tab was the one place that never mentioned
+  it. It now states the default, states what a template does and does not
+  silence, and names the switch.
+
+- **The default filter is matched without regard to case, so `Fixtures/` and
+  `TestData/` are suppressed.** That is the .NET and Swift spelling of the
+  identical convention, and the coverage note was telling those repositories'
+  readers that their fixtures had been suppressed while they had not. Same
+  for `.ENV.EXAMPLE`: the suffix list was matched with `fnmatch` on the
+  argument that it normalises case through `os.path.normcase`, which is the
+  identity on every POSIX platform this runs on. The component match is still
+  whole-component — `MyFixtures/` is not `fixtures/`.
+
+- **Two sentences that had gone stale.** The README said `ignore_paths` is
+  obeyed by "the three" deterministic phases; `iac` made four. And the note
+  stamped on every report closed without `prepare` ("no secret sweep, no
+  dependency inventory, no hygiene pass") omitted the IaC check and the SAST
+  pre-pass, which had also not run.
 
 - **The security suite is no longer green only in a configuration nothing
   ships in.** `tests/security/conftest.py` pins `CC_SECURITY_ENGINES=off` so

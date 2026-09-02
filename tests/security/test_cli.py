@@ -1359,6 +1359,73 @@ def test_the_note_goes_away_when_the_project_turns_the_default_off(tmp_path):
     assert "default noise filter" not in note
 
 
+def test_a_mistyped_switch_is_named_in_the_coverage_note(tmp_path):
+    """`!defaults` is an exact token, and it used to fail in the UNSAFE
+    direction: `!Defaults` compared unequal, the default silently stayed on,
+    and the entry went on to three engine command lines as a path to exclude.
+    A project that keeps real credentials in a fixture and typed the switch
+    believed it was being scanned. `!Defaults` now IS the switch; `!default`
+    is not, and cannot be guessed at -- so it is said."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text("print('hi')\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline", "--ignore", "!default")["coverage_note"]
+    assert "!default" in note
+    assert "STILL IN EFFECT" in note
+    assert "default noise filter" in note, (
+        "and the filter really is still on, which is what the note claims")
+
+
+def test_a_capitalised_switch_simply_works(tmp_path):
+    """There is no information in the sentinel's capitalisation and there was
+    a great deal of damage in requiring it."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text("print('hi')\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline", "--ignore", "!Defaults")["coverage_note"]
+    assert "default noise filter" not in note
+    assert "STILL IN EFFECT" not in note
+
+
+def test_the_sbom_says_what_an_absent_dependency_finding_does_not_mean(tmp_path):
+    """`deps.inventory` deliberately does not read `ignore_paths`, so the SBOM
+    lists a lockfile the dependency phase never looked up. That used to need
+    an operator to write `ignore_paths`, and they knew what they had written;
+    with the fixtures default it is what every unconfigured project gets. A
+    consumer reading the published SBOM beside the report would see "this
+    project ships lodash 4.17.20" and "no dependency findings"."""
+    root = tmp_path / "repo"
+    (root / "tests" / "fixtures").mkdir(parents=True)
+    (root / "tests" / "fixtures" / "package-lock.json").write_text(json.dumps(
+        {"packages": {"node_modules/lodash": {"version": "4.17.20"}}}))
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline")["coverage_note"]
+    assert "tests/fixtures/package-lock.json" in note
+    assert "not a clean bill of health" in note
+
+
+def test_nothing_is_said_when_the_sbom_and_the_analysis_agree(tmp_path):
+    """Measured, not standing policy: a project with no lockfile under a
+    filtered path never reads that sentence."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "package-lock.json").write_text(json.dumps(
+        {"packages": {"node_modules/lodash": {"version": "4.17.20"}}}))
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline")["coverage_note"]
+    assert "not a clean bill of health" not in note
+
+
 def test_the_default_noise_filter_reaches_every_deterministic_phase(tmp_path):
     """One filter, every phase -- the promise `ignore_paths` already made,
     now made without anybody having to write the globs. The positive control

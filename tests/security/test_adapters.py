@@ -348,17 +348,34 @@ def test_the_engine_drops_a_fixture_finding_with_no_ignore_paths_set():
     assert [f["occurrences"][0]["file"] for f in out] == ["app.env"]
 
 
-def test_the_engine_drops_a_secret_reported_from_a_sample_file():
+def test_the_engine_drops_a_template_noisy_rule_reported_from_a_sample_file():
     """A4.14 on the engine path. Gitleaks has no idea that `.env.example` is
-    a template, and the file-level rule has to be ours on both paths or the
-    same `.env.example` is a finding on one laptop and not on the next."""
+    a template, and the rule has to be ours on both paths or the same
+    `.env.example` is a finding on one laptop and not on the next."""
     data = [{"RuleID": "aws-access-token", "File": ".env.example",
              "StartLine": 1},
-            {"RuleID": "aws-access-token", "File": "k8s/values.yaml.template",
+            {"RuleID": "generic-api-key", "File": "k8s/values.yaml.template",
              "StartLine": 1},
             {"RuleID": "aws-access-token", "File": "app.env", "StartLine": 1}]
     out = adapters.gitleaks(data, root=".")
     assert [f["occurrences"][0]["file"] for f in out] == ["app.env"]
+
+
+def test_the_engine_still_reports_a_PRIVATE_KEY_from_a_sample_file():
+    """THE HOLE THIS DEFAULT ONCE OPENED, on the engine path.
+
+    The template rule used to drop the FILE, so gitleaks' `private-key` on a
+    `certs/server.key.example` holding a real `openssl genrsa` body was
+    reported by nothing at all -- not here, not by the built-in scanner, and
+    not by `hygiene`, whose suffix test does not see past `.example` either.
+    "The value in a template is a shape, not a secret" is true of the two
+    rules above and false of a PEM body."""
+    data = [{"RuleID": "private-key", "File": "certs/server.key.example",
+             "StartLine": 1},
+            {"RuleID": "github-pat", "File": ".env.sample", "StartLine": 2}]
+    out = adapters.gitleaks(data, root=".")
+    assert sorted(f["occurrences"][0]["file"] for f in out) == [
+        ".env.sample", "certs/server.key.example"]
 
 
 def test_the_engine_reports_them_again_once_the_project_turns_the_default_off():
@@ -379,7 +396,19 @@ def test_the_scope_config_carries_the_default_fixture_directories():
     toml = adapters.gitleaks_config()
     for directory in ignores.DEFAULT_IGNORE_DIRS:
         assert directory in toml, directory
-    assert "example" in toml
+
+
+def test_the_scope_config_must_NOT_allowlist_the_template_suffixes():
+    """A gitleaks `[allowlist] paths` entry silences EVERY rule for the file
+    it matches, and `\\.example$` was in this list. So the engine's own
+    `private-key` on a real key committed as `server.key.example` never
+    reached `gitleaks()` to be judged per rule -- the pre-filter had already
+    thrown it away, and a pre-filter is not where a rule-level decision can
+    be made. Whether a template's finding is noise depends on WHICH RULE
+    matched, which a path allowlist cannot express."""
+    toml = adapters.gitleaks_config()
+    for suffix in ignores.SAMPLE_SUFFIXES:
+        assert suffix not in toml, suffix
 
 
 def test_the_scope_config_drops_the_defaults_when_the_project_turns_them_off():
@@ -387,7 +416,7 @@ def test_the_scope_config_drops_the_defaults_when_the_project_turns_them_off():
     operator just asked to see -- a decision undone by a pre-filter."""
     toml = adapters.gitleaks_config(ignore_paths=[ignores.DEFAULTS_OFF])
     assert "testdata" not in toml
-    assert "example" not in toml
+    assert "fixtures" not in toml
 
 
 def test_the_engine_pre_filters_all_carry_the_default_fixture_directories():

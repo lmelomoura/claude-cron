@@ -1086,8 +1086,22 @@ document.documentElement.dataset.theme =
   </div>
   <p class="fieldhelp">A fixed finding is always shown regardless of this floor — the checklist's
     whole job is to say what closed.</p>
+  <!-- The escape hatch has to be visible WHERE ignore_paths is written. The
+       default noise filter is in force on every project whether or not this
+       box has ever been opened, and this box was the only place that could
+       say so; the old placeholder (tests/fixtures/**) also advertised as an
+       example the one thing that is now redundant. -->
   <label>Paths excluded from analysis — one glob per line</label>
-  <textarea id="sec-ignore" spellcheck="false" placeholder="tests/fixtures/**"></textarea>
+  <textarea id="sec-ignore" spellcheck="false" placeholder="docs/**&#10;vendor/**"></textarea>
+  <p class="fieldhelp">A default filter is already on: a <code>fixtures</code>,
+    <code>__fixtures__</code> or <code>testdata</code> directory at any depth is out of
+    scope, and in <code>.example</code>/<code>.sample</code>/<code>.template</code>/<code>.dist</code>
+    templates a generic password value and an AWS access key are read as placeholders.
+    Everything else — a private key included — is still reported from a template. Your
+    globs add to that; they do not replace it. To scan the lot, add the line
+    <code>!defaults</code> — the one entry here that is a switch and not a path. It cancels
+    this built-in default only, never the globs you wrote. Any other <code>!</code> line
+    does nothing and says so in the report.</p>
   </div><!-- /pane security -->
   </div><!-- /tabpanes -->
 </div>
