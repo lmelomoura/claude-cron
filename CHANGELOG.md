@@ -54,17 +54,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   like anything else the sweep opened.
 
 - **Both defaults apply to the engine and to the built-in scanner, and both
-  can be turned off per project.** The filter lives in `ignores.ignored`,
-  which gitleaks' output, Trivy's, Semgrep's and the fallback sweeps all go
-  through, so the same repository does not report differently depending on
-  which binaries a laptop happens to have. A project that keeps real
-  credentials in a fixture it wants reported adds **`!defaults`** to its
-  `ignore_paths` and gets both halves back. It is per-project and not an
-  environment variable on purpose: "does this project want its fixtures
-  scanned" is a fact about the repository, and a switch living on one
-  machine is the per-machine divergence this block has already had to fix
-  twice. The switch cancels the built-in default only — an operator who
-  also wrote `docs/**` still means it.
+  can be turned off per project.** The two halves are two mechanisms, not
+  one. The fixtures default lives in `ignores.ignored`, which gitleaks'
+  output, Trivy's, Semgrep's and the fallback sweeps all go through, so the
+  same repository does not report differently depending on which binaries a
+  laptop happens to have. The template default lives in
+  `ignores.sample_suppressed`, read by the fallback's `secrets.scan_tree` and
+  `secrets.scan_history` and by `adapters.gitleaks` — deliberately NOT by
+  Trivy's or Semgrep's post-filters, because it silences two secret-only
+  rules (`generic_secret`/`aws_access_key`, and gitleaks' own
+  `generic-api-key`/`aws-access-token`) that neither of those scanners
+  produces. A project that keeps real credentials in a fixture it wants
+  reported adds **`!defaults`** to its `ignore_paths` and gets both halves
+  back. It is per-project and not an environment variable on purpose: "does
+  this project want its fixtures scanned" is a fact about the repository,
+  and a switch living on one machine is the per-machine divergence this
+  block has already had to fix twice. The switch cancels the built-in
+  default only — an operator who also wrote `docs/**` still means it.
 
 - **The coverage note says the default is in effect, every time.** "Nothing
   was found in the fixtures" and "the fixtures were never looked at" are
@@ -381,6 +387,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and still not one when it holds a placeholder. This project's own argument
   for not suppressing `tests/**` applies to a template word for word: it is
   in the repository and readable by everyone with a clone.
+
+- **A real keystore committed as `keystore.jks.example` is reported again —
+  the same hole as `server.key.example` above, one suffix family down.**
+  `hygiene._is_key_material`'s binary branch (`.p12`, `.pfx`, `.jks`) tested
+  the raw file `name`, not the `stem` the text branch above had just been
+  taught to read past a template suffix with — so `keystore.jks.example`
+  never ended in a binary suffix, matched nothing, and `!defaults` could not
+  bring it back because the file never reached the rule at all. There is no
+  marker to sniff inside a binary container — the secrets scanner cannot
+  open one either — so the fix is narrower than the PEM one above:
+  `_is_key_material` now tests `stem` for the binary suffixes too, and the
+  file is reported by name alone, unproven, exactly as a plain `keystore.jks`
+  already was. That is not a new guess; it is the one this rule always
+  made, no longer stopped at the door by a suffix it did not recognise.
 
 - **`!defaults` is no longer an exact-match magic string that failed
   silently in the unsafe direction.** `['!Defaults']` left the default

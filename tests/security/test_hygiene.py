@@ -104,6 +104,31 @@ def test_a_p12_file_is_a_finding_regardless_of_content(tmp_path):
     assert "committed_key_file" in rules
 
 
+def test_a_binary_key_container_committed_as_a_TEMPLATE_is_still_a_finding(tmp_path):
+    """The same shape as `test_a_real_key_committed_as_a_TEMPLATE_is_still_a_
+    finding`, one suffix family down: the binary branch used to test `name`,
+    not `stem`, so a real keystore committed as `keystore.jks.example` was
+    reported by nothing -- and `!defaults` could not bring it back, because
+    the file never reached the rule at all. There is no marker to sniff in a
+    binary container, so this reports on the name alone, exactly as
+    `test_a_p12_file_is_a_finding_regardless_of_content` already does for a
+    plain `.p12` -- the template suffix no longer hides the file from that
+    same, pre-existing, unproven check."""
+    (tmp_path / "keystore.jks.example").write_bytes(b"\x00\x01not a real jks\xff")
+    rules = [f["rule"] for f in scan(tmp_path)]
+    assert "committed_key_file" in rules
+
+
+def test_an_unrelated_template_is_still_not_a_finding(tmp_path):
+    """The containment case for the widened binary check above: looking past
+    the template suffix must land on a real `.p12`/`.pfx`/`.jks` stem to fire
+    -- it must not turn into "anything under `.example` is key material".
+    `archive.zip.example` strips to `archive.zip`, which is none of the three
+    binary suffixes, and stays clear."""
+    (tmp_path / "archive.zip.example").write_bytes(b"PK\x03\x04not a real zip")
+    assert scan(tmp_path) == []
+
+
 def test_ignored_paths_are_skipped(tmp_path):
     """`ignore_paths` is a promise about the whole analysis. A fixtures
     directory excluded from the secret sweeps was still reported here, so the

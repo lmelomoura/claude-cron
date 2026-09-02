@@ -103,17 +103,23 @@ def _is_key_material(path, name):
     genuinely holds a private key, so nothing new is reported for the
     placeholder `server.key.example` this treatment exists to tolerate.
 
-    Binary containers (.p12, .pfx, .jks) keep the old suffix-only
-    behaviour, unlike .pem/.key above, and keep their EXACT suffix: sniffing
-    them for a meaningful marker is not cheap, the secrets scanner cannot
-    open them either, so suffix is the only signal available -- and a
-    `keystore.jks.example` therefore cannot be told from a placeholder, which
-    is precisely when this rule must not guess.
+    Binary containers (.p12, .pfx, .jks) get the same template treatment as
+    the suffix above -- `stem`, not `name` -- but none of the proof: there is
+    no meaningful marker to sniff in a binary container, the secrets scanner
+    cannot open one either, so suffix is the only signal this rule has ever
+    had, template or not. `keystore.jks.example` is therefore reported
+    exactly as `keystore.jks` already is -- by name alone, unproven -- which
+    is not a new guess, only the existing one no longer stopped at the door
+    by a suffix it does not recognise. The alternative (matching `name`, not
+    `stem`) was tried first and is the shape of the `.key.example` hole this
+    block was written to close, one layer up: a real key committed under a
+    template name reported by nothing, and `!defaults` unable to bring it
+    back because the file never reaches the rule at all.
     """
     stem = ignores.sample_stem(name)
     if stem.endswith(_KEY_TEXT_SUFFIXES):
         return _looks_like_private_key(path, proof_required=stem != name)
-    return name.endswith(_KEY_BINARY_SUFFIXES)
+    return stem.endswith(_KEY_BINARY_SUFFIXES)
 
 
 def scan(root, ignore=()):

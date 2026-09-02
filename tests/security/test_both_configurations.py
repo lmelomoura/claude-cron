@@ -162,7 +162,8 @@ def test_the_guard_reads_the_switch_the_way_the_PRODUCT_reads_it(monkeypatch):
     for spelling in ("on", "ON", "1", "yes", "true"):
         monkeypatch.setenv(adapters.ENGINES_ENV, spelling)
         assert _engines_are_on(), spelling
-        assert adapters.engine_path("gitleaks") is not None or True
+        assert ((adapters.engine_path("gitleaks") is not None)
+                == (engines.find("gitleaks") is not None)), spelling
     for spelling in ("off", "OFF", "0", "no", "false", "none", " off "):
         monkeypatch.setenv(adapters.ENGINES_ENV, spelling)
         assert not _engines_are_on(), spelling
