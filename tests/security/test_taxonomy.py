@@ -228,18 +228,32 @@ def _states_the_downgrade_direction(text):
 
 
 def _skill_section(start_pattern, end_pattern=None):
-    """The slice of SKILL.md from one heading up to the next, or to the end."""
+    """The slice of SKILL.md from one heading up to the next, or to the end.
+
+    `end_pattern=None` means the section runs to the END OF THE FILE, and that
+    is CHECKED, not assumed: no `## ` heading may follow the start. Without
+    the check, "scoped to the section" was in practice "from the heading to
+    the end of the file" -- exact only while the section asked for is the last
+    `##`, and a section appended after it would have widened every pin that
+    reads this slice, silently, to sentences from the new section.
+    """
     text = SKILL.read_text()
     start = re.search(start_pattern, text, re.MULTILINE)
     assert start, f"SKILL.md has no section starting {start_pattern!r}"
     section = text[start.start():]
-    if end_pattern is not None:
-        end = re.search(end_pattern, section[1:], re.MULTILINE)
-        assert end, (
-            f"SKILL.md's {start_pattern!r} section never ends: no "
-            f"{end_pattern!r} after it, so this slice is the rest of the file")
-        section = section[:1 + end.start()]
-    return section
+    if end_pattern is None:
+        later = re.search(r"^## ", section[1:], re.MULTILINE)
+        assert later is None, (
+            f"SKILL.md's {start_pattern!r} section is no longer the last one: "
+            f"{section[1 + later.start():].splitlines()[0]!r} follows it, so a "
+            "slice to the end of the file would hold another section's "
+            "sentences too -- pass an explicit end_pattern")
+        return section
+    end = re.search(end_pattern, section[1:], re.MULTILINE)
+    assert end, (
+        f"SKILL.md's {start_pattern!r} section never ends: no "
+        f"{end_pattern!r} after it, so this slice is the rest of the file")
+    return section[:1 + end.start()]
 
 
 def test_nowhere_in_the_skill_says_a_row_that_stands_can_be_left_as_it_is():

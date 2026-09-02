@@ -71,9 +71,16 @@ _RULES = [
 # under `.superpowers/`, `__pycache__/` and `data/logs/`.
 #
 # `storage/framework` -- Laravel's runtime directory (`cache/`, `sessions/`,
-# `views/`, `testing/`), git-ignored by Laravel's own per-directory
-# `.gitignore` -- is the same kind of noise at a scale that DISABLED a
-# scanner. Measured on the Minerva checkout at `cbbf901`: `gitleaks dir`
+# `views/`, `testing/`) -- is the same kind of noise at a scale that DISABLED
+# a scanner. THE RULE IT JOINS UNDER, spelled out because two texts once
+# spelled it wrong: a NAMED directory the machine generates at runtime is not
+# the repository -- `.superpowers`, `data/logs`, and this one. That all three
+# are git-ignored (this one by Laravel's own per-directory `.gitignore`) is a
+# fact about them, not the criterion: this scanner never reads `.gitignore`.
+# The tree scan walks the raw filesystem and only the directories named in
+# `SKIP_DIRS` leave, so on Minerva `.env`, `martis-app/auth.json` and
+# `docs/superpowers/` -- git-ignored, all of them -- are scanned like any
+# other file. Measured on the Minerva checkout at `cbbf901`: `gitleaks dir`
 # wrote 98,298 `generic-api-key` records from
 # `martis-app/storage/framework/sessions/` alone, a 65.8 MB report over
 # `engines.MAX_REPORT_BYTES`, so `run_json` discarded the tree pass whole and
@@ -86,7 +93,12 @@ _RULES = [
 # `storage` or `framework` would take both. This is the one entry here that
 # INCREASES recall. Measured after, same checkout: the tree pass writes 12 KB
 # (19 records), the phase reads `ran`, and the union grows from 29 identities
-# to 32 -- the three the tree pass adds sit outside `storage/` altogether.
+# to 32. The three the tree pass adds sit outside `storage/` altogether, and
+# all three are in git-ignored files -- two agent-written plans under
+# `docs/superpowers/plans/` and the local composer credential
+# `martis-app/auth.json`, the same class of untracked operator-local material
+# as the two `.env` files the scan already reported. That is the kind of
+# recall this entry buys.
 SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", "build",
              ".superpowers", "data/logs", "storage/framework"}
 

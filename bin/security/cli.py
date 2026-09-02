@@ -1453,24 +1453,41 @@ def cmd_report_finding(args):
     # established survives the triage that improved the row around it.
     payload.pop("scope", None)
     for key in TEXT_KEYS:
-        value = payload.get(key)
+        if key not in payload:
+            # The three optional keys may be absent (`title` cannot be: it is
+            # in REQUIRED_FINDING_KEYS and already a string by now). An absent
+            # key is the agent saying nothing under it, and what the upsert's
+            # REPLACE semantics then do is the skill's Job 2 step 4's business;
+            # this loop is about a key PRESENT as something other than text.
+            continue
+        value = payload[key]
         if not isinstance(value, str):
             # A text field that is not a string is not that field, and it is
-            # DROPPED here rather than skipped. A bare `continue` let
-            # `{"rationale": 5}` through to the ledger, where `_rationale_of`
-            # calls `.strip()` on it: an AttributeError the `except` around
-            # `record_finding` below does not name, so the agent got a
-            # Traceback on stderr where this door promises a sentence -- on
-            # every re-report onto an existing row, since the erasure check
-            # reaches that function on the marked rows too. Dropped, the
-            # ledger sees "no rationale" and the refusal it already has for
-            # that fires, naming what a reading would have carried instead;
-            # a wider `except` here would have turned a type error into a
-            # sentence about nothing. The other three go the same way for
-            # the same reason: an integer stored under `remediation` is a
-            # column the page renders as text holding something that is not.
-            payload.pop(key, None)
-            continue
+            # REFUSED here, by sentence. Three versions of this line, each
+            # paid for. A bare `continue` let `{"rationale": 5}` through to
+            # the ledger, where `_rationale_of` calls `.strip()` on it: an
+            # AttributeError the `except` around `record_finding` below does
+            # not name, so the agent got a Traceback where this door promises
+            # a sentence -- on every re-report onto an existing row, since the
+            # erasure check reaches that function on the marked rows too. The
+            # fix DROPPED the key instead, so that the ledger would see "no
+            # rationale" and its own refusal fire -- right for `rationale`,
+            # and for the other keys a silent erasure: `{"remediation": 5}`,
+            # `{"remediation": null}` and `{"partial_note": ["x"]}` exited 0
+            # with an empty stderr and the row stored with `''` in that
+            # column, the agent's remediation gone without a word (before the
+            # drop, an int had reached SQLite as an int and a list had raised
+            # inside `record_finding`, caught into a sentence below -- worse
+            # in one way, at least not silent). Refusing is the one answer
+            # right for all the keys on both kinds of row: nothing recorded,
+            # the field named, and the value never quoted -- a list carries a
+            # credential as easily as a string does -- only its kind.
+            kind = {type(None): "null", list: "a list", dict: "an object",
+                    bool: "a boolean"}.get(type(value), "a number")
+            sys.exit(f"report-finding: {key} must be a string — it arrived as "
+                     f"{kind}. A text field that is not text is not that field, "
+                     "and recording it as an empty one would erase what the row "
+                     "holds without saying so. Nothing was recorded")
         if len(value) > MAX_TEXT:
             sys.exit(f"report-finding: {key} is {len(value)} characters and the "
                      f"limit is {MAX_TEXT} — a finding is a paragraph the report "

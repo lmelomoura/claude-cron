@@ -154,8 +154,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   said, and the refusal names the missing half. And `{"rationale": 5}` — a
   rationale that is not a string — walked past the door into the ledger and
   came back as a Traceback on stderr instead of the door's sentence, on every
-  re-report onto an existing row; it is dropped at the door as no rationale,
-  so the refusal that already exists for that fires. Pinned alongside: the
+  re-report onto an existing row. It is now REFUSED at the door, by sentence —
+  rc 1, the field named, "must be a string", nothing recorded — and so is every
+  optional text field (`remediation`, `partial_note`) that arrives as something
+  other than a string. The first version of this fix dropped the key instead,
+  so that the ledger's own "no rationale" refusal would fire: right for
+  `rationale`, and for the other keys a silent erasure — `{"remediation": 5}`
+  exited 0 with an empty stderr and the row stored with `''` in that column,
+  the agent's remediation gone without a word. The ledger carries its own copy
+  of the location lock as well: an occurrence naming no file is never
+  inserted, whoever wrote it — unreachable through the door, which refuses such
+  an object, but `record_finding` called directly on a row that never had a
+  location stored `[{"line": 3}]` as `('', 3)`. Pinned alongside: the
   "Ending the run" clause naming the decided-row exemption, which could be
   deleted with the suite still green.
 
@@ -739,9 +749,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `secrets.SKIP_DIRS`, the one list the built-in sweep (`secrets.skipped`) and
   the gitleaks `--config` allowlist (`adapters.scope_patterns`) both read, so
   the two scanners keep one scope. Same rule as `.superpowers` and `data/logs`:
-  git-ignored runtime data on the operator's machine is not the repository, and
+  a named directory the machine generates at runtime is not the repository, and
   a scanner that reads it reports the operator's session store as the project's
-  leaked credentials. Precise on purpose: `storage/logs` (Laravel's application
+  leaked credentials. Named, not git-ignored: the scanner does not read
+  `.gitignore` — the tree scan walks the filesystem and only the directories
+  `SKIP_DIRS` names leave, so a git-ignored `.env` or `auth.json` is scanned
+  like any other file. Precise on purpose: `storage/logs` (Laravel's application
   log, where a stack trace spills a password) and `storage/app` (uploads, which
   can be key files) stay in scope. **What was measured**, on the Minerva
   checkout (`develop` @ `55cfb91`, full history, default noise filter, paths and
@@ -755,8 +768,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   only built-in 27 → 24; files 28 → 31): a `curl-auth-header` and a
   `generic-api-key` in planning documents and a `github-fine-grained-pat` in
   `martis-app/auth.json` that no analysis of that repository had ever recorded.
-  The one `SKIP_DIRS` entry that increases recall, and reversible: one entry in
-  one set.
+  All three are in git-ignored files — two agent-written plans under
+  `docs/superpowers/plans/` and the local composer credential
+  `martis-app/auth.json`, the same class of untracked operator-local material
+  as the two `.env` files the scan already reported — which is the kind of
+  recall this entry buys. The one `SKIP_DIRS` entry that increases recall, and
+  reversible: one entry in one set.
 
 - **The two secret scanners now run together and their findings add up.**
   `prepare` used to run ONE of them — gitleaks when installed, the built-in

@@ -610,20 +610,29 @@ def test_a_finding_with_no_occurrence_is_refused_rather_than_guessed(conn):
 
 def test_an_occurrence_with_no_file_is_refused_the_same_as_no_occurrence(conn):
     """The near-miss of the test above, and the one that actually gets through
-    a guard written as `if occ is None`. `report-finding` validates only that
-    each occurrence is an OBJECT, and `record_finding` writes
-    `occ.get("file", "")` -- so `{"line": 3}` is a reachable, accepted payload
-    that produces an occurrence ROW with an empty path. The row exists, so the
-    no-occurrence branch does not fire, and the recompute one line later mints
-    `secret_fingerprint(new, "")`: exactly the identity no scanner will ever
-    emit that the guard above refuses to guess, arrived at silently."""
+    a guard written as `if occ is None`: an occurrence ROW with an empty path.
+    The row exists, so the no-occurrence branch does not fire, and the
+    recompute one line later mints `secret_fingerprint(new, "")` -- exactly
+    the identity no scanner will ever emit that the guard above refuses to
+    guess, arrived at silently.
+
+    Nothing writes such a row any more: the door refuses `{"line": 3}` and
+    `record_finding` stores only occurrences that name a file (see
+    `test_an_occurrence_naming_no_file_is_never_stored_even_where_nothing_refuses_it`).
+    It is planted here by SQL because that is how it now arrives -- in a
+    ledger written before either lock existed, which is precisely the input a
+    rename runs over. The guard is for those rows and stays."""
     aid = ledger.start_analysis(conn, "web", "web", "main", "c1", "standard", "r1")
     ledger.record_finding(conn, aid, {
         "fingerprint": "e" * 64, "category": "secret", "rule": "aws_access_key",
         "severity": "critical", "title": "t", "rationale": "r",
-        "remediation": "rotate", "occurrences": [{"line": 3}]})
-    # The payload really did reach the ledger as a row with an empty path --
-    # otherwise this test would be asserting about a state that cannot exist.
+        "remediation": "rotate", "occurrences": []})
+    fid = ledger.findings_of(conn, aid)[0]["id"]
+    with conn:
+        conn.execute("INSERT INTO occurrence (finding_id, file, line, snippet_hash)"
+                     " VALUES (?, '', 3, '')", (fid,))
+    # The row with an empty path really is there -- otherwise this test would
+    # be asserting about a state that cannot exist.
     assert ledger.findings_of(conn, aid)[0]["occurrences"] == [
         {"file": "", "line": 3, "snippet_hash": ""}]
 
@@ -1182,6 +1191,30 @@ def test_a_row_that_never_carried_a_location_can_be_rewritten_without_one(conn):
 
     ledger.record_finding(conn, aid, _finding(
         producer=ledger.AGENT, occurrences=[], rationale="why, reworded"))
+
+    got = ledger.findings_of(conn, aid)
+    assert got[0]["rationale"] == "why, reworded"
+    assert got[0]["occurrences"] == []
+
+
+@pytest.mark.parametrize("phantom", ([{"line": 3}], [{"file": "  ", "line": 3}]),
+                         ids=("no-file", "blank-file"))
+def test_an_occurrence_naming_no_file_is_never_stored_even_where_nothing_refuses_it(
+        conn, phantom):
+    """The ledger's own lock on what an occurrence is, for the one route the
+    door's `names_a_file` check does not reach: `record_finding` called
+    directly, on a row that never carried a location, so `_erases` has
+    nothing to defend and the write is applied. `[{"line": 3}]` used to be
+    stored as `('', 3)` and `[{"file": "  ", "line": 3}]` as `('  ', 3)` --
+    the phantom location the report renders as nothing and the gate's note
+    prints as "(no file recorded)", the exact row the door refuses. Same
+    predicate, asked here of every occurrence about to be INSERTED, so a
+    stored occurrence names a file whoever wrote it."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    ledger.record_finding(conn, aid, _finding(producer=ledger.AGENT, occurrences=[]))
+
+    ledger.record_finding(conn, aid, _finding(
+        producer=ledger.AGENT, occurrences=phantom, rationale="why, reworded"))
 
     got = ledger.findings_of(conn, aid)
     assert got[0]["rationale"] == "why, reworded"

@@ -331,9 +331,10 @@ def names_a_file(occurrence: dict) -> bool:
     bit), so a check on the line would refuse the producers' own rows.
 
     Defined once, here, and imported by `cli.cmd_report_finding`: the door
-    refuses any occurrence this returns False for, and `_not_a_reading` below
-    asks whether at least one passes, so the two cannot drift into two
-    spellings of what a location is.
+    refuses any occurrence this returns False for, `_not_a_reading` below asks
+    whether at least one passes, and `record_finding` inserts only the ones
+    that do, so the three cannot drift into three spellings of what a
+    location is.
     """
     file = occurrence.get("file")
     return isinstance(file, str) and bool(file.strip())
@@ -615,7 +616,19 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
                  finding.get("cwe", ""), finding.get("owasp", ""),
                  finding.get("producer", ""), finding.get("scope", "")))
             fid = cur.lastrowid
-        for occ in finding.get("occurrences", []):
+        # An occurrence that names no file is not stored, whoever wrote it.
+        # The door refuses such an object outright (`names_a_file` on every
+        # occurrence, in `cli.cmd_report_finding`), so this is the ledger's own
+        # copy of that lock, for the one route the door does not reach: this
+        # function called directly, on a row that never carried a location --
+        # where `_erases` has nothing to defend and the write is applied --
+        # used to store `[{"line": 3}]` as `('', 3)` and `[{"file": "  "}]` as
+        # `('  ', 3)`, the phantom the report renders as nothing and the gate's
+        # note prints as "(no file recorded)". Filtered, not raised: every
+        # producer names a path in every occurrence it builds, so nothing a
+        # producer writes is touched, and the predicate is the door's and
+        # `_locates`'s own, so "an occurrence" means one thing here as well.
+        for occ in filter(names_a_file, finding.get("occurrences", [])):
             conn.execute(
                 "INSERT INTO occurrence (finding_id, file, line, snippet_hash) VALUES (?,?,?,?)",
                 (fid, occ.get("file", ""), int(occ.get("line", 0)), occ.get("snippet_hash", "")))
@@ -756,12 +769,14 @@ def rename_rule(conn, category: str, old: str, new: str) -> int:
             if occ is None or not occ["file"]:
                 # NO occurrence, or an occurrence with an EMPTY path: the same
                 # thing for this purpose, because the path is half of the
-                # identity. Both are reachable. `report-finding` treats
-                # occurrences as optional, and it validates only that each one
-                # is an object -- `{"line": 3}` passes that check, and
-                # `record_finding` stores its `file` as `occ.get("file", "")`.
-                # Testing only for the missing ROW would let the empty PATH
-                # through to `secret_fingerprint(new, "")`: a well-formed
+                # identity. The first is reachable today (`report-finding`
+                # treats occurrences as optional). The second no longer is
+                # through any writer -- the door refuses `{"line": 3}` and
+                # `record_finding` inserts only occurrences that name a file
+                # -- but a ledger written before either lock can hold such a
+                # row, and rows already on disk are exactly what a rename runs
+                # over. Testing only for the missing ROW would let the empty
+                # PATH through to `secret_fingerprint(new, "")`: a well-formed
                 # identity no scanner will ever emit, minted silently by the
                 # branch two lines below the guard that refuses to guess it.
                 # Refusing is the same call as refusing `sast`.
