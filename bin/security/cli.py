@@ -571,6 +571,12 @@ def _scan_dependencies(root, components, offline: bool, ignore_paths=()):
     if components:
         notes.append(osv.FALLBACK_NOTE)
     cve_findings, osv_note = osv.query(components, detail_cache={})
+    if cve_findings:
+        # Gated on FINDINGS, not on components, exactly as `DEP_SCOPE_NOTE` is
+        # on the Trivy path: `scope` is a column on a dependency finding, and
+        # with none in the report there is nothing for the sentence to
+        # describe. Said after the fallback note it qualifies.
+        notes.append(deps.SCOPE_NOTE)
     cve_findings = [f for f in cve_findings
                     if not ignores.ignored(f["occurrences"][0]["file"],
                                            ignore_paths)]
@@ -1087,6 +1093,15 @@ def cmd_report_finding(args):
         payload["cwe"], payload["owasp"] = taxonomy.classify(payload["rule"])
     else:
         payload["cwe"] = payload["owasp"] = ""
+    # `scope` IS DROPPED HERE, on the same rule as `cwe`/`owasp` above and for
+    # a sharper version of the reason. It is read from a lockfile by whichever
+    # dependency producer ran; the agent reads no lockfile, so anything it sent
+    # under this name would be a guess sitting in a column a reader takes for a
+    # measurement. Dropping it rather than refusing it keeps a re-report of a
+    # dependency finding (Job 2's whole purpose) working: `record_finding`'s
+    # upsert does not touch the column, so the value the dependency phase
+    # established survives the triage that improved the row around it.
+    payload.pop("scope", None)
     for key in TEXT_KEYS:
         value = payload.get(key)
         if not isinstance(value, str):

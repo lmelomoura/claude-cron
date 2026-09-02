@@ -63,6 +63,16 @@ CREATE TABLE IF NOT EXISTS finding (
   -- writer -- see `record_finding`, where a re-report deliberately leaves
   -- this column alone.
   producer TEXT NOT NULL DEFAULT '',
+  -- WHETHER A VULNERABLE DEPENDENCY SHIPS -- 'runtime', 'dev', 'unknown', or
+  -- '' on any finding that is not a dependency at all. Set by whichever of the
+  -- two dependency producers ran, from one shared rule (deps.merge_scope), and
+  -- never accepted from the agent -- see cmd_report_finding, for the reason
+  -- cwe/owasp are not accepted either. 'unknown' is a real answer and is NOT
+  -- the same as '': it means a producer read the lockfile and the format could
+  -- not say. Deliberately NOT a fingerprint input, so it can be corrected
+  -- without re-identifying anything: ledger._REFINGERPRINT has no `dependency`
+  -- entry, and a change to that category's identity is unrecoverable.
+  scope TEXT NOT NULL DEFAULT '',
   -- The deterministic phase (cmd_prepare) and the agent's report-finding
   -- command can both record the same fingerprint into one analysis -- the
   -- agent's triage job is explicitly to RE-REPORT a deterministic finding
@@ -160,6 +170,11 @@ _FINDING_COLUMNS = (
     ("owasp", "TEXT NOT NULL DEFAULT ''"),
     # Who minted this identity. See the column's own comment in _SCHEMA.
     ("producer", "TEXT NOT NULL DEFAULT ''"),
+    # Whether the vulnerable dependency ships. See the column's own comment in
+    # _SCHEMA. Additive in the same way `cwe` and `owasp` were: no existing row
+    # becomes wrong for carrying the '' default, only less annotated, and
+    # nothing derives a state from it.
+    ("scope", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -275,6 +290,15 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
     # to improve a finding. `prepare` always runs before the agent (see
     # `cmd_finish`'s `prepared` guard), so the first writer is always the
     # minting one.
+    #
+    # `scope` IS THE SECOND SUCH COLUMN, left alone by the upsert for the same
+    # reason plus one of its own. It is a fact about the LOCKFILE, established
+    # by the producer that read it; the agent never reads a lockfile and
+    # `cmd_report_finding` does not accept the field, so a re-report carries no
+    # value for it. Updating it anyway would write '' over a `dev` the
+    # dependency phase had correctly established, and the row would come out of
+    # triage LESS annotated than it went in -- again through the one door whose
+    # whole purpose is to improve a finding.
     with conn:
         existing = conn.execute(
             "SELECT id FROM finding WHERE analysis_id=? AND fingerprint=?",
@@ -293,13 +317,14 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
         else:
             cur = conn.execute(
                 "INSERT INTO finding (analysis_id, fingerprint, category, rule, severity,"
-                " title, rationale, remediation, partial_note, cwe, owasp, producer)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                " title, rationale, remediation, partial_note, cwe, owasp, producer,"
+                " scope)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (analysis_id, finding["fingerprint"], finding["category"], finding["rule"],
                  finding["severity"], finding["title"], finding.get("rationale", ""),
                  finding.get("remediation", ""), finding.get("partial_note", ""),
                  finding.get("cwe", ""), finding.get("owasp", ""),
-                 finding.get("producer", "")))
+                 finding.get("producer", ""), finding.get("scope", "")))
             fid = cur.lastrowid
         for occ in finding.get("occurrences", []):
             conn.execute(

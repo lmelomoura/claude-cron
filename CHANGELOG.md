@@ -19,6 +19,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A dependency finding now says whether the vulnerable package actually
+  ships.** Every `dependency` finding carries a `scope` of `runtime`, `dev`
+  or `unknown`, shown in all three report formats and on the findings
+  screen. Without it a CVE in a test runner and a CVE in the HTTP client
+  that serves traffic were the same red row, and on a repository with
+  hundreds of findings that is the difference between a triage budget that
+  works and one that does not — it is the third cost-control lever beside
+  `min_severity` and `ignore_paths`. **`unknown` is a real answer, not a
+  gap:** `package-lock.json`, `composer.lock` and `poetry.lock` say which
+  packages are development-only, `requirements.txt` and `go.sum` cannot, and
+  answering `runtime` for those would state a fact nobody established while
+  answering `dev` would hide real risk. **The two producers of this category
+  agree, and that was measured rather than assumed** — only one of them runs
+  per analysis and which one depends on whether the machine has Trivy, so
+  the rule lives in one function both call, and the parity was run live over
+  trees pinning one vulnerable dev dependency and one vulnerable runtime
+  dependency in npm, composer and poetry. The one case where they cannot
+  agree — a `poetry.lock` written by Poetry 1.5 to 2.0, which records group
+  membership nowhere the lockfile reader can see it — is stated in the
+  coverage note, and the difference is always in the safe direction.
+  `scope` is deliberately **not** part of a finding's fingerprint, so no
+  identity moved and no human decision was orphaned.
+
+- **Trivy is now asked for development dependencies at all
+  (`--include-dev-deps`).** Measured: without the flag a vulnerable
+  development dependency is not in Trivy's report at all — a
+  `package-lock.json` pinning a vulnerable `lodash` and a vulnerable
+  dev-only `minimist` produced five findings and no mention of `minimist`.
+  The built-in inventory has always read development dependencies, so the
+  same repository reported a *smaller* set of dependency findings on a
+  machine that has Trivy than on one that does not. A dev-only CVE is a
+  finding to rank, not one to drop.
+
 - **Test fixtures are suppressed by default, without anybody having to
   write `ignore_paths` first.** A `fixtures`, `__fixtures__` or `testdata`
   directory, at any depth, is now outside the analysis on every project —

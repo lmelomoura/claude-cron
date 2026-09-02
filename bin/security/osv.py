@@ -23,6 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .deps import merge_scope
 from .fingerprint import fingerprint
 
 _BATCH_URL = "https://api.osv.dev/v1/querybatch"
@@ -123,6 +124,12 @@ def _finding(component, vuln_id, detail):
         "rationale": summary,
         "remediation": (f"Upgrade {component['name']} past {component['version']}. "
                         f"See https://osv.dev/vulnerability/{vuln_id}"),
+        # Read off the component, never off the advisory: OSV.dev is asked
+        # about a package, and whether that package ships is a fact about THIS
+        # repository's lockfile that only `deps.inventory` saw. Normalised
+        # through the shared `merge_scope` rather than copied, so a component
+        # that somehow arrives without one reads `unknown` and not `runtime`.
+        "scope": merge_scope(component.get("scope")),
         "occurrences": [{"file": component["source"], "line": 0, "snippet_hash": ""}],
     }
 
@@ -144,6 +151,12 @@ def _clean_components(components):
     it only labels where a finding was found, and every surviving component
     is renormalised here so later code can keep using plain ["source"]
     access without risking a KeyError on the rare one that omits it.
+
+    `scope` is treated exactly like `source` and for the same reason -- it is
+    never sent to OSV.dev, only carried onto the finding -- except that a
+    missing or unrecognised value does not merely default to empty: it becomes
+    `unknown` through `deps.merge_scope`, so a malformed entry can never make a
+    development dependency read as one that ships.
     """
     clean = []
     for c in components:
@@ -159,7 +172,8 @@ def _clean_components(components):
         if not isinstance(source, str):
             continue
         clean.append({"name": c["name"], "ecosystem": c["ecosystem"],
-                      "version": c["version"], "source": source})
+                      "version": c["version"], "source": source,
+                      "scope": merge_scope(c.get("scope"))})
     return clean, len(components) - len(clean)
 
 

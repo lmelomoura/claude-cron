@@ -723,6 +723,36 @@ _TRIVY_ECOSYSTEM = {
     "bundler": "RubyGems", "gemspec": "RubyGems",
 }
 
+# The Trivy `Type`s whose analyser was MEASURED to mark development
+# dependencies, against trivy 0.74.0 with `--include-dev-deps`. For a type in
+# this set, `Dev` absent on the package means `runtime`; for every other type
+# -- including every type absent from `_TRIVY_ECOSYSTEM` above -- it means
+# `unknown`, because Trivy reports the absence of the field identically whether
+# the package ships or whether its analyser has no notion of a dev dependency
+# at all.
+#
+# KEYED ON THE RAW `Type`, NOT ON THE ECOSYSTEM `_TRIVY_ECOSYSTEM` maps it to,
+# and the split matters: `pip` and `poetry` are both `PyPI` there, and only
+# `poetry` can answer this. Collapsing them first would let a requirements.txt
+# finding inherit poetry's ability to say `runtime`.
+#
+# WHAT WAS MEASURED, one tree per type, each pinning one vulnerable runtime
+# package and one vulnerable dev-only package:
+#
+#   npm        package-lock.json  `Dev: true` on the `"dev": true` entry.
+#   yarn       yarn.lock          `Dev: true` (read from package.json beside it).
+#   composer   composer.lock      `Dev: true` on the `packages-dev` entry.
+#   poetry     poetry.lock        `Dev: true` from `category` or `groups`.
+#
+# And what was measured NOT to answer, which is why the set is not wider:
+# `pip` (requirements.txt: no field, and no `PkgID` on its records either),
+# `gomod` (no such concept), `bundler` (Gemfile.lock carries no group), and
+# `pnpm` -- which reported no dev package at all over a hand-written
+# lockfileVersion 6 file even with the flag, so whether its analyser marks
+# `Dev` is UNPROVEN here and it is left out rather than guessed in. Adding a
+# type to this set means running the tool over such a tree first.
+_TRIVY_DEV_AWARE = frozenset({"npm", "yarn", "composer", "poetry"})
+
 # Named so a reader of a report knows which scanner produced its dependency
 # findings, the same reason `ENGINE_NOTE` exists above for secrets. Spelled
 # out as "Trivy ({version})" rather than "{version}" alone: unlike
@@ -775,6 +805,21 @@ DEP_SBOM_NOTE = ("The SBOM lists the five lockfile formats this project's own "
 # `go.sum` and no `go.mod` produced Go findings before and produces NOTHING
 # from Trivy. Unfixable from here -- Trivy will not read `go.sum` -- so it is
 # counted and stated rather than left as a silent hole.
+# The counterpart of `deps.SCOPE_NOTE`, said by whichever producer actually
+# ran. Two notes rather than one shared sentence because the two producers do
+# not answer the same set of formats, and a single sentence would have to be
+# vague enough to be true of both -- which is how a coverage note stops being
+# worth reading. Said whenever Trivy produced the dependency findings, not only
+# when some of them are `dev`: "no development dependency was flagged" is a
+# result a reader needs to be able to trust, and it is only trustworthy if the
+# formats that could not answer are named.
+DEP_SCOPE_NOTE = ("Whether a vulnerable dependency is development-only was "
+                  "read from Trivy's own per-package flag, which its npm, "
+                  "yarn, composer and poetry analysers set. It is reported as "
+                  "unknown — never as runtime — for every other format Trivy "
+                  "reads, including requirements.txt, go.mod and Gemfile.lock, "
+                  "whose analysers do not mark it.")
+
 GO_SUM_ONLY_GAP = ("{count} {directories} in this repository {have} a go.sum "
                    "but no go.mod: Trivy reads go.mod, so the Go "
                    "dependencies pinned there were NOT checked for known "
@@ -938,7 +983,55 @@ def _trivy_severity(record) -> str:
                                osv.DEFAULT_SEVERITY)
 
 
-def _trivy_finding(source: str, vuln, ecosystem: str = ""):
+def _trivy_dev_scope(result) -> dict:
+    """`{(ecosystem, name, version): scope}` for ONE `Results[]` entry.
+
+    THE MARKER IS NOT ON THE VULNERABILITY. Measured over trivy 0.74.0: a
+    `Vulnerabilities[]` record carries 21 fields and none of them is `Dev` --
+    the flag lives on `Results[].Packages[]`, so the scope of a CVE is only
+    reachable by joining back to the package that carries it. The join key here
+    is the component tuple rather than `PkgID`/`PkgIdentifier.UID`, on purpose:
+    it is the SAME key `trivy_vulns` already dedupes on and the same one
+    `deps.inventory` builds, `PkgID` is absent entirely on pip records
+    (measured), and a second key would be a second thing to keep in agreement.
+
+    `Version` is normalised through `deps.normalise_version`, the function the
+    lockfile readers themselves call, for the reason `_trivy_component` gives:
+    a `Packages[]` entry spelling a Go module `v1.6.3` where the vulnerability
+    record's component key says `1.6.3` would simply never join, and the
+    finding would silently read `unknown`.
+    """
+    dev_aware = str(result.get("Type") or "").strip().lower() in _TRIVY_DEV_AWARE
+    ecosystem = _TRIVY_ECOSYSTEM.get(
+        str(result.get("Type") or "").strip().lower(), "")
+    packages = result.get("Packages")
+    if not isinstance(packages, list):
+        return {}
+    out = {}
+    for pkg in packages:
+        if not isinstance(pkg, dict):
+            continue
+        name = str(pkg.get("Name") or "").strip()
+        version = deps.normalise_version(
+            ecosystem, str(pkg.get("Version") or "").strip())
+        if not name or not version:
+            continue
+        if not dev_aware:
+            scope = deps.SCOPE_UNKNOWN
+        else:
+            # `is True`, not truthiness. Trivy omits the key entirely for a
+            # package that ships, and writes `true` for one that does not;
+            # anything else arriving in that slot is not a claim this code
+            # should read as either answer.
+            scope = (deps.SCOPE_DEV if pkg.get("Dev") is True
+                     else deps.SCOPE_RUNTIME)
+        key = (ecosystem, name, version)
+        out[key] = deps.merge_scope(out[key], scope) if key in out else scope
+    return out
+
+
+def _trivy_finding(source: str, vuln, ecosystem: str = "",
+                   scope: str = deps.SCOPE_UNKNOWN):
     component = _trivy_component(vuln, ecosystem)
     # OSV.dev's name for this advisory when Trivy's record carries it, the
     # CVE id otherwise -- see `_trivy_advisory_id`. It replaces the CVE
@@ -987,6 +1080,11 @@ def _trivy_finding(source: str, vuln, ecosystem: str = ""):
         "title": f"{name} {version}: {vuln_id}",
         "rationale": rationale,
         "remediation": remediation,
+        # Joined from `Results[].Packages[]` by the caller -- see
+        # `_trivy_dev_scope`. Normalised through the shared `merge_scope` so
+        # that a value this parser did not produce cannot reach the ledger,
+        # and so that "no answer" lands on `unknown` rather than `runtime`.
+        "scope": deps.merge_scope(scope),
         "occurrences": [{"file": source, "line": 0, "snippet_hash": ""}],
     }
     # The dependency category has no closed vocabulary -- its rule is the
@@ -1038,9 +1136,26 @@ def trivy_vulns(data, root=None) -> list[dict]:
     results = data.get("Results")
     if not isinstance(results, list):
         return []
+    ordered = sorted((r for r in results if isinstance(r, dict)),
+                     key=lambda r: str(r.get("Target") or ""))
+
+    # SCOPE IS RESOLVED ACROSS EVERY TARGET BEFORE ANY FINDING IS BUILT, which
+    # is what makes it agree with `deps.inventory` over a monorepo. The dedupe
+    # below keeps the FIRST lockfile that pinned a component and drops the
+    # rest, so a package that is a dev dependency in the first lockfile and a
+    # runtime one in the second would read `dev` if scope were read only from
+    # the owning target. `deps.inventory` merges the scope of every duplicate
+    # it drops for exactly this reason; two passes here is the same rule, and
+    # `merge_scope` is literally the same function.
+    scope_by_component = {}
+    for result in ordered:
+        for key, scope in _trivy_dev_scope(result).items():
+            scope_by_component[key] = (
+                deps.merge_scope(scope_by_component[key], scope)
+                if key in scope_by_component else scope)
+
     out, owner = [], {}
-    for result in sorted((r for r in results if isinstance(r, dict)),
-                         key=lambda r: str(r.get("Target") or "")):
+    for result in ordered:
         source, ecosystem = _trivy_scope(result, root)
         vulns = result.get("Vulnerabilities")
         if not source or not isinstance(vulns, list):
@@ -1050,11 +1165,16 @@ def trivy_vulns(data, root=None) -> list[dict]:
             continue
         for vuln in vulns:
             component = _trivy_component(vuln, ecosystem)
+            scope = deps.SCOPE_UNKNOWN
             if component is not None:
                 first = owner.setdefault((ecosystem, *component), source)
                 if first != source:
                     continue  # a later lockfile pinning what this one already did
-            finding = _trivy_finding(source, vuln, ecosystem)
+                # A vulnerability whose package is not in `Packages[]` at all
+                # leaves `unknown` standing: nothing said this one ships.
+                scope = scope_by_component.get((ecosystem, *component),
+                                               deps.SCOPE_UNKNOWN)
+            finding = _trivy_finding(source, vuln, ecosystem, scope)
             if finding is not None:
                 out.append(finding)
     return out
@@ -1128,8 +1248,27 @@ def trivy_scan(root, ignore_paths=()):
     holds only while another program accepted our command line is not a
     promise.
     """
+    # `--include-dev-deps` IS NOT A FLAG FOR THE `scope` COLUMN, it is what
+    # makes this producer's coverage comparable with the one it replaces.
+    # Measured on trivy 0.74.0: WITHOUT it, a development dependency is not in
+    # the report at all -- a package-lock.json pinning a vulnerable lodash and
+    # a vulnerable dev-only minimist yielded five findings and no mention of
+    # minimist, and composer.lock and poetry.lock behave the same way.
+    # `deps.inventory` has ALWAYS read development dependencies (`_composer`
+    # merged `packages-dev` from the day it was written), so leaving the flag
+    # off meant a repository reported one set of dependency findings on a
+    # machine with Trivy and a larger set on a machine without -- the
+    # per-machine divergence `_scan_dependencies` spends a page arguing
+    # against. A dev-only CVE is not noise to be dropped; it is a finding to be
+    # ranked, which is what `scope` is for.
+    #
+    # The flag reached Trivy in 0.50.0. An older binary rejects it, exits
+    # non-zero without writing a report, and `engines.run_json` turns that into
+    # (None, note) -- so the dependency phase falls back to OSV.dev and SAYS it
+    # did, which is the same declared degradation any unreadable report
+    # already produces. It does not fail silently.
     args = ["fs", ".", "--format", "json", "--output", "{out}",
-            "--scanners", "vuln", "--quiet",
+            "--scanners", "vuln", "--quiet", "--include-dev-deps",
             "--skip-dirs", ",".join(trivy_skip_dirs(ignore_paths))]
     data, note = engines.run_json("trivy", args, root)
     if data is None:
@@ -1151,6 +1290,11 @@ def trivy_scan(root, ignore_paths=()):
         # a repository that grows its first CVE gets the note back the same
         # run.
         notes.append(DEP_ID_NOTE)
+        # Beside `DEP_ID_NOTE` and gated the same way: with no dependency
+        # finding in the report there is no `scope` on anything, and a
+        # paragraph explaining a column nobody can see is a paragraph between
+        # the reader and the gaps that are real.
+        notes.append(DEP_SCOPE_NOTE)
     notes.append(DEP_SBOM_NOTE)
     go_only = _go_sum_without_go_mod(root, ignore_paths)
     if go_only:

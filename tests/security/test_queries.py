@@ -1240,6 +1240,27 @@ def test_finding_rows_carries_a_findings_cwe_and_owasp_class(conn):
     assert got["rows"][0]["owasp"] == "A03:2021"
 
 
+def test_finding_rows_carries_a_dependency_findings_scope(conn):
+    """The column has to reach the SCREEN, not just the report. `findings_of`
+    selects `*` and `diff.classify` copies the whole row, so this is a
+    property of the pipeline rather than of a line somebody wrote -- which is
+    exactly why it needs pinning: a future `SELECT` that names its columns
+    would drop it with nothing failing."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "s", "quick", "r")
+    ledger.record_finding(conn, aid, {
+        "fingerprint": "e" * 64, "category": "dependency", "rule": "CVE-2021-44906",
+        "severity": "high", "title": "minimist 1.2.5: CVE-2021-44906",
+        "scope": "dev", "producer": "trivy",
+        "occurrences": [{"file": "package-lock.json", "line": 0,
+                         "snippet_hash": ""}]})
+    ledger.mark_prepared(conn, aid, ["trivy"])
+    ledger.finish_analysis(conn, aid, "done")
+
+    assert queries.finding_rows(conn, "web")["rows"][0]["scope"] == "dev"
+    _an, findings = queries.checklist(conn, aid)
+    assert findings[0]["scope"] == "dev"
+
+
 def test_first_seen_is_the_oldest_analysis_carrying_the_fingerprint(conn):
     a1 = _analysis(conn, "main", findings=[("critical", "secret")])
     _analysis(conn, "main", findings=[("critical", "secret")])

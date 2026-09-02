@@ -299,6 +299,21 @@ def test_report_finding_ignores_a_classification_sent_by_the_agent(tmp_path):
     assert row["owasp"] == "A03:2021"
 
 
+def test_report_finding_ignores_a_scope_sent_by_the_agent(tmp_path):
+    """`scope` is read from a LOCKFILE by whichever dependency producer ran.
+    The agent reads no lockfile, so anything it sends under this name is a
+    guess sitting in a column a reader takes for a measurement. Dropped rather
+    than refused, so that Job 2's re-report of a dependency finding still
+    works -- and `record_finding`'s upsert leaves the column alone, so the
+    value the dependency phase established survives that re-report."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "d" * 64, "category": "dependency", "rule": "CVE-1",
+        "severity": "high", "title": "t", "scope": "runtime"}))
+    assert _finding_row(db, aid)["scope"] == ""
+
+
 def test_report_finding_accepts_a_deterministic_rule_unchanged(tmp_path):
     """The vocabulary is for SAST only. A hygiene rule name is produced by our
     own Python and must not be forced through a vocabulary written for the

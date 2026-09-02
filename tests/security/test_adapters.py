@@ -1746,6 +1746,33 @@ def test_the_coverage_notes_are_returned_without_the_binary(monkeypatch,
     assert adapters.DEP_ENGINE_NOTE.format(version="0.74.0") in notes, notes
 
 
+def test_the_scope_note_is_returned_without_the_binary(monkeypatch, tmp_path):
+    """Pinned OUTSIDE `@needs_trivy` for the reason this whole section exists:
+    a sentence that is only asserted on a machine with the binary is a
+    sentence a green suite lets you delete. `scope` is a column a reader
+    grades urgency by, and "no development dependency was flagged" is only
+    trustworthy if the formats that could not answer are named."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    _stub_trivy(monkeypatch, json.loads((FIX / "trivy-fs.json").read_text()))
+    findings, notes = adapters.trivy_scan(root)
+    assert findings, "the fixture stopped producing findings"
+    assert adapters.DEP_SCOPE_NOTE in notes, notes
+
+
+def test_the_scope_note_is_not_said_when_no_finding_carries_a_scope(
+        monkeypatch, tmp_path):
+    """Gated exactly as `DEP_ID_NOTE` is, and for the same reason: with no
+    dependency finding in the report there is no `scope` on anything, and the
+    paragraph sits between the reader and the gaps that are real."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    _stub_trivy(monkeypatch, {"SchemaVersion": 2, "Results": []})
+    findings, notes = adapters.trivy_scan(root)
+    assert findings == []
+    assert adapters.DEP_SCOPE_NOTE not in notes, notes
+
+
 def test_the_id_note_is_not_said_when_there_is_nothing_to_transition(
         monkeypatch, tmp_path):
     """`DEP_ID_NOTE` describes what happens to a dependency finding whose
@@ -3088,3 +3115,224 @@ def test_prepare_declares_a_pre_pass_that_failed_rather_than_recording_nothing(
     # nothing it found last time can be proven gone by this run. See
     # `diff._proven`.
     assert producer == ""
+
+
+# --------------------------------------------- the dependency scan's `scope`
+#
+# TWO PRODUCERS, ONE ANSWER. `cli._scan_dependencies` runs Trivy OR
+# `deps.inventory` + `osv.query`, never both, and which one runs depends on
+# whether a machine has the binary -- so a `scope` these two spell differently
+# is a column whose value flips with the machine. Every expectation below was
+# measured against trivy 0.74.0 over a real tree first; the twin assertions on
+# the other producer live in tests/security/test_deps.py.
+
+def _npm_result(*packages, target="package-lock.json", type_="npm"):
+    """One `Results[]` entry: `Packages[]` carries the marker, and
+    `Vulnerabilities[]` carries none -- which is the whole shape of the
+    problem. Measured: a trivy 0.74.0 vulnerability record has 21 fields and
+    `Dev` is not among them."""
+    return {"Target": target, "Type": type_,
+            "Packages": [{"Name": n, "Version": v, **({"Dev": True} if dev else {})}
+                         for n, v, dev in packages],
+            "Vulnerabilities": [
+                {"VulnerabilityID": f"CVE-{n}", "PkgName": n,
+                 "InstalledVersion": v, "Severity": "HIGH", "Title": "t"}
+                for n, v, _dev in packages]}
+
+
+def _scope_by_package(findings):
+    return {f["title"].split(" ", 1)[0]: f["scope"] for f in findings}
+
+
+def test_trivy_scope_is_joined_from_Packages_because_the_vuln_has_no_marker():
+    """The flag is on `Results[].Packages[]`, not on the vulnerability, so a
+    parser that only read `Vulnerabilities[]` could never answer this at all."""
+    data = {"Results": [_npm_result(("lodash", "4.17.20", False),
+                                    ("minimist", "1.2.5", True))]}
+    assert _scope_by_package(adapters.trivy_vulns(data)) == {
+        "lodash": deps.SCOPE_RUNTIME, "minimist": deps.SCOPE_DEV}
+
+
+def test_trivy_says_unknown_for_an_analyser_that_does_not_mark_dev():
+    """`Dev` ABSENT IS NOT `runtime` BY ITSELF. Trivy omits the field
+    identically whether a package ships or whether its analyser has no notion
+    of a development dependency -- measured for `pip`, `gomod` and `bundler`,
+    none of which marked anything over a tree that held both kinds. Reading
+    absence as `runtime` there would state a fact nobody established."""
+    for type_ in ("pip", "gomod", "bundler"):
+        data = {"Results": [_npm_result(("x", "1.0", False), type_=type_,
+                                        target="t")]}
+        assert _scope_by_package(adapters.trivy_vulns(data)) == {
+            "x": deps.SCOPE_UNKNOWN}, type_
+
+
+def test_trivy_scope_is_keyed_on_the_raw_type_not_the_ecosystem():
+    """`pip` and `poetry` are both `PyPI` in `_TRIVY_ECOSYSTEM`, and only one
+    of them can answer. Collapsing to the ecosystem first would let a
+    requirements.txt finding inherit poetry's ability to say `runtime`."""
+    poetry = {"Results": [_npm_result(("x", "1.0", False), type_="poetry",
+                                      target="poetry.lock")]}
+    pip = {"Results": [_npm_result(("x", "1.0", False), type_="pip",
+                                   target="requirements.txt")]}
+    assert _scope_by_package(adapters.trivy_vulns(poetry)) == {"x": deps.SCOPE_RUNTIME}
+    assert _scope_by_package(adapters.trivy_vulns(pip)) == {"x": deps.SCOPE_UNKNOWN}
+
+
+def test_trivy_resolves_scope_across_every_target_before_building_findings():
+    """The dedupe keeps the FIRST target that pinned a component and drops the
+    rest -- so reading scope only from the owning target would label a shared
+    package by whichever lockfile sorts first. It ships somewhere, so it is
+    runtime. `deps.inventory` merges the same way, through the same function."""
+    data = {"Results": [
+        _npm_result(("lodash", "4.17.20", True), target="a/package-lock.json"),
+        _npm_result(("lodash", "4.17.20", False), target="b/package-lock.json"),
+    ]}
+    out = adapters.trivy_vulns(data)
+    assert len(out) == 1, "the component is still deduped to one finding"
+    assert out[0]["scope"] == deps.SCOPE_RUNTIME
+    assert out[0]["occurrences"][0]["file"] == "a/package-lock.json", (
+        "the merge must move the SCOPE only, never the attribution")
+
+
+def test_a_vulnerability_whose_package_is_not_listed_stays_unknown():
+    """Nothing said this one ships, so nothing may claim it does."""
+    data = {"Results": [{"Target": "package-lock.json", "Type": "npm",
+        "Packages": [],
+        "Vulnerabilities": [{"VulnerabilityID": "CVE-1", "PkgName": "x",
+            "InstalledVersion": "1.0", "Severity": "HIGH", "Title": "t"}]}]}
+    assert adapters.trivy_vulns(data)[0]["scope"] == deps.SCOPE_UNKNOWN
+
+
+def test_a_Dev_value_that_is_not_true_is_not_read_as_dev():
+    """Trivy writes the key only for a dev package and only as `true`.
+    Anything else in that slot is not a claim either way, and truthiness would
+    turn a stray string into a `dev` label that lowers how hard a human looks."""
+    data = {"Results": [{"Target": "package-lock.json", "Type": "npm",
+        "Packages": [{"Name": "x", "Version": "1.0", "Dev": "true"}],
+        "Vulnerabilities": [{"VulnerabilityID": "CVE-1", "PkgName": "x",
+            "InstalledVersion": "1.0", "Severity": "HIGH", "Title": "t"}]}]}
+    assert adapters.trivy_vulns(data)[0]["scope"] == deps.SCOPE_RUNTIME
+
+
+def test_the_go_version_is_normalised_on_BOTH_sides_of_the_scope_join():
+    """`_trivy_dev_scope` builds its key from `Packages[].Version` and the
+    finding's key comes from `Vulnerabilities[].InstalledVersion`, and Go
+    spells both with a leading `v`. Without the shared `normalise_version` on
+    the package side the two keys never meet, and every Go finding would read
+    `unknown` for a reason that has nothing to do with Go's dependency model."""
+    data = {"Results": [{"Target": "go.mod", "Type": "gomod",
+        "Packages": [{"Name": "example.com/foo", "Version": "v1.2.3"}],
+        "Vulnerabilities": [{"VulnerabilityID": "CVE-1",
+            "PkgName": "example.com/foo", "InstalledVersion": "v1.2.3",
+            "Severity": "HIGH", "Title": "t"}]}]}
+    out = adapters.trivy_vulns(data)
+    assert out[0]["title"].startswith("example.com/foo 1.2.3")
+    # `gomod` is not dev-aware, so `unknown` is the right answer here -- but it
+    # must be the answer the join REACHED, not the one a missed join fell to.
+    assert out[0]["scope"] == deps.SCOPE_UNKNOWN
+    assert ("Go", "example.com/foo", "1.2.3") in adapters._trivy_dev_scope(
+        data["Results"][0]), "the package-side key was not normalised"
+
+
+def test_trivy_is_asked_for_development_dependencies_at_all():
+    """WITHOUT `--include-dev-deps` A DEV DEPENDENCY IS NOT IN THE REPORT.
+    Measured on trivy 0.74.0: a package-lock.json pinning a vulnerable lodash
+    and a vulnerable dev-only minimist yielded five findings and no mention of
+    minimist; composer.lock and poetry.lock behave the same way.
+    `deps.inventory` has always read development dependencies, so leaving the
+    flag off meant the same repository reported a SMALLER set of findings on a
+    machine that has Trivy -- the per-machine divergence this module exists to
+    close. A dev-only CVE is ranked by `scope`, not dropped."""
+    seen = {}
+
+    def fake_run_json(name, args, cwd, **kw):
+        seen["args"] = args
+        return {"Results": []}, ""
+
+    import security.engines as _engines
+    real = _engines.run_json
+    adapters.engines.run_json = fake_run_json
+    try:
+        adapters.trivy_scan(".")
+    finally:
+        adapters.engines.run_json = real
+    assert "--include-dev-deps" in seen["args"]
+
+
+# ------------------------------------------------ the parity proof, live
+#
+# THE ACCEPTANCE TEST FOR `scope`, and the one the history of this block says
+# matters. Everything above pins one producer's reading of a fixture; this runs
+# BOTH producers over one real tree and holds their answers against each other.
+# It needs trivy but NOT the network: `deps.inventory` never leaves the machine
+# and the comparison is of the SCOPE each producer gives a package, not of the
+# advisories either of them found -- so OSV.dev is not called and this cannot
+# go red because a database moved.
+
+@needs_trivy
+def test_the_two_dependency_producers_agree_on_scope(tmp_path):
+    """One tree, one dev-only dependency and one runtime dependency per
+    format, both producers asked. Measured live against trivy 0.74.0 over
+    separate trees for npm, composer and poetry (lock-version 1.1 and 2.1),
+    including a real OSV.dev run: six findings each with identical GHSA ids
+    and identical scopes.
+
+    THE FORMATS ARE IN SEPARATE DIRECTORIES on purpose. Trivy's yarn analyser
+    reads a `package.json` beside the lockfile, and a single flat tree lets one
+    ecosystem's manifest change another's answer -- which would make this test
+    prove something other than what it claims.
+    """
+    (tmp_path / "js").mkdir()
+    (tmp_path / "js" / "package-lock.json").write_text(json.dumps({
+        "name": "app", "version": "1.0.0", "lockfileVersion": 3,
+        "packages": {
+            "": {"name": "app", "version": "1.0.0"},
+            "node_modules/lodash": {"version": "4.17.20"},
+            "node_modules/minimist": {"version": "1.2.5", "dev": True},
+        }}))
+    (tmp_path / "php").mkdir()
+    (tmp_path / "php" / "composer.lock").write_text(json.dumps({
+        "packages": [{"name": "guzzlehttp/guzzle", "version": "6.5.0"}],
+        "packages-dev": [{"name": "phpunit/phpunit", "version": "4.8.27"}]}))
+    (tmp_path / "py").mkdir()
+    (tmp_path / "py" / "poetry.lock").write_text(
+        '[[package]]\nname = "jinja2"\nversion = "2.11.2"\n'
+        'groups = ["main"]\nfiles = []\n\n'
+        '[[package]]\nname = "urllib3"\nversion = "1.26.4"\n'
+        'groups = ["dev"]\nfiles = []\n\n'
+        '[metadata]\nlock-version = "2.1"\n')
+
+    findings, notes = adapters.trivy_scan(tmp_path)
+    assert findings is not None, f"trivy produced no report: {notes}"
+
+    # Trivy's side, as {package: scope}. A package with several advisories must
+    # carry ONE scope across all of them, which is asserted rather than assumed.
+    engine = {}
+    for f in findings:
+        name = f["title"].split(" ", 1)[0]
+        assert engine.setdefault(name, f["scope"]) == f["scope"], (
+            f"trivy gave {name} two different scopes in one report")
+
+    ours = {c["name"]: c["scope"] for c in deps.inventory(tmp_path)}
+
+    expected = {"lodash": deps.SCOPE_RUNTIME, "minimist": deps.SCOPE_DEV,
+                "guzzlehttp/guzzle": deps.SCOPE_RUNTIME,
+                "phpunit/phpunit": deps.SCOPE_DEV,
+                "jinja2": deps.SCOPE_RUNTIME, "urllib3": deps.SCOPE_DEV}
+
+    for name, want in expected.items():
+        assert ours[name] == want, f"deps.inventory called {name} {ours[name]}"
+        # A package Trivy's database has nothing on is absent from `findings`
+        # entirely -- that is a coverage difference between the two producers
+        # (`_scan_dependencies` documents it) and not a scope disagreement, so
+        # it is skipped rather than failed.
+        if name in engine:
+            assert engine[name] == want, (
+                f"trivy called {name} {engine[name]} where deps.inventory and "
+                f"the lockfile both say {want} -- the same finding would read "
+                "differently depending on which binary this machine has")
+
+    assert "minimist" in engine, (
+        "trivy reported no dev-only dependency at all, which is what happens "
+        "without --include-dev-deps: the dev finding is not ranked lower, it "
+        "is missing, and the two producers then disagree about what EXISTS")

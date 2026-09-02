@@ -136,15 +136,44 @@ testes/fixtures e de `.example`/`.sample`/`.template` no scan de segredos.
 adaptador do Trivy existir, e não vale atrasar este bloco); e tudo o que a
 spec-mãe já pôs nos blocos 3 a 5.
 
-**Adiado durante a execução, e escrito aqui para não ser lido como entregue: o
-campo `scope` (dev/runtime).** Está na lista *Entra* acima e **não foi
-implementado** — não existe coluna no ledger, campo no achado nem nota que o
-mencione. O adiamento é deliberado e não deixa nada por corrigir: o campo é
-**aditivo**, portanto nenhum achado fica errado sem ele, apenas menos anotado;
-**não é entrada do fingerprint**, portanto acrescentá-lo mais tarde não muda a
-identidade de achado nenhum nem orfaniza decisões humanas; e **nenhum documento
-entregue afirma que existe**, portanto não há promessa por cumprir. Todo o
-resto da lista *Entra* foi implementado.
+**O `scope` (dev/runtime) foi implementado depois do resto do bloco, e a lista
+*Entra* está completa.** A coluna `scope` existe no ledger (`runtime`, `dev`,
+`unknown`, ou vazio num achado que não é de dependência), é escrita pelos dois
+produtores da categoria `dependency`, e aparece nos três formatos de relatório
+e nas linhas que o ecrã lê.
+
+**Três valores, não dois, e o terceiro é a decisão de desenho.** "Não está
+marcado como dev" não é o mesmo facto que "runtime": três dos cinco formatos de
+lockfile não conseguem exprimir a distinção. Responder `runtime` aí exagerava a
+confiança de tudo; responder `dev` escondia risco real. `unknown` é a única
+leitura honesta de um ficheiro que não carrega o facto — e é o que sai sempre
+que um produtor olhou e o formato não soube responder.
+
+**Os dois produtores concordam, e isso foi medido, não assumido.** Só um deles
+corre por análise (`cli._scan_dependencies`) e qual deles depende de a máquina
+ter o Trivy — portanto duas leituras diferentes da mesma regra dariam à mesma
+vulnerabilidade um `scope` diferente conforme o binário instalado, que é o erro
+que este bloco já pagou três vezes. A regra vive numa função só
+(`deps.merge_scope`), chamada pelos dois. A paridade foi corrida ao vivo sobre
+árvores reais com uma dependência de desenvolvimento vulnerável e uma de
+produção vulnerável, em npm, composer e poetry (lock-version 1.1 e 2.1): os dois
+produtores devolvem os mesmos identificadores de aviso e o mesmo `scope`. O
+teste está em `tests/security/test_adapters.py`.
+
+**A única divergência conhecida está declarada em nota de cobertura, não
+escondida:** num `poetry.lock` de lock-version 2.0 (Poetry 1.5 a 2.0) não há
+nem `category` nem `groups` — a pertença ao grupo só existe no
+`pyproject.toml`, que o Trivy lê e propaga pelo grafo resolvido e que o leitor
+manual deste projecto não tem como ler. Aí o Trivy responde `dev` e o inventário
+responde `unknown`. A diferença é sempre nesse sentido: o nosso leitor nunca
+afirma `runtime` onde o Trivy diria `dev`.
+
+**O `--include-dev-deps` passou a ser passado ao Trivy, e não é um detalhe do
+`scope`.** Medido: sem essa flag o Trivy não põe a dependência de
+desenvolvimento no relatório de todo. O `deps.inventory` sempre as leu, portanto
+o mesmo repositório reportava menos achados numa máquina com Trivy do que numa
+sem — a mesma divergência por máquina. Um CVE só-de-dev não é ruído a descartar;
+é um achado a ordenar, que é para isso que o `scope` serve.
 
 ---
 
