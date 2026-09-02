@@ -3337,7 +3337,9 @@ def test_each_coverage_phase_renders_one_line_with_a_status_and_its_producer(
     """Drives the real renderer under Node. One row per phase, the status as
     both a word and a class (so the row is scannable by colour), the producer
     that answered, and the phase's own prose folded beneath it rather than run
-    together with the other seven."""
+    together with the rest of the table's -- one row per entry of
+    `coverage.PHASE_ORDER`, however many that tuple holds; the count is not
+    this test's to know."""
     block = _security_js(srv)
     deps = (_const(block, "SEC_PHASE_STATUS")
             + _index_screen_deps(block, "secEl", "secRenderCoveragePhases"))
@@ -3377,7 +3379,7 @@ def test_each_coverage_phase_renders_one_line_with_a_status_and_its_producer(
     # covers.
     assert "partly" in joined, joined
     # The prose is THERE, under its own phase, not concatenated into one
-    # paragraph with the other seven.
+    # paragraph with the other phases' (`coverage.PHASE_ORDER` says how many).
     notes = [n["text"] for n in out["nodes"] if n["cls"] == "secphase-note"]
     assert "trivy is not available to this analysis" in notes
 

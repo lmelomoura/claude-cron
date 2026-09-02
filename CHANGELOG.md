@@ -227,7 +227,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   **`sast` and `triage` are the eighth and ninth rows, and the two `finish`
   writes.** `sast` is the agent's own pass, and its status follows the verdict
   because the verdict is the only evidence there is about it: `ran` on `done`,
-  `warning` on `capped` or `failed`, with the agent's own `--note` as its
+  `warning` on `capped` or `failed`, with whatever `--note` the close brings —
+  the agent's, or the engine's when it closes a run the agent left — as its
   prose. `triage` carries the count from the close — `warning` with the
   findings nobody read, `ran` with how many the agent re-reported, `skipped`
   when the close never reached the check at all — and when an operator

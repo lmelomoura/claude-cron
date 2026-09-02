@@ -1057,8 +1057,11 @@ def cmd_prepare(args):
     # dropped: every list below is one of the very lists `note` was
     # concatenated from, IN THE ORDER it was concatenated, so each phase's
     # prose is a contiguous substring of the paragraph a reader can still read
-    # whole -- pinned for every phase by
-    # test_every_phases_prose_is_a_substring_of_the_paragraph. What this adds
+    # whole -- pinned for every phase THIS function files by
+    # test_every_phases_prose_is_a_substring_of_the_paragraph. The two rows
+    # `cmd_finish` adds keep the property for every gap sentence they file;
+    # the triage row's summary sentences and its never-reached sentence are
+    # the exemption, named in that test's docstring. What this adds
     # is WHICH PHASE each sentence belongs to, and the status that sentence
     # was written to explain -- taken from what the `_scan_*` functions
     # RETURNED, never from looking for a string in a note.
@@ -1715,11 +1718,14 @@ def cmd_finish(args):
     # and the pass that was underway is at best part of what this row means --
     # and `skipped` when `prepare` never ran, on the same reasoning as the
     # triage row above: an agent that never ran its first command is not an
-    # agent whose pass this table can vouch for. Its prose is the agent's own
-    # `--note`, the one sentence about its coverage this close already carries
-    # into the paragraph; a close that brings none keeps the sentence a
-    # previous close stored, so the engine's second, note-less close does not
-    # blank what the agent said.
+    # agent whose pass this table can vouch for. Its prose is whatever
+    # `--note` the close brings -- the agent's, or the engine's when it closes
+    # a run the agent left (`--if-running` after a run that never closed its
+    # own row, or the stale sweep), so the sentence under `by=agent` can be
+    # the engine's account of the agent's run -- the one sentence about its
+    # coverage this close already carries into the paragraph; a close that
+    # brings none keeps the sentence a previous close stored, so the engine's
+    # second, note-less close does not blank what the agent said.
     #
     # THIS IS THE ONE ROW THE ENGINE'S SECOND CLOSE IS ALLOWED TO LOWER. The
     # triage row is protected from it (below): the triage check is a fact

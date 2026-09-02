@@ -2625,12 +2625,21 @@ def test_every_phases_prose_is_a_substring_of_the_paragraph(tmp_path):
     Asserted for every phase `prepare` files -- all of `PHASE_ORDER` but the
     two the close adds -- and then again after the close, for the two it adds.
 
-    THE ONE DELIBERATE EXCEPTION is the triage row's two summary sentences
-    (`TRIAGE_NOTHING_NOTE`, `TRIAGE_ALL_READ_NOTE`): they describe what the
-    agent did, not a gap, and the paragraph is the list of gaps. The row's
-    other sentences -- findings never read, a decision that exempted one, a
-    `prepare` that never ran -- are gaps, and the close writes each of them
-    into the paragraph too.
+    THE DELIBERATE EXCEPTIONS are all on the triage row. Its two summary
+    sentences (`TRIAGE_NOTHING_NOTE`, `TRIAGE_ALL_READ_NOTE`) describe what the
+    agent did, not a gap, and the paragraph is the list of gaps. Its third,
+    `TRIAGE_UNVERIFIED_NOTE` -- filed when a direct `capped` or `failed` close
+    never reached the check -- IS a gap the paragraph does not carry, and that
+    is a choice, not an oversight: three fixtures pin the paragraph of such a
+    close byte for byte (`test_a_note_given_explicitly_is_added_to_the_stored_one`,
+    `test_the_same_note_twice_is_not_stored_twice`, and the stale-sweep check
+    in `bin/claude-cron`'s selftest, which compares the sweep's `--note` for
+    equality), and on the closes that file it the paragraph already says the
+    run was cut short or never happened. Pinned as an exemption by
+    `test_a_close_that_never_reached_the_check_files_the_triage_row_skipped`.
+    The row's other sentences -- findings never read, a decision that exempted
+    one, a `prepare` that never ran -- are gaps, and the close writes each of
+    them into the paragraph too.
     """
     db = tmp_path / "security.db"
     root = tmp_path / "repo"
@@ -2953,6 +2962,31 @@ def test_the_engines_capped_lowers_the_sast_row_and_leaves_the_triage_row(tmp_pa
     assert by_name["sast"]["note"] == "the SAST pass covered every entry point"
     assert by_name["triage"]["status"] == "ran"
     assert len([p for p in phases if p["name"] == "sast"]) == 1, phases
+
+
+def test_a_close_that_never_reached_the_check_files_the_triage_row_skipped(tmp_path):
+    """A direct `capped` (or the engine's `failed`) never evaluates `done`'s
+    precondition, so the row says so -- `skipped`, never `ran` -- under
+    `TRIAGE_UNVERIFIED_NOTE`. That sentence is the one gap the paragraph does
+    not carry, and this test pins the exemption rather than leaving it
+    implicit (test_every_phases_prose_is_a_substring_of_the_paragraph's
+    docstring names the three fixtures that hold the paragraph of a `failed`
+    close byte for byte). Making it a writer is a deliberate change to all
+    four, not a drift this suite should let through."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    stored = run(db, "analysis", "--id", str(aid))["coverage_note"]
+    run(db, "finish", "--analysis", str(aid), "--state", "capped",
+        "--note", "the budget ran out during the SAST pass")
+    row, phases = _coverage_phases(db, aid)
+    by_name = {p["name"]: p for p in phases}
+    assert by_name["triage"]["status"] == "skipped"
+    assert by_name["triage"]["by"] is None
+    assert by_name["triage"]["note"] == security_cli.TRIAGE_UNVERIFIED_NOTE
+    assert by_name["sast"]["status"] == "warning"
+    assert row["coverage_note"] == \
+        f"{stored} the budget ran out during the SAST pass".strip()
+    assert security_cli.TRIAGE_UNVERIFIED_NOTE not in row["coverage_note"]
 
 
 def test_the_triage_row_says_when_a_decision_and_not_absence_left_nothing_waiting(tmp_path):

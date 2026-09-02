@@ -102,9 +102,18 @@ def phase(name, status, by="", note="") -> dict:
     each phase's sentences ADJACENTLY in the paragraph, in the order the row
     carries them -- the two sentences shared by `dependencies` and `sbom` sit
     at the boundary between the two so both rows stay contiguous. Neither
-    half is enforced here (this function sees one row at a time); the whole
-    property is pinned, for every phase in `PHASE_ORDER`, by
-    test_every_phases_prose_is_a_substring_of_the_paragraph.
+    half is enforced here (this function sees one row at a time).
+
+    WHAT IS PINNED, PRECISELY -- not the whole table. Every phase `prepare`
+    files, by test_every_phases_prose_is_a_substring_of_the_paragraph; and
+    every GAP sentence the close files -- findings never read, a decision that
+    exempted one, a `prepare` that never ran, the `--note` -- by the close's
+    own tests, each asserting the row's note is in the paragraph. The triage
+    row is the exception, by design: its summary sentences
+    (`cli.TRIAGE_NOTHING_NOTE`, `cli.TRIAGE_ALL_READ_NOTE`) describe what the
+    agent did rather than a gap, and `cli.TRIAGE_UNVERIFIED_NOTE` -- filed
+    when the close never reached the check -- is not written into the
+    paragraph either; that test's docstring names all three and says why.
     """
     if name not in PHASE_ORDER:
         raise ValueError(f"unknown coverage phase: {name}")
