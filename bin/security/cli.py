@@ -516,12 +516,41 @@ def _scan_dependencies(root, components, offline: bool, ignore_paths=()):
     finding. Not by "a producer for this category", and not by a coverage
     ordering, because there is no ordering to appeal to -- calling Trivy a
     superset would be true of formats and false of advisory sources, and a
-    rule that is half true is how the first version of this got written. The
-    cost is bounded and it is the honest one: a machine that gains or loses
-    Trivy carries its baseline dependency findings as `pending` for exactly
-    one analysis, then they settle under the new producer. `pending` says
-    "not re-checked", which is precisely what happened; the alternative said
-    "fixed" about a lockfile nobody parsed.
+    rule that is half true is how the first version of this got written.
+
+    WHAT IT COSTS DEPENDS ON WHICH COVERAGE THE FINDING SITS IN, and only one
+    of the two is free:
+
+      OVERLAPPING      a `package-lock.json` CVE, which both producers read,
+                       never goes `pending` at all. The two mint the same
+                       identity (`adapters._trivy_advisory_id`), so the new
+                       producer re-finds it on the very first analysis after
+                       the switch and the row reads `open` throughout. Nothing
+                       is carried because nothing was lost.
+
+      NON-OVERLAPPING  a `yarn.lock` CVE, which only Trivy reads, is the whole
+                       reason this rule exists -- and it does NOT settle by
+                       itself. `pending` is DERIVED by `diff.classify` and
+                       never stored, and `queries.checklist` takes as
+                       `previous` the rows the preceding analysis RECORDED, so
+                       a `pending` row nothing writes back is in no analysis's
+                       findings at all. Measured over four analyses of one
+                       branch on an untouched checkout, Trivy
+                       present/absent/absent/present: `open`, `pending`,
+                       absent from the report entirely, `regressed` -- "fixed
+                       and came back" about a finding that was never fixed and
+                       never left.
+
+    SO THE CARRY IS THE AGENT'S, NOT THIS FUNCTION'S. `skills/
+    security-analysis/SKILL.md` Job 1 requires it to re-report every `pending`
+    row under the fingerprint `checklist` printed for it, on every run the row
+    comes back `pending`; that re-report is what records the row in this
+    analysis, keeps it in the next baseline, and holds it `open` until the
+    missing engine returns and re-finds it under its own producer.
+    `tests/security/test_queries.py` pins both halves -- what the instruction
+    buys and what its absence costs -- against this ledger's real behaviour.
+    `pending` still says "not re-checked", which is precisely what happened;
+    the alternative said "fixed" about a lockfile nobody parsed.
     """
     if offline:
         # No producer: `--offline` refuses BOTH sources, so nothing looked and

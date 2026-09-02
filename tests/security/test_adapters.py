@@ -1789,6 +1789,20 @@ def test_the_id_note_no_longer_claims_the_mapping_does_not_exist():
                       "here under a different identity"):
         assert overclaim not in note, note
 
+    # ONE note, TWO different transitions, and only one of them ends in
+    # `fixed`. The SOURCE SWITCH (OSV.dev's id, no Trivy counterpart) is
+    # `pending`: `diff._proven` asks whether the producer that MINTED the
+    # finding ran again, and it did not. The DATABASE REFRESH is `fixed` and
+    # correctly so -- there the same producer ran both times, and a renamed
+    # advisory really is a hole reported gone and new in one report. The note
+    # said `fixed` for both until the producer rule landed, so the count is
+    # pinned rather than the wording: a second `fixed` here is the stale
+    # claim coming back.
+    assert "listed as pending" in note, note
+    assert note.count("fixed") == 1, (
+        "the only `fixed` claim this note may carry is the database-refresh "
+        f"one; the source switch is `pending`. Note: {note}")
+
 
 def test_ignore_paths_that_cannot_reach_the_command_line_still_filter():
     """A glob containing a comma cannot be expressed in `--skip-dirs`, which

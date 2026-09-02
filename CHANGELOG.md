@@ -371,6 +371,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A finding the missing engine could not re-check no longer vanishes from
+  the report and comes back as a regression.** The producer rule below stops
+  the false `fixed` — the row reads `pending`, "not re-checked" — but
+  `pending` is DERIVED, never stored, and the next analysis's baseline is
+  the set of rows the previous one RECORDED. Meanwhile the agent's own
+  instructions (`skills/security-analysis/SKILL.md`, Job 1) told it that
+  deterministic categories "need no re-reporting here — `prepare` re-finds
+  them every run", which is false for exactly the findings the producer rule
+  protects: on a machine without Trivy, `prepare` re-finds nothing at all in
+  a `yarn.lock`. So nothing wrote the row into the analysis, and it dropped
+  out of the next baseline. Measured over four analyses of one branch on an
+  untouched checkout, Trivy present/absent/absent/present: a `yarn.lock` CVE
+  reads `open`, `pending`, **absent from the report entirely**, then
+  `regressed` — "fixed and came back" about a CVE that was never fixed and
+  never left — while the `package-lock.json` CVE beside it, which the
+  OSV.dev fallback also reads, stays `open` throughout. Every row the entry
+  below lists — five dependency CVEs, three Dockerfile misconfigurations,
+  the Semgrep pre-pass row — is of exactly this shape, so the false `fixed`
+  that entry closed became a disappearance instead. Job 1 now tells the agent to re-report every `pending` row under the fingerprint
+  `checklist` printed for it, **on every run it comes back `pending`** — a
+  re-report is proven by the analysis closing `done`, so one re-report
+  followed by one silence is the same false `fixed` by a longer route — and
+  says plainly what not to do with it: not a row `prepare` already re-found
+  this run, not a fingerprint it minted itself, not a rationale claiming a
+  check it could not make. Pinned in `tests/security/test_queries.py`
+  against the ledger's real behaviour, so the instruction and the engine
+  cannot drift apart again.
+
+- **The dependency coverage note no longer tells a reader that a finding
+  nobody re-checked is "listed as fixed".** `DEP_ID_NOTE` was written before
+  absence became the minting producer's to prove. An OSV.dev advisory id
+  with no Trivy counterpart (measured: GO-2021-0052, PYSEC-2024-230) reads
+  `pending` on the run the source changes, not `fixed`, and the note now
+  says that — along with the part that was always true, that the same hole
+  arrives under Trivy's own id and a decision recorded against the OSV.dev
+  one does not follow onto it. The note's *other* `fixed` claim, about a
+  Trivy database refresh renaming an advisory, is correct and stays: there
+  the same producer ran both times.
+
 - **The checklist no longer declares a finding `fixed` in the same report
   that says the phase never ran.** Absence was proven by CATEGORY — a
   deterministic one the moment `prepare` finished, everything else the

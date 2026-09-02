@@ -136,6 +136,16 @@ testes/fixtures e de `.example`/`.sample`/`.template` no scan de segredos.
 adaptador do Trivy existir, e não vale atrasar este bloco); e tudo o que a
 spec-mãe já pôs nos blocos 3 a 5.
 
+**Adiado durante a execução, e escrito aqui para não ser lido como entregue: o
+campo `scope` (dev/runtime).** Está na lista *Entra* acima e **não foi
+implementado** — não existe coluna no ledger, campo no achado nem nota que o
+mencione. O adiamento é deliberado e não deixa nada por corrigir: o campo é
+**aditivo**, portanto nenhum achado fica errado sem ele, apenas menos anotado;
+**não é entrada do fingerprint**, portanto acrescentá-lo mais tarde não muda a
+identidade de achado nenhum nem orfaniza decisões humanas; e **nenhum documento
+entregue afirma que existe**, portanto não há promessa por cumprir. Todo o
+resto da lista *Entra* foi implementado.
+
 ---
 
 ## Falhas e limites

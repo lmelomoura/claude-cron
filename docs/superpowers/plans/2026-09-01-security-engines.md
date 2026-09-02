@@ -504,6 +504,8 @@ Depois de preencher: `claude-cron security migrate-rules` sobre o ledger de dese
 
 ## Self-Review
 
-**Cobertura da spec.** Adaptador comum (T1), os quatro motores (T2–T5), `iac` (T6), filtro de ruído (T7), migração (T8). `fixed_version` está na T3 e `scope` também. Licenças ficaram deliberadamente fora, como a spec diz.
+**Cobertura da spec.** Adaptador comum (T1), os quatro motores (T2–T5), `iac` (T6), filtro de ruído (T7), migração (T8). `fixed_version` está na T3. Licenças ficaram deliberadamente fora, como a spec diz.
+
+**`scope` (dev/runtime) NÃO foi implementado, e fica adiado.** Esta linha dizia que estava na T3 ao lado do `fixed_version`; não está, e não está em lado nenhum — não há coluna no ledger, não há campo no achado, não há nota que o refira. Enviamos o bloco sem ele por quatro razões, todas verificadas: é **aditivo e não correctivo** — nenhum achado fica errado por não o ter, apenas menos anotado; **não é entrada do fingerprint**, por isso acrescentá-lo mais tarde não muda a identidade de nada nem orfaniza decisões; **nenhum documento entregue afirma que existe**, portanto não há promessa a desfazer; e a informação que dá — se um CVE está numa dependência de desenvolvimento ou de produção — é exactamente o género de contexto que a triagem do agente (Job 2 da skill) já escreve na `rationale`. A mesma nota está no âmbito da spec, para que quem a ler a seguir não assuma o contrário.
 
 **O ponto mais frágil, assinalado de propósito.** A Task 2 depende de o adaptador conseguir passar o âmbito ao Gitleaks de forma fiável. A medição mostrou 15 achados em 17 fora de código versionado; se a configuração não pegar, o bloco piora o produto em vez de o melhorar. **Mede o número de achados antes e depois de aplicares o âmbito, e põe os dois números no relatório da tarefa.** Se não descer, para e diz — não sigas para a Task 3.

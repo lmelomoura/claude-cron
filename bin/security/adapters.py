@@ -662,8 +662,11 @@ def gitleaks_scan(root, ignore_paths=()):
 # GO-2021-0052 and GO-2023-1737 have no Trivy counterpart to alias onto --
 # and certifi adds PYSEC-2024-230 beside the GHSA that does match. No
 # mapping reconciles a residue that exists because one side counts
-# differently from the other; those findings are still reported `fixed` once,
-# and that is stated rather than hidden.
+# differently from the other. Those findings are reported `pending` on the
+# run the source changes -- not `fixed`: `diff._proven` asks whether the
+# producer that MINTED them ran again, and it did not -- while the same hole
+# arrives under the other side's id as a separate row. That is stated rather
+# than hidden.
 
 # Trivy's own severity words, mapped to ours. The default for a word Trivy
 # did not send -- `UNKNOWN`, or a future grade this table has never heard of
@@ -744,9 +747,12 @@ DEP_ID_NOTE = ("Trivy names an advisory by the publishing database's own id "
                "identity. Not always: OSV.dev mints one record per "
                "publishing database where Trivy mints one per hole, so an "
                "OSV.dev id with no Trivy counterpart (measured: "
-               "GO-2021-0052, PYSEC-2024-230) is listed as fixed and any "
-               "decision on it does not follow. An advisory with no database "
-               "id of its own keeps its CVE id. That choice is made from the "
+               "GO-2021-0052, PYSEC-2024-230) is listed as pending — not "
+               "re-checked, because the source that found it did not run "
+               "here — while the same hole arrives under Trivy's own id, and "
+               "any decision on the OSV.dev id does not follow onto it. An "
+               "advisory with no database id of its own keeps its CVE id. "
+               "That choice is made from the "
                "record Trivy holds TODAY, and Trivy refreshes its database "
                "continuously: a record that gains its first vendor id, or a "
                "second one sorting ahead of the first, is renamed by the "
