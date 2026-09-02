@@ -110,6 +110,90 @@ def test_the_skill_lists_every_rule_name():
 # here. "capped", "medium" and "re-report" all appear in several sections, so a
 # whole-document check would keep passing after the sentence it was written to
 # pin had been deleted from the section that needs it.
+#
+# THAT CUTS BOTH WAYS, and this file learned it the expensive way. A slice is
+# the right scope for "does this section STILL SAY the thing"; it is the wrong
+# scope for "does this document ANYWHERE say the opposite". The contradiction
+# the gate punishes had two halves -- Job 2's "or leave it alone if it stands"
+# and Job 1's "changes nothing but its text" -- and the ban below was written
+# against the Job 2 SLICE only, while the second phrase had only ever lived in
+# JOB 1. Measured: restoring Job 1's old bullet verbatim left 19 passed, and so
+# did dropping the literal sentence "or leave it alone if it stands" back into
+# Job 1. Half the fix this file was written to hold had no pin at all. So the
+# bans are document-wide (`_forbidden_hits`) and only the affirmative
+# requirements stay scoped to the section that must carry them.
+#
+# AND A TOKEN IS NOT A CLAIM. The pins below used to be `phrase in text`
+# membership tests, which a negation satisfies as happily as an assertion:
+# rewriting "Ending the run" to say the analysis "is still recorded as `done`
+# (never `capped`)" kept every token these tests looked for -- `medium`,
+# `capped`, `first three` -- and inverted the rule they exist to state, 19
+# passed. Likewise Job 2 rewritten to "a row ... is NOT still re-reported: if
+# it stands, leave the scanner's row exactly as it is" matched `still
+# re-reported` INSIDE its own negation and dodged the ban by spelling "leave it
+# alone" differently. Both rewrites are pinned as data in
+# `test_the_pins_catch_the_rewrites_that_used_to_slip_past_them` below, so a
+# future weakening of either check fails on the exact text it was weakened to
+# admit rather than on a reviewer noticing again.
+
+# Every spelling of "a row that stands needs no re-report" that has actually
+# got past this file, banned across the WHOLE document. `untouched` and `left
+# alone` are here as bans, which is why the skill's own prose about the old
+# behaviour was reworded to say "writing nothing at all onto its row" -- a
+# document that may not tell the agent to leave a row alone should not be
+# reaching for the words either.
+FORBIDDEN_IN_SKILL = (
+    r"leave it alone",
+    r"changes nothing but its text",
+    r"left alone",
+    r"untouched",
+    r"leav(?:e|es|ing)\b[^.\n]{0,80}?\bas (?:it is|they are|is)\b",
+    # The affirmative pin, negated. NOTE the required `still`/`too`: "the
+    # findings ... that you never re-reported" is the gate's own correct
+    # description of what it counts and must stay legal.
+    r"\b(?:not|never|no longer)\s+(?:still\s+re-reported|re-reported\s+too)\b",
+)
+
+# `done` -> `capped`, in that direction, in one sentence. Co-presence of the
+# two words says nothing: the sentence that inverts the rule contains both.
+_DOWNGRADE_DIRECTION = re.compile(
+    r"`done`[^.]{0,120}?\b(?:lower(?:s|ed)?|downgrad(?:es|ed)?)\b[^.]{0,40}?`capped`",
+    re.I)
+
+# `still re-reported` / `re-reported too`, not immediately negated. The
+# lookbehinds are what separate the skill's "a row whose severity you would not
+# change is still re-reported" -- which carries a `not` earlier in the same
+# clause and is correct -- from "... is NOT still re-reported", which is the
+# rewrite that slipped through.
+_RE_REPORTED_ANYWAY = (
+    re.compile(r"(?<!not )(?<!never )still re-reported", re.I),
+    re.compile(r"(?<!not )(?<!never )re-reported too", re.I),
+)
+
+
+def _forbidden_hits(text):
+    """Every banned phrase `text` contains, as (pattern, matched text)."""
+    return [(pattern, m.group(0))
+            for pattern in FORBIDDEN_IN_SKILL
+            for m in re.finditer(pattern, text, re.I)]
+
+
+def _says_a_standing_row_is_re_reported(text):
+    """The affirmative sentence Job 2 turns on, or None if it is only negated."""
+    for pattern in _RE_REPORTED_ANYWAY:
+        m = pattern.search(text)
+        if m:
+            return m.group(0)
+    return None
+
+
+def _states_the_downgrade_direction(text):
+    """The clause saying a `done` BECOMES a `capped`, or None."""
+    for m in _DOWNGRADE_DIRECTION.finditer(text):
+        if not re.search(r"\b(?:not|never|no)\b", m.group(0), re.I):
+            return m.group(0)
+    return None
+
 
 def _skill_section(start_pattern, end_pattern=None):
     """The slice of SKILL.md from one heading up to the next, or to the end."""
@@ -126,25 +210,46 @@ def _skill_section(start_pattern, end_pattern=None):
     return section
 
 
+def test_nowhere_in_the_skill_says_a_row_that_stands_can_be_left_as_it_is():
+    # DOCUMENT-WIDE, and that is the whole point of it: the two halves of the
+    # contradiction lived in two different jobs, and a per-section ban pinned
+    # one of them. It does not matter WHERE the skill tells the agent that a
+    # finding it agrees with needs no re-report -- an agent reading Job 1 and
+    # an agent reading Job 2 both end up producing the state `cmd_finish`
+    # counts as unread, and close `capped` under a note asserting that findings
+    # they actually opened were never triaged.
+    hits = _forbidden_hits(SKILL.read_text())
+    assert not hits, (
+        "SKILL.md tells the agent, somewhere, that a finding that stands needs "
+        f"no re-report: {hits!r}. The re-report IS the triage mark -- "
+        "`ledger.record_finding` sets `triaged` when the agent writes onto a "
+        "row another producer minted, and there is no field an agent can send "
+        "instead")
+
+
 def test_job_2_says_a_finding_that_stands_is_still_re_reported():
-    # The re-report IS the triage mark: `ledger.record_finding` sets `triaged`
-    # when the agent writes onto a row another producer minted, and there is no
-    # field an agent can send instead. So "leave it alone if it stands" told
-    # the agent to produce exactly the state `cmd_finish` counts as unread.
+    # The affirmative half, and the one that IS section-scoped: Job 2 is the
+    # procedure for every deterministic row at or above the floor, so the rule
+    # has to be stated where that procedure is, not merely not-contradicted
+    # somewhere else.
+    #
+    # `end_pattern` is Job 3's heading, and pinning Job 2's slice is not all it
+    # does: it also incidentally pins the ORDER of the three jobs. Job 2 moved
+    # after Job 3, or Job 3 renumbered, and this section can no longer be cut
+    # out -- `_skill_section` fails loudly rather than silently widening the
+    # slice to the rest of the file, which would make the assertions below pass
+    # on sentences from a different job.
     section = _skill_section(r"^\*\*2\. Triage the deterministic findings\.\*\*",
                              r"^\*\*3\. ")
     lowered = section.lower()
-    for phrase in ("leave it alone", "changes nothing but its text"):
-        assert phrase not in lowered, (
-            f"SKILL.md's Job 2 still says {phrase!r}: an agent that follows it "
-            "closes `capped` under a note saying findings it actually read "
-            "were never triaged")
     assert re.search(r"re-report", lowered), \
         "SKILL.md's Job 2 no longer tells the agent to re-report anything"
-    assert re.search(r"still re-reported|re-reported too", lowered), (
-        "SKILL.md's Job 2 no longer says that a finding whose severity you "
-        "would NOT change is re-reported anyway -- which is the only case the "
-        "gate in cmd_finish and the old wording disagreed about")
+    assert _says_a_standing_row_is_re_reported(lowered), (
+        "SKILL.md's Job 2 no longer says -- affirmatively -- that a finding "
+        "whose severity you would NOT change is re-reported anyway, which is "
+        "the only case the gate in cmd_finish and the old wording disagreed "
+        "about. A negated form does not count: it matches the same words and "
+        "states the opposite rule")
 
 
 def test_ending_the_run_names_the_gate_that_lowers_done_to_capped():
@@ -158,6 +263,68 @@ def test_ending_the_run_names_the_gate_that_lowers_done_to_capped():
             f"SKILL.md's 'Ending the run' never says {token!r} -- the agent "
             "cannot predict a downgrade whose floor, verdict and note this "
             "section does not describe")
+    # The tokens above are necessary and nowhere near sufficient. `done` and
+    # `capped` both appear in the sentence that says the OPPOSITE of the gate,
+    # so this asks for the direction: a `done` that BECOMES a `capped`, in one
+    # sentence, with no negation inside it.
+    assert _states_the_downgrade_direction(section), (
+        "SKILL.md's 'Ending the run' names `done` and `capped` but never says "
+        "which way the close moves between them. `cmd_finish` lowers a `done` "
+        "to `capped` over untriaged scanner findings; a section that only "
+        "mentions both words can state the reverse and still pass a token "
+        "check")
+
+
+def test_the_pins_catch_the_rewrites_that_used_to_slip_past_them():
+    # Each of these is a real edit a reviewer made to SKILL.md that inverted a
+    # rule and left the suite at 19 passed. They are kept here as data so that
+    # weakening either check fails on the exact text the weakening would admit.
+    # Applied to the LIVE document, so a rewrite that stops being expressible
+    # (because the sentence it edits is gone) fails loudly rather than passing
+    # by not applying.
+    text = SKILL.read_text()
+
+    # 1. The gate, inverted, with every token the old check looked for intact.
+    inverted = ("It counts the findings a SCANNER produced at severity "
+                "**`medium` or above** that you never re-reported. If there is "
+                "even one, the analysis is still recorded as `done` (never "
+                "`capped`), and the report's coverage note gives the count and "
+                "**names the first three by rule and file**.")
+    assert _states_the_downgrade_direction(inverted) is None, (
+        "the direction check passes on the sentence that says a `done` stays a "
+        "`done`, which is the rewrite it exists to catch")
+
+    # 2. Job 2, inverted: `still re-reported` matched inside its own negation,
+    # and `leave the scanner's row exactly as it is` is not the banned literal
+    # `leave it alone`.
+    rewrite = ("A row whose severity you would not change is NOT still "
+               "re-reported: if it stands, leave the scanner's row exactly as "
+               "it is.")
+    assert _says_a_standing_row_is_re_reported(rewrite) is None, (
+        "the affirmative check still matches inside a negation, so Job 2 can "
+        "say the opposite of the gate and pass")
+    assert _forbidden_hits(rewrite), (
+        "the ban misses 'leave the scanner's row exactly as it is', which is "
+        "'leave it alone' spelled differently")
+
+    # 3. The Job 1 half of the same contradiction, which had no pin at all: the
+    # old bullet, and the literal trap sentence, both dropped into Job 1 rather
+    # than Job 2. A section-scoped ban passes on both.
+    job_1 = _skill_section(r"^\*\*1\. Re-verify what was left open\.\*\*",
+                           r"^\*\*2\. ")
+    for restored in (
+            "Re-reporting a row the checklist already shows `open` changes "
+            "nothing but its text.",
+            "Re-report it with a corrected severity, or leave it alone if it "
+            "stands."):
+        assert _forbidden_hits(job_1 + restored), (
+            f"Job 1 can carry {restored!r} and nothing fails -- the ban is "
+            "scoped to Job 2 again")
+
+    # 4. And the live document is clean under all of it.
+    assert not _forbidden_hits(text)
+    assert _says_a_standing_row_is_re_reported(text)
+    assert _states_the_downgrade_direction(text)
 
 
 def test_the_skill_forbids_subagents_and_says_why():

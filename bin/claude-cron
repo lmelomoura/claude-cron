@@ -500,10 +500,14 @@ CVEs, SBOM, hygiene and infrastructure-as-code misconfigurations -- in seconds
 and at no token cost, and prints a coverage note you must repeat in your final
 message if it is not empty.
 
-Then read what it found with \`claude-cron security findings --analysis $5\`,
-and report yours with \`claude-cron security report-finding --analysis $5\`.
-Never write to the database directly. When you are done, close the analysis
-with \`claude-cron security finish --analysis $5 --state done\`.
+Then read what it found with \`claude-cron security checklist --analysis $5\` --
+NOT \`findings\`. \`findings\` returns only THIS analysis's own rows; \`checklist\`
+returns those AND the findings a previous analysis left open, each with the
+fingerprint you must copy back to re-report it. The whole skill works from
+\`checklist\`. Report yours with
+\`claude-cron security report-finding --analysis $5\`. Never write to the
+database directly. When you are done, close the analysis with
+\`claude-cron security finish --analysis $5 --state done\`.
 
 That close is checked. It counts the findings a SCANNER produced at severity
 medium or above that you never re-reported, and records the analysis \`capped\`

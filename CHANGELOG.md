@@ -19,6 +19,74 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Job 2 of the security skill no longer selects rows the close cannot count,
+  and no longer blanks the scanner's own remediation.** Its step 2 took "every
+  row whose producer is not `agent`" off the checklist and called them "the ones
+  the close counts". Both halves were false for a carried-over `pending` row:
+  `_untriaged` counts only rows filed under THIS analysis id, and a `pending`
+  row is by definition one no producer re-found this run, so this analysis holds
+  no row for it and it can never block a `done`. Steps 3–4 then told the agent
+  to open the code and write what it read — which is precisely what Job 1
+  forbids for such a row ("Do not write in its rationale that you verified it":
+  the producer that could have re-checked it is the one that did not run), so
+  the two jobs gave opposite instructions for the same row. Step 2 now takes
+  only the four states this analysis actually holds — `new`, `open`, `partial`,
+  `regressed` — and sends `pending` back to Job 1. **And step 4 now says which
+  fields to carry across.** It asked for a severity and a rationale, while
+  `ledger.record_finding` upserts the WHOLE row: a re-report that omitted
+  `remediation` overwrote the scanner's fix instructions with an empty string,
+  and `title` is required at the door, so the agent had to invent one and lose
+  the name every earlier analysis knew the finding by. **What it cost not to
+  have this:** the triage gate shipped in the previous commit made Job 2 *the*
+  procedure for every deterministic row at `medium` or above — so every one of
+  those defects now runs once per finding per analysis, and the two that damage
+  the ledger (an emptied remediation, an invented title) are silent, arriving
+  through the one door whose whole purpose is to improve a finding. Three
+  smaller corrections travel with it: "Genuinely gone — do nothing" now says to
+  read the state first (a `sast` row the checklist shows `open` was re-found by
+  Semgrep this run, so silence over it is what the close counts, not a
+  "fixed"); "Ending the run" adds the empty-producer exclusion the query has
+  (`f.producer<>''`, a row from before that column existed); and the coverage
+  note is quoted in both its forms, since one skipped finding reads "1
+  deterministic finding was never triaged", not "1 … findings were".
+
+- **The analysis prompt names `checklist`, the verb the whole skill runs on.**
+  `security_prompt()` still said to read what `prepare` found with
+  `findings --analysis <id>`, which returns only this analysis's own rows —
+  never a finding a previous analysis left open — while the paragraph below it
+  in the same prompt already spoke of "the fingerprint the checklist printed",
+  a command the prompt had never mentioned. **What it cost not to have this:**
+  the prompt is read before the skill and outranks it in practice; an agent
+  following it worked from a list with every carried-over finding missing, which
+  is the exact route by which a live vulnerability disappears from the report as
+  `fixed`.
+
+- **The pins on the security skill stop passing on sentences that say the
+  opposite.** `tests/security/test_taxonomy.py` guarded the skill against the
+  contradiction the triage gate punishes with two token checks, and a reviewer
+  got four rewrites past them with the suite still green. The bans on "leave it
+  alone" and "changes nothing but its text" were scoped to the **Job 2** slice
+  while the second phrase had only ever lived in **Job 1**, so restoring Job 1's
+  old bullet verbatim — or dropping the literal sentence "or leave it alone if
+  it stands" into Job 1 — left 19 passed. And a token check cannot tell an
+  assertion from its negation: "Ending the run" rewritten to say the analysis
+  "is still recorded as `done` (never `capped`)" keeps `medium`, `capped` and
+  `first three`; Job 2 rewritten to "a row … is NOT still re-reported: if it
+  stands, leave the scanner's row exactly as it is" matches `still re-reported`
+  inside its own negation and spells the ban's phrase differently. The bans are
+  now document-wide and cover the negated spellings (`left alone`, `untouched`,
+  `leave … as it is`, `not still re-reported`), the affirmative pin refuses a
+  match that a negation immediately precedes, and "Ending the run" is asked for
+  the **direction** — a `done` that is *lowered to* a `capped`, in one sentence,
+  with no negation in it — rather than for both words in any arrangement.
+  **What it cost not to have this:** these tests are the only thing standing
+  between the gate and a skill that tells the agent to produce exactly what the
+  gate counts as unread, and half of what they claimed to hold was unheld. All
+  four rewrites are now kept as data in
+  `test_the_pins_catch_the_rewrites_that_used_to_slip_past_them`, so weakening
+  a check fails on the exact text the weakening would admit rather than on a
+  reviewer noticing again.
+
 - **The security skill no longer tells the agent to do the one thing the close
   now punishes.** Job 2 of `skills/security-analysis/SKILL.md` said to
   re-report a deterministic finding "with a corrected severity … **or leave it
@@ -40,9 +108,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   says what a `capped` "N deterministic findings were never triaged" means and
   that skipping this job is the only way to get one, and it states that an
   empty rationale or the scanner's own sentence pasted back is a rubber stamp
-  that will not count. "Ending the run" now names the gate the agent is judged
-  by: the `medium` floor, the `done` → `capped` downgrade, and the note that
-  names the first three skipped. The two analyses this is drawn from closed
+  the ledger cannot detect. "Ending the run" now names the gate the agent is
+  judged by: the `medium` floor, the `done` → `capped` downgrade, and the note
+  that names the first three skipped. The two analyses this is drawn from closed
   `done` over ~40 unread findings each; the gate that now catches that would
   have punished an agent that had followed the skill.
 
