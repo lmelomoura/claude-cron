@@ -1,0 +1,279 @@
+# The gate that used to live on one laptop.
+#
+# `tests/security/test_both_configurations.py` exists because the guarantee
+# that BOTH configurations of the security package pass kept silently lapsing:
+# the engines-on run was red for the entire life of the engine path and nothing
+# said so, because nothing ran it. That test spawns the second configuration
+# from inside the first — but only on a machine that happens to have one of the
+# four engines installed, which for most of this project's life meant exactly
+# one machine. A guarantee that depends on who is typing is not a guarantee.
+#
+# WHAT THIS WORKFLOW REFUSES TO DO IS AS IMPORTANT AS WHAT IT RUNS. Every
+# engine-gated test in this suite (`@needs_trivy` and its three siblings) SKIPS
+# when its binary is absent, and a suite full of skips is green — a CI that
+# installed the engines badly would report success over a run that never
+# reached the engine path at all, which is the precise failure it is here to
+# end. So the engines are verified before anything runs, and any skip that is
+# not the one known self-spawn guard fails the job.
+
+name: CI
+
+# A pull request, and main. Deliberately not every push to every branch:
+# working branches here are unrestricted (CONTRIBUTING.md), so a push trigger
+# would run every PR twice for one answer.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A second push to the same branch makes the first run's answer stale before it
+# finishes. Cancelling it costs nothing and frees the runner.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # PINNED, ALL FOUR, AND THIS IS THE MOST LOAD-BEARING BLOCK IN THE FILE.
+  # These scanners decide what a security analysis FINDS. An unpinned engine
+  # changes the findings under you between two runs of the SAME commit — a rule
+  # renamed, a new check added, a parser whose output shape moved — and the
+  # first thing anyone debugging that would suspect is the code. Worse for this
+  # repository specifically: `bin/security/adapters.py` carries measurements
+  # taken against these exact versions ("measured on trivy 0.74.0", the
+  # `_TRIVY_DEV_AWARE` table, the gitleaks rule vocabulary in
+  # `SEVERITY_BY_RULE`), and a floating version turns those comments into
+  # claims nobody has checked. A bump is a deliberate commit that re-runs the
+  # measurements and says what moved — never a silent upgrade.
+  #
+  # What is NOT pinned, said rather than hidden: Trivy's vulnerability database
+  # and Semgrep's rule registry are fetched at scan time and no version here
+  # freezes them. That is inherent — a vulnerability database that stopped
+  # moving would stop being one — and it is why the assertions in this suite
+  # are about SHAPE (does a dev-only package come back marked dev) rather than
+  # about which CVEs exist today.
+  GITLEAKS_VERSION: "8.30.1"
+  TRIVY_VERSION: "0.74.0"
+  SYFT_VERSION: "1.51.1"
+  SEMGREP_VERSION: "1.175.0"
+
+  PYTHON_VERSION: "3.13"
+
+  # Fixed here rather than left to Trivy's per-platform default
+  # (~/Library/Caches/trivy on macOS), so the cache step below and the engine
+  # both name one path.
+  TRIVY_CACHE_DIR: ${{ github.workspace }}/.trivy-cache
+
+jobs:
+
+  # ---------------------------------------------------------------- fast gate
+  #
+  # Seconds, and it fails first when something obvious is wrong.
+  checks:
+    name: selftest and server suite
+    # macOS, AND THAT IS NOT A PREFERENCE. `cmd_selftest` in bin/claude-cron
+    # calls `date -v0H -v0M -v0S` and `date -u -v-"${m}"M` with no fallback
+    # (bin/claude-cron:3989 and :4173) — `-v` is BSD date, which GNU date on a
+    # Linux runner does not have. The product's own gate does not run on Linux,
+    # so neither does this job. Running the rest of the suite on a platform the
+    # product cannot selftest on would report on a configuration nobody ships.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `claude-cron selftest` asserts CHANGELOG.md is at least as new as
+          # the newest commit touching bin/, skills/ or test/ — it compares two
+          # `git log -1` timestamps. A shallow clone can hold neither commit,
+          # and the check then passes by finding NOTHING rather than by finding
+          # things in order, which is the silent kind of green this whole file
+          # is against.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - run: python -m pip install --disable-pip-version-check --quiet pytest
+
+      - name: the tools the shell suite shells out to
+        run: |
+          # Before anything runs, because the failures otherwise read like
+          # product bugs: a missing jq turns selftest's config cases red, and a
+          # missing shasum makes the committed-UI-artifact check compare
+          # nothing at all and pass.
+          rc=0
+          for tool in git jq node shasum; do
+            if command -v "$tool" >/dev/null 2>&1; then
+              printf '  ok    %s\n' "$tool"
+            else
+              printf '  FAIL  %s is not on PATH\n' "$tool"; rc=1
+            fi
+          done
+          exit $rc
+
+      - name: claude-cron selftest
+        run: bin/claude-cron selftest
+
+      - name: the server suite
+        # `tests/security/` is deliberately absent here: it is the whole of the
+        # `security` job below, run twice, and running it a third time to no
+        # extra purpose is what "economical" rules out. This is the rest of
+        # `pytest tests/` — the journal, the API and the dashboard page
+        # contract, which shells out to `node`. About 16 seconds.
+        run: python -m pytest tests/ -q --ignore=tests/security
+
+  # ----------------------------------------------------- the two configurations
+  #
+  # The suite runs EXACTLY TWICE, once per configuration, and no more. The
+  # engines-off leg would normally spawn the engines-on run from inside itself
+  # (test_both_configurations.py) — that test is this workflow's stand-in on a
+  # developer's machine, and here it would make three runs of a suite that
+  # takes ~250s with the engines installed. So the off leg deselects it and the
+  # on leg is a real, separately reported job instead.
+  security:
+    name: security suite (engines ${{ matrix.engines }})
+    runs-on: macos-latest
+    strategy:
+      # Both answers are wanted. Cancelling the second leg because the first
+      # went red is how you end up fixing one configuration at a time.
+      fail-fast: false
+      matrix:
+        # Quoted. Bare `on` and `off` are BOOLEANS to a YAML 1.1 parser, and
+        # this value is compared against a string below.
+        engines: ["off", "on"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: install the four engines, at the pinned versions
+        run: |
+          set -eo pipefail
+          # Architecture is read, not assumed: `macos-latest` is arm64 today
+          # and the runner image is deliberately NOT pinned (a pinned image
+          # gets deprecated and then CI breaks for a reason unrelated to this
+          # repository). Each project spells the same two architectures
+          # differently, so all three mappings are spelled out.
+          case "$(uname -m)" in
+            arm64|aarch64) gitleaks_arch=arm64; trivy_arch=ARM64;  syft_arch=arm64 ;;
+            *)             gitleaks_arch=x64;   trivy_arch=64bit;  syft_arch=amd64 ;;
+          esac
+          mkdir -p "$HOME/.engines"
+
+          # `-f -` is spelled out rather than relying on tar defaulting to
+          # stdin, and `--fail` on curl is what turns a 404 from a mistyped
+          # asset name into a failed step instead of an empty tarball.
+          fetch() {  # fetch <url> <binary-name>
+            curl --fail --silent --show-error --location --retry 3 "$1" \
+              | tar -xz -f - -C "$HOME/.engines" "$2"
+          }
+          fetch "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_darwin_${gitleaks_arch}.tar.gz" gitleaks
+          fetch "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_macOS-${trivy_arch}.tar.gz" trivy
+          fetch "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_darwin_${syft_arch}.tar.gz" syft
+
+          chmod +x "$HOME"/.engines/*
+          echo "$HOME/.engines" >> "$GITHUB_PATH"
+
+          # Semgrep is a Python package, not a release tarball. `==` and not
+          # `~=`: see the pinning block at the top of this file.
+          python -m pip install --disable-pip-version-check --quiet \
+            "semgrep==${SEMGREP_VERSION}"
+
+      - run: python -m pip install --disable-pip-version-check --quiet pytest
+
+      - name: the four engines answer, at the versions this suite was measured against
+        run: |
+          # A MISSING ENGINE MUST NOT BE A SKIP. `adapters.engine_path` gates
+          # the secret phase, the dependency phase, the SAST pre-pass, the IaC
+          # phase and the SBOM producer on one switch, and every test behind it
+          # is marked `skipif` — so an install that silently half-worked would
+          # produce a green run that never touched the engine path. Checked
+          # here, once, loudly.
+          #
+          # THE VERSION IS CHECKED, NOT ONLY THE BINARY, and the parsing is
+          # deliberately strict: `awk '{print $NF}'` over each tool's own
+          # one-line banner ("8.30.1", "Version: 0.74.0", "syft 1.51.1",
+          # "1.175.0" — measured, all four). A banner that changes shape fails
+          # here rather than quietly reporting a version nobody has.
+          rc=0
+          check() {  # check <label> <expected> <actual>
+            if [ "$3" = "$2" ]; then printf '  ok    %-9s %s\n' "$1" "$3"
+            else printf '  FAIL  %-9s expected %s, got "%s"\n' "$1" "$2" "$3"; rc=1; fi
+          }
+          check gitleaks "$GITLEAKS_VERSION" "$(gitleaks version 2>/dev/null | awk '{print $NF}')"
+          check trivy    "$TRIVY_VERSION"    "$(trivy --version 2>/dev/null | head -1 | awk '{print $NF}')"
+          check syft     "$SYFT_VERSION"     "$(syft --version 2>/dev/null | awk '{print $NF}')"
+          check semgrep  "$SEMGREP_VERSION"  "$(semgrep --version 2>/dev/null | awk '{print $NF}')"
+          exit $rc
+
+      - name: cache Trivy's vulnerability database
+        # NOT for reproducibility — the database moves on purpose and no key
+        # here freezes it (see the pinning block above). It is so that a run
+        # does not fail because ghcr.io was unreachable for the minute it
+        # asked. `github.run_id` never repeats, so every run misses on the
+        # exact key, restores the most recent previous copy through
+        # `restore-keys`, refreshes it against ghcr, and saves it again — an
+        # outage then falls back to the last good copy instead of to nothing.
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TRIVY_CACHE_DIR }}
+          key: trivy-db-${{ env.TRIVY_VERSION }}-${{ github.run_id }}
+          restore-keys: trivy-db-${{ env.TRIVY_VERSION }}-
+
+      - name: Trivy has a database to scan against
+        # A separate step so that "the database could not be fetched" is a
+        # named failure here rather than a dozen confusing test failures
+        # further down.
+        run: trivy fs --download-db-only .
+
+      - name: the security suite
+        env:
+          MODE: ${{ matrix.engines }}
+        run: |
+          set -eo pipefail
+          if [ "$MODE" = "on" ]; then
+            # What every real analysis runs in.
+            export CC_SECURITY_ENGINES=on
+            deselect=""
+          else
+            # UNSET, never `CC_SECURITY_ENGINES=`. `adapters._OFF` is
+            # {off, 0, no, false, none} and the empty string is not in it, so
+            # an empty value reads as ON — this leg would silently be a second
+            # copy of the other one, and the two-configuration guarantee would
+            # be back to resting on nothing. Unset is also exactly what a
+            # developer's plain `pytest` gets: conftest.py's `setdefault` is
+            # what supplies "off", and leaving it unset exercises that line.
+            unset CC_SECURITY_ENGINES
+            # See the comment on this job: the in-suite spawn of the other
+            # configuration is what this workflow replaces, and running it here
+            # would be a third execution of a ~250s suite.
+            deselect="--deselect tests/security/test_both_configurations.py::test_the_security_suite_is_green_with_the_engines_on"
+          fi
+
+          # `-rs` prints one SKIPPED line per skipped test, with its reason —
+          # which is what the guard below reads. A partial collection needs no
+          # guard of its own here: pytest exits non-zero when a module errors
+          # while collecting, and this step reads that exit code directly
+          # (which the in-suite version could not, having only a child's
+          # stdout to parse).
+          python -m pytest tests/security/ -q -rs $deselect 2>&1 | tee result.txt
+
+      - name: nothing was skipped for want of an engine
+        run: |
+          # THE ASSERTION THIS WHOLE WORKFLOW IS FOR. `needs_gitleaks`,
+          # `needs_trivy`, `needs_syft` and `needs_semgrep` all skip rather
+          # than fail when their binary is absent — correct for a laptop,
+          # catastrophic here, because the run stays green while covering none
+          # of the engine path. This repository has exactly ONE legitimate
+          # skip: test_both_configurations.py refusing to spawn itself when it
+          # is already the engines-on run. Anything else means an engine was
+          # not reached, and it fails the job.
+          if grep '^SKIPPED' result.txt | grep -v 'this run IS the engines-on run'; then
+            echo "::error::a test skipped for a reason other than the self-spawn guard — an engine was not reached, and a green run here would have covered none of the engine path"
+            exit 1
+          fi
+          echo "  ok    no test skipped for a missing engine"

@@ -644,8 +644,7 @@ nothing said so.
 
 While iterating on that package, deselect the second run rather than switching
 it off — there is deliberately **no** opt-out environment variable, because that
-is the kind of switch that gets exported once and silently disables the only
-gate this repository has:
+is the kind of switch that gets exported once and silently disables the gate:
 
 ```bash
 python3 -m pytest tests/security/ -q \
@@ -653,6 +652,18 @@ python3 -m pytest tests/security/ -q \
 ```
 
 Run both after touching either side.
+
+**On a pull request this no longer depends on who is typing.**
+`.github/workflows/ci.yml` installs `gitleaks`, `trivy`, `syft` and `semgrep` at
+pinned versions and runs `tests/security/` as two named jobs, one per
+configuration — plus `claude-cron selftest` and the server suite. It **refuses
+to be green over a skip**: every engine-gated test skips rather than fails when
+its binary is absent (measured: 45 skips in `test_adapters.py` alone, and the
+run still reports "passed"), so the workflow checks each engine's reported
+version before starting and then fails the job on any skip other than the one
+self-spawn guard. An unpinned engine would change what an analysis finds between
+two runs of the same commit; bumping one is a deliberate commit that re-runs the
+measurements those adapters cite.
 
 ### When a run is killed
 

@@ -45,9 +45,16 @@ switch: while iterating, deselect this node id (the README says how). Then the
 gate is intact for anyone who runs the suite plainly, which is what a gate is
 for.
 
-There is no CI in this repository (`.github/` holds a PR template and nothing
-else), so "the suite" is the only gate there is, and a gate that runs one of
-the two configurations is a gate on half the product.
+THE OTHER HALF OF THIS GUARANTEE IS NOW `.github/workflows/ci.yml`, which runs
+both configurations as two named jobs over engines it installs at pinned
+versions. This test is not made redundant by that, and it is not the same
+check: CI proves the two configurations pass on a machine that HAS the engines,
+while this proves that a developer who has them cannot get a green local run
+having exercised only one configuration -- the failure that actually happened
+here, months before anyone looked. CI deliberately deselects THIS test in its
+engines-off job (and only there): the second configuration is a separate job
+there, and spawning it from inside the first would be a third execution of a
+~250s suite. Locally, nothing deselects it.
 """
 
 import os
@@ -150,11 +157,13 @@ def test_the_security_suite_is_green_with_the_engines_on():
     #
     # AGAINST THE SUITE'S OWN COUNT, not against zero. `N passed with N > 0`
     # plus `returncode == 0` is satisfied by a run that collected 40 of 808
-    # and passed all forty -- a green gate over 5% of the suite, and with no
-    # CI in this repository this is the only gate there is. Anything that
+    # and passed all forty -- a green gate over 5% of the suite. Anything that
     # narrows the child's collection (a plugin erroring while collecting one
     # module, an `--ignore` leaking in from a config file, a conftest raising
     # `Skipped` at module scope) now fails here instead of passing quietly.
+    # CI needs no equivalent of this: it invokes each configuration directly
+    # and reads pytest's own exit code, which is already non-zero when a
+    # module errors during collection. This test has only a child's stdout.
     expected = _collected()
     ran = _ran(out.stdout)
     assert ran >= expected, (

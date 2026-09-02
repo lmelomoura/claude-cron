@@ -19,6 +19,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **There is CI now, and it cannot go green over a skipped engine.**
+  `.github/workflows/ci.yml` runs `claude-cron selftest`, the server suite,
+  and `tests/security/` in **both** of its configurations
+  (`CC_SECURITY_ENGINES` unset and `on`) as two named jobs. Until now the
+  guarantee that both configurations pass lived only on the one machine that
+  happened to have all four engines installed — which is exactly how it
+  lapsed before, with the engines-on run red for the entire life of the
+  engine path and nothing saying so. **The interesting part is what it
+  refuses to do:** every engine-gated test *skips* rather than fails when its
+  binary is absent, so an install that half-worked would produce a green run
+  that never touched the engine path at all. Measured: with the four engines
+  off `PATH`, `test_adapters.py` alone skips 45 tests and still reports
+  "185 passed". So the workflow checks each engine's *reported version*
+  before anything runs, and then fails the job on any skip other than the one
+  known self-spawn guard. **All four engines are pinned** — gitleaks 8.30.1,
+  trivy 0.74.0, syft 1.51.1, semgrep 1.175.0 — because an unpinned scanner
+  changes what an analysis finds between two runs of the same commit, and the
+  adapters carry measurements taken against these exact versions. The suite
+  runs twice and no more: the engines-off job deselects the in-suite spawn of
+  the other configuration, which would have made it three.
+
 - **A dependency finding now says whether the vulnerable package actually
   ships.** Every `dependency` finding carries a `scope` of `runtime`, `dev`
   or `unknown`, shown in all three report formats and on the findings
