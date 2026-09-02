@@ -42,8 +42,8 @@ from pathlib import Path
 
 import pytest
 
-from security import (adapters, deps, engines, fingerprint, ignores, osv,
-                      report, secrets, taxonomy)
+from security import (adapters, coverage, deps, engines, fingerprint, ignores,
+                      osv, report, secrets, taxonomy)
 from security import cli as security_cli
 
 FIX = Path(__file__).parent / "fixtures" / "engines"
@@ -3168,13 +3168,18 @@ def test_prepare_declares_a_pre_pass_that_failed_rather_than_recording_nothing(
                         lambda *a, **k: (engines.purge("semgrep", SEMGREP_404), ""))
     monkeypatch.setattr(adapters, "engine_path", lambda name: "/usr/bin/semgrep"
                         if name == "semgrep" else None)
-    findings, notes, producer = security_cli._scan_sast(tmp_path, offline=False)
+    findings, notes, producer, status = security_cli._scan_sast(tmp_path,
+                                                                offline=False)
     assert findings == []
     assert len(notes) == 1 and notes[0].startswith("The SAST pre-pass did not run")
     # And NO producer: a pre-pass whose report was refused did not look, so
     # nothing it found last time can be proven gone by this run. See
     # `diff._proven`.
     assert producer == ""
+    # And the coverage table says the same thing in its own vocabulary: a
+    # refused report is `skipped`, never the `warning` a pre-pass that ran
+    # carries. The two answers come off one branch, so they cannot diverge.
+    assert status == coverage.SKIPPED
 
 
 # --------------------------------------------- the dependency scan's `scope`

@@ -41,7 +41,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from security import adapters, deps, diff, fingerprint, hygiene, ignores, ledger, osv, queries, report, secrets, taxonomy  # noqa: E402
+from security import adapters, coverage, deps, diff, fingerprint, hygiene, ignores, ledger, osv, queries, report, secrets, taxonomy  # noqa: E402
 
 REQUIRED_FINDING_KEYS = ("fingerprint", "category", "rule", "severity", "title")
 
@@ -425,8 +425,8 @@ def _produced_by(findings, producer, produced):
 
 
 def _scan_secrets(root, ignore):
-    """(findings, notes, lines, producer) for the secret phase -- ONE scanner,
-    not two.
+    """(findings, notes, lines, producer, status) for the secret phase -- ONE
+    scanner, not two.
 
     Gitleaks when it is installed, the built-in pattern scanner when it is
     not, and never both. Two scanners in one category find the same hole and
@@ -453,12 +453,19 @@ def _scan_secrets(root, ignore):
     must not read the built-in scanner's silence as proof that a
     gitleaks-only credential is gone. This phase always has a producer: there
     is no configuration in which neither scanner runs.
+
+    `status` IS NEVER `skipped` HERE, for that same reason, and it is
+    `warning` on the fallback path rather than `ran`: the built-in scanner
+    covers eight shaped patterns where gitleaks carries a whole rule set, so
+    "the secret phase found nothing" means materially less on that path. It is
+    the identical distinction `producer` draws for `diff._proven`, said in the
+    one place a human reads instead of the one a diff does.
     """
     if adapters.engine_path("gitleaks"):
         findings, notes = adapters.gitleaks_scan(root, ignore)
         if findings is not None:
             return (findings, notes, secrets.count_lines(root, ignore),
-                    PRODUCER_GITLEAKS)
+                    PRODUCER_GITLEAKS, coverage.RAN)
         # The engine is here and could not answer. Say so, and let the
         # built-in scanner do the work rather than reporting no secrets.
         notes = [*notes, secrets.FALLBACK_NOTE]
@@ -467,7 +474,8 @@ def _scan_secrets(root, ignore):
     history_findings, history_note = secrets.scan_history(root, None, ignore)
     tree_findings, tree_note, lines = secrets.scan_tree(root, ignore)
     return (history_findings + tree_findings,
-            [history_note, tree_note, *notes], lines, PRODUCER_SECRETS)
+            [history_note, tree_note, *notes], lines, PRODUCER_SECRETS,
+            coverage.WARNING)
 
 
 # Named so `test_offline_mode_declares_the_gap` (and every reader of a
@@ -482,8 +490,8 @@ OFFLINE_DEPENDENCY_NOTE = ("Dependency CVEs were NOT checked against OSV.dev "
 
 
 def _scan_dependencies(root, components, offline: bool, ignore_paths=()):
-    """(findings, notes, producer) for the dependency phase -- ONE producer,
-    not two.
+    """(findings, notes, producer, status) for the dependency phase -- ONE
+    producer, not two.
 
     Trivy's filesystem scanner when it is installed, `osv.query` fed by
     `deps.inventory`'s output (`components`) when it is not, and never both:
@@ -570,16 +578,22 @@ def _scan_dependencies(root, components, offline: bool, ignore_paths=()):
     buys and what its absence costs -- against this ledger's real behaviour.
     `pending` still says "not re-checked", which is precisely what happened;
     the alternative said "fixed" about a lockfile nobody parsed.
+
+    `status` CARRIES EXACTLY THAT ASYMMETRY into the report's own table.
+    `skipped` when `--offline` refused both sources; `ran` for Trivy; and
+    `warning` for OSV.dev, because the measured gap above -- Trivy 5 findings
+    against `deps.inventory`'s 0 components on one real `yarn.lock` -- is the
+    difference between the two, not a preference between them.
     """
     if offline:
         # No producer: `--offline` refuses BOTH sources, so nothing looked and
         # nothing about this category can be proven from this analysis.
-        return [], [OFFLINE_DEPENDENCY_NOTE], ""
+        return [], [OFFLINE_DEPENDENCY_NOTE], "", coverage.SKIPPED
     notes = []
     if adapters.engine_path("trivy"):
         findings, notes = adapters.trivy_scan(root, ignore_paths)
         if findings is not None:
-            return findings, notes, PRODUCER_TRIVY
+            return findings, notes, PRODUCER_TRIVY, coverage.RAN
         # The engine is here and could not answer. Its note is kept -- that
         # is the "say so" -- and OSV.dev does the work rather than the phase
         # reporting no dependency findings.
@@ -601,7 +615,7 @@ def _scan_dependencies(root, components, offline: bool, ignore_paths=()):
                                            ignore_paths)]
     if osv_note:
         notes.append(osv_note)
-    return cve_findings, notes, PRODUCER_OSV
+    return cve_findings, notes, PRODUCER_OSV, coverage.WARNING
 
 
 def _unfiltered_sbom_note(components, ignore_paths) -> str:
@@ -655,8 +669,8 @@ OFFLINE_SAST_NOTE = ("The Semgrep SAST pre-pass did NOT run: its rule pack is "
 
 
 def _scan_sast(root, offline: bool, ignore_paths=()):
-    """(findings, notes, producer) for the SAST pre-pass -- an ADDITION, never
-    a swap.
+    """(findings, notes, producer, status) for the SAST pre-pass -- an
+    ADDITION, never a swap.
 
     THE ONE PHASE HERE THAT REPLACES NOTHING. `_scan_secrets`,
     `_scan_dependencies` and `_scan_sbom` all choose ONE producer per category
@@ -684,21 +698,31 @@ def _scan_sast(root, offline: bool, ignore_paths=()):
     producers now answer separately, which is also why the fix is not "mark
     the whole category pending": the agent's own findings still close on the
     agent's own evidence.
+
+    THE ONE PHASE WHOSE SUCCESS IS STILL A `warning`, and the only status
+    decision in this file that is not about a missing binary. Semgrep running
+    perfectly is a PRE-pass: `adapters.SAST_PREPASS_NOTE` says so, and its
+    coverage is not remotely even -- 147 rules for Python against ONE for
+    shell, measured, over a product whose core is 8,263 lines of bash. A
+    `ran` here would tell a reader of the table that the SAST phase is covered
+    when the pass that actually covers it is the agent's, which has not
+    happened yet at this point in the analysis. So this phase reads `ran`
+    never, `warning` when Semgrep answered, `skipped` when it did not.
     """
     if offline:
-        return [], [OFFLINE_SAST_NOTE], ""
+        return [], [OFFLINE_SAST_NOTE], "", coverage.SKIPPED
     if not adapters.engine_path("semgrep"):
         # `engine_path` answers None for a machine without the binary AND for
         # one with `CC_SECURITY_ENGINES=off`, and the note says the same thing
         # for both on purpose: as far as this analysis goes they are the same
         # machine.
         return [], [adapters.SAST_GAP.format(
-            reason="semgrep is not available to this analysis")], ""
+            reason="semgrep is not available to this analysis")], "", coverage.SKIPPED
     findings, notes = adapters.semgrep_scan(root, ignore_paths)
     if findings is None:
         reason = (notes[0] if notes else "semgrep produced no report").rstrip(".")
-        return [], [adapters.SAST_GAP.format(reason=reason)], ""
-    return findings, notes, PRODUCER_SEMGREP
+        return [], [adapters.SAST_GAP.format(reason=reason)], "", coverage.SKIPPED
+    return findings, notes, PRODUCER_SEMGREP, coverage.WARNING
 
 
 # Said when `_scan_sbom` returns no document at all, and the ONE sentence that
@@ -719,8 +743,8 @@ NO_SBOM_NOTE = ("No SBOM was recorded for this analysis: neither producer had "
 
 
 def _scan_sbom(root, components):
-    """(document, notes) for the SBOM -- ONE producer, not two, on the same
-    terms `_scan_secrets` and `_scan_dependencies` use.
+    """(document, notes, status) for the SBOM -- ONE producer, not two, on the
+    same terms `_scan_secrets` and `_scan_dependencies` use.
 
     Syft's directory scan when it is installed and answers with at least one
     component; `deps.sbom` fed by `deps.inventory`'s own five-format read
@@ -742,17 +766,24 @@ def _scan_sbom(root, components):
     Falling back also drops Syft's OWN notes (which claim Syft produced the
     SBOM): carrying them forward would have this function's return value
     contradict itself the moment `deps.sbom` is what actually gets stored.
+
+    `status` follows the document, not the binary: `ran` for Syft's own
+    inventory, `warning` for the five-format fallback `deps.sbom` builds, and
+    `skipped` when there is no document to download at all -- which is what
+    `NO_SBOM_NOTE` says in prose, and the one state where every other sentence
+    about "the SBOM" would be describing a file the reader cannot open.
     """
     notes = []
     if adapters.engine_path("syft"):
         document, syft_notes = adapters.syft_sbom(root)
         if document is not None and document.get("components"):
-            return document, syft_notes
+            return document, syft_notes, coverage.RAN
         if document is None:
             notes = syft_notes
     if not components:
-        return None, notes
-    return deps.sbom(components), [*notes, deps.SBOM_FALLBACK_NOTE]
+        return None, notes, coverage.SKIPPED
+    return (deps.sbom(components), [*notes, deps.SBOM_FALLBACK_NOTE],
+            coverage.WARNING)
 
 
 # Trivy's misconfiguration checks are fetched from its own registry, the same
@@ -767,7 +798,7 @@ OFFLINE_IAC_NOTE = ("Infrastructure-as-code misconfigurations were NOT "
 
 
 def _scan_iac(root, offline: bool, ignore_paths=()):
-    """(findings, notes, producer) for the IaC misconfiguration phase.
+    """(findings, notes, producer, status) for the IaC misconfiguration phase.
 
     UNLIKE EVERY PHASE ABOVE IT, THERE IS NOTHING TO FALL BACK TO AND NOTHING
     TO REPLACE. `_scan_secrets` and `_scan_dependencies` each choose one
@@ -786,17 +817,21 @@ def _scan_iac(root, offline: bool, ignore_paths=()):
     `prepare` finished -- it produced a report that said the Dockerfile "was
     not checked at all this run" and, four lines down, declared three of its
     misconfigurations fixed. The Dockerfile was untouched.
+
+    `status` IS BINARY HERE, and this is the only phase for which that is
+    true: with no fallback to degrade to, there is no middle state to report.
+    Either Trivy answered (`ran`) or nothing looked (`skipped`).
     """
     if offline:
-        return [], [OFFLINE_IAC_NOTE], ""
+        return [], [OFFLINE_IAC_NOTE], "", coverage.SKIPPED
     if not adapters.engine_path("trivy"):
         return [], [adapters.IAC_GAP.format(
-            reason="trivy is not available to this analysis")], ""
+            reason="trivy is not available to this analysis")], "", coverage.SKIPPED
     findings, notes = adapters.trivy_iac_scan(root, ignore_paths)
     if findings is None:
         reason = (notes[0] if notes else "trivy produced no report").rstrip(".")
-        return [], [adapters.IAC_GAP.format(reason=reason)], ""
-    return findings, notes, PRODUCER_TRIVY_IAC
+        return [], [adapters.IAC_GAP.format(reason=reason)], "", coverage.SKIPPED
+    return findings, notes, PRODUCER_TRIVY_IAC, coverage.RAN
 
 
 def cmd_prepare(args):
@@ -871,14 +906,15 @@ def cmd_prepare(args):
     # findings' own `producer` column from ever disagreeing.
     produced = set()
 
-    secret_findings, secret_notes, tree_lines, secret_producer = _scan_secrets(
-        root, ignore)
+    secret_findings, secret_notes, tree_lines, secret_producer, secret_status = (
+        _scan_secrets(root, ignore))
     findings = _produced_by(secret_findings, secret_producer, produced)
     # Hygiene has no engine and no fallback -- it is our own walk over the
     # tree, so it runs in every configuration and is always its own producer.
     findings += _produced_by(hygiene.scan(root, ignore), PRODUCER_HYGIENE,
                              produced)
-    notes = [n for n in secret_notes if n]
+    secret_notes = [n for n in secret_notes if n]
+    notes = list(secret_notes)
 
     # FIRST in the paragraph, because it qualifies every phase below it and
     # not just the one that happens to be speaking. The default noise filter
@@ -887,8 +923,15 @@ def cmd_prepare(args):
     # applied -- "we found nothing there" and "we did not look there" are the
     # same silence otherwise. Emitted whichever scanner ran, because the
     # filter is `ignores.ignored` and both of them consult it.
+    #
+    # `scope_notes` is the SAME two sentences kept apart for the structured
+    # half: in the paragraph they are simply first, but the table needs a row
+    # to put them under, and neither belongs to the secret phase whose notes
+    # they are being inserted ahead of. See the `scope` phase below.
+    scope_notes = []
     if ignores.defaults_apply(ignore):
         notes.insert(0, ignores.DEFAULT_NOTE)
+        scope_notes.insert(0, ignores.DEFAULT_NOTE)
 
     # AHEAD OF EVERYTHING, including the default's own sentence: it says a
     # switch the operator typed did nothing, so it explains why the sentence
@@ -899,6 +942,7 @@ def cmd_prepare(args):
     unknown_switch = ignores.unknown_switch_note(ignore)
     if unknown_switch:
         notes.insert(0, unknown_switch)
+        scope_notes.insert(0, unknown_switch)
         # And on stderr too. `prepare` runs unattended inside a worktree, so
         # the note in the report is the durable channel -- but an operator who
         # has just edited the field and is running this by hand should not
@@ -909,11 +953,11 @@ def cmd_prepare(args):
     # source runs: `deps.inventory` never touches the network, and the SBOM
     # below is built from it whenever Syft does not.
     components = deps.inventory(root)
-    dep_findings, dep_notes, dep_producer = _scan_dependencies(
+    dep_findings, dep_notes, dep_producer, dep_status = _scan_dependencies(
         root, components, args.offline, ignore)
     findings += _produced_by(dep_findings, dep_producer, produced)
 
-    sbom_document, sbom_notes = _scan_sbom(root, components)
+    sbom_document, sbom_notes, sbom_status = _scan_sbom(root, components)
     if sbom_document is None:
         # NOTHING IS STORED, so nothing may be described. `DEP_SBOM_NOTE` is
         # appended by `trivy_scan` unconditionally and asserts what "the SBOM"
@@ -934,30 +978,95 @@ def cmd_prepare(args):
         # so it is what swaps the two notes rather than leaving the report to
         # contradict itself.
         dep_notes = [n for n in dep_notes if n != adapters.DEP_SBOM_NOTE]
-    notes += [n for n in dep_notes if n]
-    notes += [n for n in sbom_notes if n]
+    dep_notes = [n for n in dep_notes if n]
+    sbom_notes = [n for n in sbom_notes if n]
+    notes += dep_notes
+    notes += sbom_notes
     # After both, because it is about the gap BETWEEN them: what the SBOM
     # lists and what the dependency phase actually looked up.
     unfiltered = _unfiltered_sbom_note(components, ignore)
     if unfiltered:
         notes.append(unfiltered)
 
-    iac_findings, iac_notes, iac_producer = _scan_iac(root, args.offline, ignore)
+    iac_findings, iac_notes, iac_producer, iac_status = _scan_iac(
+        root, args.offline, ignore)
     findings += _produced_by(iac_findings, iac_producer, produced)
-    notes += [n for n in iac_notes if n]
+    iac_notes = [n for n in iac_notes if n]
+    notes += iac_notes
 
     # LAST of the phases, because it is the only one that does not stand
     # alone: what it produces is a pre-pass the agent's own SAST pass then
     # triages, so its sentences read after everything the deterministic half
     # settled by itself.
-    sast_findings, sast_notes, sast_producer = _scan_sast(root, args.offline,
-                                                          ignore)
+    sast_findings, sast_notes, sast_producer, sast_status = _scan_sast(
+        root, args.offline, ignore)
     findings += _produced_by(sast_findings, sast_producer, produced)
-    notes += [n for n in sast_notes if n]
+    sast_notes = [n for n in sast_notes if n]
+    notes += sast_notes
     # Every phase writes into ONE channel, in phase order. The reader gets one
     # paragraph naming every blind spot this analysis has, rather than
     # whichever gap the last phase to speak happened to know about.
     note = " ".join(notes)
+
+    # THE SAME SENTENCES, ATTRIBUTED. Nothing is re-worded and nothing is
+    # dropped: `note` above is written byte for byte as it always was, and
+    # every list below is one of the very lists it was concatenated from, so
+    # each phase's prose is a substring of the paragraph a reader can still
+    # read whole. What this adds is WHICH PHASE each sentence belongs to, and
+    # the status that sentence was written to explain -- taken from what the
+    # `_scan_*` functions RETURNED, never from looking for a string in a note.
+    #
+    # TWO SENTENCES GENUINELY BELONG TO TWO PHASES, and both are filed under
+    # both rather than under whichever one runs first:
+    #
+    #   DEP_SBOM_NOTE ("The SBOM lists the five lockfile formats ...") is
+    #     emitted by the DEPENDENCY producer -- Trivy appends it -- and every
+    #     word of it is about the SBOM. A reader asking "what is in the file I
+    #     just downloaded" looks under `sbom`; a reader asking why the
+    #     dependency phase read the formats it did looks under `dependencies`.
+    #     It also has to disappear from BOTH when the swaps above delete it,
+    #     which is why it is read back out of `dep_notes` here rather than
+    #     from the constant.
+    #
+    #   SBOM_UNFILTERED_NOTE is, in its own docstring's words, "about the gap
+    #     BETWEEN them": what the published SBOM lists against what the
+    #     dependency phase actually looked up. Filing it under one would make
+    #     the other half of the contradiction invisible from the row that
+    #     states it.
+    #
+    # DEP_ID_NOTE -- Trivy and OSV.dev minting one record per database against
+    # one per hole -- is NOT one of those. Both producers it names are this
+    # one phase's, so it stays under `dependencies` alone.
+    shared_sbom = [n for n in dep_notes if n == adapters.DEP_SBOM_NOTE]
+    both = [unfiltered] if unfiltered else []
+    phases = [
+        # `by` is None: the scope is this analysis's own configuration, not
+        # something a producer did, and `warning` is reserved for the case an
+        # operator can act on -- a switch they typed that this code did not
+        # recognise. The default filter is loud in the note and normal in the
+        # status, because it is what every unconfigured project gets.
+        coverage.phase(coverage.SCOPE,
+                       coverage.WARNING if unknown_switch else coverage.RAN,
+                       note=scope_notes),
+        coverage.phase(coverage.SECRETS, secret_status, secret_producer,
+                       secret_notes),
+        # Hygiene has no note of its own to carry: it is our own walk, it runs
+        # in every configuration, and there has never been a gap in it to
+        # declare. The row exists so the table's silence about it is a
+        # STATEMENT that it ran, not an omission a reader has to interpret.
+        coverage.phase(coverage.HYGIENE, coverage.RAN, PRODUCER_HYGIENE),
+        coverage.phase(coverage.DEPENDENCIES, dep_status, dep_producer,
+                       dep_notes + both),
+        # `by` follows the DOCUMENT, not the CVE producer above: Syft's own
+        # note says who built it when Syft did, and `deps.sbom` is this
+        # project's own inventory rather than a named engine.
+        coverage.phase(coverage.SBOM, sbom_status,
+                       "syft" if sbom_status == coverage.RAN else "",
+                       shared_sbom + sbom_notes + both),
+        coverage.phase(coverage.IAC, iac_status, iac_producer, iac_notes),
+        coverage.phase(coverage.SAST_PREPASS, sast_status, sast_producer,
+                       sast_notes),
+    ]
 
     if sbom_document is not None:
         ledger.store_sbom(conn, project, repo, branch, aid, sbom_document)
@@ -965,7 +1074,13 @@ def cmd_prepare(args):
         ledger.record_finding(conn, aid, f)
     ledger.set_lines_of_code(conn, aid, tree_lines)
 
-    conn.execute("UPDATE analysis SET coverage_note=? WHERE id=?", (note, aid))
+    # BOTH HALVES IN ONE STATEMENT, for the reason `mark_prepared` writes its
+    # two columns in one: a row holding the paragraph without the table, or the
+    # table without the paragraph, would be an analysis whose two accounts of
+    # its own coverage disagree -- and the table is the one a reader believes,
+    # because it is the one they read first.
+    conn.execute("UPDATE analysis SET coverage_note=?, coverage=? WHERE id=?",
+                 (note, coverage.encode(phases), aid))
     conn.commit()
     # LAST, and not before the writes above: `prepared` is what lets `finish`
     # record `done`, and it must mean "the deterministic phases ran and their
@@ -1203,6 +1318,71 @@ def _untriaged(conn, analysis_id) -> list:
     return sorted(rows, key=lambda r: TRIAGE_BLOCKING.index(r["severity"]))
 
 
+def _triaged_count(conn, analysis_id) -> int:
+    """How many scanner findings the agent actually RE-REPORTED.
+
+    `_untriaged` answers the opposite question, and 0 from it has two
+    completely different meanings: the agent read everything that was
+    waiting, or nothing was waiting. Neither blocks a `done`, but the coverage
+    table has to say which, or "triage: ran" over an analysis that recorded
+    nothing reads as work that happened.
+
+    NO SEVERITY FLOOR HERE, unlike `_untriaged`. The floor is about what
+    BLOCKS a close; this is about what somebody did, and a finding the agent
+    read and then correctly lowered to `low` was still read. Counting it under
+    the floor would also make this number shrink as a result of the very
+    triage it is reporting -- the re-report rewrites the severity, so a
+    corrected `high` leaves the floored set the moment it is read.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM finding"
+        " WHERE analysis_id=? AND triaged=1 AND producer<>'' AND producer<>?",
+        (analysis_id, diff.AGENT)).fetchone()
+    return row["n"] if row else 0
+
+
+# The `triage` phase's own prose, for the two outcomes that are NOT a
+# downgrade. The third -- findings nobody read -- writes `untriaged_note`,
+# which is the sentence the report already prints and the one that names
+# names, so it is reused verbatim rather than paraphrased here.
+TRIAGE_NOTHING_NOTE = ("No deterministic finding at {floor} or above was "
+                       "waiting to be triaged, so this phase had nothing to "
+                       "verify.")
+TRIAGE_ALL_READ_NOTE = ("The agent re-reported {count} deterministic "
+                        "finding{s} and left none at {floor} or above unread.")
+
+# Said when the close never reached the triage check at all -- the caller
+# closed `capped` or `failed`, so `done`'s precondition was never evaluated.
+# `skipped`, not `ran`: nothing looked, exactly as it means for every
+# deterministic phase above.
+TRIAGE_UNVERIFIED_NOTE = ("This analysis did not close `done`, so nothing "
+                          "checked whether the deterministic findings were "
+                          "ever read.")
+
+
+def _triage_phase(conn, analysis_id, untriaged, untriaged_note):
+    """The `triage` row of the coverage table.
+
+    THE ONE PHASE THE AGENT PERFORMS, and therefore the one whose status is
+    the answer to a question the deterministic half cannot ask itself: the
+    scanners are noisy on purpose (see `cmd_finish`), and the noise is meant to
+    be sorted by something that reads the surrounding code. Until this row
+    existed, an analysis's table would have shown seven phases that ran and
+    said nothing at all about the job the whole design rests on.
+    """
+    if untriaged:
+        return coverage.phase(coverage.TRIAGE, coverage.WARNING, diff.AGENT,
+                              untriaged_note)
+    read = _triaged_count(conn, analysis_id)
+    if not read:
+        return coverage.phase(coverage.TRIAGE, coverage.RAN, diff.AGENT,
+                              TRIAGE_NOTHING_NOTE.format(floor=TRIAGE_FLOOR))
+    return coverage.phase(
+        coverage.TRIAGE, coverage.RAN, diff.AGENT,
+        TRIAGE_ALL_READ_NOTE.format(count=read, floor=TRIAGE_FLOOR,
+                                    s="s" if read != 1 else ""))
+
+
 def cmd_finish(args):
     """Close the analysis. The verdict can be lowered, never raised.
 
@@ -1274,6 +1454,7 @@ def cmd_finish(args):
     # refusal here would leave the row `running`, which is the one outcome
     # this guard exists to avoid.
     untriaged_note = ""
+    triage_phase = None
     if state == "done":
         skipped = _untriaged(conn, args.analysis)
         if skipped:
@@ -1293,6 +1474,11 @@ def cmd_finish(args):
                   "triaged — closing it capped instead of done; triaging what "
                   "the deterministic phases produced is the job, not a "
                   "postscript to it", file=sys.stderr)
+        # Built from the SAME query result the downgrade was decided on, so
+        # the table and the verdict can never tell different stories about
+        # one close.
+        triage_phase = _triage_phase(conn, args.analysis, skipped,
+                                     untriaged_note)
     # `done` REQUIRES that the deterministic phases actually ran. Nothing
     # engine-side runs `prepare` -- it is the agent's first command, named in
     # the prompt and in the skill -- so an agent that simply skipped it exited
@@ -1345,7 +1531,27 @@ def cmd_finish(args):
         # the containment check the note grows a copy of itself every time.
         if part and part not in note:
             note = f"{note} {part}".strip()
-    ledger.finish_analysis(conn, args.analysis, state, _spend(args.spend), note)
+    # THE STRUCTURED HALF OF THE SAME APPEND. `prepare` wrote seven phases;
+    # this close adds the eighth, the one nothing deterministic can report on
+    # itself. `coverage.merge` REPLACES a triage row rather than appending
+    # one, which is the structured twin of the `part not in note` guard above
+    # and exists for the identical reason: this function runs twice on one
+    # analysis.
+    #
+    # A close that never reached the triage check leaves whatever `prepare`
+    # stored alone and files the phase as `skipped` -- never as `ran`. The one
+    # thing this must not do is let the engine's second close, which closes
+    # `capped` and skips the check, overwrite a `ran` the agent's own close
+    # had earned; `merge` on a phase that is not built is simply not called.
+    phases = coverage.phases_of(row)
+    if triage_phase is None and not any(
+            p.get("name") == coverage.TRIAGE for p in phases):
+        triage_phase = coverage.phase(coverage.TRIAGE, coverage.SKIPPED,
+                                      note=TRIAGE_UNVERIFIED_NOTE)
+    if triage_phase is not None:
+        phases = coverage.merge(phases, [triage_phase])
+    ledger.finish_analysis(conn, args.analysis, state, _spend(args.spend), note,
+                           coverage.encode(phases) if phases else "")
     # `row`'s own project and branch, never a flag the caller passed: `finish`
     # has two callers and neither one necessarily agrees with the row about
     # what it is closing, so the event has to come from the row itself.
@@ -1645,10 +1851,24 @@ def cmd_migrate_rules(args):
 
 
 def cmd_list(args):
+    """Every analysis of one project -- the Runs table's own feed.
+
+    `coverage` is the ONE column dropped on the way out, and the reason is
+    that this endpoint is polled every four seconds while a run is live and
+    answers with up to a hundred rows. The structured coverage is the same
+    ~2,000 characters `coverage_note` already carries, split by phase, so
+    shipping both would double a payload the Runs table has no use for either
+    half of. The analysis screen reads it from `checklist`, which answers for
+    ONE analysis -- the one actually on screen.
+
+    `coverage_note` itself stays: `bin/claude-cron`'s selftest and
+    `test/e2e.test.sh` both read it from this verb.
+    """
     rows = _conn(args).execute(
         "SELECT * FROM analysis WHERE project=? ORDER BY id DESC LIMIT 100",
         (args.project,)).fetchall()
-    print(json.dumps([dict(r) for r in rows], indent=2))
+    print(json.dumps([{k: v for k, v in dict(r).items() if k != "coverage"}
+                      for r in rows], indent=2))
 
 
 def cmd_analysis(args):

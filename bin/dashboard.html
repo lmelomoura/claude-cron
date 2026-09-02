@@ -515,6 +515,19 @@ document.documentElement.dataset.theme =
                   <div id="sec-run-head"></div>
                   <div id="sec-run-meta"></div>
                   <div class="warnline bad" id="sec-incomplete" hidden></div>
+                  <!-- The coverage, COMPACT, and deliberately ABOVE the
+                       paragraph below it: one line per phase with its status
+                       and the producer that answered, each folding open onto
+                       the very sentences #sec-coverage prints whole. On a
+                       real analysis that paragraph is ~2,000 characters
+                       assembled from 27 note constants -- every sentence
+                       true, the block unreadable, and the operator who built
+                       this read one and asked "what IS this alert?". Built
+                       by secRenderCoveragePhases (analysis.js) from the
+                       row's own `coverage` column; an analysis written
+                       before that column existed leaves this hidden and the
+                       screen is exactly what it was. -->
+                  <div id="sec-phases" hidden></div>
                   <div class="warnline" id="sec-coverage" hidden></div>
                   <div id="sec-run-notice"></div>
                   <div id="sec-run-recorded"></div>

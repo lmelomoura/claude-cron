@@ -3301,6 +3301,122 @@ def test_an_incomplete_analysis_says_so_on_the_page_and_not_only_in_the_file(srv
     assert 'sec-incomplete").innerHTML' not in paint
 
 
+def test_the_coverage_is_summarised_by_phase_above_the_paragraph(srv):
+    """`coverage_note` is one string assembled from 27 note constants across
+    six server modules -- ~2,000 characters on a real analysis. Every sentence
+    is true and the block of them is unreadable; the operator who built this
+    read one and asked "what IS this alert?". The screen now draws the phase
+    summary FIRST (bin/security/coverage.py's structure, in the row's own
+    `coverage` column) and folds each phase's prose underneath.
+
+    THE ORDER IS THE WHOLE POINT, so it is asserted and not merely described:
+    a summary painted after the paragraph is a summary nobody reaches."""
+    page = srv.render_page("boot-authed")
+    assert 'id="sec-phases"' in page
+    block = _security_js(srv)
+    paint = _plainfn(block, "secPaint")
+    assert "secRenderCoveragePhases(a)" in paint
+    # Against the paragraph's own render, not against the first mention of the
+    # id -- `secPaint`'s no-analysis branch hides both boxes near the top and
+    # would satisfy any looser comparison.
+    assert paint.index("secRenderCoveragePhases(a)") \
+        < paint.index('const note = $("sec-coverage")'), \
+        "the phase summary must be painted BEFORE the coverage paragraph"
+    render = _plainfn(block, "secRenderCoveragePhases")
+    # Same rule as every other line of this view: text, never markup -- and
+    # every one of these values arrives from a database column.
+    assert "innerHTML" not in render
+    # The status is the server's word, not something read back out of the
+    # prose, and the screen must not invent one either.
+    assert "JSON.parse" in render
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_each_coverage_phase_renders_one_line_with_a_status_and_its_producer(
+        srv, tmp_path):
+    """Drives the real renderer under Node. One row per phase, the status as
+    both a word and a class (so the row is scannable by colour), the producer
+    that answered, and the phase's own prose folded beneath it rather than run
+    together with the other seven."""
+    block = _security_js(srv)
+    deps = (_const(block, "SEC_PHASE_STATUS")
+            + _index_screen_deps(block, "secEl", "secRenderCoveragePhases"))
+    script = tmp_path / "coverage-phases.js"
+    script.write_text(_INDEX_DOM_HARNESS + """
+    const HOSTS = {};
+    function $(id){
+      if(!HOSTS[id]) HOSTS[id] = document.createElement("div");
+      return HOSTS[id];
+    }
+    """ + deps + """
+    secRenderCoveragePhases({coverage: JSON.stringify({phases: [
+      {name: "secrets", status: "ran", by: "gitleaks", note: ""},
+      {name: "iac", status: "skipped", by: null,
+       note: "trivy is not available to this analysis"},
+      {name: "triage", status: "warning", by: "agent",
+       note: "12 deterministic findings were never triaged"}]})});
+    console.log(JSON.stringify({
+      hidden: $("sec-phases").hidden,
+      nodes: collectAll($("sec-phases"), []),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True,
+                                    check=True).stdout)
+    assert out["hidden"] is False
+    rows = [n for n in out["nodes"] if n["cls"].startswith("secphase secphase-")]
+    assert len(rows) == 3, f"one row per phase, got {len(rows)}: {out['nodes']}"
+    assert [r["cls"] for r in rows] == ["secphase secphase-ran",
+                                        "secphase secphase-skipped",
+                                        "secphase secphase-warning"]
+    joined = " ".join(r["text"] for r in rows)
+    assert "secrets" in joined and "gitleaks" in joined
+    assert "skipped" in joined
+    # `warning` is not the word a reader needs -- "partly" is what it means
+    # for the report: something looked, but not the whole of what the phase
+    # covers.
+    assert "partly" in joined, joined
+    # The prose is THERE, under its own phase, not concatenated into one
+    # paragraph with the other seven.
+    notes = [n["text"] for n in out["nodes"] if n["cls"] == "secphase-note"]
+    assert "trivy is not available to this analysis" in notes
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_an_analysis_with_no_structured_coverage_draws_no_phase_summary(
+        srv, tmp_path):
+    """Every analysis written before the `coverage` column carries '' in it,
+    and this screen has always shown the paragraph alone. Nothing about that
+    may change -- no empty box, no header over nothing. A column that somehow
+    holds something unreadable takes the same path: a screen is not the place
+    to discover a corrupt column, and the paragraph below is still true."""
+    block = _security_js(srv)
+    deps = (_const(block, "SEC_PHASE_STATUS")
+            + _index_screen_deps(block, "secEl", "secRenderCoveragePhases"))
+    script = tmp_path / "coverage-none.js"
+    script.write_text(_INDEX_DOM_HARNESS + """
+    const HOSTS = {};
+    function $(id){
+      if(!HOSTS[id]) HOSTS[id] = document.createElement("div");
+      return HOSTS[id];
+    }
+    """ + deps + """
+    const seen = [];
+    for(const cov of [undefined, "", "not json", '{"phases": "secrets"}']){
+      secRenderCoveragePhases({coverage: cov});
+      seen.push({hidden: $("sec-phases").hidden,
+                 text: $("sec-phases").textContent});
+    }
+    console.log(JSON.stringify(seen));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)],
+                                    capture_output=True, text=True,
+                                    check=True).stdout)
+    for state in out:
+        assert state["hidden"] is True, out
+        assert state["text"] == "", out
+
+
 # ---- the index screen's own renderer. Everything above this point drives
 # the JSON contract (tests/security/test_cli.py, tests/test_security_api.py)
 # but never the DOM the JSON is painted into -- so a regression in, say, the

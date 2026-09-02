@@ -88,6 +88,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   narrower than the engine it replaced (the built-in secret scanner against
   gitleaks' rule set, OSV.dev's five lockfile formats against Trivy's many), or
   a Semgrep pre-pass that ran perfectly and still is not the SAST pass.
+  **`triage` is the eighth row and the only one `finish` writes:** it carries
+  the count from the close — `warning` with the findings nobody read, `ran`
+  with how many the agent re-reported, `skipped` when the close never reached
+  the check at all — so the one phase the deterministic half cannot report on
+  itself is no longer missing from the table. A row closed twice (the agent,
+  then the engine) replaces that line rather than growing a second,
+  contradicting one, and the engine's later `capped` never overwrites a
+  triage the agent's own close had earned. The Runs list deliberately does not
+  ship the new column: it is polled every four seconds over up to a hundred
+  rows, and no column of that table reads either half of the coverage.
 
 - **An analysis can no longer close `done` over findings nobody read.**
   `finish --state done` now counts the findings a SCANNER produced that are

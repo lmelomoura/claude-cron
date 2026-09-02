@@ -32,6 +32,14 @@ CREATE TABLE IF NOT EXISTS analysis (
   state TEXT NOT NULL, spend_usd REAL NOT NULL DEFAULT 0,
   run_id TEXT NOT NULL DEFAULT '',
   coverage_note TEXT NOT NULL DEFAULT '',
+  -- THE SAME COVERAGE, STRUCTURED -- a JSON document `{"phases": [...]}` (see
+  -- security/coverage.py) written BESIDE the prose above and never instead of
+  -- it. `coverage_note` is ~2,000 characters assembled from 27 note constants
+  -- and is unreadable as one paragraph; this is one row per phase, with the
+  -- status and the producer, which is what the reports and the analysis screen
+  -- print FIRST. '' is the honest value for every analysis written before this
+  -- column existed, and every renderer draws the prose alone for it.
+  coverage TEXT NOT NULL DEFAULT '',
   -- 1 once `prepare` has actually run the deterministic phases over this
   -- analysis. It is the only thing that can tell an analysis that found
   -- nothing from one that never looked: nothing engine-side runs `prepare`,
@@ -180,6 +188,12 @@ _ANALYSIS_COLUMNS = (
     ("lines_of_code", "INTEGER NOT NULL DEFAULT 0"),
     # The producers that ran. See the column's own comment in _SCHEMA.
     ("produced", "TEXT NOT NULL DEFAULT ''"),
+    # The coverage note's structure. See the column's own comment in _SCHEMA.
+    # Additive in the strongest sense the table has: nothing derives a state
+    # from it, and '' -- what every existing row gets -- is what the renderers
+    # already treat as "print the prose and no table", so an unmigrated row is
+    # not merely tolerated, it renders exactly as it did yesterday.
+    ("coverage", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -279,12 +293,23 @@ def start_analysis(conn, project, repo, branch, commit_sha, profile, run_id) -> 
     return cur.lastrowid
 
 
-def finish_analysis(conn, analysis_id, state, spend_usd=0.0, coverage_note="") -> None:
+def finish_analysis(conn, analysis_id, state, spend_usd=0.0, coverage_note="",
+                    coverage="") -> None:
+    """Close the row, and write BOTH halves of the coverage together.
+
+    `coverage` is the structured twin of `coverage_note` (see
+    security/coverage.py). It is written in the SAME statement and on the same
+    terms as the prose -- what the caller passes replaces what is stored -- so
+    the two can never end up describing different analyses. `cmd_finish` is
+    the only caller that has anything to say here, and it merges the stored
+    document before passing it back, exactly as it already does for the note.
+    """
     if state not in ANALYSIS_END_STATES:
         raise ValueError(f"bad analysis state: {state}")
     conn.execute(
-        "UPDATE analysis SET ended=?, state=?, spend_usd=?, coverage_note=? WHERE id=?",
-        (int(time.time()), state, spend_usd, coverage_note, analysis_id))
+        "UPDATE analysis SET ended=?, state=?, spend_usd=?, coverage_note=?,"
+        " coverage=? WHERE id=?",
+        (int(time.time()), state, spend_usd, coverage_note, coverage, analysis_id))
     conn.commit()
 
 

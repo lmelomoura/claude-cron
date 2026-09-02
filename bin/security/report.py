@@ -10,6 +10,8 @@ import html
 import json
 import time
 
+from . import coverage
+
 STATES = ("new", "regressed", "open", "partial", "pending", "fixed", "accepted", "false_positive")
 # Ordered most severe first. `info` is last on purpose: it is below the default
 # min_severity floor, so an informational finding is recorded and stays out of
@@ -89,6 +91,29 @@ def _coverage(analysis, coverage_note):
     return parts
 
 
+# The `by` column of a phase that had no producer -- `scope`, or any phase
+# where nothing looked. An em dash and not an empty cell: a blank there reads
+# as a value the renderer failed to print, where "—" reads as the fact that
+# there was nobody to name.
+_NO_PRODUCER = "—"
+
+
+def _phase_rows(analysis):
+    """(name, status, by) per phase, ready to print, or [] for an analysis
+    that has no structured coverage.
+
+    `[]` IS THE WHOLE COMPATIBILITY STORY. Every analysis written before the
+    `coverage` column existed has '' in it, and every renderer below draws
+    nothing whatsoever for an empty list -- so an old report is byte-identical
+    to what it was, and a new one gains a table above prose that was going to
+    be printed anyway. See security/coverage.py's own `decode`, which answers
+    `[]` for a malformed document too rather than raising inside a download.
+    """
+    return [(str(p.get("name", "")), str(p.get("status", "")),
+             str(p.get("by") or _NO_PRODUCER))
+            for p in coverage.phases_of(analysis)]
+
+
 def as_json(analysis, findings, coverage_note):
     """The machine-readable format, and the one place `scope` is ALWAYS a key.
 
@@ -107,7 +132,16 @@ def as_json(analysis, findings, coverage_note):
         rows.append(row)
     return json.dumps({
         "analysis": dict(analysis),
-        "coverage": _coverage(analysis, coverage_note),
+        # AN OBJECT, and `phases` is ALWAYS a key in it -- the same rule
+        # `scope` follows on a finding above, for the same reason. The two
+        # formats a human reads print nothing when there is nothing to print,
+        # so they cannot be parsed for an absence; this one has to let a
+        # consumer tell "this analysis predates the column" (an empty list)
+        # from "this consumer is reading an older report format" (no key at
+        # all) without special-casing either. `notes` is what this key used to
+        # BE -- the prose, unchanged, in the same order.
+        "coverage": {"notes": _coverage(analysis, coverage_note),
+                     "phases": coverage.phases_of(analysis)},
         "summary": _summary(findings),
         "findings": rows,
     }, indent=2, sort_keys=True)
@@ -122,6 +156,23 @@ def as_markdown(analysis, findings, coverage_note):
            f"- **Profile:** {analysis['profile']}",
            f"- **Run at:** {when}",
            ""]
+    # THE TABLE COMES FIRST, AND THAT ORDER IS THE POINT OF IT. The prose
+    # below is every gap this analysis has, sentence by sentence, and on a
+    # real run it is about two thousand characters of it -- true throughout
+    # and unreadable as a block. Eight lines of "who looked, who did not, and
+    # with what" answer the question a reader actually opens the file with;
+    # the paragraph is then there for the one who asks why.
+    rows = _phase_rows(analysis)
+    if rows:
+        out += ["## Coverage", "",
+                "| Phase | Status | By |", "| --- | --- | --- |"]
+        # `|` escaped, not stripped: these three values come from a closed
+        # vocabulary this module writes, but they are read back out of a
+        # database column, and a stray pipe would silently eat the rest of a
+        # row rather than showing up as the odd value it is.
+        out += ["| " + " | ".join(c.replace("|", "\\|") for c in row) + " |"
+                for row in rows]
+        out.append("")
     for note in _coverage(analysis, coverage_note):
         out += [f"> **{note}**", ""]
     out += ["## Checklist", ""]
@@ -157,7 +208,11 @@ padding:1rem;margin:1rem 0}.critical{border-left:4px solid #dc2626}
 .low{border-left:4px solid #6b7280}.info{border-left:4px solid #9ca3af}
 .cls{color:#4b5563;font-size:.9em}
 code{background:#f4f4f5;padding:.1em .35em;
-border-radius:3px}@media print{.f{break-inside:avoid}}"""
+border-radius:3px}@media print{.f{break-inside:avoid}}
+.cov{border-collapse:collapse;margin:1rem 0}
+.cov th,.cov td{border:1px solid #e5e5e5;padding:.3rem .6rem;text-align:left}
+.cov th{background:#f4f4f5;font-weight:600}
+.cov .ran{color:#15803d}.cov .warning{color:#b45309}.cov .skipped{color:#b91c1c}"""
 
 
 def as_html(analysis, findings, coverage_note):
@@ -170,6 +225,20 @@ def as_html(analysis, findings, coverage_note):
              f"<p>Branch <code>{e(analysis['branch'])}</code> at "
              f"<code>{e(analysis['commit_sha'][:12])}</code> · profile "
              f"{e(analysis['profile'])} · {e(when)}</p>"]
+    # Before the prose, for the reason `as_markdown` gives at length. The
+    # status is also the class, so a reader scanning the table sees three
+    # colours rather than three words -- and `e()` is on it like every other
+    # value here, because a class attribute built from a database column is
+    # exactly as much of a sink as the text beside it.
+    rows = _phase_rows(analysis)
+    if rows:
+        parts.append('<h2>Coverage</h2><table class="cov">'
+                     "<tr><th>Phase</th><th>Status</th><th>By</th></tr>")
+        parts += [f"<tr><td>{e(name)}</td>"
+                  f'<td class="{e(status)}">{e(status)}</td>'
+                  f"<td>{e(by)}</td></tr>"
+                  for name, status, by in rows]
+        parts.append("</table>")
     for note in _coverage(analysis, coverage_note):
         parts.append(f'<p class="note">{e(note)}</p>')
     parts.append("<h2>Checklist</h2><ul>")

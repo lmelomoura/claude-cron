@@ -417,6 +417,83 @@ function secRenderRunNotice(a){
   }
 }
 
+/* THE COVERAGE, COMPACT -- one line per phase, above the paragraph.
+
+   `coverage_note` is one string built by concatenating 27 `*_NOTE` constants
+   across six server modules (bin/security/cli.py, cmd_prepare). On a real
+   analysis it is around two thousand characters. Every sentence in it was
+   written because its absence had cost something, and every one of them is
+   true; read as one block, in the alert box below this one, they were
+   unreadable -- the operator who built this system read a real one and asked
+   "what IS this alert?".
+
+   So the same sentences arrive here attributed to the phase that produced
+   them (bin/security/coverage.py), and this draws the summary FIRST: name,
+   status, and the producer that answered. The prose is folded underneath each
+   phase, one <details> at a time, for the reader who then asks why.
+
+   NOTHING IS INVENTED HERE. The status came off the server's own control
+   flow, not off a sentence, and a phase with no note renders as a plain row
+   rather than an empty disclosure that opens onto nothing. An analysis
+   written before the `coverage` column existed carries no phases at all, and
+   this hides itself: that screen is exactly what it was. */
+const SEC_PHASE_STATUS = {
+  ran: "ran",
+  // "partly" and not "warning": the row is already coloured, and the word a
+  // reader needs is what it means for the report -- something looked, but not
+  // the whole of what this phase covers.
+  warning: "partly",
+  skipped: "skipped",
+};
+
+export function secRenderCoveragePhases(a){
+  const host = $("sec-phases");
+  host.textContent = "";
+  let phases = [];
+  try{
+    // The column is a JSON string on the analysis row. Parsed HERE and never
+    // trusted to be anything: a screen is not the place to discover that a
+    // column got corrupted, and the paragraph below is still true either way
+    // -- the same rule the server's own `coverage.decode` follows.
+    const doc = JSON.parse(a.coverage || "");
+    if(doc && Array.isArray(doc.phases)) phases = doc.phases;
+  }catch(e){ phases = []; }
+  phases = phases.filter(p => p && p.name);
+  if(!phases.length){ host.hidden = true; return; }
+  host.hidden = false;
+  const list = secEl("div", "secphases");
+  for(const p of phases){
+    const status = String(p.status || "");
+    const label = SEC_PHASE_STATUS[status] || status;
+    const by = p.by ? String(p.by) : "";
+    const note = String(p.note || "").trim();
+    // A row with something to say is a <details>; one without is a plain
+    // <div> carrying the identical inner markup. Both paths build the same
+    // pieces, so the two never drift into looking like different things --
+    // and a phase with no note never renders a disclosure that opens onto
+    // nothing.
+    const row = document.createElement(note ? "details" : "div");
+    // The status is also the class, so the dot and the row's own tint come
+    // off one value. A status this screen has not been taught still renders
+    // -- as its own raw word, under `unknown` -- rather than vanishing.
+    row.className = "secphase secphase-"
+      + (SEC_PHASE_STATUS[status] ? status : "unknown");
+    const head = document.createElement(note ? "summary" : "div");
+    head.className = "secphase-head";
+    head.appendChild(secEl("span", "secphase-dot"));
+    head.appendChild(secEl("span", "secphase-name", String(p.name)));
+    head.appendChild(secEl("span", "secphase-status", label));
+    // The producer, or nothing at all. An em dash on every skipped phase
+    // would be a column of dashes a reader learns to skip -- the same call
+    // the downloaded report's own `scope` line makes.
+    if(by) head.appendChild(secEl("span", "secphase-by", by));
+    row.appendChild(head);
+    if(note) row.appendChild(secEl("div", "secphase-note", note));
+    list.appendChild(row);
+  }
+  host.appendChild(list);
+}
+
 export function secPaint(){
   const a = secState.analysis;
   secPaintRunButton();
@@ -452,6 +529,8 @@ export function secPaint(){
     $("sec-run-meta").textContent = "";
     $("sec-run-notice").textContent = "";
     $("sec-incomplete").hidden = true;
+    $("sec-phases").textContent = "";
+    $("sec-phases").hidden = true;
     $("sec-coverage").hidden = true;
     $("sec-summary").textContent = "";
     $("sec-checklist").textContent = "";
@@ -481,6 +560,10 @@ export function secPaint(){
       + " What is below is what it had reached, not what is there."));
     inc.hidden = false;
   }else inc.hidden = true;
+
+  // ABOVE the paragraph, and the reason is the paragraph. See
+  // secRenderCoveragePhases.
+  secRenderCoveragePhases(a);
 
   const note = $("sec-coverage");
   note.textContent = "";

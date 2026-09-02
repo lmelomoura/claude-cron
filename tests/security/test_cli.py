@@ -444,7 +444,13 @@ def test_finishing_does_not_erase_the_coverage_note(tmp_path):
     run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "0")
     rendered = json.loads(run_text(db, "render", "--analysis", str(aid),
                                    "--format", "json"))
-    assert note in rendered["coverage"]
+    # `coverage.notes` is what the JSON report's `coverage` key used to BE, in
+    # the same order -- the structured `coverage.phases` was added BESIDE the
+    # prose, and this assertion is here to catch the day somebody decides the
+    # table has made the paragraph redundant. It has not: the paragraph is
+    # what every analysis written before the `coverage` column carries, and it
+    # is where the reasons live.
+    assert note in rendered["coverage"]["notes"]
 
 
 def run_text(db, *args):
@@ -2264,6 +2270,287 @@ def test_the_untriaged_downgrade_reaches_the_report_as_an_incomplete_banner(tmp_
     rendered = run_text(db, "render", "--analysis", str(aid), "--format", "md")
     assert "INCOMPLETE" in rendered
     assert "never triaged" in rendered
+
+
+# ------------------------------------------ the coverage note gains structure
+#
+# `coverage_note` is one paragraph built by concatenating 27 `*_NOTE`
+# constants across six modules -- ~2,000 characters on a real analysis, every
+# sentence of it true and the block of them unreadable. The `coverage` column
+# carries the SAME sentences with the phase that produced them attached, and
+# the reports and the screen print that first. These tests pin the two claims
+# that make it safe: the structure is what the scanners RETURNED (never a
+# reading of the prose), and the prose itself is untouched.
+
+def _coverage_phases(db, aid, project="web"):
+    """(the analysis row, its structured phases).
+
+    Read through `analysis --id`, not `list`: the list verb deliberately drops
+    the `coverage` column, because it feeds a hundred-row table polled every
+    four seconds and neither half of the coverage is on it. See `cmd_list`.
+    """
+    row = run(db, "analysis", "--id", str(aid))
+    return row, json.loads(row["coverage"])["phases"]
+
+
+def test_prepare_records_one_phase_per_deterministic_pass(tmp_path):
+    """Seven rows, in the order every renderer prints them. `--offline`
+    refuses the network, so the three phases that need it are `skipped` --
+    and `skipped` is what the scanner function RETURNED, not something read
+    back out of a sentence."""
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    aid = open_analysis(db)
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    row, phases = _coverage_phases(db, aid)
+    by_name = {p["name"]: p for p in phases}
+    assert [p["name"] for p in phases] == [
+        "scope", "secrets", "hygiene", "dependencies", "sbom", "iac",
+        "sast-prepass"]
+    # `--offline` disables OSV.dev, Trivy's database, Trivy's misconfiguration
+    # checks and Semgrep's rule pack. Nothing looked, and the table says so in
+    # the one word that means it.
+    assert by_name["dependencies"]["status"] == "skipped"
+    assert by_name["dependencies"]["by"] is None
+    assert by_name["iac"]["status"] == "skipped"
+    assert by_name["sast-prepass"]["status"] == "skipped"
+    # Hygiene is our own walk over the tree: no engine, no fallback, so it
+    # runs in every configuration this suite has.
+    assert by_name["hygiene"] == {"name": "hygiene", "status": "ran",
+                                  "by": "hygiene", "note": ""}
+    # And the secret phase always has a producer -- there is no configuration
+    # in which neither scanner runs.
+    assert by_name["secrets"]["by"] in ("gitleaks", "secrets")
+    assert by_name["secrets"]["status"] in ("ran", "warning")
+    assert row["coverage_note"]
+
+
+def test_the_runs_list_does_not_ship_the_structured_coverage(tmp_path):
+    """`list` feeds the Runs TABLE, which is polled every four seconds while
+    an analysis is live and answers with up to a hundred rows. The structured
+    coverage is the same ~2,000 characters `coverage_note` already carries,
+    split by phase -- shipping both would double a payload no column of that
+    table reads. The screen gets it from `checklist`, for the one analysis
+    actually on screen, and `analysis --id` has it for anything else."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    listed = run(db, "list", "--project", "web")[0]
+    assert "coverage" not in listed
+    # And `coverage_note` is still there: bin/claude-cron's selftest and
+    # test/e2e.test.sh both read it from this verb.
+    assert "coverage_note" in listed
+    assert json.loads(run(db, "analysis", "--id", str(aid))["coverage"])["phases"]
+    checklist = run(db, "checklist", "--analysis", str(aid))
+    assert json.loads(checklist["analysis"]["coverage"])["phases"]
+
+
+def test_every_phases_prose_is_a_substring_of_the_paragraph(tmp_path):
+    """BESIDE, NOT INSTEAD, and this is what that means byte for byte. Three
+    reports and three screens have always read `coverage_note`, and every
+    analysis written before the `coverage` column has only that. The
+    structured half re-uses the SAME strings -- nothing reworded, nothing
+    summarised -- so a phase's note is always findable in the paragraph a
+    reader can still read whole."""
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "requirements.txt").write_text("requests==2.31.0\n")
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline")["coverage_note"]
+    _, phases = _coverage_phases(db, aid)
+    assert any(p["note"] for p in phases), "no phase carried any prose at all"
+    for p in phases:
+        if p["note"]:
+            assert p["note"] in note, \
+                f"{p['name']}'s note is not in the paragraph: {p['note']}"
+
+
+def test_the_close_adds_a_triage_phase_carrying_the_count(tmp_path):
+    """The eighth phase, and the only one no deterministic pass can report on
+    itself: whether anybody READ what the scanners produced. `warning` with
+    the same sentence the downgrade already writes -- the count and the first
+    three by rule and file."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    _scanner_finding(db, aid, rule="CVE-2", severity="critical", file="pom.xml")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row, phases = _coverage_phases(db, aid)
+    triage = [p for p in phases if p["name"] == "triage"][0]
+    assert phases[-1]["name"] == "triage", "triage is the last row of the table"
+    assert triage["status"] == "warning"
+    assert triage["by"] == "agent"
+    assert "2 deterministic findings were never triaged" in triage["note"]
+    assert triage["note"] in row["coverage_note"]
+
+
+def test_a_triaged_analysis_gets_a_triage_phase_that_says_how_many_were_read(tmp_path):
+    """The control. A table that only ever showed the failure would say
+    nothing about the run that did the job -- and "ran" over an analysis with
+    nothing to read would be praise for work that never happened, which is
+    why the two are worded apart."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    _triage(db, aid, fp, rule="CVE-1")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    _, phases = _coverage_phases(db, aid)
+    triage = [p for p in phases if p["name"] == "triage"][0]
+    assert triage["status"] == "ran"
+    # Counted with NO severity floor, deliberately: `_triage` above re-reports
+    # the finding at a corrected `low`, so a count taken over the floored set
+    # would shrink as a result of the very triage it is reporting and print
+    # "nothing was waiting" over an analysis where something was read.
+    assert "The agent re-reported 1 deterministic finding and left none at " \
+        "medium or above unread" in triage["note"]
+
+    empty = prepared_analysis(db, tmp_path)
+    run(db, "finish", "--analysis", str(empty), "--state", "done")
+    _, phases = _coverage_phases(db, empty)
+    nothing = [p for p in phases if p["name"] == "triage"][0]
+    assert nothing["status"] == "ran"
+    assert "No deterministic finding at medium or above was waiting" \
+        in nothing["note"]
+
+
+def test_a_close_that_never_reached_the_triage_check_files_it_as_skipped(tmp_path):
+    """`capped` from the caller means `done`'s precondition was never
+    evaluated, so nothing knows whether the findings were read. `skipped` --
+    the same word every deterministic phase uses for "nothing looked" -- and
+    never `ran`."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    run(db, "finish", "--analysis", str(aid), "--state", "capped")
+    _, phases = _coverage_phases(db, aid)
+    triage = [p for p in phases if p["name"] == "triage"][0]
+    assert triage["status"] == "skipped"
+    assert triage["by"] is None
+
+
+def test_the_engines_second_close_never_overwrites_a_triage_the_agent_earned(tmp_path):
+    """A row is closed TWICE by design -- the agent, then the engine with the
+    run's own verdict. The engine's close may lower the state to `capped`,
+    which skips the triage check entirely; a `skipped` written there would
+    erase the `ran` the agent's own close had verified, and the table would
+    end up less true than it was a second earlier. `merge` also has to
+    REPLACE rather than append, or the second close leaves two triage rows
+    disagreeing with each other."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    _triage(db, aid, fp, rule="CVE-1")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    run(db, "finish", "--analysis", str(aid), "--state", "capped", "--spend", "2")
+    row, phases = _coverage_phases(db, aid)
+    triage = [p for p in phases if p["name"] == "triage"]
+    assert len(triage) == 1, f"the table grew a second triage row: {phases}"
+    assert triage[0]["status"] == "ran"
+    assert row["state"] == "capped" and row["spend_usd"] == 2
+
+
+def test_a_sentence_about_two_phases_is_filed_under_both(tmp_path, monkeypatch,
+                                                         capsys):
+    """TWO OF THE 27 NOTES DESCRIBE TWO PHASES AT ONCE, and the cost of
+    picking one home for them is that the other half of what they say becomes
+    invisible from the row that states it.
+
+    `DEP_SBOM_NOTE` is appended by the DEPENDENCY producer (Trivy) and every
+    word of it is about the SBOM -- what it lists, and which lockfile formats
+    that covers. `SBOM_UNFILTERED_NOTE` is, in its own docstring's words,
+    "about the gap BETWEEN them": what the published SBOM lists against what
+    the dependency phase actually looked up, which is the contradiction a
+    consumer reading the two side by side used to hit ("this project ships
+    lodash 4.17.20" beside "no dependency findings").
+
+    So both are filed under `dependencies` AND under `sbom`. The paragraph is
+    unchanged -- each still appears in it exactly once, in the same place --
+    which is the other half of what "beside, not instead" has to mean.
+
+    Driven in-process for the reason the group above gives: this needs Trivy
+    present and Syft absent at once, which a subprocess boundary cannot stage.
+    """
+    root = tmp_path / "repo"
+    (root / "fixtures").mkdir(parents=True)
+    # Under a DEFAULT-ignored directory, so the dependency phase's filter hides
+    # it while `deps.inventory` -- which deliberately does not read
+    # `ignore_paths` -- still lists it in the SBOM. That gap is the note.
+    (root / "fixtures" / "requirements.txt").write_text("requests==2.31.0\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/trivy" if name == "trivy" else None)
+    monkeypatch.setattr(security_cli.adapters, "trivy_scan",
+                        lambda root, ignore_paths=(): (
+                            [], [security_cli.adapters.DEP_SBOM_NOTE]))
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    note = json.loads(capsys.readouterr().out)["coverage_note"]
+    _, phases = _coverage_phases(db, aid)
+    by_name = {p["name"]: p["note"] for p in phases}
+
+    # The note's own opening clause, from ignores.SBOM_UNFILTERED_NOTE's
+    # format string -- the counts and the file list in it are measured per
+    # repository, so the stable half is what this anchors on.
+    unfiltered = "No vulnerability was looked up for"
+    assert security_cli.adapters.DEP_SBOM_NOTE in by_name["dependencies"]
+    assert security_cli.adapters.DEP_SBOM_NOTE in by_name["sbom"]
+    assert unfiltered in by_name["dependencies"], by_name["dependencies"]
+    assert unfiltered in by_name["sbom"], by_name["sbom"]
+    # And the paragraph still says each of them exactly once, where it always
+    # did. Filing a sentence under two phases must not duplicate it in the
+    # text three reports and three screens have always read.
+    assert note.count(security_cli.adapters.DEP_SBOM_NOTE) == 1
+    assert note.count(unfiltered) == 1
+
+
+def test_the_sbom_sentence_disappears_from_both_phases_when_there_is_no_sbom(
+        tmp_path, monkeypatch, capsys):
+    """The other half of filing a sentence under two phases: it has to LEAVE
+    both when `cmd_prepare` drops it. `DEP_SBOM_NOTE` asserts what "the SBOM"
+    lists, and with no document stored that is a sentence about a file the
+    reader cannot download -- which is why the phase note is read back out of
+    the swapped list rather than off the constant."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/trivy" if name == "trivy" else None)
+    monkeypatch.setattr(security_cli.adapters, "trivy_scan",
+                        lambda root, ignore_paths=(): (
+                            [], [security_cli.adapters.DEP_SBOM_NOTE]))
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    note = json.loads(capsys.readouterr().out)["coverage_note"]
+    _, phases = _coverage_phases(db, aid)
+    by_name = {p["name"]: p for p in phases}
+    assert security_cli.adapters.DEP_SBOM_NOTE not in by_name["dependencies"]["note"]
+    assert security_cli.adapters.DEP_SBOM_NOTE not in by_name["sbom"]["note"]
+    assert security_cli.adapters.DEP_SBOM_NOTE not in note
+    # No lockfile anywhere, so neither producer had a component to list.
+    assert by_name["sbom"]["status"] == "skipped"
+    assert security_cli.NO_SBOM_NOTE in by_name["sbom"]["note"]
+
+
+def test_the_downloaded_report_opens_with_the_phase_table(tmp_path):
+    """End to end, through the same door the download uses. The table is what
+    a reader meets first; the paragraph is still under it, unchanged."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    md = run_text(db, "render", "--analysis", str(aid), "--format", "md")
+    assert "| Phase | Status | By |" in md
+    assert md.index("| Phase | Status | By |") < md.index("## Checklist")
+    assert "| iac | skipped | — |" in md
+    assert "| triage | ran | agent |" in md
+    doc = json.loads(run_text(db, "render", "--analysis", str(aid),
+                              "--format", "json"))
+    assert [p["name"] for p in doc["coverage"]["phases"]][-1] == "triage"
 
 
 # ------------------------------- a decision is not taken while a run is live
