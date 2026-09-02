@@ -15,6 +15,13 @@ from pathlib import Path
 # function under its own name would be shadowed inside exactly the functions
 # most likely to want it.
 from .fingerprint import fingerprint as compute_fingerprint, secret_fingerprint
+# The producer name the agent's own door stamps. Re-exported rather than
+# re-spelled: `record_finding` below has to recognise an agent re-report to
+# mark it as a triage, and a second literal "agent" in this file is a rule that
+# silently stops firing the day the name changes in one place and not the
+# other. It lives in diff.py because that is where the rule that READS the
+# column lives; diff.py imports nothing at all, so there is no cycle here.
+from .diff import AGENT
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS analysis (
@@ -73,6 +80,21 @@ CREATE TABLE IF NOT EXISTS finding (
   -- without re-identifying anything: ledger._REFINGERPRINT has no `dependency`
   -- entry, and a change to that category's identity is unrecoverable.
   scope TEXT NOT NULL DEFAULT '',
+  -- WHETHER ANYBODY EVER READ THIS FINDING. 1 once the AGENT has re-reported
+  -- a finding a SCANNER minted -- Job 2 of skills/security-analysis/SKILL.md,
+  -- the triage this module's whole design rests on: the deterministic phases
+  -- are noisy on purpose and the noise is meant to be sorted by an agent that
+  -- reads the surrounding code, not by heuristics.
+  --
+  -- WRITTEN AS AN EVENT, NEVER READ FROM A PAYLOAD (see `record_finding`): a
+  -- finding is triaged because a re-report with its own severity and
+  -- rationale landed on it, which is the only trace the reading leaves. A
+  -- `triaged: true` field the agent could send would be exactly the same
+  -- unverified claim as the `done` that `cmd_finish` reads this column to
+  -- check. Measured cost of not having it: analyses 9 and 10 on Minerva each
+  -- closed `done` having triaged ZERO of the ~40 deterministic findings
+  -- waiting for them, and the reports said nothing about it.
+  triaged INTEGER NOT NULL DEFAULT 0,
   -- The deterministic phase (cmd_prepare) and the agent's report-finding
   -- command can both record the same fingerprint into one analysis -- the
   -- agent's triage job is explicitly to RE-REPORT a deterministic finding
@@ -175,6 +197,11 @@ _FINDING_COLUMNS = (
     # becomes wrong for carrying the '' default, only less annotated, and
     # nothing derives a state from it.
     ("scope", "TEXT NOT NULL DEFAULT ''"),
+    # Whether the agent ever read this finding. See the column's own comment in
+    # _SCHEMA. Additive exactly as the four above are, and the 0 default is the
+    # honest reading for every row written before the column existed: nothing
+    # recorded that anybody looked.
+    ("triaged", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -299,20 +326,47 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
     # dependency phase had correctly established, and the row would come out of
     # triage LESS annotated than it went in -- again through the one door whose
     # whole purpose is to improve a finding.
+    #
+    # `triaged` IS THE ONE COLUMN THE UPSERT WRITES THAT THE PAYLOAD CANNOT
+    # NAME. The re-report described two paragraphs up is not merely a better
+    # row: it is the only evidence that exists that anybody READ the scanner's
+    # finding before the analysis closed, and `cmd_finish` refuses to record
+    # `done` without it. So the mark is derived here, from who minted the row
+    # against who is writing it now, rather than accepted as a field -- a
+    # `triaged: true` an agent could send would be the same unverified claim as
+    # the `done` it is checked against.
+    #
+    # Three conditions, each one a case that must NOT count as triage:
+    #   - the writer is the agent. `prepare` writes through this same function,
+    #     and a second deterministic phase landing on a fingerprint the first
+    #     one recorded has read a file, not a finding.
+    #   - the row was minted by somebody else. An agent re-reporting its own
+    #     `sast` row is revising its own work; counting it would make the gate
+    #     satisfiable without ever opening a scanner's output.
+    #   - the minting producer is known at all. '' is a row from before the
+    #     `producer` column existed, and "somebody unknown looked" is not a
+    #     fact this column is allowed to invent.
+    # MAX(triaged, ?) rather than a plain assignment, because a row is written
+    # more than twice in a real analysis and a later write that happens not to
+    # qualify must not erase the reading that already happened.
     with conn:
         existing = conn.execute(
-            "SELECT id FROM finding WHERE analysis_id=? AND fingerprint=?",
+            "SELECT id, producer FROM finding WHERE analysis_id=? AND fingerprint=?",
             (analysis_id, finding["fingerprint"])).fetchone()
         if existing is not None:
             fid = existing["id"]
+            minted_by = (existing["producer"] or "").strip()
+            written_by = (finding.get("producer") or "").strip()
+            triaged = int(written_by == AGENT and minted_by not in ("", AGENT))
             conn.execute(
                 "UPDATE finding SET category=?, rule=?, severity=?, title=?,"
-                " rationale=?, remediation=?, partial_note=?, cwe=?, owasp=?"
+                " rationale=?, remediation=?, partial_note=?, cwe=?, owasp=?,"
+                " triaged=MAX(triaged, ?)"
                 " WHERE id=?",
                 (finding["category"], finding["rule"], finding["severity"], finding["title"],
                  finding.get("rationale", ""), finding.get("remediation", ""),
                  finding.get("partial_note", ""), finding.get("cwe", ""),
-                 finding.get("owasp", ""), fid))
+                 finding.get("owasp", ""), triaged, fid))
             conn.execute("DELETE FROM occurrence WHERE finding_id=?", (fid,))
         else:
             cur = conn.execute(

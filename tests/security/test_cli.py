@@ -2082,6 +2082,190 @@ def test_the_prepared_column_is_added_to_a_database_that_predates_it(tmp_path):
     assert rows[0]["prepared"] == 0, "a row from before the column is unprepared"
 
 
+# ------------------------------- an analysis that never read what it produced
+#
+# The design of this module rests on ONE argument: the deterministic phases are
+# noisy on purpose and the noise is not filtered by heuristics -- the agent
+# reads the surrounding code and triages. That is Job 2 of the skill, asked for
+# in two pages of it. In analysis 9 and again in analysis 10 on Minerva the
+# agent triaged ZERO of the ~40 deterministic findings waiting for it, spent
+# the whole budget on its own SAST pass, and both runs closed `done` with a
+# clean-looking report. Asking is what failed, so the close verifies instead.
+
+def _scanner_finding(db, aid, *, rule, severity, category="dependency",
+                     producer="trivy", file="yarn.lock"):
+    """A finding as `prepare` writes one: minted by a SCANNER, not the agent.
+
+    Written through `ledger.record_finding` -- the same function `prepare`
+    itself calls, with the same `producer` stamp `_produced_by` applies --
+    rather than by planting files and running the real phase, because these
+    tests are about what the CLOSE does with a scanner's finding and not about
+    what any one scanner finds. A fixture built on planted files would also
+    prove the gate in only one of the two scanner configurations this suite
+    runs in. `test_finishing_done_with_an_untriaged_scanner_finding...` below
+    is the end-to-end counterpart, on a real hygiene finding.
+    """
+    conn = security_ledger.connect(db)
+    fp = compute_fingerprint(category, rule, file, rule)
+    security_ledger.record_finding(conn, aid, {
+        "fingerprint": fp, "category": category, "rule": rule,
+        "severity": severity, "title": f"{rule} in {file}",
+        "rationale": "the scanner's own reading", "producer": producer,
+        "occurrences": [{"file": file, "line": 0, "snippet_hash": ""}]})
+    conn.close()
+    return fp
+
+
+def _triage(db, aid, fp, *, rule, category="dependency", severity="low"):
+    """What Job 2 looks like from the ledger's side: the agent re-reporting a
+    deterministic finding under its own severity and rationale."""
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": fp, "category": category, "rule": rule,
+        "severity": severity, "title": f"{rule}, read in context",
+        "rationale": "read the call site: it is not reachable from a request"}),
+        env=AS_AGENT)
+
+
+def test_finishing_done_with_an_untriaged_scanner_finding_is_downgraded_to_capped(tmp_path):
+    """End to end, on a finding a real deterministic phase produced.
+
+    `capped` rather than a refusal, for the same reason the `prepare` guard
+    downgrades rather than refusing: an analysis stuck `running` for ever is
+    worse than an honest incomplete, and `capped` is the state the report
+    already prints its INCOMPLETE banner for."""
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".env").write_text("DATABASE_URL=postgres://localhost/app\n")
+    aid = open_analysis(db)
+    prepared = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+                   "--offline")
+    assert prepared["findings"] >= 1
+
+    out = fails(db, "finish", "--analysis", str(aid), "--state", "done")
+    assert out.returncode == 0, out.stderr
+    assert "never triaged" in out.stderr
+
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "capped"
+    note = row["coverage_note"]
+    assert "never triaged" in note
+    assert "committed_env_file" in note, note
+    assert ".env" in note, "the note names the file, or the reader cannot find it"
+
+
+def test_the_note_names_the_count_and_the_first_three(tmp_path):
+    """A number alone is a scold. The reader of the report has to be able to
+    go and look at what was skipped, which means the rule and the file."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    _scanner_finding(db, aid, rule="CVE-2", severity="medium")
+    _scanner_finding(db, aid, rule="DS-0002", severity="critical",
+                     category="iac", producer="trivy-iac", file="Dockerfile")
+    _scanner_finding(db, aid, rule="CVE-4", severity="high", file="pom.xml")
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    note = run(db, "list", "--project", "web")[0]["coverage_note"]
+    assert "4 deterministic findings" in note, note
+    # Ordered by severity, so the three that get named are the worst three and
+    # not whichever three were written first.
+    assert "DS-0002 (Dockerfile)" in note
+    assert "CVE-1 (yarn.lock)" in note
+    assert "CVE-4 (pom.xml)" in note
+    assert "CVE-2" not in note, "three, not the whole list"
+
+
+def test_triaging_every_scanner_finding_lets_the_close_stand(tmp_path):
+    """The control, and the point: an analysis that DID the job closes `done`.
+    A gate that downgraded every close would be indistinguishable, from the
+    report, from one that worked."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    cve = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    iac = _scanner_finding(db, aid, rule="DS-0002", severity="medium",
+                           category="iac", producer="trivy-iac", file="Dockerfile")
+    _triage(db, aid, cve, rule="CVE-1")
+    _triage(db, aid, iac, rule="DS-0002", category="iac", severity="medium")
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert "triaged" not in row["coverage_note"]
+
+
+def test_an_untriaged_low_or_info_does_not_block_the_close(tmp_path):
+    """The floor is `medium`. A budget spent proving that an `info` hygiene
+    note was read is a budget not spent on the critical above it -- and a gate
+    nobody can ever satisfy is a gate that gets switched off."""
+    db = tmp_path / "security.db"
+    assert security_cli.TRIAGE_FLOOR == "medium"
+    aid = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, aid, rule="CVE-9", severity="low")
+    _scanner_finding(db, aid, rule="missing_gitignore", severity="info",
+                     category="hygiene", producer="hygiene", file=".gitignore")
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert "triaged" not in row["coverage_note"]
+
+
+def test_an_analysis_with_no_scanner_findings_closes_done_with_no_gate_noise(tmp_path):
+    """A clean repository must not be told it skipped anything."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert "triaged" not in row["coverage_note"]
+
+
+def test_the_agents_own_findings_are_never_counted_as_untriaged(tmp_path):
+    """`sast` rows are the agent's OWN work, not a scanner's output waiting to
+    be read -- and counting them would make the gate unsatisfiable by
+    construction: reporting a finding would create the very debt reporting it
+    is supposed to discharge. The run this gate was written after did nothing
+    but produce these."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "c" * 64, "category": "sast", "rule": "sql-injection",
+        "severity": "critical", "title": "String-built SQL",
+        "occurrences": [{"file": "app/db.py", "line": 12}]}), env=AS_AGENT)
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert "triaged" not in row["coverage_note"]
+
+
+def test_the_untriaged_note_is_not_stored_twice_when_the_row_closes_twice(tmp_path):
+    """A row is closed twice by design -- the agent, then the engine with the
+    run's real verdict and cost -- and the second close re-reads the note the
+    first one wrote."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "1.5")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["coverage_note"].count("never triaged") == 1
+    assert row["spend_usd"] == 1.5
+
+
+def test_the_untriaged_downgrade_reaches_the_report_as_an_incomplete_banner(tmp_path):
+    """The whole reason the gate lowers the verdict instead of refusing: the
+    reader of the downloaded file learns it from the file itself."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    rendered = run_text(db, "render", "--analysis", str(aid), "--format", "md")
+    assert "INCOMPLETE" in rendered
+    assert "never triaged" in rendered
+
+
 # ------------------------------- a decision is not taken while a run is live
 
 def test_decide_is_refused_while_the_projects_latest_analysis_is_running(tmp_path):

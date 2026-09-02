@@ -77,6 +77,25 @@ TEXT_KEYS = ("title", "rationale", "remediation", "partial_note")
 # another is two identities for one hole.
 FINDING_CATEGORIES = diff.DETERMINISTIC_CATEGORIES + ("sast",)
 
+# The severity at and above which a SCANNER's finding has to have been read
+# before an analysis may close `done` -- see `_untriaged` and `cmd_finish`.
+#
+# AN INFORMED GUESS, WRITTEN DOWN AS ONE so that the first real analysis after
+# this lands can move it on evidence instead of on argument. What the guess
+# balances: a floor of `info` would make the gate cost more triage budget than
+# the findings under it are worth and would get the whole thing switched off,
+# while `high` would let a medium nobody read close the run silently -- and
+# medium is where the dependency findings that actually matter cluster. The
+# number to measure it against is how many findings a real run has to read to
+# close `done`, and whether that number fits the budget the run is given.
+TRIAGE_FLOOR = "medium"
+
+# Everything at or above the floor, taken as a SLICE of report.SEVERITIES --
+# which is ordered worst first -- rather than written out again. A second
+# hand-written list of severities is a list that disagrees with the first one
+# the day a severity is added between two existing ones.
+TRIAGE_BLOCKING = report.SEVERITIES[:report.SEVERITIES.index(TRIAGE_FLOOR) + 1]
+
 # The word a reader sees for a decision state, mirroring
 # `SEC_STATE_LABEL` in ui/security/vocabulary.js -- the vocabulary every
 # screen in the area renders. Written INTO the event detail rather than
@@ -1146,6 +1165,44 @@ def cmd_report_finding(args):
         sys.exit(f"report-finding: could not record it: {exc}")
 
 
+def _untriaged(conn, analysis_id) -> list:
+    """The scanner findings at or above TRIAGE_FLOOR that nobody ever read.
+
+    Worst first, then in the order they were recorded, because the note built
+    from this names only the first three and those three should be the three
+    that matter most.
+
+    ASKED OF THE PRODUCER, NEVER OF THE CATEGORY -- the same rule
+    `diff._proven` states at length for a different question, and for the same
+    reason: a category is not a thing that looks. `sast` holds both the
+    agent's own findings and Semgrep's pre-pass rows, so a category test would
+    simultaneously exempt Semgrep's output from being read and count the
+    agent's own findings as a debt it can never discharge.
+
+    An empty `producer` is excluded rather than counted. It means a row from
+    before that column existed, and "an unknown scanner produced this and
+    nobody read it" is an accusation this query has no evidence for; the
+    direction to fail in is the one that does not downgrade an honest `done`
+    over a row whose history the ledger never recorded.
+    """
+    placeholders = ",".join("?" * len(TRIAGE_BLOCKING))
+    rows = conn.execute(
+        "SELECT f.severity AS severity, f.rule AS rule,"
+        " (SELECT o.file FROM occurrence o WHERE o.finding_id=f.id"
+        "  ORDER BY o.id LIMIT 1) AS file"
+        " FROM finding f"
+        " WHERE f.analysis_id=? AND f.triaged=0 AND f.producer<>''"
+        f" AND f.producer<>? AND f.severity IN ({placeholders})"
+        " ORDER BY f.id",
+        (analysis_id, diff.AGENT, *TRIAGE_BLOCKING)).fetchall()
+    # Sorted here rather than by a CASE expression built from TRIAGE_BLOCKING:
+    # the slice is a Python tuple and turning it into SQL means interpolating
+    # values into a statement, which is a habit this file does not keep even
+    # where the values are its own literals. `sorted` is stable, so findings of
+    # equal severity keep the `f.id` order the query already put them in.
+    return sorted(rows, key=lambda r: TRIAGE_BLOCKING.index(r["severity"]))
+
+
 def cmd_finish(args):
     """Close the analysis. The verdict can be lowered, never raised.
 
@@ -1191,6 +1248,51 @@ def cmd_finish(args):
               "close never upgrades a truncated or failed analysis to done",
               file=sys.stderr)
         state = row["state"]
+    # `done` ALSO REQUIRES THAT SOMEBODY READ WHAT THE SCANNERS PRODUCED.
+    #
+    # The design of this whole module rests on one argument: the deterministic
+    # phases are noisy on purpose, and the noise is not filtered by heuristics
+    # -- the agent reads the surrounding code and triages, which is Job 2 of
+    # skills/security-analysis/SKILL.md and is asked for over two pages of it.
+    # In analysis 9 and again in analysis 10 on Minerva the agent triaged ZERO
+    # of the ~40 deterministic findings waiting for it, spent the whole budget
+    # on its own SAST pass, and both runs closed `done` over a report that
+    # named 40 findings nobody had read. ASKING IS PRECISELY WHAT FAILED, so
+    # the close verifies it instead of the prompt requesting it again.
+    #
+    # Same shape as the `prepared` guard below, deliberately: a downgrade to
+    # `capped` with a note, never a refusal. A `capped` that says "40 findings
+    # were never read" is the honest result of skipping Job 2; an analysis left
+    # `running` for ever because its close was refused is worse than either.
+    #
+    # THE NOTE NAMES NAMES. A count alone is a scold the reader cannot act on;
+    # the rule and the file are what let somebody open the finding that was
+    # skipped. It quotes nothing else -- not the title, not the rationale --
+    # which is why this note is not run past `_refuse_if_secret` the way
+    # `--note` is: a rule name and a repository-relative path are minted by
+    # our own scanners and by Trivy/OSV, never by the agent's free text, and a
+    # refusal here would leave the row `running`, which is the one outcome
+    # this guard exists to avoid.
+    untriaged_note = ""
+    if state == "done":
+        skipped = _untriaged(conn, args.analysis)
+        if skipped:
+            state = "capped"
+            named = "; ".join(f"{r['rule']} ({r['file'] or 'no file recorded'})"
+                              for r in skipped[:3])
+            plural = "s were" if len(skipped) != 1 else " was"
+            lead = ("The first three" if len(skipped) > 3
+                    else "They are" if len(skipped) > 1 else "It is")
+            untriaged_note = (
+                f"{len(skipped)} deterministic finding{plural} never triaged: "
+                f"the scanners reported them at {TRIAGE_FLOOR} or above and "
+                "nothing read them back, so this analysis says nothing about "
+                f"whether they are real. {lead}: {named}.")
+            print(f"finish: analysis {args.analysis} left {len(skipped)} "
+                  f"deterministic finding(s) at {TRIAGE_FLOOR} or above never "
+                  "triaged — closing it capped instead of done; triaging what "
+                  "the deterministic phases produced is the job, not a "
+                  "postscript to it", file=sys.stderr)
     # `done` REQUIRES that the deterministic phases actually ran. Nothing
     # engine-side runs `prepare` -- it is the agent's first command, named in
     # the prompt and in the skill -- so an agent that simply skipped it exited
@@ -1229,11 +1331,14 @@ def cmd_finish(args):
     # equality guard keeps a row closed twice with the same sentence from
     # accumulating it twice.
     #
-    # A THIRD writer, from the guard above: the reason the verdict was lowered
-    # belongs in the report next to every other thing this analysis did not do.
+    # A THIRD AND FOURTH writer, from the two guards above: the reason the
+    # verdict was lowered belongs in the report next to every other thing this
+    # analysis did not do. Both can fire on one close -- an analysis that never
+    # ran `prepare` has no findings to leave untriaged, but that is a fact
+    # about today's phases and not an invariant this loop should rely on.
     stored = row["coverage_note"] or ""
     note = ""
-    for part in (stored, args.note or "", unprepared_note):
+    for part in (stored, args.note or "", unprepared_note, untriaged_note):
         part = part.strip()
         # `not in`, not `!=`: a row is closed twice (the agent, then the
         # engine) and each close re-reads the note it already wrote. Without

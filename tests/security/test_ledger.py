@@ -752,3 +752,107 @@ def test_a_re_report_does_NOT_clear_the_scope_the_producer_established(conn):
     assert got[0]["severity"] == "low"
     assert got[0]["scope"] == "dev", "and must not wipe the lockfile fact"
     assert got[0]["producer"] == "trivy"
+
+
+# ----------------------------------------------------------------- `triaged`
+#
+# Whether the agent ever READ a finding a scanner produced. The design of this
+# whole module rests on the agent triaging the deterministic findings (Job 2 of
+# skills/security-analysis/SKILL.md); in analyses 9 and 10 on Minerva it
+# triaged zero of ~40 and both runs still closed `done`. The column is what
+# lets `cmd_finish` verify what the skill could only ask for.
+#
+# THE MARK IS AN EVENT, NOT A FIELD: it is written by this module when an
+# agent's re-report lands on a row a scanner minted, and it is deliberately
+# not readable from any payload. A `triaged: true` an agent could send would
+# be the same unverified claim as the `done` this gate exists to check.
+
+def test_a_finding_starts_untriaged(conn):
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    ledger.record_finding(conn, aid, _finding(producer="trivy"))
+    assert ledger.findings_of(conn, aid)[0]["triaged"] == 0
+
+
+def test_an_agent_re_report_over_a_scanner_finding_marks_it_triaged(conn):
+    """THE event this column records. The agent re-reporting a deterministic
+    finding with its own severity and rationale IS the triage -- it is what
+    reading the surrounding code and forming a judgement looks like from the
+    ledger's side, and it is the only trace of it that exists."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    ledger.record_finding(conn, aid, _finding(
+        category="dependency", rule="CVE-1", severity="high", producer="trivy",
+        rationale="Trivy read the lockfile"))
+    assert ledger.findings_of(conn, aid)[0]["triaged"] == 0
+
+    ledger.record_finding(conn, aid, _finding(
+        category="dependency", rule="CVE-1", severity="low", producer=ledger.AGENT,
+        rationale="the dev dependency never reaches a request"))
+
+    got = ledger.findings_of(conn, aid)
+    assert len(got) == 1, "still an upsert, not a second row"
+    assert got[0]["triaged"] == 1
+    assert got[0]["producer"] == "trivy", (
+        "and the mark must not cost the row its minting producer -- "
+        "diff._proven reads that column to decide what absence proves")
+
+
+def test_the_agents_own_finding_is_not_marked_triaged_by_re_reporting_it(conn):
+    """A `sast` row the agent minted is the agent's own work, not a scanner's
+    output waiting to be read. Counting a re-report of one as "triage" would
+    let an analysis satisfy the gate with findings nobody but itself produced
+    -- exactly the run this gate was written after, which spent its whole
+    budget on its own SAST pass."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    ledger.record_finding(conn, aid, _finding(producer=ledger.AGENT))
+    ledger.record_finding(conn, aid, _finding(
+        producer=ledger.AGENT, severity="medium", rationale="second pass"))
+    got = ledger.findings_of(conn, aid)
+    assert len(got) == 1
+    assert got[0]["triaged"] == 0
+
+
+def test_one_scanner_re_recording_another_scanner_row_is_not_a_triage(conn):
+    """`prepare` writes through this same function. A phase that lands on a
+    fingerprint another phase already recorded has read a file, not a finding
+    -- and no human judgement happened."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    ledger.record_finding(conn, aid, _finding(category="secret", producer="secrets"))
+    ledger.record_finding(conn, aid, _finding(category="secret", producer="gitleaks"))
+    assert ledger.findings_of(conn, aid)[0]["triaged"] == 0
+
+
+def test_the_mark_is_never_cleared_by_a_later_re_report(conn):
+    """A row is written more than twice in a real analysis. Whatever else a
+    later write does, the fact that somebody once read this finding is not
+    something a subsequent one can undo."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    ledger.record_finding(conn, aid, _finding(producer="semgrep"))
+    ledger.record_finding(conn, aid, _finding(producer=ledger.AGENT, severity="low"))
+    assert ledger.findings_of(conn, aid)[0]["triaged"] == 1
+    ledger.record_finding(conn, aid, _finding(producer="", severity="info"))
+    assert ledger.findings_of(conn, aid)[0]["triaged"] == 1
+
+
+def test_the_triaged_column_is_added_to_a_finding_table_that_predates_it(tmp_path):
+    """Same migration `cwe`, `owasp`, `producer` and `scope` came in through:
+    an entry in `_FINDING_COLUMNS`, ALTER TABLE guarded by PRAGMA table_info.
+    A row written before the column existed carries the 0 default, which reads
+    as "nobody triaged this" -- the honest answer for a row minted when there
+    was nothing to record the reading in."""
+    path = tmp_path / "old.db"
+    raw = sqlite3.connect(str(path))
+    raw.executescript(
+        "CREATE TABLE finding (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " analysis_id INTEGER NOT NULL, fingerprint TEXT NOT NULL,"
+        " category TEXT NOT NULL, rule TEXT NOT NULL, severity TEXT NOT NULL,"
+        " title TEXT NOT NULL, UNIQUE(analysis_id, fingerprint));"
+        "INSERT INTO finding (analysis_id, fingerprint, category, rule,"
+        " severity, title) VALUES (1, 'old', 'iac', 'DS-0002', 'high', 't');")
+    raw.commit()
+    raw.close()
+
+    c = ledger.connect(path)
+    columns = {r["name"] for r in c.execute("PRAGMA table_info(finding)")}
+    assert "triaged" in columns
+    old = c.execute("SELECT triaged FROM finding WHERE fingerprint='old'").fetchone()
+    assert old["triaged"] == 0

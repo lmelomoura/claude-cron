@@ -19,6 +19,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **An analysis can no longer close `done` over findings nobody read.**
+  `finish --state done` now counts the findings a SCANNER produced that are
+  `medium` or worse and that the agent never re-reported, and closes the
+  analysis `capped` when there are any — with a coverage note that gives the
+  count and names the first three by rule and file. **What it cost not to
+  have this:** the entire design of this module rests on one argument — the
+  deterministic phases are noisy on purpose, and the noise is sorted by an
+  agent that reads the surrounding code, not by heuristics. That is Job 2 of
+  `skills/security-analysis/SKILL.md`, asked for over two pages. In analysis 9
+  and again in analysis 10 on Minerva the agent triaged **zero** of the ~40
+  deterministic findings waiting for it, spent the whole budget on its own
+  SAST pass, and both runs closed `done` — clean-looking reports over 40
+  findings nobody had read, and those reports then became the baseline the
+  next run was diffed against. Asking is precisely what failed, so the close
+  verifies instead. **The mark is an event, not a claim:** a finding counts as
+  triaged only because the agent's re-report landed on a row a scanner minted,
+  which is the only trace that reading it leaves; there is no field an agent
+  can send to say it looked, because that would be the same unverified
+  assertion as the `done` this checks. **`capped`, never a refusal** — same
+  shape as the existing "never ran `prepare`" guard, and for the same reason:
+  a `capped` that says "40 findings were never read" is the honest result of
+  skipping the job, while an analysis left `running` for ever is worse than
+  either. `low` and `info` do not block: the floor is the named constant
+  `TRIAGE_FLOOR`, an informed guess written down as one, to be moved on what
+  the first real analysis after this measures rather than on argument.
+
 - **There is CI now, and it cannot go green over a skipped engine.**
   `.github/workflows/ci.yml` runs `claude-cron selftest`, the server suite,
   and `tests/security/` in **both** of its configurations
