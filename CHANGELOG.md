@@ -425,6 +425,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`claude-cron selftest` no longer gives a different answer depending on the
+  caller's language settings.** The canonical-path check compares an exact
+  string assembled by `sort`, and `sort` orders by the caller's collation.
+  Under `en_US.UTF-8` — what a GitHub runner sets and a bare shell does not —
+  that collation folds case, so `/tmp` sorts before `/Users`; under `C` it
+  does not. Same list, same code, two orders, and an expectation written as
+  one exact string: the suite was green on every laptop for months and red on
+  the first CI run that ever set a locale. Not the path logic being wrong —
+  the assertion was reading the machine's locale and reporting it as a
+  verdict, which is the worse failure of the two, because it is the kind that
+  waits. The sort now pins its own collation. Verified both ways: 455 passed,
+  0 failed under `LC_ALL=en_US.UTF-8` and in a bare shell.
+
+- **The tests that prove an unreadable history is declared no longer race
+  git's own background housekeeping.** `break_objects` — the fixture that
+  empties `.git/objects` so a repository's commits cannot be read, which is
+  how `tests/security/test_adapters.py` holds the silent-history bug closed:
+  the coverage note has to declare the gap instead of reporting a clean
+  history — listed that directory and then deleted each name it had listed.
+  Every `git commit` starts a background `git maintenance run --auto`, and
+  that process writes `.git/objects/maintenance.lock` into the same directory
+  and unlinks it about a millisecond later. A listing taken just before that
+  unlink left the walk deleting a name that no longer existed:
+  `FileNotFoundError`, the repository half-broken, two tests red for a reason
+  that has nothing to do with what they test. A millisecond-wide window
+  against a walk lasting hundreds of milliseconds never opened on a
+  developer's machine and opened on the first loaded CI runner. The fixture
+  now turns `maintenance.auto` off, so no second process touches the
+  repository at all, and the break is a single rename instead of a walk —
+  one syscall, with no listing that can go stale. Measured with a real
+  maintenance run holding the lock: the old body failed 5 times out of 5, the
+  new one 0 out of 5, and the broken repository still reports `HISTORY_GONE`.
+  Fixed by making the setup deterministic, **not** by skipping when the lock
+  is absent: a skip here is the same silence the CI job's "nothing was
+  skipped for want of an engine" step exists to catch.
+
 - **A finding the missing engine could not re-check no longer vanishes from
   the report and comes back as a regression.** The producer rule below stops
   the false `fixed` — the row reads `pending`, "not re-checked" — but

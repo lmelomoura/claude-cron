@@ -585,6 +585,13 @@ def history_repo(root):
     git(root, "init", "-q")
     git(root, "config", "user.email", "t@example.com")
     git(root, "config", "user.name", "t")
+    # NOBODY ELSE TOUCHES THIS REPOSITORY WHILE THE TEST BREAKS IT. Every
+    # `git commit` starts a background `git maintenance run --auto`, and that
+    # process writes `.git/objects/maintenance.lock` and removes it again --
+    # inside the very directory `break_objects` is emptying. Measured on git
+    # 2.51: the lock is created on all three of three commits and lives about
+    # a millisecond. Nothing here is a test OF housekeeping, so it is off.
+    git(root, "config", "maintenance.auto", "false")
     (root / "prod.env").write_text(f"AWS_ACCESS_KEY_ID={AWS_KEY}\n")
     git(root, "add", "-A")
     git(root, "commit", "-qm", "add")
@@ -596,9 +603,28 @@ def history_repo(root):
 
 def break_objects(root):
     """Empty `.git/objects`. The reviewer's own reproduction: the refs still
-    name commits, and not one of them can be read."""
-    for child in (root / ".git" / "objects").iterdir():
-        shutil.rmtree(child) if child.is_dir() else child.unlink()
+    name commits, and not one of them can be read.
+
+    Moved aside in ONE rename rather than walked child by child, because the
+    walk was a race and lost it on CI. `git maintenance` -- started in the
+    background by every `git commit`, see `history_repo` -- writes
+    `.git/objects/maintenance.lock` and unlinks it about a millisecond later.
+    A walk that listed that name a moment before it vanished died halfway
+    through with FileNotFoundError, leaving the repository half-broken and
+    the test red. A millisecond-wide window against a walk lasting hundreds
+    of milliseconds never opened on a laptop and opened on the first loaded
+    runner. Reproduced 5 times out of 5 with the old body by starting the
+    walk while a real maintenance run held the lock, 0 out of 5 with this
+    one: a rename is a single syscall and there is no listing to go stale.
+    """
+    objects = root / ".git" / "objects"
+    gone = root.parent / (root.name + ".objects-gone")
+    objects.rename(gone)
+    objects.mkdir()
+    # Cleanup only. Nothing reads it again, and `ignore_errors` because a
+    # maintenance run that started before the rename may still be writing
+    # into the directory it is holding open.
+    shutil.rmtree(gone, ignore_errors=True)
     return root
 
 
