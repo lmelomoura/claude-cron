@@ -1,0 +1,5 @@
+{"type":"system","subtype":"hook_started","hook_id":"hook-0001","hook_name":"SessionStart:startup","hook_event":"SessionStart","uuid":"uuid-0001","session_id":"sess-hooked"}
+{"type":"system","subtype":"hook_response","hook_id":"hook-0001","hook_name":"SessionStart:startup","hook_event":"SessionStart","output":"","stdout":"","stderr":"","exit_code":0,"outcome":"success","uuid":"uuid-0002","session_id":"sess-hooked"}
+{"type":"system","subtype":"init","cwd":"/tmp/probe","session_id":"sess-hooked","tools":["Task","Bash"],"slash_commands":["compact"],"model":"claude-fable-5-1","permissionMode":"default","apiKeySource":"none","claude_code_version":"2.1.258","uuid":"uuid-0003"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]},"session_id":"sess-hooked","uuid":"uuid-0004"}
+{"type":"result","subtype":"success","is_error":false,"num_turns":1,"session_id":"sess-hooked","total_cost_usd":0,"result":"hi","uuid":"uuid-0005"}

@@ -1868,8 +1868,11 @@ model_probe_ok() { # model_probe_ok <id> -> 0 when the API accepts it
 }
 
 model_alias_baseline() { # what the CLI's own alias points at (no API call)
+  # The init event is selected, not assumed first: with any hook configured
+  # the CLI emits hook_started/hook_response system events ahead of it.
   "$CLAUDE_BIN" -p --output-format stream-json --verbose --model "$1" "hi" 2>/dev/null \
-    | head -1 | "$JQ" -r '.model // empty' 2>/dev/null
+    | "$JQ" -r 'select(.type=="system" and .subtype=="init") | .model // empty' 2>/dev/null \
+    | head -1
 }
 
 resolve_family() { # resolve_family <family> -> newest id (prints, and caches)
@@ -2171,6 +2174,41 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   : > "$tmp/s3.ndjson"
   got="$(session_from_stream "$tmp/s3.ndjson")"
   [ -z "$got" ] && ok "an empty transcript reports nothing" || bad "read '$got' from nothing"
+
+  echo "model_alias_baseline() — the init event is found even behind hook events"
+  # The probe's first lines belong to whoever has hooks configured: a
+  # SessionStart hook in ~/.claude/settings.json puts hook_started and
+  # hook_response on the stream BEFORE init, the only event carrying .model.
+  # Reading "the first line" therefore reported nothing the moment the
+  # operator wired any hook, and every family quietly resolved to itself.
+  # The stand-in replays a claude 2.1.258 capture, ids neutralised — the
+  # committed sample is test/fixtures/stream-json-hooked-probe.ndjson.
+  cat > "$tmp/hooked-claude" <<'EOF'
+#!/bin/sh
+printf '%s\n' \
+  '{"type":"system","subtype":"hook_started","hook_id":"hook-0001","hook_name":"SessionStart:startup","hook_event":"SessionStart","uuid":"uuid-0001","session_id":"sess-hooked"}' \
+  '{"type":"system","subtype":"hook_response","hook_id":"hook-0001","hook_name":"SessionStart:startup","hook_event":"SessionStart","output":"","stdout":"","stderr":"","exit_code":0,"outcome":"success","uuid":"uuid-0002","session_id":"sess-hooked"}' \
+  '{"type":"system","subtype":"init","cwd":"/tmp/probe","session_id":"sess-hooked","tools":["Task","Bash"],"slash_commands":["compact"],"model":"claude-fable-5-1","permissionMode":"default","apiKeySource":"none","claude_code_version":"2.1.258","uuid":"uuid-0003"}' \
+  '{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]},"session_id":"sess-hooked","uuid":"uuid-0004"}' \
+  '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"session_id":"sess-hooked","total_cost_usd":0,"result":"hi","uuid":"uuid-0005"}'
+EOF
+  chmod +x "$tmp/hooked-claude"
+  got="$(CLAUDE_BIN="$tmp/hooked-claude"; model_alias_baseline fable)"
+  [ "$got" = "claude-fable-5-1" ] && ok "hook events ahead of init do not blind the baseline" \
+    || bad "a hooked stream read '$got', wanted claude-fable-5-1"
+  cat > "$tmp/plain-claude" <<'EOF'
+#!/bin/sh
+printf '%s\n' \
+  '{"type":"system","subtype":"init","cwd":"/tmp/probe","session_id":"sess-plain","tools":["Task","Bash"],"model":"claude-opus-4-8","permissionMode":"default"}' \
+  '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"session_id":"sess-plain","total_cost_usd":0,"result":"hi"}'
+EOF
+  chmod +x "$tmp/plain-claude"
+  got="$(CLAUDE_BIN="$tmp/plain-claude"; model_alias_baseline opus)"
+  [ "$got" = "claude-opus-4-8" ] && ok "a hookless stream still reads the same" \
+    || bad "a plain stream read '$got', wanted claude-opus-4-8"
+  got="$(CLAUDE_BIN="$tmp/no-such-claude"; model_alias_baseline opus)"
+  [ -z "$got" ] && ok "a CLI that cannot run reports nothing, so resolve_family can give up" \
+    || bad "a missing CLI invented '$got'"
 
   echo "bind_session() — one shot, atomic, and a no-op without a run dir"
   mkdir -p "$tmp/rd1"
