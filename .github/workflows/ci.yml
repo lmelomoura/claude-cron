@@ -113,6 +113,18 @@ jobs:
           done
           exit $rc
 
+      - name: seed config/jobs.json, which selftest reads and git does not carry
+        run: |
+          # `config/jobs.json` is git-ignored and seeded by ./install.sh from
+          # config/jobs.example.json. Without it `cmd_selftest`'s job cases read
+          # a file that is not there and fail with "default broke" and a
+          # mangled canonical-path list -- failures that look like product bugs
+          # and are really a missing fixture. This is the first environment that
+          # ever ran selftest without a developer's local state, which is why it
+          # surfaced here and never on a laptop.
+          cp config/jobs.example.json config/jobs.json
+          printf '  ok    seeded config/jobs.json from the example\n'
+
       - name: claude-cron selftest
         run: bin/claude-cron selftest
 
