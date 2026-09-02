@@ -354,8 +354,60 @@ def _refuse_root_outside_run(root):
                  "its own run created, not any other checkout on the machine.")
 
 
+# THE PRODUCERS, BY NAME -- the answer to "who actually looked", which is a
+# different question from "which phase was configured" and the one
+# `diff._proven` asks before it will call a baseline finding `fixed`. Each
+# `_scan_*` below returns whichever of these produced its findings, or "" when
+# the phase did not run at all; `cmd_prepare` stamps the name onto the findings
+# and records the set on the analysis row.
+#
+# THEY ARE AN IDENTITY VOCABULARY, not labels. A finding minted under
+# `PRODUCER_TRIVY` is provable only by a later analysis that also ran Trivy, so
+# renaming one of these strings orphans the proof of every baseline finding
+# carrying the old spelling. That failure is not silent and not dangerous --
+# an unrecognised producer renders `pending`, never a false `fixed` -- but it
+# is a whole run of the checklist saying "not re-checked" about work that was
+# re-checked, so a rename here needs a ledger migration the way a rule rename
+# does.
+#
+# The two per category are the point. `secret` and `dependency` each have an
+# engine and a fallback whose coverage the other does not contain -- gitleaks'
+# rule set against eight shaped patterns, Trivy's lockfile formats against
+# `deps.inventory`'s five -- and the checklist used to treat either one's
+# silence as the category's proof.
+PRODUCER_GITLEAKS = "gitleaks"
+PRODUCER_SECRETS = "secrets"      # the built-in pattern scanner
+PRODUCER_TRIVY = "trivy"          # Trivy's filesystem vulnerability scan
+PRODUCER_OSV = "osv"              # deps.inventory + OSV.dev
+PRODUCER_HYGIENE = "hygiene"
+PRODUCER_TRIVY_IAC = "trivy-iac"  # Trivy's misconfiguration scan
+PRODUCER_SEMGREP = "semgrep"      # the SAST pre-pass
+
+
+def _produced_by(findings, producer, produced):
+    """Stamp the producer that MINTED these findings, and record that it ran.
+
+    THE ONE PLACE BOTH HALVES ARE WRITTEN, so they cannot disagree. The
+    finding's `producer` column and the analysis's `produced` set are read
+    together by `diff._proven` -- a phase that stamped its findings but never
+    joined the set would report its own previous findings `pending` for ever,
+    and a phase that joined the set without stamping would prove nothing about
+    anything. Both come off one argument here.
+
+    An empty `producer` means the phase did not run: nothing is stamped and
+    nothing joins the set, which is exactly how `iac` on a machine without
+    Trivy stops proving that a Dockerfile is clean.
+    """
+    if producer:
+        produced.add(producer)
+        for finding in findings:
+            finding["producer"] = producer
+    return findings
+
+
 def _scan_secrets(root, ignore):
-    """(findings, notes, lines) for the secret phase -- ONE scanner, not two.
+    """(findings, notes, lines, producer) for the secret phase -- ONE scanner,
+    not two.
 
     Gitleaks when it is installed, the built-in pattern scanner when it is
     not, and never both. Two scanners in one category find the same hole and
@@ -374,11 +426,20 @@ def _scan_secrets(root, ignore):
     (`secrets.count_lines`, the same walk over the same files) rather than
     lost -- the project header renders 0 as "not counted", which no analysis
     that actually ran should ever claim.
+
+    `producer` is WHICH of the two scanners answered, and it is never
+    "secret", the category. The two do not cover the same ground -- gitleaks
+    carries its own rule set, the built-in scanner has eight shaped patterns
+    and says so in `secrets.FALLBACK_NOTE` -- so a machine that loses gitleaks
+    must not read the built-in scanner's silence as proof that a
+    gitleaks-only credential is gone. This phase always has a producer: there
+    is no configuration in which neither scanner runs.
     """
     if adapters.engine_path("gitleaks"):
         findings, notes = adapters.gitleaks_scan(root, ignore)
         if findings is not None:
-            return findings, notes, secrets.count_lines(root, ignore)
+            return (findings, notes, secrets.count_lines(root, ignore),
+                    PRODUCER_GITLEAKS)
         # The engine is here and could not answer. Say so, and let the
         # built-in scanner do the work rather than reporting no secrets.
         notes = [*notes, secrets.FALLBACK_NOTE]
@@ -387,7 +448,7 @@ def _scan_secrets(root, ignore):
     history_findings, history_note = secrets.scan_history(root, None, ignore)
     tree_findings, tree_note, lines = secrets.scan_tree(root, ignore)
     return (history_findings + tree_findings,
-            [history_note, tree_note, *notes], lines)
+            [history_note, tree_note, *notes], lines, PRODUCER_SECRETS)
 
 
 # Named so `test_offline_mode_declares_the_gap` (and every reader of a
@@ -402,7 +463,8 @@ OFFLINE_DEPENDENCY_NOTE = ("Dependency CVEs were NOT checked against OSV.dev "
 
 
 def _scan_dependencies(root, components, offline: bool, ignore_paths=()):
-    """(findings, notes) for the dependency phase -- ONE producer, not two.
+    """(findings, notes, producer) for the dependency phase -- ONE producer,
+    not two.
 
     Trivy's filesystem scanner when it is installed, `osv.query` fed by
     `deps.inventory`'s output (`components`) when it is not, and never both:
@@ -433,14 +495,43 @@ def _scan_dependencies(root, components, offline: bool, ignore_paths=()):
     producer runs here: `deps.inventory` never touches the network, and the
     SBOM this project hands out (`ledger.store_sbom`) is built from it
     whether or not either vulnerability source ran.
+
+    WHICH PRODUCER IS RETURNED IS NOT COSMETIC, AND "the dependency phase ran"
+    IS NOT A FACT THIS FUNCTION CAN REPORT. The two producers are ONE
+    CATEGORY WITH TWO COVERAGES, and neither contains the other:
+
+      Trivy       reads yarn.lock, pnpm-lock.yaml, Gemfile.lock, Cargo.lock,
+                  pom.xml, vendored jars and more, against its own database.
+      OSV.dev     is asked about `deps.inventory`'s output, which reads FIVE
+                  formats (`deps._READERS`) -- and about advisories Trivy's
+                  database does not necessarily carry.
+
+    Measured on a real `yarn.lock` pinning lodash 4.17.20: Trivy 5 findings,
+    `deps.inventory` 0 components. So "the phase ran" reported all five fixed
+    on a machine without Trivy, and `osv.FALLBACK_NOTE` -- which declares a
+    gap in advisory SOURCES -- says nothing at all about the gap that actually
+    bit, which is in lockfile FORMATS.
+
+    THE DECISION: absence is proven only by the producer that MINTED the
+    finding. Not by "a producer for this category", and not by a coverage
+    ordering, because there is no ordering to appeal to -- calling Trivy a
+    superset would be true of formats and false of advisory sources, and a
+    rule that is half true is how the first version of this got written. The
+    cost is bounded and it is the honest one: a machine that gains or loses
+    Trivy carries its baseline dependency findings as `pending` for exactly
+    one analysis, then they settle under the new producer. `pending` says
+    "not re-checked", which is precisely what happened; the alternative said
+    "fixed" about a lockfile nobody parsed.
     """
     if offline:
-        return [], [OFFLINE_DEPENDENCY_NOTE]
+        # No producer: `--offline` refuses BOTH sources, so nothing looked and
+        # nothing about this category can be proven from this analysis.
+        return [], [OFFLINE_DEPENDENCY_NOTE], ""
     notes = []
     if adapters.engine_path("trivy"):
         findings, notes = adapters.trivy_scan(root, ignore_paths)
         if findings is not None:
-            return findings, notes
+            return findings, notes, PRODUCER_TRIVY
         # The engine is here and could not answer. Its note is kept -- that
         # is the "say so" -- and OSV.dev does the work rather than the phase
         # reporting no dependency findings.
@@ -456,7 +547,7 @@ def _scan_dependencies(root, components, offline: bool, ignore_paths=()):
                                            ignore_paths)]
     if osv_note:
         notes.append(osv_note)
-    return cve_findings, notes
+    return cve_findings, notes, PRODUCER_OSV
 
 
 def _unfiltered_sbom_note(components, ignore_paths) -> str:
@@ -510,7 +601,8 @@ OFFLINE_SAST_NOTE = ("The Semgrep SAST pre-pass did NOT run: its rule pack is "
 
 
 def _scan_sast(root, offline: bool, ignore_paths=()):
-    """(findings, notes) for the SAST pre-pass -- an ADDITION, never a swap.
+    """(findings, notes, producer) for the SAST pre-pass -- an ADDITION, never
+    a swap.
 
     THE ONE PHASE HERE THAT REPLACES NOTHING. `_scan_secrets`,
     `_scan_dependencies` and `_scan_sbom` all choose ONE producer per category
@@ -527,21 +619,49 @@ def _scan_sast(root, offline: bool, ignore_paths=()):
     fallback: there is nothing to fall back to and nothing was lost. The gap
     is declared all the same -- "found nothing" and "never looked" are the
     same silence in a report otherwise.
+
+    THE ADDITION IS EXACTLY WHY THIS PHASE NEEDS A PRODUCER AND NOT A
+    CATEGORY. `sast` holds rows from two sources at once: the agent's own
+    pass, and this pre-pass, whose identity is
+    `fingerprint("sast", rule, path, check_id)` -- a check id only Semgrep
+    mints. The analysis closing `done` is proof the AGENT covered its scope,
+    and it used to be read as proof for every `sast` row, so a pre-pass
+    finding went `fixed` the moment a run without Semgrep finished. The two
+    producers now answer separately, which is also why the fix is not "mark
+    the whole category pending": the agent's own findings still close on the
+    agent's own evidence.
     """
     if offline:
-        return [], [OFFLINE_SAST_NOTE]
+        return [], [OFFLINE_SAST_NOTE], ""
     if not adapters.engine_path("semgrep"):
         # `engine_path` answers None for a machine without the binary AND for
         # one with `CC_SECURITY_ENGINES=off`, and the note says the same thing
         # for both on purpose: as far as this analysis goes they are the same
         # machine.
         return [], [adapters.SAST_GAP.format(
-            reason="semgrep is not available to this analysis")]
+            reason="semgrep is not available to this analysis")], ""
     findings, notes = adapters.semgrep_scan(root, ignore_paths)
     if findings is None:
         reason = (notes[0] if notes else "semgrep produced no report").rstrip(".")
-        return [], [adapters.SAST_GAP.format(reason=reason)]
-    return findings, notes
+        return [], [adapters.SAST_GAP.format(reason=reason)], ""
+    return findings, notes, PRODUCER_SEMGREP
+
+
+# Said when `_scan_sbom` returns no document at all, and the ONE sentence that
+# makes the rest of the SBOM paragraph safe. Every other note in that paragraph
+# describes a document -- what it lists, who produced it, which of its entries
+# a filter hid -- and all of them were still emitted for an analysis that
+# stored nothing: `sbom` held 0 rows, `render --format sbom` answered "no SBOM
+# recorded", and the coverage note said "The SBOM lists the five lockfile
+# formats ...". A reader was told about a file they cannot download.
+#
+# Worded around the OBSERVABLE fact rather than around which producer was
+# absent, because both are absent by different routes -- Syft not installed,
+# Syft writing a document with no `components`, or simply no lockfile in the
+# tree -- and the reader's question is the same in all three.
+NO_SBOM_NOTE = ("No SBOM was recorded for this analysis: neither producer had "
+                "a component to list, so there is no component inventory to "
+                "download for this run.")
 
 
 def _scan_sbom(root, components):
@@ -593,7 +713,7 @@ OFFLINE_IAC_NOTE = ("Infrastructure-as-code misconfigurations were NOT "
 
 
 def _scan_iac(root, offline: bool, ignore_paths=()):
-    """(findings, notes) for the IaC misconfiguration phase.
+    """(findings, notes, producer) for the IaC misconfiguration phase.
 
     UNLIKE EVERY PHASE ABOVE IT, THERE IS NOTHING TO FALL BACK TO AND NOTHING
     TO REPLACE. `_scan_secrets` and `_scan_dependencies` each choose one
@@ -604,17 +724,25 @@ def _scan_iac(root, offline: bool, ignore_paths=()):
     `[]` and the gap is declared, the same shape `_scan_sast` uses when
     Semgrep is unavailable, for the identical reason -- "found nothing" and
     "never looked" must not be the same silence in a report.
+
+    AND THE CHECKLIST HAS TO HEAR THAT TOO, which is what `producer` is for.
+    A category with no fallback is the one where "the phase was configured"
+    and "something looked" diverge completely: `[]` from here means nobody
+    looked, every time. Read as a deterministic CATEGORY -- proven the moment
+    `prepare` finished -- it produced a report that said the Dockerfile "was
+    not checked at all this run" and, four lines down, declared three of its
+    misconfigurations fixed. The Dockerfile was untouched.
     """
     if offline:
-        return [], [OFFLINE_IAC_NOTE]
+        return [], [OFFLINE_IAC_NOTE], ""
     if not adapters.engine_path("trivy"):
         return [], [adapters.IAC_GAP.format(
-            reason="trivy is not available to this analysis")]
+            reason="trivy is not available to this analysis")], ""
     findings, notes = adapters.trivy_iac_scan(root, ignore_paths)
     if findings is None:
         reason = (notes[0] if notes else "trivy produced no report").rstrip(".")
-        return [], [adapters.IAC_GAP.format(reason=reason)]
-    return findings, notes
+        return [], [adapters.IAC_GAP.format(reason=reason)], ""
+    return findings, notes, PRODUCER_TRIVY_IAC
 
 
 def cmd_prepare(args):
@@ -683,8 +811,19 @@ def cmd_prepare(args):
     # retired with it: it asserted the built-in scanner's rule name while
     # inheriting the suite's engines-off default, so it was red in the only
     # configuration a real analysis runs in.
-    secret_findings, secret_notes, tree_lines = _scan_secrets(root, ignore)
-    findings = secret_findings + hygiene.scan(root, ignore)
+    # WHAT ACTUALLY LOOKED, accumulated phase by phase and written onto the
+    # analysis row at the very end (see `mark_prepared`). Every phase below
+    # goes through `_produced_by`, which is what keeps this set and the
+    # findings' own `producer` column from ever disagreeing.
+    produced = set()
+
+    secret_findings, secret_notes, tree_lines, secret_producer = _scan_secrets(
+        root, ignore)
+    findings = _produced_by(secret_findings, secret_producer, produced)
+    # Hygiene has no engine and no fallback -- it is our own walk over the
+    # tree, so it runs in every configuration and is always its own producer.
+    findings += _produced_by(hygiene.scan(root, ignore), PRODUCER_HYGIENE,
+                             produced)
     notes = [n for n in secret_notes if n]
 
     # FIRST in the paragraph, because it qualifies every phase below it and
@@ -716,12 +855,22 @@ def cmd_prepare(args):
     # source runs: `deps.inventory` never touches the network, and the SBOM
     # below is built from it whenever Syft does not.
     components = deps.inventory(root)
-    dep_findings, dep_notes = _scan_dependencies(root, components, args.offline,
-                                                 ignore)
-    findings += dep_findings
+    dep_findings, dep_notes, dep_producer = _scan_dependencies(
+        root, components, args.offline, ignore)
+    findings += _produced_by(dep_findings, dep_producer, produced)
 
     sbom_document, sbom_notes = _scan_sbom(root, components)
-    if adapters.SYFT_SBOM_NOTE in sbom_notes and adapters.DEP_SBOM_NOTE in dep_notes:
+    if sbom_document is None:
+        # NOTHING IS STORED, so nothing may be described. `DEP_SBOM_NOTE` is
+        # appended by `trivy_scan` unconditionally and asserts what "the SBOM"
+        # lists; with no SBOM that is a sentence about a file the reader
+        # cannot download, and `SYFT_NO_COMPONENTS_NOTE`'s "so it was not
+        # used" sits beside it implying a fallback that never happened. The
+        # swap below handles the two-producer case; this handles the
+        # NO-producer case, which it used to fall straight through.
+        dep_notes = [n for n in dep_notes if n != adapters.DEP_SBOM_NOTE]
+        sbom_notes = [*sbom_notes, NO_SBOM_NOTE]
+    elif adapters.SYFT_SBOM_NOTE in sbom_notes and adapters.DEP_SBOM_NOTE in dep_notes:
         # Task 3's `DEP_SBOM_NOTE` asserts the SBOM lists the five lockfile
         # formats `deps.inventory` reads -- true only while `deps.sbom` built
         # it. `_scan_sbom` just said (via `SYFT_SBOM_NOTE`) that Syft did
@@ -739,16 +888,17 @@ def cmd_prepare(args):
     if unfiltered:
         notes.append(unfiltered)
 
-    iac_findings, iac_notes = _scan_iac(root, args.offline, ignore)
-    findings += iac_findings
+    iac_findings, iac_notes, iac_producer = _scan_iac(root, args.offline, ignore)
+    findings += _produced_by(iac_findings, iac_producer, produced)
     notes += [n for n in iac_notes if n]
 
     # LAST of the phases, because it is the only one that does not stand
     # alone: what it produces is a pre-pass the agent's own SAST pass then
     # triages, so its sentences read after everything the deterministic half
     # settled by itself.
-    sast_findings, sast_notes = _scan_sast(root, args.offline, ignore)
-    findings += sast_findings
+    sast_findings, sast_notes, sast_producer = _scan_sast(root, args.offline,
+                                                          ignore)
+    findings += _produced_by(sast_findings, sast_producer, produced)
     notes += [n for n in sast_notes if n]
     # Every phase writes into ONE channel, in phase order. The reader gets one
     # paragraph naming every blind spot this analysis has, rather than
@@ -767,7 +917,13 @@ def cmd_prepare(args):
     # record `done`, and it must mean "the deterministic phases ran and their
     # findings are in the ledger", not "prepare was invoked and then fell over
     # halfway".
-    ledger.mark_prepared(conn, aid)
+    #
+    # `produced` goes down in the SAME statement, for the same reason one step
+    # on: it is what the next analysis of this branch reads to decide whether
+    # any of these findings' absence can ever be proven, and an analysis
+    # marked prepared with an empty `produced` would report its whole
+    # deterministic baseline `pending` for ever.
+    ledger.mark_prepared(conn, aid, produced)
     print(json.dumps({"coverage_note": note, "findings": len(findings)}))
 
 
@@ -921,6 +1077,16 @@ def cmd_report_finding(args):
     if not isinstance(occurrences, list) or any(
             not isinstance(o, dict) for o in occurrences):
         sys.exit("report-finding: occurrences must be a list of objects")
+    # NEVER read from the payload -- `producer` is not an agent-writable
+    # field, it is this door's own record of who arrived through it. An agent
+    # able to send its own would be able to claim a deterministic producer for
+    # a finding it invented, and `diff._proven` reads that column to decide
+    # what absence proves. On a RE-REPORT this is discarded anyway
+    # (`record_finding` leaves the column alone for a fingerprint the analysis
+    # already holds), so it only ever lands on a finding the agent genuinely
+    # minted -- which is exactly what `diff.AGENT` is proven by: the analysis
+    # closing `done`.
+    payload["producer"] = diff.AGENT
     conn = _conn(args)
     _running(conn, args.analysis)
     try:

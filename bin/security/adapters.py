@@ -746,7 +746,14 @@ DEP_ID_NOTE = ("Trivy names an advisory by the publishing database's own id "
                "OSV.dev id with no Trivy counterpart (measured: "
                "GO-2021-0052, PYSEC-2024-230) is listed as fixed and any "
                "decision on it does not follow. An advisory with no database "
-               "id of its own keeps its CVE id.")
+               "id of its own keeps its CVE id. That choice is made from the "
+               "record Trivy holds TODAY, and Trivy refreshes its database "
+               "continuously: a record that gains its first vendor id, or a "
+               "second one sorting ahead of the first, is renamed by the "
+               "refresh alone — the same hole is then listed as fixed and as "
+               "new in one report, and a decision recorded against the old "
+               "name does not follow it. Unlike a secret or a hygiene rule, "
+               "a dependency finding cannot be migrated back by hand.")
 
 # The SBOM and the findings deliberately come from two different readers, and
 # a reader comparing them has to be told. `cli.cmd_prepare` builds the SBOM
@@ -816,6 +823,18 @@ def _trivy_advisory_id(vuln) -> str:
     Preserving one beats preserving none. Every record measured so far
     carries exactly one vendor id; this is the tie-break, not the common
     path.
+
+    AND SORTING DOES NOT MAKE THE CHOICE STABLE OVER TIME -- it makes it
+    independent of ARRIVAL ORDER, which is a smaller guarantee. The answer
+    still depends on the SET, and Trivy refreshes its database continuously:
+    a record with no `VendorIDs` today (id = the CVE) and one tomorrow
+    (id = a GHSA), or one that gains a second GHSA sorting ahead of the
+    first, is re-identified by the refresh alone. `rename_rule` refuses
+    `dependency` (see `ledger._REFINGERPRINT`), so there is no way back --
+    the finding is reported fixed and new in one report and its decision
+    strands. Unfixable from here, exactly as `GO_SUM_ONLY_GAP` is, so it is
+    STATED instead: `DEP_ID_NOTE` now carries the clause. The `iac` section
+    documents the same exposure for Trivy's check ids.
     """
     if not isinstance(vuln, dict):
         return ""

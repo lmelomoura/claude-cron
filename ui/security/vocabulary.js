@@ -29,12 +29,14 @@ export const SEC_STATE_HELP = {
   regressed:  "Was fixed once and is back — usually a fix that closed the symptom, not the route.",
   open:       "Was here last time too, unchanged.",
   partial:    "Some of its places are gone, or the agent recorded it as mitigated but not eliminated.",
-  pending:    "In the previous analysis and not re-checked by this one yet — a statement "
+  pending:    "In the previous analysis and not re-checked by this one — a statement "
             + "about this analysis, not about the code. Becomes fixed only when its absence "
-            + "is proven: deterministic findings once prepare completes, code-review findings "
-            + "only when the analysis closes with full coverage.",
-  fixed:      "Gone since the previous analysis of this branch — and the phase that would "
-            + "have re-found it DID finish, so the absence is proven, not assumed.",
+            + "is proven, and proof is the scanner that found it having run again: a run "
+            + "on a machine without Trivy cannot close a Trivy finding, however cleanly "
+            + "it ends.",
+  fixed:      "Gone since the previous analysis of this branch — and the scanner that "
+            + "found it in the first place DID run again, so the absence is proven, not "
+            + "assumed.",
   accepted:   "You accepted the risk. The reason is recorded and outlives every analysis after it.",
   false_positive: "You said it is not real. If the code around it changes the fingerprint changes "
                 + "and it comes back as new — different code, so a fresh judgement.",

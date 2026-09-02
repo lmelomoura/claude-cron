@@ -79,8 +79,8 @@
     regressed: "Was fixed once and is back \u2014 usually a fix that closed the symptom, not the route.",
     open: "Was here last time too, unchanged.",
     partial: "Some of its places are gone, or the agent recorded it as mitigated but not eliminated.",
-    pending: "In the previous analysis and not re-checked by this one yet \u2014 a statement about this analysis, not about the code. Becomes fixed only when its absence is proven: deterministic findings once prepare completes, code-review findings only when the analysis closes with full coverage.",
-    fixed: "Gone since the previous analysis of this branch \u2014 and the phase that would have re-found it DID finish, so the absence is proven, not assumed.",
+    pending: "In the previous analysis and not re-checked by this one \u2014 a statement about this analysis, not about the code. Becomes fixed only when its absence is proven, and proof is the scanner that found it having run again: a run on a machine without Trivy cannot close a Trivy finding, however cleanly it ends.",
+    fixed: "Gone since the previous analysis of this branch \u2014 and the scanner that found it in the first place DID run again, so the absence is proven, not assumed.",
     accepted: "You accepted the risk. The reason is recorded and outlives every analysis after it.",
     false_positive: "You said it is not real. If the code around it changes the fingerprint changes and it comes back as new \u2014 different code, so a fresh judgement."
   };
@@ -5112,5 +5112,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: f30a2c65b976390e5c5e96b4b29bf9ccb8199487135c7d581af8828ed0f135c8 */
-/* ui-sources: 96e385753d9a68f2949f11a0a06aadd308a2d1c92b893406cf42ff31aca6b4ab */
+/* ui-bundle: 91a7cd1655ac2c1f573e6fdbf6ace7d792149aa0792de6eae90dded02e1c242d */
+/* ui-sources: c4a95ac72da034c9ccd8c399b3b059bacdd583d5d8b89d36712c612cbe1e9a65 */

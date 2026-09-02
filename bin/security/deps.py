@@ -11,7 +11,15 @@ import re
 from pathlib import Path
 from urllib.parse import quote
 
-_SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", "build"}
+# THE shared engine scope, not a copy of it. This was a byte-identical private
+# set, as was `hygiene._SKIP_DIRS`, while `secrets.SKIP_DIRS` was already
+# public and documented as the one place an analysis's scope is written down
+# (five call sites read it, `adapters.gitleaks_config`, `trivy_skip_dirs` and
+# `syft_sbom` among them, so that whichever scanner runs they all agree on
+# where an analysis looks). Three identical sets do not disagree until somebody
+# edits one; editing the public one used to leave this phase and the hygiene
+# pass silently walking a different tree from every engine.
+from .secrets import SKIP_DIRS as _SKIP_DIRS
 _PURL = {"npm": "npm", "PyPI": "pypi", "Packagist": "composer",
          "Go": "golang", "RubyGems": "gem"}
 

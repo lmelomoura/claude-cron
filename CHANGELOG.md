@@ -356,9 +356,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   deterministic finding `fixed` when it was in the previous analysis and is
   absent from this one, and a suppressed finding is absent. Worse, a human
   `accepted` or `false_positive` decision on such a finding becomes
-  unreachable: decisions are only ever applied to findings the CURRENT
-  analysis produced, so a suppressed one takes the `fixed` branch without
-  its decision being consulted at all. The decision **row is not deleted** —
+  unreachable: the scanner really did run, so the absence really is proven,
+  and proven absence takes the `fixed` branch ahead of any decision. (The
+  Fixed entry below restores the decision for the *other* case — a finding
+  nothing this run could re-check — but not for this one, where `fixed` is
+  the better-founded answer.) The decision **row is not deleted** —
   identity is rule + path and neither moved, so setting `!defaults` in the
   project's `ignore_paths` brings the finding back under its original
   fingerprint and the decision attaches to it again. A project holding
@@ -368,6 +370,81 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   checklist and not a regression in the ledger.
 
 ### Fixed
+
+- **The checklist no longer declares a finding `fixed` in the same report
+  that says the phase never ran.** Absence was proven by CATEGORY — a
+  deterministic one the moment `prepare` finished, everything else the
+  moment the analysis closed `done` — and a category is not a thing that
+  looks. Reproduced end to end against one ledger, analysis 1 with the
+  engines on and analysis 2 with them off, over an untouched checkout: one
+  report said the infrastructure-as-code scan "did not run (trivy is not
+  available to this analysis) … was not checked at all this run" and, four
+  lines below, declared three of that Dockerfile's misconfigurations
+  `fixed`, five dependency CVEs `fixed` and the Semgrep pre-pass row `fixed`
+  — eight false remediation claims in one checklist. Not an edge case: the
+  spec's own decision table calls the degraded path the normal one, since
+  none of the four engines is installed on a plain machine. Proof is now
+  the **producer** that minted a finding having run again — `iac` has no
+  fallback at all, so `[]` from it has only ever meant "nobody looked";
+  Trivy reads `yarn.lock` where the OSV.dev fallback reads five lockfile
+  formats and does not (measured on a `yarn.lock` pinning lodash 4.17.20:
+  Trivy 5 findings, the fallback 0 components, so all five read as fixed);
+  a Semgrep pre-pass identity carries a check id only Semgrep can mint, and
+  the analysis closing `done` only ever proved the *agent* had looked. Those
+  findings now read `pending` — "not re-checked", which is what happened —
+  and the same rule closes the identical hole between gitleaks and the
+  built-in secret scanner. **`fixed` still means fixed:** a producer that
+  ran and found nothing proves absence exactly as before, so a genuinely
+  closed hole still closes on the very next analysis. A human's `accepted`
+  or `false_positive` decision now survives this too — it used to be
+  overridden by the false `fixed`, since decisions were only ever consulted
+  for findings the current run had re-found.
+
+- **A run's coverage note no longer describes an SBOM that does not exist.**
+  `trivy_scan` appends "The SBOM lists the five lockfile formats…"
+  unconditionally, and `prepare` only swapped that sentence out when Syft
+  had supplied a document instead. With NEITHER producer able to list a
+  component — no lockfile the built-in inventory reads, and a Syft that
+  answered with none — nothing is stored at all: the `sbom` table held 0
+  rows and `render --format sbom` answered "no SBOM recorded", while the
+  note described what "the SBOM" lists and added "Syft wrote a document
+  naming no `components`, so it was not used", implying a fallback that
+  never happened. Both sentences are now dropped and replaced by one that
+  says there is no component inventory for this run.
+
+- **A Trivy database refresh can rename a dependency finding, and the report
+  now says so.** An advisory's identity is its vendor id where the record
+  carries one, else a GHSA from its references, else the CVE — read from
+  the record Trivy holds *today*, and Trivy refreshes continuously. A record
+  that gains its first vendor id, or a second one sorting ahead of the
+  first, is renamed by the refresh alone: the same hole is listed `fixed`
+  and `new` in one report and the decision recorded against the old name
+  strands, with no way back, since `rename-rule` refuses `dependency`. The
+  `iac` section already documented exactly this exposure for check ids;
+  `DEP_ID_NOTE` now carries the clause for dependencies.
+
+- **The engines-on gate can no longer pass on a fraction of the suite.**
+  `test_the_security_suite_is_green_with_the_engines_on` asserted `N passed`
+  with `N > 0` and `returncode == 0` — both of which a child run that
+  collected 40 of 808 tests and passed all forty satisfies. With no CI in
+  this repository that test is the only gate there is, so it now counts what
+  `tests/security/` actually holds and requires the child to account for all
+  of it.
+
+- **The dependency and hygiene phases no longer keep private copies of the
+  shared engine scope.** `deps._SKIP_DIRS` and `hygiene._SKIP_DIRS` were
+  byte-identical duplicates of `secrets.SKIP_DIRS`, which is public
+  precisely because it is the one place an analysis's scope is written down
+  — five call sites read it, `gitleaks_config`, `trivy_skip_dirs` and
+  `syft_sbom` among them, so that every scanner agrees on where to look.
+  Identical sets do not disagree until somebody edits one; editing the
+  public one used to leave those two phases silently walking a different
+  tree from every engine. Both now import it.
+
+- **The README said `ignore_paths` is obeyed by "the four" phases.** It is
+  five — the SAST pre-pass reads the same globs, as do the findings from a
+  lockfile under one of them, and this file's own entry above already listed
+  five. An earlier pass fixed three→four and left the staleness behind.
 
 - **A real private key committed as `server.key.example` is reported again.
   For one commit, it was reported by nothing at all.** The template default

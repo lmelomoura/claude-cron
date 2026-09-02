@@ -67,6 +67,43 @@ REPO = SUITE.parent.parent
 # child run really would be the parent run again.
 ENGINES = ("gitleaks", "trivy", "semgrep", "syft")
 
+# Every outcome that means a test was RUN, so that `passed + skipped + ...`
+# can be held against what collection found. `deselected` is deliberately
+# absent: a deselected test is one nobody ran, which is the whole failure
+# below.
+_OUTCOMES = ("passed", "failed", "error", "errors", "skipped", "xfailed",
+             "xpassed")
+
+
+def _ran(stdout: str) -> int:
+    """How many tests the child actually ran, off its own summary line."""
+    return sum(int(n) for n, word in re.findall(
+        r"(\d+) (%s)\b" % "|".join(_OUTCOMES), stdout))
+
+
+def _collected() -> int:
+    """How many tests `tests/security/` HOLDS -- asked, not assumed.
+
+    A separate collection pass rather than this run's own `testscollected`,
+    because the parent may itself be a subset (`pytest tests/security/
+    test_diff.py`, or a `-k` while iterating) while the child always runs the
+    whole directory. Comparing the child against the parent's selection would
+    make the gate weaker exactly when someone is narrowing it.
+
+    Collection is ~0.2s and executes no test. `skipif` markers do not change
+    it: a skipped test is still a collected one, and it is still counted in
+    the child's `N skipped`.
+    """
+    out = subprocess.run(
+        [sys.executable, "-m", "pytest", str(SUITE), "-q", "--collect-only",
+         "-p", "no:cacheprovider"],
+        cwd=str(REPO), capture_output=True, text=True, check=False)
+    found = re.search(r"(\d+) tests? collected", out.stdout)
+    assert found, ("could not count the tests in tests/security/ -- without "
+                   "that number the engines-on run below cannot be told from "
+                   f"a partial collection of it:\n{out.stdout[-2000:]}")
+    return int(found.group(1))
+
 
 def _engines_are_on() -> bool:
     """Whether THIS process is already the engines-on run.
@@ -110,10 +147,20 @@ def test_the_security_suite_is_green_with_the_engines_on():
     # ran" when one node id is missing -- output with zero FAILED lines in it,
     # which reads exactly like success to anything that only greps for those.
     # So the count is asserted before the exit code, not after.
-    ran = re.search(r"(\d+) passed", out.stdout)
-    assert ran and int(ran.group(1)) > 0, (
-        "the engines-on run reported no passing tests at all, which is a "
-        f"collection failure and not a green run (rc={out.returncode}):\n"
+    #
+    # AGAINST THE SUITE'S OWN COUNT, not against zero. `N passed with N > 0`
+    # plus `returncode == 0` is satisfied by a run that collected 40 of 808
+    # and passed all forty -- a green gate over 5% of the suite, and with no
+    # CI in this repository this is the only gate there is. Anything that
+    # narrows the child's collection (a plugin erroring while collecting one
+    # module, an `--ignore` leaking in from a config file, a conftest raising
+    # `Skipped` at module scope) now fails here instead of passing quietly.
+    expected = _collected()
+    ran = _ran(out.stdout)
+    assert ran >= expected, (
+        f"the engines-on run accounted for {ran} of the {expected} tests "
+        "tests/security/ holds, so it is a PARTIAL run being reported as a "
+        f"green one (rc={out.returncode}):\n"
         f"{report}\n{out.stderr[-2000:]}")
 
     assert out.returncode == 0, (

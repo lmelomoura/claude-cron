@@ -5,8 +5,11 @@ from pathlib import Path
 from . import ignores
 from .fingerprint import fingerprint
 from .ignores import ignored
-
-_SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", "build"}
+# THE shared engine scope, not a copy of it -- see `deps.py`, which imported
+# the same set for the same reason. `secrets.SKIP_DIRS` is public precisely
+# because it is no longer one module's business: it is what every scanner,
+# built-in or engine, is told an analysis covers.
+from .secrets import SKIP_DIRS as _SKIP_DIRS
 _KEY_TEXT_SUFFIXES = (".pem", ".key")
 _KEY_BINARY_SUFFIXES = (".p12", ".pfx", ".jks")
 _KEY_SNIFF_BYTES = 4096

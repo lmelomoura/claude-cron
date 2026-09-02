@@ -1141,10 +1141,12 @@ only reachable again with `!defaults` set.
 
 **`ignore_paths` and `min_severity` are two different filters, and confusing
 them is expensive.** `ignore_paths` excludes globs from the **analysis**: the
-working-tree secret scan, the git-history secret sweep, the hygiene pass and the
-infrastructure-as-code check all obey the same globs, so a fixtures directory
-full of deliberately fake credentials never becomes a finding at all — from any
-of the four. The one deterministic phase it deliberately does **not** filter is
+working-tree secret scan, the git-history secret sweep, the hygiene pass, the
+infrastructure-as-code check and the SAST pre-pass all obey the same globs, so a
+fixtures directory full of deliberately fake credentials never becomes a finding
+at all — from any of the five, and the dependency findings read out of a
+lockfile under one of those globs are filtered too. The one deterministic phase
+it deliberately does **not** filter is
 the dependency **inventory**: a lockfile under an ignored glob still declares
 packages this project ships, so the SBOM stays complete wherever the file sits.
 The *findings* from that lockfile **are** filtered, which is a real gap between

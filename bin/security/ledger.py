@@ -32,7 +32,14 @@ CREATE TABLE IF NOT EXISTS analysis (
   -- clean report, an empty coverage note and no banner -- and that report
   -- became the baseline every later analysis is diffed against. See
   -- `cmd_finish`, which refuses to record `done` without it.
-  prepared INTEGER NOT NULL DEFAULT 0);
+  prepared INTEGER NOT NULL DEFAULT 0,
+  -- WHICH PRODUCERS ACTUALLY RAN in this analysis's `prepare`, comma
+  -- separated (see `mark_prepared`). `prepared` says the deterministic half
+  -- ran; this says WHAT ran, which is a different fact and the one
+  -- `diff._proven` needs. Trivy absent means the `iac` phase produced
+  -- nothing because nobody looked, and `prepared` alone cannot tell that
+  -- from a Dockerfile that is genuinely clean.
+  produced TEXT NOT NULL DEFAULT '');
 
 CREATE INDEX IF NOT EXISTS analysis_by_scope ON analysis(project, repo, branch);
 
@@ -49,6 +56,13 @@ CREATE TABLE IF NOT EXISTS finding (
   -- for the `other` escape hatch, whose whole point is to be visibly
   -- unclassified rather than quietly mislabelled.
   cwe TEXT NOT NULL DEFAULT '', owasp TEXT NOT NULL DEFAULT '',
+  -- WHICH PRODUCER MINTED THIS IDENTITY -- 'trivy', 'osv', 'gitleaks',
+  -- 'secrets', 'hygiene', 'trivy-iac', 'semgrep', or 'agent'. Read by
+  -- `diff._proven` against the analysis's own `produced` above: only the
+  -- producer that could re-find a finding can prove it gone. Never the LAST
+  -- writer -- see `record_finding`, where a re-report deliberately leaves
+  -- this column alone.
+  producer TEXT NOT NULL DEFAULT '',
   -- The deterministic phase (cmd_prepare) and the agent's report-finding
   -- command can both record the same fingerprint into one analysis -- the
   -- agent's triage job is explicitly to RE-REPORT a deterministic finding
@@ -132,6 +146,8 @@ _ANALYSIS_COLUMNS = (
     # written before this column existed -- and the page shows a dash for it
     # rather than a zero that reads as an empty repository.
     ("lines_of_code", "INTEGER NOT NULL DEFAULT 0"),
+    # The producers that ran. See the column's own comment in _SCHEMA.
+    ("produced", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -142,6 +158,8 @@ _ANALYSIS_COLUMNS = (
 _FINDING_COLUMNS = (
     ("cwe", "TEXT NOT NULL DEFAULT ''"),
     ("owasp", "TEXT NOT NULL DEFAULT ''"),
+    # Who minted this identity. See the column's own comment in _SCHEMA.
+    ("producer", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -169,10 +187,38 @@ def connect(path) -> sqlite3.Connection:
     return conn
 
 
-def mark_prepared(conn, analysis_id) -> None:
-    """Record that the deterministic phases ran over this analysis."""
-    conn.execute("UPDATE analysis SET prepared=1 WHERE id=?", (analysis_id,))
+def mark_prepared(conn, analysis_id, produced=()) -> None:
+    """Record that the deterministic phases ran over this analysis, and WHICH
+    producers among them actually ran.
+
+    ONE STATEMENT for both columns, deliberately. `prepared` is what lets
+    `finish` record `done`, and `produced` is what lets `diff._proven` tell a
+    phase that found nothing from a phase that never looked -- an analysis
+    holding one without the other is a ledger that can still make the false
+    remediation claim this column was added to end. Written last in
+    `cmd_prepare`, after the findings are in, for the reason that call site
+    gives.
+
+    `produced` is stored comma separated because it is a small closed set of
+    identifiers this module writes and reads back -- no producer name contains
+    a comma, `_producers` is what turns it back into a set, and a JSON array
+    would buy nothing but a parse.
+    """
+    conn.execute("UPDATE analysis SET prepared=1, produced=? WHERE id=?",
+                 (",".join(sorted({p for p in produced if p})), analysis_id))
     conn.commit()
+
+
+def producers_of(row) -> set:
+    """The `produced` column of an analysis row, as a set.
+
+    A function rather than a `.split(",")` at each call site: `""` splits to
+    `[""]`, and a stray empty string in that set would make a finding whose
+    `producer` is somehow empty read as proven -- exactly the wrong direction
+    to fail in.
+    """
+    raw = (row["produced"] if "produced" in row.keys() else "") or ""
+    return {p for p in raw.split(",") if p}
 
 
 def set_lines_of_code(conn, analysis_id, lines) -> None:
@@ -217,6 +263,18 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
     # same `with conn:` block as the insert path, so a failed re-report
     # (occurrences fail to insert) rolls back the field update and the
     # deletion too, instead of leaving the finding with half its occurrences.
+    #
+    # `producer` IS THE ONE COLUMN THE UPSERT DOES NOT TOUCH, and that is the
+    # whole point of it. It records who MINTED this identity, not who wrote
+    # the row last -- and the agent's triage job (Job 2 in the skill) is
+    # explicitly to re-report a deterministic finding with a corrected
+    # severity and rationale. Letting that re-report stamp `agent` over
+    # `trivy-iac` would hand the finding's absence-proof to the analysis
+    # closing `done`, which is precisely the false `fixed` `diff._proven`
+    # exists to prevent -- reintroduced through the one door that is supposed
+    # to improve a finding. `prepare` always runs before the agent (see
+    # `cmd_finish`'s `prepared` guard), so the first writer is always the
+    # minting one.
     with conn:
         existing = conn.execute(
             "SELECT id FROM finding WHERE analysis_id=? AND fingerprint=?",
@@ -235,12 +293,13 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
         else:
             cur = conn.execute(
                 "INSERT INTO finding (analysis_id, fingerprint, category, rule, severity,"
-                " title, rationale, remediation, partial_note, cwe, owasp)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                " title, rationale, remediation, partial_note, cwe, owasp, producer)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (analysis_id, finding["fingerprint"], finding["category"], finding["rule"],
                  finding["severity"], finding["title"], finding.get("rationale", ""),
                  finding.get("remediation", ""), finding.get("partial_note", ""),
-                 finding.get("cwe", ""), finding.get("owasp", "")))
+                 finding.get("cwe", ""), finding.get("owasp", ""),
+                 finding.get("producer", "")))
             fid = cur.lastrowid
         for occ in finding.get("occurrences", []):
             conn.execute(

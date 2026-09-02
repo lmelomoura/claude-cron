@@ -1772,6 +1772,148 @@ def test_iac_gap_is_declared_when_trivy_produces_no_report(tmp_path, monkeypatch
     assert "did not finish" in row["coverage_note"]
 
 
+# 64 lowercase hex, so `report-finding` will accept it back: the re-report
+# test below goes through the agent's own door, which checks the SHAPE of a
+# fingerprint even for a finding `prepare` minted.
+_IAC_FP = "d1ac" + "0" * 60
+
+
+def _only_trivy(monkeypatch):
+    """A machine with Trivy and nothing else, and neither real binary run.
+
+    `engine_path("trivy")` gates the dependency phase as well as the IaC one,
+    so `trivy_scan` has to be stubbed too or these tests shell out to the
+    actual scanner.
+    """
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/trivy" if name == "trivy" else None)
+    monkeypatch.setattr(security_cli.adapters, "trivy_scan",
+                        lambda root, ignore_paths=(): ([], []))
+    monkeypatch.setattr(
+        security_cli.adapters, "trivy_iac_scan",
+        lambda root, ignore_paths=(): (
+            [dict(_iac_finding(), fingerprint=_IAC_FP)], []))
+
+
+def test_a_run_without_trivy_never_declares_an_iac_finding_fixed(
+        tmp_path, monkeypatch):
+    """THE BLOCKING DEFECT, end to end, on the path the spec calls NORMAL.
+
+    Analysis 1 runs with Trivy and records a Dockerfile misconfiguration;
+    analysis 2 reads the SAME untouched checkout on a machine without it. The
+    checklist used to say `fixed` -- in the same report whose coverage note
+    says the Dockerfile "was not checked at all this run" -- because `iac` sat
+    in DETERMINISTIC_CATEGORIES, where `prepare` finishing counts as proof.
+    `iac` has no fallback by design, so `[]` from that phase has only ever
+    meant "nobody looked".
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+
+    _only_trivy(monkeypatch)
+    first = open_analysis(db, commit="a1", run_id="r1")
+    security_cli.main(["prepare", "--analysis", str(first), "--root", str(root),
+                       "--db", str(db)])
+    run(db, "finish", "--analysis", str(first), "--state", "done")
+
+    # The same checkout, a machine with no engines at all.
+    monkeypatch.setattr(security_cli.adapters, "engine_path", lambda name: None)
+    second = open_analysis(db, commit="a2", run_id="r2")
+    security_cli.main(["prepare", "--analysis", str(second), "--root", str(root),
+                       "--db", str(db)])
+    run(db, "finish", "--analysis", str(second), "--state", "done")
+
+    checklist = run(db, "checklist", "--analysis", str(second))
+    iac = [f for f in checklist["findings"] if f["category"] == "iac"]
+    assert [f["state"] for f in iac] == ["pending"], (
+        "the IaC scan did not run, so it proved nothing -- and the report "
+        "that says the Dockerfile was never checked must not also say its "
+        "misconfiguration is fixed")
+
+
+def test_the_same_engine_running_again_does_close_an_iac_finding(
+        tmp_path, monkeypatch):
+    """The other direction of the same rule, and the reason it is a producer
+    and not a blanket `pending`: Trivy running and finding nothing IS proof,
+    so a genuinely fixed Dockerfile closes on the very next analysis."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+
+    _only_trivy(monkeypatch)
+    first = open_analysis(db, commit="a1", run_id="r1")
+    security_cli.main(["prepare", "--analysis", str(first), "--root", str(root),
+                       "--db", str(db)])
+    run(db, "finish", "--analysis", str(first), "--state", "done")
+
+    # Trivy is still here; the misconfiguration is gone.
+    monkeypatch.setattr(security_cli.adapters, "trivy_iac_scan",
+                        lambda root, ignore_paths=(): ([], []))
+    second = open_analysis(db, commit="a2", run_id="r2")
+    security_cli.main(["prepare", "--analysis", str(second), "--root", str(root),
+                       "--db", str(db)])
+    run(db, "finish", "--analysis", str(second), "--state", "done")
+
+    checklist = run(db, "checklist", "--analysis", str(second))
+    iac = [f for f in checklist["findings"] if f["category"] == "iac"]
+    assert [f["state"] for f in iac] == ["fixed"]
+
+
+def test_prepare_records_which_producers_actually_ran(tmp_path, monkeypatch):
+    """`prepared` says the deterministic half ran; `produced` says WHAT ran,
+    and only the second can tell a clean Dockerfile from an unread one."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+
+    _only_trivy(monkeypatch)
+    aid = open_analysis(db)
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT produced FROM analysis WHERE id=?", (aid,)).fetchone()
+    produced = set(row["produced"].split(","))
+    # Trivy answered for both of its phases, the built-in scanner for secrets,
+    # and hygiene always runs. Semgrep and Syft are not on this machine.
+    assert {"trivy", "trivy-iac", "secrets", "hygiene"} <= produced
+    assert "semgrep" not in produced and "gitleaks" not in produced
+
+    producer = {f["rule"]: f["producer"]
+                for f in run(db, "findings", "--analysis", str(aid))}
+    assert producer["DS-0002"] == "trivy-iac"
+
+
+def test_an_agents_re_report_does_not_steal_a_deterministic_producer(
+        tmp_path, monkeypatch):
+    """Triage is the agent's JOB (Job 2 in the skill): it re-reports a
+    deterministic finding with a corrected severity and rationale. If that
+    re-report restamped `producer` as `agent`, the finding's absence-proof
+    would move to the analysis closing `done` -- reintroducing the false
+    `fixed` through the one door meant to improve a finding."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+
+    _only_trivy(monkeypatch)
+    aid = open_analysis(db)
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+
+    run(db, "report-finding", "--analysis", str(aid),
+        stdin=json.dumps({**_iac_finding(), "fingerprint": _IAC_FP,
+                          "severity": "low",
+                          "rationale": "the base image is pinned"}))
+
+    rows = {f["rule"]: f for f in run(db, "findings", "--analysis", str(aid))}
+    assert rows["DS-0002"]["severity"] == "low", "the re-report must still land"
+    assert rows["DS-0002"]["producer"] == "trivy-iac", (
+        "the producer records who MINTED the identity, never who wrote the "
+        "row last")
+
+
 def test_offline_skips_iac_scanning_too(tmp_path, monkeypatch):
     """`--offline` turns Trivy's misconfiguration scan off exactly as it
     turns the dependency and SAST phases off: its checks bundle is fetched
@@ -2180,6 +2322,52 @@ def test_the_sbom_note_is_replaced_not_duplicated_when_syft_and_trivy_both_run(
     assert security_cli.adapters.DEP_SBOM_NOTE not in note
     assert security_cli.adapters.SYFT_SBOM_NOTE in note
     assert "Trivy" in note
+
+
+def test_the_sbom_notes_are_dropped_when_no_SBOM_IS_STORED_AT_ALL(
+        tmp_path, monkeypatch):
+    """The case the swap above fell straight through.
+
+    `trivy_scan` appends `DEP_SBOM_NOTE` unconditionally, and `cmd_prepare`
+    only swapped it out when `SYFT_SBOM_NOTE` was present. But `_scan_sbom`
+    returns `(None, notes)` for a checkout with no lockfile `deps.inventory`
+    reads and a Syft that answered with nothing usable -- so NOTHING is
+    stored, `render --format sbom` answers "no SBOM recorded", and the note
+    still read "The SBOM lists the five lockfile formats ..." beside "Syft
+    wrote a document naming no `components`, so it was not used" -- the
+    second implying a fallback that never happened.
+    """
+    root = tmp_path / "repo"          # no lockfile of any kind
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(
+        security_cli.adapters, "engine_path",
+        lambda name: f"/usr/bin/{name}" if name in ("trivy", "syft") else None)
+    monkeypatch.setattr(
+        security_cli.adapters, "trivy_scan",
+        lambda root, ignore_paths=(): (
+            [], [security_cli.adapters.DEP_SBOM_NOTE]))
+    monkeypatch.setattr(
+        security_cli.adapters, "syft_sbom",
+        lambda root: (None, [security_cli.adapters.SYFT_NO_COMPONENTS_NOTE]))
+    monkeypatch.setattr(security_cli.adapters, "trivy_iac_scan",
+                        lambda root, ignore_paths=(): ([], []))
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT COUNT(*) FROM sbom").fetchone()[0] == 0
+
+    note = run(db, "list", "--project", "web")[0]["coverage_note"]
+    assert security_cli.adapters.DEP_SBOM_NOTE not in note, (
+        "no SBOM was stored, so nothing may describe what it lists")
+    assert security_cli.NO_SBOM_NOTE in note, (
+        "and the reader has to be told there is no SBOM, or "
+        "`SYFT_NO_COMPONENTS_NOTE`'s 'it was not used' still implies a "
+        "fallback that never happened")
 
 
 @needs_syft
