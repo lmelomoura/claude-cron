@@ -403,6 +403,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **A security analysis is now launched with the `Agent` tool closed, and it
+  cost $51.44 to learn that asking was not enough.** The design of this module
+  chose one agent over subagents — fewer moving parts, one trace a human can
+  read end to end — but that decision lived only in the spec: nothing in the
+  skill or the analysis prompt forbade the tool, and nothing at launch removed
+  it. Analysis 10 fanned the SAST pass out to **six** subagents split by
+  repository area; analysis 9 did the same and cost **$51.44**. Both then
+  triaged **zero** of the 40 deterministic findings waiting for them — the
+  triage the whole checklist rests on — because the budget had already gone to
+  SAST. The derived security job now carries `disallowed_tools: "Agent"` and
+  `run_job` turns any job's `disallowed_tools` into the CLI's
+  `--disallowedTools`, so the tool is absent before the first turn. A
+  **denylist, not the `allowed_tools` allowlist that was already there**: an
+  allowlist would have to name every tool an analysis needs and would break
+  silently the first time the CLI grew a new one, and the failure would look
+  like an agent that had mysteriously stopped working. The analysis prompt
+  still says the tool is missing and why, so the agent does not spend turns
+  rediscovering the wall. `disallowed_tools` is a general job field — set it on
+  your own jobs if you want it — but it is deliberately **not** a per-project
+  `security.*` setting, because a project able to re-open the tool could re-buy
+  the $51.
+
 - **A finding that was being reported from a fixtures directory is now
   reported `fixed` on the next analysis, and nothing was fixed.** This is
   the honest cost of the two defaults above, and it is stated here rather

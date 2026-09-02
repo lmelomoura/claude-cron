@@ -194,6 +194,8 @@ A job is one object in `config/jobs.json`. Fields:
 | `stall_timeout_seconds` | kill a run only after this long with **no output** (default 1200) |
 | `timeout_seconds` | optional absolute time cap (**omit = no limit**) |
 | `permission_mode` | `dontAsk`, `bypassPermissions` (full autonomy, needed for headless tool use), … |
+| `allowed_tools` | comma-separated allowlist passed as `--allowedTools` (**omit = every tool**) |
+| `disallowed_tools` | comma-separated denylist passed as `--disallowedTools` (**omit = nothing denied**); a security analysis is derived with `Agent` here, so it cannot spend its budget on subagents instead of triage |
 
 Create and edit jobs entirely from the dashboard (**+ New job** / **Edit**),
 including the precheck script, or from the CLI.
