@@ -2351,6 +2351,86 @@ def test_a_finding_no_producer_claims_does_not_block_the_close(tmp_path):
     assert "triaged" not in row["coverage_note"]
 
 
+def _decide(db, fingerprint, *, project="web", state="accepted",
+            reason="rotated at the provider; the commit stays in history"):
+    """A human's decision, written straight into the ledger.
+
+    NOT through `security decide`, which refuses while any analysis of the
+    project is `running` -- and the analysis under test is, right up to the
+    `finish` these tests are about. That guard is a real one (see `cmd_decide`)
+    and is tested where it lives; here it would only force the decision to be
+    recorded after the close it is supposed to affect.
+    """
+    conn = security_ledger.connect(db)
+    security_ledger.set_decision(conn, project, fingerprint, state, reason,
+                                 "luiz")
+    conn.close()
+
+
+def test_a_finding_the_operator_has_decided_on_does_not_block_the_close(tmp_path):
+    """A DECISION IS A STRONGER READING THAN A RE-REPORT, and the gate has to
+    honour it or it contradicts the operator for ever.
+
+    `diff.classify` lets a project decision override every state a finding
+    could otherwise be in, and the skill sends the agent past those rows: an
+    `accepted` finding is not its to re-report. The canonical case is the one
+    the skill describes -- a credential in git history, `secret`, high,
+    re-found by every sweep for as long as the commit exists, whose only
+    closure is a human rotating it and accepting the risk. Without this
+    exclusion that repository's every future analysis closes `capped` naming
+    the finding its operator already ruled on, and nothing an agent could do
+    would ever clear it."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="aws_secret_key", severity="high",
+                          category="secret", producer="secrets",
+                          file="config/legacy.env")
+    _decide(db, fp)
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert "never triaged" not in row["coverage_note"], row["coverage_note"]
+
+
+def test_an_undecided_sibling_still_lowers_the_close_and_is_the_one_named(tmp_path):
+    """The control for the exclusion above, in the SAME analysis: it must
+    subtract exactly the decided row and nothing else. A gate that stopped
+    counting the moment any decision existed would be indistinguishable, from
+    the report, from one that had been switched off."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    decided = _scanner_finding(db, aid, rule="CVE-1", severity="critical")
+    _scanner_finding(db, aid, rule="CVE-2", severity="high", file="pom.xml")
+    _decide(db, decided)
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "capped"
+    note = row["coverage_note"]
+    assert "1 deterministic finding was never triaged" in note, note
+    assert "It is: CVE-2 (pom.xml)." in note, note
+    assert "CVE-1" not in note, "the decided row is not a debt: " + note
+
+
+def test_a_decision_in_another_project_exempts_nothing_here(tmp_path):
+    """The `decision` table is keyed (project, fingerprint) on purpose --
+    dismissing a false positive on one repository must not silently dismiss the
+    identical fingerprint on another -- and the gate is scoped the same way. A
+    query that dropped the project term would let one operator's judgement on
+    their own repository close every other repository's runs."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    _decide(db, fp, project="other", state="false_positive",
+            reason="not the same dependency tree at all")
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "capped"
+    assert "CVE-1 (yarn.lock)" in row["coverage_note"]
+
+
 def test_the_note_says_it_is_when_exactly_one_finding_was_skipped(tmp_path):
     """Singular all the way through -- "1 deterministic finding WAS never
     triaged ... IT IS". The n=4 wording is what every other test here

@@ -19,6 +19,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The triage gate no longer names a finding the operator already ruled on.**
+  `_untriaged` counted every scanner row of the analysis at `medium` or above
+  that carried no re-report — decided or not — while `diff.classify` lets a
+  project decision override every other state a finding can be in, and the skill
+  correctly sends the agent past those rows. The canonical case is the one the
+  skill itself describes: a credential in git history, `secret`, high, re-found
+  by every sweep for as long as the commit exists, whose only closure is a human
+  rotating it at the provider and accepting the risk. **What it cost not to have
+  this:** from the moment the operator accepted it, every later analysis of that
+  repository closed `capped` under a note naming the very finding they had ruled
+  on — the gate contradicting its own operator, on every run, with nothing an
+  agent could ever do to clear it. The query now excludes fingerprints the
+  project has a decision for, scoped by project exactly as the `decision` table
+  is (a judgement on one repository must not dismiss the identical fingerprint
+  on another). A decision is a stronger record that a mind read the row than any
+  re-report: it is written, signed and permanent. Job 2 of the skill said the
+  four states it lists are "exactly" the rows a producer recorded this analysis,
+  which was untrue in both directions; it now says which two kinds of
+  producer-recorded row sit outside them and why — a `pending` row, which
+  belongs to Job 1, and a decided row, which belongs to the human who signed it.
+
 - **The triage mark now costs a reading, and the cheapest rubber stamp can no
   longer strip a finding of its evidence.** The gate that lowers `done` to
   `capped` when a scanner finding at `medium` or above was never read takes its

@@ -282,6 +282,17 @@ def test_the_pins_catch_the_rewrites_that_used_to_slip_past_them():
     # Applied to the LIVE document, so a rewrite that stops being expressible
     # (because the sentence it edits is gone) fails loudly rather than passing
     # by not applying.
+    #
+    # WHAT THESE PINS DO NOT CATCH, and nobody should read them as more: a
+    # spelling list catches spellings. An exemption written in words that are
+    # not on the ban list passes every check in this file -- a later reviewer
+    # measured three that did, 21/21 green each time: "can be skipped", "A
+    # re-report is optional for a row you agree with", and "neither does a row
+    # you read without changing it". None of them contains a banned phrase, and
+    # the affirmative pins are satisfied elsewhere in the document, so the skill
+    # can grant the exemption the gate punishes and this suite will not notice.
+    # The only real defence is a reader who knows the rule; these tests hold the
+    # sentences that have ALREADY got past one.
     text = SKILL.read_text()
 
     # 1. The gate, inverted, with every token the old check looked for intact.

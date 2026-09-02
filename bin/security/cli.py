@@ -1280,7 +1280,7 @@ def cmd_report_finding(args):
         sys.exit(f"report-finding: could not record it: {exc}")
 
 
-def _untriaged(conn, analysis_id) -> list:
+def _untriaged(conn, analysis_id, project) -> list:
     """The scanner findings at or above TRIAGE_FLOOR that nobody ever read.
 
     Worst first, then in the order they were recorded, because the note built
@@ -1299,6 +1299,25 @@ def _untriaged(conn, analysis_id) -> list:
     nobody read it" is an accusation this query has no evidence for; the
     direction to fail in is the one that does not downgrade an honest `done`
     over a row whose history the ledger never recorded.
+
+    A FINGERPRINT THE OPERATOR HAS ALREADY DECIDED ON IS EXCLUDED TOO, and it
+    is the strongest exclusion of the three. `triaged` records that an agent
+    re-reported the row; a `decision` records that a HUMAN read it, wrote down
+    why, signed it and made the answer permanent -- `diff.classify` lets that
+    decision override every state a finding could otherwise be in, precisely
+    because it outranks anything a run can conclude. A gate that then named the
+    same finding as unread would be telling the operator that their own call is
+    a debt, and would do it on every analysis for as long as the finding exists.
+    The canonical case is the one the skill itself describes: a credential in
+    git history, `secret`, high, re-found by every run for ever, whose only
+    closure is a human rotating it and accepting the risk. Nothing an agent can
+    do would ever clear that row.
+
+    Scoped by PROJECT, like the `decision` table itself (`ledger._SCHEMA`:
+    dismissing a false positive on `develop` and watching it resurrect on `main`
+    would make the feature unusable). A decision recorded against another
+    project is another operator's reading of another repository and exempts
+    nothing here.
     """
     placeholders = ",".join("?" * len(TRIAGE_BLOCKING))
     rows = conn.execute(
@@ -1308,8 +1327,10 @@ def _untriaged(conn, analysis_id) -> list:
         " FROM finding f"
         " WHERE f.analysis_id=? AND f.triaged=0 AND f.producer<>''"
         f" AND f.producer<>? AND f.severity IN ({placeholders})"
+        " AND NOT EXISTS (SELECT 1 FROM decision d WHERE d.project=?"
+        "                 AND d.fingerprint=f.fingerprint)"
         " ORDER BY f.id",
-        (analysis_id, diff.AGENT, *TRIAGE_BLOCKING)).fetchall()
+        (analysis_id, diff.AGENT, *TRIAGE_BLOCKING, project)).fetchall()
     # Sorted here rather than by a CASE expression built from TRIAGE_BLOCKING:
     # the slice is a Python tuple and turning it into SQL means interpolating
     # values into a statement, which is a habit this file does not keep even
@@ -1456,7 +1477,9 @@ def cmd_finish(args):
     #
     # THAT IS TRUE ONLY BECAUSE OF THREE RULES ELSEWHERE, and it stops being
     # true if any of them is relaxed: `_untriaged` excludes rows the agent
-    # minted AND rows minted by nobody (`producer<>''`), and `record_finding`
+    # minted AND rows minted by nobody (`producer<>''`) -- its fourth
+    # exclusion, a fingerprint the operator has decided on, only ever removes
+    # rows and quotes nothing -- and `record_finding`
     # REFUSES an agent write onto an unread scanner row rather than applying it
     # (see its docstring), so a row this query returns has never had a byte of
     # agent text written into its `rule` or its occurrences. All three are
@@ -1464,7 +1487,7 @@ def cmd_finish(args):
     untriaged_note = ""
     triage_phase = None
     if state == "done":
-        skipped = _untriaged(conn, args.analysis)
+        skipped = _untriaged(conn, args.analysis, row["project"])
         if skipped:
             state = "capped"
             named = "; ".join(f"{r['rule']} ({r['file'] or 'no file recorded'})"
