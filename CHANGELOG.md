@@ -44,7 +44,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   analysis and reads `open` — the truth. The two deliberately unmapped
   built-in rules (`github_token`, `slack_token`) keep their own names on every
   path, as before. `migrate-rules` remains for ledgers written before this
-  change.
+  change, and runs without gitleaks (next entry).
+- **`migrate-rules` runs on a machine without gitleaks.** It used to exit
+  there, because the built-in scanner minted its own names on the very next
+  analysis and undid the migration. With both scanners minting one vocabulary
+  that reason is gone — and the ledger the verb exists to fix is exactly the
+  one a machine without gitleaks wrote before this change. **What it cost to
+  keep the refusal:** reproduced on a scratch ledger, a pre-branch
+  `aws_access_key` row with an `accepted` decision read `fixed` beside a `new
+  aws-access-token` carrying no decision, the close went `capped` for a row a
+  human had already ruled on, and the remedy the CHANGELOG pointed at was
+  refused. The presence check is lifted; the refusal while any analysis is
+  `running` stays. `--help` now says what the verb does, when to run it, and
+  that it needs no engine.
 - **The secret row no longer reads `ran` while gitleaks' working-tree pass
   produced nothing.** `adapters.gitleaks_scan` reported what its HISTORY sweep
   covered and nothing about its tree pass, so `gitleaks git` finishing while

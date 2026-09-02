@@ -108,10 +108,13 @@ RULE_NAMES = tuple(sorted(SAST_RULES))
 # finding per credential instead of two, and what keeps that finding one
 # across a scanner coming and going. `migrate-rules` therefore serves ledgers
 # written BEFORE this branch -- rows the built-in minted under the source
-# names when it ran alone -- and nothing an analysis does today undoes it. It
-# stays a deliberate one-shot verb, and refused where gitleaks is not present,
-# because a rename is a promise about identity: the operator makes it once,
-# knowingly, on the machine whose engine defines the target vocabulary.
+# names when it ran alone -- and nothing an analysis does today undoes it, so
+# it runs on ANY machine, engine or not: the ledger it fixes is exactly the
+# one a machine without gitleaks wrote, and refusing it there (as the verb
+# once did, for the re-minting this paragraph describes as gone) left that
+# operator with a `fixed`-beside-`new` flip and an orphaned decision. It stays
+# a deliberate one-shot verb because a rename is a promise about identity: the
+# operator makes it once, knowingly.
 #
 # Each pairing below was VERIFIED by running gitleaks 8.30.1 over a synthetic
 # sample of the shapes the hand-written pattern accepts and reading the RuleID

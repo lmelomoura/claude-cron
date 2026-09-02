@@ -5130,7 +5130,9 @@ def _gitleaks_stub(tmp_path):
 
 
 def with_gitleaks(tmp_path, base=None):
-    """Env for a SUBPROCESS run that has to get past the gitleaks guard."""
+    """Env for a SUBPROCESS run with the engines on and a gitleaks stub on
+    PATH. `migrate-rules` no longer has a gitleaks guard to get past; this
+    stays so the migration tests run the same in both configurations."""
     base = os.environ if base is None else base
     return {**base, "CC_SECURITY_ENGINES": "on",
             "PATH": f"{_gitleaks_stub(tmp_path)}{os.pathsep}{base['PATH']}"}
@@ -5157,66 +5159,76 @@ def test_migrate_rules_reports_nothing_when_there_is_nothing_to_rename(tmp_path)
     assert out == {"renamed": [], "findings": 0}
 
 
-def test_migrate_rules_is_refused_without_gitleaks(tmp_path):
-    """The refusal, reached through its own front door.
+def test_migrate_rules_runs_without_gitleaks_and_carries_the_decision_across(tmp_path):
+    """THE LEDGER THIS VERB EXISTS FOR, on the machine that wrote it.
 
-    Every secret rename moves findings from the built-in pattern scanner's
-    snake_case names onto gitleaks' kebab-case ones. When this refusal was
-    written, a machine with no gitleaks -- or with the engines switched off --
-    minted the old names again on its very next analysis, so a migration made
-    there was undone at once: the migrated row read `fixed` (nothing produced
-    its new name) and the re-minted one `new`, in ONE report, with the human
-    decision on each side stranded. Both scanners mint one vocabulary now
-    (`_scan_secrets` renames at mint on the fallback path too), so that route
-    is closed; the refusal stays because a rename is a one-shot promise about
-    identity, made on the machine whose engine defines the target vocabulary
-    -- and its message still names the damage it was written after.
+    A ledger written before both scanners minted one vocabulary holds the
+    built-in scanner's own names -- `aws_access_key`, `producer=secrets` --
+    and the human decisions taken on them. The first analysis after that
+    change, on a machine WITHOUT gitleaks, mints `aws-access-token` for the
+    same file: a different fingerprint, so the old row read `fixed`, the new
+    one `new` with no decision on it, and the close went `capped` for a row a
+    human had already ruled on. `migrate-rules` is the remedy -- and it used
+    to be REFUSED on exactly that machine, for a reason (the built-in
+    re-minting its old names) that the one-vocabulary rule had made false.
 
-    Refused before the ledger is opened, like the category check and for the
-    same reason -- it needs nothing from the ledger, so it cannot leave a map
-    half-applied.
+    So: no gitleaks (`CC_SECURITY_ENGINES=off`, stated rather than inherited
+    from conftest, because `engine_path` consults the switch before PATH and
+    the engines-on run of this suite must exercise the same machine), the
+    migration runs, the decision lands on the new identity, and the next
+    fallback analysis reads the row `accepted` and closes `done`.
     """
-    db = tmp_path / "security.db"
-    aid = open_analysis(db)
-    run(db, "finish", "--analysis", str(aid), "--state", "done")
-
-    # CC_SECURITY_ENGINES=off, STATED here rather than inherited from
-    # conftest's default. `engine_path` consults the switch before it consults
-    # PATH, so an engine that is off is an engine that is absent as far as the
-    # next analysis is concerned -- which is the machine this refusal is about,
-    # and it is the same machine on a laptop with gitleaks and on CI without
-    # it. Inheriting the default instead made this test pass only while nobody
-    # ran the suite in production's configuration: with the engines on and
-    # gitleaks really installed, `migrate-rules` correctly proceeded and the
-    # refusal this test is named for was never reached.
     env_off = {**os.environ, "CC_SECURITY_ENGINES": "off"}
-    out = fails(db, "migrate-rules", env=env_off)
-    assert out.returncode != 0
-    assert "gitleaks is not available" in out.stderr
-    assert "nothing was migrated" in out.stderr.lower()
-    # It names the damage, not just the missing binary: an operator who is
-    # told only "gitleaks not found" installs nothing and runs it anyway.
-    assert "fixed AND new" in out.stderr
+    db = tmp_path / "security.db"
+    root = git_repo(tmp_path / "repo", [("plant", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"})])
+    path = "prod.env"
+    old_fp = secret_fingerprint("aws_access_key", path)
+    new_fp = secret_fingerprint("aws-access-token", path)
 
-    # And the same machine with the engine visible gets through to the work.
-    assert run(db, "migrate-rules", env=with_gitleaks(tmp_path)) == {
-        "renamed": [], "findings": 0}
+    # The pre-branch analysis: prepared over nothing, then the row the built-in
+    # scanner of that era minted, under its own name and as its own producer.
+    before = prepared_analysis(db, tmp_path)
+    conn = security_ledger.connect(str(db))
+    security_ledger.record_finding(conn, before, {
+        "fingerprint": old_fp, "category": "secret", "rule": "aws_access_key",
+        "severity": "critical", "title": "aws access key committed to the repository",
+        "rationale": "A credential of type aws_access_key was found in the working tree.",
+        "remediation": "rotate", "producer": "secrets",
+        "occurrences": [{"file": path, "line": 1, "snippet_hash": ""}]})
+    conn.close()
+    run(db, "finish", "--analysis", str(before), "--state", "done", env=env_off)
+    run(db, "decide", "--project", "web", "--fingerprint", old_fp,
+        "--state", "accepted", "--reason", "rotated at the provider", "--by", "luiz",
+        env=env_off)
+
+    printed = run(db, "migrate-rules", env=env_off)
+    moved = [r for r in printed["renamed"] if r["from"] == "aws_access_key"]
+    assert moved == [{"category": "secret", "from": "aws_access_key",
+                      "to": "aws-access-token", "findings": 1}], printed
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT fingerprint FROM decision").fetchall() == [(new_fp,)]
+    conn.close()
+
+    after = open_analysis(db)
+    run(db, "prepare", "--analysis", str(after), "--root", str(root), "--offline",
+        env=env_off)
+    run(db, "finish", "--analysis", str(after), "--state", "done", env=env_off)
+    assert run(db, "analysis", "--id", str(after), env=env_off)["state"] == "done"
+    secret = [f for f in run(db, "checklist", "--analysis", str(after), env=env_off)["findings"]
+              if f["category"] == "secret"]
+    assert [(f["rule"], f["state"], f["decision_reason"]) for f in secret] == [
+        ("aws-access-token", "accepted", "rotated at the provider")], secret
 
 
-def test_migrate_rules_refuses_a_machine_with_the_engines_switched_off(tmp_path):
-    """`CC_SECURITY_ENGINES=off` is not a lesser version of "not installed":
-    it is the same machine as far as the next analysis is concerned, because
-    `engine_path` consults the switch before it consults PATH. An operator who
-    installed gitleaks and left the switch off would otherwise migrate onto
-    names their own analyses will never mint."""
+def test_migrate_rules_runs_with_the_engines_switched_off(tmp_path):
+    """`CC_SECURITY_ENGINES=off` used to be refused like an absent binary. It
+    is the same machine as far as the next analysis is concerned -- and that
+    machine now mints the engine's names too, so the migration holds there."""
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     run(db, "finish", "--analysis", str(aid), "--state", "done")
-
-    # gitleaks IS on PATH here -- only the switch is off.
     env = {**with_gitleaks(tmp_path), "CC_SECURITY_ENGINES": "off"}
-    out = fails(db, "migrate-rules", env=env)
-    assert out.returncode != 0 and "gitleaks is not available" in out.stderr
+    assert run(db, "migrate-rules", env=env) == {"renamed": [], "findings": 0}
 
 
 def test_migrate_rules_carries_findings_and_decisions_to_the_new_name(

@@ -431,14 +431,17 @@ def scan_tree(root, ignore, rename=None):
 
     `rename` maps this scanner's rule names onto the names the findings are
     MINTED under. `cli._scan_secrets` passes the secret entries of
-    `taxonomy.RULE_RENAMES` when gitleaks runs beside this scanner, so the two
-    scanners' readings of one credential type share one fingerprint and merge
-    into one finding. Applied AFTER the template rule, which is keyed on this
+    `taxonomy.RULE_RENAMES` on BOTH of its paths -- beside gitleaks, so the
+    two scanners' readings of one credential type share one fingerprint and
+    merge into one finding, and alone, so a row's identity does not change
+    with the scanner on the machine (the first version renamed beside the
+    engine only, and a machine that lost it read `fixed` beside `new` for one
+    credential). Applied AFTER the template rule, which is keyed on this
     scanner's own names, and BEFORE the finding is built, so the identity, the
-    title and the rationale all carry the minted name. None -- the fallback
-    path, when this scanner runs alone -- mints this scanner's own names,
-    exactly as it always has: `migrate-rules` stays the deliberate step from
-    one vocabulary to the other on a machine that gains the engine.
+    title and the rationale all carry the minted name. None mints this
+    scanner's own names: the tests of this module read them, and
+    `migrate-rules` moves a ledger written under them onto the other
+    vocabulary, once, on any machine.
     """
     rename = rename or {}
     out, lines = [], 0

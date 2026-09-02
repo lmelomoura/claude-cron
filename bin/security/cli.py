@@ -608,7 +608,9 @@ def _scan_secrets(root, ignore):
     `open`, which is the truth: the built-in looked, and found it. The two
     deliberately unmapped built-in rules (`github_token`, `slack_token`) keep
     their own names on every path. `migrate-rules` remains for ledgers written
-    before this branch, when the built-in ran alone under its own names.
+    before this branch, when the built-in ran alone under its own names -- and
+    runs on any machine, engine or not, because every path mints the same
+    names now.
 
     `lines` is `lines_of_code`, a by-product of the built-in sweep's read on
     both paths now that the sweep runs on both.
@@ -2180,17 +2182,18 @@ def cmd_migrate_rules(args):
     entry naming a category `rename_rule` refuses is caught before the first
     row moves rather than after the entries above it have already committed.
 
-    Refused, for the same all-or-nothing reason, on a machine where
-    `adapters.engine_path("gitleaks")` is falsy while the map holds a `secret`
-    entry -- the binary absent, or the engines switched off with
-    `CC_SECURITY_ENGINES`. Every secret rename moves findings from the built-in
-    pattern scanner's snake_case names to gitleaks' kebab-case ones, and
-    `_scan_secrets` runs the built-in scanner on exactly the machines this
-    check catches. Migrating there does not merely fail to help: the next
-    analysis re-mints every old name, so each secret is reported `fixed` (the
-    migrated row, under a name nothing produced) AND `new` (the re-minted one)
-    in one report, and both human decisions strand -- which is the precise
-    failure this verb exists to prevent, reached through its own front door.
+    NOT REFUSED FOR WANT OF GITLEAKS, ANY MORE. This verb used to exit on a
+    machine where `adapters.engine_path("gitleaks")` was falsy, because the
+    built-in scanner then minted its own snake_case names on the very next
+    analysis and undid the migration -- every secret `fixed` AND `new` in one
+    report. Both paths of `_scan_secrets` now mint the engine's names
+    (`_SECRET_RENAMES` at mint, with or without the engine), so the migration
+    holds on any machine -- and the ledger it exists to fix is exactly the one
+    a machine WITHOUT gitleaks wrote before this branch. Refusing there left
+    that operator with the flip and no remedy: reproduced on a scratch ledger,
+    a pre-branch `aws_access_key` row with an `accepted` decision read `fixed`
+    beside a `new aws-access-token` carrying no decision, and the close went
+    `capped` for a row a human had already ruled on.
 
     THE REST IS NOT. `rename_rule` wraps each entry in its own transaction, and
     the two failures it can only discover while walking -- a finding with no
@@ -2233,29 +2236,6 @@ def cmd_migrate_rules(args):
                      "rebuilt from what the ledger stores, which is "
                      + ", ".join(ledger.RENAMEABLE_CATEGORIES)
                      + " (see ledger.rename_rule). Nothing was migrated.")
-    # Asked before the ledger is opened, like the category check above and for
-    # the same reason: it needs nothing from the ledger, so it refuses before
-    # the first row moves rather than halfway down the map.
-    if any(category == "secret" for category, _old in taxonomy.RULE_RENAMES) \
-            and not adapters.engine_path("gitleaks"):
-        # The refusal predates the one-vocabulary rule and outlives it. It was
-        # written when a machine without gitleaks minted the built-in's old
-        # names on its next analysis, so a migration here was undone at once
-        # and every migrated secret read fixed AND new in one report. Both
-        # scanners mint the engine's names now (`_scan_secrets`), so that
-        # route is closed -- but a rename is a promise about identity, its
-        # pairings were verified against the engine (`taxonomy.RULE_RENAMES`),
-        # and the operator makes it once, on the machine whose engine defines
-        # the target vocabulary. Conservative, and cheap to keep.
-        sys.exit("migrate-rules: gitleaks is not available here — the secret "
-                 "renames move findings onto ITS rule names, and a rename is a "
-                 "one-shot promise about identity that is made on the machine "
-                 "whose engine defines that vocabulary. (Before both scanners "
-                 "minted one vocabulary, migrating here was also undone by the "
-                 "very next analysis, and every migrated secret was reported "
-                 "fixed AND new in the same report with both human decisions "
-                 "stranded.) Install gitleaks (and leave CC_SECURITY_ENGINES "
-                 "on) before migrating; nothing was migrated.")
     conn = _conn(args)
     live = conn.execute(
         "SELECT id, project FROM analysis WHERE state='running' "
@@ -2952,14 +2932,15 @@ def main(argv=None):
     # guessable from the name.
     mgr = sub.add_parser(
         "migrate-rules", parents=[dbflag],
-        description="Apply taxonomy.RULE_RENAMES to the ledger. Takes no "
-                    "arguments and is safe to run twice. Requires gitleaks to "
-                    "be installed and CC_SECURITY_ENGINES on: the secret "
-                    "renames move findings onto gitleaks' rule names, and a "
-                    "machine that falls back to the built-in scanner mints "
-                    "the old names again on the next analysis, reporting "
-                    "every migrated secret as fixed AND new at once. Also "
-                    "refused while any analysis is running.")
+        description="Apply taxonomy.RULE_RENAMES to the ledger: move every "
+                    "finding recorded under a rule's old name -- and every "
+                    "human decision taken on it -- onto the name the scanners "
+                    "mint today (for secrets, gitleaks' rule names, which both "
+                    "scanners now mint whether or not gitleaks is installed). "
+                    "Run it once on a ledger written before that change, on "
+                    "any machine: it needs no engine, takes no arguments and "
+                    "is safe to run twice. Refused only while an analysis is "
+                    "running.")
     mgr.set_defaults(fn=cmd_migrate_rules)
 
     mv = sub.add_parser("rename-project", parents=[dbflag]); mv.set_defaults(fn=cmd_rename_project)
