@@ -85,27 +85,33 @@ RULE_NAMES = tuple(sorted(SAST_RULES))
 # categories apart on their own, which is why the key carries the category.
 # SAST rules are kebab-case (the table above), hygiene rules are snake_case
 # (the literals hygiene.py passes to `_finding`), and a dependency rule is a
-# GHSA/CVE id. A SECRET rule is BOTH, and which one it is says who found it:
-# snake_case from the built-in pattern scanner (`secrets._RULES`), kebab-case
-# from gitleaks, whose rule ids look exactly like the SAST table's names -- and
-# gitleaks ships around 180 of them, gaining more with every release. Nothing
+# GHSA/CVE id. A SECRET rule is BOTH: snake_case from the built-in pattern
+# scanner (`secrets._RULES`) -- in ledgers written before the two vocabularies
+# were unified, and still for its two unmapped rules -- and kebab-case from
+# gitleaks, whose rule ids look exactly like the SAST table's names, and since
+# `cli._scan_secrets` renames at mint, from the built-in's mapped types too.
+# Gitleaks ships around 180 of those ids, gaining more with every release. Nothing
 # ENFORCES that a name is unique across categories, and a key carrying the
 # category never has to depend on it: `rename_rule` matches on (category, rule)
 # and leaves an identically named rule in the other category untouched.
 #
-# THE SECRET CATEGORY HAS TWO PRODUCERS, AND WHERE GITLEAKS IS INSTALLED BOTH
-# RUN. `cli._scan_secrets` mints the built-in scanner's findings under the
-# names below BEFORE the fingerprint is computed and merges the two lists by
-# identity, so on such a machine no analysis mints a source name of this map
-# any more -- the map is what makes the union one finding per credential
-# instead of two. On a machine WITHOUT gitleaks the built-in runs alone and
-# mints its own names, exactly as it always has. Every entry below therefore
-# moves a finding from the vocabulary of the machine that had no engine to
-# the vocabulary of the machine that does, which is why `migrate-rules` is a
-# deliberate one-shot verb an operator runs after installing gitleaks and not
-# something an analysis does for itself: run it on a machine that then falls
-# back to the built-in scanner and the old names are minted again on the next
-# analysis, undoing it.
+# THE SECRET CATEGORY HAS TWO PRODUCERS AND ONE VOCABULARY. Where gitleaks is
+# installed both run; where it is not, the built-in runs alone; on EITHER path
+# `cli._scan_secrets` mints the built-in scanner's findings under the names
+# below BEFORE the fingerprint is computed (`secrets.scan_tree(rename=...)`),
+# so no analysis on this branch mints a source name of this map into the
+# ledger, and a row's identity does not depend on which scanner was on the
+# machine the day it was minted. The first version renamed on the union path
+# only; the first machine that then lost the engine minted `generic_secret`
+# where the previous analysis held `generic-api-key`, and the checklist read
+# `fixed` beside `new` for one credential. The map is what makes the union one
+# finding per credential instead of two, and what keeps that finding one
+# across a scanner coming and going. `migrate-rules` therefore serves ledgers
+# written BEFORE this branch -- rows the built-in minted under the source
+# names when it ran alone -- and nothing an analysis does today undoes it. It
+# stays a deliberate one-shot verb, and refused where gitleaks is not present,
+# because a rename is a promise about identity: the operator makes it once,
+# knowingly, on the machine whose engine defines the target vocabulary.
 #
 # Each pairing below was VERIFIED by running gitleaks 8.30.1 over a synthetic
 # sample of the shapes the hand-written pattern accepts and reading the RuleID

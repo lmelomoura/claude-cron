@@ -140,6 +140,14 @@ def _proven(finding, analysis_state, prepared, produced) -> bool:
                             machine that loses a scanner, and that is the
                             honest side to err on: `pending` says "not
                             re-checked", which is true of it.
+
+    The rule is about ABSENT rows, and one seam kept a row absent that was
+    still there: the fallback path used to mint the built-in's own rule names,
+    so on a machine that lost gitleaks a row only the built-in saw came back
+    under a different fingerprint -- absent from `current`, its atom in
+    `produced`, sworn `fixed` here while the same credential read `new`. Both
+    paths now mint one vocabulary (`cli._scan_secrets`), so such a row is in
+    `current`, never reaches this function, and reads `open`: the truth.
     """
     producer = (finding.get("producer") or "").strip()
     if not producer:

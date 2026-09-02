@@ -592,12 +592,23 @@ def _scan_secrets(root, ignore):
 
     The engine still yields the whole phase to the built-in scanner if it
     could not produce a report at all -- absent, unversioned, timed out on
-    both passes, or writing a format this code cannot read. That path is what
-    it always was: the built-in's own rule names, `PRODUCER_SECRETS`,
-    `warning`, and `secrets.FALLBACK_NOTE` saying which scanner ran. No
-    renaming there, on purpose: a machine without the engine keeps minting the
-    identities it always has, and `migrate-rules` stays the deliberate step
-    onto the engine's names for the machine that gains it.
+    both passes, or writing a format this code cannot read. That path is
+    `PRODUCER_SECRETS`, `warning`, and `secrets.FALLBACK_NOTE` saying which
+    scanner ran -- and ONE VOCABULARY WITH THE UNION PATH: the built-in's
+    findings are minted under the same names there (`_SECRET_RENAMES` at
+    mint, `secrets.scan_tree(rename=...)`), so a row's identity does not
+    depend on which path minted it. The first version renamed on the union
+    path only, and the seam bit on the first machine that lost the engine:
+    analysis N stored `generic-api-key` with `producer="secrets"`, analysis
+    N+1 minted `generic_secret` for the same file -- a different fingerprint
+    -- and `diff._proven`, correct by its own rule (the built-in ran), swore
+    the old row `fixed` while the same credential appeared as `new`.
+    Reachable without uninstalling anything: two 600 s timeouts on a large
+    repository. With one name on both paths the row is in `current` and reads
+    `open`, which is the truth: the built-in looked, and found it. The two
+    deliberately unmapped built-in rules (`github_token`, `slack_token`) keep
+    their own names on every path. `migrate-rules` remains for ledgers written
+    before this branch, when the built-in ran alone under its own names.
 
     `lines` is `lines_of_code`, a by-product of the built-in sweep's read on
     both paths now that the sweep runs on both.
@@ -610,9 +621,12 @@ def _scan_secrets(root, ignore):
     one only the built-in's generic rule saw. `_produced_by` leaves those
     per-finding stamps alone. `_proven` then asks, atom by atom, whether every
     scanner that saw a row looked again -- so on a machine that later loses
-    gitleaks, a row both saw reads `pending` rather than being sworn `fixed`
-    by the built-in's eight rules. This phase always has a producer: there is
-    no configuration in which neither scanner runs.
+    gitleaks, a row only gitleaks saw reads `pending` rather than being sworn
+    `fixed` by the built-in's eight rules, while a row the built-in saw --
+    alone or beside the engine -- is re-minted under the same name, sits in
+    `current`, and reads `open`: the built-in looked, and found it. This phase
+    always has a producer: there is no configuration in which neither scanner
+    runs.
 
     `status` IS NEVER `skipped` HERE, for that same reason. It is `warning`
     on the fallback path rather than `ran`: eight shaped patterns are not a
@@ -661,8 +675,12 @@ def _scan_secrets(root, ignore):
         notes = [*notes, secrets.FALLBACK_NOTE]
     else:
         notes = [secrets.FALLBACK_NOTE]
-    history_findings, history_note, _swept = secrets.scan_history(root, None, ignore)
-    tree_findings, tree_note, lines = secrets.scan_tree(root, ignore)
+    # The same names as the union path mints, for the reason the docstring
+    # gives: an identity that changed with the scanner on the machine read
+    # `fixed` beside `new` for one credential.
+    history_findings, history_note, _swept = secrets.scan_history(
+        root, None, ignore, rename=_SECRET_RENAMES)
+    tree_findings, tree_note, lines = secrets.scan_tree(root, ignore, rename=_SECRET_RENAMES)
     return (history_findings + tree_findings,
             [history_note, tree_note, *notes], lines, PRODUCER_SECRETS,
             coverage.WARNING)
@@ -2220,14 +2238,24 @@ def cmd_migrate_rules(args):
     # the first row moves rather than halfway down the map.
     if any(category == "secret" for category, _old in taxonomy.RULE_RENAMES) \
             and not adapters.engine_path("gitleaks"):
+        # The refusal predates the one-vocabulary rule and outlives it. It was
+        # written when a machine without gitleaks minted the built-in's old
+        # names on its next analysis, so a migration here was undone at once
+        # and every migrated secret read fixed AND new in one report. Both
+        # scanners mint the engine's names now (`_scan_secrets`), so that
+        # route is closed -- but a rename is a promise about identity, its
+        # pairings were verified against the engine (`taxonomy.RULE_RENAMES`),
+        # and the operator makes it once, on the machine whose engine defines
+        # the target vocabulary. Conservative, and cheap to keep.
         sys.exit("migrate-rules: gitleaks is not available here — the secret "
-                 "renames move findings onto ITS rule names, and without it "
-                 "the next analysis falls back to the built-in scanner and "
-                 "mints the old names again. Every migrated secret would then "
-                 "be reported fixed AND new in the same report, with both "
-                 "human decisions stranded. Install gitleaks (and leave "
-                 "CC_SECURITY_ENGINES on) before migrating; nothing was "
-                 "migrated.")
+                 "renames move findings onto ITS rule names, and a rename is a "
+                 "one-shot promise about identity that is made on the machine "
+                 "whose engine defines that vocabulary. (Before both scanners "
+                 "minted one vocabulary, migrating here was also undone by the "
+                 "very next analysis, and every migrated secret was reported "
+                 "fixed AND new in the same report with both human decisions "
+                 "stranded.) Install gitleaks (and leave CC_SECURITY_ENGINES "
+                 "on) before migrating; nothing was migrated.")
     conn = _conn(args)
     live = conn.execute(
         "SELECT id, project FROM analysis WHERE state='running' "

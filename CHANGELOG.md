@@ -19,6 +19,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A credential committed and deleted under a skipped directory no longer
+  comes back from the built-in's history sweep.** `scan_history` applied the
+  operator's `ignore_paths` to a diff's path and never `secrets.skipped()`,
+  while the tree sweep and the gitleaks adapter both did — so a secret ever
+  committed under `.superpowers/` or `build/` was a `medium`-or-worse row only
+  the built-in saw, counted by the close, and the sentence "one list both
+  scanners read" was false on the history. Reproduced with the binary: three
+  paths committed and deleted, two under `SKIP_DIRS`, and the history sweep
+  reported exactly those two. The sweep now reads the same predicate as the
+  tree, in the same order.
+- **A machine that loses gitleaks no longer swears a built-in-only secret
+  `fixed` while reporting it `new`.** The fallback path — gitleaks absent, or
+  both of its passes failed, which two 600 s timeouts on a large repository
+  reach without uninstalling anything — minted the built-in's own rule names
+  (`generic_secret`, `aws_access_key`, …) while the union path renamed them
+  through `taxonomy.RULE_RENAMES` before the fingerprint. Analysis N with the
+  engines on stored `generic-api-key` under `producer=secrets`; analysis N+1
+  without them minted `generic_secret` for the same file — a different
+  fingerprint — and `diff._proven`, correct by its own rule (the built-in ran),
+  proved the old row `fixed` beside the same credential as `new`. ONE
+  vocabulary for the `secret` category now, whichever scanner minted the row:
+  the fallback renames at mint exactly as the union does, so the row is in the
+  analysis and reads `open` — the truth. The two deliberately unmapped
+  built-in rules (`github_token`, `slack_token`) keep their own names on every
+  path, as before. `migrate-rules` remains for ledgers written before this
+  change.
 - **The secret row no longer reads `ran` while gitleaks' working-tree pass
   produced nothing.** `adapters.gitleaks_scan` reported what its HISTORY sweep
   covered and nothing about its tree pass, so `gitleaks git` finishing while
@@ -788,8 +814,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `gitleaks+secrets` in `produced`, and `diff._proven` reads both sides atom by
   atom and requires EVERY scanner that saw a row to have looked again before it
   is `fixed` — so a row minted under `gitleaks` alone before this change is
-  still proven by the union, and a row both saw is `pending`, never `fixed`,
-  on a machine that later loses gitleaks. **What it cost not to have this:**
+  still proven by the union; on a machine that later loses gitleaks, a row only
+  gitleaks saw is `pending`, never `fixed`, and a row the built-in saw — alone
+  or beside the engine — is re-minted under the same name and reads `open`,
+  because both paths mint one vocabulary (see the Fixed entry on the fallback
+  path). **What it cost not to have this:**
   measured on Minerva with the product filters applied to both, gitleaks saw 2
   secret identities and the built-in 30; the one credential gitleaks' generic
   rule discards through its stopword list (`our_` and `con_` are entries), not

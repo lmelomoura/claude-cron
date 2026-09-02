@@ -1222,7 +1222,10 @@ def test_prepare_falls_back_to_the_hand_written_scanner_and_says_which_ran(tmp_p
     judging the report's blind spots needs to know which they got."""
     findings, note = prepare(tmp_path, engines_on=False)
     secret_rules = {f["rule"] for f in findings if f["category"] == "secret"}
-    assert secret_rules == {"aws_access_key"}, secret_rules
+    # Under the ENGINE's name for the type, on the fallback path too: one
+    # vocabulary for `secret` whichever scanner minted the row, so a machine
+    # that loses gitleaks keeps every identity (see tests/security/test_recall.py).
+    assert secret_rules == {"aws-access-token"}, secret_rules
     assert "built-in pattern scanner" in note
 
 

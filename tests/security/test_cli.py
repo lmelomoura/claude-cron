@@ -1327,7 +1327,8 @@ def test_ignore_paths_reach_the_tree_the_history_and_the_hygiene_pass(tmp_path):
     promise about the HISTORY sweep and the HYGIENE pass: the bare `== []`
     covers every phase, and the `committed_key_file` in the positive control
     is the proof that the hygiene pass really had something to suppress. Those
-    two phases are the same code on both paths; the rule names are not.
+    two phases are the same code on both paths, and -- since both paths mint
+    one vocabulary for `secret` -- so are the rule names below.
     """
     env = {**os.environ, "CC_SECURITY_ENGINES": "off"}
     root = git_repo(tmp_path / "repo", [
@@ -1342,7 +1343,7 @@ def test_ignore_paths_reach_the_tree_the_history_and_the_hygiene_pass(tmp_path):
         env=env)
     rules = {f["rule"] for f in run(db, "findings", "--analysis", str(noisy),
                                     env=env)}
-    assert {"aws_access_key", "private_key", "committed_key_file"} <= rules, (
+    assert {"aws-access-token", "private-key", "committed_key_file"} <= rules, (
         f"the fixture must be noisy without the globs: {sorted(rules)}")
     run(db, "finish", "--analysis", str(noisy), "--state", "done", env=env)
 
@@ -1455,9 +1456,10 @@ def test_the_default_noise_filter_reaches_every_deterministic_phase(tmp_path):
     is the same tree with the default switched off: `== []` on its own passes
     identically on an analysis that scanned nothing at all.
 
-    PINNED to the built-in scanner rather than left to the machine, because
-    the rule names below are the built-in scanner's. The ENGINE's half of
-    the same default is
+    PINNED to the built-in scanner rather than left to the machine, so that
+    the fallback path is the one under test -- both paths mint one vocabulary
+    for `secret`, so the names below read the same either way. The ENGINE's
+    half of the same default is
     `test_adapters.test_the_default_narrows_the_real_engine_with_nothing_
     configured`, which drives the real gitleaks binary -- a default only one
     of the two honoured is the per-machine divergence this whole block keeps
@@ -1476,7 +1478,7 @@ def test_the_default_noise_filter_reaches_every_deterministic_phase(tmp_path):
     run(db, "prepare", "--analysis", str(loud), "--root", str(root), "--offline",
         "--ignore", "!defaults", env=env)
     rules = {f["rule"] for f in run(db, "findings", "--analysis", str(loud), env=env)}
-    assert {"aws_access_key", "private_key", "committed_key_file"} <= rules, (
+    assert {"aws-access-token", "private-key", "committed_key_file"} <= rules, (
         f"the tree must be noisy with the default switched off: {sorted(rules)}")
     run(db, "finish", "--analysis", str(loud), "--state", "done", env=env)
 
@@ -5156,17 +5158,19 @@ def test_migrate_rules_reports_nothing_when_there_is_nothing_to_rename(tmp_path)
 
 
 def test_migrate_rules_is_refused_without_gitleaks(tmp_path):
-    """The failure this verb EXISTS to prevent, reached through its own front
-    door.
+    """The refusal, reached through its own front door.
 
     Every secret rename moves findings from the built-in pattern scanner's
-    snake_case names onto gitleaks' kebab-case ones. Run it on a machine with
-    no gitleaks -- or with the engines switched off -- and `_scan_secrets`
-    falls back to that same built-in scanner on the very next analysis and
-    mints the old names again. The migrated row is then reported `fixed`
-    (nothing produces its new name) and the re-minted one `new`, in ONE
-    report, and the human decision on each side strands: precisely the
-    double-identity damage `migrate-rules` was written to stop.
+    snake_case names onto gitleaks' kebab-case ones. When this refusal was
+    written, a machine with no gitleaks -- or with the engines switched off --
+    minted the old names again on its very next analysis, so a migration made
+    there was undone at once: the migrated row read `fixed` (nothing produced
+    its new name) and the re-minted one `new`, in ONE report, with the human
+    decision on each side stranded. Both scanners mint one vocabulary now
+    (`_scan_secrets` renames at mint on the fallback path too), so that route
+    is closed; the refusal stays because a rename is a one-shot promise about
+    identity, made on the machine whose engine defines the target vocabulary
+    -- and its message still names the damage it was written after.
 
     Refused before the ledger is opened, like the category check and for the
     same reason -- it needs nothing from the ledger, so it cannot leave a map

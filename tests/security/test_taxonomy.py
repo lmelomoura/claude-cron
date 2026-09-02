@@ -582,10 +582,13 @@ def _hygiene_rule_names():
 
 
 def _retired_secret_rule_names():
-    """The built-in pattern scanner's names -- what a secret rule USED to be.
+    """The built-in pattern scanner's own names -- what a secret rule USED to
+    be minted as, and what `migrate-rules` moves rows off.
 
-    Still reachable, not historical: `cli._scan_secrets` falls back to this
-    scanner on a machine with no gitleaks. Kept separate from the live
+    Historical for the six mapped types: `cli._scan_secrets` renames at mint
+    on BOTH paths, so no analysis on this branch writes one of those into the
+    ledger, with or without gitleaks. Still live for the two unmapped rules,
+    which keep their own names everywhere. Kept separate from the live
     vocabulary because a rename's two ends belong to different producers.
     """
     return {name for name, *_ in secrets._RULES}
@@ -681,3 +684,28 @@ def test_renames_do_not_chain():
         assert key not in targets, (
             f"{key[1]!r} is both a rename source and a rename target in "
             f"{key[0]}: collapse the chain into one entry")
+
+
+def test_the_skills_optional_severities_are_exactly_those_below_the_floor():
+    """Step 5 of Job 2 says which severities the agent may leave untriaged, and
+    step 2 which ones block the close. Both sets are slices of
+    `report.SEVERITIES` around `cli.TRIAGE_FLOOR`, derived here and not spelled
+    twice: editing the skill to "`low`, `info` and `medium` are optional" used
+    to pass every test in this file while the close counted `medium` against
+    the agent."""
+    import re as _re
+    from security import cli as security_cli
+    from security import report
+    text = SKILL.read_text()
+    below = report.SEVERITIES[report.SEVERITIES.index(security_cli.TRIAGE_FLOOR) + 1:]
+    step5 = _re.search(r"^5\. \*\*(.+?) are optional\.\*\*", text, _re.MULTILINE)
+    assert step5, "SKILL.md's Job 2 has no step 5 naming the optional severities"
+    optional = set(_re.findall(r"`([a-z]+)`", step5.group(1)))
+    assert optional == set(below), (optional, below)
+    assert security_cli.TRIAGE_FLOOR not in optional
+    step2 = _re.search(r"^2\. \*\*Take every row.*?at severity (.+?)\.\*\*", text,
+                       _re.MULTILINE | _re.DOTALL)
+    assert step2, "SKILL.md's Job 2 has no step 2 naming the blocking severities"
+    blocking = set(_re.findall(r"`([a-z]+)`", step2.group(1)))
+    assert blocking == set(security_cli.TRIAGE_BLOCKING), (blocking, security_cli.TRIAGE_BLOCKING)
+    assert not (optional & blocking)

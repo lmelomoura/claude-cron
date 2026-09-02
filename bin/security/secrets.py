@@ -672,7 +672,17 @@ def scan_history(root, since_sha, ignore=(), rename=None):
             # level down, per rule, exactly as `scan_tree` applies it -- so a
             # private key committed in a `.example` file is reported from the
             # history too, and only the two template-noisy rules are not.
-            skip_path = ignored(path, ignore)
+            #
+            # `SKIP_DIRS` TOO, through the same predicate the tree sweep reads
+            # and in the same order. This line used to consult `ignored` alone,
+            # so a credential committed and deleted under `.superpowers/` or
+            # `build/` came back from this sweep and from nothing else --
+            # `seen_by == ["secrets"]`, `medium` or worse, counted by the close
+            # -- while `scan_tree` and the gitleaks adapter (`_out_of_scope`,
+            # applied to history records too) both left it out. Measured with
+            # the binary: three paths committed and deleted, two of them under
+            # `SKIP_DIRS`, and this sweep reported exactly those two.
+            skip_path = skipped(path) or ignored(path, ignore)
             continue
         if skip_path:
             continue

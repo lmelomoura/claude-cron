@@ -78,8 +78,9 @@ def test_a_projects_own_log_directory_is_still_scanned(tmp_path):
 # Laravel session files are runtime data, git-ignored by Laravel's own
 # `storage/framework/*/.gitignore`, and a scanner that reads them reports the
 # operator's session store as the project's leaked credentials. Same rule as
-# `.superpowers` and `data/logs`: git-ignored runtime data on the operator's
-# machine is not the repository. The exclusion is PRECISE, and the two tests
+# `.superpowers` and `data/logs`: a NAMED directory the machine generates at
+# runtime is not the repository -- that all three are git-ignored is a fact
+# about them, not the criterion. The exclusion is PRECISE, and the two tests
 # below hold both edges of it: `storage/logs` stays in (the section above says
 # why), `storage/app` stays in (an upload can be a key file). Only
 # `storage/framework` -- Laravel's `cache/`, `sessions/`, `views/`, `testing/`.
@@ -644,3 +645,168 @@ def test_the_cap_is_exact_on_the_tree_and_the_history_is_the_built_ins_alone(
     assert any("2 larger than 2 MB" in n and "in the working tree" in n
                for n in notes), notes
     assert AWS_KEY not in json.dumps(findings) + " ".join(notes)
+
+
+# ------------------------------------ the history sweep honours SKIP_DIRS too
+#
+# `scan_history` applied the operator's `ignore_paths` to a diff's path and
+# never `secrets.skipped()`, while `scan_tree` and the gitleaks adapter (through
+# `_out_of_scope`, on history records too) both did. Reproduced with the
+# binary: a credential committed and deleted under `.superpowers/sdd/` and
+# `build/` came back from the built-in's history sweep alone -- `seen_by ==
+# ["secrets"]`, `medium`, counted by the close -- while `secrets.skipped()`
+# said True for both paths.
+
+SWEPT_OUT = (".superpowers/sdd/f.txt", "build/out.js")
+IN_SCOPE = "app/storage/logs/laravel.log"
+
+
+def _committed_and_deleted(root, paths):
+    """A checkout whose only trace of `paths` is in the history."""
+    for rel in paths:
+        _plant(root, rel)
+    _commit_all(root)
+    for rel in paths:
+        (root / rel).unlink()
+    _commit_all(root)
+    return root
+
+
+def test_the_built_in_history_sweep_honours_skip_dirs(tmp_path, monkeypatch):
+    root = _committed_and_deleted(_git_repo(tmp_path / "repo", {"README.md": "clean\n"}),
+                                  [*SWEPT_OUT, IN_SCOPE])
+    assert all(secrets.skipped(p) for p in SWEPT_OUT) and not secrets.skipped(IN_SCOPE)
+    found, note, swept = secrets.scan_history(root, None)
+    assert swept and note == ""
+    assert [f["occurrences"][0]["file"] for f in found] == [IN_SCOPE], found
+    # And through the union, with the engine's own history reading of the
+    # in-scope path: NEITHER scanner reports the two, BOTH report the third.
+    _pretend_gitleaks_saw(monkeypatch, [
+        _engine_reading("generic-api-key", IN_SCOPE, line=1, historical=True)])
+    findings, *_ = security_cli._scan_secrets(root, [])
+    by_file = {f["occurrences"][0]["file"]: f for f in findings}
+    assert set(by_file) == {IN_SCOPE}, sorted(by_file)
+    assert by_file[IN_SCOPE]["seen_by"] == ["gitleaks", "secrets"]
+    assert by_file[IN_SCOPE]["historical"]
+
+
+@needs_gitleaks
+def test_the_built_in_history_sweep_honours_skip_dirs_beside_the_real_engine(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("CC_SECURITY_ENGINES", "on")
+    root = _committed_and_deleted(_git_repo(tmp_path / "repo", {"README.md": "clean\n"}),
+                                  [*SWEPT_OUT, IN_SCOPE])
+    findings, *_ = security_cli._scan_secrets(root, [])
+    by_file = {f["occurrences"][0]["file"]: f for f in findings}
+    assert set(by_file) == {IN_SCOPE}, sorted(by_file)
+    assert by_file[IN_SCOPE]["seen_by"] == ["gitleaks", "secrets"]
+
+
+# ------------------ one vocabulary for `secret`, whichever scanner minted it
+#
+# The fallback path -- gitleaks absent, or both of its passes failed -- used to
+# mint the built-in's own rule names while the union path renamed them through
+# `_SECRET_RENAMES` before the fingerprint. Reproduced in a scratch ledger:
+# analysis N with the engines on stored `generic-api-key` (`producer=secrets`);
+# analysis N+1 with the engines off minted `generic_secret` for the same file,
+# a different fingerprint, and the checklist read `fixed medium
+# generic-api-key` beside `new medium generic_secret` -- `_proven` correct by
+# its own rule (the built-in ran) about a row that had merely changed its name.
+# Reachable without uninstalling anything: two 600 s timeouts. Both paths now
+# mint one vocabulary, so the row is in `current` and reads `open`.
+
+def _closed_analysis(db, aid, root, capsys):
+    _prepare_in_process(db, aid, root, capsys)
+    _cli_json(db, "finish", "--analysis", str(aid), "--state", "done")
+
+
+def _secret_states(db, aid):
+    return {f["rule"]: f["state"]
+            for f in _cli_json(db, "checklist", "--analysis", str(aid))["findings"]
+            if f["category"] == "secret"}
+
+
+def test_a_machine_that_loses_gitleaks_keeps_every_built_in_identity(
+        tmp_path, monkeypatch, capsys):
+    """Engines on, then off, one ledger. The built-in-only row reads `open` --
+    never `fixed`, never `new`; the row both saw is re-found by the built-in
+    under the same name and reads `open` too; only the row gitleaks ALONE saw,
+    which the built-in has no rule for, reads `pending`."""
+    root = _git_repo(tmp_path / "repo", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
+                                         "scripts/seed.py": SNAKE_CASE_TOKEN,
+                                         "auth.json": '{"user": "x"}\n'})
+    db = tmp_path / "security.db"
+    first = _open_analysis(db)
+    _pretend_gitleaks_saw(monkeypatch, [
+        _engine_reading("aws-access-token", "prod.env"),
+        _engine_reading("github-fine-grained-pat", "auth.json")])
+    _closed_analysis(db, first, root, capsys)
+    assert _secret_states(db, first) == {"aws-access-token": "new",
+                                         "generic-api-key": "new",
+                                         "github-fine-grained-pat": "new"}
+
+    second = _open_analysis(db)
+    monkeypatch.setattr(adapters, "engine_path", lambda name: None)
+    _closed_analysis(db, second, root, capsys)
+    states = _secret_states(db, second)
+    assert states == {"aws-access-token": "open",
+                      "generic-api-key": "open",
+                      "github-fine-grained-pat": "pending"}, states
+    assert not ({"fixed", "new"} & set(states.values()))
+    assert not ({"generic_secret", "aws_access_key"} & set(states))
+
+
+def test_a_machine_that_never_had_gitleaks_mints_the_engines_names(tmp_path, monkeypatch):
+    """The fallback path alone, a fresh ledger: the mapped types under
+    gitleaks' names, the two unmapped ones under their own, `secrets` as the
+    producer, `warning` as the status, the fallback note saying which ran."""
+    monkeypatch.setattr(adapters, "engine_path", lambda name: None)
+    root = _git_repo(tmp_path / "repo", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
+                                         "scripts/seed.py": SNAKE_CASE_TOKEN,
+                                         "ci.env": f"GITHUB_TOKEN={GITHUB_TOKEN}\n"})
+    findings, notes, _lines, producer, status = security_cli._scan_secrets(root, [])
+    rules = {f["rule"] for f in findings}
+    assert {"aws-access-token", "generic-api-key", "github_token"} <= rules, rules
+    assert not (rules & {"aws_access_key", "generic_secret"}), rules
+    assert producer == "secrets" and status == coverage.WARNING
+    assert secrets.FALLBACK_NOTE in notes
+
+
+# ------------------------------------------- no secret leaves the machine
+#
+# The operator's constraint (spec, 2026-09-02): live validation of credentials
+# is OUT, and nothing in this phase makes a network request. Pinned rather
+# than grepped for: with the socket layer and urllib refusing, the phase
+# completes on both paths and finds what it finds.
+
+def _no_network(monkeypatch):
+    import socket
+    import urllib.request
+
+    def refused(*a, **k):
+        raise AssertionError("the secret phase opened a network connection")
+
+    monkeypatch.setattr(socket, "socket", refused)
+    monkeypatch.setattr(socket, "create_connection", refused)
+    monkeypatch.setattr(urllib.request, "urlopen", refused)
+
+
+def test_the_secret_phase_never_reaches_the_network_on_either_path(tmp_path, monkeypatch):
+    root = _git_repo(tmp_path / "repo", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"})
+    _no_network(monkeypatch)
+    _pretend_gitleaks_saw(monkeypatch, [_engine_reading("aws-access-token", "prod.env")])
+    findings, *_ = security_cli._scan_secrets(root, [])
+    assert {f["rule"] for f in findings} == {"aws-access-token"}
+    monkeypatch.setattr(adapters, "engine_path", lambda name: None)
+    findings, *_ = security_cli._scan_secrets(root, [])
+    assert {f["rule"] for f in findings} == {"aws-access-token"}
+
+
+@needs_gitleaks
+def test_the_secret_phase_never_reaches_the_network_with_the_real_engine(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("CC_SECURITY_ENGINES", "on")
+    root = _git_repo(tmp_path / "repo", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"})
+    _no_network(monkeypatch)
+    findings, *_ = security_cli._scan_secrets(root, [])
+    assert {f["rule"] for f in findings} == {"aws-access-token"}
