@@ -3629,9 +3629,15 @@ EOF
  {"cwd":null}
 ]}
 NASTY
+  # LC_ALL=C on the sort below, because the expectation is a byte order and
+  # `sort` honours the caller's collation. Under en_US.UTF-8 -- what a GitHub
+  # runner sets and a bare shell does not -- "/tmp" sorts BEFORE "/Users",
+  # since that collation folds case; under C it does not. Same list, same
+  # code, two orders, and the assertion is an exact string. This was green on
+  # laptops for months and red on the first CI run that ever set a locale.
   got="$("$JQ" -r '
     .projects[]? | ((.repos // [])[]? | objects | .path), .cwd
-    | strings | select(. != "")' "$tmp/proj/nasty.json" 2>/dev/null | sort -u | tr '\n' '|')"
+    | strings | select(. != "")' "$tmp/proj/nasty.json" 2>/dev/null | LC_ALL=C sort -u | tr '\n' '|')"
   [ "$got" = "/Users/Jane|/Users/Jane Doe/repo-a|/tmp/api|/tmp/malformed|/tmp/web|" ] \
     && ok "a home dir with a space is its own path, and one bad entry drops only itself" \
     || bad "the path list came out as '$got'"
