@@ -35,7 +35,25 @@ _RULES = [
 # the filesystem and knows nothing about caches, vendored trees or build
 # output; `adapters.gitleaks_config` turns this set into the engine's scope, so
 # whichever scanner runs, both agree on where an analysis looks.
-SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", "build"}
+#
+# `.superpowers` and `logs` were added after a measurement on the Minerva
+# checkout (dev-knowledge-platform) turned up 22 `generic_secret` hits from
+# `.superpowers/` alone, none of them a leak. `.superpowers/` is git-ignored
+# and is where this repository's own agents write review diffs and run
+# reports -- not the analysed project, but routinely full of
+# credential-shaped text (a captured key in a review diff, a planted secret
+# in a transcript). `data/logs/` -- where run transcripts land -- is the
+# same kind of noise for the same reason, which is why `logs` is listed here
+# rather than the full `data/logs` path: every entry in this set is a bare
+# path COMPONENT matched at any depth (see `ignores.DEFAULT_IGNORE_DIRS` for
+# the same convention), not a path from the root, so `logs` alone reaches
+# `data/logs` and any equivalent log directory in whatever project is being
+# analysed. This lines up with the earlier measurement recorded in
+# `adapters.gitleaks_config`'s module docstring: before that config's scope
+# existed, gitleaks reported 17 findings on this repository, 15 of them
+# under `.superpowers/`, `__pycache__/` and `data/logs/`.
+SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", "build",
+             ".superpowers", "logs"}
 _MAX_BYTES = 2 * 1024 * 1024
 
 # ONE sentence, whichever scanner found the credential -- `adapters` emits it

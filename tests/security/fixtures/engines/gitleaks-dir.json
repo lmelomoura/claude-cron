@@ -106,5 +106,23 @@
     "Message": "",
     "Tags": [],
     "Fingerprint": ".superpowers/sdd/review-b6c3f41..a331b31.diff:generic-api-key:2732"
+  },
+  {
+    "RuleID": "generic-api-key",
+    "Description": "Detected a Generic API Key, potentially exposing access to various services and sensitive operations.",
+    "StartLine": 12,
+    "EndLine": 12,
+    "StartColumn": 1,
+    "EndColumn": 40,
+    "File": "config/app.env",
+    "SymlinkFile": "",
+    "Commit": "",
+    "Entropy": 4.3,
+    "Author": "",
+    "Email": "",
+    "Date": "",
+    "Message": "",
+    "Tags": [],
+    "Fingerprint": "config/app.env:generic-api-key:12"
   }
 ]

@@ -447,6 +447,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The built-in secret scanner stopped reading its own agents' workspace as
+  if it were the project.** `secrets.SKIP_DIRS` never listed `.superpowers`
+  or `logs`, so a repository's own `.superpowers/` (where this repository's
+  agents write review diffs and run reports) and `data/logs/` (where run
+  transcripts land) were read like any other source directory — both
+  git-ignored, both routinely full of credential-shaped text that belongs to
+  neither the project nor a leak. Measured on the Minerva checkout
+  (dev-knowledge-platform): 22 `generic_secret` occurrences from
+  `.superpowers/` alone, none of them real, out of 57 total; after the fix,
+  0 under `.superpowers/` and the `src/`, `services/`, `scripts/` counts are
+  unchanged (3 and 4 occurrences respectively, in both cases). `SKIP_DIRS`
+  is read by twelve call sites across `adapters.py`, `deps.py`, `hygiene.py`
+  and `ignores.py` — including `adapters.gitleaks_config`'s `scope_patterns`
+  — so the one change reaches the built-in scanner and gitleaks alike. Both
+  new entries are bare path components matched at any depth, the same
+  convention every existing entry already uses, so `logs` also reaches an
+  equivalent transcript directory in whatever project is being analysed.
+
 - **A maintainer's home directory is out of the repository, and
   `claude-cron selftest` now fails if one comes back.**
   `tests/security/fixtures/engines/syft-cyclonedx.json` is a raw Syft capture

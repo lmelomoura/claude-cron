@@ -18,6 +18,18 @@ The fixture is a REAL gitleaks 8.30.1 capture of this repository, purged
 through `engines.purge` before it was written. A fixture typed from the
 documentation makes the parser and the test agree with each other while both
 disagree with the tool.
+
+ONE ENTRY WAS ADDED TO THE CAPTURE, AND IT IS NOT THE FIX. Every record the
+real capture held sat under `.superpowers/` or `__pycache__/` -- exactly the
+noise `secrets.SKIP_DIRS` now excludes (see its own comment for the
+measurement) -- so `_out_of_scope` drops the whole fixture once that fix
+lands, and "the captured fixture must contain at least one finding" below
+would fail for having nothing left to find rather than for a real parser
+regression. The added `config/app.env` record is synthetic, sits outside
+every skipped directory, and exists only so this file keeps testing what it
+says it tests: the RECORD-TO-FINDING translation, not the scope filter --
+that filter has its own tests in `tests/security/test_secrets.py` and
+`tests/security/test_recall.py`.
 """
 
 import json
