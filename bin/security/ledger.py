@@ -371,6 +371,36 @@ def _not_a_reading(existing_rationale: str, finding: dict) -> str:
     return ""
 
 
+def _erases(stored: dict, finding: dict) -> str:
+    """What this write would take from the row -- '' when nothing.
+
+    The complement of `_not_a_reading`, asked on the rows that test does not
+    gate: one already marked, the agent's own, an unknown minter's. A
+    re-report REPLACES the stored rationale and occurrences, so a payload
+    that omits a half the row carries does not leave that half alone -- it
+    erases it. Three shapes, each named so the refusal says which half is
+    missing, the one thing the agent can fix. The two predicates are the
+    reading test's own (`_rationale_of`, `_locates`), asked of the payload
+    and of the stored row alike: the rule is about what the row HAS, not
+    about what every payload must carry, so a row that never had a location
+    can still be re-worded without one.
+    """
+    no_rationale = not _rationale_of(finding)
+    no_location = not _locates(finding)
+    if no_rationale and no_location:
+        return ("no rationale and no occurrence naming a file, and applying it "
+                "would leave a finding nobody explained at no location, taking "
+                "the rationale and the locations already recorded with it")
+    if no_rationale and _rationale_of(stored):
+        return ("no rationale while the row already carries one, and applying "
+                "it would erase the sentence recorded about this finding")
+    if no_location and _locates(stored):
+        return ("no occurrence naming a file while the row already carries its "
+                "locations, and applying it would erase every file and line the "
+                "reader of the report could open")
+    return ""
+
+
 def record_finding(conn, analysis_id, finding: dict) -> None:
     """Record a finding, upserting the one this analysis already holds.
 
@@ -410,9 +440,9 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
     replaces the occurrence list rather than appending to it, which is what
     lets a re-report narrow five locations to the two still affected (the
     `partial` half of the skill's Job 3). The erasure route was never the
-    replacement as such: it was the payload that replaces everything with
-    nothing -- and that one is refused on every row, marked or not, two
-    paragraphs down.
+    replacement as such: it was the payload that replaces something with
+    nothing -- everything, or either half while the row carries it -- and
+    those are refused on every row, marked or not, two paragraphs down.
 
     ONLY THE 0 -> 1 TRANSITION IS GATED FOR A READING. A row already marked
     has had its reading recorded; a later write from the agent -- a retry, or
@@ -429,6 +459,18 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
     was already there and there was nothing left to gate. It is never a
     correction of anything, so it is refused on the same terms as the stamp:
     before the UPDATE, inside the transaction, nothing recorded.
+
+    AND SO IS HALF OF ONE. That refusal was first written as a conjunction,
+    and on a marked row it left two routes open, each one key richer than the
+    bare payload: `{"rationale": "x", "occurrences": []}` was applied and
+    stripped every location; `{"occurrences": [...]}` with no rationale was
+    applied and erased the rationale to ''. A write onto a row that already
+    carries a rationale, or an occurrence naming a file, may not leave that
+    half empty. Refused rather than merged, and the refusal names the missing
+    half: the REPLACE semantics above are deliberate, and a silent merge would
+    make the stored row differ from what the agent last said. A row that never
+    carried a location can still be re-worded without one -- the rule is about
+    what the row has (`_erases`), not about what every payload must carry.
     """
     # A finding and its occurrences are one unit: without this transaction
     # boundary, an occurrence that fails to insert midway (a non-numeric
@@ -527,19 +569,30 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
                             "to carry your own rationale and the occurrences "
                             "you read. Nothing was recorded.")
                     triaged = 1
-                elif not _rationale_of(finding) and not _locates(finding):
+                else:
                     # Every other agent write onto an existing row -- one
                     # already marked, the agent's own, or an unknown minter's.
                     # The stamp test above is a superset of this on the rows it
-                    # gates, so this is the erasure alone: see the docstring's
-                    # last paragraph.
-                    raise ValueError(
-                        "this re-report carries no rationale and no occurrence "
-                        "naming a file, and a re-report REPLACES the stored row, "
-                        "so applying it would leave a finding nobody explained "
-                        "at no location and take the rationale and the "
-                        "locations already recorded with it. That is never a "
-                        "correction. Nothing was recorded.")
+                    # gates, so this is the erasure alone, whole or by half:
+                    # see the docstring's last two paragraphs. The stored
+                    # occurrences are read back through the same predicate
+                    # the payload is judged by, so "the row carries a
+                    # location" means here what it means at the door.
+                    stored = {
+                        "rationale": existing["rationale"],
+                        "occurrences": [
+                            {"file": r["file"]} for r in conn.execute(
+                                "SELECT file FROM occurrence WHERE finding_id=?",
+                                (fid,))]}
+                    lost = _erases(stored, finding)
+                    if lost:
+                        raise ValueError(
+                            f"this re-report carries {lost}. A re-report "
+                            "REPLACES the stored row, rationale and occurrences "
+                            "both, so a payload missing either half is an "
+                            "erasure of that half and never a correction of the "
+                            "other: send your rationale and the occurrences you "
+                            "read together. Nothing was recorded.")
             conn.execute(
                 "UPDATE finding SET category=?, rule=?, severity=?, title=?,"
                 " rationale=?, remediation=?, partial_note=?, cwe=?, owasp=?,"

@@ -2360,6 +2360,65 @@ def test_an_occurrence_at_line_zero_that_names_a_file_is_accepted_at_the_door(tm
     assert run(db, "list", "--project", "web")[0]["state"] == "done"
 
 
+@pytest.mark.parametrize("rationale", (5, None, ["read the call site"]),
+                         ids=("number", "null", "list"))
+def test_a_rationale_that_is_not_a_string_is_refused_with_a_sentence_not_a_traceback(
+        tmp_path, rationale):
+    """`cmd_report_finding` skipped a non-string free-text field with
+    `continue`, so `{"rationale": 5}` reached the ledger, where
+    `_rationale_of` calls `.strip()` on it: an `AttributeError`, a Traceback
+    on stderr and no sentence -- against the door's own contract, whose
+    `except` around `record_finding` names what a bad finding can raise, and
+    not that. Nothing was recorded, which was the one half that was right. A
+    rationale that is not a string is not a rationale: dropped AT THE DOOR,
+    so the ledger sees "no rationale" and the refusal it already has for that
+    fires, in the one place the agent is looking. Driven through to the close
+    so the scanner's row is shown untouched by the note that names it."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": fp, "category": "dependency", "rule": "CVE-1",
+        "severity": "high", "title": "CVE-1 in yarn.lock",
+        "rationale": rationale,
+        "occurrences": [{"file": "a.py", "line": 0}]}), env=AS_AGENT)
+    assert out.returncode == 1, (out.returncode, out.stderr)
+    assert "Traceback" not in out.stderr, out.stderr
+    assert "no rationale" in out.stderr, out.stderr
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "capped"
+    assert "CVE-1 (yarn.lock)" in row["coverage_note"]
+
+
+def test_a_non_string_rationale_onto_a_row_already_marked_gets_the_same_sentence(tmp_path):
+    """The route the reading gate widened: once a row is marked, an agent
+    write reaches `_rationale_of` from the erasure check instead of the
+    stamp test, and `{"rationale": 5}` produced the same Traceback there.
+    Dropped at the door, it is a write carrying no rationale onto a row that
+    has one -- refused by sentence, and the reading it would have erased
+    survives."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    _triage(db, aid, fp, rule="CVE-1")
+
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": fp, "category": "dependency", "rule": "CVE-1",
+        "severity": "low", "title": "CVE-1, read in context", "rationale": 5,
+        "occurrences": [{"file": "yarn.lock", "line": 0}]}), env=AS_AGENT)
+    assert out.returncode == 1, (out.returncode, out.stderr)
+    assert "Traceback" not in out.stderr, out.stderr
+    assert "no rationale" in out.stderr, out.stderr
+
+    found = run(db, "findings", "--analysis", str(aid))
+    assert found[0]["triaged"] == 1
+    assert found[0]["rationale"] == "read the call site: it is not reachable from a request"
+    assert [o["file"] for o in found[0]["occurrences"]] == ["yarn.lock"]
+
+
 def test_a_re_report_that_agrees_with_the_scanner_still_satisfies_the_gate(tmp_path):
     """The control for the refusal above, and the case it must never catch: an
     agent that read the code and concluded the scanner was right. The severity
@@ -2637,8 +2696,11 @@ def test_every_phases_prose_is_a_substring_of_the_paragraph(tmp_path):
     close byte for byte (`test_a_note_given_explicitly_is_added_to_the_stored_one`,
     `test_the_same_note_twice_is_not_stored_twice`, and the stale-sweep check
     in `bin/claude-cron`'s selftest, which compares the sweep's `--note` for
-    equality), and on the closes that file it the paragraph already says the
-    run was cut short or never happened. Pinned as an exemption by
+    equality), and on the closes that file it, what says the run was cut
+    short or never happened is the VERDICT the row sits beside -- `capped` or
+    `failed` -- not the paragraph: a direct `capped` close with no `--note` on
+    a prepared analysis leaves the paragraph as `prepare`'s note alone.
+    Pinned as an exemption by
     `test_a_close_that_never_reached_the_check_files_the_triage_row_skipped`.
     The row's other sentences -- findings never read, a decision that exempted
     one, a `prepare` that never ran -- are gaps, and the close writes each of

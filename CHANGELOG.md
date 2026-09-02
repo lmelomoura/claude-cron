@@ -111,7 +111,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a path without running them past the secret scanner), the mark resetting per
   analysis, the note's one-finding and two/three-finding wordings, and
   `TRIAGE_BLOCKING` as a slice of `report.SEVERITIES` that a reordering of that
-  tuple would silently change.
+  tuple would silently change. Two more routes out of the same row closed
+  since. A payload one key richer than the bare one — `{"rationale": "x",
+  "occurrences": []}`, or `{"occurrences": [...]}` with no rationale — was
+  applied to a row already marked and erased the half it omitted: every
+  location, or the rationale to `''`. A write onto a row that already carries
+  a rationale or an occurrence naming a file may now not leave that half
+  empty; refused rather than merged, because the replacement is deliberate and
+  a silent merge would make the stored row differ from what the agent last
+  said, and the refusal names the missing half. And `{"rationale": 5}` — a
+  rationale that is not a string — walked past the door into the ledger and
+  came back as a Traceback on stderr instead of the door's sentence, on every
+  re-report onto an existing row; it is dropped at the door as no rationale,
+  so the refusal that already exists for that fires. Pinned alongside: the
+  "Ending the run" clause naming the decided-row exemption, which could be
+  deleted with the suite still green.
 
 - **Job 2 of the security skill no longer selects rows the close cannot count,
   and no longer blanks the scanner's own remediation.** Its step 2 took "every

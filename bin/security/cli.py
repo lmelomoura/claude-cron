@@ -1451,6 +1451,21 @@ def cmd_report_finding(args):
     for key in TEXT_KEYS:
         value = payload.get(key)
         if not isinstance(value, str):
+            # A text field that is not a string is not that field, and it is
+            # DROPPED here rather than skipped. A bare `continue` let
+            # `{"rationale": 5}` through to the ledger, where `_rationale_of`
+            # calls `.strip()` on it: an AttributeError the `except` around
+            # `record_finding` below does not name, so the agent got a
+            # Traceback on stderr where this door promises a sentence -- on
+            # every re-report onto an existing row, since the erasure check
+            # reaches that function on the marked rows too. Dropped, the
+            # ledger sees "no rationale" and the refusal it already has for
+            # that fires, naming what a reading would have carried instead;
+            # a wider `except` here would have turned a type error into a
+            # sentence about nothing. The other three go the same way for
+            # the same reason: an integer stored under `remediation` is a
+            # column the page renders as text holding something that is not.
+            payload.pop(key, None)
             continue
         if len(value) > MAX_TEXT:
             sys.exit(f"report-finding: {key} is {len(value)} characters and the "
@@ -1775,15 +1790,16 @@ def cmd_finish(args):
     # for ever is a worse outcome than an honest "incomplete", and `capped` is
     # the state the report already prints an INCOMPLETE banner for.
     #
-    # ASKED FIRST, BEFORE THE TRIAGE CHECK, AND THE TRIAGE ROW IS FILED FROM
-    # INSIDE THE BRANCH THAT KNOWS THE ANSWER. The triage of what the
-    # scanners produced is a question about `prepare`'s output; with no
-    # `prepare`, `_untriaged` answers "nothing waiting" for want of rows, and
-    # the triage row used to be built from that answer -- a green `triage |
-    # ran` over a paragraph saying nothing ran, for exactly the analysis this
-    # guard was written after. So a never-prepared close files BOTH agent-side
-    # rows `skipped`, carrying the sentence the paragraph is about to carry
-    # for the same fact, and never evaluates the triage at all.
+    # ASKED FIRST, BEFORE THE TRIAGE CHECK, WHICH IS THEN NEVER EVALUATED.
+    # The triage of what the scanners produced is a question about
+    # `prepare`'s output; with no `prepare`, `_untriaged` answers "nothing
+    # waiting" for want of rows, and the triage row used to be built from
+    # that answer -- a green `triage | ran` over a paragraph saying nothing
+    # ran, for exactly the analysis this guard was written after. So a
+    # never-prepared close sets the sentence here and files BOTH agent-side
+    # rows `skipped` under it below, in the one block that writes the
+    # never-prepared table, carrying the sentence the paragraph is about to
+    # carry for the same fact.
     if state == "done" and not row["prepared"]:
         state = "capped"
         unprepared_note = (
@@ -1795,8 +1811,6 @@ def cmd_finish(args):
               "it capped instead of done; a report with no deterministic "
               "phase behind it must not become the next analysis's baseline",
               file=sys.stderr)
-        triage_phase = coverage.phase(coverage.TRIAGE, coverage.SKIPPED,
-                                      note=unprepared_note)
     elif state == "done":
         skipped = _untriaged(conn, args.analysis, row["project"])
         # The rows the gate rightly did not count because a human already
@@ -1897,18 +1911,33 @@ def cmd_finish(args):
     phases = coverage.phases_of(row)
     prior_sast = next((p.get("note") or "" for p in phases
                        if p.get("name") == coverage.SAST_AGENT), "")
+    no_triage_row = not any(p.get("name") == coverage.TRIAGE for p in phases)
     if not row["prepared"]:
+        # THE NEVER-PREPARED TABLE, IN ONE PLACE: both agent-side rows
+        # `skipped`, and no writer of prose beyond the guard's own sentence.
+        # That sentence is the rows' when this is the close that fired the
+        # guard (`unprepared_note` set: a `done` lowered to `capped`, which
+        # files the triage row the way a `done` on a prepared analysis always
+        # does -- from what it just established). Otherwise the rows carry
+        # what is already there: the SAST row keeps the note a previous close
+        # stored, and the triage row is filed under `TRIAGE_UNVERIFIED_NOTE`
+        # only when no close has filed one yet -- so the engine's direct
+        # `capped` after the agent's `done` keeps the rows and the sentence
+        # that close wrote.
         sast_phase = coverage.phase(coverage.SAST_AGENT, coverage.SKIPPED,
                                     note=unprepared_note or prior_sast)
+        if unprepared_note or no_triage_row:
+            triage_phase = coverage.phase(
+                coverage.TRIAGE, coverage.SKIPPED,
+                note=unprepared_note or TRIAGE_UNVERIFIED_NOTE)
     else:
         sast_phase = coverage.phase(
             coverage.SAST_AGENT,
             coverage.RAN if state == "done" else coverage.WARNING,
             diff.AGENT, (args.note or "").strip() or prior_sast)
-    if triage_phase is None and not any(
-            p.get("name") == coverage.TRIAGE for p in phases):
-        triage_phase = coverage.phase(coverage.TRIAGE, coverage.SKIPPED,
-                                      note=TRIAGE_UNVERIFIED_NOTE)
+        if triage_phase is None and no_triage_row:
+            triage_phase = coverage.phase(coverage.TRIAGE, coverage.SKIPPED,
+                                          note=TRIAGE_UNVERIFIED_NOTE)
     phases = coverage.merge(
         phases, [sast_phase] + ([triage_phase] if triage_phase else []))
     ledger.finish_analysis(conn, args.analysis, state, _spend(args.spend), note,

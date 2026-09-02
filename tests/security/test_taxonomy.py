@@ -188,6 +188,20 @@ _DECIDED_ROW_IS_THE_HUMANS = re.compile(
 # one that sends the agent to re-report a row the operator already ruled on.
 _FOUR_STATES_ARE_EXACTLY = re.compile(r"exactly the rows a producer recorded", re.I)
 
+# "Ending the run"'s half of the same exemption, in ITS direction: the gate
+# that section describes does not count a row a human decided on. The clause
+# was added beside Job 2's, and deleting it left the suite green -- the only
+# pin on the exemption read Job 2, while "Ending the run" is where the agent
+# reads what the close will do to it. A decided row named, then a NEGATED
+# `counted`, in one sentence. The verb is the section's own (the paragraph is
+# about what the close COUNTS), so the pin is on the direction rather than on
+# one spelling of the clause: a rewrite that keeps the sentence and drops the
+# `not` fails here, and so does one that cuts the clause.
+_ENDING_DOES_NOT_COUNT_A_DECIDED_ROW = re.compile(
+    r"(?:decided|decision|accepted|false_positive)[^.]{0,200}?"
+    r"\b(?:not|never|no longer)\s+(?:be\s+)?counted\b",
+    re.I)
+
 
 def _forbidden_hits(text):
     """Every banned phrase `text` contains, as (pattern, matched text)."""
@@ -317,6 +331,20 @@ def test_job_2_says_a_decided_row_is_the_humans_and_the_close_does_not_count_it(
         "false in that direction")
 
 
+def test_ending_the_run_says_a_decided_row_is_not_counted():
+    # The exemption `_untriaged`'s fourth exclusion grants, stated where the
+    # agent reads what the close will do to it. Job 2 has its pin (above);
+    # this is "Ending the run"'s, and the slice is the point: Job 2's own
+    # sentence, earlier in the file, must not be what satisfies it.
+    section = _skill_section(r"^## Ending the run$")
+    assert _ENDING_DOES_NOT_COUNT_A_DECIDED_ROW.search(section), (
+        "SKILL.md's 'Ending the run' no longer says that a row the operator "
+        "decided on (`accepted`, `false_positive`) is not counted against the "
+        "agent. `_untriaged` excludes decided fingerprints, and an agent that "
+        "cannot read that here either re-reports the operator's own signed call "
+        "or closes `capped` expecting a debt the gate never counts")
+
+
 def test_the_pins_catch_the_rewrites_that_used_to_slip_past_them():
     # Each of these is a real edit a reviewer made to SKILL.md that inverted a
     # rule and left the suite at 19 passed. They are kept here as data so that
@@ -387,12 +415,31 @@ def test_the_pins_catch_the_rewrites_that_used_to_slip_past_them():
         "Those four states are exactly the rows a producer recorded in THIS "
         "analysis."), "the ban misses the very sentence that was replaced"
 
-    # 5. And the live document is clean under all of it.
+    # 5. "Ending the run"'s decided-row clause, cut and flipped. Cut: the
+    # sentence as it read before the clause was added, which the suite
+    # accepted with the clause deleted. Flipped: the clause kept, its `not`
+    # gone -- every token in place, the rule inverted.
+    cut = ("It counts the findings a SCANNER produced at severity **`medium` "
+           "or above** that you never re-reported. If there is even one, your "
+           "`done` is **lowered to `capped`**.")
+    assert _ENDING_DOES_NOT_COUNT_A_DECIDED_ROW.search(cut) is None, (
+        "the 'Ending the run' pin is satisfied by the sentence with the "
+        "decided-row clause cut out, which is the deletion it exists to catch")
+    flipped = ("that you never re-reported and that no human has decided on: a "
+               "row the checklist shows `accepted` or `false_positive` is the "
+               "operator's, as step 2 says, and is counted against you.")
+    assert _ENDING_DOES_NOT_COUNT_A_DECIDED_ROW.search(flipped) is None, (
+        "the 'Ending the run' pin matches the clause with its `not` removed, "
+        "which says the close DOES count the operator's decision")
+
+    # 6. And the live document is clean under all of it.
     assert not _forbidden_hits(text)
     assert _says_a_standing_row_is_re_reported(text)
     assert _states_the_downgrade_direction(text)
     assert _DECIDED_ROW_IS_THE_HUMANS.search(text)
     assert _FOUR_STATES_ARE_EXACTLY.search(text) is None
+    assert _ENDING_DOES_NOT_COUNT_A_DECIDED_ROW.search(
+        _skill_section(r"^## Ending the run$"))
 
 
 def test_the_skill_forbids_subagents_and_says_why():

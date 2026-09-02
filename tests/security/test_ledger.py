@@ -1047,6 +1047,147 @@ def test_the_same_bare_write_onto_the_agents_own_row_is_refused_too(conn):
     assert [o["file"] for o in got[0]["occurrences"]] == ["app/db.py"]
 
 
+# ------------------------------------ half of the evidence is not a correction
+#
+# The bare write above is refused on every row, and a payload ONE KEY richer
+# walked past that refusal on a marked row: `{"rationale": "x", "occurrences":
+# []}` was applied and stripped every location; `{"occurrences": [...]}` with
+# no rationale was applied and erased the rationale to ''. Each is half of the
+# erasure the bare write was refused for, through the `elif` the stamp test
+# does not reach once `triaged` is 1. The rule the tests below pin: a write
+# onto a row that already carries a rationale, or an occurrence naming a file,
+# may not leave that half empty -- refused, naming the half, with the row as
+# it was. REPLACE stays REPLACE: a payload carrying both halves lands.
+
+_HALF_PAYLOADS = (
+    ({"rationale": "the dev dependency never reaches a request", "occurrences": []},
+     "no occurrence naming a file"),
+    ({"occurrences": [{"file": "yarn.lock", "line": 4, "snippet_hash": ""}]},
+     "no rationale"),
+)
+_HALF_IDS = ("rationale-only", "occurrences-only")
+
+
+def _marked_scanner_row(conn, aid):
+    """A scanner row the agent has already read: `triaged=1`, the agent's own
+    sentence, and the location it read."""
+    _scanner_row(conn, aid)
+    ledger.record_finding(conn, aid, _finding(
+        category="dependency", rule="CVE-1", severity="low",
+        producer=ledger.AGENT, rationale="not reachable from any request",
+        occurrences=[{"file": "yarn.lock", "line": 4, "snippet_hash": ""}]))
+    assert ledger.findings_of(conn, aid)[0]["triaged"] == 1
+
+
+@pytest.mark.parametrize("half, names", _HALF_PAYLOADS, ids=_HALF_IDS)
+def test_a_half_payload_onto_a_row_already_marked_is_refused_and_both_halves_survive(
+        conn, half, names):
+    """The two routes the bare-write refusal left open. On a marked row the
+    reading test is not asked again, and `not rationale and not locates` is
+    satisfied by neither of these: one carries a sentence and no location,
+    the other a location and no sentence. Applied, the first left a
+    `triaged=1` row naming no file for the reader to open; the second left
+    one nobody explained. The refusal says which half is missing, because
+    that is the one thing the agent can fix."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    _marked_scanner_row(conn, aid)
+
+    with pytest.raises(ValueError) as exc:
+        ledger.record_finding(conn, aid, {
+            "fingerprint": "a" * 64, "category": "dependency", "rule": "CVE-1",
+            "severity": "low", "title": "String-built SQL",
+            "producer": ledger.AGENT, **half})
+    assert names in str(exc.value), "the refusal names the half that is missing"
+    assert "Nothing was recorded" in str(exc.value)
+
+    got = ledger.findings_of(conn, aid)
+    assert len(got) == 1
+    assert got[0]["triaged"] == 1, "the reading that happened is not undone"
+    assert got[0]["rationale"] == "not reachable from any request", (
+        "the refused write must not have been applied at all")
+    assert [(o["file"], o["line"]) for o in got[0]["occurrences"]] == \
+        [("yarn.lock", 4)], "and above all it must not have stripped the evidence"
+
+
+@pytest.mark.parametrize("half", [p for p, _ in _HALF_PAYLOADS], ids=_HALF_IDS)
+def test_the_same_half_payloads_onto_an_unread_scanner_row_stay_refused(conn, half):
+    """The pin on the other door. On an UNREAD scanner row both halves were
+    refused already, by the reading test -- a reading leaves two traces and
+    no fewer -- and the fix for the marked row must not have moved that."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    _scanner_row(conn, aid)
+
+    with pytest.raises(ValueError) as exc:
+        ledger.record_finding(conn, aid, {
+            "fingerprint": "a" * 64, "category": "dependency", "rule": "CVE-1",
+            "severity": "low", "title": "String-built SQL",
+            "producer": ledger.AGENT, **half})
+    assert "rubber stamp" in str(exc.value)
+
+    got = ledger.findings_of(conn, aid)
+    assert got[0]["triaged"] == 0
+    assert got[0]["rationale"] == "Trivy read the lockfile"
+    assert [(o["file"], o["line"]) for o in got[0]["occurrences"]] == [("yarn.lock", 4)]
+
+
+@pytest.mark.parametrize("half, names", _HALF_PAYLOADS, ids=_HALF_IDS)
+def test_the_same_half_payloads_onto_the_agents_own_row_are_refused_too(conn, half, names):
+    """No mark at stake, same `elif`, same erasure: the agent's own row
+    carries a sentence and a location, and a payload missing either would
+    take it. Refused on the same terms as on a marked scanner row."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    ledger.record_finding(conn, aid, _finding(producer=ledger.AGENT))
+
+    with pytest.raises(ValueError) as exc:
+        ledger.record_finding(conn, aid, {
+            "fingerprint": "a" * 64, "category": "sast", "rule": "sql-injection",
+            "severity": "high", "title": "String-built SQL",
+            "producer": ledger.AGENT, **half})
+    assert names in str(exc.value)
+
+    got = ledger.findings_of(conn, aid)
+    assert got[0]["rationale"] == "why"
+    assert [o["file"] for o in got[0]["occurrences"]] == ["app/db.py"]
+
+
+def test_a_full_payload_onto_a_row_already_marked_still_replaces_both_halves(conn):
+    """The boundary the refusals above must not cross: REPLACE is still the
+    semantics. A correction carrying both halves lands -- a new sentence, a
+    changed severity, the five locations narrowed to the one still affected
+    -- and the mark stays."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    _marked_scanner_row(conn, aid)
+
+    ledger.record_finding(conn, aid, _finding(
+        category="dependency", rule="CVE-1", severity="medium",
+        producer=ledger.AGENT,
+        rationale="reachable after all: the upload handler calls it",
+        occurrences=[{"file": "app/upload.py", "line": 30, "snippet_hash": ""}]))
+
+    got = ledger.findings_of(conn, aid)
+    assert got[0]["triaged"] == 1
+    assert got[0]["severity"] == "medium"
+    assert got[0]["rationale"] == "reachable after all: the upload handler calls it"
+    assert [(o["file"], o["line"]) for o in got[0]["occurrences"]] == [("app/upload.py", 30)]
+
+
+def test_a_row_that_never_carried_a_location_can_be_rewritten_without_one(conn):
+    """The rule is about what the row CARRIES, not what every payload must
+    have. `[]` on a NEW agent finding is accepted at the door, so an agent's
+    own row can hold a sentence and no location; a correction of that
+    sentence omits nothing the row had, and refusing it would punish the
+    one write that cannot erase anything."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    ledger.record_finding(conn, aid, _finding(producer=ledger.AGENT, occurrences=[]))
+
+    ledger.record_finding(conn, aid, _finding(
+        producer=ledger.AGENT, occurrences=[], rationale="why, reworded"))
+
+    got = ledger.findings_of(conn, aid)
+    assert got[0]["rationale"] == "why, reworded"
+    assert got[0]["occurrences"] == []
+
+
 def test_a_row_no_producer_claims_is_never_marked_triaged(conn):
     """`minted_by not in ("", AGENT)`, and the empty string is half of it.
 
