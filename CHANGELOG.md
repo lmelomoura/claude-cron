@@ -440,7 +440,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   triage the whole checklist rests on — because the budget had already gone to
   SAST. The derived security job now carries `disallowed_tools: "Agent"` and
   `run_job` turns any job's `disallowed_tools` into the CLI's
-  `--disallowedTools`, so the tool is absent before the first turn. A
+  `--disallowedTools`, so the tool is absent before the first turn. **As first
+  shipped this did not work at all — it killed every analysis outright, and the
+  entry originally written here described a feature that never ran once. See
+  "Every security analysis was dying before its first turn" under Fixed below
+  for what actually happened and what the flag now looks like on the command
+  line.** A
   **denylist, not the `allowed_tools` allowlist that was already there**: an
   allowlist would have to name every tool an analysis needs and would break
   silently the first time the CLI grew a new one, and the failure would look
@@ -472,6 +477,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   checklist and not a regression in the ledger.
 
 ### Fixed
+
+- **Every security analysis was dying before its first turn, because the flag
+  that closes the `Agent` tool ate the prompt.** `--disallowedTools` is
+  **variadic** — the CLI's own `--help` spells it `<tools...>` — and `run_job`
+  appended it to the very end of the launch line, immediately before the prompt
+  positional. The option parser went on consuming positionals, took the whole
+  prompt as a second tool name, and `--print` was left with no input at all:
+  `Error: Input must be provided either through stdin or as a prompt argument
+  when using --print`. Every run of a job carrying `disallowed_tools` ended
+  `"last_status":"error"`, `"cause":"killed"`, `"turns":0` — measured end to end
+  through `claude-cron run` against the real CLI 2.1.258, with a control job
+  lacking the field running clean. So the entire feature above shipped inert,
+  and worse than inert: the analyses it was meant to make cheaper stopped
+  running at all. The same latent bug sat in the pre-existing `--allowedTools`
+  line and was dormant only because nothing had ever set that field; mirroring
+  it is what armed it. The launch now ends option parsing with `--` before the
+  prompt — **always, not only when a tool flag is set**, since it costs nothing
+  otherwise and goes on protecting the prompt from any variadic flag added
+  later. The two tool flags are also passed as a quoted array rather than
+  through the word-split `$args`, so a value like `Bash(git *)` reaches the CLI
+  as one argument instead of splitting into `Bash(git` and a glob-expanded
+  `*)`. And it is written down that a tool named in **both** lists is denied:
+  deny wins, measured off the session's own `init` tool roster.
+
+  **Why no test caught it, which is the more expensive half.** The two
+  assertions guarding this launch `sed`-ed `run_job`'s source text and grepped
+  for literal lines: they proved the lines existed and never once observed an
+  argv. `test/fake-claude`, which the whole end-to-end suite runs against, never
+  read `"$@"` at all, so a green e2e run was never evidence about the launch
+  path. And the assertion that checked the derived job's `disallowed_tools`
+  compared it against `$SECURITY_DISALLOWED_TOOLS`, the very constant it was
+  testing — emptying that constant re-opened the tool with all five assertions
+  still green, including the one whose failure message reads "subagents are
+  back". All three are fixed: the structural greps are replaced by a real
+  `run_job` launch recorded through `CLAUDE_CRON_CLAUDE_BIN` and asserted
+  argument by argument (the flag and its value, the prompt as a lone positional
+  after `--`, a job with neither field getting neither flag but still getting
+  `--`, and a tool value with a space surviving as one argument); the derived
+  job is compared against the literal `"Agent"`; and `test/fake-claude` can now
+  record its argv, with a scenario in `test/e2e.test.sh` that reads it over the
+  real `security analyze` path. Each of the three properties was mutation-tested
+  by breaking it and watching the new assertions go red.
 
 - **The built-in secret scanner stopped reading its own agents' workspace as
   if it were the project — and `SKIP_DIRS` learned to say a path, so it did

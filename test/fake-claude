@@ -3,12 +3,34 @@
 # parses. It exists so the session lifecycle can be driven end to end without
 # spending a real session on it — everything here is ours except the model.
 #
-# Behaviour is steered by two env vars the harness sets:
+# WHAT A GREEN E2E RUN DOES *NOT* PROVE. Every behaviour below is steered by env
+# vars. Unless FAKE_ARGV_OUT is set this stand-in never looks at "$@" at all, so
+# it accepts ANY launch line and reports success either way — a green suite is
+# not evidence about the arguments run_job builds. It cost a Critical: a variadic
+# `--disallowedTools` at the end of the launch swallowed the prompt positional,
+# the real CLI died with "Input must be provided ... when using --print" before
+# its first turn, and this suite stayed green throughout because it never read an
+# argv. Set FAKE_ARGV_OUT to record one (see scenario 12 in e2e.test.sh), and
+# never cite a green run here as proof that the launch path is sound.
+#
+# Behaviour is steered by env vars the harness sets:
 #   FAKE_SESSION  the session id to report in the init event
 #   FAKE_MODE     complete | undeclared | dirty | hang
 #   FAKE_SKIP_PREPARE  set to skip `security prepare` inside a security run,
 #                      i.e. to play the agent that ignored its first command
+#   FAKE_ARGV_OUT      a path to record the launch argv in, one line per
+#                      ARGUMENT, "<n><TAB><that argument's first line>"
 set -u
+
+# The one place this file reads its own arguments. First line only, because the
+# prompt is a paragraph — but one line here is still exactly one argument there,
+# which is what makes the recording worth reading.
+if [ -n "${FAKE_ARGV_OUT:-}" ]; then
+  { printf 'ARGC\t%s\n' "$#"
+    n=0
+    for a in "$@"; do n=$((n + 1)); printf '%s\t%s\n' "$n" "${a%%$'\n'*}"; done
+  } > "$FAKE_ARGV_OUT"
+fi
 
 sid="${FAKE_SESSION:-sess-fake-0001}"
 mode="${FAKE_MODE:-complete}"
