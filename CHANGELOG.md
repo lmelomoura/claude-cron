@@ -69,6 +69,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Model families resolve to concrete ids again for anyone with a hook
+  configured.** The family→id baseline read the probe stream's first line
+  expecting the init event there, but with any hook wired in
+  `~/.claude/settings.json` the CLI emits `hook_started`/`hook_response`
+  system events ahead of it (on 2.1.258, init — the only event carrying
+  `.model` — arrives third). The baseline came back empty, `resolve_family`
+  gave up, and `config/models.json` recorded every family as itself
+  (`fable -> fable`) for a day at a time — the newest-model discovery this
+  resolver exists for silently off, families falling back to whatever the
+  installed CLI's own lagging alias means, and the dashboard's picker left
+  with no concrete id to offer. The init event is now selected wherever it
+  sits in the stream, and the selftest replays a captured hooked stream
+  (the sample is committed in `test/fixtures/`) so it stays read.
+
 - **The running badge sits beside Runs, not Jobs.** It counts runs in
   flight, and the Runs counter already includes them — beside the job
   count it read as "1 of these 8 jobs is running", which is not what it
