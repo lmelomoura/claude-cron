@@ -505,6 +505,13 @@ and report yours with \`claude-cron security report-finding --analysis $5\`.
 Never write to the database directly. When you are done, close the analysis
 with \`claude-cron security finish --analysis $5 --state done\`.
 
+That close is checked. It counts the findings a SCANNER produced at severity
+medium or above that you never re-reported, and records the analysis \`capped\`
+instead of \`done\` when there are any -- with a note naming the count and the
+first three. Re-reporting a scanner's finding under the fingerprint the
+checklist printed is the only record that anybody read it, so a finding you
+agree with is re-reported too, at its own severity. Triage before SAST.
+
 You have no \`Agent\` tool in this run -- the CLI's own tool roster calls it
 \`Task\`, and it is the same tool under both names. It is closed at launch, on
 purpose. Two earlier analyses spent their whole budget fanning the SAST pass out

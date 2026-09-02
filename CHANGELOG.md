@@ -17,7 +17,77 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The security skill no longer tells the agent to do the one thing the close
+  now punishes.** Job 2 of `skills/security-analysis/SKILL.md` said to
+  re-report a deterministic finding "with a corrected severity … **or leave it
+  alone if it stands**", and Job 1 said re-reporting an already-open row
+  "changes nothing but its text". Both are now false: a re-report onto a row a
+  scanner minted is the ONLY thing that marks the finding triaged, and
+  `finish --state done` counts what is not marked. **What it cost not to have
+  this:** the gate shipped without the two documents that tell the agent what
+  it measures — the repository's own rule that a rule the code enforces
+  travels with the code, broken in the commit that added the rule. An agent
+  following Job 2 *exactly* — opening all ~40 findings, correcting thirty,
+  agreeing with ten at `medium` or above — would have closed `capped` under a
+  coverage note asserting that those ten "were never triaged". That note is a
+  false statement about work that was actually done, in a module whose entire
+  case rests on its reports never asserting what they cannot prove. Job 2 is
+  now a numbered procedure rather than a paragraph of intent (`checklist`
+  first; every non-`agent` producer's row at `medium` or above; open the code;
+  re-report under the printed fingerprint, unchanged severity included), it
+  says what a `capped` "N deterministic findings were never triaged" means and
+  that skipping this job is the only way to get one, and it states that an
+  empty rationale or the scanner's own sentence pasted back is a rubber stamp
+  that will not count. "Ending the run" now names the gate the agent is judged
+  by: the `medium` floor, the `done` → `capped` downgrade, and the note that
+  names the first three skipped. The two analyses this is drawn from closed
+  `done` over ~40 unread findings each; the gate that now catches that would
+  have punished an agent that had followed the skill.
+
+- **The skill says why it has no subagents, in the same words as the runner.**
+  The `Agent` tool — `Task` in the CLI's roster, the same tool under both
+  names — has been closed at launch since the previous commit, but nothing the
+  agent reads explained the absence, which reads as a broken environment
+  rather than a decision. Both `SKILL.md` and `security_prompt()` now say it is
+  closed on purpose and give the number: analysis 9 cost **$51.44** running six
+  subagents that split the repository for the SAST pass and triaged not one
+  deterministic finding. Dividing the repository by area is not the answer to a
+  budget that runs out — a `capped` that says what was not reached is.
+  `tests/security/test_taxonomy.py` pins all three statements to the skill:
+  Job 2's re-report instruction (and the absence of "leave it alone"), the
+  floor/verdict/note in "Ending the run", and a sentence naming both `Agent`
+  and `Task` as closed, with the cost that made it a rule.
+
 ### Added
+
+- **The coverage note is now a table of phases before it is a paragraph.** An
+  analysis records, beside the prose it always wrote, one row per phase —
+  `scope`, `secrets`, `hygiene`, `dependencies`, `sbom`, `iac`, `sast-prepass`
+  and `triage` — each with a status (`ran` / `warning` / `skipped`), the
+  producer that answered, and that phase's own sentences. The downloaded
+  Markdown and HTML reports open with that table, the JSON carries it under
+  `coverage.phases`, and the analysis screen draws one line per phase with a
+  status dot, folding the prose underneath. **What it cost not to have this:**
+  `coverage_note` is a single string assembled by concatenating 27 `*_NOTE`
+  constants across six modules — about two thousand characters on a real run.
+  Every sentence in it was written because its absence had cost something and
+  every one of them is true; read as one block, the operator who built this
+  system looked at a real one and asked "what *is* this alert?". Honest per
+  phase, incoherent as a whole. The table answers "who looked, who did not,
+  and with what" in a glance, and the paragraph is what you open when you then
+  ask why. **Beside, never instead:** `coverage_note` is still written byte for
+  byte as before, each phase's note is a substring of it, and an analysis
+  recorded before the new `coverage` column existed renders exactly as it
+  always did — no empty table, no placeholder. **The status is what the
+  scanner returned, not a reading of its prose:** every `_scan_*` in
+  `cmd_prepare` now answers with its own status off its own control flow, so a
+  reworded note can never quietly change what a phase claims. `warning` is the
+  middle case that used to be invisible — a fallback producer whose coverage is
+  narrower than the engine it replaced (the built-in secret scanner against
+  gitleaks' rule set, OSV.dev's five lockfile formats against Trivy's many), or
+  a Semgrep pre-pass that ran perfectly and still is not the SAST pass.
 
 - **An analysis can no longer close `done` over findings nobody read.**
   `finish --state done` now counts the findings a SCANNER produced that are

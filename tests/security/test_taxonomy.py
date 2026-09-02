@@ -93,6 +93,94 @@ def test_the_skill_lists_every_rule_name():
         )
 
 
+# ---- The skill against the gate in `cmd_finish`.
+#
+# CONTRIBUTING rule 1: a rule the code enforces travels with the code. The
+# `done` -> `capped` downgrade for untriaged scanner findings shipped without
+# either of the two documents that tell the agent what to do, and the skill
+# said the OPPOSITE of what the gate measures -- "re-report it with a corrected
+# severity ... or leave it alone if it stands". An agent following Job 2
+# exactly, reading all ~40 findings and agreeing with ten of them, closed
+# `capped` under a note asserting those ten "were never triaged". The note was
+# false, and a module whose whole case is that its reports never assert what
+# they cannot prove cannot ship one.
+#
+# Same extraction shape as `test_the_skill_lists_every_rule_name` above, and
+# for the same reason: a substring search over the WHOLE document is too weak
+# here. "capped", "medium" and "re-report" all appear in several sections, so a
+# whole-document check would keep passing after the sentence it was written to
+# pin had been deleted from the section that needs it.
+
+def _skill_section(start_pattern, end_pattern=None):
+    """The slice of SKILL.md from one heading up to the next, or to the end."""
+    text = SKILL.read_text()
+    start = re.search(start_pattern, text, re.MULTILINE)
+    assert start, f"SKILL.md has no section starting {start_pattern!r}"
+    section = text[start.start():]
+    if end_pattern is not None:
+        end = re.search(end_pattern, section[1:], re.MULTILINE)
+        assert end, (
+            f"SKILL.md's {start_pattern!r} section never ends: no "
+            f"{end_pattern!r} after it, so this slice is the rest of the file")
+        section = section[:1 + end.start()]
+    return section
+
+
+def test_job_2_says_a_finding_that_stands_is_still_re_reported():
+    # The re-report IS the triage mark: `ledger.record_finding` sets `triaged`
+    # when the agent writes onto a row another producer minted, and there is no
+    # field an agent can send instead. So "leave it alone if it stands" told
+    # the agent to produce exactly the state `cmd_finish` counts as unread.
+    section = _skill_section(r"^\*\*2\. Triage the deterministic findings\.\*\*",
+                             r"^\*\*3\. ")
+    lowered = section.lower()
+    for phrase in ("leave it alone", "changes nothing but its text"):
+        assert phrase not in lowered, (
+            f"SKILL.md's Job 2 still says {phrase!r}: an agent that follows it "
+            "closes `capped` under a note saying findings it actually read "
+            "were never triaged")
+    assert re.search(r"re-report", lowered), \
+        "SKILL.md's Job 2 no longer tells the agent to re-report anything"
+    assert re.search(r"still re-reported|re-reported too", lowered), (
+        "SKILL.md's Job 2 no longer says that a finding whose severity you "
+        "would NOT change is re-reported anyway -- which is the only case the "
+        "gate in cmd_finish and the old wording disagreed about")
+
+
+def test_ending_the_run_names_the_gate_that_lowers_done_to_capped():
+    # The agent has to be able to predict the downgrade before it happens, not
+    # discover it in the note afterwards. Three facts, all from `cmd_finish`:
+    # the floor is TRIAGE_FLOOR, the verdict becomes `capped`, and the note
+    # names the first three by rule and file.
+    section = _skill_section(r"^## Ending the run$")
+    for token in ("medium", "capped", "first three"):
+        assert token in section.lower(), (
+            f"SKILL.md's 'Ending the run' never says {token!r} -- the agent "
+            "cannot predict a downgrade whose floor, verdict and note this "
+            "section does not describe")
+
+
+def test_the_skill_forbids_subagents_and_says_why():
+    # Closed at launch by the runner (--disallowedTools Task); this sentence
+    # explains the absence rather than enforcing it, which is why it has to
+    # name BOTH spellings: the CLI's roster calls the tool `Task`, and an agent
+    # told only about `Agent` reads the missing `Task` as a broken environment.
+    text = SKILL.read_text()
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    naming = [s for s in sentences if "`Agent`" in s and "`Task`" in s]
+    assert naming, (
+        "no sentence in SKILL.md names both `Agent` and `Task` -- the tool is "
+        "denied at launch under the name `Task`, and nothing tells the agent")
+    assert any(re.search(r"closed at launch|not available|no subagents", s, re.I)
+               for s in naming), (
+        "SKILL.md names `Agent`/`Task` but never says it is closed: "
+        f"{naming!r}")
+    # The reason travels with the rule, or the next reader deletes the rule as
+    # unexplained. $51.44 on six subagents that triaged nothing is the reason.
+    assert "51.44" in text, \
+        "SKILL.md forbids subagents without the cost that made it a rule"
+
+
 # ---- RULE_RENAMES: the declared history of every rule name that changed.
 #
 # These were written while the map was still EMPTY, and therefore vacuous, on
