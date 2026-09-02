@@ -314,6 +314,36 @@ def finish_analysis(conn, analysis_id, state, spend_usd=0.0, coverage_note="",
     conn.commit()
 
 
+def names_a_file(occurrence: dict) -> bool:
+    """Whether this occurrence IS a location -- the one test both doors ask.
+
+    An occurrence counts when it names a file, and only then. `{}` and
+    `{"file": ""}` are objects in a list, not places a reader can open, and a
+    `not occurrences` test that saw `[{}]` as a location let a re-report
+    carrying it be marked read while leaving the row a single occurrence at
+    `('', 0)` -- rendered as nothing, and printed by the gate's own note as
+    "(no file recorded)". `line` is deliberately no part of it: 0 is what
+    every scanner row about a whole file carries (a lockfile advisory, a mode
+    bit), so a check on the line would refuse the producers' own rows.
+
+    Defined once, here, and imported by `cli.cmd_report_finding`: the door
+    refuses any occurrence this returns False for, and `_not_a_reading` below
+    asks whether at least one passes, so the two cannot drift into two
+    spellings of what a location is.
+    """
+    file = occurrence.get("file")
+    return isinstance(file, str) and bool(file.strip())
+
+
+def _rationale_of(finding: dict) -> str:
+    return (finding.get("rationale") or "").strip()
+
+
+def _locates(finding: dict) -> bool:
+    """Whether at least one of the finding's occurrences names a file."""
+    return any(names_a_file(o) for o in finding.get("occurrences") or ())
+
+
 def _not_a_reading(existing_rationale: str, finding: dict) -> str:
     """Why this re-report is a rubber stamp -- '' when it is a real reading.
 
@@ -322,7 +352,7 @@ def _not_a_reading(existing_rationale: str, finding: dict) -> str:
     refusal, so it says which of the three arrived and what a reading would
     have carried instead.
     """
-    rationale = (finding.get("rationale") or "").strip()
+    rationale = _rationale_of(finding)
     if not rationale:
         return ("it carries no rationale, and a finding nobody explained is a "
                 "finding nobody read")
@@ -330,10 +360,10 @@ def _not_a_reading(existing_rationale: str, finding: dict) -> str:
         return ("its rationale is the producer's own sentence handed back "
                 "byte for byte, which is what a rubber stamp looks like from "
                 "here -- your reading, not the scanner's, is what was missing")
-    if not finding.get("occurrences"):
-        return ("it carries no occurrences, so the row it would leave behind "
-                "names no file and no line for the reader of the report to "
-                "open")
+    if not _locates(finding):
+        return ("it carries no occurrences naming a file, so the row it would "
+                "leave behind names no file and no line for the reader of the "
+                "report to open")
     return ""
 
 
@@ -375,13 +405,26 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
     own note is built by reading them back. A write that IS applied still
     replaces the occurrence list rather than appending to it, which is what
     lets a re-report narrow five locations to the two still affected (the
-    `partial` half of the skill's Job 3). The erasure route was the stamp, not
-    the replacement.
+    `partial` half of the skill's Job 3). The erasure route was never the
+    replacement as such: it was the payload that replaces everything with
+    nothing -- and that one is refused on every row, marked or not, two
+    paragraphs down.
 
-    ONLY THE 0 -> 1 TRANSITION IS GATED. A row already marked has had its
-    reading recorded; a later write from the agent -- a retry, or a correction
-    that happens to repeat its own earlier sentence -- is not a stamp on unread
-    work, and refusing it would punish the analyses that did the job.
+    ONLY THE 0 -> 1 TRANSITION IS GATED FOR A READING. A row already marked
+    has had its reading recorded; a later write from the agent -- a retry, or
+    a correction that happens to repeat its own earlier sentence -- is not a
+    stamp on unread work, and refusing it would punish the analyses that did
+    the job.
+
+    ONE WRITE IS REFUSED WHATEVER THE MARK SAYS, AND WHOEVER MINTED THE ROW: an
+    agent payload carrying no rationale and no occurrence naming a file.
+    Applied, it would leave a row nobody explained at no location -- with
+    `triaged` still 1 if it was, so the row counts as read while nothing of
+    the reading or of the scanner's evidence survives. The first version of
+    the gate above let exactly that through one write later, because the mark
+    was already there and there was nothing left to gate. It is never a
+    correction of anything, so it is refused on the same terms as the stamp:
+    before the UPDATE, inside the transaction, nothing recorded.
     """
     # A finding and its occurrences are one unit: without this transaction
     # boundary, an occurrence that fails to insert midway (a non-numeric
@@ -465,20 +508,34 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
             minted_by = (existing["producer"] or "").strip()
             written_by = (finding.get("producer") or "").strip()
             triaged = 0
-            if (written_by == AGENT and minted_by not in ("", AGENT)
-                    and not existing["triaged"]):
-                stamp = _not_a_reading(existing["rationale"], finding)
-                if stamp:
-                    # Inside `with conn:`, so this rolls back: "nothing was
-                    # recorded" is a statement about the database, not a hope.
+            if written_by == AGENT:
+                if minted_by not in ("", AGENT) and not existing["triaged"]:
+                    stamp = _not_a_reading(existing["rationale"], finding)
+                    if stamp:
+                        # Inside `with conn:`, so this rolls back: "nothing
+                        # was recorded" is a statement about the database,
+                        # not a hope.
+                        raise ValueError(
+                            f"this re-report of {minted_by}'s finding is a "
+                            f"rubber stamp rather than a triage — {stamp}. The "
+                            "re-report IS the mark that this finding was read, "
+                            "and the close is verified against it, so it has "
+                            "to carry your own rationale and the occurrences "
+                            "you read. Nothing was recorded.")
+                    triaged = 1
+                elif not _rationale_of(finding) and not _locates(finding):
+                    # Every other agent write onto an existing row -- one
+                    # already marked, the agent's own, or an unknown minter's.
+                    # The stamp test above is a superset of this on the rows it
+                    # gates, so this is the erasure alone: see the docstring's
+                    # last paragraph.
                     raise ValueError(
-                        f"this re-report of {minted_by}'s finding is a rubber "
-                        f"stamp rather than a triage — {stamp}. The re-report "
-                        "IS the mark that this finding was read, and the close "
-                        "is verified against it, so it has to carry your own "
-                        "rationale and the occurrences you read. Nothing was "
-                        "recorded.")
-                triaged = 1
+                        "this re-report carries no rationale and no occurrence "
+                        "naming a file, and a re-report REPLACES the stored row, "
+                        "so applying it would leave a finding nobody explained "
+                        "at no location and take the rationale and the "
+                        "locations already recorded with it. That is never a "
+                        "correction. Nothing was recorded.")
             conn.execute(
                 "UPDATE finding SET category=?, rule=?, severity=?, title=?,"
                 " rationale=?, remediation=?, partial_note=?, cwe=?, owasp=?,"

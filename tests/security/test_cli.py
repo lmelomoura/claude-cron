@@ -2311,6 +2311,53 @@ def test_a_rubber_stamp_through_the_real_door_neither_marks_nor_strips(tmp_path)
         "the stamp must not have taken the finding's only location with it")
 
 
+@pytest.mark.parametrize("phantom", ([{}], [{"file": "", "line": 0}]),
+                         ids=("empty-object", "empty-file"))
+def test_an_occurrence_that_names_no_file_is_refused_at_the_door(tmp_path, phantom):
+    """`[{}]` passed the door's "a list of objects" and the ledger's `not
+    occurrences`, so a re-report carrying it was marked read and left the row
+    one occurrence at `('', 0)` -- rendered as nothing, and named by the
+    gate's own note as "(no file recorded)". The door now asks the ledger's
+    question of the ledger's predicate, so the two cannot drift: an occurrence
+    names a file or it is not one. Refused HERE as well as in the ledger
+    because the door is where the agent is looking, and it can fix this one.
+    The scanner's evidence has to survive the refusal, so the close is driven
+    through to the note that only `yarn.lock` can be in."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": fp, "category": "dependency", "rule": "CVE-1",
+        "severity": "high", "title": "CVE-1 in yarn.lock",
+        "rationale": "read the call site: it is not reachable from a request",
+        "occurrences": phantom}), env=AS_AGENT)
+    assert out.returncode != 0, out.stdout
+    assert "file" in out.stderr, out.stderr
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "capped"
+    assert "CVE-1 (yarn.lock)" in row["coverage_note"]
+
+
+def test_an_occurrence_at_line_zero_that_names_a_file_is_accepted_at_the_door(tmp_path):
+    """The control: `line` 0 is what every whole-file scanner row carries and
+    what `_triage` above sends, so it is never the tell -- the file is."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": fp, "category": "dependency", "rule": "CVE-1",
+        "severity": "high", "title": "CVE-1 in yarn.lock",
+        "rationale": "read the call site: it is not reachable from a request",
+        "occurrences": [{"file": "a.py", "line": 0}]}), env=AS_AGENT)
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    assert run(db, "list", "--project", "web")[0]["state"] == "done"
+
+
 def test_a_re_report_that_agrees_with_the_scanner_still_satisfies_the_gate(tmp_path):
     """The control for the refusal above, and the case it must never catch: an
     agent that read the code and concluded the scanner was right. The severity

@@ -1311,6 +1311,20 @@ def cmd_report_finding(args):
     if not isinstance(occurrences, list) or any(
             not isinstance(o, dict) for o in occurrences):
         sys.exit("report-finding: occurrences must be a list of objects")
+    # An object is not an occurrence until it names a file. `[{}]` used to pass
+    # the line above and the ledger's `not occurrences` alike, marking a
+    # scanner's row read and leaving it one location at `('', 0)` -- the
+    # phantom the report renders as nothing and the gate's note prints as
+    # "(no file recorded)". `ledger.names_a_file` is the ONE predicate, asked
+    # here of every occurrence and in `record_finding` of at least one, so the
+    # door and the reading test cannot drift. `line` is not looked at: 0 is
+    # what every whole-file scanner row carries.
+    if not all(ledger.names_a_file(o) for o in occurrences):
+        sys.exit("report-finding: every occurrence must name a file. An "
+                 "occurrence is the file (and line -- 0 for a whole file) the "
+                 "reader of the report opens; an object with no `file` is not "
+                 "one, and a row carrying only such objects has no location "
+                 "at all")
     # NEVER read from the payload -- `producer` is not an agent-writable
     # field, it is this door's own record of who arrived through it. An agent
     # able to send its own would be able to claim a deterministic producer for

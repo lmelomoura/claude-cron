@@ -35,10 +35,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is (a judgement on one repository must not dismiss the identical fingerprint
   on another). A decision is a stronger record that a mind read the row than any
   re-report: it is written, signed and permanent. Job 2 of the skill said the
-  four states it lists are "exactly" the rows a producer recorded this analysis,
-  which was untrue in both directions; it now says which two kinds of
-  producer-recorded row sit outside them and why — a `pending` row, which
-  belongs to Job 1, and a decided row, which belongs to the human who signed it.
+  four states it lists are "exactly" the rows a producer recorded this analysis.
+  That was untrue in one direction — a decided row is producer-recorded too, and
+  sits outside the four states — while the other direction, that every row in
+  those states was recorded by a producer in this analysis, holds and is what
+  the sentence now affirms; it then names the two kinds of producer-recorded row
+  that sit outside them and why — a `pending` row, which belongs to Job 1, and a
+  decided row, which belongs to the human who signed it.
 
 - **The triage mark now costs a reading, and the cheapest rubber stamp can no
   longer strip a finding of its evidence.** The gate that lowers `done` to
@@ -52,7 +55,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   about a skipped finding could no longer name the file to open it at. Such a
   re-report is now refused outright, with nothing about the row changed, when it
   carries no rationale, hands the producer's own sentence back byte for byte, or
-  names no location. The severity is deliberately not part of that test —
+  names no location — where a location is an occurrence that names a file:
+  `[{}]` and `[{"file": ""}]` used to count as one at the door and in the ledger
+  alike, and be stored as a phantom `('', 0)`, while `line` 0 stays legitimate
+  because every whole-file scanner row carries it. And a payload carrying no
+  rationale and no location is refused on EVERY row, marked or not: once a real
+  reading had marked the row, a second bare write was applied as a replacement
+  and left it `triaged=1` with its rationale and occurrences gone — counted as
+  read, evidence erased. The severity is deliberately not part of that test —
   agreeing with the scanner is a legitimate, probably the commonest, outcome of
   reading the code, and a check that demanded a changed severity would teach the
   agent to move numbers instead. Refused rather than silently uncounted: the

@@ -170,6 +170,24 @@ _RE_REPORTED_ANYWAY = (
     re.compile(r"(?<!not )(?<!never )re-reported too", re.I),
 )
 
+# Job 2's decided-row clause, both halves in ONE sentence and in their
+# direction: a row a human decided on is NOT the agent's to re-report, AND the
+# close does NOT count it. A reviewer kept the first half and flipped the
+# second -- "It is not yours to re-report, but the close still counts it
+# against you" -- and the suite stayed at 21 passed, because nothing in this
+# file had ever looked at the sentence. An agent reading the flipped version
+# re-reports the operator's own signed call, or closes `capped` believing it
+# owes a reading `_untriaged` never asks for.
+_DECIDED_ROW_IS_THE_HUMANS = re.compile(
+    r"not yours to re-report[^.]{0,80}?\bthe close does not count it against you",
+    re.I)
+
+# The sentence that clause replaced, restored verbatim by the same reviewer with
+# the suite still green. A decided row is producer-recorded and sits outside the
+# four states, so "exactly" is false -- in the one direction that matters, the
+# one that sends the agent to re-report a row the operator already ruled on.
+_FOUR_STATES_ARE_EXACTLY = re.compile(r"exactly the rows a producer recorded", re.I)
+
 
 def _forbidden_hits(text):
     """Every banned phrase `text` contains, as (pattern, matched text)."""
@@ -275,6 +293,30 @@ def test_ending_the_run_names_the_gate_that_lowers_done_to_capped():
         "check")
 
 
+def test_job_2_says_a_decided_row_is_the_humans_and_the_close_does_not_count_it():
+    # The fourth exclusion in `cli._untriaged` -- a fingerprint the project
+    # holds a decision for -- stated where the procedure is, and in its
+    # direction. Section-scoped like the other affirmative pin: the rule has to
+    # be in Job 2, not merely not-contradicted somewhere else.
+    section = _skill_section(r"^\*\*2\. Triage the deterministic findings\.\*\*",
+                             r"^\*\*3\. ")
+    assert _DECIDED_ROW_IS_THE_HUMANS.search(section), (
+        "SKILL.md's Job 2 no longer says, in one sentence, that a row the "
+        "checklist shows `accepted` or `false_positive` is not the agent's to "
+        "re-report AND that the close does not count it. `_untriaged` excludes "
+        "decided fingerprints; a Job 2 that says otherwise sends the agent to "
+        "re-report the operator's own signed call, or to close `capped` over a "
+        "debt the gate never counts")
+    # The sentence it replaced, banned across the WHOLE document, for the
+    # reason the comment block above gives: a slice is the wrong scope for
+    # "does this document ANYWHERE say the false thing".
+    assert not _FOUR_STATES_ARE_EXACTLY.search(SKILL.read_text()), (
+        "SKILL.md says again that the four states are 'exactly' the rows a "
+        "producer recorded this analysis. A decided row is producer-recorded "
+        "and sits outside them -- that sentence was replaced because it was "
+        "false in that direction")
+
+
 def test_the_pins_catch_the_rewrites_that_used_to_slip_past_them():
     # Each of these is a real edit a reviewer made to SKILL.md that inverted a
     # rule and left the suite at 19 passed. They are kept here as data so that
@@ -332,10 +374,25 @@ def test_the_pins_catch_the_rewrites_that_used_to_slip_past_them():
             f"Job 1 can carry {restored!r} and nothing fails -- the ban is "
             "scoped to Job 2 again")
 
-    # 4. And the live document is clean under all of it.
+    # 4. Job 2's decided-row clause with its second half flipped, and the false
+    # sentence it replaced restored beside it. A reviewer applied both to the
+    # live document after the clause landed and left 21 passed: neither
+    # contains a banned phrase, and every older pin is satisfied elsewhere.
+    flipped = ("It is not yours to re-report, but the close still counts it "
+               "against you.")
+    assert _DECIDED_ROW_IS_THE_HUMANS.search(flipped) is None, (
+        "the decided-row pin matches a sentence saying the close DOES count "
+        "the row, which is the rewrite it exists to catch")
+    assert _FOUR_STATES_ARE_EXACTLY.search(
+        "Those four states are exactly the rows a producer recorded in THIS "
+        "analysis."), "the ban misses the very sentence that was replaced"
+
+    # 5. And the live document is clean under all of it.
     assert not _forbidden_hits(text)
     assert _says_a_standing_row_is_re_reported(text)
     assert _states_the_downgrade_direction(text)
+    assert _DECIDED_ROW_IS_THE_HUMANS.search(text)
+    assert _FOUR_STATES_ARE_EXACTLY.search(text) is None
 
 
 def test_the_skill_forbids_subagents_and_says_why():
