@@ -120,7 +120,7 @@ Voltar ao estado normal: `rm data/rate-limits.json`.
 
       ```json
       "statusLine": { "type": "command",
-                      "command": "/Users/lfmoura/Projects/claude-cron/bin/statusline-rate-limits.sh" }
+                      "command": "<checkout>/bin/statusline-rate-limits.sh" }
       ```
 
       Não toquei nas tuas settings. Imprime `5h 62% · 7d 18%`, portanto continua

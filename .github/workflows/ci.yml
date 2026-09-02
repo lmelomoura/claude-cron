@@ -282,10 +282,32 @@ jobs:
           # catastrophic here, because the run stays green while covering none
           # of the engine path. This repository has exactly ONE legitimate
           # skip: test_both_configurations.py refusing to spawn itself when it
-          # is already the engines-on run. Anything else means an engine was
-          # not reached, and it fails the job.
-          if grep '^SKIPPED' result.txt | grep -v 'this run IS the engines-on run'; then
-            echo "::error::a test skipped for a reason other than the self-spawn guard — an engine was not reached, and a green run here would have covered none of the engine path"
-            exit 1
+          # is already the engines-on run. Anything else fails the job.
+          #
+          # BUT THE MESSAGE MUST NAME THE CAUSE IT ACTUALLY SAW. Every
+          # engine gate skips with the same reason text — "<engine> is not
+          # installed on this machine" — so "an engine was not reached" is a
+          # claim this step can check rather than assume. It used to assume
+          # it for every skip that was not the self-spawn guard, which meant
+          # the first test added here that skipped for any other legitimate
+          # reason would have failed the job with a diagnosis pointing at an
+          # engine install that was perfectly fine. Both kinds still fail —
+          # a new skip in this suite is a decision, not an accident — but
+          # they are now reported as what they are.
+          set -o pipefail
+          skips="$(grep '^SKIPPED' result.txt \
+                   | grep -v 'this run IS the engines-on run' || true)"
+          if [ -z "$skips" ]; then
+            echo "  ok    no test skipped for a missing engine"
+            exit 0
           fi
-          echo "  ok    no test skipped for a missing engine"
+          printf '%s\n' "$skips"
+          missing="$(printf '%s\n' "$skips" | grep 'is not installed on this machine' || true)"
+          other="$(printf '%s\n' "$skips" | grep -v 'is not installed on this machine' || true)"
+          if [ -n "$missing" ]; then
+            echo "::error::a test skipped because its engine is not installed — the engine install above did not take, and a green run here would have covered none of the engine path"
+          fi
+          if [ -n "$other" ]; then
+            echo "::error::a test skipped for a reason this guard does not recognise — it is NOT a missing engine, so read the SKIPPED lines above rather than debugging the engine install; if the skip is legitimate, allow it here explicitly"
+          fi
+          exit 1

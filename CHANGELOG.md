@@ -425,6 +425,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A maintainer's home directory is out of the repository, and
+  `claude-cron selftest` now fails if one comes back.**
+  `tests/security/fixtures/engines/syft-cyclonedx.json` is a raw Syft capture
+  kept deliberately unpurged, because the leak `adapters.syft_document` exists
+  to close is one Syft itself introduces — and it was captured on a laptop, so
+  it shipped that laptop's username to everyone who cloned this repository.
+  Two more copies were in a comment and an old plan. The cure is not "no
+  absolute paths": the fixture has to keep the *shape* of a home path or its
+  test proves nothing, so the username is now `/Users/me`, the placeholder
+  README.md already uses, and the test asserts the shape is still there before
+  it asserts the filter removed it. The new gate reads every **tracked** file —
+  the exposure has no natural home in the tree, any file can carry it — and
+  allows exactly five placeholder users (`Jane`, `example`, `me`, `runner`,
+  `user`), per occurrence rather than per line, so a line carrying both a
+  placeholder and a real home still fails.
+
+- **The engine-skip guard in CI no longer blames the engine install for a skip
+  it never looked at.** `nothing was skipped for want of an engine` treated
+  *every* `SKIPPED` line except the self-spawn guard as proof that an engine
+  was unreachable, and said so in the failure message. Every engine gate skips
+  with the same recognisable reason (`… is not installed on this machine`), so
+  that was a claim the step could check and did not: the first test added to
+  `tests/security/` that skipped for any other legitimate reason would have
+  failed the job pointing at a perfectly healthy engine install, and the next
+  person would have debugged the install for nothing. Both kinds still fail —
+  a new skip in this suite is a decision, not an accident — but the message
+  now names which of the two it actually saw.
+
 - **`claude-cron selftest` no longer gives a different answer depending on the
   caller's language settings.** The canonical-path check compares an exact
   string assembled by `sort`, and `sort` orders by the caller's collation.

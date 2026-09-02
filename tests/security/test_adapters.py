@@ -2147,10 +2147,20 @@ def test_trivy_iac_scan_reports_empty_results_as_no_findings_not_none(
 # applied), on the same model as `trivy-fs.json` and `gitleaks-dir.json`
 # above: a fixture typed from the documentation makes the parser and the
 # test agree with each other while both disagree with the tool. It still
-# carries the leak `syft_document` exists to close -- see the two
-# `type: "file"` entries whose `name` is this machine's own absolute path --
-# because a fixture that had already been fixed by hand would not prove the
-# fix does anything.
+# carries the leak `syft_document` exists to close -- see the three
+# `type: "file"` entries whose `name` is an absolute path rooted in a home
+# directory -- because a fixture that had already been fixed by hand would
+# not prove the fix does anything.
+#
+# ONE EDIT WAS MADE TO THE CAPTURE, AND IT IS NOT THE FIX. The capturing
+# machine's home directory was replaced with `/Users/me`, this repository's
+# own documented placeholder (see README.md), because a real username in a
+# repository other people clone is the very disclosure this adapter is about.
+# The SHAPE is untouched -- still an absolute path, still rooted in
+# `/Users/<somebody>`, still the only field in the document that is not
+# root-relative -- so the test below still fails the moment `syft_document`
+# stops dropping these entries. `bin/claude-cron selftest` is what keeps a
+# future re-capture from bringing a real home back in.
 
 def _syft_fixture():
     return json.loads((FIX / "syft-cyclonedx.json").read_text())
@@ -2171,7 +2181,19 @@ def test_syft_document_drops_the_absolute_path_the_file_entries_carry():
     is already root-relative. Stored and downloaded as-is, that field would
     put the operator's home directory and username into a document handed to
     whoever asked for this project's dependency list."""
-    document = adapters.syft_document(_syft_fixture())
+    raw = _syft_fixture()
+    # THE FIXTURE IS CHECKED BEFORE THE FILTER IS. The home directory in this
+    # capture is a placeholder (see the section comment), and an anonymisation
+    # that flattened these paths instead of neutralising them would leave the
+    # two assertions below passing over a document that never had anything to
+    # drop -- a green test proving nothing. This line is what makes that
+    # impossible: the input must still carry the shape being removed.
+    assert [c["name"] for c in raw["components"]
+            if c.get("type") == "file"
+            and c.get("name", "").startswith("/Users/")], (
+        "the fixture no longer carries an absolute home path, so the "
+        "assertions below cannot fail even with the filter removed")
+    document = adapters.syft_document(raw)
     assert not any(c.get("type") == "file" for c in document["components"])
     assert "/Users/" not in json.dumps(document)
 

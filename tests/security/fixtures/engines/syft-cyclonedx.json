@@ -91,7 +91,7 @@
         {
             "bom-ref": "68ee6a83a060036d",
             "type": "file",
-            "name": "/Users/lfmoura/Projects/claude-cron/tests/security/fixtures/composer.lock",
+            "name": "/Users/me/code/claude-cron/tests/security/fixtures/composer.lock",
             "hashes": [
                 {"alg": "SHA-1", "content": "28f0a9f778bb874aed8873a0caf760d93b561c3e"},
                 {"alg": "SHA-256", "content": "16c49c4bb4fae8797c8c23f7a1e54fa1e5e965cee7caed4e66d0caa197326a56"}
@@ -100,7 +100,7 @@
         {
             "bom-ref": "ad934e3add32bbda",
             "type": "file",
-            "name": "/Users/lfmoura/Projects/claude-cron/tests/security/fixtures/package-lock.json",
+            "name": "/Users/me/code/claude-cron/tests/security/fixtures/package-lock.json",
             "hashes": [
                 {"alg": "SHA-1", "content": "8ce78a6afbcbca3db15b465b21860570c7129919"},
                 {"alg": "SHA-256", "content": "7fe7e3465ff903789dfe96086437884c9fdc666680c8ea5613f4115a88fc5bf7"}
@@ -109,7 +109,7 @@
         {
             "bom-ref": "18480e3d72a34f1a",
             "type": "file",
-            "name": "/Users/lfmoura/Projects/claude-cron/tests/security/fixtures/poetry.lock",
+            "name": "/Users/me/code/claude-cron/tests/security/fixtures/poetry.lock",
             "hashes": [
                 {"alg": "SHA-1", "content": "10e337b5449f9b79b9dd3dfcdc59bee63b95f277"},
                 {"alg": "SHA-256", "content": "b25149c6b8e8e1db77aff6b4b6a50a01b31337b1f32dfa673c91e5d20605de89"}

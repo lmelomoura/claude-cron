@@ -1546,8 +1546,9 @@ def trivy_iac_scan(root, ignore_paths=()):
 # `syft:location:*:path`), and once more as a `type: "file"` component that
 # carries nothing but a SHA digest and -- unlike every other path in the same
 # document -- the scan root's OWN ABSOLUTE PATH with the relative part
-# appended. Captured verbatim in this module's fixture:
-# `/Users/lfmoura/Projects/claude-cron/tests/security/fixtures/composer.lock`,
+# appended. Kept in this module's fixture, with the capturing machine's home
+# directory swapped for this repository's `/Users/me` placeholder and nothing
+# else touched: `<home>/code/claude-cron/tests/security/fixtures/composer.lock`,
 # not `/tests/security/fixtures/composer.lock` the way the library entry for
 # the SAME file names it, two entries later in the identical array. Stored
 # and handed out through the same download route as every other SBOM in this

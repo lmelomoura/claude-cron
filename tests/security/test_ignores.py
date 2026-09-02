@@ -257,9 +257,9 @@ def test_the_default_announces_itself_in_one_sentence():
 
 
 def test_the_note_does_not_promise_more_silence_than_the_filter_delivers():
-    """"Secrets in .example files were not reported" was the old sentence and
-    it is a promise the filter is no longer allowed to keep: a private key in
-    a template IS reported. A reader deciding whether to trust an empty secret
+    """The old sentence -- "Secrets in .example files were not reported" --
+    is a promise the filter is no longer allowed to keep: a private key in a
+    template IS reported. A reader deciding whether to trust an empty secret
     section has to know which of the two they got."""
     assert "private key" in ignores.DEFAULT_NOTE
 
