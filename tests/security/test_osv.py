@@ -411,3 +411,35 @@ def test_a_component_missing_source_defaults_to_empty_not_a_crash(monkeypatch):
     assert findings
     assert findings[0]["occurrences"][0]["file"] == ""
     assert "malformed" not in note
+
+
+# ------------------------------------------------------------------- `scope`
+#
+# The OSV.dev side of the parity. `osv.query` never asks OSV.dev about scope --
+# only name, ecosystem and version leave the machine -- so the value is carried
+# from the component `deps.inventory` built, and the only two things that can
+# go wrong here are losing it and inventing one.
+
+def test_a_findings_scope_comes_off_the_component(monkeypatch):
+    _serve(monkeypatch)
+    findings, _note = osv.query([{**COMPONENT, "scope": "dev"}])
+    assert findings
+    assert {f["scope"] for f in findings} == {"dev"}
+
+
+def test_a_component_with_no_scope_yields_unknown_never_runtime(monkeypatch):
+    """`_clean_components` normalises through `deps.merge_scope`, so a
+    malformed entry cannot make a development dependency read as one that
+    ships -- and "nothing said" is never answered with "it ships"."""
+    _serve(monkeypatch)
+    findings, _note = osv.query([COMPONENT])
+    assert findings
+    assert {f["scope"] for f in findings} == {"unknown"}
+
+
+def test_a_nonsense_scope_is_not_carried_into_the_ledger(monkeypatch):
+    """The column is a closed vocabulary a reader grades urgency by. A value
+    from outside it would be rendered verbatim by the report."""
+    _serve(monkeypatch)
+    findings, _note = osv.query([{**COMPONENT, "scope": "production"}])
+    assert {f["scope"] for f in findings} == {"unknown"}

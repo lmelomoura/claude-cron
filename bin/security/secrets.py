@@ -12,7 +12,7 @@ import subprocess
 from pathlib import Path
 
 from .fingerprint import secret_fingerprint
-from .ignores import ignored
+from .ignores import ignored, sample_suppressed
 
 # Each rule is (name, severity, compiled pattern, minimum entropy of group 1).
 # Entropy 0 means the shape alone is conclusive.
@@ -31,8 +31,19 @@ _RULES = [
      3.5),
 ]
 
-_SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", "build"}
+# PUBLIC because it is no longer only this module's business. Gitleaks scans
+# the filesystem and knows nothing about caches, vendored trees or build
+# output; `adapters.gitleaks_config` turns this set into the engine's scope, so
+# whichever scanner runs, both agree on where an analysis looks.
+SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", "build"}
 _MAX_BYTES = 2 * 1024 * 1024
+
+# ONE sentence, whichever scanner found the credential -- `adapters` emits it
+# too. The advice is identical because the fact is: a credential that reached
+# a repository is compromised, and the file it sits in is not where it lives.
+REMEDIATION = ("Rotate the credential at the provider first -- it must be "
+               "assumed compromised. Removing it from the file is not enough "
+               "while it remains reachable in the history.")
 
 # The generic rule matches on shape alone (password/token/secret = <blob>),
 # and a real credential's entropy margin over a bad placeholder is thin (see
@@ -145,9 +156,7 @@ def _finding(rule, severity, path, lines, historical, commit_count=None):
         "category": "secret", "rule": rule, "severity": severity,
         "title": f"{rule.replace('_', ' ')} committed to the repository",
         "rationale": rationale,
-        "remediation": ("Rotate the credential at the provider first -- it must be "
-                        "assumed compromised. Removing it from the file is not enough "
-                        "while it remains reachable in the history."),
+        "remediation": REMEDIATION,
         "occurrences": [{"file": path, "line": line, "snippet_hash": ""} for line in lines],
         "historical": historical,
     }
@@ -175,6 +184,58 @@ def _skip_note(too_big, unreadable):
             f"{'' if total == 1 else 's'} ({', '.join(parts)}).")
 
 
+def _readable_files(root, ignore, skipped):
+    """Yield (relative path, text) for every file a sweep may read.
+
+    ONE walk, shared by the two callers below. `scan_tree` needs the text to
+    match patterns against and `count_lines` needs it to count -- and when an
+    engine does the secret detection instead, the line count still has to
+    come from somewhere, from the same set of files, or the two numbers would
+    describe different repositories. `skipped` is a mutable dict the walk
+    reports into, because a generator's return value is not reachable through
+    a `for`.
+    """
+    root = Path(root)
+    for p in sorted(root.rglob("*")):
+        if not p.is_file() or p.is_symlink():
+            continue
+        if any(part in SKIP_DIRS for part in p.relative_to(root).parts):
+            continue
+        rel = str(p.relative_to(root))
+        if ignored(rel, ignore):
+            continue
+        try:
+            if p.stat().st_size > _MAX_BYTES:
+                skipped["too_big"] += 1
+                continue
+        except OSError:
+            skipped["unreadable"] += 1
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            skipped["unreadable"] += 1
+            continue
+        yield rel, text
+
+
+def _lines_in(text: str) -> int:
+    return text.count("\n") + (0 if text.endswith("\n") or not text else 1)
+
+
+def count_lines(root, ignore) -> int:
+    """The size of what was analysed, without the pattern matching.
+
+    For the runs where an ENGINE did the secret detection: `lines_of_code` is
+    a by-product of `scan_tree`'s read, and losing it would leave the project
+    header rendering an em dash -- "not counted" -- for ever on any machine
+    with gitleaks installed. It is a count, never the text: nothing here can
+    put a file's contents into the ledger, a report or a log.
+    """
+    return sum(_lines_in(text) for _rel, text in _readable_files(
+        root, ignore, {"too_big": 0, "unreadable": 0}))
+
+
 def scan_tree(root, ignore):
     """(findings, note, lines) for the working tree.
 
@@ -189,30 +250,10 @@ def scan_tree(root, ignore):
     a count, never the text itself: nothing about it can put a file's
     contents into the ledger, a report or a log.
     """
-    root = Path(root)
     out, lines = [], 0
-    too_big = unreadable = 0
-    for p in sorted(root.rglob("*")):
-        if not p.is_file() or p.is_symlink():
-            continue
-        if any(part in _SKIP_DIRS for part in p.relative_to(root).parts):
-            continue
-        rel = str(p.relative_to(root))
-        if ignored(rel, ignore):
-            continue
-        try:
-            if p.stat().st_size > _MAX_BYTES:
-                too_big += 1
-                continue
-        except OSError:
-            unreadable += 1
-            continue
-        try:
-            text = p.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            unreadable += 1
-            continue
-        lines += text.count("\n") + (0 if text.endswith("\n") or not text else 1)
+    skipped = {"too_big": 0, "unreadable": 0}
+    for rel, text in _readable_files(root, ignore, skipped):
+        lines += _lines_in(text)
         # One finding per credential TYPE per file -- not per match. The
         # fingerprint (type + path) cannot depend on a position, so several
         # matches of one type collapse into one finding with several
@@ -220,11 +261,20 @@ def scan_tree(root, ignore):
         # deterministic).
         by_rule = {}
         for rule, severity, line in _hits(text):
+            # A committed TEMPLATE of a configuration file is read like any
+            # other file -- it counts towards `lines`, because this sweep did
+            # open it -- and the two rules that over-fire on a template are
+            # dropped from it. PER RULE and not per file: this used to skip
+            # the whole file, and a real `openssl genrsa` key in
+            # `certs/server.key.example` was then reported by nothing at all.
+            # See `ignores.SAMPLE_SUPPRESSED_RULES`.
+            if sample_suppressed(rel, rule, ignore):
+                continue
             group = by_rule.setdefault(rule, {"severity": severity, "lines": []})
             group["lines"].append(line)
         for rule, group in by_rule.items():
             out.append(_finding(rule, group["severity"], rel, group["lines"], False))
-    return out, _skip_note(too_big, unreadable), lines
+    return out, _skip_note(skipped["too_big"], skipped["unreadable"]), lines
 
 
 _DIFF_HEADER_PREFIX = "diff --git a/"
@@ -269,9 +319,22 @@ def _path_from_diff_header(line: str):
 _COMMIT_HEADER = re.compile(r"^commit ([0-9a-f]{7,40})")
 
 
-_HISTORY_GAP = ("The git history sweep did not complete ({reason}) — history "
-                "findings may be missing: a credential committed and later "
-                "deleted would not appear in this report.")
+# PUBLIC: one sentence for one blind spot, whichever scanner hit it. The
+# engine path in `adapters.gitleaks_scan` fills the same template, so a reader
+# is never asked to learn two vocabularies for "the history was not read".
+HISTORY_GAP = ("The git history sweep did not complete ({reason}) — history "
+               "findings may be missing: a credential committed and later "
+               "deleted would not appear in this report.")
+
+# What it costs to have run this scanner instead of an engine. Counted from
+# the rule list itself so the number cannot drift away from the rules, and
+# said out loud because "secrets were scanned" is a different claim depending
+# on who did the scanning -- eight shaped rules is not gitleaks' rule set, and
+# a reader judging this report's blind spots needs to know which they got.
+FALLBACK_NOTE = (f"Secrets were scanned by the built-in pattern scanner and "
+                 f"its {len(_RULES)} shaped rules, not by gitleaks: a "
+                 "credential whose shape is outside those rules would not "
+                 "have been found.")
 
 
 def scan_history(root, since_sha, ignore=()):
@@ -295,9 +358,9 @@ def scan_history(root, since_sha, ignore=()):
              "--diff-filter=AM", rev],
             capture_output=True, text=True, timeout=300, check=False)
     except subprocess.TimeoutExpired:
-        return [], _HISTORY_GAP.format(reason="it timed out after 300s")
+        return [], HISTORY_GAP.format(reason="it timed out after 300s")
     except OSError as exc:
-        return [], _HISTORY_GAP.format(reason=f"git could not be run: {exc}")
+        return [], HISTORY_GAP.format(reason=f"git could not be run: {exc}")
     if proc.returncode != 0:
         # A non-zero git is not an exception -- `check=False` -- and it was
         # swallowed exactly like one. The overwhelmingly common cause is a
@@ -307,7 +370,7 @@ def scan_history(root, since_sha, ignore=()):
         # history. Only git's FIRST stderr line is quoted; the rest is
         # advice addressed to a human at a terminal.
         reason = (proc.stderr or "").strip().splitlines()
-        return [], _HISTORY_GAP.format(
+        return [], HISTORY_GAP.format(
             reason=reason[0] if reason else f"git exited {proc.returncode}")
     blob = proc.stdout
 
@@ -337,6 +400,12 @@ def scan_history(root, since_sha, ignore=()):
             # deliberately fake credentials was excluded from the working-tree
             # findings and reported in full from the history -- the operator
             # set `ignore_paths` and got the noise anyway, one report later.
+            # The default filter rides in the same decision for the same
+            # reason: a default honoured by one of the two sweeps and not the
+            # other reopens exactly that hole. The TEMPLATE rule rides one
+            # level down, per rule, exactly as `scan_tree` applies it -- so a
+            # private key committed in a `.example` file is reported from the
+            # history too, and only the two template-noisy rules are not.
             skip_path = ignored(path, ignore)
             continue
         if skip_path:
@@ -344,6 +413,8 @@ def scan_history(root, since_sha, ignore=()):
         if not line.startswith("+") or line.startswith("+++"):
             continue
         for rule, severity, _ in _hits(line[1:]):
+            if sample_suppressed(path, rule, ignore):
+                continue
             key = (rule, path)
             group = groups.setdefault(key, {"severity": severity, "commits": set()})
             if commit_sha is not None:

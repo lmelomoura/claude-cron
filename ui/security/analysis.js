@@ -512,15 +512,15 @@ export function secPaintRunButton(){
   btn.textContent = running ? "Analysing…" : "Analyse";
 }
 
-// The four category values a finding can carry -- duplicated from the
-// server's own closed set (secrets.py/hygiene.py/osv.py, plus the open
-// "sast" vocabulary -- see vocabulary.js's own SEC_RULE_META comment for
-// why those four and no more), the same duplication findings-screen.js's
-// own FIND_CATEGORIES already carries against the server: the Category
-// picker has to draw its options before any request (there is no request
-// here at all -- this list floors what secState.findings already holds)
-// has ever answered.
-const SEC_FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene"];
+// The five category values a finding can carry -- duplicated from the
+// server's own closed set (secrets.py/hygiene.py/osv.py/adapters.py's
+// `trivy_misconfigs`, plus the open "sast" vocabulary -- see vocabulary.js's
+// own SEC_RULE_META comment for why those five and no more), the same
+// duplication findings-screen.js's own FIND_CATEGORIES already carries
+// against the server: the Category picker has to draw its options before any
+// request (there is no request here at all -- this list floors what
+// secState.findings already holds) has ever answered.
+const SEC_FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene", "iac"];
 
 // This run's own search text and category pick -- module state beside
 // secState.stateFilter for the identical reason: secOpen() resets all

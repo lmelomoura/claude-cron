@@ -7720,6 +7720,30 @@ def test_every_deterministic_rule_resolves_its_pinned_label_and_a_real_icon(srv,
         "stripe_key":          "Stripe live key committed",
         "openai_key":          "OpenAI API key committed",
         "google_api_key":      "Google API key committed",
+        # The same credential types under gitleaks' OWN rule ids. The engine
+        # writes its id into the finding (the fingerprint contains the rule,
+        # so re-spelling it would orphan every recorded decision), and without
+        # these keys every secret on an engine-scanned project drew the
+        # generic humanised label instead of the curated one. One rule of ours
+        # is several of theirs -- five GitHub token kinds, seven Slack ones.
+        "aws-access-token":          "AWS access key committed",
+        "github-pat":                "GitHub token committed",
+        "github-fine-grained-pat":   "GitHub token committed",
+        "github-oauth":              "GitHub OAuth token committed",
+        "github-app-token":          "GitHub app token committed",
+        "github-refresh-token":      "GitHub refresh token committed",
+        "slack-bot-token":           "Slack token committed",
+        "slack-user-token":          "Slack token committed",
+        "slack-app-token":           "Slack token committed",
+        "slack-config-access-token": "Slack token committed",
+        "slack-legacy-bot-token":    "Slack token committed",
+        "slack-legacy-token":        "Slack token committed",
+        "slack-webhook-url":         "Slack webhook URL committed",
+        "stripe-access-token":       "Stripe live key committed",
+        "openai-api-key":            "OpenAI API key committed",
+        "gcp-api-key":               "Google API key committed",
+        "private-key":               "Private keys committed",
+        "generic-api-key":           "Hardcoded secrets",
         "committed_env_file":  ".env file committed",
         "committed_key_file":  "Private key file committed",
         "missing_gitignore":   "No .gitignore in the repository",
@@ -7738,6 +7762,46 @@ def test_every_deterministic_rule_resolves_its_pinned_label_and_a_real_icon(srv,
     # scanner found it.
     by_rule = {row["rule"]: row["icon"] for row in out}
     assert by_rule["private_key"] == by_rule["committed_key_file"] == "key"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_every_rule_the_engine_grades_has_a_curated_label(srv, tmp_path):
+    """The two lists that name gitleaks' rules must not drift apart.
+
+    bin/security/adapters.py's `SEVERITY_BY_RULE` is the set of engine rules
+    this project has an OPINION about -- each one carried across from a
+    `secrets._RULES` judgement so the scanner swap does not re-grade a
+    repository's backlog. Every one of them therefore has a curated label
+    waiting for it here; a rule graded in Python and humanised on screen is
+    exactly the half-done state this test exists to catch, and it is invisible
+    otherwise (the label still renders, just genericly).
+
+    The other direction is deliberately NOT asserted: gitleaks ships ~180
+    rules and gains more every release, and adapters.DEFAULT_SEVERITY exists
+    precisely so an unmapped one is still graded. Those humanise on screen, as
+    they should.
+    """
+    import sys
+    sys.path.insert(0, str(REPO / "bin"))
+    try:
+        from security import adapters
+    finally:
+        sys.path.pop(0)
+
+    block = _security_js(srv)
+    deps = _rule_meta_deps(block)
+    script = tmp_path / "rule-meta-engine.js"
+    script.write_text(deps + """
+    console.log(JSON.stringify(Object.keys(SEC_RULE_META)));
+    """)
+    known = set(json.loads(subprocess.run(["node", str(script)],
+                                          capture_output=True, text=True,
+                                          check=True).stdout))
+    missing = sorted(set(adapters.SEVERITY_BY_RULE) - known)
+    assert not missing, (
+        f"adapters.SEVERITY_BY_RULE grades these gitleaks rules, but "
+        f"SEC_RULE_META has no label for them, so they render as the generic "
+        f"humanised slug: {missing}")
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -7762,6 +7826,48 @@ def test_an_advisory_id_keeps_itself_as_the_label(srv, tmp_path):
     assert out["ghsa"] == {"label": "GHSA-8xcm-r25x-g524", "icon": "shield"}
     assert out["cve"] == {"label": "CVE-2024-12345", "icon": "shield"}
     assert out["lower"] == {"label": "ghsa-lowercase-id", "icon": "shield"}
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_an_iac_check_id_keeps_itself_as_the_label(srv, tmp_path):
+    """bin/security/adapters.py's `_iac_finding` writes Trivy's own check id
+    as the `rule` -- `DS-0002`, `KSV-0001`, `AVD-AWS-0088` -- and a check id
+    is the SAME kind of object an advisory id (above) is: an opaque vendor
+    identifier, not a sentence. Before this fix secRuleMeta had no branch for
+    it and fell through to secHumaniseRule, which splits on the hyphen:
+    "DS-0002" rendered as "DS 0002" in every "Top issue categories" rollup
+    (index-screen.js, overview-tab.js, project-screen.js) -- a string that
+    matches neither the id an operator would grep the ledger for nor a real
+    human label. The fix keeps the id verbatim in its own branch (not a join
+    onto SEC_ADVISORY_RULE, which recognises only GHSA/CVE) and draws the
+    iac category's own `cpu` icon rather than the advisory branch's
+    `shield`.
+
+    The containment probe is `sastControl`: the identical string under the
+    "sast" category must still humanise. The new branch is keyed on
+    `category === "iac"`, not on the shape of the rule, so a sast rule id
+    that happens to look like a Trivy check id must not start keeping
+    itself verbatim too."""
+    block = _security_js(srv)
+    deps = _rule_meta_deps(block)
+    script = tmp_path / "rule-meta-iac.js"
+    script.write_text(deps + """
+    console.log(JSON.stringify({
+      ds: secRuleMeta("iac", "DS-0002"),
+      ksv: secRuleMeta("iac", "KSV-0001"),
+      avd: secRuleMeta("iac", "AVD-AWS-0088"),
+      sastControl: secRuleMeta("sast", "DS-0002"),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["ds"] == {"label": "DS-0002", "icon": "cpu"}
+    assert out["ksv"] == {"label": "KSV-0001", "icon": "cpu"}
+    assert out["avd"] == {"label": "AVD-AWS-0088", "icon": "cpu"}
+    assert out["sastControl"] == {"label": "DS 0002", "icon": "code"}, (
+        "the iac branch must be keyed on category, not on the rule's shape "
+        f"-- a sast rule that happens to look like a check id must still "
+        f"humanise: {out['sastControl']}")
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -7820,6 +7926,63 @@ def test_an_unknown_category_falls_back_safely(srv, tmp_path):
         assert row["icon"] in icon_names, f"{key} points at an unknown icon: {row}"
     assert out["noRuleEither"]["icon"] in icon_names
     assert out["noRuleEither"]["label"], "even with no rule at all, some label must render"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_iac_is_a_labelled_category_with_a_real_icon(srv, tmp_path):
+    """The fifth category (bin/security/adapters.py's `trivy_misconfigs`,
+    diff.DETERMINISTIC_CATEGORIES) has to earn its own word here too, or a
+    checklist row using it falls through to the generic sentence-case
+    fallback ("Iac") `secCategoryMeta`'s own comment describes for a category
+    this map has not been told about."""
+    block = _security_js(srv)
+    consts = (_const(block, "ICON_HYGIENE") + _const(block, "SEC_CATEGORY_LABEL")
+             + _const(block, "SEC_CATEGORY_ICON"))
+    deps = _plainfn(block, "secCategoryMeta")
+    icon_names = _icon_names(_js(srv))
+    script = tmp_path / "cat-meta-iac.js"
+    script.write_text(consts + deps + """
+    console.log(JSON.stringify(secCategoryMeta("iac")));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert out["label"] == "IaC"
+    assert out["icon"] in icon_names, (
+        f"iac points at icon {out['icon']!r}, which bin/dashboard.html's own "
+        f"table does not define: {sorted(icon_names)}")
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_all_findings_category_filter_matches_the_project_tabs_own_labels(
+        srv, tmp_path):
+    """findings-screen.js's Category filter (secFindFilterBar) used to label
+    its options with `_secCap(c)` -- a bare capitalised category string
+    ("Iac", "Sast") -- while analysis.js's secFindCatPicker, the identical
+    filter on the per-project Findings tab, already reads `secCategoryMeta
+    (cat).label` ("IaC", "SAST"). Same five values, two spellings depending
+    on which screen a reader had open. This extracts the ACTUAL options
+    expression out of the live secFindFilterBar source (whichever helper it
+    currently calls) and evaluates it for real, so reverting the fix back to
+    `_secCap` fails this test rather than only reading correctly in a diff."""
+    block = _security_js(srv)
+    filter_bar_src = _plainfn(block, "secFindFilterBar")
+    m = re.search(r"FIND_CATEGORIES\.map\(c => \(\{v: c, label: [^}]*\}\)\)",
+                  filter_bar_src)
+    assert m, "could not find the Category picker's options expression in secFindFilterBar"
+    deps = (_const(block, "FIND_CATEGORIES") + _const(block, "ICON_HYGIENE")
+            + _const(block, "SEC_CATEGORY_LABEL") + _const(block, "SEC_CATEGORY_ICON")
+            + _plainfn(block, "secCategoryMeta") + _plainfn(block, "_secCap"))
+    script = tmp_path / "find-category-filter.js"
+    script.write_text(deps + f"""
+    console.log(JSON.stringify({m.group(0)}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    labels = {row["v"]: row["label"] for row in out}
+    assert labels == {"secret": "Secrets", "dependency": "Dependency",
+                       "sast": "SAST", "hygiene": "Hygiene", "iac": "IaC"}, (
+        "the All Findings Category filter must spell every category the way "
+        f"the project Findings tab's own picker does: {labels}")
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")

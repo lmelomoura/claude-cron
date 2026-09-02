@@ -627,7 +627,43 @@ agrees with the engine's, and that its riskier save paths behave: they run the
 page's real functions over a stub DOM in `node`, so a save that would wipe a
 provisioning hook fails the suite rather than the operator's config.
 
+`tests/security/` is run **twice**. It is pinned to the built-in secret scanner
+(`CC_SECURITY_ENGINES=off`) so that a test planting a credential exercises one
+scanner rather than whichever binaries a laptop happens to have installed — and
+then, on a machine where **any** of `gitleaks`, `trivy`, `semgrep` or `syft` is
+installed, one test runs the whole security package again with
+`CC_SECURITY_ENGINES=on`, which is the configuration every real analysis uses.
+All four are gated by the same switch — it decides the secret scanner, the
+dependency source, the SAST pre-pass, the IaC phase and the SBOM producer — so
+the second configuration is real on a machine with only one of them. The second
+run roughly triples that package's time (about four minutes here, against ninety
+seconds). It is the price of not discovering in production that the suite was
+green only in a configuration nothing ships in — which is exactly what had
+happened: the engines-on run was red for the entire life of the engine path and
+nothing said so.
+
+While iterating on that package, deselect the second run rather than switching
+it off — there is deliberately **no** opt-out environment variable, because that
+is the kind of switch that gets exported once and silently disables the gate:
+
+```bash
+python3 -m pytest tests/security/ -q \
+  --deselect tests/security/test_both_configurations.py::test_the_security_suite_is_green_with_the_engines_on
+```
+
 Run both after touching either side.
+
+**On a pull request this no longer depends on who is typing.**
+`.github/workflows/ci.yml` installs `gitleaks`, `trivy`, `syft` and `semgrep` at
+pinned versions and runs `tests/security/` as two named jobs, one per
+configuration — plus `claude-cron selftest` and the server suite. It **refuses
+to be green over a skip**: every engine-gated test skips rather than fails when
+its binary is absent (measured: 45 skips in `test_adapters.py` alone, and the
+run still reports "passed"), so the workflow checks each engine's reported
+version before starting and then fails the job on any skip other than the one
+self-spawn guard. An unpinned engine would change what an analysis finds between
+two runs of the same commit; bumping one is a deliberate commit that re-runs the
+measurements those adapters cite.
 
 ### When a run is killed
 
@@ -889,9 +925,12 @@ diff. `quick` is there so you can look before deciding to spend.
 Secrets across the whole tree, and across the branch's whole git history on
 **every** analysis. A dependency inventory read from the lockfiles it knows
 (`package-lock.json`, `requirements.txt`, `poetry.lock`, `composer.lock`,
-`go.sum`), a CycloneDX SBOM built from that, and repository hygiene: a committed
-`.env`, a file whose first bytes are a private key, a world-writable file. All
-of it is Python over the files, so it takes seconds and costs nothing.
+`go.sum`), a CycloneDX SBOM built from that, repository hygiene (a committed
+`.env`, a file whose first bytes are a private key, a world-writable file),
+and infrastructure-as-code misconfigurations in any Dockerfile, Terraform
+module, Kubernetes manifest, Helm chart or CloudFormation template committed
+to the repository. All of it runs by pattern, so it takes seconds and costs
+nothing.
 
 It is written to the ledger **moments after the agent starts** — `prepare` is
 the agent's first command, named in the prompt and in the skill — which is why
@@ -938,7 +977,7 @@ has looked at nothing — it used to declare the entire baseline `fixed`, 43
 findings "resolved" before `prepare` had written a byte, and a `capped` run told
 the same lie at the end about the code its SAST pass never reached. A baseline
 finding missing from this analysis is `fixed` only when its absence is *proven*:
-for the deterministic categories (secrets, dependencies, hygiene) once `prepare`
+for the deterministic categories (secrets, dependencies, hygiene, IaC) once `prepare`
 has completed, for everything the agent reads only when the analysis closes
 `done` with full coverage. Anything short of that is `pending` — a statement
 about this analysis, never about the code — and it is counted with the open
@@ -1087,14 +1126,45 @@ inherits the project's, which inherits the install's — see [Which Claude accou
 a run signs in as](#which-claude-account-a-run-signs-in-as). Set it here only
 when the analysis itself should sign in as somebody else.
 
+**Some noise is filtered before you configure anything.** A `fixtures`,
+`__fixtures__` or `testdata` directory — at any depth, and whatever its case —
+is outside the analysis by default. In a file ending `.example`, `.sample`,
+`.template` or `.dist` — a committed template of a configuration rather than a
+leak — the **two rules that over-fire on templates** are held back: the generic
+`password = <blob>` rule and the AWS access-key rule, which is what
+`AKIAIOSFODNN7EXAMPLE` in a `.env.example` trips. **Every other credential
+shape is still reported from a template, a private key included** — a PEM body
+is not a placeholder, and a real key committed as `server.key.example` is a real
+leak. Both defaults reach every phase and both scanners, and the coverage note
+says so on every report, because "nothing was found there" and "we never looked
+there" are the same silence otherwise. **`tests/**` is deliberately not
+covered:** a credential hard-coded in a test file is in the repository and
+readable by everyone with a clone, so it is still reported. A project that keeps
+real credentials in a fixture it *wants* reported adds the entry `!defaults` to
+`ignore_paths` and gets both halves back — it cancels the built-in default only,
+never the globs you wrote yourself. `!defaults` is the **only** `!` entry that
+means anything: any capitalisation of it works, and anything else beginning with
+`!` (`!default`, `!defaults/**`) is dropped, never treated as a path, and named
+in the coverage note as having done nothing — the default is still on. Note that
+turning the default on for the first time makes any fixture finding already in
+the ledger show up as `fixed` once, and a human decision recorded against one is
+only reachable again with `!defaults` set.
+
 **`ignore_paths` and `min_severity` are two different filters, and confusing
 them is expensive.** `ignore_paths` excludes globs from the **analysis**: the
-working-tree secret scan, the git-history secret sweep and the hygiene pass all
-obey the same globs, so a fixtures directory full of deliberately fake
-credentials never becomes a finding at all — from any of the three. The one
-deterministic phase it deliberately does **not** filter is the dependency
-inventory: a lockfile under an ignored glob still declares packages this project
-ships, and a CVE against one of them is real wherever the file sits. `min_severity`
+working-tree secret scan, the git-history secret sweep, the hygiene pass, the
+infrastructure-as-code check and the SAST pre-pass all obey the same globs, so a
+fixtures directory full of deliberately fake credentials never becomes a finding
+at all — from any of the five, and the dependency findings read out of a
+lockfile under one of those globs are filtered too. The one deterministic phase
+it deliberately does **not** filter is
+the dependency **inventory**: a lockfile under an ignored glob still declares
+packages this project ships, so the SBOM stays complete wherever the file sits.
+The *findings* from that lockfile **are** filtered, which is a real gap between
+two things you can download — an SBOM listing lodash 4.17.20 beside a report
+with no dependency findings does **not** mean lodash 4.17.20 is clean. When it
+happens the coverage note says so, with the count and the lockfiles.
+`min_severity`
 filters only what is **shown**: everything found is kept in the ledger whatever
 its severity, so lowering the floor later reveals what was recorded all along
 instead of forcing a re-analysis, and the page says how many findings it is
@@ -1189,6 +1259,13 @@ and its decision to the new identity. It takes no arguments, it is safe to run
 twice, and it is refused for the categories whose fingerprint cannot be rebuilt
 from what the ledger stores — `sast` (built from the code snippet, which is
 never stored) and `dependency` (a CVE id nobody renames).
+It is also refused on a machine without gitleaks, or with
+`CC_SECURITY_ENGINES` switched off. The secret renames exist to move findings
+onto *gitleaks'* rule names, and such a machine falls back to the built-in
+pattern scanner, which mints the old names again on the very next analysis:
+every migrated secret would then be reported fixed *and* new in one report,
+with the human decision on each side stranded — the exact damage this verb
+exists to prevent. Install gitleaks first, then migrate.
 Each of the four screens has one read verb behind it — `index-data`,
 `project-data`, `findings-page`, `activity-data` — answering that whole screen in
 a single call, plus `analysis`, `events` and `filters list` for the smaller

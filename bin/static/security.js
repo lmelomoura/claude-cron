@@ -79,8 +79,8 @@
     regressed: "Was fixed once and is back \u2014 usually a fix that closed the symptom, not the route.",
     open: "Was here last time too, unchanged.",
     partial: "Some of its places are gone, or the agent recorded it as mitigated but not eliminated.",
-    pending: "In the previous analysis and not re-checked by this one yet \u2014 a statement about this analysis, not about the code. Becomes fixed only when its absence is proven: deterministic findings once prepare completes, code-review findings only when the analysis closes with full coverage.",
-    fixed: "Gone since the previous analysis of this branch \u2014 and the phase that would have re-found it DID finish, so the absence is proven, not assumed.",
+    pending: "In the previous analysis and not re-checked by this one \u2014 a statement about this analysis, not about the code. Becomes fixed only when its absence is proven, and proof is the scanner that found it having run again: a run on a machine without Trivy cannot close a Trivy finding, however cleanly it ends.",
+    fixed: "Gone since the previous analysis of this branch \u2014 and the scanner that found it in the first place DID run again, so the absence is proven, not assumed.",
     accepted: "You accepted the risk. The reason is recorded and outlives every analysis after it.",
     false_positive: "You said it is not real. If the code around it changes the fingerprint changes and it comes back as new \u2014 different code, so a fresh judgement."
   };
@@ -160,6 +160,42 @@
     stripe_key: { label: "Stripe live key committed", icon: "lock" },
     openai_key: { label: "OpenAI API key committed", icon: "lock" },
     google_api_key: { label: "Google API key committed", icon: "lock" },
+    /* secret, again -- gitleaks' OWN rule ids, for the same credential types.
+         bin/security/adapters.py runs gitleaks instead of secrets.py whenever the
+         binary is installed, and it writes the ENGINE's rule id into the finding
+         (`aws-access-token`, not `aws_access_key`) because the fingerprint
+         contains the rule and re-spelling it would orphan every decision recorded
+         against the old identity. Without these keys every secret on an
+         engine-scanned project fell through to secHumaniseRule -- "Aws access
+         token" with the generic category icon, instead of the curated label above.
+         The snake_case keys STAY: the built-in scanner still emits them wherever
+         gitleaks is absent or switched off, and both vocabularies are live at once
+         across a fleet of projects.
+    
+         Paired with adapters.SEVERITY_BY_RULE, which maps the same ids -- one
+         rule of ours is routinely several of theirs (five GitHub token kinds,
+         seven Slack ones), and each gets the label its own credential type earns
+         rather than a shared one that would flatten them back together. Anything
+         outside this list is one of gitleaks' ~180 other rules and humanises, as
+         it did before. */
+    "aws-access-token": { label: "AWS access key committed", icon: "lock" },
+    "github-pat": { label: "GitHub token committed", icon: "lock" },
+    "github-fine-grained-pat": { label: "GitHub token committed", icon: "lock" },
+    "github-oauth": { label: "GitHub OAuth token committed", icon: "lock" },
+    "github-app-token": { label: "GitHub app token committed", icon: "lock" },
+    "github-refresh-token": { label: "GitHub refresh token committed", icon: "lock" },
+    "slack-bot-token": { label: "Slack token committed", icon: "lock" },
+    "slack-user-token": { label: "Slack token committed", icon: "lock" },
+    "slack-app-token": { label: "Slack token committed", icon: "lock" },
+    "slack-config-access-token": { label: "Slack token committed", icon: "lock" },
+    "slack-legacy-bot-token": { label: "Slack token committed", icon: "lock" },
+    "slack-legacy-token": { label: "Slack token committed", icon: "lock" },
+    "slack-webhook-url": { label: "Slack webhook URL committed", icon: "lock" },
+    "stripe-access-token": { label: "Stripe live key committed", icon: "lock" },
+    "openai-api-key": { label: "OpenAI API key committed", icon: "lock" },
+    "gcp-api-key": { label: "Google API key committed", icon: "lock" },
+    "private-key": { label: "Private keys committed", icon: "key" },
+    "generic-api-key": { label: "Hardcoded secrets", icon: "lock" },
     // hygiene -- bin/security/hygiene.py's four findings. Labels say what each
     // rule's own rationale says it detects, not what its name suggests:
     // missing_gitignore's rationale is "the first .env, key or credential file
@@ -182,19 +218,22 @@
     if (known) return known;
     const safe = rule == null || rule === "" ? "Unknown rule" : String(rule);
     if (SEC_ADVISORY_RULE.test(safe)) return { label: safe, icon: "shield" };
+    if (category === "iac") return { label: safe, icon: SEC_CATEGORY_ICON.iac };
     return { label: secHumaniseRule(safe), icon: SEC_CATEGORY_ICON[category] || "shield" };
   }
   var SEC_CATEGORY_ICON = {
     secret: "lock",
     dependency: "package",
     hygiene: ICON_HYGIENE,
-    sast: "code"
+    sast: "code",
+    iac: "cpu"
   };
   var SEC_CATEGORY_LABEL = {
     secret: "Secrets",
     dependency: "Dependency",
     hygiene: "Hygiene",
-    sast: "SAST"
+    sast: "SAST",
+    iac: "IaC"
   };
   function secCategoryMeta(category) {
     const label = SEC_CATEGORY_LABEL[category];
@@ -651,7 +690,7 @@
     btn.title = running ? "An analysis of this project is already running \u2014 one at a time." : "Analyse the selected branch";
     btn.textContent = running ? "Analysing\u2026" : "Analyse";
   }
-  var SEC_FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene"];
+  var SEC_FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene", "iac"];
   var secFindSearch = "";
   var secFindCategory = "";
   var secFindCatPicker = null;
@@ -1883,7 +1922,7 @@
     ["state", "Status"],
     ["first_seen", "First seen"]
   ];
-  var FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene"];
+  var FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene", "iac"];
   var FIND_PER_PAGE = 25;
   var FIND_PER_PAGE_OPTIONS = [10, 25, 50];
   function _defaultFilters() {
@@ -2462,7 +2501,14 @@
     const row2 = secEl("div", "secfind-filters-row row2");
     row2.appendChild(secFindMultiPicker(
       "Category",
-      FIND_CATEGORIES.map((c) => ({ v: c, label: _secCap(c) })),
+      // secCategoryMeta's own label, not _secCap: a bare capitalised category
+      // ("Sast", "Iac") is the same word the project Findings tab's category
+      // picker (analysis.js's secFindCatPicker) does NOT show -- it reads
+      // secCategoryMeta(cat).label there ("SAST", "IaC") -- and this filter
+      // and that one name the exact same five values, so one screen spelling
+      // a value differently from the other is a second identity for a reader
+      // to notice and wonder whether it means something.
+      FIND_CATEGORIES.map((c) => ({ v: c, label: secCategoryMeta(c).label })),
       fs.filters.category,
       (v) => {
         secFindToggleIn(fs.filters.category, v);
@@ -5066,5 +5112,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 5f050d9bacac2fb1c2136177d6857f7e55e619d96e340a640588c427e2f627da */
-/* ui-sources: 77dc92452c6400e5e401c6c753825ddf25d5bf618d89887f14c5e5aafd59425d */
+/* ui-bundle: 91a7cd1655ac2c1f573e6fdbf6ace7d792149aa0792de6eae90dded02e1c242d */
+/* ui-sources: c4a95ac72da034c9ccd8c399b3b059bacdd583d5d8b89d36712c612cbe1e9a65 */

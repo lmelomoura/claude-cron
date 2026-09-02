@@ -1,7 +1,12 @@
+import re
 import time
+from pathlib import Path
 
 import pytest
-from security import ledger, queries
+from security import diff, ledger, queries
+
+REPO = Path(__file__).resolve().parent.parent.parent
+SKILL = REPO / "skills" / "security-analysis" / "SKILL.md"
 
 
 @pytest.fixture
@@ -1235,6 +1240,27 @@ def test_finding_rows_carries_a_findings_cwe_and_owasp_class(conn):
     assert got["rows"][0]["owasp"] == "A03:2021"
 
 
+def test_finding_rows_carries_a_dependency_findings_scope(conn):
+    """The column has to reach the SCREEN, not just the report. `findings_of`
+    selects `*` and `diff.classify` copies the whole row, so this is a
+    property of the pipeline rather than of a line somebody wrote -- which is
+    exactly why it needs pinning: a future `SELECT` that names its columns
+    would drop it with nothing failing."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "s", "quick", "r")
+    ledger.record_finding(conn, aid, {
+        "fingerprint": "e" * 64, "category": "dependency", "rule": "CVE-2021-44906",
+        "severity": "high", "title": "minimist 1.2.5: CVE-2021-44906",
+        "scope": "dev", "producer": "trivy",
+        "occurrences": [{"file": "package-lock.json", "line": 0,
+                         "snippet_hash": ""}]})
+    ledger.mark_prepared(conn, aid, ["trivy"])
+    ledger.finish_analysis(conn, aid, "done")
+
+    assert queries.finding_rows(conn, "web")["rows"][0]["scope"] == "dev"
+    _an, findings = queries.checklist(conn, aid)
+    assert findings[0]["scope"] == "dev"
+
+
 def test_first_seen_is_the_oldest_analysis_carrying_the_fingerprint(conn):
     a1 = _analysis(conn, "main", findings=[("critical", "secret")])
     _analysis(conn, "main", findings=[("critical", "secret")])
@@ -1491,3 +1517,157 @@ def test_non_numeric_page_is_refused(conn):
     _analysis(conn, "main", findings=[("low", "hygiene")])
     with pytest.raises(ValueError):
         queries.finding_rows(conn, "web", page="two")
+
+
+# --------------------------------- a `pending` row nobody re-reports is LOST
+#
+# The producer rule (`diff._proven`) stops a missing engine from proving a
+# finding gone -- the baseline row reads `pending` instead of a false `fixed`.
+# That is where the engine's job ends and the AGENT's begins, and the seam
+# between them is the whole point of this section.
+#
+# `pending` is DERIVED and never stored, and `queries.checklist` takes as
+# `previous` the rows the preceding analysis actually RECORDED. So a `pending`
+# row is in NO analysis's findings unless somebody writes it back, and the only
+# writer available is the agent re-reporting it -- which is what
+# `skills/security-analysis/SKILL.md` Job 1 now tells it to do, on every run the
+# row comes back `pending`.
+#
+# These three tests exist so the instruction and the behaviour cannot drift
+# apart again: two measure what the instruction buys and what its absence
+# costs, and the third fails if the instruction leaves the document.
+
+
+def _dependency(fp, producer):
+    """One dependency CVE, stamped with the producer that MINTED it."""
+    return {"fingerprint": fp, "category": "dependency", "rule": "CVE-2021-23337",
+            "severity": "high", "title": "lodash 4.17.20", "producer": producer,
+            "occurrences": [{"file": "yarn.lock", "line": 1, "snippet_hash": "h"}]}
+
+
+def _run(conn, rows, produced, state="done"):
+    """One finished analysis of web/main: its findings, and WHICH producers ran."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "sha", "quick", "r")
+    for row in rows:
+        ledger.record_finding(conn, aid, row)
+    ledger.mark_prepared(conn, aid, produced)
+    if state != "running":
+        ledger.finish_analysis(conn, aid, state)
+    return aid
+
+
+def _states(conn, aid):
+    return {f["fingerprint"]: f["state"] for f in queries.checklist(conn, aid)[1]}
+
+
+TRIVY_ONLY = "a" * 64   # a yarn.lock CVE: only Trivy reads that format
+BOTH = "b" * 64         # a package-lock.json CVE: both producers read it
+
+
+def test_a_pending_row_the_agent_never_re_reports_leaves_the_report_entirely(conn):
+    """THE COST, measured. Four analyses of one branch over an UNTOUCHED
+    checkout, Trivy present / absent / absent / present.
+
+    The engine can only ever refuse to call the row `fixed`; it cannot keep it
+    alive, because nothing stores a derived state. So the row reads `pending`
+    once, is absent from the next report altogether -- not `pending` there, not
+    `fixed`, nothing -- and comes back `regressed` when Trivy returns: "fixed
+    and came back" about a CVE that was never fixed and never left."""
+    _run(conn, [_dependency(TRIVY_ONLY, "trivy"), _dependency(BOTH, "trivy")],
+         {"trivy", "hygiene"})
+    a2 = _run(conn, [_dependency(BOTH, "osv")], {"osv", "hygiene"})
+    a3 = _run(conn, [_dependency(BOTH, "osv")], {"osv", "hygiene"})
+    a4 = _run(conn, [_dependency(TRIVY_ONLY, "trivy"), _dependency(BOTH, "trivy")],
+              {"trivy", "hygiene"})
+
+    assert _states(conn, a2)[TRIVY_ONLY] == "pending"
+    assert TRIVY_ONLY not in _states(conn, a3), (
+        "a `pending` row nobody re-reported is in no analysis's findings, so "
+        "the run after it has nothing to carry it from")
+    assert _states(conn, a4)[TRIVY_ONLY] == "regressed"
+    # The overlapping half is the control: an identity BOTH producers mint
+    # never goes `pending` at all, which is why the docstring in
+    # `cli._scan_dependencies` has to describe the two coverages separately.
+    for aid in (a2, a3, a4):
+        assert _states(conn, aid)[BOTH] == "open"
+
+
+def test_re_reporting_a_pending_row_holds_it_open_until_the_engine_returns(conn):
+    """THE REMEDY, and the reason the skill's Job 1 says to do it EVERY run.
+
+    The re-report lands under the same fingerprint, so the row is recorded by
+    this analysis, stays in the next one's baseline, and goes back to `open`
+    under its own producer the moment Trivy returns -- never `regressed`."""
+    _run(conn, [_dependency(TRIVY_ONLY, "trivy")], {"trivy", "hygiene"})
+    # `report-finding` stamps `diff.AGENT` on anything the agent mints; see
+    # `cli.cmd_report_finding`, which never reads `producer` from the payload.
+    a2 = _run(conn, [_dependency(TRIVY_ONLY, diff.AGENT)], {"osv", "hygiene"})
+    a3 = _run(conn, [_dependency(TRIVY_ONLY, diff.AGENT)], {"osv", "hygiene"})
+    a4 = _run(conn, [_dependency(TRIVY_ONLY, "trivy")], {"trivy", "hygiene"})
+
+    assert [_states(conn, aid)[TRIVY_ONLY] for aid in (a2, a3, a4)] == \
+        ["open", "open", "open"]
+
+
+def test_one_re_report_and_then_silence_is_the_same_false_fixed_by_a_longer_route(conn):
+    """WHY the skill says "every run it comes back `pending`", and not "once".
+
+    A re-reported row is stamped `diff.AGENT`, whose absence-proof is the
+    analysis closing `done` -- so the run AFTER a re-report, if the agent stays
+    silent, declares it fixed. That is the same false remediation claim the
+    producer rule exists to prevent, reached by a longer route.
+
+    It is self-sustaining if the instruction is followed, which is the point:
+    the agent reads the checklist mid-run, and mid-run the row is `pending`
+    again, so there is always a prompt to re-report."""
+    _run(conn, [_dependency(TRIVY_ONLY, "trivy")], {"trivy", "hygiene"})
+    _run(conn, [_dependency(TRIVY_ONLY, diff.AGENT)], {"osv", "hygiene"})
+
+    silent = _run(conn, [], {"osv", "hygiene"}, state="running")
+    assert _states(conn, silent)[TRIVY_ONLY] == "pending", (
+        "mid-run -- when the agent reads the checklist -- the row must still "
+        "read `pending`, or nothing prompts the next re-report")
+    ledger.finish_analysis(conn, silent, "done")
+    # A writable connection carries no checklist cache (see `queries.checklist`),
+    # so this really is recomputed against the now-closed analysis.
+    assert _states(conn, silent)[TRIVY_ONLY] == "fixed"
+
+
+def test_the_skill_tells_the_agent_to_re_report_a_pending_row():
+    """The document half, in the spirit of
+    `test_taxonomy.test_the_skill_lists_every_rule_name`: the two tests above
+    measure what the behaviour is, and this one fails if the instruction that
+    makes the agent produce that behaviour leaves the document.
+
+    Shaped rather than a substring match on one sentence, so a rewording does
+    not fail it and a DELETION does: somewhere in Job 1 there must be a block
+    that mentions `pending` and tells the agent to re-report, and that block
+    must name every deterministic category, read off `diff` rather than typed
+    here -- a fifth one added to the code has to be added to the instruction
+    too, or the agent silently drops that category's carried-over rows.
+
+    What it deliberately does NOT catch: a future edit that keeps this block
+    and adds a contradicting sentence beside it. A negative match on the
+    retired claim ("deterministic categories need no re-reporting here") would
+    be one paraphrase away from vacuous, and the two tests above are the real
+    guard -- they measure the ledger, not the prose."""
+    text = SKILL.read_text()
+    job1 = re.search(r"\*\*1\. Re-verify what was left open\.\*\*(.*?)"
+                     r"\*\*2\. Triage", text, re.DOTALL)
+    assert job1, "SKILL.md no longer has a Job 1 section this test can read"
+
+    blocks = [b for b in job1.group(1).split("\n\n") if "`pending`" in b
+              and "re-report" in b]
+    assert blocks, (
+        "SKILL.md's Job 1 never tells the agent to re-report a `pending` row. "
+        "Without that instruction nothing writes the row into this analysis, "
+        "so it drops out of the next baseline and returns as `regressed` -- "
+        "see the two tests above, which measure exactly that.")
+
+    named = [b for b in blocks
+             if all(f"`{c}`" in b for c in diff.DETERMINISTIC_CATEGORIES)]
+    assert named, (
+        "no block of Job 1 both instructs the re-report and names every "
+        f"deterministic category {list(diff.DETERMINISTIC_CATEGORIES)} -- a "
+        "category the instruction does not name is one the agent will let "
+        "silently disappear from the report")

@@ -1,16 +1,32 @@
 """Things that are wrong about the repository itself, not about its code."""
 
-import fnmatch
 from pathlib import Path
 
+from . import ignores
 from .fingerprint import fingerprint
 from .ignores import ignored
-
-_SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", "build"}
+# THE shared engine scope, not a copy of it -- see `deps.py`, which imported
+# the same set for the same reason. `secrets.SKIP_DIRS` is public precisely
+# because it is no longer one module's business: it is what every scanner,
+# built-in or engine, is told an analysis covers.
+from .secrets import SKIP_DIRS as _SKIP_DIRS
 _KEY_TEXT_SUFFIXES = (".pem", ".key")
 _KEY_BINARY_SUFFIXES = (".p12", ".pfx", ".jks")
 _KEY_SNIFF_BYTES = 4096
-_ENV_ALLOWED = ("*.example", "*.sample", "*.template", "*.dist")
+# The template suffixes this rule has always allowed are matched by
+# `ignores.sample_suffix` -- the one place they are written down, and now the
+# one matcher too. This rule and the secret scan's are about the same fact --
+# a committed template of a configuration file is the documented, correct
+# thing to ship -- and a repository where the two disagreed would report
+# `.env.dist` in one section of the report and not in the other. The local
+# `fnmatch` copy that used to live here disagreed about `.ENV.EXAMPLE`, which
+# is what moved the matcher rather than only the list.
+#
+# NOT gated on `ignores.defaults_apply`: this exclusion predates the default
+# noise filter and is not part of it. `!defaults` says "scan my fixtures and
+# my templates for CREDENTIALS"; it has never meant "and start telling me
+# that committing a .env.example is a leak".
+#
 # .envrc is a direnv config -- a script that sets up a shell environment, not
 # an env file -- and it is routinely and correctly committed. It only trips
 # the `.env` prefix check by coincidence of naming.
@@ -30,7 +46,7 @@ def _finding(rule, severity, title, rationale, remediation, rel):
     }
 
 
-def _looks_like_private_key(path):
+def _looks_like_private_key(path, proof_required=False):
     """True unless the head of a text key file proves it holds no private key.
 
     Reads only the first _KEY_SNIFF_BYTES bytes -- a PEM marker always sits
@@ -45,14 +61,25 @@ def _looks_like_private_key(path):
     .pem/.key this scanner cannot make sense of is exactly the case where
     staying quiet would be the false negative, not the false positive this
     function exists to remove.
+
+    `proof_required` INVERTS that default, and only for a file whose name says
+    it is a template (`server.key.example`). The conservative side is chosen
+    by which error is more likely, and for a template it is the other one: a
+    `.key.example` is expected to hold a placeholder, so "neither marker" is
+    the normal case there rather than the suspicious one. Under proof the
+    finding is made only when the PEM marker is actually present -- which is
+    exactly the case that matters, and the case a real `openssl genrsa` key
+    committed as `server.key.example` produces.
     """
     try:
         with path.open("rb") as f:
             head = f.read(_KEY_SNIFF_BYTES).decode("utf-8", errors="ignore")
     except OSError:
-        return True
+        return not proof_required
     if "PRIVATE KEY" in head:
         return True
+    if proof_required:
+        return False
     if "CERTIFICATE" in head:
         return False
     return True
@@ -70,14 +97,32 @@ def _is_key_material(path, name):
     `private_key`) independently catches a private key embedded anywhere,
     so nothing is lost by letting a pure certificate through here.
 
-    Binary containers (.p12, .pfx, .jks) keep the old suffix-only
-    behaviour, unlike .pem/.key above: sniffing them for a meaningful
-    marker is not cheap, and the secrets scanner cannot open them either,
-    so suffix is the only signal available.
+    A TEMPLATE SUFFIX IS LOOKED PAST BEFORE THE SUFFIX TEST. `server.key`
+    was sniffed and `server.key.example` was not even considered key
+    material, so a real 2048-bit RSA key committed under the second name was
+    reported by no rule in this project at all. The name a template is a
+    template OF is what this rule is about (`ignores.sample_stem`), and the
+    sniff then runs under proof: the template is reported only when it
+    genuinely holds a private key, so nothing new is reported for the
+    placeholder `server.key.example` this treatment exists to tolerate.
+
+    Binary containers (.p12, .pfx, .jks) get the same template treatment as
+    the suffix above -- `stem`, not `name` -- but none of the proof: there is
+    no meaningful marker to sniff in a binary container, the secrets scanner
+    cannot open one either, so suffix is the only signal this rule has ever
+    had, template or not. `keystore.jks.example` is therefore reported
+    exactly as `keystore.jks` already is -- by name alone, unproven -- which
+    is not a new guess, only the existing one no longer stopped at the door
+    by a suffix it does not recognise. The alternative (matching `name`, not
+    `stem`) was tried first and is the shape of the `.key.example` hole this
+    block was written to close, one layer up: a real key committed under a
+    template name reported by nothing, and `!defaults` unable to bring it
+    back because the file never reaches the rule at all.
     """
-    if name.endswith(_KEY_TEXT_SUFFIXES):
-        return _looks_like_private_key(path)
-    return name.endswith(_KEY_BINARY_SUFFIXES)
+    stem = ignores.sample_stem(name)
+    if stem.endswith(_KEY_TEXT_SUFFIXES):
+        return _looks_like_private_key(path, proof_required=stem != name)
+    return stem.endswith(_KEY_BINARY_SUFFIXES)
 
 
 def scan(root, ignore=()):
@@ -102,7 +147,7 @@ def scan(root, ignore=()):
             continue
 
         if (name.startswith(".env") and name not in _ENV_EXCLUDED_NAMES
-                and not any(fnmatch.fnmatch(name, pat) for pat in _ENV_ALLOWED)):
+                and not ignores.sample_suffix(name)):
             out.append(_finding(
                 "committed_env_file", "high", f"{rel} is committed",
                 "Environment files hold configuration that is meant to differ per "

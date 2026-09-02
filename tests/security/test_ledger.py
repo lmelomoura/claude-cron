@@ -661,3 +661,94 @@ def test_the_renameable_categories_are_the_two_with_a_derivable_identity(conn):
     recipe that matches how that category actually builds its fingerprint is
     the one mistake this whole function exists to prevent."""
     assert set(ledger.RENAMEABLE_CATEGORIES) == {"secret", "hygiene"}
+
+
+def test_renaming_an_iac_rule_is_refused(conn):
+    """TECHNICALLY derivable -- `fingerprint("iac", rule, path, rule)` is
+    exactly hygiene's shape -- and refused all the same: an `iac` rule is
+    Trivy's own check id, verbatim, the identical relationship `dependency`'s
+    GHSA/CVE id already has to this table. There is no vocabulary this
+    project curates for Trivy's check ids to validate a rename target
+    against, so a `RULE_RENAMES` entry here would have nothing to check it
+    against -- the same reasoning `_REFINGERPRINT`'s own comment gives for
+    excluding it."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "c1", "standard", "r1")
+    ledger.record_finding(conn, aid, {
+        "fingerprint": fp_mod.fingerprint("iac", "DS-0002", "Dockerfile", "DS-0002"),
+        "category": "iac", "rule": "DS-0002", "severity": "high", "title": "t",
+        "rationale": "r", "remediation": "add a USER",
+        "occurrences": [{"file": "Dockerfile", "line": 0}]})
+
+    with pytest.raises(ValueError, match="iac"):
+        ledger.rename_rule(conn, "iac", "DS-0002", "avd-ds-0002")
+
+
+# ------------------------------------------------------------------- `scope`
+#
+# Whether a vulnerable dependency ships. Added the way `cwe`/`owasp` and
+# `producer` were -- an entry in `_FINDING_COLUMNS`, ALTER TABLE guarded by
+# PRAGMA table_info -- because `executescript(_SCHEMA)` runs CREATE TABLE IF
+# NOT EXISTS and does nothing at all to a `finding` table that already exists.
+
+def test_scope_round_trips(conn):
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    ledger.record_finding(conn, aid, _finding(
+        category="dependency", rule="CVE-1", scope="dev"))
+    assert ledger.findings_of(conn, aid)[0]["scope"] == "dev"
+
+
+def test_a_finding_with_no_scope_gets_the_empty_default(conn):
+    """'' is a THIRD state, distinct from 'unknown': it means nothing recorded
+    a scope at all (every non-dependency finding, and every row written before
+    the column existed), where 'unknown' means a producer read the lockfile and
+    the format could not say. The two report formats a human reads render
+    nothing for '' and the word for 'unknown'."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    ledger.record_finding(conn, aid, _finding())
+    assert ledger.findings_of(conn, aid)[0]["scope"] == ""
+
+
+def test_the_column_is_added_to_a_finding_table_that_predates_it(tmp_path):
+    """The migration `_FINDING_COLUMNS` exists for. A database built without
+    the column must gain it on the next `connect`, not raise "no such column"
+    at the first `record_finding` -- and the rows already in it must survive."""
+    path = tmp_path / "old.db"
+    raw = sqlite3.connect(str(path))
+    raw.executescript(
+        "CREATE TABLE finding (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " analysis_id INTEGER NOT NULL, fingerprint TEXT NOT NULL,"
+        " category TEXT NOT NULL, rule TEXT NOT NULL, severity TEXT NOT NULL,"
+        " title TEXT NOT NULL, UNIQUE(analysis_id, fingerprint));"
+        "INSERT INTO finding (analysis_id, fingerprint, category, rule,"
+        " severity, title) VALUES (1, 'old', 'dependency', 'CVE-0', 'high', 't');")
+    raw.commit()
+    raw.close()
+
+    c = ledger.connect(path)
+    columns = {r["name"] for r in c.execute("PRAGMA table_info(finding)")}
+    assert "scope" in columns
+    old = c.execute("SELECT scope FROM finding WHERE fingerprint='old'").fetchone()
+    assert old["scope"] == "", "the pre-existing row survives, carrying the default"
+
+
+def test_a_re_report_does_NOT_clear_the_scope_the_producer_established(conn):
+    """`scope` is the second column the upsert deliberately leaves alone, after
+    `producer`. It is a fact about the LOCKFILE, and the agent reads no
+    lockfile -- `cmd_report_finding` drops the field entirely. Updating it
+    would write '' over a `dev` the dependency phase had correctly established,
+    so a finding would come out of triage LESS annotated than it went in,
+    through the one door whose purpose is to improve it."""
+    aid = ledger.start_analysis(conn, "web", "web", "main", "abc", "standard", "r")
+    ledger.record_finding(conn, aid, _finding(
+        category="dependency", rule="CVE-1", scope="dev", producer="trivy",
+        severity="high", rationale="from the lockfile"))
+    ledger.record_finding(conn, aid, _finding(
+        category="dependency", rule="CVE-1", severity="low",
+        rationale="the agent's corrected reading"))
+    got = ledger.findings_of(conn, aid)
+    assert len(got) == 1
+    assert got[0]["rationale"] == "the agent's corrected reading", (
+        "the re-report must still improve the row")
+    assert got[0]["severity"] == "low"
+    assert got[0]["scope"] == "dev", "and must not wipe the lockfile fact"
+    assert got[0]["producer"] == "trivy"

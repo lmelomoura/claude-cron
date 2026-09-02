@@ -46,6 +46,14 @@ approval to merge. **Working branches are unrestricted** — push `fix/…` and
 5. Open the pull request against `main`. The description is pre-filled from
    `.github/pull_request_template.md` — answer it rather than deleting it.
 
+**CI runs on every pull request** (`.github/workflows/ci.yml`): `claude-cron
+selftest`, the server suite, and `tests/security/` in **both** of its
+configurations against `gitleaks`, `trivy`, `syft` and `semgrep` at pinned
+versions. It does not replace step 3 — a red pull request is a slower way to
+learn what `selftest` tells you in seconds — and it will not go green over a
+skipped test: an engine-gated test skips rather than fails when its binary is
+missing, so the workflow fails the job on any skip it does not expect.
+
 ## The three rules that actually matter
 
 ### 1. A rule the code enforces must travel with the code

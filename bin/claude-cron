@@ -458,8 +458,9 @@ YOUR FIRST COMMAND, before anything else:
   claude-cron security prepare --analysis $5 --root "\$PWD" --ignore '$6'
 
 It runs the deterministic phases inside this worktree -- secrets, dependency
-CVEs, SBOM, hygiene -- in seconds and at no token cost, and prints a coverage
-note you must repeat in your final message if it is not empty.
+CVEs, SBOM, hygiene and infrastructure-as-code misconfigurations -- in seconds
+and at no token cost, and prints a coverage note you must repeat in your final
+message if it is not empty.
 
 Then read what it found with \`claude-cron security findings --analysis $5\`,
 and report yours with \`claude-cron security report-finding --analysis $5\`.
@@ -2427,6 +2428,54 @@ EOF
   fi
   [ -f "$BASE_DIR/CHANGELOG.md" ] && ok "CHANGELOG.md exists" || bad "CHANGELOG.md is missing"
 
+  echo "no tracked file carries anybody's home directory"
+  # Sits with the changelog check because it is the same kind of gate: a
+  # promise about what a CLONE receives, checkable only against git, and
+  # useless if it is remembered rather than enforced. It is NOT a pytest:
+  # tests/security/ is scoped to the security package and tests/test_page_
+  # contract.py to the served HTML page, while the file that leaked here --
+  # tests/security/fixtures/engines/syft-cyclonedx.json, a raw Syft capture
+  # taken on a maintainer's laptop -- proves the exposure has no natural home
+  # in the tree. Any file can carry it, so the check must read every tracked
+  # file, and this function is already the place that does whole-repository
+  # hygiene.
+  #
+  # THE RULE IS NOT "NO ABSOLUTE HOME PATHS". The Syft fixture has to keep the
+  # SHAPE of one -- dropping that field is the entire point of
+  # `adapters.syft_document`, and a fixture with the shape scrubbed out would
+  # leave its test green over nothing. So a home path is fine as long as the
+  # user in it is a placeholder, and the allowed placeholders are the ones
+  # this repository already documents with: `me` (README.md's
+  # `/Users/me/code/web`) and `Jane` (the worktree-prefix cases, which need a
+  # home directory with a space in it), plus the generic `example`, `runner`
+  # and `user`. Keep this list short — every name on it is a name the check
+  # will not catch.
+  if [ -d "$BASE_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+    local _homes _ok='|Jane|example|me|runner|user|'
+    # -I so a committed binary is never scanned as text; no revision, so this
+    # reads the tracked working tree -- exactly what a clone would get. The
+    # allowlist is applied per OCCURRENCE, not per line: a line carrying both
+    # a placeholder and a real home must still fail.
+    _homes="$(git -C "$BASE_DIR" grep -nIE '/(Users|home)/[A-Za-z0-9._-]+' -- . 2>/dev/null \
+              | awk -v ok="$_ok" '
+                  { rest = $0
+                    while (match(rest, /\/(Users|home)\/[A-Za-z0-9._-]+/)) {
+                      hit = substr(rest, RSTART, RLENGTH)
+                      sub(/^\/(Users|home)\//, "", hit)
+                      if (index(ok, "|" hit "|") == 0) { print; next }
+                      rest = substr(rest, RSTART + RLENGTH)
+                    }
+                  }' || true)"
+    if [ -z "$_homes" ]; then
+      ok "no tracked file names a real home directory"
+    else
+      bad "a tracked file carries someone's home directory — replace the user with one of:${_ok//|/ }"
+      printf '%s\n' "$_homes" | sed 's/^/        /'
+    fi
+  else
+    ok "not a git checkout — tracked paths not checkable here"
+  fi
+
   echo "the security-analysis skill ships with the repo, not only in ~/.claude/skills"
   # security_prompt() makes this skill MANDATORY ("Invoke the
   # `security-analysis` skill and follow it exactly") -- a prompt that names a
@@ -3628,9 +3677,15 @@ EOF
  {"cwd":null}
 ]}
 NASTY
+  # LC_ALL=C on the sort below, because the expectation is a byte order and
+  # `sort` honours the caller's collation. Under en_US.UTF-8 -- what a GitHub
+  # runner sets and a bare shell does not -- "/tmp" sorts BEFORE "/Users",
+  # since that collation folds case; under C it does not. Same list, same
+  # code, two orders, and the assertion is an exact string. This was green on
+  # laptops for months and red on the first CI run that ever set a locale.
   got="$("$JQ" -r '
     .projects[]? | ((.repos // [])[]? | objects | .path), .cwd
-    | strings | select(. != "")' "$tmp/proj/nasty.json" 2>/dev/null | sort -u | tr '\n' '|')"
+    | strings | select(. != "")' "$tmp/proj/nasty.json" 2>/dev/null | LC_ALL=C sort -u | tr '\n' '|')"
   [ "$got" = "/Users/Jane|/Users/Jane Doe/repo-a|/tmp/api|/tmp/malformed|/tmp/web|" ] \
     && ok "a home dir with a space is its own path, and one bad entry drops only itself" \
     || bad "the path list came out as '$got'"
@@ -8184,8 +8239,9 @@ claude-cron — durable local scheduler for headless Claude Code runs
   claude-cron get-precheck <id>   print a job's precheck script
   claude-cron security analyze [--detach] <project> <repo> <branch> [profile]
                               analyse a branch: secrets, dependency CVEs, an
-                              SBOM and hygiene run first at no token cost, then
-                              a Claude run does the SAST and the triage.
+                              SBOM, hygiene and infrastructure-as-code
+                              misconfigurations run first at no token cost,
+                              then a Claude run does the SAST and the triage.
                               <repo> names one of the project's `repos`; a
                               project with a single checkout has none, and every
                               analysis of it is filed under the PROJECT's name

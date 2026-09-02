@@ -151,10 +151,13 @@ def checklist(conn, analysis_id):
     decisions = ledger.decisions_for(conn, analysis["project"])
     # Absence is only evidence when the looking finished: mid-run (or capped)
     # a baseline finding missing from `current` is `pending`, never `fixed`.
+    # `produced` carries the third half of that -- WHICH producers ran here --
+    # so a phase whose engine was missing this run cannot prove anything gone.
     result = analysis, diff.classify(
         current, previous, history, decisions,
         analysis_state=analysis.get("state", "done"),
-        prepared=bool(analysis.get("prepared", 0)))
+        prepared=bool(analysis.get("prepared", 0)),
+        produced=ledger.producers_of(analysis))
     if cache is not None:
         cache[analysis_id] = result
     return result

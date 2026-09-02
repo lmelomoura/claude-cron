@@ -246,3 +246,65 @@ def test_html_escapes_the_classification_fields():
     assert "&lt;script&gt;" in htm
     assert 'onmouseover="x' not in htm
     assert "&quot;" in htm
+
+
+# ------------------------------------------------------------------- `scope`
+#
+# Rendered the way `cwe`/`owasp` are: nothing at all when the value is absent
+# (every non-dependency finding carries ''), and expanded into a sentence
+# fragment when it is present, because the bare word invites the wrong reading
+# in both directions -- "dev" reads as "ignore me" and "unknown" reads as
+# "probably fine".
+
+DEP = {"fingerprint": "c" * 64, "category": "dependency", "rule": "CVE-2021-44906",
+       "severity": "high", "title": "minimist 1.2.5: CVE-2021-44906",
+       "rationale": "prototype pollution", "remediation": "upgrade",
+       "occurrences": [{"file": "package-lock.json", "line": 0, "snippet_hash": ""}],
+       "state": "new", "scope": "dev"}
+
+
+def test_json_always_carries_the_scope_key():
+    """The two human formats render nothing when it is absent, so they cannot
+    be parsed for it. This one can: something reading the JSON has to tell "the
+    analysis predates the column" from "this finding is not a dependency"
+    without special-casing a missing key."""
+    doc = json.loads(report.as_json(ANALYSIS, FINDINGS + [DEP], ""))
+    by_rule = {f["rule"]: f for f in doc["findings"]}
+    assert by_rule["CVE-2021-44906"]["scope"] == "dev"
+    assert by_rule["aws_access_key"]["scope"] == "", (
+        "the key is present on a finding that has no scope, not missing")
+
+
+def test_markdown_and_html_name_the_scope_and_say_what_it_means():
+    md = report.as_markdown(ANALYSIS, [DEP], "")
+    html_out = report.as_html(ANALYSIS, [DEP], "")
+    assert "Scope: dev — a development-only dependency, not shipped" in md
+    assert "Scope: dev — a development-only dependency, not shipped" in html_out
+
+
+def test_unknown_renders_as_unknown_and_never_as_runtime():
+    """The whole point of the third value: a reader must not take "not marked
+    dev" for "ships"."""
+    md = report.as_markdown(ANALYSIS, [{**DEP, "scope": "unknown"}], "")
+    assert "does not say whether it ships" in md
+    assert "runtime" not in md
+
+
+def test_a_finding_with_no_scope_renders_no_scope_line_at_all():
+    """Every secret, hygiene, iac and sast finding carries '', and a column of
+    "Scope: —" on all of them is a line a reader learns to skip."""
+    assert "Scope:" not in report.as_markdown(ANALYSIS, FINDINGS, "")
+    assert "Scope:" not in report.as_html(ANALYSIS, FINDINGS, "")
+
+
+def test_a_scope_value_this_module_does_not_know_is_shown_not_dropped():
+    """A vocabulary this renderer has not been taught is still a fact the
+    ledger holds. Hiding it would be the silent difference one level down."""
+    md = report.as_markdown(ANALYSIS, [{**DEP, "scope": "vendored"}], "")
+    assert "Scope: vendored" in md
+
+
+def test_html_escapes_the_scope_field():
+    html_out = report.as_html(ANALYSIS, [{**DEP, "scope": "<img src=x>"}], "")
+    assert "<img src=x>" not in html_out
+    assert "&lt;img src=x&gt;" in html_out

@@ -201,8 +201,31 @@ Um bloco, uma branch, um PR, com testes a passar no fim de cada um.
 2. **Dependência de quatro binários de terceiros.** A degradação está desenhada,
    mas a superfície de manutenção cresce: quatro formatos de output que podem
    mudar de versão para versão.
-3. **O custo do Semgrep não está medido.** Vale correr uma vez sobre este
-   repositório antes de o bloco 2 ser planeado em detalhe.
+3. ~~**O custo do Semgrep não está medido.**~~ **Medido em 2026-09-01, e o
+   risco não existe.** `semgrep --config=p/owasp-top-ten` sobre este
+   repositório (120 ficheiros versionados, ~56k linhas de Python, JavaScript e
+   shell): **6 segundos** de parede, 223 regras, 85 ficheiros, 99,9% das linhas
+   analisadas. A fase determinística continua a medir-se em segundos. Três
+   observações que valem mais do que o número:
+
+   - **Os ficheiros sem extensão são analisados.** `bin/claude-cron` (8.263
+     linhas) e `bin/claude-cron-server` (3.473) entram os dois — o Semgrep
+     escolhe o analisador pelo shebang, não só pela extensão. A preocupação
+     inicial era infundada.
+   - **A cobertura de shell é quase nula: 1 regra, contra 147 para Python e 65
+     para JavaScript.** O núcleo deste produto são 8.263 linhas de bash. O
+     Semgrep **não substitui** o SAST do agente aqui; complementa-o. Um projecto
+     cuja lógica viva em shell fica com a cobertura determinística que o
+     ecossistema Semgrep tem para shell, que é pouca, e o `coverage_note` tem de
+     o dizer.
+   - **Os 3 achados são 3 falsos positivos, e do tipo que só o contexto
+     resolve.** Todos `insecure-hash-algorithm-md5` (CWE-327), todos em usos
+     não-criptográficos de MD5: chaves de cache, ETags, "cheap fingerprint of
+     the file head". O filtro de ruído do GitGuard não os apanharia — não são
+     ficheiros de teste nem dependências de desenvolvimento. Um agente que lê as
+     três linhas à volta suprime-os com justificação escrita em segundos. É a
+     validação empírica do argumento central desta spec, num volume que torna a
+     triagem barata.
 4. **Sobreposição entre motores.** O Trivy também detecta segredos e o Gitleaks
    também. A regra "um motor por categoria" evita achados duplicados, mas
    precisa de ser explícita no adaptador.

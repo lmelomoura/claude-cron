@@ -15,6 +15,7 @@ calls `main()` in-process instead.
 import inspect
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -83,9 +84,23 @@ def prepared_analysis(db, tmp_path, **kw):
 
 
 def test_prepare_then_report_then_finish(tmp_path):
+    """The whole shape of one analysis, on EITHER scanner.
+
+    The planted key is scaffolding -- this test is about prepare -> report ->
+    finish -> checklist, not about secret detection -- but scaffolding a
+    lifecycle test on material only one scanner reports means proving the
+    lifecycle in only one configuration. It used to plant AWS's own
+    documentation key (AKIAIOSFODNN7EXAMPLE), which gitleaks deliberately
+    allowlists: `findings >= 1` below was true on the built-in scanner and
+    false on the engine, so with `CC_SECURITY_ENGINES=on` -- what a real
+    analysis runs with -- this test failed on its second line and proved
+    nothing about the four verbs it names. The key here is shaped like a live
+    one and assembled at runtime, the way test_adapters.py's is and for the
+    same reason, so both scanners report it and the lifecycle is proved twice.
+    """
     root = tmp_path / "repo"
     (root / "sub").mkdir(parents=True)
-    (root / "prod.env").write_text("AWS_ACCESS_KEY_ID=AKIA" + "IOSFODNN7EXAMPLE\n")
+    (root / "prod.env").write_text("AWS_ACCESS_KEY_ID=AKIA" + "QYLPMN5HNXMEFRTG\n")
     db = tmp_path / "security.db"
 
     aid = open_analysis(db)
@@ -282,6 +297,21 @@ def test_report_finding_ignores_a_classification_sent_by_the_agent(tmp_path):
     row = _finding_row(db, aid)
     assert row["cwe"] == "CWE-89"
     assert row["owasp"] == "A03:2021"
+
+
+def test_report_finding_ignores_a_scope_sent_by_the_agent(tmp_path):
+    """`scope` is read from a LOCKFILE by whichever dependency producer ran.
+    The agent reads no lockfile, so anything it sends under this name is a
+    guess sitting in a column a reader takes for a measurement. Dropped rather
+    than refused, so that Job 2's re-report of a dependency finding still
+    works -- and `record_finding`'s upsert leaves the column alone, so the
+    value the dependency phase established survives that re-report."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "d" * 64, "category": "dependency", "rule": "CVE-1",
+        "severity": "high", "title": "t", "scope": "runtime"}))
+    assert _finding_row(db, aid)["scope"] == ""
 
 
 def test_report_finding_accepts_a_deterministic_rule_unchanged(tmp_path):
@@ -607,13 +637,25 @@ def test_a_decision_wins_over_the_derived_state(tmp_path):
 
 
 def test_findings_lists_what_the_deterministic_phase_left_for_the_agent(tmp_path):
+    """PINNED to the built-in scanner, because the fixture is one only it
+    reports: a PEM header with `xx` where the key material goes. Gitleaks is
+    right to ignore that -- its private-key rule wants a body -- so under the
+    engine `found` came back empty, `any(...)` failed and, worse,
+    `all("occurrences" in f ...)` passed vacuously over the empty list.
+
+    The `any(...)` is what stops the `all(...)` after it being vacuous here
+    too, so the two lines are a pair and neither may be dropped. The engine's
+    half of this verb is exercised in test_adapters.py, whose engine-path
+    tests read `findings` through this same CLI door."""
+    env = {**os.environ, "CC_SECURITY_ENGINES": "off"}
     root = tmp_path / "repo"
     root.mkdir()
     (root / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----\nxx\n")
     db = tmp_path / "security.db"
     aid = open_analysis(db)
-    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
-    found = run(db, "findings", "--analysis", str(aid))
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline",
+        env=env)
+    found = run(db, "findings", "--analysis", str(aid), env=env)
     assert any(f["category"] == "secret" for f in found)
     assert all("occurrences" in f for f in found)
 
@@ -1223,107 +1265,34 @@ def git_repo(root, commits):
     return root
 
 
+# AWS's own documentation key, which gitleaks allowlists on purpose. That is
+# exactly why it is still here: every test below that uses it is PINNED to the
+# built-in scanner and asserts the built-in scanner's rule names, and a fixture
+# the engine reports too would invite somebody to unpin one of them. The
+# detectable shape lives in test_adapters.py (`AKIA` + `QYLPMN5HNXMEFRTG`) and
+# in `test_prepare_then_report_then_finish`, which is engine-neutral.
 AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
 
 
-def states_by_rule(checklist):
-    return {f["rule"]: f["state"] for f in checklist["findings"]}
-
-
-def test_a_history_secret_survives_the_second_and_third_analysis(tmp_path):
-    """THE scenario the whole history sweep exists for.
-
-    A key was committed on Monday and the file deleted on Tuesday. The value
-    is still readable by anyone with a clone, which is why the finding's own
-    remediation says deleting the file is not enough -- rotate first.
-
-    The sweep used to run only on a branch's FIRST analysis, so nothing
-    re-emitted the finding afterwards: `classify` saw it in the previous
-    analysis and not in this one and reported it `fixed` -- congratulating the
-    operator for the exact act the remediation calls insufficient -- and by
-    the third analysis it had dropped out of the report entirely. It must stay
-    OPEN, run after run, until somebody rotates the credential and DECIDES it.
-    """
-    root = git_repo(tmp_path / "repo", [
-        ("add", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
-        ("remove", {"prod.env": None}),
-    ])
-    db = tmp_path / "security.db"
-
-    first = open_analysis(db)
-    run(db, "prepare", "--analysis", str(first), "--root", str(root), "--offline")
-    run(db, "finish", "--analysis", str(first), "--state", "done")
-    assert states_by_rule(run(db, "checklist", "--analysis", str(first))) == {
-        "aws_access_key": "new"}
-
-    # Nothing changed in the repository between the analyses. The finding is
-    # not new (it was here last time) and it is emphatically not fixed.
-    second = open_analysis(db)
-    run(db, "prepare", "--analysis", str(second), "--root", str(root), "--offline")
-    run(db, "finish", "--analysis", str(second), "--state", "done")
-    assert states_by_rule(run(db, "checklist", "--analysis", str(second))) == {
-        "aws_access_key": "open"}
-
-    # And the third run still knows about it: the old behaviour lost it here
-    # altogether -- neither the previous analysis nor this one carried it, so
-    # it was in no checklist at all.
-    third = open_analysis(db)
-    run(db, "prepare", "--analysis", str(third), "--root", str(root), "--offline")
-    run(db, "finish", "--analysis", str(third), "--state", "done")
-    assert states_by_rule(run(db, "checklist", "--analysis", str(third))) == {
-        "aws_access_key": "open"}
-    carried = run(db, "findings", "--analysis", str(third))
-    assert "git history" in carried[0]["rationale"]
-    assert AWS_KEY not in json.dumps(carried)
-
-
-def test_rotating_and_accepting_is_how_a_history_finding_closes(tmp_path):
-    """The other half of the lifecycle. Because the sweep never stops finding
-    it, a history finding cannot be closed by changing the code -- the only
-    honest close is a human saying the credential was rotated and the exposure
-    accepted. That decision must win over the derived `open`."""
-    root = git_repo(tmp_path / "repo", [
-        ("add", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
-        ("remove", {"prod.env": None}),
-    ])
-    db = tmp_path / "security.db"
-    first = open_analysis(db)
-    run(db, "prepare", "--analysis", str(first), "--root", str(root), "--offline")
-    fp = run(db, "findings", "--analysis", str(first))[0]["fingerprint"]
-    run(db, "finish", "--analysis", str(first), "--state", "done")
-
-    run(db, "decide", "--project", "web", "--fingerprint", fp,
-        "--state", "accepted", "--reason", "rotated at the provider on Tuesday")
-
-    second = open_analysis(db)
-    run(db, "prepare", "--analysis", str(second), "--root", str(root), "--offline")
-    run(db, "finish", "--analysis", str(second), "--state", "done")
-    assert states_by_rule(run(db, "checklist", "--analysis", str(second))) == {
-        "aws_access_key": "accepted"}
-
-
-def test_the_working_tree_reading_wins_over_its_history_twin(tmp_path):
-    """A secret in the tree AND in the history is ONE finding: same rule, same
-    path, therefore one fingerprint, and record_finding upserts.
-
-    The two readings disagree about the wording and the line: the tree knows
-    the real line number and says "in the working tree", the history says line
-    0 and "in the git history". The tree's is the one a reader can act on, so
-    it must be recorded LAST and win the upsert. The history sweep used to be
-    appended after the tree, which overwrote a live, locatable secret with a
-    line-0 report about the past.
-    """
-    root = git_repo(tmp_path / "repo", [
-        ("add", {"prod.env": f"# header\nAWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
-    ])
-    db = tmp_path / "security.db"
-    aid = open_analysis(db)
-    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
-    found = run(db, "findings", "--analysis", str(aid))
-    secret = [f for f in found if f["rule"] == "aws_access_key"]
-    assert len(secret) == 1, "the tree and history readings must be one row"
-    assert "in the working tree" in secret[0]["rationale"]
-    assert [o["line"] for o in secret[0]["occurrences"]] == [2]
+# THREE TESTS THAT USED TO SIT HERE NOW LIVE IN test_adapters.py, parametrised
+# over `ENGINE_MATRIX` so each is proved on the built-in scanner AND on
+# gitleaks:
+#
+#   test_a_history_secret_survives_the_second_and_third_analysis
+#     -> test_a_history_secret_stays_open_on_either_scanner
+#   test_rotating_and_accepting_is_how_a_history_finding_closes
+#     -> test_rotating_and_accepting_closes_it_on_either_scanner
+#   test_the_working_tree_reading_wins_over_its_history_twin
+#     -> test_the_tree_reading_wins_over_its_history_twin_on_either_scanner
+#
+# The copies here were not a second opinion, they were the same opinion in a
+# vocabulary only one scanner speaks: they planted the documentation key above
+# and asserted `aws_access_key`, while inheriting a `CC_SECURITY_ENGINES=off`
+# default they never declared. Run the suite the way production runs -- engines
+# ON -- and all three went red on a fixture gitleaks is right to ignore, having
+# proved the built-in half twice and the engine half never. The parametrised
+# versions assert the STATE and the wording rather than the rule name, which is
+# what made covering both paths possible at all.
 
 
 def test_ignore_paths_reach_the_tree_the_history_and_the_hygiene_pass(tmp_path):
@@ -1333,25 +1302,180 @@ def test_ignore_paths_reach_the_tree_the_history_and_the_hygiene_pass(tmp_path):
     working-tree sweep and reported in full by the history sweep and by the
     hygiene pass -- so the operator set the option, saw the noise disappear
     from one section of the report and stay in two others.
+
+    Planted in `tests/planted/` and NOT in the `tests/fixtures/` this test
+    used to use: `ignores.DEFAULT_IGNORE_DIRS` now suppresses a `fixtures`
+    directory with no configuration at all, so the old path would make the
+    `== []` below pass without `--ignore` ever being read. The default has
+    its own coverage in `test_the_default_noise_filter_reaches_every_
+    deterministic_phase` above; this test is about the OPERATOR's globs and
+    has to keep being about only them.
+
+    PINNED to the built-in scanner, and NOT retired in favour of the engine's
+    version. `test_adapters.test_the_engine_obeys_the_ignore_paths_prepare_
+    was_given` covers the same globs on the engine path, but it filters to
+    `category == "secret"` over a tree that is not a git checkout -- so it is
+    the SECRET phase's half and only that. This test is the one that keeps the
+    promise about the HISTORY sweep and the HYGIENE pass: the bare `== []`
+    covers every phase, and the `committed_key_file` in the positive control
+    is the proof that the hygiene pass really had something to suppress. Those
+    two phases are the same code on both paths; the rule names are not.
     """
+    env = {**os.environ, "CC_SECURITY_ENGINES": "off"}
     root = git_repo(tmp_path / "repo", [
-        ("fixtures", {"tests/fixtures/fake.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
-                      "tests/fixtures/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nx\n"}),
-        ("delete the env", {"tests/fixtures/fake.env": None}),
+        ("fixtures", {"tests/planted/fake.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
+                      "tests/planted/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nx\n"}),
+        ("delete the env", {"tests/planted/fake.env": None}),
     ])
     db = tmp_path / "security.db"
 
     noisy = open_analysis(db)
-    run(db, "prepare", "--analysis", str(noisy), "--root", str(root), "--offline")
-    rules = {f["rule"] for f in run(db, "findings", "--analysis", str(noisy))}
+    run(db, "prepare", "--analysis", str(noisy), "--root", str(root), "--offline",
+        env=env)
+    rules = {f["rule"] for f in run(db, "findings", "--analysis", str(noisy),
+                                    env=env)}
     assert {"aws_access_key", "private_key", "committed_key_file"} <= rules, (
         f"the fixture must be noisy without the globs: {sorted(rules)}")
-    run(db, "finish", "--analysis", str(noisy), "--state", "done")
+    run(db, "finish", "--analysis", str(noisy), "--state", "done", env=env)
 
     quiet = open_analysis(db)
     run(db, "prepare", "--analysis", str(quiet), "--root", str(root), "--offline",
-        "--ignore", "tests/fixtures/**")
-    assert run(db, "findings", "--analysis", str(quiet)) == []
+        "--ignore", "tests/planted/**", env=env)
+    assert run(db, "findings", "--analysis", str(quiet), env=env) == []
+
+
+def test_the_default_noise_filter_is_declared_in_the_coverage_note(tmp_path):
+    """A default suppression a reader cannot see is a report that cannot be
+    read: "nothing was found in the fixtures" and "the fixtures were never
+    looked at" are the same silence otherwise. The sentence also has to carry
+    the way back out, because the reader who needs it is the one who just
+    discovered the filter exists."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text("print('hi')\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline")["coverage_note"]
+    assert "default noise filter" in note
+    assert "!defaults" in note
+
+
+def test_the_note_goes_away_when_the_project_turns_the_default_off(tmp_path):
+    """Nothing was suppressed, so there is no gap to declare -- and a note
+    that kept claiming one would be the mirror image of the bug above."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text("print('hi')\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline", "--ignore", "!defaults")["coverage_note"]
+    assert "default noise filter" not in note
+
+
+def test_a_mistyped_switch_is_named_in_the_coverage_note(tmp_path):
+    """`!defaults` is an exact token, and it used to fail in the UNSAFE
+    direction: `!Defaults` compared unequal, the default silently stayed on,
+    and the entry went on to three engine command lines as a path to exclude.
+    A project that keeps real credentials in a fixture and typed the switch
+    believed it was being scanned. `!Defaults` now IS the switch; `!default`
+    is not, and cannot be guessed at -- so it is said."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text("print('hi')\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline", "--ignore", "!default")["coverage_note"]
+    assert "!default" in note
+    assert "STILL IN EFFECT" in note
+    assert "default noise filter" in note, (
+        "and the filter really is still on, which is what the note claims")
+
+
+def test_a_capitalised_switch_simply_works(tmp_path):
+    """There is no information in the sentinel's capitalisation and there was
+    a great deal of damage in requiring it."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text("print('hi')\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline", "--ignore", "!Defaults")["coverage_note"]
+    assert "default noise filter" not in note
+    assert "STILL IN EFFECT" not in note
+
+
+def test_the_sbom_says_what_an_absent_dependency_finding_does_not_mean(tmp_path):
+    """`deps.inventory` deliberately does not read `ignore_paths`, so the SBOM
+    lists a lockfile the dependency phase never looked up. That used to need
+    an operator to write `ignore_paths`, and they knew what they had written;
+    with the fixtures default it is what every unconfigured project gets. A
+    consumer reading the published SBOM beside the report would see "this
+    project ships lodash 4.17.20" and "no dependency findings"."""
+    root = tmp_path / "repo"
+    (root / "tests" / "fixtures").mkdir(parents=True)
+    (root / "tests" / "fixtures" / "package-lock.json").write_text(json.dumps(
+        {"packages": {"node_modules/lodash": {"version": "4.17.20"}}}))
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline")["coverage_note"]
+    assert "tests/fixtures/package-lock.json" in note
+    assert "not a clean bill of health" in note
+
+
+def test_nothing_is_said_when_the_sbom_and_the_analysis_agree(tmp_path):
+    """Measured, not standing policy: a project with no lockfile under a
+    filtered path never reads that sentence."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "package-lock.json").write_text(json.dumps(
+        {"packages": {"node_modules/lodash": {"version": "4.17.20"}}}))
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline")["coverage_note"]
+    assert "not a clean bill of health" not in note
+
+
+def test_the_default_noise_filter_reaches_every_deterministic_phase(tmp_path):
+    """One filter, every phase -- the promise `ignore_paths` already made,
+    now made without anybody having to write the globs. The positive control
+    is the same tree with the default switched off: `== []` on its own passes
+    identically on an analysis that scanned nothing at all.
+
+    PINNED to the built-in scanner rather than left to the machine, because
+    the rule names below are the built-in scanner's. The ENGINE's half of
+    the same default is
+    `test_adapters.test_the_default_narrows_the_real_engine_with_nothing_
+    configured`, which drives the real gitleaks binary -- a default only one
+    of the two honoured is the per-machine divergence this whole block keeps
+    having to fix."""
+    env = {**os.environ, "CC_SECURITY_ENGINES": "off"}
+    root = git_repo(tmp_path / "repo", [
+        ("fixtures", {
+            "tests/fixtures/fake.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
+            "tests/fixtures/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nx\n",
+            ".env.example": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
+        ("delete the env", {"tests/fixtures/fake.env": None}),
+    ])
+    db = tmp_path / "security.db"
+
+    loud = open_analysis(db)
+    run(db, "prepare", "--analysis", str(loud), "--root", str(root), "--offline",
+        "--ignore", "!defaults", env=env)
+    rules = {f["rule"] for f in run(db, "findings", "--analysis", str(loud), env=env)}
+    assert {"aws_access_key", "private_key", "committed_key_file"} <= rules, (
+        f"the tree must be noisy with the default switched off: {sorted(rules)}")
+    run(db, "finish", "--analysis", str(loud), "--state", "done", env=env)
+
+    quiet = open_analysis(db)
+    run(db, "prepare", "--analysis", str(quiet), "--root", str(root), "--offline",
+        env=env)
+    assert run(db, "findings", "--analysis", str(quiet), env=env) == []
 
 
 def test_a_history_sweep_that_could_not_run_says_so_in_the_coverage_note(tmp_path):
@@ -1387,6 +1511,480 @@ def test_every_phase_gap_reaches_the_one_coverage_note(tmp_path):
                "--offline")["coverage_note"]
     assert "history sweep did not complete" in note
     assert "OSV.dev" in note
+
+
+# --------------------------- the dependency engine, Trivy vs OSV.dev, never both
+#
+# `osv.query` makes a real HTTP call to api.osv.dev, and this suite must never
+# depend on that network being reachable (test_osv.py itself never lets a real
+# request through -- every test there monkeypatches `osv._http`). These tests
+# drive `security_cli.main()` IN-PROCESS rather than through the `run`/`fails`
+# subprocess helpers for exactly that reason: the point is to stub
+# `security_cli.osv.query` and `security_cli.adapters` mid-call, which a
+# subprocess boundary cannot see (the same exception the module docstring
+# already names for the ledger-write-failure tests below).
+
+def _dep_finding(rule="CVE-9999"):
+    return {"fingerprint": "f" * 64, "category": "dependency", "rule": rule,
+            "severity": "high", "title": "t", "rationale": "r",
+            "remediation": "m", "occurrences": []}
+
+
+def test_prepare_prefers_trivy_and_never_calls_osv(tmp_path, monkeypatch, capsys):
+    """Two producers in the `dependency` category would report one CVE under
+    two fingerprints. `osv.query` raising proves it was never even called --
+    a plain call-counter could pass by accident if an early return happened
+    to skip it for an unrelated reason."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/trivy" if name == "trivy" else None)
+    monkeypatch.setattr(security_cli.adapters, "trivy_scan",
+                        lambda root, ignore_paths=(): (
+                            [_dep_finding()],
+                            ["Dependencies were scanned for known CVEs by "
+                             "trivy 0.74.0."]))
+
+    def must_not_run(*_a, **_kw):
+        raise AssertionError("osv.query must not run once Trivy has answered")
+    monkeypatch.setattr(security_cli.osv, "query", must_not_run)
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["findings"] >= 1
+    findings = run(db, "findings", "--analysis", str(aid))
+    dep_rules = {f["rule"] for f in findings if f["category"] == "dependency"}
+    assert dep_rules == {"CVE-9999"}
+    row = run(db, "list", "--project", "web")[0]
+    assert "trivy" in row["coverage_note"].lower()
+
+
+def test_prepare_falls_back_to_osv_when_trivy_is_not_installed(tmp_path, monkeypatch):
+    """The mirror of the test above: with no engine on the machine, OSV.dev
+    still does the work -- the fallback pair this task replaces, not
+    removes."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path", lambda name: None)
+    calls = []
+
+    def fake_query(components, detail_cache=None, timeout=30):
+        calls.append(components)
+        return [], ""
+    monkeypatch.setattr(security_cli.osv, "query", fake_query)
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    assert calls, "osv.query was never called"
+
+
+def test_prepare_falls_back_to_osv_when_trivy_produces_no_report(tmp_path, monkeypatch):
+    """Trivy is on the machine but could not answer -- absent a version,
+    timed out, whatever `adapters.trivy_scan` signals with `None`. That is
+    safe to fall back from precisely because it produced nothing: there is
+    no engine finding for OSV.dev's to collide with."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/trivy" if name == "trivy" else None)
+    monkeypatch.setattr(security_cli.adapters, "trivy_scan",
+                        lambda root, ignore_paths=(): (
+                            None, ["trivy did not finish within 600s and was "
+                                   "stopped."]))
+    calls = []
+
+    def fake_query(components, detail_cache=None, timeout=30):
+        calls.append(components)
+        return [], ""
+    monkeypatch.setattr(security_cli.osv, "query", fake_query)
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    assert calls, "osv.query must run when Trivy contributed nothing"
+    row = run(db, "list", "--project", "web")[0]
+    assert "did not finish" in row["coverage_note"]
+
+
+def test_the_osv_fallback_note_is_not_said_for_a_repository_with_no_lockfiles(
+        tmp_path, monkeypatch):
+    """The note claims dependencies "were checked against OSV.dev's own
+    database". With no components, `osv.query` returns before it opens a
+    socket, and saying it anyway describes a lookup that never happened."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path", lambda name: None)
+    monkeypatch.setattr(security_cli.osv, "query",
+                        lambda components, detail_cache=None, timeout=30: ([], ""))
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    note = run(db, "list", "--project", "web")[0]["coverage_note"]
+    assert "OSV.dev's own database" not in note
+
+    # ... and it IS said the moment there is something to check, or nobody
+    # learns which of the two producers scanned their dependencies.
+    (root / "package-lock.json").write_text(
+        (Path(__file__).parent / "fixtures" / "package-lock.json").read_text())
+    second = open_analysis(db)
+    security_cli.main(["prepare", "--analysis", str(second), "--root", str(root),
+                       "--db", str(db)])
+    notes = [r["coverage_note"] for r in run(db, "list", "--project", "web")]
+    assert any("OSV.dev's own database" in n for n in notes)
+
+
+def test_ignore_paths_reach_the_dependency_phase_whichever_producer_ran(
+        tmp_path, monkeypatch):
+    """`ignore_paths` is a promise about the ANALYSIS. Honouring it on the
+    engine path alone would make an operator's globs suppress a CVE on a
+    machine with Trivy installed and not on one without -- a report that
+    changes by machine, which is the same class of bug as the fingerprint
+    divergence. The inventory is untouched: the SBOM still lists the
+    lockfile."""
+    root = tmp_path / "repo"
+    (root / "examples").mkdir(parents=True)
+    (root / "examples" / "package-lock.json").write_text(
+        (Path(__file__).parent / "fixtures" / "package-lock.json").read_text())
+    db = tmp_path / "security.db"
+
+    def one_cve(components, detail_cache=None, timeout=30):
+        return [dict(_dep_finding(), occurrences=[
+            {"file": c["source"], "line": 0, "snippet_hash": ""}])
+            for c in components], ""
+    monkeypatch.setattr(security_cli.adapters, "engine_path", lambda name: None)
+    monkeypatch.setattr(security_cli.osv, "query", one_cve)
+
+    aid = open_analysis(db)
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    assert [f for f in run(db, "findings", "--analysis", str(aid))
+            if f["category"] == "dependency"]
+
+    scoped = open_analysis(db)
+    security_cli.main(["prepare", "--analysis", str(scoped), "--root", str(root),
+                       "--ignore", "examples", "--db", str(db)])
+    assert not [f for f in run(db, "findings", "--analysis", str(scoped))
+                if f["category"] == "dependency"]
+
+
+def test_offline_skips_trivy_as_well_as_osv(tmp_path, monkeypatch):
+    """`--offline` turns off BOTH: a vulnerability database, Trivy's own or
+    OSV.dev's, does not exist unless somebody publishes it, and this
+    analysis was told not to reach the network. Both stubs raise, so a
+    regression that let either one run mid-flight fails the test instead of
+    quietly making a real network call."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    def must_not_run(*_a, **_kw):
+        raise AssertionError("neither engine may run while --offline")
+    monkeypatch.setattr(security_cli.adapters, "trivy_scan", must_not_run)
+    monkeypatch.setattr(security_cli.osv, "query", must_not_run)
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--offline", "--db", str(db)])
+    row = run(db, "list", "--project", "web")[0]
+    assert "OSV" in row["coverage_note"]
+    assert "Trivy" in row["coverage_note"]
+
+
+# ------------------------- the IaC misconfiguration phase, Trivy-only, no fallback
+
+def _iac_finding(rule="DS-0002"):
+    return {"fingerprint": "i" * 64, "category": "iac", "rule": rule,
+            "severity": "high", "title": "t", "rationale": "r",
+            "remediation": "m", "occurrences": [{"file": "Dockerfile", "line": 0}]}
+
+
+def test_iac_is_in_the_deterministic_and_finding_category_sets():
+    """The two ledgers this project keeps of its own finding categories have
+    to agree, or a category the ledger accepts is one the checklist cannot
+    classify. `cli.FINDING_CATEGORIES` is DERIVED from `diff.
+    DETERMINISTIC_CATEGORIES`, so asserting both is checking the derivation
+    still holds, not duplicating the fact."""
+    assert "iac" in security_cli.diff.DETERMINISTIC_CATEGORIES
+    assert "iac" in security_cli.FINDING_CATEGORIES
+
+
+def test_prepare_reports_iac_findings_from_trivy(tmp_path, monkeypatch, capsys):
+    """`iac` has no built-in scanner and no fallback -- Trivy on, or nothing
+    this run. Mirrors `test_prepare_prefers_trivy_and_never_calls_osv`'s own
+    shape for the dependency phase."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/trivy" if name == "trivy" else None)
+    monkeypatch.setattr(security_cli.adapters, "trivy_iac_scan",
+                        lambda root, ignore_paths=(): (
+                            [_iac_finding()],
+                            ["Infrastructure-as-code misconfigurations were "
+                             "scanned by Trivy (0.74.0)."]))
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["findings"] >= 1
+    findings = run(db, "findings", "--analysis", str(aid))
+    iac_rules = {f["rule"] for f in findings if f["category"] == "iac"}
+    assert iac_rules == {"DS-0002"}
+    row = run(db, "list", "--project", "web")[0]
+    assert "trivy" in row["coverage_note"].lower()
+
+
+def test_iac_declares_a_gap_when_trivy_is_not_installed(tmp_path):
+    """No built-in scanner exists for `iac`, unlike secrets or dependencies --
+    so the absence has to be SAID, not silently reported as zero findings."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    assert not [f for f in run(db, "findings", "--analysis", str(aid))
+                if f["category"] == "iac"]
+    row = run(db, "list", "--project", "web")[0]
+    assert "infrastructure-as-code" in row["coverage_note"].lower()
+
+
+def test_iac_gap_is_declared_when_trivy_produces_no_report(tmp_path, monkeypatch):
+    """Trivy is on the machine but could not answer -- `adapters.
+    trivy_iac_scan` signals that with `None`, exactly as `trivy_scan` does
+    for dependencies. There is nothing to fall back to, so the gap is what
+    the report shows instead of a silent zero."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/trivy" if name == "trivy" else None)
+    monkeypatch.setattr(security_cli.adapters, "trivy_iac_scan",
+                        lambda root, ignore_paths=(): (
+                            None, ["trivy did not finish within 600s and was "
+                                   "stopped."]))
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    row = run(db, "list", "--project", "web")[0]
+    assert "did not finish" in row["coverage_note"]
+
+
+# 64 lowercase hex, so `report-finding` will accept it back: the re-report
+# test below goes through the agent's own door, which checks the SHAPE of a
+# fingerprint even for a finding `prepare` minted.
+_IAC_FP = "d1ac" + "0" * 60
+
+
+def _only_trivy(monkeypatch):
+    """A machine with Trivy and nothing else, and neither real binary run.
+
+    `engine_path("trivy")` gates the dependency phase as well as the IaC one,
+    so `trivy_scan` has to be stubbed too or these tests shell out to the
+    actual scanner.
+    """
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/trivy" if name == "trivy" else None)
+    monkeypatch.setattr(security_cli.adapters, "trivy_scan",
+                        lambda root, ignore_paths=(): ([], []))
+    monkeypatch.setattr(
+        security_cli.adapters, "trivy_iac_scan",
+        lambda root, ignore_paths=(): (
+            [dict(_iac_finding(), fingerprint=_IAC_FP)], []))
+
+
+def test_a_run_without_trivy_never_declares_an_iac_finding_fixed(
+        tmp_path, monkeypatch):
+    """THE BLOCKING DEFECT, end to end, on the path the spec calls NORMAL.
+
+    Analysis 1 runs with Trivy and records a Dockerfile misconfiguration;
+    analysis 2 reads the SAME untouched checkout on a machine without it. The
+    checklist used to say `fixed` -- in the same report whose coverage note
+    says the Dockerfile "was not checked at all this run" -- because `iac` sat
+    in DETERMINISTIC_CATEGORIES, where `prepare` finishing counts as proof.
+    `iac` has no fallback by design, so `[]` from that phase has only ever
+    meant "nobody looked".
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+
+    _only_trivy(monkeypatch)
+    first = open_analysis(db, commit="a1", run_id="r1")
+    security_cli.main(["prepare", "--analysis", str(first), "--root", str(root),
+                       "--db", str(db)])
+    run(db, "finish", "--analysis", str(first), "--state", "done")
+
+    # The same checkout, a machine with no engines at all.
+    monkeypatch.setattr(security_cli.adapters, "engine_path", lambda name: None)
+    second = open_analysis(db, commit="a2", run_id="r2")
+    security_cli.main(["prepare", "--analysis", str(second), "--root", str(root),
+                       "--db", str(db)])
+    run(db, "finish", "--analysis", str(second), "--state", "done")
+
+    checklist = run(db, "checklist", "--analysis", str(second))
+    iac = [f for f in checklist["findings"] if f["category"] == "iac"]
+    assert [f["state"] for f in iac] == ["pending"], (
+        "the IaC scan did not run, so it proved nothing -- and the report "
+        "that says the Dockerfile was never checked must not also say its "
+        "misconfiguration is fixed")
+
+
+def test_the_same_engine_running_again_does_close_an_iac_finding(
+        tmp_path, monkeypatch):
+    """The other direction of the same rule, and the reason it is a producer
+    and not a blanket `pending`: Trivy running and finding nothing IS proof,
+    so a genuinely fixed Dockerfile closes on the very next analysis."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+
+    _only_trivy(monkeypatch)
+    first = open_analysis(db, commit="a1", run_id="r1")
+    security_cli.main(["prepare", "--analysis", str(first), "--root", str(root),
+                       "--db", str(db)])
+    run(db, "finish", "--analysis", str(first), "--state", "done")
+
+    # Trivy is still here; the misconfiguration is gone.
+    monkeypatch.setattr(security_cli.adapters, "trivy_iac_scan",
+                        lambda root, ignore_paths=(): ([], []))
+    second = open_analysis(db, commit="a2", run_id="r2")
+    security_cli.main(["prepare", "--analysis", str(second), "--root", str(root),
+                       "--db", str(db)])
+    run(db, "finish", "--analysis", str(second), "--state", "done")
+
+    checklist = run(db, "checklist", "--analysis", str(second))
+    iac = [f for f in checklist["findings"] if f["category"] == "iac"]
+    assert [f["state"] for f in iac] == ["fixed"]
+
+
+def test_prepare_records_which_producers_actually_ran(tmp_path, monkeypatch):
+    """`prepared` says the deterministic half ran; `produced` says WHAT ran,
+    and only the second can tell a clean Dockerfile from an unread one."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+
+    _only_trivy(monkeypatch)
+    aid = open_analysis(db)
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT produced FROM analysis WHERE id=?", (aid,)).fetchone()
+    produced = set(row["produced"].split(","))
+    # Trivy answered for both of its phases, the built-in scanner for secrets,
+    # and hygiene always runs. Semgrep and Syft are not on this machine.
+    assert {"trivy", "trivy-iac", "secrets", "hygiene"} <= produced
+    assert "semgrep" not in produced and "gitleaks" not in produced
+
+    producer = {f["rule"]: f["producer"]
+                for f in run(db, "findings", "--analysis", str(aid))}
+    assert producer["DS-0002"] == "trivy-iac"
+
+
+def test_an_agents_re_report_does_not_steal_a_deterministic_producer(
+        tmp_path, monkeypatch):
+    """Triage is the agent's JOB (Job 2 in the skill): it re-reports a
+    deterministic finding with a corrected severity and rationale. If that
+    re-report restamped `producer` as `agent`, the finding's absence-proof
+    would move to the analysis closing `done` -- reintroducing the false
+    `fixed` through the one door meant to improve a finding."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+
+    _only_trivy(monkeypatch)
+    aid = open_analysis(db)
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+
+    run(db, "report-finding", "--analysis", str(aid),
+        stdin=json.dumps({**_iac_finding(), "fingerprint": _IAC_FP,
+                          "severity": "low",
+                          "rationale": "the base image is pinned"}))
+
+    rows = {f["rule"]: f for f in run(db, "findings", "--analysis", str(aid))}
+    assert rows["DS-0002"]["severity"] == "low", "the re-report must still land"
+    assert rows["DS-0002"]["producer"] == "trivy-iac", (
+        "the producer records who MINTED the identity, never who wrote the "
+        "row last")
+
+
+def test_offline_skips_iac_scanning_too(tmp_path, monkeypatch):
+    """`--offline` turns Trivy's misconfiguration scan off exactly as it
+    turns the dependency and SAST phases off: its checks bundle is fetched
+    from Trivy's own registry, and this analysis was told not to reach the
+    network."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    def must_not_run(*_a, **_kw):
+        raise AssertionError("trivy_iac_scan must not run while --offline")
+    monkeypatch.setattr(security_cli.adapters, "trivy_iac_scan", must_not_run)
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--offline", "--db", str(db)])
+    row = run(db, "list", "--project", "web")[0]
+    assert "infrastructure-as-code" in row["coverage_note"].lower()
+
+
+def test_ignore_paths_reach_the_iac_phase(tmp_path, monkeypatch):
+    """The same promise `ignore_paths` makes to every other phase: it is
+    about the ANALYSIS, and `_scan_iac` has to pass it down."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    seen = {}
+
+    def fake_scan(root, ignore_paths=()):
+        seen["ignore_paths"] = ignore_paths
+        return [], []
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/trivy" if name == "trivy" else None)
+    monkeypatch.setattr(security_cli.adapters, "trivy_iac_scan", fake_scan)
+
+    aid = open_analysis(db)
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--ignore", "examples,dist", "--db", str(db)])
+    assert seen["ignore_paths"] == ["examples", "dist"]
+
+
+def test_report_finding_accepts_the_iac_category(tmp_path):
+    """The vocabulary gate is for `sast` only -- an `iac` rule is Trivy's own
+    check id, produced by our own Python during `prepare`, not the agent's
+    `report-finding` door in the ordinary run. Still has to be usable through
+    it: an operator debugging a stuck analysis, or a future manual repair,
+    types the same command every other category already accepts."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "d" * 64, "category": "iac", "rule": "DS-0002",
+        "severity": "high", "title": "t"}))
+    row = _finding_row(db, aid)
+    assert row["category"] == "iac"
+    assert row["rule"] == "DS-0002"
+    assert row["cwe"] == "" and row["owasp"] == ""
 
 
 # ------------------------------- an analysis that never ran its own phases
@@ -1628,6 +2226,193 @@ def test_render_sbom_refuses_an_analysis_that_does_not_exist(tmp_path):
     out = fails(db, "render", "--analysis", "999", "--format", "sbom")
     assert out.returncode != 0
     assert "no such analysis" in out.stderr
+
+
+# ------------------------------------------------- Syft replaces `deps.sbom`
+
+needs_syft = pytest.mark.skipif(
+    shutil.which("syft") is None, reason="syft is not installed on this machine")
+
+
+def test_prepare_prefers_syft_and_never_calls_deps_sbom(tmp_path, monkeypatch):
+    """Two producers for one SBOM is not the two-fingerprint problem
+    `_scan_secrets`/`_scan_dependencies` guard against -- an SBOM is not
+    fingerprinted at all -- but it is still ONE producer, not two: calling
+    `deps.sbom` after Syft already answered would silently overwrite Syft's
+    document with a narrower one for no reason. `deps.sbom` raising proves it
+    was never called, not merely that its result was discarded."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/syft" if name == "syft" else None)
+    monkeypatch.setattr(
+        security_cli.adapters, "syft_sbom",
+        lambda root: ({"bomFormat": "CycloneDX", "specVersion": "1.5",
+                       "components": [{"type": "library", "name": "left-pad",
+                                       "version": "1.3.0",
+                                       "purl": "pkg:npm/left-pad@1.3.0"}]},
+                      ["The SBOM was produced by syft 1.51.1.",
+                       security_cli.adapters.SYFT_SBOM_NOTE]))
+
+    def must_not_run(*_a, **_kw):
+        raise AssertionError("deps.sbom must not run once Syft has answered")
+    monkeypatch.setattr(security_cli.deps, "sbom", must_not_run)
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--offline", "--db", str(db)])
+    document = json.loads(run_text(db, "render", "--analysis", str(aid),
+                                   "--format", "sbom"))
+    assert document["components"][0]["name"] == "left-pad"
+    row = run(db, "list", "--project", "web")[0]
+    assert "Syft" in row["coverage_note"]
+
+
+def test_prepare_falls_back_to_deps_sbom_when_syft_finds_nothing_useful(
+        tmp_path, monkeypatch):
+    """The mirror of the test above: a project with a lockfile `deps.inventory`
+    reads, on a machine where Syft is installed but answers with nothing this
+    adapter can use, still gets the SBOM the pre-Syft behaviour always gave
+    it -- the fallback pair this task replaces, not removes."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "requirements.txt").write_text("requests==2.31.0\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/syft" if name == "syft" else None)
+    monkeypatch.setattr(security_cli.adapters, "syft_sbom",
+                        lambda root: (None, ["syft did not finish within "
+                                             "600s and was stopped."]))
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--offline", "--db", str(db)])
+    document = json.loads(run_text(db, "render", "--analysis", str(aid),
+                                   "--format", "sbom"))
+    assert {c["name"]: c["version"] for c in document["components"]} == {
+        "requests": "2.31.0"}
+    row = run(db, "list", "--project", "web")[0]
+    assert "did not finish" in row["coverage_note"]
+    assert "own inventory" in row["coverage_note"]
+
+
+def test_the_sbom_note_is_replaced_not_duplicated_when_syft_and_trivy_both_run(
+        tmp_path, monkeypatch):
+    """Task 3's `adapters.DEP_SBOM_NOTE` says the SBOM lists the five
+    lockfile formats `deps.inventory` reads -- true only while `deps.sbom`
+    built it. The moment Syft supplies the document instead, that specific
+    claim is false: Syft reads far more than five formats. `cmd_prepare` is
+    the one place that knows both which producer found the CVEs and which
+    one built the SBOM, so it has to swap the two notes rather than let the
+    report contradict itself."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(
+        security_cli.adapters, "engine_path",
+        lambda name: f"/usr/bin/{name}" if name in ("trivy", "syft") else None)
+    monkeypatch.setattr(
+        security_cli.adapters, "trivy_scan",
+        lambda root, ignore_paths=(): (
+            [], [security_cli.adapters.DEP_ENGINE_NOTE.format(version="trivy 0.74.0"),
+                 security_cli.adapters.DEP_ID_NOTE,
+                 security_cli.adapters.DEP_SBOM_NOTE]))
+    monkeypatch.setattr(
+        security_cli.adapters, "syft_sbom",
+        lambda root: ({"bomFormat": "CycloneDX", "specVersion": "1.5",
+                       "components": [{"type": "library", "name": "x",
+                                       "version": "1.0",
+                                       "purl": "pkg:generic/x@1.0"}]},
+                      ["The SBOM was produced by syft 1.51.1.",
+                       security_cli.adapters.SYFT_SBOM_NOTE]))
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    note = run(db, "list", "--project", "web")[0]["coverage_note"]
+    assert security_cli.adapters.DEP_SBOM_NOTE not in note
+    assert security_cli.adapters.SYFT_SBOM_NOTE in note
+    assert "Trivy" in note
+
+
+def test_the_sbom_notes_are_dropped_when_no_SBOM_IS_STORED_AT_ALL(
+        tmp_path, monkeypatch):
+    """The case the swap above fell straight through.
+
+    `trivy_scan` appends `DEP_SBOM_NOTE` unconditionally, and `cmd_prepare`
+    only swapped it out when `SYFT_SBOM_NOTE` was present. But `_scan_sbom`
+    returns `(None, notes)` for a checkout with no lockfile `deps.inventory`
+    reads and a Syft that answered with nothing usable -- so NOTHING is
+    stored, `render --format sbom` answers "no SBOM recorded", and the note
+    still read "The SBOM lists the five lockfile formats ..." beside "Syft
+    wrote a document naming no `components`, so it was not used" -- the
+    second implying a fallback that never happened.
+    """
+    root = tmp_path / "repo"          # no lockfile of any kind
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(
+        security_cli.adapters, "engine_path",
+        lambda name: f"/usr/bin/{name}" if name in ("trivy", "syft") else None)
+    monkeypatch.setattr(
+        security_cli.adapters, "trivy_scan",
+        lambda root, ignore_paths=(): (
+            [], [security_cli.adapters.DEP_SBOM_NOTE]))
+    monkeypatch.setattr(
+        security_cli.adapters, "syft_sbom",
+        lambda root: (None, [security_cli.adapters.SYFT_NO_COMPONENTS_NOTE]))
+    monkeypatch.setattr(security_cli.adapters, "trivy_iac_scan",
+                        lambda root, ignore_paths=(): ([], []))
+
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT COUNT(*) FROM sbom").fetchone()[0] == 0
+
+    note = run(db, "list", "--project", "web")[0]["coverage_note"]
+    assert security_cli.adapters.DEP_SBOM_NOTE not in note, (
+        "no SBOM was stored, so nothing may describe what it lists")
+    assert security_cli.NO_SBOM_NOTE in note, (
+        "and the reader has to be told there is no SBOM, or "
+        "`SYFT_NO_COMPONENTS_NOTE`'s 'it was not used' still implies a "
+        "fallback that never happened")
+
+
+@needs_syft
+def test_prepare_stores_syfts_sbom_and_it_survives_the_download_round_trip(
+        tmp_path):
+    """The one test that matters beyond the parser: whichever producer built
+    the SBOM, `ledger.store_sbom` has to accept it and `render --format sbom`
+    has to hand it back unharmed. `test_render_sbom_hands_back_the_stored_
+    cyclonedx` above already proves this for `deps.sbom` (the suite's own
+    `CC_SECURITY_ENGINES=off` default keeps Syft out of that one); this is
+    the same round trip for the real Syft binary."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    lockfile = REPO / "tests" / "security" / "fixtures" / "package-lock.json"
+    (root / "package-lock.json").write_text(lockfile.read_text())
+    db = tmp_path / "security.db"
+    env = {**os.environ, "CC_SECURITY_ENGINES": "on"}
+    aid = open_analysis(db)
+
+    prepared = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+                   "--offline", env=env)
+    assert "Syft" in prepared["coverage_note"]
+    run(db, "finish", "--analysis", str(aid), "--state", "done", env=env)
+
+    document = json.loads(run_text(db, "render", "--analysis", str(aid),
+                                   "--format", "sbom"))
+    assert document["bomFormat"] == "CycloneDX"
+    assert not any(c.get("type") == "file" for c in document["components"])
+    names = {c["name"]: c["version"] for c in document["components"]}
+    assert names.get("lodash") == "4.17.20"
 
 
 def test_checklist_of_an_analysis_that_does_not_exist_exits_with_the_old_sentence(tmp_path):
@@ -3142,22 +3927,125 @@ def test_the_skill_does_not_claim_a_read_verb_is_refused(tmp_path):
 
 # ---- migrate-rules: applying taxonomy.RULE_RENAMES to the ledger.
 #
-# RULE_RENAMES is empty, so the verb is a no-op against the shipped map. The
-# tests that need a rename to happen monkeypatch the map and drive `main()`
-# in-process, the same exception this file's docstring already makes for the
-# ledger-write-failure group: a subprocess cannot see a monkeypatch.
+# The shipped map now carries the six secret pairings, so the verb is a no-op
+# against a ledger that holds no findings under the old names rather than a
+# no-op by construction. The tests that need a rename to actually happen
+# monkeypatch the map and drive `main()` in-process, the same exception this
+# file's docstring already makes for the ledger-write-failure group: a
+# subprocess cannot see a monkeypatch.
+#
+# EVERY TEST THAT GETS PAST THE GUARDS NEEDS `gitleaks` VISIBLE. The verb
+# refuses a machine where `adapters.engine_path("gitleaks")` is falsy while
+# the map holds a `secret` entry, and this suite pins CC_SECURITY_ENGINES=off
+# (see conftest.py) -- so without the two helpers below every one of these
+# would be testing the refusal instead of what it was written for.
+
+
+def _gitleaks_stub(tmp_path):
+    """A directory holding an executable file called `gitleaks`, and nothing
+    more.
+
+    `adapters.engine_path` is `shutil.which` behind an env switch, and
+    `migrate-rules` never RUNS the engine -- it asks only whether the NEXT
+    analysis would find one, because a machine without it re-mints the old
+    snake_case names and undoes the migration. So a stub is not a shortcut
+    here, it is the honest fixture: requiring the real binary would make
+    these tests pass or fail on whether the reviewer had run `brew install`.
+    """
+    binroot = tmp_path / "stub-bin"
+    binroot.mkdir(exist_ok=True)
+    stub = binroot / "gitleaks"
+    stub.write_text("#!/bin/sh\nexit 0\n")
+    stub.chmod(0o755)
+    return binroot
+
+
+def with_gitleaks(tmp_path, base=None):
+    """Env for a SUBPROCESS run that has to get past the gitleaks guard."""
+    base = os.environ if base is None else base
+    return {**base, "CC_SECURITY_ENGINES": "on",
+            "PATH": f"{_gitleaks_stub(tmp_path)}{os.pathsep}{base['PATH']}"}
+
+
+def pretend_gitleaks_is_installed(monkeypatch, tmp_path):
+    """The same, for the tests that drive `main()` IN-PROCESS."""
+    monkeypatch.setenv("CC_SECURITY_ENGINES", "on")
+    monkeypatch.setenv(
+        "PATH", f"{_gitleaks_stub(tmp_path)}{os.pathsep}{os.environ['PATH']}")
+
 
 def test_migrate_rules_reports_nothing_when_there_is_nothing_to_rename(tmp_path):
-    """The shipped map is empty and the verb must still be runnable and say so
-    -- an operator running it after pulling a release should get a plain
-    "nothing moved", not an error and not silence."""
+    """A ledger holding no findings under any old name must still leave the
+    verb runnable and saying so -- an operator running it after pulling a
+    release should get a plain "nothing moved", not an error and not
+    silence."""
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     # Closed first: the verb refuses while any analysis is running, and this
-    # test is about the empty map, not about that guard.
+    # test is about the empty result, not about that guard.
     run(db, "finish", "--analysis", str(aid), "--state", "done")
-    out = run(db, "migrate-rules")
+    out = run(db, "migrate-rules", env=with_gitleaks(tmp_path))
     assert out == {"renamed": [], "findings": 0}
+
+
+def test_migrate_rules_is_refused_without_gitleaks(tmp_path):
+    """The failure this verb EXISTS to prevent, reached through its own front
+    door.
+
+    Every secret rename moves findings from the built-in pattern scanner's
+    snake_case names onto gitleaks' kebab-case ones. Run it on a machine with
+    no gitleaks -- or with the engines switched off -- and `_scan_secrets`
+    falls back to that same built-in scanner on the very next analysis and
+    mints the old names again. The migrated row is then reported `fixed`
+    (nothing produces its new name) and the re-minted one `new`, in ONE
+    report, and the human decision on each side strands: precisely the
+    double-identity damage `migrate-rules` was written to stop.
+
+    Refused before the ledger is opened, like the category check and for the
+    same reason -- it needs nothing from the ledger, so it cannot leave a map
+    half-applied.
+    """
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+
+    # CC_SECURITY_ENGINES=off, STATED here rather than inherited from
+    # conftest's default. `engine_path` consults the switch before it consults
+    # PATH, so an engine that is off is an engine that is absent as far as the
+    # next analysis is concerned -- which is the machine this refusal is about,
+    # and it is the same machine on a laptop with gitleaks and on CI without
+    # it. Inheriting the default instead made this test pass only while nobody
+    # ran the suite in production's configuration: with the engines on and
+    # gitleaks really installed, `migrate-rules` correctly proceeded and the
+    # refusal this test is named for was never reached.
+    env_off = {**os.environ, "CC_SECURITY_ENGINES": "off"}
+    out = fails(db, "migrate-rules", env=env_off)
+    assert out.returncode != 0
+    assert "gitleaks is not available" in out.stderr
+    assert "nothing was migrated" in out.stderr.lower()
+    # It names the damage, not just the missing binary: an operator who is
+    # told only "gitleaks not found" installs nothing and runs it anyway.
+    assert "fixed AND new" in out.stderr
+
+    # And the same machine with the engine visible gets through to the work.
+    assert run(db, "migrate-rules", env=with_gitleaks(tmp_path)) == {
+        "renamed": [], "findings": 0}
+
+
+def test_migrate_rules_refuses_a_machine_with_the_engines_switched_off(tmp_path):
+    """`CC_SECURITY_ENGINES=off` is not a lesser version of "not installed":
+    it is the same machine as far as the next analysis is concerned, because
+    `engine_path` consults the switch before it consults PATH. An operator who
+    installed gitleaks and left the switch off would otherwise migrate onto
+    names their own analyses will never mint."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+
+    # gitleaks IS on PATH here -- only the switch is off.
+    env = {**with_gitleaks(tmp_path), "CC_SECURITY_ENGINES": "off"}
+    out = fails(db, "migrate-rules", env=env)
+    assert out.returncode != 0 and "gitleaks is not available" in out.stderr
 
 
 def test_migrate_rules_carries_findings_and_decisions_to_the_new_name(
@@ -3178,6 +4066,7 @@ def test_migrate_rules_carries_findings_and_decisions_to_the_new_name(
 
     monkeypatch.setattr(security_taxonomy, "RULE_RENAMES",
                         {("secret", "aws_access_key"): "aws-access-token"})
+    pretend_gitleaks_is_installed(monkeypatch, tmp_path)
     security_cli.main(["migrate-rules", "--db", str(db)])
     printed = json.loads(capsys.readouterr().out)
 
@@ -3207,6 +4096,7 @@ def test_migrate_rules_is_safe_to_run_twice(tmp_path, monkeypatch, capsys):
     run(db, "finish", "--analysis", str(aid), "--state", "done")
     monkeypatch.setattr(security_taxonomy, "RULE_RENAMES",
                         {("secret", "aws_access_key"): "aws-access-token"})
+    pretend_gitleaks_is_installed(monkeypatch, tmp_path)
 
     security_cli.main(["migrate-rules", "--db", str(db)])
     assert json.loads(capsys.readouterr().out)["findings"] == 1
@@ -3243,6 +4133,7 @@ def test_migrate_rules_carries_the_decision_event_to_the_new_fingerprint(
 
     monkeypatch.setattr(security_taxonomy, "RULE_RENAMES",
                         {("secret", "aws_access_key"): "aws-access-token"})
+    pretend_gitleaks_is_installed(monkeypatch, tmp_path)
     security_cli.main(["migrate-rules", "--db", str(db)])
     capsys.readouterr()
 
@@ -3283,6 +4174,7 @@ def test_migrate_rules_names_the_entries_it_already_applied_when_one_fails(
         ("secret", "aws_access_key"): "aws-access-token",
         ("secret", "github_token"): "gh-token",
     })
+    pretend_gitleaks_is_installed(monkeypatch, tmp_path)
 
     with pytest.raises(SystemExit) as exc:
         security_cli.main(["migrate-rules", "--db", str(db)])
@@ -3343,7 +4235,9 @@ def test_migrate_rules_is_not_refused_the_agent(tmp_path):
     aid = open_analysis(db)
     run(db, "finish", "--analysis", str(aid), "--state", "done")
     assert "migrate-rules" not in security_cli.AGENT_FORBIDDEN
-    assert run(db, "migrate-rules", env=AS_AGENT) == {"renamed": [], "findings": 0}
+    assert run(db, "migrate-rules",
+               env=with_gitleaks(tmp_path, base=AS_AGENT)) == {
+        "renamed": [], "findings": 0}
 
 
 def test_migrate_rules_is_refused_while_an_analysis_is_running(tmp_path):
@@ -3356,8 +4250,11 @@ def test_migrate_rules_is_refused_while_an_analysis_is_running(tmp_path):
     exactly that."""
     db = tmp_path / "security.db"
     aid = prepared_analysis(db, tmp_path)
+    # gitleaks visible throughout, so what is being measured here is the
+    # running-analysis guard and not the engine guard ahead of it.
+    env = with_gitleaks(tmp_path)
 
-    out = fails(db, "migrate-rules")
+    out = fails(db, "migrate-rules", env=env)
 
     assert out.returncode != 0
     assert f"analysis {aid}" in out.stderr and "still running" in out.stderr
@@ -3367,8 +4264,8 @@ def test_migrate_rules_is_refused_while_an_analysis_is_running(tmp_path):
     # live analysis it could pull the ground out from under.
     other = open_analysis(db, project="api", repo="api", run_id="r2")
     run(db, "finish", "--analysis", str(aid), "--state", "done")
-    out = fails(db, "migrate-rules")
+    out = fails(db, "migrate-rules", env=env)
     assert out.returncode != 0 and f"analysis {other}" in out.stderr
 
     run(db, "finish", "--analysis", str(other), "--state", "done")
-    assert run(db, "migrate-rules") == {"renamed": [], "findings": 0}
+    assert run(db, "migrate-rules", env=env) == {"renamed": [], "findings": 0}

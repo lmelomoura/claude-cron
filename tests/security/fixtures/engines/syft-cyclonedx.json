@@ -1,0 +1,119 @@
+{
+    "$schema": "http://cyclonedx.org/schema/bom-1.7.schema.json",
+    "bomFormat": "CycloneDX",
+    "specVersion": "1.7",
+    "serialNumber": "urn:uuid:dfc9083a-4c8e-4091-96bf-80aa7a68aa91",
+    "version": 1,
+    "metadata": {
+        "timestamp": "2026-09-01T18:54:47+01:00",
+        "tools": {
+            "components": [
+                {
+                    "type": "application",
+                    "author": "anchore",
+                    "name": "syft",
+                    "version": "1.51.1"
+                }
+            ]
+        },
+        "component": {
+            "bom-ref": "af63bd4c8601b7f1",
+            "type": "file",
+            "name": "."
+        }
+    },
+    "components": [
+        {
+            "bom-ref": "pkg:pypi/certifi@2024.2.2?package-id=8da607fe133ceb2c",
+            "type": "library",
+            "name": "certifi",
+            "version": "2024.2.2",
+            "cpe": "cpe:2.3:a:certifi:certifi:2024.2.2:*:*:*:*:python:*:*",
+            "purl": "pkg:pypi/certifi@2024.2.2",
+            "properties": [
+                {"name": "syft:package:foundBy", "value": "python-package-cataloger"},
+                {"name": "syft:package:language", "value": "python"},
+                {"name": "syft:package:type", "value": "python"},
+                {"name": "syft:package:metadataType", "value": "python-poetry-lock-entry"},
+                {"name": "syft:location:0:path", "value": "/tests/security/fixtures/poetry.lock"}
+            ]
+        },
+        {
+            "bom-ref": "pkg:composer/evenement/evenement@v3.0.2?package-id=6f0693cab38f3b6a",
+            "type": "library",
+            "name": "evenement/evenement",
+            "version": "v3.0.2",
+            "licenses": [{"license": {"id": "MIT"}}],
+            "cpe": "cpe:2.3:a:evenement\\/evenement:evenement\\/evenement:v3.0.2:*:*:*:*:*:*:*",
+            "purl": "pkg:composer/evenement/evenement@v3.0.2",
+            "properties": [
+                {"name": "syft:package:foundBy", "value": "php-composer-lock-cataloger"},
+                {"name": "syft:package:language", "value": "php"},
+                {"name": "syft:package:type", "value": "php-composer"},
+                {"name": "syft:package:metadataType", "value": "php-composer-lock-entry"},
+                {"name": "syft:location:0:path", "value": "/tests/security/fixtures/composer.lock"}
+            ]
+        },
+        {
+            "bom-ref": "pkg:npm/lodash@4.17.20?package-id=7984aa2276542668",
+            "type": "library",
+            "name": "lodash",
+            "version": "4.17.20",
+            "licenses": [{"license": {"id": "MIT"}}],
+            "cpe": "cpe:2.3:a:lodash:lodash:4.17.20:*:*:*:*:node.js:*:*",
+            "purl": "pkg:npm/lodash@4.17.20",
+            "properties": [
+                {"name": "syft:package:foundBy", "value": "javascript-lock-cataloger"},
+                {"name": "syft:package:language", "value": "javascript"},
+                {"name": "syft:package:type", "value": "npm"},
+                {"name": "syft:package:metadataType", "value": "javascript-npm-package-lock-entry"},
+                {"name": "syft:location:0:path", "value": "/tests/security/fixtures/package-lock.json"}
+            ]
+        },
+        {
+            "bom-ref": "pkg:pypi/six@1.16.0?package-id=0bb14d550a713083",
+            "type": "library",
+            "name": "six",
+            "version": "1.16.0",
+            "cpe": "cpe:2.3:a:python-six:python-six:1.16.0:*:*:*:*:*:*:*",
+            "purl": "pkg:pypi/six@1.16.0",
+            "properties": [
+                {"name": "syft:package:foundBy", "value": "python-package-cataloger"},
+                {"name": "syft:package:language", "value": "python"},
+                {"name": "syft:package:type", "value": "python"},
+                {"name": "syft:package:metadataType", "value": "python-poetry-lock-entry"},
+                {"name": "syft:cpe23", "value": "cpe:2.3:a:python-six:python_six:1.16.0:*:*:*:*:*:*:*"},
+                {"name": "syft:cpe23", "value": "cpe:2.3:a:python_six:python-six:1.16.0:*:*:*:*:*:*:*"},
+                {"name": "syft:cpe23", "value": "cpe:2.3:a:six:six:1.16.0:*:*:*:*:*:*:*"},
+                {"name": "syft:location:0:path", "value": "/tests/security/fixtures/poetry.lock"}
+            ]
+        },
+        {
+            "bom-ref": "68ee6a83a060036d",
+            "type": "file",
+            "name": "/Users/me/code/claude-cron/tests/security/fixtures/composer.lock",
+            "hashes": [
+                {"alg": "SHA-1", "content": "28f0a9f778bb874aed8873a0caf760d93b561c3e"},
+                {"alg": "SHA-256", "content": "16c49c4bb4fae8797c8c23f7a1e54fa1e5e965cee7caed4e66d0caa197326a56"}
+            ]
+        },
+        {
+            "bom-ref": "ad934e3add32bbda",
+            "type": "file",
+            "name": "/Users/me/code/claude-cron/tests/security/fixtures/package-lock.json",
+            "hashes": [
+                {"alg": "SHA-1", "content": "8ce78a6afbcbca3db15b465b21860570c7129919"},
+                {"alg": "SHA-256", "content": "7fe7e3465ff903789dfe96086437884c9fdc666680c8ea5613f4115a88fc5bf7"}
+            ]
+        },
+        {
+            "bom-ref": "18480e3d72a34f1a",
+            "type": "file",
+            "name": "/Users/me/code/claude-cron/tests/security/fixtures/poetry.lock",
+            "hashes": [
+                {"alg": "SHA-1", "content": "10e337b5449f9b79b9dd3dfcdc59bee63b95f277"},
+                {"alg": "SHA-256", "content": "b25149c6b8e8e1db77aff6b4b6a50a01b31337b1f32dfa673c91e5d20605de89"}
+            ]
+        }
+    ]
+}

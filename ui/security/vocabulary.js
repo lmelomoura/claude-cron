@@ -29,12 +29,14 @@ export const SEC_STATE_HELP = {
   regressed:  "Was fixed once and is back — usually a fix that closed the symptom, not the route.",
   open:       "Was here last time too, unchanged.",
   partial:    "Some of its places are gone, or the agent recorded it as mitigated but not eliminated.",
-  pending:    "In the previous analysis and not re-checked by this one yet — a statement "
+  pending:    "In the previous analysis and not re-checked by this one — a statement "
             + "about this analysis, not about the code. Becomes fixed only when its absence "
-            + "is proven: deterministic findings once prepare completes, code-review findings "
-            + "only when the analysis closes with full coverage.",
-  fixed:      "Gone since the previous analysis of this branch — and the phase that would "
-            + "have re-found it DID finish, so the absence is proven, not assumed.",
+            + "is proven, and proof is the scanner that found it having run again: a run "
+            + "on a machine without Trivy cannot close a Trivy finding, however cleanly "
+            + "it ends.",
+  fixed:      "Gone since the previous analysis of this branch — and the scanner that "
+            + "found it in the first place DID run again, so the absence is proven, not "
+            + "assumed.",
   accepted:   "You accepted the risk. The reason is recorded and outlives every analysis after it.",
   false_positive: "You said it is not real. If the code around it changes the fingerprint changes "
                 + "and it comes back as new — different code, so a fresh judgement.",
@@ -131,9 +133,10 @@ export const SEC_FLOOR_SCOPE_NOTE =
   + "each of those says how many rows it is holding back — it never narrows "
   + "a posture total.";
 
-/* The deterministic phase (secrets, dependencies, CVEs, hygiene) writes its
-   findings before the agent is even launched, so a poll this quick shows real
-   results within seconds of pressing Analyse while the SAST is still running. */
+/* The deterministic phase (secrets, dependencies, CVEs, hygiene, IaC
+   misconfigurations) writes its findings before the agent is even launched,
+   so a poll this quick shows real results within seconds of pressing Analyse
+   while the SAST is still running. */
 export const SEC_POLL_MS = 4000;
 /* An analysis row is opened moments BEFORE the run that carries it starts, so
    the two stamps are seconds apart and never equal. A project analyses one
@@ -211,17 +214,38 @@ export function secPosture(findings, minSeverity){
    that can drift from this one.
 
    SEC_RULE_META covers exactly the CLOSED rule vocabularies: category
-   "secret" (bin/security/secrets.py's own `_RULES`) and category "hygiene"
-   (bin/security/hygiene.py's own findings) -- both fixed lists, because the
-   engine that writes them ships a fixed list of its own. Two more
-   categories are closed too and still need no entry here: "dependency"
-   (bin/security/osv.py) writes the OSV.dev advisory id itself as the rule --
-   GHSA-... or CVE-... -- and an advisory id is already a name (the mockup
-   keeps "GHSA-8xcm-r25x-g524" verbatim, never translates it, see
-   SEC_ADVISORY_RULE below); "sast" is the one OPEN vocabulary -- the
-   analysis agent writes its own kebab-case rule id per finding, so no fixed
-   list could ever cover it, and secRuleMeta humanises it instead of looking
-   it up.
+   "secret" and category "hygiene" (bin/security/hygiene.py's own findings)
+   -- fixed lists, because the engine that writes them ships a fixed list of
+   its own. "secret" has TWO such lists, because two scanners can write it:
+   bin/security/secrets.py's own `_RULES` (snake_case) when the built-in
+   pattern scanner runs, and gitleaks' rule ids (kebab-case) when the engine
+   does -- see the second block below. Only ever one of the two per analysis,
+   but both across a fleet, and a ledger keeps findings from both. Three more
+   categories need no entry here, for two different reasons: "dependency"
+   and "iac" both keep their rule verbatim as the label; "sast" alone
+   humanises. "dependency" (bin/security/osv.py) writes the OSV.dev advisory
+   id itself as the rule -- GHSA-... or CVE-... -- and an advisory id is
+   already a name (the mockup keeps "GHSA-8xcm-r25x-g524" verbatim, never
+   translates it, see SEC_ADVISORY_RULE below). "iac" (bin/security/
+   adapters.py's `_iac_finding`, called from `trivy_misconfigs`) is the SAME
+   kind of case: its rule is Trivy's own check id (`DS-0002`, `KSV-0001`,
+   `AVD-AWS-0088`, ...), drawn from an external, unbounded vocabulary this
+   project does not curate the way it curates gitleaks' subset above -- but
+   it is an opaque vendor identifier exactly like an advisory id, not a
+   sentence, which is why it earns the SAME treatment rather than the
+   opposite one an earlier version of this comment argued for: humanising a
+   check id explains nothing, it only breaks the id an operator would grep
+   the ledger for (`secHumaniseRule("DS-0002")` splits on the hyphen and
+   produces "DS 0002", which matches neither the id nor a real label). It
+   gets its own branch below rather than joining SEC_ADVISORY_RULE's --
+   that pattern names exactly two vendor prefixes, and an "iac" rule draws
+   `cpu` (SEC_CATEGORY_ICON's own entry), not the advisory branch's
+   `shield`. "sast" is the one OPEN vocabulary left -- the analysis agent
+   writes its own kebab-case rule id per finding, so no fixed list could
+   ever cover it, and secRuleMeta humanises it instead of looking it up:
+   unlike a vendor's check id, a sast rule id is a phrase this project's own
+   agent composed, and turning it into a sentence is the explanation an
+   opaque id cannot get.
 
    Every label below was written FROM the rule's own rationale in secrets.py
    or hygiene.py, not guessed from the rule's name -- both files are short;
@@ -241,6 +265,42 @@ export const SEC_RULE_META = {
   stripe_key:          {label: "Stripe live key committed",       icon: "lock"},
   openai_key:          {label: "OpenAI API key committed",        icon: "lock"},
   google_api_key:      {label: "Google API key committed",        icon: "lock"},
+  /* secret, again -- gitleaks' OWN rule ids, for the same credential types.
+     bin/security/adapters.py runs gitleaks instead of secrets.py whenever the
+     binary is installed, and it writes the ENGINE's rule id into the finding
+     (`aws-access-token`, not `aws_access_key`) because the fingerprint
+     contains the rule and re-spelling it would orphan every decision recorded
+     against the old identity. Without these keys every secret on an
+     engine-scanned project fell through to secHumaniseRule -- "Aws access
+     token" with the generic category icon, instead of the curated label above.
+     The snake_case keys STAY: the built-in scanner still emits them wherever
+     gitleaks is absent or switched off, and both vocabularies are live at once
+     across a fleet of projects.
+
+     Paired with adapters.SEVERITY_BY_RULE, which maps the same ids -- one
+     rule of ours is routinely several of theirs (five GitHub token kinds,
+     seven Slack ones), and each gets the label its own credential type earns
+     rather than a shared one that would flatten them back together. Anything
+     outside this list is one of gitleaks' ~180 other rules and humanises, as
+     it did before. */
+  "aws-access-token":          {label: "AWS access key committed",    icon: "lock"},
+  "github-pat":                {label: "GitHub token committed",      icon: "lock"},
+  "github-fine-grained-pat":   {label: "GitHub token committed",      icon: "lock"},
+  "github-oauth":              {label: "GitHub OAuth token committed", icon: "lock"},
+  "github-app-token":          {label: "GitHub app token committed",  icon: "lock"},
+  "github-refresh-token":      {label: "GitHub refresh token committed", icon: "lock"},
+  "slack-bot-token":           {label: "Slack token committed",       icon: "lock"},
+  "slack-user-token":          {label: "Slack token committed",       icon: "lock"},
+  "slack-app-token":           {label: "Slack token committed",       icon: "lock"},
+  "slack-config-access-token": {label: "Slack token committed",       icon: "lock"},
+  "slack-legacy-bot-token":    {label: "Slack token committed",       icon: "lock"},
+  "slack-legacy-token":        {label: "Slack token committed",       icon: "lock"},
+  "slack-webhook-url":         {label: "Slack webhook URL committed", icon: "lock"},
+  "stripe-access-token":       {label: "Stripe live key committed",   icon: "lock"},
+  "openai-api-key":            {label: "OpenAI API key committed",    icon: "lock"},
+  "gcp-api-key":               {label: "Google API key committed",    icon: "lock"},
+  "private-key":               {label: "Private keys committed",      icon: "key"},
+  "generic-api-key":           {label: "Hardcoded secrets",           icon: "lock"},
   // hygiene -- bin/security/hygiene.py's four findings. Labels say what each
   // rule's own rationale says it detects, not what its name suggests:
   // missing_gitignore's rationale is "the first .env, key or credential file
@@ -287,13 +347,22 @@ function secHumaniseRule(rule){
         FIRST and ignores `category` when it matches: every rule a CLOSED
         engine (secrets.py, hygiene.py) can produce is in that map, labelled
         from the engine's own rationale, which a generic per-category label
-        (step 4, below) would only flatten.
+        (step 5, below) would only flatten.
      2. An advisory id (SEC_ADVISORY_RULE) keeps itself as the label.
-     3. `category === "sast"` -- the one OPEN vocabulary -- humanised.
-     4. Whatever `category` says, sensibly, for a rule from a closed engine
+     3. `category === "iac"` keeps itself as the label too -- a Trivy check
+        id is the same kind of opaque vendor identifier an advisory id is,
+        just one SEC_ADVISORY_RULE's own pattern does not recognise, so it
+        earns its own branch rather than a join onto that one, and draws
+        `cpu` (SEC_CATEGORY_ICON's own "iac" entry) rather than the
+        advisory branch's `shield`.
+     4. `category === "sast"` -- the one OPEN vocabulary left -- humanised:
+        the analysis agent composes its own rule id per finding, and turning
+        that phrase into a sentence is the explanation the opaque vendor ids
+        in steps 2 and 3 do not get.
+     5. Whatever `category` says, sensibly, for a rule from a closed engine
         this map has not been told about yet (a future secret/dependency/
         hygiene rule).
-     5. `shield`, unconditionally -- the same fallback an unrecognised
+     6. `shield`, unconditionally -- the same fallback an unrecognised
         severity or state already gets elsewhere in this file (secSevRank,
         secStateKey). */
 export function secRuleMeta(category, rule){
@@ -302,6 +371,16 @@ export function secRuleMeta(category, rule){
   const safe = (rule == null || rule === "") ? "Unknown rule" : String(rule);
   // Advisory ids ARE names -- never humanised, whatever the category says.
   if(SEC_ADVISORY_RULE.test(safe)) return {label: safe, icon: "shield"};
+  // A Trivy check id is the SAME kind of object an advisory id above is: an
+  // opaque vendor identifier, not a sentence. Humanising it explains
+  // nothing -- it only breaks the id an operator would grep the ledger for
+  // (secHumaniseRule("DS-0002") splits on the hyphen and produces
+  // "DS 0002", matching neither the id nor a real label) -- so it keeps
+  // itself verbatim too, in its own branch rather than joining
+  // SEC_ADVISORY_RULE's (that pattern names exactly two vendor prefixes),
+  // and with its own icon: `cpu`, SEC_CATEGORY_ICON's "iac" entry, not the
+  // advisory branch's `shield`.
+  if(category === "iac") return {label: safe, icon: SEC_CATEGORY_ICON.iac};
   // Every other unknown id humanises. A raw kebab/snake id is never a better
   // display string than its sentence-case form, and the raw id stays one
   // hover away in the row's title -- this is what keeps the card legible
@@ -312,27 +391,30 @@ export function secRuleMeta(category, rule){
   return {label: secHumaniseRule(safe), icon: SEC_CATEGORY_ICON[category] || "shield"};
 }
 
-// The icon each of the four categories earns when nothing more specific
+// The icon each of the five categories earns when nothing more specific
 // applies -- secRuleMeta's own fallback, above, factored out so
 // secCategoryMeta (below) draws the IDENTICAL icon a rule from that same
 // category would otherwise fall back to, rather than a second, hand-typed
-// list that could drift from it the next time either one changes.
+// list that could drift from it the next time either one changes. "iac"
+// draws `cpu`: the closest thing this page's own icon table (bin/
+// dashboard.html's `const I={...}`) has to infrastructure, with nothing
+// naming a server, a container or a cloud.
 const SEC_CATEGORY_ICON = {secret: "lock", dependency: "package",
-                           hygiene: ICON_HYGIENE, sast: "code"};
+                           hygiene: ICON_HYGIENE, sast: "code", iac: "cpu"};
 
-// The category's own fixed label -- "Secrets"/"Dependency"/"Hygiene"/"SAST",
-// the mockup's own CATEGORY column (findings-screen.js's own secFindRow),
-// coarser than secRuleMeta's per-RULE label ("Private keys committed") a
-// column to its left already shows -- the same fact at two resolutions, not
-// one duplicating the other.
+// The category's own fixed label -- "Secrets"/"Dependency"/"Hygiene"/"SAST"/
+// "IaC", the mockup's own CATEGORY column (findings-screen.js's own
+// secFindRow), coarser than secRuleMeta's per-RULE label ("Private keys
+// committed") a column to its left already shows -- the same fact at two
+// resolutions, not one duplicating the other.
 const SEC_CATEGORY_LABEL = {secret: "Secrets", dependency: "Dependency",
-                            hygiene: "Hygiene", sast: "SAST"};
+                            hygiene: "Hygiene", sast: "SAST", iac: "IaC"};
 
 /* (category) -> {label, icon}, for a column that draws the ledger's own
    CATEGORY rather than a rule's label -- secRuleMeta (above) stays the one
    RULE resolver, untouched, for its other caller ("Top issue categories",
    index-screen.js, which ranks rules, not categories). A category outside
-   the four the ledger writes today (ledger.py's own schema promises one
+   the five the ledger writes today (ledger.py's own schema promises one
    always arrives: `category TEXT NOT NULL`) still reads as something
    legible -- sentence case of whatever string it actually is, `shield` for
    its icon, the identical "never throw, never point at an unlisted icon"

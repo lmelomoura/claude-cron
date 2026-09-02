@@ -136,7 +136,7 @@ const SEC_FIND_TABLE_COLS = [
   ["category", "Category"], [null, "Analysis run"], ["branch", "Branch"],
   ["state", "Status"], ["first_seen", "First seen"], [null, "Actions"],
 ];
-const FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene"];
+const FIND_CATEGORIES = ["secret", "dependency", "sast", "hygiene", "iac"];
 // AllFindings.png's own default per-page selection and picker options.
 // 25 by default -- ProjectFindings.png's own footer reads "25 per page";
 // 10 stays pickable for a tighter read.
@@ -873,7 +873,14 @@ function secFindFilterBar(fs, data){
 
   const row2 = secEl("div", "secfind-filters-row row2");
   row2.appendChild(secFindMultiPicker("Category",
-    FIND_CATEGORIES.map(c => ({v: c, label: _secCap(c)})),
+    // secCategoryMeta's own label, not _secCap: a bare capitalised category
+    // ("Sast", "Iac") is the same word the project Findings tab's category
+    // picker (analysis.js's secFindCatPicker) does NOT show -- it reads
+    // secCategoryMeta(cat).label there ("SAST", "IaC") -- and this filter
+    // and that one name the exact same five values, so one screen spelling
+    // a value differently from the other is a second identity for a reader
+    // to notice and wonder whether it means something.
+    FIND_CATEGORIES.map(c => ({v: c, label: secCategoryMeta(c).label})),
     fs.filters.category,
     (v) => { secFindToggleIn(fs.filters.category, v); fs.page = 1; secFindRefresh(fs); }));
 

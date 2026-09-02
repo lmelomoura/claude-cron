@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 
 import pytest
-from security import ledger, secrets, taxonomy
+from security import adapters, ledger, secrets, taxonomy
 
 REPO = Path(__file__).resolve().parent.parent.parent
 SKILL = REPO / "skills" / "security-analysis" / "SKILL.md"
@@ -95,12 +95,12 @@ def test_the_skill_lists_every_rule_name():
 
 # ---- RULE_RENAMES: the declared history of every rule name that changed.
 #
-# The map is EMPTY today and these tests are therefore vacuous today. That is
-# the point of writing them now: the block that replaces the hand-written
-# detectors renames every secret rule at once, and the first entry added to
-# this map has to land on tests that already say what a legal entry looks
-# like. Written afterwards, they would be written against whatever the
-# migration happened to do.
+# These were written while the map was still EMPTY, and therefore vacuous, on
+# purpose: the block that replaced the hand-written detectors renamed every
+# secret rule at once, and the first entries added had to land on tests that
+# already said what a legal entry looks like. Written afterwards, they would
+# have been written against whatever the migration happened to do. The map now
+# carries the six secret pairings, so every assertion below is live.
 
 def test_a_rename_is_keyed_by_category_and_old_rule():
     # The rule name is unique only within its category, and the recompute
@@ -123,7 +123,7 @@ def test_every_rename_is_in_a_category_the_ledger_can_actually_rename():
             f"{category}/{old} is in a category the ledger refuses to rename")
 
 
-# What each renameable category's PRODUCER can actually emit.
+# What each renameable category's LIVE producer can actually emit.
 #
 # Both remaining questions about an entry -- is the source still live, is the
 # target a name that will ever be minted -- are asked of the CATEGORY's own
@@ -131,13 +131,45 @@ def test_every_rename_is_in_a_category_the_ledger_can_actually_rename():
 # membership in SAST_RULES, and the test above guarantees every legal key is
 # `secret` or `hygiene`, neither of which ever appears there.
 #
-# `secret` is enumerable directly: `secrets._RULES` is a module-level list and
-# every secret finding's rule name is the first field of one of its entries.
+# `secret` HAS TWO PRODUCERS, and this returns the one that is live wherever
+# the engine is installed. It used to read `secrets._RULES` and say, correctly
+# at the time, that "every secret finding's rule name is the first field of one
+# of its entries". That stopped being true when gitleaks took the secret phase
+# over: `cli._scan_secrets` runs the engine when it is present and the
+# hand-written scanner only when it is not, so a secret finding's rule is a
+# gitleaks RuleID on any machine that has the binary. Reading `secrets._RULES`
+# here now would fail every legal entry in the map twice over -- no gitleaks
+# name is in it, so no target could pass, and every source still is, so none
+# could pass either -- which is a test measuring the vocabulary it was written
+# against rather than the one findings are minted from.
 #
-# `hygiene` has no such list. Its rule names are string literals passed to
-# `_finding()` inside `scan()`, and at RUNTIME each one is reachable only by
-# making that rule's own condition fire -- a world-writable mode bit, an absent
-# .gitignore beside a real `.git`, a PEM marker in a sniffed file. Enumerating
+# `adapters.SEVERITY_BY_RULE` is the engine vocabulary instead: this project's
+# own record of the gitleaks rules it has recognised, graded and paired with
+# what the hand-written scanner used to call them. It is a SUBSET of gitleaks'
+# ~180 rules, which is the safe direction for a target check -- a target has to
+# be a name somebody here wrote down deliberately, not merely one the engine
+# might emit. The retired vocabulary is not thrown away: it is what
+# `test_every_secret_rename_source_is_a_name_the_built_in_scanner_minted`
+# checks the sources against.
+#
+# WHERE THIS GUARD'S STRENGTH COMES FROM, precisely. `SEVERITY_BY_RULE` is
+# HAND-MAINTAINED, and nothing checks it against the engine -- so a typo in
+# THAT list would be accepted here as a legal rename target by the very test
+# built to catch typos in targets. Deliberate: verifying it would mean
+# requiring the gitleaks binary in CI, and the suite pins itself to
+# CC_SECURITY_ENGINES=off precisely so it does not. The choice is safe because
+# the two lists are written and reviewed together and the check runs in the
+# safe direction -- a subset of what the engine emits -- so what it actually
+# guarantees is "this target is a name a human here wrote down on purpose",
+# not "this target is a name gitleaks 8.30.1 ships". Its 18 entries were
+# verified against the binary by hand when they were added; a new entry there
+# deserves the same, because this test will not do it.
+#
+# `hygiene` has one producer and no such list. Its rule names are string
+# literals passed to `_finding()` inside `scan()`, and at RUNTIME each one is
+# reachable only by making that rule's own condition fire -- a world-writable
+# mode bit, an absent .gitignore beside a real `.git`, a PEM marker in a
+# sniffed file. Enumerating
 # them by running the scanner over a fixture tree would therefore produce the
 # set of rules THAT FIXTURE triggers, not the set the module can emit, and a
 # correct rename of a rule the fixture cannot provoke would be failed as a
@@ -165,9 +197,19 @@ def _hygiene_rule_names():
     return names
 
 
+def _retired_secret_rule_names():
+    """The built-in pattern scanner's names -- what a secret rule USED to be.
+
+    Still reachable, not historical: `cli._scan_secrets` falls back to this
+    scanner on a machine with no gitleaks. Kept separate from the live
+    vocabulary because a rename's two ends belong to different producers.
+    """
+    return {name for name, *_ in secrets._RULES}
+
+
 def _producer_vocabulary(category):
     if category == "secret":
-        return {name for name, *_ in secrets._RULES}
+        return set(adapters.SEVERITY_BY_RULE)
     if category == "hygiene":
         return _hygiene_rule_names()
     raise AssertionError(
@@ -211,10 +253,36 @@ def test_no_rename_source_is_still_live_in_its_own_category():
     # vocabulary a legal entry's name can never come from -- so it passed for
     # every entry that could ever exist while promising, by its name, to catch
     # this.
+    #
+    # For `secret` this is the ENGINE's vocabulary, and it has to be: the
+    # built-in scanner still emits every source in the map, because it is still
+    # the fallback for a machine with no gitleaks. That is not a defect in the
+    # map, it is the boundary of what `migrate-rules` claims -- it moves a
+    # ledger onto the names of the scanner that took over ON THIS MACHINE, and
+    # running it somewhere the engine cannot run would indeed undo itself on
+    # the next analysis. What this catches is the version of that mistake the
+    # map alone can make: renaming one ENGINE rule to another.
     for category, old in taxonomy.RULE_RENAMES:
         assert old not in _producer_vocabulary(category), (
             f"{category}/{old} is still a live {category} rule: the scanner "
             "re-emits it on the next analysis and the rename undoes itself")
+
+
+def test_every_secret_rename_source_is_a_name_the_built_in_scanner_minted():
+    # The other end of the same entry. A secret rename moves findings from the
+    # retired scanner's vocabulary to the engine's, so a source that was never
+    # one of `secrets._RULES`' names cannot be describing findings that exist:
+    # it is a typo, or an engine rule someone tried to rename by hand. Neither
+    # is loud on its own -- `rename_rule` matches nothing and returns 0, and
+    # `migrate-rules` prints a clean result for a map that did nothing -- which
+    # is exactly the silence a map of promises should not be able to hold.
+    retired = _retired_secret_rule_names()
+    for category, old in taxonomy.RULE_RENAMES:
+        if category != "secret":
+            continue
+        assert old in retired, (
+            f"secret/{old} is not a name the built-in scanner ever minted, so "
+            f"no finding carries it -- secrets._RULES has: {sorted(retired)}")
 
 
 def test_renames_do_not_chain():

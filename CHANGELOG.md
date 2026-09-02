@@ -19,6 +19,176 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **There is CI now, and it cannot go green over a skipped engine.**
+  `.github/workflows/ci.yml` runs `claude-cron selftest`, the server suite,
+  and `tests/security/` in **both** of its configurations
+  (`CC_SECURITY_ENGINES` unset and `on`) as two named jobs. Until now the
+  guarantee that both configurations pass lived only on the one machine that
+  happened to have all four engines installed — which is exactly how it
+  lapsed before, with the engines-on run red for the entire life of the
+  engine path and nothing saying so. **The interesting part is what it
+  refuses to do:** every engine-gated test *skips* rather than fails when its
+  binary is absent, so an install that half-worked would produce a green run
+  that never touched the engine path at all. Measured: with the four engines
+  off `PATH`, `test_adapters.py` alone skips 45 tests and still reports
+  "185 passed". So the workflow checks each engine's *reported version*
+  before anything runs, and then fails the job on any skip other than the one
+  known self-spawn guard. **All four engines are pinned** — gitleaks 8.30.1,
+  trivy 0.74.0, syft 1.51.1, semgrep 1.175.0 — because an unpinned scanner
+  changes what an analysis finds between two runs of the same commit, and the
+  adapters carry measurements taken against these exact versions. The suite
+  runs twice and no more: the engines-off job deselects the in-suite spawn of
+  the other configuration, which would have made it three.
+
+- **A dependency finding now says whether the vulnerable package actually
+  ships.** Every `dependency` finding carries a `scope` of `runtime`, `dev`
+  or `unknown`, shown in all three report formats and on the findings
+  screen. Without it a CVE in a test runner and a CVE in the HTTP client
+  that serves traffic were the same red row, and on a repository with
+  hundreds of findings that is the difference between a triage budget that
+  works and one that does not — it is the third cost-control lever beside
+  `min_severity` and `ignore_paths`. **`unknown` is a real answer, not a
+  gap:** `package-lock.json`, `composer.lock` and `poetry.lock` say which
+  packages are development-only, `requirements.txt` and `go.sum` cannot, and
+  answering `runtime` for those would state a fact nobody established while
+  answering `dev` would hide real risk. **The two producers of this category
+  agree, and that was measured rather than assumed** — only one of them runs
+  per analysis and which one depends on whether the machine has Trivy, so
+  the rule lives in one function both call, and the parity was run live over
+  trees pinning one vulnerable dev dependency and one vulnerable runtime
+  dependency in npm, composer and poetry. The one case where they cannot
+  agree — a `poetry.lock` written by Poetry 1.5 to 2.0, which records group
+  membership nowhere the lockfile reader can see it — is stated in the
+  coverage note, and the difference is always in the safe direction.
+  `scope` is deliberately **not** part of a finding's fingerprint, so no
+  identity moved and no human decision was orphaned.
+
+- **Trivy is now asked for development dependencies at all
+  (`--include-dev-deps`).** Measured: without the flag a vulnerable
+  development dependency is not in Trivy's report at all — a
+  `package-lock.json` pinning a vulnerable `lodash` and a vulnerable
+  dev-only `minimist` produced five findings and no mention of `minimist`.
+  The built-in inventory has always read development dependencies, so the
+  same repository reported a *smaller* set of dependency findings on a
+  machine that has Trivy than on one that does not. A dev-only CVE is a
+  finding to rank, not one to drop.
+
+- **Test fixtures are suppressed by default, without anybody having to
+  write `ignore_paths` first.** A `fixtures`, `__fixtures__` or `testdata`
+  directory, at any depth, is now outside the analysis on every project —
+  the secret sweeps, the git-history sweep, the hygiene pass, the
+  dependency scan and the SAST pre-pass all read the same filter, so it
+  cannot be honoured by one phase and ignored by the next. `ignore_paths`
+  could always express this and almost nobody wrote it, so every project
+  was told about its own deliberately fake credentials on every single
+  analysis. Measured on this repository, which has no `ignore_paths` set:
+  the dependency category goes from 6 findings to 0 — five CVEs against a
+  `package-lock.json` and one against a `poetry.lock` that exist only as
+  captured test fixtures. **`tests/**` is deliberately NOT suppressed.** A
+  credential hard-coded in a test file is in the repository and readable by
+  everyone with a clone; "looks like a test" is a heuristic, and a default
+  broad enough to hide a real key on a project nobody has configured is
+  worse than no default at all.
+
+- **In `.example`, `.sample`, `.template` and `.dist` files, the two rules
+  that over-fire on a template are held back — and only those two.**
+  `hygiene.py` has always known that a committed template of your
+  configuration is the correct thing to ship; the secret scanner did not. It
+  filtered the *value* through `_is_placeholder`, which guards only the one
+  generic `password = ...` rule — so a `.env.example` carrying
+  `AKIAIOSFODNN7EXAMPLE` matched the shaped AWS rule, which has no entropy
+  gate and no placeholder gate at all, and was reported as a committed key.
+  Those are the two rules now gated: the generic one and the AWS one, on
+  both scanners (`generic_secret`/`aws_access_key`, and gitleaks'
+  `generic-api-key`/`aws-access-token`). **Every other credential shape is
+  still reported from a template, a private key included** — see Fixed
+  below for why that is not a detail. The four suffixes live in one place
+  (`ignores.py`) and every pass reads them, instead of hygiene holding its
+  own copy. The file is still **read** — it counts towards `lines_of_code`
+  like anything else the sweep opened.
+
+- **Both defaults apply to the engine and to the built-in scanner, and both
+  can be turned off per project.** The two halves are two mechanisms, not
+  one. The fixtures default lives in `ignores.ignored`, which gitleaks'
+  output, Trivy's, Semgrep's and the fallback sweeps all go through, so the
+  same repository does not report differently depending on which binaries a
+  laptop happens to have. The template default lives in
+  `ignores.sample_suppressed`, read by the fallback's `secrets.scan_tree` and
+  `secrets.scan_history` and by `adapters.gitleaks` — deliberately NOT by
+  Trivy's or Semgrep's post-filters, because it silences two secret-only
+  rules (`generic_secret`/`aws_access_key`, and gitleaks' own
+  `generic-api-key`/`aws-access-token`) that neither of those scanners
+  produces. A project that keeps real credentials in a fixture it wants
+  reported adds **`!defaults`** to its `ignore_paths` and gets both halves
+  back. It is per-project and not an environment variable on purpose: "does
+  this project want its fixtures scanned" is a fact about the repository,
+  and a switch living on one machine is the per-machine divergence this
+  block has already had to fix twice. The switch cancels the built-in
+  default only — an operator who also wrote `docs/**` still means it.
+
+- **The coverage note says the default is in effect, every time.** "Nothing
+  was found in the fixtures" and "the fixtures were never looked at" are
+  the same silence otherwise, and the reader who needs to know the filter
+  exists is exactly the reader who has not configured anything. The
+  sentence names the directories, the suffixes and the way back out.
+
+- **Gitleaks does the secret scanning when it is installed, and the
+  built-in scanner says so when it is not.** The eight hand-written
+  regexes in `secrets.py` found eight shapes of credential; gitleaks
+  8.30.1 knows around 180, so a Datadog key, a Twilio token or a GCP
+  service account sat in a repository unreported and the report gave no
+  hint the question had never been asked. Only ONE of the two ever runs:
+  the fingerprint contains the rule name, the two scanners name their
+  rules differently, and two scanners in one category would report one
+  credential as two contradictory checklist entries. The coverage note
+  now names whichever did the work, because "secrets were scanned" is a
+  different claim depending on who scanned them. The engine reads the
+  git history as well as the tree — a credential that was ever committed
+  stays compromised — and a root that is not a checkout is reported as a
+  gap rather than as a clean history: `gitleaks git` outside a repository
+  writes `[]` and exits 0, which is the same answer it gives for a
+  repository with nothing to find.
+
+- **The scope an analysis looks in now reaches the engine, and is
+  enforced again on what comes back.** Gitleaks scans the FILESYSTEM,
+  not the versioned tree, and knows nothing about `SKIP_DIRS` or the
+  project's `ignore_paths`. Measured on this repository before the
+  configuration existed: 17 findings, 15 of them under `.superpowers/`,
+  `__pycache__/` and `data/logs/` — swapping in the better engine would
+  have made the report noisier than the scanner it replaced. The same
+  17 now come back as 14 with `SKIP_DIRS` alone and 2 once the project's
+  own globs are set. `ignore_paths` is filtered twice on purpose: once
+  as engine configuration so the files are never read, and once on the
+  parsed findings, because a promise about the analysis that holds only
+  while another program accepted our command line is not a promise.
+
+- **A secret's identity did not change, deliberately.** Gitleaks emits
+  its own `Fingerprint` — path, rule and line — and adopting it would
+  have been free and wrong twice over: it would have re-identified every
+  secret already in the ledger, orphaning the human `accepted` and
+  `false_positive` decisions recorded against them, and it anchors on a
+  line number, so an untouched, already-triaged secret would resurrect
+  as `new` the moment an unrelated line was added above it. Identity
+  stays `secret_fingerprint(rule, path)`: the credential's type and the
+  file it lives in.
+
+- **`CC_SECURITY_ENGINES=off` falls back to the built-in scanner without
+  uninstalling anything.** A parser is written against a format, and when
+  an engine's output stops matching it an operator needs a way back that
+  does not involve removing a binary the rest of the machine shares. It
+  is also what stops the test suite from testing two different products
+  depending on whether somebody has run `brew install gitleaks`.
+
+- **External scanners run through one door that cannot leak what they
+  found.** Gitleaks returns the credential it matched, Semgrep returns
+  the source line, Trivy's secret scanner returns both — and this
+  repository's own run logs already carry a 1,546-character private key,
+  printed by a masking command the agent wrote and then forgot to pipe
+  through. Engines now write their JSON to a file this code names, never
+  to a stream the run transcript captures, and the forbidden fields are
+  stripped recursively in the function that parses them, not at the call
+  sites that would each have to remember.
+
 - **A security finding now carries a CWE and an OWASP class, and its SAST
   rule name comes from a closed vocabulary of 21.** The rule name is part
   of a finding's fingerprint, so free text meant one hole could arrive
@@ -67,7 +237,865 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   analysis is still going: rewriting identities under a live agent makes
   its next re-report file a second row for a hole it already reported.
 
+- **Secret findings already in a ledger survive the swap to gitleaks
+  instead of being reported `fixed` and `new` in the same breath.** Every
+  hand-written secret rule changes name when the engine takes the phase
+  over — `aws_access_key` becomes `aws-access-token`, `private_key`
+  becomes `private-key` — and the name is inside the fingerprint, so
+  without a map the first analysis on a machine with gitleaks installed
+  reports every existing secret as fixed AND the identical secret as new,
+  and every human `accepted` / `false_positive` decision recorded against
+  one matches nothing ever again. `taxonomy.RULE_RENAMES` now carries the
+  six pairings, and `migrate-rules` applies them. Each was verified by
+  running gitleaks over a synthetic sample of the shapes the old pattern
+  accepted and reading the RuleID back, never by matching the two names
+  up by eye: a target the engine cannot mint is the same orphan by
+  another route. Where our pattern is the looser of the two — the AWS body
+  is base32 to gitleaks and merely alphanumeric to us — the pairing still
+  stands and the over-match is written down on the entry. `github_token`
+  and `slack_token` are deliberately left
+  out and say so in a comment — one rule of ours is four or more
+  credential types of theirs (`ghp_` is a PAT, `gho_` an OAuth token,
+  `ghr_` a refresh token; `xoxb`, `xoxp`, `xoxa`/`xoxr` and `xoxs` are four
+  Slack rules), there is no single target that is true for
+  such a finding, and a rename is a promise that the two names are one
+  rule. They report as `new` once under the engine's own name, which is
+  honest; a wrong pairing would be silent corruption in the one field a
+  human's decision hangs off. Run on this repository's own development
+  ledger: 94 findings moved across four rules and both human decisions
+  followed theirs, with zero findings left holding a fingerprint no
+  scanner can reproduce.
+
+- **Trivy scans dependencies for known CVEs when it is installed, and the
+  hand-written lockfile inventory plus OSV.dev's own lookup fall back when
+  it is not.** `deps.inventory` (five lockfile formats) feeding
+  `osv.query`'s `/v1/querybatch` call was the only producer in the
+  `dependency` category; Trivy 0.74.0 now runs first when present, reading
+  the same lockfiles directly and carrying `FixedVersion`, `CweIDs` and an
+  advisory link OSV.dev's own record does not always have. Only ONE of the
+  two ever runs, on the same terms as the Gitleaks swap above: running both
+  would report one hole as two contradictory checklist entries. The
+  fingerprint recipe is unchanged — `fingerprint("dependency", vuln_id,
+  source, f"{name}@{version}")`, exactly `osv._finding`'s — and the INPUTS
+  to it are now normalised onto the inventory's own spelling as well, so a
+  CVE this engine reports for a package OSV.dev already reported keeps its
+  identity — the advisory id included, which is read out of Trivy's own
+  record rather than left to diverge (see *A dependency advisory keeps
+  OSV.dev's own id* below). `--offline` now
+  declares Trivy's own vulnerability database unreachable as well as
+  OSV.dev's, since neither exists without a network request this analysis
+  was told not to make.
+
+- **A CVE with no published fix is reported, not hidden.** `FixedVersion`
+  empty is Trivy's own way of saying nobody has shipped a fix yet — not a
+  gap in the parser to paper over — so the remediation says exactly that
+  instead of naming a version that does not exist. A dependency finding's
+  `CweIDs` fills the ledger's existing `cwe` column when Trivy sent one;
+  the category still has no closed vocabulary the way SAST rules do — its
+  rule is the CVE id — so this is metadata carried across, not validated.
+
+- **Syft builds the SBOM when it is installed, and `deps.sbom` falls back
+  when it is not.** `deps.inventory` (five lockfile formats) feeding
+  `deps.sbom`'s hand-built CycloneDX was the only producer; Syft 1.51.1
+  emits CycloneDX directly and reads far more ecosystems, so it now runs
+  first. Measured on this repository: Syft's directory scan reports each
+  recognised lockfile TWICE — once as the real `library` component, and
+  once more as a `type: "file"` digest entry that carries no version and,
+  unlike every other path in the same document, the scan root's own
+  ABSOLUTE filesystem path (this machine's home directory, captured
+  verbatim in the fixture). Stored and downloaded as-is, that field would
+  have put the operator's own directory layout into a document meant for
+  whoever asked for this project's dependencies; `syft_document` drops
+  every such entry before anything is stored. Syft's own writer omits
+  `components` entirely — not `[]` — for a checkout it recognises nothing
+  in, which is read as "fall back to `deps.sbom`", not as "an SBOM with
+  zero components is the honest answer": a malformed or empty Syft
+  document must never silently replace a good one. The SBOM does NOT
+  honour `ignore_paths`, on the same terms `deps.inventory` already did
+  not — an SBOM is a promise about what the project SHIPS, a different one
+  than a findings list an operator has asked to keep quiet.
+
+- **Task 3's `DEP_SBOM_NOTE` no longer contradicts itself once Syft
+  supplies the SBOM.** That note says the SBOM lists the five lockfile
+  formats `deps.inventory` reads — true only while `deps.sbom` built it.
+  `cmd_prepare` now swaps it for a note naming Syft instead whenever Syft's
+  own document is what actually got stored, so a report never asserts two
+  different things about where its own SBOM came from.
+
+- **Semgrep runs a SAST pre-pass when it is installed — and the report says
+  how little of a shell repository it can see.** `prepare` now records what
+  Semgrep's `p/owasp-top-ten` pack matches as `sast` findings, mapped onto
+  this project's closed rule vocabulary by CWE (`CWE-327` →
+  `weak-cryptography`), or `other` with Semgrep's own check id in the
+  rationale when nothing carries that CWE. It REPLACES NOTHING: unlike the
+  three engines above it, this one is added beside the analysis's own SAST
+  pass, because the coverage is not remotely even. Measured on this
+  repository: 244 rules loaded over 89 files in 6 seconds, 147 of them for
+  Python, 61 for JavaScript (65 counting the TypeScript rules Semgrep's own
+  summary folds in with them) and **one** for shell — and the core of this
+  product is 8,263 lines of bash. The note says "loaded" and not "ran"
+  because the two numbers differ and it must not pick the flattering one:
+  Semgrep's own summary line for the same scan says "Rules run: 223" where
+  `time.rules` holds the 244 it loaded. "Semgrep ran" is true here and
+  misleading, so the coverage note carries the per-language spread, plus how
+  many files Semgrep could not fully parse (3 here, all of them shell).
+  Nothing Semgrep grades
+  can open a `critical` on its own: an `ERROR` from a linter is a statement
+  about the rule's confidence, not about this repository's exposure — all
+  three findings here are false positives of the kind only context resolves
+  — so `ERROR`/`WARNING`/`INFO` land as `high`/`medium`/`info` and the
+  triage that follows is what raises them. `--offline` refuses the pass
+  outright and says why: the rule pack is fetched from Semgrep's registry.
+  And an unreachable registry is declared, not swallowed — measured against
+  a pack that does not exist, Semgrep exits 7 and still writes a well-formed
+  report with `results: []` and `paths.scanned: []`, which is the identical
+  answer it gives for a repository with nothing wrong in it. That is the
+  same shape as `gitleaks git` writing `[]` outside a checkout, and reached
+  by any machine with no network the moment nobody passed `--offline`, so a
+  report carrying an `errors[]` entry at `level: "error"` is refused whole.
+  A file Semgrep could only partly parse is graded `warn` and costs the note
+  it earns, not the pass.
+
+- **A Semgrep finding cannot share an identity with an agent-reported one,
+  and the report says so rather than pretending otherwise.** A SAST
+  finding's identity is `fingerprint("sast", rule, path, snippet)` and the
+  fourth argument is the CODE — which the engine door strips out of
+  `extra.lines` before this project ever sees it, deliberately, because a
+  rule firing on a hardcoded credential returns the credential there. The
+  ledger keeps only an opaque `snippet_hash`, so there is no way back, and
+  `rename_rule` refuses the `sast` category outright for that same reason: a
+  wrong identity minted here could never be migrated afterwards. The
+  pre-pass therefore hashes Semgrep's own check id, which is stable run to
+  run and keeps two checks in one file apart, and the coverage note states
+  plainly that one weakness found by both passes is listed twice. Several
+  hits of one check in one file are ONE finding with several occurrences —
+  without the code there is no per-hit identity to give.
+
+- **A new finding category, `iac`: Trivy's misconfiguration scanner now
+  checks Dockerfiles, Terraform, Kubernetes manifests, Helm charts and
+  CloudFormation templates for known-bad patterns.** Nothing in this
+  project has ever scanned for this, so there was no coverage of it at all
+  until now — a Dockerfile running as root or a Terraform bucket left
+  unencrypted was invisible to every earlier phase. `iac` is the first
+  category added to the finding vocabulary since this module was built, so
+  it had to be threaded through every place that has an opinion about the
+  set of categories: `diff.DETERMINISTIC_CATEGORIES` (and `cli.
+  FINDING_CATEGORIES`, which derives from it), the control server's own
+  duplicate of that set, and the findings screen's category filter and
+  labels. A finding's identity is `(check id, file)` alone — chosen from
+  scratch, since there was no prior `iac` finding to match, on the model of
+  `hygiene`'s own (rule, path) recipe rather than a snippet or a resource
+  name, so it stays stable across runs and across machines. Deliberately
+  NOT made renameable despite that recipe matching hygiene's shape exactly:
+  a check id is Trivy's own vocabulary, verbatim, not a name this project
+  curates, so there is nothing a rename target could be validated against —
+  the same reasoning that already keeps `dependency` out of that set.
+  Multiple resources in one file failing the same check (two Kubernetes
+  Pods both missing a security control, say) produce several
+  `Misconfigurations[]` entries under the identical check id and file —
+  measured against a real two-Pod manifest, not assumed — so they fold into
+  ONE finding with several occurrences, the same grouping `gitleaks` and
+  Semgrep already use for repeated hits of one rule in one file. There is
+  no built-in scanner for this category, so a Trivy this analysis cannot
+  use costs the whole phase rather than falling back to anything, and
+  `--offline` refuses it outright: the misconfiguration checks are fetched
+  from Trivy's own registry.
+
+### Changed
+
+- **A finding that was being reported from a fixtures directory is now
+  reported `fixed` on the next analysis, and nothing was fixed.** This is
+  the honest cost of the two defaults above, and it is stated here rather
+  than left to be discovered from a diff. `diff.classify` marks a
+  deterministic finding `fixed` when it was in the previous analysis and is
+  absent from this one, and a suppressed finding is absent. Worse, a human
+  `accepted` or `false_positive` decision on such a finding becomes
+  unreachable: the scanner really did run, so the absence really is proven,
+  and proven absence takes the `fixed` branch ahead of any decision. (The
+  Fixed entry below restores the decision for the *other* case — a finding
+  nothing this run could re-check — but not for this one, where `fixed` is
+  the better-founded answer.) The decision **row is not deleted** —
+  identity is rule + path and neither moved, so setting `!defaults` in the
+  project's `ignore_paths` brings the finding back under its original
+  fingerprint and the decision attaches to it again. A project holding
+  triaged fixture findings it wants to keep visible should set `!defaults`
+  **before** its next analysis. The first analysis after this change will
+  report those findings as `fixed` exactly once, which is a one-off in the
+  checklist and not a regression in the ledger.
+
 ### Fixed
+
+- **A maintainer's home directory is out of the repository, and
+  `claude-cron selftest` now fails if one comes back.**
+  `tests/security/fixtures/engines/syft-cyclonedx.json` is a raw Syft capture
+  kept deliberately unpurged, because the leak `adapters.syft_document` exists
+  to close is one Syft itself introduces — and it was captured on a laptop, so
+  it shipped that laptop's username to everyone who cloned this repository.
+  Two more copies were in a comment and an old plan. The cure is not "no
+  absolute paths": the fixture has to keep the *shape* of a home path or its
+  test proves nothing, so the username is now `/Users/me`, the placeholder
+  README.md already uses, and the test asserts the shape is still there before
+  it asserts the filter removed it. The new gate reads every **tracked** file —
+  the exposure has no natural home in the tree, any file can carry it — and
+  allows exactly five placeholder users (`Jane`, `example`, `me`, `runner`,
+  `user`), per occurrence rather than per line, so a line carrying both a
+  placeholder and a real home still fails.
+
+- **The engine-skip guard in CI no longer blames the engine install for a skip
+  it never looked at.** `nothing was skipped for want of an engine` treated
+  *every* `SKIPPED` line except the self-spawn guard as proof that an engine
+  was unreachable, and said so in the failure message. Every engine gate skips
+  with the same recognisable reason (`… is not installed on this machine`), so
+  that was a claim the step could check and did not: the first test added to
+  `tests/security/` that skipped for any other legitimate reason would have
+  failed the job pointing at a perfectly healthy engine install, and the next
+  person would have debugged the install for nothing. Both kinds still fail —
+  a new skip in this suite is a decision, not an accident — but the message
+  now names which of the two it actually saw.
+
+- **`claude-cron selftest` no longer gives a different answer depending on the
+  caller's language settings.** The canonical-path check compares an exact
+  string assembled by `sort`, and `sort` orders by the caller's collation.
+  Under `en_US.UTF-8` — what a GitHub runner sets and a bare shell does not —
+  that collation folds case, so `/tmp` sorts before `/Users`; under `C` it
+  does not. Same list, same code, two orders, and an expectation written as
+  one exact string: the suite was green on every laptop for months and red on
+  the first CI run that ever set a locale. Not the path logic being wrong —
+  the assertion was reading the machine's locale and reporting it as a
+  verdict, which is the worse failure of the two, because it is the kind that
+  waits. The sort now pins its own collation. Verified both ways: 455 passed,
+  0 failed under `LC_ALL=en_US.UTF-8` and in a bare shell.
+
+- **The tests that prove an unreadable history is declared no longer race
+  git's own background housekeeping.** `break_objects` — the fixture that
+  empties `.git/objects` so a repository's commits cannot be read, which is
+  how `tests/security/test_adapters.py` holds the silent-history bug closed:
+  the coverage note has to declare the gap instead of reporting a clean
+  history — listed that directory and then deleted each name it had listed.
+  Every `git commit` starts a background `git maintenance run --auto`, and
+  that process writes `.git/objects/maintenance.lock` into the same directory
+  and unlinks it about a millisecond later. A listing taken just before that
+  unlink left the walk deleting a name that no longer existed:
+  `FileNotFoundError`, the repository half-broken, two tests red for a reason
+  that has nothing to do with what they test. A millisecond-wide window
+  against a walk lasting hundreds of milliseconds never opened on a
+  developer's machine and opened on the first loaded CI runner. The fixture
+  now turns `maintenance.auto` off, so no second process touches the
+  repository at all, and the break is a single rename instead of a walk —
+  one syscall, with no listing that can go stale. Measured with a real
+  maintenance run holding the lock: the old body failed 5 times out of 5, the
+  new one 0 out of 5, and the broken repository still reports `HISTORY_GONE`.
+  Fixed by making the setup deterministic, **not** by skipping when the lock
+  is absent: a skip here is the same silence the CI job's "nothing was
+  skipped for want of an engine" step exists to catch.
+
+- **A finding the missing engine could not re-check no longer vanishes from
+  the report and comes back as a regression.** The producer rule below stops
+  the false `fixed` — the row reads `pending`, "not re-checked" — but
+  `pending` is DERIVED, never stored, and the next analysis's baseline is
+  the set of rows the previous one RECORDED. Meanwhile the agent's own
+  instructions (`skills/security-analysis/SKILL.md`, Job 1) told it that
+  deterministic categories "need no re-reporting here — `prepare` re-finds
+  them every run", which is false for exactly the findings the producer rule
+  protects: on a machine without Trivy, `prepare` re-finds nothing at all in
+  a `yarn.lock`. So nothing wrote the row into the analysis, and it dropped
+  out of the next baseline. Measured over four analyses of one branch on an
+  untouched checkout, Trivy present/absent/absent/present: a `yarn.lock` CVE
+  reads `open`, `pending`, **absent from the report entirely**, then
+  `regressed` — "fixed and came back" about a CVE that was never fixed and
+  never left — while the `package-lock.json` CVE beside it, which the
+  OSV.dev fallback also reads, stays `open` throughout. Every row the entry
+  below lists — five dependency CVEs, three Dockerfile misconfigurations,
+  the Semgrep pre-pass row — is of exactly this shape, so the false `fixed`
+  that entry closed became a disappearance instead. Job 1 now tells the agent to re-report every `pending` row under the fingerprint
+  `checklist` printed for it, **on every run it comes back `pending`** — a
+  re-report is proven by the analysis closing `done`, so one re-report
+  followed by one silence is the same false `fixed` by a longer route — and
+  says plainly what not to do with it: not a row `prepare` already re-found
+  this run, not a fingerprint it minted itself, not a rationale claiming a
+  check it could not make. Pinned in `tests/security/test_queries.py`
+  against the ledger's real behaviour, so the instruction and the engine
+  cannot drift apart again.
+
+- **The dependency coverage note no longer tells a reader that a finding
+  nobody re-checked is "listed as fixed".** `DEP_ID_NOTE` was written before
+  absence became the minting producer's to prove. An OSV.dev advisory id
+  with no Trivy counterpart (measured: GO-2021-0052, PYSEC-2024-230) reads
+  `pending` on the run the source changes, not `fixed`, and the note now
+  says that — along with the part that was always true, that the same hole
+  arrives under Trivy's own id and a decision recorded against the OSV.dev
+  one does not follow onto it. The note's *other* `fixed` claim, about a
+  Trivy database refresh renaming an advisory, is correct and stays: there
+  the same producer ran both times.
+
+- **The checklist no longer declares a finding `fixed` in the same report
+  that says the phase never ran.** Absence was proven by CATEGORY — a
+  deterministic one the moment `prepare` finished, everything else the
+  moment the analysis closed `done` — and a category is not a thing that
+  looks. Reproduced end to end against one ledger, analysis 1 with the
+  engines on and analysis 2 with them off, over an untouched checkout: one
+  report said the infrastructure-as-code scan "did not run (trivy is not
+  available to this analysis) … was not checked at all this run" and, four
+  lines below, declared three of that Dockerfile's misconfigurations
+  `fixed`, five dependency CVEs `fixed` and the Semgrep pre-pass row `fixed`
+  — eight false remediation claims in one checklist. Not an edge case: the
+  spec's own decision table calls the degraded path the normal one, since
+  none of the four engines is installed on a plain machine. Proof is now
+  the **producer** that minted a finding having run again — `iac` has no
+  fallback at all, so `[]` from it has only ever meant "nobody looked";
+  Trivy reads `yarn.lock` where the OSV.dev fallback reads five lockfile
+  formats and does not (measured on a `yarn.lock` pinning lodash 4.17.20:
+  Trivy 5 findings, the fallback 0 components, so all five read as fixed);
+  a Semgrep pre-pass identity carries a check id only Semgrep can mint, and
+  the analysis closing `done` only ever proved the *agent* had looked. Those
+  findings now read `pending` — "not re-checked", which is what happened —
+  and the same rule closes the identical hole between gitleaks and the
+  built-in secret scanner. **`fixed` still means fixed:** a producer that
+  ran and found nothing proves absence exactly as before, so a genuinely
+  closed hole still closes on the very next analysis. A human's `accepted`
+  or `false_positive` decision now survives this too — it used to be
+  overridden by the false `fixed`, since decisions were only ever consulted
+  for findings the current run had re-found.
+
+- **A run's coverage note no longer describes an SBOM that does not exist.**
+  `trivy_scan` appends "The SBOM lists the five lockfile formats…"
+  unconditionally, and `prepare` only swapped that sentence out when Syft
+  had supplied a document instead. With NEITHER producer able to list a
+  component — no lockfile the built-in inventory reads, and a Syft that
+  answered with none — nothing is stored at all: the `sbom` table held 0
+  rows and `render --format sbom` answered "no SBOM recorded", while the
+  note described what "the SBOM" lists and added "Syft wrote a document
+  naming no `components`, so it was not used", implying a fallback that
+  never happened. Both sentences are now dropped and replaced by one that
+  says there is no component inventory for this run.
+
+- **A Trivy database refresh can rename a dependency finding, and the report
+  now says so.** An advisory's identity is its vendor id where the record
+  carries one, else a GHSA from its references, else the CVE — read from
+  the record Trivy holds *today*, and Trivy refreshes continuously. A record
+  that gains its first vendor id, or a second one sorting ahead of the
+  first, is renamed by the refresh alone: the same hole is listed `fixed`
+  and `new` in one report and the decision recorded against the old name
+  strands, with no way back, since `rename-rule` refuses `dependency`. The
+  `iac` section already documented exactly this exposure for check ids;
+  `DEP_ID_NOTE` now carries the clause for dependencies.
+
+- **The engines-on gate can no longer pass on a fraction of the suite.**
+  `test_the_security_suite_is_green_with_the_engines_on` asserted `N passed`
+  with `N > 0` and `returncode == 0` — both of which a child run that
+  collected 40 of 808 tests and passed all forty satisfies. With no CI in
+  this repository that test is the only gate there is, so it now counts what
+  `tests/security/` actually holds and requires the child to account for all
+  of it.
+
+- **The dependency and hygiene phases no longer keep private copies of the
+  shared engine scope.** `deps._SKIP_DIRS` and `hygiene._SKIP_DIRS` were
+  byte-identical duplicates of `secrets.SKIP_DIRS`, which is public
+  precisely because it is the one place an analysis's scope is written down
+  — five call sites read it, `gitleaks_config`, `trivy_skip_dirs` and
+  `syft_sbom` among them, so that every scanner agrees on where to look.
+  Identical sets do not disagree until somebody edits one; editing the
+  public one used to leave those two phases silently walking a different
+  tree from every engine. Both now import it.
+
+- **The README said `ignore_paths` is obeyed by "the four" phases.** It is
+  five — the SAST pre-pass reads the same globs, as do the findings from a
+  lockfile under one of them, and this file's own entry above already listed
+  five. An earlier pass fixed three→four and left the staleness behind.
+
+- **A real private key committed as `server.key.example` is reported again.
+  For one commit, it was reported by nothing at all.** The template default
+  above started life as a *file*-level exclusion, on the reasoning that "the
+  value in a template is a shape, not a secret". That is true of the generic
+  `password =` rule and of the AWS rule; a PEM body is never a shape.
+  Measured end to end with a genuine `openssl genrsa 2048` key and a
+  live-shaped AWS key, on both scanners:
+  `certs/server.key.example` → reported by NOTHING, while `certs/server.key`
+  beside it → `private_key` / `private-key`. Gitleaks on its own reported
+  both. `hygiene`'s key-file rule missed it too: its suffix test does not see
+  past `.example`, so the file was never even sniffed. The gate moved from
+  the file to the **rule** — an allowlist of the two rules that genuinely
+  over-fire, so a rule nobody has thought about reports rather than falls
+  silent — and `hygiene` now looks past a template suffix and sniffs *under
+  proof*: `server.key.example` is a finding when it really holds a PEM body,
+  and still not one when it holds a placeholder. This project's own argument
+  for not suppressing `tests/**` applies to a template word for word: it is
+  in the repository and readable by everyone with a clone.
+
+- **A real keystore committed as `keystore.jks.example` is reported again —
+  the same hole as `server.key.example` above, one suffix family down.**
+  `hygiene._is_key_material`'s binary branch (`.p12`, `.pfx`, `.jks`) tested
+  the raw file `name`, not the `stem` the text branch above had just been
+  taught to read past a template suffix with — so `keystore.jks.example`
+  never ended in a binary suffix, matched nothing, and `!defaults` could not
+  bring it back because the file never reached the rule at all. There is no
+  marker to sniff inside a binary container — the secrets scanner cannot
+  open one either — so the fix is narrower than the PEM one above:
+  `_is_key_material` now tests `stem` for the binary suffixes too, and the
+  file is reported by name alone, unproven, exactly as a plain `keystore.jks`
+  already was. That is not a new guess; it is the one this rule always
+  made, no longer stopped at the door by a suffix it did not recognise.
+
+- **`!defaults` is no longer an exact-match magic string that failed
+  silently in the unsafe direction.** `['!Defaults']` left the default
+  **on** — the switch appeared to be accepted and was not — and then went on
+  to three engine command lines as a path to exclude: `trivy --skip-dirs
+  '!Defaults'`, `semgrep --exclude './!Defaults'`, and a pair of gitleaks
+  allowlist regexes, which is exactly what `ignores.globs()` exists to
+  prevent. `!DEFAULTS`, `!default` and `!defaults/**` were all silent no-ops.
+  A project that keeps real credentials in a fixture and typed the switch
+  believed it was being scanned. Now: the sentinel is recognised in any
+  capitalisation, **every** leading `!` entry is dropped from every command
+  line and from the path matcher, and anything beginning with `!` that is not
+  the switch is named in the coverage note and on stderr — "it was ignored
+  entirely, so the default noise filter is STILL IN EFFECT" — rather than
+  guessed at.
+
+- **The SBOM and the dependency findings disagree by design, and the report
+  now says so.** `deps.inventory` deliberately does not read `ignore_paths`,
+  because an SBOM is a statement about what the repository *contains* and one
+  whose contents changed with a settings field would answer differently for
+  the same commit. Measured on this repository: 4 of 4 SBOM components come
+  from `tests/security/fixtures/`, and the dependency category goes 6 → 0 — a
+  consumer holding both files reads "this project ships lodash 4.17.20"
+  beside "no dependency findings". That used to require an operator to write
+  `ignore_paths`, and they knew what they had written; with the fixtures
+  default it is what every unconfigured project gets. The SBOM stays
+  complete; the report stops making the unqualified claim, naming the count
+  and the lockfiles: *an absent dependency finding is not a clean bill of
+  health for a component the SBOM shows.*
+
+- **The engines-on guard no longer skips on a machine that has trivy and
+  semgrep but not gitleaks.** It skipped unless `gitleaks` was installed,
+  reasoning that otherwise "engines on and off are the same run".
+  `adapters.engine_path` is one switch over four binaries, and it gates the
+  dependency phase, the SAST pre-pass, the IaC phase and the SBOM producer as
+  well as the secret phase — so on such a machine the guard silently proved
+  nothing while the two configurations genuinely differed, which is the
+  precise failure it exists to end. It now skips only when **none** of
+  gitleaks, trivy, semgrep or syft is installed. Its second skip also stopped
+  reading `== "on"`: the product treats anything not in `{off,0,no,false,
+  none}` as on, so `CC_SECURITY_ENGINES=ON` was an engines-on run that did not
+  recognise itself and spent 166 seconds spawning the configuration it was
+  already running. There is deliberately still **no opt-out variable** — it
+  is the kind of switch that gets exported once and never unset, turning a
+  loud cost into a silent gap; the README documents the deselect instead.
+
+- **The escape hatch is visible where `ignore_paths` is written.** The
+  Security tab's field said "Paths excluded from analysis — one glob per
+  line", offered `tests/fixtures/**` as its placeholder (now redundant: it is
+  the default), and said nothing about a default being in force or about
+  `!defaults` — which is not a glob, so the label denied it existed. The
+  overridability argument leaned on "`ignore_paths` is already written by the
+  Security tab", and the Security tab was the one place that never mentioned
+  it. It now states the default, states what a template does and does not
+  silence, and names the switch.
+
+- **The default filter is matched without regard to case, so `Fixtures/` and
+  `TestData/` are suppressed.** That is the .NET and Swift spelling of the
+  identical convention, and the coverage note was telling those repositories'
+  readers that their fixtures had been suppressed while they had not. Same
+  for `.ENV.EXAMPLE`: the suffix list was matched with `fnmatch` on the
+  argument that it normalises case through `os.path.normcase`, which is the
+  identity on every POSIX platform this runs on. The component match is still
+  whole-component — `MyFixtures/` is not `fixtures/`.
+
+- **Two sentences that had gone stale.** The README said `ignore_paths` is
+  obeyed by "the three" deterministic phases; `iac` made four. And the note
+  stamped on every report closed without `prepare` ("no secret sweep, no
+  dependency inventory, no hygiene pass") omitted the IaC check and the SAST
+  pre-pass, which had also not run.
+
+- **The security suite is no longer green only in a configuration nothing
+  ships in.** `tests/security/conftest.py` pins `CC_SECURITY_ENGINES=off` so
+  that a test planting a credential exercises one scanner rather than
+  whichever binaries a laptop happens to have. What nobody was checking is
+  the other configuration — engines **on**, which is what every real analysis
+  runs — and it had been red since the commit that first put gitleaks on the
+  secret path. Seven tests: six planted material gitleaks is deliberately
+  right to ignore (AWS's own published documentation key; a PEM header with
+  `xx` where the key body goes) and/or asserted the built-in scanner's
+  snake_case rule names against an engine that mints kebab-case ones, and the
+  seventh asserted a refusal that only the unstated ambient default produced.
+  Three of the six were superseded copies of lifecycle tests that
+  `test_adapters.py` already runs over BOTH scanners, and are deleted with a
+  pointer to their replacements; two now state the scanner they are about in
+  their own environment, as the tests around them already did; and the
+  whole-analysis lifecycle test plants a key both scanners report, so it is
+  proved on both paths instead of one. No property lost a home — each was
+  read against its replacement before the copy was removed.
+
+- **`pytest tests/security/` now runs itself a second time with the engines
+  on, and fails if that run is red.** The drift above survived for the whole
+  life of the engine path because nothing ever ran production's
+  configuration: there is no CI in this repository, so the suite is the only
+  gate, and a gate that exercises one of two configurations is a gate on half
+  the product. One test re-runs the security package with
+  `CC_SECURITY_ENGINES=on` whenever `gitleaks` is installed (where it is not,
+  on and off are the same run and it skips), and refuses a "no tests ran" as
+  a pass — pytest reports a collection failure with zero `FAILED` lines,
+  which reads exactly like success. It costs what the second configuration
+  costs: the package goes from about ninety seconds to about four minutes on
+  a machine with the engines installed.
+
+- **An operator's `ignore_paths` glob no longer narrows the Semgrep scan
+  below the scope the analysis itself uses.** `semgrep_excludes` stripped the
+  wildcard off every glob it was given — `docs/**` went down the command line
+  as `docs` — and Semgrep matches a bare `--exclude` at ANY DEPTH, where the
+  Trivy helper this was copied from matches the top level only. Measured:
+  with `ignore_paths=["docs/**"]`, `src/docs/b.py` was never read, while the
+  analysis's own reading of the same glob (`ignores.ignored`) answers that
+  the file is IN SCOPE. Nothing declared the loss, and the second scope lock
+  cannot undo it — it only ever removes more. Every operator glob is now
+  anchored (`./docs/**`), which the same measurement shows keeps
+  `src/docs/b.py` and still drops `docs/a.py`. The one error left runs the
+  safe way: a glob whose wildcard crosses `/` in `fnmatch` costs Semgrep some
+  reading it need not have done, and the finding is dropped afterwards
+  anyway.
+
+- **A Semgrep report that scanned nothing is now declared instead of landing
+  as a clean pre-pass.** The guard added with the pre-pass refused a report
+  carrying an `errors[]` entry at `level: "error"` — the unfetchable-pack
+  case, exit 7. Its sibling has no `errors[]` at all: a rule pack that is
+  well-formed and parses to no rule exits **0** and writes the identical
+  `results: []` / `paths.scanned: []` a clean repository produces. Measured
+  verbatim over a tree of six files. `paths.scanned` being present, a list
+  and empty is now a declared gap, on this project's own precedent — the
+  gitleaks `[]` scar that `history_state` exists for. Two adjacent routes
+  went with it: an `errors[]` entry whose `level` is missing, or is a word
+  this parser has never heard of, now refuses the report instead of passing
+  as recoverable (the list is of the words that mean Semgrep KEPT GOING, not
+  of the words that mean it stopped); and the error type quoted into the note
+  is now constrained to look like a *name*, because Semgrep writes
+  `type: ["PartialParsing", [{"path": …}]]` for a partial parse and `str()`
+  of that would have put this repository's own file paths into the coverage
+  note.
+
+- **The coverage note no longer reports a number the report never carried as
+  zero.** Both counts in its first sentence came from the length of something
+  that could be missing, so a scan captured without `--time` read "over 89
+  files, with **0 rules loaded** from p/owasp-top-ten" for a scan that loaded
+  244, and a `paths` block this parser could not read read "over 0 files".
+  Zero rules loaded and an unknown number of rules loaded are opposite facts
+  — the first says nothing was checked — and this is the one sentence the
+  whole pre-pass exists for. Each clause is now either a number the report
+  carries or a phrase saying it does not. Semgrep itself conflates the two
+  (measured: it writes `time.rules: []` whenever `--time` was not passed,
+  over a tree it scanned perfectly well), which is why the empty-scan refusal
+  above reads what was *scanned* rather than what was loaded.
+
+- **The per-language breakdown no longer presents non-languages as
+  languages.** `p/owasp-top-ten` loads a floor of rules over any directory at
+  all — measured, a directory holding one `.txt` file loads `java 3`,
+  `scala 3`, `ruby 1`, `generic 15` — and the note printed them beside
+  `python 147` on a repository with no Java, Scala or Ruby in it. The whole
+  sentence is read as a statement about how much of *this* tree was examined,
+  so that misleads in the one direction it exists to prevent. The rows a
+  scanned file evidences are now the coverage list; the rest are stated in a
+  separate sentence that says what they are. They are not deleted: this
+  tree's own shell lives in an extensionless `bin/claude-cron`, and a
+  repository whose shell is all extensionless would otherwise lose `bash 1`
+  from the one note that exists to say shell got a single rule.
+
+- **A scanner's report is no longer read whole without a ceiling.**
+  `engines.run_json` read the file, parsed it and then deep-copied it through
+  the purge, so its peak cost is a multiple of the file and nothing bounded
+  it — and the failure that produces is a `MemoryError`, the one exception
+  neither handler in that function names, escaping a door documented to
+  return a note for every failure. Semgrep's `--time` is the growth it was
+  measured on: one timing per (file, rule) pair, 651 KB for this repository's
+  89 files, of which 612 KB is a `time.targets` block nothing reads. Anything
+  over 64 MB is now a declared gap in the same shape as every other failure
+  there, checked before the read and stated with its own number. It sits in
+  the one door rather than in the Semgrep adapter, so every engine gets it.
+
+- **The analysis agent can no longer be told to mint a second identity for a
+  finding it already has.** The skill's rule against recomputing a pre-pass
+  fingerprint keyed off "a `sast` finding whose rationale starts
+  'Semgrep's …'" — and `rationale` is a field a re-report OVERWRITES, which
+  is exactly what the same skill's triage job instructs. So after any run
+  where the agent triaged a pre-pass finding and Semgrep did not run the next
+  time (offline, absent, or its report refused), the row arrived carrying the
+  agent's own rationale, the marker was gone, and the `--snippet` branch
+  minted the second identity that rule existed to prevent — permanently, since
+  `rename-rule` refuses the `sast` category and no migration can be written.
+  The branch is gone rather than the marker improved: a carried-over `sast`
+  fingerprint is now never recomputed, it is copied from what `checklist`
+  printed, and nothing is lost because `checklist` prints one for every row.
+
+- **The agent is now told to fold its own finding into the pre-pass row that
+  already lists the same weakness.** The two passes cannot share an identity
+  — the pre-pass never records the code its identity would need — and the
+  report has always declared that one weakness found by both is listed twice.
+  But the declaration reaches the *reader*, while the agent is the only actor
+  who can prevent the duplicate, and its instructions said nothing about it:
+  on a Python-heavy repository the doubling was guaranteed every run, for
+  every weakness both passes see.
+
+- **A dependency CVE keeps one identity whether or not Trivy is installed.**
+  The fingerprint recipe was copied from `osv._finding` correctly and the
+  INPUTS to it were not, which is a different bug with the same consequence.
+  Three of them, all measured by running both producers over one tree:
+  `deps.py` strips the `v` Packagist writes and Trivy's `InstalledVersion`
+  keeps it (`5.4.0` against `v5.4.0` — and `v`-prefixed is the Packagist
+  norm: Symfony, Doctrine, Monolog, most of Laravel); the built-in inventory
+  reads `go.sum` where Trivy reads `go.mod`, moving the source AND the
+  version at once; and the inventory dedupes a package across lockfiles
+  where Trivy reports once per file, so a monorepo pinning lodash twice was
+  one identity against two. Every affected finding was reported `fixed` (its
+  old identity gone) and `new` (a fresh one) in a single report, with the
+  human `accepted`/`false_positive` decision on the old one stranded for
+  good — `ledger._REFINGERPRINT` has no `dependency` entry, so `rename_rule`
+  refuses the category and no migration could be written. And it flipped per
+  machine. On a tree with a `v`-prefixed Symfony and a Go module, 0 of 4
+  identities matched between the two producers before and 4 of 4 after.
+  The fourth input, the advisory id, is closed by the entry below. Two
+  smaller gaps are stated in the coverage note rather than fixed: a
+  directory with a `go.sum` and no `go.mod` is invisible to Trivy, and the
+  SBOM still comes from the inventory's five formats while the findings come
+  from every format Trivy reads.
+
+- **A dependency advisory keeps OSV.dev's own id, so swapping in Trivy no
+  longer re-identifies every finding it names.** The three normalised inputs
+  above left a fourth diverging, and it was written down as unfixable on the
+  stated grounds that no offline mapping between the two vocabularies
+  existed. It does exist, and Trivy ships it inside the record the old
+  comment quoted as proof of the gap: `VendorIDs` is the publishing
+  database's own id, which is exactly what OSV.dev names an advisory by.
+  Nine of the ten findings on a tree holding `gin 1.6.3`, `lodash 4.17.20`,
+  `certifi 2024.2.2` and `symfony/http-kernel 5.4.0` matched OSV.dev on that
+  field alone; the tenth comes from `php-security-advisories`, which
+  publishes no vendor id, and carries `GHSA-h7vf-5wrv-9fhv` in its
+  `References` — precisely what OSV.dev returned. Running BOTH producers for
+  real over that tree: **0 of 10 shared identities before, 10 of 10 after.**
+  The reference source is treated as the heuristic it is — a GHSA id is
+  taken from `References` only when the whole list yields exactly one, since
+  lodash's `CVE-2026-4800` lists a *different* advisory's GHSA first, and
+  "the first GHSA in the list" would have aliased it onto the wrong hole.
+  `VendorIDs` is resolved by the set rather than by arrival order, because
+  indexing `[0]` would let a database refresh that merely reorders the field
+  re-identify a finding — the same bug arriving by a new route. The CVE id
+  is no longer the identity, so it is said in the finding's prose instead:
+  it is what a human searches for even when it is not what the ledger keys
+  on. What genuinely cannot be aliased is now what the coverage note
+  describes: OSV.dev mints one record per publishing database where Trivy
+  mints one per hole, so `GO-2021-0052`, `GO-2023-1737` and `PYSEC-2024-230`
+  have no Trivy counterpart to map onto and are still reported `fixed` once.
+  That note is also no longer said on every report for ever — it describes a
+  transition, so it is said only when the report actually contains
+  dependency findings, and it and the SBOM note are now pinned by tests that
+  do not need the Trivy binary (previously nothing asserted either was
+  returned on a machine without it).
+
+- **The one actionable sentence in a dependency finding no longer tells you
+  to skip the release that fixes it.** `osv.py` says "Upgrade X past
+  {version}" — past the version you HAVE. The Trivy adapter kept the
+  preposition and substituted the version that CONTAINS the fix, so a real
+  report read "Upgrade certifi past 2024.7.4" when 2024.7.4 *is* the fix. It
+  now reads "Upgrade certifi to 2024.7.4 or later", and the branch has a
+  test; only the no-fix-published branch had one before.
+
+- **The engine no longer reports lockfiles from directories the analysis has
+  never looked inside.** `--skip-dirs` was given bare names, and Trivy
+  matches those at the TOP LEVEL only, while `deps.inventory` skips
+  `SKIP_DIRS` at any depth: `src/vendor/thing/package-lock.json` and
+  `a/b/dist/package-lock.json` were both reported by the engine and by
+  nothing else — the swap making the report NOISIER, which is the exact
+  regression the module's own docstring warns about. The flag now carries
+  `**/name` as well as the bare name, and the test that was supposed to
+  catch this plants its lockfile NESTED: it used to plant a top-level
+  `node_modules`, the one directory Trivy skips unasked, and passed with
+  `--skip-dirs` deleted outright.
+
+- **`ignore_paths` is enforced on the dependency findings, not just asked
+  of the scanner.** Trivy reads formats the built-in inventory never opened
+  — yarn.lock, pnpm, Gemfile.lock, Cargo.lock, pom.xml, vendored jars — so
+  the class of finding an operator's globs have to be able to suppress got
+  materially larger with this swap, while scope was delegated entirely to
+  another program's command line. The Gitleaks adapter's second lock now
+  covers this path too, and it covers BOTH producers: honouring the globs
+  only where the engine is installed would be a report that changes by
+  machine, the same fault as the fingerprint divergence. The SBOM is
+  unaffected — the inventory still lists every lockfile in the tree.
+
+- **The OSV.dev fallback note is no longer said about a repository with no
+  dependencies.** It claimed they "were checked against OSV.dev's own
+  database" for a tree where `osv.query` returned before opening a socket.
+  The sentence also moved to `osv.py` beside `DEFAULT_SEVERITY`, on the
+  model of `secrets.FALLBACK_NOTE` its own comment cites, and the engine
+  note stopped reading "by Trivy (Version: 0.74.0)" with the label twice.
+
+- **`migrate-rules` now refuses a machine without gitleaks, instead of
+  producing exactly the damage it exists to prevent.** The verb's whole
+  purpose is to stop one hole arriving under two identities, and running it
+  where the engine is absent — or where `CC_SECURITY_ENGINES` is off — did
+  precisely that: the secret renames move findings onto *gitleaks'* rule
+  names, `_scan_secrets` falls back to the built-in scanner on such a
+  machine, and the very next analysis re-mints every snake_case name. Every
+  migrated secret was then reported `fixed` (its new name, which nothing on
+  that machine produces) *and* `new` (the re-minted old one) in one report,
+  with the human `accepted` / `false_positive` decision on each side
+  stranded. The limit was written down in `taxonomy.py` and nowhere an
+  operator looks; it is now a fourth refusal beside the three the verb
+  already made, stated in `--help`, in the README paragraph and in the
+  refusal itself, which names the damage rather than only the missing
+  binary.
+
+- **A git too old for `--is-shallow-repository` no longer makes the coverage
+  note claim "the full git history".** That question landed in git 2.15, and
+  `git rev-parse` echoes a dashed argument it does not recognise back at the
+  caller instead of failing — so on an older git the answer arrived as its
+  own text with exit 0, was read as "not shallow", and the one machine that
+  could not answer the question became the one making the strongest claim
+  about it. Only a literal `true`/`false` now counts as an answer; anything
+  else falls back to the `shallow` marker file inside the git directory,
+  which every shallow clone has had for as long as the feature has existed.
+
+- **Three comments that recorded MEASURED facts were wrong, in code whose
+  doctrine is "measure, never guess".** `taxonomy.py` said `xoxs` "is not a
+  gitleaks rule at all" — it is `slack-legacy-token`, which this project
+  already grades; the original sample was simply too short to fire it, so
+  `slack_token` is five prefixes across four rules and *more* unmappable,
+  not less. The same file claimed every shape our AWS pattern accepts was
+  confirmed to land, where gitleaks wants a base32 body and ours also takes
+  `0`, `1`, `8` and `9` (`AKIAUJZDE8GXD6NCF10E` reports nothing); the
+  pairing stands and now carries the caveat `openai_key` and `private_key`
+  already had. And four places warned that the tree-wins-over-history
+  ordering was the two `run_json` calls — swapping those is a measured
+  no-op — when it is the two recording blocks below them. That last one is
+  the one that mattered: a maintainer reordering the recording blocks would
+  have read the warning, seen it was about a different pair, and made the
+  dangerous change believing it was covered.
+
+- **The engine's history sweep now asks whether the history can be READ,
+  not whether a `.git` exists — and the coverage note stops claiming a
+  sweep that never happened.** The guard ran `git rev-parse --git-dir`,
+  which answers "is this a repository". Every other way of failing to read
+  a history sailed past it: inside a real checkout `gitleaks git` then
+  exits 0, writes `[]`, and is indistinguishable from a clean history,
+  while the note went on saying the scan covered "the working tree and the
+  full git history". Reproduced on a repository whose only secret was in a
+  deleted file, with `.git/objects` emptied: `git log` exits 128 with
+  "fatal: bad object HEAD", the guard said yes, the history finding was
+  lost, and the report said it had been looked for. **This was a
+  regression against the scanner being replaced** — `secrets.scan_history`
+  checks git's return code and says so; the module already carries this
+  scar from the days it answered failures with `[]`, and the engine path
+  reopened it through a neighbouring door. The question is now `git
+  rev-list -n1 --all`, which WALKS the refs, so unreadable objects, a
+  broken ref, an unreadable `.git` and git being absent altogether are all
+  declared gaps. A repository with no commits yet is deliberately NOT one:
+  `rev-list` exits 0 there, an unborn history has nothing to miss, and
+  crying gap on every freshly-initialised checkout would be the same
+  dishonesty pointing the other way. A **shallow clone** is its own answer
+  — a depth-1 clone reads cleanly and carries one commit, so the sweep
+  runs and what it reports is real, but the note says "the commits this
+  shallow clone carries" instead of "the full git history" and adds the
+  gap out loud. Verified: a depth-1 clone misses the deleted-file secret,
+  and the note used to be unchanged.
+
+- **A repository can no longer silence the whole secret phase without the
+  report saying so.** `gitleaks_config` extends the analysed project's own
+  `.gitleaks.toml`, which is gitleaks' own default and stays — that file
+  is the project telling the tool what it considers noise. Extending it
+  *silently* does not: measured on a planted tree, 2 findings without the
+  file and 0 with `[allowlist] regexes=['.*'] paths=['.*']`, and the same
+  "the working tree and the full git history" note both times. The note
+  now declares the extension, so a reader can tell "we found nothing" from
+  "the repository told the scanner not to look".
+
+- **When neither engine pass produced a report, both reasons are given.**
+  Only the tree pass's sentence was appended and the history pass's was
+  dropped, so a run whose history was unreadable *and* whose tree sweep
+  could not run reported whichever fault happened to be second. Both are
+  reported now, deduplicated — the commonest case by far, a missing
+  binary, fails both passes with the identical sentence, and saying it
+  twice reads like two separate faults.
+
+- **Secrets found by gitleaks get their curated label and icon back on the
+  dashboard.** `SEC_RULE_META` was keyed only on the eight snake_case rule
+  names the built-in scanner emits, so with the engine running every
+  secret fell through to the generic humaniser — "Aws access token" with a
+  category icon, instead of "AWS access key committed" with a lock. The
+  engine's own rule ids are keyed alongside the old ones, which stay: the
+  built-in scanner still emits them wherever gitleaks is absent, and a
+  ledger holds findings from both. A test now fails if a rule
+  `adapters.SEVERITY_BY_RULE` grades has no label waiting for it.
+
+- **The test named after this module's most important promise now proves
+  it.** `test_a_gitleaks_finding_carries_no_value_anywhere` read an
+  already-purged fixture and grepped the output for the strings "Secret"
+  and "Match" — the engine's KEY NAMES, in a blob those keys had been
+  stripped from. It could not fail, and would have passed unchanged if the
+  adapter had copied `record["Match"]` into a field called `snippet`. It
+  now passes an UNPURGED record carrying a credential-shaped value and
+  asserts the value itself is absent from the result — no binary needed,
+  so it runs everywhere, where the file's only real value assertion used
+  to be skipped on any machine without gitleaks. The engine path's three
+  load-bearing lifecycle properties gained coverage too: a history secret
+  stays `open` and is never reported `fixed`, rotating and accepting is
+  the only way it closes, and the working-tree reading wins over its
+  history twin — the last of which is guaranteed *only* by the order of
+  two adjacent lines, and on a machine with gitleaks installed the suite
+  proved none of them.
+
+- **The one door to an external scanner stopped raising, in the exact case
+  its own comment anticipated.** `subprocess.run(..., text=True)` decodes
+  strictly, so an engine that writes raw bytes to stderr — precisely what
+  the code foresees, "an engine that fails while reading a file can put
+  that file's bytes in its error message" — raised `UnicodeDecodeError`.
+  That is a `ValueError`, so it slipped past both handlers and killed the
+  analysis instead of degrading it: a repository holding a binary blob, a
+  truncated multibyte sequence or a filename that is not valid UTF-8 was
+  enough, and the `--version` probe had the same hole. Both call sites now
+  decode with `errors="replace"`, which costs nothing, because stderr is
+  never quoted back. A report nested deeper than `json.loads` will descend
+  escaped the same way — `RecursionError` is a `RuntimeError`, not a
+  `ValueError` — and is now the "wrote a report this version cannot read"
+  gap it always should have been. That one had a second exit a line
+  further on, outside every handler: `json.loads` descends in C and
+  tolerates thousands of levels while the purge is a Python walk that stops
+  around 995, so a report could parse cleanly and then blow up on the way
+  through the strip. It is dropped now, rather than returned unstripped.
+  `run_json` has seven ways out and six of
+  them, the happy path included, were untested; each has a test now, and so
+  do the two promises that were asserted by comment only: that stderr never
+  reaches the note or the result, and that the temporary directory does not
+  survive the call. The tests run a real misbehaving engine placed on
+  `PATH`, not a stubbed `subprocess.run` that can only behave the way the
+  test author imagined.
+
+- **An engine name the purge table does not know is refused, not trusted.**
+  `purge()` returned the engine's output untouched for any name it did not
+  recognise, so `purge("gitleaks-git", …)` and `purge("Gitleaks", …)` both
+  handed the credential straight back — and the gitleaks adapter calls this
+  module twice, once for the working tree and once for the history, so one
+  misspelling was a silent leak from one of the two sweeps. Unknown names
+  now raise, and `run_json` refuses to run such an engine at all, before
+  the version probe rather than after the scan; an engine that genuinely
+  returns nothing it matched is registered with an empty tuple, so "nothing
+  to strip" is a decision on the record instead of the accident of a name
+  nobody added. The table also gained the fields the real engines emit and
+  it did not list: Semgrep's `abstract_content` and its propagated twin
+  (for a rule that fires ON a hardcoded credential, the metavariable
+  binding IS the credential), its `fix`, `rendered_fix` and
+  `dataflow_trace`, and Trivy's `Code.Lines[].Content` and `Highlighted` —
+  the raw source lines it attaches to secrets and misconfigurations alike.
+
+- **Semgrep put this repository's own source in a field the purge table did
+  not name, and now it does.** Found by capturing the fixture for the SAST
+  pre-pass rather than by reading the documentation: semgrep 1.175.0 reports
+  a file it cannot fully parse as an `errors[]` entry whose `message` QUOTES
+  THE FILE — roughly 2kB of `bin/claude-cron` in the capture taken here,
+  three such entries in one report. It is exactly the hazard the door
+  already refuses to quote stderr for, arriving through the report instead.
+  The same field name carries a second one: `results[].extra.message` is the
+  rule's own sentence only until the rule writes `$X` in it, which semgrep
+  substitutes with what the metavariable bound to — so the field that reads
+  like harmless engine prose carries the same credential `abstract_content`
+  does. `message` is stripped at every depth now, which takes both, and the
+  SAST adapter wanted neither: it builds its rationale from the check id and
+  the CWE.
 
 - **Model families resolve to concrete ids again for anyone with a hook
   configured.** The family→id baseline read the probe stream's first line
@@ -126,6 +1154,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   half-circle arcs, since a full-circle arc degenerates to nothing).
   Verified by rasterising the arcs and sampling the whole ring: five
   contiguous colour blocks in severity order, nothing out of place.
+
+- **A Trivy check id no longer gets mangled in "Top issue categories".**
+  `secRuleMeta` humanised every rule id it did not already recognise — right
+  for `sast`, where the agent composes its own kebab-case phrase, wrong for
+  `iac`: a Trivy check id (`DS-0002`, `KSV-0001`, `AVD-AWS-0088`) is an
+  opaque vendor identifier, the same kind of object a GHSA/CVE advisory id
+  already is, and splitting it on the hyphen produced neither the id an
+  operator would grep the ledger for nor a real label — `DS-0002` rendered
+  as `DS 0002` in the Security index, the project Overview tab and the
+  project screen's own open-findings-by-rule rollup, the three surfaces
+  that share this resolver. `iac` now keeps its rule verbatim, exactly like
+  `dependency` already does, with its own `cpu` icon rather than the
+  advisory branch's `shield`.
+
+- **The All Findings screen's Category filter now spells every category
+  the way the project Findings tab already does.** It capitalised the raw
+  category string (`Iac`, `Sast`) instead of reading the same label map
+  (`secCategoryMeta`) the project tab's own category picker already uses
+  (`IaC`, `SAST`) — the same five values, filtered by a different spelling
+  depending on which screen a reader had open.
 
 ### Changed
 

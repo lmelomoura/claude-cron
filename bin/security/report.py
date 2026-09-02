@@ -43,6 +43,26 @@ def _unknown_states(by_state):
     return [s for s in by_state if s not in STATES]
 
 
+# `scope` reads as a bare word in the ledger and as a sentence fragment in a
+# report, and the gap between the two is where a reader guesses wrong. "dev"
+# alone invites "so I can ignore it"; "unknown" alone invites "so it is
+# probably fine". Both are expanded here, in the one place all three formats
+# read, so the two a human downloads cannot describe the column differently.
+#
+# A value not in this table renders as itself rather than being dropped: a
+# vocabulary this module has not been taught is still a fact the ledger holds,
+# and hiding it would be the silent-difference failure one level down.
+_SCOPE_LABELS = {
+    "dev": "dev — a development-only dependency, not shipped",
+    "runtime": "runtime — this dependency ships",
+    "unknown": "unknown — this lockfile format does not say whether it ships",
+}
+
+
+def _scope_label(scope: str) -> str:
+    return _SCOPE_LABELS.get(scope, scope)
+
+
 def _coverage(analysis, coverage_note):
     """What this report did NOT look at. Printed before anything else.
 
@@ -70,11 +90,26 @@ def _coverage(analysis, coverage_note):
 
 
 def as_json(analysis, findings, coverage_note):
+    """The machine-readable format, and the one place `scope` is ALWAYS a key.
+
+    The two formats a human reads render nothing when the value is absent, so
+    they cannot be parsed for it. This one is: something consuming the JSON has
+    to be able to tell "this analysis predates the column" from "this finding
+    is not a dependency" without special-casing a missing key, so the key is
+    always present and the empty string carries that distinction. Rows read
+    from the ledger have it already (the column is NOT NULL with a '' default);
+    the `setdefault` is for a caller assembling findings some other way.
+    """
+    rows = []
+    for f in findings:
+        row = dict(f)
+        row.setdefault("scope", "")
+        rows.append(row)
     return json.dumps({
         "analysis": dict(analysis),
         "coverage": _coverage(analysis, coverage_note),
         "summary": _summary(findings),
-        "findings": [dict(f) for f in findings],
+        "findings": rows,
     }, indent=2, sort_keys=True)
 
 
@@ -104,6 +139,8 @@ def as_markdown(analysis, findings, coverage_note):
         if f.get("cwe"):
             out.append(f"  - Class: {f['cwe']}"
                        + (f" · OWASP {f['owasp']}" if f.get("owasp") else ""))
+        if f.get("scope"):
+            out.append(f"  - Scope: {_scope_label(f['scope'])}")
         out.append("")
         for occ in f["occurrences"]:
             out.append(f"- `{occ['file']}`" + (f":{occ['line']}" if occ["line"] else ""))
@@ -152,11 +189,16 @@ def as_html(analysis, findings, coverage_note):
         cls = (f'<p class="cls">{e(f["cwe"])}'
                + (f" · OWASP {e(f['owasp'])}" if f.get("owasp") else "")
                + "</p>") if f.get("cwe") else ""
+        # Absent renders NOTHING, exactly as `cwe` does above: every
+        # non-dependency finding carries '' here, and a "Scope: —" line on all
+        # of them would be a column of dashes a reader learns to skip.
+        scope = (f'<p class="cls">Scope: {e(_scope_label(f["scope"]))}</p>'
+                 if f.get("scope") else "")
         parts.append(
             f'<div class="f {e(f["severity"])}">'
             f"<h3>[{e(f['severity'])}] {e(f['title'])} — {e(f['state'])}</h3>"
             f"<p>Rule <code>{e(f['rule'])}</code> ({e(f['category'])})</p>"
-            f"{cls}"
+            f"{cls}{scope}"
             f"<ul>{locs}</ul><p>{e(f['rationale'])}</p>"
             f"<p><strong>Remediation:</strong> {e(f['remediation'])}</p></div>")
     return "".join(parts)

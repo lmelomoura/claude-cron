@@ -23,6 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .deps import merge_scope
 from .fingerprint import fingerprint
 
 _BATCH_URL = "https://api.osv.dev/v1/querybatch"
@@ -35,6 +36,21 @@ _SEVERITY = {"CRITICAL": "critical", "HIGH": "high",
 # real CVE below the default min_severity floor, where it looks like it was
 # never found at all.
 DEFAULT_SEVERITY = "medium"
+
+# Named so a reader of a report knows which producer scanned that analysis's
+# dependencies, whenever it was this module rather than Trivy. Lives HERE,
+# beside the other constant this module's results are described by, on the
+# model of `secrets.FALLBACK_NOTE`: it is a sentence about what OSV.dev's
+# database is, not about a command-line flag, and the caller that says it
+# (`cli._scan_dependencies`) should not also be the module that knows what it
+# means. OSV.dev's own database, not Trivy's aggregate of GHSA, NVD, distro
+# trackers and OSV.dev together: an advisory tracked only by one of those
+# sources and never published to OSV.dev itself would not be found this way.
+FALLBACK_NOTE = ("Dependencies were checked against OSV.dev's own database, "
+                 "not Trivy: an advisory tracked only by a source Trivy "
+                 "aggregates (a distro tracker, NVD, GitHub Security "
+                 "Advisories) and never published to OSV.dev would not have "
+                 "been found.")
 
 
 def _http(url, body=None, timeout=30):
@@ -108,6 +124,12 @@ def _finding(component, vuln_id, detail):
         "rationale": summary,
         "remediation": (f"Upgrade {component['name']} past {component['version']}. "
                         f"See https://osv.dev/vulnerability/{vuln_id}"),
+        # Read off the component, never off the advisory: OSV.dev is asked
+        # about a package, and whether that package ships is a fact about THIS
+        # repository's lockfile that only `deps.inventory` saw. Normalised
+        # through the shared `merge_scope` rather than copied, so a component
+        # that somehow arrives without one reads `unknown` and not `runtime`.
+        "scope": merge_scope(component.get("scope")),
         "occurrences": [{"file": component["source"], "line": 0, "snippet_hash": ""}],
     }
 
@@ -129,6 +151,12 @@ def _clean_components(components):
     it only labels where a finding was found, and every surviving component
     is renormalised here so later code can keep using plain ["source"]
     access without risking a KeyError on the rare one that omits it.
+
+    `scope` is treated exactly like `source` and for the same reason -- it is
+    never sent to OSV.dev, only carried onto the finding -- except that a
+    missing or unrecognised value does not merely default to empty: it becomes
+    `unknown` through `deps.merge_scope`, so a malformed entry can never make a
+    development dependency read as one that ships.
     """
     clean = []
     for c in components:
@@ -144,7 +172,8 @@ def _clean_components(components):
         if not isinstance(source, str):
             continue
         clean.append({"name": c["name"], "ecosystem": c["ecosystem"],
-                      "version": c["version"], "source": source})
+                      "version": c["version"], "source": source,
+                      "scope": merge_scope(c.get("scope"))})
     return clean, len(components) - len(clean)
 
 
