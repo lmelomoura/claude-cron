@@ -19,6 +19,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The secret row no longer reads `ran` while gitleaks' working-tree pass
+  produced nothing.** `adapters.gitleaks_scan` reported what its HISTORY sweep
+  covered and nothing about its tree pass, so `gitleaks git` finishing while
+  `gitleaks dir` timed out — or wrote a report over the 64 MB ceiling — left the
+  coverage table saying `ran` beside a paragraph saying *"The working-tree
+  secret scan did not complete"*. **What it cost not to have this:** measured
+  on one Laravel monorepo, `gitleaks dir` wrote 98,306 `generic-api-key`
+  records from `storage/framework/sessions/` alone, a 65 MB report the analysis
+  refused to read, and every analysis of it filed the secret phase as fully
+  run with the tree never scanned by the engine. The adapter now returns the
+  tree outcome as a fourth value (`TREE_OK` / `TREE_GONE`), the same way it
+  returns the history state, and `_scan_secrets` earns `ran` only when both
+  passes wrote a report, the history was full, and the built-in sweep of the
+  history completed — never by matching a sentence in a note.
+- **A PEM header with no key behind it is no longer a secret finding.** The
+  built-in scanner's `private_key` rule fired on the header line alone, where
+  gitleaks' `private-key` rule wants the body. Measured on Minerva: three
+  `private_key` findings, every one a lone header — in an adversarial test, a
+  conformance harness and two planning documents — and none of them a key.
+  **What it cost not to have this:** with the two scanners' findings now merged
+  (below), each came back as a critical finding only the built-in saw. The rule
+  now requires key material to follow the header, on the next line as a PEM
+  file lays it out or on the same line as a `.env` or JSON value carries it
+  with `\n` escapes; the history sweep reads a file's added lines together so
+  it can see the line after a header too.
+- **Both secret scanners stop at the same file size.** The built-in sweep
+  skips files over 2 MB and says so; gitleaks had no cap. With the two merged
+  by fingerprint, every larger file would have been a credential only gitleaks
+  could ever see — reported "only gitleaks saw" for ever — and the "N larger
+  than 2 MB" sentence false for the phase as a whole. Gitleaks is now handed
+  `--max-target-megabytes`, derived from the built-in's own ceiling
+  (`secrets.MAX_TARGET_MEGABYTES`) rather than written a second time.
 - **The triage gate no longer names a finding the operator already ruled on.**
   `_untriaged` counted every scanner row of the analysis at `medium` or above
   that carried no re-report — decided or not — while `diff.classify` lets a
@@ -655,6 +687,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The two secret scanners now run together and their findings add up.**
+  `prepare` used to run ONE of them — gitleaks when installed, the built-in
+  pattern scanner when not — because two scanners naming their rules
+  differently mint two fingerprints for one credential. `taxonomy.RULE_RENAMES`
+  made that reason false for six of the built-in's eight types, so the built-in's
+  findings are now minted under gitleaks' names BEFORE the fingerprint is
+  computed and the two lists merge by identity: one row per credential, the
+  higher severity, the occurrences of both, and a `producer` naming every
+  scanner that saw it — `gitleaks+secrets` for a row both re-found, `secrets`
+  for one only the built-in's generic rule saw. The analysis row records
+  `gitleaks+secrets` in `produced`, and `diff._proven` reads both sides atom by
+  atom and requires EVERY scanner that saw a row to have looked again before it
+  is `fixed` — so a row minted under `gitleaks` alone before this change is
+  still proven by the union, and a row both saw is `pending`, never `fixed`,
+  on a machine that later loses gitleaks. **What it cost not to have this:**
+  measured on Minerva with the product filters applied to both, gitleaks saw 2
+  secret identities and the built-in 30; the one credential gitleaks discards
+  by entropy — a seed token shared by a script, a test helper and a Postman
+  collection — was found by nothing on any machine with gitleaks installed.
+  The coverage paragraph now says how many findings both saw and how many only
+  one did, and — when a `github_token` or `slack_token` row is present, the two
+  types the rename map deliberately leaves out — that such a credential may be
+  listed twice until a map exists. On a machine without gitleaks nothing
+  changes: the built-in runs alone, under its own names, as `warning`.
 - **The JSON report's `coverage` key is an object, not an array.** It used to
   be the list of coverage sentences; it is now `{"notes": [...], "phases":
   [...]}`, where `notes` is that same list, unchanged and in the same order,

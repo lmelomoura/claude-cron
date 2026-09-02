@@ -22,6 +22,8 @@ _RULES = [
     ("slack_token", "high", re.compile(r"\b(xox[baprs]-[0-9A-Za-z-]{10,})\b"), 0.0),
     ("stripe_key", "critical", re.compile(r"\b((?:sk|rk)_live_[0-9A-Za-z]{24,})\b"), 0.0),
     ("openai_key", "critical", re.compile(r"\b(sk-[A-Za-z0-9]{32,})\b"), 0.0),
+    # The header alone is not a finding: `_hits` requires key material to
+    # follow it, on the same line or the next -- see `_pem_body_follows`.
     ("private_key", "critical", re.compile(r"(-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----)"), 0.0),
     ("google_api_key", "high", re.compile(r"\b(AIza[0-9A-Za-z_-]{35})\b"), 0.0),
     # The one generic rule, and the only one that needs the entropy gate and
@@ -106,6 +108,13 @@ def skipped(rel) -> bool:
 
 
 _MAX_BYTES = 2 * 1024 * 1024
+# The same ceiling, in the unit gitleaks' flag takes (`--max-target-megabytes`,
+# see `adapters.gitleaks_scan`). Derived from `_MAX_BYTES` rather than written
+# twice: the two scanners' findings are merged by fingerprint, so a file only
+# one of them reads is a credential only one of them can ever see -- and the
+# "N larger than 2 MB" sentence `_skip_note` writes is true of the phase as a
+# whole only while both stop at the same size.
+MAX_TARGET_MEGABYTES = _MAX_BYTES // (1024 * 1024)
 
 # ONE sentence, whichever scanner found the credential -- `adapters` emits it
 # too. The advice is identical because the fact is: a credential that reached
@@ -150,13 +159,50 @@ def _is_placeholder(value: str) -> bool:
     return False
 
 
+# A run of base64 long enough to be key material and too long to be a word.
+# Real PEM body lines are 64 characters (OpenSSH writes 70); 40 leaves room for
+# the short final line of a body without admitting an ellipsis, a `<redacted>`
+# or a variable name.
+_PEM_BODY = re.compile(r"[A-Za-z0-9+/=]{40,}")
+
+
+def _pem_body_follows(rest_of_line: str, next_line: str) -> bool:
+    """Whether key material follows a PEM header -- the shape of a KEY, not
+    of a mention of one.
+
+    Measured on Minerva: three `private_key` findings, every one a lone header
+    -- in an adversarial test, a conformance harness and two planning documents
+    -- and not one of them a gitleaks finding, whose `private-key` rule wants
+    the body. Once both scanners' findings were merged by fingerprint (see
+    `cli._scan_secrets`) those came back as findings only this scanner saw, so
+    the requirement moved here, to the source.
+
+    Two places the body can be: the NEXT physical line, which is where a PEM
+    file puts it, and the REST OF THE SAME line, which is where a `.env` or a
+    JSON value puts it -- the whole key on one line with `\\n` where the line
+    breaks were. The second is not a corner case; it is how real keys are
+    stored in the files this scanner most needs to read.
+    """
+    return bool(_PEM_BODY.search(rest_of_line) or _PEM_BODY.search(next_line))
+
+
 def _hits(text: str):
-    """Yield (rule, severity, line_number) for every match. The value stays here."""
-    for lineno, line in enumerate(text.splitlines(), start=1):
+    """Yield (rule, severity, line_number) for every match. The value stays here.
+
+    The lines are read together rather than one at a time because one rule
+    needs to see past the line it matched on: a PEM header is a finding only
+    when its body follows (`_pem_body_follows`), and in a PEM file the body is
+    the next line.
+    """
+    lines = text.splitlines()
+    for lineno, line in enumerate(lines, start=1):
         for name, severity, pattern, min_entropy in _RULES:
             for m in pattern.finditer(line):
                 candidate = m.group(1)
                 if name == "generic_secret" and _is_placeholder(candidate):
+                    continue
+                if name == "private_key" and not _pem_body_follows(
+                        line[m.end():], lines[lineno] if lineno < len(lines) else ""):
                     continue
                 if min_entropy and _entropy(candidate) < min_entropy:
                     continue
@@ -177,7 +223,9 @@ def looks_like_a_secret(text: str):
     same placeholder gate `_is_placeholder` already applies to the generic
     rule applies here too, so an agent writing `password = "changeme12345"`
     to describe what it found is not refused for quoting an obvious
-    stand-in.
+    stand-in. So does the body requirement `_hits` puts on a PEM header, over
+    the rest of the text: a header an agent quotes to name what it found is
+    not refused; a header with the key behind it is.
 
     Returns the RULE NAME ONLY. It never returns, logs, or stores the
     matched text itself -- the one property every function in this module
@@ -189,6 +237,8 @@ def looks_like_a_secret(text: str):
         for m in pattern.finditer(text):
             candidate = m.group(1)
             if name == "generic_secret" and _is_placeholder(candidate):
+                continue
+            if name == "private_key" and not _pem_body_follows(text[m.end():], ""):
                 continue
             if min_entropy and _entropy(candidate) < min_entropy:
                 continue
@@ -214,6 +264,11 @@ def _finding(rule, severity, path, lines, historical, commit_count=None):
     re-added" cannot be told apart from "a second, different credential" --
     but the reader still needs to know there were two exposures, not one
     silently swallowed by dedup.
+
+    `rule` is the name the finding is MINTED under, which is this scanner's
+    own name for the type or -- when the caller passed a `rename` map, see
+    `scan_tree` -- the engine's name for it. Either spelling reads as words in
+    the title.
     """
     where = "in the git history" if historical else "in the working tree"
     rationale = (f"A credential of type {rule} was found {where}. Its value is "
@@ -223,7 +278,7 @@ def _finding(rule, severity, path, lines, historical, commit_count=None):
     return {
         "fingerprint": secret_fingerprint(rule, path),
         "category": "secret", "rule": rule, "severity": severity,
-        "title": f"{rule.replace('_', ' ')} committed to the repository",
+        "title": f"{rule.replace('_', ' ').replace('-', ' ')} committed to the repository",
         "rationale": rationale,
         "remediation": REMEDIATION,
         "occurrences": [{"file": path, "line": line, "snippet_hash": ""} for line in lines],
@@ -243,7 +298,7 @@ def _skip_note(too_big, unreadable):
     """
     parts = []
     if too_big:
-        parts.append(f"{too_big} larger than {_MAX_BYTES // (1024 * 1024)} MB")
+        parts.append(f"{too_big} larger than {MAX_TARGET_MEGABYTES} MB")
     if unreadable:
         parts.append(f"{unreadable} not readable as UTF-8 text")
     if not parts:
@@ -256,15 +311,16 @@ def _skip_note(too_big, unreadable):
 def _readable_files(root, ignore, unread):
     """Yield (relative path, text) for every file a sweep may read.
 
-    ONE walk, shared by the two callers below. `scan_tree` needs the text to
-    match patterns against and `count_lines` needs it to count -- and when an
-    engine does the secret detection instead, the line count still has to
-    come from somewhere, from the same set of files, or the two numbers would
-    describe different repositories. `unread` is a mutable dict the walk
-    reports into, because a generator's return value is not reachable through
-    a `for`. It counts only the files this walk OPENED AND COULD NOT READ --
-    a path excluded by `skipped` or by `ignore` was never in scope and is not
-    a coverage gap to declare.
+    The walk `scan_tree` reads, kept apart from the matching so that what was
+    and was not opened has one home. It used to be shared with a second
+    caller, `count_lines`, which counted `lines_of_code` for the analyses an
+    engine scanned instead of this module; the built-in sweep now runs beside
+    the engine on every analysis (see `cli._scan_secrets`), so the count is
+    once again a by-product of the read that is happening anyway. `unread` is
+    a mutable dict the walk reports into, because a generator's return value
+    is not reachable through a `for`. It counts only the files this walk
+    OPENED AND COULD NOT READ -- a path excluded by `skipped` or by `ignore`
+    was never in scope and is not a coverage gap to declare.
     """
     root = Path(root)
     for p in sorted(root.rglob("*")):
@@ -294,20 +350,7 @@ def _lines_in(text: str) -> int:
     return text.count("\n") + (0 if text.endswith("\n") or not text else 1)
 
 
-def count_lines(root, ignore) -> int:
-    """The size of what was analysed, without the pattern matching.
-
-    For the runs where an ENGINE did the secret detection: `lines_of_code` is
-    a by-product of `scan_tree`'s read, and losing it would leave the project
-    header rendering an em dash -- "not counted" -- for ever on any machine
-    with gitleaks installed. It is a count, never the text: nothing here can
-    put a file's contents into the ledger, a report or a log.
-    """
-    return sum(_lines_in(text) for _rel, text in _readable_files(
-        root, ignore, {"too_big": 0, "unreadable": 0}))
-
-
-def scan_tree(root, ignore):
+def scan_tree(root, ignore, rename=None):
     """(findings, note, lines) for the working tree.
 
     The note is the same channel `scan_history` and `osv.query` use: whatever
@@ -320,7 +363,19 @@ def scan_tree(root, ignore):
     so the count describes what was analysed, not what exists on disk. It is
     a count, never the text itself: nothing about it can put a file's
     contents into the ledger, a report or a log.
+
+    `rename` maps this scanner's rule names onto the names the findings are
+    MINTED under. `cli._scan_secrets` passes the secret entries of
+    `taxonomy.RULE_RENAMES` when gitleaks runs beside this scanner, so the two
+    scanners' readings of one credential type share one fingerprint and merge
+    into one finding. Applied AFTER the template rule, which is keyed on this
+    scanner's own names, and BEFORE the finding is built, so the identity, the
+    title and the rationale all carry the minted name. None -- the fallback
+    path, when this scanner runs alone -- mints this scanner's own names,
+    exactly as it always has: `migrate-rules` stays the deliberate step from
+    one vocabulary to the other on a machine that gains the engine.
     """
+    rename = rename or {}
     out, lines = [], 0
     unread = {"too_big": 0, "unreadable": 0}
     for rel, text in _readable_files(root, ignore, unread):
@@ -341,6 +396,7 @@ def scan_tree(root, ignore):
             # See `ignores.SAMPLE_SUPPRESSED_RULES`.
             if sample_suppressed(rel, rule, ignore):
                 continue
+            rule = rename.get(rule, rule)
             group = by_rule.setdefault(rule, {"severity": severity, "lines": []})
             group["lines"].append(line)
         for rule, group in by_rule.items():
@@ -408,7 +464,7 @@ FALLBACK_NOTE = (f"Secrets were scanned by the built-in pattern scanner and "
                  "have been found.")
 
 
-def scan_history(root, since_sha, ignore=()):
+def scan_history(root, since_sha, ignore=(), rename=None):
     """(findings, note): every secret ever committed, even if the file no
     longer has it.
 
@@ -421,6 +477,10 @@ def scan_history(root, since_sha, ignore=()):
     clean" -- so the one failure mode that hides the findings this function
     exists to produce was reported as the best possible news. A gap that is
     stated is useful; this one was silent.
+
+    `rename` is `scan_tree`'s: the names to mint under, applied after the
+    template rule and before the finding is built, None for this scanner's
+    own.
     """
     rev = f"{since_sha}..HEAD" if since_sha else "HEAD"
     try:
@@ -455,16 +515,37 @@ def scan_history(root, since_sha, ignore=()):
     # "commit" can never be mistaken for this header, which always starts
     # at column zero.
     groups = {}
+    rename = rename or {}
     path = ""
     skip_path = False
     commit_sha = None
+    # The `+` lines of the current (commit, path), read TOGETHER when the next
+    # header arrives rather than one at a time: `_hits` has to see the line
+    # after a PEM header to know whether a body follows it, and a single diff
+    # line cannot show it one. A path the sweep skips adds nothing here, so
+    # the buffer is never more than one file's additions in one commit.
+    added = []
+
+    def sweep():
+        for rule, severity, _ in _hits("\n".join(added)):
+            if sample_suppressed(path, rule, ignore):
+                continue
+            rule = rename.get(rule, rule)
+            key = (rule, path)
+            group = groups.setdefault(key, {"severity": severity, "commits": set()})
+            if commit_sha is not None:
+                group["commits"].add(commit_sha)
+        added.clear()
+
     for line in blob.splitlines():
         commit_match = _COMMIT_HEADER.match(line)
         if commit_match is not None:
+            sweep()
             commit_sha = commit_match.group(1)
             continue
         header_path = _path_from_diff_header(line)
         if header_path is not None:
+            sweep()
             path = header_path
             # The same globs the tree sweep obeys, applied to the same
             # repo-relative paths. Without this, a fixtures directory full of
@@ -483,13 +564,8 @@ def scan_history(root, since_sha, ignore=()):
             continue
         if not line.startswith("+") or line.startswith("+++"):
             continue
-        for rule, severity, _ in _hits(line[1:]):
-            if sample_suppressed(path, rule, ignore):
-                continue
-            key = (rule, path)
-            group = groups.setdefault(key, {"severity": severity, "commits": set()})
-            if commit_sha is not None:
-                group["commits"].add(commit_sha)
+        added.append(line[1:])
+    sweep()
 
     out = []
     for (rule, path), group in groups.items():

@@ -395,6 +395,18 @@ HISTORY_OK = "ok"          # git walked it; whatever gitleaks reports is complet
 HISTORY_SHALLOW = "shallow"  # git walked what there is, and there is not all of it
 HISTORY_GONE = "gone"      # git cannot walk it at all; the sweep must not run
 
+# And the two the working-tree pass can end in: `gitleaks dir` either wrote a
+# report this module could read or it did not -- there is no shallow tree.
+# Returned beside the history state and read by `cli._scan_secrets` the same
+# way, so a tree pass that produced nothing costs the phase its `ran` instead
+# of leaving the table saying the tree was scanned beside a paragraph saying it
+# was not. Not hypothetical: measured on one Laravel monorepo, `gitleaks dir`
+# wrote 98,306 `generic-api-key` records from `storage/framework/sessions/`
+# alone -- a 65 MB report, over `engines.MAX_REPORT_BYTES` -- while `gitleaks
+# git` finished cleanly, and the secret row read `ran`.
+TREE_OK = "ok"      # `gitleaks dir` wrote a report; whatever it holds is the tree
+TREE_GONE = "gone"  # no tree report exists: the pass was attempted and produced nothing
+
 
 def _git(root, *args):
     """`git -C root ...`, or None when git will not run at all."""
@@ -506,25 +518,34 @@ def _is_shallow(root) -> bool:
 def gitleaks_scan(root, ignore_paths=()):
     """Every secret gitleaks can find in `root`, tree and history.
 
-    Returns `(findings, notes, history)`. `findings` is None when NEITHER
-    pass produced a report -- the caller's signal that the built-in scanner
-    should do the work after all. It may only do so while the engine has
-    contributed nothing: two scanners in one category report one hole under
-    two fingerprints, and the checklist then shows the same secret as two
-    entries that contradict each other.
+    Returns `(findings, notes, history, tree)`. `findings` is None when
+    NEITHER pass produced a report -- the caller's signal that the built-in
+    scanner is on its own for this analysis. When at least one pass answered,
+    the built-in scanner runs BESIDE this one and `cli._scan_secrets` merges
+    the two lists by fingerprint: the built-in's findings are minted under
+    this engine's rule names for the types `taxonomy.RULE_RENAMES` maps, so a
+    credential both saw is one identity, not two entries whose remediations
+    contradict each other. That merge is the caller's; this function reports
+    what the engine saw and nothing about the other scanner.
 
     `history` IS WHAT THE HISTORY SWEEP ACTUALLY COVERED, one of the three
-    `HISTORY_*` states above, and it is the value `cli._scan_secrets` turns
-    into the secret phase's status in the coverage table. `HISTORY_OK` only
-    when the sweep ran over a full clone; `HISTORY_SHALLOW` when it ran over
-    what a shallow clone carries; `HISTORY_GONE` when no history report exists
-    at all -- because git could not walk the history OR because the pass was
-    attempted and produced nothing. The second route matters: `history_state`
-    can answer OK and `gitleaks git` can still fail to write a report, and a
-    caller reading the pre-scan state alone would file the phase as `ran`
-    under a note saying the sweep did not complete. The notes already say all
-    of this in prose; this value says it in the vocabulary the table reads,
-    so the two cannot drift.
+    `HISTORY_*` states above, and `tree` IS WHETHER THE TREE PASS WROTE A
+    REPORT, one of the two `TREE_*` states. Together they are what
+    `cli._scan_secrets` turns into the secret phase's status in the coverage
+    table. `HISTORY_OK` only when the sweep ran over a full clone;
+    `HISTORY_SHALLOW` when it ran over what a shallow clone carries;
+    `HISTORY_GONE` when no history report exists at all -- because git could
+    not walk the history OR because the pass was attempted and produced
+    nothing. The second route matters: `history_state` can answer OK and
+    `gitleaks git` can still fail to write a report, and a caller reading the
+    pre-scan state alone would file the phase as `ran` under a note saying
+    the sweep did not complete. `TREE_GONE` is the tree's version of that
+    second route, and it used to have no value at all: `gitleaks dir` timing
+    out or writing a report over the ceiling left `TREE_GAP` in the notes and
+    nothing in the vocabulary the table reads, so the row read `ran` beside
+    "the working-tree secret scan did not complete". The notes say all of this
+    in prose; these two values say it in the table's words, so the two cannot
+    drift -- and the caller never has to look for a sentence in a note.
 
     THE HISTORY IS NOT OPTIONAL. A credential that was ever committed stays
     compromised however thoroughly the file was later deleted, which is what
@@ -571,7 +592,17 @@ def gitleaks_scan(root, ignore_paths=()):
                   "--exit-code", "0",
                   # Nothing this engine prints is read, and its info lines
                   # name the files it is scanning.
-                  "--log-level", "error"]
+                  "--log-level", "error",
+                  # THE SAME FILE SET AS THE BUILT-IN SWEEP. Gitleaks has no
+                  # size cap by default; the built-in scanner stops at
+                  # `secrets._MAX_BYTES`. The two lists are merged by
+                  # fingerprint, so a file only one of them read would be a
+                  # credential only one of them could ever see -- reported as
+                  # "only gitleaks saw" for ever, and leaving the built-in's
+                  # "N larger than 2 MB" sentence false for the phase as a
+                  # whole. Verified against `gitleaks --help` for 8.30.1: the
+                  # flag exists on both `dir` and `git`.
+                  "--max-target-megabytes", str(secrets.MAX_TARGET_MEGABYTES)]
         history, history_note = (
             (None, HISTORY_UNREADABLE.format(reason=why))
             if state == HISTORY_GONE
@@ -590,7 +621,7 @@ def gitleaks_scan(root, ignore_paths=()):
         # `_scan_secrets` reads a None here as "the engine contributed
         # nothing" and runs the built-in scanner over both halves instead.
         notes += [n for n in dict.fromkeys((history_note, tree_note)) if n]
-        return None, notes, HISTORY_GONE
+        return None, notes, HISTORY_GONE, TREE_GONE
 
     findings = []
     if history is None:
@@ -625,15 +656,20 @@ def gitleaks_scan(root, ignore_paths=()):
     # for.
     if project_config(root) is not None:
         notes.append(PROJECT_CONFIG_NOTE)
-    return findings, notes, state
+    return findings, notes, state, TREE_OK if tree is not None else TREE_GONE
 
 
 # ------------------------------------------------------- the dependency scan
 #
-# Trivy replaces `deps.inventory` + `osv.query` on the same terms as above:
-# ONE producer per category, never both -- see `cli._scan_dependencies`,
-# which is where that choice is actually made. Everything here is the
-# translator, not the switch.
+# Trivy replaces `deps.inventory` + `osv.query`: ONE producer per category,
+# never both -- see `cli._scan_dependencies`, which is where that choice is
+# actually made. NOT the secret phase's terms any more: the two secret
+# scanners run together and merge by fingerprint (`cli._scan_secrets`), which
+# is possible there because `taxonomy.RULE_RENAMES` maps one scanner's rule
+# names onto the other's. No such map exists between OSV.dev's identities and
+# Trivy's -- the paragraphs below are about how far apart they are -- so two
+# dependency producers would be two identities for one hole. Everything here
+# is the translator, not the switch.
 #
 # THE IDENTITY IS OSV'S, AND SO ARE ITS INPUTS. `osv._finding` already had
 # the recipe -- `fingerprint("dependency", vuln_id, source,

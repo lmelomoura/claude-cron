@@ -360,12 +360,87 @@ def test_a_PRIVATE_KEY_in_a_sample_file_is_STILL_reported(tmp_path):
     `tests/**` applies word for word: it is in the repository and readable by
     everyone with a clone."""
     (tmp_path / "certs").mkdir()
-    (tmp_path / "certs" / "server.key.example").write_text(
-        "-----BEGIN RSA PRIVATE KEY-----\nMIIEow...\n"
-        "-----END RSA PRIVATE KEY-----\n")
+    (tmp_path / "certs" / "server.key.example").write_text(PEM)
     found, _note, _lines = scan_tree(tmp_path, [])
     assert [f["rule"] for f in found] == ["private_key"]
     assert found[0]["occurrences"][0]["file"] == "certs/server.key.example"
+
+
+# ------------------------------------------ a PEM header alone is not a key
+#
+# Measured on Minerva: three `private_key` findings, every one a header with
+# no body -- in an adversarial test, a conformance harness and two planning
+# documents -- and not one of them a gitleaks finding, because gitleaks'
+# `private-key` rule wants the body. With the two scanners' findings merged by
+# fingerprint, the built-in's header-only matches came back as findings only
+# it saw; the fix is at the source, and the shape it now requires is the one
+# a key actually has.
+
+# Sixty-four base64 characters -- the shape of a body line, and not a key.
+PEM_BODY_LINE = "MIIEpAIBAAKCAQEA" + "7Yb3ZpQk9wVt2LmN4RsX8HcJ1FgD6KaE" + "0uWq5TzP3nBvC2rM"
+PEM = (f"-----BEGIN RSA PRIVATE KEY-----\n{PEM_BODY_LINE}\n"
+       "-----END RSA PRIVATE KEY-----\n")
+
+
+def test_a_pem_header_with_no_body_is_not_a_finding(tmp_path):
+    """The documentation shape: a header, an ellipsis or a placeholder where
+    the material goes, a footer. Nothing to rotate."""
+    (tmp_path / "plan.md").write_text(
+        "The redactor must catch this:\n\n"
+        "    -----BEGIN RSA PRIVATE KEY-----\n    ...\n"
+        "    -----END RSA PRIVATE KEY-----\n")
+    (tmp_path / "harness.js").write_text(
+        'const HEADER = "-----BEGIN RSA PRIVATE KEY-----";\n'
+        'const FOOTER = "-----END RSA PRIVATE KEY-----";\n')
+    assert scan_tree(tmp_path, [])[0] == []
+    assert looks_like_a_secret("-----BEGIN RSA PRIVATE KEY----- appears in the log") is None
+
+
+def test_a_pem_header_followed_by_its_body_is_a_finding(tmp_path):
+    (tmp_path / "id_rsa").write_text(PEM)
+    found, _, _ = scan_tree(tmp_path, [])
+    assert [f["rule"] for f in found] == ["private_key"]
+    assert [o["line"] for o in found[0]["occurrences"]] == [1]
+    assert PEM_BODY_LINE not in repr(found)
+    assert looks_like_a_secret(f"pasted: {PEM}") == "private_key"
+
+
+def test_a_one_line_pem_with_escaped_newlines_is_still_a_finding(tmp_path):
+    """The `.env` and JSON shape: the whole key on one physical line with
+    `\\n` where the line breaks were. The body follows the header on the SAME
+    line, and that has to count -- a real key stored the way real keys are
+    stored is the one shape this rule must never lose."""
+    (tmp_path / ".env").write_text(
+        f'SIGNING_KEY="-----BEGIN RSA PRIVATE KEY-----\\n{PEM_BODY_LINE}\\n'
+        '-----END RSA PRIVATE KEY-----"\n')
+    found, _, _ = scan_tree(tmp_path, [])
+    assert [f["rule"] for f in found] == ["private_key"]
+
+
+def test_the_history_sweep_reads_a_body_across_its_added_lines(tmp_path):
+    """`scan_history` used to match each `+` line on its own, which cannot see
+    a body on the line after a header. The added lines of one file in one
+    commit are read together, so a key committed and later deleted is still
+    found -- and a lone header committed and deleted is still not."""
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True,
+                       capture_output=True)
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "deploy.key").write_text(PEM)
+    (tmp_path / "notes.md").write_text("-----BEGIN RSA PRIVATE KEY-----\n...\n")
+    git("add", "-A")
+    git("commit", "-qm", "add")
+    (tmp_path / "deploy.key").unlink()
+    (tmp_path / "notes.md").unlink()
+    git("add", "-A")
+    git("commit", "-qm", "remove")
+    found, note = scan_history(tmp_path, None)
+    assert note == ""
+    assert [(f["rule"], f["occurrences"][0]["file"]) for f in found] == [
+        ("private_key", "deploy.key")]
+    assert PEM_BODY_LINE not in repr(found)
 
 
 def test_a_template_silences_ONLY_the_two_template_noisy_rules(tmp_path):

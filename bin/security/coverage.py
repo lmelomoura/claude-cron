@@ -89,9 +89,11 @@ PHASE_ORDER = (SCOPE, SECRETS, HYGIENE, DEPENDENCIES, SBOM, IAC, SAST_PREPASS,
 def phase(name, status, by="", note="") -> dict:
     """One row of the table.
 
-    `by` is the PRODUCER that answered -- one of `cli.PRODUCER_*`, the same
-    identity vocabulary `diff._proven` reads -- or None when no producer is
-    involved at all (`scope` is this analysis's own configuration, not
+    `by` is the PRODUCER that answered -- one of `cli.PRODUCER_*`, or two of
+    them joined by `diff.PRODUCER_SEPARATOR` when a phase ran two scanners at
+    once (`gitleaks+secrets`, see `cli._scan_secrets`): the same identity
+    vocabulary `diff._proven` reads, atom by atom -- or None when no producer
+    is involved at all (`scope` is this analysis's own configuration, not
     something a scanner did). Stored as null rather than as "" so a consumer
     never has to tell an empty producer from a missing key.
 

@@ -644,10 +644,12 @@ def test_a_decision_wins_over_the_derived_state(tmp_path):
 
 def test_findings_lists_what_the_deterministic_phase_left_for_the_agent(tmp_path):
     """PINNED to the built-in scanner, because the fixture is one only it
-    reports: a PEM header with `xx` where the key material goes. Gitleaks is
-    right to ignore that -- its private-key rule wants a body -- so under the
-    engine `found` came back empty, `any(...)` failed and, worse,
-    `all("occurrences" in f ...)` passed vacuously over the empty list.
+    reports: a PEM header and one body line, with no footer. Gitleaks is
+    right to ignore that -- its private-key rule wants the footer too -- so
+    under the engine `found` came back empty, `any(...)` failed and, worse,
+    `all("occurrences" in f ...)` passed vacuously over the empty list. (The
+    body line is there because the built-in scanner wants one as well now:
+    a header alone is not a key, see `secrets._pem_body_follows`.)
 
     The `any(...)` is what stops the `all(...)` after it being vacuous here
     too, so the two lines are a pair and neither may be dropped. The engine's
@@ -656,7 +658,7 @@ def test_findings_lists_what_the_deterministic_phase_left_for_the_agent(tmp_path
     env = {**os.environ, "CC_SECURITY_ENGINES": "off"}
     root = tmp_path / "repo"
     root.mkdir()
-    (root / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----\nxx\n")
+    (root / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7Yb3ZpQk9wVt2LmN4RsX8HcJ1FgD6KaE0uWq5TzP3nBvC2rM\n")
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline",
@@ -851,7 +853,7 @@ def test_a_closed_analysis_refuses_a_second_prepare(tmp_path):
     db = tmp_path / "security.db"
     root = tmp_path / "repo"
     root.mkdir()
-    (root / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----\nxx\n")
+    (root / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7Yb3ZpQk9wVt2LmN4RsX8HcJ1FgD6KaE0uWq5TzP3nBvC2rM\n")
     aid = open_analysis(db)
     run(db, "finish", "--analysis", str(aid), "--state", "failed")
     out = fails(db, "prepare", "--analysis", str(aid), "--root", str(root),
@@ -1330,7 +1332,7 @@ def test_ignore_paths_reach_the_tree_the_history_and_the_hygiene_pass(tmp_path):
     env = {**os.environ, "CC_SECURITY_ENGINES": "off"}
     root = git_repo(tmp_path / "repo", [
         ("fixtures", {"tests/planted/fake.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
-                      "tests/planted/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nx\n"}),
+                      "tests/planted/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7Yb3ZpQk9wVt2LmN4RsX8HcJ1FgD6KaE0uWq5TzP3nBvC2rM\n"}),
         ("delete the env", {"tests/planted/fake.env": None}),
     ])
     db = tmp_path / "security.db"
@@ -1464,7 +1466,7 @@ def test_the_default_noise_filter_reaches_every_deterministic_phase(tmp_path):
     root = git_repo(tmp_path / "repo", [
         ("fixtures", {
             "tests/fixtures/fake.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
-            "tests/fixtures/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nx\n",
+            "tests/fixtures/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7Yb3ZpQk9wVt2LmN4RsX8HcJ1FgD6KaE0uWq5TzP3nBvC2rM\n",
             ".env.example": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
         ("delete the env", {"tests/fixtures/fake.env": None}),
     ])
@@ -2582,8 +2584,9 @@ def test_prepare_records_one_phase_per_deterministic_pass(tmp_path):
     assert by_name["hygiene"] == {"name": "hygiene", "status": "ran",
                                   "by": "hygiene", "note": ""}
     # And the secret phase always has a producer -- there is no configuration
-    # in which neither scanner runs.
-    assert by_name["secrets"]["by"] in ("gitleaks", "secrets")
+    # in which neither scanner runs: both when gitleaks is here, the built-in
+    # alone when it is not.
+    assert by_name["secrets"]["by"] in ("gitleaks+secrets", "secrets")
     assert by_name["secrets"]["status"] in ("ran", "warning")
     assert row["coverage_note"]
 
@@ -3079,14 +3082,15 @@ def test_the_secret_row_is_a_warning_when_the_history_was_not_swept_in_full(
     monkeypatch.setattr(security_cli.adapters, "engine_path",
                         lambda name: "/usr/bin/gitleaks" if name == "gitleaks" else None)
     monkeypatch.setattr(security_cli.adapters, "gitleaks_scan",
-                        lambda root, ignore_paths=(): ([], [gap, engine_note], history))
+                        lambda root, ignore_paths=(): ([], [gap, engine_note], history,
+                                                       security_cli.adapters.TREE_OK))
     security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
                        "--db", str(db), "--offline"])
     note = json.loads(capsys.readouterr().out)["coverage_note"]
     _, phases = _coverage_phases(db, aid)
     secret = [p for p in phases if p["name"] == "secrets"][0]
     assert secret["status"] == "warning"
-    assert secret["by"] == "gitleaks"
+    assert secret["by"] == "gitleaks+secrets"
     assert gap in secret["note"]
     assert secret["note"] in note
 
@@ -3094,9 +3098,10 @@ def test_the_secret_row_is_a_warning_when_the_history_was_not_swept_in_full(
 def test_the_secret_row_is_ran_only_when_the_full_history_was_swept(
         tmp_path, monkeypatch, capsys):
     """The control: the engine over a full clone, and the one state that earns
-    the row a `ran`."""
-    root = tmp_path / "repo"
-    root.mkdir()
+    the row a `ran`. A real checkout, because the built-in scanner now sweeps
+    the history beside the engine and its own gap over a directory that is not
+    a repository would -- correctly -- cost the row its `ran`."""
+    root = git_repo(tmp_path / "repo", [("init", {"README.md": "clean\n"})])
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     engine_note = security_cli.adapters.ENGINE_NOTE.format(
@@ -3106,14 +3111,15 @@ def test_the_secret_row_is_ran_only_when_the_full_history_was_swept(
                         lambda name: "/usr/bin/gitleaks" if name == "gitleaks" else None)
     monkeypatch.setattr(security_cli.adapters, "gitleaks_scan",
                         lambda root, ignore_paths=(): (
-                            [], [engine_note], security_cli.adapters.HISTORY_OK))
+                            [], [engine_note], security_cli.adapters.HISTORY_OK,
+                            security_cli.adapters.TREE_OK))
     security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
                        "--db", str(db), "--offline"])
     capsys.readouterr()
     _, phases = _coverage_phases(db, aid)
     secret = [p for p in phases if p["name"] == "secrets"][0]
     assert secret["status"] == "ran"
-    assert secret["by"] == "gitleaks"
+    assert secret["by"] == "gitleaks+secrets"
 
 
 def test_the_fallback_sbom_names_the_inventory_that_built_it(tmp_path, monkeypatch,

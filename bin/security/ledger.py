@@ -53,7 +53,9 @@ CREATE TABLE IF NOT EXISTS analysis (
   -- ran; this says WHAT ran, which is a different fact and the one
   -- `diff._proven` needs. Trivy absent means the `iac` phase produced
   -- nothing because nobody looked, and `prepared` alone cannot tell that
-  -- from a Dockerfile that is genuinely clean.
+  -- from a Dockerfile that is genuinely clean. One entry may name two
+  -- scanners joined by `+` ('gitleaks+secrets': the secret phase runs both),
+  -- which `diff._proven` reads atom by atom.
   produced TEXT NOT NULL DEFAULT '');
 
 CREATE INDEX IF NOT EXISTS analysis_by_scope ON analysis(project, repo, branch);
@@ -72,11 +74,13 @@ CREATE TABLE IF NOT EXISTS finding (
   -- unclassified rather than quietly mislabelled.
   cwe TEXT NOT NULL DEFAULT '', owasp TEXT NOT NULL DEFAULT '',
   -- WHICH PRODUCER MINTED THIS IDENTITY -- 'trivy', 'osv', 'gitleaks',
-  -- 'secrets', 'hygiene', 'trivy-iac', 'semgrep', or 'agent'. Read by
-  -- `diff._proven` against the analysis's own `produced` above: only the
-  -- producer that could re-find a finding can prove it gone. Never the LAST
-  -- writer -- see `record_finding`, where a re-report deliberately leaves
-  -- this column alone.
+  -- 'secrets', 'hygiene', 'trivy-iac', 'semgrep', or 'agent' -- or two of
+  -- them joined by `+` ('gitleaks+secrets') when both secret scanners saw the
+  -- same credential. Read by `diff._proven` against the analysis's own
+  -- `produced` above, atom by atom: only when every producer that saw a
+  -- finding has looked again is it proven gone. Never the LAST writer -- see
+  -- `record_finding`, where a re-report deliberately leaves this column
+  -- alone.
   producer TEXT NOT NULL DEFAULT '',
   -- WHETHER A VULNERABLE DEPENDENCY SHIPS -- 'runtime', 'dev', 'unknown', or
   -- '' on any finding that is not a dependency at all. Set by whichever of the

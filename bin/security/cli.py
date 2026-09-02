@@ -402,6 +402,17 @@ PRODUCER_HYGIENE = "hygiene"
 PRODUCER_TRIVY_IAC = "trivy-iac"  # Trivy's misconfiguration scan
 PRODUCER_SEMGREP = "semgrep"      # the SAST pre-pass
 
+# ONE PHASE HAS TWO PRODUCERS AT ONCE. The secret phase runs gitleaks AND the
+# built-in scanner whenever both are here (`_scan_secrets`), and what it
+# records is the two names joined by `diff.PRODUCER_SEPARATOR`: this composite
+# on the analysis row and on every finding both re-found, `PRODUCER_SECRETS`
+# alone on a finding only the built-in's generic rule saw. `diff._proven`
+# reads both sides atom by atom -- every name above is an atom, never a
+# composite -- which is why the separator is defined next to the reader and
+# only used here.
+PRODUCER_BOTH_SECRET_SCANNERS = diff.PRODUCER_SEPARATOR.join(
+    sorted((PRODUCER_GITLEAKS, PRODUCER_SECRETS)))
+
 # The two producers of the SBOM DOCUMENT, named in the same vocabulary so the
 # coverage table's `by` column speaks one language -- but NOT part of the
 # identity vocabulary above: neither mints a finding, neither joins the
@@ -429,74 +440,216 @@ def _produced_by(findings, producer, produced):
     An empty `producer` means the phase did not run: nothing is stamped and
     nothing joins the set, which is exactly how `iac` on a machine without
     Trivy stops proving that a Dockerfile is clean.
+
+    A FINDING THAT ALREADY NAMES WHO SAW IT KEEPS THAT NAME. The secret phase
+    runs two scanners and stamps each finding itself with the atoms that
+    actually re-found it -- `gitleaks+secrets` for one both saw, `secrets` for
+    one only the built-in's generic rule saw -- while the phase-level
+    `producer` it hands here is the composite, which is what joins the set.
+    Overwriting a finding's own stamp with the composite would let gitleaks'
+    silence prove a built-in-only row gone on a later analysis; every atom a
+    finding carries is one of the composite's, so the two halves still agree.
     """
     if producer:
         produced.add(producer)
         for finding in findings:
-            finding["producer"] = producer
+            if not finding.get("producer"):
+                finding["producer"] = producer
     return findings
 
 
+# The secret entries of `taxonomy.RULE_RENAMES`, keyed by the built-in
+# scanner's name alone: what `secrets.scan_tree` and `secrets.scan_history`
+# mint the built-in's findings under when gitleaks runs beside them, so that a
+# credential both see is ONE fingerprint. The two types the map deliberately
+# leaves out are what `UNMAPPED_TYPES_NOTE` below is about.
+_SECRET_RENAMES = {old: new for (category, old), new in taxonomy.RULE_RENAMES.items()
+                   if category == "secret"}
+UNMAPPED_SECRET_RULES = tuple(sorted(
+    name for name, *_ in secrets._RULES if name not in _SECRET_RENAMES))
+
+# What the union says about itself: how much of it only one scanner saw. Said
+# whenever both ran, zeros included -- "the two agreed on everything" is a fact
+# a reader judging the report's blind spots wants stated, not inferred from a
+# silence.
+UNION_NOTE = ("Both secret scanners ran and their findings were merged by "
+              "identity: {both} seen by gitleaks and by the built-in pattern "
+              "scanner alike, {engine} only by gitleaks, {builtin} only by the "
+              "built-in scanner.")
+
+# Said only when a finding of one of the two unmapped types is present. One
+# sentence, formatted once at import so it is a constant the coverage phase can
+# be attributed and the paragraph searched for.
+UNMAPPED_TYPES_NOTE = (
+    "A {types} credential may be listed twice, once under the built-in "
+    "scanner's name and once under gitleaks' own: one rule of ours is several "
+    "of theirs, so no single rename is true and none is made; until a map "
+    "exists, read the two entries as one credential."
+).format(types=" or ".join(UNMAPPED_SECRET_RULES))
+
+
+def _graver(a, b):
+    """The higher of two severities in `report.SEVERITIES` order; a grade
+    neither scanner's table knows sorts last."""
+    order = report.SEVERITIES
+    return min((a, b), key=lambda s: order.index(s) if s in order else len(order))
+
+
+def _pooled(first, second):
+    """The occurrences of two readings of one finding, without repeats: one
+    entry per (file, line), and no line-0 placeholder for a file a real line
+    is known for. The built-in's history sweep files every hit at line 0 -- it
+    reads a diff and has no line to give -- where gitleaks reports the
+    commit's own StartLine; both are the same exposure."""
+    seen, out = set(), []
+    for occ in [*first, *second]:
+        key = (occ.get("file", ""), int(occ.get("line", 0)))
+        if key not in seen:
+            seen.add(key)
+            out.append(occ)
+    located = {o.get("file", "") for o in out if int(o.get("line", 0)) > 0}
+    return [o for o in out
+            if int(o.get("line", 0)) > 0 or o.get("file", "") not in located]
+
+
+def _merge_secret_readings(engine, builtin):
+    """One finding per fingerprint out of two scanners' readings, each carrying
+    `seen_by`: the sorted atoms that saw it.
+
+    IDENTITY IS THE JOIN. The built-in's findings arrive already minted under
+    gitleaks' names for the mapped types (`secrets.scan_tree(rename=...)`), so
+    a credential both saw is one fingerprint here without anything but that
+    being compared. Two readings of one identity keep the graver severity and
+    both producers.
+
+    THE TREE READING WINS OVER ITS HISTORY TWIN, here as it did in the ledger.
+    Each scanner reports a secret that is both in the tree and in the history
+    twice under one fingerprint -- history first, then tree -- and
+    `ledger.record_finding` used to resolve that by upsert, the last writer's
+    wording and occurrences surviving (see `cmd_prepare`'s comment and
+    test_the_tree_reading_wins_over_its_history_twin_on_either_scanner). With
+    the two lists merged before anything is recorded, the same rule lives
+    here: a tree reading REPLACES a history reading's wording and occurrences
+    -- "in the working tree", at the line the credential is on right now --
+    and a history reading adds nothing but its producer to a tree reading.
+    Two readings of the same kind pool their occurrences (`_pooled`).
+
+    The engine's list goes first so that, where both scanners saw a credential
+    in the same place, the wording kept is the engine's -- the one every
+    existing engine-path assertion reads.
+    """
+    merged = {}
+    for producer, readings in ((PRODUCER_GITLEAKS, engine), (PRODUCER_SECRETS, builtin)):
+        for reading in readings:
+            kept = merged.get(reading["fingerprint"])
+            if kept is None:
+                merged[reading["fingerprint"]] = {
+                    **reading, "occurrences": list(reading["occurrences"]),
+                    "seen_by": [producer]}
+                continue
+            if producer not in kept["seen_by"]:
+                kept["seen_by"] = sorted([*kept["seen_by"], producer])
+            kept["severity"] = _graver(kept["severity"], reading["severity"])
+            if kept["historical"] and not reading["historical"]:
+                kept.update(title=reading["title"], rationale=reading["rationale"],
+                            historical=False, occurrences=list(reading["occurrences"]))
+            elif kept["historical"] == reading["historical"]:
+                kept["occurrences"] = _pooled(kept["occurrences"], reading["occurrences"])
+    return list(merged.values())
+
+
 def _scan_secrets(root, ignore):
-    """(findings, notes, lines, producer, status) for the secret phase -- ONE
-    scanner, not two.
+    """(findings, notes, lines, producer, status) for the secret phase -- BOTH
+    scanners when gitleaks is here, the built-in pattern scanner alone when it
+    is not.
 
-    Gitleaks when it is installed, the built-in pattern scanner when it is
-    not, and never both. Two scanners in one category find the same hole and
-    report it under two fingerprints, because the fingerprint contains the
-    RULE and the two name their rules differently -- the checklist then shows
-    one credential as two entries whose remediations contradict each other,
-    and a human's decision about one never matches the other.
+    WHY IT USED TO BE ONE, AND WHY THAT REASON IS GONE. Two scanners in one
+    category find the same hole and report it under two fingerprints when
+    they name their rules differently, because the fingerprint is the rule
+    and the path -- and then the checklist shows one credential as two entries
+    whose remediations contradict each other, and a human's decision about
+    one never matches the other. `taxonomy.RULE_RENAMES` made that reason
+    false for six of the built-in's eight types: the built-in's findings are
+    minted under gitleaks' names BEFORE the fingerprint is computed
+    (`secrets.scan_tree(rename=...)`), so a credential both saw is one
+    identity and `_merge_secret_readings` folds the two readings into one
+    finding. For the two types the map deliberately leaves out --
+    `github_token` and `slack_token`, one rule of ours being several of
+    theirs -- a credential CAN appear twice, and `UNMAPPED_TYPES_NOTE` says so
+    whenever one is present. `UNION_NOTE` says, every time, how much only one
+    scanner saw.
 
-    The engine still falls back if it could not produce a report at all --
-    absent, unversioned, timed out, or writing a format this code cannot
-    read. That is safe precisely because it produced nothing: there is no
-    engine finding for a built-in one to collide with.
+    WHAT THE UNION BUYS, MEASURED on Minerva with the product filters applied
+    to both: gitleaks saw 2 identities, the built-in 30, and they shared 1.
+    The built-in's surplus is mostly test fixtures and documentation examples,
+    and among the rest is the one credential gitleaks discards by entropy --
+    a seed token shared by a script, a test helper and a Postman collection.
+    The union is the built-in's recall with the engine's identities.
 
-    `lines` is `lines_of_code`, which used to arrive as a by-product of the
-    built-in sweep's read. It is counted separately on the engine path
-    (`secrets.count_lines`, the same walk over the same files) rather than
-    lost -- the project header renders 0 as "not counted", which no analysis
-    that actually ran should ever claim.
+    The engine still yields the whole phase to the built-in scanner if it
+    could not produce a report at all -- absent, unversioned, timed out on
+    both passes, or writing a format this code cannot read. That path is what
+    it always was: the built-in's own rule names, `PRODUCER_SECRETS`,
+    `warning`, and `secrets.FALLBACK_NOTE` saying which scanner ran. No
+    renaming there, on purpose: a machine without the engine keeps minting the
+    identities it always has, and `migrate-rules` stays the deliberate step
+    onto the engine's names for the machine that gains it.
 
-    `producer` is WHICH of the two scanners answered, and it is never
-    "secret", the category. The two do not cover the same ground -- gitleaks
-    carries its own rule set, the built-in scanner has eight shaped patterns
-    and says so in `secrets.FALLBACK_NOTE` -- so a machine that loses gitleaks
-    must not read the built-in scanner's silence as proof that a
-    gitleaks-only credential is gone. This phase always has a producer: there
-    is no configuration in which neither scanner runs.
+    `lines` is `lines_of_code`, a by-product of the built-in sweep's read on
+    both paths now that the sweep runs on both.
 
-    `status` IS NEVER `skipped` HERE, for that same reason, and it is
-    `warning` on the fallback path rather than `ran`: the built-in scanner
-    covers eight shaped patterns where gitleaks carries a whole rule set, so
-    "the secret phase found nothing" means materially less on that path. It is
-    the identical distinction `producer` draws for `diff._proven`, said in the
-    one place a human reads instead of the one a diff does.
+    `producer` is WHO LOOKED, in the identity vocabulary `diff._proven`
+    reads, and it is never "secret", the category. On the union path the
+    PHASE's producer -- what joins the analysis's `produced` set -- is
+    `PRODUCER_BOTH_SECRET_SCANNERS`, and each FINDING carries the atoms that
+    actually saw it: `gitleaks+secrets` for one both re-found, `secrets` for
+    one only the built-in's generic rule saw. `_produced_by` leaves those
+    per-finding stamps alone. `_proven` then asks, atom by atom, whether every
+    scanner that saw a row looked again -- so on a machine that later loses
+    gitleaks, a row both saw reads `pending` rather than being sworn `fixed`
+    by the built-in's eight rules. This phase always has a producer: there is
+    no configuration in which neither scanner runs.
 
-    AND ON THE ENGINE PATH, `ran` IS EARNED BY THE HISTORY, NOT BY THE BINARY.
-    This phase means the working tree AND the git history -- a credential
-    that was ever committed stays compromised however thoroughly the file was
-    later deleted, which is why `cmd_prepare` sweeps the whole history on
-    every analysis. `adapters.gitleaks_scan` reports what its history sweep
-    actually covered (`HISTORY_OK`, `HISTORY_SHALLOW`, `HISTORY_GONE`), and
-    only the first is the whole of what this phase means: a shallow clone's
-    sweep saw the commits it carries and nothing before the cut-off, and a
-    history git could not walk -- or a pass that produced no report -- was not
-    swept at all. Both are `warning` by that word's own definition in
-    `coverage.py` ("something looked, but not the whole of what this phase
-    means"), and the sentence beside the row is the one the notes already
-    carry for the same gap (`adapters.SHALLOW_GAP`, `secrets.HISTORY_GAP`).
-    This row used to read `ran` over either of them, which is the table
-    contradicting its own paragraph.
+    `status` IS NEVER `skipped` HERE, for that same reason. It is `warning`
+    on the fallback path rather than `ran`: eight shaped patterns are not a
+    whole rule set, so "the secret phase found nothing" means materially less
+    there. AND ON THE UNION PATH `ran` IS EARNED BY THE WHOLE OF WHAT THE
+    PHASE MEANS, NOT BY THE BINARY: the working tree AND the git history, by
+    both scanners. `adapters.gitleaks_scan` reports what its history sweep
+    covered (`HISTORY_OK`, `HISTORY_SHALLOW`, `HISTORY_GONE`) and whether its
+    tree pass wrote a report (`TREE_OK`, `TREE_GONE`); the built-in's history
+    sweep reports its own gap as a non-empty note. `ran` needs all three
+    clean. A shallow clone's sweep saw nothing before the cut-off, a history
+    git could not walk was not swept, and a tree pass that timed out -- or
+    wrote a report over the ceiling, which one Laravel `storage/` did with
+    98,000 session files -- left a row reading `ran` beside "the working-tree
+    secret scan did not complete". Each is `warning` by that word's own
+    definition in `coverage.py` ("something looked, but not the whole of what
+    this phase means"), and the sentence beside the row is the one the notes
+    already carry for the same gap (`adapters.SHALLOW_GAP`,
+    `secrets.HISTORY_GAP`, `adapters.TREE_GAP`).
     """
     if adapters.engine_path("gitleaks"):
-        findings, notes, history = adapters.gitleaks_scan(root, ignore)
-        if findings is not None:
-            return (findings, notes, secrets.count_lines(root, ignore),
-                    PRODUCER_GITLEAKS,
-                    coverage.RAN if history == adapters.HISTORY_OK
-                    else coverage.WARNING)
+        engine, notes, history, tree = adapters.gitleaks_scan(root, ignore)
+        if engine is not None:
+            history_findings, history_note = secrets.scan_history(
+                root, None, ignore, rename=_SECRET_RENAMES)
+            tree_findings, tree_note, lines = secrets.scan_tree(
+                root, ignore, rename=_SECRET_RENAMES)
+            findings = _merge_secret_readings(engine, history_findings + tree_findings)
+            for finding in findings:
+                finding["producer"] = diff.PRODUCER_SEPARATOR.join(finding["seen_by"])
+            union_notes = [UNION_NOTE.format(
+                both=sum(1 for f in findings if len(f["seen_by"]) == 2),
+                engine=sum(1 for f in findings if f["seen_by"] == [PRODUCER_GITLEAKS]),
+                builtin=sum(1 for f in findings if f["seen_by"] == [PRODUCER_SECRETS]))]
+            if any(f["rule"] in UNMAPPED_SECRET_RULES for f in findings):
+                union_notes.append(UNMAPPED_TYPES_NOTE)
+            whole = (history == adapters.HISTORY_OK and tree == adapters.TREE_OK
+                     and not history_note)
+            return (findings, [*notes, history_note, tree_note, *union_notes], lines,
+                    PRODUCER_BOTH_SECRET_SCANNERS,
+                    coverage.RAN if whole else coverage.WARNING)
         # The engine is here and could not answer. Say so, and let the
         # built-in scanner do the work rather than reporting no secrets.
         notes = [*notes, secrets.FALLBACK_NOTE]

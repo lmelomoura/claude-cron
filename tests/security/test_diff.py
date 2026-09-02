@@ -217,6 +217,70 @@ def test_the_agents_own_sast_findings_still_close_on_the_agents_own_evidence():
     assert out[0]["state"] == "pending"
 
 
+# ------------------------- a producer made of two scanners, atom by atom
+#
+# The secret phase runs gitleaks AND the built-in scanner and records
+# `gitleaks+secrets` -- on the analysis row, and on every finding both saw.
+# `_proven` splits both sides into atoms and asks for a SUBSET: every scanner
+# that ever saw the row has to have looked again. Exact string membership
+# would leave a row minted under `gitleaks` alone, before the union, `pending`
+# for ever against `{"gitleaks+secrets"}`; "any atom" would let the built-in
+# alone swear a row both saw `fixed` on a machine that later lost gitleaks --
+# and `fixed` is the verdict whose false positive costs most.
+
+def test_a_row_minted_by_gitleaks_alone_is_proven_by_the_union():
+    """The pre-union row: `producer="gitleaks"`, meeting an analysis whose
+    `produced` spells the composite. Gitleaks ran; that is what it asked."""
+    prev = [p("ua", "secret", "gitleaks")]
+    out = classify([], prev, {"ua"}, {}, analysis_state="done", prepared=True,
+                   produced={"gitleaks+secrets", "hygiene"})
+    assert out[0]["state"] == "fixed"
+
+
+def test_a_row_both_saw_is_not_proven_by_the_built_in_alone():
+    """The machine that lost gitleaks. The built-in scanner ran and did not
+    re-find the row; gitleaks -- which also saw it -- did not look. `pending`
+    is the true statement; `fixed` would be the false remediation claim
+    `_proven` exists to prevent."""
+    prev = [p("ub", "secret", "gitleaks+secrets")]
+    out = classify([], prev, {"ub"}, {}, analysis_state="done", prepared=True,
+                   produced={"secrets", "hygiene"})
+    assert out[0]["state"] == "pending"
+    out = classify([], prev, {"ub"}, {}, analysis_state="done", prepared=True,
+                   produced={"gitleaks", "hygiene"})
+    assert out[0]["state"] == "pending"
+
+
+def test_a_row_both_saw_is_proven_when_both_looked_again():
+    """The control, spelled both ways `produced` can carry the two atoms:
+    joined as the phase records them, and as two separate entries."""
+    prev = [p("uc", "secret", "gitleaks+secrets")]
+    out = classify([], prev, {"uc"}, {}, analysis_state="done", prepared=True,
+                   produced={"gitleaks+secrets"})
+    assert out[0]["state"] == "fixed"
+    out = classify([], prev, {"uc"}, {}, analysis_state="done", prepared=True,
+                   produced={"gitleaks", "secrets"})
+    assert out[0]["state"] == "fixed"
+
+
+def test_a_row_only_the_built_in_saw_is_proven_by_the_union():
+    """The built-in ran as half of the union, so its own row's absence is
+    proven -- the composite contains the atom."""
+    prev = [p("ud", "secret", "secrets")]
+    out = classify([], prev, {"ud"}, {}, analysis_state="done", prepared=True,
+                   produced={"gitleaks+secrets"})
+    assert out[0]["state"] == "fixed"
+
+
+def test_a_producer_that_is_only_separators_proves_nothing():
+    """Fails closed, like an unknown name: a non-empty producer with no atoms
+    in it cannot be a subset of anything that ran."""
+    prev = [p("ue", "secret", "+")]
+    out = classify([], prev, {"ue"}, {}, analysis_state="done", prepared=True,
+                   produced={"gitleaks+secrets"})
+    assert out[0]["state"] == "pending"
+
+
 def test_an_unknown_producer_fails_closed():
     """A producer nobody recognises renders `pending`, never `fixed` -- so a
     rename of the vocabulary costs a run of "not re-checked" and never a false
