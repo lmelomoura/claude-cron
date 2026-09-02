@@ -11,6 +11,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from .engines import SCAN_TIMEOUT
 from .fingerprint import secret_fingerprint
 from .ignores import ignored, sample_suppressed
 
@@ -126,13 +127,39 @@ def skipped(rel) -> bool:
 
 
 _MAX_BYTES = 2 * 1024 * 1024
-# The same ceiling, in the unit gitleaks' flag takes (`--max-target-megabytes`,
-# see `adapters.gitleaks_scan`). Derived from `_MAX_BYTES` rather than written
-# twice: the two scanners' findings are merged by fingerprint, so a file only
-# one of them reads is a credential only one of them can ever see -- and the
-# "N larger than 2 MB" sentence `_skip_note` writes is true of the phase as a
-# whole only while both stop at the same size.
-MAX_TARGET_MEGABYTES = _MAX_BYTES // (1024 * 1024)
+
+
+def oversized(path) -> bool:
+    """Whether a file is over the ceiling the tree sweep reads up to.
+
+    THE ONE PREDICATE, read by `_readable_files` here and by
+    `adapters.gitleaks` for the engine's working-tree records, so both
+    scanners stop at ONE number whatever unit the engine's own flag counts in
+    (see `GITLEAKS_MAX_TARGET_MEGABYTES`). Raises `OSError` as `stat` does;
+    the two callers decide what a file that cannot be measured means.
+    """
+    return Path(path).stat().st_size > _MAX_BYTES
+
+
+# What gitleaks is handed as `--max-target-megabytes`, and it is NOT the
+# ceiling above in another unit -- it is one megabyte MORE. Measured on
+# gitleaks 8.30.1: the flag counts 10^6 bytes and, in `dir` mode, skips a file
+# strictly larger than N x 10^6, where `_MAX_BYTES` is 2 x 2^20 = 2,097,152.
+# Handed `2`, the engine skipped the band 2,000,001-2,097,152 that the tree
+# sweep above reads, so every credential in it was "only the built-in saw" --
+# the reverse of what a shared cap was for. Handed the ceiling rounded UP to
+# the next 10^6 (`3`), the engine reads at least everything the built-in
+# reads, and `adapters.gitleaks` then drops any tree record whose file
+# `oversized()` says is over the ceiling: exact parity on the tree, from one
+# number. Derived, never a second literal.
+#
+# THE HISTORY IS NOT COVERED BY THIS, on either side, and the asymmetry is
+# stated where each sweep is defined rather than claimed away: `scan_history`
+# below reads `git log -p` and has no file cap by construction, and gitleaks'
+# `git` mode applies its own rule to the same flag (measured: handed `2` it
+# skipped committed files of 3,000,000 bytes and up, handed `3` files of
+# 4,000,000 and up). See `adapters.gitleaks_scan`.
+GITLEAKS_MAX_TARGET_MEGABYTES = -(-_MAX_BYTES // 10 ** 6)
 
 # ONE sentence, whichever scanner found the credential -- `adapters` emits it
 # too. The advice is identical because the fact is: a credential that reached
@@ -188,12 +215,17 @@ def _pem_body_follows(rest_of_line: str, next_line: str) -> bool:
     """Whether key material follows a PEM header -- the shape of a KEY, not
     of a mention of one.
 
-    Measured on Minerva: three `private_key` findings, every one a lone header
-    -- in an adversarial test, a conformance harness and two planning documents
-    -- and not one of them a gitleaks finding, whose `private-key` rule wants
-    the body. Once both scanners' findings were merged by fingerprint (see
-    `cli._scan_secrets`) those came back as findings only this scanner saw, so
-    the requirement moved here, to the source.
+    Measured on Minerva: five `private_key` findings from this scanner. Two
+    were a lone header -- an adversarial test and a conformance harness, both
+    test code -- and not a gitleaks finding, whose `private-key` rule wants
+    the body. Three had a body behind the header: a redaction test with a
+    base64 run on the next line, and two planning documents, one with that
+    same shape and one carrying a whole PEM on one line with `\\n` escapes;
+    gitleaks reports two of those three itself. Once both scanners' findings
+    were merged by fingerprint (see `cli._scan_secrets`) the two lone headers
+    came back as critical findings only this scanner saw, so the requirement
+    moved here, to the source -- and the three with a body are exactly the
+    shape it keeps.
 
     Two places the body can be: the NEXT physical line, which is where a PEM
     file puts it, and the REST OF THE SAME line, which is where a `.env` or a
@@ -316,14 +348,17 @@ def _skip_note(too_big, unreadable):
     """
     parts = []
     if too_big:
-        parts.append(f"{too_big} larger than {MAX_TARGET_MEGABYTES} MB")
+        parts.append(f"{too_big} larger than {_MAX_BYTES // (1024 * 1024)} MB")
     if unreadable:
         parts.append(f"{unreadable} not readable as UTF-8 text")
     if not parts:
         return ""
     total = too_big + unreadable
+    # "in the working tree", because it is only true of the tree: the history
+    # sweep has no size cap (see `scan_history`), so a committed file this
+    # sweep did not open may still have been read there.
     return (f"The secret scan did not read {total} file"
-            f"{'' if total == 1 else 's'} ({', '.join(parts)}).")
+            f"{'' if total == 1 else 's'} in the working tree ({', '.join(parts)}).")
 
 
 def _readable_files(root, ignore, unread):
@@ -350,7 +385,7 @@ def _readable_files(root, ignore, unread):
         if ignored(rel, ignore):
             continue
         try:
-            if p.stat().st_size > _MAX_BYTES:
+            if oversized(p):
                 unread["too_big"] += 1
                 continue
         except OSError:
@@ -482,9 +517,19 @@ FALLBACK_NOTE = (f"Secrets were scanned by the built-in pattern scanner and "
                  "have been found.")
 
 
+# The sentence for a checkout with no commits yet. Not `HISTORY_GAP`: nothing
+# failed and nothing is missing -- an unborn branch has no history to sweep,
+# and `adapters.history_state` draws the same line on the engine side ("an
+# unborn history is not a gap"). Said rather than left silent because the
+# engine's own sentence beside it claims "the full git history", and a reader
+# is owed the fact that the full history is empty.
+HISTORY_EMPTY_NOTE = ("The git history is empty: this checkout has no commits "
+                      "yet, so there was nothing for the history sweep to read.")
+
+
 def scan_history(root, since_sha, ignore=(), rename=None):
-    """(findings, note): every secret ever committed, even if the file no
-    longer has it.
+    """(findings, note, swept): every secret ever committed, even if the file
+    no longer has it.
 
     A key deleted in a later commit is still readable by anyone with a clone,
     so it is still compromised. This is git plumbing and plain Python: it costs
@@ -496,20 +541,59 @@ def scan_history(root, since_sha, ignore=(), rename=None):
     exists to produce was reported as the best possible news. A gap that is
     stated is useful; this one was silent.
 
+    `swept` IS THE VALUE THE COVERAGE TABLE READS: True when this sweep read
+    the whole history it was pointed at -- an empty one included -- and False
+    when it could not, the note then saying why. `cli._scan_secrets` needs it
+    beside the note because two true sentences call for two different rows: a
+    checkout with no commits (`HISTORY_EMPTY_NOTE`, swept) leaves the phase
+    `ran`, a sweep that did not complete (`HISTORY_GAP`, not swept) makes it
+    `warning`, and a caller reading the note alone would have to match a
+    sentence to tell them apart. The two used to be one: `git log HEAD` on an
+    unborn branch fails with "ambiguous argument 'HEAD'", the shape of a
+    broken repository, and the row read `warning` beside the engine's own
+    claim to have scanned the full history.
+
+    NO FILE-SIZE CAP, BY CONSTRUCTION -- an asymmetry with the tree sweep and
+    with gitleaks, stated here rather than claimed away. `git log -p` streams
+    every added line of every commit; there is no file to `stat` and no size
+    to stop at, so a credential in a committed 40 MB bundle is found here.
+    `scan_tree` stops at `_MAX_BYTES`, and gitleaks' `git` mode applies its own
+    rule to the flag it is handed (`GITLEAKS_MAX_TARGET_MEGABYTES`), so such a
+    finding is this sweep's alone -- `seen_by == ["secrets"]` -- and correctly
+    so.
+
+    The time budget is `engines.SCAN_TIMEOUT`, the one the engines get. This
+    used to run with 300 s against their 600 s, so on a large repository
+    gitleaks' history pass could finish while this one timed out, and the
+    secret row -- which needs both -- read `warning` for a limit two lines
+    apart.
+
     `rename` is `scan_tree`'s: the names to mint under, applied after the
     template rule and before the finding is built, None for this scanner's
     own.
     """
     rev = f"{since_sha}..HEAD" if since_sha else "HEAD"
     try:
+        # Is there anything to walk? `rev-list -n1 --all` is the question
+        # `adapters.history_state` asks, for the same reason: an unborn branch
+        # answers 0 with nothing on stdout, where `git log HEAD` answers a
+        # `fatal:` that reads like a broken repository. A checkout that is
+        # not a repository at all still fails here and falls through to the
+        # `git log` below, which says so in the words it always has.
+        walked = subprocess.run(
+            ["git", "-C", str(root), "rev-list", "-n1", "--all"],
+            capture_output=True, text=True, timeout=SCAN_TIMEOUT, check=False)
+        if walked.returncode == 0 and not walked.stdout.strip():
+            return [], HISTORY_EMPTY_NOTE, True
         proc = subprocess.run(
             ["git", "-C", str(root), "log", "-p", "--no-color", "--no-merges",
              "--diff-filter=AM", rev],
-            capture_output=True, text=True, timeout=300, check=False)
+            capture_output=True, text=True, timeout=SCAN_TIMEOUT, check=False)
     except subprocess.TimeoutExpired:
-        return [], HISTORY_GAP.format(reason="it timed out after 300s")
+        return [], HISTORY_GAP.format(
+            reason=f"it timed out after {SCAN_TIMEOUT}s"), False
     except OSError as exc:
-        return [], HISTORY_GAP.format(reason=f"git could not be run: {exc}")
+        return [], HISTORY_GAP.format(reason=f"git could not be run: {exc}"), False
     if proc.returncode != 0:
         # A non-zero git is not an exception -- `check=False` -- and it was
         # swallowed exactly like one. The overwhelmingly common cause is a
@@ -520,7 +604,7 @@ def scan_history(root, since_sha, ignore=(), rename=None):
         # advice addressed to a human at a terminal.
         reason = (proc.stderr or "").strip().splitlines()
         return [], HISTORY_GAP.format(
-            reason=reason[0] if reason else f"git exited {proc.returncode}")
+            reason=reason[0] if reason else f"git exited {proc.returncode}"), False
     blob = proc.stdout
 
     # (rule, path) -> {"severity": ..., "commits": set-of-sha}. Keyed the
@@ -589,4 +673,4 @@ def scan_history(root, since_sha, ignore=(), rename=None):
     for (rule, path), group in groups.items():
         out.append(_finding(rule, group["severity"], path, [0], True,
                              commit_count=len(group["commits"])))
-    return out, ""
+    return out, "", True

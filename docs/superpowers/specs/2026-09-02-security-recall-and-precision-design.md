@@ -57,6 +57,22 @@ ficheiros "perdidos" decompõem-se assim:
 desaparecer. O recall real perdido são tokens de teste que o Gitleaks descarta
 por entropia — e não é óbvio que descartá-los seja errado.
 
+**Errata (Task 2, medido no Minerva):** a segunda medição, feita ao implementar
+a união com o binário e com o âmbito da Task 1 aplicado aos dois scanners,
+encontrou **cinco** `private_key` do interno, não três: dois só-cabeçalho
+(`clients/minerva-connect/test/adversarial.test.js` e
+`clients/minerva-connect/test/conformance/_harness.js`, ambos código de teste)
+e **três com corpo** (`clients/minerva-connect/test/redact.test.js` e o plano
+rp144, com uma linha base64 a seguir ao cabeçalho; o plano rp154, com um PEM
+inteiro numa só linha com `\n` escapados). O Gitleaks assinala `redact.test.js`
+e rp144 quando o seu passe de árvore corre. A conclusão de desenho mantém-se:
+o padrão `private_key` do interno passa a exigir corpo, os dois só-cabeçalho
+deixam de ser achados e os três com corpo ficam — são achados legítimos ou
+exemplos com forma de chave em documentação, matéria de triagem, não de padrão.
+Também o motivo do descarte dos tokens de seed foi medido: o Gitleaks
+descarta-os pela **forma snake_case** (palavras minúsculas unidas por `_`, com
+dígitos no fim), não pela entropia — as mesmas letras sem `_` são assinaladas.
+
 ### Terceira leitura: porque é que 69% é `low`/`info`
 
 A spec original assenta num argumento: *o ruído não é filtrado por heurística,

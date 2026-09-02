@@ -35,22 +35,54 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   history completed — never by matching a sentence in a note.
 - **A PEM header with no key behind it is no longer a secret finding.** The
   built-in scanner's `private_key` rule fired on the header line alone, where
-  gitleaks' `private-key` rule wants the body. Measured on Minerva: three
-  `private_key` findings, every one a lone header — in an adversarial test, a
-  conformance harness and two planning documents — and none of them a key.
-  **What it cost not to have this:** with the two scanners' findings now merged
-  (below), each came back as a critical finding only the built-in saw. The rule
-  now requires key material to follow the header, on the next line as a PEM
-  file lays it out or on the same line as a `.env` or JSON value carries it
-  with `\n` escapes; the history sweep reads a file's added lines together so
-  it can see the line after a header too.
-- **Both secret scanners stop at the same file size.** The built-in sweep
-  skips files over 2 MB and says so; gitleaks had no cap. With the two merged
-  by fingerprint, every larger file would have been a credential only gitleaks
-  could ever see — reported "only gitleaks saw" for ever — and the "N larger
-  than 2 MB" sentence false for the phase as a whole. Gitleaks is now handed
-  `--max-target-megabytes`, derived from the built-in's own ceiling
-  (`secrets.MAX_TARGET_MEGABYTES`) rather than written a second time.
+  gitleaks' `private-key` rule wants the body. Measured on Minerva: five
+  `private_key` findings — two a lone header (an adversarial test and a
+  conformance harness, both test code) and three with a body behind the header
+  (a redaction test with a base64 run on the next line, and two planning
+  documents, one with that same shape and one carrying a whole PEM on one line
+  with `\n` escapes). The spec had counted three, all header-only; the second
+  measurement says two were, and three are key-shaped — gitleaks reports two of
+  them itself — and the design conclusion stands. **What it cost not to have
+  this:** with the two scanners' findings now merged (below), the two lone
+  headers came back as critical findings only the built-in saw. The rule now
+  requires key material to follow the header, on the next line as a PEM file
+  lays it out or on the same line as a `.env` or JSON value carries it with
+  `\n` escapes; the history sweep reads a file's added lines together so it
+  can see the line after a header too.
+- **The two secret scanners stop at the same file size on the working tree —
+  exactly — and the history's asymmetry is stated instead of denied.** The
+  first version of this claimed parity by handing gitleaks
+  `--max-target-megabytes 2`. Measured on 8.30.1: gitleaks counts that flag in
+  10^6 bytes and, in `dir` mode, skips a file strictly larger than 2,000,000,
+  while the built-in sweep stops at 2 × 2^20 = 2,097,152 — so every file in the
+  band 2,000,001–2,097,152 was "only the built-in saw", the reverse of what
+  parity meant. Gitleaks is now handed the built-in's ceiling rounded UP to the
+  next 10^6 (`secrets.GITLEAKS_MAX_TARGET_MEGABYTES`, derived, never a second
+  literal) so it reads at least everything the built-in reads, and
+  `adapters.gitleaks` drops any working-tree record whose file is over the
+  ceiling through the one predicate the built-in sweep uses
+  (`secrets.oversized`): one number on both scanners, whatever unit the flag
+  counts in. The HISTORY is a different matter and the code now says so: the
+  built-in's `git log -p` sweep has no file cap by construction, and gitleaks'
+  `git` mode applies its own rule to the flag (measured: handed `2` it skipped
+  committed files of 3,000,000 bytes and up, handed `3` files of 4,000,000 and
+  up) — a credential in a committed file that large is a history finding of the
+  built-in alone, asserted as such, and the coverage sentence about files not
+  read now says it is about the working tree.
+- **A checkout with no commits is an empty history, not a failed sweep.** The
+  built-in history sweep ran `git log -p HEAD`, which on an unborn branch fails
+  with "ambiguous argument 'HEAD'", and filed the gap sentence — beside
+  gitleaks' own "scanned … over the full git history", under a secret row that
+  read `warning` for it. `scan_history` now asks git whether there is anything
+  to walk before it walks (`rev-list -n1 --all`, the question `history_state`
+  already asks on the engine side), answers with a third value saying whether
+  it swept, and files one sentence saying the history is empty; the row reads
+  `ran`, and `_scan_secrets` reads the value rather than the sentence.
+- **The built-in history sweep and the engines share one time budget.** `git
+  log -p` ran with 300 s against the engines' 600 s, so on a large repository
+  gitleaks' history pass could finish while the built-in's timed out — and the
+  secret row, which now needs both, read `warning` for a limit two lines
+  apart. Both read `engines.SCAN_TIMEOUT`.
 - **The triage gate no longer names a finding the operator already ruled on.**
   `_untriaged` counted every scanner row of the analysis at `medium` or above
   that carried no re-report — decided or not — while `diff.classify` lets a

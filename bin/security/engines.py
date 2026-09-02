@@ -79,7 +79,14 @@ PURGE = {
     "syft": (),
 }
 
-_TIMEOUT = 600
+# ONE time budget for anything an analysis runs as a subprocess to sweep a
+# repository: an engine pass here, and the built-in history sweep's `git log
+# -p` in `secrets.scan_history`. It lives here, at the door to external
+# programs, because that is what both are. The two used to differ -- 300 s for
+# the built-in's git against 600 s for the engines -- so on a large repository
+# gitleaks' history pass could finish while the built-in's timed out, and the
+# secret row, which needs both, read `warning` for a limit two lines apart.
+SCAN_TIMEOUT = 600
 
 # The largest report this module will read off disk, in bytes.
 #
@@ -188,7 +195,7 @@ def purge(name: str, data):
     return _strip(data, frozenset(fields_for(name)))
 
 
-def run_json(name: str, args, cwd, timeout: int = _TIMEOUT):
+def run_json(name: str, args, cwd, timeout: int = SCAN_TIMEOUT):
     """Run the engine and return (purged JSON, note).
 
     `note` is empty when everything worked and is a sentence for the

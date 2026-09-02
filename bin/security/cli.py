@@ -580,7 +580,9 @@ def _scan_secrets(root, ignore):
     scanner saw.
 
     WHAT THE UNION BUYS, MEASURED on Minerva with the product filters applied
-    to both: gitleaks saw 2 identities, the built-in 30, and they shared 1.
+    to both: gitleaks saw 2 identities -- both from its history pass, its tree
+    pass having written a report over the ceiling and been discarded, see
+    `adapters.TREE_GONE` -- the built-in 30, and they shared 1.
     The built-in's surplus is mostly test fixtures and documentation examples,
     and among the rest is the one credential gitleaks discards by entropy --
     a seed token shared by a script, a test helper and a Postman collection.
@@ -618,8 +620,10 @@ def _scan_secrets(root, ignore):
     both scanners. `adapters.gitleaks_scan` reports what its history sweep
     covered (`HISTORY_OK`, `HISTORY_SHALLOW`, `HISTORY_GONE`) and whether its
     tree pass wrote a report (`TREE_OK`, `TREE_GONE`); the built-in's history
-    sweep reports its own gap as a non-empty note. `ran` needs all three
-    clean. A shallow clone's sweep saw nothing before the cut-off, a history
+    sweep answers, as its third value, whether it swept the history at all --
+    a checkout with no commits counts as swept (`secrets.HISTORY_EMPTY_NOTE`
+    beside it says the history is empty), a sweep that did not complete does
+    not. `ran` needs all three clean. A shallow clone's sweep saw nothing before the cut-off, a history
     git could not walk was not swept, and a tree pass that timed out -- or
     wrote a report over the ceiling, which one Laravel `storage/` did with
     98,000 session files -- left a row reading `ran` beside "the working-tree
@@ -632,7 +636,7 @@ def _scan_secrets(root, ignore):
     if adapters.engine_path("gitleaks"):
         engine, notes, history, tree = adapters.gitleaks_scan(root, ignore)
         if engine is not None:
-            history_findings, history_note = secrets.scan_history(
+            history_findings, history_note, swept = secrets.scan_history(
                 root, None, ignore, rename=_SECRET_RENAMES)
             tree_findings, tree_note, lines = secrets.scan_tree(
                 root, ignore, rename=_SECRET_RENAMES)
@@ -646,7 +650,7 @@ def _scan_secrets(root, ignore):
             if any(f["rule"] in UNMAPPED_SECRET_RULES for f in findings):
                 union_notes.append(UNMAPPED_TYPES_NOTE)
             whole = (history == adapters.HISTORY_OK and tree == adapters.TREE_OK
-                     and not history_note)
+                     and swept)
             return (findings, [*notes, history_note, tree_note, *union_notes], lines,
                     PRODUCER_BOTH_SECRET_SCANNERS,
                     coverage.RAN if whole else coverage.WARNING)
@@ -655,7 +659,7 @@ def _scan_secrets(root, ignore):
         notes = [*notes, secrets.FALLBACK_NOTE]
     else:
         notes = [secrets.FALLBACK_NOTE]
-    history_findings, history_note = secrets.scan_history(root, None, ignore)
+    history_findings, history_note, _swept = secrets.scan_history(root, None, ignore)
     tree_findings, tree_note, lines = secrets.scan_tree(root, ignore)
     return (history_findings + tree_findings,
             [history_note, tree_note, *notes], lines, PRODUCER_SECRETS,

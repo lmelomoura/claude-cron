@@ -1,5 +1,9 @@
+import inspect
 import subprocess
-from security.secrets import scan_tree, scan_history, looks_like_a_secret
+
+from security import engines
+from security.secrets import (HISTORY_EMPTY_NOTE, scan_tree, scan_history,
+                              looks_like_a_secret)
 
 AWS = "AKIA" + "IOSFODNN7EXAMPLE"
 GITHUB = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
@@ -96,7 +100,7 @@ def test_history_finds_a_key_that_was_deleted(tmp_path):
     run("git", "commit", "-qm", "remove")
 
     assert scan_tree(tmp_path, []) == ([], "", 0)
-    hist, note = scan_history(tmp_path, None)
+    hist, note, _ = scan_history(tmp_path, None)
     assert note == ""
     assert len(hist) == 1
     assert hist[0]["historical"] is True
@@ -153,7 +157,7 @@ def test_history_attributes_the_correct_file_despite_a_decoy_diff_header_in_cont
     run("git", "add", "-A")
     run("git", "commit", "-qm", "add")
 
-    hist, _ = scan_history(tmp_path, None)
+    hist, _, _ = scan_history(tmp_path, None)
     assert len(hist) == 1
     assert hist[0]["occurrences"][0]["file"] == "decoy.txt"
 
@@ -174,7 +178,7 @@ def test_history_attributes_a_path_containing_a_space(tmp_path):
     run("git", "add", "-A")
     run("git", "commit", "-qm", "add")
 
-    hist, _ = scan_history(tmp_path, None)
+    hist, _, _ = scan_history(tmp_path, None)
     assert len(hist) == 1
     assert hist[0]["occurrences"][0]["file"] == "my dir/secret file.env"
 
@@ -200,7 +204,7 @@ def test_history_counts_distinct_commits_for_a_rotated_credential(tmp_path):
     run("git", "add", "-A")
     run("git", "commit", "-qm", "rotate")
 
-    hist, _ = scan_history(tmp_path, None)
+    hist, _, _ = scan_history(tmp_path, None)
     assert len(hist) == 1
     assert "2 commits" in hist[0]["rationale"]
     assert first_key not in repr(hist)
@@ -252,10 +256,10 @@ def test_the_history_sweep_obeys_the_same_ignore_globs(tmp_path):
     run("git", "add", "-A")
     run("git", "commit", "-qm", "add")
 
-    everything, _ = scan_history(tmp_path, None)
+    everything, _, _ = scan_history(tmp_path, None)
     assert {f["rule"] for f in everything} == {"aws_access_key", "github_token"}
 
-    filtered, note = scan_history(tmp_path, None, ["tests/**"])
+    filtered, note, _ = scan_history(tmp_path, None, ["tests/**"])
     assert note == ""
     assert [f["occurrences"][0]["file"] for f in filtered] == ["prod.env"]
 
@@ -265,18 +269,19 @@ def test_a_history_sweep_that_times_out_says_so_instead_of_answering_clean(tmp_p
     to look like too. The two must never be the same answer: the second one
     hides exactly the findings this function exists to produce."""
     def boom(*a, **kw):
-        raise subprocess.TimeoutExpired(cmd="git", timeout=300)
+        raise subprocess.TimeoutExpired(cmd="git", timeout=600)
     monkeypatch.setattr(subprocess, "run", boom)
-    findings, note = scan_history(tmp_path, None)
+    findings, note, swept = scan_history(tmp_path, None)
     assert findings == []
     assert "did not complete" in note and "timed out" in note
+    assert swept is False, "a sweep that did not complete must say so in the value too"
 
 
 def test_a_history_sweep_that_cannot_run_git_says_so(tmp_path, monkeypatch):
     def boom(*a, **kw):
         raise OSError("no git on this machine")
     monkeypatch.setattr(subprocess, "run", boom)
-    findings, note = scan_history(tmp_path, None)
+    findings, note, swept = scan_history(tmp_path, None)
     assert findings == []
     assert "did not complete" in note and "no git on this machine" in note
 
@@ -284,9 +289,43 @@ def test_a_history_sweep_that_cannot_run_git_says_so(tmp_path, monkeypatch):
 def test_a_root_that_is_not_a_git_checkout_is_a_stated_gap(tmp_path):
     """git exits non-zero, which `check=False` turned into an empty stdout and
     therefore into "this history is clean"."""
-    findings, note = scan_history(tmp_path, None)
+    findings, note, swept = scan_history(tmp_path, None)
     assert findings == []
     assert "did not complete" in note
+    assert swept is False
+
+
+def test_a_checkout_with_no_commits_is_an_empty_history_not_a_failed_sweep(tmp_path):
+    """`git log HEAD` on an unborn branch fails with "ambiguous argument
+    'HEAD'" -- the shape of a broken repository -- and this sweep filed the gap
+    sentence for a checkout that merely had nothing to sweep, beside gitleaks'
+    own claim to have scanned the full history. Nothing failed and nothing is
+    missing: the sweep is complete, the note says the history is empty, and
+    the coverage row stays `ran` (see test_recall.py for the phase)."""
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
+    findings, note, swept = scan_history(tmp_path, None)
+    assert findings == []
+    assert note == HISTORY_EMPTY_NOTE
+    assert swept is True
+    assert "did not complete" not in note
+
+
+def test_the_history_sweep_runs_on_the_engines_time_budget(tmp_path, monkeypatch):
+    """One constant, `engines.SCAN_TIMEOUT`, for the built-in's `git log -p`
+    and for every engine pass. The two used to be 300 s against 600 s, so on a
+    large repository gitleaks' history pass could finish while this one timed
+    out, and the secret row -- which needs both -- read `warning`."""
+    seen = []
+
+    def fake_run(cmd, **kw):
+        seen.append(kw.get("timeout"))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    scan_history(tmp_path, None)
+    assert seen and set(seen) == {engines.SCAN_TIMEOUT}, seen
+    assert (inspect.signature(engines.run_json).parameters["timeout"].default
+            == engines.SCAN_TIMEOUT == 600)
 
 
 def test_scan_tree_counts_the_lines_it_already_read(tmp_path):
@@ -368,13 +407,16 @@ def test_a_PRIVATE_KEY_in_a_sample_file_is_STILL_reported(tmp_path):
 
 # ------------------------------------------ a PEM header alone is not a key
 #
-# Measured on Minerva: three `private_key` findings, every one a header with
-# no body -- in an adversarial test, a conformance harness and two planning
-# documents -- and not one of them a gitleaks finding, because gitleaks'
-# `private-key` rule wants the body. With the two scanners' findings merged by
-# fingerprint, the built-in's header-only matches came back as findings only
-# it saw; the fix is at the source, and the shape it now requires is the one
-# a key actually has.
+# Measured on Minerva: five `private_key` findings from this scanner. Two were
+# a header with no body -- an adversarial test and a conformance harness, both
+# test code -- and not a gitleaks finding, because gitleaks' `private-key` rule
+# wants the body; three had a body behind the header (a redaction test with a
+# base64 run on the next line, and two planning documents, one with that shape
+# and one carrying a whole PEM on one line with `\n` escapes), and gitleaks
+# reports two of those three itself. With the two scanners' findings merged by
+# fingerprint, the two header-only matches came back as findings only the
+# built-in saw; the fix is at the source, and the shape it now requires is the
+# one a key actually has -- which the three with a body have.
 
 # Sixty-four base64 characters -- the shape of a body line, and not a key.
 PEM_BODY_LINE = "MIIEpAIBAAKCAQEA" + "7Yb3ZpQk9wVt2LmN4RsX8HcJ1FgD6KaE" + "0uWq5TzP3nBvC2rM"
@@ -436,8 +478,8 @@ def test_the_history_sweep_reads_a_body_across_its_added_lines(tmp_path):
     (tmp_path / "notes.md").unlink()
     git("add", "-A")
     git("commit", "-qm", "remove")
-    found, note = scan_history(tmp_path, None)
-    assert note == ""
+    found, note, swept = scan_history(tmp_path, None)
+    assert note == "" and swept is True
     assert [(f["rule"], f["occurrences"][0]["file"]) for f in found] == [
         ("private_key", "deploy.key")]
     assert PEM_BODY_LINE not in repr(found)
@@ -485,11 +527,11 @@ def test_the_history_sweep_obeys_the_default_too(tmp_path):
     run("git", "add", "-A")
     run("git", "commit", "-qm", "add")
 
-    filtered, note = scan_history(tmp_path, None)
+    filtered, note, _ = scan_history(tmp_path, None)
     assert note == ""
     assert sorted((f["occurrences"][0]["file"], f["rule"]) for f in filtered) == [
         (".env.example", "github_token"), ("prod.env", "github_token")]
 
-    everything, _ = scan_history(tmp_path, None, ["!defaults"])
+    everything, _, _ = scan_history(tmp_path, None, ["!defaults"])
     assert sorted({f["occurrences"][0]["file"] for f in everything}) == [
         ".env.example", "prod.env", "tests/fixtures/fake.env"]

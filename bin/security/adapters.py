@@ -328,6 +328,17 @@ def _out_of_scope(path: str, ignore_paths) -> bool:
     return secrets.skipped(path) or ignored(path, ignore_paths)
 
 
+def _over_the_cap(root, path: str) -> bool:
+    """Whether a working-tree file the engine reported is over the built-in
+    sweep's ceiling -- `secrets.oversized`, the same predicate. A file that
+    cannot be measured is KEPT: the engine did read it, and "not proven over
+    the cap" is no reason to drop a credential it found."""
+    try:
+        return secrets.oversized(Path(root) / path)
+    except OSError:
+        return False
+
+
 def gitleaks(data, root, historical: bool = False, ignore_paths=()) -> list[dict]:
     """Gitleaks' JSON report as findings, grouped the way secrets.py groups.
 
@@ -373,6 +384,20 @@ def gitleaks(data, root, historical: bool = False, ignore_paths=()) -> list[dict
         # tell those apart and dropped both.
         if _out_of_scope(path, ignore_paths) or ignores.sample_suppressed(
                 path, rule, ignore_paths):
+            continue
+        # THE EXACT HALF OF THE SIZE CAP, on the tree only. `gitleaks_scan`
+        # hands the engine a flag one megabyte above the built-in's ceiling
+        # (the flag counts 10^6, the ceiling is 2^20-based -- see
+        # `secrets.GITLEAKS_MAX_TARGET_MEGABYTES`), so the engine reads at
+        # least everything the built-in reads and this drops what it read
+        # beyond that, through the one predicate the built-in sweep uses.
+        # One number on both scanners, whatever unit the flag counts in; and
+        # the built-in's "N larger than 2 MB in the working tree" sentence is
+        # true of the phase as a whole. HISTORY records are not filtered: the
+        # built-in's history sweep has no cap by construction, and gitleaks'
+        # `git` mode applies its own rule -- that asymmetry is documented, not
+        # denied, in `gitleaks_scan` and `secrets.scan_history`.
+        if not historical and _over_the_cap(root, path):
             continue
         group = groups.setdefault((rule, path), {"lines": [], "commits": set()})
         line = record.get("StartLine")
@@ -547,6 +572,22 @@ def gitleaks_scan(root, ignore_paths=()):
     in prose; these two values say it in the table's words, so the two cannot
     drift -- and the caller never has to look for a sentence in a note.
 
+    THE SIZE CAP IS EXACT ON THE TREE AND ASYMMETRIC ON THE HISTORY, and both
+    halves of that are measured, not assumed. On the tree, the engine is
+    handed `--max-target-megabytes` one megabyte above the built-in's ceiling
+    (the flag counts 10^6 bytes, `secrets._MAX_BYTES` is 2^20-based; handed
+    the ceiling in the wrong unit it skipped a band the built-in reads) and
+    `gitleaks()` drops every tree record over `secrets._MAX_BYTES` through
+    `secrets.oversized` -- one number on both scanners. On the history there
+    is no shared number to be had: the built-in sweep reads `git log -p` and
+    has no file cap by construction, while `gitleaks git` applies its own rule
+    to the same flag (measured on 8.30.1: handed `2` it skipped committed files
+    of 3,000,000 bytes and up, handed `3` files of 4,000,000 and up). So a
+    credential in a committed file that large is a history finding of the
+    built-in alone, `seen_by == ["secrets"]`, and the built-in's "did not
+    read N files" sentence says "in the working tree" because that is the
+    only sweep it is true of.
+
     THE HISTORY IS NOT OPTIONAL. A credential that was ever committed stays
     compromised however thoroughly the file was later deleted, which is what
     this finding's remediation says and what the hand-written sweep reads
@@ -593,16 +634,25 @@ def gitleaks_scan(root, ignore_paths=()):
                   # Nothing this engine prints is read, and its info lines
                   # name the files it is scanning.
                   "--log-level", "error",
-                  # THE SAME FILE SET AS THE BUILT-IN SWEEP. Gitleaks has no
-                  # size cap by default; the built-in scanner stops at
-                  # `secrets._MAX_BYTES`. The two lists are merged by
-                  # fingerprint, so a file only one of them read would be a
-                  # credential only one of them could ever see -- reported as
-                  # "only gitleaks saw" for ever, and leaving the built-in's
-                  # "N larger than 2 MB" sentence false for the phase as a
-                  # whole. Verified against `gitleaks --help` for 8.30.1: the
-                  # flag exists on both `dir` and `git`.
-                  "--max-target-megabytes", str(secrets.MAX_TARGET_MEGABYTES)]
+                  # THE COARSE HALF OF THE SIZE CAP, in the engine's own
+                  # unit. Gitleaks counts this flag in 10^6 bytes and, in
+                  # `dir` mode, skips a file strictly larger than N x 10^6;
+                  # the built-in sweep stops at `secrets._MAX_BYTES`, which is
+                  # 2^20-based. The value is the built-in's ceiling rounded UP
+                  # to the next 10^6, so the engine reads at least everything
+                  # the built-in reads; `gitleaks()` below then drops any tree
+                  # record over the ceiling itself, which is the exact half.
+                  # Handed the ceiling in the wrong unit (`2`), the engine
+                  # skipped the band 2,000,001-2,097,152 the built-in reads,
+                  # and every credential in it was "only the built-in saw".
+                  # Verified against `gitleaks --help` for 8.30.1: the flag
+                  # exists on both `dir` and `git`. In `git` mode it follows
+                  # the engine's own rule (measured: `3` skips committed files
+                  # of 4,000,000 bytes and up) and the built-in history sweep
+                  # has no cap at all -- see `gitleaks_scan`'s docstring for
+                  # why that asymmetry is stated and not hidden.
+                  "--max-target-megabytes",
+                  str(secrets.GITLEAKS_MAX_TARGET_MEGABYTES)]
         history, history_note = (
             (None, HISTORY_UNREADABLE.format(reason=why))
             if state == HISTORY_GONE

@@ -142,11 +142,12 @@ RULE_RENAMES: dict[tuple[str, str], str] = {
     ("secret", "openai_key"): "openai-api-key",
     # Every PEM header ours accepts (RSA, EC, OPENSSH, PGP, bare) reports as
     # `private-key`. BOTH scanners need the BODY: gitleaks always did, and ours
-    # since the union brought three header-only rows back as findings only it
-    # saw (`secrets._pem_body_follows`, measured on Minerva) -- so a row minted
-    # from a lone header before that is reported `fixed` once by either
-    # scanner. That is the pattern fix, not the rename; there is no other name
-    # for such a row to land on.
+    # since the union brought Minerva's two header-only rows back as findings
+    # only it saw (`secrets._pem_body_follows`; of its five `private_key` rows
+    # there, the other three carry a body and stay) -- so a row minted from a
+    # lone header before that is reported `fixed` once by either scanner. That
+    # is the pattern fix, not the rename; there is no other name for such a
+    # row to land on.
     ("secret", "private_key"): "private-key",
     # `AIza…`. Google's name for the product changed, not the credential.
     ("secret", "google_api_key"): "gcp-api-key",

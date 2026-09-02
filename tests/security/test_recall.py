@@ -217,6 +217,19 @@ PEM = (f"-----BEGIN RSA PRIVATE KEY-----\n{PEM_BODY_LINE}\n"
        "-----END RSA PRIVATE KEY-----\n")
 COMPOSITE = "gitleaks+secrets"
 
+# THE SHAPE ONLY THE BUILT-IN SEES, measured with gitleaks 8.30.1 rather than
+# assumed. `SHAPED` above is reported by both scanners (`generic-api-key`), so
+# it could not stand for the built-in's recall. Minerva's seed token -- 48
+# characters, entropy 3.8-4.1, lowercase words joined by `_` with digits at the
+# end, assigned to a `*_TOKEN` name -- is what gitleaks discards, and the
+# reason is the SHAPE, not the entropy or a stopword: nine snake_case values
+# with and without words like `test`/`seed`/`dev` all reported nothing, and the
+# very same letters without the underscores reported `generic-api-key`.
+# Gitleaks' generic rule reads a snake_case value as an identifier; the
+# built-in's entropy gate (4.26 here) does not, and that difference is the
+# one genuine recall the union exists for.
+SNAKE_CASE_TOKEN = 'token = "harbour_violet_saffron_meadow_copper_falcon_ivy_2026"\n'
+
 HAVE_GITLEAKS = engines.find("gitleaks") is not None
 needs_gitleaks = pytest.mark.skipif(
     not HAVE_GITLEAKS, reason="gitleaks is not installed on this machine")
@@ -287,8 +300,14 @@ def test_both_secret_scanners_run_and_their_findings_merge(tmp_path, monkeypatch
     aws finding -- not two under two rule names -- carrying both producers, and
     the generic one survives under gitleaks' name for the type."""
     root = _git_repo(tmp_path / "repo", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
-                                         "scripts/seed.py": SHAPED})
-    _pretend_gitleaks_saw(monkeypatch, [_engine_reading("aws-access-token", "prod.env")])
+                                         "scripts/seed.py": SNAKE_CASE_TOKEN})
+    # The engine's own two readings of the key, history FIRST as `gitleaks_scan`
+    # records them: the merge has to make the tree's wording win without any
+    # engine installed, or the "in the working tree" assertion below would be
+    # passing on the built-in's tree reading alone.
+    _pretend_gitleaks_saw(monkeypatch, [
+        _engine_reading("aws-access-token", "prod.env", line=1, historical=True),
+        _engine_reading("aws-access-token", "prod.env")])
     findings, notes, lines, producer, status = security_cli._scan_secrets(root, [])
 
     aws = [f for f in findings if f["rule"] == "aws-access-token"]
@@ -301,6 +320,7 @@ def test_both_secret_scanners_run_and_their_findings_merge(tmp_path, monkeypatch
     # occurrence, the line the key is on right now, worded as the present.
     assert [o["line"] for o in aws[0]["occurrences"]] == [1], aws[0]["occurrences"]
     assert "in the working tree" in aws[0]["rationale"]
+    assert "git history" not in aws[0]["rationale"] and not aws[0]["historical"]
 
     generic = [f for f in findings if f["rule"] == "generic-api-key"]
     assert len(generic) == 1
@@ -320,14 +340,18 @@ def test_both_secret_scanners_run_for_real_and_mint_one_identity(tmp_path, monke
     the built-in's renamed `aws_access_key` are one row with two producers, and
     neither the credential nor the seed token reaches a finding or a note."""
     monkeypatch.setenv("CC_SECURITY_ENGINES", "on")
-    seed = SHAPED.split('"')[1]
+    seed = SNAKE_CASE_TOKEN.split('"')[1]
     root = _git_repo(tmp_path / "repo", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
-                                         "scripts/seed.py": SHAPED})
+                                         "scripts/seed.py": SNAKE_CASE_TOKEN})
     findings, notes, _lines, producer, status = security_cli._scan_secrets(root, [])
     aws = [f for f in findings if f["rule"] == "aws-access-token"]
     assert len(aws) == 1, sorted(f["rule"] for f in findings)
     assert set(aws[0]["seen_by"]) == {"gitleaks", "secrets"}
-    assert any(f["rule"] == "generic-api-key" for f in findings)
+    # The recall the union exists for, against the real binary: the snake_case
+    # token is a finding of the built-in ALONE, and the paragraph counts it.
+    generic = [f for f in findings if f["rule"] == "generic-api-key"]
+    assert len(generic) == 1 and generic[0]["seen_by"] == ["secrets"], findings
+    assert security_cli.UNION_NOTE.format(both=1, engine=0, builtin=1) in notes
     assert producer == COMPOSITE
     assert status == coverage.RAN, notes
     blob = json.dumps(findings) + " ".join(notes)
@@ -343,7 +367,7 @@ def test_prepare_files_the_composite_on_the_row_and_the_atoms_on_each_finding(
     how many only one saw -- are the phase's prose and a substring of the
     paragraph, like every other phase's."""
     root = _git_repo(tmp_path / "repo", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
-                                         "scripts/seed.py": SHAPED})
+                                         "scripts/seed.py": SNAKE_CASE_TOKEN})
     db = tmp_path / "security.db"
     aid = _open_analysis(db)
     _pretend_gitleaks_saw(monkeypatch, [_engine_reading("aws-access-token", "prod.env")])
@@ -468,11 +492,82 @@ def test_the_tree_outcome_is_a_returned_value_and_not_a_sentence(tmp_path, monke
     assert adapters.gitleaks_scan(root)[2:] == (adapters.HISTORY_GONE, adapters.TREE_GONE)
 
 
-# Size caps must agree, or the union is over two different file sets: every
-# file over the built-in's ceiling would be gitleaks-only for ever, and the
-# "N larger than 2 MB" sentence would be false for the phase as a whole.
+# The third `ran` condition, pinned: the built-in's history sweep has to have
+# swept. A stubbed engine answering OK on both passes leaves the row's status
+# to that one value -- and a sweep that did not complete is not the same value
+# as a history that is empty.
 
-def test_gitleaks_is_handed_the_same_size_cap_as_the_built_in_sweep(tmp_path, monkeypatch):
+def test_the_secret_row_is_a_warning_when_the_built_in_history_sweep_did_not_complete(
+        tmp_path, monkeypatch):
+    root = _git_repo(tmp_path / "repo", {"README.md": "clean\n"})
+    _pretend_gitleaks_saw(monkeypatch, [])
+    gap = secrets.HISTORY_GAP.format(reason=f"it timed out after {engines.SCAN_TIMEOUT}s")
+    monkeypatch.setattr(secrets, "scan_history", lambda *a, **k: ([], gap, False))
+    _findings, notes, _lines, producer, status = security_cli._scan_secrets(root, [])
+    assert status == coverage.WARNING
+    assert producer == COMPOSITE
+    assert gap in notes
+
+
+def test_a_checkout_with_no_commits_leaves_the_secret_row_ran(tmp_path, monkeypatch):
+    """`history_state` says ok and the engine's note claims the full history;
+    the built-in's `git log HEAD` used to fail on the unborn branch and file a
+    gap -- a `warning` row over a paragraph contradicting itself. An empty
+    history is swept, the note says it is empty, and the row reads `ran`."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
+    (root / "README.md").write_text("clean\n")
+    _pretend_gitleaks_saw(monkeypatch, [])
+    _findings, notes, _lines, _producer, status = security_cli._scan_secrets(root, [])
+    assert status == coverage.RAN, notes
+    assert secrets.HISTORY_EMPTY_NOTE in notes
+    assert not any("did not complete" in n for n in notes), notes
+
+
+# Size caps: EXACT on the working tree, ASYMMETRIC on the history -- both
+# halves measured with gitleaks 8.30.1 rather than assumed.
+#
+# gitleaks counts `--max-target-megabytes` in 10^6 bytes and, in `dir` mode,
+# skips a file strictly larger than N x 10^6; the built-in sweep stops at
+# `secrets._MAX_BYTES` = 2 x 2^20 = 2,097,152. Handed `2`, the engine skipped
+# the band 2,000,001-2,097,152 the built-in reads, so every credential in it
+# was "only the built-in saw" -- the reverse of what parity meant. The flag is
+# now the ceiling rounded UP to the next 10^6 (`3`), so gitleaks reads at least
+# everything the built-in reads, and `adapters.gitleaks` drops any tree record
+# whose file is over the ceiling: one number on both scanners. The HISTORY has
+# no shared number: the built-in's `git log -p` sweep has no cap at all, and
+# gitleaks' `git` mode applies its own rule to the flag (measured: `2` skipped
+# committed files of 3,000,000 bytes and up, `3` files of 4,000,000 and up). A
+# committed file that large is a history finding of the built-in alone, and is
+# asserted here as exactly that.
+
+IN_BAND = 2_050_000           # > 2 x 10^6 and <= _MAX_BYTES: BOTH must see it on the tree
+OVER_CAP = 2_200_000          # > _MAX_BYTES and <= 3 x 10^6: the post-filter drops it, not the flag
+BEYOND_GIT_MODE = 4_200_000   # what gitleaks' git mode skips at `3`; the built-in history reads it
+
+
+def _plant_of_size(root, rel, size):
+    """A file of exactly `size` bytes whose last line is the planted key."""
+    tail = f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"
+    line = "x" * 79 + "\n"
+    body_size = size - len(tail)
+    text = line * (body_size // len(line))
+    rest = body_size - len(text)
+    if rest:
+        text += "z" * (rest - 1) + "\n"
+    text += tail
+    assert len(text) == size, (len(text), size)
+    (root / rel).write_text(text)
+    assert (root / rel).stat().st_size == size
+
+
+def _commit_all(root):
+    for args in (["add", "-A"], ["commit", "-qm", "more"]):
+        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+
+
+def test_gitleaks_is_handed_the_ceiling_rounded_up_to_its_own_unit(tmp_path, monkeypatch):
     seen = []
 
     def run_json(name, args, cwd, **kw):
@@ -484,19 +579,60 @@ def test_gitleaks_is_handed_the_same_size_cap_as_the_built_in_sweep(tmp_path, mo
     assert len(seen) == 2, "one history pass, one tree pass"
     for args in seen:
         at = args.index("--max-target-megabytes")
-        assert args[at + 1] == str(secrets.MAX_TARGET_MEGABYTES) == "2"
+        assert args[at + 1] == str(secrets.GITLEAKS_MAX_TARGET_MEGABYTES) == "3"
+    assert secrets.GITLEAKS_MAX_TARGET_MEGABYTES * 10 ** 6 >= secrets._MAX_BYTES, (
+        "the flag must let gitleaks read at least everything the built-in reads")
+
+
+def test_a_tree_record_over_the_built_ins_ceiling_is_dropped_by_the_adapter(
+        tmp_path, monkeypatch):
+    """The exact half of the cap, without the binary: the stubbed `dir` pass
+    reports both files, as gitleaks handed `3` really does, and the adapter
+    keeps the one the built-in sweep would have read."""
+    root = _git_repo(tmp_path / "repo", {"README.md": "clean\n"})
+    _plant_of_size(root, "band.txt", IN_BAND)
+    _plant_of_size(root, "over.txt", OVER_CAP)
+    record = lambda name: {"RuleID": "aws-access-token", "File": name, "StartLine": 2}
+
+    def passes(tree_records, history_records):
+        monkeypatch.setattr(engines, "run_json", lambda n, args, cwd, **kw: (
+            (tree_records if args[0] == "dir" else history_records), ""))
+
+    passes([record("band.txt"), record("over.txt")], [])
+    findings, _notes, _history, tree = adapters.gitleaks_scan(root)
+    assert tree == adapters.TREE_OK
+    assert {f["occurrences"][0]["file"] for f in findings} == {"band.txt"}, findings
+    # A history record of the same over-cap file is NOT dropped: the history
+    # has no shared cap, and the engine's own rule decided what it read.
+    passes([], [record("over.txt")])
+    findings, *_ = adapters.gitleaks_scan(root)
+    assert [(f["occurrences"][0]["file"], f["historical"]) for f in findings] == [
+        ("over.txt", True)]
 
 
 @needs_gitleaks
-def test_a_file_over_the_cap_is_seen_by_neither_scanner(tmp_path, monkeypatch):
+def test_the_cap_is_exact_on_the_tree_and_the_history_is_the_built_ins_alone(
+        tmp_path, monkeypatch):
+    """The three sizes that matter, against the real binary. In the band both
+    see it on the tree (the parity claim); just over the ceiling neither does
+    on the tree; a committed file beyond what gitleaks' git mode reads is a
+    history finding of the built-in alone -- the documented asymmetry."""
     monkeypatch.setenv("CC_SECURITY_ENGINES", "on")
-    root = tmp_path / "repo"
-    root.mkdir()
-    filler = "# nothing to see on this line of the bundle\n"
-    (root / "bundle.txt").write_text(
-        filler * (secrets._MAX_BYTES // len(filler) + 2) + f"AWS_ACCESS_KEY_ID={AWS_KEY}\n")
-    (root / "prod.env").write_text(f"AWS_ACCESS_KEY_ID={AWS_KEY}\n")
-    findings, notes, *_ = security_cli._scan_secrets(root, [])
-    files = {o["file"] for f in findings for o in f["occurrences"]}
-    assert files == {"prod.env"}, files
-    assert any("1 larger than 2 MB" in n for n in notes), notes
+    root = _git_repo(tmp_path / "repo", {"README.md": "clean\n"})
+    _plant_of_size(root, "beyond.txt", BEYOND_GIT_MODE)
+    _commit_all(root)
+    _plant_of_size(root, "band.txt", IN_BAND)    # untracked: tree only
+    _plant_of_size(root, "over.txt", OVER_CAP)   # untracked: tree only
+    findings, notes, _lines, _producer, status = security_cli._scan_secrets(root, [])
+    by_file = {f["occurrences"][0]["file"]: f for f in findings}
+    assert set(by_file) == {"band.txt", "beyond.txt"}, sorted(by_file)
+    assert by_file["band.txt"]["seen_by"] == ["gitleaks", "secrets"]
+    assert not by_file["band.txt"]["historical"]
+    assert by_file["beyond.txt"]["seen_by"] == ["secrets"]
+    assert by_file["beyond.txt"]["historical"]
+    assert status == coverage.RAN, notes
+    # Two files over the ceiling sit in the tree, and the sentence says which
+    # sweep it is about: the history read one of them regardless.
+    assert any("2 larger than 2 MB" in n and "in the working tree" in n
+               for n in notes), notes
+    assert AWS_KEY not in json.dumps(findings) + " ".join(notes)
