@@ -68,8 +68,26 @@ _RULES = [
 # `adapters.gitleaks_config`'s module docstring: before that config's scope
 # existed, gitleaks reported 17 findings on this repository, 15 of them
 # under `.superpowers/`, `__pycache__/` and `data/logs/`.
+#
+# `storage/framework` -- Laravel's runtime directory (`cache/`, `sessions/`,
+# `views/`, `testing/`), git-ignored by Laravel's own per-directory
+# `.gitignore` -- is the same kind of noise at a scale that DISABLED a
+# scanner. Measured on the Minerva checkout at `cbbf901`: `gitleaks dir`
+# wrote 98,298 `generic-api-key` records from
+# `martis-app/storage/framework/sessions/` alone, a 65.8 MB report over
+# `engines.MAX_REPORT_BYTES`, so `run_json` discarded the tree pass whole and
+# gitleaks contributed its history sweep only, on every analysis of that
+# repository -- the secret phase read `warning` for want of a tree report. A
+# session file is the operator's session store, not the project's
+# credentials. SPELLED IN FULL, like `data/logs`, and for the same reason:
+# `storage/logs` beside it is Laravel's application-log directory (kept,
+# above) and `storage/app` holds uploads that can be key files (kept); a bare
+# `storage` or `framework` would take both. This is the one entry here that
+# INCREASES recall. Measured after, same checkout: the tree pass writes 12 KB
+# (19 records), the phase reads `ran`, and the union grows from 29 identities
+# to 32 -- the three the tree pass adds sit outside `storage/` altogether.
 SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", "build",
-             ".superpowers", "data/logs"}
+             ".superpowers", "data/logs", "storage/framework"}
 
 
 def skipped(rel) -> bool:

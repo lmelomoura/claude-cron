@@ -68,6 +68,50 @@ def test_a_projects_own_log_directory_is_still_scanned(tmp_path):
     assert files == {"martis-app/storage/logs/laravel.log"}, files
 
 
+# -------------------------- Laravel's runtime directory is not the repository
+#
+# Measured on the Minerva checkout at `cbbf901`: `gitleaks dir` wrote a 65.8 MB
+# report -- 98,317 records, 98,298 of them `generic-api-key` hits under
+# `martis-app/storage/framework/sessions/` -- over the 64 MB ceiling
+# `engines.run_json` reads, so the WHOLE tree pass was discarded and gitleaks
+# contributed its history sweep alone, on every analysis of that repository.
+# Laravel session files are runtime data, git-ignored by Laravel's own
+# `storage/framework/*/.gitignore`, and a scanner that reads them reports the
+# operator's session store as the project's leaked credentials. Same rule as
+# `.superpowers` and `data/logs`: git-ignored runtime data on the operator's
+# machine is not the repository. The exclusion is PRECISE, and the two tests
+# below hold both edges of it: `storage/logs` stays in (the section above says
+# why), `storage/app` stays in (an upload can be a key file). Only
+# `storage/framework` -- Laravel's `cache/`, `sessions/`, `views/`, `testing/`.
+
+def test_laravels_runtime_directory_is_skipped_and_its_siblings_are_not(tmp_path):
+    assert secrets.skipped("martis-app/storage/framework/sessions/DEe2Cps0kuuDNg2L")
+    assert secrets.skipped("app/storage/framework/cache/data/ab/cd")
+    assert secrets.skipped("app/storage/framework/views/1f3a.php")
+    assert not secrets.skipped("app/storage/logs/laravel.log")
+    assert not secrets.skipped("app/storage/app/uploads/key.txt")
+    for rel in ("app/storage/framework/sessions/s1", "app/storage/logs/laravel.log",
+                "app/storage/app/uploads/key.txt"):
+        _plant(tmp_path, rel)
+    findings, _, _ = secrets.scan_tree(tmp_path, ())
+    files = {o["file"] for f in findings for o in f["occurrences"]}
+    assert files == {"app/storage/logs/laravel.log",
+                     "app/storage/app/uploads/key.txt"}, files
+
+
+def test_laravels_runtime_directory_leaves_the_engine_scope_and_its_siblings_stay():
+    """The engine side of the same fact: the allowlist pattern carries the
+    whole `storage/framework` run and nothing wider, and `_out_of_scope` --
+    the second lock on what comes back -- reads the same predicate."""
+    patterns = adapters.scope_patterns()
+    assert r"(^|/)storage/framework/" in patterns
+    assert not any("storage/logs" in p or "storage/app" in p for p in patterns), patterns
+    assert r"(^|/)storage/framework/" in adapters.gitleaks_config()
+    assert adapters._out_of_scope("app/storage/framework/sessions/s1", ())
+    assert not adapters._out_of_scope("app/storage/logs/laravel.log", ())
+    assert not adapters._out_of_scope("app/storage/app/uploads/key.txt", ())
+
+
 def test_the_transcript_directory_is_skipped_with_everything_under_it():
     assert secrets.skipped("data/logs/x/f.txt")
     assert secrets.skipped("data/logs")

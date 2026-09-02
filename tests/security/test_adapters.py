@@ -286,6 +286,21 @@ def test_the_scope_config_excludes_what_the_hand_written_sweep_skips():
         assert re.escape(directory) in toml or directory in toml, directory
 
 
+def test_the_scope_config_excludes_laravels_runtime_directory_and_keeps_its_siblings():
+    """Measured on one Laravel monorepo: `gitleaks dir` wrote 98,298
+    `generic-api-key` records from `storage/framework/sessions/` alone -- a
+    65.8 MB report over the ceiling `engines.run_json` reads, so the tree
+    pass contributed NOTHING. The runtime directory leaves the engine's scope
+    through this config, exactly as it leaves the built-in sweep's through
+    `secrets.SKIP_DIRS` (test_recall.py has the receipts); its siblings
+    `storage/logs` and `storage/app` stay, because a log can spill a password
+    and an upload can be a key file."""
+    toml = adapters.gitleaks_config()
+    assert r"(^|/)storage/framework/" in toml
+    assert "storage/logs" not in toml
+    assert "storage/app" not in toml
+
+
 def test_the_scope_config_carries_the_projects_ignore_paths():
     toml = adapters.gitleaks_config(ignore_paths=["tests/fixtures/**"])
     assert "tests/fixtures" in toml
@@ -496,6 +511,29 @@ def test_the_scope_actually_narrows_what_the_engine_reports(tmp_path):
     assert len(before) == 3, [f["File"] for f in before]
     assert len(after) == 1, [f["File"] for f in after]
     assert after[0]["File"] == "app.env"
+
+
+@needs_gitleaks
+def test_the_real_engine_skips_laravels_runtime_directory_and_reads_its_siblings(tmp_path):
+    """The same planted key three times under `storage/`: the engine reports
+    all three on its own (the control -- a tree that is not noisy to the
+    engine proves nothing about the scope), and with our config it reports
+    the log and the upload and never the session file."""
+    root = tmp_path / "repo"
+    planted = ("app/storage/framework/sessions/s1", "app/storage/logs/laravel.log",
+               "app/storage/app/uploads/key.txt")
+    for rel in planted:
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(f"AWS_ACCESS_KEY_ID={AWS_KEY}\n")
+    before = raw_gitleaks(root)
+    assert sorted(f["File"] for f in before) == sorted(planted), \
+        "the tree must be noisy to the engine"
+    config = root / "scope.toml"
+    config.write_text(adapters.gitleaks_config(root=root))
+    after = raw_gitleaks(root, config)
+    assert sorted(f["File"] for f in after) == [
+        "app/storage/app/uploads/key.txt", "app/storage/logs/laravel.log"], \
+        [f["File"] for f in after]
 
 
 @needs_gitleaks

@@ -701,6 +701,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Laravel's runtime directory leaves the secret scan, on both scanners.**
+  `storage/framework` — Laravel's `cache/`, `sessions/`, `views/`, `testing/`,
+  git-ignored by Laravel's own per-directory `.gitignore` — joins
+  `secrets.SKIP_DIRS`, the one list the built-in sweep (`secrets.skipped`) and
+  the gitleaks `--config` allowlist (`adapters.scope_patterns`) both read, so
+  the two scanners keep one scope. Same rule as `.superpowers` and `data/logs`:
+  git-ignored runtime data on the operator's machine is not the repository, and
+  a scanner that reads it reports the operator's session store as the project's
+  leaked credentials. Precise on purpose: `storage/logs` (Laravel's application
+  log, where a stack trace spills a password) and `storage/app` (uploads, which
+  can be key files) stay in scope. **What was measured**, on the Minerva
+  checkout (`develop` @ `55cfb91`, full history, default noise filter, paths and
+  rule names only): `gitleaks dir` wrote a 65.8 MB report — 98,317 records,
+  98,298 of them `generic-api-key` under `martis-app/storage/framework/sessions/`
+  — over the 64 MB ceiling `engines.run_json` reads, so the tree pass was
+  discarded on every analysis of that repository and the secret phase read
+  `warning`. After, the same pass writes 12 KB (19 records, none under
+  `storage/framework`), the phase reads `ran`, and the union grows from 29
+  identities to 32 (gitleaks 2 → 8, seen by both 1 → 4, only gitleaks 1 → 4,
+  only built-in 27 → 24; files 28 → 31): a `curl-auth-header` and a
+  `generic-api-key` in planning documents and a `github-fine-grained-pat` in
+  `martis-app/auth.json` that no analysis of that repository had ever recorded.
+  The one `SKIP_DIRS` entry that increases recall, and reversible: one entry in
+  one set.
+
 - **The two secret scanners now run together and their findings add up.**
   `prepare` used to run ONE of them — gitleaks when installed, the built-in
   pattern scanner when not — because two scanners naming their rules
