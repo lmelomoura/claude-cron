@@ -8699,3 +8699,104 @@ console.log(JSON.stringify(out));
     assert "the provider's fault" in got["api_error"]["tip"], (
         "the API badge no longer says whose fault it is, which is what tells the "
         "operator to wait rather than go and look")
+
+
+def test_a_start_keeps_its_button_down_until_the_run_appears(srv, tmp_path):
+    """A click has to stay committed until the run it started is visible.
+
+    The server answers a start as soon as `cc(..., background=True)` has
+    forked; the slot, and therefore the row, appear on a later poll. Handing
+    the button back in between is how one reviewer job ended up with two
+    sessions cut short on the SAME port block — two runs from two clicks, the
+    first dying and releasing block 21000, the second taking it back, and
+    neither resumable while the other was going.
+
+    The four things that must all hold: down while in flight, back up when the
+    run lands, back up after the grace period if nothing ever lands (or the
+    only way to run the job again is a page reload), and — for a resume —
+    keyed by session, so a job's other Resume buttons stay usable."""
+    js = _js(srv)
+    state = re.search(r"const starting=new Map\(\);.*?const START_GRACE_S=\d+;", js, re.S)
+    assert state, "the pending-start state moved — update this test with it"
+    script = tmp_path / "pending-starts.js"
+    script.write_text("""
+// Stubs for the two live-slot readers isStarting consults.
+let SLOTS = {};
+function activeRunsOf(id){ return SLOTS[id] || []; }
+function resumeInFlight(id, sid){ return activeRunsOf(id).some(a => a.resume_of === sid); }
+let NOW = 1000;
+const _realNow = Date.now;
+Date.now = () => NOW * 1000;
+""" + state.group(0) + "\n"
+   + _plainfn(js, "startKey") + "\n"
+   + _plainfn(js, "markStarting") + "\n"
+   + _plainfn(js, "isStarting") + """
+const out = {};
+
+// A job already running one thing; the click must not be cleared by that.
+SLOTS = {rev: [{pid: 111}]};
+markStarting("rev");
+out.downWhileForking = isStarting("rev");
+SLOTS = {rev: [{pid: 111}]};                 // still only the old slot
+out.stillDownWithOnlyTheOldRun = isStarting("rev");
+SLOTS = {rev: [{pid: 111}, {pid: 222}]};     // the started run appears
+out.upWhenTheRunLands = isStarting("rev");
+
+// Nothing ever lands: the button has to come back on its own.
+SLOTS = {dev: []};
+markStarting("dev");
+out.downBeforeGrace = isStarting("dev");
+NOW += START_GRACE_S + 1;
+out.upAfterGrace = isStarting("dev");
+NOW = 1000;
+
+// Two Resume buttons on one card: only the clicked one goes down.
+SLOTS = {rev: []};
+markStarting("rev", "sid-A");
+out.resumeAdown = isStarting("rev", "sid-A");
+out.resumeBstillUp = isStarting("rev", "sid-B");
+SLOTS = {rev: [{pid: 333, resume_of: "sid-A"}]};
+out.resumeAupWhenItLands = isStarting("rev", "sid-A");
+
+// A run and a resume of the same job are tracked apart.
+SLOTS = {promo: []};
+markStarting("promo");
+markStarting("promo", "sid-C");
+SLOTS = {promo: [{pid: 444, resume_of: "sid-C"}]};
+out.resumeLandedButRunStillPending = [isStarting("promo", "sid-C"), isStarting("promo")];
+
+Date.now = _realNow;
+console.log(JSON.stringify(out));
+""")
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert got["downWhileForking"] is True, "the button is live while the run is still forking"
+    assert got["stillDownWithOnlyTheOldRun"] is True, (
+        "a run the job already had before the click cleared the pending state — at "
+        "max_parallel > 1 that clears it instantly and the guard buys nothing")
+    assert got["upWhenTheRunLands"] is False, "the button never comes back once the run appears"
+    assert got["downBeforeGrace"] is True
+    assert got["upAfterGrace"] is False, (
+        "a start that never landed strands its button — a page reload becomes the "
+        "only way to run the job again")
+    assert got["resumeAdown"] is True
+    assert got["resumeBstillUp"] is False, (
+        "resuming one session disabled another session's Resume button on the same card")
+    assert got["resumeAupWhenItLands"] is False
+    assert got["resumeLandedButRunStillPending"] == [False, True], (
+        "a run and a resume of one job are not tracked apart")
+
+
+def test_the_start_path_does_not_hand_the_button_straight_back(srv):
+    """The success branch must not re-enable the button: that is the window a
+    second click landed in. Pinned as source, because the failure is invisible
+    in any single render — it is the two lines running in the wrong order."""
+    js = _js(srv)
+    i = js.index('toast("Started "+id, false, "play");')
+    branch = js[i:i + 400]
+    assert "markStarting(id)" in branch, (
+        "a successful start no longer records itself as pending, so the next repaint "
+        "hands the button back before the run exists")
+    assert "b.disabled=false" not in branch, (
+        "the success path re-enables the button while the run is still forking — "
+        "this is exactly the double-click window")

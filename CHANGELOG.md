@@ -19,6 +19,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A Run now or Resume button stays down until its run actually appears.** The
+  server answers a start as soon as `cc(..., background=True)` has forked; the
+  engine's slot, and so the row, land on a later 5-second poll. The success
+  path handed the button straight back (`b.disabled=false`), leaving a window —
+  a second at best, tens of them while a precheck talks to Jira — where the
+  button looked idle and a second click started a SECOND run. That window is
+  what produced the rest of this release: two clicks on one reviewer job gave
+  it two runs, the first died and released port block 21000, the second took it
+  straight back, and the two sessions it left cut short could never both be
+  resumed. The button now stays disabled until a live slot for that start
+  exists, is re-disabled after every repaint that rebuilds it, and comes back on
+  its own after 90 seconds if nothing ever lands — otherwise a start the engine
+  quietly declines would leave a page reload as the only way to run the job
+  again. Keyed by job for a run and by job+session for a resume, so a card
+  offering several Resume buttons only takes down the one that was clicked, and
+  a resume's slot cannot answer for a Run now that is still forking.
 - **The cause badge in the Runs table explains itself again.** `API`, `limit`,
   `blocked` — a 30px pill whose whole job is to say, without opening the run,
   whether to wait or to go and look. The sentence behind it was a `title`, and
