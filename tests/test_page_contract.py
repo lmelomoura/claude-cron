@@ -8566,3 +8566,136 @@ def test_the_activity_and_index_back_buttons_are_wrapped_not_passed_bare(srv):
     )
     assert '.addEventListener("click", () => secBack())' in index_js
     assert '.addEventListener("click", () => secBackFromActivity())' in index_js
+
+
+def test_every_menu_popover_ships_hidden(srv):
+    """A popover that is in the page from the first paint but carries no
+    `hidden` attribute reads as OPEN to anything asking `:not([hidden])`.
+
+    #sec-run-filterpop shipped exactly like that: it sits inside a closed
+    <details>, so nobody could see it, and its `hidden` is only ever written
+    by that element's own ontoggle -- which never fires until the filter is
+    opened by hand. renderOverviewJobs() skips its repaint while a menu is
+    open, so on every install where the Security page had been built the
+    Overview's job cards were never drawn at all. Eight jobs, an empty
+    column, and nothing in the console.
+
+    Every sibling popover in that same bar already ships `hidden`; this pins
+    the whole class rather than the one element, because the cost of
+    forgetting is a screenful of jobs that silently stops rendering."""
+    page = _page(srv)
+    tags = re.findall(r'<div[^>]*class="menu-pop[^"]*"[^>]*>', page)
+    assert tags, "no .menu-pop in the page — this test is watching nothing"
+    naked = [t for t in tags if not re.search(r"(?<![-\w])hidden(?![-\w])", t)]
+    assert not naked, (
+        "these popovers ship without `hidden`, so they read as open menus and "
+        "stall the Overview repaint: " + "; ".join(naked))
+
+
+def test_the_overview_repaint_guard_asks_whether_a_menu_is_on_screen(srv, tmp_path):
+    """The guard must skip the repaint for a menu that is really on screen and
+    only for that one.
+
+    Two failure modes, one on each side, and both have a real cost:
+      * testing the ABSENCE of `hidden` (what shipped) counts a popover hidden
+        by any other means -- a closed <details>, a `display:none` -- as open,
+        and the job cards then never render at all;
+      * testing `offsetParent` instead would miss a genuinely open menu, which
+        positions itself `position:fixed`, and the repaint would snatch it away
+        mid-reach -- the very thing the guard exists to prevent.
+
+    getClientRects() is the test that separates them, so the four cases below
+    are asserted together: no menus, a popover in a closed <details>, one
+    carrying `hidden`, and one actually open."""
+    src = _plainfn(_js(srv), "renderOverviewJobs")
+    m = re.search(r"const menuOpen\s*=.*?;\n", src, re.S)
+    assert m, ("renderOverviewJobs no longer computes `menuOpen` — if the guard went "
+               "back to a bare `.menu-pop:not([hidden])` query, that is the bug this "
+               "test exists for; if it was renamed, update this test with it")
+    script = tmp_path / "overview-menu-guard.js"
+    script.write_text("""
+// One fake popover per case: `hidden` is the attribute, `rects` is whether the
+// browser lays it out at all (false for display:none and for a closed <details>).
+function fakeDoc(pops){
+  return {querySelectorAll(sel){
+    const onlyVisibleAttr = sel.includes(":not([hidden])");
+    return pops.filter(p => !(onlyVisibleAttr && p.hidden))
+               .map(p => ({getClientRects: () => (p.rects ? [{}] : [])}));
+  }};
+}
+const CASES = {
+  noMenus:       [],
+  closedDetails: [{hidden: false, rects: false}],
+  hiddenAttr:    [{hidden: true,  rects: false}],
+  openMenu:      [{hidden: false, rects: true}],
+};
+const out = {};
+for(const [name, pops] of Object.entries(CASES)){
+  const document = fakeDoc(pops);
+""" + m.group(0) + """
+  out[name] = menuOpen;
+}
+console.log(JSON.stringify(out));
+""")
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert got["openMenu"] is True, (
+        "a menu that is on screen no longer stops the repaint — it will be snatched "
+        "away mid-reach")
+    assert got["closedDetails"] is False, (
+        "a popover inside a closed <details> still counts as an open menu, so the "
+        "Overview will render no job cards")
+    assert got["hiddenAttr"] is False, "a `hidden` popover counts as an open menu"
+    assert got["noMenus"] is False, "the guard fires with no menus in the page at all"
+
+
+def test_the_cause_badge_explains_itself_on_hover(srv, tmp_path):
+    """The badge is a 30px pill saying "API" or "limit" — useless without the
+    sentence behind it, which is why the CSS gives it `cursor:help`.
+
+    It carried that sentence in a `title`, and a native tooltip needs the
+    pointer to dwell for about a second before the browser draws it. This is a
+    table that repaints every 5 seconds, so on a badge that size the dwell
+    rarely completes: the cursor turned into a question mark and nothing ever
+    appeared — a promise the page could not keep. The page's own bubble
+    (tipShow, wired to a delegated mouseover on `[data-tip]`) shows on hover
+    with no dwell and cannot be clipped by an ancestor, so the badge uses that.
+    """
+    js = _app_js(srv)
+    fn = _plainfn(js, "causeTag")
+    assert "dataset.tip" in fn, (
+        "causeTag no longer sets data-tip, so the badge's explanation is back to a "
+        "native tooltip the pointer rarely dwells long enough to trigger")
+    assert ".title" not in fn, (
+        "causeTag sets a `title` as well — the browser then draws its own tooltip "
+        "over the page's bubble a second later")
+
+    labels = re.search(r"const CAUSE_LABEL=\{.*?\n\};", js, re.S)
+    assert labels, "CAUSE_LABEL moved — update this test with it"
+    script = tmp_path / "causetag.js"
+    script.write_text("""
+function el(tag, cls, text){ return {tag, className: cls, textContent: text, dataset: {}}; }
+""" + labels.group(0) + "\n" + fn + """
+const out = {};
+for(const cause of Object.keys(CAUSE_LABEL)){
+  const t = causeTag({cause});
+  out[cause] = {label: t.textContent, tip: decodeURIComponent(t.dataset.tip || "")};
+}
+out.unknown = causeTag({cause: "something-new"});
+out.none = causeTag({});
+console.log(JSON.stringify(out));
+""")
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert got["none"] is None, "a run with no cause still gets a badge"
+    assert got["unknown"] is None, "an unrecognised cause invents a badge with no text"
+    for cause, seen in got.items():
+        if cause in ("none", "unknown"):
+            continue
+        assert seen["label"], f"{cause} has no badge text"
+        assert len(seen["tip"]) > 20, (
+            f"{cause}'s badge carries no explanation — the whole point of the pill "
+            f"is that the sentence is one hover away")
+    assert "the provider's fault" in got["api_error"]["tip"], (
+        "the API badge no longer says whose fault it is, which is what tells the "
+        "operator to wait rather than go and look")

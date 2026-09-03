@@ -348,11 +348,19 @@ const CAUSE_LABEL={
   killed:       ["killed",   "the run was cut off — a watchdog, a crash, or a kill — and never reported a result"],
   agent_error:  ["agent",    "the agent itself ended in error"],
 };
+// `data-tip`, not `title`: the page's own bubble (tipShow in bin/dashboard.html,
+// reached by the delegated mouseover on `[data-tip]`) appears on hover instead
+// of after the browser's own ~1s dwell, and cannot be clipped by an ancestor.
+// The dwell is what made this label unreachable in practice -- the tag is a
+// 30px pill in a table that repaints every 5 seconds, so the pointer rarely
+// sits still on it long enough for a native tooltip to ever appear, and the
+// `cursor:help` the CSS gives it promised an explanation that never came.
+// Encoded because tipShow decodeURIComponent()s what it reads back.
 function causeTag(rec){
   const c=CAUSE_LABEL[(rec&&rec.cause)||""];
   if(!c) return null;
   const tag=el("span", "causetag", c[0]);
-  tag.title=c[1];
+  tag.dataset.tip=encodeURIComponent(c[1]);
   return tag;
 }
 

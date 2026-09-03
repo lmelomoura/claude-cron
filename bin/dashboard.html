@@ -557,7 +557,14 @@ document.documentElement.dataset.theme =
                     </div>
                     <details class="secrun-filterpick" id="sec-run-filterpick">
                       <summary class="filterpick" id="sec-run-filterpick-trigger"></summary>
-                      <div class="menu-pop secrun-filterpop" id="sec-run-filterpop">
+                      <!-- `hidden` from the first paint, like every sibling popover
+                           in this bar. Its own ontoggle keeps it in step with the
+                           <details> from then on, but that only ever fires once the
+                           filter has been opened by hand — until then this element
+                           read as an OPEN menu to anything asking `:not([hidden])`,
+                           which is how renderOverviewJobs() came to abort on every
+                           repaint and leave the Overview with no job cards at all. -->
+                      <div class="menu-pop secrun-filterpop" id="sec-run-filterpop" hidden>
                         <div class="secchips" id="sec-checklist"></div>
                       </div>
                     </details>
@@ -1805,7 +1812,25 @@ function renderOverviewJobs(){
   // Rebuilt from scratch on every 5-second poll. An overflow menu is inside
   // one, so redrawing while it is open would snatch it away mid-reach; the
   // next poll is 5 seconds behind at worst.
-  if(document.querySelector(".menu-pop:not([hidden])")) return;
+  //
+  // "Open" has to mean RENDERED, not "missing a `hidden` attribute". A popover
+  // hidden by any other means still matches `:not([hidden])`, and one of them
+  // is in the page from the first paint: #sec-run-filterpop lives inside a
+  // closed <details>, and its `hidden` is only ever written by that element's
+  // own ontoggle — which has never fired. This guard therefore fired on EVERY
+  // repaint and the Overview's job cards were never drawn at all: eight jobs
+  // reduced to an empty column, with nothing in the console to say why. The
+  // markup now ships that popover `hidden` like its siblings, but the guard
+  // must not depend on every future popover remembering to.
+  //
+  // getClientRects(), not offsetParent: an OPEN menu positions itself
+  // `position:fixed` (see secRunFilterPick), whose offsetParent is null even
+  // when it is plainly on screen — that test would snatch away the very menus
+  // this exists to protect. An element inside `display:none`, or inside a
+  // closed <details>, has no client rects; a visible one always has at least one.
+  const menuOpen = Array.from(document.querySelectorAll(".menu-pop:not([hidden])"))
+    .some(el => el.getClientRects().length > 0);
+  if(menuOpen) return;
   const jobs=DATA.jobs||[];
   const allProjects=[...new Set(jobs.map(j=>j.project||"").filter(Boolean))].sort();
   if(CCApp.jobFilters.project && CCApp.jobFilters.project!=="__none__"

@@ -1937,7 +1937,7 @@
     const c = CAUSE_LABEL[rec && rec.cause || ""];
     if (!c) return null;
     const tag = el("span", "causetag", c[0]);
-    tag.title = c[1];
+    tag.dataset.tip = encodeURIComponent(c[1]);
     return tag;
   }
   var RUN_COLS = [
@@ -2376,5 +2376,5 @@
     projectStepError
   };
 })();
-/* ui-bundle: e3549861f94f008dac747519522b66496257011649f055a8283ae0b3c51a154d */
-/* ui-sources: bb9778699c8b0c0cefa87cd89ffded1408c07cdf93fe4cb3c9f94e232cb8c82a */
+/* ui-bundle: 81e59e183b4e5bdeb495b77e14b8011e432baf58fb2fa7573042c79af1bb8833 */
+/* ui-sources: 578ff094f9a45b8aad609ab16aca10dda737d7e90812373903d2050260360ef1 */
