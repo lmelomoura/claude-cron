@@ -634,6 +634,50 @@
       }
     }
   }
+  var SEC_PHASE_STATUS = {
+    ran: "ran",
+    // "partly" and not "warning": the row is already coloured, and the word a
+    // reader needs is what it means for the report -- something looked, but not
+    // the whole of what this phase covers.
+    warning: "partly",
+    skipped: "skipped"
+  };
+  function secRenderCoveragePhases(a) {
+    const host = $("sec-phases");
+    host.textContent = "";
+    let phases = [];
+    try {
+      const doc = JSON.parse(a.coverage || "");
+      if (doc && Array.isArray(doc.phases)) phases = doc.phases;
+    } catch (e) {
+      phases = [];
+    }
+    phases = phases.filter((p) => p && p.name);
+    if (!phases.length) {
+      host.hidden = true;
+      return;
+    }
+    host.hidden = false;
+    const list = secEl("div", "secphases");
+    for (const p of phases) {
+      const status = String(p.status || "");
+      const label = SEC_PHASE_STATUS[status] || status;
+      const by = p.by ? String(p.by) : "";
+      const note = String(p.note || "").trim();
+      const row = document.createElement(note ? "details" : "div");
+      row.className = "secphase secphase-" + (SEC_PHASE_STATUS[status] ? status : "unknown");
+      const head = document.createElement(note ? "summary" : "div");
+      head.className = "secphase-head";
+      head.appendChild(secEl("span", "secphase-dot"));
+      head.appendChild(secEl("span", "secphase-name", String(p.name)));
+      head.appendChild(secEl("span", "secphase-status", label));
+      if (by) head.appendChild(secEl("span", "secphase-by", by));
+      row.appendChild(head);
+      if (note) row.appendChild(secEl("div", "secphase-note", note));
+      list.appendChild(row);
+    }
+    host.appendChild(list);
+  }
   function secPaint() {
     const a = secState.analysis;
     secPaintRunButton();
@@ -652,6 +696,8 @@
       $("sec-run-meta").textContent = "";
       $("sec-run-notice").textContent = "";
       $("sec-incomplete").hidden = true;
+      $("sec-phases").textContent = "";
+      $("sec-phases").hidden = true;
       $("sec-coverage").hidden = true;
       $("sec-summary").textContent = "";
       $("sec-checklist").textContent = "";
@@ -670,6 +716,7 @@
       inc.appendChild(secEl("span", "grow", incomplete + " What is below is what it had reached, not what is there."));
       inc.hidden = false;
     } else inc.hidden = true;
+    secRenderCoveragePhases(a);
     const note = $("sec-coverage");
     note.textContent = "";
     if ((a.coverage_note || "").trim()) {
@@ -5112,5 +5159,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 91a7cd1655ac2c1f573e6fdbf6ace7d792149aa0792de6eae90dded02e1c242d */
-/* ui-sources: c4a95ac72da034c9ccd8c399b3b059bacdd583d5d8b89d36712c612cbe1e9a65 */
+/* ui-bundle: 6d2fb895cc855280ed44cfb83410e0f39a9b9b7aa2547ce4107f07740b77675e */
+/* ui-sources: bb9778699c8b0c0cefa87cd89ffded1408c07cdf93fe4cb3c9f94e232cb8c82a */

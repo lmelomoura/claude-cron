@@ -18,6 +18,18 @@ The fixture is a REAL gitleaks 8.30.1 capture of this repository, purged
 through `engines.purge` before it was written. A fixture typed from the
 documentation makes the parser and the test agree with each other while both
 disagree with the tool.
+
+ONE ENTRY WAS ADDED TO THE CAPTURE, AND IT IS NOT THE FIX. Every record the
+real capture held sat under `.superpowers/` or `__pycache__/` -- exactly the
+noise `secrets.SKIP_DIRS` now excludes (see its own comment for the
+measurement) -- so `_out_of_scope` drops the whole fixture once that fix
+lands, and "the captured fixture must contain at least one finding" below
+would fail for having nothing left to find rather than for a real parser
+regression. The added `config/app.env` record is synthetic, sits outside
+every skipped directory, and exists only so this file keeps testing what it
+says it tests: the RECORD-TO-FINDING translation, not the scope filter --
+that filter has its own tests in `tests/security/test_secrets.py` and
+`tests/security/test_recall.py`.
 """
 
 import json
@@ -30,8 +42,8 @@ from pathlib import Path
 
 import pytest
 
-from security import (adapters, deps, engines, fingerprint, ignores, osv,
-                      report, secrets, taxonomy)
+from security import (adapters, coverage, deps, engines, fingerprint, ignores,
+                      osv, report, secrets, taxonomy)
 from security import cli as security_cli
 
 FIX = Path(__file__).parent / "fixtures" / "engines"
@@ -274,6 +286,21 @@ def test_the_scope_config_excludes_what_the_hand_written_sweep_skips():
         assert re.escape(directory) in toml or directory in toml, directory
 
 
+def test_the_scope_config_excludes_laravels_runtime_directory_and_keeps_its_siblings():
+    """Measured on one Laravel monorepo: `gitleaks dir` wrote 98,298
+    `generic-api-key` records from `storage/framework/sessions/` alone -- a
+    65.8 MB report over the ceiling `engines.run_json` reads, so the tree
+    pass contributed NOTHING. The runtime directory leaves the engine's scope
+    through this config, exactly as it leaves the built-in sweep's through
+    `secrets.SKIP_DIRS` (test_recall.py has the receipts); its siblings
+    `storage/logs` and `storage/app` stay, because a log can spill a password
+    and an upload can be a key file."""
+    toml = adapters.gitleaks_config()
+    assert r"(^|/)storage/framework/" in toml
+    assert "storage/logs" not in toml
+    assert "storage/app" not in toml
+
+
 def test_the_scope_config_carries_the_projects_ignore_paths():
     toml = adapters.gitleaks_config(ignore_paths=["tests/fixtures/**"])
     assert "tests/fixtures" in toml
@@ -487,6 +514,29 @@ def test_the_scope_actually_narrows_what_the_engine_reports(tmp_path):
 
 
 @needs_gitleaks
+def test_the_real_engine_skips_laravels_runtime_directory_and_reads_its_siblings(tmp_path):
+    """The same planted key three times under `storage/`: the engine reports
+    all three on its own (the control -- a tree that is not noisy to the
+    engine proves nothing about the scope), and with our config it reports
+    the log and the upload and never the session file."""
+    root = tmp_path / "repo"
+    planted = ("app/storage/framework/sessions/s1", "app/storage/logs/laravel.log",
+               "app/storage/app/uploads/key.txt")
+    for rel in planted:
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(f"AWS_ACCESS_KEY_ID={AWS_KEY}\n")
+    before = raw_gitleaks(root)
+    assert sorted(f["File"] for f in before) == sorted(planted), \
+        "the tree must be noisy to the engine"
+    config = root / "scope.toml"
+    config.write_text(adapters.gitleaks_config(root=root))
+    after = raw_gitleaks(root, config)
+    assert sorted(f["File"] for f in after) == [
+        "app/storage/app/uploads/key.txt", "app/storage/logs/laravel.log"], \
+        [f["File"] for f in after]
+
+
+@needs_gitleaks
 def test_the_default_narrows_the_real_engine_with_nothing_configured(tmp_path):
     """The acceptance test of TASK 7, against the real binary and with an
     EMPTY `ignore_paths` -- which is what almost every project actually has.
@@ -505,11 +555,11 @@ def test_the_default_narrows_the_real_engine_with_nothing_configured(tmp_path):
 
     assert len(raw_gitleaks(root)) == 3, "the tree must be noisy to the engine"
 
-    loud, _ = adapters.gitleaks_scan(root, [ignores.DEFAULTS_OFF])
+    loud, _, _, _ = adapters.gitleaks_scan(root, [ignores.DEFAULTS_OFF])
     assert sorted(f["occurrences"][0]["file"] for f in loud) == [
         ".env.example", "app.env", "tests/fixtures/fake.env"], loud
 
-    quiet, notes = adapters.gitleaks_scan(root)
+    quiet, notes, _, _ = adapters.gitleaks_scan(root)
     assert [f["occurrences"][0]["file"] for f in quiet] == ["app.env"], quiet
     assert notes, "the scan still has to describe itself"
 
@@ -532,7 +582,7 @@ def test_the_engine_reads_the_history_a_deleted_file_no_longer_has(tmp_path):
     git(root, "add", "-A")
     git(root, "commit", "-qm", "remove")
 
-    findings, notes = adapters.gitleaks_scan(root)
+    findings, notes, _, _ = adapters.gitleaks_scan(root)
     assert findings is not None, notes
     historical = [f for f in findings if f["historical"]]
     assert historical, f"the history sweep found nothing: {notes}"
@@ -548,7 +598,7 @@ def test_a_root_that_is_not_a_checkout_costs_the_history_not_the_scan(tmp_path):
     and it has to be SAID, because "no history findings" and "the history
     was never read" are the same silence otherwise."""
     root = plant(tmp_path / "loose")
-    findings, notes = adapters.gitleaks_scan(root)
+    findings, notes, _, _ = adapters.gitleaks_scan(root)
     assert findings is not None
     assert any(f["rule"] == "aws-access-token" for f in findings)
     assert any("history sweep did not complete" in n for n in notes), notes
@@ -748,10 +798,12 @@ def test_an_unreadable_history_is_a_declared_gap_not_a_clean_report(tmp_path,
     reopened through a neighbouring door.
     """
     root = break_it(history_repo(tmp_path / "repo"))
-    findings, notes = adapters.gitleaks_scan(root)
+    findings, notes, history, _ = adapters.gitleaks_scan(root)
     assert findings is not None, notes
     assert notes_say_history_gap(notes), notes
     assert not notes_claim_full_history(notes), notes
+    # And the table's word for it agrees with the paragraph's.
+    assert history == adapters.HISTORY_GONE
 
 
 @needs_gitleaks
@@ -763,10 +815,11 @@ def test_a_shallow_clone_never_claims_the_full_history(tmp_path):
     shallow = tmp_path / "shallow"
     subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{deep}",
                     str(shallow)], check=True, capture_output=True, text=True)
-    findings, notes = adapters.gitleaks_scan(shallow)
+    findings, notes, history, _ = adapters.gitleaks_scan(shallow)
     assert findings is not None, notes
     assert not notes_claim_full_history(notes), notes
     assert any("shallow clone" in n for n in notes), notes
+    assert history == adapters.HISTORY_SHALLOW
 
 
 @needs_gitleaks
@@ -775,12 +828,13 @@ def test_a_readable_history_still_says_it_read_the_full_history(tmp_path):
     gap, and a guard that now declares one everywhere would be broken the
     other way -- silently, because a gap note reads like diligence."""
     root = history_repo(tmp_path / "repo")
-    findings, notes = adapters.gitleaks_scan(root)
+    findings, notes, history, _ = adapters.gitleaks_scan(root)
     assert findings is not None, notes
     assert [f for f in findings if f["historical"]], f"the finding is gone: {notes}"
     assert notes_claim_full_history(notes), notes
     assert not notes_say_history_gap(notes), notes
     assert not any("shallow clone" in n for n in notes), notes
+    assert history == adapters.HISTORY_OK
 
 
 @needs_gitleaks
@@ -790,7 +844,7 @@ def test_a_repository_with_no_commits_declares_no_history_gap(tmp_path):
     spot."""
     root = plant(tmp_path / "fresh")
     git(root, "init", "-q")
-    findings, notes = adapters.gitleaks_scan(root)
+    findings, notes, _, _ = adapters.gitleaks_scan(root)
     assert findings is not None, notes
     assert any(f["rule"] == "aws-access-token" for f in findings)
     assert not notes_say_history_gap(notes), notes
@@ -801,7 +855,7 @@ def test_an_unreadable_history_still_keeps_the_working_tree_findings(tmp_path):
     """A gap in one half is not a reason to lose the other half."""
     root = break_objects(history_repo(tmp_path / "repo"))
     (root / "app.env").write_text(f"AWS_ACCESS_KEY_ID={AWS_KEY}\n")
-    findings, notes = adapters.gitleaks_scan(root)
+    findings, notes, _, _ = adapters.gitleaks_scan(root)
     assert findings is not None, notes
     assert any(not f["historical"] and f["occurrences"][0]["file"] == "app.env"
                for f in findings), findings
@@ -817,7 +871,7 @@ def test_when_neither_pass_ran_both_reasons_are_reported(monkeypatch, tmp_path):
     # The tree pass fails for its own, different reason.
     monkeypatch.setattr(engines, "run_json",
                         lambda *a, **k: (None, "gitleaks is not installed."))
-    findings, notes = adapters.gitleaks_scan(root)
+    findings, notes, _, _ = adapters.gitleaks_scan(root)
     assert findings is None, findings
     blob = " ".join(notes)
     assert "not installed" in blob, notes
@@ -831,8 +885,78 @@ def test_neither_pass_ran_says_one_reason_once(monkeypatch, tmp_path):
     root = history_repo(tmp_path / "repo")
     monkeypatch.setattr(engines, "run_json",
                         lambda *a, **k: (None, "gitleaks is not installed."))
-    _findings, notes = adapters.gitleaks_scan(root)
+    _findings, notes, _, _ = adapters.gitleaks_scan(root)
     assert notes.count("gitleaks is not installed.") == 1, notes
+
+
+# ------------------------------ what the sweep covered, in the table's words
+#
+# `gitleaks_scan`'s third value is what `cli._scan_secrets` turns into the
+# secret row's status in the coverage table, and the notes are what the
+# paragraph says about the same sweep; the two have to agree. Driven WITHOUT
+# the binary: `engines.run_json` is the one door to it, and a report of `[]`
+# is exactly what gitleaks writes for a clean history, so the mapping is proved
+# on every machine and not only on the ones with gitleaks installed. The
+# `needs_gitleaks` probes above assert the same value through the real tool.
+
+def _clean_reports(monkeypatch):
+    """Both passes answer with an empty, well-formed report."""
+    monkeypatch.setattr(engines, "run_json", lambda *a, **k: ([], ""))
+
+
+def test_a_full_history_that_was_swept_is_reported_ok(monkeypatch, tmp_path):
+    """The control: the one state that earns the secret row a `ran`."""
+    root = history_repo(tmp_path / "repo")
+    _clean_reports(monkeypatch)
+    findings, notes, history, _ = adapters.gitleaks_scan(root)
+    assert findings == []
+    assert history == adapters.HISTORY_OK
+    assert notes_claim_full_history(notes), notes
+
+
+def test_a_shallow_clones_sweep_is_reported_shallow_beside_its_gap_note(
+        monkeypatch, tmp_path):
+    """The sweep RAN, over what the clone carries: real findings, a real
+    report, and a `warning` in the table because a credential committed before
+    the cut-off is not in it. The value and the sentence travel together."""
+    deep = history_repo(tmp_path / "deep")
+    shallow = tmp_path / "shallow"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{deep}",
+                    str(shallow)], check=True, capture_output=True, text=True)
+    _clean_reports(monkeypatch)
+    _findings, notes, history, _ = adapters.gitleaks_scan(shallow)
+    assert history == adapters.HISTORY_SHALLOW
+    assert adapters.SHALLOW_GAP in notes, notes
+
+
+def test_a_history_git_cannot_walk_is_reported_gone_beside_its_gap_note(
+        monkeypatch, tmp_path):
+    root = break_objects(history_repo(tmp_path / "repo"))
+    _clean_reports(monkeypatch)
+    findings, notes, history, _ = adapters.gitleaks_scan(root)
+    assert findings is not None, "the tree pass still ran and still counts"
+    assert history == adapters.HISTORY_GONE
+    assert notes_say_history_gap(notes), notes
+
+
+def test_a_history_pass_that_wrote_no_report_is_gone_whatever_git_said(
+        monkeypatch, tmp_path):
+    """`history_state` answers OK a moment before `gitleaks git` fails to
+    write a report -- a timeout, an exit code, a format this parser cannot
+    read. No history was swept, and the paragraph says so (`HISTORY_GAP`); a
+    third value that echoed the pre-scan state would have the table read
+    `ran` beside a sentence saying the sweep did not complete."""
+    root = history_repo(tmp_path / "repo")
+
+    def one_pass(name, args, cwd, **kw):
+        return (None, "gitleaks timed out.") if args[0] == "git" else ([], "")
+
+    monkeypatch.setattr(engines, "run_json", one_pass)
+    findings, notes, history, _ = adapters.gitleaks_scan(root)
+    assert findings is not None, notes
+    assert history == adapters.HISTORY_GONE
+    assert notes_say_history_gap(notes), notes
+    assert not notes_claim_full_history(notes), notes
 
 
 # ------------------------------------- the analysed repository's own config
@@ -849,14 +973,14 @@ def test_a_project_config_that_silences_the_scan_is_declared(tmp_path):
     tree with and without the file, and the note has to tell them apart.
     """
     root = plant(tmp_path / "repo")
-    loud, loud_notes = adapters.gitleaks_scan(root)
+    loud, loud_notes, _, _ = adapters.gitleaks_scan(root)
     assert loud, "the planted tree must be noisy without the project's config"
     assert not any("gitleaks.toml" in n for n in loud_notes), loud_notes
 
     (root / ".gitleaks.toml").write_text(
         "[extend]\nuseDefault = true\n\n"
         "[allowlist]\nregexes = ['''.*''']\npaths = ['''.*''']\n")
-    quiet, quiet_notes = adapters.gitleaks_scan(root)
+    quiet, quiet_notes, _, _ = adapters.gitleaks_scan(root)
     assert quiet == [], f"the project's own allowlist should have silenced it: {quiet}"
     assert any("gitleaks.toml" in n for n in quiet_notes), (
         f"a repository that told the scanner not to look must be declared, "
@@ -905,15 +1029,24 @@ def prepare(tmp_path, engines_on):
 
 
 @needs_gitleaks
-def test_prepare_runs_the_engine_and_not_the_hand_written_scanner(tmp_path):
-    """Two engines in one category report one hole under two fingerprints,
-    and the checklist then shows the same secret as two entries that
-    contradict each other. Whichever scanner runs, it runs alone."""
+def test_prepare_runs_both_scanners_and_mints_one_name_per_credential(tmp_path):
+    """Two scanners in one category used to mean one hole under two
+    fingerprints, so whichever ran, it ran alone. Both run now, and the
+    built-in's `aws_access_key` is minted under the engine's name BEFORE the
+    fingerprint is computed (`taxonomy.RULE_RENAMES`), so the planted key is
+    ONE row under ONE name -- see tests/security/test_recall.py for the merge
+    itself. The note names the engine, and says both ran."""
     findings, note = prepare(tmp_path, engines_on=True)
-    secret_rules = {f["rule"] for f in findings if f["category"] == "secret"}
+    secret = [f for f in findings if f["category"] == "secret"]
+    secret_rules = {f["rule"] for f in secret}
     assert secret_rules == {"aws-access-token"}, secret_rules
     assert "aws_access_key" not in secret_rules
+    # One row per FILE the key is planted in (`plant` writes two the analysis
+    # is not told to ignore), never two per file under two names.
+    files = [f["occurrences"][0]["file"] for f in secret]
+    assert len(files) == len(set(files)) == 2, secret
     assert "gitleaks" in note
+    assert "Both secret scanners ran" in note
 
 
 @needs_gitleaks
@@ -1089,7 +1222,10 @@ def test_prepare_falls_back_to_the_hand_written_scanner_and_says_which_ran(tmp_p
     judging the report's blind spots needs to know which they got."""
     findings, note = prepare(tmp_path, engines_on=False)
     secret_rules = {f["rule"] for f in findings if f["category"] == "secret"}
-    assert secret_rules == {"aws_access_key"}, secret_rules
+    # Under the ENGINE's name for the type, on the fallback path too: one
+    # vocabulary for `secret` whichever scanner minted the row, so a machine
+    # that loses gitleaks keeps every identity (see tests/security/test_recall.py).
+    assert secret_rules == {"aws-access-token"}, secret_rules
     assert "built-in pattern scanner" in note
 
 
@@ -3156,13 +3292,18 @@ def test_prepare_declares_a_pre_pass_that_failed_rather_than_recording_nothing(
                         lambda *a, **k: (engines.purge("semgrep", SEMGREP_404), ""))
     monkeypatch.setattr(adapters, "engine_path", lambda name: "/usr/bin/semgrep"
                         if name == "semgrep" else None)
-    findings, notes, producer = security_cli._scan_sast(tmp_path, offline=False)
+    findings, notes, producer, status = security_cli._scan_sast(tmp_path,
+                                                                offline=False)
     assert findings == []
     assert len(notes) == 1 and notes[0].startswith("The SAST pre-pass did not run")
     # And NO producer: a pre-pass whose report was refused did not look, so
     # nothing it found last time can be proven gone by this run. See
     # `diff._proven`.
     assert producer == ""
+    # And the coverage table says the same thing in its own vocabulary: a
+    # refused report is `skipped`, never the `warning` a pre-pass that ran
+    # carries. The two answers come off one branch, so they cannot diverge.
+    assert status == coverage.SKIPPED
 
 
 # --------------------------------------------- the dependency scan's `scope`

@@ -225,5 +225,32 @@ case "$(secnote sandbox "$aid11")" in
 esac
 
 echo
+echo "12. the analysis is launched with the Agent tool closed and its prompt intact"
+# THE ONE SCENARIO THAT READS AN ARGV. Everything above steers `fake-claude` by
+# env var and never looks at how it was invoked -- which is why this suite was
+# green while every real analysis died at launch: `--disallowedTools` is
+# variadic, it sat immediately before the prompt positional, Commander ate the
+# prompt as a second tool name, and the real CLI exited with "Input must be
+# provided either through stdin or as a prompt argument when using --print".
+# Here the derived security job goes down the real `security analyze` path and
+# the launch line is read back off the stand-in's own "$@".
+argv="$ROOT/launch-argv"
+rm -f "$argv"
+FAKE_ARGV_OUT="$argv" FAKE_MODE=complete FAKE_SESSION=sess-sec-argv \
+  "$CC" security analyze sandbox anything main quick >/dev/null 2>&1
+# <index><TAB><argument>. `at <n>` is the n-th argument, `idx <word>` its index.
+at()  { awk -F'\t' -v i="$1" '$1==i {print $2; exit}' "$argv"; }
+idx() { awk -F'\t' -v w="$1" '$2==w {print $1; exit}' "$argv"; }
+argc="$(awk -F'\t' '$1=="ARGC" {print $2; exit}' "$argv" 2>/dev/null)"
+di="$(idx '--disallowedTools' 2>/dev/null)"
+[ -n "${di:-}" ] && [ "$(at "$((di + 1))")" = "Agent" ] \
+  && ok "the real analysis launch carries --disallowedTools Agent" \
+  || bad "no --disallowedTools Agent in the launch argv: $(tr '\n' ' ' < "$argv" 2>/dev/null)"
+mi="$(idx '--' 2>/dev/null)"
+[ -n "${mi:-}" ] && [ "$((mi + 1))" = "${argc:-0}" ] \
+  && ok "and its prompt is the one argument after --, not swallowed by the variadic flag" \
+  || bad "the prompt is not a lone positional after -- (-- at '${mi:-none}', argc '${argc:-none}')"
+
+echo
 printf '\n  %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

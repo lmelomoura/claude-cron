@@ -1399,6 +1399,36 @@ button.secrow:hover{border-color:var(--accent);background:var(--panel2)}
    note below it. */
 .warnline.bad{border-color:color-mix(in srgb,var(--err) 40%,var(--line));
   background:var(--err-soft);color:var(--err)}
+/* THE COVERAGE, COMPACT (#sec-phases, secRenderCoveragePhases in
+   analysis.js) -- one row per phase above the coverage paragraph, each
+   folding open onto the sentences that paragraph prints whole. Quiet on
+   purpose: it sits between two warnlines and is not itself an alarm, it is
+   the map of what looked. `[hidden]` spelled out for the same reason every
+   rule above it is -- the author `display` on .secphase-head would otherwise
+   outrank the UA sheet. */
+#sec-phases[hidden]{display:none}
+.secphases{border:1px solid var(--line);border-radius:10px;overflow:hidden;
+  margin:2px 0 8px;background:var(--panel)}
+.secphase + .secphase{border-top:1px solid var(--line2)}
+.secphase-head{display:flex;align-items:center;gap:8px;padding:6px 10px;
+  font-size:12px;color:var(--ink);list-style:none}
+details.secphase > summary.secphase-head{cursor:pointer}
+/* Safari still needs the pseudo-element to drop the disclosure triangle; the
+   row's own dot is the affordance, and the marker doubled it. */
+details.secphase > summary.secphase-head::-webkit-details-marker{display:none}
+.secphase-dot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--idle)}
+.secphase-name{font-weight:600}
+.secphase-status{color:var(--muted)}
+/* Pushed to the right edge: the producer answers "with what", which is the
+   second question, and a reader scanning statuses should not have to read
+   past a name to reach the next one. */
+.secphase-by{margin-left:auto;color:var(--muted);font-variant-numeric:tabular-nums}
+.secphase-note{padding:0 10px 8px 25px;font-size:12px;line-height:1.5;color:var(--muted)}
+.secphase-ran .secphase-dot{background:var(--ok)}
+.secphase-warning .secphase-dot{background:var(--warn)}
+.secphase-warning .secphase-status{color:var(--warn)}
+.secphase-skipped .secphase-dot{background:var(--err)}
+.secphase-skipped .secphase-status{color:var(--err)}
 .secfield > span{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
 .secfield input{font:inherit;font-size:13px;padding:8px 11px;min-width:160px;
   max-width:280px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);color:var(--ink)}

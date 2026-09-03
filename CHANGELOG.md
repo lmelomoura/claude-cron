@@ -17,7 +17,385 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A credential committed and deleted under a skipped directory no longer
+  comes back from the built-in's history sweep.** `scan_history` applied the
+  operator's `ignore_paths` to a diff's path and never `secrets.skipped()`,
+  while the tree sweep and the gitleaks adapter both did — so a secret ever
+  committed under `.superpowers/` or `build/` was a `medium`-or-worse row only
+  the built-in saw, counted by the close, and the sentence "one list both
+  scanners read" was false on the history. Reproduced with the binary: three
+  paths committed and deleted, two under `SKIP_DIRS`, and the history sweep
+  reported exactly those two. The sweep now reads the same predicate as the
+  tree, in the same order.
+- **A machine that loses gitleaks no longer swears a built-in-only secret
+  `fixed` while reporting it `new`.** The fallback path — gitleaks absent, or
+  both of its passes failed, which two 600 s timeouts on a large repository
+  reach without uninstalling anything — minted the built-in's own rule names
+  (`generic_secret`, `aws_access_key`, …) while the union path renamed them
+  through `taxonomy.RULE_RENAMES` before the fingerprint. Analysis N with the
+  engines on stored `generic-api-key` under `producer=secrets`; analysis N+1
+  without them minted `generic_secret` for the same file — a different
+  fingerprint — and `diff._proven`, correct by its own rule (the built-in ran),
+  proved the old row `fixed` beside the same credential as `new`. ONE
+  vocabulary for the `secret` category now, whichever scanner minted the row:
+  the fallback renames at mint exactly as the union does, so the row is in the
+  analysis and reads `open` — the truth. The two deliberately unmapped
+  built-in rules (`github_token`, `slack_token`) keep their own names on every
+  path, as before. `migrate-rules` remains for ledgers written before this
+  change, and runs without gitleaks (next entry).
+- **`migrate-rules` runs on a machine without gitleaks.** It used to exit
+  there, because the built-in scanner minted its own names on the very next
+  analysis and undid the migration. With both scanners minting one vocabulary
+  that reason is gone — and the ledger the verb exists to fix is exactly the
+  one a machine without gitleaks wrote before this change. **What it cost to
+  keep the refusal:** reproduced on a scratch ledger, a pre-branch
+  `aws_access_key` row with an `accepted` decision read `fixed` beside a `new
+  aws-access-token` carrying no decision, the close went `capped` for a row a
+  human had already ruled on, and the remedy the CHANGELOG pointed at was
+  refused. The presence check is lifted; the refusal while any analysis is
+  `running` stays. `--help` now says what the verb does, when to run it, and
+  that it needs no engine.
+- **The secret row no longer reads `ran` while gitleaks' working-tree pass
+  produced nothing.** `adapters.gitleaks_scan` reported what its HISTORY sweep
+  covered and nothing about its tree pass, so `gitleaks git` finishing while
+  `gitleaks dir` timed out — or wrote a report over the 64 MB ceiling — left the
+  coverage table saying `ran` beside a paragraph saying *"The working-tree
+  secret scan did not complete"*. **What it cost not to have this:** measured
+  on one Laravel monorepo, `gitleaks dir` wrote 98,306 `generic-api-key`
+  records from `storage/framework/sessions/` alone, a 65 MB report the analysis
+  refused to read, and every analysis of it filed the secret phase as fully
+  run with the tree never scanned by the engine. The adapter now returns the
+  tree outcome as a fourth value (`TREE_OK` / `TREE_GONE`), the same way it
+  returns the history state, and `_scan_secrets` earns `ran` only when both
+  passes wrote a report, the history was full, and the built-in sweep of the
+  history completed — never by matching a sentence in a note.
+- **A PEM header with no key behind it is no longer a secret finding.** The
+  built-in scanner's `private_key` rule fired on the header line alone, where
+  gitleaks' `private-key` rule wants the body. Measured on Minerva: five
+  `private_key` findings — two a lone header (an adversarial test and a
+  conformance harness, both test code) and three with a body behind the header
+  (a redaction test with a base64 run on the next line, and two planning
+  documents, one with that same shape and one carrying a whole PEM on one line
+  with `\n` escapes). The spec had counted three, all header-only; the second
+  measurement says two were, and three are key-shaped — gitleaks reports two of
+  them itself — and the design conclusion stands. **What it cost not to have
+  this:** with the two scanners' findings now merged (below), the two lone
+  headers came back as critical findings only the built-in saw. The rule now
+  requires key material to follow the header, on the next line as a PEM file
+  lays it out or on the same line as a `.env` or JSON value carries it with
+  `\n` escapes; the history sweep reads a file's added lines together so it
+  can see the line after a header too.
+- **The two secret scanners stop at the same file size on the working tree —
+  exactly — and the history's asymmetry is stated instead of denied.** The
+  first version of this claimed parity by handing gitleaks
+  `--max-target-megabytes 2`. Measured on 8.30.1: gitleaks counts that flag in
+  10^6 bytes and, in `dir` mode, skips a file strictly larger than 2,000,000,
+  while the built-in sweep stops at 2 × 2^20 = 2,097,152 — so every file in the
+  band 2,000,001–2,097,152 was "only the built-in saw", the reverse of what
+  parity meant. Gitleaks is now handed the built-in's ceiling rounded UP to the
+  next 10^6 (`secrets.GITLEAKS_MAX_TARGET_MEGABYTES`, derived, never a second
+  literal) so it reads at least everything the built-in reads, and
+  `adapters.gitleaks` drops any working-tree record whose file is over the
+  ceiling through the one predicate the built-in sweep uses
+  (`secrets.oversized`): one number on both scanners, whatever unit the flag
+  counts in. The HISTORY is a different matter and the code now says so: the
+  built-in's `git log -p` sweep has no file cap by construction, and gitleaks'
+  `git` mode applies its own rule to the flag (measured: handed `2` it skipped
+  committed files of 3,000,000 bytes and up, handed `3` files of 4,000,000 and
+  up) — a credential in a committed file that large is a history finding of the
+  built-in alone, asserted as such, and the coverage sentence about files not
+  read now says it is about the working tree.
+- **A checkout with no commits is an empty history, not a failed sweep.** The
+  built-in history sweep ran `git log -p HEAD`, which on an unborn branch fails
+  with "ambiguous argument 'HEAD'", and filed the gap sentence — beside
+  gitleaks' own "scanned … over the full git history", under a secret row that
+  read `warning` for it. `scan_history` now asks git whether there is anything
+  to walk before it walks (`rev-list -n1 --all`, the question `history_state`
+  already asks on the engine side), answers with a third value saying whether
+  it swept, and files one sentence saying the history is empty; the row reads
+  `ran`, and `_scan_secrets` reads the value rather than the sentence.
+- **The built-in history sweep and the engines share one time budget.** `git
+  log -p` ran with 300 s against the engines' 600 s, so on a large repository
+  gitleaks' history pass could finish while the built-in's timed out — and the
+  secret row, which now needs both, read `warning` for a limit two lines
+  apart. Both read `engines.SCAN_TIMEOUT`.
+- **The triage gate no longer names a finding the operator already ruled on.**
+  `_untriaged` counted every scanner row of the analysis at `medium` or above
+  that carried no re-report — decided or not — while `diff.classify` lets a
+  project decision override every other state a finding can be in, and the skill
+  correctly sends the agent past those rows. The canonical case is the one the
+  skill itself describes: a credential in git history, `secret`, high, re-found
+  by every sweep for as long as the commit exists, whose only closure is a human
+  rotating it at the provider and accepting the risk. **What it cost not to have
+  this:** from the moment the operator accepted it, every later analysis of that
+  repository closed `capped` under a note naming the very finding they had ruled
+  on — the gate contradicting its own operator, on every run, with nothing an
+  agent could ever do to clear it. The query now excludes fingerprints the
+  project has a decision for, scoped by project exactly as the `decision` table
+  is (a judgement on one repository must not dismiss the identical fingerprint
+  on another). A decision is a stronger record that a mind read the row than any
+  re-report: it is written, signed and permanent. Job 2 of the skill said the
+  four states it lists are "exactly" the rows a producer recorded this analysis.
+  That was untrue in one direction — a decided row is producer-recorded too, and
+  sits outside the four states — while the other direction, that every row in
+  those states was recorded by a producer in this analysis, holds and is what
+  the sentence now affirms; it then names the two kinds of producer-recorded row
+  that sit outside them and why — a `pending` row, which belongs to Job 1, and a
+  decided row, which belongs to the human who signed it.
+
+- **The triage mark now costs a reading, and the cheapest rubber stamp can no
+  longer strip a finding of its evidence.** The gate that lowers `done` to
+  `capped` when a scanner finding at `medium` or above was never read takes its
+  mark from `ledger.record_finding`: an agent re-report landing on a row a
+  producer minted IS the triage, because it is the only trace reading one
+  leaves. Arrival was the whole test, so a JSON object echoing the scanner's own
+  rule, severity and title back — no rationale, no occurrences — set `triaged=1`
+  and closed `done`. And because the upsert REPLACES a finding's occurrences,
+  that same cheapest payload left the row with none: the note the gate writes
+  about a skipped finding could no longer name the file to open it at. Such a
+  re-report is now refused outright, with nothing about the row changed, when it
+  carries no rationale, hands the producer's own sentence back byte for byte, or
+  names no location — where a location is an occurrence that names a file:
+  `[{}]` and `[{"file": ""}]` used to count as one at the door and in the ledger
+  alike, and be stored as a phantom `('', 0)`, while `line` 0 stays legitimate
+  because every whole-file scanner row carries it. And a payload carrying no
+  rationale and no location is refused on EVERY row, marked or not: once a real
+  reading had marked the row, a second bare write was applied as a replacement
+  and left it `triaged=1` with its rationale and occurrences gone — counted as
+  read, evidence erased. The severity is deliberately not part of that test —
+  agreeing with the scanner is a legitimate, probably the commonest, outcome of
+  reading the code, and a check that demanded a changed severity would teach the
+  agent to move numbers instead. Refused rather than silently uncounted: the
+  failure this gate was written after is an agent that believed it had done
+  Job 2, so `report-finding` now exits non-zero saying which of the three
+  payloads arrived. **What it cost not to have this:** one JSON key was the
+  entire price of the gate shipped two commits ago, and paying it also destroyed
+  the evidence — a `capped` verdict naming "CVE-2024-1234 (no file recorded)" is
+  a scold the reader cannot act on. Six pinning tests travel with it, for rules
+  that were documented at length and tested nowhere: the two exclusions a
+  mutation could delete with the whole suite still green
+  (`minted_by not in ("", AGENT)` and `_untriaged`'s `f.producer<>''`, which
+  together with the refusal above are what let the gate's note quote a rule and
+  a path without running them past the secret scanner), the mark resetting per
+  analysis, the note's one-finding and two/three-finding wordings, and
+  `TRIAGE_BLOCKING` as a slice of `report.SEVERITIES` that a reordering of that
+  tuple would silently change. Two more routes out of the same row closed
+  since. A payload one key richer than the bare one — `{"rationale": "x",
+  "occurrences": []}`, or `{"occurrences": [...]}` with no rationale — was
+  applied to a row already marked and erased the half it omitted: every
+  location, or the rationale to `''`. A write onto a row that already carries
+  a rationale or an occurrence naming a file may now not leave that half
+  empty; refused rather than merged, because the replacement is deliberate and
+  a silent merge would make the stored row differ from what the agent last
+  said, and the refusal names the missing half. And `{"rationale": 5}` — a
+  rationale that is not a string — walked past the door into the ledger and
+  came back as a Traceback on stderr instead of the door's sentence, on every
+  re-report onto an existing row. It is now REFUSED at the door, by sentence —
+  rc 1, the field named, "must be a string", nothing recorded — and so is every
+  optional text field (`remediation`, `partial_note`) that arrives as something
+  other than a string. The first version of this fix dropped the key instead,
+  so that the ledger's own "no rationale" refusal would fire: right for
+  `rationale`, and for the other keys a silent erasure — `{"remediation": 5}`
+  exited 0 with an empty stderr and the row stored with `''` in that column,
+  the agent's remediation gone without a word. The ledger carries its own copy
+  of the location lock as well: an occurrence naming no file is never
+  inserted, whoever wrote it — unreachable through the door, which refuses such
+  an object, but `record_finding` called directly on a row that never had a
+  location stored `[{"line": 3}]` as `('', 3)`. Pinned alongside: the
+  "Ending the run" clause naming the decided-row exemption, which could be
+  deleted with the suite still green.
+
+- **Job 2 of the security skill no longer selects rows the close cannot count,
+  and no longer blanks the scanner's own remediation.** Its step 2 took "every
+  row whose producer is not `agent`" off the checklist and called them "the ones
+  the close counts". Both halves were false for a carried-over `pending` row:
+  `_untriaged` counts only rows filed under THIS analysis id, and a `pending`
+  row is by definition one no producer re-found this run, so this analysis holds
+  no row for it and it can never block a `done`. Steps 3–4 then told the agent
+  to open the code and write what it read — which is precisely what Job 1
+  forbids for such a row ("Do not write in its rationale that you verified it":
+  the producer that could have re-checked it is the one that did not run), so
+  the two jobs gave opposite instructions for the same row. Step 2 now takes
+  only the four states this analysis actually holds — `new`, `open`, `partial`,
+  `regressed` — and sends `pending` back to Job 1. **And step 4 now says which
+  fields to carry across.** It asked for a severity and a rationale, while
+  `ledger.record_finding` upserts the WHOLE row: a re-report that omitted
+  `remediation` overwrote the scanner's fix instructions with an empty string,
+  and `title` is required at the door, so the agent had to invent one and lose
+  the name every earlier analysis knew the finding by. **What it cost not to
+  have this:** the triage gate shipped in the previous commit made Job 2 *the*
+  procedure for every deterministic row at `medium` or above — so every one of
+  those defects now runs once per finding per analysis, and the two that damage
+  the ledger (an emptied remediation, an invented title) are silent, arriving
+  through the one door whose whole purpose is to improve a finding. Three
+  smaller corrections travel with it: "Genuinely gone — do nothing" now says to
+  read the state first (a `sast` row the checklist shows `open` was re-found by
+  Semgrep this run, so silence over it is what the close counts, not a
+  "fixed"); "Ending the run" adds the empty-producer exclusion the query has
+  (`f.producer<>''`, a row from before that column existed); and the coverage
+  note is quoted in both its forms, since one skipped finding reads "1
+  deterministic finding was never triaged", not "1 … findings were".
+
+- **The analysis prompt names `checklist`, the verb the whole skill runs on.**
+  `security_prompt()` still said to read what `prepare` found with
+  `findings --analysis <id>`, which returns only this analysis's own rows —
+  never a finding a previous analysis left open — while the paragraph below it
+  in the same prompt already spoke of "the fingerprint the checklist printed",
+  a command the prompt had never mentioned. **What it cost not to have this:**
+  the prompt is read before the skill and outranks it in practice; an agent
+  following it worked from a list with every carried-over finding missing, which
+  is the exact route by which a live vulnerability disappears from the report as
+  `fixed`.
+
+- **The pins on the security skill stop passing on sentences that say the
+  opposite.** `tests/security/test_taxonomy.py` guarded the skill against the
+  contradiction the triage gate punishes with two token checks, and a reviewer
+  got four rewrites past them with the suite still green. The bans on "leave it
+  alone" and "changes nothing but its text" were scoped to the **Job 2** slice
+  while the second phrase had only ever lived in **Job 1**, so restoring Job 1's
+  old bullet verbatim — or dropping the literal sentence "or leave it alone if
+  it stands" into Job 1 — left 19 passed. And a token check cannot tell an
+  assertion from its negation: "Ending the run" rewritten to say the analysis
+  "is still recorded as `done` (never `capped`)" keeps `medium`, `capped` and
+  `first three`; Job 2 rewritten to "a row … is NOT still re-reported: if it
+  stands, leave the scanner's row exactly as it is" matches `still re-reported`
+  inside its own negation and spells the ban's phrase differently. The bans are
+  now document-wide and cover the negated spellings (`left alone`, `untouched`,
+  `leave … as it is`, `not still re-reported`), the affirmative pin refuses a
+  match that a negation immediately precedes, and "Ending the run" is asked for
+  the **direction** — a `done` that is *lowered to* a `capped`, in one sentence,
+  with no negation in it — rather than for both words in any arrangement.
+  **What it cost not to have this:** these tests are the only thing standing
+  between the gate and a skill that tells the agent to produce exactly what the
+  gate counts as unread, and half of what they claimed to hold was unheld. All
+  four rewrites are now kept as data in
+  `test_the_pins_catch_the_rewrites_that_used_to_slip_past_them`, so weakening
+  a check fails on the exact text the weakening would admit rather than on a
+  reviewer noticing again.
+
+- **The security skill no longer tells the agent to do the one thing the close
+  now punishes.** Job 2 of `skills/security-analysis/SKILL.md` said to
+  re-report a deterministic finding "with a corrected severity … **or leave it
+  alone if it stands**", and Job 1 said re-reporting an already-open row
+  "changes nothing but its text". Both are now false: a re-report onto a row a
+  scanner minted is the ONLY thing that marks the finding triaged, and
+  `finish --state done` counts what is not marked. **What it cost not to have
+  this:** the gate shipped without the two documents that tell the agent what
+  it measures — the repository's own rule that a rule the code enforces
+  travels with the code, broken in the commit that added the rule. An agent
+  following Job 2 *exactly* — opening all ~40 findings, correcting thirty,
+  agreeing with ten at `medium` or above — would have closed `capped` under a
+  coverage note asserting that those ten "were never triaged". That note is a
+  false statement about work that was actually done, in a module whose entire
+  case rests on its reports never asserting what they cannot prove. Job 2 is
+  now a numbered procedure rather than a paragraph of intent (`checklist`
+  first; every non-`agent` producer's row at `medium` or above; open the code;
+  re-report under the printed fingerprint, unchanged severity included), it
+  says what a `capped` "N deterministic findings were never triaged" means and
+  that skipping this job is the only way to get one, and it states that an
+  empty rationale or the scanner's own sentence pasted back is a rubber stamp
+  the ledger cannot detect. "Ending the run" now names the gate the agent is
+  judged by: the `medium` floor, the `done` → `capped` downgrade, and the note
+  that names the first three skipped. The two analyses this is drawn from closed
+  `done` over ~40 unread findings each; the gate that now catches that would
+  have punished an agent that had followed the skill.
+
+- **The skill says why it has no subagents, in the same words as the runner.**
+  The `Agent` tool — `Task` in the CLI's roster, the same tool under both
+  names — has been closed at launch since the previous commit, but nothing the
+  agent reads explained the absence, which reads as a broken environment
+  rather than a decision. Both `SKILL.md` and `security_prompt()` now say it is
+  closed on purpose and give the number: analysis 9 cost **$51.44** running six
+  subagents that split the repository for the SAST pass and triaged not one
+  deterministic finding. Dividing the repository by area is not the answer to a
+  budget that runs out — a `capped` that says what was not reached is.
+  `tests/security/test_taxonomy.py` pins all three statements to the skill:
+  Job 2's re-report instruction (and the absence of "leave it alone"), the
+  floor/verdict/note in "Ending the run", and a sentence naming both `Agent`
+  and `Task` as closed, with the cost that made it a rule.
+
 ### Added
+
+- **The coverage note is now a table of phases before it is a paragraph.** An
+  analysis records, beside the prose it always wrote, one row per phase —
+  `scope`, `secrets`, `hygiene`, `dependencies`, `sbom`, `iac`, `sast-prepass`,
+  `sast` and `triage` — each with a status (`ran` / `warning` / `skipped`), the
+  producer that answered, and that phase's own sentences. The downloaded
+  Markdown and HTML reports open with that table, the JSON carries it under
+  `coverage.phases`, and the analysis screen draws one line per phase with a
+  status dot, folding the prose underneath. **What it cost not to have this:**
+  `coverage_note` is a single string assembled by concatenating 27 `*_NOTE`
+  constants across six modules — about two thousand characters on a real run.
+  Every sentence in it was written because its absence had cost something and
+  every one of them is true; read as one block, the operator who built this
+  system looked at a real one and asked "what *is* this alert?". Honest per
+  phase, incoherent as a whole. The table answers "who looked, who did not,
+  and with what" in a glance, and the paragraph is what you open when you then
+  ask why. **Beside, never instead:** `coverage_note` is still written byte for
+  byte as before, each phase's note is a substring of it, and an analysis
+  recorded before the new `coverage` column existed renders exactly as it
+  always did — no empty table, no placeholder. **The status is what the
+  scanner returned, not a reading of its prose:** every `_scan_*` in
+  `cmd_prepare` now answers with its own status off its own control flow, so a
+  reworded note can never quietly change what a phase claims. `warning` is the
+  middle case that used to be invisible — a fallback producer whose coverage is
+  narrower than the engine it replaced (the built-in secret scanner against
+  gitleaks' rule set, OSV.dev's five lockfile formats against Trivy's many), or
+  a Semgrep pre-pass that ran perfectly and still is not the SAST pass. **The
+  secret row earns `ran` from the history, not from the binary:** gitleaks
+  over a shallow clone, or over a history git could not walk, reads `warning`
+  beside the same sentence the paragraph already carried for that gap — the
+  tree was scanned, the whole of what the phase means was not. **The SBOM row
+  names who built the document** — `syft`, or `inventory` for this project's
+  own five-format read — instead of showing a dash over a file that exists.
+  **`sast` and `triage` are the eighth and ninth rows, and the two `finish`
+  writes.** `sast` is the agent's own pass, and its status follows the verdict
+  because the verdict is the only evidence there is about it: `ran` on `done`,
+  `warning` on `capped` or `failed`, with whatever `--note` the close brings —
+  the agent's, or the engine's when it closes a run the agent left — as its
+  prose. `triage` carries the count from the close — `warning` with the
+  findings nobody read, `ran` with how many the agent re-reported, `skipped`
+  when the close never reached the check at all — and when an operator
+  decision exempted a finding from that count it says so ("1 deterministic
+  finding at medium or above carried an operator decision and was not
+  counted") rather than reporting that nothing was waiting. An analysis that
+  never ran `prepare` files both rows `skipped` under the very sentence the
+  paragraph carries for it, never `ran`. A row closed twice (the agent, then
+  the engine) replaces these lines rather than growing second, contradicting
+  ones; the engine's later `capped` never overwrites a triage the agent's own
+  close had earned, and does lower the `sast` row, because a run cut short is
+  precisely what that row cannot vouch for. The Runs list deliberately does
+  not ship the new column: it is polled every four seconds over up to a
+  hundred rows, and no column of that table reads either half of the
+  coverage.
+
+- **An analysis can no longer close `done` over findings nobody read.**
+  `finish --state done` now counts the findings a SCANNER produced that are
+  `medium` or worse and that the agent never re-reported, and closes the
+  analysis `capped` when there are any — with a coverage note that gives the
+  count and names the first three by rule and file. **What it cost not to
+  have this:** the entire design of this module rests on one argument — the
+  deterministic phases are noisy on purpose, and the noise is sorted by an
+  agent that reads the surrounding code, not by heuristics. That is Job 2 of
+  `skills/security-analysis/SKILL.md`, asked for over two pages. In analysis 9
+  and again in analysis 10 on Minerva the agent triaged **zero** of the ~40
+  deterministic findings waiting for it, spent the whole budget on its own
+  SAST pass, and both runs closed `done` — clean-looking reports over 40
+  findings nobody had read, and those reports then became the baseline the
+  next run was diffed against. Asking is precisely what failed, so the close
+  verifies instead. **The mark is an event, not a claim:** a finding counts as
+  triaged only because the agent's re-report landed on a row a scanner minted,
+  which is the only trace that reading it leaves; there is no field an agent
+  can send to say it looked, because that would be the same unverified
+  assertion as the `done` this checks. **`capped`, never a refusal** — same
+  shape as the existing "never ran `prepare`" guard, and for the same reason:
+  a `capped` that says "40 findings were never read" is the honest result of
+  skipping the job, while an analysis left `running` for ever is worse than
+  either. `low` and `info` do not block: the floor is the named constant
+  `TRIAGE_FLOOR`, an informed guess written down as one, to be moved on what
+  the first real analysis after this measures rather than on argument.
 
 - **There is CI now, and it cannot go green over a skipped engine.**
   `.github/workflows/ci.yml` runs `claude-cron selftest`, the server suite,
@@ -403,6 +781,103 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Laravel's runtime directory leaves the secret scan, on both scanners.**
+  `storage/framework` — Laravel's `cache/`, `sessions/`, `views/`, `testing/`,
+  git-ignored by Laravel's own per-directory `.gitignore` — joins
+  `secrets.SKIP_DIRS`, the one list the built-in sweep (`secrets.skipped`) and
+  the gitleaks `--config` allowlist (`adapters.scope_patterns`) both read, so
+  the two scanners keep one scope. Same rule as `.superpowers` and `data/logs`:
+  a named directory the machine generates at runtime is not the repository, and
+  a scanner that reads it reports the operator's session store as the project's
+  leaked credentials. Named, not git-ignored: the scanner does not read
+  `.gitignore` — the tree scan walks the filesystem and only the directories
+  `SKIP_DIRS` names leave, so a git-ignored `.env` or `auth.json` is scanned
+  like any other file. Precise on purpose: `storage/logs` (Laravel's application
+  log, where a stack trace spills a password) and `storage/app` (uploads, which
+  can be key files) stay in scope. **What was measured**, on the Minerva
+  checkout (`develop` @ `55cfb91`, full history, default noise filter, paths and
+  rule names only): `gitleaks dir` wrote a 65.8 MB report — 98,317 records,
+  98,298 of them `generic-api-key` under `martis-app/storage/framework/sessions/`
+  — over the 64 MB ceiling `engines.run_json` reads, so the tree pass was
+  discarded on every analysis of that repository and the secret phase read
+  `warning`. After, the same pass writes 12 KB (19 records, none under
+  `storage/framework`), the phase reads `ran`, and the union grows from 29
+  identities to 32 (gitleaks 2 → 8, seen by both 1 → 4, only gitleaks 1 → 4,
+  only built-in 27 → 24; files 28 → 31): a `curl-auth-header` and a
+  `generic-api-key` in planning documents and a `github-fine-grained-pat` in
+  `martis-app/auth.json` that no analysis of that repository had ever recorded.
+  All three are in git-ignored files — two agent-written plans under
+  `docs/superpowers/plans/` and the local composer credential
+  `martis-app/auth.json`, the same class of untracked operator-local material
+  as the two `.env` files the scan already reported — which is the kind of
+  recall this entry buys. The one `SKIP_DIRS` entry that increases recall, and
+  reversible: one entry in one set.
+
+- **The two secret scanners now run together and their findings add up.**
+  `prepare` used to run ONE of them — gitleaks when installed, the built-in
+  pattern scanner when not — because two scanners naming their rules
+  differently mint two fingerprints for one credential. `taxonomy.RULE_RENAMES`
+  made that reason false for six of the built-in's eight types, so the built-in's
+  findings are now minted under gitleaks' names BEFORE the fingerprint is
+  computed and the two lists merge by identity: one row per credential, the
+  higher severity, the occurrences of both, and a `producer` naming every
+  scanner that saw it — `gitleaks+secrets` for a row both re-found, `secrets`
+  for one only the built-in's generic rule saw. The analysis row records
+  `gitleaks+secrets` in `produced`, and `diff._proven` reads both sides atom by
+  atom and requires EVERY scanner that saw a row to have looked again before it
+  is `fixed` — so a row minted under `gitleaks` alone before this change is
+  still proven by the union; on a machine that later loses gitleaks, a row only
+  gitleaks saw is `pending`, never `fixed`, and a row the built-in saw — alone
+  or beside the engine — is re-minted under the same name and reads `open`,
+  because both paths mint one vocabulary (see the Fixed entry on the fallback
+  path). **What it cost not to have this:**
+  measured on Minerva with the product filters applied to both, gitleaks saw 2
+  secret identities and the built-in 30; the one credential gitleaks' generic
+  rule discards through its stopword list (`our_` and `con_` are entries), not
+  by entropy and not by shape — a seed token shared by a script, a test helper
+  and a Postman collection — was found by nothing on any machine with gitleaks
+  installed.
+  The coverage paragraph now says how many findings both saw and how many only
+  one did, and — when a `github_token` or `slack_token` row is present, the two
+  types the rename map deliberately leaves out — that such a credential may be
+  listed twice until a map exists. On a machine without gitleaks nothing
+  changes: the built-in runs alone, under its own names, as `warning`.
+- **The JSON report's `coverage` key is an object, not an array.** It used to
+  be the list of coverage sentences; it is now `{"notes": [...], "phases":
+  [...]}`, where `notes` is that same list, unchanged and in the same order,
+  and `phases` is the structured table the Markdown and HTML reports open
+  with. A consumer that read `coverage` as a list has to read `coverage.notes`
+  instead. `phases` is always present — `[]` for an analysis recorded before
+  the column existed — so a consumer can tell "this analysis predates the
+  table" from "this is an older report format" without special-casing either.
+
+- **A security analysis is now launched with the `Agent` tool closed, and it
+  cost $51.44 to learn that asking was not enough.** The design of this module
+  chose one agent over subagents — fewer moving parts, one trace a human can
+  read end to end — but that decision lived only in the spec: nothing in the
+  skill or the analysis prompt forbade the tool, and nothing at launch removed
+  it. Analysis 10 fanned the SAST pass out to **six** subagents split by
+  repository area; analysis 9 did the same and cost **$51.44**. Both then
+  triaged **zero** of the 40 deterministic findings waiting for them — the
+  triage the whole checklist rests on — because the budget had already gone to
+  SAST. The derived security job now carries `disallowed_tools: "Agent"` and
+  `run_job` turns any job's `disallowed_tools` into the CLI's
+  `--disallowedTools`, so the tool is absent before the first turn. **As first
+  shipped this did not work at all — it killed every analysis outright, and the
+  entry originally written here described a feature that never ran once. See
+  "Every security analysis was dying before its first turn" under Fixed below
+  for what actually happened and what the flag now looks like on the command
+  line.** A
+  **denylist, not the `allowed_tools` allowlist that was already there**: an
+  allowlist would have to name every tool an analysis needs and would break
+  silently the first time the CLI grew a new one, and the failure would look
+  like an agent that had mysteriously stopped working. The analysis prompt
+  still says the tool is missing and why, so the agent does not spend turns
+  rediscovering the wall. `disallowed_tools` is a general job field — set it on
+  your own jobs if you want it — but it is deliberately **not** a per-project
+  `security.*` setting, because a project able to re-open the tool could re-buy
+  the $51.
+
 - **A finding that was being reported from a fixtures directory is now
   reported `fixed` on the next analysis, and nothing was fixed.** This is
   the honest cost of the two defaults above, and it is stated here rather
@@ -424,6 +899,80 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   checklist and not a regression in the ledger.
 
 ### Fixed
+
+- **Every security analysis was dying before its first turn, because the flag
+  that closes the `Agent` tool ate the prompt.** `--disallowedTools` is
+  **variadic** — the CLI's own `--help` spells it `<tools...>` — and `run_job`
+  appended it to the very end of the launch line, immediately before the prompt
+  positional. The option parser went on consuming positionals, took the whole
+  prompt as a second tool name, and `--print` was left with no input at all:
+  `Error: Input must be provided either through stdin or as a prompt argument
+  when using --print`. Every run of a job carrying `disallowed_tools` ended
+  `"last_status":"error"`, `"cause":"killed"`, `"turns":0` — measured end to end
+  through `claude-cron run` against the real CLI 2.1.258, with a control job
+  lacking the field running clean. So the entire feature above shipped inert,
+  and worse than inert: the analyses it was meant to make cheaper stopped
+  running at all. The same latent bug sat in the pre-existing `--allowedTools`
+  line and was dormant only because nothing had ever set that field; mirroring
+  it is what armed it. The launch now ends option parsing with `--` before the
+  prompt — **always, not only when a tool flag is set**, since it costs nothing
+  otherwise and goes on protecting the prompt from any variadic flag added
+  later. The two tool flags are also passed as a quoted array rather than
+  through the word-split `$args`, so a value like `Bash(git *)` reaches the CLI
+  as one argument instead of splitting into `Bash(git` and a glob-expanded
+  `*)`. And it is written down that a tool named in **both** lists is denied:
+  deny wins, measured off the session's own `init` tool roster.
+
+  **Why no test caught it, which is the more expensive half.** The two
+  assertions guarding this launch `sed`-ed `run_job`'s source text and grepped
+  for literal lines: they proved the lines existed and never once observed an
+  argv. `test/fake-claude`, which the whole end-to-end suite runs against, never
+  read `"$@"` at all, so a green e2e run was never evidence about the launch
+  path. And the assertion that checked the derived job's `disallowed_tools`
+  compared it against `$SECURITY_DISALLOWED_TOOLS`, the very constant it was
+  testing — emptying that constant re-opened the tool with all five assertions
+  still green, including the one whose failure message reads "subagents are
+  back". All three are fixed: the structural greps are replaced by a real
+  `run_job` launch recorded through `CLAUDE_CRON_CLAUDE_BIN` and asserted
+  argument by argument (the flag and its value, the prompt as a lone positional
+  after `--`, a job with neither field getting neither flag but still getting
+  `--`, and a tool value with a space surviving as one argument); the derived
+  job is compared against the literal `"Agent"`; and `test/fake-claude` can now
+  record its argv, with a scenario in `test/e2e.test.sh` that reads it over the
+  real `security analyze` path. Each of the three properties was mutation-tested
+  by breaking it and watching the new assertions go red.
+
+- **The built-in secret scanner stopped reading its own agents' workspace as
+  if it were the project — and `SKIP_DIRS` learned to say a path, so it did
+  not go blind to an analysed project's logs on the way.**
+  `secrets.SKIP_DIRS` never listed `.superpowers`, so a repository's own
+  `.superpowers/` (where this repository's agents write review diffs and run
+  reports) was read like any other source directory — git-ignored, and
+  routinely full of credential-shaped text that belongs to neither the
+  project nor a leak. Measured on the Minerva checkout
+  (dev-knowledge-platform): 22 `generic_secret` occurrences from
+  `.superpowers/` alone, none of them real, out of 57 total; after the fix,
+  35 occurrences, 0 under `.superpowers/`, and the `src/`, `services/`,
+  `scripts/` counts unchanged (0, 3 and 4 occurrences respectively, in both
+  cases). This repository's own transcript directory is skipped too, as the
+  full path **`data/logs`, not a bare `logs`**. Every entry used to be a
+  single path component matched at any depth, and a bare `logs` would have
+  exempted *every* directory of that name, in every analysed project, from
+  *every* phase — the secret sweep, the hygiene key-file and
+  committed-`.env` checks, the dependency inventory and all four engine
+  scopes. On Minerva that is `martis-app/storage/logs/`, Laravel's real
+  application-log directory and a well-known place for a stack trace to
+  spill a database password: silently unscanned for ever, and for nothing,
+  since Minerva has no `data/logs` and the entire measured reduction was
+  `.superpowers`. So `SKIP_DIRS` now accepts multi-segment entries and
+  `secrets.skipped()` is the one matcher every reader goes through: a
+  single-segment entry still means that component at any depth, a
+  multi-segment one means that contiguous run of components, also at any
+  depth (`src/data/logs/f` is skipped; `storage/logs/f` is not). It is read
+  by `secrets.py`, `deps.py`, `hygiene.py` and `adapters._out_of_scope`
+  alike, and the engine scopes spell the entry out in full —
+  `(^|/)data/logs/` for gitleaks, `**/data/logs` for trivy, syft and
+  semgrep — so the built-in scanner and every engine cover the same tree.
 
 - **A maintainer's home directory is out of the repository, and
   `claude-cron selftest` now fails if one comes back.**

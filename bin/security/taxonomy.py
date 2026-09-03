@@ -85,23 +85,36 @@ RULE_NAMES = tuple(sorted(SAST_RULES))
 # categories apart on their own, which is why the key carries the category.
 # SAST rules are kebab-case (the table above), hygiene rules are snake_case
 # (the literals hygiene.py passes to `_finding`), and a dependency rule is a
-# GHSA/CVE id. A SECRET rule is BOTH, and which one it is says who found it:
-# snake_case from the built-in pattern scanner (`secrets._RULES`), kebab-case
-# from gitleaks, whose rule ids look exactly like the SAST table's names -- and
-# gitleaks ships around 180 of them, gaining more with every release. Nothing
+# GHSA/CVE id. A SECRET rule is BOTH: snake_case from the built-in pattern
+# scanner (`secrets._RULES`) -- in ledgers written before the two vocabularies
+# were unified, and still for its two unmapped rules -- and kebab-case from
+# gitleaks, whose rule ids look exactly like the SAST table's names, and since
+# `cli._scan_secrets` renames at mint, from the built-in's mapped types too.
+# Gitleaks ships around 180 of those ids, gaining more with every release. Nothing
 # ENFORCES that a name is unique across categories, and a key carrying the
 # category never has to depend on it: `rename_rule` matches on (category, rule)
 # and leaves an identically named rule in the other category untouched.
 #
-# THE SECRET CATEGORY HAS TWO PRODUCERS, AND ONLY ONE RUNS PER ANALYSIS.
-# Gitleaks when it is installed, the built-in scanner when it is not (see
-# `cli._scan_secrets`), and the two name their rules differently. Every entry
-# below therefore moves a finding from the scanner that is being retired ON
-# THIS MACHINE to the engine that replaced it, which is why `migrate-rules` is
-# a deliberate one-shot verb an operator runs after installing gitleaks and not
-# something an analysis does for itself: run it on a machine that then falls
-# back to the built-in scanner and the old names are minted again on the next
-# analysis, undoing it.
+# THE SECRET CATEGORY HAS TWO PRODUCERS AND ONE VOCABULARY. Where gitleaks is
+# installed both run; where it is not, the built-in runs alone; on EITHER path
+# `cli._scan_secrets` mints the built-in scanner's findings under the names
+# below BEFORE the fingerprint is computed (`secrets.scan_tree(rename=...)`),
+# so no analysis on this branch mints a source name of this map into the
+# ledger, and a row's identity does not depend on which scanner was on the
+# machine the day it was minted. The first version renamed on the union path
+# only; the first machine that then lost the engine minted `generic_secret`
+# where the previous analysis held `generic-api-key`, and the checklist read
+# `fixed` beside `new` for one credential. The map is what makes the union one
+# finding per credential instead of two, and what keeps that finding one
+# across a scanner coming and going. `migrate-rules` therefore serves ledgers
+# written BEFORE this branch -- rows the built-in minted under the source
+# names when it ran alone -- and nothing an analysis does today undoes it, so
+# it runs on ANY machine, engine or not: the ledger it fixes is exactly the
+# one a machine without gitleaks wrote, and refusing it there (as the verb
+# once did, for the re-minting this paragraph describes as gone) left that
+# operator with a `fixed`-beside-`new` flip and an orphaned decision. It stays
+# a deliberate one-shot verb because a rename is a promise about identity: the
+# operator makes it once, knowingly.
 #
 # Each pairing below was VERIFIED by running gitleaks 8.30.1 over a synthetic
 # sample of the shapes the hand-written pattern accepts and reading the RuleID
@@ -137,10 +150,13 @@ RULE_RENAMES: dict[tuple[str, str], str] = {
     # analysis whether it was migrated or not.
     ("secret", "openai_key"): "openai-api-key",
     # Every PEM header ours accepts (RSA, EC, OPENSSH, PGP, bare) reports as
-    # `private-key`. Note gitleaks needs the BODY: a lone header line -- a doc,
-    # a diff, a fixture -- is not a gitleaks finding at all, so some rows this
-    # moves will still be reported `fixed` once. That is the scanner swap, not
-    # the rename; there is no other name for them to land on.
+    # `private-key`. BOTH scanners need the BODY: gitleaks always did, and ours
+    # since the union brought Minerva's two header-only rows back as findings
+    # only it saw (`secrets._pem_body_follows`; of its five `private_key` rows
+    # there, the other three carry a body and stay) -- so a row minted from a
+    # lone header before that is reported `fixed` once by either scanner. That
+    # is the pattern fix, not the rename; there is no other name for such a
+    # row to land on.
     ("secret", "private_key"): "private-key",
     # `AIza…`. Google's name for the product changed, not the credential.
     ("secret", "google_api_key"): "gcp-api-key",

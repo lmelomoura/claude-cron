@@ -15,6 +15,13 @@ from pathlib import Path
 # function under its own name would be shadowed inside exactly the functions
 # most likely to want it.
 from .fingerprint import fingerprint as compute_fingerprint, secret_fingerprint
+# The producer name the agent's own door stamps. Re-exported rather than
+# re-spelled: `record_finding` below has to recognise an agent re-report to
+# mark it as a triage, and a second literal "agent" in this file is a rule that
+# silently stops firing the day the name changes in one place and not the
+# other. It lives in diff.py because that is where the rule that READS the
+# column lives; diff.py imports nothing at all, so there is no cycle here.
+from .diff import AGENT
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS analysis (
@@ -25,6 +32,14 @@ CREATE TABLE IF NOT EXISTS analysis (
   state TEXT NOT NULL, spend_usd REAL NOT NULL DEFAULT 0,
   run_id TEXT NOT NULL DEFAULT '',
   coverage_note TEXT NOT NULL DEFAULT '',
+  -- THE SAME COVERAGE, STRUCTURED -- a JSON document `{"phases": [...]}` (see
+  -- security/coverage.py) written BESIDE the prose above and never instead of
+  -- it. `coverage_note` is ~2,000 characters assembled from 27 note constants
+  -- and is unreadable as one paragraph; this is one row per phase, with the
+  -- status and the producer, which is what the reports and the analysis screen
+  -- print FIRST. '' is the honest value for every analysis written before this
+  -- column existed, and every renderer draws the prose alone for it.
+  coverage TEXT NOT NULL DEFAULT '',
   -- 1 once `prepare` has actually run the deterministic phases over this
   -- analysis. It is the only thing that can tell an analysis that found
   -- nothing from one that never looked: nothing engine-side runs `prepare`,
@@ -38,7 +53,9 @@ CREATE TABLE IF NOT EXISTS analysis (
   -- ran; this says WHAT ran, which is a different fact and the one
   -- `diff._proven` needs. Trivy absent means the `iac` phase produced
   -- nothing because nobody looked, and `prepared` alone cannot tell that
-  -- from a Dockerfile that is genuinely clean.
+  -- from a Dockerfile that is genuinely clean. One entry may name two
+  -- scanners joined by `+` ('gitleaks+secrets': the secret phase runs both),
+  -- which `diff._proven` reads atom by atom.
   produced TEXT NOT NULL DEFAULT '');
 
 CREATE INDEX IF NOT EXISTS analysis_by_scope ON analysis(project, repo, branch);
@@ -57,11 +74,13 @@ CREATE TABLE IF NOT EXISTS finding (
   -- unclassified rather than quietly mislabelled.
   cwe TEXT NOT NULL DEFAULT '', owasp TEXT NOT NULL DEFAULT '',
   -- WHICH PRODUCER MINTED THIS IDENTITY -- 'trivy', 'osv', 'gitleaks',
-  -- 'secrets', 'hygiene', 'trivy-iac', 'semgrep', or 'agent'. Read by
-  -- `diff._proven` against the analysis's own `produced` above: only the
-  -- producer that could re-find a finding can prove it gone. Never the LAST
-  -- writer -- see `record_finding`, where a re-report deliberately leaves
-  -- this column alone.
+  -- 'secrets', 'hygiene', 'trivy-iac', 'semgrep', or 'agent' -- or two of
+  -- them joined by `+` ('gitleaks+secrets') when both secret scanners saw the
+  -- same credential. Read by `diff._proven` against the analysis's own
+  -- `produced` above, atom by atom: only when every producer that saw a
+  -- finding has looked again is it proven gone. Never the LAST writer -- see
+  -- `record_finding`, where a re-report deliberately leaves this column
+  -- alone.
   producer TEXT NOT NULL DEFAULT '',
   -- WHETHER A VULNERABLE DEPENDENCY SHIPS -- 'runtime', 'dev', 'unknown', or
   -- '' on any finding that is not a dependency at all. Set by whichever of the
@@ -73,6 +92,22 @@ CREATE TABLE IF NOT EXISTS finding (
   -- without re-identifying anything: ledger._REFINGERPRINT has no `dependency`
   -- entry, and a change to that category's identity is unrecoverable.
   scope TEXT NOT NULL DEFAULT '',
+  -- WHETHER ANYBODY EVER READ THIS FINDING. 1 once the AGENT has re-reported
+  -- a finding a SCANNER minted -- Job 2 of skills/security-analysis/SKILL.md,
+  -- the triage this module's whole design rests on: the deterministic phases
+  -- are noisy on purpose and the noise is meant to be sorted by an agent that
+  -- reads the surrounding code, not by heuristics.
+  --
+  -- WRITTEN AS AN EVENT, NEVER READ FROM A PAYLOAD (see `record_finding`): a
+  -- finding is triaged because a re-report carrying the agent's OWN rationale
+  -- and the occurrences it read landed on it, which is the only trace the
+  -- reading leaves. The agent can reach this column -- the re-report is how --
+  -- but not for the price of a `triaged: true` key, which would be exactly the
+  -- same unverified claim as the `done` that `cmd_finish` reads this column to
+  -- check. Measured cost of not having it: analyses 9 and 10 on Minerva each
+  -- closed `done` having triaged ZERO of the ~40 deterministic findings
+  -- waiting for them, and the reports said nothing about it.
+  triaged INTEGER NOT NULL DEFAULT 0,
   -- The deterministic phase (cmd_prepare) and the agent's report-finding
   -- command can both record the same fingerprint into one analysis -- the
   -- agent's triage job is explicitly to RE-REPORT a deterministic finding
@@ -158,6 +193,12 @@ _ANALYSIS_COLUMNS = (
     ("lines_of_code", "INTEGER NOT NULL DEFAULT 0"),
     # The producers that ran. See the column's own comment in _SCHEMA.
     ("produced", "TEXT NOT NULL DEFAULT ''"),
+    # The coverage note's structure. See the column's own comment in _SCHEMA.
+    # Additive in the strongest sense the table has: nothing derives a state
+    # from it, and '' -- what every existing row gets -- is what the renderers
+    # already treat as "print the prose and no table", so an unmigrated row is
+    # not merely tolerated, it renders exactly as it did yesterday.
+    ("coverage", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -175,6 +216,11 @@ _FINDING_COLUMNS = (
     # becomes wrong for carrying the '' default, only less annotated, and
     # nothing derives a state from it.
     ("scope", "TEXT NOT NULL DEFAULT ''"),
+    # Whether the agent ever read this finding. See the column's own comment in
+    # _SCHEMA. Additive exactly as the four above are, and the 0 default is the
+    # honest reading for every row written before the column existed: nothing
+    # recorded that anybody looked.
+    ("triaged", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -252,16 +298,181 @@ def start_analysis(conn, project, repo, branch, commit_sha, profile, run_id) -> 
     return cur.lastrowid
 
 
-def finish_analysis(conn, analysis_id, state, spend_usd=0.0, coverage_note="") -> None:
+def finish_analysis(conn, analysis_id, state, spend_usd=0.0, coverage_note="",
+                    coverage="") -> None:
+    """Close the row, and write BOTH halves of the coverage together.
+
+    `coverage` is the structured twin of `coverage_note` (see
+    security/coverage.py). It is written in the SAME statement and on the same
+    terms as the prose -- what the caller passes replaces what is stored -- so
+    the two can never end up describing different analyses. `cmd_finish` is
+    the only caller that has anything to say here, and it merges the stored
+    document before passing it back, exactly as it already does for the note.
+    """
     if state not in ANALYSIS_END_STATES:
         raise ValueError(f"bad analysis state: {state}")
     conn.execute(
-        "UPDATE analysis SET ended=?, state=?, spend_usd=?, coverage_note=? WHERE id=?",
-        (int(time.time()), state, spend_usd, coverage_note, analysis_id))
+        "UPDATE analysis SET ended=?, state=?, spend_usd=?, coverage_note=?,"
+        " coverage=? WHERE id=?",
+        (int(time.time()), state, spend_usd, coverage_note, coverage, analysis_id))
     conn.commit()
 
 
+def names_a_file(occurrence: dict) -> bool:
+    """Whether this occurrence IS a location -- the one test both doors ask.
+
+    An occurrence counts when it names a file, and only then. `{}` and
+    `{"file": ""}` are objects in a list, not places a reader can open, and a
+    `not occurrences` test that saw `[{}]` as a location let a re-report
+    carrying it be marked read while leaving the row a single occurrence at
+    `('', 0)` -- rendered as nothing, and printed by the gate's own note as
+    "(no file recorded)". `line` is deliberately no part of it: 0 is what
+    every scanner row about a whole file carries (a lockfile advisory, a mode
+    bit), so a check on the line would refuse the producers' own rows.
+
+    Defined once, here, and imported by `cli.cmd_report_finding`: the door
+    refuses any occurrence this returns False for, `_not_a_reading` below asks
+    whether at least one passes, and `record_finding` inserts only the ones
+    that do, so the three cannot drift into three spellings of what a
+    location is.
+    """
+    file = occurrence.get("file")
+    return isinstance(file, str) and bool(file.strip())
+
+
+def _rationale_of(finding: dict) -> str:
+    return (finding.get("rationale") or "").strip()
+
+
+def _locates(finding: dict) -> bool:
+    """Whether at least one of the finding's occurrences names a file."""
+    return any(names_a_file(o) for o in finding.get("occurrences") or ())
+
+
+def _not_a_reading(existing_rationale: str, finding: dict) -> str:
+    """Why this re-report is a rubber stamp -- '' when it is a real reading.
+
+    Three payloads, each one a way of stamping a scanner's finding `triaged`
+    without having read it. The sentence returned is quoted straight into the
+    refusal, so it says which of the three arrived and what a reading would
+    have carried instead.
+    """
+    rationale = _rationale_of(finding)
+    if not rationale:
+        return ("it carries no rationale, and a finding nobody explained is a "
+                "finding nobody read")
+    if rationale == (existing_rationale or "").strip():
+        return ("its rationale is the producer's own sentence handed back "
+                "byte for byte, which is what a rubber stamp looks like from "
+                "here -- your reading, not the scanner's, is what was missing")
+    if not _locates(finding):
+        return ("it carries no occurrences naming a file, so the row it would "
+                "leave behind names no file and no line for the reader of the "
+                "report to open")
+    return ""
+
+
+def _erases(stored: dict, finding: dict) -> str:
+    """What this write would take from the row -- '' when nothing.
+
+    The complement of `_not_a_reading`, asked on the rows that test does not
+    gate: one already marked, the agent's own, an unknown minter's. A
+    re-report REPLACES the stored rationale and occurrences, so a payload
+    that omits a half the row carries does not leave that half alone -- it
+    erases it. Three shapes, each named so the refusal says which half is
+    missing, the one thing the agent can fix. The two predicates are the
+    reading test's own (`_rationale_of`, `_locates`), asked of the payload
+    and of the stored row alike: the rule is about what the row HAS, not
+    about what every payload must carry, so a row that never had a location
+    can still be re-worded without one.
+    """
+    no_rationale = not _rationale_of(finding)
+    no_location = not _locates(finding)
+    if no_rationale and no_location:
+        return ("no rationale and no occurrence naming a file, and applying it "
+                "would leave a finding nobody explained at no location, taking "
+                "the rationale and the locations already recorded with it")
+    if no_rationale and _rationale_of(stored):
+        return ("no rationale while the row already carries one, and applying "
+                "it would erase the sentence recorded about this finding")
+    if no_location and _locates(stored):
+        return ("no occurrence naming a file while the row already carries its "
+                "locations, and applying it would erase every file and line the "
+                "reader of the report could open")
+    return ""
+
+
 def record_finding(conn, analysis_id, finding: dict) -> None:
+    """Record a finding, upserting the one this analysis already holds.
+
+    WHAT AN AGENT'S RE-REPORT HAS TO CARRY BEFORE IT COUNTS AS A READING.
+    `triaged` (see the block below) is derived from who minted the row against
+    who is writing it now, and the first version of that derivation was
+    satisfied by the mere ARRIVAL of an agent payload on a scanner's
+    fingerprint. That made the mark free: a JSON object echoing the scanner's
+    own rule, severity and title back -- no rationale, no occurrences -- set
+    `triaged=1` and let `cmd_finish` record `done`. The cheapest such payload
+    also DESTROYED the finding it stamped, because the upsert REPLACES
+    occurrences and replacing them with none leaves a row carrying no file and
+    no line: the note the gate writes could not then even name what had been
+    skipped.
+
+    A reading leaves two traces and no fewer -- a sentence the agent wrote
+    about this finding, and the locations it read. So a re-report by the AGENT
+    onto a row a SCANNER minted is REFUSED outright, with nothing about the row
+    changed, when `_not_a_reading` above recognises it: no rationale, a
+    rationale that is the stored one byte for byte, or no occurrences. The
+    severity is deliberately not part of that test: keeping the scanner's
+    severity is a legitimate outcome of triage -- often the commonest one --
+    and a check that demanded a changed severity would teach the agent to move
+    numbers rather than to read code.
+
+    REFUSED, not silently left unmarked. The failure this gate was written
+    after is an agent that believed it had done Job 2; a `report-finding` that
+    exits non-zero naming which of the three payloads arrived teaches that in
+    the one place the agent is looking, while a payload accepted and quietly
+    not counted produces a `capped` verdict it cannot account for.
+
+    WHICH IS ALSO THE ANSWER TO WHAT A STAMP DOES TO THE EVIDENCE: nothing at
+    all. The refusal is raised before the UPDATE and inside the transaction, so
+    the occurrences the scanner recorded survive a stamp intact -- a mark that
+    erased the file and line would be worse than no mark, because the gate's
+    own note is built by reading them back. A write that IS applied still
+    replaces the occurrence list rather than appending to it, which is what
+    lets a re-report narrow five locations to the two still affected (the
+    `partial` half of the skill's Job 3). The erasure route was never the
+    replacement as such: it was the payload that replaces something with
+    nothing -- everything, or either half while the row carries it -- and
+    those are refused on every row, marked or not, two paragraphs down.
+
+    ONLY THE 0 -> 1 TRANSITION IS GATED FOR A READING. A row already marked
+    has had its reading recorded; a later write from the agent -- a retry, or
+    a correction that happens to repeat its own earlier sentence -- is not a
+    stamp on unread work, and refusing it would punish the analyses that did
+    the job.
+
+    ONE WRITE IS REFUSED WHATEVER THE MARK SAYS, AND WHOEVER MINTED THE ROW: an
+    agent payload carrying no rationale and no occurrence naming a file.
+    Applied, it would leave a row nobody explained at no location -- with
+    `triaged` still 1 if it was, so the row counts as read while nothing of
+    the reading or of the scanner's evidence survives. The first version of
+    the gate above let exactly that through one write later, because the mark
+    was already there and there was nothing left to gate. It is never a
+    correction of anything, so it is refused on the same terms as the stamp:
+    before the UPDATE, inside the transaction, nothing recorded.
+
+    AND SO IS HALF OF ONE. That refusal was first written as a conjunction,
+    and on a marked row it left two routes open, each one key richer than the
+    bare payload: `{"rationale": "x", "occurrences": []}` was applied and
+    stripped every location; `{"occurrences": [...]}` with no rationale was
+    applied and erased the rationale to ''. A write onto a row that already
+    carries a rationale, or an occurrence naming a file, may not leave that
+    half empty. Refused rather than merged, and the refusal names the missing
+    half: the REPLACE semantics above are deliberate, and a silent merge would
+    make the stored row differ from what the agent last said. A row that never
+    carried a location can still be re-worded without one -- the rule is about
+    what the row has (`_erases`), not about what every payload must carry.
+    """
     # A finding and its occurrences are one unit: without this transaction
     # boundary, an occurrence that fails to insert midway (a non-numeric
     # line, say) would leave the finding row committed by whatever later
@@ -299,20 +510,99 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
     # dependency phase had correctly established, and the row would come out of
     # triage LESS annotated than it went in -- again through the one door whose
     # whole purpose is to improve a finding.
+    #
+    # `triaged` IS THE ONE COLUMN THE UPSERT WRITES THAT THE PAYLOAD CANNOT
+    # NAME. The re-report described two paragraphs up is not merely a better
+    # row: it is the only evidence that exists that anybody READ the scanner's
+    # finding before the analysis closed, and `cmd_finish` refuses to record
+    # `done` without it. So the mark is derived here -- from who minted the row
+    # against who is writing it now, and from whether what that writer sent is
+    # a reading at all -- rather than accepted as a field.
+    #
+    # NOT because there is no field the agent can send to say it looked: the
+    # re-report IS that field, and the docstring above is the price list. The
+    # difference is what the two cost. A `triaged: true` costs one JSON key and
+    # asserts something no reader can check -- the same unverified claim as the
+    # `done` it would be checked against. The mark derived here costs the
+    # smallest honest output of the job itself: the agent's own sentence about
+    # this finding, and the lines it read. That is the most a ledger can verify
+    # without reading the code, and it is the difference between a gate that
+    # measures work and one that measures a keystroke.
+    #
+    # Four conditions, each one a case that must NOT count as triage:
+    #   - the writer is the agent. `prepare` writes through this same function,
+    #     and a second deterministic phase landing on a fingerprint the first
+    #     one recorded has read a file, not a finding.
+    #   - the row was minted by somebody else. An agent re-reporting its own
+    #     `sast` row is revising its own work; counting it would make the gate
+    #     satisfiable without ever opening a scanner's output.
+    #   - the minting producer is known at all. '' is a row from before the
+    #     `producer` column existed, and "somebody unknown looked" is not a
+    #     fact this column is allowed to invent.
+    #   - the payload is a reading rather than an echo of the row it lands on.
+    #     See the docstring: this one is a refusal, not a silent 0, because it
+    #     is the only one of the four the agent can correct.
+    # MAX(triaged, ?) rather than a plain assignment, because a row is written
+    # more than twice in a real analysis and a later write that happens not to
+    # qualify must not erase the reading that already happened.
     with conn:
         existing = conn.execute(
-            "SELECT id FROM finding WHERE analysis_id=? AND fingerprint=?",
+            "SELECT id, producer, rationale, triaged FROM finding"
+            " WHERE analysis_id=? AND fingerprint=?",
             (analysis_id, finding["fingerprint"])).fetchone()
         if existing is not None:
             fid = existing["id"]
+            minted_by = (existing["producer"] or "").strip()
+            written_by = (finding.get("producer") or "").strip()
+            triaged = 0
+            if written_by == AGENT:
+                if minted_by not in ("", AGENT) and not existing["triaged"]:
+                    stamp = _not_a_reading(existing["rationale"], finding)
+                    if stamp:
+                        # Inside `with conn:`, so this rolls back: "nothing
+                        # was recorded" is a statement about the database,
+                        # not a hope.
+                        raise ValueError(
+                            f"this re-report of {minted_by}'s finding is a "
+                            f"rubber stamp rather than a triage — {stamp}. The "
+                            "re-report IS the mark that this finding was read, "
+                            "and the close is verified against it, so it has "
+                            "to carry your own rationale and the occurrences "
+                            "you read. Nothing was recorded.")
+                    triaged = 1
+                else:
+                    # Every other agent write onto an existing row -- one
+                    # already marked, the agent's own, or an unknown minter's.
+                    # The stamp test above is a superset of this on the rows it
+                    # gates, so this is the erasure alone, whole or by half:
+                    # see the docstring's last two paragraphs. The stored
+                    # occurrences are read back through the same predicate
+                    # the payload is judged by, so "the row carries a
+                    # location" means here what it means at the door.
+                    stored = {
+                        "rationale": existing["rationale"],
+                        "occurrences": [
+                            {"file": r["file"]} for r in conn.execute(
+                                "SELECT file FROM occurrence WHERE finding_id=?",
+                                (fid,))]}
+                    lost = _erases(stored, finding)
+                    if lost:
+                        raise ValueError(
+                            f"this re-report carries {lost}. A re-report "
+                            "REPLACES the stored row, rationale and occurrences "
+                            "both, so a payload missing either half is an "
+                            "erasure of that half and never a correction of the "
+                            "other: send your rationale and the occurrences you "
+                            "read together. Nothing was recorded.")
             conn.execute(
                 "UPDATE finding SET category=?, rule=?, severity=?, title=?,"
-                " rationale=?, remediation=?, partial_note=?, cwe=?, owasp=?"
+                " rationale=?, remediation=?, partial_note=?, cwe=?, owasp=?,"
+                " triaged=MAX(triaged, ?)"
                 " WHERE id=?",
                 (finding["category"], finding["rule"], finding["severity"], finding["title"],
                  finding.get("rationale", ""), finding.get("remediation", ""),
                  finding.get("partial_note", ""), finding.get("cwe", ""),
-                 finding.get("owasp", ""), fid))
+                 finding.get("owasp", ""), triaged, fid))
             conn.execute("DELETE FROM occurrence WHERE finding_id=?", (fid,))
         else:
             cur = conn.execute(
@@ -326,7 +616,19 @@ def record_finding(conn, analysis_id, finding: dict) -> None:
                  finding.get("cwe", ""), finding.get("owasp", ""),
                  finding.get("producer", ""), finding.get("scope", "")))
             fid = cur.lastrowid
-        for occ in finding.get("occurrences", []):
+        # An occurrence that names no file is not stored, whoever wrote it.
+        # The door refuses such an object outright (`names_a_file` on every
+        # occurrence, in `cli.cmd_report_finding`), so this is the ledger's own
+        # copy of that lock, for the one route the door does not reach: this
+        # function called directly, on a row that never carried a location --
+        # where `_erases` has nothing to defend and the write is applied --
+        # used to store `[{"line": 3}]` as `('', 3)` and `[{"file": "  "}]` as
+        # `('  ', 3)`, the phantom the report renders as nothing and the gate's
+        # note prints as "(no file recorded)". Filtered, not raised: every
+        # producer names a path in every occurrence it builds, so nothing a
+        # producer writes is touched, and the predicate is the door's and
+        # `_locates`'s own, so "an occurrence" means one thing here as well.
+        for occ in filter(names_a_file, finding.get("occurrences", [])):
             conn.execute(
                 "INSERT INTO occurrence (finding_id, file, line, snippet_hash) VALUES (?,?,?,?)",
                 (fid, occ.get("file", ""), int(occ.get("line", 0)), occ.get("snippet_hash", "")))
@@ -467,12 +769,14 @@ def rename_rule(conn, category: str, old: str, new: str) -> int:
             if occ is None or not occ["file"]:
                 # NO occurrence, or an occurrence with an EMPTY path: the same
                 # thing for this purpose, because the path is half of the
-                # identity. Both are reachable. `report-finding` treats
-                # occurrences as optional, and it validates only that each one
-                # is an object -- `{"line": 3}` passes that check, and
-                # `record_finding` stores its `file` as `occ.get("file", "")`.
-                # Testing only for the missing ROW would let the empty PATH
-                # through to `secret_fingerprint(new, "")`: a well-formed
+                # identity. The first is reachable today (`report-finding`
+                # treats occurrences as optional). The second no longer is
+                # through any writer -- the door refuses `{"line": 3}` and
+                # `record_finding` inserts only occurrences that name a file
+                # -- but a ledger written before either lock can hold such a
+                # row, and rows already on disk are exactly what a rename runs
+                # over. Testing only for the missing ROW would let the empty
+                # PATH through to `secret_fingerprint(new, "")`: a well-formed
                 # identity no scanner will ever emit, minted silently by the
                 # branch two lines below the guard that refuses to guess it.
                 # Refusing is the same call as refusing `sast`.

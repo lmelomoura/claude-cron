@@ -48,11 +48,13 @@ from pathlib import Path
 # and only the second one is safe to apply to a repository nobody has looked
 # at yet.
 #
-# Each name below is a whole path COMPONENT at ANY DEPTH, matched the way
-# `secrets.SKIP_DIRS` is matched and for the same reason: `testdata` is Go's
-# own reserved directory name and sits beside the package it belongs to,
-# never at the top of the tree, so a top-level-only rule would miss every Go
-# repository. `myfixtures/` is not `fixtures/` and is not touched.
+# Each name below is a whole path COMPONENT at ANY DEPTH, matched the way a
+# single-segment `secrets.SKIP_DIRS` entry is matched (that set now also takes
+# multi-segment paths; these are all names) and for the same reason:
+# `testdata` is Go's own reserved directory name and sits beside the package
+# it belongs to, never at the top of the tree, so a top-level-only rule would
+# miss every Go repository. `myfixtures/` is not `fixtures/` and is not
+# touched.
 DEFAULT_IGNORE_DIRS = ("__fixtures__", "fixtures", "testdata")
 
 # Matched CASE-INSENSITIVELY, which is not tidiness. `Fixtures/` and

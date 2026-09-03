@@ -11,6 +11,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from .engines import SCAN_TIMEOUT
 from .fingerprint import secret_fingerprint
 from .ignores import ignored, sample_suppressed
 
@@ -22,6 +23,8 @@ _RULES = [
     ("slack_token", "high", re.compile(r"\b(xox[baprs]-[0-9A-Za-z-]{10,})\b"), 0.0),
     ("stripe_key", "critical", re.compile(r"\b((?:sk|rk)_live_[0-9A-Za-z]{24,})\b"), 0.0),
     ("openai_key", "critical", re.compile(r"\b(sk-[A-Za-z0-9]{32,})\b"), 0.0),
+    # The header alone is not a finding: `_hits` requires key material to
+    # follow it, on the same line or the next -- see `_pem_body_follows`.
     ("private_key", "critical", re.compile(r"(-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----)"), 0.0),
     ("google_api_key", "high", re.compile(r"\b(AIza[0-9A-Za-z_-]{35})\b"), 0.0),
     # The one generic rule, and the only one that needs the entropy gate and
@@ -35,8 +38,140 @@ _RULES = [
 # the filesystem and knows nothing about caches, vendored trees or build
 # output; `adapters.gitleaks_config` turns this set into the engine's scope, so
 # whichever scanner runs, both agree on where an analysis looks.
-SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", "build"}
+#
+# AN ENTRY MAY BE A PATH, NOT ONLY A NAME. `skipped()` below is the one
+# matcher every reader goes through: a single-segment entry means that
+# component at any depth (the old convention, see `ignores.DEFAULT_IGNORE_DIRS`
+# for the same one), a multi-segment entry means that exact run of components.
+#
+# `.superpowers` was added after a measurement on the Minerva checkout
+# (dev-knowledge-platform) turned up 22 `generic_secret` hits from
+# `.superpowers/` alone, none of them a leak. It is git-ignored and is where
+# this repository's own agents write review diffs and run reports -- not the
+# analysed project, but routinely full of credential-shaped text (a captured
+# key in a review diff, a planted secret in a transcript).
+#
+# `data/logs` -- where this repository's run transcripts land -- is the same
+# kind of noise, and it is SPELLED IN FULL. A bare `logs` was tried first,
+# because at the time every reader could only express a bare component; it
+# would have exempted EVERY directory named `logs`, in any analysed project,
+# from every phase -- the secret sweep, the hygiene key-file and
+# committed-`.env` checks, the dependency inventory and all four engine
+# scopes. On Minerva that is `martis-app/storage/logs/`, Laravel's real
+# application-log directory: a classic place for a stack trace to spill a
+# database password, and precisely the untracked material this scanner walks
+# the raw filesystem to reach. It also bought nothing -- Minerva has no
+# `data/logs`, so the entire measured 57 -> 35 was `.superpowers`. The
+# matcher was widened instead; a scanner does not widen its blind spot to fit
+# its matching code.
+#
+# This lines up with the earlier measurement recorded in
+# `adapters.gitleaks_config`'s module docstring: before that config's scope
+# existed, gitleaks reported 17 findings on this repository, 15 of them
+# under `.superpowers/`, `__pycache__/` and `data/logs/`.
+#
+# `storage/framework` -- Laravel's runtime directory (`cache/`, `sessions/`,
+# `views/`, `testing/`) -- is the same kind of noise at a scale that DISABLED
+# a scanner. THE RULE IT JOINS UNDER, spelled out because two texts once
+# spelled it wrong: a NAMED directory the machine generates at runtime is not
+# the repository -- `.superpowers`, `data/logs`, and this one. That all three
+# are git-ignored (this one by Laravel's own per-directory `.gitignore`) is a
+# fact about them, not the criterion: this scanner never reads `.gitignore`.
+# The tree scan walks the raw filesystem and only the directories named in
+# `SKIP_DIRS` leave, so on Minerva `.env`, `martis-app/auth.json` and
+# `docs/superpowers/` -- git-ignored, all of them -- are scanned like any
+# other file. Measured on the Minerva checkout at `cbbf901`: `gitleaks dir`
+# wrote 98,298 `generic-api-key` records from
+# `martis-app/storage/framework/sessions/` alone, a 65.8 MB report over
+# `engines.MAX_REPORT_BYTES`, so `run_json` discarded the tree pass whole and
+# gitleaks contributed its history sweep only, on every analysis of that
+# repository -- the secret phase read `warning` for want of a tree report. A
+# session file is the operator's session store, not the project's
+# credentials. SPELLED IN FULL, like `data/logs`, and for the same reason:
+# `storage/logs` beside it is Laravel's application-log directory (kept,
+# above) and `storage/app` holds uploads that can be key files (kept); a bare
+# `storage` or `framework` would take both. This is the one entry here that
+# INCREASES recall. Measured after, same checkout: the tree pass writes 12 KB
+# (19 records), the phase reads `ran`, and the union grows from 29 identities
+# to 32. The three the tree pass adds sit outside `storage/` altogether, and
+# all three are in git-ignored files -- two agent-written plans under
+# `docs/superpowers/plans/` and the local composer credential
+# `martis-app/auth.json`, the same class of untracked operator-local material
+# as the two `.env` files the scan already reported. That is the kind of
+# recall this entry buys.
+SKIP_DIRS = {".git", "node_modules", "vendor", "__pycache__", ".venv", "dist", "build",
+             ".superpowers", "data/logs", "storage/framework"}
+
+
+def skipped(rel) -> bool:
+    """True when `rel` is, or lies under, a `SKIP_DIRS` entry.
+
+    THE ONE MATCHER, and it is public for the same reason `SKIP_DIRS` is.
+    Every reader used to carry its own `any(part in SKIP_DIRS for part in
+    ...)`, which can only ever express a bare component -- and that is how a
+    bare `logs` came to be preferred over `data/logs`, exempting an analysed
+    project's real application-log directory from every phase because the
+    matcher could not say the narrower thing.
+
+    ANY DEPTH, FOR ONE SEGMENT AND FOR MANY. A single-segment entry matches
+    that component wherever it appears, exactly as before. A multi-segment
+    entry matches its segments as a CONTIGUOUS RUN, also wherever it appears:
+    `data/logs` covers `data/logs/x/f` and `sub/data/logs/f`, and never
+    `storage/logs/f`. Any-depth is not a taste; it is the only reading the
+    engines can be held to. `adapters.scope_patterns` emits
+    `(^|/)data/logs/`, and trivy, syft and semgrep are each handed
+    `**/data/logs` -- every one of them an any-depth matcher. A root-anchored
+    predicate here would leave the built-in sweep reading a tree the engines
+    are told to skip, so the same repository would report differently
+    depending on which binaries the machine has installed: the exact
+    divergence this shared set exists to prevent.
+    """
+    parts = Path(rel).parts
+    for entry in SKIP_DIRS:
+        segments = tuple(s for s in str(entry).split("/") if s)
+        if not segments:
+            continue
+        span = len(segments)
+        if any(parts[i:i + span] == segments
+               for i in range(len(parts) - span + 1)):
+            return True
+    return False
+
+
 _MAX_BYTES = 2 * 1024 * 1024
+
+
+def oversized(path) -> bool:
+    """Whether a file is over the ceiling the tree sweep reads up to.
+
+    THE ONE PREDICATE, read by `_readable_files` here and by
+    `adapters.gitleaks` for the engine's working-tree records, so both
+    scanners stop at ONE number whatever unit the engine's own flag counts in
+    (see `GITLEAKS_MAX_TARGET_MEGABYTES`). Raises `OSError` as `stat` does;
+    the two callers decide what a file that cannot be measured means.
+    """
+    return Path(path).stat().st_size > _MAX_BYTES
+
+
+# What gitleaks is handed as `--max-target-megabytes`, and it is NOT the
+# ceiling above in another unit -- it is one megabyte MORE. Measured on
+# gitleaks 8.30.1: the flag counts 10^6 bytes and, in `dir` mode, skips a file
+# strictly larger than N x 10^6, where `_MAX_BYTES` is 2 x 2^20 = 2,097,152.
+# Handed `2`, the engine skipped the band 2,000,001-2,097,152 that the tree
+# sweep above reads, so every credential in it was "only the built-in saw" --
+# the reverse of what a shared cap was for. Handed the ceiling rounded UP to
+# the next 10^6 (`3`), the engine reads at least everything the built-in
+# reads, and `adapters.gitleaks` then drops any tree record whose file
+# `oversized()` says is over the ceiling: exact parity on the tree, from one
+# number. Derived, never a second literal.
+#
+# THE HISTORY IS NOT COVERED BY THIS, on either side, and the asymmetry is
+# stated where each sweep is defined rather than claimed away: `scan_history`
+# below reads `git log -p` and has no file cap by construction, and gitleaks'
+# `git` mode applies its own rule to the same flag (measured: handed `2` it
+# skipped committed files of 3,000,000 bytes and up, handed `3` files of
+# 4,000,000 and up). See `adapters.gitleaks_scan`.
+GITLEAKS_MAX_TARGET_MEGABYTES = -(-_MAX_BYTES // 10 ** 6)
 
 # ONE sentence, whichever scanner found the credential -- `adapters` emits it
 # too. The advice is identical because the fact is: a credential that reached
@@ -81,13 +216,55 @@ def _is_placeholder(value: str) -> bool:
     return False
 
 
+# A run of base64 long enough to be key material and too long to be a word.
+# Real PEM body lines are 64 characters (OpenSSH writes 70); 40 leaves room for
+# the short final line of a body without admitting an ellipsis, a `<redacted>`
+# or a variable name.
+_PEM_BODY = re.compile(r"[A-Za-z0-9+/=]{40,}")
+
+
+def _pem_body_follows(rest_of_line: str, next_line: str) -> bool:
+    """Whether key material follows a PEM header -- the shape of a KEY, not
+    of a mention of one.
+
+    Measured on Minerva: five `private_key` findings from this scanner. Two
+    were a lone header -- an adversarial test and a conformance harness, both
+    test code -- and not a gitleaks finding, whose `private-key` rule wants
+    the body. Three had a body behind the header: a redaction test with a
+    base64 run on the next line, and two planning documents, one with that
+    same shape and one carrying a whole PEM on one line with `\\n` escapes;
+    gitleaks reports two of those three itself. Once both scanners' findings
+    were merged by fingerprint (see `cli._scan_secrets`) the two lone headers
+    came back as critical findings only this scanner saw, so the requirement
+    moved here, to the source -- and the three with a body are exactly the
+    shape it keeps.
+
+    Two places the body can be: the NEXT physical line, which is where a PEM
+    file puts it, and the REST OF THE SAME line, which is where a `.env` or a
+    JSON value puts it -- the whole key on one line with `\\n` where the line
+    breaks were. The second is not a corner case; it is how real keys are
+    stored in the files this scanner most needs to read.
+    """
+    return bool(_PEM_BODY.search(rest_of_line) or _PEM_BODY.search(next_line))
+
+
 def _hits(text: str):
-    """Yield (rule, severity, line_number) for every match. The value stays here."""
-    for lineno, line in enumerate(text.splitlines(), start=1):
+    """Yield (rule, severity, line_number) for every match. The value stays here.
+
+    The lines are read together rather than one at a time because one rule
+    needs to see past the line it matched on: a PEM header is a finding only
+    when its body follows (`_pem_body_follows`), and in a PEM file the body is
+    the next line.
+    """
+    lines = text.splitlines()
+    for lineno, line in enumerate(lines, start=1):
         for name, severity, pattern, min_entropy in _RULES:
             for m in pattern.finditer(line):
                 candidate = m.group(1)
                 if name == "generic_secret" and _is_placeholder(candidate):
+                    continue
+                if name == "private_key" and not _pem_body_follows(
+                        line[m.end():], lines[lineno] if lineno < len(lines) else ""):
                     continue
                 if min_entropy and _entropy(candidate) < min_entropy:
                     continue
@@ -108,7 +285,9 @@ def looks_like_a_secret(text: str):
     same placeholder gate `_is_placeholder` already applies to the generic
     rule applies here too, so an agent writing `password = "changeme12345"`
     to describe what it found is not refused for quoting an obvious
-    stand-in.
+    stand-in. So does the body requirement `_hits` puts on a PEM header, over
+    the rest of the text: a header an agent quotes to name what it found is
+    not refused; a header with the key behind it is.
 
     Returns the RULE NAME ONLY. It never returns, logs, or stores the
     matched text itself -- the one property every function in this module
@@ -120,6 +299,8 @@ def looks_like_a_secret(text: str):
         for m in pattern.finditer(text):
             candidate = m.group(1)
             if name == "generic_secret" and _is_placeholder(candidate):
+                continue
+            if name == "private_key" and not _pem_body_follows(text[m.end():], ""):
                 continue
             if min_entropy and _entropy(candidate) < min_entropy:
                 continue
@@ -145,6 +326,11 @@ def _finding(rule, severity, path, lines, historical, commit_count=None):
     re-added" cannot be told apart from "a second, different credential" --
     but the reader still needs to know there were two exposures, not one
     silently swallowed by dedup.
+
+    `rule` is the name the finding is MINTED under, which is this scanner's
+    own name for the type or -- when the caller passed a `rename` map, see
+    `scan_tree` -- the engine's name for it. Either spelling reads as words in
+    the title.
     """
     where = "in the git history" if historical else "in the working tree"
     rationale = (f"A credential of type {rule} was found {where}. Its value is "
@@ -154,7 +340,7 @@ def _finding(rule, severity, path, lines, historical, commit_count=None):
     return {
         "fingerprint": secret_fingerprint(rule, path),
         "category": "secret", "rule": rule, "severity": severity,
-        "title": f"{rule.replace('_', ' ')} committed to the repository",
+        "title": f"{rule.replace('_', ' ').replace('-', ' ')} committed to the repository",
         "rationale": rationale,
         "remediation": REMEDIATION,
         "occurrences": [{"file": path, "line": line, "snippet_hash": ""} for line in lines],
@@ -180,41 +366,47 @@ def _skip_note(too_big, unreadable):
     if not parts:
         return ""
     total = too_big + unreadable
+    # "in the working tree", because it is only true of the tree: the history
+    # sweep has no size cap (see `scan_history`), so a committed file this
+    # sweep did not open may still have been read there.
     return (f"The secret scan did not read {total} file"
-            f"{'' if total == 1 else 's'} ({', '.join(parts)}).")
+            f"{'' if total == 1 else 's'} in the working tree ({', '.join(parts)}).")
 
 
-def _readable_files(root, ignore, skipped):
+def _readable_files(root, ignore, unread):
     """Yield (relative path, text) for every file a sweep may read.
 
-    ONE walk, shared by the two callers below. `scan_tree` needs the text to
-    match patterns against and `count_lines` needs it to count -- and when an
-    engine does the secret detection instead, the line count still has to
-    come from somewhere, from the same set of files, or the two numbers would
-    describe different repositories. `skipped` is a mutable dict the walk
-    reports into, because a generator's return value is not reachable through
-    a `for`.
+    The walk `scan_tree` reads, kept apart from the matching so that what was
+    and was not opened has one home. It used to be shared with a second
+    caller, `count_lines`, which counted `lines_of_code` for the analyses an
+    engine scanned instead of this module; the built-in sweep now runs beside
+    the engine on every analysis (see `cli._scan_secrets`), so the count is
+    once again a by-product of the read that is happening anyway. `unread` is
+    a mutable dict the walk reports into, because a generator's return value
+    is not reachable through a `for`. It counts only the files this walk
+    OPENED AND COULD NOT READ -- a path excluded by `skipped` or by `ignore`
+    was never in scope and is not a coverage gap to declare.
     """
     root = Path(root)
     for p in sorted(root.rglob("*")):
         if not p.is_file() or p.is_symlink():
             continue
-        if any(part in SKIP_DIRS for part in p.relative_to(root).parts):
+        if skipped(p.relative_to(root)):
             continue
         rel = str(p.relative_to(root))
         if ignored(rel, ignore):
             continue
         try:
-            if p.stat().st_size > _MAX_BYTES:
-                skipped["too_big"] += 1
+            if oversized(p):
+                unread["too_big"] += 1
                 continue
         except OSError:
-            skipped["unreadable"] += 1
+            unread["unreadable"] += 1
             continue
         try:
             text = p.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
-            skipped["unreadable"] += 1
+            unread["unreadable"] += 1
             continue
         yield rel, text
 
@@ -223,20 +415,7 @@ def _lines_in(text: str) -> int:
     return text.count("\n") + (0 if text.endswith("\n") or not text else 1)
 
 
-def count_lines(root, ignore) -> int:
-    """The size of what was analysed, without the pattern matching.
-
-    For the runs where an ENGINE did the secret detection: `lines_of_code` is
-    a by-product of `scan_tree`'s read, and losing it would leave the project
-    header rendering an em dash -- "not counted" -- for ever on any machine
-    with gitleaks installed. It is a count, never the text: nothing here can
-    put a file's contents into the ledger, a report or a log.
-    """
-    return sum(_lines_in(text) for _rel, text in _readable_files(
-        root, ignore, {"too_big": 0, "unreadable": 0}))
-
-
-def scan_tree(root, ignore):
+def scan_tree(root, ignore, rename=None):
     """(findings, note, lines) for the working tree.
 
     The note is the same channel `scan_history` and `osv.query` use: whatever
@@ -249,10 +428,25 @@ def scan_tree(root, ignore):
     so the count describes what was analysed, not what exists on disk. It is
     a count, never the text itself: nothing about it can put a file's
     contents into the ledger, a report or a log.
+
+    `rename` maps this scanner's rule names onto the names the findings are
+    MINTED under. `cli._scan_secrets` passes the secret entries of
+    `taxonomy.RULE_RENAMES` on BOTH of its paths -- beside gitleaks, so the
+    two scanners' readings of one credential type share one fingerprint and
+    merge into one finding, and alone, so a row's identity does not change
+    with the scanner on the machine (the first version renamed beside the
+    engine only, and a machine that lost it read `fixed` beside `new` for one
+    credential). Applied AFTER the template rule, which is keyed on this
+    scanner's own names, and BEFORE the finding is built, so the identity, the
+    title and the rationale all carry the minted name. None mints this
+    scanner's own names: the tests of this module read them, and
+    `migrate-rules` moves a ledger written under them onto the other
+    vocabulary, once, on any machine.
     """
+    rename = rename or {}
     out, lines = [], 0
-    skipped = {"too_big": 0, "unreadable": 0}
-    for rel, text in _readable_files(root, ignore, skipped):
+    unread = {"too_big": 0, "unreadable": 0}
+    for rel, text in _readable_files(root, ignore, unread):
         lines += _lines_in(text)
         # One finding per credential TYPE per file -- not per match. The
         # fingerprint (type + path) cannot depend on a position, so several
@@ -270,11 +464,12 @@ def scan_tree(root, ignore):
             # See `ignores.SAMPLE_SUPPRESSED_RULES`.
             if sample_suppressed(rel, rule, ignore):
                 continue
+            rule = rename.get(rule, rule)
             group = by_rule.setdefault(rule, {"severity": severity, "lines": []})
             group["lines"].append(line)
         for rule, group in by_rule.items():
             out.append(_finding(rule, group["severity"], rel, group["lines"], False))
-    return out, _skip_note(skipped["too_big"], skipped["unreadable"]), lines
+    return out, _skip_note(unread["too_big"], unread["unreadable"]), lines
 
 
 _DIFF_HEADER_PREFIX = "diff --git a/"
@@ -337,9 +532,19 @@ FALLBACK_NOTE = (f"Secrets were scanned by the built-in pattern scanner and "
                  "have been found.")
 
 
-def scan_history(root, since_sha, ignore=()):
-    """(findings, note): every secret ever committed, even if the file no
-    longer has it.
+# The sentence for a checkout with no commits yet. Not `HISTORY_GAP`: nothing
+# failed and nothing is missing -- an unborn branch has no history to sweep,
+# and `adapters.history_state` draws the same line on the engine side ("an
+# unborn history is not a gap"). Said rather than left silent because the
+# engine's own sentence beside it claims "the full git history", and a reader
+# is owed the fact that the full history is empty.
+HISTORY_EMPTY_NOTE = ("The git history is empty: this checkout has no commits "
+                      "yet, so there was nothing for the history sweep to read.")
+
+
+def scan_history(root, since_sha, ignore=(), rename=None):
+    """(findings, note, swept): every secret ever committed, even if the file
+    no longer has it.
 
     A key deleted in a later commit is still readable by anyone with a clone,
     so it is still compromised. This is git plumbing and plain Python: it costs
@@ -350,17 +555,60 @@ def scan_history(root, since_sha, ignore=()):
     clean" -- so the one failure mode that hides the findings this function
     exists to produce was reported as the best possible news. A gap that is
     stated is useful; this one was silent.
+
+    `swept` IS THE VALUE THE COVERAGE TABLE READS: True when this sweep read
+    the whole history it was pointed at -- an empty one included -- and False
+    when it could not, the note then saying why. `cli._scan_secrets` needs it
+    beside the note because two true sentences call for two different rows: a
+    checkout with no commits (`HISTORY_EMPTY_NOTE`, swept) leaves the phase
+    `ran`, a sweep that did not complete (`HISTORY_GAP`, not swept) makes it
+    `warning`, and a caller reading the note alone would have to match a
+    sentence to tell them apart. The two used to be one: `git log HEAD` on an
+    unborn branch fails with "ambiguous argument 'HEAD'", the shape of a
+    broken repository, and the row read `warning` beside the engine's own
+    claim to have scanned the full history.
+
+    NO FILE-SIZE CAP, BY CONSTRUCTION -- an asymmetry with the tree sweep and
+    with gitleaks, stated here rather than claimed away. `git log -p` streams
+    every added line of every commit; there is no file to `stat` and no size
+    to stop at, so a credential in a committed 40 MB bundle is found here.
+    `scan_tree` stops at `_MAX_BYTES`, and gitleaks' `git` mode applies its own
+    rule to the flag it is handed (`GITLEAKS_MAX_TARGET_MEGABYTES`), so such a
+    finding is this sweep's alone -- `seen_by == ["secrets"]` -- and correctly
+    so.
+
+    The time budget is `engines.SCAN_TIMEOUT`, the one the engines get. This
+    used to run with 300 s against their 600 s, so on a large repository
+    gitleaks' history pass could finish while this one timed out, and the
+    secret row -- which needs both -- read `warning` for a limit two lines
+    apart.
+
+    `rename` is `scan_tree`'s: the names to mint under, applied after the
+    template rule and before the finding is built, None for this scanner's
+    own.
     """
     rev = f"{since_sha}..HEAD" if since_sha else "HEAD"
     try:
+        # Is there anything to walk? `rev-list -n1 --all` is the question
+        # `adapters.history_state` asks, for the same reason: an unborn branch
+        # answers 0 with nothing on stdout, where `git log HEAD` answers a
+        # `fatal:` that reads like a broken repository. A checkout that is
+        # not a repository at all still fails here and falls through to the
+        # `git log` below, which says so in the words it always has.
+        walked = subprocess.run(
+            ["git", "-C", str(root), "rev-list", "-n1", "--all"],
+            capture_output=True, text=True, timeout=SCAN_TIMEOUT, check=False)
+        if walked.returncode == 0 and not walked.stdout.strip():
+            return [], HISTORY_EMPTY_NOTE, True
         proc = subprocess.run(
             ["git", "-C", str(root), "log", "-p", "--no-color", "--no-merges",
              "--diff-filter=AM", rev],
-            capture_output=True, text=True, timeout=300, check=False)
+            capture_output=True, text=True, timeout=SCAN_TIMEOUT, check=False)
     except subprocess.TimeoutExpired:
-        return [], HISTORY_GAP.format(reason="it timed out after 300s")
+        return [], HISTORY_GAP.format(
+            reason=f"it timed out after {SCAN_TIMEOUT}s"), False
     except OSError as exc:
-        return [], HISTORY_GAP.format(reason=f"git could not be run: {exc}")
+        return [], HISTORY_GAP.format(reason=f"git could not be run: {exc}"), False
     if proc.returncode != 0:
         # A non-zero git is not an exception -- `check=False` -- and it was
         # swallowed exactly like one. The overwhelmingly common cause is a
@@ -371,7 +619,7 @@ def scan_history(root, since_sha, ignore=()):
         # advice addressed to a human at a terminal.
         reason = (proc.stderr or "").strip().splitlines()
         return [], HISTORY_GAP.format(
-            reason=reason[0] if reason else f"git exited {proc.returncode}")
+            reason=reason[0] if reason else f"git exited {proc.returncode}"), False
     blob = proc.stdout
 
     # (rule, path) -> {"severity": ..., "commits": set-of-sha}. Keyed the
@@ -384,16 +632,37 @@ def scan_history(root, since_sha, ignore=()):
     # "commit" can never be mistaken for this header, which always starts
     # at column zero.
     groups = {}
+    rename = rename or {}
     path = ""
     skip_path = False
     commit_sha = None
+    # The `+` lines of the current (commit, path), read TOGETHER when the next
+    # header arrives rather than one at a time: `_hits` has to see the line
+    # after a PEM header to know whether a body follows it, and a single diff
+    # line cannot show it one. A path the sweep skips adds nothing here, so
+    # the buffer is never more than one file's additions in one commit.
+    added = []
+
+    def sweep():
+        for rule, severity, _ in _hits("\n".join(added)):
+            if sample_suppressed(path, rule, ignore):
+                continue
+            rule = rename.get(rule, rule)
+            key = (rule, path)
+            group = groups.setdefault(key, {"severity": severity, "commits": set()})
+            if commit_sha is not None:
+                group["commits"].add(commit_sha)
+        added.clear()
+
     for line in blob.splitlines():
         commit_match = _COMMIT_HEADER.match(line)
         if commit_match is not None:
+            sweep()
             commit_sha = commit_match.group(1)
             continue
         header_path = _path_from_diff_header(line)
         if header_path is not None:
+            sweep()
             path = header_path
             # The same globs the tree sweep obeys, applied to the same
             # repo-relative paths. Without this, a fixtures directory full of
@@ -406,22 +675,27 @@ def scan_history(root, since_sha, ignore=()):
             # level down, per rule, exactly as `scan_tree` applies it -- so a
             # private key committed in a `.example` file is reported from the
             # history too, and only the two template-noisy rules are not.
-            skip_path = ignored(path, ignore)
+            #
+            # `SKIP_DIRS` TOO, through the same predicate the tree sweep reads
+            # and in the same order. This line used to consult `ignored` alone,
+            # so a credential committed and deleted under `.superpowers/` or
+            # `build/` came back from this sweep and from nothing else --
+            # `seen_by == ["secrets"]`, `medium` or worse, counted by the close
+            # -- while `scan_tree` and the gitleaks adapter (`_out_of_scope`,
+            # applied to history records too) both left it out. Measured with
+            # the binary: three paths committed and deleted, two of them under
+            # `SKIP_DIRS`, and this sweep reported exactly those two.
+            skip_path = skipped(path) or ignored(path, ignore)
             continue
         if skip_path:
             continue
         if not line.startswith("+") or line.startswith("+++"):
             continue
-        for rule, severity, _ in _hits(line[1:]):
-            if sample_suppressed(path, rule, ignore):
-                continue
-            key = (rule, path)
-            group = groups.setdefault(key, {"severity": severity, "commits": set()})
-            if commit_sha is not None:
-                group["commits"].add(commit_sha)
+        added.append(line[1:])
+    sweep()
 
     out = []
     for (rule, path), group in groups.items():
         out.append(_finding(rule, group["severity"], path, [0], True,
                              commit_count=len(group["commits"])))
-    return out, ""
+    return out, "", True

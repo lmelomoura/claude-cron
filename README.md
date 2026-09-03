@@ -194,6 +194,8 @@ A job is one object in `config/jobs.json`. Fields:
 | `stall_timeout_seconds` | kill a run only after this long with **no output** (default 1200) |
 | `timeout_seconds` | optional absolute time cap (**omit = no limit**) |
 | `permission_mode` | `dontAsk`, `bypassPermissions` (full autonomy, needed for headless tool use), … |
+| `allowed_tools` | allowlist passed as `--allowedTools`, whole and as a single argument — so a comma-separated list *and* a specifier containing a space, like `Bash(git *)`, both arrive intact (**omit = every tool**) |
+| `disallowed_tools` | denylist passed as `--disallowedTools`, same handling (**omit = nothing denied**). Set both fields and **deny wins** for any tool named in each — an allowlist can never re-open what the denylist closed. A security analysis is derived with `Agent` here (the CLI's own tool roster calls that tool `Task`), so it cannot spend its budget on subagents instead of triage |
 
 Create and edit jobs entirely from the dashboard (**+ New job** / **Edit**),
 including the precheck script, or from the CLI.

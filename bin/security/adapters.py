@@ -177,6 +177,13 @@ def scope_patterns(skip_dirs=None, ignore_paths=()) -> list[str]:
     it, so `tests/fixtures` and `tests/fixtures/**` both exclude the
     directory's contents.
 
+    A MULTI-SEGMENT SKIP_DIR GOES DOWN WHOLE, and that is load-bearing rather
+    than incidental. `re.escape` leaves `/` alone, so `data/logs` becomes
+    `(^|/)data/logs/` -- the contiguous run at any depth, which is exactly
+    what `secrets.skipped` matches on this side. Emitting `(^|/)logs/` for it
+    would hand the engine a scope wider than the analysis has, and gitleaks
+    would stop reading an analysed project's real application-log directory.
+
     THE SAMPLE SUFFIXES ARE NOT HERE ANY MORE, and their absence is the fix
     rather than an omission. A gitleaks `[allowlist] paths` entry silences
     EVERY rule for the file it matches, so `\\.example$` in this list stopped
@@ -313,9 +320,23 @@ def _out_of_scope(path: str, ignore_paths) -> bool:
     happen on this side of the engine and not only in the config: a default
     only the built-in scanner honoured would make the same repository report
     differently depending on which binaries the machine has installed.
+
+    The skip-directory half is `secrets.skipped`, not a local reading of
+    `secrets.SKIP_DIRS`, so a multi-segment entry means here what it means to
+    the built-in sweep and to `scope_patterns`.
     """
-    return (any(part in secrets.SKIP_DIRS for part in Path(path).parts)
-            or ignored(path, ignore_paths))
+    return secrets.skipped(path) or ignored(path, ignore_paths)
+
+
+def _over_the_cap(root, path: str) -> bool:
+    """Whether a working-tree file the engine reported is over the built-in
+    sweep's ceiling -- `secrets.oversized`, the same predicate. A file that
+    cannot be measured is KEPT: the engine did read it, and "not proven over
+    the cap" is no reason to drop a credential it found."""
+    try:
+        return secrets.oversized(Path(root) / path)
+    except OSError:
+        return False
 
 
 def gitleaks(data, root, historical: bool = False, ignore_paths=()) -> list[dict]:
@@ -364,6 +385,20 @@ def gitleaks(data, root, historical: bool = False, ignore_paths=()) -> list[dict
         if _out_of_scope(path, ignore_paths) or ignores.sample_suppressed(
                 path, rule, ignore_paths):
             continue
+        # THE EXACT HALF OF THE SIZE CAP, on the tree only. `gitleaks_scan`
+        # hands the engine a flag one megabyte above the built-in's ceiling
+        # (the flag counts 10^6, the ceiling is 2^20-based -- see
+        # `secrets.GITLEAKS_MAX_TARGET_MEGABYTES`), so the engine reads at
+        # least everything the built-in reads and this drops what it read
+        # beyond that, through the one predicate the built-in sweep uses.
+        # One number on both scanners, whatever unit the flag counts in; and
+        # the built-in's "N larger than 2 MB in the working tree" sentence is
+        # true of the phase as a whole. HISTORY records are not filtered: the
+        # built-in's history sweep has no cap by construction, and gitleaks'
+        # `git` mode applies its own rule -- that asymmetry is documented, not
+        # denied, in `gitleaks_scan` and `secrets.scan_history`.
+        if not historical and _over_the_cap(root, path):
+            continue
         group = groups.setdefault((rule, path), {"lines": [], "commits": set()})
         line = record.get("StartLine")
         line = int(line) if isinstance(line, (int, float)) and not isinstance(
@@ -384,6 +419,18 @@ def gitleaks(data, root, historical: bool = False, ignore_paths=()) -> list[dict
 HISTORY_OK = "ok"          # git walked it; whatever gitleaks reports is complete
 HISTORY_SHALLOW = "shallow"  # git walked what there is, and there is not all of it
 HISTORY_GONE = "gone"      # git cannot walk it at all; the sweep must not run
+
+# And the two the working-tree pass can end in: `gitleaks dir` either wrote a
+# report this module could read or it did not -- there is no shallow tree.
+# Returned beside the history state and read by `cli._scan_secrets` the same
+# way, so a tree pass that produced nothing costs the phase its `ran` instead
+# of leaving the table saying the tree was scanned beside a paragraph saying it
+# was not. Not hypothetical: measured on one Laravel monorepo, `gitleaks dir`
+# wrote 98,306 `generic-api-key` records from `storage/framework/sessions/`
+# alone -- a 65 MB report, over `engines.MAX_REPORT_BYTES` -- while `gitleaks
+# git` finished cleanly, and the secret row read `ran`.
+TREE_OK = "ok"      # `gitleaks dir` wrote a report; whatever it holds is the tree
+TREE_GONE = "gone"  # no tree report exists: the pass was attempted and produced nothing
 
 
 def _git(root, *args):
@@ -496,12 +543,50 @@ def _is_shallow(root) -> bool:
 def gitleaks_scan(root, ignore_paths=()):
     """Every secret gitleaks can find in `root`, tree and history.
 
-    Returns `(findings, notes)`. `findings` is None when NEITHER pass
-    produced a report -- the caller's signal that the built-in scanner
-    should do the work after all. It may only do so while the engine has
-    contributed nothing: two scanners in one category report one hole under
-    two fingerprints, and the checklist then shows the same secret as two
-    entries that contradict each other.
+    Returns `(findings, notes, history, tree)`. `findings` is None when
+    NEITHER pass produced a report -- the caller's signal that the built-in
+    scanner is on its own for this analysis. When at least one pass answered,
+    the built-in scanner runs BESIDE this one and `cli._scan_secrets` merges
+    the two lists by fingerprint: the built-in's findings are minted under
+    this engine's rule names for the types `taxonomy.RULE_RENAMES` maps, so a
+    credential both saw is one identity, not two entries whose remediations
+    contradict each other. That merge is the caller's; this function reports
+    what the engine saw and nothing about the other scanner.
+
+    `history` IS WHAT THE HISTORY SWEEP ACTUALLY COVERED, one of the three
+    `HISTORY_*` states above, and `tree` IS WHETHER THE TREE PASS WROTE A
+    REPORT, one of the two `TREE_*` states. Together they are what
+    `cli._scan_secrets` turns into the secret phase's status in the coverage
+    table. `HISTORY_OK` only when the sweep ran over a full clone;
+    `HISTORY_SHALLOW` when it ran over what a shallow clone carries;
+    `HISTORY_GONE` when no history report exists at all -- because git could
+    not walk the history OR because the pass was attempted and produced
+    nothing. The second route matters: `history_state` can answer OK and
+    `gitleaks git` can still fail to write a report, and a caller reading the
+    pre-scan state alone would file the phase as `ran` under a note saying
+    the sweep did not complete. `TREE_GONE` is the tree's version of that
+    second route, and it used to have no value at all: `gitleaks dir` timing
+    out or writing a report over the ceiling left `TREE_GAP` in the notes and
+    nothing in the vocabulary the table reads, so the row read `ran` beside
+    "the working-tree secret scan did not complete". The notes say all of this
+    in prose; these two values say it in the table's words, so the two cannot
+    drift -- and the caller never has to look for a sentence in a note.
+
+    THE SIZE CAP IS EXACT ON THE TREE AND ASYMMETRIC ON THE HISTORY, and both
+    halves of that are measured, not assumed. On the tree, the engine is
+    handed `--max-target-megabytes` one megabyte above the built-in's ceiling
+    (the flag counts 10^6 bytes, `secrets._MAX_BYTES` is 2^20-based; handed
+    the ceiling in the wrong unit it skipped a band the built-in reads) and
+    `gitleaks()` drops every tree record over `secrets._MAX_BYTES` through
+    `secrets.oversized` -- one number on both scanners. On the history there
+    is no shared number to be had: the built-in sweep reads `git log -p` and
+    has no file cap by construction, while `gitleaks git` applies its own rule
+    to the same flag (measured on 8.30.1: handed `2` it skipped committed files
+    of 3,000,000 bytes and up, handed `3` files of 4,000,000 and up). So a
+    credential in a committed file that large is a history finding of the
+    built-in alone, `seen_by == ["secrets"]`, and the built-in's "did not
+    read N files" sentence says "in the working tree" because that is the
+    only sweep it is true of.
 
     THE HISTORY IS NOT OPTIONAL. A credential that was ever committed stays
     compromised however thoroughly the file was later deleted, which is what
@@ -548,7 +633,26 @@ def gitleaks_scan(root, ignore_paths=()):
                   "--exit-code", "0",
                   # Nothing this engine prints is read, and its info lines
                   # name the files it is scanning.
-                  "--log-level", "error"]
+                  "--log-level", "error",
+                  # THE COARSE HALF OF THE SIZE CAP, in the engine's own
+                  # unit. Gitleaks counts this flag in 10^6 bytes and, in
+                  # `dir` mode, skips a file strictly larger than N x 10^6;
+                  # the built-in sweep stops at `secrets._MAX_BYTES`, which is
+                  # 2^20-based. The value is the built-in's ceiling rounded UP
+                  # to the next 10^6, so the engine reads at least everything
+                  # the built-in reads; `gitleaks()` below then drops any tree
+                  # record over the ceiling itself, which is the exact half.
+                  # Handed the ceiling in the wrong unit (`2`), the engine
+                  # skipped the band 2,000,001-2,097,152 the built-in reads,
+                  # and every credential in it was "only the built-in saw".
+                  # Verified against `gitleaks --help` for 8.30.1: the flag
+                  # exists on both `dir` and `git`. In `git` mode it follows
+                  # the engine's own rule (measured: `3` skips committed files
+                  # of 4,000,000 bytes and up) and the built-in history sweep
+                  # has no cap at all -- see `gitleaks_scan`'s docstring for
+                  # why that asymmetry is stated and not hidden.
+                  "--max-target-megabytes",
+                  str(secrets.GITLEAKS_MAX_TARGET_MEGABYTES)]
         history, history_note = (
             (None, HISTORY_UNREADABLE.format(reason=why))
             if state == HISTORY_GONE
@@ -567,13 +671,16 @@ def gitleaks_scan(root, ignore_paths=()):
         # `_scan_secrets` reads a None here as "the engine contributed
         # nothing" and runs the built-in scanner over both halves instead.
         notes += [n for n in dict.fromkeys((history_note, tree_note)) if n]
-        return None, notes
+        return None, notes, HISTORY_GONE, TREE_GONE
 
     findings = []
     if history is None:
         # The same sentence the built-in sweep uses for the same gap, so a
         # reader is not asked to learn two vocabularies for one blind spot.
         notes.append(secrets.HISTORY_GAP.format(reason=history_note.rstrip(".")))
+        # Whatever git said beforehand, no history was swept: the table has
+        # to read this the same way it reads a history git could not walk.
+        state = HISTORY_GONE
     else:
         findings += gitleaks(history, root, historical=True,
                              ignore_paths=ignore_paths)
@@ -599,15 +706,20 @@ def gitleaks_scan(root, ignore_paths=()):
     # for.
     if project_config(root) is not None:
         notes.append(PROJECT_CONFIG_NOTE)
-    return findings, notes
+    return findings, notes, state, TREE_OK if tree is not None else TREE_GONE
 
 
 # ------------------------------------------------------- the dependency scan
 #
-# Trivy replaces `deps.inventory` + `osv.query` on the same terms as above:
-# ONE producer per category, never both -- see `cli._scan_dependencies`,
-# which is where that choice is actually made. Everything here is the
-# translator, not the switch.
+# Trivy replaces `deps.inventory` + `osv.query`: ONE producer per category,
+# never both -- see `cli._scan_dependencies`, which is where that choice is
+# actually made. NOT the secret phase's terms any more: the two secret
+# scanners run together and merge by fingerprint (`cli._scan_secrets`), which
+# is possible there because `taxonomy.RULE_RENAMES` maps one scanner's rule
+# names onto the other's. No such map exists between OSV.dev's identities and
+# Trivy's -- the paragraphs below are about how far apart they are -- so two
+# dependency producers would be two identities for one hole. Everything here
+# is the translator, not the switch.
 #
 # THE IDENTITY IS OSV'S, AND SO ARE ITS INPUTS. `osv._finding` already had
 # the recipe -- `fingerprint("dependency", vuln_id, source,
@@ -1201,6 +1313,11 @@ def trivy_skip_dirs(ignore_paths=()) -> list[str]:
     switched the default off, so a decision the operator took is not undone
     by a command line.
 
+    A multi-segment entry (`data/logs`) goes down verbatim in both forms, so
+    the pair reads `data/logs` (Trivy's top level) and `**/data/logs` (any
+    depth) -- the same run of components `secrets.skipped` matches, never the
+    last component on its own.
+
     `ignore_paths` is passed down too, the cheap way round -- the files are
     then never read at all. It is not the guarantee: `trivy_scan` filters
     what comes back through `_out_of_scope` as well, for the reason that
@@ -1639,7 +1756,9 @@ def syft_sbom(root):
     `--exclude '**/name'` per entry, matched at any depth without also
     needing the bare name Trivy's matcher required (see `trivy_skip_dirs`) --
     measured with a `package-lock.json` planted at the TOP LEVEL of a
-    `vendor/` directory, `--exclude '**/vendor'` alone excludes it. Not
+    `vendor/` directory, `--exclude '**/vendor'` alone excludes it. A
+    multi-segment entry goes down whole -- `**/data/logs`, not `**/logs` --
+    which is the run of components `secrets.skipped` matches. Not
     `ignore_paths`: see the section comment above for why an SBOM does not
     take it.
     """
@@ -1854,7 +1973,10 @@ def semgrep_excludes(ignore_paths=()) -> list[str]:
     Trivy's bare name matched the top level only. That is what `SKIP_DIRS`
     wants -- `_out_of_scope` drops those names at any depth too -- so the pair
     is kept because it costs nothing and neither form can then be the one a
-    future matcher narrows, but nobody should read it here as a hole.
+    future matcher narrows, but nobody should read it here as a hole. A
+    multi-segment entry keeps the pair as well: `data/logs` (which semgrep
+    anchors, because it contains a `/`) beside `**/data/logs` (any depth),
+    which together say what `secrets.skipped` says.
 
     THE OPERATOR'S GLOBS ARE ANCHORED, AND THE `rstrip("/*")` THAT USED TO BE
     HERE WAS A NARROWING. It was copied from `trivy_skip_dirs`, where it is

@@ -36,6 +36,21 @@ DETERMINISTIC_CATEGORIES = ("secret", "dependency", "hygiene", "iac")
 # two modules, so it lives here, next to the rule that reads it.
 AGENT = "agent"
 
+# What joins two producers that BOTH saw one finding. The secret phase runs
+# gitleaks and the built-in scanner together and records `gitleaks+secrets` --
+# on the analysis row, and on every finding both re-found (see
+# `cli._scan_secrets`). Defined here beside `AGENT` for the same reason: the
+# writer (`cli`) and the reader (`_proven`) have to spell it identically, and
+# this module is the reader. Not a comma, which is what `ledger.mark_prepared`
+# separates the producers of one analysis with.
+PRODUCER_SEPARATOR = "+"
+
+
+def atoms(producer) -> set:
+    """The single scanners a producer string names: `"gitleaks+secrets"` is
+    `{"gitleaks", "secrets"}`, `"trivy"` is `{"trivy"}`, `""` is `set()`."""
+    return {a for a in (producer or "").split(PRODUCER_SEPARATOR) if a}
+
 
 def _proven(finding, analysis_state, prepared, produced) -> bool:
     """Did something that COULD have re-found this finding actually look?
@@ -97,6 +112,42 @@ def _proven(finding, analysis_state, prepared, produced) -> bool:
     `producer` is empty on rows written before the column existed. Those fall
     back to the category rule this function replaced, which is the only
     honest reading available for them: nothing recorded who looked.
+
+    ATOM BY ATOM, AND EVERY ATOM. A producer may name two scanners at once --
+    `gitleaks+secrets`, the secret phase's own since the two run together --
+    and so may an entry of `produced`. Both sides are split on
+    `PRODUCER_SEPARATOR` and the finding is proven only when EVERY scanner
+    its producer names is among the scanners that ran. Three rules were
+    possible and two of them are wrong:
+
+      exact membership   -- what this function did before the union. A row
+                            minted under `gitleaks` alone, before the two ran
+                            together, meets `produced = {"gitleaks+secrets"}`
+                            and is never proven again: `pending` for ever,
+                            though gitleaks ran and looked for exactly it.
+
+      any atom present   -- a row both saw, on a machine that later loses
+                            gitleaks, would be sworn `fixed` by the built-in
+                            scanner alone -- whose eight shaped rules are not
+                            the engine's rule set. `fixed` is the verdict
+                            whose false positive costs most: it tells the
+                            operator a credential is gone. Preventing exactly
+                            that verdict is why this function asks about
+                            producers at all.
+
+      every atom present -- chosen. Proven only when every scanner that ever
+                            saw the row looked again. Over-conservative on a
+                            machine that loses a scanner, and that is the
+                            honest side to err on: `pending` says "not
+                            re-checked", which is true of it.
+
+    The rule is about ABSENT rows, and one seam kept a row absent that was
+    still there: the fallback path used to mint the built-in's own rule names,
+    so on a machine that lost gitleaks a row only the built-in saw came back
+    under a different fingerprint -- absent from `current`, its atom in
+    `produced`, sworn `fixed` here while the same credential read `new`. Both
+    paths now mint one vocabulary (`cli._scan_secrets`), so such a row is in
+    `current`, never reaches this function, and reads `open`: the truth.
     """
     producer = (finding.get("producer") or "").strip()
     if not producer:
@@ -111,8 +162,12 @@ def _proven(finding, analysis_state, prepared, produced) -> bool:
     # Every other producer runs inside `prepare`, which is what writes
     # `produced` -- so `prepared` is implied by a non-empty membership and
     # asked anyway, because the two facts are written by one statement and a
-    # future edit that separates them should fail closed.
-    return bool(prepared) and producer in produced
+    # future edit that separates them should fail closed. `needed` is asked
+    # for the same reason: a producer that is all separators and no name is
+    # a subset of anything, and must prove nothing.
+    looked = set().union(*(atoms(p) for p in produced)) if produced else set()
+    needed = atoms(producer)
+    return bool(prepared) and bool(needed) and needed <= looked
 
 
 def classify(current, previous, history, decisions,

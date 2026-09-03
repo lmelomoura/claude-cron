@@ -41,7 +41,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from security import adapters, deps, diff, fingerprint, hygiene, ignores, ledger, osv, queries, report, secrets, taxonomy  # noqa: E402
+from security import adapters, coverage, deps, diff, fingerprint, hygiene, ignores, ledger, osv, queries, report, secrets, taxonomy  # noqa: E402
 
 REQUIRED_FINDING_KEYS = ("fingerprint", "category", "rule", "severity", "title")
 
@@ -76,6 +76,25 @@ TEXT_KEYS = ("title", "rationale", "remediation", "partial_note")
 # fingerprint computed under one spelling of a category and reported under
 # another is two identities for one hole.
 FINDING_CATEGORIES = diff.DETERMINISTIC_CATEGORIES + ("sast",)
+
+# The severity at and above which a SCANNER's finding has to have been read
+# before an analysis may close `done` -- see `_untriaged` and `cmd_finish`.
+#
+# AN INFORMED GUESS, WRITTEN DOWN AS ONE so that the first real analysis after
+# this lands can move it on evidence instead of on argument. What the guess
+# balances: a floor of `info` would make the gate cost more triage budget than
+# the findings under it are worth and would get the whole thing switched off,
+# while `high` would let a medium nobody read close the run silently -- and
+# medium is where the dependency findings that actually matter cluster. The
+# number to measure it against is how many findings a real run has to read to
+# close `done`, and whether that number fits the budget the run is given.
+TRIAGE_FLOOR = "medium"
+
+# Everything at or above the floor, taken as a SLICE of report.SEVERITIES --
+# which is ordered worst first -- rather than written out again. A second
+# hand-written list of severities is a list that disagrees with the first one
+# the day a severity is added between two existing ones.
+TRIAGE_BLOCKING = report.SEVERITIES[:report.SEVERITIES.index(TRIAGE_FLOOR) + 1]
 
 # The word a reader sees for a decision state, mirroring
 # `SEC_STATE_LABEL` in ui/security/vocabulary.js -- the vocabulary every
@@ -383,6 +402,30 @@ PRODUCER_HYGIENE = "hygiene"
 PRODUCER_TRIVY_IAC = "trivy-iac"  # Trivy's misconfiguration scan
 PRODUCER_SEMGREP = "semgrep"      # the SAST pre-pass
 
+# ONE PHASE HAS TWO PRODUCERS AT ONCE. The secret phase runs gitleaks AND the
+# built-in scanner whenever both are here (`_scan_secrets`), and what it
+# records is the two names joined by `diff.PRODUCER_SEPARATOR`: this composite
+# on the analysis row and on every finding both re-found, `PRODUCER_SECRETS`
+# alone on a finding only the built-in's generic rule saw. `diff._proven`
+# reads both sides atom by atom -- every name above is an atom, never a
+# composite -- which is why the separator is defined next to the reader and
+# only used here.
+PRODUCER_BOTH_SECRET_SCANNERS = diff.PRODUCER_SEPARATOR.join(
+    sorted((PRODUCER_GITLEAKS, PRODUCER_SECRETS)))
+
+# The two producers of the SBOM DOCUMENT, named in the same vocabulary so the
+# coverage table's `by` column speaks one language -- but NOT part of the
+# identity vocabulary above: neither mints a finding, neither joins the
+# `produced` set, and `diff._proven` never reads either. They name who built
+# the file a reader downloads, on the same terms `_scan_sbom` chooses between
+# them: Syft's directory scan when it answers with a component, this project's
+# own five-format read (`deps.inventory` -> `deps.sbom`) otherwise. The
+# fallback has a name here because a row reading `warning | —` says "somebody
+# built this and nobody will say who", when `deps.SBOM_FALLBACK_NOTE` beside
+# it says exactly who.
+PRODUCER_SYFT = "syft"
+PRODUCER_INVENTORY = "inventory"  # deps.inventory, the built-in SBOM producer
+
 
 def _produced_by(findings, producer, produced):
     """Stamp the producer that MINTED these findings, and record that it ran.
@@ -397,58 +440,252 @@ def _produced_by(findings, producer, produced):
     An empty `producer` means the phase did not run: nothing is stamped and
     nothing joins the set, which is exactly how `iac` on a machine without
     Trivy stops proving that a Dockerfile is clean.
+
+    A FINDING THAT ALREADY NAMES WHO SAW IT KEEPS THAT NAME. The secret phase
+    runs two scanners and stamps each finding itself with the atoms that
+    actually re-found it -- `gitleaks+secrets` for one both saw, `secrets` for
+    one only the built-in's generic rule saw -- while the phase-level
+    `producer` it hands here is the composite, which is what joins the set.
+    Overwriting a finding's own stamp with the composite would let gitleaks'
+    silence prove a built-in-only row gone on a later analysis; every atom a
+    finding carries is one of the composite's, so the two halves still agree.
     """
     if producer:
         produced.add(producer)
         for finding in findings:
-            finding["producer"] = producer
+            if not finding.get("producer"):
+                finding["producer"] = producer
     return findings
 
 
+# The secret entries of `taxonomy.RULE_RENAMES`, keyed by the built-in
+# scanner's name alone: what `secrets.scan_tree` and `secrets.scan_history`
+# mint the built-in's findings under when gitleaks runs beside them, so that a
+# credential both see is ONE fingerprint. The two types the map deliberately
+# leaves out are what `UNMAPPED_TYPES_NOTE` below is about.
+_SECRET_RENAMES = {old: new for (category, old), new in taxonomy.RULE_RENAMES.items()
+                   if category == "secret"}
+UNMAPPED_SECRET_RULES = tuple(sorted(
+    name for name, *_ in secrets._RULES if name not in _SECRET_RENAMES))
+
+# What the union says about itself: how much of it only one scanner saw. Said
+# whenever both ran, zeros included -- "the two agreed on everything" is a fact
+# a reader judging the report's blind spots wants stated, not inferred from a
+# silence.
+UNION_NOTE = ("Both secret scanners ran and their findings were merged by "
+              "identity: {both} seen by gitleaks and by the built-in pattern "
+              "scanner alike, {engine} only by gitleaks, {builtin} only by the "
+              "built-in scanner.")
+
+# Said only when a finding of one of the two unmapped types is present. One
+# sentence, formatted once at import so it is a constant the coverage phase can
+# be attributed and the paragraph searched for.
+UNMAPPED_TYPES_NOTE = (
+    "A {types} credential may be listed twice, once under the built-in "
+    "scanner's name and once under gitleaks' own: one rule of ours is several "
+    "of theirs, so no single rename is true and none is made; until a map "
+    "exists, read the two entries as one credential."
+).format(types=" or ".join(UNMAPPED_SECRET_RULES))
+
+
+def _graver(a, b):
+    """The higher of two severities in `report.SEVERITIES` order; a grade
+    neither scanner's table knows sorts last."""
+    order = report.SEVERITIES
+    return min((a, b), key=lambda s: order.index(s) if s in order else len(order))
+
+
+def _pooled(first, second):
+    """The occurrences of two readings of one finding, without repeats: one
+    entry per (file, line), and no line-0 placeholder for a file a real line
+    is known for. The built-in's history sweep files every hit at line 0 -- it
+    reads a diff and has no line to give -- where gitleaks reports the
+    commit's own StartLine; both are the same exposure."""
+    seen, out = set(), []
+    for occ in [*first, *second]:
+        key = (occ.get("file", ""), int(occ.get("line", 0)))
+        if key not in seen:
+            seen.add(key)
+            out.append(occ)
+    located = {o.get("file", "") for o in out if int(o.get("line", 0)) > 0}
+    return [o for o in out
+            if int(o.get("line", 0)) > 0 or o.get("file", "") not in located]
+
+
+def _merge_secret_readings(engine, builtin):
+    """One finding per fingerprint out of two scanners' readings, each carrying
+    `seen_by`: the sorted atoms that saw it.
+
+    IDENTITY IS THE JOIN. The built-in's findings arrive already minted under
+    gitleaks' names for the mapped types (`secrets.scan_tree(rename=...)`), so
+    a credential both saw is one fingerprint here without anything but that
+    being compared. Two readings of one identity keep the graver severity and
+    both producers.
+
+    THE TREE READING WINS OVER ITS HISTORY TWIN, here as it did in the ledger.
+    Each scanner reports a secret that is both in the tree and in the history
+    twice under one fingerprint -- history first, then tree -- and
+    `ledger.record_finding` used to resolve that by upsert, the last writer's
+    wording and occurrences surviving (see `cmd_prepare`'s comment and
+    test_the_tree_reading_wins_over_its_history_twin_on_either_scanner). With
+    the two lists merged before anything is recorded, the same rule lives
+    here: a tree reading REPLACES a history reading's wording and occurrences
+    -- "in the working tree", at the line the credential is on right now --
+    and a history reading adds nothing but its producer to a tree reading.
+    Two readings of the same kind pool their occurrences (`_pooled`).
+
+    The engine's list goes first so that, where both scanners saw a credential
+    in the same place, the wording kept is the engine's -- the one every
+    existing engine-path assertion reads.
+    """
+    merged = {}
+    for producer, readings in ((PRODUCER_GITLEAKS, engine), (PRODUCER_SECRETS, builtin)):
+        for reading in readings:
+            kept = merged.get(reading["fingerprint"])
+            if kept is None:
+                merged[reading["fingerprint"]] = {
+                    **reading, "occurrences": list(reading["occurrences"]),
+                    "seen_by": [producer]}
+                continue
+            if producer not in kept["seen_by"]:
+                kept["seen_by"] = sorted([*kept["seen_by"], producer])
+            kept["severity"] = _graver(kept["severity"], reading["severity"])
+            if kept["historical"] and not reading["historical"]:
+                kept.update(title=reading["title"], rationale=reading["rationale"],
+                            historical=False, occurrences=list(reading["occurrences"]))
+            elif kept["historical"] == reading["historical"]:
+                kept["occurrences"] = _pooled(kept["occurrences"], reading["occurrences"])
+    return list(merged.values())
+
+
 def _scan_secrets(root, ignore):
-    """(findings, notes, lines, producer) for the secret phase -- ONE scanner,
-    not two.
+    """(findings, notes, lines, producer, status) for the secret phase -- BOTH
+    scanners when gitleaks is here, the built-in pattern scanner alone when it
+    is not.
 
-    Gitleaks when it is installed, the built-in pattern scanner when it is
-    not, and never both. Two scanners in one category find the same hole and
-    report it under two fingerprints, because the fingerprint contains the
-    RULE and the two name their rules differently -- the checklist then shows
-    one credential as two entries whose remediations contradict each other,
-    and a human's decision about one never matches the other.
+    WHY IT USED TO BE ONE, AND WHY THAT REASON IS GONE. Two scanners in one
+    category find the same hole and report it under two fingerprints when
+    they name their rules differently, because the fingerprint is the rule
+    and the path -- and then the checklist shows one credential as two entries
+    whose remediations contradict each other, and a human's decision about
+    one never matches the other. `taxonomy.RULE_RENAMES` made that reason
+    false for six of the built-in's eight types: the built-in's findings are
+    minted under gitleaks' names BEFORE the fingerprint is computed
+    (`secrets.scan_tree(rename=...)`), so a credential both saw is one
+    identity and `_merge_secret_readings` folds the two readings into one
+    finding. For the two types the map deliberately leaves out --
+    `github_token` and `slack_token`, one rule of ours being several of
+    theirs -- a credential CAN appear twice, and `UNMAPPED_TYPES_NOTE` says so
+    whenever one is present. `UNION_NOTE` says, every time, how much only one
+    scanner saw.
 
-    The engine still falls back if it could not produce a report at all --
-    absent, unversioned, timed out, or writing a format this code cannot
-    read. That is safe precisely because it produced nothing: there is no
-    engine finding for a built-in one to collide with.
+    WHAT THE UNION BUYS, MEASURED on Minerva with the product filters applied
+    to both: gitleaks saw 2 identities -- both from its history pass, its tree
+    pass having written a report over the ceiling and been discarded, see
+    `adapters.TREE_GONE` -- the built-in 30, and they shared 1.
+    The built-in's surplus is mostly test fixtures and documentation examples,
+    and among the rest is the one credential gitleaks' generic rule discards
+    through its stopword list (`our_` and `con_` are entries), not by entropy
+    and not by shape -- a seed token shared by a script, a test helper and a
+    Postman collection.
+    The union is the built-in's recall with the engine's identities.
 
-    `lines` is `lines_of_code`, which used to arrive as a by-product of the
-    built-in sweep's read. It is counted separately on the engine path
-    (`secrets.count_lines`, the same walk over the same files) rather than
-    lost -- the project header renders 0 as "not counted", which no analysis
-    that actually ran should ever claim.
+    The engine still yields the whole phase to the built-in scanner if it
+    could not produce a report at all -- absent, unversioned, timed out on
+    both passes, or writing a format this code cannot read. That path is
+    `PRODUCER_SECRETS`, `warning`, and `secrets.FALLBACK_NOTE` saying which
+    scanner ran -- and ONE VOCABULARY WITH THE UNION PATH: the built-in's
+    findings are minted under the same names there (`_SECRET_RENAMES` at
+    mint, `secrets.scan_tree(rename=...)`), so a row's identity does not
+    depend on which path minted it. The first version renamed on the union
+    path only, and the seam bit on the first machine that lost the engine:
+    analysis N stored `generic-api-key` with `producer="secrets"`, analysis
+    N+1 minted `generic_secret` for the same file -- a different fingerprint
+    -- and `diff._proven`, correct by its own rule (the built-in ran), swore
+    the old row `fixed` while the same credential appeared as `new`.
+    Reachable without uninstalling anything: two 600 s timeouts on a large
+    repository. With one name on both paths the row is in `current` and reads
+    `open`, which is the truth: the built-in looked, and found it. The two
+    deliberately unmapped built-in rules (`github_token`, `slack_token`) keep
+    their own names on every path. `migrate-rules` remains for ledgers written
+    before this branch, when the built-in ran alone under its own names -- and
+    runs on any machine, engine or not, because every path mints the same
+    names now.
 
-    `producer` is WHICH of the two scanners answered, and it is never
-    "secret", the category. The two do not cover the same ground -- gitleaks
-    carries its own rule set, the built-in scanner has eight shaped patterns
-    and says so in `secrets.FALLBACK_NOTE` -- so a machine that loses gitleaks
-    must not read the built-in scanner's silence as proof that a
-    gitleaks-only credential is gone. This phase always has a producer: there
-    is no configuration in which neither scanner runs.
+    `lines` is `lines_of_code`, a by-product of the built-in sweep's read on
+    both paths now that the sweep runs on both.
+
+    `producer` is WHO LOOKED, in the identity vocabulary `diff._proven`
+    reads, and it is never "secret", the category. On the union path the
+    PHASE's producer -- what joins the analysis's `produced` set -- is
+    `PRODUCER_BOTH_SECRET_SCANNERS`, and each FINDING carries the atoms that
+    actually saw it: `gitleaks+secrets` for one both re-found, `secrets` for
+    one only the built-in's generic rule saw. `_produced_by` leaves those
+    per-finding stamps alone. `_proven` then asks, atom by atom, whether every
+    scanner that saw a row looked again -- so on a machine that later loses
+    gitleaks, a row only gitleaks saw reads `pending` rather than being sworn
+    `fixed` by the built-in's eight rules, while a row the built-in saw --
+    alone or beside the engine -- is re-minted under the same name, sits in
+    `current`, and reads `open`: the built-in looked, and found it. This phase
+    always has a producer: there is no configuration in which neither scanner
+    runs.
+
+    `status` IS NEVER `skipped` HERE, for that same reason. It is `warning`
+    on the fallback path rather than `ran`: eight shaped patterns are not a
+    whole rule set, so "the secret phase found nothing" means materially less
+    there. AND ON THE UNION PATH `ran` IS EARNED BY THE WHOLE OF WHAT THE
+    PHASE MEANS, NOT BY THE BINARY: the working tree AND the git history, by
+    both scanners. `adapters.gitleaks_scan` reports what its history sweep
+    covered (`HISTORY_OK`, `HISTORY_SHALLOW`, `HISTORY_GONE`) and whether its
+    tree pass wrote a report (`TREE_OK`, `TREE_GONE`); the built-in's history
+    sweep answers, as its third value, whether it swept the history at all --
+    a checkout with no commits counts as swept (`secrets.HISTORY_EMPTY_NOTE`
+    beside it says the history is empty), a sweep that did not complete does
+    not. `ran` needs all three clean. A shallow clone's sweep saw nothing before the cut-off, a history
+    git could not walk was not swept, and a tree pass that timed out -- or
+    wrote a report over the ceiling, which one Laravel `storage/` did with
+    98,000 session files -- left a row reading `ran` beside "the working-tree
+    secret scan did not complete". Each is `warning` by that word's own
+    definition in `coverage.py` ("something looked, but not the whole of what
+    this phase means"), and the sentence beside the row is the one the notes
+    already carry for the same gap (`adapters.SHALLOW_GAP`,
+    `secrets.HISTORY_GAP`, `adapters.TREE_GAP`).
     """
     if adapters.engine_path("gitleaks"):
-        findings, notes = adapters.gitleaks_scan(root, ignore)
-        if findings is not None:
-            return (findings, notes, secrets.count_lines(root, ignore),
-                    PRODUCER_GITLEAKS)
+        engine, notes, history, tree = adapters.gitleaks_scan(root, ignore)
+        if engine is not None:
+            history_findings, history_note, swept = secrets.scan_history(
+                root, None, ignore, rename=_SECRET_RENAMES)
+            tree_findings, tree_note, lines = secrets.scan_tree(
+                root, ignore, rename=_SECRET_RENAMES)
+            findings = _merge_secret_readings(engine, history_findings + tree_findings)
+            for finding in findings:
+                finding["producer"] = diff.PRODUCER_SEPARATOR.join(finding["seen_by"])
+            union_notes = [UNION_NOTE.format(
+                both=sum(1 for f in findings if len(f["seen_by"]) == 2),
+                engine=sum(1 for f in findings if f["seen_by"] == [PRODUCER_GITLEAKS]),
+                builtin=sum(1 for f in findings if f["seen_by"] == [PRODUCER_SECRETS]))]
+            if any(f["rule"] in UNMAPPED_SECRET_RULES for f in findings):
+                union_notes.append(UNMAPPED_TYPES_NOTE)
+            whole = (history == adapters.HISTORY_OK and tree == adapters.TREE_OK
+                     and swept)
+            return (findings, [*notes, history_note, tree_note, *union_notes], lines,
+                    PRODUCER_BOTH_SECRET_SCANNERS,
+                    coverage.RAN if whole else coverage.WARNING)
         # The engine is here and could not answer. Say so, and let the
         # built-in scanner do the work rather than reporting no secrets.
         notes = [*notes, secrets.FALLBACK_NOTE]
     else:
         notes = [secrets.FALLBACK_NOTE]
-    history_findings, history_note = secrets.scan_history(root, None, ignore)
-    tree_findings, tree_note, lines = secrets.scan_tree(root, ignore)
+    # The same names as the union path mints, for the reason the docstring
+    # gives: an identity that changed with the scanner on the machine read
+    # `fixed` beside `new` for one credential.
+    history_findings, history_note, _swept = secrets.scan_history(
+        root, None, ignore, rename=_SECRET_RENAMES)
+    tree_findings, tree_note, lines = secrets.scan_tree(root, ignore, rename=_SECRET_RENAMES)
     return (history_findings + tree_findings,
-            [history_note, tree_note, *notes], lines, PRODUCER_SECRETS)
+            [history_note, tree_note, *notes], lines, PRODUCER_SECRETS,
+            coverage.WARNING)
 
 
 # Named so `test_offline_mode_declares_the_gap` (and every reader of a
@@ -463,8 +700,8 @@ OFFLINE_DEPENDENCY_NOTE = ("Dependency CVEs were NOT checked against OSV.dev "
 
 
 def _scan_dependencies(root, components, offline: bool, ignore_paths=()):
-    """(findings, notes, producer) for the dependency phase -- ONE producer,
-    not two.
+    """(findings, notes, producer, status) for the dependency phase -- ONE
+    producer, not two.
 
     Trivy's filesystem scanner when it is installed, `osv.query` fed by
     `deps.inventory`'s output (`components`) when it is not, and never both:
@@ -551,16 +788,22 @@ def _scan_dependencies(root, components, offline: bool, ignore_paths=()):
     buys and what its absence costs -- against this ledger's real behaviour.
     `pending` still says "not re-checked", which is precisely what happened;
     the alternative said "fixed" about a lockfile nobody parsed.
+
+    `status` CARRIES EXACTLY THAT ASYMMETRY into the report's own table.
+    `skipped` when `--offline` refused both sources; `ran` for Trivy; and
+    `warning` for OSV.dev, because the measured gap above -- Trivy 5 findings
+    against `deps.inventory`'s 0 components on one real `yarn.lock` -- is the
+    difference between the two, not a preference between them.
     """
     if offline:
         # No producer: `--offline` refuses BOTH sources, so nothing looked and
         # nothing about this category can be proven from this analysis.
-        return [], [OFFLINE_DEPENDENCY_NOTE], ""
+        return [], [OFFLINE_DEPENDENCY_NOTE], "", coverage.SKIPPED
     notes = []
     if adapters.engine_path("trivy"):
         findings, notes = adapters.trivy_scan(root, ignore_paths)
         if findings is not None:
-            return findings, notes, PRODUCER_TRIVY
+            return findings, notes, PRODUCER_TRIVY, coverage.RAN
         # The engine is here and could not answer. Its note is kept -- that
         # is the "say so" -- and OSV.dev does the work rather than the phase
         # reporting no dependency findings.
@@ -582,7 +825,7 @@ def _scan_dependencies(root, components, offline: bool, ignore_paths=()):
                                            ignore_paths)]
     if osv_note:
         notes.append(osv_note)
-    return cve_findings, notes, PRODUCER_OSV
+    return cve_findings, notes, PRODUCER_OSV, coverage.WARNING
 
 
 def _unfiltered_sbom_note(components, ignore_paths) -> str:
@@ -636,8 +879,8 @@ OFFLINE_SAST_NOTE = ("The Semgrep SAST pre-pass did NOT run: its rule pack is "
 
 
 def _scan_sast(root, offline: bool, ignore_paths=()):
-    """(findings, notes, producer) for the SAST pre-pass -- an ADDITION, never
-    a swap.
+    """(findings, notes, producer, status) for the SAST pre-pass -- an
+    ADDITION, never a swap.
 
     THE ONE PHASE HERE THAT REPLACES NOTHING. `_scan_secrets`,
     `_scan_dependencies` and `_scan_sbom` all choose ONE producer per category
@@ -665,21 +908,31 @@ def _scan_sast(root, offline: bool, ignore_paths=()):
     producers now answer separately, which is also why the fix is not "mark
     the whole category pending": the agent's own findings still close on the
     agent's own evidence.
+
+    THE ONE PHASE WHOSE SUCCESS IS STILL A `warning`, and the only status
+    decision in this file that is not about a missing binary. Semgrep running
+    perfectly is a PRE-pass: `adapters.SAST_PREPASS_NOTE` says so, and its
+    coverage is not remotely even -- 147 rules for Python against ONE for
+    shell, measured, over a product whose core is 8,263 lines of bash. A
+    `ran` here would tell a reader of the table that the SAST phase is covered
+    when the pass that actually covers it is the agent's, which has not
+    happened yet at this point in the analysis. So this phase reads `ran`
+    never, `warning` when Semgrep answered, `skipped` when it did not.
     """
     if offline:
-        return [], [OFFLINE_SAST_NOTE], ""
+        return [], [OFFLINE_SAST_NOTE], "", coverage.SKIPPED
     if not adapters.engine_path("semgrep"):
         # `engine_path` answers None for a machine without the binary AND for
         # one with `CC_SECURITY_ENGINES=off`, and the note says the same thing
         # for both on purpose: as far as this analysis goes they are the same
         # machine.
         return [], [adapters.SAST_GAP.format(
-            reason="semgrep is not available to this analysis")], ""
+            reason="semgrep is not available to this analysis")], "", coverage.SKIPPED
     findings, notes = adapters.semgrep_scan(root, ignore_paths)
     if findings is None:
         reason = (notes[0] if notes else "semgrep produced no report").rstrip(".")
-        return [], [adapters.SAST_GAP.format(reason=reason)], ""
-    return findings, notes, PRODUCER_SEMGREP
+        return [], [adapters.SAST_GAP.format(reason=reason)], "", coverage.SKIPPED
+    return findings, notes, PRODUCER_SEMGREP, coverage.WARNING
 
 
 # Said when `_scan_sbom` returns no document at all, and the ONE sentence that
@@ -700,8 +953,8 @@ NO_SBOM_NOTE = ("No SBOM was recorded for this analysis: neither producer had "
 
 
 def _scan_sbom(root, components):
-    """(document, notes) for the SBOM -- ONE producer, not two, on the same
-    terms `_scan_secrets` and `_scan_dependencies` use.
+    """(document, notes, status) for the SBOM -- ONE producer, not two, on the
+    same terms `_scan_secrets` and `_scan_dependencies` use.
 
     Syft's directory scan when it is installed and answers with at least one
     component; `deps.sbom` fed by `deps.inventory`'s own five-format read
@@ -723,17 +976,24 @@ def _scan_sbom(root, components):
     Falling back also drops Syft's OWN notes (which claim Syft produced the
     SBOM): carrying them forward would have this function's return value
     contradict itself the moment `deps.sbom` is what actually gets stored.
+
+    `status` follows the document, not the binary: `ran` for Syft's own
+    inventory, `warning` for the five-format fallback `deps.sbom` builds, and
+    `skipped` when there is no document to download at all -- which is what
+    `NO_SBOM_NOTE` says in prose, and the one state where every other sentence
+    about "the SBOM" would be describing a file the reader cannot open.
     """
     notes = []
     if adapters.engine_path("syft"):
         document, syft_notes = adapters.syft_sbom(root)
         if document is not None and document.get("components"):
-            return document, syft_notes
+            return document, syft_notes, coverage.RAN
         if document is None:
             notes = syft_notes
     if not components:
-        return None, notes
-    return deps.sbom(components), [*notes, deps.SBOM_FALLBACK_NOTE]
+        return None, notes, coverage.SKIPPED
+    return (deps.sbom(components), [*notes, deps.SBOM_FALLBACK_NOTE],
+            coverage.WARNING)
 
 
 # Trivy's misconfiguration checks are fetched from its own registry, the same
@@ -748,7 +1008,7 @@ OFFLINE_IAC_NOTE = ("Infrastructure-as-code misconfigurations were NOT "
 
 
 def _scan_iac(root, offline: bool, ignore_paths=()):
-    """(findings, notes, producer) for the IaC misconfiguration phase.
+    """(findings, notes, producer, status) for the IaC misconfiguration phase.
 
     UNLIKE EVERY PHASE ABOVE IT, THERE IS NOTHING TO FALL BACK TO AND NOTHING
     TO REPLACE. `_scan_secrets` and `_scan_dependencies` each choose one
@@ -767,17 +1027,21 @@ def _scan_iac(root, offline: bool, ignore_paths=()):
     `prepare` finished -- it produced a report that said the Dockerfile "was
     not checked at all this run" and, four lines down, declared three of its
     misconfigurations fixed. The Dockerfile was untouched.
+
+    `status` IS BINARY HERE, and this is the only phase for which that is
+    true: with no fallback to degrade to, there is no middle state to report.
+    Either Trivy answered (`ran`) or nothing looked (`skipped`).
     """
     if offline:
-        return [], [OFFLINE_IAC_NOTE], ""
+        return [], [OFFLINE_IAC_NOTE], "", coverage.SKIPPED
     if not adapters.engine_path("trivy"):
         return [], [adapters.IAC_GAP.format(
-            reason="trivy is not available to this analysis")], ""
+            reason="trivy is not available to this analysis")], "", coverage.SKIPPED
     findings, notes = adapters.trivy_iac_scan(root, ignore_paths)
     if findings is None:
         reason = (notes[0] if notes else "trivy produced no report").rstrip(".")
-        return [], [adapters.IAC_GAP.format(reason=reason)], ""
-    return findings, notes, PRODUCER_TRIVY_IAC
+        return [], [adapters.IAC_GAP.format(reason=reason)], "", coverage.SKIPPED
+    return findings, notes, PRODUCER_TRIVY_IAC, coverage.RAN
 
 
 def cmd_prepare(args):
@@ -852,14 +1116,15 @@ def cmd_prepare(args):
     # findings' own `producer` column from ever disagreeing.
     produced = set()
 
-    secret_findings, secret_notes, tree_lines, secret_producer = _scan_secrets(
-        root, ignore)
+    secret_findings, secret_notes, tree_lines, secret_producer, secret_status = (
+        _scan_secrets(root, ignore))
     findings = _produced_by(secret_findings, secret_producer, produced)
     # Hygiene has no engine and no fallback -- it is our own walk over the
     # tree, so it runs in every configuration and is always its own producer.
     findings += _produced_by(hygiene.scan(root, ignore), PRODUCER_HYGIENE,
                              produced)
-    notes = [n for n in secret_notes if n]
+    secret_notes = [n for n in secret_notes if n]
+    notes = list(secret_notes)
 
     # FIRST in the paragraph, because it qualifies every phase below it and
     # not just the one that happens to be speaking. The default noise filter
@@ -868,8 +1133,15 @@ def cmd_prepare(args):
     # applied -- "we found nothing there" and "we did not look there" are the
     # same silence otherwise. Emitted whichever scanner ran, because the
     # filter is `ignores.ignored` and both of them consult it.
+    #
+    # `scope_notes` is the SAME two sentences kept apart for the structured
+    # half: in the paragraph they are simply first, but the table needs a row
+    # to put them under, and neither belongs to the secret phase whose notes
+    # they are being inserted ahead of. See the `scope` phase below.
+    scope_notes = []
     if ignores.defaults_apply(ignore):
         notes.insert(0, ignores.DEFAULT_NOTE)
+        scope_notes.insert(0, ignores.DEFAULT_NOTE)
 
     # AHEAD OF EVERYTHING, including the default's own sentence: it says a
     # switch the operator typed did nothing, so it explains why the sentence
@@ -880,6 +1152,7 @@ def cmd_prepare(args):
     unknown_switch = ignores.unknown_switch_note(ignore)
     if unknown_switch:
         notes.insert(0, unknown_switch)
+        scope_notes.insert(0, unknown_switch)
         # And on stderr too. `prepare` runs unattended inside a worktree, so
         # the note in the report is the durable channel -- but an operator who
         # has just edited the field and is running this by hand should not
@@ -890,11 +1163,11 @@ def cmd_prepare(args):
     # source runs: `deps.inventory` never touches the network, and the SBOM
     # below is built from it whenever Syft does not.
     components = deps.inventory(root)
-    dep_findings, dep_notes, dep_producer = _scan_dependencies(
+    dep_findings, dep_notes, dep_producer, dep_status = _scan_dependencies(
         root, components, args.offline, ignore)
     findings += _produced_by(dep_findings, dep_producer, produced)
 
-    sbom_document, sbom_notes = _scan_sbom(root, components)
+    sbom_document, sbom_notes, sbom_status = _scan_sbom(root, components)
     if sbom_document is None:
         # NOTHING IS STORED, so nothing may be described. `DEP_SBOM_NOTE` is
         # appended by `trivy_scan` unconditionally and asserts what "the SBOM"
@@ -915,30 +1188,123 @@ def cmd_prepare(args):
         # so it is what swaps the two notes rather than leaving the report to
         # contradict itself.
         dep_notes = [n for n in dep_notes if n != adapters.DEP_SBOM_NOTE]
-    notes += [n for n in dep_notes if n]
-    notes += [n for n in sbom_notes if n]
-    # After both, because it is about the gap BETWEEN them: what the SBOM
-    # lists and what the dependency phase actually looked up.
+    dep_notes = [n for n in dep_notes if n]
+    sbom_notes = [n for n in sbom_notes if n]
+    # THE SBOM SENTENCE THE DEPENDENCY PRODUCER SAYS IS SAID LAST BY IT, so it
+    # sits on the boundary between this phase's notes and the SBOM's. It is
+    # filed under both rows below, and a shared sentence can only be a
+    # contiguous part of two rows' prose if it stands where the two meet.
+    # `trivy_scan` already appends it after everything but the go.sum gap, so
+    # this is a no-op on every path measured; it is enforced here rather than
+    # relied on because the boundary is THIS function's invariant, not the
+    # adapter's.
+    shared_sbom = [n for n in dep_notes if n == adapters.DEP_SBOM_NOTE]
+    dep_notes = [n for n in dep_notes if n != adapters.DEP_SBOM_NOTE] + shared_sbom
+    # BETWEEN the dependency notes and the SBOM's, because it is about the gap
+    # between them -- what the SBOM lists against what the dependency phase
+    # actually looked up -- and because it is filed under both rows: emitted
+    # after the SBOM notes, as it used to be, the dependency row's own prose
+    # (its notes, then this sentence) was not a substring of the paragraph
+    # the moment the SBOM had a sentence of its own.
     unfiltered = _unfiltered_sbom_note(components, ignore)
-    if unfiltered:
-        notes.append(unfiltered)
+    both = [unfiltered] if unfiltered else []
+    notes += dep_notes
+    notes += both
+    notes += sbom_notes
 
-    iac_findings, iac_notes, iac_producer = _scan_iac(root, args.offline, ignore)
+    iac_findings, iac_notes, iac_producer, iac_status = _scan_iac(
+        root, args.offline, ignore)
     findings += _produced_by(iac_findings, iac_producer, produced)
-    notes += [n for n in iac_notes if n]
+    iac_notes = [n for n in iac_notes if n]
+    notes += iac_notes
 
     # LAST of the phases, because it is the only one that does not stand
     # alone: what it produces is a pre-pass the agent's own SAST pass then
     # triages, so its sentences read after everything the deterministic half
     # settled by itself.
-    sast_findings, sast_notes, sast_producer = _scan_sast(root, args.offline,
-                                                          ignore)
+    sast_findings, sast_notes, sast_producer, sast_status = _scan_sast(
+        root, args.offline, ignore)
     findings += _produced_by(sast_findings, sast_producer, produced)
-    notes += [n for n in sast_notes if n]
+    sast_notes = [n for n in sast_notes if n]
+    notes += sast_notes
     # Every phase writes into ONE channel, in phase order. The reader gets one
     # paragraph naming every blind spot this analysis has, rather than
     # whichever gap the last phase to speak happened to know about.
     note = " ".join(notes)
+
+    # THE SAME SENTENCES, ATTRIBUTED. Nothing is re-worded and nothing is
+    # dropped: every list below is one of the very lists `note` was
+    # concatenated from, IN THE ORDER it was concatenated, so each phase's
+    # prose is a contiguous substring of the paragraph a reader can still read
+    # whole -- pinned for every phase THIS function files by
+    # test_every_phases_prose_is_a_substring_of_the_paragraph. The two rows
+    # `cmd_finish` adds keep the property for every gap sentence they file;
+    # the triage row's summary sentences and its never-reached sentence are
+    # the exemption, named in that test's docstring. What this adds
+    # is WHICH PHASE each sentence belongs to, and the status that sentence
+    # was written to explain -- taken from what the `_scan_*` functions
+    # RETURNED, never from looking for a string in a note.
+    #
+    # TWO SENTENCES GENUINELY BELONG TO TWO PHASES, and both are filed under
+    # both rather than under whichever one runs first:
+    #
+    #   DEP_SBOM_NOTE ("The SBOM lists the five lockfile formats ...") is
+    #     emitted by the DEPENDENCY producer -- Trivy appends it -- and every
+    #     word of it is about the SBOM. A reader asking "what is in the file I
+    #     just downloaded" looks under `sbom`; a reader asking why the
+    #     dependency phase read the formats it did looks under `dependencies`.
+    #     It also has to disappear from BOTH when the swaps above delete it,
+    #     which is why it is read back out of `dep_notes` here rather than
+    #     from the constant.
+    #
+    #   SBOM_UNFILTERED_NOTE is, in its own docstring's words, "about the gap
+    #     BETWEEN them": what the published SBOM lists against what the
+    #     dependency phase actually looked up. Filing it under one would make
+    #     the other half of the contradiction invisible from the row that
+    #     states it.
+    #
+    # BOTH SIT ON THE BOUNDARY, AND THAT IS WHAT MAKES DUAL FILING HONEST. The
+    # paragraph reads `dep_notes | DEP_SBOM_NOTE unfiltered | sbom_notes`, so
+    # the dependency row (`dep_notes` ending in DEP_SBOM_NOTE, then
+    # `unfiltered`) and the SBOM row (DEP_SBOM_NOTE, `unfiltered`, then
+    # `sbom_notes`) are each one contiguous run of it. Move either shared
+    # sentence off the boundary and one of the two rows stops being a
+    # substring of the paragraph it claims to be quoting.
+    #
+    # DEP_ID_NOTE -- Trivy and OSV.dev minting one record per database against
+    # one per hole -- is NOT one of those. Both producers it names are this
+    # one phase's, so it stays under `dependencies` alone.
+    phases = [
+        # `by` is None: the scope is this analysis's own configuration, not
+        # something a producer did, and `warning` is reserved for the case an
+        # operator can act on -- a switch they typed that this code did not
+        # recognise. The default filter is loud in the note and normal in the
+        # status, because it is what every unconfigured project gets.
+        coverage.phase(coverage.SCOPE,
+                       coverage.WARNING if unknown_switch else coverage.RAN,
+                       note=scope_notes),
+        coverage.phase(coverage.SECRETS, secret_status, secret_producer,
+                       secret_notes),
+        # Hygiene has no note of its own to carry: it is our own walk, it runs
+        # in every configuration, and there has never been a gap in it to
+        # declare. The row exists so the table's silence about it is a
+        # STATEMENT that it ran, not an omission a reader has to interpret.
+        coverage.phase(coverage.HYGIENE, coverage.RAN, PRODUCER_HYGIENE),
+        coverage.phase(coverage.DEPENDENCIES, dep_status, dep_producer,
+                       dep_notes + both),
+        # `by` follows the DOCUMENT, not the CVE producer above: Syft built
+        # it when the status is `ran`, this project's own inventory when it
+        # is `warning` (`deps.SBOM_FALLBACK_NOTE` beside it says so), and
+        # nobody when there is no document to download at all.
+        coverage.phase(coverage.SBOM, sbom_status,
+                       PRODUCER_SYFT if sbom_status == coverage.RAN
+                       else PRODUCER_INVENTORY if sbom_status == coverage.WARNING
+                       else "",
+                       shared_sbom + both + sbom_notes),
+        coverage.phase(coverage.IAC, iac_status, iac_producer, iac_notes),
+        coverage.phase(coverage.SAST_PREPASS, sast_status, sast_producer,
+                       sast_notes),
+    ]
 
     if sbom_document is not None:
         ledger.store_sbom(conn, project, repo, branch, aid, sbom_document)
@@ -946,7 +1312,13 @@ def cmd_prepare(args):
         ledger.record_finding(conn, aid, f)
     ledger.set_lines_of_code(conn, aid, tree_lines)
 
-    conn.execute("UPDATE analysis SET coverage_note=? WHERE id=?", (note, aid))
+    # BOTH HALVES IN ONE STATEMENT, for the reason `mark_prepared` writes its
+    # two columns in one: a row holding the paragraph without the table, or the
+    # table without the paragraph, would be an analysis whose two accounts of
+    # its own coverage disagree -- and the table is the one a reader believes,
+    # because it is the one they read first.
+    conn.execute("UPDATE analysis SET coverage_note=?, coverage=? WHERE id=?",
+                 (note, coverage.encode(phases), aid))
     conn.commit()
     # LAST, and not before the writes above: `prepared` is what lets `finish`
     # record `done`, and it must mean "the deterministic phases ran and their
@@ -1103,9 +1475,41 @@ def cmd_report_finding(args):
     # established survives the triage that improved the row around it.
     payload.pop("scope", None)
     for key in TEXT_KEYS:
-        value = payload.get(key)
-        if not isinstance(value, str):
+        if key not in payload:
+            # The three optional keys may be absent (`title` cannot be: it is
+            # in REQUIRED_FINDING_KEYS and already a string by now). An absent
+            # key is the agent saying nothing under it, and what the upsert's
+            # REPLACE semantics then do is the skill's Job 2 step 4's business;
+            # this loop is about a key PRESENT as something other than text.
             continue
+        value = payload[key]
+        if not isinstance(value, str):
+            # A text field that is not a string is not that field, and it is
+            # REFUSED here, by sentence. Three versions of this line, each
+            # paid for. A bare `continue` let `{"rationale": 5}` through to
+            # the ledger, where `_rationale_of` calls `.strip()` on it: an
+            # AttributeError the `except` around `record_finding` below does
+            # not name, so the agent got a Traceback where this door promises
+            # a sentence -- on every re-report onto an existing row, since the
+            # erasure check reaches that function on the marked rows too. The
+            # fix DROPPED the key instead, so that the ledger would see "no
+            # rationale" and its own refusal fire -- right for `rationale`,
+            # and for the other keys a silent erasure: `{"remediation": 5}`,
+            # `{"remediation": null}` and `{"partial_note": ["x"]}` exited 0
+            # with an empty stderr and the row stored with `''` in that
+            # column, the agent's remediation gone without a word (before the
+            # drop, an int had reached SQLite as an int and a list had raised
+            # inside `record_finding`, caught into a sentence below -- worse
+            # in one way, at least not silent). Refusing is the one answer
+            # right for all the keys on both kinds of row: nothing recorded,
+            # the field named, and the value never quoted -- a list carries a
+            # credential as easily as a string does -- only its kind.
+            kind = {type(None): "null", list: "a list", dict: "an object",
+                    bool: "a boolean"}.get(type(value), "a number")
+            sys.exit(f"report-finding: {key} must be a string — it arrived as "
+                     f"{kind}. A text field that is not text is not that field, "
+                     "and recording it as an empty one would erase what the row "
+                     "holds without saying so. Nothing was recorded")
         if len(value) > MAX_TEXT:
             sys.exit(f"report-finding: {key} is {len(value)} characters and the "
                      f"limit is {MAX_TEXT} — a finding is a paragraph the report "
@@ -1121,6 +1525,20 @@ def cmd_report_finding(args):
     if not isinstance(occurrences, list) or any(
             not isinstance(o, dict) for o in occurrences):
         sys.exit("report-finding: occurrences must be a list of objects")
+    # An object is not an occurrence until it names a file. `[{}]` used to pass
+    # the line above and the ledger's `not occurrences` alike, marking a
+    # scanner's row read and leaving it one location at `('', 0)` -- the
+    # phantom the report renders as nothing and the gate's note prints as
+    # "(no file recorded)". `ledger.names_a_file` is the ONE predicate, asked
+    # here of every occurrence and in `record_finding` of at least one, so the
+    # door and the reading test cannot drift. `line` is not looked at: 0 is
+    # what every whole-file scanner row carries.
+    if not all(ledger.names_a_file(o) for o in occurrences):
+        sys.exit("report-finding: every occurrence must name a file. An "
+                 "occurrence is the file (and line -- 0 for a whole file) the "
+                 "reader of the report opens; an object with no `file` is not "
+                 "one, and a row carrying only such objects has no location "
+                 "at all")
     # NEVER read from the payload -- `producer` is not an agent-writable
     # field, it is this door's own record of who arrived through it. An agent
     # able to send its own would be able to claim a deterministic producer for
@@ -1144,6 +1562,176 @@ def cmd_report_finding(args):
         # transaction, so a rejected line number rolls the whole thing back --
         # the agent has to be told, or it moves on believing it reported.
         sys.exit(f"report-finding: could not record it: {exc}")
+
+
+def _untriaged(conn, analysis_id, project) -> list:
+    """The scanner findings at or above TRIAGE_FLOOR that nobody ever read.
+
+    Worst first, then in the order they were recorded, because the note built
+    from this names only the first three and those three should be the three
+    that matter most.
+
+    ASKED OF THE PRODUCER, NEVER OF THE CATEGORY -- the same rule
+    `diff._proven` states at length for a different question, and for the same
+    reason: a category is not a thing that looks. `sast` holds both the
+    agent's own findings and Semgrep's pre-pass rows, so a category test would
+    simultaneously exempt Semgrep's output from being read and count the
+    agent's own findings as a debt it can never discharge.
+
+    An empty `producer` is excluded rather than counted. It means a row from
+    before that column existed, and "an unknown scanner produced this and
+    nobody read it" is an accusation this query has no evidence for; the
+    direction to fail in is the one that does not downgrade an honest `done`
+    over a row whose history the ledger never recorded.
+
+    A FINGERPRINT THE OPERATOR HAS ALREADY DECIDED ON IS EXCLUDED TOO, and it
+    is the strongest exclusion of the three. `triaged` records that an agent
+    re-reported the row; a `decision` records that a HUMAN read it, wrote down
+    why, signed it and made the answer permanent -- `diff.classify` lets that
+    decision override every state a finding could otherwise be in, precisely
+    because it outranks anything a run can conclude. A gate that then named the
+    same finding as unread would be telling the operator that their own call is
+    a debt, and would do it on every analysis for as long as the finding exists.
+    The canonical case is the one the skill itself describes: a credential in
+    git history, `secret`, high, re-found by every run for ever, whose only
+    closure is a human rotating it and accepting the risk. Nothing an agent can
+    do would ever clear that row.
+
+    Scoped by PROJECT, like the `decision` table itself (`ledger._SCHEMA`:
+    dismissing a false positive on `develop` and watching it resurrect on `main`
+    would make the feature unusable). A decision recorded against another
+    project is another operator's reading of another repository and exempts
+    nothing here.
+    """
+    placeholders = ",".join("?" * len(TRIAGE_BLOCKING))
+    rows = conn.execute(
+        "SELECT f.severity AS severity, f.rule AS rule,"
+        " (SELECT o.file FROM occurrence o WHERE o.finding_id=f.id"
+        "  ORDER BY o.id LIMIT 1) AS file"
+        " FROM finding f"
+        " WHERE f.analysis_id=? AND f.triaged=0 AND f.producer<>''"
+        f" AND f.producer<>? AND f.severity IN ({placeholders})"
+        " AND NOT EXISTS (SELECT 1 FROM decision d WHERE d.project=?"
+        "                 AND d.fingerprint=f.fingerprint)"
+        " ORDER BY f.id",
+        (analysis_id, diff.AGENT, *TRIAGE_BLOCKING, project)).fetchall()
+    # Sorted here rather than by a CASE expression built from TRIAGE_BLOCKING:
+    # the slice is a Python tuple and turning it into SQL means interpolating
+    # values into a statement, which is a habit this file does not keep even
+    # where the values are its own literals. `sorted` is stable, so findings of
+    # equal severity keep the `f.id` order the query already put them in.
+    return sorted(rows, key=lambda r: TRIAGE_BLOCKING.index(r["severity"]))
+
+
+def _triaged_count(conn, analysis_id) -> int:
+    """How many scanner findings the agent actually RE-REPORTED.
+
+    `_untriaged` answers the opposite question, and 0 from it has two
+    completely different meanings: the agent read everything that was
+    waiting, or nothing was waiting. Neither blocks a `done`, but the coverage
+    table has to say which, or "triage: ran" over an analysis that recorded
+    nothing reads as work that happened.
+
+    NO SEVERITY FLOOR HERE, unlike `_untriaged`. The floor is about what
+    BLOCKS a close; this is about what somebody did, and a finding the agent
+    read and then correctly lowered to `low` was still read. Counting it under
+    the floor would also make this number shrink as a result of the very
+    triage it is reporting -- the re-report rewrites the severity, so a
+    corrected `high` leaves the floored set the moment it is read.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM finding"
+        " WHERE analysis_id=? AND triaged=1 AND producer<>'' AND producer<>?",
+        (analysis_id, diff.AGENT)).fetchone()
+    return row["n"] if row else 0
+
+
+def _decided_count(conn, analysis_id, project) -> int:
+    """How many scanner findings at or above TRIAGE_FLOOR the gate did NOT
+    count because the operator had already decided on them.
+
+    THE INVERSE OF `_untriaged`'s FOURTH EXCLUSION, over the same rows: this
+    analysis's, minted by a scanner, unread by the agent, at the floor or
+    above -- and covered by a `decision` of this project where `_untriaged`
+    requires them not to be. It exists because the triage row's prose used to
+    describe those rows as absent. An analysis whose one `high` the operator
+    accepted, with no agent re-report, closes `done` -- correctly -- and its
+    triage row read "No deterministic finding at medium or above was waiting
+    to be triaged". One was. It was exempted by a human decision, not absent,
+    and a reader of the table could not tell the two apart.
+
+    `triaged=0` is kept deliberately: a decided row the agent ALSO re-reported
+    is counted by `_triaged_count` as read, and saying it "was not counted"
+    would be false.
+    """
+    placeholders = ",".join("?" * len(TRIAGE_BLOCKING))
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM finding f"
+        " WHERE f.analysis_id=? AND f.triaged=0 AND f.producer<>''"
+        f" AND f.producer<>? AND f.severity IN ({placeholders})"
+        " AND EXISTS (SELECT 1 FROM decision d WHERE d.project=?"
+        "             AND d.fingerprint=f.fingerprint)",
+        (analysis_id, diff.AGENT, *TRIAGE_BLOCKING, project)).fetchone()
+    return row["n"] if row else 0
+
+
+# The `triage` phase's own prose, for the two outcomes that are NOT a
+# downgrade. The third -- findings nobody read -- writes `untriaged_note`,
+# which is the sentence the report already prints and the one that names
+# names, so it is reused verbatim rather than paraphrased here.
+TRIAGE_NOTHING_NOTE = ("No deterministic finding at {floor} or above was "
+                       "waiting to be triaged, so this phase had nothing to "
+                       "verify.")
+TRIAGE_ALL_READ_NOTE = ("The agent re-reported {count} deterministic "
+                        "finding{s} and left none at {floor} or above unread.")
+
+# Said beside either of the above -- or INSTEAD of `TRIAGE_NOTHING_NOTE`, when
+# the only reason nothing was waiting is that a human had already ruled --
+# whenever `_decided_count` is non-zero. The gate is right not to count a
+# decided row (see `_untriaged`); the row is wrong to hide that it did.
+# Written into `coverage_note` too, so the triage row stays a substring of the
+# paragraph in the one case this sentence is the whole of its prose.
+TRIAGE_DECIDED_NOTE = ("{count} deterministic finding{s} at {floor} or above "
+                       "carried an operator decision and {were} not counted.")
+
+# Said when the close never reached the triage check at all -- the caller
+# closed `capped` or `failed`, so `done`'s precondition was never evaluated.
+# `skipped`, not `ran`: nothing looked, exactly as it means for every
+# deterministic phase above.
+TRIAGE_UNVERIFIED_NOTE = ("This analysis did not close `done`, so nothing "
+                          "checked whether the deterministic findings were "
+                          "ever read.")
+
+
+def _triage_phase(conn, analysis_id, untriaged, untriaged_note, decided_note):
+    """The `triage` row of the coverage table.
+
+    THE ONE PHASE THE AGENT PERFORMS ON THE SCANNERS' OUTPUT, and therefore
+    the one whose status is the answer to a question the deterministic half
+    cannot ask itself: the scanners are noisy on purpose (see `cmd_finish`),
+    and the noise is meant to be sorted by something that reads the
+    surrounding code. Until this row existed, an analysis's table would have
+    shown eight phases that ran and said nothing at all about the job the
+    whole design rests on.
+
+    `decided_note` is `TRIAGE_DECIDED_NOTE` formatted, or "" when no decided
+    row was exempted. It rides beside the count sentence in every case but
+    one: with nothing read and nothing waiting EXCEPT what a human ruled on,
+    it replaces `TRIAGE_NOTHING_NOTE`, because that sentence would be false.
+    """
+    if untriaged:
+        return coverage.phase(coverage.TRIAGE, coverage.WARNING, diff.AGENT,
+                              [untriaged_note, decided_note])
+    read = _triaged_count(conn, analysis_id)
+    if not read:
+        return coverage.phase(
+            coverage.TRIAGE, coverage.RAN, diff.AGENT,
+            decided_note or TRIAGE_NOTHING_NOTE.format(floor=TRIAGE_FLOOR))
+    return coverage.phase(
+        coverage.TRIAGE, coverage.RAN, diff.AGENT,
+        [TRIAGE_ALL_READ_NOTE.format(count=read, floor=TRIAGE_FLOOR,
+                                     s="s" if read != 1 else ""),
+         decided_note])
 
 
 def cmd_finish(args):
@@ -1191,6 +1779,45 @@ def cmd_finish(args):
               "close never upgrades a truncated or failed analysis to done",
               file=sys.stderr)
         state = row["state"]
+    # `done` ALSO REQUIRES THAT SOMEBODY READ WHAT THE SCANNERS PRODUCED.
+    #
+    # The design of this whole module rests on one argument: the deterministic
+    # phases are noisy on purpose, and the noise is not filtered by heuristics
+    # -- the agent reads the surrounding code and triages, which is Job 2 of
+    # skills/security-analysis/SKILL.md and is asked for over two pages of it.
+    # In analysis 9 and again in analysis 10 on Minerva the agent triaged ZERO
+    # of the ~40 deterministic findings waiting for it, spent the whole budget
+    # on its own SAST pass, and both runs closed `done` over a report that
+    # named 40 findings nobody had read. ASKING IS PRECISELY WHAT FAILED, so
+    # the close verifies it instead of the prompt requesting it again.
+    #
+    # Same shape as the `prepared` guard below, deliberately: a downgrade to
+    # `capped` with a note, never a refusal. A `capped` that says "40 findings
+    # were never read" is the honest result of skipping Job 2; an analysis left
+    # `running` for ever because its close was refused is worse than either.
+    #
+    # THE NOTE NAMES NAMES. A count alone is a scold the reader cannot act on;
+    # the rule and the file are what let somebody open the finding that was
+    # skipped. It quotes nothing else -- not the title, not the rationale --
+    # which is why this note is not run past `_refuse_if_secret` the way
+    # `--note` is: a rule name and a repository-relative path are minted by
+    # our own scanners and by Trivy/OSV, never by the agent's free text, and a
+    # refusal here would leave the row `running`, which is the one outcome
+    # this guard exists to avoid.
+    #
+    # THAT IS TRUE ONLY BECAUSE OF THREE RULES ELSEWHERE, and it stops being
+    # true if any of them is relaxed: `_untriaged` excludes rows the agent
+    # minted AND rows minted by nobody (`producer<>''`) -- its fourth
+    # exclusion, a fingerprint the operator has decided on, only ever removes
+    # rows and quotes nothing -- and `record_finding`
+    # REFUSES an agent write onto an unread scanner row rather than applying it
+    # (see its docstring), so a row this query returns has never had a byte of
+    # agent text written into its `rule` or its occurrences. All three are
+    # pinned by tests that name this paragraph.
+    untriaged_note = ""
+    unprepared_note = ""
+    decided_note = ""
+    triage_phase = None
     # `done` REQUIRES that the deterministic phases actually ran. Nothing
     # engine-side runs `prepare` -- it is the agent's first command, named in
     # the prompt and in the skill -- so an agent that simply skipped it exited
@@ -1205,7 +1832,17 @@ def cmd_finish(args):
     # the close-out can only ever lower a verdict: leaving the row `running`
     # for ever is a worse outcome than an honest "incomplete", and `capped` is
     # the state the report already prints an INCOMPLETE banner for.
-    unprepared_note = ""
+    #
+    # ASKED FIRST, BEFORE THE TRIAGE CHECK, WHICH IS THEN NEVER EVALUATED.
+    # The triage of what the scanners produced is a question about
+    # `prepare`'s output; with no `prepare`, `_untriaged` answers "nothing
+    # waiting" for want of rows, and the triage row used to be built from
+    # that answer -- a green `triage | ran` over a paragraph saying nothing
+    # ran, for exactly the analysis this guard was written after. So a
+    # never-prepared close sets the sentence here and files BOTH agent-side
+    # rows `skipped` under it below, in the one block that writes the
+    # never-prepared table, carrying the sentence the paragraph is about to
+    # carry for the same fact.
     if state == "done" and not row["prepared"]:
         state = "capped"
         unprepared_note = (
@@ -1217,6 +1854,39 @@ def cmd_finish(args):
               "it capped instead of done; a report with no deterministic "
               "phase behind it must not become the next analysis's baseline",
               file=sys.stderr)
+    elif state == "done":
+        skipped = _untriaged(conn, args.analysis, row["project"])
+        # The rows the gate rightly did not count because a human already
+        # ruled on them -- said out loud, because "nothing was waiting" and
+        # "what was waiting had been decided" are different facts and the
+        # triage row used to state the first in both cases.
+        decided = _decided_count(conn, args.analysis, row["project"])
+        if decided:
+            decided_note = TRIAGE_DECIDED_NOTE.format(
+                count=decided, s="s" if decided != 1 else "",
+                floor=TRIAGE_FLOOR, were="were" if decided != 1 else "was")
+        if skipped:
+            state = "capped"
+            named = "; ".join(f"{r['rule']} ({r['file'] or 'no file recorded'})"
+                              for r in skipped[:3])
+            plural = "s were" if len(skipped) != 1 else " was"
+            lead = ("The first three" if len(skipped) > 3
+                    else "They are" if len(skipped) > 1 else "It is")
+            untriaged_note = (
+                f"{len(skipped)} deterministic finding{plural} never triaged: "
+                f"the scanners reported them at {TRIAGE_FLOOR} or above and "
+                "nothing read them back, so this analysis says nothing about "
+                f"whether they are real. {lead}: {named}.")
+            print(f"finish: analysis {args.analysis} left {len(skipped)} "
+                  f"deterministic finding(s) at {TRIAGE_FLOOR} or above never "
+                  "triaged — closing it capped instead of done; triaging what "
+                  "the deterministic phases produced is the job, not a "
+                  "postscript to it", file=sys.stderr)
+        # Built from the SAME query results the downgrade was decided on, so
+        # the table and the verdict can never tell different stories about
+        # one close.
+        triage_phase = _triage_phase(conn, args.analysis, skipped,
+                                     untriaged_note, decided_note)
     # finish_analysis writes coverage_note unconditionally, and neither caller
     # of `finish` carries the note `prepare` printed: the agent never saw it,
     # and the engine's close-out knows only the run's status and cost. An
@@ -1229,18 +1899,92 @@ def cmd_finish(args):
     # equality guard keeps a row closed twice with the same sentence from
     # accumulating it twice.
     #
-    # A THIRD writer, from the guard above: the reason the verdict was lowered
-    # belongs in the report next to every other thing this analysis did not do.
+    # A THIRD, FOURTH AND FIFTH writer, from the two guards above: the reason
+    # the verdict was lowered belongs in the report next to every other thing
+    # this analysis did not do, and so does the count of rows a human decision
+    # exempted from the gate -- the one sentence of the triage row's prose that
+    # has to be in the paragraph for the row to be quoting it.
     stored = row["coverage_note"] or ""
     note = ""
-    for part in (stored, args.note or "", unprepared_note):
+    for part in (stored, args.note or "", unprepared_note, untriaged_note,
+                 decided_note):
         part = part.strip()
         # `not in`, not `!=`: a row is closed twice (the agent, then the
         # engine) and each close re-reads the note it already wrote. Without
         # the containment check the note grows a copy of itself every time.
         if part and part not in note:
             note = f"{note} {part}".strip()
-    ledger.finish_analysis(conn, args.analysis, state, _spend(args.spend), note)
+    # THE STRUCTURED HALF OF THE SAME APPEND. `prepare` wrote seven phases;
+    # this close adds the eighth and the ninth -- the agent's own SAST pass and
+    # the triage of what the scanners produced, the two nothing deterministic
+    # can report on itself. `coverage.merge` REPLACES a row of the same name
+    # rather than appending one, which is the structured twin of the `part not
+    # in note` guard above and exists for the identical reason: this function
+    # runs twice on one analysis.
+    #
+    # THE SAST ROW FOLLOWS THE VERDICT, because the verdict is the only
+    # evidence there is about the agent's own pass: `ran` on `done`, `warning`
+    # on anything less -- the run was cut off (`capped`) or broke (`failed`),
+    # and the pass that was underway is at best part of what this row means --
+    # and `skipped` when `prepare` never ran, on the same reasoning as the
+    # triage row above: an agent that never ran its first command is not an
+    # agent whose pass this table can vouch for. Its prose is whatever
+    # `--note` the close brings -- the agent's, or the engine's when it closes
+    # a run the agent left (`--if-running` after a run that never closed its
+    # own row, or the stale sweep), so the sentence under `by=agent` can be
+    # the engine's account of the agent's run -- the one sentence about its
+    # coverage this close already carries into the paragraph; a close that
+    # brings none keeps the sentence a previous close stored, so the engine's
+    # second, note-less close does not blank what the agent said.
+    #
+    # THIS IS THE ONE ROW THE ENGINE'S SECOND CLOSE IS ALLOWED TO LOWER. The
+    # triage row is protected from it (below): the triage check is a fact
+    # about the ledger, and a `capped` from the engine says nothing about
+    # whether the findings were read. The agent's SAST pass is the opposite
+    # case -- a `capped` from the engine is precisely the statement that the
+    # run making the claim was cut short, so `ran` there would be the table
+    # trusting the one fact this docstring says nothing can verify.
+    #
+    # A close that never reached the triage check leaves whatever `prepare`
+    # stored alone and files that phase as `skipped` -- never as `ran`. The one
+    # thing this must not do is let the engine's second close, which closes
+    # `capped` and skips the check, overwrite a `ran` the agent's own close
+    # had earned; `merge` on a triage row that is not built is simply not
+    # called.
+    phases = coverage.phases_of(row)
+    prior_sast = next((p.get("note") or "" for p in phases
+                       if p.get("name") == coverage.SAST_AGENT), "")
+    no_triage_row = not any(p.get("name") == coverage.TRIAGE for p in phases)
+    if not row["prepared"]:
+        # THE NEVER-PREPARED TABLE, IN ONE PLACE: both agent-side rows
+        # `skipped`, and no writer of prose beyond the guard's own sentence.
+        # That sentence is the rows' when this is the close that fired the
+        # guard (`unprepared_note` set: a `done` lowered to `capped`, which
+        # files the triage row the way a `done` on a prepared analysis always
+        # does -- from what it just established). Otherwise the rows carry
+        # what is already there: the SAST row keeps the note a previous close
+        # stored, and the triage row is filed under `TRIAGE_UNVERIFIED_NOTE`
+        # only when no close has filed one yet -- so the engine's direct
+        # `capped` after the agent's `done` keeps the rows and the sentence
+        # that close wrote.
+        sast_phase = coverage.phase(coverage.SAST_AGENT, coverage.SKIPPED,
+                                    note=unprepared_note or prior_sast)
+        if unprepared_note or no_triage_row:
+            triage_phase = coverage.phase(
+                coverage.TRIAGE, coverage.SKIPPED,
+                note=unprepared_note or TRIAGE_UNVERIFIED_NOTE)
+    else:
+        sast_phase = coverage.phase(
+            coverage.SAST_AGENT,
+            coverage.RAN if state == "done" else coverage.WARNING,
+            diff.AGENT, (args.note or "").strip() or prior_sast)
+        if triage_phase is None and no_triage_row:
+            triage_phase = coverage.phase(coverage.TRIAGE, coverage.SKIPPED,
+                                          note=TRIAGE_UNVERIFIED_NOTE)
+    phases = coverage.merge(
+        phases, [sast_phase] + ([triage_phase] if triage_phase else []))
+    ledger.finish_analysis(conn, args.analysis, state, _spend(args.spend), note,
+                           coverage.encode(phases))
     # `row`'s own project and branch, never a flag the caller passed: `finish`
     # has two callers and neither one necessarily agrees with the row about
     # what it is closing, so the event has to come from the row itself.
@@ -1438,17 +2182,18 @@ def cmd_migrate_rules(args):
     entry naming a category `rename_rule` refuses is caught before the first
     row moves rather than after the entries above it have already committed.
 
-    Refused, for the same all-or-nothing reason, on a machine where
-    `adapters.engine_path("gitleaks")` is falsy while the map holds a `secret`
-    entry -- the binary absent, or the engines switched off with
-    `CC_SECURITY_ENGINES`. Every secret rename moves findings from the built-in
-    pattern scanner's snake_case names to gitleaks' kebab-case ones, and
-    `_scan_secrets` runs the built-in scanner on exactly the machines this
-    check catches. Migrating there does not merely fail to help: the next
-    analysis re-mints every old name, so each secret is reported `fixed` (the
-    migrated row, under a name nothing produced) AND `new` (the re-minted one)
-    in one report, and both human decisions strand -- which is the precise
-    failure this verb exists to prevent, reached through its own front door.
+    NOT REFUSED FOR WANT OF GITLEAKS, ANY MORE. This verb used to exit on a
+    machine where `adapters.engine_path("gitleaks")` was falsy, because the
+    built-in scanner then minted its own snake_case names on the very next
+    analysis and undid the migration -- every secret `fixed` AND `new` in one
+    report. Both paths of `_scan_secrets` now mint the engine's names
+    (`_SECRET_RENAMES` at mint, with or without the engine), so the migration
+    holds on any machine -- and the ledger it exists to fix is exactly the one
+    a machine WITHOUT gitleaks wrote before this branch. Refusing there left
+    that operator with the flip and no remedy: reproduced on a scratch ledger,
+    a pre-branch `aws_access_key` row with an `accepted` decision read `fixed`
+    beside a `new aws-access-token` carrying no decision, and the close went
+    `capped` for a row a human had already ruled on.
 
     THE REST IS NOT. `rename_rule` wraps each entry in its own transaction, and
     the two failures it can only discover while walking -- a finding with no
@@ -1491,19 +2236,6 @@ def cmd_migrate_rules(args):
                      "rebuilt from what the ledger stores, which is "
                      + ", ".join(ledger.RENAMEABLE_CATEGORIES)
                      + " (see ledger.rename_rule). Nothing was migrated.")
-    # Asked before the ledger is opened, like the category check above and for
-    # the same reason: it needs nothing from the ledger, so it refuses before
-    # the first row moves rather than halfway down the map.
-    if any(category == "secret" for category, _old in taxonomy.RULE_RENAMES) \
-            and not adapters.engine_path("gitleaks"):
-        sys.exit("migrate-rules: gitleaks is not available here — the secret "
-                 "renames move findings onto ITS rule names, and without it "
-                 "the next analysis falls back to the built-in scanner and "
-                 "mints the old names again. Every migrated secret would then "
-                 "be reported fixed AND new in the same report, with both "
-                 "human decisions stranded. Install gitleaks (and leave "
-                 "CC_SECURITY_ENGINES on) before migrating; nothing was "
-                 "migrated.")
     conn = _conn(args)
     live = conn.execute(
         "SELECT id, project FROM analysis WHERE state='running' "
@@ -1540,10 +2272,24 @@ def cmd_migrate_rules(args):
 
 
 def cmd_list(args):
+    """Every analysis of one project -- the Runs table's own feed.
+
+    `coverage` is the ONE column dropped on the way out, and the reason is
+    that this endpoint is polled every four seconds while a run is live and
+    answers with up to a hundred rows. The structured coverage is the same
+    ~2,000 characters `coverage_note` already carries, split by phase, so
+    shipping both would double a payload the Runs table has no use for either
+    half of. The analysis screen reads it from `checklist`, which answers for
+    ONE analysis -- the one actually on screen.
+
+    `coverage_note` itself stays: `bin/claude-cron`'s selftest and
+    `test/e2e.test.sh` both read it from this verb.
+    """
     rows = _conn(args).execute(
         "SELECT * FROM analysis WHERE project=? ORDER BY id DESC LIMIT 100",
         (args.project,)).fetchall()
-    print(json.dumps([dict(r) for r in rows], indent=2))
+    print(json.dumps([{k: v for k, v in dict(r).items() if k != "coverage"}
+                      for r in rows], indent=2))
 
 
 def cmd_analysis(args):
@@ -2186,14 +2932,15 @@ def main(argv=None):
     # guessable from the name.
     mgr = sub.add_parser(
         "migrate-rules", parents=[dbflag],
-        description="Apply taxonomy.RULE_RENAMES to the ledger. Takes no "
-                    "arguments and is safe to run twice. Requires gitleaks to "
-                    "be installed and CC_SECURITY_ENGINES on: the secret "
-                    "renames move findings onto gitleaks' rule names, and a "
-                    "machine that falls back to the built-in scanner mints "
-                    "the old names again on the next analysis, reporting "
-                    "every migrated secret as fixed AND new at once. Also "
-                    "refused while any analysis is running.")
+        description="Apply taxonomy.RULE_RENAMES to the ledger: move every "
+                    "finding recorded under a rule's old name -- and every "
+                    "human decision taken on it -- onto the name the scanners "
+                    "mint today (for secrets, gitleaks' rule names, which both "
+                    "scanners now mint whether or not gitleaks is installed). "
+                    "Run it once on a ledger written before that change, on "
+                    "any machine: it needs no engine, takes no arguments and "
+                    "is safe to run twice. Refused only while an analysis is "
+                    "running.")
     mgr.set_defaults(fn=cmd_migrate_rules)
 
     mv = sub.add_parser("rename-project", parents=[dbflag]); mv.set_defaults(fn=cmd_rename_project)

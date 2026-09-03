@@ -1,6 +1,9 @@
 # tests/security/test_report.py
 import json
-from security import report
+
+import pytest
+
+from security import coverage, report
 
 AWS = "AKIA" + "IOSFODNN7EXAMPLE"
 
@@ -308,3 +311,217 @@ def test_html_escapes_the_scope_field():
     html_out = report.as_html(ANALYSIS, [{**DEP, "scope": "<img src=x>"}], "")
     assert "<img src=x>" not in html_out
     assert "&lt;img src=x&gt;" in html_out
+
+
+# ---------------------------------------------- the structured coverage note
+#
+# `coverage_note` is ~2,000 characters of prose on a real analysis, built by
+# concatenating 27 `*_NOTE` constants across six modules (cmd_prepare). Every
+# sentence is true; the block is unreadable. The `coverage` column carries the
+# SAME sentences attributed to the phase that produced them, and every
+# renderer prints that table BEFORE the prose. These tests pin the two halves
+# that make it worth having: the table cannot slide below the paragraph, and
+# an analysis that has no table renders exactly as it did before the column
+# existed.
+
+PHASES = coverage.encode([
+    coverage.phase(coverage.SCOPE, coverage.RAN, note="fixtures were skipped"),
+    coverage.phase(coverage.SECRETS, coverage.RAN, "gitleaks"),
+    coverage.phase(coverage.DEPENDENCIES, coverage.WARNING, "osv",
+                   "OSV.dev reads five lockfile formats"),
+    coverage.phase(coverage.IAC, coverage.SKIPPED,
+                   note="trivy is not available to this analysis"),
+])
+WITH_PHASES = dict(ANALYSIS, coverage=PHASES)
+
+
+def test_the_json_report_always_carries_the_phases_key():
+    """`coverage.phases` is ALWAYS a key, the same rule a finding's `scope`
+    follows: the two formats a human reads print nothing when there is nothing
+    to print, so they cannot be parsed for an absence. A consumer has to be
+    able to tell "this analysis predates the column" (an empty list) from
+    "this is an older report format" (no key) without special-casing either.
+    And `coverage.notes` is what this key used to BE -- the prose, unchanged,
+    beside the structure rather than replaced by it."""
+    doc = json.loads(report.as_json(WITH_PHASES, FINDINGS, "OSV was not reached"))
+    names = [p["name"] for p in doc["coverage"]["phases"]]
+    assert names == ["scope", "secrets", "dependencies", "iac"]
+    assert doc["coverage"]["phases"][3]["status"] == "skipped"
+    assert doc["coverage"]["phases"][3]["by"] is None
+    assert "OSV was not reached" in doc["coverage"]["notes"]
+
+    old = json.loads(report.as_json(ANALYSIS, FINDINGS, ""))
+    assert old["coverage"]["phases"] == []
+
+
+def test_markdown_opens_with_the_phase_table_before_the_prose():
+    """THE ORDER IS THE FEATURE. The paragraph below is every gap this
+    analysis has, sentence by sentence, and it is what made a real report
+    unreadable; the table is what a reader can answer "who looked?" from in
+    one glance. A table printed after the prose is a table nobody reaches."""
+    md = report.as_markdown(WITH_PHASES, FINDINGS, "OSV was not reached")
+    table = md.index("| Phase | Status | By |")
+    assert table < md.index("OSV was not reached"), \
+        "the phase table must come BEFORE the coverage prose, not after it"
+    assert table < md.index("## Checklist")
+    assert "| secrets | ran | gitleaks |" in md
+    assert "| iac | skipped | — |" in md
+
+
+def test_the_phase_table_keeps_the_order_the_ledger_stored():
+    """One row per phase, in the stored order, and every phase present.
+    `coverage.encode` is the single place that orders them (scope first
+    because it qualifies everything below it, triage last because it is the
+    only one `finish` writes), so a renderer that sorted for itself would be
+    a second opinion that could differ from the JSON's."""
+    md = report.as_markdown(WITH_PHASES, FINDINGS, "")
+    rows = [line for line in md.splitlines()
+            if line.startswith("| ") and not line.startswith("| --- ")]
+    assert [r.split(" | ")[0].removeprefix("| ") for r in rows] == \
+        ["Phase", "scope", "secrets", "dependencies", "iac"]
+
+
+def test_a_skipped_phase_is_named_even_with_no_prose_of_its_own():
+    """A phase whose sentence somebody deleted is still a phase that did not
+    run, and the row is what says so. This is the whole reason the status
+    comes off the scanner's own return value and not off the presence of a
+    note: the two can disagree, and when they do the fact is the status.
+
+    THE HTML ASSERTION IS ON A CELL. It used to be `"skipped" in html`, which
+    passed on a page with no such row: the word was in the stylesheet, as the
+    class `.cov .skipped`. The class is now spelled differently from the
+    status (`_STATUS_CLASS`), and what is asserted is the rendered `<td>`."""
+    silent = dict(ANALYSIS, coverage=coverage.encode(
+        [coverage.phase(coverage.IAC, coverage.SKIPPED)]))
+    md = report.as_markdown(silent, FINDINGS, "")
+    assert "| iac | skipped | — |" in md
+    html = report.as_html(silent, FINDINGS, "")
+    assert '<td class="cov-gap">skipped</td>' in html
+    # And the word appears ONLY in that cell: strip the cell and it is gone.
+    assert "skipped" not in html.replace('<td class="cov-gap">skipped</td>', "")
+
+
+def test_no_status_class_spells_the_status_it_colours():
+    """The rule that keeps the assertion above honest for good: a test that
+    finds a status word in the HTML has found it in a cell, never in a class
+    name. Every status has a class, and a status this table does not know
+    renders as a bare word with no class at all -- nothing for a hostile value
+    to ride into an attribute on."""
+    assert set(report._STATUS_CLASS) == set(coverage.STATUSES)
+    for status, cls in report._STATUS_CLASS.items():
+        assert status not in cls, (status, cls)
+    odd = dict(ANALYSIS, coverage=json.dumps({"phases": [
+        {"name": "iac", "status": "quantum", "by": None, "note": ""}]}))
+    assert "<td>quantum</td>" in report.as_html(odd, FINDINGS, "")
+
+
+def test_html_opens_with_the_phase_table_before_the_prose():
+    """The HTML twin of the Markdown test above, and it was missing: the table
+    could be moved below the paragraph with every test still green. Pinned on
+    the TAGS' positions -- the table's opening tag before the first prose
+    element's -- not on a word that could appear in either."""
+    html = report.as_html(WITH_PHASES, FINDINGS, "OSV was not reached")
+    table = html.index('<table class="cov">')
+    assert table < html.index('<p class="note">'), \
+        "the phase table must come BEFORE the coverage prose, not after it"
+    assert table < html.index("<h2>Checklist</h2>")
+    assert '<td class="cov-ok">ran</td>' in html
+    assert '<td class="cov-warn">warning</td>' in html
+
+
+def test_the_agents_own_sast_pass_has_a_row_between_the_pre_pass_and_the_triage():
+    """Nine rows, not eight. The Semgrep pre-pass is an ADDITION to the
+    agent's own SAST pass (see `cli._scan_sast`), so a table with a row for
+    the pre-pass and none for the pass said nothing about the primary source
+    of the `sast` category. The row is named for that category, and it sits
+    where the pass happens: after everything `prepare` filed, before the
+    triage that closes the analysis."""
+    order = coverage.PHASE_ORDER
+    assert len(order) == 9
+    assert coverage.SAST_AGENT == "sast"
+    assert order.index(coverage.SAST_AGENT) == order.index(coverage.SAST_PREPASS) + 1
+    assert order[-1] == coverage.TRIAGE
+
+
+def test_an_analysis_with_no_structured_coverage_renders_exactly_as_before():
+    """EVERY analysis written before the `coverage` column carries '' in it,
+    and three reports plus three screens have always read the prose alone.
+    Nothing about them may change: no empty table, no header for a section
+    with no rows, no placeholder."""
+    for text in (report.as_markdown(ANALYSIS, FINDINGS, "OSV was not reached"),
+                 report.as_html(ANALYSIS, FINDINGS, "OSV was not reached")):
+        assert "Coverage" not in text
+        assert "Phase" not in text
+        assert "OSV was not reached" in text
+
+
+def test_a_coverage_document_this_module_cannot_read_never_breaks_a_download():
+    """A report is not the place to discover that a column got corrupted, and
+    the prose beside it is still true. Anything unreadable renders as an
+    analysis with no structure at all -- never a traceback inside a download,
+    never a half-drawn table."""
+    for broken in ("not json at all", "[]", '{"phases": "secrets"}', "null"):
+        analysis = dict(ANALYSIS, coverage=broken)
+        assert "| Phase |" not in report.as_markdown(analysis, FINDINGS, "")
+        doc = json.loads(report.as_json(analysis, FINDINGS, ""))
+        assert doc["coverage"]["phases"] == []
+
+
+def test_html_escapes_a_phase_row():
+    """The status is the row's CSS class as well as its text, and both come
+    off a database column. A class attribute is exactly as much of a sink as
+    the text beside it."""
+    hostile = dict(ANALYSIS, coverage=json.dumps({"phases": [
+        {"name": "<img src=x>", "status": '"><script>alert(1)</script>',
+         "by": "<b>", "note": ""}]}))
+    out = report.as_html(hostile, FINDINGS, "")
+    assert "<img src=x>" not in out
+    assert "<script>alert(1)</script>" not in out
+    assert "&lt;img src=x&gt;" in out
+
+
+def test_a_phase_name_carrying_a_pipe_cannot_eat_the_markdown_row():
+    """These values come from a closed vocabulary this project writes, but
+    they are read back out of a column -- and a stray pipe would silently
+    swallow the rest of the row rather than showing up as the odd value it
+    is."""
+    piped = dict(ANALYSIS, coverage=json.dumps({"phases": [
+        {"name": "a | b", "status": "ran", "by": None, "note": ""}]}))
+    md = report.as_markdown(piped, FINDINGS, "")
+    assert "| a \\| b | ran | — |" in md
+
+
+def test_the_phase_builder_refuses_a_name_or_status_it_does_not_know():
+    """A typo'd phase would sort to the end of the table and read as a phase
+    this project does not have; a typo'd status would render as a word with no
+    colour and no meaning. Both are refused where they are written, which is
+    the only place the mistake is still cheap."""
+    with pytest.raises(ValueError):
+        coverage.phase("secrests", coverage.RAN)
+    with pytest.raises(ValueError):
+        coverage.phase(coverage.SECRETS, "ok")
+
+
+def test_encode_orders_the_phases_and_keeps_an_unknown_one():
+    """Ordered ONCE, here, so no renderer has to sort and none of them can
+    sort differently. A name this module has not been taught goes to the end
+    rather than being dropped -- the same rule `_unknown_states` follows for a
+    state outside the contract."""
+    doc = json.loads(coverage.encode([
+        coverage.phase(coverage.TRIAGE, coverage.RAN, "agent"),
+        {"name": "quantum", "status": "ran", "by": None, "note": ""},
+        coverage.phase(coverage.SCOPE, coverage.RAN),
+    ]))
+    assert [p["name"] for p in doc["phases"]] == ["scope", "triage", "quantum"]
+
+
+def test_merge_replaces_a_phase_rather_than_appending_a_second_one():
+    """`finish` runs TWICE on one analysis -- the agent closes it, then the
+    engine closes the same row again with the run's own verdict. A triage
+    phase appended each time would give the table two contradicting triage
+    lines by the second close, which is the structured version of the bug the
+    prose's own `part not in note` guard exists to stop."""
+    first = [coverage.phase(coverage.TRIAGE, coverage.WARNING, "agent", "12 unread")]
+    again = coverage.merge(first, [coverage.phase(coverage.TRIAGE, coverage.RAN,
+                                                  "agent", "all read")])
+    assert len(again) == 1 and again[0]["note"] == "all read"

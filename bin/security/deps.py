@@ -19,7 +19,11 @@ from urllib.parse import quote
 # where an analysis looks). Three identical sets do not disagree until somebody
 # edits one; editing the public one used to leave this phase and the hygiene
 # pass silently walking a different tree from every engine.
-from .secrets import SKIP_DIRS as _SKIP_DIRS
+#
+# The MATCHER is shared for the same reason, and it is the newer half of the
+# lesson: three identical `any(part in SKIP_DIRS ...)` loops could only match
+# a bare component, so the set's own contents were narrowed to fit them.
+from .secrets import skipped as _skipped
 _PURL = {"npm": "npm", "PyPI": "pypi", "Packagist": "composer",
          "Go": "golang", "RubyGems": "gem"}
 
@@ -280,7 +284,7 @@ def inventory(root):
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-        if any(part in _SKIP_DIRS for part in path.relative_to(root).parts):
+        if _skipped(path.relative_to(root)):
             continue
         reader = _READERS.get(path.name)
         if not reader:

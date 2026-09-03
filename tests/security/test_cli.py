@@ -444,7 +444,13 @@ def test_finishing_does_not_erase_the_coverage_note(tmp_path):
     run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "0")
     rendered = json.loads(run_text(db, "render", "--analysis", str(aid),
                                    "--format", "json"))
-    assert note in rendered["coverage"]
+    # `coverage.notes` is what the JSON report's `coverage` key used to BE, in
+    # the same order -- the structured `coverage.phases` was added BESIDE the
+    # prose, and this assertion is here to catch the day somebody decides the
+    # table has made the paragraph redundant. It has not: the paragraph is
+    # what every analysis written before the `coverage` column carries, and it
+    # is where the reasons live.
+    assert note in rendered["coverage"]["notes"]
 
 
 def run_text(db, *args):
@@ -638,10 +644,12 @@ def test_a_decision_wins_over_the_derived_state(tmp_path):
 
 def test_findings_lists_what_the_deterministic_phase_left_for_the_agent(tmp_path):
     """PINNED to the built-in scanner, because the fixture is one only it
-    reports: a PEM header with `xx` where the key material goes. Gitleaks is
-    right to ignore that -- its private-key rule wants a body -- so under the
-    engine `found` came back empty, `any(...)` failed and, worse,
-    `all("occurrences" in f ...)` passed vacuously over the empty list.
+    reports: a PEM header and one body line, with no footer. Gitleaks is
+    right to ignore that -- its private-key rule wants the footer too -- so
+    under the engine `found` came back empty, `any(...)` failed and, worse,
+    `all("occurrences" in f ...)` passed vacuously over the empty list. (The
+    body line is there because the built-in scanner wants one as well now:
+    a header alone is not a key, see `secrets._pem_body_follows`.)
 
     The `any(...)` is what stops the `all(...)` after it being vacuous here
     too, so the two lines are a pair and neither may be dropped. The engine's
@@ -650,7 +658,7 @@ def test_findings_lists_what_the_deterministic_phase_left_for_the_agent(tmp_path
     env = {**os.environ, "CC_SECURITY_ENGINES": "off"}
     root = tmp_path / "repo"
     root.mkdir()
-    (root / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----\nxx\n")
+    (root / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7Yb3ZpQk9wVt2LmN4RsX8HcJ1FgD6KaE0uWq5TzP3nBvC2rM\n")
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline",
@@ -845,7 +853,7 @@ def test_a_closed_analysis_refuses_a_second_prepare(tmp_path):
     db = tmp_path / "security.db"
     root = tmp_path / "repo"
     root.mkdir()
-    (root / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----\nxx\n")
+    (root / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7Yb3ZpQk9wVt2LmN4RsX8HcJ1FgD6KaE0uWq5TzP3nBvC2rM\n")
     aid = open_analysis(db)
     run(db, "finish", "--analysis", str(aid), "--state", "failed")
     out = fails(db, "prepare", "--analysis", str(aid), "--root", str(root),
@@ -1319,12 +1327,13 @@ def test_ignore_paths_reach_the_tree_the_history_and_the_hygiene_pass(tmp_path):
     promise about the HISTORY sweep and the HYGIENE pass: the bare `== []`
     covers every phase, and the `committed_key_file` in the positive control
     is the proof that the hygiene pass really had something to suppress. Those
-    two phases are the same code on both paths; the rule names are not.
+    two phases are the same code on both paths, and -- since both paths mint
+    one vocabulary for `secret` -- so are the rule names below.
     """
     env = {**os.environ, "CC_SECURITY_ENGINES": "off"}
     root = git_repo(tmp_path / "repo", [
         ("fixtures", {"tests/planted/fake.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
-                      "tests/planted/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nx\n"}),
+                      "tests/planted/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7Yb3ZpQk9wVt2LmN4RsX8HcJ1FgD6KaE0uWq5TzP3nBvC2rM\n"}),
         ("delete the env", {"tests/planted/fake.env": None}),
     ])
     db = tmp_path / "security.db"
@@ -1334,7 +1343,7 @@ def test_ignore_paths_reach_the_tree_the_history_and_the_hygiene_pass(tmp_path):
         env=env)
     rules = {f["rule"] for f in run(db, "findings", "--analysis", str(noisy),
                                     env=env)}
-    assert {"aws_access_key", "private_key", "committed_key_file"} <= rules, (
+    assert {"aws-access-token", "private-key", "committed_key_file"} <= rules, (
         f"the fixture must be noisy without the globs: {sorted(rules)}")
     run(db, "finish", "--analysis", str(noisy), "--state", "done", env=env)
 
@@ -1447,9 +1456,10 @@ def test_the_default_noise_filter_reaches_every_deterministic_phase(tmp_path):
     is the same tree with the default switched off: `== []` on its own passes
     identically on an analysis that scanned nothing at all.
 
-    PINNED to the built-in scanner rather than left to the machine, because
-    the rule names below are the built-in scanner's. The ENGINE's half of
-    the same default is
+    PINNED to the built-in scanner rather than left to the machine, so that
+    the fallback path is the one under test -- both paths mint one vocabulary
+    for `secret`, so the names below read the same either way. The ENGINE's
+    half of the same default is
     `test_adapters.test_the_default_narrows_the_real_engine_with_nothing_
     configured`, which drives the real gitleaks binary -- a default only one
     of the two honoured is the per-machine divergence this whole block keeps
@@ -1458,7 +1468,7 @@ def test_the_default_noise_filter_reaches_every_deterministic_phase(tmp_path):
     root = git_repo(tmp_path / "repo", [
         ("fixtures", {
             "tests/fixtures/fake.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
-            "tests/fixtures/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nx\n",
+            "tests/fixtures/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7Yb3ZpQk9wVt2LmN4RsX8HcJ1FgD6KaE0uWq5TzP3nBvC2rM\n",
             ".env.example": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
         ("delete the env", {"tests/fixtures/fake.env": None}),
     ])
@@ -1468,7 +1478,7 @@ def test_the_default_noise_filter_reaches_every_deterministic_phase(tmp_path):
     run(db, "prepare", "--analysis", str(loud), "--root", str(root), "--offline",
         "--ignore", "!defaults", env=env)
     rules = {f["rule"] for f in run(db, "findings", "--analysis", str(loud), env=env)}
-    assert {"aws_access_key", "private_key", "committed_key_file"} <= rules, (
+    assert {"aws-access-token", "private-key", "committed_key_file"} <= rules, (
         f"the tree must be noisy with the default switched off: {sorted(rules)}")
     run(db, "finish", "--analysis", str(loud), "--state", "done", env=env)
 
@@ -2080,6 +2090,1165 @@ def test_the_prepared_column_is_added_to_a_database_that_predates_it(tmp_path):
     rows = run(db, "list", "--project", "web")
     assert len(rows) == 1
     assert rows[0]["prepared"] == 0, "a row from before the column is unprepared"
+
+
+# ------------------------------- an analysis that never read what it produced
+#
+# The design of this module rests on ONE argument: the deterministic phases are
+# noisy on purpose and the noise is not filtered by heuristics -- the agent
+# reads the surrounding code and triages. That is Job 2 of the skill, asked for
+# in two pages of it. In analysis 9 and again in analysis 10 on Minerva the
+# agent triaged ZERO of the ~40 deterministic findings waiting for it, spent
+# the whole budget on its own SAST pass, and both runs closed `done` with a
+# clean-looking report. Asking is what failed, so the close verifies instead.
+
+def _scanner_finding(db, aid, *, rule, severity, category="dependency",
+                     producer="trivy", file="yarn.lock"):
+    """A finding as `prepare` writes one: minted by a SCANNER, not the agent.
+
+    Written through `ledger.record_finding` -- the same function `prepare`
+    itself calls, with the same `producer` stamp `_produced_by` applies --
+    rather than by planting files and running the real phase, because these
+    tests are about what the CLOSE does with a scanner's finding and not about
+    what any one scanner finds. A fixture built on planted files would also
+    prove the gate in only one of the two scanner configurations this suite
+    runs in. `test_finishing_done_with_an_untriaged_scanner_finding...` below
+    is the end-to-end counterpart, on a real hygiene finding.
+    """
+    conn = security_ledger.connect(db)
+    fp = compute_fingerprint(category, rule, file, rule)
+    security_ledger.record_finding(conn, aid, {
+        "fingerprint": fp, "category": category, "rule": rule,
+        "severity": severity, "title": f"{rule} in {file}",
+        "rationale": "the scanner's own reading", "producer": producer,
+        "occurrences": [{"file": file, "line": 0, "snippet_hash": ""}]})
+    conn.close()
+    return fp
+
+
+def _triage(db, aid, fp, *, rule, category="dependency", severity="low",
+            file="yarn.lock",
+            rationale="read the call site: it is not reachable from a request"):
+    """What Job 2 looks like from the ledger's side: the agent re-reporting a
+    deterministic finding under its own severity, rationale and occurrences.
+
+    THE OCCURRENCES ARE NOT DECORATION HERE. `ledger.record_finding` refuses a
+    re-report that carries no rationale of its own, echoes the producer's back
+    verbatim, or names no location -- the three shapes a rubber stamp takes --
+    so a helper that omitted them would be modelling the payload the gate is
+    built to reject and calling it triage.
+    """
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": fp, "category": category, "rule": rule,
+        "severity": severity, "title": f"{rule}, read in context",
+        "rationale": rationale,
+        "occurrences": [{"file": file, "line": 0, "snippet_hash": ""}]}),
+        env=AS_AGENT)
+
+
+def test_finishing_done_with_an_untriaged_scanner_finding_is_downgraded_to_capped(tmp_path):
+    """End to end, on a finding a real deterministic phase produced.
+
+    `capped` rather than a refusal, for the same reason the `prepare` guard
+    downgrades rather than refusing: an analysis stuck `running` for ever is
+    worse than an honest incomplete, and `capped` is the state the report
+    already prints its INCOMPLETE banner for."""
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / ".env").write_text("DATABASE_URL=postgres://localhost/app\n")
+    aid = open_analysis(db)
+    prepared = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+                   "--offline")
+    assert prepared["findings"] >= 1
+
+    out = fails(db, "finish", "--analysis", str(aid), "--state", "done")
+    assert out.returncode == 0, out.stderr
+    assert "never triaged" in out.stderr
+
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "capped"
+    note = row["coverage_note"]
+    assert "never triaged" in note
+    assert "committed_env_file" in note, note
+    assert ".env" in note, "the note names the file, or the reader cannot find it"
+
+
+def test_the_note_names_the_count_and_the_first_three(tmp_path):
+    """A number alone is a scold. The reader of the report has to be able to
+    go and look at what was skipped, which means the rule and the file."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    _scanner_finding(db, aid, rule="CVE-2", severity="medium")
+    _scanner_finding(db, aid, rule="DS-0002", severity="critical",
+                     category="iac", producer="trivy-iac", file="Dockerfile")
+    _scanner_finding(db, aid, rule="CVE-4", severity="high", file="pom.xml")
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    note = run(db, "list", "--project", "web")[0]["coverage_note"]
+    assert "4 deterministic findings" in note, note
+    # Ordered by severity, so the three that get named are the worst three and
+    # not whichever three were written first.
+    assert "DS-0002 (Dockerfile)" in note
+    assert "CVE-1 (yarn.lock)" in note
+    assert "CVE-4 (pom.xml)" in note
+    assert "CVE-2" not in note, "three, not the whole list"
+
+
+def test_triaging_every_scanner_finding_lets_the_close_stand(tmp_path):
+    """The control, and the point: an analysis that DID the job closes `done`.
+    A gate that downgraded every close would be indistinguishable, from the
+    report, from one that worked."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    cve = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    iac = _scanner_finding(db, aid, rule="DS-0002", severity="medium",
+                           category="iac", producer="trivy-iac", file="Dockerfile")
+    _triage(db, aid, cve, rule="CVE-1")
+    _triage(db, aid, iac, rule="DS-0002", category="iac", severity="medium")
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert "triaged" not in row["coverage_note"]
+
+
+def test_an_untriaged_low_or_info_does_not_block_the_close(tmp_path):
+    """The floor is `medium`. A budget spent proving that an `info` hygiene
+    note was read is a budget not spent on the critical above it -- and a gate
+    nobody can ever satisfy is a gate that gets switched off."""
+    db = tmp_path / "security.db"
+    assert security_cli.TRIAGE_FLOOR == "medium"
+    aid = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, aid, rule="CVE-9", severity="low")
+    _scanner_finding(db, aid, rule="missing_gitignore", severity="info",
+                     category="hygiene", producer="hygiene", file=".gitignore")
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert "triaged" not in row["coverage_note"]
+
+
+def test_an_analysis_with_no_scanner_findings_closes_done_with_no_gate_noise(tmp_path):
+    """A clean repository must not be told it skipped anything."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert "triaged" not in row["coverage_note"]
+
+
+def test_the_agents_own_findings_are_never_counted_as_untriaged(tmp_path):
+    """`sast` rows are the agent's OWN work, not a scanner's output waiting to
+    be read -- and counting them would make the gate unsatisfiable by
+    construction: reporting a finding would create the very debt reporting it
+    is supposed to discharge. The run this gate was written after did nothing
+    but produce these."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": "c" * 64, "category": "sast", "rule": "sql-injection",
+        "severity": "critical", "title": "String-built SQL",
+        "occurrences": [{"file": "app/db.py", "line": 12}]}), env=AS_AGENT)
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert "triaged" not in row["coverage_note"]
+
+
+def test_the_untriaged_note_is_not_stored_twice_when_the_row_closes_twice(tmp_path):
+    """A row is closed twice by design -- the agent, then the engine with the
+    run's real verdict and cost -- and the second close re-reads the note the
+    first one wrote."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    run(db, "finish", "--analysis", str(aid), "--state", "done", "--spend", "1.5")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["coverage_note"].count("never triaged") == 1
+    assert row["spend_usd"] == 1.5
+
+
+def test_the_untriaged_downgrade_reaches_the_report_as_an_incomplete_banner(tmp_path):
+    """The whole reason the gate lowers the verdict instead of refusing: the
+    reader of the downloaded file learns it from the file itself."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    rendered = run_text(db, "render", "--analysis", str(aid), "--format", "md")
+    assert "INCOMPLETE" in rendered
+    assert "never triaged" in rendered
+
+
+def test_a_rubber_stamp_through_the_real_door_neither_marks_nor_strips(tmp_path):
+    """The gate's cheapest bypass, driven end to end through `report-finding`.
+
+    A payload echoing the scanner's own rule, severity and title back -- with
+    no rationale and no occurrences -- used to set `triaged=1` and close
+    `done`. It also left the row with NO occurrences, because the upsert
+    replaces them, so the note the gate writes about a skipped finding could
+    not even name the file. Both halves are asserted here: the close is still
+    downgraded, and the note still names `yarn.lock`, which only exists if the
+    scanner's occurrence survived the stamp."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+
+    stamp = fails(db, "report-finding", "--analysis", str(aid),
+                  stdin=json.dumps({
+                      "fingerprint": fp, "category": "dependency",
+                      "rule": "CVE-1", "severity": "high",
+                      "title": "CVE-1 in yarn.lock"}), env=AS_AGENT)
+    assert stamp.returncode != 0, stamp.stdout
+    assert "rubber stamp" in stamp.stderr, stamp.stderr
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "capped"
+    assert "CVE-1 (yarn.lock)" in row["coverage_note"], (
+        "the stamp must not have taken the finding's only location with it")
+
+
+@pytest.mark.parametrize("phantom", ([{}], [{"file": "", "line": 0}]),
+                         ids=("empty-object", "empty-file"))
+def test_an_occurrence_that_names_no_file_is_refused_at_the_door(tmp_path, phantom):
+    """`[{}]` passed the door's "a list of objects" and the ledger's `not
+    occurrences`, so a re-report carrying it was marked read and left the row
+    one occurrence at `('', 0)` -- rendered as nothing, and named by the
+    gate's own note as "(no file recorded)". The door now asks the ledger's
+    question of the ledger's predicate, so the two cannot drift: an occurrence
+    names a file or it is not one. Refused HERE as well as in the ledger
+    because the door is where the agent is looking, and it can fix this one.
+    The scanner's evidence has to survive the refusal, so the close is driven
+    through to the note that only `yarn.lock` can be in."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+
+    out = fails(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": fp, "category": "dependency", "rule": "CVE-1",
+        "severity": "high", "title": "CVE-1 in yarn.lock",
+        "rationale": "read the call site: it is not reachable from a request",
+        "occurrences": phantom}), env=AS_AGENT)
+    assert out.returncode != 0, out.stdout
+    assert "file" in out.stderr, out.stderr
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "capped"
+    assert "CVE-1 (yarn.lock)" in row["coverage_note"]
+
+
+def test_an_occurrence_at_line_zero_that_names_a_file_is_accepted_at_the_door(tmp_path):
+    """The control: `line` 0 is what every whole-file scanner row carries and
+    what `_triage` above sends, so it is never the tell -- the file is."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": fp, "category": "dependency", "rule": "CVE-1",
+        "severity": "high", "title": "CVE-1 in yarn.lock",
+        "rationale": "read the call site: it is not reachable from a request",
+        "occurrences": [{"file": "a.py", "line": 0}]}), env=AS_AGENT)
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    assert run(db, "list", "--project", "web")[0]["state"] == "done"
+
+
+_NOT_A_STRING = pytest.mark.parametrize(
+    "value", (5, None, ["read the call site"]), ids=("number", "null", "list"))
+_OPTIONAL_TEXT_KEYS = pytest.mark.parametrize(
+    "key", [k for k in security_cli.TEXT_KEYS if k not in security_cli.REQUIRED_FINDING_KEYS])
+
+
+@_OPTIONAL_TEXT_KEYS
+@_NOT_A_STRING
+def test_a_text_field_that_is_not_a_string_is_refused_at_the_door_on_an_unread_row(
+        tmp_path, key, value):
+    """`cmd_report_finding` skipped a non-string free-text field with
+    `continue`, so `{"rationale": 5}` reached the ledger, where
+    `_rationale_of` calls `.strip()` on it: an `AttributeError`, a Traceback
+    on stderr and no sentence -- against the door's own contract. The first
+    fix DROPPED the key at the door, which put the rationale case right (the
+    ledger's own "no rationale" refusal fired) and made the other two worse:
+    `{"remediation": 5}`, `{"remediation": null}` and `{"partial_note":
+    ["x"]}` exited 0 with an empty stderr and the row stored with `''` in that
+    column -- the agent's remediation gone without a word, at a door whose
+    contract is "refuse by sentence". Now REFUSED, every optional text key
+    alike: rc 1, stderr names the field and says it must be a string, nothing
+    recorded. The key ABSENT stays accepted (every `_triage` in this file
+    sends no remediation); it is the key PRESENT as something other than text
+    that is refused. Driven through to the close so the scanner's row is
+    shown untouched by the note that names it."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+
+    payload = {"fingerprint": fp, "category": "dependency", "rule": "CVE-1",
+               "severity": "low", "title": "CVE-1, read in context",
+               "rationale": "read the call site: it is not reachable from a request",
+               "remediation": "pin the transitive and move on",
+               "partial_note": "only the api package still pulls it",
+               "occurrences": [{"file": "a.py", "line": 0}]}
+    payload[key] = value
+    out = fails(db, "report-finding", "--analysis", str(aid),
+                stdin=json.dumps(payload), env=AS_AGENT)
+    assert out.returncode == 1, (out.returncode, out.stderr)
+    assert "Traceback" not in out.stderr, out.stderr
+    assert f"report-finding: {key} must be a string" in out.stderr, out.stderr
+
+    # Nothing recorded: the row is the scanner's, field for field.
+    found = run(db, "findings", "--analysis", str(aid))
+    assert found[0]["triaged"] == 0
+    assert found[0]["severity"] == "high"
+    assert found[0]["title"] == "CVE-1 in yarn.lock"
+    assert found[0]["rationale"] == "the scanner's own reading"
+    assert found[0]["remediation"] == ""
+    assert found[0]["partial_note"] == ""
+    assert [o["file"] for o in found[0]["occurrences"]] == ["yarn.lock"]
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "capped"
+    assert "CVE-1 (yarn.lock)" in row["coverage_note"]
+
+
+@_OPTIONAL_TEXT_KEYS
+@_NOT_A_STRING
+def test_a_text_field_that_is_not_a_string_is_refused_on_a_marked_row_too(
+        tmp_path, key, value):
+    """The route the reading gate does not cover: once a row is marked, an
+    agent write skips the stamp test and reaches the erasure check, which
+    only defends the halves it knows (rationale, locations). Under the
+    dropping fix, `{"remediation": 5}` there was applied and blanked the
+    remediation the agent had written one write earlier -- silently. Refused
+    at the door, the reading survives in all three of its text fields."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    run(db, "report-finding", "--analysis", str(aid), stdin=json.dumps({
+        "fingerprint": fp, "category": "dependency", "rule": "CVE-1",
+        "severity": "low", "title": "CVE-1, read in context",
+        "rationale": "read the call site: it is not reachable from a request",
+        "remediation": "pin the transitive and move on",
+        "partial_note": "only the api package still pulls it",
+        "occurrences": [{"file": "yarn.lock", "line": 0}]}), env=AS_AGENT)
+
+    payload = {"fingerprint": fp, "category": "dependency", "rule": "CVE-1",
+               "severity": "medium", "title": "CVE-1, read again",
+               "rationale": "read it again: still not reachable",
+               "remediation": "or drop the package altogether",
+               "partial_note": "the worker package too",
+               "occurrences": [{"file": "package-lock.json", "line": 0}]}
+    payload[key] = value
+    out = fails(db, "report-finding", "--analysis", str(aid),
+                stdin=json.dumps(payload), env=AS_AGENT)
+    assert out.returncode == 1, (out.returncode, out.stderr)
+    assert "Traceback" not in out.stderr, out.stderr
+    assert f"report-finding: {key} must be a string" in out.stderr, out.stderr
+
+    found = run(db, "findings", "--analysis", str(aid))
+    assert found[0]["triaged"] == 1
+    assert found[0]["severity"] == "low"
+    assert found[0]["rationale"] == "read the call site: it is not reachable from a request"
+    assert found[0]["remediation"] == "pin the transitive and move on"
+    assert found[0]["partial_note"] == "only the api package still pulls it"
+    assert [o["file"] for o in found[0]["occurrences"]] == ["yarn.lock"]
+
+
+def test_a_re_report_that_agrees_with_the_scanner_still_satisfies_the_gate(tmp_path):
+    """The control for the refusal above, and the case it must never catch: an
+    agent that read the code and concluded the scanner was right. The severity
+    it sends is the scanner's own -- only the rationale is new -- and that is a
+    triage."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    _triage(db, aid, fp, rule="CVE-1", severity="high",
+            rationale="reachable from the upload handler; high is right")
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert "triaged" not in row["coverage_note"]
+
+
+def test_a_finding_no_producer_claims_does_not_block_the_close(tmp_path):
+    """`_untriaged`'s `f.producer<>''` clause, which no other test touches --
+    deleting it leaves the whole triage suite green while downgrading every
+    honest `done` on a ledger written before the `producer` column existed.
+
+    Those rows carry `producer=''`, and "an unknown scanner produced this and
+    nobody read it" is an accusation the query has no evidence for. It is also
+    half of an interlock: together with the `producer<>?` exclusion of the
+    agent's own rows, and with `record_finding` refusing an agent write onto an
+    unread scanner row, it is what lets `cmd_finish` build its note from `rule`
+    and `file` WITHOUT running it past `_refuse_if_secret`. Every row this
+    query can return was written by a producer, so no agent free text can reach
+    the note. Relax any one of the three and that stops being true."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, aid, rule="CVE-1", severity="critical", producer="")
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert "triaged" not in row["coverage_note"]
+
+
+def _decide(db, fingerprint, *, project="web", state="accepted",
+            reason="rotated at the provider; the commit stays in history"):
+    """A human's decision, written straight into the ledger.
+
+    NOT through `security decide`, which refuses while any analysis of the
+    project is `running` -- and the analysis under test is, right up to the
+    `finish` these tests are about. That guard is a real one (see `cmd_decide`)
+    and is tested where it lives; here it would only force the decision to be
+    recorded after the close it is supposed to affect.
+    """
+    conn = security_ledger.connect(db)
+    security_ledger.set_decision(conn, project, fingerprint, state, reason,
+                                 "luiz")
+    conn.close()
+
+
+def test_a_finding_the_operator_has_decided_on_does_not_block_the_close(tmp_path):
+    """A DECISION IS A STRONGER READING THAN A RE-REPORT, and the gate has to
+    honour it or it contradicts the operator for ever.
+
+    `diff.classify` lets a project decision override every state a finding
+    could otherwise be in, and the skill sends the agent past those rows: an
+    `accepted` finding is not its to re-report. The canonical case is the one
+    the skill describes -- a credential in git history, `secret`, high,
+    re-found by every sweep for as long as the commit exists, whose only
+    closure is a human rotating it and accepting the risk. Without this
+    exclusion that repository's every future analysis closes `capped` naming
+    the finding its operator already ruled on, and nothing an agent could do
+    would ever clear it."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="aws_secret_key", severity="high",
+                          category="secret", producer="secrets",
+                          file="config/legacy.env")
+    _decide(db, fp)
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "done"
+    assert "never triaged" not in row["coverage_note"], row["coverage_note"]
+
+
+def test_an_undecided_sibling_still_lowers_the_close_and_is_the_one_named(tmp_path):
+    """The control for the exclusion above, in the SAME analysis: it must
+    subtract exactly the decided row and nothing else. A gate that stopped
+    counting the moment any decision existed would be indistinguishable, from
+    the report, from one that had been switched off."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    decided = _scanner_finding(db, aid, rule="CVE-1", severity="critical")
+    _scanner_finding(db, aid, rule="CVE-2", severity="high", file="pom.xml")
+    _decide(db, decided)
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "capped"
+    note = row["coverage_note"]
+    assert "1 deterministic finding was never triaged" in note, note
+    assert "It is: CVE-2 (pom.xml)." in note, note
+    assert "CVE-1" not in note, "the decided row is not a debt: " + note
+
+
+def test_a_decision_in_another_project_exempts_nothing_here(tmp_path):
+    """The `decision` table is keyed (project, fingerprint) on purpose --
+    dismissing a false positive on one repository must not silently dismiss the
+    identical fingerprint on another -- and the gate is scoped the same way. A
+    query that dropped the project term would let one operator's judgement on
+    their own repository close every other repository's runs."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    _decide(db, fp, project="other", state="false_positive",
+            reason="not the same dependency tree at all")
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row = run(db, "list", "--project", "web")[0]
+    assert row["state"] == "capped"
+    assert "CVE-1 (yarn.lock)" in row["coverage_note"]
+
+
+def test_the_note_says_it_is_when_exactly_one_finding_was_skipped(tmp_path):
+    """Singular all the way through -- "1 deterministic finding WAS never
+    triaged ... IT IS". The n=4 wording is what every other test here
+    exercises, and a note that said "1 findings were" over the one thing
+    somebody has to go and look at reads as a bug in the report rather than a
+    fact about the analysis."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, aid, rule="CVE-1", severity="high")
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    note = run(db, "list", "--project", "web")[0]["coverage_note"]
+    assert "1 deterministic finding was never triaged" in note, note
+    assert "It is: CVE-1 (yarn.lock)." in note, note
+
+
+def test_the_note_says_they_are_and_names_all_of_them_below_four(tmp_path):
+    """Two and three take the middle wording: plural, but the whole list, not
+    "the first three" of three. The `> 3` boundary is the one an off-by-one
+    lands on, and it is invisible at n=4."""
+    db = tmp_path / "security.db"
+    two = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, two, rule="CVE-1", severity="high")
+    _scanner_finding(db, two, rule="CVE-2", severity="medium", file="pom.xml")
+    run(db, "finish", "--analysis", str(two), "--state", "done")
+    note = run(db, "list", "--project", "web")[0]["coverage_note"]
+    assert "2 deterministic findings were never triaged" in note, note
+    assert "They are: CVE-1 (yarn.lock); CVE-2 (pom.xml)." in note, note
+
+    three = prepared_analysis(db, tmp_path, run_id="r2")
+    _scanner_finding(db, three, rule="CVE-3", severity="critical")
+    _scanner_finding(db, three, rule="CVE-4", severity="high", file="pom.xml")
+    _scanner_finding(db, three, rule="CVE-5", severity="medium", file="go.sum")
+    run(db, "finish", "--analysis", str(three), "--state", "done")
+    note = [r for r in run(db, "list", "--project", "web")
+            if r["id"] == three][0]["coverage_note"]
+    assert "3 deterministic findings were never triaged" in note, note
+    assert "The first three" not in note, "three IS all of them"
+    assert "They are: CVE-3 (yarn.lock); CVE-4 (pom.xml); CVE-5 (go.sum)." \
+        in note, note
+
+
+def test_the_blocking_severities_are_the_slice_at_and_above_the_floor():
+    """`TRIAGE_BLOCKING` is a SLICE of `report.SEVERITIES`, so it is only
+    correct while that tuple stays ordered worst first. Reordering it -- or
+    inserting a severity between two existing ones -- silently changes which
+    findings can hold a `done` open, and nothing else in this suite would
+    notice: the derived tuple itself was never asserted, only the floor it is
+    derived from."""
+    assert security_cli.report.SEVERITIES == (
+        "critical", "high", "medium", "low", "info"), (
+        "the slice below reads this order; changing it changes the gate")
+    assert security_cli.TRIAGE_FLOOR == "medium"
+    assert security_cli.TRIAGE_BLOCKING == ("critical", "high", "medium")
+
+
+# ------------------------------------------ the coverage note gains structure
+#
+# `coverage_note` is one paragraph built by concatenating 27 `*_NOTE`
+# constants across six modules -- ~2,000 characters on a real analysis, every
+# sentence of it true and the block of them unreadable. The `coverage` column
+# carries the SAME sentences with the phase that produced them attached, and
+# the reports and the screen print that first. These tests pin the two claims
+# that make it safe: the structure is what the scanners RETURNED (never a
+# reading of the prose), and the prose itself is untouched.
+
+def _coverage_phases(db, aid, project="web"):
+    """(the analysis row, its structured phases).
+
+    Read through `analysis --id`, not `list`: the list verb deliberately drops
+    the `coverage` column, because it feeds a hundred-row table polled every
+    four seconds and neither half of the coverage is on it. See `cmd_list`.
+    """
+    row = run(db, "analysis", "--id", str(aid))
+    return row, json.loads(row["coverage"])["phases"]
+
+
+def test_prepare_records_one_phase_per_deterministic_pass(tmp_path):
+    """Seven rows, in the order every renderer prints them. `--offline`
+    refuses the network, so the three phases that need it are `skipped` --
+    and `skipped` is what the scanner function RETURNED, not something read
+    back out of a sentence."""
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    root.mkdir()
+    aid = open_analysis(db)
+    run(db, "prepare", "--analysis", str(aid), "--root", str(root), "--offline")
+    row, phases = _coverage_phases(db, aid)
+    by_name = {p["name"]: p for p in phases}
+    assert [p["name"] for p in phases] == [
+        "scope", "secrets", "hygiene", "dependencies", "sbom", "iac",
+        "sast-prepass"]
+    # `--offline` disables OSV.dev, Trivy's database, Trivy's misconfiguration
+    # checks and Semgrep's rule pack. Nothing looked, and the table says so in
+    # the one word that means it.
+    assert by_name["dependencies"]["status"] == "skipped"
+    assert by_name["dependencies"]["by"] is None
+    assert by_name["iac"]["status"] == "skipped"
+    assert by_name["sast-prepass"]["status"] == "skipped"
+    # Hygiene is our own walk over the tree: no engine, no fallback, so it
+    # runs in every configuration this suite has.
+    assert by_name["hygiene"] == {"name": "hygiene", "status": "ran",
+                                  "by": "hygiene", "note": ""}
+    # And the secret phase always has a producer -- there is no configuration
+    # in which neither scanner runs: both when gitleaks is here, the built-in
+    # alone when it is not.
+    assert by_name["secrets"]["by"] in ("gitleaks+secrets", "secrets")
+    assert by_name["secrets"]["status"] in ("ran", "warning")
+    assert row["coverage_note"]
+
+
+def test_the_runs_list_does_not_ship_the_structured_coverage(tmp_path):
+    """`list` feeds the Runs TABLE, which is polled every four seconds while
+    an analysis is live and answers with up to a hundred rows. The structured
+    coverage is the same ~2,000 characters `coverage_note` already carries,
+    split by phase -- shipping both would double a payload no column of that
+    table reads. The screen gets it from `checklist`, for the one analysis
+    actually on screen, and `analysis --id` has it for anything else."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    listed = run(db, "list", "--project", "web")[0]
+    assert "coverage" not in listed
+    # And `coverage_note` is still there: bin/claude-cron's selftest and
+    # test/e2e.test.sh both read it from this verb.
+    assert "coverage_note" in listed
+    assert json.loads(run(db, "analysis", "--id", str(aid))["coverage"])["phases"]
+    checklist = run(db, "checklist", "--analysis", str(aid))
+    assert json.loads(checklist["analysis"]["coverage"])["phases"]
+
+
+def test_every_phases_prose_is_a_substring_of_the_paragraph(tmp_path):
+    """BESIDE, NOT INSTEAD, and this is what that means byte for byte. Three
+    reports and three screens have always read `coverage_note`, and every
+    analysis written before the `coverage` column has only that. The
+    structured half re-uses the SAME strings -- nothing reworded, nothing
+    summarised -- so a phase's WHOLE note is always one contiguous run of the
+    paragraph a reader can still read whole.
+
+    STAGED ON THE CASE THAT USED TO BREAK IT. A lockfile under a directory the
+    default filter excludes gives the SBOM a component the dependency phase
+    never looked up, so `SBOM_UNFILTERED_NOTE` fires -- and the SBOM has a
+    sentence of its own. That sentence used to be emitted AFTER the SBOM's,
+    while the dependency row carried it right after its own notes: the row
+    was not a substring of the paragraph, and the only test of the property
+    put the lockfile at the root, where the sentence is never said at all.
+    Asserted for every phase `prepare` files -- all of `PHASE_ORDER` but the
+    two the close adds -- and then again after the close, for the two it adds.
+
+    THE DELIBERATE EXCEPTIONS are all on the triage row. Its two summary
+    sentences (`TRIAGE_NOTHING_NOTE`, `TRIAGE_ALL_READ_NOTE`) describe what the
+    agent did, not a gap, and the paragraph is the list of gaps. Its third,
+    `TRIAGE_UNVERIFIED_NOTE` -- filed when a direct `capped` or `failed` close
+    never reached the check -- IS a gap the paragraph does not carry, and that
+    is a choice, not an oversight: three fixtures pin the paragraph of such a
+    close byte for byte (`test_a_note_given_explicitly_is_added_to_the_stored_one`,
+    `test_the_same_note_twice_is_not_stored_twice`, and the stale-sweep check
+    in `bin/claude-cron`'s selftest, which compares the sweep's `--note` for
+    equality), and on the closes that file it, what says the run was cut
+    short or never happened is the VERDICT the row sits beside -- `capped` or
+    `failed` -- not the paragraph: a direct `capped` close with no `--note` on
+    a prepared analysis leaves the paragraph as `prepare`'s note alone.
+    Pinned as an exemption by
+    `test_a_close_that_never_reached_the_check_files_the_triage_row_skipped`.
+    The row's other sentences -- findings never read, a decision that exempted
+    one, a `prepare` that never ran -- are gaps, and the close writes each of
+    them into the paragraph too.
+    """
+    db = tmp_path / "security.db"
+    root = tmp_path / "repo"
+    (root / "fixtures").mkdir(parents=True)
+    (root / "fixtures" / "requirements.txt").write_text("requests==2.31.0\n")
+    aid = open_analysis(db)
+    note = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
+               "--offline")["coverage_note"]
+    _, phases = _coverage_phases(db, aid)
+    by_name = {p["name"]: p for p in phases}
+    # The case is reached: the unfiltered sentence is said once, filed under
+    # both rows, and the SBOM row has a sentence of its own beside it --
+    # whichever producer built the document in this configuration.
+    unfiltered = "No vulnerability was looked up for"
+    assert note.count(unfiltered) == 1, note
+    assert unfiltered in by_name["dependencies"]["note"]
+    assert unfiltered in by_name["sbom"]["note"]
+    assert any(own in by_name["sbom"]["note"] for own in (
+        security_cli.deps.SBOM_FALLBACK_NOTE,
+        security_cli.adapters.SYFT_SBOM_NOTE)), by_name["sbom"]["note"]
+    # Every phase `prepare` writes, and each one's whole prose.
+    assert [p["name"] for p in phases] == \
+        list(security_cli.coverage.PHASE_ORDER[:-2])
+    for p in phases:
+        assert p["note"] in note, \
+            f"{p['name']}'s note is not in the paragraph: {p['note']!r}"
+
+    run(db, "finish", "--analysis", str(aid), "--state", "done",
+        "--note", "I stopped before the SAST phase")
+    row, phases = _coverage_phases(db, aid)
+    assert [p["name"] for p in phases] == list(security_cli.coverage.PHASE_ORDER)
+    for p in phases:
+        if p["name"] == "triage":
+            assert p["note"] == security_cli.TRIAGE_NOTHING_NOTE.format(
+                floor=security_cli.TRIAGE_FLOOR)
+            continue
+        assert p["note"] in row["coverage_note"], \
+            f"{p['name']}'s note is not in the paragraph: {p['note']!r}"
+
+
+def test_the_close_adds_a_triage_phase_carrying_the_count(tmp_path):
+    """The ninth phase, and the one no deterministic pass can report on
+    itself: whether anybody READ what the scanners produced. `warning` with
+    the same sentence the downgrade already writes -- the count and the first
+    three by rule and file."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    _scanner_finding(db, aid, rule="CVE-2", severity="critical", file="pom.xml")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row, phases = _coverage_phases(db, aid)
+    triage = [p for p in phases if p["name"] == "triage"][0]
+    assert phases[-1]["name"] == "triage", "triage is the last row of the table"
+    assert triage["status"] == "warning"
+    assert triage["by"] == "agent"
+    assert "2 deterministic findings were never triaged" in triage["note"]
+    assert triage["note"] in row["coverage_note"]
+
+
+def test_a_triaged_analysis_gets_a_triage_phase_that_says_how_many_were_read(tmp_path):
+    """The control. A table that only ever showed the failure would say
+    nothing about the run that did the job -- and "ran" over an analysis with
+    nothing to read would be praise for work that never happened, which is
+    why the two are worded apart."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    _triage(db, aid, fp, rule="CVE-1")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    _, phases = _coverage_phases(db, aid)
+    triage = [p for p in phases if p["name"] == "triage"][0]
+    assert triage["status"] == "ran"
+    # Counted with NO severity floor, deliberately: `_triage` above re-reports
+    # the finding at a corrected `low`, so a count taken over the floored set
+    # would shrink as a result of the very triage it is reporting and print
+    # "nothing was waiting" over an analysis where something was read.
+    assert "The agent re-reported 1 deterministic finding and left none at " \
+        "medium or above unread" in triage["note"]
+
+    empty = prepared_analysis(db, tmp_path)
+    run(db, "finish", "--analysis", str(empty), "--state", "done")
+    _, phases = _coverage_phases(db, empty)
+    nothing = [p for p in phases if p["name"] == "triage"][0]
+    assert nothing["status"] == "ran"
+    assert "No deterministic finding at medium or above was waiting" \
+        in nothing["note"]
+
+
+def test_a_close_that_never_reached_the_triage_check_files_it_as_skipped(tmp_path):
+    """`capped` from the caller means `done`'s precondition was never
+    evaluated, so nothing knows whether the findings were read. `skipped` --
+    the same word every deterministic phase uses for "nothing looked" -- and
+    never `ran`."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    run(db, "finish", "--analysis", str(aid), "--state", "capped")
+    _, phases = _coverage_phases(db, aid)
+    triage = [p for p in phases if p["name"] == "triage"][0]
+    assert triage["status"] == "skipped"
+    assert triage["by"] is None
+
+
+def test_the_engines_second_close_never_overwrites_a_triage_the_agent_earned(tmp_path):
+    """A row is closed TWICE by design -- the agent, then the engine with the
+    run's own verdict. The engine's close may lower the state to `capped`,
+    which skips the triage check entirely; a `skipped` written there would
+    erase the `ran` the agent's own close had verified, and the table would
+    end up less true than it was a second earlier. `merge` also has to
+    REPLACE rather than append, or the second close leaves two triage rows
+    disagreeing with each other."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    _triage(db, aid, fp, rule="CVE-1")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    run(db, "finish", "--analysis", str(aid), "--state", "capped", "--spend", "2")
+    row, phases = _coverage_phases(db, aid)
+    triage = [p for p in phases if p["name"] == "triage"]
+    assert len(triage) == 1, f"the table grew a second triage row: {phases}"
+    assert triage[0]["status"] == "ran"
+    assert row["state"] == "capped" and row["spend_usd"] == 2
+
+
+def test_a_sentence_about_two_phases_is_filed_under_both(tmp_path, monkeypatch,
+                                                         capsys):
+    """TWO OF THE 27 NOTES DESCRIBE TWO PHASES AT ONCE, and the cost of
+    picking one home for them is that the other half of what they say becomes
+    invisible from the row that states it.
+
+    `DEP_SBOM_NOTE` is appended by the DEPENDENCY producer (Trivy) and every
+    word of it is about the SBOM -- what it lists, and which lockfile formats
+    that covers. `SBOM_UNFILTERED_NOTE` is, in its own docstring's words,
+    "about the gap BETWEEN them": what the published SBOM lists against what
+    the dependency phase actually looked up, which is the contradiction a
+    consumer reading the two side by side used to hit ("this project ships
+    lodash 4.17.20" beside "no dependency findings").
+
+    So both are filed under `dependencies` AND under `sbom`. The paragraph is
+    unchanged -- each still appears in it exactly once, in the same place --
+    which is the other half of what "beside, not instead" has to mean.
+
+    Driven in-process for the reason the group above gives: this needs Trivy
+    present and Syft absent at once, which a subprocess boundary cannot stage.
+    """
+    root = tmp_path / "repo"
+    (root / "fixtures").mkdir(parents=True)
+    # Under a DEFAULT-ignored directory, so the dependency phase's filter hides
+    # it while `deps.inventory` -- which deliberately does not read
+    # `ignore_paths` -- still lists it in the SBOM. That gap is the note.
+    (root / "fixtures" / "requirements.txt").write_text("requests==2.31.0\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/trivy" if name == "trivy" else None)
+    # A sentence BEFORE the SBOM one, as the real `trivy_scan` always has: the
+    # boundary assertion below is vacuous against a one-note dependency phase.
+    monkeypatch.setattr(security_cli.adapters, "trivy_scan",
+                        lambda root, ignore_paths=(): (
+                            [], [security_cli.adapters.DEP_ENGINE_NOTE.format(
+                                     version="0.74.0"),
+                                 security_cli.adapters.DEP_SBOM_NOTE]))
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    note = json.loads(capsys.readouterr().out)["coverage_note"]
+    _, phases = _coverage_phases(db, aid)
+    by_name = {p["name"]: p["note"] for p in phases}
+
+    # The note's own opening clause, from ignores.SBOM_UNFILTERED_NOTE's
+    # format string -- the counts and the file list in it are measured per
+    # repository, so the stable half is what this anchors on.
+    unfiltered = "No vulnerability was looked up for"
+    assert security_cli.adapters.DEP_SBOM_NOTE in by_name["dependencies"]
+    assert security_cli.adapters.DEP_SBOM_NOTE in by_name["sbom"]
+    assert unfiltered in by_name["dependencies"], by_name["dependencies"]
+    assert unfiltered in by_name["sbom"], by_name["sbom"]
+    # And the paragraph still says each of them exactly once. Filing a
+    # sentence under two phases must not duplicate it in the text three
+    # reports and three screens have always read.
+    assert note.count(security_cli.adapters.DEP_SBOM_NOTE) == 1
+    assert note.count(unfiltered) == 1
+    # BOTH ROWS ARE WHOLE SUBSTRINGS AT ONCE, which is only possible because
+    # the two shared sentences sit on the boundary between them: the paragraph
+    # reads `dep notes | SBOM sentence, unfiltered | SBOM's own notes`. This
+    # is the assertion the test above makes for the OSV path, on the Trivy
+    # path, where the dependency producer is the one saying the SBOM sentence.
+    for name, prose in by_name.items():
+        assert prose in note, f"{name}'s note is not in the paragraph: {prose!r}"
+    assert (note.index(security_cli.adapters.DEP_ENGINE_NOTE.format(version="0.74.0"))
+            < note.index(security_cli.adapters.DEP_SBOM_NOTE)
+            < note.index(unfiltered)
+            < note.index(security_cli.deps.SBOM_FALLBACK_NOTE)), note
+
+
+def test_the_sbom_sentence_disappears_from_both_phases_when_there_is_no_sbom(
+        tmp_path, monkeypatch, capsys):
+    """The other half of filing a sentence under two phases: it has to LEAVE
+    both when `cmd_prepare` drops it. `DEP_SBOM_NOTE` asserts what "the SBOM"
+    lists, and with no document stored that is a sentence about a file the
+    reader cannot download -- which is why the phase note is read back out of
+    the swapped list rather than off the constant."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/trivy" if name == "trivy" else None)
+    monkeypatch.setattr(security_cli.adapters, "trivy_scan",
+                        lambda root, ignore_paths=(): (
+                            [], [security_cli.adapters.DEP_SBOM_NOTE]))
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db)])
+    note = json.loads(capsys.readouterr().out)["coverage_note"]
+    _, phases = _coverage_phases(db, aid)
+    by_name = {p["name"]: p for p in phases}
+    assert security_cli.adapters.DEP_SBOM_NOTE not in by_name["dependencies"]["note"]
+    assert security_cli.adapters.DEP_SBOM_NOTE not in by_name["sbom"]["note"]
+    assert security_cli.adapters.DEP_SBOM_NOTE not in note
+    # No lockfile anywhere, so neither producer had a component to list.
+    assert by_name["sbom"]["status"] == "skipped"
+    assert security_cli.NO_SBOM_NOTE in by_name["sbom"]["note"]
+
+
+def test_the_downloaded_report_opens_with_the_phase_table(tmp_path):
+    """End to end, through the same door the download uses. The table is what
+    a reader meets first; the paragraph is still under it, unchanged."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    md = run_text(db, "render", "--analysis", str(aid), "--format", "md")
+    assert "| Phase | Status | By |" in md
+    assert md.index("| Phase | Status | By |") < md.index("## Checklist")
+    assert "| iac | skipped | — |" in md
+    assert "| sast | ran | agent |" in md
+    assert "| triage | ran | agent |" in md
+    assert md.index("| sast | ran | agent |") < md.index("| triage | ran | agent |")
+    doc = json.loads(run_text(db, "render", "--analysis", str(aid),
+                              "--format", "json"))
+    assert [p["name"] for p in doc["coverage"]["phases"]][-1] == "triage"
+
+
+# -------------------------------- the two rows the close writes, and when not
+
+def test_a_never_prepared_close_files_the_agents_rows_skipped_and_nothing_ran(tmp_path):
+    """THE MINERVA 9/10 SHAPE, on the table. An analysis whose `prepare` never
+    ran closes `capped` under a paragraph saying nothing ran -- and its triage
+    row used to read `ran`, because the row was built from `_untriaged`'s
+    answer BEFORE the `prepared` guard asked its question, and a ledger with
+    no scanner rows has nothing waiting. Both agent-side rows are `skipped`,
+    under the paragraph's own sentence, and no row in the table reads `ran`."""
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row, phases = _coverage_phases(db, aid)
+    by_name = {p["name"]: p for p in phases}
+    assert row["state"] == "capped"
+    assert by_name["triage"]["status"] == "skipped"
+    assert by_name["sast"]["status"] == "skipped"
+    assert by_name["triage"]["by"] is None and by_name["sast"]["by"] is None
+    assert not [p for p in phases if p["status"] == "ran"], phases
+    for name in ("triage", "sast"):
+        assert "deterministic phases never ran" in by_name[name]["note"]
+        assert by_name[name]["note"] in row["coverage_note"]
+    # The engine's second close -- `capped`, with the spend -- keeps both rows
+    # and both sentences: it brings no note of its own and must not blank
+    # theirs.
+    run(db, "finish", "--analysis", str(aid), "--state", "capped", "--spend", "1")
+    row, phases = _coverage_phases(db, aid)
+    assert {p["status"] for p in phases} == {"skipped"}, phases
+    assert all("deterministic phases never ran" in p["note"] for p in phases), phases
+
+
+def test_the_close_files_the_agents_own_sast_pass_by_the_verdict(tmp_path):
+    """The eighth row: the agent's own SAST pass had a row for its Semgrep
+    PRE-pass and none for itself, so the table said nothing about the primary
+    source of the `sast` category. `ran` on `done`, `warning` on `capped` --
+    the verdict is the only evidence there is about the pass -- and its prose
+    is the agent's own `--note`, the one sentence about its coverage the close
+    already carries into the paragraph."""
+    db = tmp_path / "security.db"
+    done = prepared_analysis(db, tmp_path)
+    run(db, "finish", "--analysis", str(done), "--state", "done")
+    _, phases = _coverage_phases(db, done)
+    assert [p["name"] for p in phases] == list(security_cli.coverage.PHASE_ORDER)
+    sast = [p for p in phases if p["name"] == "sast"][0]
+    assert sast == {"name": "sast", "status": "ran", "by": "agent", "note": ""}
+
+    capped = prepared_analysis(db, tmp_path)
+    run(db, "finish", "--analysis", str(capped), "--state", "capped",
+        "--note", "I stopped before the SAST phase")
+    row, phases = _coverage_phases(db, capped)
+    sast = [p for p in phases if p["name"] == "sast"][0]
+    assert sast["status"] == "warning" and sast["by"] == "agent"
+    assert sast["note"] == "I stopped before the SAST phase"
+    assert sast["note"] in row["coverage_note"]
+
+
+def test_the_engines_capped_lowers_the_sast_row_and_leaves_the_triage_row(tmp_path):
+    """The one asymmetry between the two rows the close writes, and it is
+    deliberate. The triage check is a fact about the ledger, and the engine's
+    `capped` says nothing about whether the findings were read -- so that row
+    keeps the `ran` the agent's close earned (pinned above). The agent's SAST
+    pass is the opposite case: the engine's `capped` is precisely the
+    statement that the run making the `done` claim was cut short, so its row
+    is lowered to `warning`. The agent's sentence is carried forward, because
+    the engine's close brings none of its own."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    _triage(db, aid, fp, rule="CVE-1")
+    run(db, "finish", "--analysis", str(aid), "--state", "done",
+        "--note", "the SAST pass covered every entry point")
+    run(db, "finish", "--analysis", str(aid), "--state", "capped", "--spend", "2")
+    row, phases = _coverage_phases(db, aid)
+    by_name = {p["name"]: p for p in phases}
+    assert row["state"] == "capped"
+    assert by_name["sast"]["status"] == "warning"
+    assert by_name["sast"]["note"] == "the SAST pass covered every entry point"
+    assert by_name["triage"]["status"] == "ran"
+    assert len([p for p in phases if p["name"] == "sast"]) == 1, phases
+
+
+def test_a_close_that_never_reached_the_check_files_the_triage_row_skipped(tmp_path):
+    """A direct `capped` (or the engine's `failed`) never evaluates `done`'s
+    precondition, so the row says so -- `skipped`, never `ran` -- under
+    `TRIAGE_UNVERIFIED_NOTE`. That sentence is the one gap the paragraph does
+    not carry, and this test pins the exemption rather than leaving it
+    implicit (test_every_phases_prose_is_a_substring_of_the_paragraph's
+    docstring names the three fixtures that hold the paragraph of a `failed`
+    close byte for byte). Making it a writer is a deliberate change to all
+    four, not a drift this suite should let through."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    stored = run(db, "analysis", "--id", str(aid))["coverage_note"]
+    run(db, "finish", "--analysis", str(aid), "--state", "capped",
+        "--note", "the budget ran out during the SAST pass")
+    row, phases = _coverage_phases(db, aid)
+    by_name = {p["name"]: p for p in phases}
+    assert by_name["triage"]["status"] == "skipped"
+    assert by_name["triage"]["by"] is None
+    assert by_name["triage"]["note"] == security_cli.TRIAGE_UNVERIFIED_NOTE
+    assert by_name["sast"]["status"] == "warning"
+    assert row["coverage_note"] == \
+        f"{stored} the budget ran out during the SAST pass".strip()
+    assert security_cli.TRIAGE_UNVERIFIED_NOTE not in row["coverage_note"]
+
+
+def test_the_triage_row_says_when_a_decision_and_not_absence_left_nothing_waiting(tmp_path):
+    """`_untriaged` rightly excludes a fingerprint the operator decided on --
+    and the triage row then read "No deterministic finding at medium or above
+    was waiting to be triaged". One was. It was exempted by a human, not
+    absent, and the two are different facts about the same close."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="aws_secret_key", severity="high",
+                          category="secret", producer="secrets",
+                          file="config/legacy.env")
+    _decide(db, fp)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row, phases = _coverage_phases(db, aid)
+    triage = [p for p in phases if p["name"] == "triage"][0]
+    assert row["state"] == "done"
+    assert triage["status"] == "ran"
+    assert triage["note"] == ("1 deterministic finding at medium or above "
+                              "carried an operator decision and was not counted.")
+    assert "was waiting to be triaged" not in triage["note"]
+    assert triage["note"] in row["coverage_note"]
+
+
+def test_the_triage_row_names_the_undecided_one_and_counts_the_decided_one(tmp_path):
+    """The sibling: one decided, one not. The close lowers to `capped` for the
+    undecided row and names it; the decided count rides beside that sentence
+    rather than replacing it, and both are in the paragraph."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    decided = _scanner_finding(db, aid, rule="CVE-1", severity="critical")
+    _scanner_finding(db, aid, rule="CVE-2", severity="high", file="pom.xml")
+    _decide(db, decided)
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    row, phases = _coverage_phases(db, aid)
+    triage = [p for p in phases if p["name"] == "triage"][0]
+    assert row["state"] == "capped"
+    assert triage["status"] == "warning"
+    assert "1 deterministic finding was never triaged" in triage["note"]
+    assert "CVE-2 (pom.xml)" in triage["note"]
+    assert "CVE-1" not in triage["note"]
+    assert ("1 deterministic finding at medium or above carried an operator "
+            "decision and was not counted.") in triage["note"]
+    assert triage["note"] in row["coverage_note"]
+
+
+def test_a_decided_row_the_agent_also_read_is_counted_as_read_not_as_decided(tmp_path):
+    """`triaged=0` in `_decided_count` is load-bearing: a decided row the agent
+    re-reported anyway -- here at its original severity, so the floor alone
+    would not drop it -- is in `_triaged_count`, and "was not counted" would
+    be false of it."""
+    db = tmp_path / "security.db"
+    aid = prepared_analysis(db, tmp_path)
+    fp = _scanner_finding(db, aid, rule="CVE-1", severity="high")
+    _decide(db, fp)
+    _triage(db, aid, fp, rule="CVE-1", severity="high")
+    run(db, "finish", "--analysis", str(aid), "--state", "done")
+    _, phases = _coverage_phases(db, aid)
+    triage = [p for p in phases if p["name"] == "triage"][0]
+    assert "re-reported 1 deterministic finding" in triage["note"]
+    assert "operator decision" not in triage["note"]
+
+
+# ------------------------------ the secret row is earned by the history sweep
+#
+# In-process, like the Trivy group above: the gitleaks path has to be staged
+# without depending on the binary, and the adapter's own third return value is
+# what is being threaded through here. The adapter is proved against real
+# repositories in tests/security/test_adapters.py.
+
+@pytest.mark.parametrize("history, gap", [
+    (security_cli.adapters.HISTORY_SHALLOW, security_cli.adapters.SHALLOW_GAP),
+    (security_cli.adapters.HISTORY_GONE,
+     security_cli.secrets.HISTORY_GAP.format(reason="fatal: bad object HEAD")),
+], ids=["shallow", "gone"])
+def test_the_secret_row_is_a_warning_when_the_history_was_not_swept_in_full(
+        tmp_path, monkeypatch, capsys, history, gap):
+    """`_scan_secrets` used to answer `ran` on the gitleaks path whatever the
+    history sweep had covered, so a shallow clone -- or a history git could not
+    walk at all -- got a green row over a paragraph saying the sweep saw only
+    part of the history, or none of it. The row reads `warning` for anything
+    short of the full history, beside the very sentence the paragraph carries
+    for that gap."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    engine_note = security_cli.adapters.ENGINE_NOTE.format(
+        version="gitleaks 8.21.0", scope="the working tree")
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/gitleaks" if name == "gitleaks" else None)
+    monkeypatch.setattr(security_cli.adapters, "gitleaks_scan",
+                        lambda root, ignore_paths=(): ([], [gap, engine_note], history,
+                                                       security_cli.adapters.TREE_OK))
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db), "--offline"])
+    note = json.loads(capsys.readouterr().out)["coverage_note"]
+    _, phases = _coverage_phases(db, aid)
+    secret = [p for p in phases if p["name"] == "secrets"][0]
+    assert secret["status"] == "warning"
+    assert secret["by"] == "gitleaks+secrets"
+    assert gap in secret["note"]
+    assert secret["note"] in note
+
+
+def test_the_secret_row_is_ran_only_when_the_full_history_was_swept(
+        tmp_path, monkeypatch, capsys):
+    """The control: the engine over a full clone, and the one state that earns
+    the row a `ran`. A real checkout, because the built-in scanner now sweeps
+    the history beside the engine and its own gap over a directory that is not
+    a repository would -- correctly -- cost the row its `ran`."""
+    root = git_repo(tmp_path / "repo", [("init", {"README.md": "clean\n"})])
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    engine_note = security_cli.adapters.ENGINE_NOTE.format(
+        version="gitleaks 8.21.0",
+        scope=f"the working tree and {security_cli.adapters.FULL_HISTORY}")
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/gitleaks" if name == "gitleaks" else None)
+    monkeypatch.setattr(security_cli.adapters, "gitleaks_scan",
+                        lambda root, ignore_paths=(): (
+                            [], [engine_note], security_cli.adapters.HISTORY_OK,
+                            security_cli.adapters.TREE_OK))
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db), "--offline"])
+    capsys.readouterr()
+    _, phases = _coverage_phases(db, aid)
+    secret = [p for p in phases if p["name"] == "secrets"][0]
+    assert secret["status"] == "ran"
+    assert secret["by"] == "gitleaks+secrets"
+
+
+def test_the_fallback_sbom_names_the_inventory_that_built_it(tmp_path, monkeypatch,
+                                                            capsys):
+    """`warning | —` over a document that exists said "somebody built this
+    and nobody will say who", while the sentence beside it named this
+    project's own inventory. The row names it too. In-process with every
+    engine absent, so the fallback is what runs in both configurations of
+    this suite."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "requirements.txt").write_text("requests==2.31.0\n")
+    db = tmp_path / "security.db"
+    aid = open_analysis(db)
+    monkeypatch.setattr(security_cli.adapters, "engine_path", lambda name: None)
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db), "--offline"])
+    capsys.readouterr()
+    _, phases = _coverage_phases(db, aid)
+    sbom = [p for p in phases if p["name"] == "sbom"][0]
+    assert sbom["status"] == "warning"
+    assert sbom["by"] == security_cli.PRODUCER_INVENTORY == "inventory"
+    assert security_cli.deps.SBOM_FALLBACK_NOTE in sbom["note"]
 
 
 # ------------------------------- a decision is not taken while a run is live
@@ -3961,7 +5130,9 @@ def _gitleaks_stub(tmp_path):
 
 
 def with_gitleaks(tmp_path, base=None):
-    """Env for a SUBPROCESS run that has to get past the gitleaks guard."""
+    """Env for a SUBPROCESS run with the engines on and a gitleaks stub on
+    PATH. `migrate-rules` no longer has a gitleaks guard to get past; this
+    stays so the migration tests run the same in both configurations."""
     base = os.environ if base is None else base
     return {**base, "CC_SECURITY_ENGINES": "on",
             "PATH": f"{_gitleaks_stub(tmp_path)}{os.pathsep}{base['PATH']}"}
@@ -3988,64 +5159,76 @@ def test_migrate_rules_reports_nothing_when_there_is_nothing_to_rename(tmp_path)
     assert out == {"renamed": [], "findings": 0}
 
 
-def test_migrate_rules_is_refused_without_gitleaks(tmp_path):
-    """The failure this verb EXISTS to prevent, reached through its own front
-    door.
+def test_migrate_rules_runs_without_gitleaks_and_carries_the_decision_across(tmp_path):
+    """THE LEDGER THIS VERB EXISTS FOR, on the machine that wrote it.
 
-    Every secret rename moves findings from the built-in pattern scanner's
-    snake_case names onto gitleaks' kebab-case ones. Run it on a machine with
-    no gitleaks -- or with the engines switched off -- and `_scan_secrets`
-    falls back to that same built-in scanner on the very next analysis and
-    mints the old names again. The migrated row is then reported `fixed`
-    (nothing produces its new name) and the re-minted one `new`, in ONE
-    report, and the human decision on each side strands: precisely the
-    double-identity damage `migrate-rules` was written to stop.
+    A ledger written before both scanners minted one vocabulary holds the
+    built-in scanner's own names -- `aws_access_key`, `producer=secrets` --
+    and the human decisions taken on them. The first analysis after that
+    change, on a machine WITHOUT gitleaks, mints `aws-access-token` for the
+    same file: a different fingerprint, so the old row read `fixed`, the new
+    one `new` with no decision on it, and the close went `capped` for a row a
+    human had already ruled on. `migrate-rules` is the remedy -- and it used
+    to be REFUSED on exactly that machine, for a reason (the built-in
+    re-minting its old names) that the one-vocabulary rule had made false.
 
-    Refused before the ledger is opened, like the category check and for the
-    same reason -- it needs nothing from the ledger, so it cannot leave a map
-    half-applied.
+    So: no gitleaks (`CC_SECURITY_ENGINES=off`, stated rather than inherited
+    from conftest, because `engine_path` consults the switch before PATH and
+    the engines-on run of this suite must exercise the same machine), the
+    migration runs, the decision lands on the new identity, and the next
+    fallback analysis reads the row `accepted` and closes `done`.
     """
-    db = tmp_path / "security.db"
-    aid = open_analysis(db)
-    run(db, "finish", "--analysis", str(aid), "--state", "done")
-
-    # CC_SECURITY_ENGINES=off, STATED here rather than inherited from
-    # conftest's default. `engine_path` consults the switch before it consults
-    # PATH, so an engine that is off is an engine that is absent as far as the
-    # next analysis is concerned -- which is the machine this refusal is about,
-    # and it is the same machine on a laptop with gitleaks and on CI without
-    # it. Inheriting the default instead made this test pass only while nobody
-    # ran the suite in production's configuration: with the engines on and
-    # gitleaks really installed, `migrate-rules` correctly proceeded and the
-    # refusal this test is named for was never reached.
     env_off = {**os.environ, "CC_SECURITY_ENGINES": "off"}
-    out = fails(db, "migrate-rules", env=env_off)
-    assert out.returncode != 0
-    assert "gitleaks is not available" in out.stderr
-    assert "nothing was migrated" in out.stderr.lower()
-    # It names the damage, not just the missing binary: an operator who is
-    # told only "gitleaks not found" installs nothing and runs it anyway.
-    assert "fixed AND new" in out.stderr
+    db = tmp_path / "security.db"
+    root = git_repo(tmp_path / "repo", [("plant", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"})])
+    path = "prod.env"
+    old_fp = secret_fingerprint("aws_access_key", path)
+    new_fp = secret_fingerprint("aws-access-token", path)
 
-    # And the same machine with the engine visible gets through to the work.
-    assert run(db, "migrate-rules", env=with_gitleaks(tmp_path)) == {
-        "renamed": [], "findings": 0}
+    # The pre-branch analysis: prepared over nothing, then the row the built-in
+    # scanner of that era minted, under its own name and as its own producer.
+    before = prepared_analysis(db, tmp_path)
+    conn = security_ledger.connect(str(db))
+    security_ledger.record_finding(conn, before, {
+        "fingerprint": old_fp, "category": "secret", "rule": "aws_access_key",
+        "severity": "critical", "title": "aws access key committed to the repository",
+        "rationale": "A credential of type aws_access_key was found in the working tree.",
+        "remediation": "rotate", "producer": "secrets",
+        "occurrences": [{"file": path, "line": 1, "snippet_hash": ""}]})
+    conn.close()
+    run(db, "finish", "--analysis", str(before), "--state", "done", env=env_off)
+    run(db, "decide", "--project", "web", "--fingerprint", old_fp,
+        "--state", "accepted", "--reason", "rotated at the provider", "--by", "luiz",
+        env=env_off)
+
+    printed = run(db, "migrate-rules", env=env_off)
+    moved = [r for r in printed["renamed"] if r["from"] == "aws_access_key"]
+    assert moved == [{"category": "secret", "from": "aws_access_key",
+                      "to": "aws-access-token", "findings": 1}], printed
+    conn = sqlite3.connect(str(db))
+    assert conn.execute("SELECT fingerprint FROM decision").fetchall() == [(new_fp,)]
+    conn.close()
+
+    after = open_analysis(db)
+    run(db, "prepare", "--analysis", str(after), "--root", str(root), "--offline",
+        env=env_off)
+    run(db, "finish", "--analysis", str(after), "--state", "done", env=env_off)
+    assert run(db, "analysis", "--id", str(after), env=env_off)["state"] == "done"
+    secret = [f for f in run(db, "checklist", "--analysis", str(after), env=env_off)["findings"]
+              if f["category"] == "secret"]
+    assert [(f["rule"], f["state"], f["decision_reason"]) for f in secret] == [
+        ("aws-access-token", "accepted", "rotated at the provider")], secret
 
 
-def test_migrate_rules_refuses_a_machine_with_the_engines_switched_off(tmp_path):
-    """`CC_SECURITY_ENGINES=off` is not a lesser version of "not installed":
-    it is the same machine as far as the next analysis is concerned, because
-    `engine_path` consults the switch before it consults PATH. An operator who
-    installed gitleaks and left the switch off would otherwise migrate onto
-    names their own analyses will never mint."""
+def test_migrate_rules_runs_with_the_engines_switched_off(tmp_path):
+    """`CC_SECURITY_ENGINES=off` used to be refused like an absent binary. It
+    is the same machine as far as the next analysis is concerned -- and that
+    machine now mints the engine's names too, so the migration holds there."""
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     run(db, "finish", "--analysis", str(aid), "--state", "done")
-
-    # gitleaks IS on PATH here -- only the switch is off.
     env = {**with_gitleaks(tmp_path), "CC_SECURITY_ENGINES": "off"}
-    out = fails(db, "migrate-rules", env=env)
-    assert out.returncode != 0 and "gitleaks is not available" in out.stderr
+    assert run(db, "migrate-rules", env=env) == {"renamed": [], "findings": 0}
 
 
 def test_migrate_rules_carries_findings_and_decisions_to_the_new_name(

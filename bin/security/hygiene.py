@@ -8,8 +8,11 @@ from .ignores import ignored
 # THE shared engine scope, not a copy of it -- see `deps.py`, which imported
 # the same set for the same reason. `secrets.SKIP_DIRS` is public precisely
 # because it is no longer one module's business: it is what every scanner,
-# built-in or engine, is told an analysis covers.
-from .secrets import SKIP_DIRS as _SKIP_DIRS
+# built-in or engine, is told an analysis covers. The MATCHER comes with it:
+# a hand-rolled `any(part in SKIP_DIRS ...)` here could not honour a
+# multi-segment entry, and would silently widen `data/logs` back to every
+# directory named `logs`.
+from .secrets import skipped as _skipped
 _KEY_TEXT_SUFFIXES = (".pem", ".key")
 _KEY_BINARY_SUFFIXES = (".p12", ".pfx", ".jks")
 _KEY_SNIFF_BYTES = 4096
@@ -140,7 +143,7 @@ def scan(root, ignore=()):
         if not path.is_file() or path.is_symlink():
             continue
         rel_path = path.relative_to(root)
-        if any(part in _SKIP_DIRS for part in rel_path.parts):
+        if _skipped(rel_path):
             continue
         rel, name = str(rel_path), path.name
         if ignored(rel, ignore):
