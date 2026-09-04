@@ -8566,3 +8566,237 @@ def test_the_activity_and_index_back_buttons_are_wrapped_not_passed_bare(srv):
     )
     assert '.addEventListener("click", () => secBack())' in index_js
     assert '.addEventListener("click", () => secBackFromActivity())' in index_js
+
+
+def test_every_menu_popover_ships_hidden(srv):
+    """A popover that is in the page from the first paint but carries no
+    `hidden` attribute reads as OPEN to anything asking `:not([hidden])`.
+
+    #sec-run-filterpop shipped exactly like that: it sits inside a closed
+    <details>, so nobody could see it, and its `hidden` is only ever written
+    by that element's own ontoggle -- which never fires until the filter is
+    opened by hand. renderOverviewJobs() skips its repaint while a menu is
+    open, so on every install where the Security page had been built the
+    Overview's job cards were never drawn at all. Eight jobs, an empty
+    column, and nothing in the console.
+
+    Every sibling popover in that same bar already ships `hidden`; this pins
+    the whole class rather than the one element, because the cost of
+    forgetting is a screenful of jobs that silently stops rendering."""
+    page = _page(srv)
+    tags = re.findall(r'<div[^>]*class="menu-pop[^"]*"[^>]*>', page)
+    assert tags, "no .menu-pop in the page — this test is watching nothing"
+    naked = [t for t in tags if not re.search(r"(?<![-\w])hidden(?![-\w])", t)]
+    assert not naked, (
+        "these popovers ship without `hidden`, so they read as open menus and "
+        "stall the Overview repaint: " + "; ".join(naked))
+
+
+def test_the_overview_repaint_guard_asks_whether_a_menu_is_on_screen(srv, tmp_path):
+    """The guard must skip the repaint for a menu that is really on screen and
+    only for that one.
+
+    Two failure modes, one on each side, and both have a real cost:
+      * testing the ABSENCE of `hidden` (what shipped) counts a popover hidden
+        by any other means -- a closed <details>, a `display:none` -- as open,
+        and the job cards then never render at all;
+      * testing `offsetParent` instead would miss a genuinely open menu, which
+        positions itself `position:fixed`, and the repaint would snatch it away
+        mid-reach -- the very thing the guard exists to prevent.
+
+    getClientRects() is the test that separates them, so the four cases below
+    are asserted together: no menus, a popover in a closed <details>, one
+    carrying `hidden`, and one actually open."""
+    src = _plainfn(_js(srv), "renderOverviewJobs")
+    m = re.search(r"const menuOpen\s*=.*?;\n", src, re.S)
+    assert m, ("renderOverviewJobs no longer computes `menuOpen` — if the guard went "
+               "back to a bare `.menu-pop:not([hidden])` query, that is the bug this "
+               "test exists for; if it was renamed, update this test with it")
+    script = tmp_path / "overview-menu-guard.js"
+    script.write_text("""
+// One fake popover per case: `hidden` is the attribute, `rects` is whether the
+// browser lays it out at all (false for display:none and for a closed <details>).
+function fakeDoc(pops){
+  return {querySelectorAll(sel){
+    const onlyVisibleAttr = sel.includes(":not([hidden])");
+    return pops.filter(p => !(onlyVisibleAttr && p.hidden))
+               .map(p => ({getClientRects: () => (p.rects ? [{}] : [])}));
+  }};
+}
+const CASES = {
+  noMenus:       [],
+  closedDetails: [{hidden: false, rects: false}],
+  hiddenAttr:    [{hidden: true,  rects: false}],
+  openMenu:      [{hidden: false, rects: true}],
+};
+const out = {};
+for(const [name, pops] of Object.entries(CASES)){
+  const document = fakeDoc(pops);
+""" + m.group(0) + """
+  out[name] = menuOpen;
+}
+console.log(JSON.stringify(out));
+""")
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert got["openMenu"] is True, (
+        "a menu that is on screen no longer stops the repaint — it will be snatched "
+        "away mid-reach")
+    assert got["closedDetails"] is False, (
+        "a popover inside a closed <details> still counts as an open menu, so the "
+        "Overview will render no job cards")
+    assert got["hiddenAttr"] is False, "a `hidden` popover counts as an open menu"
+    assert got["noMenus"] is False, "the guard fires with no menus in the page at all"
+
+
+def test_the_cause_badge_explains_itself_on_hover(srv, tmp_path):
+    """The badge is a 30px pill saying "API" or "limit" — useless without the
+    sentence behind it, which is why the CSS gives it `cursor:help`.
+
+    It carried that sentence in a `title`, and a native tooltip needs the
+    pointer to dwell for about a second before the browser draws it. This is a
+    table that repaints every 5 seconds, so on a badge that size the dwell
+    rarely completes: the cursor turned into a question mark and nothing ever
+    appeared — a promise the page could not keep. The page's own bubble
+    (tipShow, wired to a delegated mouseover on `[data-tip]`) shows on hover
+    with no dwell and cannot be clipped by an ancestor, so the badge uses that.
+    """
+    js = _app_js(srv)
+    fn = _plainfn(js, "causeTag")
+    assert "dataset.tip" in fn, (
+        "causeTag no longer sets data-tip, so the badge's explanation is back to a "
+        "native tooltip the pointer rarely dwells long enough to trigger")
+    assert ".title" not in fn, (
+        "causeTag sets a `title` as well — the browser then draws its own tooltip "
+        "over the page's bubble a second later")
+
+    labels = re.search(r"const CAUSE_LABEL=\{.*?\n\};", js, re.S)
+    assert labels, "CAUSE_LABEL moved — update this test with it"
+    script = tmp_path / "causetag.js"
+    script.write_text("""
+function el(tag, cls, text){ return {tag, className: cls, textContent: text, dataset: {}}; }
+""" + labels.group(0) + "\n" + fn + """
+const out = {};
+for(const cause of Object.keys(CAUSE_LABEL)){
+  const t = causeTag({cause});
+  out[cause] = {label: t.textContent, tip: decodeURIComponent(t.dataset.tip || "")};
+}
+out.unknown = causeTag({cause: "something-new"});
+out.none = causeTag({});
+console.log(JSON.stringify(out));
+""")
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert got["none"] is None, "a run with no cause still gets a badge"
+    assert got["unknown"] is None, "an unrecognised cause invents a badge with no text"
+    for cause, seen in got.items():
+        if cause in ("none", "unknown"):
+            continue
+        assert seen["label"], f"{cause} has no badge text"
+        assert len(seen["tip"]) > 20, (
+            f"{cause}'s badge carries no explanation — the whole point of the pill "
+            f"is that the sentence is one hover away")
+    assert "the provider's fault" in got["api_error"]["tip"], (
+        "the API badge no longer says whose fault it is, which is what tells the "
+        "operator to wait rather than go and look")
+
+
+def test_a_start_keeps_its_button_down_until_the_run_appears(srv, tmp_path):
+    """A click has to stay committed until the run it started is visible.
+
+    The server answers a start as soon as `cc(..., background=True)` has
+    forked; the slot, and therefore the row, appear on a later poll. Handing
+    the button back in between is how one reviewer job ended up with two
+    sessions cut short on the SAME port block — two runs from two clicks, the
+    first dying and releasing block 21000, the second taking it back, and
+    neither resumable while the other was going.
+
+    The four things that must all hold: down while in flight, back up when the
+    run lands, back up after the grace period if nothing ever lands (or the
+    only way to run the job again is a page reload), and — for a resume —
+    keyed by session, so a job's other Resume buttons stay usable."""
+    js = _js(srv)
+    state = re.search(r"const starting=new Map\(\);.*?const START_GRACE_S=\d+;", js, re.S)
+    assert state, "the pending-start state moved — update this test with it"
+    script = tmp_path / "pending-starts.js"
+    script.write_text("""
+// Stubs for the two live-slot readers isStarting consults.
+let SLOTS = {};
+function activeRunsOf(id){ return SLOTS[id] || []; }
+function resumeInFlight(id, sid){ return activeRunsOf(id).some(a => a.resume_of === sid); }
+let NOW = 1000;
+const _realNow = Date.now;
+Date.now = () => NOW * 1000;
+""" + state.group(0) + "\n"
+   + _plainfn(js, "startKey") + "\n"
+   + _plainfn(js, "markStarting") + "\n"
+   + _plainfn(js, "isStarting") + """
+const out = {};
+
+// A job already running one thing; the click must not be cleared by that.
+SLOTS = {rev: [{pid: 111}]};
+markStarting("rev");
+out.downWhileForking = isStarting("rev");
+SLOTS = {rev: [{pid: 111}]};                 // still only the old slot
+out.stillDownWithOnlyTheOldRun = isStarting("rev");
+SLOTS = {rev: [{pid: 111}, {pid: 222}]};     // the started run appears
+out.upWhenTheRunLands = isStarting("rev");
+
+// Nothing ever lands: the button has to come back on its own.
+SLOTS = {dev: []};
+markStarting("dev");
+out.downBeforeGrace = isStarting("dev");
+NOW += START_GRACE_S + 1;
+out.upAfterGrace = isStarting("dev");
+NOW = 1000;
+
+// Two Resume buttons on one card: only the clicked one goes down.
+SLOTS = {rev: []};
+markStarting("rev", "sid-A");
+out.resumeAdown = isStarting("rev", "sid-A");
+out.resumeBstillUp = isStarting("rev", "sid-B");
+SLOTS = {rev: [{pid: 333, resume_of: "sid-A"}]};
+out.resumeAupWhenItLands = isStarting("rev", "sid-A");
+
+// A run and a resume of the same job are tracked apart.
+SLOTS = {promo: []};
+markStarting("promo");
+markStarting("promo", "sid-C");
+SLOTS = {promo: [{pid: 444, resume_of: "sid-C"}]};
+out.resumeLandedButRunStillPending = [isStarting("promo", "sid-C"), isStarting("promo")];
+
+Date.now = _realNow;
+console.log(JSON.stringify(out));
+""")
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert got["downWhileForking"] is True, "the button is live while the run is still forking"
+    assert got["stillDownWithOnlyTheOldRun"] is True, (
+        "a run the job already had before the click cleared the pending state — at "
+        "max_parallel > 1 that clears it instantly and the guard buys nothing")
+    assert got["upWhenTheRunLands"] is False, "the button never comes back once the run appears"
+    assert got["downBeforeGrace"] is True
+    assert got["upAfterGrace"] is False, (
+        "a start that never landed strands its button — a page reload becomes the "
+        "only way to run the job again")
+    assert got["resumeAdown"] is True
+    assert got["resumeBstillUp"] is False, (
+        "resuming one session disabled another session's Resume button on the same card")
+    assert got["resumeAupWhenItLands"] is False
+    assert got["resumeLandedButRunStillPending"] == [False, True], (
+        "a run and a resume of one job are not tracked apart")
+
+
+def test_the_start_path_does_not_hand_the_button_straight_back(srv):
+    """The success branch must not re-enable the button: that is the window a
+    second click landed in. Pinned as source, because the failure is invisible
+    in any single render — it is the two lines running in the wrong order."""
+    js = _js(srv)
+    i = js.index('toast("Started "+id, false, "play");')
+    branch = js[i:i + 400]
+    assert "markStarting(id)" in branch, (
+        "a successful start no longer records itself as pending, so the next repaint "
+        "hands the button back before the run exists")
+    assert "b.disabled=false" not in branch, (
+        "the success path re-enables the button while the run is still forking — "
+        "this is exactly the double-click window")

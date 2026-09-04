@@ -557,7 +557,14 @@ document.documentElement.dataset.theme =
                     </div>
                     <details class="secrun-filterpick" id="sec-run-filterpick">
                       <summary class="filterpick" id="sec-run-filterpick-trigger"></summary>
-                      <div class="menu-pop secrun-filterpop" id="sec-run-filterpop">
+                      <!-- `hidden` from the first paint, like every sibling popover
+                           in this bar. Its own ontoggle keeps it in step with the
+                           <details> from then on, but that only ever fires once the
+                           filter has been opened by hand — until then this element
+                           read as an OPEN menu to anything asking `:not([hidden])`,
+                           which is how renderOverviewJobs() came to abort on every
+                           repaint and leave the Overview with no job cards at all. -->
+                      <div class="menu-pop secrun-filterpop" id="sec-run-filterpop" hidden>
                         <div class="secchips" id="sec-checklist"></div>
                       </div>
                     </details>
@@ -1805,7 +1812,25 @@ function renderOverviewJobs(){
   // Rebuilt from scratch on every 5-second poll. An overflow menu is inside
   // one, so redrawing while it is open would snatch it away mid-reach; the
   // next poll is 5 seconds behind at worst.
-  if(document.querySelector(".menu-pop:not([hidden])")) return;
+  //
+  // "Open" has to mean RENDERED, not "missing a `hidden` attribute". A popover
+  // hidden by any other means still matches `:not([hidden])`, and one of them
+  // is in the page from the first paint: #sec-run-filterpop lives inside a
+  // closed <details>, and its `hidden` is only ever written by that element's
+  // own ontoggle — which has never fired. This guard therefore fired on EVERY
+  // repaint and the Overview's job cards were never drawn at all: eight jobs
+  // reduced to an empty column, with nothing in the console to say why. The
+  // markup now ships that popover `hidden` like its siblings, but the guard
+  // must not depend on every future popover remembering to.
+  //
+  // getClientRects(), not offsetParent: an OPEN menu positions itself
+  // `position:fixed` (see secRunFilterPick), whose offsetParent is null even
+  // when it is plainly on screen — that test would snatch away the very menus
+  // this exists to protect. An element inside `display:none`, or inside a
+  // closed <details>, has no client rects; a visible one always has at least one.
+  const menuOpen = Array.from(document.querySelectorAll(".menu-pop:not([hidden])"))
+    .some(el => el.getClientRects().length > 0);
+  if(menuOpen) return;
   const jobs=DATA.jobs||[];
   const allProjects=[...new Set(jobs.map(j=>j.project||"").filter(Boolean))].sort();
   if(CCApp.jobFilters.project && CCApp.jobFilters.project!=="__none__"
@@ -2675,6 +2700,10 @@ function render(){
   CCSecurity.render();
   renderJobsArea();
   CCApp.renderRunsPage();
+  // Last, once every button in the page exists again: a start that has not
+  // landed yet keeps its button down across the repaint that would otherwise
+  // hand it back live. See `starting` for what that window cost.
+  applyPendingStarts();
   $("foot").textContent="claude-cron · control server on 127.0.0.1 · SQLite index.db ("
     +fmtBytes(DATA.db_bytes)+") holds run history & search · runs.ndjson is the append journal";
 }
@@ -2711,6 +2740,72 @@ function forgetDeadStops(live){
   [...stopping].forEach(p=>{ if(!alive.has(p)) stopping.delete(p); });
 }
 function isStopping(r){ return r.live && stopping.has(String(r.pid)); }
+
+/* ---- a click that has not become a run yet ---- */
+// The server answers a start long before the engine's slot exists: the fetch
+// returns as soon as `cc(..., background=True)` has forked, and the run itself
+// only appears on a later 5-second poll. The success path used to hand the
+// button straight back (`b.disabled=false`), so every start had a window — a
+// second or two at best, tens of seconds while a precheck talks to Jira — in
+// which the button looked idle and a second click started a SECOND run.
+//
+// That is not hypothetical. It is how one reviewer job ended up with two
+// sessions cut short on the SAME port block: two runs from two clicks, the
+// first dying and releasing block 21000, the second taking it straight back.
+// Neither could then be resumed while the other was going, and the second
+// Resume button failed with nothing to show for it.
+//
+// Keyed by what the click actually starts: a job id for a run, and job|session
+// for a resume, because one card can offer several Resume buttons and only the
+// one that was clicked should go down. Modelled on `stopping` above, and held
+// in memory for the same reason: a reload is a deliberate act, and the live
+// slots are authoritative the moment the page comes back.
+const starting=new Map();
+// Long enough for a slow precheck and a fresh worktree, short enough that a
+// start which never lands cannot strand the button: without a ceiling, a run
+// the engine quietly declines would leave a page reload as the only way back.
+const START_GRACE_S=90;
+function startKey(id, sid){ return sid ? id+"|"+sid : id; }
+function markStarting(id, sid){
+  starting.set(startKey(id, sid),
+               {at:Math.floor(Date.now()/1000), sid:sid||"",
+                pids:new Set(activeRunsOf(id).map(a=>String(a.pid)))});
+}
+// In flight, landed, or given up? Answered from the live slots, so it reads the
+// same data the row the operator is watching does.
+function isStarting(id, sid){
+  const k=startKey(id, sid), s=starting.get(k);
+  if(!s) return false;
+  const landed = s.sid
+    // A resume is identified by the session it continues — exactly what
+    // resumeInFlight already asks, rather than a second definition to drift.
+    ? resumeInFlight(id, s.sid)
+    // A plain run is identified by a slot this job did not have when the button
+    // was clicked: at max_parallel 3 it may well have had others going already,
+    // so "has any run" would clear the moment it was set. `!a.resume_of`
+    // because a resume is a new slot too — clicking Run now and then Resume on
+    // one card otherwise let the resume's slot answer for the run, handing the
+    // Run now button back while its own start was still forking.
+    : activeRunsOf(id).some(a=>!s.pids.has(String(a.pid)) && !a.resume_of);
+  if(landed || Math.floor(Date.now()/1000)-s.at > START_GRACE_S){
+    starting.delete(k); return false;
+  }
+  return true;
+}
+// Re-applied after every repaint, because the cards and rows are rebuilt from
+// scratch: the element the click handler disabled is gone by the time the next
+// poll lands, and its replacement comes back live. Central on purpose — every
+// `data-op="run"`/`"resume"` button in the page is covered without each of the
+// places that builds one having to remember.
+function applyPendingStarts(){
+  document.querySelectorAll('button[data-op="run"],button[data-op="resume"]').forEach(b=>{
+    if(!isStarting(b.dataset.id, b.dataset.session)) return;
+    b.disabled=true;
+    b.dataset.tip=encodeURIComponent(
+      "Starting — waiting for the run to appear. The button comes back as soon "
+      + "as it does, or shortly after if nothing starts.");
+  });
+}
 
 /* ONE run, one row — and one number.
    The two sources overlap. A run writes its journal record and only THEN
@@ -4913,7 +5008,12 @@ document.addEventListener("click", async (e)=>{
     }
     if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Failed — "+(j.error||("HTTP "+r.status)), true); b.disabled=false; return; }
     toast("Started "+id, false, "play");
-    setTimeout(refresh, 1200); b.disabled=false; return;
+    // Stays DOWN until the run shows up in the live slots. Handing it back here
+    // is what let a second click land while the first start was still forking —
+    // see `starting`. applyPendingStarts() keeps it down across the repaints in
+    // between, and releases it the moment the run appears.
+    markStarting(id);
+    setTimeout(refresh, 1200); return;
   }
   // Resume continues THAT run's own session (the same task), so it carries the
   // session id. Stop from a runs row targets that one run by its pid — with
@@ -4934,6 +5034,10 @@ document.addEventListener("click", async (e)=>{
     if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Resume failed — "+(j.error||("HTTP "+r.status)), true); b.disabled=false; return; }
     if(b.dataset.resumeKey){ const [rid,rstart]=b.dataset.resumeKey.split("|"); markResumed(rid, +rstart); }
     toast("Resuming "+id+" — continuing session "+sid.slice(0,8), false, "play");
+    // This element stays down, but it is replaced on the next repaint and its
+    // successor is built live; markStarting is what carries the state across
+    // that, keyed by the session so a job's OTHER Resume buttons stay usable.
+    markStarting(id, sid);
     setTimeout(refresh, 1200); b.disabled=true; return;
   }
   const extra={id};

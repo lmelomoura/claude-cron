@@ -1780,6 +1780,74 @@ def resume_in_flight(jid, sid):
     return bool(sid) and any(r.get("resume_of") == sid for r in active_runs_for(jid))
 
 
+def _resume_port_block(jid, sid):
+    """The port block the retained run dir for <sid> would have to reclaim, or
+    "" when there is none recorded — the engine then allocates a fresh one and
+    nothing can be in the way."""
+    root = DATA_DIR / "worktrees" / str(jid)
+    if not root.is_dir():
+        return ""
+    for d in sorted(root.iterdir()):
+        if not d.is_dir() or d.name.startswith("."):
+            continue
+        if _session_bound_to(d) != sid:
+            continue
+        try:
+            base = json.loads((d / ".run.json").read_text()).get("port_base")
+        except Exception:  # noqa: BLE001
+            return ""
+        return str(base or "")
+    return ""
+
+
+def resume_port_block_held_by(jid, sid):
+    """(block, holder) — the port block this resume needs, and the LIVE run
+    sitting on it, if any.
+
+    A resume must have the EXACT block its services were bound to: a fresh one
+    would point the resumed agent's config at ports nothing is listening on, so
+    the engine refuses rather than substitute (see port_base_reclaim in
+    bin/claude-cron). That refusal happens after the run has detached, which is
+    why it has to be asked here too — `cc(..., background=True)` returns before
+    the engine has looked, so the dashboard said "Resuming…", disabled the
+    button and left the operator watching nothing happen, with the reason
+    written only to tick.log. Two sessions of one job cut short in a row share
+    a block, so resuming either one makes the other unresumable until it ends —
+    the exact case that produced two Resume buttons and one that could never
+    work.
+
+    Same scan as port_base_free: every live slot of every job, since the block
+    can be held by a run of any of them. The resume's own slot does not exist
+    yet at this point, so there is nothing to exclude.
+    """
+    want = _resume_port_block(jid, sid)
+    if not want:
+        return "", None
+    locks = DATA_DIR / "locks"
+    if not locks.is_dir():
+        return want, None
+    for jobdir in sorted(locks.iterdir()):
+        if not jobdir.is_dir():
+            continue
+        for slot in sorted(jobdir.iterdir()):
+            if not slot.is_dir() or slot.name.startswith("."):
+                continue
+            if not slot_alive(slot):
+                continue
+            try:
+                base = (slot / "portbase").read_text().strip()
+            except OSError:
+                continue
+            if base != want:
+                continue
+            try:
+                pid = int((slot / "pid").read_text().strip())
+            except (OSError, ValueError):
+                pid = None
+            return want, {"job": jobdir.name, "pid": pid}
+    return want, None
+
+
 _LAUNCHD_TTL = 60
 _launchd_cache = {"at": 0.0, "loaded": False}
 
@@ -3368,6 +3436,21 @@ class Handler(BaseHTTPRequestHandler):
                              f"is {ceiling} at a time, so this task was not resumed. Stop a run, wait "
                              f"for one to finish, or raise “Max simultaneous runs” on this job.",
                     "running": True, "at_capacity": True, "running_count": n, "max_parallel": ceiling})
+            # Asked BEFORE the launch for the same reason at_capacity is: the
+            # engine's own refusal lands after `cc` has detached, so without
+            # this the dashboard reports a resume that the engine then declines,
+            # naming the reason only in tick.log.
+            block, holder = resume_port_block_held_by(jid, sid)
+            if holder:
+                who = holder["job"] + (f" (pid {holder['pid']})" if holder["pid"] else "")
+                return self._send(409, {
+                    "error": f"this task's services are bound to port block {block}, and the run "
+                             f"{who} is holding it right now, so it was not resumed. A resume has to "
+                             f"have that exact block — a fresh one would point the resumed agent at "
+                             f"ports nothing is listening on. Stop that run, or wait for it to finish "
+                             f"and try again.",
+                    "running": True, "port_block_held": True,
+                    "port_block": block, "held_by": holder})
             ok, out = cc(["resume", jid, sid], background=True)
         elif op == "say":
             # Deliver a human message into the run that is happening right now.

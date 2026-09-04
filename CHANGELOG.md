@@ -19,6 +19,67 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A Run now or Resume button stays down until its run actually appears.** The
+  server answers a start as soon as `cc(..., background=True)` has forked; the
+  engine's slot, and so the row, land on a later 5-second poll. The success
+  path handed the button straight back (`b.disabled=false`), leaving a window —
+  a second at best, tens of them while a precheck talks to Jira — where the
+  button looked idle and a second click started a SECOND run. That window is
+  what produced the rest of this release: two clicks on one reviewer job gave
+  it two runs, the first died and released port block 21000, the second took it
+  straight back, and the two sessions it left cut short could never both be
+  resumed. The button now stays disabled until a live slot for that start
+  exists, is re-disabled after every repaint that rebuilds it, and comes back on
+  its own after 90 seconds if nothing ever lands — otherwise a start the engine
+  quietly declines would leave a page reload as the only way to run the job
+  again. Keyed by job for a run and by job+session for a resume, so a card
+  offering several Resume buttons only takes down the one that was clicked, and
+  a resume's slot cannot answer for a Run now that is still forking.
+- **The cause badge in the Runs table explains itself again.** `API`, `limit`,
+  `blocked` — a 30px pill whose whole job is to say, without opening the run,
+  whether to wait or to go and look. The sentence behind it was a `title`, and
+  a native tooltip only appears after the pointer dwells for about a second;
+  on a pill that size, in a table that repaints every 5 seconds, that dwell
+  rarely completes. The cursor turned into a question mark, courtesy of the
+  `cursor:help` the CSS gives it, and nothing was ever drawn. It now uses the
+  page's own bubble (`data-tip`, the delegated `mouseover` that tipShow already
+  backs), which appears on hover and cannot be clipped by an ancestor.
+- **A resume that cannot have its port block is refused out loud instead of
+  silently declined.** A resume must reclaim the EXACT block its services were
+  bound to — a fresh one would point the resumed agent's config at ports
+  nothing is listening on — so the engine refuses when a live run holds it.
+  That refusal happens after the run has detached, and the dashboard launches a
+  resume with `cc(..., background=True)`: it answered 200 before the engine had
+  looked, so the button went disabled, a "Resuming…" toast appeared, nothing
+  ever started, and the reason existed only in `tick.log`. Two runs of one job
+  cut short in a row share a block, which is how one job came to show two
+  Resume buttons where resuming either made the other impossible: `cannot
+  resume 1f78a14d — its port block 21000 is held by a live run`, twice, with
+  the operator watching a button that looked like it had worked. The handler
+  now asks before it launches, the same way it already asks `at_capacity`, and
+  returns 409 naming the block and the run sitting on it — which is not
+  necessarily a run of the same job, since a block is machine-wide.
+- **The Overview draws its job cards again — a popover nobody could see was
+  stalling every repaint.** `renderOverviewJobs()` skips its rebuild while a
+  menu is open, so an operator reaching into an overflow menu does not have it
+  snatched away by the 5-second poll. It asked for that with
+  `.menu-pop:not([hidden])` — the ABSENCE of an attribute — and one popover
+  ships in the page from the first paint without it: `#sec-run-filterpop` sits
+  inside a closed `<details>`, and its `hidden` is only ever written by that
+  element's own `ontoggle`, which never fires until the filter is opened by
+  hand. So on every install where the Security page had been built, the guard
+  matched on EVERY repaint and the job cards were never drawn at all: eight
+  jobs reduced to an empty column below the 24-hour chart, no error in the
+  console, and the sidebar still counting them. Reproduced by serving the real
+  bundle against the real `load_data()`/`load_config()` payload: `#jobs` came
+  back with `innerHTML.length === 0` and exactly one `.menu-pop` in the
+  document, laid out nowhere (`getClientRects().length === 0`). The popover now
+  ships `hidden` like every sibling in that bar, and the guard asks whether a
+  menu is actually on screen rather than trusting an attribute — by
+  `getClientRects()`, not `offsetParent`, because an open menu positions itself
+  `position:fixed` and its `offsetParent` is `null` while it is plainly
+  visible, which would have broken the guard in the other direction and
+  reintroduced exactly the snatched-away menu it exists to prevent.
 - **A credential committed and deleted under a skipped directory no longer
   comes back from the built-in's history sweep.** `scan_history` applied the
   operator's `ignore_paths` to a diff's path and never `secrets.skipped()`,
