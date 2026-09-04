@@ -2109,7 +2109,7 @@ CCApp.init({ $, fmtAgo, fmtDur, money,
              icon: CC.icon,
              projById, eff,
              backoffMultiplier, activeRunsOf, renderJobs: renderJobsArea,
-             effortLabel, fmtExpiresIn, resumeInFlight,
+             effortLabel, fmtExpiresIn, resumeInFlight, markIfStarting,
              fmtWhen, fmtIn, isFav, TOKEN, toast, refresh, paintJobPickers,
              normStatus,
              openLog, resumeTarget, resumeTip, continuedRun, resumedBadgeTip,
@@ -2700,10 +2700,6 @@ function render(){
   CCSecurity.render();
   renderJobsArea();
   CCApp.renderRunsPage();
-  // Last, once every button in the page exists again: a start that has not
-  // landed yet keeps its button down across the repaint that would otherwise
-  // hand it back live. See `starting` for what that window cost.
-  applyPendingStarts();
   $("foot").textContent="claude-cron · control server on 127.0.0.1 · SQLite index.db ("
     +fmtBytes(DATA.db_bytes)+") holds run history & search · runs.ndjson is the append journal";
 }
@@ -2778,10 +2774,10 @@ function markStarting(id, sid){
 // Dropping the entry is not enough on its own. The element the click handler is
 // still holding may already have been replaced — a poll can land while a
 // showConfirm sits open — and its replacement was disabled by
-// applyPendingStarts() on that very repaint, with nothing to re-enable it until
+// markIfStarting() as it was built, with nothing to re-enable it until
 // the NEXT one. Answering "no" would leave the button dead for up to five
 // seconds. So re-enable whatever is in the page right now, matched the same way
-// applyPendingStarts() disables it.
+// markIfStarting() disables it.
 function clearStarting(id, sid){
   starting.delete(startKey(id, sid));
   document.querySelectorAll('button[data-op="run"],button[data-op="resume"]').forEach(b=>{
@@ -2811,19 +2807,28 @@ function isStarting(id, sid){
   }
   return true;
 }
-// Re-applied after every repaint, because the cards and rows are rebuilt from
-// scratch: the element the click handler disabled is gone by the time the next
-// poll lands, and its replacement comes back live. Central on purpose — every
-// `data-op="run"`/`"resume"` button in the page is covered without each of the
-// places that builds one having to remember.
-function applyPendingStarts(){
-  document.querySelectorAll('button[data-op="run"],button[data-op="resume"]').forEach(b=>{
-    if(!isStarting(b.dataset.id, b.dataset.session)) return;
-    b.disabled=true;
-    b.dataset.tip=encodeURIComponent(
-      "Starting — waiting for the run to appear. The button comes back as soon "
-      + "as it does, or shortly after if nothing starts.");
-  });
+// Applied where a button is BUILT, and handed to the builders through the
+// CCApp interface -- NOT re-applied after a repaint.
+//
+// The first cut of this did re-apply, from the last line of render(), and that
+// is only one of the ways these buttons are rebuilt. A keystroke in the jobs
+// search box, a column sort, a page change, a project or status pick, a filter
+// chip, a favourite toggle -- fourteen paths in all -- call renderJobsArea() or
+// CCApp.renderRunsPage() directly and never reach render(). Every one of them
+// minted a fresh, enabled Run now / Resume and nothing put the guard back, so
+// typing one character while a start was in flight handed the button back and
+// the second click went through after all.
+//
+// `isStopping` and `resumeInFlight` never had that hole because the row builder
+// consults them as it builds. This does the same, so there is one place that
+// decides and no repaint path left to forget.
+function markIfStarting(btn){
+  if(!btn || !isStarting(btn.dataset.id, btn.dataset.session||"")) return btn;
+  btn.disabled=true;
+  btn.dataset.tip=encodeURIComponent(
+    "Starting — waiting for the run to appear. The button comes back as soon "
+    + "as it does, or shortly after if nothing starts.");
+  return btn;
 }
 
 /* ONE run, one row — and one number.
@@ -5040,7 +5045,7 @@ document.addEventListener("click", async (e)=>{
     toast("Started "+id, false, "play");
     // Stays DOWN until the run shows up in the live slots. Handing it back here
     // is what let a second click land while the first start was still forking —
-    // see `starting`. applyPendingStarts() keeps it down across the repaints in
+    // see `starting`. markIfStarting() keeps it down across the repaints in
     // between, and releases it the moment the run appears.
     markStarting(id);
     setTimeout(refresh, 1200); return;

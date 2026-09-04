@@ -46,6 +46,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the commitment again and re-enables whatever button is in the page at that
   moment, since the element the handler was holding may already have been
   replaced by a repaint that ran while the dialog was open.
+
+  And the guard is asked where each button is BUILT, not re-applied after the
+  repaint. `render()` is not the only thing that rebuilds these: a keystroke in
+  the jobs search box, a column sort, a page change, a project or status pick, a
+  filter chip and a favourite toggle — fourteen paths — call `renderJobsArea()`
+  or `CCApp.renderRunsPage()` directly and never reach `render()`. A guard
+  re-applied from the last line of `render()` was thrown away by every one of
+  them, so typing a single character while a start was in flight minted a fresh,
+  enabled Run now and let the second click through after all. `isStopping` and
+  `resumeInFlight` never had that hole because the row builder consults them as
+  it builds; the pending start now does the same, through the same interface,
+  and there is no repaint path left to forget.
 - **The cause badge in the Runs table explains itself again.** `API`, `limit`,
   `blocked` — a 30px pill whose whole job is to say, without opening the run,
   whether to wait or to go and look. The sentence behind it was a `title`, and

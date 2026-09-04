@@ -51,7 +51,7 @@ import { jobFacts, visibleJobs, jobFilters, sortJobs, JOB_COLS,
 import { jobsEmptyNote } from "./overview.js";
 import { el, pageHeader, kpiCard, filterBar, tableCard, tableFooter } from "./chrome.js";
 import { $, CC, icon, money, fmtAgo, fmtDur, fmtWhen, fmtIn, isFav,
-         TOKEN, toast, refresh, paintJobPickers } from "./page.js";
+         TOKEN, toast, refresh, paintJobPickers, markIfStarting } from "./page.js";
 
 /* ------------------------------------------------------------ the header
    One sentence, built from what is actually configured -- not a static
@@ -321,6 +321,9 @@ function jobRow(j, F){
   const tdActs = el("td", "rowacts");
   const run = el("button", "iconbtn");
   run.dataset.op = "run"; run.dataset.id = j.id; run.title = "Run now";
+  // A sort, a page change or a keystroke rebuilds this row without going
+  // through render() -- see overview.js's jobCard for the whole story.
+  markIfStarting(run);
   run.appendChild(icon("play"));
   tdActs.appendChild(run);
 

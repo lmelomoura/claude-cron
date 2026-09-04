@@ -13,6 +13,7 @@
   var effortLabel;
   var fmtExpiresIn;
   var resumeInFlight;
+  var markIfStarting;
   var fmtWhen;
   var fmtIn;
   var isFav;
@@ -48,6 +49,7 @@
       effortLabel,
       fmtExpiresIn,
       resumeInFlight,
+      markIfStarting,
       fmtWhen,
       fmtIn,
       isFav,
@@ -637,6 +639,7 @@
         btn.dataset.op = "resume";
         btn.dataset.id = jobId;
         btn.dataset.session = w.session;
+        markIfStarting(btn);
         btn.title = "Resume this task \u2014 continue session " + w.session.slice(0, 8) + " where it stopped";
         btn.appendChild(icon("play"));
         btn.appendChild(document.createTextNode("Resume"));
@@ -801,6 +804,7 @@
     const runBtn = el("button", "btn primary");
     runBtn.dataset.op = "run";
     runBtn.dataset.id = j.id;
+    markIfStarting(runBtn);
     runBtn.appendChild(icon("play"));
     runBtn.appendChild(document.createTextNode("Run now"));
     actions.appendChild(runBtn);
@@ -1254,6 +1258,7 @@
     run.dataset.op = "run";
     run.dataset.id = j.id;
     run.title = "Run now";
+    markIfStarting(run);
     run.appendChild(icon("play"));
     tdActs.appendChild(run);
     const toggle = el("button", "iconbtn");
@@ -2072,6 +2077,7 @@
         retry.dataset.id = r.id;
         retry.dataset.session = r.session || "";
         retry.dataset.resumeKey = runKey(r.id, r.start);
+        markIfStarting(retry);
       }
     } else {
       retry.disabled = true;
@@ -2376,5 +2382,5 @@
     projectStepError
   };
 })();
-/* ui-bundle: 81e59e183b4e5bdeb495b77e14b8011e432baf58fb2fa7573042c79af1bb8833 */
-/* ui-sources: 578ff094f9a45b8aad609ab16aca10dda737d7e90812373903d2050260360ef1 */
+/* ui-bundle: 5733c2da28aac1309e7c0ccc7689ff0704363527cc29823dc3cce199e23e9ba9 */
+/* ui-sources: 8eb95a3d1dfbc674152263138438c085cac87b5abddab54c1c9c0e5a43ed2bf0 */
