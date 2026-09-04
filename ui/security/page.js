@@ -17,6 +17,12 @@
 export let $, TOKEN, api, toast, openLog, projById, sessionLost,
            unjournaledLive, fmtAgo, fmtWhen, fmtDur, money, icon, iconLabel, iconHTML,
            openProjectEditor,
+           // The page-wide guard against firing one action twice. This page
+           // repaints on its own 4-second cycle, which rebuilds its buttons the
+           // same way the dashboard's poll rebuilds the cards -- so it reads the
+           // SAME state rather than keeping a second one that could disagree
+           // about what is already in flight.
+           markPending, clearPending, isPending, markIfPending,
            // The chrome bridge (Phase 4 Task 1): pageHeader, kpiCard and
            // tableFooter are ui/app/chrome.js's own builders, read off
            // CCApp -- not imported -- because ui/security/ and ui/app/ are
@@ -114,6 +120,7 @@ export function bindPage(cc) {
   CC = cc;
   ({ $, TOKEN, api, toast, openLog, projById, sessionLost, unjournaledLive,
      fmtAgo, fmtWhen, fmtDur, money, icon, iconLabel, iconHTML, openProjectEditor,
+     markPending, clearPending, isPending, markIfPending,
      pageHeader, kpiCard, tableFooter, makePicker, createCombo, closeMenus,
      pushNav } = cc);
 }

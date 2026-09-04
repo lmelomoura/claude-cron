@@ -1,5 +1,5 @@
 /* --------------------------------------------------------------- actions */
-import { $, TOKEN, api, toast } from "./page.js";
+import { $, TOKEN, api, toast, markPending, clearPending } from "./page.js";
 import { secState } from "./state.js";
 import { secScope, secReload, secSyncPoll, secPaintRunButton } from "./analysis.js";
 
@@ -9,6 +9,13 @@ export async function secAnalyse(){
   const btn = $("sec-run");
   btn.disabled = true;
   btn.textContent = "Analysing…";
+  // secPaint() rebuilds this button on its own 4-second cycle, so `disabled`
+  // alone is gone before the detached `security analyze` has reached
+  // acquire_slot -- and the engine's "one at a time" gate is that slot, which
+  // takes a second or two to exist. A second click in the gap really starts a
+  // second analysis.
+  const ak = ["security_analyze", secState.project, ""];
+  markPending(...ak);
   try{
     // ALWAYS this op, never a bare run of the derived job: the request file the
     // job reads is written here, and running the job on its own would make it
@@ -34,6 +41,7 @@ export async function secAnalyse(){
     await secReload();
     secSyncPoll();
   } finally {
+    clearPending(...ak);
     btn.disabled = false;
     btn.textContent = "Analyse";
     secPaintRunButton();
@@ -55,6 +63,11 @@ export async function secAnalyse(){
 // their own copy that would drift the first time one of them was fixed.
 export async function secDownloadReport(id, fmt, btn){
   btn.disabled = true;
+  // /api/security/report is not read-only: it spawns `security render`, then
+  // `security analysis`, and writes a report_exported event into the ledger.
+  // The `finally` below lands on a node secPaint may already have replaced.
+  const dk = ["security_report", id, fmt];
+  markPending(...dk);
   try{
     // Every GET on this API carries the token header, which a plain
     // `<a href="/api/security/report?…">` cannot attach — so the report is
@@ -82,7 +95,7 @@ export async function secDownloadReport(id, fmt, btn){
     // asynchronously and a URL revoked in the same tick can lose the race.
     setTimeout(() => URL.revokeObjectURL(url), 30000);
   }catch(e){ toast("Download failed — " + e.message, true); }
-  finally{ btn.disabled = false; }
+  finally{ clearPending(...dk); btn.disabled = false; }
 }
 
 export async function secDownload(fmt){

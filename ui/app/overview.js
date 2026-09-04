@@ -37,7 +37,7 @@
    ./chrome.js rather than have five pages import their own furniture from
    a file named for one of them. */
 import { $, CC, icon, eff, fmtAgo, fmtDur, money, effortLabel, fmtExpiresIn,
-         resumeInFlight, markIfStarting, projById } from "./page.js";
+         resumeInFlight, markIfPending, projById } from "./page.js";
 import { jobFacts } from "./jobs-domain.js";
 import { el, pageHeader, kpiCard } from "./chrome.js";
 
@@ -409,7 +409,7 @@ function sessionNotices(jobId){
       btn.dataset.op = "resume";
       btn.dataset.id = jobId;
       btn.dataset.session = w.session;
-      markIfStarting(btn);   // see jobCard's own call
+      markIfPending(btn);   // see jobCard's own call
       btn.title = "Resume this task — continue session " + w.session.slice(0, 8) + " where it stopped";
       btn.appendChild(icon("play"));
       btn.appendChild(document.createTextNode("Resume"));
@@ -659,7 +659,7 @@ export function jobCard(j){
   // in the row builders: this card is rebuilt by a keystroke in the jobs
   // search box and a dozen other paths that never reach render(), so a guard
   // re-applied after the repaint is thrown away by every one of them.
-  markIfStarting(runBtn);
+  markIfPending(runBtn);
   runBtn.appendChild(icon("play"));
   runBtn.appendChild(document.createTextNode("Run now"));
   actions.appendChild(runBtn);
@@ -667,6 +667,7 @@ export function jobCard(j){
   const toggleBtn = el("button", "btn");
   toggleBtn.dataset.op = disabled ? "enable" : "disable";
   toggleBtn.dataset.id = j.id;
+  markIfPending(toggleBtn);
   toggleBtn.appendChild(icon("power"));
   toggleBtn.appendChild(document.createTextNode(disabled ? "Enable" : "Disable"));
   actions.appendChild(toggleBtn);
@@ -701,6 +702,7 @@ export function jobCard(j){
   const delBtn = el("button", "danger");
   delBtn.setAttribute("role", "menuitem");
   delBtn.dataset.op = "delete"; delBtn.dataset.id = j.id;
+  markIfPending(delBtn);
   delBtn.appendChild(icon("trash"));
   delBtn.appendChild(document.createTextNode("Delete job"));
   pop.appendChild(delBtn);

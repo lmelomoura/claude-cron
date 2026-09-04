@@ -1757,6 +1757,10 @@ function noteRecentProject(name){
 function bulkBtn(cls, kind, key, js){
   const on=CCApp.bulkOn(js);
   return '<button class="'+cls+'" data-bulk-kind="'+kind+'" data-bulk="'+esc(key)+'" data-bulk-to="'+(on?"0":"1")+'"'
+    // Asked as the button is composed, like every other action button: this
+    // header is rebuilt on every poll, so a disable set by the click handler
+    // is gone before the toggle it guards has finished.
+    +pendingAttr("toggle_many", key, kind)
     +' title="'+(on?"Disable":"Enable")+' every job in this group">'
     +I.power+CCApp.bulkLabel(on)+'</button>';
 }
@@ -1773,6 +1777,13 @@ function bulkScope(kind, key){
 async function bulkToggle(btn, kind, key, enable){
   const sc=bulkScope(kind, key), js=sc.js;
   if(!js.length) return;
+  // The confirm is three lines about spending agent sessions and money -- read
+  // time comfortably over one poll -- and the header this button lives in is
+  // rebuilt by every one of them. Two concurrent toggle-many calls race
+  // write_jobs, an unlocked read-modify-write of jobs.json.
+  const bk=["toggle_many", key, kind];
+  markPending(...bk);
+  try{
   const n=js.length, word=(n===1?"job":"jobs"), where=(sc.label?" in "+sc.label:"");
   const yes=await showConfirm({tone:"warn", icon:"alert",
     title:(enable?"Enable all ":"Disable all ")+n+" "+word+where+"?",
@@ -1790,6 +1801,7 @@ async function bulkToggle(btn, kind, key, enable){
   toast(j.output||"Done", false, "check");
   btn.disabled=false;
   refresh();
+  }finally{ clearPending(...bk); }
 }
 
 // The Overview's own card grid -- what used to be the second half of
@@ -1988,6 +2000,11 @@ function renderJobsArea(){
    throws. */
 const CC = {
   $, TOKEN, api, toast, openLog, projById, sessionLost, unjournaledLive,
+  // The Security page repaints on its own 4-second cycle (secPaint), which
+  // rebuilds its buttons exactly the way this page's poll rebuilds the cards --
+  // so its actions need the same page-wide pending state, not a second copy
+  // that could disagree about what is in flight.
+  markPending, clearPending, isPending, markIfPending,
   fmtAgo, fmtWhen, fmtDur, money,
   pageHeader: CCApp.pageHeader, kpiCard: CCApp.kpiCard, tableFooter: CCApp.tableFooter,
   // The project screen's "Project settings" link opens the SAME editor the
@@ -2109,7 +2126,7 @@ CCApp.init({ $, fmtAgo, fmtDur, money,
              icon: CC.icon,
              projById, eff,
              backoffMultiplier, activeRunsOf, renderJobs: renderJobsArea,
-             effortLabel, fmtExpiresIn, resumeInFlight, markIfStarting,
+             effortLabel, fmtExpiresIn, resumeInFlight, markIfPending,
              fmtWhen, fmtIn, isFav, TOKEN, toast, refresh, paintJobPickers,
              normStatus,
              openLog, resumeTarget, resumeTip, continuedRun, resumedBadgeTip,
@@ -2624,7 +2641,8 @@ function renderRetained(){
           ? '<span class="muted">—</span>'
           : esc(fmtExpiresIn(w.expires_in)))+'</td>'
       +'<td class="rowacts"><button class="btn ghost sm" data-wtdrop="'
-        +esc(w.job)+'" data-wtstamp="'+esc(w.stamp)+'">Discard</button></td></tr>';
+        +esc(w.job)+'" data-wtstamp="'+esc(w.stamp)+'"'
+        +pendingAttr("worktree_drop", w.job, w.stamp)+'>Discard</button></td></tr>';
   }).join("");
 }
 
@@ -2737,97 +2755,116 @@ function forgetDeadStops(live){
 }
 function isStopping(r){ return r.live && stopping.has(String(r.pid)); }
 
-/* ---- a click that has not become a run yet ---- */
-// The server answers a start long before the engine's slot exists: the fetch
-// returns as soon as `cc(..., background=True)` has forked, and the run itself
-// only appears on a later 5-second poll. The success path used to hand the
-// button straight back (`b.disabled=false`), so every start had a window — a
-// second or two at best, tens of seconds while a precheck talks to Jira — in
-// which the button looked idle and a second click started a SECOND run.
+/* ---- an action that has been asked for but has not happened yet ---- */
+// Every side-effecting button in this page shares one failure: the only thing
+// holding it between the click and the effect is `b.disabled` on ONE element,
+// and `setInterval(refresh, 5000)` rebuilds the cards, the rows, the group
+// headers and the Sessions dialog from scratch. The replacement is born
+// enabled, so any action whose round trip -- or whose confirm dialog -- outlasts
+// one poll can be fired twice. An audit of the page found it on nine buttons
+// besides the two that started this: delete a run (whose POST VACUUMs a 346 MB
+// index), discard a worktree (a `down` hook that runs for minutes), stop,
+// delete a job, delete a project, bulk enable/disable, and three on the
+// Security page.
 //
-// That is not hypothetical. It is how one reviewer job ended up with two
-// sessions cut short on the SAME port block: two runs from two clicks, the
-// first dying and releasing block 21000, the second taking it straight back.
-// Neither could then be resumed while the other was going, and the second
-// Resume button failed with nothing to show for it.
+// So it is held HERE, keyed by the action rather than by the element, and asked
+// again by every builder as it makes the button (markIfPending) -- the way
+// isStopping and resumeInFlight have always been read, and the reason those two
+// never had this hole.
 //
-// Keyed by what the click actually starts: a job id for a run, and job|session
-// for a resume, because one card can offer several Resume buttons and only the
-// one that was clicked should go down. Modelled on `stopping` above, and held
-// in memory for the same reason: a reload is a deliberate act, and the live
-// slots are authoritative the moment the page comes back.
-const starting=new Map();
-// Long enough for a slow precheck and a fresh worktree, short enough that a
-// start which never lands cannot strand the button: without a ceiling, a run
-// the engine quietly declines would leave a page reload as the only way back.
-const START_GRACE_S=90;
-function startKey(id, sid){ return sid ? id+"|"+sid : id; }
-function markStarting(id, sid){
-  starting.set(startKey(id, sid),
-               {at:Math.floor(Date.now()/1000), sid:sid||"",
-                pids:new Set(activeRunsOf(id).map(a=>String(a.pid)))});
+// Two kinds, because they end differently:
+//   * a START (run/resume) is not over when the server answers -- the engine has
+//     only forked, and the run appears in the live slots seconds later. Its
+//     button stays down until a slot that was not there at click time shows up.
+//   * everything else is a plain request: it is over when it answers, and the
+//     handler's own `finally` lets go.
+// Both are capped by PENDING_GRACE_S, so an action that never lands cannot
+// strand its button and leave a page reload as the only way out.
+const pending=new Map();
+const PENDING_GRACE_S=90;
+const START_OPS={run:1, resume:1};
+// The extra that makes a key unique when one job offers several of the same
+// button: the session for a resume, the pid for a stop, the stamp for a
+// worktree drop. Read off the element so the handler and the builders cannot
+// disagree about what they are naming.
+// Four of these buttons predate `data-op` and carry their own attribute
+// instead -- delete-a-run, discard-a-worktree, delete-a-project and the group
+// bulk switch, each with its own branch in the click listener. They are the
+// same kind of action and need the same protection, so the key is derived from
+// whatever the element carries rather than from `data-op` alone.
+function btnOp(b){
+  const d=(b&&b.dataset)||{};
+  if(d.op) return d.op;
+  if(d.delId!==undefined) return "run_delete";
+  if(d.wtdrop!==undefined) return "worktree_drop";
+  if(d.delproj!==undefined) return "project_delete";
+  if(d.bulk!==undefined) return "toggle_many";
+  return "";
 }
-// The click did not become a start after all: the operator answered "no" to a
-// precheck warning, or the server refused it. Nothing is coming, so the button
-// has to be usable again immediately rather than waiting out START_GRACE_S.
-//
-// Dropping the entry is not enough on its own. The element the click handler is
-// still holding may already have been replaced — a poll can land while a
-// showConfirm sits open — and its replacement was disabled by
-// markIfStarting() as it was built, with nothing to re-enable it until
-// the NEXT one. Answering "no" would leave the button dead for up to five
-// seconds. So re-enable whatever is in the page right now, matched the same way
-// markIfStarting() disables it.
-function clearStarting(id, sid){
-  starting.delete(startKey(id, sid));
-  document.querySelectorAll('button[data-op="run"],button[data-op="resume"]').forEach(b=>{
-    if(b.dataset.id!==id || (b.dataset.session||"")!==(sid||"")) return;
+function btnId(b){
+  const d=(b&&b.dataset)||{};
+  return d.id || d.delId || d.wtdrop || d.delproj || d.bulk || "";
+}
+function btnExtra(b){
+  const d=(b&&b.dataset)||{};
+  return d.session || d.runPid || d.stamp || d.wtstamp || d.delStart || d.bulkKind || "";
+}
+// Every element the click listener can act on, for clearPending's sweep.
+const ACTION_SELECTOR = "button[data-op],button[data-del-id],button[data-wtdrop]"
+                      + ",button[data-delproj],button[data-bulk]";
+// For the two builders that still compose their button as an HTML string.
+function pendingAttr(op, id, extra){ return isPending(op, id, extra) ? " disabled" : ""; }
+function pendKey(op, id, extra){ return op+"|"+(id||"")+"|"+(extra||""); }
+function markPending(op, id, extra){
+  pending.set(pendKey(op, id, extra),
+              {at:Math.floor(Date.now()/1000), op, id, extra:extra||"",
+               pids:START_OPS[op]
+                 ? new Set(activeRunsOf(id).map(a=>String(a.pid)))
+                 : null});
+}
+// Over, or given up on. Dropping the entry is not enough: a poll can land while
+// a confirm dialog is open, and the replacement button was disabled by
+// markIfPending as it was built, with nothing to re-enable it until the NEXT
+// poll -- five seconds of a dead button after answering "no". So re-enable what
+// is in the page right now, matched the same way markIfPending disabled it.
+function clearPending(op, id, extra){
+  pending.delete(pendKey(op, id, extra));
+  document.querySelectorAll(ACTION_SELECTOR).forEach(b=>{
+    if(btnOp(b)!==op || btnId(b)!==id || btnExtra(b)!==(extra||"")) return;
     b.disabled=false;
     delete b.dataset.tip;
   });
 }
-// In flight, landed, or given up? Answered from the live slots, so it reads the
-// same data the row the operator is watching does.
-function isStarting(id, sid){
-  const k=startKey(id, sid), s=starting.get(k);
+function isPending(op, id, extra){
+  const k=pendKey(op, id, extra), s=pending.get(k);
   if(!s) return false;
-  const landed = s.sid
-    // A resume is identified by the session it continues — exactly what
-    // resumeInFlight already asks, rather than a second definition to drift.
-    ? resumeInFlight(id, s.sid)
-    // A plain run is identified by a slot this job did not have when the button
-    // was clicked: at max_parallel 3 it may well have had others going already,
-    // so "has any run" would clear the moment it was set. `!a.resume_of`
-    // because a resume is a new slot too — clicking Run now and then Resume on
-    // one card otherwise let the resume's slot answer for the run, handing the
-    // Run now button back while its own start was still forking.
-    : activeRunsOf(id).some(a=>!s.pids.has(String(a.pid)) && !a.resume_of);
-  if(landed || Math.floor(Date.now()/1000)-s.at > START_GRACE_S){
-    starting.delete(k); return false;
+  if(s.pids){
+    const landed = s.op==="resume"
+      // A resume is identified by the session it continues -- exactly what
+      // resumeInFlight already asks, rather than a second definition to drift.
+      ? resumeInFlight(id, extra)
+      // A plain run is identified by a slot this job did not have when the
+      // button was clicked: at max_parallel 3 it may well have had others going,
+      // so "has any run" would clear the moment it was set. `!a.resume_of`
+      // because a resume is a new slot too, and must not answer for a run.
+      : activeRunsOf(id).some(a=>!s.pids.has(String(a.pid)) && !a.resume_of);
+    if(landed){ pending.delete(k); return false; }
   }
+  if(Math.floor(Date.now()/1000)-s.at > PENDING_GRACE_S){ pending.delete(k); return false; }
   return true;
 }
-// Applied where a button is BUILT, and handed to the builders through the
-// CCApp interface -- NOT re-applied after a repaint.
-//
-// The first cut of this did re-apply, from the last line of render(), and that
-// is only one of the ways these buttons are rebuilt. A keystroke in the jobs
-// search box, a column sort, a page change, a project or status pick, a filter
-// chip, a favourite toggle -- fourteen paths in all -- call renderJobsArea() or
-// CCApp.renderRunsPage() directly and never reach render(). Every one of them
-// minted a fresh, enabled Run now / Resume and nothing put the guard back, so
-// typing one character while a start was in flight handed the button back and
-// the second click went through after all.
-//
-// `isStopping` and `resumeInFlight` never had that hole because the row builder
-// consults them as it builds. This does the same, so there is one place that
-// decides and no repaint path left to forget.
-function markIfStarting(btn){
-  if(!btn || !isStarting(btn.dataset.id, btn.dataset.session||"")) return btn;
+// Handed to the builders through the CCApp interface and called as each
+// data-op button is made. NOT a pass over the finished DOM: render() is only
+// one of the fourteen paths that rebuild these, and a guard re-applied there is
+// thrown away by the other thirteen.
+function markIfPending(btn){
+  if(!btn || !btn.dataset) return btn;
+  if(!isPending(btnOp(btn), btnId(btn), btnExtra(btn))) return btn;
   btn.disabled=true;
-  btn.dataset.tip=encodeURIComponent(
-    "Starting — waiting for the run to appear. The button comes back as soon "
-    + "as it does, or shortly after if nothing starts.");
+  btn.dataset.tip=encodeURIComponent(START_OPS[btnOp(btn)]
+    ? "Starting — waiting for the run to appear. The button comes back as soon "
+      + "as it does, or shortly after if nothing starts."
+    : "Working — waiting for this to finish. The button comes back when it does.");
   return btn;
 }
 
@@ -3893,6 +3930,12 @@ async function sendToRun(){
   const inp=$("term-input"); if(!inp) return;
   const text=inp.value.trim(); if(!text || !logCtx) return;
   inp.value=""; inp.disabled=true;
+  // paintLog throws this input away wholesale every 3 seconds and builds a new
+  // one, enabled -- so `inp.disabled` guards nothing across a `say`, which
+  // blocks until the agent's turn ends and can take minutes. Two of them write
+  // two user turns into the same FIFO.
+  const sk=["say", logCtx.id, ""];
+  markPending(...sk);
   try{
     const r=await fetch("/api/action",{method:"POST",
       headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
@@ -3903,7 +3946,15 @@ async function sendToRun(){
       inp.value=text;                       // give the message back, do not lose it
     }
   }catch(e){ toast("Not delivered — "+e.message, true); inp.value=text; }
-  inp.disabled=false; inp.focus();
+  finally{ clearPending(...sk); }
+  // Re-read: the element `inp` names may have been replaced by a repaint while
+  // the request was in flight, and putting the text back into a detached node
+  // is how a message the operator typed disappears.
+  const live=$("term-input");
+  if(live){
+    if(live!==inp && inp.value) live.value=inp.value;
+    live.disabled=false; live.focus();
+  }
 }
 
 function paintLog(d){
@@ -3939,6 +3990,12 @@ function paintLog(d){
   if(inp){
     if(draft!==null) inp.value=draft;
     if(hadFocus) inp.focus();
+    // The draft and the caret already survive this rebuild; so must the fact
+    // that a message is still being delivered. Without it the new input comes
+    // back live mid-`say` and a second Enter injects a second user turn.
+    if(logCtx && isPending("say", logCtx.id, "")){
+      inp.disabled=true;
+    }
     inp.onkeydown=(e)=>{ if(e.key==="Enter"){ e.preventDefault(); sendToRun(); } };
     const sb=$("term-send"); if(sb) sb.onclick=()=>sendToRun();
   }
@@ -4823,7 +4880,15 @@ document.addEventListener("click", async (e)=>{
   const del=e.target.closest("button[data-del-id]");
   if(del){
     const id=del.dataset.delId, start=+del.dataset.delStart;
+    // Held from the click: the confirm alone outlives a poll, and the POST
+    // behind it VACUUMs the whole search index -- seconds to tens of seconds on
+    // a large one -- while `del.disabled` sits on a row the poll has replaced.
+    // The second click's 404 then toasts "Delete failed" over a delete that
+    // actually succeeded.
+    const dk=["run_delete", id, String(start)];
+    markPending(...dk);
     (async()=>{
+     try{
       const yes=await showConfirm({tone:"danger", icon:"trash", title:"Delete this run?",
         message:"Everything this run left behind goes: its log and transcript files, its line in the journal, and its rows in the search database. This cannot be undone.",
         mono:id+" · "+fmtWhen(start), confirmLabel:"Delete run"});
@@ -4837,6 +4902,7 @@ document.addEventListener("click", async (e)=>{
       const freed=(j.removed&&j.removed.bytes)||0;
       toast("Run deleted"+(freed>0?" — "+fmtBytes(freed)+" reclaimed":""), false, "trash");
       refresh();
+     }finally{ clearPending(...dk); }
     })();
     return;
   }
@@ -4870,6 +4936,13 @@ document.addEventListener("click", async (e)=>{
   const wtd=e.target.closest("[data-wtdrop]");
   if(wtd){
     const job=wtd.dataset.wtdrop, stamp=wtd.dataset.wtstamp;
+    // renderRetained() rewrites every Discard button on each poll, including
+    // while this dialog is open, and the drop itself runs the project's `down`
+    // hook -- seconds to minutes. Without this the row stays listed with a live
+    // button and a second drop toasts "Discarded" for a tree already gone.
+    const wk=["worktree_drop", job, stamp];
+    markPending(...wk);
+    try{
     const yes=await showConfirm({tone:"danger", icon:"trash",
       title:"Discard "+job+" / "+stamp+"?",
       message:"This worktree was kept because it holds commits or changes that are on no remote."
@@ -4883,6 +4956,7 @@ document.addEventListener("click", async (e)=>{
     const j=await r.json().catch(()=>({}));
     if(!r.ok){ toast(j.error||"could not discard", true); wtd.disabled=false; return; }
     toast("Discarded "+job+" / "+stamp); refresh(); return;
+    }finally{ clearPending(...wk); }
   }
   // sorting the runs table -- the sort state itself, and the fork on the key
   // that decides the opening direction, now live in ui/app/runs.js.
@@ -4895,6 +4969,13 @@ document.addEventListener("click", async (e)=>{
   const dp=e.target.closest("[data-delproj]");
   if(dp){
     const name=dp.dataset.delproj;
+    // This branch never touched `disabled` at all -- there was nothing for the
+    // repaint to defeat because there was no guard to begin with. And it fails
+    // QUIETLY: cmd_project_delete is a filter-out rewrite, so deleting an
+    // already-deleted project exits 0 and the page says it worked, twice.
+    const pk=["project_delete", name, ""];
+    markPending(...pk);
+    try{
     const n=(DATA.jobs||[]).filter(j=>j.project===name).length;
     const yes=await showConfirm({tone:"danger", icon:"trash", title:"Delete project "+name+"?",
       message: n ? "Its "+n+" job"+(n===1?"":"s")+" stay, but lose everything they inherited from it — "
@@ -4904,6 +4985,7 @@ document.addEventListener("click", async (e)=>{
     if(!yes) return;
     if(await api("project_delete",{name})) { toast("Deleted project "+name); refresh(); }
     return;
+    }finally{ clearPending(...pk); }
   }
   // sorting the jobs table. The opening direction per column, and the sort
   // state itself, now live in ui/app/jobs-table.js -- CCApp.jobsSort(key)
@@ -4983,7 +5065,15 @@ document.addEventListener("click", async (e)=>{
   if(e.target.closest("#ov-wt-view")){ $("wt-halo").innerHTML=I.folder; $("wtmodal").showModal(); return; }
   const b=e.target.closest("button[data-op]"); if(!b) return;
   const op=b.dataset.op, id=b.dataset.id;
-  if(op==="edit"){ openEditor(id); return; }
+  if(op==="edit"){ openEditor(id); return; }   // read-only: nothing to hold
+  // COMMITTED HERE, before any await. Everything below can wait on a confirm
+  // dialog, a probe and a request, and every 5-second poll rebuilds the button
+  // underneath all three -- `b.disabled` alone holds a node the repaint has
+  // already thrown away. The `finally` at the end lets go again for every op
+  // except a start, which stays down until its run appears (see `pending`).
+  const extra=btnExtra(b);
+  markPending(op, id, extra);
+  try{
   if(op==="delete"){
     const yes=await showConfirm({tone:"danger", icon:"trash", title:"Delete job "+id+"?",
       message:"This removes the job from jobs.json. Its logs and precheck script are kept on disk.",
@@ -4999,9 +5089,8 @@ document.addEventListener("click", async (e)=>{
   // came back live mid-probe and TWO run POSTs left the page.
   //
   // Cleared again on every path that does not start anything (see
-  // clearStarting), so answering "no" to a precheck warning gives the button
+  // clearPending), so answering "no" to a precheck warning gives the button
   // straight back rather than waiting out the grace period.
-  if(op==="run"||op==="resume") markStarting(id, b.dataset.session||"");
   if(op==="run"){
     // Guard: forcing bypasses the precheck, so probe it first and warn when
     // it reports nothing to do — a forced idle run still costs a session.
@@ -5017,12 +5106,12 @@ document.addEventListener("click", async (e)=>{
         const yes=await showConfirm({tone:"danger", icon:"alert", title:"This job's precheck is broken",
           message:"The probe exited with an error instead of reporting on the board, so nothing is known about whether there is work. Until it is fixed this job will never start on its own. A forced run will still spend a full agent session.",
           mono:(j.output||""), confirmLabel:"Run anyway"});
-        if(!yes){ clearStarting(id); b.disabled=false; return; }
+        if(!yes){ clearPending(op, id, extra); b.disabled=false; return; }
       } else if(r.ok && j.ok && j.work===false){
         const yes=await showConfirm({tone:"warn", icon:"alert", title:"Nothing to do right now",
           message:"The precheck reports no pending work. Run now bypasses the precheck — a forced run will still spend a full agent session.",
           mono:(j.output||""), confirmLabel:"Run anyway"});
-        if(!yes){ clearStarting(id); b.disabled=false; return; }
+        if(!yes){ clearPending(op, id, extra); b.disabled=false; return; }
       }
     }catch(err){ /* probe failed — fall through, the run itself will tell */ }
   }
@@ -5039,15 +5128,15 @@ document.addEventListener("click", async (e)=>{
       await showConfirm({tone:"warn", icon:"alert", title:"Nothing was started",
         message: j.error || ("A run is already in progress for "+id),
         confirmLabel:"OK", alertOnly:true});
-      clearStarting(id); b.disabled=false; refresh(); return;
+      clearPending(op, id, extra); b.disabled=false; refresh(); return;
     }
-    if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Failed — "+(j.error||("HTTP "+r.status)), true); clearStarting(id); b.disabled=false; return; }
+    if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Failed — "+(j.error||("HTTP "+r.status)), true); clearPending(op, id, extra); b.disabled=false; return; }
     toast("Started "+id, false, "play");
     // Stays DOWN until the run shows up in the live slots. Handing it back here
     // is what let a second click land while the first start was still forking —
-    // see `starting`. markIfStarting() keeps it down across the repaints in
+    // see `pending`. markIfPending() keeps it down across the repaints in
     // between, and releases it the moment the run appears.
-    markStarting(id);
+    markPending(op, id, extra);   // restart the clock from the real fork
     setTimeout(refresh, 1200); return;
   }
   // Resume continues THAT run's own session (the same task), so it carries the
@@ -5064,27 +5153,37 @@ document.addEventListener("click", async (e)=>{
       await showConfirm({tone:"warn", icon:"alert", title:"Nothing was resumed",
         message: j.error || "This task could not be resumed right now.",
         confirmLabel:"OK", alertOnly:true});
-      clearStarting(id, sid); b.disabled=false; refresh(); return;
+      clearPending(op, id, extra); b.disabled=false; refresh(); return;
     }
-    if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Resume failed — "+(j.error||("HTTP "+r.status)), true); clearStarting(id, sid); b.disabled=false; return; }
+    if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Resume failed — "+(j.error||("HTTP "+r.status)), true); clearPending(op, id, extra); b.disabled=false; return; }
     if(b.dataset.resumeKey){ const [rid,rstart]=b.dataset.resumeKey.split("|"); markResumed(rid, +rstart); }
     toast("Resuming "+id+" — continuing session "+sid.slice(0,8), false, "play");
     // This element stays down, but it is replaced on the next repaint and its
-    // successor is built live; markStarting is what carries the state across
+    // successor is built live; markPending is what carries the state across
     // that, keyed by the session so a job's OTHER Resume buttons stay usable.
-    markStarting(id, sid);
+    markPending(op, id, extra);   // restart the clock from the real fork
     setTimeout(refresh, 1200); b.disabled=true; return;
   }
   const extra={id};
   if(op==="stop" && b.dataset.runPid) extra.pid=b.dataset.runPid;
+  // Recorded BEFORE the request, not after it answers. `stopping` is the only
+  // repaint-proof guard the Stop button has, and a poll landing inside the round
+  // trip rebuilt the row with `stopping` still empty -- a live Stop on a run
+  // already being killed, which is the exact thing that Set exists to prevent.
+  // Harmless if the request then fails: forgetDeadStops drops any pid that is
+  // no longer live on the next render.
+  if(op==="stop") markStopping(b.dataset.runPid);
   const ok=await api(op,extra);
-  // Remember the kill BEFORE the repaint that follows, so the button comes back
-  // disabled rather than live for the seconds the run takes to wind down.
-  if(ok && op==="stop") markStopping(b.dataset.runPid);
   if(ok) toast((op==="run"?"Started ":op+"d ")+id, false, op==="run"?"play":"check");
   setTimeout(refresh, op==="run"?1200:250);
   // A used resume button stays disabled; so does a stop, until the run is gone.
   b.disabled=!!(ok && (b.dataset.resumeKey || op==="stop"));
+  }finally{
+    // A start is not over when the server answers -- the engine has only
+    // forked -- so it holds until its run shows up in the live slots. Every
+    // other op is a request: it is done, and the button comes back.
+    if(!START_OPS[op]) clearPending(op, id, extra);
+  }
 });
 
 $("pj-cancel").addEventListener("click", ()=>pjWiz.close());

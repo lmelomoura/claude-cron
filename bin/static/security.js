@@ -16,6 +16,10 @@
   var iconLabel;
   var iconHTML;
   var openProjectEditor;
+  var markPending;
+  var clearPending;
+  var isPending;
+  var markIfPending;
   var pageHeader;
   var kpiCard;
   var tableFooter;
@@ -43,6 +47,10 @@
       iconLabel,
       iconHTML,
       openProjectEditor,
+      markPending,
+      clearPending,
+      isPending,
+      markIfPending,
       pageHeader,
       kpiCard,
       tableFooter,
@@ -732,7 +740,7 @@
   }
   function secPaintRunButton() {
     const btn = $("sec-run");
-    const running = secState.analyses.some((a) => a.state === "running");
+    const running = secState.analyses.some((a) => a.state === "running") || isPending("security_analyze", secState.project, "");
     btn.disabled = running;
     btn.title = running ? "An analysis of this project is already running \u2014 one at a time." : "Analyse the selected branch";
     btn.textContent = running ? "Analysing\u2026" : "Analyse";
@@ -915,6 +923,7 @@
         b.className = "btn";
         b.type = "button";
         b.textContent = label;
+        b.disabled = isPending("security_decide", secState.project, f.fingerprint);
         b.onclick = () => secDecide(f, state, label);
         wrap.appendChild(b);
       }
@@ -922,17 +931,23 @@
     return wrap;
   }
   async function secDecide(f, state, label) {
-    const reason = await secAskReason(label, f.title);
-    if (reason === null) return;
-    const ok = await api("security_decide", {
-      project: secState.project,
-      fingerprint: f.fingerprint,
-      state,
-      reason
-    });
-    if (!ok) return;
-    toast(label + " recorded", false, "check");
-    await secReload();
+    const dk = ["security_decide", secState.project, f.fingerprint];
+    markPending(...dk);
+    try {
+      const reason = await secAskReason(label, f.title);
+      if (reason === null) return;
+      const ok = await api("security_decide", {
+        project: secState.project,
+        fingerprint: f.fingerprint,
+        state,
+        reason
+      });
+      if (!ok) return;
+      toast(label + " recorded", false, "check");
+      await secReload();
+    } finally {
+      clearPending(...dk);
+    }
   }
 
   // ui/security/actions.js
@@ -945,6 +960,8 @@
     const btn = $("sec-run");
     btn.disabled = true;
     btn.textContent = "Analysing\u2026";
+    const ak = ["security_analyze", secState.project, ""];
+    markPending(...ak);
     try {
       const ok = await api("security_analyze", {
         project: secState.project,
@@ -960,6 +977,7 @@
       await secReload();
       secSyncPoll();
     } finally {
+      clearPending(...ak);
       btn.disabled = false;
       btn.textContent = "Analyse";
       secPaintRunButton();
@@ -967,6 +985,8 @@
   }
   async function secDownloadReport(id, fmt, btn) {
     btn.disabled = true;
+    const dk = ["security_report", id, fmt];
+    markPending(...dk);
     try {
       const r = await fetch("/api/security/report?analysis=" + encodeURIComponent(id) + "&format=" + encodeURIComponent(fmt), { headers: { "X-CC-Token": TOKEN } });
       if (!r.ok) {
@@ -984,6 +1004,7 @@
     } catch (e) {
       toast("Download failed \u2014 " + e.message, true);
     } finally {
+      clearPending(...dk);
       btn.disabled = false;
     }
   }
@@ -3957,6 +3978,7 @@
     dl.className = "iconbtn";
     dl.title = "Download this run's report (Markdown)";
     dl.appendChild(secIcon("download"));
+    dl.disabled = isPending("security_report", a.id, "md");
     dl.onclick = () => secDownloadReport(a.id, "md", dl);
     actions.appendChild(dl);
     const run = secRunFor(a);
@@ -5159,5 +5181,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 6d2fb895cc855280ed44cfb83410e0f39a9b9b7aa2547ce4107f07740b77675e */
-/* ui-sources: 8eb95a3d1dfbc674152263138438c085cac87b5abddab54c1c9c0e5a43ed2bf0 */
+/* ui-bundle: 7bf6b454c1671155d2e899533c1006f6ac1f20113c3359f6bfc634a76aca7249 */
+/* ui-sources: 5ebcd983ca7706774ebf29a7a0259026d979c960871019f6db179ed551e06295 */

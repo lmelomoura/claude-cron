@@ -13,7 +13,7 @@
   var effortLabel;
   var fmtExpiresIn;
   var resumeInFlight;
-  var markIfStarting;
+  var markIfPending;
   var fmtWhen;
   var fmtIn;
   var isFav;
@@ -49,7 +49,7 @@
       effortLabel,
       fmtExpiresIn,
       resumeInFlight,
-      markIfStarting,
+      markIfPending,
       fmtWhen,
       fmtIn,
       isFav,
@@ -639,7 +639,7 @@
         btn.dataset.op = "resume";
         btn.dataset.id = jobId;
         btn.dataset.session = w.session;
-        markIfStarting(btn);
+        markIfPending(btn);
         btn.title = "Resume this task \u2014 continue session " + w.session.slice(0, 8) + " where it stopped";
         btn.appendChild(icon("play"));
         btn.appendChild(document.createTextNode("Resume"));
@@ -804,13 +804,14 @@
     const runBtn = el("button", "btn primary");
     runBtn.dataset.op = "run";
     runBtn.dataset.id = j.id;
-    markIfStarting(runBtn);
+    markIfPending(runBtn);
     runBtn.appendChild(icon("play"));
     runBtn.appendChild(document.createTextNode("Run now"));
     actions.appendChild(runBtn);
     const toggleBtn = el("button", "btn");
     toggleBtn.dataset.op = disabled ? "enable" : "disable";
     toggleBtn.dataset.id = j.id;
+    markIfPending(toggleBtn);
     toggleBtn.appendChild(icon("power"));
     toggleBtn.appendChild(document.createTextNode(disabled ? "Enable" : "Disable"));
     actions.appendChild(toggleBtn);
@@ -842,6 +843,7 @@
     delBtn.setAttribute("role", "menuitem");
     delBtn.dataset.op = "delete";
     delBtn.dataset.id = j.id;
+    markIfPending(delBtn);
     delBtn.appendChild(icon("trash"));
     delBtn.appendChild(document.createTextNode("Delete job"));
     pop.appendChild(delBtn);
@@ -1149,6 +1151,7 @@
       ball.dataset.bulkKind = "visible";
       ball.dataset.bulk = "__visible__";
       ball.dataset.bulkTo = on ? "0" : "1";
+      markIfPending(ball);
       ball.textContent = "";
       ball.appendChild(icon("power"));
       ball.appendChild(document.createTextNode(bulkLabel(on, vis.length)));
@@ -1258,12 +1261,13 @@
     run.dataset.op = "run";
     run.dataset.id = j.id;
     run.title = "Run now";
-    markIfStarting(run);
+    markIfPending(run);
     run.appendChild(icon("play"));
     tdActs.appendChild(run);
     const toggle = el("button", "iconbtn");
     toggle.dataset.op = F.disabled ? "enable" : "disable";
     toggle.dataset.id = j.id;
+    markIfPending(toggle);
     toggle.title = F.disabled ? "Enable" : "Disable";
     toggle.appendChild(icon("power"));
     tdActs.appendChild(toggle);
@@ -1277,6 +1281,7 @@
     del.dataset.op = "delete";
     del.dataset.id = j.id;
     del.title = "Delete job";
+    markIfPending(del);
     del.appendChild(icon("trash"));
     tdActs.appendChild(del);
     tr.appendChild(tdActs);
@@ -1616,6 +1621,7 @@
     tdActs.appendChild(editBtn);
     const delBtn = el("button", "iconbtn danger");
     delBtn.dataset.delproj = p.name;
+    markIfPending(delBtn);
     delBtn.title = "Delete project";
     delBtn.appendChild(icon("trash"));
     tdActs.appendChild(delBtn);
@@ -2050,6 +2056,7 @@
         stop.dataset.op = "stop";
         stop.dataset.id = r.id;
         stop.dataset.runPid = r.pid || livePidFor(r.id);
+        markIfPending(stop);
       }
     } else {
       stop.disabled = true;
@@ -2077,7 +2084,7 @@
         retry.dataset.id = r.id;
         retry.dataset.session = r.session || "";
         retry.dataset.resumeKey = runKey(r.id, r.start);
-        markIfStarting(retry);
+        markIfPending(retry);
       }
     } else {
       retry.disabled = true;
@@ -2096,6 +2103,7 @@
       del.title = "Delete this run and everything it left behind";
       del.dataset.delId = r.id;
       del.dataset.delStart = r.start;
+      markIfPending(del);
     }
     tdActs.appendChild(del);
     tr.appendChild(tdActs);
@@ -2382,5 +2390,5 @@
     projectStepError
   };
 })();
-/* ui-bundle: 5733c2da28aac1309e7c0ccc7689ff0704363527cc29823dc3cce199e23e9ba9 */
-/* ui-sources: 8eb95a3d1dfbc674152263138438c085cac87b5abddab54c1c9c0e5a43ed2bf0 */
+/* ui-bundle: a7fb841b82f5aa3d939e61dd43c7403bc786c79234a2e1dfcc9bc031a50fa296 */
+/* ui-sources: 5ebcd983ca7706774ebf29a7a0259026d979c960871019f6db179ed551e06295 */
