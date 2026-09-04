@@ -2771,6 +2771,25 @@ function markStarting(id, sid){
                {at:Math.floor(Date.now()/1000), sid:sid||"",
                 pids:new Set(activeRunsOf(id).map(a=>String(a.pid)))});
 }
+// The click did not become a start after all: the operator answered "no" to a
+// precheck warning, or the server refused it. Nothing is coming, so the button
+// has to be usable again immediately rather than waiting out START_GRACE_S.
+//
+// Dropping the entry is not enough on its own. The element the click handler is
+// still holding may already have been replaced — a poll can land while a
+// showConfirm sits open — and its replacement was disabled by
+// applyPendingStarts() on that very repaint, with nothing to re-enable it until
+// the NEXT one. Answering "no" would leave the button dead for up to five
+// seconds. So re-enable whatever is in the page right now, matched the same way
+// applyPendingStarts() disables it.
+function clearStarting(id, sid){
+  starting.delete(startKey(id, sid));
+  document.querySelectorAll('button[data-op="run"],button[data-op="resume"]').forEach(b=>{
+    if(b.dataset.id!==id || (b.dataset.session||"")!==(sid||"")) return;
+    b.disabled=false;
+    delete b.dataset.tip;
+  });
+}
 // In flight, landed, or given up? Answered from the live slots, so it reads the
 // same data the row the operator is watching does.
 function isStarting(id, sid){
@@ -4967,6 +4986,17 @@ document.addEventListener("click", async (e)=>{
     if(!yes) return;
   }
   b.disabled=true;
+  // Committed AT THE CLICK, not once the start succeeds. `b.disabled` alone
+  // only holds this element, and everything below awaits: the precheck fetch
+  // can take seconds, a showConfirm can sit open across several polls, and each
+  // poll rebuilds the card — the replacement button is born enabled and the
+  // second click goes through. Measured against a 4-second precheck: the button
+  // came back live mid-probe and TWO run POSTs left the page.
+  //
+  // Cleared again on every path that does not start anything (see
+  // clearStarting), so answering "no" to a precheck warning gives the button
+  // straight back rather than waiting out the grace period.
+  if(op==="run"||op==="resume") markStarting(id, b.dataset.session||"");
   if(op==="run"){
     // Guard: forcing bypasses the precheck, so probe it first and warn when
     // it reports nothing to do — a forced idle run still costs a session.
@@ -4982,12 +5012,12 @@ document.addEventListener("click", async (e)=>{
         const yes=await showConfirm({tone:"danger", icon:"alert", title:"This job's precheck is broken",
           message:"The probe exited with an error instead of reporting on the board, so nothing is known about whether there is work. Until it is fixed this job will never start on its own. A forced run will still spend a full agent session.",
           mono:(j.output||""), confirmLabel:"Run anyway"});
-        if(!yes){ b.disabled=false; return; }
+        if(!yes){ clearStarting(id); b.disabled=false; return; }
       } else if(r.ok && j.ok && j.work===false){
         const yes=await showConfirm({tone:"warn", icon:"alert", title:"Nothing to do right now",
           message:"The precheck reports no pending work. Run now bypasses the precheck — a forced run will still spend a full agent session.",
           mono:(j.output||""), confirmLabel:"Run anyway"});
-        if(!yes){ b.disabled=false; return; }
+        if(!yes){ clearStarting(id); b.disabled=false; return; }
       }
     }catch(err){ /* probe failed — fall through, the run itself will tell */ }
   }
@@ -5004,9 +5034,9 @@ document.addEventListener("click", async (e)=>{
       await showConfirm({tone:"warn", icon:"alert", title:"Nothing was started",
         message: j.error || ("A run is already in progress for "+id),
         confirmLabel:"OK", alertOnly:true});
-      b.disabled=false; refresh(); return;
+      clearStarting(id); b.disabled=false; refresh(); return;
     }
-    if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Failed — "+(j.error||("HTTP "+r.status)), true); b.disabled=false; return; }
+    if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Failed — "+(j.error||("HTTP "+r.status)), true); clearStarting(id); b.disabled=false; return; }
     toast("Started "+id, false, "play");
     // Stays DOWN until the run shows up in the live slots. Handing it back here
     // is what let a second click land while the first start was still forking —
@@ -5029,9 +5059,9 @@ document.addEventListener("click", async (e)=>{
       await showConfirm({tone:"warn", icon:"alert", title:"Nothing was resumed",
         message: j.error || "This task could not be resumed right now.",
         confirmLabel:"OK", alertOnly:true});
-      b.disabled=false; refresh(); return;
+      clearStarting(id, sid); b.disabled=false; refresh(); return;
     }
-    if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Resume failed — "+(j.error||("HTTP "+r.status)), true); b.disabled=false; return; }
+    if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Resume failed — "+(j.error||("HTTP "+r.status)), true); clearStarting(id, sid); b.disabled=false; return; }
     if(b.dataset.resumeKey){ const [rid,rstart]=b.dataset.resumeKey.split("|"); markResumed(rid, +rstart); }
     toast("Resuming "+id+" — continuing session "+sid.slice(0,8), false, "play");
     // This element stays down, but it is replaced on the next repaint and its

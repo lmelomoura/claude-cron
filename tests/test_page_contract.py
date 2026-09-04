@@ -8800,3 +8800,83 @@ def test_the_start_path_does_not_hand_the_button_straight_back(srv):
     assert "b.disabled=false" not in branch, (
         "the success path re-enables the button while the run is still forking — "
         "this is exactly the double-click window")
+
+
+def test_the_pending_start_is_committed_at_the_click_not_at_the_start(srv):
+    """`b.disabled` holds one element; the repaint replaces it.
+
+    "Run now" awaits a precheck fetch before it ever posts the run, and can sit
+    on a showConfirm on top of that. Every 5-second poll during that rebuilds
+    the card, and the replacement button is born enabled — so recording the
+    pending state only after the run POST succeeded left the whole precheck
+    window open. Measured against a 4-second precheck: the button came back
+    live mid-probe and TWO run POSTs left the page.
+
+    So markStarting has to be called on the click, before anything is awaited,
+    and every path that then decides NOT to start must clear it — otherwise a
+    declined precheck would leave the button dead for the full grace period."""
+    js = _js(srv)
+    i_handler = js.index('const b=e.target.closest("button[data-op]")')
+    handler = js[i_handler:i_handler + 6000]
+
+    i_mark = handler.index("markStarting(id, b.dataset.session")
+    i_precheck = handler.index('op:"precheck"')
+    assert i_mark < i_precheck, (
+        "the start is recorded after the precheck fetch, so a repaint during the probe "
+        "hands the button back and a second click starts a second run")
+
+    # Every give-up path lets go again: the two precheck confirms, and the
+    # refusal/failure exits of both run and resume.
+    gives_up = [seg for seg in handler.split("\n")
+                if "b.disabled=false" in seg and "clearStarting" not in seg]
+    assert not gives_up, (
+        "these paths re-enable the button without dropping the pending start, so it is "
+        "re-disabled on the next repaint and stays dead for the grace period: "
+        + " | ".join(s.strip()[:90] for s in gives_up))
+
+
+def test_giving_up_hands_the_button_back_without_waiting_for_a_repaint(srv, tmp_path):
+    """Dropping the map entry is not enough. A poll can land while the confirm
+    dialog is open, and applyPendingStarts() disables the replacement button on
+    that very repaint — with nothing to re-enable it until the next one. The
+    operator answers "no" and the button is dead for up to five seconds.
+
+    So clearStarting re-enables what is in the page now, matched the same way
+    applyPendingStarts() disabled it: same job, same session."""
+    fn = _plainfn(_js(srv), "clearStarting")
+    assert "querySelectorAll" in fn, (
+        "clearStarting only drops the map entry — the button already replaced by a "
+        "repaint stays disabled until the next poll")
+    script = tmp_path / "clear-starting.js"
+    script.write_text("""
+const BUTTONS = [
+  {dataset: {op: "run",    id: "rev"},                    disabled: true, tag: "run:rev"},
+  {dataset: {op: "run",    id: "dev"},                    disabled: true, tag: "run:dev"},
+  {dataset: {op: "resume", id: "rev", session: "sid-A"},  disabled: true, tag: "res:rev:A"},
+  {dataset: {op: "resume", id: "rev", session: "sid-B"},  disabled: true, tag: "res:rev:B"},
+];
+const starting = new Map();
+function startKey(id, sid){ return sid ? id+"|"+sid : id; }
+const document = { querySelectorAll: () => BUTTONS };
+""" + fn + """
+const out = {};
+// A plain run: only that job's Run now comes back, and no Resume of the same job.
+starting.set("rev", {});
+clearStarting("rev");
+out.afterRunClear = BUTTONS.filter(b => !b.disabled).map(b => b.tag);
+BUTTONS.forEach(b => { b.disabled = true; });
+// A resume: only the clicked session's button, not the job's other one.
+starting.set("rev|sid-A", {});
+clearStarting("rev", "sid-A");
+out.afterResumeClear = BUTTONS.filter(b => !b.disabled).map(b => b.tag);
+out.entryDropped = !starting.has("rev|sid-A");
+console.log(JSON.stringify(out));
+""")
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert got["afterRunClear"] == ["run:rev"], (
+        "clearing a run re-enabled the wrong buttons: " + repr(got["afterRunClear"]))
+    assert got["afterResumeClear"] == ["res:rev:A"], (
+        "clearing one resume re-enabled another session's button: "
+        + repr(got["afterResumeClear"]))
+    assert got["entryDropped"] is True
