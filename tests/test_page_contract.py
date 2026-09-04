@@ -3429,6 +3429,13 @@ def test_an_analysis_with_no_structured_coverage_draws_no_phase_summary(
 # createElement/createElementNS calls the screen's own functions make.
 
 _INDEX_DOM_HARNESS = """
+// The builders ask this as they build a Run now / Resume button, so that a
+// repaint which never reaches render() cannot hand a pending start back live
+// (see test_every_run_and_resume_button_asks_about_the_pending_start_as_it_is_built).
+// Nothing here is testing that guard, so the stand-in is the "nothing pending"
+// answer: it hands the button straight back, exactly as the real one does when
+// no start is in flight.
+function markIfStarting(b){ return b; }
 class FakeNode {
   constructor(){ this.childNodes = []; }
   appendChild(c){ this.childNodes.push(c); return c; }
@@ -8800,3 +8807,126 @@ def test_the_start_path_does_not_hand_the_button_straight_back(srv):
     assert "b.disabled=false" not in branch, (
         "the success path re-enables the button while the run is still forking — "
         "this is exactly the double-click window")
+
+
+def test_the_pending_start_is_committed_at_the_click_not_at_the_start(srv):
+    """`b.disabled` holds one element; the repaint replaces it.
+
+    "Run now" awaits a precheck fetch before it ever posts the run, and can sit
+    on a showConfirm on top of that. Every 5-second poll during that rebuilds
+    the card, and the replacement button is born enabled — so recording the
+    pending state only after the run POST succeeded left the whole precheck
+    window open. Measured against a 4-second precheck: the button came back
+    live mid-probe and TWO run POSTs left the page.
+
+    So markStarting has to be called on the click, before anything is awaited,
+    and every path that then decides NOT to start must clear it — otherwise a
+    declined precheck would leave the button dead for the full grace period."""
+    js = _js(srv)
+    i_handler = js.index('const b=e.target.closest("button[data-op]")')
+    handler = js[i_handler:i_handler + 6000]
+
+    i_mark = handler.index("markStarting(id, b.dataset.session")
+    i_precheck = handler.index('op:"precheck"')
+    assert i_mark < i_precheck, (
+        "the start is recorded after the precheck fetch, so a repaint during the probe "
+        "hands the button back and a second click starts a second run")
+
+    # Every give-up path lets go again: the two precheck confirms, and the
+    # refusal/failure exits of both run and resume.
+    gives_up = [seg for seg in handler.split("\n")
+                if "b.disabled=false" in seg and "clearStarting" not in seg]
+    assert not gives_up, (
+        "these paths re-enable the button without dropping the pending start, so it is "
+        "re-disabled on the next repaint and stays dead for the grace period: "
+        + " | ".join(s.strip()[:90] for s in gives_up))
+
+
+def test_giving_up_hands_the_button_back_without_waiting_for_a_repaint(srv, tmp_path):
+    """Dropping the map entry is not enough. A poll can land while the confirm
+    dialog is open, and markIfStarting() disables the replacement button as it
+    that very repaint — with nothing to re-enable it until the next one. The
+    operator answers "no" and the button is dead for up to five seconds.
+
+    So clearStarting re-enables what is in the page now, matched the same way
+    markIfStarting() disables it: same job, same session."""
+    fn = _plainfn(_js(srv), "clearStarting")
+    assert "querySelectorAll" in fn, (
+        "clearStarting only drops the map entry — the button already replaced by a "
+        "repaint stays disabled until the next poll")
+    script = tmp_path / "clear-starting.js"
+    script.write_text("""
+const BUTTONS = [
+  {dataset: {op: "run",    id: "rev"},                    disabled: true, tag: "run:rev"},
+  {dataset: {op: "run",    id: "dev"},                    disabled: true, tag: "run:dev"},
+  {dataset: {op: "resume", id: "rev", session: "sid-A"},  disabled: true, tag: "res:rev:A"},
+  {dataset: {op: "resume", id: "rev", session: "sid-B"},  disabled: true, tag: "res:rev:B"},
+];
+const starting = new Map();
+function startKey(id, sid){ return sid ? id+"|"+sid : id; }
+const document = { querySelectorAll: () => BUTTONS };
+""" + fn + """
+const out = {};
+// A plain run: only that job's Run now comes back, and no Resume of the same job.
+starting.set("rev", {});
+clearStarting("rev");
+out.afterRunClear = BUTTONS.filter(b => !b.disabled).map(b => b.tag);
+BUTTONS.forEach(b => { b.disabled = true; });
+// A resume: only the clicked session's button, not the job's other one.
+starting.set("rev|sid-A", {});
+clearStarting("rev", "sid-A");
+out.afterResumeClear = BUTTONS.filter(b => !b.disabled).map(b => b.tag);
+out.entryDropped = !starting.has("rev|sid-A");
+console.log(JSON.stringify(out));
+""")
+    got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
+                                    text=True, check=True).stdout)
+    assert got["afterRunClear"] == ["run:rev"], (
+        "clearing a run re-enabled the wrong buttons: " + repr(got["afterRunClear"]))
+    assert got["afterResumeClear"] == ["res:rev:A"], (
+        "clearing one resume re-enabled another session's button: "
+        + repr(got["afterResumeClear"]))
+    assert got["entryDropped"] is True
+
+
+def test_every_run_and_resume_button_asks_about_the_pending_start_as_it_is_built(srv):
+    """render() is not the only thing that rebuilds these buttons.
+
+    A keystroke in the jobs search box, a column sort, a page change, a project
+    or status pick, a filter chip, a favourite toggle — fourteen paths in all —
+    call renderJobsArea() or CCApp.renderRunsPage() directly and never reach
+    render(). The first cut of the pending-start guard was re-applied from the
+    last line of render(), so every one of those paths minted a fresh, enabled
+    Run now / Resume and handed the second click straight through: typing one
+    character while a start was in flight was enough to start a second run.
+
+    `isStopping` and `resumeInFlight` never had that hole, because the row
+    builder consults them as it builds. This pins that every builder of a
+    `data-op="run"`/`"resume"` button does the same, so there is no repaint path
+    left to forget — the guard cannot be defeated by a rebuild that does not
+    know about it."""
+    builders = {}
+    for path in sorted(APP_ROOT.rglob("*.js")):
+        src = path.read_text()
+        for m in re.finditer(r'dataset\.op\s*=\s*"(run|resume)"', src):
+            # The call has to be near the button it guards, not merely somewhere
+            # in the file: a builder that sets data-op and never asks is the bug.
+            window = src[m.start():m.start() + 700]
+            builders.setdefault(f"{path.name}:{m.group(1)}@{src[:m.start()].count(chr(10)) + 1}",
+                                "markIfStarting" in window)
+    assert builders, "no run/resume button builders found — this test is watching nothing"
+    missing = [k for k, ok in builders.items() if not ok]
+    assert not missing, (
+        "these buttons are built without asking whether a start is pending, so any "
+        "repaint that does not go through render() hands them back live: "
+        + ", ".join(missing))
+
+    # And it has to actually reach them: declared on the interface, bound, imported.
+    page = (APP_ROOT / "page.js").read_text()
+    assert page.count("markIfStarting") >= 2, (
+        "markIfStarting is not both declared and bound in page.js, so the builders "
+        "would be calling an undefined import")
+    for name in sorted({k.split(":")[0] for k in builders}):
+        src = (APP_ROOT / name).read_text()
+        assert re.search(r'import\s*\{[^}]*markIfStarting[^}]*\}\s*from\s*"\./page\.js"', src, re.S), (
+            f"{name} calls markIfStarting without importing it")

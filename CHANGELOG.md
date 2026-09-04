@@ -35,6 +35,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   again. Keyed by job for a run and by job+session for a resume, so a card
   offering several Resume buttons only takes down the one that was clicked, and
   a resume's slot cannot answer for a Run now that is still forking.
+
+  The commitment is made ON THE CLICK, not once the start succeeds — the first
+  cut of this recorded it after the run POST, which left the whole PRECHECK
+  window open: "Run now" probes the board before it posts anything, and can sit
+  on a confirm dialog on top of that, while every 5-second poll rebuilds the
+  card underneath. Measured against a 4-second precheck, the button came back
+  live mid-probe and two run POSTs left the page. Every path that then declines
+  to start — a precheck warning answered "no", a 409, a failed request — drops
+  the commitment again and re-enables whatever button is in the page at that
+  moment, since the element the handler was holding may already have been
+  replaced by a repaint that ran while the dialog was open.
+
+  And the guard is asked where each button is BUILT, not re-applied after the
+  repaint. `render()` is not the only thing that rebuilds these: a keystroke in
+  the jobs search box, a column sort, a page change, a project or status pick, a
+  filter chip and a favourite toggle — fourteen paths — call `renderJobsArea()`
+  or `CCApp.renderRunsPage()` directly and never reach `render()`. A guard
+  re-applied from the last line of `render()` was thrown away by every one of
+  them, so typing a single character while a start was in flight minted a fresh,
+  enabled Run now and let the second click through after all. `isStopping` and
+  `resumeInFlight` never had that hole because the row builder consults them as
+  it builds; the pending start now does the same, through the same interface,
+  and there is no repaint path left to forget.
 - **The cause badge in the Runs table explains itself again.** `API`, `limit`,
   `blocked` — a 30px pill whose whole job is to say, without opening the run,
   whether to wait or to go and look. The sentence behind it was a `title`, and

@@ -37,7 +37,7 @@
 import { $, CC, icon, money, fmtAgo, fmtDur, fmtWhen, normStatus,
          openLog, resumeTarget, resumeTip, continuedRun, resumedBadgeTip,
          runKey, isStopping, unjournaledLive, paintRunPickers, runDateLabel,
-         toast, TOKEN } from "./page.js";
+         toast, TOKEN, markIfStarting } from "./page.js";
 import { el, pageHeader, kpiCard, filterBar, tableCard, tableFooter } from "./chrome.js";
 
 // One object rather than five `let`s, the same reason jobFilters/projFilters
@@ -554,6 +554,9 @@ function runRow(r){
       retry.dataset.id = r.id;
       retry.dataset.session = r.session || "";
       retry.dataset.resumeKey = runKey(r.id, r.start);
+      // Sorting or paging this table rebuilds the row without a render(), the
+      // same hole isStopping above is already immune to.
+      markIfStarting(retry);
     }
   }else{
     retry.disabled = true;

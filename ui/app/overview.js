@@ -37,7 +37,7 @@
    ./chrome.js rather than have five pages import their own furniture from
    a file named for one of them. */
 import { $, CC, icon, eff, fmtAgo, fmtDur, money, effortLabel, fmtExpiresIn,
-         resumeInFlight, projById } from "./page.js";
+         resumeInFlight, markIfStarting, projById } from "./page.js";
 import { jobFacts } from "./jobs-domain.js";
 import { el, pageHeader, kpiCard } from "./chrome.js";
 
@@ -409,6 +409,7 @@ function sessionNotices(jobId){
       btn.dataset.op = "resume";
       btn.dataset.id = jobId;
       btn.dataset.session = w.session;
+      markIfStarting(btn);   // see jobCard's own call
       btn.title = "Resume this task — continue session " + w.session.slice(0, 8) + " where it stopped";
       btn.appendChild(icon("play"));
       btn.appendChild(document.createTextNode("Resume"));
@@ -654,6 +655,11 @@ export function jobCard(j){
   const actions = el("div", "actions");
   const runBtn = el("button", "btn primary");
   runBtn.dataset.op = "run"; runBtn.dataset.id = j.id;
+  // Asked as the button is built, the way isStopping/resumeInFlight are read
+  // in the row builders: this card is rebuilt by a keystroke in the jobs
+  // search box and a dozen other paths that never reach render(), so a guard
+  // re-applied after the repaint is thrown away by every one of them.
+  markIfStarting(runBtn);
   runBtn.appendChild(icon("play"));
   runBtn.appendChild(document.createTextNode("Run now"));
   actions.appendChild(runBtn);
