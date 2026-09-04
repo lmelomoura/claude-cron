@@ -37,7 +37,7 @@
 import { $, CC, icon, money, fmtAgo, fmtDur, fmtWhen, normStatus,
          openLog, resumeTarget, resumeTip, continuedRun, resumedBadgeTip,
          runKey, isStopping, unjournaledLive, paintRunPickers, runDateLabel,
-         toast, TOKEN, markIfStarting } from "./page.js";
+         toast, TOKEN, markIfPending } from "./page.js";
 import { el, pageHeader, kpiCard, filterBar, tableCard, tableFooter } from "./chrome.js";
 
 // One object rather than five `let`s, the same reason jobFilters/projFilters
@@ -520,6 +520,9 @@ function runRow(r){
       stop.dataset.op = "stop";
       stop.dataset.id = r.id;
       stop.dataset.runPid = r.pid || livePidFor(r.id);
+      // isStopping above only knows about a stop the SERVER has answered; this
+      // covers the round trip before that, which a repaint used to hand back.
+      markIfPending(stop);
     }
   }else{
     stop.disabled = true;
@@ -556,7 +559,7 @@ function runRow(r){
       retry.dataset.resumeKey = runKey(r.id, r.start);
       // Sorting or paging this table rebuilds the row without a render(), the
       // same hole isStopping above is already immune to.
-      markIfStarting(retry);
+      markIfPending(retry);
     }
   }else{
     retry.disabled = true;
@@ -578,6 +581,7 @@ function runRow(r){
     del.title = "Delete this run and everything it left behind";
     del.dataset.delId = r.id;
     del.dataset.delStart = r.start;
+    markIfPending(del);
   }
   tdActs.appendChild(del);
 

@@ -51,7 +51,7 @@ import { jobFacts, visibleJobs, jobFilters, sortJobs, JOB_COLS,
 import { jobsEmptyNote } from "./overview.js";
 import { el, pageHeader, kpiCard, filterBar, tableCard, tableFooter } from "./chrome.js";
 import { $, CC, icon, money, fmtAgo, fmtDur, fmtWhen, fmtIn, isFav,
-         TOKEN, toast, refresh, paintJobPickers, markIfStarting } from "./page.js";
+         TOKEN, toast, refresh, paintJobPickers, markIfPending } from "./page.js";
 
 /* ------------------------------------------------------------ the header
    One sentence, built from what is actually configured -- not a static
@@ -181,6 +181,10 @@ function paintJobFilterBar(vis, allJobs){
     ball.dataset.bulkKind = "visible";
     ball.dataset.bulk = "__visible__";
     ball.dataset.bulkTo = on ? "0" : "1";
+    // The toolbar is repainted on every poll like everything else, and this
+    // switch fires toggle_many over every visible job -- see the page's own
+    // `pending` for why the guard cannot live on the element.
+    markIfPending(ball);
     ball.textContent = "";
     ball.appendChild(icon("power"));
     ball.appendChild(document.createTextNode(bulkLabel(on, vis.length)));
@@ -323,12 +327,13 @@ function jobRow(j, F){
   run.dataset.op = "run"; run.dataset.id = j.id; run.title = "Run now";
   // A sort, a page change or a keystroke rebuilds this row without going
   // through render() -- see overview.js's jobCard for the whole story.
-  markIfStarting(run);
+  markIfPending(run);
   run.appendChild(icon("play"));
   tdActs.appendChild(run);
 
   const toggle = el("button", "iconbtn");
   toggle.dataset.op = F.disabled ? "enable" : "disable"; toggle.dataset.id = j.id;
+  markIfPending(toggle);
   toggle.title = F.disabled ? "Enable" : "Disable";
   toggle.appendChild(icon("power"));
   tdActs.appendChild(toggle);
@@ -340,6 +345,7 @@ function jobRow(j, F){
 
   const del = el("button", "iconbtn danger");
   del.dataset.op = "delete"; del.dataset.id = j.id; del.title = "Delete job";
+  markIfPending(del);
   del.appendChild(icon("trash"));
   tdActs.appendChild(del);
 

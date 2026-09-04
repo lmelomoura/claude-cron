@@ -33,7 +33,7 @@
    Findings tab -- unrelated to the Runs tab's own, run-scoped findings list,
    which stays analysis.js's. */
 import { $, closeMenus, fmtAgo, fmtWhen, openLog, openProjectEditor, projById,
-         tableFooter, pushNav } from "./page.js";
+         tableFooter, pushNav, isPending } from "./page.js";
 import { secIcon, secEl, secFetch } from "./dom.js";
 import { SEC_NEVER, SEC_FLOOR_SCOPE_NOTE, secMinSeverity,
          secPosture, secVisible } from "./vocabulary.js";
@@ -687,6 +687,9 @@ function secRenderRunHead(){
   dl.className = "iconbtn";
   dl.title = "Download this run's report (Markdown)";
   dl.appendChild(secIcon("download"));
+  // This card is rebuilt by secPaint's own cycle, and the report endpoint is not
+  // read-only -- it spawns a render and writes a ledger event.
+  dl.disabled = isPending("security_report", a.id, "md");
   dl.onclick = () => secDownloadReport(a.id, "md", dl);
   actions.appendChild(dl);
 

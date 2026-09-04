@@ -19,6 +19,50 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Every side-effecting button in the dashboard is held from the click until
+  its action finishes.** One guard, one hole, eleven buttons. `b.disabled` holds
+  the element the handler is looking at; `setInterval(refresh, 5000)` rebuilds
+  the cards, the rows, the group headers and the Sessions dialog from scratch,
+  and the replacement is born enabled. Any action whose confirm dialog or round
+  trip outlasts one poll could therefore be fired twice, and an audit of the page
+  found it on nine buttons besides the two Run now / Resume had already cost:
+
+  - **delete a run** — the confirm alone outlives a poll, and the POST behind it
+    optimises the FTS index and `VACUUM`s a 346 MB database; the second click's
+    404 then toasted "Delete failed" over a delete that had succeeded;
+  - **discard a worktree** — the drop runs the project's `down` hook, seconds to
+    minutes, while `renderRetained()` rewrites the Discard button every 5s; the
+    second drop toasted "Discarded" for a tree already gone and wrote a second,
+    false "dropped by the user" into tick.log;
+  - **stop a run** — `markStopping`, the only repaint-proof guard the Stop button
+    has, was recorded AFTER the POST answered, so a poll inside the round trip
+    offered Stop again on a run already being killed — the exact thing that Set
+    exists to prevent. It is now recorded before the request;
+  - **delete a project** and **decide a Security finding** — no guard at all, on
+    any path. Deleting an already-deleted project is a filter-out rewrite that
+    exits 0, so the page said it worked, twice; two racing decisions upsert on
+    (project, fingerprint) and the surviving state is whichever subprocess
+    commits last, not the one the operator chose last;
+  - **delete a job**, **bulk enable/disable** (both the group header and the
+    Jobs toolbar), **start an analysis** (the engine's "one at a time" gate is a
+    lock slot the detached run needs a second or two to claim), **download a
+    report** (not read-only: it spawns a render and writes a ledger event), and
+    the **log terminal's input**, which `paintLog` throws away every 3 seconds
+    while a `say` blocks until the agent's turn ends.
+
+  All of them now share one piece of state, keyed by the action rather than by
+  the element, taken before the first `await` and released when the action ends
+  — with a 90-second ceiling so an action that never lands cannot strand its
+  button. Two kinds, because they end differently: a start (run/resume) is not
+  over when the server answers, since the engine has only forked and the run
+  appears in the live slots seconds later, so its button waits for a slot that
+  was not there at click time; everything else is a plain request and lets go
+  when it answers. Every builder asks as it makes the button — the way
+  `isStopping` and `resumeInFlight` have always been read — so no repaint path
+  can hand one back, and releasing also re-enables whatever button is in the page
+  at that moment, since the element the handler was holding may already have been
+  replaced by a repaint that ran while its dialog was open.
+
 - **A Run now or Resume button stays down until its run actually appears.** The
   server answers a start as soon as `cc(..., background=True)` has forked; the
   engine's slot, and so the row, land on a later 5-second poll. The success

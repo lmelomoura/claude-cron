@@ -1,6 +1,6 @@
 /* --------------------------------------------------------- one project */
 import { $, CC, api, toast, projById, fmtDur, fmtWhen, money, createCombo,
-         makePicker, pushNav } from "./page.js";
+         makePicker, pushNav, markPending, clearPending, isPending } from "./page.js";
 import { secIcon, secIconHTML, secEl, secFetch } from "./dom.js";
 import { SEC_POLL_MS, SEC_PROFILES, SEC_STATES, SEC_STATE_HELP, SEC_STATE_LABEL,
          SEC_NEVER, secCategoryMeta, secDefaultProfile, secMinSeverity,
@@ -587,7 +587,12 @@ export function secPaintRunButton(){
   // button says so before it is pressed rather than after — and if one starts
   // between the repaint and the click, the refusal the server sends back is
   // what gets shown, because that message is the one that is actually true.
-  const running = secState.analyses.some(a => a.state === "running");
+  // `running` is the LEDGER's answer, and a detached `security analyze` needs a
+  // second or two to reach acquire_slot and become one -- the window in which a
+  // second click really starts a second analysis. isPending covers exactly that
+  // gap, from the click until the request answers.
+  const running = secState.analyses.some(a => a.state === "running")
+                  || isPending("security_analyze", secState.project, "");
   btn.disabled = running;
   btn.title = running
     ? "An analysis of this project is already running — one at a time."
@@ -874,6 +879,9 @@ function secDecisionControls(f){
       b.className = "btn";
       b.type = "button";
       b.textContent = label;
+      // Asked as it is built: this row is rebuilt by secPaint's own cycle, and
+      // the reason modal in front of it is user-paced.
+      b.disabled = isPending("security_decide", secState.project, f.fingerprint);
       b.onclick = () => secDecide(f, state, label);
       wrap.appendChild(b);
     });
@@ -885,11 +893,20 @@ async function secDecide(f, state, label){
   // without a reason it is unreadable in three months. The API refuses a blank
   // one with a 400 of its own — asked here so that refusal is never the way
   // somebody discovers the rule.
-  const reason = await secAskReason(label, f.title);
-  if(reason === null) return;
-  const ok = await api("security_decide", {project: secState.project,
-              fingerprint: f.fingerprint, state, reason});
-  if(!ok) return;          // api() has already shown the server's own message
-  toast(label + " recorded", false, "check");
-  await secReload();
+  // Nothing guarded these two buttons at all, and the reason modal is
+  // user-paced: seconds to minutes with the finding's row repainting behind it.
+  // ledger.set_decision upserts on (project, fingerprint), so two racing
+  // decisions leave whichever subprocess commits last -- not necessarily the
+  // one the operator chose last.
+  const dk = ["security_decide", secState.project, f.fingerprint];
+  markPending(...dk);
+  try{
+    const reason = await secAskReason(label, f.title);
+    if(reason === null) return;
+    const ok = await api("security_decide", {project: secState.project,
+                fingerprint: f.fingerprint, state, reason});
+    if(!ok) return;          // api() has already shown the server's own message
+    toast(label + " recorded", false, "check");
+    await secReload();
+  }finally{ clearPending(...dk); }
 }

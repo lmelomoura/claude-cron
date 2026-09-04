@@ -3435,7 +3435,7 @@ _INDEX_DOM_HARNESS = """
 // Nothing here is testing that guard, so the stand-in is the "nothing pending"
 // answer: it hands the button straight back, exactly as the real one does when
 // no start is in flight.
-function markIfStarting(b){ return b; }
+function markIfPending(b){ return b; }
 class FakeNode {
   constructor(){ this.childNodes = []; }
   appendChild(c){ this.childNodes.push(c); return c; }
@@ -8723,8 +8723,8 @@ def test_a_start_keeps_its_button_down_until_the_run_appears(srv, tmp_path):
     only way to run the job again is a page reload), and — for a resume —
     keyed by session, so a job's other Resume buttons stay usable."""
     js = _js(srv)
-    state = re.search(r"const starting=new Map\(\);.*?const START_GRACE_S=\d+;", js, re.S)
-    assert state, "the pending-start state moved — update this test with it"
+    state = re.search(r"const pending=new Map\(\);.*?const START_OPS=\{[^}]*\};", js, re.S)
+    assert state, "the pending-action state moved — update this test with it"
     script = tmp_path / "pending-starts.js"
     script.write_text("""
 // Stubs for the two live-slot readers isStarting consults.
@@ -8735,42 +8735,51 @@ let NOW = 1000;
 const _realNow = Date.now;
 Date.now = () => NOW * 1000;
 """ + state.group(0) + "\n"
-   + _plainfn(js, "startKey") + "\n"
-   + _plainfn(js, "markStarting") + "\n"
-   + _plainfn(js, "isStarting") + """
+   + _plainfn(js, "pendKey") + "\n"
+   + _plainfn(js, "markPending") + "\n"
+   + _plainfn(js, "isPending") + """
 const out = {};
 
 // A job already running one thing; the click must not be cleared by that.
 SLOTS = {rev: [{pid: 111}]};
-markStarting("rev");
-out.downWhileForking = isStarting("rev");
+markPending("run", "rev", "");
+out.downWhileForking = isPending("run", "rev", "");
 SLOTS = {rev: [{pid: 111}]};                 // still only the old slot
-out.stillDownWithOnlyTheOldRun = isStarting("rev");
+out.stillDownWithOnlyTheOldRun = isPending("run", "rev", "");
 SLOTS = {rev: [{pid: 111}, {pid: 222}]};     // the started run appears
-out.upWhenTheRunLands = isStarting("rev");
+out.upWhenTheRunLands = isPending("run", "rev", "");
 
 // Nothing ever lands: the button has to come back on its own.
 SLOTS = {dev: []};
-markStarting("dev");
-out.downBeforeGrace = isStarting("dev");
-NOW += START_GRACE_S + 1;
-out.upAfterGrace = isStarting("dev");
+markPending("run", "dev", "");
+out.downBeforeGrace = isPending("run", "dev", "");
+NOW += PENDING_GRACE_S + 1;
+out.upAfterGrace = isPending("run", "dev", "");
 NOW = 1000;
 
 // Two Resume buttons on one card: only the clicked one goes down.
 SLOTS = {rev: []};
-markStarting("rev", "sid-A");
-out.resumeAdown = isStarting("rev", "sid-A");
-out.resumeBstillUp = isStarting("rev", "sid-B");
+markPending("resume", "rev", "sid-A");
+out.resumeAdown = isPending("resume", "rev", "sid-A");
+out.resumeBstillUp = isPending("resume", "rev", "sid-B");
 SLOTS = {rev: [{pid: 333, resume_of: "sid-A"}]};
-out.resumeAupWhenItLands = isStarting("rev", "sid-A");
+out.resumeAupWhenItLands = isPending("resume", "rev", "sid-A");
 
 // A run and a resume of the same job are tracked apart.
 SLOTS = {promo: []};
-markStarting("promo");
-markStarting("promo", "sid-C");
+markPending("run", "promo", "");
+markPending("resume", "promo", "sid-C");
 SLOTS = {promo: [{pid: 444, resume_of: "sid-C"}]};
-out.resumeLandedButRunStillPending = [isStarting("promo", "sid-C"), isStarting("promo")];
+out.resumeLandedButRunStillPending = [isPending("resume", "promo", "sid-C"),
+                                      isPending("run", "promo", "")];
+
+// A plain request (not a start) is over only when the handler says so: no
+// slot will ever appear for it, so nothing but clearPending or the grace
+// period may release it.
+SLOTS = {rev: [{pid: 111}]};
+markPending("run_delete", "rev", "1700000000");
+SLOTS = {rev: [{pid: 111}, {pid: 555}]};   // an unrelated run starts meanwhile
+out.plainRequestIgnoresNewSlots = isPending("run_delete", "rev", "1700000000");
 
 Date.now = _realNow;
 console.log(JSON.stringify(out));
@@ -8792,6 +8801,9 @@ console.log(JSON.stringify(out));
     assert got["resumeAupWhenItLands"] is False
     assert got["resumeLandedButRunStillPending"] == [False, True], (
         "a run and a resume of one job are not tracked apart")
+    assert got["plainRequestIgnoresNewSlots"] is True, (
+        "a delete/stop/drop was released by an unrelated run appearing — only the "
+        "handler finishing, or the grace period, may hand those buttons back")
 
 
 def test_the_start_path_does_not_hand_the_button_straight_back(srv):
@@ -8801,7 +8813,7 @@ def test_the_start_path_does_not_hand_the_button_straight_back(srv):
     js = _js(srv)
     i = js.index('toast("Started "+id, false, "play");')
     branch = js[i:i + 400]
-    assert "markStarting(id)" in branch, (
+    assert "markPending(op, id, extra)" in branch, (
         "a successful start no longer records itself as pending, so the next repaint "
         "hands the button back before the run exists")
     assert "b.disabled=false" not in branch, (
@@ -8826,7 +8838,7 @@ def test_the_pending_start_is_committed_at_the_click_not_at_the_start(srv):
     i_handler = js.index('const b=e.target.closest("button[data-op]")')
     handler = js[i_handler:i_handler + 6000]
 
-    i_mark = handler.index("markStarting(id, b.dataset.session")
+    i_mark = handler.index("markPending(op, id, extra)")
     i_precheck = handler.index('op:"precheck"')
     assert i_mark < i_precheck, (
         "the start is recorded after the precheck fetch, so a repaint during the probe "
@@ -8835,7 +8847,7 @@ def test_the_pending_start_is_committed_at_the_click_not_at_the_start(srv):
     # Every give-up path lets go again: the two precheck confirms, and the
     # refusal/failure exits of both run and resume.
     gives_up = [seg for seg in handler.split("\n")
-                if "b.disabled=false" in seg and "clearStarting" not in seg]
+                if "b.disabled=false" in seg and "clearPending" not in seg]
     assert not gives_up, (
         "these paths re-enable the button without dropping the pending start, so it is "
         "re-disabled on the next repaint and stays dead for the grace period: "
@@ -8844,15 +8856,15 @@ def test_the_pending_start_is_committed_at_the_click_not_at_the_start(srv):
 
 def test_giving_up_hands_the_button_back_without_waiting_for_a_repaint(srv, tmp_path):
     """Dropping the map entry is not enough. A poll can land while the confirm
-    dialog is open, and markIfStarting() disables the replacement button as it
+    dialog is open, and markIfPending() disables the replacement button as it
     that very repaint — with nothing to re-enable it until the next one. The
     operator answers "no" and the button is dead for up to five seconds.
 
     So clearStarting re-enables what is in the page now, matched the same way
-    markIfStarting() disables it: same job, same session."""
-    fn = _plainfn(_js(srv), "clearStarting")
+    markIfPending() disables it: same job, same session."""
+    fn = _plainfn(_js(srv), "clearPending")
     assert "querySelectorAll" in fn, (
-        "clearStarting only drops the map entry — the button already replaced by a "
+        "clearPending only drops the map entry — the button already replaced by a "
         "repaint stays disabled until the next poll")
     script = tmp_path / "clear-starting.js"
     script.write_text("""
@@ -8862,21 +8874,25 @@ const BUTTONS = [
   {dataset: {op: "resume", id: "rev", session: "sid-A"},  disabled: true, tag: "res:rev:A"},
   {dataset: {op: "resume", id: "rev", session: "sid-B"},  disabled: true, tag: "res:rev:B"},
 ];
-const starting = new Map();
-function startKey(id, sid){ return sid ? id+"|"+sid : id; }
+const pending = new Map();
+function pendKey(op, id, extra){ return op+"|"+(id||"")+"|"+(extra||""); }
+function btnOp(b){ const d=(b&&b.dataset)||{}; return d.op || ""; }
+function btnId(b){ const d=(b&&b.dataset)||{}; return d.id || ""; }
+function btnExtra(b){ const d=(b&&b.dataset)||{}; return d.session || d.runPid || ""; }
+const ACTION_SELECTOR = "button[data-op]";
 const document = { querySelectorAll: () => BUTTONS };
 """ + fn + """
 const out = {};
 // A plain run: only that job's Run now comes back, and no Resume of the same job.
-starting.set("rev", {});
-clearStarting("rev");
+pending.set("run|rev|", {});
+clearPending("run", "rev", "");
 out.afterRunClear = BUTTONS.filter(b => !b.disabled).map(b => b.tag);
 BUTTONS.forEach(b => { b.disabled = true; });
 // A resume: only the clicked session's button, not the job's other one.
-starting.set("rev|sid-A", {});
-clearStarting("rev", "sid-A");
+pending.set("resume|rev|sid-A", {});
+clearPending("resume", "rev", "sid-A");
 out.afterResumeClear = BUTTONS.filter(b => !b.disabled).map(b => b.tag);
-out.entryDropped = !starting.has("rev|sid-A");
+out.entryDropped = !pending.has("resume|rev|sid-A");
 console.log(JSON.stringify(out));
 """)
     got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
@@ -8913,7 +8929,7 @@ def test_every_run_and_resume_button_asks_about_the_pending_start_as_it_is_built
             # in the file: a builder that sets data-op and never asks is the bug.
             window = src[m.start():m.start() + 700]
             builders.setdefault(f"{path.name}:{m.group(1)}@{src[:m.start()].count(chr(10)) + 1}",
-                                "markIfStarting" in window)
+                                "markIfPending" in window)
     assert builders, "no run/resume button builders found — this test is watching nothing"
     missing = [k for k, ok in builders.items() if not ok]
     assert not missing, (
@@ -8923,10 +8939,76 @@ def test_every_run_and_resume_button_asks_about_the_pending_start_as_it_is_built
 
     # And it has to actually reach them: declared on the interface, bound, imported.
     page = (APP_ROOT / "page.js").read_text()
-    assert page.count("markIfStarting") >= 2, (
-        "markIfStarting is not both declared and bound in page.js, so the builders "
+    assert page.count("markIfPending") >= 2, (
+        "markIfPending is not both declared and bound in page.js, so the builders "
         "would be calling an undefined import")
     for name in sorted({k.split(":")[0] for k in builders}):
         src = (APP_ROOT / name).read_text()
-        assert re.search(r'import\s*\{[^}]*markIfStarting[^}]*\}\s*from\s*"\./page\.js"', src, re.S), (
-            f"{name} calls markIfStarting without importing it")
+        assert re.search(r'import\s*\{[^}]*markIfPending[^}]*\}\s*from\s*"\./page\.js"', src, re.S), (
+            f"{name} calls markIfPending without importing it")
+
+
+def test_every_side_effecting_button_is_held_from_the_click(srv):
+    """Nine buttons besides Run now had this same hole, and an audit of the page
+    found every one of them: delete a run (whose POST VACUUMs the search index),
+    discard a worktree (a `down` hook that runs for minutes), stop, delete a
+    job, delete a project, and the group bulk switch. Two of them — delete a
+    project and the Security finding decisions — had no guard at all.
+
+    The shape is always the same: `b.disabled` on one element, an await (a
+    confirm dialog, a request, or both), and a 5-second poll that rebuilds the
+    element underneath. So every branch that acts has to take the pending mark
+    BEFORE its first await, and every builder of such a button has to ask.
+
+    Read as source rather than run, because the failure is an ordering one: two
+    statements in the wrong order render identically."""
+    js = _js(srv)
+
+    # 1. Each action branch commits before it awaits anything.
+    for name, anchor, mark in [
+        ("run delete",     'const id=del.dataset.delId', 'markPending(...dk)'),
+        ("worktree drop",  'const job=wtd.dataset.wtdrop', 'markPending(...wk)'),
+        ("project delete", 'const name=dp.dataset.delproj', 'markPending(...pk)'),
+        ("bulk toggle",    'async function bulkToggle', 'markPending(...bk)'),
+    ]:
+        i = js.index(anchor)
+        branch = js[i:i + 1400]
+        i_mark = branch.find(mark)
+        i_await = branch.find("await ")
+        assert i_mark != -1, f"{name} no longer takes a pending mark at all"
+        assert i_await == -1 or i_mark < i_await, (
+            f"{name} awaits before it commits, so a repaint during that await hands "
+            f"the button back and the action can be fired twice")
+
+    # 2. Stop records itself before the request, not after it answers.
+    i_stop = js.index('if(op==="stop") markStopping(b.dataset.runPid);')
+    i_api = js.index("const ok=await api(op,extra);")
+    assert i_stop < i_api, (
+        "markStopping runs after the POST returns, so a poll inside the round trip "
+        "rebuilds the row with `stopping` still empty and offers Stop again on a run "
+        "that is already being killed")
+
+    # 3. Every builder of an action button asks. Read-only ops are exempt:
+    #    opening the editor changes nothing.
+    READ_ONLY = {"edit"}
+    missing = []
+    for path in sorted(APP_ROOT.rglob("*.js")):
+        src = path.read_text()
+        for m in re.finditer(r'dataset\.(op|delId|wtdrop|delproj|bulk)\s*=\s*(.+)', src):
+            if m.group(1) == "op":
+                lits = set(re.findall(r'"([a-z_]+)"', m.group(2)))
+                if lits and lits <= READ_ONLY:
+                    continue
+            line = src[:m.start()].count("\n") + 1
+            if "markIfPending" not in src[m.start():m.start() + 700]:
+                missing.append(f"{path.name}:{line}")
+    # The two builders that compose their button as an HTML string ask through
+    # pendingAttr instead, in the page itself.
+    for op, key in [("toggle_many", "bulkBtn"), ("worktree_drop", "renderRetained")]:
+        i = js.index("function " + key)
+        assert f'pendingAttr("{op}"' in js[i:i + 3000], (
+            f"{key} composes its button without asking whether that action is already "
+            f"in flight, so the poll hands it back mid-request")
+    assert not missing, (
+        "these action buttons are built without asking whether the action is already "
+        "in flight: " + ", ".join(missing))

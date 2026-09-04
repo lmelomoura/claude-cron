@@ -11,7 +11,7 @@
    cards, the same search box repainted rather than rebuilt, and a table
    card with a real pager -- the same shape jobs-table.js already gave the
    Jobs page, reached through the same chrome.js builders. */
-import { CC, $, icon, isFav, fmtWhen } from "./page.js";
+import { CC, $, icon, isFav, fmtWhen, markIfPending } from "./page.js";
 import { el, pageHeader, kpiCard, filterBar, tableCard, tableFooter } from "./chrome.js";
 
 export const projFilters = { query: "" };
@@ -292,6 +292,7 @@ function projectRow(p){
   tdActs.appendChild(editBtn);
   const delBtn = el("button", "iconbtn danger");
   delBtn.dataset.delproj = p.name;
+  markIfPending(delBtn);
   delBtn.title = "Delete project";
   delBtn.appendChild(icon("trash"));
   tdActs.appendChild(delBtn);
