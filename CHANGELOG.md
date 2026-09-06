@@ -43,6 +43,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     the page's own globals are `ALApp`, `ALSecurity` and `AL`. **For this
     release only** the server also accepts the old header, so a tab left open
     across the upgrade keeps working until it reloads.
+  - `agentloop install` retires the two pre-rename launchd agents and the old
+    `~/.local/bin` symlinks on an existing machine, carrying the pinned Claude
+    account over to the new agents, and says so when `~/.claude/settings.json`
+    still runs the statusline from the folder's old name. Re-running
+    `install.sh` is the whole upgrade.
 
 ### Fixed
 

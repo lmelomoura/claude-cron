@@ -91,6 +91,13 @@ PLIST_LABEL="com.agentloop.tick"
 PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 SERVER_LABEL="com.agentloop.server"
 SERVER_PLIST="$HOME/Library/LaunchAgents/$SERVER_LABEL.plist"
+# The names this install had until 2026-09-06. A machine installed under them
+# still carries two launchd agents and two symlinks so named; `install`
+# retires them (install_migrate_legacy). These three lines are the only place
+# the old names are spelled — everything else reaches them through here.
+LEGACY_PLIST_LABEL="com.claude-cron.tick"
+LEGACY_SERVER_LABEL="com.claude-cron.server"
+LEGACY_CLI_NAME="claude-cron"
 SERVER_BIN="$BIN_DIR/agentloop-server"
 PORT="${AGENTLOOP_PORT:-8787}"
 
@@ -6481,6 +6488,46 @@ JSON
     && ok "app.js's bytes copied onto app.css's name are caught by name, not read as a clean app.css" \
     || bad "the swap was not caught the way it should: $(cat "$tmp/uiswap-after.out")"
 
+  echo "the rename — install retires the pre-rename agents and symlinks, and keeps the pinned account"
+  mkdir -p "$tmp/mig/home/Library/LaunchAgents" "$tmp/mig/home/.local/bin" "$tmp/mig/fakebin"
+  printf '%s\n' '#!/bin/sh' 'echo "launchctl $*" >> "$MIG_LOG"' > "$tmp/mig/fakebin/launchctl"
+  chmod +x "$tmp/mig/fakebin/launchctl"
+  cat > "$tmp/mig/home/Library/LaunchAgents/$LEGACY_PLIST_LABEL.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>x</string>
+  <key>EnvironmentVariables</key><dict><key>CLAUDE_CONFIG_DIR</key><string>/tmp/pinned-account</string></dict>
+</dict></plist>
+PLIST
+  : > "$tmp/mig/home/Library/LaunchAgents/$LEGACY_SERVER_LABEL.plist"
+  ln -s "$BASE_DIR/bin/$LEGACY_CLI_NAME" "$tmp/mig/home/.local/bin/$LEGACY_CLI_NAME"
+  ln -s "/somewhere/else/$LEGACY_CLI_NAME-server" "$tmp/mig/home/.local/bin/$LEGACY_CLI_NAME-server"
+  got="$( HOME="$tmp/mig/home" MIG_LOG="$tmp/mig/log" PATH="$tmp/mig/fakebin:$PATH" install_migrate_legacy 2>/dev/null )"
+  [ "$got" = "/tmp/pinned-account" ] && ok "the account pinned in the old agent is handed on" || bad "install_migrate_legacy printed '$got'"
+  [ ! -e "$tmp/mig/home/Library/LaunchAgents/$LEGACY_PLIST_LABEL.plist" ] \
+    && [ ! -e "$tmp/mig/home/Library/LaunchAgents/$LEGACY_SERVER_LABEL.plist" ] \
+    && ok "both old plists are gone" || bad "an old plist survived"
+  grep -q "launchctl unload .*$LEGACY_PLIST_LABEL" "$tmp/mig/log" 2>/dev/null \
+    && grep -q "launchctl unload .*$LEGACY_SERVER_LABEL" "$tmp/mig/log" 2>/dev/null \
+    && ok "and both were unloaded before being removed" || bad "unload was not called: $(cat "$tmp/mig/log" 2>/dev/null)"
+  [ ! -L "$tmp/mig/home/.local/bin/$LEGACY_CLI_NAME" ] && ok "the old symlink into this folder is removed" || bad "the old symlink was kept"
+  [ -L "$tmp/mig/home/.local/bin/$LEGACY_CLI_NAME-server" ] && ok "a symlink pointing elsewhere is left alone" || bad "somebody else's symlink was removed"
+  got="$( HOME="$tmp/mig/home" MIG_LOG="$tmp/mig/log" PATH="$tmp/mig/fakebin:$PATH" install_migrate_legacy 2>/dev/null )"
+  [ -z "$got" ] && ok "a second run finds nothing to migrate" || bad "second run printed '$got'"
+
+  echo "the rename — the statusline that still points at the old folder is named"
+  mkdir -p "$tmp/mig/home2/.claude"
+  printf '{"statusLine":{"type":"command","command":"/Users/me/%s/bin/statusline-rate-limits.sh"}}\n' "$LEGACY_CLI_NAME" \
+    > "$tmp/mig/home2/.claude/settings.json"
+  got="$( HOME="$tmp/mig/home2" statusline_path_warning )"
+  case "$got" in *"statusline-rate-limits.sh"*"$BIN_DIR/statusline-rate-limits.sh"*) ok "the warning names the old path and the new one" ;;
+                 *) bad "the warning was: '$got'" ;; esac
+  printf '{"statusLine":{"type":"command","command":"%s/statusline-rate-limits.sh"}}\n' "$BIN_DIR" \
+    > "$tmp/mig/home2/.claude/settings.json"
+  got="$( HOME="$tmp/mig/home2" statusline_path_warning )"
+  [ -z "$got" ] && ok "a statusline already on the new path gets no warning" || bad "warned anyway: '$got'"
+
   echo "the rename — a run, its hooks and its prechecks see AL_* and CC_* alike for one release"
   mkdir -p "$tmp/hookcfg/hooks"
   printf '%s\n' '#!/usr/bin/env bash' \
@@ -7855,12 +7902,63 @@ cmd_tick() {
 
 PLIST_PATH_ENV="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+install_migrate_legacy() { # retire the pre-rename agents and symlinks; prints the account they had pinned, if any
+  local old_tick="$HOME/Library/LaunchAgents/$LEGACY_PLIST_LABEL.plist"
+  local old_server="$HOME/Library/LaunchAgents/$LEGACY_SERVER_LABEL.plist"
+  local link
+  if [ -f "$old_tick" ]; then
+    # The account pinned into the old agent has to reach the new one: dropping
+    # it would sign every run in as the CLI default from the next tick on.
+    "$PYTHON" - "$old_tick" <<'PY'
+import plistlib, sys
+try:
+    v = plistlib.load(open(sys.argv[1], "rb")).get("EnvironmentVariables", {}).get("CLAUDE_CONFIG_DIR")
+except Exception:
+    v = None
+if v:
+    print(v)
+PY
+    launchctl unload "$old_tick" 2>/dev/null
+    rm -f "$old_tick"
+    echo "retired $LEGACY_PLIST_LABEL" >&2
+  fi
+  if [ -f "$old_server" ]; then
+    launchctl unload "$old_server" 2>/dev/null
+    rm -f "$old_server"
+    echo "retired $LEGACY_SERVER_LABEL" >&2
+  fi
+  for link in "$HOME/.local/bin/$LEGACY_CLI_NAME" "$HOME/.local/bin/$LEGACY_CLI_NAME-server"; do
+    # Only a link into THIS folder is ours to remove.
+    [ -L "$link" ] || continue
+    case "$(readlink "$link")" in
+      "$BASE_DIR"/*) rm -f "$link"; echo "removed $link" >&2 ;;
+    esac
+  done
+}
+
+statusline_path_warning() { # ~/.claude/settings.json may still run the statusline from the folder's old name
+  local settings="$HOME/.claude/settings.json" cmd
+  [ -f "$settings" ] || return 0
+  cmd="$("$JQ" -r '.statusLine.command // ""' "$settings" 2>/dev/null)"
+  case "$cmd" in
+    # Anchored on "/bin/" (not just "/$LEGACY_CLI_NAME/") so this names the
+    # install's OWN base folder, not any ancestor directory that happens to
+    # share the name — this repo's own checkout is one such ancestor.
+    *"/$LEGACY_CLI_NAME/bin/"*)
+      echo "WARNING: the statusLine in $settings runs $cmd — that folder was renamed; point it at $BIN_DIR/statusline-rate-limits.sh" ;;
+  esac
+}
+
 cmd_install() {
   # A global default account, carried into launchd — which inherits nothing from
   # the shell, so without this every run signs in as ~/.claude however the
   # scheduler was installed. Taken ONLY from the explicit variable, never from an
   # ambient CLAUDE_CONFIG_DIR: installing from inside a Claude session would
   # otherwise silently pin that session's account for every job, forever.
+  # An install that predates the rename is retired first, and the account it
+  # had pinned is read out of it before it goes.
+  local legacy_cfgdir
+  legacy_cfgdir="$(install_migrate_legacy)"
   local plist_cfgdir=""
   if [ -n "${AGENTLOOP_CLAUDE_CONFIG_DIR:-}" ]; then
     plist_cfgdir="
@@ -7877,6 +7975,9 @@ if v:
     print("\n    <key>CLAUDE_CONFIG_DIR</key><string>%s</string>" % v, end="")
 PY
 )"
+  elif [ -n "$legacy_cfgdir" ]; then
+    plist_cfgdir="
+    <key>CLAUDE_CONFIG_DIR</key><string>$legacy_cfgdir</string>"
   fi
 
   # 1) the tick agent — fires the scheduler once a minute
@@ -7963,9 +8064,11 @@ PLIST
   echo "Open the dashboard with: agentloop dashboard"
   legacy_env_warnings
   legacy_scripts_warnings
+  statusline_path_warning
 }
 
 cmd_uninstall() {
+  install_migrate_legacy >/dev/null     # an install that was never re-run since the rename still has the old agents
   launchctl unload "$PLIST_PATH" 2>/dev/null
   launchctl unload "$SERVER_PLIST" 2>/dev/null
   rm -f "$PLIST_PATH" "$SERVER_PLIST"
@@ -8002,6 +8105,7 @@ cmd_status() {
   echo "Dashboard : http://127.0.0.1:$PORT/   (agentloop dashboard)"
   legacy_env_warnings
   legacy_scripts_warnings
+  statusline_path_warning
 }
 
 cmd_dashboard() {
