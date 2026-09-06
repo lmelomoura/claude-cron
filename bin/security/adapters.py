@@ -133,13 +133,24 @@ TREE_GAP = ("The working-tree secret scan did not complete ({reason}) — a "
 # back to the built-in scanner that does not involve removing a binary the
 # rest of the machine shares. It is also what lets the test suite pin which
 # scanner runs, instead of depending on what happens to be on PATH.
-ENGINES_ENV = "CC_SECURITY_ENGINES"
+ENGINES_ENV = "AL_SECURITY_ENGINES"
+# The switch's spelling before 2026-09-06, read for one release. Delete after.
+LEGACY_ENGINES_ENV = "CC_SECURITY_ENGINES"
 _OFF = {"off", "0", "no", "false", "none"}
+
+
+def _engines_setting() -> str:
+    """The switch, lower-cased and stripped: ENGINES_ENV, else its pre-rename
+    spelling, else empty (which reads as ON, see engine_path)."""
+    v = os.environ.get(ENGINES_ENV)
+    if v is None:
+        v = os.environ.get(LEGACY_ENGINES_ENV, "")
+    return v.strip().lower()
 
 
 def engine_path(name: str):
     """The engine's binary, or None when it is absent OR switched off."""
-    if os.environ.get(ENGINES_ENV, "").strip().lower() in _OFF:
+    if _engines_setting() in _OFF:
         return None
     return engines.find(name)
 

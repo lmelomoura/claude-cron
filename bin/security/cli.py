@@ -17,10 +17,10 @@ The door also checks WHO is knocking, not only what they brought. The agent
 and the operator reach this file through the identical command, so the
 verbs and actions an agent must never reach -- `decide`, `rename-project`,
 `open-analysis`, `event`, and saving or deleting a saved filter -- are
-refused whenever CC_SECURITY_AGENT is set (see `_refuse_if_agent`).
+refused whenever AL_SECURITY_AGENT is set (see `_refuse_if_agent`).
 
-BE CLEAR ABOUT WHAT THAT IS WORTH. CC_SECURITY_AGENT is a variable in the
-agent's own environment, and the agent has a shell: `env -u CC_SECURITY_AGENT
+BE CLEAR ABOUT WHAT THAT IS WORTH. AL_SECURITY_AGENT is a variable in the
+agent's own environment, and the agent has a shell: `env -u AL_SECURITY_AGENT
 agentloop security decide ...` walks straight past it. It is a GUARDRAIL
 AGAINST MISTAKE, not a boundary against malice -- it stops a model that
 genuinely believes dismissing its own finding is the helpful thing to do, which
@@ -133,10 +133,17 @@ AGENT_FORBIDDEN = ("decide", "rename-project", "open-analysis", "event",
                    "filters save", "filters delete")
 
 
+def _agent_env(name: str) -> str:
+    """The run-environment variable AL_<name>, or its pre-rename spelling —
+    the engine exports both for one release, a hook written before the rename
+    may still set only the old one. Stripped; empty when neither is set."""
+    return (os.environ.get("AL_" + name) or os.environ.get("CC_" + name) or "").strip()
+
+
 def _refuse_if_agent(cmd):
     """The door validates the SHAPE of what is written; this validates WHO.
 
-    `cmd_security_analyze` exports CC_SECURITY_AGENT=1 into the analysis run,
+    `cmd_security_analyze` exports AL_SECURITY_AGENT=1 into the analysis run,
     so every `agentloop security ...` the agent types -- from its own tool
     shell, inside the worktree -- arrives here with that flag set. These
     verbs (and, for `filters`, these specific actions) have to be refused
@@ -172,7 +179,7 @@ def _refuse_if_agent(cmd):
     and closing the row is the one thing that must always work.
 
     A GUARDRAIL, NOT A BOUNDARY. The flag lives in the agent's environment and
-    the agent has a shell, so `env -u CC_SECURITY_AGENT ...` is all it takes to
+    the agent has a shell, so `env -u AL_SECURITY_AGENT ...` is all it takes to
     be somebody else here. That is fine for what this is for: the failure that
     actually happens is a model deciding, in good faith, that retiring the
     finding it just filed is the helpful thing to do -- and this stops that
@@ -186,10 +193,10 @@ def _refuse_if_agent(cmd):
     access to the ledger file could still write a decision without going
     through this door at all.
     """
-    if os.environ.get("CC_SECURITY_AGENT", "").strip():
+    if _agent_env("SECURITY_AGENT"):
         sys.exit(
             f"security {cmd}: refused inside a security analysis "
-            "(CC_SECURITY_AGENT is set) — the agent that reports a finding "
+            "(AL_SECURITY_AGENT is set) — the agent that reports a finding "
             "does not get to dismiss it, rename the ledger out from under it, "
             "open analyses of its own, write an event by hand into the one "
             "record of what actually happened, or save/delete a saved filter "
@@ -348,21 +355,21 @@ def _refuse_root_outside_run(root):
     never looked at its own scope at all.
 
     When the run is isolated, `bin/agentloop`'s `run_job` (see
-    `bin/worktree-lib.sh:wt_setup`) exports `CC_RUN_MANIFEST` as the path to
+    `bin/worktree-lib.sh:wt_setup`) exports `AL_RUN_MANIFEST` as the path to
     that run's own `.run.json`, written into the run's own directory before
     the agent ever starts. The directory holding that file -- not anything
     read out of its contents, which is more than this needs -- IS the run's
     own worktree. `--root` has no reason to name anywhere else, so when both
     markers are present it is required to resolve inside that directory.
 
-    Deliberately conditioned on CC_SECURITY_AGENT too, not on the manifest
+    Deliberately conditioned on AL_SECURITY_AGENT too, not on the manifest
     variable alone: a human running `prepare` by hand, outside any run,
     carries neither, and must see the same behaviour as before this guard --
     this is the agent's own run being anchored to the checkout the engine
     built for it, not a new restriction on manual use.
     """
-    manifest = os.environ.get("CC_RUN_MANIFEST", "").strip()
-    if not (os.environ.get("CC_SECURITY_AGENT", "").strip() and manifest):
+    manifest = _agent_env("RUN_MANIFEST")
+    if not (_agent_env("SECURITY_AGENT") and manifest):
         return
     run_dir = Path(manifest).expanduser().resolve().parent
     try:
@@ -923,7 +930,7 @@ def _scan_sast(root, offline: bool, ignore_paths=()):
         return [], [OFFLINE_SAST_NOTE], "", coverage.SKIPPED
     if not adapters.engine_path("semgrep"):
         # `engine_path` answers None for a machine without the binary AND for
-        # one with `CC_SECURITY_ENGINES=off`, and the note says the same thing
+        # one with `AL_SECURITY_ENGINES=off`, and the note says the same thing
         # for both on purpose: as far as this analysis goes they are the same
         # machine.
         return [], [adapters.SAST_GAP.format(
@@ -1352,7 +1359,7 @@ def cmd_fingerprint(args):
     recipe, so the agent never has to reproduce it by hand.
 
     Read-only and side-effect free: it never opens the database, so it is
-    allowed under CC_SECURITY_AGENT (see AGENT_FORBIDDEN) even though it
+    allowed under AL_SECURITY_AGENT (see AGENT_FORBIDDEN) even though it
     still requires --db, like every other subcommand here.
 
     The same door as `report-finding`'s SAST-rule gate, saying the same
@@ -2067,7 +2074,7 @@ def cmd_render(args):
 def cmd_decide(args):
     """A permanent, project-wide judgement. Refused while an analysis is live.
 
-    The CC_SECURITY_AGENT guard above is a guardrail against mistake -- the
+    The AL_SECURITY_AGENT guard above is a guardrail against mistake -- the
     variable is in the agent's own environment and the agent has a shell. This
     check does not depend on the environment at all: while ANY analysis of the
     project says `running` -- not only the latest one -- an agent of that
@@ -2079,7 +2086,7 @@ def cmd_decide(args):
 
     NOT keyed on the latest row alone. That used to be the whole check, and it
     had a two-command bypass: `open-analysis` a second analysis of the same
-    project (allowed once CC_SECURITY_AGENT is unset, same shell as always),
+    project (allowed once AL_SECURITY_AGENT is unset, same shell as always),
     `finish` it immediately, and the project's LATEST analysis now reads
     `done` while the original one an agent is still working inside of sits
     `running`, unseen by a query that only ever looked at the newest row.
@@ -2301,7 +2308,7 @@ def cmd_analysis(args):
     every prior analysis of the branch, and `decisions_for`, all to read one
     string. This verb is the row and only the row.
 
-    Read-only, so it is allowed under CC_SECURITY_AGENT (see AGENT_FORBIDDEN)
+    Read-only, so it is allowed under AL_SECURITY_AGENT (see AGENT_FORBIDDEN)
     exactly like `findings`, `list` and `checklist` itself.
     """
     conn = _conn(args)

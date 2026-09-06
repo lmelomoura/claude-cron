@@ -16,7 +16,7 @@ for _ in $(seq 40); do curl -sf "http://127.0.0.1:$PORT/rest/api/3/myself" >/dev
 AUTH="x:y"
 JIRA="http://127.0.0.1:$PORT"
 JQ=/usr/bin/jq
-. "${CC_LIB:-$(cd "$(dirname "$0")/../bin" && pwd)}/round-cap.sh"
+. "${AL_LIB:-$(cd "$(dirname "$0")/../bin" && pwd)}/round-cap.sh"
 
 fail=0
 ok()   { printf '  PASS  %s\n' "$1"; }
@@ -88,16 +88,25 @@ echo
 echo "== the cap is configurable =="
 # RC_CAP is resolved when the library is sourced, which is how the precheck uses
 # it (env set for the job, read at script start) — so test it the same way.
-( export CC_ROUND_CAP=5
+( export AL_ROUND_CAP=5
   AUTH="x:y"; JIRA="http://127.0.0.1:$PORT"; JQ=/usr/bin/jq
-  . "${CC_LIB:-$(cd "$(dirname "$0")/../bin" && pwd)}/round-cap.sh"
+  . "${AL_LIB:-$(cd "$(dirname "$0")/../bin" && pwd)}/round-cap.sh"
   [ "$RC_CAP" = "5" ] || exit 2
   rc_gate_rework T-1 2>/dev/null ) \
-  && ok "CC_ROUND_CAP=5 raises the cap" || bad "CC_ROUND_CAP=5 raises the cap" "cap not honoured"
+  && ok "AL_ROUND_CAP=5 raises the cap" || bad "AL_ROUND_CAP=5 raises the cap" "cap not honoured"
+
+echo
+echo "== the cap still reads its pre-rename name for one release =="
+( export CC_ROUND_CAP=4    # the spelling before AL_ROUND_CAP, honoured for one release
+  AUTH="x:y"; JIRA="http://127.0.0.1:$PORT"; JQ=/usr/bin/jq
+  . "${AL_LIB:-$(cd "$(dirname "$0")/../bin" && pwd)}/round-cap.sh"
+  [ "$RC_CAP" = "4" ] ) \
+  && ok "CC_ROUND_CAP alone still raises the cap (read as AL_ROUND_CAP)" \
+  || bad "CC_ROUND_CAP alone still raises the cap (read as AL_ROUND_CAP)" "cap not honoured"
 
 echo
 echo "== dry run must not write =="
-CC_PRECHECK_DRY_RUN=1 rc_gate_rework T-DRY >/dev/null 2>&1 \
+AL_PRECHECK_DRY_RUN=1 rc_gate_rework T-DRY >/dev/null 2>&1 \
   && bad "dry run refuses a capped ticket" "allowed" || ok "dry run refuses a capped ticket"
 
 echo

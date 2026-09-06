@@ -47,6 +47,23 @@ legacy_env_warnings() { # one line per pre-rename variable still in the environm
   done
 }
 
+# The run-environment prefix before 2026-09-06. The engine exports every run
+# variable under both prefixes for one release; this names the operator's own
+# scripts that still read the old one, so they can be moved before the export
+# stops. Delete with the dual exports.
+LEGACY_RUN_PREFIX="CC_"
+
+legacy_scripts_warnings() { # one line per personal script under config/ still reading the old prefix
+  local f n
+  for f in "$CONFIG_DIR"/prechecks/*.sh "$CONFIG_DIR"/provision/*.sh "$CONFIG_DIR"/hooks/*; do
+    [ -f "$f" ] || continue
+    n="$(num "$(grep -cE "${LEGACY_RUN_PREFIX}[A-Z_]+" "$f" 2>/dev/null)")"
+    [ "$n" -gt 0 ] || continue
+    printf 'WARNING: %s reads %s* on %s line(s) — those names are exported alongside AL_* for now, and stop in the next release.\n' \
+      "$f" "$LEGACY_RUN_PREFIX" "$n"
+  done
+}
+
 CONFIG_DIR="${AGENTLOOP_CONFIG:-$BASE_DIR/config}"
 DATA_DIR="${AGENTLOOP_DATA:-$BASE_DIR/data}"
 JOBS_FILE="$CONFIG_DIR/jobs.json"
@@ -257,7 +274,7 @@ security_derived_jobs() {
     # not run a single command (the first live analysis burnt $0.56 probing
     # the walls and ended BLOCKED). Containment does not come from the
     # permission mode: the worktree is disposable, the ledger only accepts
-    # writes through the CLI's validating door, and CC_SECURITY_AGENT keeps
+    # writes through the CLI's validating door, and AL_SECURITY_AGENT keeps
     # the human-authority verbs shut. A project that wants a tighter mode
     # sets security.permission_mode, and an unknown value falls back rather
     # than launching a run that dies at the first tool call.
@@ -624,7 +641,7 @@ cmd_security_branches() { # cmd_security_branches <project> <repo> -> every
 # gate, a cwd that has gone missing, an empty prompt), and each of them would
 # otherwise leave the row `running` for ever.
 #
-# CC_SECURITY_AGENT marks the whole run as "this is the agent under review".
+# AL_SECURITY_AGENT marks the whole run as "this is the agent under review".
 # `agentloop security` is one command with one door, and the agent types it
 # from its own tool shell inside the worktree: without a marker, `security
 # decide --state false_positive` permanently suppresses a finding the agent
@@ -634,7 +651,7 @@ cmd_security_branches() { # cmd_security_branches <project> <repo> -> every
 # security_close_analysis runs inside run_job, still under this assignment, and
 # `finish` stays allowed precisely so that close keeps working.
 #
-# CC_SECURITY_ANALYSIS_ID is what the close-out reads the row id from. The
+# AL_SECURITY_ANALYSIS_ID is what the close-out reads the row id from. The
 # request file is shared and mutable -- the next analysis of this project
 # rewrites it -- so a close that reads it can land on another analysis's row.
 #
@@ -646,8 +663,9 @@ security_run_analysis() { # security_run_analysis <job-id> <analysis-id> <branch
   local jid="$1" aid="$2" branch="$3" rc=0
   # --force because a derived job is disabled: it exists to be run on demand,
   # never on a tick.
-  CC_BASE_OVERRIDE="$branch" CC_SKIP_PROVISION=1 \
-  CC_SECURITY_AGENT=1 CC_SECURITY_ANALYSIS_ID="$aid" \
+  AL_BASE_OVERRIDE="$branch" AL_SKIP_PROVISION=1 \
+  AL_SECURITY_AGENT=1 CC_SECURITY_AGENT=1 \
+  AL_SECURITY_ANALYSIS_ID="$aid" CC_SECURITY_ANALYSIS_ID="$aid" \
     run_job "$jid" --force || rc=$?
   # `--if-running` makes this a no-op for the ordinary case where the run really
   # happened and has already closed the row with its own verdict.
@@ -730,7 +748,7 @@ EOF
   # Refused before it reaches git, for the same reason wt_base_ref refuses it:
   # a value starting with '-' sits in an argument position next to plumbing.
   case "$branch" in -*) die "security: a branch name cannot start with '-': $branch" ;; esac
-  # THE SAME ORDER wt_base_ref uses under CC_BASE_OVERRIDE, remote first. The
+  # THE SAME ORDER wt_base_ref uses under AL_BASE_OVERRIDE, remote first. The
   # sha recorded on the analysis has to be the commit the worktree is actually
   # cut from; resolving it here in a different order would file the report
   # under a local branch's sha while the agent read origin's.
@@ -829,7 +847,7 @@ security_close_analysis() { # <job-id> <status> <cost> <wdreason>
   # closing an analysis still in flight while leaving this one running for
   # ever. cmd_security_analyze exports the id into the run itself, and this
   # runs inside that run.
-  aid="${CC_SECURITY_ANALYSIS_ID:-}"
+  aid="${AL_SECURITY_ANALYSIS_ID:-}"
   if [ -z "$aid" ]; then
     req="$(security_request_path "$1")"
     aid="$("$JQ" -r '.analysis_id // empty' "$req" 2>/dev/null)"
@@ -953,12 +971,12 @@ lock_drop() { rm -rf "${1:-}"; }   # rm -rf, not rmdir: the dir holds a pid file
 # tolerance would paper over it; the boot session UUID has no such behaviour to
 # tolerate. It is opaque, so there is also no field to parse and no greedy
 # pattern to get wrong.
-CC_BOOT_ID=""
+AL_BOOT_ID=""
 boot_id() {
-  if [ -z "$CC_BOOT_ID" ]; then
-    CC_BOOT_ID="$(sysctl -n kern.bootsessionuuid 2>/dev/null | tr -d '[:space:]')"
+  if [ -z "$AL_BOOT_ID" ]; then
+    AL_BOOT_ID="$(sysctl -n kern.bootsessionuuid 2>/dev/null | tr -d '[:space:]')"
   fi
-  printf '%s\n' "$CC_BOOT_ID"
+  printf '%s\n' "$AL_BOOT_ID"
 }
 
 # 0 = the process this slot names is still the process that took it.
@@ -1383,13 +1401,13 @@ release_slot() { rm -rf "$1"; }          # <slot-dir>
 # the published ports are still whatever the compose file says.
 #
 # So every run also gets a block of ports nobody else is using. It is handed to
-# the run and to its provisioning hooks as CC_PORT_BASE, and provision-lib.sh
+# the run and to its provisioning hooks as AL_PORT_BASE, and provision-lib.sh
 # turns it into concrete numbers. Generic on purpose: this is not a Docker
 # feature or a Compose feature, it is "two copies of the same stack at once",
 # which every project that isolates will meet.
-CC_PORT_RANGE_START="${AGENTLOOP_PORT_RANGE_START:-21000}"
-CC_PORT_SPAN="${AGENTLOOP_PORT_SPAN:-100}"        # ports per run
-CC_PORT_BLOCKS="${AGENTLOOP_PORT_BLOCKS:-60}"     # how many runs can hold one at once
+AL_PORT_RANGE_START="${AGENTLOOP_PORT_RANGE_START:-21000}"
+AL_PORT_SPAN="${AGENTLOOP_PORT_SPAN:-100}"        # ports per run
+AL_PORT_BLOCKS="${AGENTLOOP_PORT_BLOCKS:-60}"     # how many runs can hold one at once
 
 # Lowest block no LIVE run holds. Recorded in the slot, so it is released exactly
 # when the slot is — no separate registry to leak. Allocated under a mutex:
@@ -1409,17 +1427,17 @@ alloc_port_base() { # <slot-dir> -> prints the base port
     [ -n "$b" ] && taken="$taken $b"
   done
   i=0
-  while [ "$i" -lt "$CC_PORT_BLOCKS" ]; do
-    b=$(( CC_PORT_RANGE_START + i * CC_PORT_SPAN ))
+  while [ "$i" -lt "$AL_PORT_BLOCKS" ]; do
+    b=$(( AL_PORT_RANGE_START + i * AL_PORT_SPAN ))
     case " $taken " in *" $b "*) ;; *) break ;; esac
     i=$(( i + 1 ))
   done
   # Every block held. Rather than refuse the run, hand back the first one and say
   # so: a port clash is a failure the operator can see and read, and a run that
   # never started because 60 others were live is one they cannot.
-  if [ "$i" -ge "$CC_PORT_BLOCKS" ]; then
-    b="$CC_PORT_RANGE_START"
-    log_tick "all $CC_PORT_BLOCKS port blocks are in use — reusing $b, services may collide"
+  if [ "$i" -ge "$AL_PORT_BLOCKS" ]; then
+    b="$AL_PORT_RANGE_START"
+    log_tick "all $AL_PORT_BLOCKS port blocks are in use — reusing $b, services may collide"
   fi
   # Same redirection trap as in provision-lib: the shell raises it before echo
   # runs, so the group is what has to swallow it.
@@ -1839,7 +1857,8 @@ fleet_stall_check() {
   [ -f "$script" ] || return 0
   (
     _stall_hook() {
-      CC_REASON="$1" CC_STALL_HOURS="$STALL_HOURS" CC_DASHBOARD="http://127.0.0.1:$PORT/" \
+      AL_REASON="$1" CC_REASON="$1" AL_STALL_HOURS="$STALL_HOURS" CC_STALL_HOURS="$STALL_HOURS" \
+      AL_DASHBOARD="http://127.0.0.1:$PORT/" CC_DASHBOARD="http://127.0.0.1:$PORT/" \
         bash "$script" >>"$DATA_DIR/exec.log" 2>&1
     }
     wt_run_limited "$RUN_HOOK_TIMEOUT" _stall_hook "$reason" \
@@ -2716,13 +2735,13 @@ EOF
   ( CONFIG_DIR="$tmp/cfg"; PROJECTS_FILE="$tmp/proj/projects.json"
     wt_provision up nohooks j1 "$tmp/run" repoA /x/a "$tmp/run/repoA" develop ) >/dev/null 2>&1
   want "no script at all is a no-op" 0 $?
-  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s %s\n" "$CC_REPO_NAME" "$CC_BASE" > "$CC_WORKTREE/seen"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s %s\n" "$AL_REPO_NAME" "$AL_BASE" > "$AL_WORKTREE/seen"' \
     > "$tmp/cfg/provision/hooked.up.sh"
   ( CONFIG_DIR="$tmp/cfg"; PROJECTS_FILE="$tmp/proj/projects.json"
     wt_provision up hooked j1 "$tmp/run" repoA /x/a "$tmp/run/repoA" develop ) >/dev/null 2>&1
   want "a passing hook returns 0" 0 $?
   got="$(cat "$tmp/run/repoA/seen" 2>/dev/null)"
-  [ "$got" = "repoA develop" ] && ok "the hook sees CC_REPO_NAME and CC_BASE" || bad "hook saw '$got'"
+  [ "$got" = "repoA develop" ] && ok "the hook sees AL_REPO_NAME and AL_BASE" || bad "hook saw '$got'"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 3' > "$tmp/cfg/provision/broken.up.sh"
   ( CONFIG_DIR="$tmp/cfg"; PROJECTS_FILE="$tmp/proj/projects.json"
     wt_provision up broken j1 "$tmp/run" repoA /x/a "$tmp/run/repoA" develop ) >/dev/null 2>&1
@@ -2778,7 +2797,7 @@ EOF
 
   echo "wt_setup() — a failing hook aborts, takes down what it built, leaves nothing"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$tmp/cfg/provision/two.up.sh"
-  printf '%s\n' '#!/usr/bin/env bash' 'echo "$CC_REPO_NAME" >> "$tmp_down_log"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "$AL_REPO_NAME" >> "$tmp_down_log"' \
     > "$tmp/cfg/provision/two.down.sh"
   export tmp_down_log="$tmp/abort-down.log"; : > "$tmp_down_log"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
@@ -2792,7 +2811,7 @@ EOF
   rm -f "$tmp/cfg/provision/two.up.sh" "$tmp/cfg/provision/two.down.sh"
 
   echo "wt_teardown() — a finished session's dir goes, whatever is in it"
-  printf '%s\n' '#!/usr/bin/env bash' 'echo down >> "$CC_RUN_DIR/../down.count"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'echo down >> "$AL_RUN_DIR/../down.count"' \
     > "$tmp/cfg/provision/two.down.sh"
   chmod +x "$tmp/cfg/provision/two.down.sh"
   rm -f "$tmp/wtroot/j2/down.count"
@@ -3025,7 +3044,7 @@ EOF
   # second pass leaves a DIFFERENT untracked path behind, standing in for
   # what a real hook can do (a compose lockfile or a temp dir named after its
   # own pid).
-  printf '%s\n' '#!/usr/bin/env bash' 'echo hi > "$CC_WORKTREE/build-$$.txt"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'echo hi > "$AL_WORKTREE/build-$$.txt"' \
     > "$tmp/cfg/provision/two.up.sh"
   chmod +x "$tmp/cfg/provision/two.up.sh"
   local rdDirt="$tmp/wtroot/jDirt/stampDirt" wtDirt
@@ -3416,8 +3435,8 @@ EOF
   # teardown time goes through this SAME wt_dirt_sha, so a failure still
   # there when it matters is still reported, not silently read as clean.
   printf '%s\n' '#!/usr/bin/env bash' \
-    'echo residue > "$CC_WORKTREE/leftover.txt"' \
-    'echo "gitdir: $CC_WORKTREE/nonexistent-gitdir" > "$CC_WORKTREE/.git"' \
+    'echo residue > "$AL_WORKTREE/leftover.txt"' \
+    'echo "gitdir: $AL_WORKTREE/nonexistent-gitdir" > "$AL_WORKTREE/.git"' \
     > "$tmp/cfg/provision/two.up.sh"
   chmod +x "$tmp/cfg/provision/two.up.sh"
   local rdSF="$tmp/wtroot/jSnapFail/stampSF"
@@ -3445,7 +3464,7 @@ EOF
     *-*-*-*-*) ok "it is a boot session uuid, not a timestamp that a clock step moves" ;;
     *) bad "boot_id printed '$got', which is not a uuid" ;;
   esac
-  [ "$got" = "$(CC_BOOT_ID=""; boot_id)" ] \
+  [ "$got" = "$(AL_BOOT_ID=""; boot_id)" ] \
     && ok "and two reads inside one boot agree" || bad "boot_id is not stable"
 
   echo "slot_alive() — a lease is pinned to the boot it was taken in"
@@ -3487,7 +3506,7 @@ EOF
 
   # No backticks in this string: inside double quotes the shell would run it.
   echo "wt_provision() — a down hook from the orphan sweep still knows its ports"
-  printf '%s\n' '#!/usr/bin/env bash' 'echo "down saw ${CC_PORT_BASE:-none}" >> "$CC_RUN_DIR/../down.log"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "down saw ${AL_PORT_BASE:-none}" >> "$AL_RUN_DIR/../down.log"' \
     > "$tmp/cfg/provision/two.down.sh"
   chmod +x "$tmp/cfg/provision/two.down.sh"
   rm -f "$tmp/wtroot/j6/down.log"
@@ -3501,7 +3520,7 @@ EOF
   # actually tear down -- a crash that landed AFTER the run's own classifier
   # wrote `done`, not one caught before any classifier ran.
   echo done > "$tmp/wtroot/j6/stampP/.ended"
-  # No slot, no ambient CC_PORT_BASE: exactly the orphan sweep's situation.
+  # No slot, no ambient AL_PORT_BASE: exactly the orphan sweep's situation.
   # wt_prune_orphans resolves the project via job_get (JOBS_FILE), not by
   # reading the manifest's own .project — so the sweep needs a job "j6" ->
   # project "two" of its own, same as the real jobs.json a live job would
@@ -3509,7 +3528,7 @@ EOF
   printf '%s' '{"jobs":[{"id":"j6","project":"two"}]}' > "$tmp/proj/j6.jobs.json"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
     WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"; JOBS_FILE="$tmp/proj/j6.jobs.json"
-    unset CC_PORT_BASE
+    unset AL_PORT_BASE
     wt_prune_orphans ) >/dev/null 2>&1
   grep -q "down saw 27100" "$tmp/wtroot/j6/down.log" 2>/dev/null \
     && ok "a crashed run's down hook reads its ports from the manifest" \
@@ -3689,7 +3708,7 @@ EOF
     || bad "an expired session was kept"
 
   echo "wt_prune_orphans() — a deleted job's run dir still takes its services down"
-  printf '%s\n' '#!/usr/bin/env bash' 'echo down >> "$CC_RUN_DIR/../orphan-down.log"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'echo down >> "$AL_RUN_DIR/../orphan-down.log"' \
     > "$tmp/cfg/provision/two.down.sh"
   chmod +x "$tmp/cfg/provision/two.down.sh"
   rm -f "$tmp/wtroot/jGone/orphan-down.log"
@@ -4227,7 +4246,7 @@ NASTY
     LOCK_DIR="$tmp/stall/locks"; DATA_DIR="$tmp/stall"; CONFIG_DIR="$tmp/stall/cfg"
     STALL_MARK_FILE="$tmp/stall/.stalled"; STALL_HOURS=4
     mkdir -p "$tmp/stall/cfg/hooks"
-    printf '#!/usr/bin/env bash\necho "$CC_REASON" >> "%s/fired.txt"\n' "$tmp/stall" > "$tmp/stall/cfg/hooks/on-fleet-stalled.sh"
+    printf '#!/usr/bin/env bash\necho "$AL_REASON" >> "%s/fired.txt"\n' "$tmp/stall" > "$tmp/stall/cfg/hooks/on-fleet-stalled.sh"
     fleet_stall_check; fleet_stall_check; fleet_stall_check
     wait 2>/dev/null
     [ -f "$STALL_MARK_FILE" ] || exit 3
@@ -4385,7 +4404,7 @@ NASTY
   # actually fires on a drop, only that the directory goes. An open session
   # never reaches wt_teardown's own down block, so this explicit drop is the
   # ONLY place left that can still release it -- prove it does.
-  printf '%s\n' '#!/usr/bin/env bash' 'echo down >> "$CC_RUN_DIR/../down.count"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'echo down >> "$AL_RUN_DIR/../down.count"' \
     > "$tmp/cfg/provision/two.down.sh"
   chmod +x "$tmp/cfg/provision/two.down.sh"
   rm -f "$tmp/wtroot/j7/down.count"
@@ -4778,8 +4797,8 @@ NASTY
   b2="$( LOCK_DIR="$tmp/locks"; alloc_port_base "$tmp/locks/pj/102" )"
   [ -n "$b1" ] && [ "$b1" != "$b2" ] && ok "two live runs get different blocks ($b1 vs $b2)" \
     || bad "both got '$b1'"
-  [ "$(( b2 - b1 ))" = "$CC_PORT_SPAN" ] && ok "the blocks do not overlap" \
-    || bad "blocks are $(( b2 - b1 )) apart, span is $CC_PORT_SPAN"
+  [ "$(( b2 - b1 ))" = "$AL_PORT_SPAN" ] && ok "the blocks do not overlap" \
+    || bad "blocks are $(( b2 - b1 )) apart, span is $AL_PORT_SPAN"
   # A slot whose process is gone holds nothing — otherwise the pool shrinks by
   # one for every run that ever ended and never came back.
   echo 999999 > "$tmp/locks/pk/103/pid"
@@ -4985,15 +5004,15 @@ NASTY
 
   echo "provision-lib.sh — a run's ports come from its own block"
   local plib="$BIN_DIR/provision-lib.sh"
-  got="$( CC_PORT_BASE=21000 CC_PORT_SPAN=100 TMPDIR="$tmp" bash -c \
-    'source "$1"; echo "$(cc_port POSTGRES_PORT) $(cc_port REDIS_PORT) $(cc_port POSTGRES_PORT)"' _ "$plib" )"
+  got="$( AL_PORT_BASE=21000 AL_PORT_SPAN=100 TMPDIR="$tmp" bash -c \
+    'source "$1"; echo "$(al_port POSTGRES_PORT) $(al_port REDIS_PORT) $(al_port POSTGRES_PORT)"' _ "$plib" )"
   [ "$got" = "21000 21001 21000" ] && ok "each name gets its own port, and keeps it" \
     || bad "got '$got'"
   # The whole point: rewrite the ports a checked-in .env carries, and touch
   # nothing else in it.
   printf '%s\n' 'POSTGRES_PORT=5432' 'REDIS_PORT=6379' 'SECRET=keepme' > "$tmp/dotenv"
-  ( CC_PORT_BASE=21200 CC_PORT_SPAN=100 TMPDIR="$tmp" bash -c \
-    'source "$1"; cc_env_ports "$2"' _ "$plib" "$tmp/dotenv" ) >/dev/null 2>&1
+  ( AL_PORT_BASE=21200 AL_PORT_SPAN=100 TMPDIR="$tmp" bash -c \
+    'source "$1"; al_env_ports "$2"' _ "$plib" "$tmp/dotenv" ) >/dev/null 2>&1
   got="$(grep -c -E '^(POSTGRES|REDIS)_PORT=212[0-9][0-9]$' "$tmp/dotenv")"
   [ "$got" = "2" ] && ok "every *_PORT in the file moves into the block" || bad "$got of 2 rewritten"
   grep -q '^SECRET=keepme$' "$tmp/dotenv" && ok "and nothing else in the file is touched" \
@@ -5008,13 +5027,13 @@ NASTY
   ( CONFIG_DIR="$tmp/hookcfg"; run_end_hook j1 error 1.5 "boom" P sess /tmp/l.json 1 2 ) >/dev/null 2>&1
   want "no hook installed is a no-op" 0 $?
   printf '%s\n' '#!/usr/bin/env bash' \
-    'printf "%s|%s|%s|%s|%s\n" "$CC_JOB_ID" "$CC_STATUS" "$CC_COST" "$CC_NOTE" "$CC_PROJECT" > "$CC_HOOK_OUT"' \
+    'printf "%s|%s|%s|%s|%s\n" "$AL_JOB_ID" "$AL_STATUS" "$AL_COST" "$AL_NOTE" "$AL_PROJECT" > "$AL_HOOK_OUT"' \
     > "$tmp/hookcfg/hooks/on-run-end.sh"
-  export CC_HOOK_OUT="$tmp/hook.seen"; rm -f "$CC_HOOK_OUT"
+  export AL_HOOK_OUT="$tmp/hook.seen"; rm -f "$AL_HOOK_OUT"
   ( CONFIG_DIR="$tmp/hookcfg"; run_end_hook j1 error 1.5 "boom" P sess /tmp/l.json 1 2 ) >/dev/null 2>&1
   local waited=0
-  while [ ! -f "$CC_HOOK_OUT" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited+1)); done
-  got="$(cat "$CC_HOOK_OUT" 2>/dev/null)"
+  while [ ! -f "$AL_HOOK_OUT" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited+1)); done
+  got="$(cat "$AL_HOOK_OUT" 2>/dev/null)"
   [ "$got" = "j1|error|1.5|boom|P" ] && ok "the hook is told which run ended and how" \
     || bad "the hook saw '$got'"
   # It must never delay the run's cleanup, however slow or wedged it is.
@@ -5024,7 +5043,7 @@ NASTY
   elapsed=$(( $(now_epoch) - t0 ))
   [ "$elapsed" -lt 3 ] && ok "a slow hook does not hold the run open (${elapsed}s)" \
     || bad "run_end_hook blocked for ${elapsed}s"
-  unset CC_HOOK_OUT
+  unset AL_HOOK_OUT
   rm -f "$tmp/hookcfg/hooks/on-run-end.sh"
 
   echo "the round cap itself — counting, parking, failing open"
@@ -5072,7 +5091,7 @@ NASTY
   # request reaches. Rounds only ended when the budget did. Three properties keep
   # that closed, and each has been silently undone before by an edit elsewhere —
   # so they are asserted here rather than trusted to prose.
-  local jf="${CC_JOBS_FILE:-$CONFIG_DIR/jobs.json}"
+  local jf="${AL_JOBS_FILE:-$CONFIG_DIR/jobs.json}"
   if [ ! -f "$jf" ]; then
     ok "no jobs.json — loop invariants not applicable"
   else
@@ -5276,7 +5295,7 @@ JSON
 # line per ARGUMENT, "<n><TAB><that argument's first line>". Only the first
 # line, because the prompt is a paragraph -- but one line here is still exactly
 # one argument there, which is the entire point of recording it.
-exec > "$CC_ARGV_OUT"
+exec > "$AL_ARGV_OUT"
 printf 'ARGC\t%s\n' "$#"
 n=0
 for a in "$@"; do n=$((n + 1)); printf '%s\t%s\n' "$n" "${a%%$'\n'*}"; done
@@ -5300,7 +5319,7 @@ JSON
   st_argv_run() { # st_argv_run <job-id> -- the recorded argv of one real launch
     rm -f "$argvdir/out"
     AGENTLOOP_CONFIG="$argvdir/config" AGENTLOOP_DATA="$argvdir/data" \
-      AGENTLOOP_CLAUDE_BIN="$argvdir/claude" CC_ARGV_OUT="$argvdir/out" \
+      AGENTLOOP_CLAUDE_BIN="$argvdir/claude" AL_ARGV_OUT="$argvdir/out" \
       "$BIN_DIR/agentloop" run "$1" >/dev/null 2>&1
     cat "$argvdir/out" 2>/dev/null
   }
@@ -5716,7 +5735,7 @@ EOF
   # A structural assertion, deliberately: exercising the real reattach path
   # end-to-end needs a live slot, a killed agent and an actual resume, which
   # this suite has no harness for. What CAN be checked is the SHAPE of the
-  # fix. CC_SKIP_PROVISION is an env var on the ORIGINAL invocation, so by the
+  # fix. AL_SKIP_PROVISION is an env var on the ORIGINAL invocation, so by the
   # time a SIGKILL/OOM/reboot casualty is resumed it is unset again -- the
   # only thing that still tells a derived security job apart at reattach time
   # is its ID. Find the reattach path's own wt_provision call, identified by
@@ -5770,9 +5789,9 @@ EOF
     echo three > a.txt && git commit -qam three
     git checkout -q - ) >/dev/null 2>&1
 
-  got="$( CC_BASE_OVERRIDE="feature/x" wt_base_ref "$tmp/brov/repo" "main" 5 )"
-  case "$got" in *feature/x*) ok "CC_BASE_OVERRIDE wins over the declared base" ;;
-                 *) bad "CC_BASE_OVERRIDE wins over the declared base" ;; esac
+  got="$( AL_BASE_OVERRIDE="feature/x" wt_base_ref "$tmp/brov/repo" "main" 5 )"
+  case "$got" in *feature/x*) ok "AL_BASE_OVERRIDE wins over the declared base" ;;
+                 *) bad "AL_BASE_OVERRIDE wins over the declared base" ;; esac
 
   # The candidate order matters: refs/remotes/origin/<name> is tried BEFORE
   # refs/heads/<name>. Assert the EXACT ref and its resolved sha, not a
@@ -5786,11 +5805,11 @@ EOF
   if [ "$origin_sha" = "$diverged_local_sha" ]; then
     bad "fixture setup: local feature/x never diverged from origin/feature/x"
   fi
-  got="$( CC_BASE_OVERRIDE="feature/x" wt_base_ref "$tmp/brov/repo" "main" 5 )"
+  got="$( AL_BASE_OVERRIDE="feature/x" wt_base_ref "$tmp/brov/repo" "main" 5 )"
   got_sha="$(git -C "$tmp/brov/repo" rev-parse --verify --quiet "$got" 2>/dev/null)"
   [ "$got" = "refs/remotes/origin/feature/x" ] && [ "$got_sha" = "$origin_sha" ] \
-    && ok "CC_BASE_OVERRIDE prefers the remote branch over a diverged local one" \
-    || bad "CC_BASE_OVERRIDE resolved '$got' ($got_sha), want refs/remotes/origin/feature/x ($origin_sha)"
+    && ok "AL_BASE_OVERRIDE prefers the remote branch over a diverged local one" \
+    || bad "AL_BASE_OVERRIDE resolved '$got' ($got_sha), want refs/remotes/origin/feature/x ($origin_sha)"
 
   # Independently confirm neither candidate resolves for "main" in this repo,
   # so HEAD is the only correct fallback -- not just the ABSENCE of
@@ -5804,13 +5823,13 @@ EOF
     && ok "an unset override falls back to the declared base's own resolution (HEAD, since 'main' does not exist here)" \
     || bad "an unset override resolved to '$got', want 'HEAD' (the declared base's actual resolution)"
 
-  ( CC_BASE_OVERRIDE="no/such/branch" wt_base_ref "$tmp/brov/repo" "main" 5 >/dev/null 2>&1 ) \
+  ( AL_BASE_OVERRIDE="no/such/branch" wt_base_ref "$tmp/brov/repo" "main" 5 >/dev/null 2>&1 ) \
     && bad "a branch that does not exist is refused, not silently replaced" \
     || ok "a branch that does not exist is refused, not silently replaced"
 
-  ( CC_BASE_OVERRIDE="-x" wt_base_ref "$tmp/brov/repo" "main" 5 >/dev/null 2>&1 ) \
-    && bad "CC_BASE_OVERRIDE starting with '-' was accepted" \
-    || ok "CC_BASE_OVERRIDE starting with '-' is refused before it reaches rev-parse"
+  ( AL_BASE_OVERRIDE="-x" wt_base_ref "$tmp/brov/repo" "main" 5 >/dev/null 2>&1 ) \
+    && bad "AL_BASE_OVERRIDE starting with '-' was accepted" \
+    || ok "AL_BASE_OVERRIDE starting with '-' is refused before it reaches rev-parse"
 
   # The probe above passes today whether or not the guard exists, because
   # real git already refuses to create a branch named "-x" in the first
@@ -5829,14 +5848,14 @@ EOF
     'exec /usr/bin/git "$@"' > "$tmp/brov/fakebin/git"
   chmod +x "$tmp/brov/fakebin/git"
   local rc
-  got="$( PATH="$tmp/brov/fakebin:$PATH"; CC_BASE_OVERRIDE="-x"
+  got="$( PATH="$tmp/brov/fakebin:$PATH"; AL_BASE_OVERRIDE="-x"
           wt_base_ref "$tmp/brov/repo" "main" 5 2>/dev/null )"
   rc=$?
   [ -z "$got" ] && [ "$rc" -ne 0 ] \
     && ok "even a git that WOULD accept '-x' is never asked -- the guard refuses first" \
-    || bad "CC_BASE_OVERRIDE starting with '-' resolved to '$got' (rc=$rc) once git said yes to it"
+    || bad "AL_BASE_OVERRIDE starting with '-' resolved to '$got' (rc=$rc) once git said yes to it"
 
-  # ---- CC_SKIP_PROVISION really skips wt_provision up (not just by shape) --
+  # ---- AL_SKIP_PROVISION really skips wt_provision up (not just by shape) --
   # A security analysis reads code; it must neither pay for nor be blocked by
   # a project's provisioning (.env, containers, migrations). The fixture's up
   # hook writes a marker file precisely so its ABSENCE is what proves the
@@ -5847,20 +5866,20 @@ EOF
       && git config user.name t && echo hi > f && git add -A && git commit -qm init ) >/dev/null 2>&1
   printf '%s' '{"projects":[{"name":"secskip","cwd":"'"$tmp"'/brov/skip-repo"}]}' \
     > "$tmp/brov/proj/secskip.json"
-  printf '%s\n' '#!/usr/bin/env bash' 'touch "$CC_WORKTREE/PROVISIONED"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'touch "$AL_WORKTREE/PROVISIONED"' \
     > "$tmp/brov/cfg/provision/secskip.up.sh"
   chmod +x "$tmp/brov/cfg/provision/secskip.up.sh"
 
   ( PROJECTS_FILE="$tmp/brov/proj/secskip.json"; CONFIG_DIR="$tmp/brov/cfg"; WORKTREES_DIR="$tmp/brov/wtroot"
-    CC_SKIP_PROVISION=1 wt_setup jsec secskip "$tmp/brov/skip-repo" stampSkip ) >/dev/null 2>&1
+    AL_SKIP_PROVISION=1 wt_setup jsec secskip "$tmp/brov/skip-repo" stampSkip ) >/dev/null 2>&1
   [ ! -f "$tmp/brov/wtroot/jsec/stampSkip/skip-repo/PROVISIONED" ] \
-    && ok "CC_SKIP_PROVISION=1 leaves the project's up hook unrun" \
-    || bad "CC_SKIP_PROVISION=1 still ran the up hook"
+    && ok "AL_SKIP_PROVISION=1 leaves the project's up hook unrun" \
+    || bad "AL_SKIP_PROVISION=1 still ran the up hook"
 
   ( PROJECTS_FILE="$tmp/brov/proj/secskip.json"; CONFIG_DIR="$tmp/brov/cfg"; WORKTREES_DIR="$tmp/brov/wtroot"
     wt_setup jsec secskip "$tmp/brov/skip-repo" stampNoSkip ) >/dev/null 2>&1
   [ -f "$tmp/brov/wtroot/jsec/stampNoSkip/skip-repo/PROVISIONED" ] \
-    && ok "and an ordinary run still provisions, so the skip above was CC_SKIP_PROVISION's doing" \
+    && ok "and an ordinary run still provisions, so the skip above was AL_SKIP_PROVISION's doing" \
     || bad "an ordinary run did not provision at all — the fixture proves nothing"
 
   # ---- ...and teardown must not run `down` over a stack it never brought up -
@@ -5869,11 +5888,11 @@ EOF
   # at teardown: containers stopped, ports released and services unlinked for
   # whatever IS up on that project -- the developer's own environment, torn
   # down by a read-only code review. The guard is by IDENTITY, not by
-  # environment: CC_SKIP_PROVISION was a variable on the original invocation
+  # environment: AL_SKIP_PROVISION was a variable on the original invocation
   # and teardown can happen from a later process entirely (the orphan sweep, an
   # explicit drop) where it is long gone.
   mkdir -p "$tmp/brov/data"
-  printf '%s\n' '#!/usr/bin/env bash' 'touch "$CC_RUN_DIR/WENT-DOWN"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'touch "$AL_RUN_DIR/WENT-DOWN"' \
     > "$tmp/brov/cfg/provision/secskip.down.sh"
   chmod +x "$tmp/brov/cfg/provision/secskip.down.sh"
   ( PROJECTS_FILE="$tmp/brov/proj/secskip.json"; CONFIG_DIR="$tmp/brov/cfg"
@@ -5947,17 +5966,17 @@ JSON
   ( sec_env
     run_job() {
       printf '%s\n' "$*" > "$sec/runjob.args"
-      printf '%s|%s\n' "${CC_BASE_OVERRIDE:-}" "${CC_SKIP_PROVISION:-}" > "$sec/runjob.env"
+      printf '%s|%s\n' "${AL_BASE_OVERRIDE:-}" "${AL_SKIP_PROVISION:-}" > "$sec/runjob.env"
       # A CHILD PROCESS, not this shell: what matters is that the two markers
       # are EXPORTED all the way down to the agent's own tool shell, not that
       # run_job can see them as shell variables.
-      sh -c 'printf "%s|%s\n" "${CC_SECURITY_AGENT:-}" "${CC_SECURITY_ANALYSIS_ID:-}"' \
+      sh -c 'printf "%s|%s\n" "${AL_SECURITY_AGENT:-}" "${AL_SECURITY_ANALYSIS_ID:-}"' \
         > "$sec/runjob.childenv"
       security_py list --project "Sec App" | "$JQ" -r '.[0].state' > "$sec/state-during"
       return 0
     }
     cmd_security_analyze "Sec App" repo main quick
-    printf '%s|%s\n' "${CC_SECURITY_AGENT:-unset}" "${CC_SECURITY_ANALYSIS_ID:-unset}" \
+    printf '%s|%s\n' "${AL_SECURITY_AGENT:-unset}" "${AL_SECURITY_ANALYSIS_ID:-unset}" \
       > "$sec/after-analyze.env" ) > "$sec/analyze.out" 2>&1
   [ "$("$JQ" -r '.analysis_id' "$secreq" 2>/dev/null)" = "1" ] \
     && ok "the request file carries the analysis id the run has to report against" \
@@ -5979,14 +5998,14 @@ JSON
     && ok "the derived job is run forced, never waiting for a tick it can never have" \
     || bad "run_job got '$(cat "$sec/runjob.args" 2>/dev/null)'"
   [ "$(cat "$sec/runjob.env" 2>/dev/null)" = "main|1" ] \
-    && ok "with the branch as CC_BASE_OVERRIDE and provisioning skipped" \
+    && ok "with the branch as AL_BASE_OVERRIDE and provisioning skipped" \
     || bad "run_job saw '$(cat "$sec/runjob.env" 2>/dev/null)'"
   # The agent reaches `security decide` and `security rename-project` through
   # the very same command the operator does; the marker is what tells the door
   # who is knocking, and it is worth nothing unless it reaches the agent's own
   # process rather than only run_job's shell.
   [ "$(cat "$sec/runjob.childenv" 2>/dev/null)" = "1|1" ] \
-    && ok "and CC_SECURITY_AGENT=1 plus the analysis id exported into every process the run starts" \
+    && ok "and AL_SECURITY_AGENT=1 plus the analysis id exported into every process the run starts" \
     || bad "a child of run_job saw '$(cat "$sec/runjob.childenv" 2>/dev/null)'"
   [ "$(cat "$sec/after-analyze.env" 2>/dev/null)" = "unset|unset" ] \
     && ok "and gone again the moment run_job returns, so the sweep after it is not marked as the agent" \
@@ -6069,7 +6088,7 @@ FAKESELF
     # It prepares before it closes, exactly as a real run does: the agent runs
     # the deterministic phases first and `finish` refuses `done` without them.
     run_job() {
-      security_py prepare --analysis "$CC_SECURITY_ANALYSIS_ID" --root "$sec/tree" \
+      security_py prepare --analysis "$AL_SECURITY_ANALYSIS_ID" --root "$sec/tree" \
         --offline >/dev/null 2>&1
       security_close_analysis "$1" success "1.25" "" >/dev/null 2>&1; return 0; }
     aid="$(security_py open-analysis --project "Sec App" --repo repo --branch sc \
@@ -6203,7 +6222,7 @@ JSON
   secnoprep="$( ( sec_env
     a="$(security_py open-analysis --project "Sec App" --repo repo --branch main \
            --commit noprep --profile quick --run-id "$secjid" | "$JQ" -r '.analysis_id')"
-    CC_SECURITY_ANALYSIS_ID="$a" security_close_analysis "$secjid" success "0.75" "" \
+    AL_SECURITY_ANALYSIS_ID="$a" security_close_analysis "$secjid" success "0.75" "" \
       >/dev/null 2>&1
     security_py list --project "Sec App" | "$JQ" -r --argjson a "$a" \
       '.[] | select(.id==$a) | [.state, (.coverage_note | test("deterministic phases never ran") | tostring)] | join(",")' ) )"
@@ -6257,7 +6276,7 @@ JSON
            --commit abc --profile quick --run-id "$secjid" | "$JQ" -r '.analysis_id')"
     security_py finish --analysis "$a" --state capped \
       --note "I stopped before the SAST phase" >/dev/null 2>&1
-    CC_SECURITY_ANALYSIS_ID="$a" security_close_analysis "$secjid" success "2.5" "" >/dev/null 2>&1
+    AL_SECURITY_ANALYSIS_ID="$a" security_close_analysis "$secjid" success "2.5" "" >/dev/null 2>&1
     security_py list --project "Sec App" \
       | "$JQ" -r --argjson a "$a" '.[] | select(.id==$a) | [.state, (.spend_usd|tostring)] | join(",")' ) )"
   [ "$secupg" = "capped,2.5" ] \
@@ -6274,7 +6293,7 @@ JSON
     # exactly what a second `security analyze` does to the shared file while
     # the first run is still going
     "$JQ" --argjson a "$other" '.analysis_id = $a' "$secreq" > "$secreq.t" && mv "$secreq.t" "$secreq"
-    CC_SECURITY_ANALYSIS_ID="$mine" security_close_analysis "$secjid" success "0.5" "" >/dev/null 2>&1
+    AL_SECURITY_ANALYSIS_ID="$mine" security_close_analysis "$secjid" success "0.5" "" >/dev/null 2>&1
     security_py list --project "Sec App" | "$JQ" -r --argjson m "$mine" --argjson o "$other" \
       '[(.[] | select(.id==$m) | .state), (.[] | select(.id==$o) | .state)] | join(",")' ) )"
   [ "$seccross" = "done,running" ] \
@@ -6282,19 +6301,19 @@ JSON
     || bad "close with a rewritten request file -> $seccross (mine,other)"
 
   echo "the agent cannot vote on its own findings"
-  # The marker the run carries (CC_SECURITY_AGENT) reaching the same door the
+  # The marker the run carries (AL_SECURITY_AGENT) reaching the same door the
   # operator uses. `finish` must stay allowed: security_close_analysis runs
   # inside run_job, after the agent, under this very variable.
   local secfp="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   local secrc=0
-  ( sec_env; CC_SECURITY_AGENT=1 security_py decide --project "Sec App" \
+  ( sec_env; AL_SECURITY_AGENT=1 security_py decide --project "Sec App" \
       --fingerprint "$secfp" --state false_positive \
       --reason "I looked at it myself" --by "security team" ) > "$sec/agent-decide.out" 2>&1 || secrc=$?
-  [ "$secrc" -ne 0 ] && grep -q "CC_SECURITY_AGENT" "$sec/agent-decide.out" \
+  [ "$secrc" -ne 0 ] && grep -q "AL_SECURITY_AGENT" "$sec/agent-decide.out" \
     && ok "'decide' is refused inside an analysis, with a sentence saying why" \
     || bad "agent decide: rc=$secrc $(cat "$sec/agent-decide.out" 2>/dev/null)"
   secrc=0
-  ( sec_env; CC_SECURITY_AGENT=1 security_py rename-project --from "Sec App" --to "Mine" ) \
+  ( sec_env; AL_SECURITY_AGENT=1 security_py rename-project --from "Sec App" --to "Mine" ) \
     > "$sec/agent-rename.out" 2>&1 || secrc=$?
   [ "$secrc" -ne 0 ] && [ "$( ( sec_env; security_py list --project "Mine" | "$JQ" -r 'length' ) )" = "0" ] \
     && ok "and so is moving the ledger out from under the project being analysed" \
@@ -6302,13 +6321,13 @@ JSON
   local secfin
   secfin="$( ( sec_env
     a="$(sec_open)"
-    CC_SECURITY_AGENT=1 CC_SECURITY_ANALYSIS_ID="$a" \
+    AL_SECURITY_AGENT=1 AL_SECURITY_ANALYSIS_ID="$a" \
       security_close_analysis "$secjid" success "0.25" "" >/dev/null 2>&1
     security_py list --project "Sec App" \
       | "$JQ" -r --argjson a "$a" '.[] | select(.id==$a) | .state' ) )"
   [ "$secfin" = "done" ] \
     && ok "while the engine's own close still works under the same flag, which is why finish is not refused" \
-    || bad "close under CC_SECURITY_AGENT -> $secfin"
+    || bad "close under AL_SECURITY_AGENT -> $secfin"
 
   echo "cmd_project_set() — a settings save files settings_changed only when security is on"
   # No test asserted this event's kind or gate anywhere: a wrong kind string
@@ -6462,6 +6481,46 @@ JSON
     && ok "app.js's bytes copied onto app.css's name are caught by name, not read as a clean app.css" \
     || bad "the swap was not caught the way it should: $(cat "$tmp/uiswap-after.out")"
 
+  echo "the rename — a run, its hooks and its prechecks see AL_* and CC_* alike for one release"
+  mkdir -p "$tmp/hookcfg/hooks"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'printf "%s|%s|%s|%s\n" "$AL_JOB_ID" "$CC_JOB_ID" "$AL_STATUS" "$CC_STATUS" > "$AL_HOOK_OUT"' \
+    > "$tmp/hookcfg/hooks/on-run-end.sh"
+  export AL_HOOK_OUT="$tmp/hook-twins.seen"; rm -f "$AL_HOOK_OUT"
+  ( CONFIG_DIR="$tmp/hookcfg"; run_end_hook j7 warning 0.2 "n" P sess /tmp/l.json 1 2 ) >/dev/null 2>&1
+  waited=0
+  while [ ! -f "$AL_HOOK_OUT" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited+1)); done
+  got="$(cat "$AL_HOOK_OUT" 2>/dev/null)"
+  [ "$got" = "j7|j7|warning|warning" ] && ok "on-run-end sees AL_JOB_ID and CC_JOB_ID with one value" \
+    || bad "the hook saw '$got'"
+  unset AL_HOOK_OUT
+  rm -f "$tmp/hookcfg/hooks/on-run-end.sh"
+
+  mkdir -p "$tmp/twins/cfg/provision" "$tmp/twins/run/repoA"
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s|%s\n" "$AL_REPO_NAME" "$CC_REPO_NAME" > "$AL_WORKTREE/twins"' \
+    > "$tmp/twins/cfg/provision/twins.up.sh"
+  ( CONFIG_DIR="$tmp/twins/cfg"; PROJECTS_FILE="$tmp/proj/projects.json"
+    wt_provision up twins j1 "$tmp/twins/run" repoA /x/a "$tmp/twins/run/repoA" develop ) >/dev/null 2>&1
+  got="$(cat "$tmp/twins/run/repoA/twins" 2>/dev/null)"
+  [ "$got" = "repoA|repoA" ] && ok "a provisioning hook sees AL_REPO_NAME and CC_REPO_NAME with one value" \
+    || bad "the provisioning hook saw '$got'"
+
+  # Structural, like the bind_session call-site count above: the three places
+  # a precheck is run dry all export the marker under both names, and a
+  # fourth caller added later has to as well.
+  got="$(sed -n '/^cmd_selftest()/,/^}/!p' "$SELF" | grep -c 'export AL_PRECHECK_DRY_RUN=1 CC_PRECHECK_DRY_RUN=1')"
+  [ "$got" = "3" ] && ok "every dry precheck exports the marker under both names ($got sites)" \
+    || bad "$got sites export both spellings of the dry-run marker, expected 3"
+
+  echo "the rename — install and status name the personal scripts still reading CC_*"
+  mkdir -p "$tmp/legacy/prechecks" "$tmp/legacy/provision" "$tmp/legacy/hooks"
+  printf '%s\n' '#!/bin/bash' "echo \"\$${LEGACY_RUN_PREFIX}JOB_ID\"" > "$tmp/legacy/prechecks/old.sh"
+  printf '%s\n' '#!/bin/bash' 'echo "$AL_JOB_ID"' > "$tmp/legacy/provision/new.up.sh"
+  got="$( CONFIG_DIR="$tmp/legacy" legacy_scripts_warnings )"
+  case "$got" in *"prechecks/old.sh reads ${LEGACY_RUN_PREFIX}"*) ok "a script still on the old prefix is named" ;;
+                 *) bad "the warning was: '$got'" ;; esac
+  case "$got" in *"new.up.sh"*) bad "a script already on AL_ was named" ;; *) ok "a script already on AL_ is not" ;; esac
+
   echo "the rename — the pre-rename environment names still work for one release"
   mkdir -p "$tmp/legacy/config" "$tmp/legacy/data"
   got="$( env -i HOME="$HOME" PATH="$PATH" "${LEGACY_ENV_PREFIX}PORT=9876" \
@@ -6592,10 +6651,10 @@ cmd_precheck() { # <id> — run the job's precheck once and RECORD it, without t
   precheck="$(jobs_json | "$JQ" -r --arg id "$id" '.jobs[] | select(.id==$id) | .precheck // ""')"
   [ -n "$precheck" ] || { echo "no precheck configured for $id"; return 0; }
   cwd="$(resolve "$id" cwd "$HOME")"
-  # A probe reports; it must not claim. See CC_PRECHECK_DRY_RUN in the
+  # A probe reports; it must not claim. See AL_PRECHECK_DRY_RUN in the
   # prechecks: a claim is a write, and spending it here leaves a ticket
   # claimed with no session behind it.
-  pc_out="$( cd "$cwd" && export CC_PRECHECK_DRY_RUN=1 && eval "$precheck" 2>&1 )"; pc_rc=$?
+  pc_out="$( cd "$cwd" && export AL_PRECHECK_DRY_RUN=1 CC_PRECHECK_DRY_RUN=1 && eval "$precheck" 2>&1 )"; pc_rc=$?
   state_set "$id" last_precheck "$("$JQ" -nc --arg o "${pc_out:-(no output)}" --argjson rc "$pc_rc" '{output:$o, exit:$rc}')"
   printf '%s\n(exit %s)\n' "$pc_out" "$pc_rc"
 }
@@ -6830,7 +6889,7 @@ $(run_ending_contract)" ;;
     # run that is never going to look at it. Same contract as the standalone
     # probes: report, touch nothing.
     pc_out="$( cd "$cwd" && { [ -n "$run_cfgdir" ] && export CLAUDE_CONFIG_DIR="$run_cfgdir"
-                              [ -n "$resume_sid" ] && export CC_PRECHECK_DRY_RUN=1
+                              [ -n "$resume_sid" ] && export AL_PRECHECK_DRY_RUN=1 CC_PRECHECK_DRY_RUN=1
                               eval "$precheck" 2>&1; } )"; pc_rc=$?
     state_set "$id" last_precheck "$("$JQ" -nc --arg o "${pc_out:-(no output)}" --argjson rc "$pc_rc" '{output:$o, exit:$rc}')"
     local pc_verdict; pc_verdict="$(precheck_verdict "$pc_rc")"
@@ -6959,7 +7018,7 @@ ${prompt}"
         port_base="$(alloc_port_base "$slot")"
         # Record it. The manifest is what teardown reads — wt_provision says so
         # explicitly, because the orphan sweep runs `down` with no ambient
-        # CC_PORT_BASE. A block bound here and left out of the manifest means
+        # AL_PORT_BASE. A block bound here and left out of the manifest means
         # the eventual `down` releases ports this run never took.
         if "$JQ" --arg pb "$port_base" '.port_base = $pb' "$run_dir/.run.json" \
              > "$run_dir/.run.json.new" 2>/dev/null; then
@@ -6977,7 +7036,7 @@ ${prompt}"
         run_cleanup "$id" "$slot"; trap - EXIT
         return 1
       fi
-      export CC_PORT_BASE="$port_base" CC_PORT_SPAN CC_PROVISION_LIB="$BIN_DIR/provision-lib.sh"
+      export AL_PORT_BASE="$port_base" AL_PORT_SPAN AL_PROVISION_LIB="$BIN_DIR/provision-lib.sh"
       local primary_name
       primary_name="$("$JQ" -r '.primary // ""' "$run_dir/.run.json" 2>/dev/null)"
       case "$primary_name" in null) primary_name="" ;; esac
@@ -6995,7 +7054,7 @@ ${prompt}"
         return 1
       fi
       # `up` runs again, with the SAME port block. The hooks are written to be
-      # re-runnable (cc_copy_ignored, cc_env_ports, `herd link`, `compose up -d`
+      # re-runnable (al_copy_ignored, al_env_ports, `herd link`, `compose up -d`
       # all are), and this is what puts a stack back that a reboot took down
       # while the session sat open.
       #
@@ -7011,7 +7070,7 @@ ${prompt}"
       : > "$rdirt" 2>/dev/null || rdirt=""
       while IFS="$(printf '\t')" read -r rname rrepo rwt rbase; do
         [ -n "$rname" ] || continue
-        # A derived security job never provisioned on the way in -- CC_SKIP_PROVISION
+        # A derived security job never provisioned on the way in -- AL_SKIP_PROVISION
         # was set on the ORIGINAL invocation, but that is an env var, not a fact
         # recorded anywhere a resume can see: by the time a SIGKILL/OOM/reboot
         # casualty gets reattached, the var is unset again, and without this guard
@@ -7094,7 +7153,7 @@ ${prompt}"
       # Before wt_setup, because the provisioning hooks it calls are what need the
       # block: they are what write the run's ports into its config.
       port_base="$(alloc_port_base "$slot")"
-      export CC_PORT_BASE="$port_base" CC_PORT_SPAN CC_PROVISION_LIB="$BIN_DIR/provision-lib.sh"
+      export AL_PORT_BASE="$port_base" AL_PORT_SPAN AL_PROVISION_LIB="$BIN_DIR/provision-lib.sh"
       if ! worktree="$(wt_setup "$id" "$project" "$cwd" "$stamp" "$port_base")"; then
         state_set "$id" last_start "$start"
         state_set "$id" last_status '"error"'
@@ -7107,11 +7166,16 @@ ${prompt}"
     run_cwd="$worktree"
     # What the agent needs to find the OTHER repos of this run, and the canonical
     # checkout of each: the manifest. Everything else it could only guess at.
-    run_env+=("CC_RUN_DIR=$run_dir" "CC_RUN_MANIFEST=$run_dir/.run.json" \
-              "CC_PROJECT=$project" "CC_JOB_ID=$id" \
-              "CC_PRIMARY_REPO=$(basename "$run_cwd")" \
-              "CC_PORT_BASE=$port_base" "CC_PORT_SPAN=$CC_PORT_SPAN" \
-              "CC_PROVISION_LIB=$BIN_DIR/provision-lib.sh")
+    # Both spellings of every run variable, for one release: the prompts,
+    # prechecks and hooks of an existing install still read the old one.
+    local primary_repo; primary_repo="$(basename "$run_cwd")"
+    run_env+=("AL_RUN_DIR=$run_dir" "CC_RUN_DIR=$run_dir" \
+              "AL_RUN_MANIFEST=$run_dir/.run.json" "CC_RUN_MANIFEST=$run_dir/.run.json" \
+              "AL_PROJECT=$project" "CC_PROJECT=$project" "AL_JOB_ID=$id" "CC_JOB_ID=$id" \
+              "AL_PRIMARY_REPO=$primary_repo" "CC_PRIMARY_REPO=$primary_repo" \
+              "AL_PORT_BASE=$port_base" "CC_PORT_BASE=$port_base" \
+              "AL_PORT_SPAN=$AL_PORT_SPAN" "CC_PORT_SPAN=$AL_PORT_SPAN" \
+              "AL_PROVISION_LIB=$BIN_DIR/provision-lib.sh" "CC_PROVISION_LIB=$BIN_DIR/provision-lib.sh")
     while IFS= read -r _envln; do
       [ -n "$_envln" ] && run_env+=("$_envln")
     done < <(wt_env_line "$project" "$cwd" "$run_cwd")
@@ -7666,9 +7730,12 @@ run_end_hook() { # <id> <status> <cost> <note> <project> <session> <log> <start>
   [ -f "$script" ] || return 0
   (
     _hook() {
-      CC_JOB_ID="$1" CC_STATUS="$2" CC_COST="$3" CC_NOTE="$4" CC_PROJECT="$5" \
-      CC_SESSION="$6" CC_LOG="$7" CC_START="$8" CC_END="$9" \
-      CC_DURATION="$(( ${9:-0} - ${8:-0} ))" CC_DASHBOARD="http://127.0.0.1:$PORT/" \
+      AL_JOB_ID="$1" CC_JOB_ID="$1" AL_STATUS="$2" CC_STATUS="$2" AL_COST="$3" CC_COST="$3" \
+      AL_NOTE="$4" CC_NOTE="$4" AL_PROJECT="$5" CC_PROJECT="$5" \
+      AL_SESSION="$6" CC_SESSION="$6" AL_LOG="$7" CC_LOG="$7" \
+      AL_START="$8" CC_START="$8" AL_END="$9" CC_END="$9" \
+      AL_DURATION="$(( ${9:-0} - ${8:-0} ))" CC_DURATION="$(( ${9:-0} - ${8:-0} ))" \
+      AL_DASHBOARD="http://127.0.0.1:$PORT/" CC_DASHBOARD="http://127.0.0.1:$PORT/" \
         bash "$script" >>"$DATA_DIR/exec.log" 2>&1
     }
     wt_run_limited "$RUN_HOOK_TIMEOUT" _hook "$@" \
@@ -7895,6 +7962,7 @@ PLIST
   cmd_skills install
   echo "Open the dashboard with: agentloop dashboard"
   legacy_env_warnings
+  legacy_scripts_warnings
 }
 
 cmd_uninstall() {
@@ -7933,6 +8001,7 @@ cmd_status() {
   echo
   echo "Dashboard : http://127.0.0.1:$PORT/   (agentloop dashboard)"
   legacy_env_warnings
+  legacy_scripts_warnings
 }
 
 cmd_dashboard() {
@@ -8550,8 +8619,8 @@ cmd_check() {
   precheck="$(jobs_json | "$JQ" -r --arg id "$id" '.jobs[] | select(.id==$id) | .precheck // ""')"
   cwd="$(resolve "$id" cwd "$HOME")"   # inherit the project's cwd, like run_job
   [ -n "$precheck" ] || { echo "$id has no precheck — every due tick spends a session."; return 0; }
-  # Read-only, like every standalone probe (see CC_PRECHECK_DRY_RUN).
-  ( cd "$cwd" && export CC_PRECHECK_DRY_RUN=1 && eval "$precheck" ); local rc=$?
+  # Read-only, like every standalone probe (see AL_PRECHECK_DRY_RUN).
+  ( cd "$cwd" && export AL_PRECHECK_DRY_RUN=1 CC_PRECHECK_DRY_RUN=1 && eval "$precheck" ); local rc=$?
   case "$(precheck_verdict "$rc")" in
     work)  echo "precheck: WORK FOUND — a due tick would start a Claude run" ;;
     idle)  echo "precheck: nothing to do — a due tick would cost nothing" ;;

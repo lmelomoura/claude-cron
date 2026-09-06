@@ -34,6 +34,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     this release only** the old names are still read, and `install` and
     `status` list every one they find so it can be renamed before the next
     release drops the fallback.
+  - The run environment is `AL_*` (it was `CC_*`), and the provisioning helpers
+    are `al_port`, `al_env_set`, `al_env_ports` and `al_copy_ignored`. **For
+    this release only** every run variable is exported under both prefixes
+    and the old helper names still answer, and `install` and `status` name
+    each script under `config/` that still reads the old prefix.
 
 ### Fixed
 

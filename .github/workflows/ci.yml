@@ -249,17 +249,17 @@ jobs:
           set -eo pipefail
           if [ "$MODE" = "on" ]; then
             # What every real analysis runs in.
-            export CC_SECURITY_ENGINES=on
+            export AL_SECURITY_ENGINES=on
             deselect=""
           else
-            # UNSET, never `CC_SECURITY_ENGINES=`. `adapters._OFF` is
+            # UNSET, never `AL_SECURITY_ENGINES=`. `adapters._OFF` is
             # {off, 0, no, false, none} and the empty string is not in it, so
             # an empty value reads as ON — this leg would silently be a second
             # copy of the other one, and the two-configuration guarantee would
             # be back to resting on nothing. Unset is also exactly what a
             # developer's plain `pytest` gets: conftest.py's `setdefault` is
             # what supplies "off", and leaving it unset exercises that line.
-            unset CC_SECURITY_ENGINES
+            unset AL_SECURITY_ENGINES
             # See the comment on this job: the in-suite spawn of the other
             # configuration is what this workflow replaces, and running it here
             # would be a third execution of a ~250s suite.

@@ -1021,7 +1021,7 @@ def prepare(tmp_path, engines_on):
     """`prepare` over a planted tree, with the engines switched on or off."""
     root = plant(tmp_path / f"repo-{engines_on}")
     db = tmp_path / f"security-{engines_on}.db"
-    env = {**os.environ, "CC_SECURITY_ENGINES": "on" if engines_on else "off"}
+    env = {**os.environ, "AL_SECURITY_ENGINES": "on" if engines_on else "off"}
     aid = open_analysis(db)
     note = cli_json(db, "prepare", "--analysis", str(aid), "--root", str(root),
                     "--offline", env=env)["coverage_note"]
@@ -1064,7 +1064,7 @@ def test_the_engine_obeys_the_ignore_paths_prepare_was_given(tmp_path):
     """
     root = plant(tmp_path / "repo")
     db = tmp_path / "security.db"
-    env = {**os.environ, "CC_SECURITY_ENGINES": "on"}
+    env = {**os.environ, "AL_SECURITY_ENGINES": "on"}
 
     loud = open_analysis(db)
     cli_json(db, "prepare", "--analysis", str(loud), "--root", str(root),
@@ -1089,7 +1089,7 @@ def test_the_engine_obeys_the_ignore_paths_prepare_was_given(tmp_path):
 # Three properties this project already holds the built-in scanner to
 # (tests/security/test_cli.py, "the history sweep, every run") had no
 # engine-path equivalent, and tests/security/conftest.py pins the whole suite
-# to CC_SECURITY_ENGINES=off -- so on a machine with gitleaks installed, which
+# to AL_SECURITY_ENGINES=off -- so on a machine with gitleaks installed, which
 # is production going forward, the suite proved none of them.
 #
 # The third one is the reason this is not merely tidiness. "The tree reading
@@ -1107,7 +1107,7 @@ ENGINE_MATRIX = [False, pytest.param(True, marks=needs_gitleaks)]
 
 def analysis_with(db, root, engines_on, aid=None):
     """One `prepare` over `root` with the scanner switched explicitly."""
-    env = {**os.environ, "CC_SECURITY_ENGINES": "on" if engines_on else "off"}
+    env = {**os.environ, "AL_SECURITY_ENGINES": "on" if engines_on else "off"}
     aid = open_analysis(db) if aid is None else aid
     cli_json(db, "prepare", "--analysis", str(aid), "--root", str(root),
              "--offline", env=env)
@@ -1238,7 +1238,7 @@ def test_prepare_still_counts_the_lines_it_analysed(tmp_path):
     for engines_on in ((True, False) if HAVE_GITLEAKS else (False,)):
         root = plant(tmp_path / f"repo-loc-{engines_on}")
         db = tmp_path / f"loc-{engines_on}.db"
-        env = {**os.environ, "CC_SECURITY_ENGINES": "on" if engines_on else "off"}
+        env = {**os.environ, "AL_SECURITY_ENGINES": "on" if engines_on else "off"}
         aid = open_analysis(db)
         cli_json(db, "prepare", "--analysis", str(aid), "--root", str(root),
                  "--offline", env=env)
@@ -1258,13 +1258,13 @@ def test_the_engines_can_be_switched_off_without_uninstalling_them(monkeypatch):
     Checked for both engines this module knows about: the switch is a
     single environment variable read by `engine_path` itself, not something
     each caller has to wire up on its own."""
-    monkeypatch.setenv("CC_SECURITY_ENGINES", "off")
+    monkeypatch.setenv("AL_SECURITY_ENGINES", "off")
     assert adapters.engine_path("gitleaks") is None
     assert adapters.engine_path("trivy") is None
-    monkeypatch.setenv("CC_SECURITY_ENGINES", "on")
+    monkeypatch.setenv("AL_SECURITY_ENGINES", "on")
     assert (adapters.engine_path("gitleaks") is not None) == HAVE_GITLEAKS
     assert (adapters.engine_path("trivy") is not None) == HAVE_TRIVY
-    monkeypatch.delenv("CC_SECURITY_ENGINES")
+    monkeypatch.delenv("AL_SECURITY_ENGINES")
     assert (adapters.engine_path("gitleaks") is not None) == HAVE_GITLEAKS
     assert (adapters.engine_path("trivy") is not None) == HAVE_TRIVY
 
@@ -3038,7 +3038,7 @@ def test_prepare_records_the_pre_pass_as_sast_findings(tmp_path):
         "import hashlib\n\n\ndef etag(body):\n"
         "    return hashlib.md5(body).hexdigest()\n")
     db = tmp_path / "security.db"
-    env = {**os.environ, "CC_SECURITY_ENGINES": "on"}
+    env = {**os.environ, "AL_SECURITY_ENGINES": "on"}
     aid = open_analysis(db)
     note = cli_json(db, "prepare", "--analysis", str(aid), "--root", str(root),
                     env=env)["coverage_note"]
@@ -3055,7 +3055,7 @@ def test_prepare_declares_the_pre_pass_it_did_not_run(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     db = tmp_path / "security.db"
-    env = {**os.environ, "CC_SECURITY_ENGINES": "off"}
+    env = {**os.environ, "AL_SECURITY_ENGINES": "off"}
     aid = open_analysis(db)
     note = cli_json(db, "prepare", "--analysis", str(aid), "--root", str(root),
                     env=env)["coverage_note"]
@@ -3069,7 +3069,7 @@ def test_the_pre_pass_does_not_run_offline(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     db = tmp_path / "security.db"
-    env = {**os.environ, "CC_SECURITY_ENGINES": "on"}
+    env = {**os.environ, "AL_SECURITY_ENGINES": "on"}
     aid = open_analysis(db)
     note = cli_json(db, "prepare", "--analysis", str(aid), "--root", str(root),
                     "--offline", env=env)["coverage_note"]

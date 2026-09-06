@@ -231,7 +231,7 @@ If your probe genuinely cannot tell (the API is down, and you would rather wait
 than guess) that is `exit 1` — "no work found" — and it is right to be quiet
 about it. Reserve the other codes for "this probe is not working".
 
-#### A precheck that writes: `CC_PRECHECK_DRY_RUN`
+#### A precheck that writes: `AL_PRECHECK_DRY_RUN`
 
 A precheck may do more than look. The useful case is a **claim**: reading a queue
 tells you what *was* free, and only a write that succeeds tells you what *is*
@@ -247,7 +247,7 @@ precheck's output entirely, so anything claimed there would be claimed for a run
 that never reads it. All three export
 
 ```bash
-CC_PRECHECK_DRY_RUN=1
+AL_PRECHECK_DRY_RUN=1
 ```
 
 A precheck that writes MUST honour it: report the candidate it *would* take,
@@ -257,7 +257,7 @@ follows finds an empty board and reports there is nothing to do, and the ticket
 is left claimed with no session behind it.
 
 ```bash
-if [ -n "${CC_PRECHECK_DRY_RUN:-}" ]; then
+if [ -n "${AL_PRECHECK_DRY_RUN:-}" ]; then
   echo "would_claim=$candidate — dry run, the board was untouched"
   exit 0
 fi
@@ -335,7 +335,7 @@ git -C /Users/me/code/web checkout develop
 The only symptom of skipping this is agents working from a stale base, so it is
 worth checking even where nothing looks wrong.
 
-The agent finds everything through `$CC_RUN_MANIFEST`. The canonical checkouts
+The agent finds everything through `$AL_RUN_MANIFEST`. The canonical checkouts
 are never modified: they are read to cut worktrees from, nothing more.
 
 `enabled` is `"auto"` (isolate when the cwd is a git repo), `true` or `false`.
@@ -355,10 +355,10 @@ config/provision/<project>.down.sh   # when the run ends, before they are remove
 ```
 
 Each runs **once per repo**, with the working directory set to that repo's
-worktree and the run described in its environment: `CC_REPO_NAME`,
-`CC_REPO_PATH` (the canonical checkout), `CC_WORKTREE`, `CC_BASE`, `CC_RUN_DIR`,
-`CC_RUN_MANIFEST`, `CC_PROJECT`, `CC_JOB_ID`, plus `CC_PORT_BASE`,
-`CC_PORT_SPAN` and `CC_PROVISION_LIB` (below). See
+worktree and the run described in its environment: `AL_REPO_NAME`,
+`AL_REPO_PATH` (the canonical checkout), `AL_WORKTREE`, `AL_BASE`, `AL_RUN_DIR`,
+`AL_RUN_MANIFEST`, `AL_PROJECT`, `AL_JOB_ID`, plus `AL_PORT_BASE`,
+`AL_PORT_SPAN` and `AL_PROVISION_LIB` (below). See
 `config/provision/example-hello.up.sh`.
 
 A non-zero `up` **aborts the run** — the engine takes down what it provisioned
@@ -415,16 +415,16 @@ session with its size, its age and the time it has left, and **Discard** ends on
 early (`agentloop worktree-drop <job-id> <stamp>` from the CLI). A run dir a
 live run is using is never offered, and never dropped.
 
-Anything with a global name must derive it from `$CC_RUN_DIR`, or two concurrent
+Anything with a global name must derive it from `$AL_RUN_DIR`, or two concurrent
 runs of the same repo collide:
 
 ```bash
-SITE="${CC_REPO_NAME}-$(basename "$CC_RUN_DIR")"
+SITE="${AL_REPO_NAME}-$(basename "$AL_RUN_DIR")"
 herd link "$SITE"; docker compose -p "$SITE" up -d      # up
 herd unlink "$SITE"; docker compose -p "$SITE" down -v  # down
 ```
 
-#### Ports: `CC_PORT_BASE` and `bin/provision-lib.sh`
+#### Ports: `AL_PORT_BASE` and `bin/provision-lib.sh`
 
 A unique compose project name stops two runs sharing containers. It does nothing
 about **published ports**: both runs bring up the same stack, both try to publish
@@ -432,20 +432,20 @@ about **published ports**: both runs bring up the same stack, both try to publis
 test suite and is nothing of the kind. Worktrees settle the filesystem; ports are
 the other half.
 
-So every isolated run is given a block of ports no live run holds — `CC_PORT_BASE`
-and `CC_PORT_SPAN` (100 by default) — allocated under a lock and released with the
+So every isolated run is given a block of ports no live run holds — `AL_PORT_BASE`
+and `AL_PORT_SPAN` (100 by default) — allocated under a lock and released with the
 run's slot. `bin/provision-lib.sh` turns that block into numbers:
 
 ```bash
-source "$CC_PROVISION_LIB"
+source "$AL_PROVISION_LIB"
 
-cc_copy_ignored .env            # the canonical checkout's gitignored files, into this worktree
-cc_env_ports .env               # every *_PORT the file already declares moves into this run's block
-cc_port POSTGRES_PORT           # or one at a time -> 21003, and the same number if asked again
-cc_env_set .env APP_URL "http://localhost:$(cc_port APP_PORT)"
+al_copy_ignored .env            # the canonical checkout's gitignored files, into this worktree
+al_env_ports .env               # every *_PORT the file already declares moves into this run's block
+al_port POSTGRES_PORT           # or one at a time -> 21003, and the same number if asked again
+al_env_set .env APP_URL "http://localhost:$(al_port APP_PORT)"
 ```
 
-`cc_env_ports` only rewrites keys the file **already has**: inventing ports for
+`al_env_ports` only rewrites keys the file **already has**: inventing ports for
 services a project does not run would publish things nobody asked for. Nothing
 here is Docker-specific — this is the general shape of "two copies of one stack at
 once", which every project that isolates eventually meets.
@@ -547,21 +547,21 @@ after every run, with the outcome in its environment:
 
 | Variable | |
 |---|---|
-| `CC_JOB_ID` | which job |
-| `CC_STATUS` | `success`, `warning` or `error` |
-| `CC_COST` | dollars this run spent |
-| `CC_NOTE` | why it ended as it did (`BUDGET LIMITED: …`, `NOTHING TO DO: …`, a watchdog reason) |
-| `CC_PROJECT`, `CC_SESSION`, `CC_LOG` | |
-| `CC_START`, `CC_END`, `CC_DURATION` | epoch seconds, and the span |
-| `CC_DASHBOARD` | the dashboard URL |
+| `AL_JOB_ID` | which job |
+| `AL_STATUS` | `success`, `warning` or `error` |
+| `AL_COST` | dollars this run spent |
+| `AL_NOTE` | why it ended as it did (`BUDGET LIMITED: …`, `NOTHING TO DO: …`, a watchdog reason) |
+| `AL_PROJECT`, `AL_SESSION`, `AL_LOG` | |
+| `AL_START`, `AL_END`, `AL_DURATION` | epoch seconds, and the span |
+| `AL_DASHBOARD` | the dashboard URL |
 
 The engine knows nothing about notifiers, so this is where they go:
 
 ```bash
 #!/usr/bin/env bash
-[ "$CC_STATUS" = error ] || exit 0
-terminal-notifier -title "agentloop: $CC_JOB_ID failed" \
-                  -message "${CC_NOTE:-see the run log}" -open "$CC_DASHBOARD"
+[ "$AL_STATUS" = error ] || exit 0
+terminal-notifier -title "agentloop: $AL_JOB_ID failed" \
+                  -message "${AL_NOTE:-see the run log}" -open "$AL_DASHBOARD"
 ```
 
 It is detached and time-limited (`AGENTLOOP_HOOK_TIMEOUT`, default 60s): a
@@ -582,15 +582,15 @@ Once per stall, the engine runs `config/hooks/on-fleet-stalled.sh` with:
 
 | Variable | |
 |---|---|
-| `CC_REASON` | one sentence naming which of the four it is |
-| `CC_STALL_HOURS` | the window that had no runs in it (`AGENTLOOP_STALL_HOURS`, default 4) |
-| `CC_DASHBOARD` | the dashboard URL |
+| `AL_REASON` | one sentence naming which of the four it is |
+| `AL_STALL_HOURS` | the window that had no runs in it (`AGENTLOOP_STALL_HOURS`, default 4) |
+| `AL_DASHBOARD` | the dashboard URL |
 
 No dependencies needed — `osascript` ships with macOS:
 
 ```bash
 #!/usr/bin/env bash
-osascript -e "display notification \"$CC_REASON\" with title \"agentloop: nothing is running\""
+osascript -e "display notification \"$AL_REASON\" with title \"agentloop: nothing is running\""
 ```
 
 **A quiet loop is not a stalled one.** `precheck found nothing to do` is
@@ -630,11 +630,11 @@ page's real functions over a stub DOM in `node`, so a save that would wipe a
 provisioning hook fails the suite rather than the operator's config.
 
 `tests/security/` is run **twice**. It is pinned to the built-in secret scanner
-(`CC_SECURITY_ENGINES=off`) so that a test planting a credential exercises one
+(`AL_SECURITY_ENGINES=off`) so that a test planting a credential exercises one
 scanner rather than whichever binaries a laptop happens to have installed — and
 then, on a machine where **any** of `gitleaks`, `trivy`, `semgrep` or `syft` is
 installed, one test runs the whole security package again with
-`CC_SECURITY_ENGINES=on`, which is the configuration every real analysis uses.
+`AL_SECURITY_ENGINES=on`, which is the configuration every real analysis uses.
 All four are gated by the same switch — it decides the secret scanner, the
 dependency source, the SAST pre-pass, the IaC phase and the SBOM producer — so
 the second configuration is real on a machine with only one of them. The second
@@ -1262,7 +1262,7 @@ twice, and it is refused for the categories whose fingerprint cannot be rebuilt
 from what the ledger stores — `sast` (built from the code snippet, which is
 never stored) and `dependency` (a CVE id nobody renames).
 It is also refused on a machine without gitleaks, or with
-`CC_SECURITY_ENGINES` switched off. The secret renames exist to move findings
+`AL_SECURITY_ENGINES` switched off. The secret renames exist to move findings
 onto *gitleaks'* rule names, and such a machine falls back to the built-in
 pattern scanner, which mints the old names again on the very next analysis:
 every migrated secret would then be reported fixed *and* new in one report,
@@ -1291,9 +1291,9 @@ it did, or edit the working set a human curated. The read verbs beside them
 for the flag to protect, only a query the agent may legitimately want.
 
 **That refusal is a guardrail against mistake, not a boundary against malice,
-and it is worth saying which.** It works off `CC_SECURITY_AGENT`, a variable in
+and it is worth saying which.** It works off `AL_SECURITY_AGENT`, a variable in
 the agent's own environment, and the agent has a shell: `env -u
-CC_SECURITY_AGENT agentloop security decide …` walks straight past it. What
+AL_SECURITY_AGENT agentloop security decide …` walks straight past it. What
 it stops is the failure that actually happens — a model deciding, in good
 faith, that retiring the finding it just filed is the helpful thing to do — and
 it stops that cold. Nothing here is load-bearing against an agent that is

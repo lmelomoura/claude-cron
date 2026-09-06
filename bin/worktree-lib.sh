@@ -109,24 +109,24 @@ wt_base_ref() { # <canonical> <base> [fetch-timeout] -> prints a ref; non-zero i
   # `release/2.1` produces a report that is correct about the wrong code.
   #
   # No fetch here, unlike the declared-base path below: the caller already
-  # knows the branch resolves before it ever sets CC_BASE_OVERRIDE (a security
+  # knows the branch resolves before it ever sets AL_BASE_OVERRIDE (a security
   # analysis pre-validates the branch it was asked to analyse), so there is
   # nothing for this block to fetch on its own behalf -- it only has to find a
   # ref that is already on disk, remote-tracking refs included.
-  if [ -n "${CC_BASE_OVERRIDE:-}" ]; then
+  if [ -n "${AL_BASE_OVERRIDE:-}" ]; then
     # Refuse anything shaped like a flag before it ever reaches rev-parse. The
-    # bare candidate below (unlike the two refs/... ones) is CC_BASE_OVERRIDE
+    # bare candidate below (unlike the two refs/... ones) is AL_BASE_OVERRIDE
     # verbatim, so a value starting with `-` would sit in an argument position
     # next to git plumbing -- empirically safe today, since `rev-parse
     # --verify --quiet` does not treat it specially, but defence in depth
     # against whatever this call site looks like after its next refactor.
-    case "$CC_BASE_OVERRIDE" in -*) return 1 ;; esac
+    case "$AL_BASE_OVERRIDE" in -*) return 1 ;; esac
     local ov
     # Remote first: a security analysis targets whatever was just pushed, and
     # the remote is the source of truth for that -- a local branch of the same
     # name that has since diverged (an operator's own stale checkout) must
     # lose to it, not win by coming first in the list.
-    for ov in "refs/remotes/origin/$CC_BASE_OVERRIDE" "refs/heads/$CC_BASE_OVERRIDE" "$CC_BASE_OVERRIDE"; do
+    for ov in "refs/remotes/origin/$AL_BASE_OVERRIDE" "refs/heads/$AL_BASE_OVERRIDE" "$AL_BASE_OVERRIDE"; do
       if git -C "$1" rev-parse --verify --quiet "$ov" >/dev/null 2>&1; then
         printf '%s\n' "$ov"; return 0
       fi
@@ -242,18 +242,21 @@ wt_provision() { # <up|down> <project> <id> <run_dir> <name> <canonical> <worktr
   case "$t" in ''|null|*[!0-9]*) t=900 ;; esac
   # The manifest is the source of truth for the port block, not the environment.
   # `down` also runs from the orphan sweep, which has no slot and so no ambient
-  # CC_PORT_BASE — a hook that asked cc_port there got different numbers from
+  # AL_PORT_BASE — a hook that asked al_port there got different numbers from
   # the ones `up` bound, and released nothing.
   pb="$("$JQ" -r '.port_base // ""' "$run_dir/.run.json" 2>/dev/null)"
   case "$pb" in null) pb="" ;; esac
-  [ -z "$pb" ] && pb="${CC_PORT_BASE:-}"
+  [ -z "$pb" ] && pb="${AL_PORT_BASE:-}"
   _wt_hook() {
     cd "$wt" 2>/dev/null || return 1
-    CC_REPO_NAME="$name" CC_REPO_PATH="$repo" CC_WORKTREE="$wt" CC_BASE="$base" \
-    CC_RUN_DIR="$run_dir" CC_RUN_MANIFEST="$run_dir/.run.json" \
-    CC_PROJECT="$project" CC_JOB_ID="$id" \
-    CC_PORT_BASE="$pb" CC_PORT_SPAN="${CC_PORT_SPAN:-100}" \
-    CC_PROVISION_LIB="${CC_PROVISION_LIB:-}" \
+    AL_REPO_NAME="$name" CC_REPO_NAME="$name" AL_REPO_PATH="$repo" CC_REPO_PATH="$repo" \
+    AL_WORKTREE="$wt" CC_WORKTREE="$wt" AL_BASE="$base" CC_BASE="$base" \
+    AL_RUN_DIR="$run_dir" CC_RUN_DIR="$run_dir" \
+    AL_RUN_MANIFEST="$run_dir/.run.json" CC_RUN_MANIFEST="$run_dir/.run.json" \
+    AL_PROJECT="$project" CC_PROJECT="$project" AL_JOB_ID="$id" CC_JOB_ID="$id" \
+    AL_PORT_BASE="$pb" CC_PORT_BASE="$pb" \
+    AL_PORT_SPAN="${AL_PORT_SPAN:-100}" CC_PORT_SPAN="${AL_PORT_SPAN:-100}" \
+    AL_PROVISION_LIB="${AL_PROVISION_LIB:-}" CC_PROVISION_LIB="${AL_PROVISION_LIB:-}" \
       bash "$script" >>"$DATA_DIR/exec.log" 2>&1
   }
   wt_run_limited "$t" _wt_hook; rc=$?
@@ -327,7 +330,7 @@ wt_find_by_session() { # <id> <session-id> -> prints a run dir, or nothing
 # never fall back to the shared checkout — that is the race we are removing).
 #
 # ORDER MATTERS: every worktree is created first, then the manifest, and only
-# then does `up` run. A hook therefore always sees a complete $CC_RUN_MANIFEST
+# then does `up` run. A hook therefore always sees a complete $AL_RUN_MANIFEST
 # and can reach a sibling repo's worktree. It also means "no manifest" implies
 # "no hook ran", which is what lets teardown skip `down` after a half-built run.
 #
@@ -386,8 +389,8 @@ wt_setup() { # <id> <project> <canonical_cwd> <stamp> [port_base]
     {job:$job, project:$project, run_dir:$run_dir, primary:$primary,
      # The port block for this run. Recorded here and not left to the environment
      # because `down` also runs from the orphan sweep, which has no slot and
-     # therefore no CC_PORT_BASE: a hook computing what to release from
-     # cc_port would have released numbers it never bound. Everything teardown
+     # therefore no AL_PORT_BASE: a hook computing what to release from
+     # al_port would have released numbers it never bound. Everything teardown
      # needs must be reconstructible from disk alone.
      port_base:$port_base,
      repos: [inputs | split("\t")
@@ -400,7 +403,7 @@ wt_setup() { # <id> <project> <canonical_cwd> <stamp> [port_base]
     [ -n "$name" ] || continue
     # Reading code needs no .env and no containers, and a security analysis must
     # not pay for -- or be blocked by -- a project's provisioning.
-    if [ "${CC_SKIP_PROVISION:-}" != "1" ]; then
+    if [ "${AL_SKIP_PROVISION:-}" != "1" ]; then
       if ! wt_provision up "$project" "$id" "$run_dir" "$name" "$repo" "$wt" "$base"; then
         log_tick "$id: provisioning failed for $name — aborting the run"
         rm -f "$tsv"; printf 'done\n' > "$run_dir/.ended" 2>/dev/null || true
@@ -549,7 +552,7 @@ wt_down_all() { # <id> <project> <run dir>
   [ -f "$run_dir/.down" ] && return 0
   : > "$run_dir/.down"
   # A DERIVED SECURITY JOB NEVER RAN `up`, SO IT MUST NEVER RUN `down`. The
-  # analysis is launched with CC_SKIP_PROVISION=1 precisely so it does not run
+  # analysis is launched with AL_SKIP_PROVISION=1 precisely so it does not run
   # the project's .env writing, container and service hooks over a tree it is
   # only ever going to read. Teardown had no such guard, so the ONE half of
   # provisioning an analysis was promised not to touch ran anyway: `down` on a
@@ -558,7 +561,7 @@ wt_down_all() { # <id> <project> <run dir>
   # developer's own environment, torn down by a read-only code review.
   #
   # Checked by IDENTITY, not by environment, for the same reason the reattach
-  # path is (see run_job): CC_SKIP_PROVISION is an env var on the original
+  # path is (see run_job): AL_SKIP_PROVISION is an env var on the original
   # invocation, and teardown can happen from a later process entirely -- the
   # orphan sweep, an explicit worktree drop -- where it is long gone. The id is
   # the one thing that survives. `${...:-security-}` because this file declares

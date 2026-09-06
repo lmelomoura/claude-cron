@@ -29,11 +29,11 @@
 
 # Rework rounds a ticket may take before a human decides. The Nth round is
 # allowed; round N+1 is refused. 2 => at most two reworks, i.e. three reviews.
-RC_CAP="${CC_ROUND_CAP:-2}"
+RC_CAP="${AL_ROUND_CAP:-${CC_ROUND_CAP:-2}}"
 
 # The status whose entries count as a round. A ticket enters it once per
 # change-requested verdict, so counting entries counts rounds.
-RC_ROUND_STATUS="${CC_ROUND_STATUS:-Change Requested}"
+RC_ROUND_STATUS="${AL_ROUND_STATUS:-${CC_ROUND_STATUS:-Change Requested}}"
 
 # rc_rounds_used <KEY> -> prints the number of rework rounds already spent.
 # Returns non-zero if the changelog could not be read, so callers can fail OPEN
@@ -131,7 +131,7 @@ What a human decides now, on the pull request as it stands:
 - FIX — one of the open findings is a genuine regression. Say which one in a comment and return the card to In Progress; the cap counts rounds, so state that this round is authorised.
 - RESCOPE — the ticket is too large or its spec is wrong. Send it back to the backlog.
 
-Raise the cap for one ticket by saying so in a comment; raise it fleet-wide with CC_ROUND_CAP."
+Raise the cap for one ticket by saying so in a comment; raise it fleet-wide with AL_ROUND_CAP."
 
   rc_transition_to "$k" "Blocked" && return 0
 
@@ -158,7 +158,7 @@ rc_gate_rework() {
     echo "round-cap: $k at round $(( used + 1 ))/$RC_CAP" >&2
     return 0
   fi
-  if [ -n "${CC_PRECHECK_DRY_RUN:-}" ]; then
+  if [ -n "${AL_PRECHECK_DRY_RUN:-${CC_PRECHECK_DRY_RUN:-}}" ]; then
     echo "round-cap: $k would be PARKED (used $used, cap $RC_CAP) — dry run, board untouched" >&2
     return 1
   fi

@@ -1009,14 +1009,14 @@ document.documentElement.dataset.theme =
     put them there.</p>
   <label><code>up</code> — run in every repo's fresh worktree</label>
   <textarea id="pj-up" spellcheck="false"
-            placeholder="#!/usr/bin/env bash&#10;cp -c &quot;$CC_REPO_PATH/.env&quot; .env"></textarea>
+            placeholder="#!/usr/bin/env bash&#10;cp -c &quot;$AL_REPO_PATH/.env&quot; .env"></textarea>
   <label><code>down</code> — run when the run ends</label>
   <textarea id="pj-down" spellcheck="false"></textarea>
-  <p class="fieldhelp">Run once per repo in that repo's worktree, with <code>CC_REPO_NAME</code>,
-    <code>CC_REPO_PATH</code>, <code>CC_WORKTREE</code>, <code>CC_BASE</code>, <code>CC_RUN_DIR</code>,
-    <code>CC_RUN_MANIFEST</code>, <code>CC_PROJECT</code> and <code>CC_JOB_ID</code> in the
+  <p class="fieldhelp">Run once per repo in that repo's worktree, with <code>AL_REPO_NAME</code>,
+    <code>AL_REPO_PATH</code>, <code>AL_WORKTREE</code>, <code>AL_BASE</code>, <code>AL_RUN_DIR</code>,
+    <code>AL_RUN_MANIFEST</code>, <code>AL_PROJECT</code> and <code>AL_JOB_ID</code> in the
     environment — a non-zero <code>up</code> aborts the run, so anything with a global name must
-    derive it from <code>$CC_RUN_DIR</code> or collide.</p>
+    derive it from <code>$AL_RUN_DIR</code> or collide.</p>
   </div><!-- /pane prov -->
 
   <div class="tabpane" data-pjpane="security">
