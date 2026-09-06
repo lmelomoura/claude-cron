@@ -47,7 +47,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     `~/.local/bin` symlinks on an existing machine, carrying the pinned Claude
     account over to the new agents, and says so when `~/.claude/settings.json`
     still runs the statusline from the folder's old name. Re-running
-    `install.sh` is the whole upgrade.
+    `install.sh` is the whole upgrade. A symlink that points anywhere but this
+    folder is left alone, on install and on uninstall alike.
 
 ### Fixed
 

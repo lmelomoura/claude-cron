@@ -6510,11 +6510,15 @@ PLIST
     && ok "both old plists are gone" || bad "an old plist survived"
   grep -q "launchctl unload .*$LEGACY_PLIST_LABEL" "$tmp/mig/log" 2>/dev/null \
     && grep -q "launchctl unload .*$LEGACY_SERVER_LABEL" "$tmp/mig/log" 2>/dev/null \
-    && ok "and both were unloaded before being removed" || bad "unload was not called: $(cat "$tmp/mig/log" 2>/dev/null)"
+    && ok "and both were unloaded" || bad "unload was not called: $(cat "$tmp/mig/log" 2>/dev/null)"
   [ ! -L "$tmp/mig/home/.local/bin/$LEGACY_CLI_NAME" ] && ok "the old symlink into this folder is removed" || bad "the old symlink was kept"
   [ -L "$tmp/mig/home/.local/bin/$LEGACY_CLI_NAME-server" ] && ok "a symlink pointing elsewhere is left alone" || bad "somebody else's symlink was removed"
+  loglines_before="$(num "$(wc -l < "$tmp/mig/log" 2>/dev/null)")"
   got="$( HOME="$tmp/mig/home" MIG_LOG="$tmp/mig/log" PATH="$tmp/mig/fakebin:$PATH" install_migrate_legacy 2>/dev/null )"
-  [ -z "$got" ] && ok "a second run finds nothing to migrate" || bad "second run printed '$got'"
+  loglines_after="$(num "$(wc -l < "$tmp/mig/log" 2>/dev/null)")"
+  [ -z "$got" ] && [ "$loglines_after" -eq "$loglines_before" ] \
+    && ok "a second run finds nothing to migrate" \
+    || bad "second run printed '$got', log went from $loglines_before to $loglines_after lines"
 
   echo "the rename — the statusline that still points at the old folder is named"
   mkdir -p "$tmp/mig/home2/.claude"
@@ -7909,7 +7913,8 @@ install_migrate_legacy() { # retire the pre-rename agents and symlinks; prints t
   if [ -f "$old_tick" ]; then
     # The account pinned into the old agent has to reach the new one: dropping
     # it would sign every run in as the CLI default from the next tick on.
-    "$PYTHON" - "$old_tick" <<'PY'
+    local pinned
+    pinned="$("$PYTHON" - "$old_tick" <<'PY'
 import plistlib, sys
 try:
     v = plistlib.load(open(sys.argv[1], "rb")).get("EnvironmentVariables", {}).get("CLAUDE_CONFIG_DIR")
@@ -7918,6 +7923,9 @@ except Exception:
 if v:
     print(v)
 PY
+)"
+    [ -n "$pinned" ] && printf '%s\n' "$pinned"
+    [ -n "$pinned" ] && echo "carrying the account pinned in $LEGACY_PLIST_LABEL: $pinned" >&2
     launchctl unload "$old_tick" 2>/dev/null
     rm -f "$old_tick"
     echo "retired $LEGACY_PLIST_LABEL" >&2
@@ -7932,6 +7940,7 @@ PY
     [ -L "$link" ] || continue
     case "$(readlink "$link")" in
       "$BASE_DIR"/*) rm -f "$link"; echo "removed $link" >&2 ;;
+      *) echo "left $link alone: it points outside this folder" >&2 ;;
     esac
   done
 }
@@ -7940,11 +7949,10 @@ statusline_path_warning() { # ~/.claude/settings.json may still run the statusli
   local settings="$HOME/.claude/settings.json" cmd
   [ -f "$settings" ] || return 0
   cmd="$("$JQ" -r '.statusLine.command // ""' "$settings" 2>/dev/null)"
+  # This install's own script is never wrong, whatever the folder is called.
+  [ "$cmd" = "$BIN_DIR/statusline-rate-limits.sh" ] && return 0
   case "$cmd" in
-    # Anchored on "/bin/" (not just "/$LEGACY_CLI_NAME/") so this names the
-    # install's OWN base folder, not any ancestor directory that happens to
-    # share the name — this repo's own checkout is one such ancestor.
-    *"/$LEGACY_CLI_NAME/bin/"*)
+    *"/$LEGACY_CLI_NAME/"*)
       echo "WARNING: the statusLine in $settings runs $cmd — that folder was renamed; point it at $BIN_DIR/statusline-rate-limits.sh" ;;
   esac
 }
@@ -7975,7 +7983,10 @@ if v:
     print("\n    <key>CLAUDE_CONFIG_DIR</key><string>%s</string>" % v, end="")
 PY
 )"
-  elif [ -n "$legacy_cfgdir" ]; then
+  fi
+  # The old agent's pinned account is the last resort: only when neither the
+  # variable nor the new plist named one.
+  if [ -z "$plist_cfgdir" ] && [ -n "$legacy_cfgdir" ]; then
     plist_cfgdir="
     <key>CLAUDE_CONFIG_DIR</key><string>$legacy_cfgdir</string>"
   fi
