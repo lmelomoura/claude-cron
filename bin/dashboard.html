@@ -49,37 +49,37 @@ document.documentElement.dataset.theme =
   <!-- The full lockup: robot, wordmark and tagline. Used on the sign-in and
        first-run cards, which have the width for it. The sidebar cannot: it
        collapses to a 48px rail, where only a square mark survives. -->
-  <symbol id="cc-lockup" viewBox="0 0 1040 300">
+  <symbol id="al-lockup" viewBox="0 0 1040 300">
     <defs>
-    <linearGradient id="cc-l-shell" x1="42" y1="48" x2="204" y2="218" gradientUnits="userSpaceOnUse">
+    <linearGradient id="al-l-shell" x1="42" y1="48" x2="204" y2="218" gradientUnits="userSpaceOnUse">
     <stop stop-color="#A855F7"/>
     <stop offset=".28" stop-color="#7C3AED"/>
     <stop offset=".7" stop-color="#5B21B6"/>
     <stop offset="1" stop-color="#3B168A"/>
     </linearGradient>
-    <linearGradient id="cc-l-shellTop" x1="76" y1="61" x2="192" y2="151" gradientUnits="userSpaceOnUse">
+    <linearGradient id="al-l-shellTop" x1="76" y1="61" x2="192" y2="151" gradientUnits="userSpaceOnUse">
     <stop stop-color="#7C3AED"/>
     <stop offset=".72" stop-color="#A855F7"/>
     <stop offset="1" stop-color="#F0ABFC"/>
     </linearGradient>
-    <linearGradient id="cc-l-screen" x1="78" y1="91" x2="182" y2="170" gradientUnits="userSpaceOnUse">
+    <linearGradient id="al-l-screen" x1="78" y1="91" x2="182" y2="170" gradientUnits="userSpaceOnUse">
     <stop stop-color="#321079"/>
     <stop offset=".58" stop-color="#24105A"/>
     <stop offset="1" stop-color="#160B3F"/>
     </linearGradient>
-    <radialGradient id="cc-l-lamp" cx=".35" cy=".3" r=".8">
+    <radialGradient id="al-l-lamp" cx=".35" cy=".3" r=".8">
     <stop stop-color="#FFFFFF"/>
     <stop offset=".38" stop-color="#CFFAFE"/>
     <stop offset=".72" stop-color="#67E8F9"/>
     <stop offset="1" stop-color="#22D3EE"/>
     </radialGradient>
-    <radialGradient id="cc-l-antenna" cx=".35" cy=".25" r=".78">
+    <radialGradient id="al-l-antenna" cx=".35" cy=".25" r=".78">
     <stop stop-color="#E0F2FE"/>
     <stop offset=".38" stop-color="#93C5FD"/>
     <stop offset=".72" stop-color="#818CF8"/>
     <stop offset="1" stop-color="#5B21B6"/>
     </radialGradient>
-    <linearGradient id="cc-l-wordAccent" x1="624" y1="82" x2="915" y2="195" gradientUnits="userSpaceOnUse">
+    <linearGradient id="al-l-wordAccent" x1="624" y1="82" x2="915" y2="195" gradientUnits="userSpaceOnUse">
     <stop stop-color="#7C3AED"/>
     <stop offset=".55" stop-color="#6D28D9"/>
     <stop offset="1" stop-color="#4C1D95"/>
@@ -89,22 +89,21 @@ document.documentElement.dataset.theme =
     <g transform="translate(24 20)">
     <path d="M128 51V34" fill="none" stroke="#3B168A" stroke-width="7" stroke-linecap="round"/>
     <path d="M102 56c2-10 9-14 26-14s24 4 26 14" fill="#4C1D95" stroke="#321079" stroke-width="2"/>
-    <circle cx="128" cy="24" r="16" fill="url(#cc-l-antenna)" stroke="#4C1D95" stroke-width="2"/>
+    <circle cx="128" cy="24" r="16" fill="url(#al-l-antenna)" stroke="#4C1D95" stroke-width="2"/>
     <rect x="22" y="106" width="33" height="71" rx="16.5" fill="#4C1D95" stroke="#321079" stroke-width="2"/>
     <rect x="201" y="106" width="33" height="71" rx="16.5" fill="#4C1D95" stroke="#321079" stroke-width="2"/>
     <path d="M30 121c7-6 12-7 20-5v49c-8 2-13 1-20-5z" fill="#6D28D9"/>
     <path d="M226 121c-7-6-12-7-20-5v49c8 2 13 1 20-5z" fill="#6D28D9"/>
-    <path d="M49 69c14-13 44-18 79-18s65 5 79 18c8 8 11 26 11 61v39c0 30-12 43-34 49-15 4-34 6-56 6s-41-2-56-6c-22-6-34-19-34-49v-39c0-35 3-53 11-61z" fill="url(#cc-l-shell)" stroke="#3B168A" stroke-width="2.5"/>
-    <path d="M55 71c18-11 43-15 73-15 35 0 62 5 77 17 5 4 8 12 10 24-27-15-55-21-87-21-31 0-60 6-88 20 2-12 7-20 15-25z" fill="url(#cc-l-shellTop)" opacity=".82"/>
+    <path d="M49 69c14-13 44-18 79-18s65 5 79 18c8 8 11 26 11 61v39c0 30-12 43-34 49-15 4-34 6-56 6s-41-2-56-6c-22-6-34-19-34-49v-39c0-35 3-53 11-61z" fill="url(#al-l-shell)" stroke="#3B168A" stroke-width="2.5"/>
+    <path d="M55 71c18-11 43-15 73-15 35 0 62 5 77 17 5 4 8 12 10 24-27-15-55-21-87-21-31 0-60 6-88 20 2-12 7-20 15-25z" fill="url(#al-l-shellTop)" opacity=".82"/>
     <path d="M61 204c32 9 102 9 134-1-5 8-12 12-23 15-13 3-27 4-44 4s-31-1-44-4c-10-3-18-7-23-14z" fill="#3B168A" opacity=".55"/>
-    <path d="M73 89c13-10 32-14 55-14s42 4 55 14c10 8 14 20 14 39v18c0 19-5 31-16 38-12 8-30 11-53 11s-41-3-53-11c-11-7-16-19-16-38v-18c0-19 4-31 14-39z" fill="url(#cc-l-screen)" stroke="#C084FC" stroke-width="4"/>
+    <path d="M73 89c13-10 32-14 55-14s42 4 55 14c10 8 14 20 14 39v18c0 19-5 31-16 38-12 8-30 11-53 11s-41-3-53-11c-11-7-16-19-16-38v-18c0-19 4-31 14-39z" fill="url(#al-l-screen)" stroke="#C084FC" stroke-width="4"/>
     <path d="M80 92c12-8 28-11 48-11 25 0 43 4 55 14" fill="none" stroke="#E9D5FF" stroke-width="4" stroke-linecap="round" opacity=".16"/>
     <circle cx="95" cy="137" r="14" fill="#2B1264" stroke="#4C1D95" stroke-width="2"/>
-    <circle cx="161" cy="137" r="21" fill="url(#cc-l-lamp)" stroke="#312E81" stroke-width="2.5"/>
+    <circle cx="161" cy="137" r="21" fill="url(#al-l-lamp)" stroke="#312E81" stroke-width="2.5"/>
     </g>
     <!-- Wordmark -->
-    <text x="300" y="158" fill="#17172A" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="102" font-weight="650" letter-spacing="-5">Claude-</text>
-    <text x="620" y="158" fill="url(#cc-l-wordAccent)" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="102" font-weight="650" letter-spacing="-5">cron</text>
+    <text x="300" y="158" fill="#17172A" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="102" font-weight="650" letter-spacing="-5">agentloop</text>
     <!-- Tagline -->
     <text x="305" y="214" fill="#6B6B80" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="31" font-weight="400" letter-spacing="2.5">Agent Loop Manager</text>
     <path d="M646 204H982" stroke="#C4B5FD" stroke-width="2" stroke-linecap="round"/>
@@ -112,19 +111,19 @@ document.documentElement.dataset.theme =
   <!-- The menu lockup: robot + wordmark, no tagline — at the 172px the sidebar
        header leaves, a tagline renders about 5px tall. Shown only while the
        sidebar is expanded; the rail falls back to #al-logo. -->
-  <symbol id="cc-menu" viewBox="0 0 172 44">
+  <symbol id="al-menu" viewBox="0 0 172 44">
     <defs>
-    <linearGradient id="cc-m-shell" x1="5" y1="6" x2="27" y2="30" gradientUnits="userSpaceOnUse">
+    <linearGradient id="al-m-shell" x1="5" y1="6" x2="27" y2="30" gradientUnits="userSpaceOnUse">
     <stop stop-color="#A855F7"/>
     <stop offset=".48" stop-color="#7C3AED"/>
     <stop offset="1" stop-color="#4C1D95"/>
     </linearGradient>
-    <radialGradient id="cc-m-lamp" cx=".35" cy=".3" r=".8">
+    <radialGradient id="al-m-lamp" cx=".35" cy=".3" r=".8">
     <stop stop-color="#FFFFFF"/>
     <stop offset=".45" stop-color="#CFFAFE"/>
     <stop offset="1" stop-color="#22D3EE"/>
     </radialGradient>
-    <linearGradient id="cc-m-cron" x1="119" y1="11" x2="168" y2="34" gradientUnits="userSpaceOnUse">
+    <linearGradient id="al-m-cron" x1="119" y1="11" x2="168" y2="34" gradientUnits="userSpaceOnUse">
     <stop stop-color="#7C3AED"/>
     <stop offset="1" stop-color="#5B21B6"/>
     </linearGradient>
@@ -135,14 +134,13 @@ document.documentElement.dataset.theme =
     <circle cx="16" cy="3" r="2.3" fill="#93C5FD" stroke="#4C1D95" stroke-width=".7"/>
     <rect x="1.5" y="14" width="4" height="9" rx="2" fill="#5B21B6"/>
     <rect x="26.5" y="14" width="4" height="9" rx="2" fill="#5B21B6"/>
-    <rect x="4" y="6" width="24" height="24" rx="7.5" fill="url(#cc-m-shell)" stroke="#3B168A" stroke-width=".8"/>
+    <rect x="4" y="6" width="24" height="24" rx="7.5" fill="url(#al-m-shell)" stroke="#3B168A" stroke-width=".8"/>
     <rect x="6.5" y="10" width="19" height="13.5" rx="5" fill="#21104E" stroke="#C084FC" stroke-width="1"/>
     <circle cx="12" cy="16.75" r="2" fill="#2B1264" stroke="#4C1D95" stroke-width=".6"/>
-    <circle cx="20" cy="16.75" r="3.1" fill="url(#cc-m-lamp)" stroke="#312E81" stroke-width=".6"/>
+    <circle cx="20" cy="16.75" r="3.1" fill="url(#al-m-lamp)" stroke="#312E81" stroke-width=".6"/>
     </g>
     <!-- No tagline: the wordmark remains readable at the available 172 px. -->
-    <text x="42" y="29" fill="currentColor" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="19.5" font-weight="650" letter-spacing="-.8">Claude-</text>
-    <text x="110" y="29" fill="url(#cc-m-cron)" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="19.5" font-weight="650" letter-spacing="-.8">cron</text>
+    <text x="42" y="29" fill="currentColor" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="19.5" font-weight="650" letter-spacing="-.8">agentloop</text>
   </symbol>
 </svg>
 <div class="shell">
@@ -153,7 +151,7 @@ document.documentElement.dataset.theme =
            wordmark. Collapsed: the robot alone — the rail is 48px wide and no
            lockup survives that. The heading stays in the DOM either way, hidden
            from view but not from the document outline or a screen reader. -->
-      <svg class="brandlock" viewBox="0 0 172 44" aria-hidden="true" focusable="false"><use href="#cc-menu"/></svg>
+      <svg class="brandlock" viewBox="0 0 172 44" aria-hidden="true" focusable="false"><use href="#al-menu"/></svg>
       <div class="mark" id="brandmark"><svg viewBox="0 0 32 32" aria-hidden="true" focusable="false"><use href="#al-logo"/></svg></div>
       <div class="btext"><h1>agentloop</h1><div class="tag">Agent Loop Manager</div></div>
     </div>
@@ -706,7 +704,7 @@ document.documentElement.dataset.theme =
      readable next to the rest of the page. -->
 <div class="setup" id="setup" hidden>
   <form class="setup-card" id="setup-form" autocomplete="off">
-    <div class="mark lockup" id="setup-mark"><svg viewBox="0 0 1040 300" aria-hidden="true" focusable="false"><use href="#cc-lockup"/></svg></div>
+    <div class="mark lockup" id="setup-mark"><svg viewBox="0 0 1040 300" aria-hidden="true" focusable="false"><use href="#al-lockup"/></svg></div>
     <h2>Create your profile</h2>
     <p class="lede">agentloop runs unattended agents that spend real money on
       your repositories. Before the dashboard opens, say who is running it.</p>
@@ -730,7 +728,7 @@ document.documentElement.dataset.theme =
 <!-- Shown when there is a profile but no live session: the password screen. -->
 <div class="setup" id="login" hidden>
   <form class="setup-card" id="login-form">
-    <div class="mark lockup" id="login-mark"><svg viewBox="0 0 1040 300" aria-hidden="true" focusable="false"><use href="#cc-lockup"/></svg></div>
+    <div class="mark lockup" id="login-mark"><svg viewBox="0 0 1040 300" aria-hidden="true" focusable="false"><use href="#al-lockup"/></svg></div>
     <h2>Sign in</h2>
     <p class="lede">This dashboard starts agents that spend real money on your
       repositories.</p>

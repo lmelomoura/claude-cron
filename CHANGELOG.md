@@ -1,12 +1,13 @@
 # Changelog
 
-All notable changes to claude-cron.
+All notable changes to agentloop — called claude-cron until 2026-09-06; entries
+older than that use the old name, as they did on their day.
 
 **This file is filled in with every commit that is pushed to `main`.** Not
 afterwards, not in a batch at release time — in the same change as the code, so
 the entry is written while the reason is still known. Other people run this
 scheduler on their own projects; a fix they cannot see the shape of is a fix they
-cannot trust or adopt. `claude-cron selftest` fails when `main` has moved and this
+cannot trust or adopt. `agentloop selftest` fails when `main` has moved and this
 file has not.
 
 How to write an entry, in one line: **say what behaviour changed and what it cost
@@ -49,6 +50,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     still runs the statusline from the folder's old name. Re-running
     `install.sh` is the whole upgrade. A symlink that points anywhere but this
     folder is left alone, on install and on uninstall alike.
+  - The dashboard's logo, the last `cc-` ids in the page and two articles in
+    shipped prose that the mechanical substitution had left as "a agentloop"
+    are the final vestiges; `README.md` now carries *Upgrading from
+    claude-cron*, the only place outside the changelog where the old name is
+    still written on purpose.
 
 ### Fixed
 

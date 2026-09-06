@@ -3875,7 +3875,7 @@ def _overview_tab_deps(block):
     """Everything the Overview tab's full render (overview-tab.js) reaches,
     extracted from the bundle, plus deliberately trivial stubs for the
     bridge and cross-module bindings the harness cannot extract (kpiCard is
-    a ALApp bridge binding; secRuleMeta/secSevKey/the three navigation
+    an ALApp bridge binding; secRuleMeta/secSevKey/the three navigation
     callees are other modules' own, not under test here)."""
     consts = "".join(_const(block, n) for n in
         ("SEV5", "SEV_LABEL", "SEV_KPI_ICON", "SEV_KPI_TONE", "SEC_OVFIND_COLS",

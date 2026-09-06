@@ -65,6 +65,36 @@ The installer runs `agentloop install`, which writes and loads two macOS
 Because they live in `~/Library/LaunchAgents/`, macOS loads both **automatically
 on every login** — you do not start anything by hand, and they survive reboots.
 
+### Upgrading from claude-cron
+
+This scheduler was called **claude-cron** until 2026-09-06. An install made
+under that name upgrades by pulling and running the installer again:
+
+```bash
+bash install.sh
+```
+
+`agentloop install` retires the two old agents (`com.claude-cron.tick` and
+`com.claude-cron.server`), carrying the Claude account pinned in them over to
+the new ones, and replaces the `claude-cron` and `claude-cron-server` symlinks
+in `~/.local/bin`. Your jobs, projects, run history and prechecks are untouched.
+
+Three things still answer to their old names **for this release only**, and the
+installer and `agentloop status` list every one they find on your machine:
+
+- the environment: every `CLAUDE_CRON_*` is read as `AGENTLOOP_*`;
+- the run environment: every `CC_*` your prechecks, provisioning hooks and
+  `on-run-end.sh` read is exported alongside its `AL_*` twin, and `cc_port`,
+  `cc_env_set`, `cc_env_ports` and `cc_copy_ignored` still answer for
+  `al_port` and its siblings;
+- the dashboard's `X-CC-Token` header, now `X-AL-Token`.
+
+Rename them at your leisure before the next release, where the old spellings
+stop working. If the folder itself was renamed, point the `statusLine` in
+`~/.claude/settings.json` at the new path — the installer says so when it
+notices. The repository moved to `lmelomoura/agentloop`; GitHub redirects the
+old address.
+
 ### Verify it is running
 
 ```bash

@@ -1,11 +1,11 @@
 ---
 name: security-analysis
-description: Use when running a agentloop security analysis on a repository — the SAST pass, the triage of deterministic findings, and the re-verification of findings left open by the previous analysis. Invoked automatically by every `agentloop security` run; the analysis prompt names it as mandatory.
+description: Use when running an agentloop security analysis on a repository — the SAST pass, the triage of deterministic findings, and the re-verification of findings left open by the previous analysis. Invoked automatically by every `agentloop security` run; the analysis prompt names it as mandatory.
 ---
 
 # Security Analysis
 
-You are the judgement half of a agentloop security analysis. The deterministic half — secrets, dependency CVEs, SBOM, repository hygiene, infrastructure-as-code misconfigurations — runs by pattern and costs no tokens. You cost tokens because you bring what a pattern cannot: reading code and deciding what it means.
+You are the judgement half of an agentloop security analysis. The deterministic half — secrets, dependency CVEs, SBOM, repository hygiene, infrastructure-as-code misconfigurations — runs by pattern and costs no tokens. You cost tokens because you bring what a pattern cannot: reading code and deciding what it means.
 
 ## Before anything else
 
