@@ -23,8 +23,32 @@ SELF="$(cd -P "$(dirname "$_src")" && pwd)/$(basename "$_src")"
 BIN_DIR="$(dirname "$SELF")"
 BASE_DIR="$(cd "$BIN_DIR/.." && pwd)"
 
-CONFIG_DIR="${CLAUDE_CRON_CONFIG:-$BASE_DIR/config}"
-DATA_DIR="${CLAUDE_CRON_DATA:-$BASE_DIR/data}"
+# --- transition: the pre-rename environment names still work for one release --
+# Every AGENTLOOP_X read below had another prefix until 2026-09-06, and an
+# existing install carries that prefix in its launchd plists and shell
+# profiles. Map each old name onto the new one when the new one is unset,
+# remember what was mapped so `status` and `install` can say so, and delete
+# this whole block in the release after the rename.
+LEGACY_ENV_PREFIX="CLAUDE_CRON_"
+LEGACY_ENV_SEEN=""
+for _legacy in $(env | sed -n "s/^${LEGACY_ENV_PREFIX}\([A-Z_]*\)=.*/\1/p"); do
+  if eval "[ -z \"\${AGENTLOOP_${_legacy}+x}\" ]"; then
+    eval "export AGENTLOOP_${_legacy}=\"\$${LEGACY_ENV_PREFIX}${_legacy}\""
+  fi
+  LEGACY_ENV_SEEN="$LEGACY_ENV_SEEN ${LEGACY_ENV_PREFIX}${_legacy}"
+done
+unset _legacy
+
+legacy_env_warnings() { # one line per pre-rename variable still in the environment
+  local v
+  for v in $LEGACY_ENV_SEEN; do
+    printf 'WARNING: %s is set — it is read as AGENTLOOP_%s for now; the old name stops working in the next release.\n' \
+      "$v" "${v#"$LEGACY_ENV_PREFIX"}"
+  done
+}
+
+CONFIG_DIR="${AGENTLOOP_CONFIG:-$BASE_DIR/config}"
+DATA_DIR="${AGENTLOOP_DATA:-$BASE_DIR/data}"
 JOBS_FILE="$CONFIG_DIR/jobs.json"
 PROJECTS_FILE="$CONFIG_DIR/projects.json"
 MODELS_FILE="$CONFIG_DIR/models.json"
@@ -44,16 +68,16 @@ RATE_LIMIT_FILE="$DATA_DIR/rate-limits.json"   # last usage window the API repor
 # anything quieter than that is invisible and this floor is the only figure that
 # can act. 0.95 leaves room for a short run to finish instead of dying at the
 # ceiling with its work uncommitted.
-RL_STOP_AT="${CLAUDE_CRON_RATE_LIMIT_STOP_AT:-0.95}"
+RL_STOP_AT="${AGENTLOOP_RATE_LIMIT_STOP_AT:-0.95}"
 
 PLIST_LABEL="com.agentloop.tick"
 PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 SERVER_LABEL="com.agentloop.server"
 SERVER_PLIST="$HOME/Library/LaunchAgents/$SERVER_LABEL.plist"
 SERVER_BIN="$BIN_DIR/agentloop-server"
-PORT="${CLAUDE_CRON_PORT:-8787}"
+PORT="${AGENTLOOP_PORT:-8787}"
 
-CLAUDE_BIN="${CLAUDE_CRON_CLAUDE_BIN:-$HOME/.local/bin/claude}"
+CLAUDE_BIN="${AGENTLOOP_CLAUDE_BIN:-$HOME/.local/bin/claude}"
 # Which Claude account every run signs in as. Claude Code keeps credentials,
 # settings, plugins, MCP servers and past sessions per config directory — one
 # signed-in account each — so this variable is the only thing that chooses
@@ -70,15 +94,15 @@ CLAUDE_BIN="${CLAUDE_CRON_CLAUDE_BIN:-$HOME/.local/bin/claude}"
 # terminal — different billing, different plugins, different MCP servers — with
 # nothing in the run record saying which. Unsetting instead is the safe answer:
 # it lands on the CLI default, which is where a run with no setting belongs.
-CLAUDE_CONFIG_DIR="${CLAUDE_CRON_CLAUDE_CONFIG_DIR:-}"
+CLAUDE_CONFIG_DIR="${AGENTLOOP_CLAUDE_CONFIG_DIR:-}"
 if [ -n "$CLAUDE_CONFIG_DIR" ]; then export CLAUDE_CONFIG_DIR; else unset CLAUDE_CONFIG_DIR; fi
-PYTHON="${CLAUDE_CRON_PYTHON:-$(command -v python3 2>/dev/null || echo /usr/bin/python3)}"
+PYTHON="${AGENTLOOP_PYTHON:-$(command -v python3 2>/dev/null || echo /usr/bin/python3)}"
 # /usr/bin/jq is only guaranteed on macOS 15 and later; before that jq comes
 # from Homebrew, at a path that differs between Apple Silicon and Intel. The
 # installer checks `jq` on PATH, so hard-coding a different path here meant an
 # install could pass every check and then have every single run fail. Resolve
 # it the same way python3 is resolved, and let the environment override.
-JQ="${CLAUDE_CRON_JQ:-$(command -v jq 2>/dev/null || echo /usr/bin/jq)}"
+JQ="${AGENTLOOP_JQ:-$(command -v jq 2>/dev/null || echo /usr/bin/jq)}"
 
 mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" "$LOCK_DIR" "$WORKTREES_DIR"
 [ -f "$STATE_FILE" ] || echo '{}' > "$STATE_FILE"
@@ -123,7 +147,7 @@ log_tick() { printf '%s %s\n' "$(iso_now)" "$*" >> "$TICK_LOG"; }
 # day's activity, so an old install pays for that growth on every poll. Keep one
 # previous generation and start fresh: history far enough back to be useless for
 # the 24h counters is not worth carrying for ever.
-LOG_MAX_BYTES="${CLAUDE_CRON_LOG_MAX:-4194304}"   # 4 MiB per file
+LOG_MAX_BYTES="${AGENTLOOP_LOG_MAX:-4194304}"   # 4 MiB per file
 log_rotate() { # log_rotate <file> [max-bytes]
   local f="${1:-}" max; max="$(num "${2:-$LOG_MAX_BYTES}" "$LOG_MAX_BYTES")"
   [ -f "$f" ] || return 0
@@ -394,7 +418,7 @@ SECURITY_DISALLOWED_TOOLS="Agent"
 # builds the prompt and resolves the model first -- and a row swept inside that
 # window would be the row of a run that is about to start, marked failed while it
 # goes on to produce a perfectly good report nothing will read.
-SECURITY_STALE_GRACE="${CLAUDE_CRON_SECURITY_STALE_GRACE:-120}"
+SECURITY_STALE_GRACE="${AGENTLOOP_SECURITY_STALE_GRACE:-120}"
 
 # ---- what a bad security block is allowed to cost -------------------------
 # Everything derivation refuses -- a name that slugs to nothing, two projects
@@ -541,7 +565,7 @@ EOF
 # data, and a path computed once at startup would defeat that and let the test
 # suite write analyses into the live database.
 security_db() { # security_db -> the path to this install's ledger
-  if [ -n "${CLAUDE_CRON_SECURITY_DB:-}" ]; then printf '%s\n' "$CLAUDE_CRON_SECURITY_DB"
+  if [ -n "${AGENTLOOP_SECURITY_DB:-}" ]; then printf '%s\n' "$AGENTLOOP_SECURITY_DB"
   else printf '%s/security.db\n' "$DATA_DIR"; fi
 }
 
@@ -872,7 +896,7 @@ state_get() { # state_get <id> <field> [default]
 # record a run had just appended could be lost to the very mechanism meant to
 # protect it. `acquire_lock` already knew the right answer (write your pid, and
 # only break the lock when that pid is gone); this generalises it to the rest.
-LOCK_GRACE_SECONDS="${CLAUDE_CRON_LOCK_GRACE:-30}"
+LOCK_GRACE_SECONDS="${AGENTLOOP_LOCK_GRACE:-30}"
 
 lock_take() { # lock_take <lockdir> — blocks until held; always succeeds
   local d="${1:-}" hold i=0
@@ -1363,9 +1387,9 @@ release_slot() { rm -rf "$1"; }          # <slot-dir>
 # turns it into concrete numbers. Generic on purpose: this is not a Docker
 # feature or a Compose feature, it is "two copies of the same stack at once",
 # which every project that isolates will meet.
-CC_PORT_RANGE_START="${CLAUDE_CRON_PORT_RANGE_START:-21000}"
-CC_PORT_SPAN="${CLAUDE_CRON_PORT_SPAN:-100}"        # ports per run
-CC_PORT_BLOCKS="${CLAUDE_CRON_PORT_BLOCKS:-60}"     # how many runs can hold one at once
+CC_PORT_RANGE_START="${AGENTLOOP_PORT_RANGE_START:-21000}"
+CC_PORT_SPAN="${AGENTLOOP_PORT_SPAN:-100}"        # ports per run
+CC_PORT_BLOCKS="${AGENTLOOP_PORT_BLOCKS:-60}"     # how many runs can hold one at once
 
 # Lowest block no LIVE run holds. Recorded in the slot, so it is released exactly
 # when the slot is — no separate registry to leak. Allocated under a mutex:
@@ -1634,7 +1658,7 @@ record_run() { # <id> <status> <start> <end> <cost> <turns> <session> <logfile> 
 # them made every single run launch O(all history ever). 4 MiB is thousands of
 # records: far more than any day, and bounded for ever. A partial first line is
 # dropped by `fromjson?`, which is why the offset can be a plain byte count.
-SPEND_SCAN_BYTES="${CLAUDE_CRON_SPEND_SCAN:-4194304}"
+SPEND_SCAN_BYTES="${AGENTLOOP_SPEND_SCAN:-4194304}"
 
 _spend_since_midnight() { # _spend_since_midnight [id] -> dollars (float)
   local id="${1:-}" midnight
@@ -1749,7 +1773,7 @@ rl_gate() { # rl_gate -> 0 = hold this run back (reason on stdout)
 # Deliberately NOT the run-end hook with an extra variable: a hook already on
 # disk was written against that contract, and quietly handing it events it never
 # expected would make it lie about what happened. A new event gets a new file.
-STALL_HOURS="${CLAUDE_CRON_STALL_HOURS:-4}"
+STALL_HOURS="${AGENTLOOP_STALL_HOURS:-4}"
 STALL_MARK_FILE="$DATA_DIR/.stalled"
 
 # Why is nothing running? Prints one sentence when the answer is a fault or a
@@ -3659,7 +3683,7 @@ EOF
     || bad "the sweep reaped a session that is still open"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
     WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
-    CLAUDE_CRON_SESSION_TTL=0
+    AGENTLOOP_SESSION_TTL=0
     wt_prune_orphans ) >/dev/null 2>&1
   [ ! -d "$tmp/wtroot/jT/stampT" ] && ok "and is reclaimed once its ttl is up" \
     || bad "an expired session was kept"
@@ -3685,7 +3709,7 @@ EOF
   # teardown at all, same as it would in the wild once the real TTL is up.
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
     WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
-    CLAUDE_CRON_SESSION_TTL=0
+    AGENTLOOP_SESSION_TTL=0
     wt_prune_orphans ) >/dev/null 2>&1
   [ -f "$tmp/wtroot/jGone/orphan-down.log" ] \
     && ok "the manifest's project is what teardown uses, so down still fires" \
@@ -3709,7 +3733,7 @@ EOF
           "$tmp/wtroot/jFallback/stampF2/.run.json"
   printf '%s' '{"jobs":[{"id":"jFallback","project":"two"}]}' > "$tmp/cfg/jobs.json"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; JOBS_FILE="$tmp/cfg/jobs.json"
-    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"; CLAUDE_CRON_SESSION_TTL=0
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"; AGENTLOOP_SESSION_TTL=0
     wt_prune_orphans ) >/dev/null 2>&1
   [ -f "$tmp/wtroot/jFallback/orphan-down.log" ] \
     && ok "a manifest with no project falls back to the jobs file" \
@@ -4023,7 +4047,7 @@ NASTY
   sl="$BIN_DIR/statusline-rate-limits.sh"
   mkdir -p "$tmp/sl"
   sl_run() { # sl_run <payload-json> -> writes $tmp/sl/rate-limits.json
-    printf '%s' "$1" | CLAUDE_CRON_DATA="$tmp/sl" CLAUDE_CRON_STATUSLINE_MIN_SECONDS=0 sh "$sl" >/dev/null 2>&1
+    printf '%s' "$1" | AGENTLOOP_DATA="$tmp/sl" AGENTLOOP_STATUSLINE_MIN_SECONDS=0 sh "$sl" >/dev/null 2>&1
   }
   sl_get() { "$JQ" -r "$1" "$tmp/sl/rate-limits.json" 2>/dev/null; }
 
@@ -4295,9 +4319,9 @@ NASTY
   # Sourcing it with `--help` runs every top-level assignment and then returns.
   # An empty value and an unset one are the same to `${VAR:-}`, so both can be
   # passed unconditionally — and stay quoted, which a conditional would not.
-  al_account_probe() { # <ambient CLAUDE_CONFIG_DIR> <CLAUDE_CRON_CLAUDE_CONFIG_DIR>
-    env CLAUDE_CONFIG_DIR="$1" CLAUDE_CRON_CLAUDE_CONFIG_DIR="$2" \
-        CLAUDE_CRON_CONFIG="$tmp/acct/config" CLAUDE_CRON_DATA="$tmp/acct/data" \
+  al_account_probe() { # <ambient CLAUDE_CONFIG_DIR> <AGENTLOOP_CLAUDE_CONFIG_DIR>
+    env CLAUDE_CONFIG_DIR="$1" AGENTLOOP_CLAUDE_CONFIG_DIR="$2" \
+        AGENTLOOP_CONFIG="$tmp/acct/config" AGENTLOOP_DATA="$tmp/acct/data" \
         bash -c '. "$1" --help >/dev/null 2>&1; printf "%s" "${CLAUDE_CONFIG_DIR-<unset>}"' _ "$SELF"
   }
   got="$(al_account_probe /tmp/al-someones-session "")"
@@ -5241,7 +5265,7 @@ JSON
   # analysis ended error / killed / 0 turns, before its first turn, with both
   # assertions green. Source text is not behaviour. Observe the launch.
   #
-  # CLAUDE_CRON_CLAUDE_BIN is honoured by run_job, so the whole apparatus is a
+  # AGENTLOOP_CLAUDE_BIN is honoured by run_job, so the whole apparatus is a
   # stand-in that records its own argv and exits. Offline and free -- no model
   # is reached, and CONFIG/DATA are redirected into this test's own $tmp.
   local argvdir="$tmp/argv"
@@ -5275,8 +5299,8 @@ SH
 JSON
   st_argv_run() { # st_argv_run <job-id> -- the recorded argv of one real launch
     rm -f "$argvdir/out"
-    CLAUDE_CRON_CONFIG="$argvdir/config" CLAUDE_CRON_DATA="$argvdir/data" \
-      CLAUDE_CRON_CLAUDE_BIN="$argvdir/claude" CC_ARGV_OUT="$argvdir/out" \
+    AGENTLOOP_CONFIG="$argvdir/config" AGENTLOOP_DATA="$argvdir/data" \
+      AGENTLOOP_CLAUDE_BIN="$argvdir/claude" CC_ARGV_OUT="$argvdir/out" \
       "$BIN_DIR/agentloop" run "$1" >/dev/null 2>&1
     cat "$argvdir/out" 2>/dev/null
   }
@@ -5897,7 +5921,7 @@ JSON
     PROJECTS_FILE="$sec/cfg/projects.json"; JOBS_FILE="$sec/cfg/jobs.json"
     CONFIG_DIR="$sec/cfg"; DATA_DIR="$sec/data"; LOCK_DIR="$sec/data/locks"
     TICK_LOG="$sec/data/tick.log"; RUNS_FILE="$sec/data/runs.ndjson"
-    CLAUDE_CRON_SECURITY_DB="$secdb"
+    AGENTLOOP_SECURITY_DB="$secdb"
   }
   # An analysis row that is allowed to close `done`. `finish` downgrades a
   # `done` close to `capped` for a row whose deterministic phases never ran
@@ -6437,6 +6461,21 @@ JSON
     && grep -q "BAD: bin/static/app.css" "$tmp/uiswap-after.out" \
     && ok "app.js's bytes copied onto app.css's name are caught by name, not read as a clean app.css" \
     || bad "the swap was not caught the way it should: $(cat "$tmp/uiswap-after.out")"
+
+  echo "the rename — the pre-rename environment names still work for one release"
+  mkdir -p "$tmp/legacy/config" "$tmp/legacy/data"
+  got="$( env -i HOME="$HOME" PATH="$PATH" "${LEGACY_ENV_PREFIX}PORT=9876" \
+            AGENTLOOP_CONFIG="$tmp/legacy/config" AGENTLOOP_DATA="$tmp/legacy/data" \
+            bash "$SELF" status 2>/dev/null )"
+  case "$got" in *"http://127.0.0.1:9876/"*) ok "a port set only under the old name is honoured" ;;
+                 *) bad "status said: $got" ;; esac
+  case "$got" in *"${LEGACY_ENV_PREFIX}PORT is set"*) ok "and status says which old name it found" ;;
+                 *) bad "no warning about the old name in: $got" ;; esac
+  got="$( env -i HOME="$HOME" PATH="$PATH" "${LEGACY_ENV_PREFIX}PORT=9876" AGENTLOOP_PORT=1111 \
+            AGENTLOOP_CONFIG="$tmp/legacy/config" AGENTLOOP_DATA="$tmp/legacy/data" \
+            bash "$SELF" status 2>/dev/null )"
+  case "$got" in *"http://127.0.0.1:1111/"*) ok "the new name wins when both are set" ;;
+                 *) bad "status said: $got" ;; esac
 
   echo "the committed UI artifacts — built from the sources sitting next to them"
   check_ui_artifacts
@@ -7621,7 +7660,7 @@ If the work turns out to be already finished, or it can no longer be done at all
 #
 # Detached AND time-limited: a notifier that hangs must not hold the run's slot,
 # and a run must never be kept alive by something that only reports on it.
-RUN_HOOK_TIMEOUT="${CLAUDE_CRON_HOOK_TIMEOUT:-60}"
+RUN_HOOK_TIMEOUT="${AGENTLOOP_HOOK_TIMEOUT:-60}"
 run_end_hook() { # <id> <status> <cost> <note> <project> <session> <log> <start> <end>
   local script="$CONFIG_DIR/hooks/on-run-end.sh"
   [ -f "$script" ] || return 0
@@ -7756,9 +7795,9 @@ cmd_install() {
   # ambient CLAUDE_CONFIG_DIR: installing from inside a Claude session would
   # otherwise silently pin that session's account for every job, forever.
   local plist_cfgdir=""
-  if [ -n "${CLAUDE_CRON_CLAUDE_CONFIG_DIR:-}" ]; then
+  if [ -n "${AGENTLOOP_CLAUDE_CONFIG_DIR:-}" ]; then
     plist_cfgdir="
-    <key>CLAUDE_CONFIG_DIR</key><string>$(expand_home "$CLAUDE_CRON_CLAUDE_CONFIG_DIR")</string>"
+    <key>CLAUDE_CONFIG_DIR</key><string>$(expand_home "$AGENTLOOP_CLAUDE_CONFIG_DIR")</string>"
   elif [ -f "$PLIST_PATH" ]; then
     # Re-running the installer must not quietly drop an account pinned earlier.
     plist_cfgdir="$("$PYTHON" - "$PLIST_PATH" <<'PY'
@@ -7827,7 +7866,7 @@ PLIST
   <dict>
     <key>PATH</key><string>$PLIST_PATH_ENV</string>
     <key>HOME</key><string>$HOME</string>
-    <key>CLAUDE_CRON_PORT</key><string>$PORT</string>$plist_cfgdir
+    <key>AGENTLOOP_PORT</key><string>$PORT</string>$plist_cfgdir
   </dict>
   <key>StandardOutPath</key><string>$DATA_DIR/server.log</string>
   <key>StandardErrorPath</key><string>$DATA_DIR/server.log</string>
@@ -7845,7 +7884,7 @@ PLIST
   if [ -n "$plist_cfgdir" ]; then
     echo "Claude account : ${plist_cfgdir##*<string>}" | sed 's|</string>||'
   else
-    echo "Claude account : the CLI default (~/.claude) — set CLAUDE_CRON_CLAUDE_CONFIG_DIR and re-run to change it"
+    echo "Claude account : the CLI default (~/.claude) — set AGENTLOOP_CLAUDE_CONFIG_DIR and re-run to change it"
   fi
   # The agent prompts make these skills mandatory by name. A fresh clone whose
   # ~/.claude/skills lacks them runs agents that cite standards they cannot read,
@@ -7855,6 +7894,7 @@ PLIST
   echo "Skills (linked into ~/.claude/skills):"
   cmd_skills install
   echo "Open the dashboard with: agentloop dashboard"
+  legacy_env_warnings
 }
 
 cmd_uninstall() {
@@ -7892,6 +7932,7 @@ cmd_status() {
           (($s.last_cost // 0) | tostring) ] | @tsv' "$JOBS_FILE" 2>/dev/null)
   echo
   echo "Dashboard : http://127.0.0.1:$PORT/   (agentloop dashboard)"
+  legacy_env_warnings
 }
 
 cmd_dashboard() {
@@ -8437,7 +8478,7 @@ cmd_project_list() {
 # Ensure the control server is up; start it detached if nothing answers /health.
 ensure_server() {
   curl -s -o /dev/null "http://127.0.0.1:$PORT/health" 2>/dev/null && return 0
-  CLAUDE_CRON_PORT="$PORT" nohup "$PYTHON" "$SERVER_BIN" >> "$DATA_DIR/server.log" 2>&1 &
+  AGENTLOOP_PORT="$PORT" nohup "$PYTHON" "$SERVER_BIN" >> "$DATA_DIR/server.log" 2>&1 &
   local i=0
   while [ "$i" -lt 20 ]; do
     curl -s -o /dev/null "http://127.0.0.1:$PORT/health" 2>/dev/null && return 0
@@ -8446,7 +8487,7 @@ ensure_server() {
   return 1
 }
 
-cmd_serve() { CLAUDE_CRON_PORT="$PORT" exec "$PYTHON" "$SERVER_BIN"; }
+cmd_serve() { AGENTLOOP_PORT="$PORT" exec "$PYTHON" "$SERVER_BIN"; }
 
 usage() {
   cat <<USAGE

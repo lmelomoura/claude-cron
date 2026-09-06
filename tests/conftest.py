@@ -28,8 +28,8 @@ def srv(tmp_path_factory):
     root = tmp_path_factory.mktemp("al")
     (root / "config").mkdir()
     (root / "data").mkdir()
-    os.environ["CLAUDE_CRON_CONFIG"] = str(root / "config")
-    os.environ["CLAUDE_CRON_DATA"] = str(root / "data")
+    os.environ["AGENTLOOP_CONFIG"] = str(root / "config")
+    os.environ["AGENTLOOP_DATA"] = str(root / "data")
     spec = importlib.util.spec_from_loader(
         "cc_server", importlib.machinery.SourceFileLoader("cc_server", str(SERVER)))
     mod = importlib.util.module_from_spec(spec)

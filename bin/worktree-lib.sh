@@ -612,7 +612,7 @@ wt_remove_all() { # <run dir>
 wt_prune_orphans() {
   [ -d "$WORKTREES_DIR" ] || return 0
   local iddir id d project ttl age now rlock
-  ttl="$(num "${CLAUDE_CRON_SESSION_TTL:-}" 86400)"
+  ttl="$(num "${AGENTLOOP_SESSION_TTL:-}" 86400)"
   now="$(now_epoch)"
   rlock="$LOCK_DIR/.resume"
   # Everything one directory needs, called under $rlock below -- reads

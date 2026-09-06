@@ -409,7 +409,7 @@ Exit code, stderr and a spent budget cap describe how *well* a run went, not
 whether its session has more to do, so none of them decide this.
 
 An open session that nobody resumes expires after **24 hours**
-(`CLAUDE_CRON_SESSION_TTL`, in seconds), at which point the sweep runs its `down`
+(`AGENTLOOP_SESSION_TTL`, in seconds), at which point the sweep runs its `down`
 hooks and removes it like any other finished run. The dashboard lists every open
 session with its size, its age and the time it has left, and **Discard** ends one
 early (`agentloop worktree-drop <job-id> <stamp>` from the CLI). A run dir a
@@ -450,8 +450,8 @@ services a project does not run would publish things nobody asked for. Nothing
 here is Docker-specific — this is the general shape of "two copies of one stack at
 once", which every project that isolates eventually meets.
 
-`CLAUDE_CRON_PORT_RANGE_START` (21000), `CLAUDE_CRON_PORT_SPAN` (100) and
-`CLAUDE_CRON_PORT_BLOCKS` (60) move or resize the range if it is already in use.
+`AGENTLOOP_PORT_RANGE_START` (21000), `AGENTLOOP_PORT_SPAN` (100) and
+`AGENTLOOP_PORT_BLOCKS` (60) move or resize the range if it is already in use.
 
 ### Budgets
 
@@ -564,7 +564,7 @@ terminal-notifier -title "agentloop: $CC_JOB_ID failed" \
                   -message "${CC_NOTE:-see the run log}" -open "$CC_DASHBOARD"
 ```
 
-It is detached and time-limited (`CLAUDE_CRON_HOOK_TIMEOUT`, default 60s): a
+It is detached and time-limited (`AGENTLOOP_HOOK_TIMEOUT`, default 60s): a
 notifier that hangs must never hold a run's slot open. Its output goes to
 `data/exec.log`.
 
@@ -583,7 +583,7 @@ Once per stall, the engine runs `config/hooks/on-fleet-stalled.sh` with:
 | Variable | |
 |---|---|
 | `CC_REASON` | one sentence naming which of the four it is |
-| `CC_STALL_HOURS` | the window that had no runs in it (`CLAUDE_CRON_STALL_HOURS`, default 4) |
+| `CC_STALL_HOURS` | the window that had no runs in it (`AGENTLOOP_STALL_HOURS`, default 4) |
 | `CC_DASHBOARD` | the dashboard URL |
 
 No dependencies needed — `osascript` ships with macOS:
@@ -740,11 +740,11 @@ are two levels:
 
 | Level | Where | Applies to |
 |---|---|---|
-| default | `CLAUDE_CRON_CLAUDE_CONFIG_DIR` at install time | every run, and the model probes |
+| default | `AGENTLOOP_CLAUDE_CONFIG_DIR` at install time | every run, and the model probes |
 | per project | `claude_config_dir` in `config/projects.json` (**Edit project** in the dashboard) | that project's runs and their prechecks |
 
 ```bash
-CLAUDE_CRON_CLAUDE_CONFIG_DIR=~/.claude-work bash install.sh
+AGENTLOOP_CLAUDE_CONFIG_DIR=~/.claude-work bash install.sh
 ```
 
 The value is written into both `launchd` plists, so it survives logout and
@@ -1451,11 +1451,11 @@ agentloop selftest           # offline checks of the logic that can kill a run
 agentloop install | uninstall
 ```
 
-Environment overrides: `CLAUDE_CRON_PORT`, `CLAUDE_CRON_CONFIG`,
-`CLAUDE_CRON_DATA`, `CLAUDE_CRON_CLAUDE_BIN`, `CLAUDE_CRON_CLAUDE_CONFIG_DIR`,
-`CLAUDE_CRON_PYTHON`, `CLAUDE_CRON_JQ`, `CLAUDE_CRON_LOG_MAX` (log rotation
-threshold, default 4 MiB), `CLAUDE_CRON_HOOK_TIMEOUT`, `CLAUDE_CRON_LOCK_GRACE`,
-`CLAUDE_CRON_SESSION_TTL` (open-session expiry, in seconds, default 86400).
+Environment overrides: `AGENTLOOP_PORT`, `AGENTLOOP_CONFIG`,
+`AGENTLOOP_DATA`, `AGENTLOOP_CLAUDE_BIN`, `AGENTLOOP_CLAUDE_CONFIG_DIR`,
+`AGENTLOOP_PYTHON`, `AGENTLOOP_JQ`, `AGENTLOOP_LOG_MAX` (log rotation
+threshold, default 4 MiB), `AGENTLOOP_HOOK_TIMEOUT`, `AGENTLOOP_LOCK_GRACE`,
+`AGENTLOOP_SESSION_TTL` (open-session expiry, in seconds, default 86400).
 
 ---
 
@@ -1489,7 +1489,7 @@ get, instead of a frozen artefact that disagrees with the page you have open.
 
 **Logs.** `data/tick.log` (scheduler decisions) and `data/exec.log` (detached
 runner and provisioning-hook output) are append-only and are rotated by the tick
-once either passes `CLAUDE_CRON_LOG_MAX` (4 MiB). Exactly one previous
+once either passes `AGENTLOOP_LOG_MAX` (4 MiB). Exactly one previous
 generation is kept, as `.1` — the chain never grows.
 
 ---

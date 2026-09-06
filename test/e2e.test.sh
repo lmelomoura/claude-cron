@@ -20,9 +20,9 @@ ROOT="$E2E/sandbox"
 trap 'rm -rf "$ROOT"' EXIT
 rm -rf "$ROOT"; mkdir -p "$ROOT"/{config,data,remote,work}
 
-export CLAUDE_CRON_CONFIG="$ROOT/config"
-export CLAUDE_CRON_DATA="$ROOT/data"
-export CLAUDE_CRON_CLAUDE_BIN="$E2E/fake-claude"
+export AGENTLOOP_CONFIG="$ROOT/config"
+export AGENTLOOP_DATA="$ROOT/data"
+export AGENTLOOP_CLAUDE_BIN="$E2E/fake-claude"
 AL="$REPO/bin/agentloop"
 
 pass=0; fail=0
@@ -113,7 +113,7 @@ grep -q 'UNDELIVERED' "$ROOT/data/runs.ndjson" 2>/dev/null \
 
 echo
 echo "5. an open session nobody resumes expires and is reclaimed"
-CLAUDE_CRON_SESSION_TTL=0 "$AL" tick >/dev/null 2>&1
+AGENTLOOP_SESSION_TTL=0 "$AL" tick >/dev/null 2>&1
 sleep 1
 [ -z "$(dirs j3)" ] && ok "the sweep reclaimed it once its ttl was up" \
   || bad "still there: $(dirs j3)"
@@ -177,7 +177,7 @@ cat > "$ROOT/dead-claude" <<'SH'
 exit 3
 SH
 chmod +x "$ROOT/dead-claude"
-out9="$(CLAUDE_CRON_CLAUDE_BIN="$ROOT/dead-claude" "$AL" security analyze --detach sandbox anything main quick)"
+out9="$(AGENTLOOP_CLAUDE_BIN="$ROOT/dead-claude" "$AL" security analyze --detach sandbox anything main quick)"
 aid9="$(secid "$out9")"
 w=0
 while [ "$w" -lt 20 ] && [ "$(secstate sandbox "$aid9")" = "running" ]; do sleep 1; w=$((w + 1)); done
@@ -197,7 +197,7 @@ stuck_id="$(secid "$stuck_out")"
   || bad "open-analysis did not open row $stuck_id running"
 # The default grace (120s) would leave a row this young alone -- it may still
 # be on its way to acquire_slot -- so the sweep is forced to fire immediately.
-CLAUDE_CRON_SECURITY_STALE_GRACE=0 FAKE_MODE=complete FAKE_SESSION=sess-sec-fresh \
+AGENTLOOP_SECURITY_STALE_GRACE=0 FAKE_MODE=complete FAKE_SESSION=sess-sec-fresh \
   "$AL" security analyze sandbox anything main quick >/dev/null 2>&1
 [ "$(secstate sandbox "$stuck_id")" = "failed" ] \
   && ok "the next analyse's own preflight sweeps it before opening a fresh one" \

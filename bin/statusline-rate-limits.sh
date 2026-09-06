@@ -31,14 +31,14 @@
 # before the first response of a session).
 set -u
 
-DATA_DIR="${CLAUDE_CRON_DATA:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)/data}"
+DATA_DIR="${AGENTLOOP_DATA:-${CLAUDE_CRON_DATA:-$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)/data}}"
 OUT="$DATA_DIR/rate-limits.json"
-JQ="${CLAUDE_CRON_JQ:-$(command -v jq 2>/dev/null || echo /usr/bin/jq)}"
+JQ="${AGENTLOOP_JQ:-${CLAUDE_CRON_JQ:-$(command -v jq 2>/dev/null || echo /usr/bin/jq)}}"
 
 # The statusline is invoked several times a second while a turn streams. Writing
 # every time would be thousands of pointless file writes an hour, so a floor:
 # below it, print from what is already on disk and write nothing.
-MIN_WRITE_SECONDS="${CLAUDE_CRON_STATUSLINE_MIN_SECONDS:-15}"
+MIN_WRITE_SECONDS="${AGENTLOOP_STATUSLINE_MIN_SECONDS:-${CLAUDE_CRON_STATUSLINE_MIN_SECONDS:-15}}"
 
 payload="$(cat)"
 [ -n "$payload" ] || exit 0

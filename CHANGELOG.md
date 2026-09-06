@@ -30,6 +30,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `tests/test_no_old_name_survives.py` is the definition of "renamed": it
     fails on any old spelling that is not one of the transition lines it
     lists, and emptying that list is how the transition ends.
+  - The engine's environment is `AGENTLOOP_*` (it was `CLAUDE_CRON_*`). **For
+    this release only** the old names are still read, and `install` and
+    `status` list every one they find so it can be renamed before the next
+    release drops the fallback.
 
 ### Fixed
 

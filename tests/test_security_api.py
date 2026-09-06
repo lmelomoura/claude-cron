@@ -1262,7 +1262,7 @@ def test_activity_all_time_reaches_the_real_route_past_the_thirty_day_default(sr
                       "--kind", "analysis_finished", "--detail", "recent run"])
     assert ok, f"setup: could not record the recent event: {out}"
 
-    db_path = Path(os.environ["CLAUDE_CRON_DATA"]) / "security.db"
+    db_path = Path(os.environ["AGENTLOOP_DATA"]) / "security.db"
     conn = sqlite3.connect(str(db_path))
     conn.execute("UPDATE event SET at=? WHERE project=? AND kind='analysis_started'",
                 (old_ts, project))

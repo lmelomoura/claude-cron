@@ -43,8 +43,22 @@ HOME = Path.home()
 # (resolve() follows the ~/.local/bin symlink to the real project folder).
 BASE_DIR = Path(__file__).resolve().parent.parent
 BIN_DIR = Path(__file__).resolve().parent
-CONFIG_DIR = Path(os.environ.get("CLAUDE_CRON_CONFIG", BASE_DIR / "config"))
-DATA_DIR = Path(os.environ.get("CLAUDE_CRON_DATA", BASE_DIR / "data"))
+# The pre-rename prefix, read for one release: config, data and port still
+# arrive under it from a plist written before 2026-09-06. Delete
+# LEGACY_ENV_PREFIX and the fallback in _env in the release after the rename.
+LEGACY_ENV_PREFIX = "CLAUDE_CRON_"
+
+
+def _env(name, default=None):
+    """AGENTLOOP_<name>, else its pre-rename spelling, else default."""
+    v = os.environ.get("AGENTLOOP_" + name)
+    if v is None:
+        v = os.environ.get(LEGACY_ENV_PREFIX + name)
+    return default if v is None else v
+
+
+CONFIG_DIR = Path(_env("CONFIG", BASE_DIR / "config"))
+DATA_DIR = Path(_env("DATA", BASE_DIR / "data"))
 JOBS_FILE = CONFIG_DIR / "jobs.json"
 PROJECTS_FILE = CONFIG_DIR / "projects.json"
 STATE_FILE = DATA_DIR / "state.json"
@@ -94,7 +108,7 @@ def static_asset(name):
     except (OSError, ValueError):
         return None, None
 
-PORT = int(os.environ.get("CLAUDE_CRON_PORT", "8787"))
+PORT = int(_env("PORT", "8787"))
 PLIST_LABEL = "com.agentloop.tick"
 SERVER_LABEL = "com.agentloop.server"
 # WORKTREE_SESSION_TTL, not SESSION_TTL: this module already has a SESSION_TTL,
@@ -104,7 +118,7 @@ SERVER_LABEL = "com.agentloop.server"
 # constant that has nothing to do with the sweep. Kept in step with the engine's
 # own default (bin/worktree-lib.sh, wt_prune_orphans): the dashboard must never
 # promise a directory more time than the sweep will give it.
-WORKTREE_SESSION_TTL = int(os.environ.get("CLAUDE_CRON_SESSION_TTL") or 86400)
+WORKTREE_SESSION_TTL = int(_env("SESSION_TTL") or 86400)
 
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -2298,7 +2312,7 @@ def list_models():
     # /usr/bin/strings belongs to the Xcode Command Line Tools, so on a machine
     # that never installed them it fails and the picker would come up empty.
     # python3 is already a hard dependency of this tool, so this always works.
-    claude = os.environ.get("CLAUDE_CRON_CLAUDE_BIN") or str(Path.home() / ".local/bin/claude")
+    claude = _env("CLAUDE_BIN") or str(Path.home() / ".local/bin/claude")
     try:
         with open(os.path.realpath(claude), "rb") as fh:
             blob = fh.read()

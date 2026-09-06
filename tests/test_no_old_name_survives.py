@@ -32,7 +32,8 @@ SKIP_DIRS = {"__pycache__", ".pytest_cache", "node_modules", "fixtures"}
 SKIP_FILES = {Path(__file__).name}
 
 OLD = re.compile(
-    r"claude-cron"
+    r"(?i:claude-cron)"
+    r"|\bCLAUDE_CRON\b"
     r"|CLAUDE_CRON_[A-Z_]+"
     r"|\bCC_[A-Z_]+"
     r"|\bcc_(?:port|env_set|env_ports|copy_ignored)\b"
@@ -80,13 +81,15 @@ def _files():
 
 def _paired(line, token):
     """A transition line carries BOTH spellings: the old one is tolerated only
-    next to the new one it falls back from."""
+    next to the new one it falls back from, as a whole token."""
+    def has(new):
+        return re.search(r"(?<![A-Za-z0-9_])" + re.escape(new) + r"(?![A-Za-z0-9_])", line) is not None
     if token.startswith("CLAUDE_CRON_"):
-        return "AGENTLOOP_" + token[len("CLAUDE_CRON_"):] in line
+        return has("AGENTLOOP_" + token[len("CLAUDE_CRON_"):])
     if token.startswith("CC_"):
-        return "AL_" + token[len("CC_"):] in line
+        return has("AL_" + token[len("CC_"):])
     if token.startswith("cc_"):
-        return "al_" + token[len("cc_"):] in line
+        return has("al_" + token[len("cc_"):])
     if token == "X-CC-Token":
         return "X-AL-Token" in line
     return False
