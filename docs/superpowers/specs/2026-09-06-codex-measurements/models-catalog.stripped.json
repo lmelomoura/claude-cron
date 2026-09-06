@@ -1,0 +1,309 @@
+{
+ "_note": "codex debug models on codex-cli 0.148.0, 2026-09-05; prompt templates (model_messages, base_instructions) stripped",
+ "models": [
+  {
+   "slug": "gpt-reserve",
+   "display_name": "GPT-Reserve",
+   "description": "Fast and affordable agentic coding model.",
+   "default_reasoning_level": "medium",
+   "supported_reasoning_levels": [
+    {
+     "effort": "low",
+     "description": "Fast responses with lighter reasoning"
+    },
+    {
+     "effort": "medium",
+     "description": "Balances speed and reasoning depth for everyday tasks"
+    },
+    {
+     "effort": "high",
+     "description": "Greater reasoning depth for complex problems"
+    },
+    {
+     "effort": "xhigh",
+     "description": "Extra high reasoning depth for complex problems"
+    },
+    {
+     "effort": "max",
+     "description": "Maximum reasoning depth for the hardest problems"
+    }
+   ],
+   "visibility": "hide",
+   "priority": 3,
+   "upgrade": null,
+   "supported_in_api": true,
+   "context_window": 272000,
+   "max_context_window": 872000,
+   "additional_speed_tiers": [
+    "fast"
+   ],
+   "service_tiers": [
+    {
+     "id": "priority",
+     "name": "Fast",
+     "description": "1.5x speed, increased usage"
+    }
+   ]
+  },
+  {
+   "slug": "gpt-5.6-sol",
+   "display_name": "GPT-5.6-Sol",
+   "description": "Reliable agentic workhorse for everyday tasks.",
+   "default_reasoning_level": "low",
+   "supported_reasoning_levels": [
+    {
+     "effort": "low",
+     "description": "Fast responses with lighter reasoning"
+    },
+    {
+     "effort": "medium",
+     "description": "Balances speed and reasoning depth for everyday tasks"
+    },
+    {
+     "effort": "high",
+     "description": "Greater reasoning depth for complex problems"
+    },
+    {
+     "effort": "xhigh",
+     "description": "Extra high reasoning depth for complex problems"
+    },
+    {
+     "effort": "max",
+     "description": "Maximum reasoning depth for the hardest problems"
+    },
+    {
+     "effort": "ultra",
+     "description": "Maximum reasoning with automatic task delegation"
+    }
+   ],
+   "visibility": "list",
+   "priority": 6,
+   "upgrade": null,
+   "supported_in_api": true,
+   "context_window": 272000,
+   "max_context_window": 872000,
+   "additional_speed_tiers": [
+    "fast"
+   ],
+   "service_tiers": [
+    {
+     "id": "priority",
+     "name": "Fast",
+     "description": "1.5x speed, increased usage"
+    }
+   ]
+  },
+  {
+   "slug": "gpt-5.6-terra",
+   "display_name": "GPT-5.6-Terra",
+   "description": "Balanced agentic coding model for everyday work.",
+   "default_reasoning_level": "medium",
+   "supported_reasoning_levels": [
+    {
+     "effort": "low",
+     "description": "Fast responses with lighter reasoning"
+    },
+    {
+     "effort": "medium",
+     "description": "Balances speed and reasoning depth for everyday tasks"
+    },
+    {
+     "effort": "high",
+     "description": "Greater reasoning depth for complex problems"
+    },
+    {
+     "effort": "xhigh",
+     "description": "Extra high reasoning depth for complex problems"
+    },
+    {
+     "effort": "max",
+     "description": "Maximum reasoning depth for the hardest problems"
+    },
+    {
+     "effort": "ultra",
+     "description": "Maximum reasoning with automatic task delegation"
+    }
+   ],
+   "visibility": "list",
+   "priority": 7,
+   "upgrade": null,
+   "supported_in_api": true,
+   "context_window": 272000,
+   "max_context_window": 872000,
+   "additional_speed_tiers": [
+    "fast"
+   ],
+   "service_tiers": [
+    {
+     "id": "priority",
+     "name": "Fast",
+     "description": "1.5x speed, increased usage"
+    }
+   ]
+  },
+  {
+   "slug": "gpt-5.6-luna",
+   "display_name": "GPT-5.6-Luna",
+   "description": "Fast and affordable agentic coding model.",
+   "default_reasoning_level": "medium",
+   "supported_reasoning_levels": [
+    {
+     "effort": "low",
+     "description": "Fast responses with lighter reasoning"
+    },
+    {
+     "effort": "medium",
+     "description": "Balances speed and reasoning depth for everyday tasks"
+    },
+    {
+     "effort": "high",
+     "description": "Greater reasoning depth for complex problems"
+    },
+    {
+     "effort": "xhigh",
+     "description": "Extra high reasoning depth for complex problems"
+    },
+    {
+     "effort": "max",
+     "description": "Maximum reasoning depth for the hardest problems"
+    }
+   ],
+   "visibility": "list",
+   "priority": 8,
+   "upgrade": null,
+   "supported_in_api": true,
+   "context_window": 272000,
+   "max_context_window": 872000,
+   "additional_speed_tiers": [
+    "fast"
+   ],
+   "service_tiers": [
+    {
+     "id": "priority",
+     "name": "Fast",
+     "description": "1.5x speed, increased usage"
+    }
+   ]
+  },
+  {
+   "slug": "gpt-5.5",
+   "display_name": "GPT-5.5",
+   "description": "Proven previous-generation model for coding and general work.",
+   "default_reasoning_level": "medium",
+   "supported_reasoning_levels": [
+    {
+     "effort": "low",
+     "description": "Fast responses with lighter reasoning"
+    },
+    {
+     "effort": "medium",
+     "description": "Balances speed and reasoning depth for everyday tasks"
+    },
+    {
+     "effort": "high",
+     "description": "Greater reasoning depth for complex problems"
+    },
+    {
+     "effort": "xhigh",
+     "description": "Extra high reasoning depth for complex problems"
+    }
+   ],
+   "visibility": "list",
+   "priority": 12,
+   "upgrade": null,
+   "supported_in_api": true,
+   "context_window": 272000,
+   "max_context_window": 272000,
+   "additional_speed_tiers": [
+    "fast"
+   ],
+   "service_tiers": [
+    {
+     "id": "priority",
+     "name": "Fast",
+     "description": "1.5x speed, increased usage"
+    }
+   ]
+  },
+  {
+   "slug": "gpt-5.4-mini",
+   "display_name": "GPT-5.4-Mini",
+   "description": "Small, fast, and cost-efficient model for simpler coding tasks.",
+   "default_reasoning_level": "medium",
+   "supported_reasoning_levels": [
+    {
+     "effort": "low",
+     "description": "Fast responses with lighter reasoning"
+    },
+    {
+     "effort": "medium",
+     "description": "Balances speed and reasoning depth for everyday tasks"
+    },
+    {
+     "effort": "high",
+     "description": "Greater reasoning depth for complex problems"
+    },
+    {
+     "effort": "xhigh",
+     "description": "Extra high reasoning depth for complex problems"
+    }
+   ],
+   "visibility": "list",
+   "priority": 23,
+   "upgrade": {
+    "model": "gpt-5.6-luna",
+    "migration_markdown": "GPT-5.4 Mini will be deprecated soon\n\nCodex now uses GPT-5.6 Luna in place of GPT-5.4 Mini. Switch to GPT-5.6 Luna to continue.\n",
+    "retirement_at": "2026-08-31T19:00:00Z"
+   },
+   "supported_in_api": true,
+   "context_window": 272000,
+   "max_context_window": 272000,
+   "additional_speed_tiers": [],
+   "service_tiers": []
+  },
+  {
+   "slug": "codex-auto-review",
+   "display_name": "Codex Auto Review",
+   "description": "Automatic approval review model for Codex.",
+   "default_reasoning_level": "medium",
+   "supported_reasoning_levels": [
+    {
+     "effort": "low",
+     "description": "Fast responses with lighter reasoning"
+    },
+    {
+     "effort": "medium",
+     "description": "Balances speed and reasoning depth for everyday tasks"
+    },
+    {
+     "effort": "high",
+     "description": "Greater reasoning depth for complex problems"
+    },
+    {
+     "effort": "xhigh",
+     "description": "Extra high reasoning depth for complex problems"
+    },
+    {
+     "effort": "max",
+     "description": "Maximum reasoning depth for the hardest problems"
+    }
+   ],
+   "visibility": "hide",
+   "priority": 43,
+   "upgrade": null,
+   "supported_in_api": true,
+   "context_window": 272000,
+   "max_context_window": 872000,
+   "additional_speed_tiers": [
+    "fast"
+   ],
+   "service_tiers": [
+    {
+     "id": "priority",
+     "name": "Fast",
+     "description": "1.5x speed, increased usage"
+    }
+   ]
+  }
+ ]
+}

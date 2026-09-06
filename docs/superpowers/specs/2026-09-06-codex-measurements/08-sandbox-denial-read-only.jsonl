@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"01a071d7-d979-7ea0-a41e-ed9a82d1c694"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll attempt the requested single shell write once."}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"denied: filesystem permissions prohibit writing c.txt."}}
+{"type":"turn.completed","usage":{"input_tokens":32761,"cached_input_tokens":28160,"cache_write_input_tokens":0,"output_tokens":134,"reasoning_output_tokens":0}}
