@@ -115,14 +115,15 @@ def _collected() -> int:
 def _engines_are_on() -> bool:
     """Whether THIS process is already the engines-on run.
 
-    Asks the question the product asks, rather than `== "on"`. `engine_path`
-    treats anything not in `adapters._OFF` as on, so `AL_SECURITY_ENGINES=ON`
-    -- or `1`, or `yes` -- was an engines-on run that did not recognise itself
-    and spawned a second one, paying 166 seconds to run the configuration it
-    was already running.
+    Goes through `adapters._engines_setting()` rather than reading the
+    environment itself, so this can never disagree with `engine_path` about
+    what the switch says -- under either its current spelling or its
+    pre-rename one. `engine_path` treats anything not in `adapters._OFF` as
+    on, so `AL_SECURITY_ENGINES=ON` -- or `1`, or `yes` -- was an engines-on
+    run that did not recognise itself and spawned a second one, paying 166
+    seconds to run the configuration it was already running.
     """
-    return (os.environ.get(adapters.ENGINES_ENV, "").strip().lower()
-            not in adapters._OFF)
+    return adapters._engines_setting() not in adapters._OFF
 
 
 @pytest.mark.skipif(
@@ -224,3 +225,9 @@ def test_the_guard_reads_the_switch_the_way_the_PRODUCT_reads_it(monkeypatch):
         monkeypatch.setenv(adapters.ENGINES_ENV, spelling)
         assert not _engines_are_on(), spelling
         assert adapters.engine_path("gitleaks") is None, spelling
+
+    # The pre-rename spelling too -- otherwise the guard can read the switch
+    # on while the product it is guarding has already read it off.
+    monkeypatch.delenv(adapters.ENGINES_ENV, raising=False)
+    monkeypatch.setenv(adapters.LEGACY_ENGINES_ENV, "off")
+    assert not _engines_are_on()
