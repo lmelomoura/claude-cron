@@ -6,7 +6,7 @@ rather than substitute a fresh block and point the resumed agent at ports
 nothing is listening on.
 
 That refusal lands after the run has detached. The dashboard launches a resume
-with `cc(..., background=True)`, so it used to answer 200 before the engine had
+with `al(..., background=True)`, so it used to answer 200 before the engine had
 looked: the button went disabled, a "Resuming…" toast appeared, nothing
 happened, and the reason existed only in tick.log. Two runs of one job cut
 short in a row share a block, which is how one job came to show two Resume
@@ -131,13 +131,13 @@ def test_another_session_of_the_same_job_is_not_mistaken_for_this_one(srv):
 
 def test_the_handler_asks_before_it_launches(srv):
     """Order matters and nothing else can enforce it: asked after the launch,
-    the answer is useless — `cc(..., background=True)` has already returned 200
+    the answer is useless — `al(..., background=True)` has already returned 200
     and the engine's refusal is in tick.log where nobody is looking."""
     src = (srv.__file__ if hasattr(srv, "__file__") else "")
     text = open(src, encoding="utf-8").read() if src else ""
     assert text, "could not read the server source to check the call order"
     i_ask = text.index("resume_port_block_held_by(jid, sid)")
-    i_launch = text.index('cc(["resume", jid, sid]')
+    i_launch = text.index('al(["resume", jid, sid]')
     assert i_ask < i_launch, (
         "the port-block check runs after the resume is launched, so its 409 can "
         "never reach the dashboard")

@@ -71,7 +71,7 @@ export function secInvalidateProject(){ secProjectCache = null; }
    the default analysis for drilling into below the Runs table -- this only
    adds the header/tabs/sidebar fetch on top of it.
 
-   `fromHistory` (F4 history layer): set by CCSecurity.navigate (a popstate
+   `fromHistory` (F4 history layer): set by ALSecurity.navigate (a popstate
    restore) and by the two index-screen.js buttons that immediately follow
    this call with their own secSwitchProjectTab -- that second call is the
    one real navigation ("open this project's Reports tab") and is the one
@@ -135,7 +135,7 @@ function secRenderProjectError(msg){
   host.appendChild(secEl("span", "grow", "Could not read this project — " + msg));
 }
 
-/* `fromHistory` (F4 history layer): true only for CCSecurity.navigate's own
+/* `fromHistory` (F4 history layer): true only for ALSecurity.navigate's own
    restore -- every tab button in the page wires this with a bare tab name,
    so `fromHistory` there stays undefined/false and every real click still
    pushes. See bin/dashboard.html's own router comment, beside setView. */
@@ -170,7 +170,7 @@ export function secSwitchProjectTab(tab, fromHistory){
   if(!fromHistory) pushNav({view: "security", sec: {screen: "project", project: secState.project, tab: secProjectTab}});
 }
 
-/* The project screen's own active tab -- read by CCSecurity.navState()
+/* The project screen's own active tab -- read by ALSecurity.navState()
    (ui/security/index.js) to compose the history state a real navigation
    elsewhere (entering Security from the sidebar, resuming a project) pushes.
    secProjectTab itself stays module-private; this is the one door in. */

@@ -76,7 +76,7 @@ export async function secDownloadReport(id, fmt, btn){
     // the server names the file in Content-Disposition, and a fetch never turns
     // that header into a download name on its own.
     const r = await fetch("/api/security/report?analysis=" + encodeURIComponent(id)
-                          + "&format=" + encodeURIComponent(fmt), {headers:{"X-CC-Token":TOKEN}});
+                          + "&format=" + encodeURIComponent(fmt), {headers:{"X-AL-Token":TOKEN}});
     if(!r.ok){
       const j = await r.json().catch(() => null);
       throw new Error((j && j.error) || ("HTTP " + r.status));

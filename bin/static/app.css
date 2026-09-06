@@ -1165,7 +1165,7 @@ td .favdot .ic{width:11px;height:11px;fill:var(--warn);stroke:none}
 .cardline .ic{width:13px;height:13px;flex:none;color:var(--muted)}
 .cardline .grow{flex:1 1 auto;min-width:0}
 .cardline .lbl{color:var(--muted);flex:none}
-/* The worktrees card's own rows (CCApp.worktreesCard, ui/app/overview.js):
+/* The worktrees card's own rows (ALApp.worktreesCard, ui/app/overview.js):
    a job id that can run long beside a size that must not wrap onto its own
    line -- the id gives way, the size stays put and lines its digits up. */
 .wtrow-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -2797,5 +2797,5 @@ details.secphase > summary.secphase-head::-webkit-details-marker{display:none}
   .row2{grid-template-columns:1fr}
   .spark{width:88px}
 }
-/* ui-bundle: c5e017a3b3575a685a053464230ded25def43484778dcbd9454cf35d72a99b46 */
-/* ui-sources: 914dfceee541dc64c5f82cd52930031864d2f435863ab1cf68b73e306766f114 */
+/* ui-bundle: 0f8a39b7ea2088696d387dc54559a70b849a3d169d9b4717437251a19b0a5aa9 */
+/* ui-sources: 55b58d6008704a6a9af84c7b5c09f3ae37c5b7565c3bdee3cd039a3aa57bc4e0 */

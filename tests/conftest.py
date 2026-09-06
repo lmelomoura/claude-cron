@@ -31,9 +31,9 @@ def srv(tmp_path_factory):
     os.environ["AGENTLOOP_CONFIG"] = str(root / "config")
     os.environ["AGENTLOOP_DATA"] = str(root / "data")
     spec = importlib.util.spec_from_loader(
-        "cc_server", importlib.machinery.SourceFileLoader("cc_server", str(SERVER)))
+        "al_server", importlib.machinery.SourceFileLoader("al_server", str(SERVER)))
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["cc_server"] = mod
+    sys.modules["al_server"] = mod
     spec.loader.exec_module(mod)
     return mod
 

@@ -31,7 +31,7 @@
    The summary card says the true version of that last one.
 
    Downloads go through fetch + Blob for the identical reason actions.js's
-   secDownload already does: every GET on this API carries the X-CC-Token
+   secDownload already does: every GET on this API carries the X-AL-Token
    header, which a bare `<a href>` cannot attach. Both call actions.js's
    secDownloadReport, the shared fetch+Blob mechanism parameterised by an
    explicit analysis id, format and button element.

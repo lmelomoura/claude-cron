@@ -103,10 +103,10 @@ export let $, fmtAgo, fmtDur, money,
    poll, currentView on every navigation. Destructured they would freeze at
    whatever they held when init() ran. Read through the object, live, and the
    different spelling is the reminder that they move under you. */
-export let CC = null;
+export let AL = null;
 
 export function bindPage(cc){
-  CC = cc;
+  AL = cc;
   ({ $, fmtAgo, fmtDur, money,
      icon, projById, eff,
      backoffMultiplier, activeRunsOf, renderJobs,

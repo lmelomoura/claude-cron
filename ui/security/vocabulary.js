@@ -8,7 +8,7 @@
    page will list. Every one of them goes in through textContent or an
    attribute property. The area reaches no HTML sink at all: the only markup it
    draws is an icon, and injecting THAT stayed in the page beside the icon
-   table it comes from (CC.icon / CC.iconLabel). A test in
+   table it comes from (AL.icon / AL.iconLabel). A test in
    tests/test_page_contract.py pins both halves so the pattern cannot come
    back.
 

@@ -11,7 +11,7 @@
    validation reads) stays exactly where it was, in bin/dashboard.html, which
    now calls back in by name.
 
-   Nothing here touches $, document or CC.DATA -- every export takes plain
+   Nothing here touches $, document or AL.DATA -- every export takes plain
    values and returns plain values, so this module needs nothing from
    ./page.js and nothing bindPage() sets up. */
 

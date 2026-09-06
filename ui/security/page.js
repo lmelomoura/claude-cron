@@ -25,15 +25,15 @@ export let $, TOKEN, api, toast, openLog, projById, sessionLost,
            markPending, clearPending, isPending, markIfPending,
            // The chrome bridge (Phase 4 Task 1): pageHeader, kpiCard and
            // tableFooter are ui/app/chrome.js's own builders, read off
-           // CCApp -- not imported -- because ui/security/ and ui/app/ are
+           // ALApp -- not imported -- because ui/security/ and ui/app/ are
            // two separate esbuild bundles, and importing chrome.js here
            // would pull in a SECOND, never-bound copy of ui/app/page.js
-           // (its `icon` stays undefined forever, since only CCApp.init()
-           // binds it). bin/dashboard.html's CC object reads
-           // CCApp.pageHeader/CCApp.kpiCard/CCApp.tableFooter -- the ONE
+           // (its `icon` stays undefined forever, since only ALApp.init()
+           // binds it). bin/dashboard.html's AL object reads
+           // ALApp.pageHeader/ALApp.kpiCard/ALApp.tableFooter -- the ONE
            // compiled copy chrome.js ever gets, already bound to the app
            // bundle's own `icon` by the time anything here calls one of
-           // these -- and hands them into CCSecurity.init(CC) alongside
+           // these -- and hands them into ALSecurity.init(AL) alongside
            // every other name. One executing copy, zero drift.
            //
            // tableFooter joined the other two so a later task's own project/
@@ -45,11 +45,11 @@ export let $, TOKEN, api, toast, openLog, projById, sessionLost,
            pageHeader, kpiCard, tableFooter,
            // makePicker/createCombo (Phase 4 Task 5) are the opposite
            // direction of bridge from the three above: pageHeader/kpiCard/
-           // tableFooter are ui/app/chrome.js's own builders, read off CCApp
+           // tableFooter are ui/app/chrome.js's own builders, read off ALApp
            // because THEY live outside the page; makePicker and createCombo
            // are hoisted `function`s bin/dashboard.html defines directly in
            // its own inline script (there is no ui/-side source for either
-           // one to import), read off CC just like every other page-native
+           // one to import), read off AL just like every other page-native
            // name above. Both build and wire a widget whose markup can live
            // anywhere, but whose BEHAVIOUR -- what a row means, what picking
            // one does -- belongs to whichever screen is asking, so unlike
@@ -60,7 +60,7 @@ export let $, TOKEN, api, toast, openLog, projById, sessionLost,
            // makePicker, and secInitLaunchCombos (analysis.js) does the same
            // for the three `.combo` nodes replacing sec-repo/sec-branch/
            // sec-profile's old <select>s. Safe to read this early (this
-           // object is built before CCSecurity.init(CC) even runs): both are
+           // object is built before ALSecurity.init(AL) even runs): both are
            // `function` declarations, hoisted whole, not `const`/`let` --
            // test_every_name_ccapp_and_ccsecurity_init_pass_is_already_usable
            // exists to catch exactly the alternative.
@@ -112,12 +112,12 @@ export let $, TOKEN, api, toast, openLog, projById, sessionLost,
    local like the rest, they would freeze at whatever they held when init() ran:
    an empty DATA (the poll has not answered yet) and the startup view. So they
    are the two things read through the object, live, at the moment they are
-   needed — `CC.DATA`, `CC.currentView` — and the difference in spelling is the
+   needed — `AL.DATA`, `AL.currentView` — and the difference in spelling is the
    reminder that they change under you. */
-export let CC = null;
+export let AL = null;
 
 export function bindPage(cc) {
-  CC = cc;
+  AL = cc;
   ({ $, TOKEN, api, toast, openLog, projById, sessionLost, unjournaledLive,
      fmtAgo, fmtWhen, fmtDur, money, icon, iconLabel, iconHTML, openProjectEditor,
      markPending, clearPending, isPending, markIfPending,

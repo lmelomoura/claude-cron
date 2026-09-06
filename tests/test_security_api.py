@@ -1,24 +1,24 @@
 """The security endpoints the dashboard's Security area calls.
 
 Every function here is module-level and called directly, the same style as
-the rest of this suite (see conftest.py) — no HTTP round trip, `cc()` (the
+the rest of this suite (see conftest.py) — no HTTP round trip, `al()` (the
 shell-out to the CLI) is monkeypatched with `monkeypatch.setattr` (never a
 bare assignment: `srv` is a session-scoped fixture, and an assignment would
 leak the fake into every test that runs after it). What matters most is what
-gets refused BEFORE `cc` is ever reached: a branch name with shell
+gets refused BEFORE `al` is ever reached: a branch name with shell
 metacharacters, a leading '-', a '..' traversal or trailing newline, a bad
 profile, a decision missing its reason or naming a state the ledger does not
 know, a non-integer analysis id, and a missing project. Each of those is a
 400 at this edge rather than a 500 built from a CLI that exited non-zero or a
 traceback from int() or json.loads().
 
-Two tests deliberately do NOT stub `cc()`: the leading-dash project
+Two tests deliberately do NOT stub `al()`: the leading-dash project
 invariant near the bottom of this file, which runs the real CLI to prove
 argparse itself refuses an option-shaped value; and
 `test_activity_all_time_reaches_the_real_route_past_the_thirty_day_default`
 in the activity section, which drives a real subprocess against a real
 ledger to prove the "All time" fix at the layer the bug actually lived in --
-one a mocked `cc()` cannot see, because a mock has no timestamps of its own
+one a mocked `al()` cannot see, because a mock has no timestamps of its own
 to get wrong.
 """
 import json
@@ -31,7 +31,7 @@ from pathlib import Path
 # --------------------------------------------------------------- report GET
 
 def test_a_report_download_is_an_attachment(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, "# report"))
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (True, "# report"))
     body, headers = srv.security_report(7, "md")
     assert body == "# report"
     assert "attachment" in headers["Content-Disposition"]
@@ -39,14 +39,14 @@ def test_a_report_download_is_an_attachment(srv, monkeypatch):
 
 
 def test_the_filename_carries_only_the_int_id_and_the_format(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, "{}"))
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (True, "{}"))
     _, headers = srv.security_report(42, "json")
     assert headers["Content-Disposition"] == \
         'attachment; filename="security-analysis-42.json"'
 
 
 def test_a_failed_render_raises_instead_of_returning_broken_bytes(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (False, "no such analysis: 7"))
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (False, "no such analysis: 7"))
     try:
         srv.security_report(7, "md")
         assert False, "expected a RuntimeError"
@@ -68,9 +68,9 @@ def test_a_successful_download_fires_report_exported(srv, monkeypatch):
             return True, json.dumps({"id": 7, "project": "web"})
         if args[1] == "event":
             return True, ""
-        raise AssertionError(f"unexpected cc call: {args}")
+        raise AssertionError(f"unexpected al call: {args}")
 
-    monkeypatch.setattr(srv, "cc", fake_cc)
+    monkeypatch.setattr(srv, "al", fake_cc)
     body, _ = srv.security_report(7, "md")
     assert body == "# report"
 
@@ -94,7 +94,7 @@ def test_the_project_lookup_uses_the_lightweight_analysis_verb(srv, monkeypatch)
             return True, "# report"
         return True, json.dumps({"id": 7, "project": "web"})
 
-    monkeypatch.setattr(srv, "cc", fake_cc)
+    monkeypatch.setattr(srv, "al", fake_cc)
     srv.security_report(7, "md")
     assert ["security", "analysis", "--id", "7"] in seen
     assert not any(c[1] == "checklist" for c in seen)
@@ -113,9 +113,9 @@ def test_a_download_with_no_resolvable_project_files_no_event(srv, monkeypatch):
             return True, "# report"
         if args[1] == "analysis":
             return False, "no such analysis: 7"
-        raise AssertionError(f"unexpected cc call: {args}")
+        raise AssertionError(f"unexpected al call: {args}")
 
-    monkeypatch.setattr(srv, "cc", fake_cc)
+    monkeypatch.setattr(srv, "al", fake_cc)
     body, _ = srv.security_report(7, "md")
     assert body == "# report"
     assert not any(c[1] == "event" for c in calls)
@@ -124,7 +124,7 @@ def test_a_download_with_no_resolvable_project_files_no_event(srv, monkeypatch):
 def test_an_unknown_format_is_refused_before_it_reaches_the_cli(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_report_guard("xml")
     assert code == 400
     assert "format" in payload["error"]
@@ -133,7 +133,7 @@ def test_an_unknown_format_is_refused_before_it_reaches_the_cli(srv, monkeypatch
 def test_a_path_ish_format_is_refused_the_same_way(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_report_guard("../etc/passwd")
     assert code == 400
 
@@ -157,7 +157,7 @@ def test_a_non_integer_analysis_id_parses_to_none(srv):
 def test_checklist_refuses_a_non_integer_analysis_before_the_cli(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_checklist("../etc/passwd")
     assert code == 400
     assert "integer" in payload["error"]
@@ -170,7 +170,7 @@ def test_checklist_passes_a_valid_int_through_to_the_cli(srv, monkeypatch):
         seen["args"] = args
         return True, json.dumps({"analysis": {"id": 7}, "findings": []})
 
-    monkeypatch.setattr(srv, "cc", fake_cc)
+    monkeypatch.setattr(srv, "al", fake_cc)
     code, payload = srv.security_checklist("7")
     assert code == 200
     assert seen["args"] == ["security", "checklist", "--analysis", "7"]
@@ -178,18 +178,18 @@ def test_checklist_passes_a_valid_int_through_to_the_cli(srv, monkeypatch):
 
 
 def test_checklist_reports_a_cli_failure_as_500_not_a_crash(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (False, "no such analysis: 7"))
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (False, "no such analysis: 7"))
     code, payload = srv.security_checklist("7")
     assert code == 500
     assert "no such analysis" in payload["error"]
 
 
 def test_checklist_is_a_500_not_an_uncaught_crash_on_rc0_chatter(srv, monkeypatch):
-    """`cc()` merges stdout and stderr (see `cc`), so a CLI that exits 0 but
+    """`al()` merges stdout and stderr (see `al`), so a CLI that exits 0 but
     printed a stray warning line alongside its JSON hands `json.loads` a
     string that is not valid JSON. Unguarded, that raised `JSONDecodeError`
     straight out of this function — a dropped connection instead of a 500."""
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None:
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None:
                         (True, '{"analysis": {"id": 7}, "findings": []}\n'
                                'warning: something noisy on stderr'))
     code, payload = srv.security_checklist("7")
@@ -200,7 +200,7 @@ def test_checklist_is_a_500_not_an_uncaught_crash_on_rc0_chatter(srv, monkeypatc
 # ------------------------------------------------------------------- decide
 
 def test_a_decision_without_a_reason_is_refused(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, ""))
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (True, ""))
     code, payload = srv.security_decide({"project": "web", "fingerprint": "a" * 64,
                                          "state": "accepted", "reason": "  "})
     assert code == 400
@@ -210,7 +210,7 @@ def test_a_decision_without_a_reason_is_refused(srv, monkeypatch):
 def test_a_decision_with_an_unknown_state_is_refused(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_decide({"project": "web", "fingerprint": "a" * 64,
                                          "state": "ignored", "reason": "looked at it"})
     assert code == 400
@@ -220,7 +220,7 @@ def test_a_decision_with_an_unknown_state_is_refused(srv, monkeypatch):
 def test_a_decision_with_no_project_or_fingerprint_is_refused(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_decide({"project": "", "fingerprint": "a" * 64,
                                          "state": "accepted", "reason": "x"})
     assert code == 400
@@ -240,7 +240,7 @@ def test_a_decision_with_a_malformed_fingerprint_is_refused(srv, monkeypatch):
     refuses it as well, because neither door is the only one."""
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     for bad in ("aws-key in prod.env", "A" * 64, "a" * 63, "a" * 65, "a1b2"):
         code, payload = srv.security_decide(
             {"project": "web", "fingerprint": bad,
@@ -252,7 +252,7 @@ def test_a_decision_with_a_malformed_fingerprint_is_refused(srv, monkeypatch):
 def test_a_decision_with_a_real_fingerprint_still_reaches_the_cli(srv, monkeypatch):
     """Containment probe for the shape check above."""
     seen = {}
-    monkeypatch.setattr(srv, "cc",
+    monkeypatch.setattr(srv, "al",
                         lambda args, stdin=None: (seen.setdefault("args", args), (True, ""))[1])
     code, _payload = srv.security_decide({"project": "web", "fingerprint": "0f" * 32,
                                           "state": "accepted", "reason": "x"})
@@ -275,7 +275,7 @@ def test_decide_by_comes_from_load_user_never_the_request_body(srv, monkeypatch)
         seen["args"] = args
         return True, ""
 
-    monkeypatch.setattr(srv, "cc", fake_cc)
+    monkeypatch.setattr(srv, "al", fake_cc)
     code, payload = srv.security_decide({"project": "web", "fingerprint": "a" * 64,
                                          "state": "accepted", "reason": "looked at it",
                                          "by": "attacker-supplied-name"})
@@ -285,7 +285,7 @@ def test_decide_by_comes_from_load_user_never_the_request_body(srv, monkeypatch)
 
 
 def test_decide_reports_a_cli_failure_as_500(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (False, "decide: bad state"))
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (False, "decide: bad state"))
     code, payload = srv.security_decide({"project": "web", "fingerprint": "a" * 64,
                                          "state": "accepted", "reason": "x"})
     assert code == 500
@@ -334,7 +334,7 @@ def test_branch_ok_refuses_a_trailing_newline_standalone(srv):
 def test_analyze_refuses_an_unknown_profile(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_analyze({"project": "web", "repo": "web",
                                           "branch": "main", "profile": "thorough"})
     assert code == 400
@@ -344,7 +344,7 @@ def test_analyze_refuses_an_unknown_profile(srv, monkeypatch):
 def test_analyze_requires_project_and_repo(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_analyze({"project": "", "repo": "web",
                                           "branch": "main"})
     assert code == 400
@@ -360,7 +360,7 @@ def test_analyze_defaults_the_profile_to_standard(srv, monkeypatch):
         seen["args"] = args
         return True, "analysis 1 — web/web @ main (abc123) — job security-web"
 
-    monkeypatch.setattr(srv, "cc", fake_cc)
+    monkeypatch.setattr(srv, "al", fake_cc)
     code, payload = srv.security_analyze({"project": "web", "repo": "web", "branch": "main"})
     assert code == 200
     assert seen["args"] == ["security", "analyze", "--detach", "web", "web", "main", "standard"]
@@ -373,7 +373,7 @@ def test_analyze_passes_a_valid_branch_straight_through(srv, monkeypatch):
         seen["args"] = args
         return True, "started"
 
-    monkeypatch.setattr(srv, "cc", fake_cc)
+    monkeypatch.setattr(srv, "al", fake_cc)
     code, payload = srv.security_analyze({"project": "web", "repo": "web",
                                           "branch": "release/2.1", "profile": "deep"})
     assert code == 200
@@ -381,13 +381,13 @@ def test_analyze_passes_a_valid_branch_straight_through(srv, monkeypatch):
 
 
 def test_analyze_detaches_the_run_rather_than_holding_the_request(srv, monkeypatch):
-    """`cc()` gives a command 30 seconds and then SIGKILLs it, and an analysis
+    """`al()` gives a command 30 seconds and then SIGKILLs it, and an analysis
     is minutes of work: run inline, this route timed out, the killed shell never
     reached the close, and the analysis stayed `running` for ever — which is
     what the page reads to decide that Analyse must stay disabled for that
     project.
 
-    And it must NOT be backgrounded wholesale (`cc(..., background=True)`):
+    And it must NOT be backgrounded wholesale (`al(..., background=True)`):
     every refusal the CLI makes — security not enabled, no such branch, one
     already running — is a sentence this page shows, and a fire-and-forget
     Popen can only ever answer "started". `--detach` is the split that keeps
@@ -402,7 +402,7 @@ def test_analyze_detaches_the_run_rather_than_holding_the_request(srv, monkeypat
         return True, ('analysis 7 — web/web @ main (abc1234) — job security-web\n'
                       '{"analysis_id":7}')
 
-    monkeypatch.setattr(srv, "cc", fake_cc)
+    monkeypatch.setattr(srv, "al", fake_cc)
     code, payload = srv.security_analyze({"project": "web", "repo": "web", "branch": "main"})
     assert code == 200
     assert "--detach" in seen["args"], "the run is held on the request thread"
@@ -413,7 +413,7 @@ def test_analyze_detaches_the_run_rather_than_holding_the_request(srv, monkeypat
 
 
 def test_analyze_reports_a_cli_failure_as_500(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None:
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None:
                         (False, "an analysis of 'web' is already running"))
     code, payload = srv.security_analyze({"project": "web", "repo": "web", "branch": "main"})
     assert code == 500
@@ -422,7 +422,7 @@ def test_analyze_reports_a_cli_failure_as_500(srv, monkeypatch):
 # ----------------------------------------------------------------- branches
 
 def test_branches_come_from_the_checkout(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc",
+    monkeypatch.setattr(srv, "al",
                         lambda args, stdin=None: (True, "main\ndevelop\nrelease/2.1\n"))
     code, payload = srv.security_branches("web", "web")
     assert code == 200
@@ -430,7 +430,7 @@ def test_branches_come_from_the_checkout(srv, monkeypatch):
 
 
 def test_branches_reports_a_missing_checkout_as_500(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (False, "no checkout for web/web"))
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (False, "no checkout for web/web"))
     code, payload = srv.security_branches("web", "web")
     assert code == 500
     assert "no checkout" in payload["error"]
@@ -438,12 +438,12 @@ def test_branches_reports_a_missing_checkout_as_500(srv, monkeypatch):
 
 def test_branches_is_an_empty_list_not_an_error_for_a_checkout_with_none(srv, monkeypatch):
     """A checkout that exists but carries no branches yet (a fresh `git init`
-    with no commits) is `cmd_security_branches` printing nothing — `cc()`
+    with no commits) is `cmd_security_branches` printing nothing — `al()`
     still reports that as ok=True with empty output (see the fix in
     bin/agentloop, where the old `grep -v '^HEAD$'` on empty input used to
     make the whole pipeline exit 1 under `set -uo pipefail`). The route must
     answer an empty picker, not the 500 that empty output used to cause."""
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, ""))
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (True, ""))
     code, payload = srv.security_branches("web", "web")
     assert code == 200
     assert payload == {"branches": []}
@@ -458,7 +458,7 @@ def test_list_passes_the_project_through_to_the_cli(srv, monkeypatch):
         seen["args"] = args
         return True, json.dumps([{"id": 1, "project": "web"}])
 
-    monkeypatch.setattr(srv, "cc", fake_cc)
+    monkeypatch.setattr(srv, "al", fake_cc)
     code, payload = srv.security_list("web")
     assert code == 200
     assert seen["args"] == ["security", "list", "--project", "web"]
@@ -466,7 +466,7 @@ def test_list_passes_the_project_through_to_the_cli(srv, monkeypatch):
 
 
 def test_list_reports_a_cli_failure_as_500(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (False, "boom"))
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (False, "boom"))
     code, payload = srv.security_list("web")
     assert code == 500
     assert payload == {"error": "boom"}
@@ -480,7 +480,7 @@ def test_list_refuses_a_missing_project_before_the_cli(srv, monkeypatch):
     answering an empty list for a parameter nobody supplied."""
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_list("")
     assert code == 400
     assert "project" in payload["error"]
@@ -489,11 +489,11 @@ def test_list_refuses_a_missing_project_before_the_cli(srv, monkeypatch):
 
 
 def test_list_is_a_500_not_an_uncaught_crash_on_rc0_chatter(srv, monkeypatch):
-    """Same failure mode as checklist: `cc()` merges stdout and stderr, so a
+    """Same failure mode as checklist: `al()` merges stdout and stderr, so a
     warning on an rc-0 run lands right next to the JSON the CLI meant to
     return, and an unguarded `json.loads` turns that into an escaped
     `JSONDecodeError` instead of a 500."""
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None:
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None:
                         (True, '[{"id": 1, "project": "web"}]\nwarning: noisy'))
     code, payload = srv.security_list("web")
     assert code == 500
@@ -503,7 +503,7 @@ def test_list_is_a_500_not_an_uncaught_crash_on_rc0_chatter(srv, monkeypatch):
 # ------------------------------------------------ the leading-dash invariant
 
 def test_a_leading_dash_project_reaches_argparse_as_a_value_not_a_flag(srv):
-    """`cc()` passes `args` as a Python list straight to `subprocess.run` —
+    """`al()` passes `args` as a Python list straight to `subprocess.run` —
     never a shell string — which is exactly what makes a project name shaped
     like an option safe to hand through unquoted: argparse itself refuses to
     consume "-x" as `--project`'s value (it looks like another flag), rather
@@ -512,8 +512,8 @@ def test_a_leading_dash_project_reaches_argparse_as_a_value_not_a_flag(srv):
 
     Deliberately NOT stubbed: the whole point is what the real CLI's argparse
     does with a leading-dash value reaching it through a real argv, and a
-    mocked `cc()` would never notice a refactor that broke this (e.g. one
-    that switched `cc()` to build a shell string, or otherwise re-joined
+    mocked `al()` would never notice a refactor that broke this (e.g. one
+    that switched `al()` to build a shell string, or otherwise re-joined
     argv). `security list` needs no working ledger to prove this — argparse
     refuses the value before `cmd_list` ever opens the database."""
     code, payload = srv.security_list("-x")
@@ -526,7 +526,7 @@ def test_the_sbom_is_a_fourth_download_and_is_named_for_its_tooling(srv, monkeyp
     """`.cdx.json` is the conventional CycloneDX suffix and is what the tools
     that consume one recognise; `security-analysis-7.sbom` is a file nothing
     will open."""
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, '{"bomFormat":"CycloneDX"}'))
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (True, '{"bomFormat":"CycloneDX"}'))
     code, err = srv.security_report_guard("sbom")
     assert code == 200 and err is None
     body, headers = srv.security_report(7, "sbom")
@@ -538,7 +538,7 @@ def test_the_sbom_is_a_fourth_download_and_is_named_for_its_tooling(srv, monkeyp
 
 def test_the_sbom_download_asks_the_cli_for_that_format(srv, monkeypatch):
     seen = {}
-    monkeypatch.setattr(srv, "cc",
+    monkeypatch.setattr(srv, "al",
                         lambda args, stdin=None: (seen.setdefault("args", args), (True, "{}"))[1])
     srv.security_report(3, "sbom")
     assert seen["args"] == ["security", "render", "--analysis", "3", "--format", "sbom"]
@@ -557,7 +557,7 @@ def test_every_report_format_has_a_content_type_and_a_filename(srv):
 # --------------------------------------------------------------- index GET
 
 def test_the_index_answers_with_every_panel_the_screen_draws(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, json.dumps({
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (True, json.dumps({
         "summary": {"projects": 2, "analyses": 12, "critical": 4,
                     "high": 18, "success_rate": 0.75},
         "projects": [], "recent": [], "donut": {}, "categories": []})))
@@ -576,7 +576,7 @@ def test_the_index_project_row_carries_trend_untouched(srv, monkeypatch):
     route. The empty list for a never-analysed project must arrive as `[]`,
     not a missing key -- the same "never null, never absent" the row's own
     `posture`/`branch` fields already guarantee."""
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, json.dumps({
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (True, json.dumps({
         "summary": {}, "recent": [], "donut": {}, "categories": [],
         "projects": [{"name": "web", "trend": [3, 1, 2]},
                     {"name": "never-analysed", "trend": []}]})))
@@ -590,7 +590,7 @@ def test_the_index_project_row_carries_trend_untouched(srv, monkeypatch):
 def test_the_index_survives_a_ledger_that_does_not_exist_yet(srv, monkeypatch):
     """Nobody has run an analysis. That is an empty screen with a sentence,
     not a 500."""
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, json.dumps({
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (True, json.dumps({
         "summary": {"projects": 0, "analyses": 0, "critical": 0, "high": 0,
                     "success_rate": None},
         "projects": [], "recent": [], "donut": {}, "categories": []})))
@@ -600,19 +600,19 @@ def test_the_index_survives_a_ledger_that_does_not_exist_yet(srv, monkeypatch):
 
 
 def test_the_index_is_a_500_when_the_cli_fails(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (False, "boom"))
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (False, "boom"))
     code, payload = srv.security_index()
     assert code == 500
     assert payload == {"error": "boom"}
 
 
 def test_the_index_is_a_500_on_output_that_is_not_json(srv, monkeypatch):
-    """`cc()` merges stdout and stderr (see the identical guard on
+    """`al()` merges stdout and stderr (see the identical guard on
     `security_list`/`security_checklist`), so a stray warning on an
     otherwise-clean run must not become an uncaught `JSONDecodeError`.
     `security_index` shares `_json_or_500` with those two now instead of
     carrying its own copy of the same try/except (see its own docstring)."""
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, "not json"))
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (True, "not json"))
     code, payload = srv.security_index()
     assert code == 500
     assert "not valid JSON" in payload["error"]
@@ -652,7 +652,7 @@ def test_the_index_asks_the_cli_for_only_the_security_enabled_projects(srv, monk
         seen.append(args)
         return True, json.dumps({"summary": {}, "projects": [], "recent": [],
                                   "donut": {}, "categories": []})
-    monkeypatch.setattr(srv, "cc", fake_cc)
+    monkeypatch.setattr(srv, "al", fake_cc)
     code, _ = srv.security_index()
     assert code == 200
     args = seen[0]
@@ -674,7 +674,7 @@ def test_the_index_days_defaults_to_30_and_passes_an_explicit_zero_through(srv, 
         seen.append(args)
         return True, json.dumps({"summary": {}, "projects": [], "recent": [],
                                   "donut": {}, "categories": []})
-    monkeypatch.setattr(srv, "cc", fake_cc)
+    monkeypatch.setattr(srv, "al", fake_cc)
 
     code, _ = srv.security_index()
     assert code == 200
@@ -709,7 +709,7 @@ def test_the_index_recent_page_defaults_to_1_and_forwards_an_explicit_page(srv, 
         seen.append(args)
         return True, json.dumps({"summary": {}, "projects": [], "recent": [],
                                   "donut": {}, "categories": []})
-    monkeypatch.setattr(srv, "cc", fake_cc)
+    monkeypatch.setattr(srv, "al", fake_cc)
 
     code, _ = srv.security_index()
     assert code == 200
@@ -732,7 +732,7 @@ def test_the_project_screen_refuses_an_unknown_project(srv):
 
 
 def test_the_project_screen_carries_its_header_and_both_tabs(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, json.dumps({
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (True, json.dumps({
         "project": "web",
         "header": {"profile": "deep", "branch": "develop",
                    "lines_of_code": 1842331, "last_analysis": 1787290000},
@@ -745,7 +745,7 @@ def test_the_project_screen_carries_its_header_and_both_tabs(srv, monkeypatch):
 
 
 def test_the_project_payload_carries_branches_and_reports(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, json.dumps({
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (True, json.dumps({
         "project": "web", "header": {},
         "tabs": {"overview": {}, "runs": [],
                  "branches": [{"branch": "main", "open": {"critical": 1},
@@ -772,7 +772,7 @@ def test_the_project_screen_passes_projects_json_through_to_the_cli(srv, monkeyp
     def fake_cc(args, stdin=None):
         seen.append(args)
         return True, json.dumps({"project": "web", "header": {}, "tabs": {}, "sidebar": {}})
-    monkeypatch.setattr(srv, "cc", fake_cc)
+    monkeypatch.setattr(srv, "al", fake_cc)
     code, _ = srv.security_project("web")
     assert code == 200
     args = seen[0]
@@ -795,7 +795,7 @@ def test_the_project_screen_defaults_to_blank_meta_for_a_project_projects_json_d
     def fake_cc(args, stdin=None):
         seen.append(args)
         return True, json.dumps({"project": "gone", "header": {}, "tabs": {}, "sidebar": {}})
-    monkeypatch.setattr(srv, "cc", fake_cc)
+    monkeypatch.setattr(srv, "al", fake_cc)
     code, _ = srv.security_project("gone")
     assert code == 200
     args = seen[0]
@@ -804,7 +804,7 @@ def test_the_project_screen_defaults_to_blank_meta_for_a_project_projects_json_d
 
 
 def test_the_project_screen_reports_a_cli_failure_as_500(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (False, "boom"))
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (False, "boom"))
     code, payload = srv.security_project("web")
     assert code == 500
     assert "boom" in payload["error"]
@@ -848,7 +848,7 @@ def test_the_findings_route_refuses_an_unknown_sort_at_the_edge(srv):
 def test_the_findings_route_refuses_an_unknown_direction(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_findings({"project": "web", "dir": "sideways"})
     assert code == 400
     assert "dir" in payload["error"]
@@ -857,7 +857,7 @@ def test_the_findings_route_refuses_an_unknown_direction(srv, monkeypatch):
 def test_the_findings_route_refuses_a_blank_project(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_findings({"project": "  "})
     assert code == 400
     assert "project" in payload["error"]
@@ -866,7 +866,7 @@ def test_the_findings_route_refuses_a_blank_project(srv, monkeypatch):
 def test_the_findings_route_refuses_an_unknown_severity(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_findings({"project": "web", "severity": "extreme"})
     assert code == 400
     assert "severity" in payload["error"]
@@ -875,7 +875,7 @@ def test_the_findings_route_refuses_an_unknown_severity(srv, monkeypatch):
 def test_the_findings_route_refuses_an_unknown_state(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_findings({"project": "web", "state": "ignored"})
     assert code == 400
     assert "state" in payload["error"]
@@ -884,7 +884,7 @@ def test_the_findings_route_refuses_an_unknown_state(srv, monkeypatch):
 def test_the_findings_route_refuses_an_unknown_category(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_findings({"project": "web", "category": "network"})
     assert code == 400
     assert "category" in payload["error"]
@@ -902,7 +902,7 @@ def test_the_findings_route_accepts_the_iac_category(srv, monkeypatch):
         seen["args"] = args
         return True, json.dumps({"rows": [], "total": 0, "unique": 0,
                                  "by_severity": {}, "page": 1, "per_page": 25})
-    monkeypatch.setattr(srv, "cc", fake)
+    monkeypatch.setattr(srv, "al", fake)
     code, _ = srv.security_findings({"project": "web", "category": "iac"})
     assert code == 200
     assert seen["args"][seen["args"].index("--category") + 1] == "iac"
@@ -911,7 +911,7 @@ def test_the_findings_route_accepts_the_iac_category(srv, monkeypatch):
 def test_the_findings_route_refuses_a_non_integer_analysis_id(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_findings({"project": "web", "analysis": "seven"})
     assert code == 400
     assert "analysis" in payload["error"]
@@ -924,7 +924,7 @@ def test_the_findings_route_caps_page_size(srv, monkeypatch):
         seen["args"] = args
         return True, json.dumps({"rows": [], "total": 0, "unique": 0,
                                  "by_severity": {}, "page": 1, "per_page": 100})
-    monkeypatch.setattr(srv, "cc", fake)
+    monkeypatch.setattr(srv, "al", fake)
     srv.security_findings({"project": "web", "per_page": "99999"})
     assert "99999" not in seen["args"]
     assert seen["args"][seen["args"].index("--per-page") + 1] == "100"
@@ -941,7 +941,7 @@ def test_the_findings_route_treats_page_zero_as_page_one(srv, monkeypatch):
         seen["args"] = args
         return True, json.dumps({"rows": [], "total": 0, "unique": 0,
                                  "by_severity": {}, "page": 1, "per_page": 25})
-    monkeypatch.setattr(srv, "cc", fake)
+    monkeypatch.setattr(srv, "al", fake)
     srv.security_findings({"project": "web", "page": "0"})
     assert seen["args"][seen["args"].index("--page") + 1] == "1"
 
@@ -949,7 +949,7 @@ def test_the_findings_route_treats_page_zero_as_page_one(srv, monkeypatch):
 def test_the_findings_route_refuses_a_non_integer_page(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_findings({"project": "web", "page": "abc"})
     assert code == 400
     assert "page" in payload["error"]
@@ -966,7 +966,7 @@ def test_the_findings_route_passes_every_filter_through_as_repeated_flags(srv, m
         seen["args"] = args
         return True, json.dumps({"rows": [], "total": 0, "unique": 0,
                                  "by_severity": {}, "page": 2, "per_page": 10})
-    monkeypatch.setattr(srv, "cc", fake)
+    monkeypatch.setattr(srv, "al", fake)
     srv.security_findings({
         "project": "web", "sort": "title", "dir": "asc", "page": "2", "per_page": "10",
         "severity": "critical,high", "state": "open", "category": "sast",
@@ -1001,7 +1001,7 @@ def test_the_findings_route_accepts_repeated_query_values_the_same_way(srv, monk
         seen["args"] = args
         return True, json.dumps({"rows": [], "total": 0, "unique": 0,
                                  "by_severity": {}, "page": 1, "per_page": 25})
-    monkeypatch.setattr(srv, "cc", fake)
+    monkeypatch.setattr(srv, "al", fake)
     srv.security_findings({"project": ["web"], "severity": ["critical", "high"]})
     args = seen["args"]
     assert args.count("--severity") == 2
@@ -1011,7 +1011,7 @@ def test_the_findings_route_accepts_repeated_query_values_the_same_way(srv, monk
 def test_the_findings_route_refuses_a_fingerprint_that_is_not_hex(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_findings({"project": "web", "fingerprint": "not-hex!"})
     assert code == 400
     assert "fingerprint" in payload["error"]
@@ -1028,21 +1028,21 @@ def test_the_findings_route_passes_a_fingerprint_prefix_through(srv, monkeypatch
         seen["args"] = args
         return True, json.dumps({"rows": [], "total": 0, "unique": 0,
                                  "by_severity": {}, "page": 1, "per_page": 25})
-    monkeypatch.setattr(srv, "cc", fake)
+    monkeypatch.setattr(srv, "al", fake)
     srv.security_findings({"project": "web", "fingerprint": "ABC123DEF456"})
     args = seen["args"]
     assert args[args.index("--fingerprint") + 1] == "abc123def456"
 
 
 def test_the_findings_route_reports_a_cli_failure_as_500(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (False, "boom"))
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (False, "boom"))
     code, payload = srv.security_findings({"project": "web"})
     assert code == 500
     assert "boom" in payload["error"]
 
 
 def test_the_findings_route_is_a_500_on_rc0_chatter_not_json(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None:
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None:
                         (True, '{"rows": []}\nwarning: noisy'))
     code, payload = srv.security_findings({"project": "web"})
     assert code == 500
@@ -1050,7 +1050,7 @@ def test_the_findings_route_is_a_500_on_rc0_chatter_not_json(srv, monkeypatch):
 
 
 def test_the_findings_route_answers_with_the_full_shape(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, json.dumps({
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (True, json.dumps({
         "rows": [{"fingerprint": "a" * 64, "severity": "critical"}],
         "total": 1, "unique": 1,
         "by_severity": {"critical": 1, "high": 0, "medium": 0, "low": 0, "info": 0},
@@ -1081,7 +1081,7 @@ def test_saving_a_filter_without_a_name_is_refused(srv):
 def test_saving_a_filter_without_a_project_is_refused(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_filter_save({"project": "  ", "name": "mine"})
     assert code == 400
     assert "project" in payload["error"]
@@ -1094,7 +1094,7 @@ def test_saving_a_filter_sends_the_query_on_stdin(srv, monkeypatch):
         seen["args"] = args
         seen["stdin"] = stdin
         return True, ""
-    monkeypatch.setattr(srv, "cc", fake)
+    monkeypatch.setattr(srv, "al", fake)
     code, payload = srv.security_filter_save(
         {"project": "web", "name": "mine", "query": {"severity": ["critical"]}})
     assert code == 200
@@ -1116,13 +1116,13 @@ def test_saving_a_filter_with_no_query_sends_an_empty_object(srv, monkeypatch):
     def fake(args, stdin=None):
         seen["stdin"] = stdin
         return True, ""
-    monkeypatch.setattr(srv, "cc", fake)
+    monkeypatch.setattr(srv, "al", fake)
     srv.security_filter_save({"project": "web", "name": "mine"})
     assert json.loads(seen["stdin"]) == {}
 
 
 def test_saving_a_filter_reports_a_cli_failure_as_500(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None:
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None:
                         (False, "filters save: a saved filter needs a name"))
     code, payload = srv.security_filter_save({"project": "web", "name": "mine"})
     assert code == 500
@@ -1131,7 +1131,7 @@ def test_saving_a_filter_reports_a_cli_failure_as_500(srv, monkeypatch):
 def test_deleting_a_filter_requires_a_project_and_a_name(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_filter_delete({"project": "", "name": "mine"})
     assert code == 400
     code, payload = srv.security_filter_delete({"project": "web", "name": ""})
@@ -1144,7 +1144,7 @@ def test_deleting_a_filter_passes_through_and_reports_what_the_cli_says(srv, mon
     def fake(args, stdin=None):
         seen["args"] = args
         return True, json.dumps({"deleted": True})
-    monkeypatch.setattr(srv, "cc", fake)
+    monkeypatch.setattr(srv, "al", fake)
     code, payload = srv.security_filter_delete({"project": "web", "name": "mine"})
     assert code == 200
     assert payload == {"deleted": True}
@@ -1156,7 +1156,7 @@ def test_deleting_a_filter_passes_through_and_reports_what_the_cli_says(srv, mon
 
 
 def test_deleting_a_filter_reports_a_cli_failure_as_500(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (False, "boom"))
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (False, "boom"))
     code, payload = srv.security_filter_delete({"project": "web", "name": "mine"})
     assert code == 500
 
@@ -1178,7 +1178,7 @@ def test_activity_refuses_an_unknown_event_kind(srv):
 
 
 def test_activity_carries_events_and_a_summary(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, json.dumps({
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (True, json.dumps({
         "events": [{"kind": "analysis_started", "detail": "deep on develop",
                     "project": "web", "related": "4", "at": 1787290000}],
         "summary": {"analysis_started": 12, "analysis_finished": 11},
@@ -1193,7 +1193,7 @@ def test_activity_carries_events_and_a_summary(srv, monkeypatch):
 def test_the_activity_payload_has_no_user_or_ip_field(srv, monkeypatch):
     """One operator. A column that can only ever hold one value teaches
     nothing, and an IP column on a loopback-only server teaches less."""
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, json.dumps({
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (True, json.dumps({
         "events": [{"kind": "decision_made", "detail": "accepted: reviewed",
                     "project": "web", "related": "abc", "at": 1}],
         "summary": {}, "projects": [], "page": 1, "per_page": 25})))
@@ -1211,7 +1211,7 @@ def test_activity_defaults_since_to_a_30_day_window(srv, monkeypatch):
         seen["args"] = args
         return True, json.dumps({"events": [], "summary": {}, "projects": [],
                                  "page": 1, "per_page": 25})
-    monkeypatch.setattr(srv, "cc", fake)
+    monkeypatch.setattr(srv, "al", fake)
     import time as _time
     before = int(_time.time())
     srv.security_activity({})
@@ -1234,7 +1234,7 @@ def test_activity_an_explicit_since_zero_is_not_rewritten_to_the_default(srv, mo
         seen["args"] = args
         return True, json.dumps({"events": [], "summary": {}, "projects": [],
                                  "page": 1, "per_page": 25})
-    monkeypatch.setattr(srv, "cc", fake)
+    monkeypatch.setattr(srv, "al", fake)
     srv.security_activity({"since": "0"})
     assert seen["args"][seen["args"].index("--since") + 1] == "0", \
         "an explicit since=0 ('All time') must reach the CLI as 0, not a rewritten 30-day timestamp"
@@ -1242,7 +1242,7 @@ def test_activity_an_explicit_since_zero_is_not_rewritten_to_the_default(srv, mo
 
 def test_activity_all_time_reaches_the_real_route_past_the_thirty_day_default(srv):
     """The same fix proved at the ROUTE, through a real subprocess and a
-    real ledger -- not `cc()` mocked away like every other test in this
+    real ledger -- not `al()` mocked away like every other test in this
     file. This is deliberate, the same reasoning as the leading-dash test
     near the bottom of this file: the finding this closes was originally
     verified by a manual check that drove `bin/security/cli.py
@@ -1250,15 +1250,15 @@ def test_activity_all_time_reaches_the_real_route_past_the_thirty_day_default(sr
     own `since=0` already means "no lower bound", `ledger.events_for`'s own
     contract) -- so that check passed while the real bug sat one layer up,
     in `security_activity`'s OWN rewrite of `since <= 0`, a layer a mocked
-    `cc()` has no timestamps of its own to get wrong about either. Only a
+    `al()` has no timestamps of its own to get wrong about either. Only a
     real round trip through the actual route can catch a regression here.
     """
     project = "route-alltime-probe"
     old_ts = int(time.time()) - 200 * 86400  # far past every period the screen offers
-    ok, out = srv.cc(["security", "event", "--project", project,
+    ok, out = srv.al(["security", "event", "--project", project,
                       "--kind", "analysis_started", "--detail", "ancient run"])
     assert ok, f"setup: could not record the ancient event: {out}"
-    ok, out = srv.cc(["security", "event", "--project", project,
+    ok, out = srv.al(["security", "event", "--project", project,
                       "--kind", "analysis_finished", "--detail", "recent run"])
     assert ok, f"setup: could not record the recent event: {out}"
 
@@ -1295,7 +1295,7 @@ def test_activity_passes_project_and_kind_through(srv, monkeypatch):
         seen["args"] = args
         return True, json.dumps({"events": [], "summary": {}, "projects": [],
                                  "page": 1, "per_page": 25})
-    monkeypatch.setattr(srv, "cc", fake)
+    monkeypatch.setattr(srv, "al", fake)
     srv.security_activity({"project": "web",
                            "kind": "analysis_started,analysis_finished",
                            "since": "1700000000", "page": "2", "per_page": "10"})
@@ -1316,7 +1316,7 @@ def test_activity_caps_page_size(srv, monkeypatch):
         seen["args"] = args
         return True, json.dumps({"events": [], "summary": {}, "projects": [],
                                  "page": 1, "per_page": 500})
-    monkeypatch.setattr(srv, "cc", fake)
+    monkeypatch.setattr(srv, "al", fake)
     srv.security_activity({"per_page": "99999"})
     assert "99999" not in seen["args"]
     assert seen["args"][seen["args"].index("--per-page") + 1] == "500"
@@ -1325,14 +1325,14 @@ def test_activity_caps_page_size(srv, monkeypatch):
 def test_activity_refuses_a_non_integer_since(srv, monkeypatch):
     def must_not_run(args, stdin=None):
         raise AssertionError("the CLI must not be reached")
-    monkeypatch.setattr(srv, "cc", must_not_run)
+    monkeypatch.setattr(srv, "al", must_not_run)
     code, payload = srv.security_activity({"since": "yesterday"})
     assert code == 400
     assert "since" in payload["error"]
 
 
 def test_activity_reports_a_cli_failure_as_500(srv, monkeypatch):
-    monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (False, "boom"))
+    monkeypatch.setattr(srv, "al", lambda args, stdin=None: (False, "boom"))
     code, payload = srv.security_activity({})
     assert code == 500
     assert "boom" in payload["error"]

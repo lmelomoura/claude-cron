@@ -642,7 +642,7 @@ td .favdot .ic{width:11px;height:11px;fill:var(--warn);stroke:none}
 .cardline .ic{width:13px;height:13px;flex:none;color:var(--muted)}
 .cardline .grow{flex:1 1 auto;min-width:0}
 .cardline .lbl{color:var(--muted);flex:none}
-/* The worktrees card's own rows (CCApp.worktreesCard, ui/app/overview.js):
+/* The worktrees card's own rows (ALApp.worktreesCard, ui/app/overview.js):
    a job id that can run long beside a size that must not wrap onto its own
    line -- the id gives way, the size stays put and lines its digits up. */
 .wtrow-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

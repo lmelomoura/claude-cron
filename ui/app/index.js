@@ -12,8 +12,8 @@
    would not fail loudly; it would throw the first time a 5-second poll
    tried to redraw. jobFacts is jobs-domain.js's own export too, but reached
    only by ES import inside this bundle (overview.js, jobs-table.js) -- the
-   page itself never calls CCApp.jobFacts(), so it does not belong on this
-   list or on window.CCApp below.
+   page itself never calls ALApp.jobFacts(), so it does not belong on this
+   list or on window.ALApp below.
 
    overview.js's exports are the same deal for what pulseHtml, helloHtml and
    renderJobCards used to build: the arithmetic, the wording and the markup
@@ -50,19 +50,19 @@ function init(cc){
 // and 9 made every one of them internal the moment renderOverviewHead and
 // jobCard moved into the same module and started calling them by their bare
 // name. Nothing outside overview.js -- not bin/dashboard.html, not a test --
-// has ever called CCApp.pulseKpis() or any of the other four; the
+// has ever called ALApp.pulseKpis() or any of the other four; the
 // characterisation tests that pin their behaviour read the function's own
 // source text out of the built bundle (`_app_js` + `_plainfn` in
 // tests/test_page_contract.py), never this global. Putting them on
-// window.CCApp would be a second, unused way to reach code the page never
+// window.ALApp would be a second, unused way to reach code the page never
 // asks for that way -- see this file's own history for the four that WERE
 // carried here for a stated future and then never trimmed once that future
 // landed inside the module instead.
-window.CCApp = { init, visibleJobs, jobFilters, bulkOn,
+window.ALApp = { init, visibleJobs, jobFilters, bulkOn,
                  bulkLabel, clearJobFilters, jobProjectNames,
                  // sortJobs and JOB_COLS are Task 2 (phase 2)'s: renderJobTable
-                 // and renderJobHead in bin/dashboard.html call CCApp.sortJobs
-                 // and read CCApp.JOB_COLS instead of keeping their own copies,
+                 // and renderJobHead in bin/dashboard.html call ALApp.sortJobs
+                 // and read ALApp.JOB_COLS instead of keeping their own copies,
                  // the same "table is the second consumer" reach visibleJobs
                  // already has above.
                  sortJobs, JOB_COLS,
@@ -72,10 +72,10 @@ window.CCApp = { init, visibleJobs, jobFilters, bulkOn,
                  // for a stated future that landed differently -- Jobs, Runs
                  // and Projects all grew their own KPI row by calling
                  // kpiCard() through a direct ES import inside their own
-                 // module, never through window.CCApp, and pageHeader's one
+                 // module, never through window.ALApp, and pageHeader's one
                  // caller (bin/dashboard.html's initPageHeaders()) was
-                 // removed outright. Grepped for CCApp.pageHeader,
-                 // CCApp.kpiCard and CCApp.renderPulse across bin/ and
+                 // removed outright. Grepped for ALApp.pageHeader,
+                 // ALApp.kpiCard and ALApp.renderPulse across bin/ and
                  // tests/ before removing all three -- zero readers.
                  //
                  // pageHeader and kpiCard are back (Phase 4 Task 1), for a
@@ -83,12 +83,12 @@ window.CCApp = { init, visibleJobs, jobFilters, bulkOn,
                  // bundle that cannot import chrome.js directly (see
                  // ui/security/page.js's own comment on why -- a second,
                  // never-bound copy of this module's `icon` is the failure
-                 // mode), so bin/dashboard.html's CC object reads
-                 // CCApp.pageHeader/CCApp.kpiCard off this global instead and
-                 // hands them into CCSecurity.init(CC) alongside every other
+                 // mode), so bin/dashboard.html's AL object reads
+                 // ALApp.pageHeader/ALApp.kpiCard off this global instead and
+                 // hands them into ALSecurity.init(AL) alongside every other
                  // name the area needs. tableFooter joins them for the first
                  // time, not a comeback -- nothing has ever read
-                 // CCApp.tableFooter -- because the same bridge is the one
+                 // ALApp.tableFooter -- because the same bridge is the one
                  // sane way for a later task's own project/recent-analyses
                  // pager to reach it too, and adding it now means that task
                  // does not have to touch this file again. renderPulse stays
@@ -99,7 +99,7 @@ window.CCApp = { init, visibleJobs, jobFilters, bulkOn,
                  // jobCard is Task 9's: renderJobCards() in bin/dashboard.html
                  // (the Overview's own cards, what used to be inside
                  // renderJobs() before the Jobs table forked off it) calls
-                 // CCApp.jobCard(j) per job instead of building the card as
+                 // ALApp.jobCard(j) per job instead of building the card as
                  // an HTML string. checkList and the kept-session notice are
                  // internal to jobCard and have no other caller, so they
                  // stay unexported, the same shape as el() above.
@@ -110,16 +110,16 @@ window.CCApp = { init, visibleJobs, jobFilters, bulkOn,
                  // paintJobFilters and the table branch that used to live
                  // inside renderJobs()) into ui/app/jobs-table.js.
                  // renderJobsArea() (bin/dashboard.html) calls
-                 // CCApp.renderJobsPage() once per poll, the same way it
+                 // ALApp.renderJobsPage() once per poll, the same way it
                  // calls renderJobCards() for the Overview's own cards; the
-                 // page's delegated click listener calls CCApp.jobsSort(key)
-                 // for a sortable header and CCApp.jobsSetPage(delta) for
+                 // page's delegated click listener calls ALApp.jobsSort(key)
+                 // for a sortable header and ALApp.jobsSetPage(delta) for
                  // the footer's pager instead of keeping jobSortKey/
                  // jobSortDir/page as its own module state.
                  renderJobsPage, jobsSort, jobsSetPage, initJobDrag,
                  // visibleProjects, projFilters and projectIsolation are
                  // Phase 2 Task 4's: the search box's input/clear handlers
-                 // read and write CCApp.projFilters.query instead of a
+                 // read and write ALApp.projFilters.query instead of a
                  // module-level prjQuery -- the same "table is the second
                  // consumer" reach sortJobs/JOB_COLS already have above.
                  visibleProjects, projFilters, projectIsolation,
@@ -128,9 +128,9 @@ window.CCApp = { init, visibleJobs, jobFilters, bulkOn,
                  // out of bin/dashboard.html's renderProjects() into
                  // ui/app/projects.js, the same move jobs-table.js already
                  // made for Jobs. render() (bin/dashboard.html) calls
-                 // CCApp.renderProjectsPage() once per poll; the page's
-                 // delegated click listener calls CCApp.projectsSort(key)
-                 // for a sortable header and CCApp.projectsSetPage(delta)
+                 // ALApp.renderProjectsPage() once per poll; the page's
+                 // delegated click listener calls ALApp.projectsSort(key)
+                 // for a sortable header and ALApp.projectsSetPage(delta)
                  // for the footer's pager, instead of keeping
                  // prjSortKey/prjSortDir/page as its own module state.
                  renderProjectsPage, projectsSort, projectsSetPage,
@@ -138,12 +138,12 @@ window.CCApp = { init, visibleJobs, jobFilters, bulkOn,
                  // internal to ui/app/runs.js's own exports now that Task 7
                  // gave the rest of the table a home beside it: nothing in
                  // bin/dashboard.html or a test has ever called
-                 // CCApp.filteredRuns() -- the characterisation tests that
+                 // ALApp.filteredRuns() -- the characterisation tests that
                  // pin its behaviour read the function's own source text
                  // out of the built bundle (`_app_js` + `_plainfn` in
                  // tests/test_page_contract.py), the same as pulseKpis and
                  // its neighbours above, so it does not belong on
-                 // window.CCApp either.
+                 // window.ALApp either.
                  // RF, renderRunsPage, runsSort, runsSetPage,
                  // runsFilterChanged, runsGotoFirstPage, runsSetPageSize,
                  // runsPageSize, clearRunFilters, runSearch and
@@ -157,11 +157,11 @@ window.CCApp = { init, visibleJobs, jobFilters, bulkOn,
                  // `let`s for the same reason jobFilters/projFilters are:
                  // the four Runs pickers' own onPick callbacks (still in
                  // bin/dashboard.html, since they are page-owned stateful
-                 // widgets) read and write CCApp.RF.project/job/status/
+                 // widgets) read and write ALApp.RF.project/job/status/
                  // from/to directly. render() (bin/dashboard.html) calls
-                 // CCApp.renderRunsPage() once per poll; the page's
-                 // delegated click listener calls CCApp.runsSort(key) for a
-                 // sortable header and CCApp.runsSetPage(delta) for the
+                 // ALApp.renderRunsPage() once per poll; the page's
+                 // delegated click listener calls ALApp.runsSort(key) for a
+                 // sortable header and ALApp.runsSetPage(delta) for the
                  // footer's pager; runsFilterChanged/runsGotoFirstPage are
                  // the two shapes every filter change needs (one that also
                  // redraws, one that does not because a view switch is about
@@ -181,7 +181,7 @@ window.CCApp = { init, visibleJobs, jobFilters, bulkOn,
                  // "unset" check; getDays calls dayNumbers; collectRepos
                  // calls shapeRepoRows; validateProjectStep calls
                  // projectStepError. Every one of them is plain values in,
-                 // plain values out -- none reaches $, document or CC.DATA,
+                 // plain values out -- none reaches $, document or AL.DATA,
                  // so none needed a page.js entry the way jobs-domain.js's
                  // exports do.
                  changedKeys, EFFORTS, effortIndex, effortFromIndex,

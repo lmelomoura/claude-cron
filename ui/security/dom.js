@@ -44,7 +44,7 @@ export function secEl(tag, cls, text){
 }
 
 export async function secFetch(path){
-  const r = await fetch(path, {headers:{"X-CC-Token":TOKEN}});
+  const r = await fetch(path, {headers:{"X-AL-Token":TOKEN}});
   // Same two codes /api/data treats as "go back to the login card", for the
   // same reason: a session that ended is a state, not an error to report.
   if(r.status === 401 || r.status === 428){ sessionLost(); throw new Error("signed out"); }

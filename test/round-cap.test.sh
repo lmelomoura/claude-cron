@@ -5,7 +5,7 @@
 set -uo pipefail
 S="$(cd "$(dirname "$0")" && pwd)"
 PORT=8971
-STATEF="${TMPDIR:-/tmp}/cc-round-cap-state.$$.json"
+STATEF="${TMPDIR:-/tmp}/al-round-cap-state.$$.json"
 rm -f "$STATEF"
 
 python3 "$S/fakejira.py" "$PORT" "$STATEF" &
