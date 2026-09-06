@@ -726,10 +726,12 @@ Em `bin/agentloop`, dentro de `cmd_selftest`, imediatamente antes de `echo "the 
   [ "$got" = "repoA|repoA" ] && ok "a provisioning hook sees AL_REPO_NAME and CC_REPO_NAME with one value" \
     || bad "the provisioning hook saw '$got'"
 
-  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s|%s\n" "${AL_PRECHECK_DRY_RUN:-}" "${CC_PRECHECK_DRY_RUN:-}"' \
-    > "$tmp/twins/dry.sh"
-  got="$( ( cd "$tmp/twins" && export AL_PRECHECK_DRY_RUN=1 CC_PRECHECK_DRY_RUN=1 && eval "bash dry.sh" ) )"
-  [ "$got" = "1|1" ] && ok "the dry-run marker reaches a precheck under both names" || bad "the precheck saw '$got'"
+  # Structural, like the bind_session call-site count above: the three places
+  # a precheck is run dry all export the marker under both names, and a
+  # fourth caller added later has to as well.
+  got="$(grep -c 'export AL_PRECHECK_DRY_RUN=1 CC_PRECHECK_DRY_RUN=1' "$SELF")"
+  [ "$got" = "3" ] && ok "every dry precheck exports the marker under both names ($got sites)" \
+    || bad "$got sites export both spellings of the dry-run marker, expected 3"
 
   echo "the rename — install and status name the personal scripts still reading CC_*"
   mkdir -p "$tmp/legacy/prechecks" "$tmp/legacy/provision" "$tmp/legacy/hooks"
@@ -742,7 +744,7 @@ Em `bin/agentloop`, dentro de `cmd_selftest`, imediatamente antes de `echo "the 
 
 ```
 
-O terceiro caso não passa pelo engine: pina a forma exacta dos três `export` que o engine faz (`export AL_PRECHECK_DRY_RUN=1 CC_PRECHECK_DRY_RUN=1`), e existe para que o dia em que alguém apagar uma das metades tenha um teste que diz o que se perdeu.
+O terceiro caso é estrutural, como a contagem de sítios de `bind_session` que o selftest já faz: pina que os três `export` do marcador de dry-run levam as duas grafias, para que o dia em que alguém apagar uma das metades tenha um teste que diz o que se perdeu.
 
 - [ ] **Step 3: Os testes que vão falhar — round-cap e pacote security**
 
