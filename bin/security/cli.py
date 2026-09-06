@@ -21,7 +21,7 @@ refused whenever CC_SECURITY_AGENT is set (see `_refuse_if_agent`).
 
 BE CLEAR ABOUT WHAT THAT IS WORTH. CC_SECURITY_AGENT is a variable in the
 agent's own environment, and the agent has a shell: `env -u CC_SECURITY_AGENT
-claude-cron security decide ...` walks straight past it. It is a GUARDRAIL
+agentloop security decide ...` walks straight past it. It is a GUARDRAIL
 AGAINST MISTAKE, not a boundary against malice -- it stops a model that
 genuinely believes dismissing its own finding is the helpful thing to do, which
 is the failure that actually happens. It stops nothing that is trying. The one
@@ -56,7 +56,7 @@ FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
 # `findings-page --fingerprint`'s own shape: a PREFIX, not the full 64-hex
 # identity FINGERPRINT_RE enforces above -- see that flag's own comment for
 # why (the Activity screen's deep link only ever has the first 12). Mirrors
-# `security_findings`'s regex in bin/claude-cron-server exactly, so a value
+# `security_findings`'s regex in bin/agentloop-server exactly, so a value
 # typed at the command line is held to the identical shape one arriving over
 # HTTP already is -- this verb has no route in front of it refusing a typo
 # before it ever reaches here (a human, or the agent, can call it directly).
@@ -137,7 +137,7 @@ def _refuse_if_agent(cmd):
     """The door validates the SHAPE of what is written; this validates WHO.
 
     `cmd_security_analyze` exports CC_SECURITY_AGENT=1 into the analysis run,
-    so every `claude-cron security ...` the agent types -- from its own tool
+    so every `agentloop security ...` the agent types -- from its own tool
     shell, inside the worktree -- arrives here with that flag set. These
     verbs (and, for `filters`, these specific actions) have to be refused
     there:
@@ -347,7 +347,7 @@ def _refuse_root_outside_run(root):
     asked about, and the analysis closes `done` with clean findings having
     never looked at its own scope at all.
 
-    When the run is isolated, `bin/claude-cron`'s `run_job` (see
+    When the run is isolated, `bin/agentloop`'s `run_job` (see
     `bin/worktree-lib.sh:wt_setup`) exports `CC_RUN_MANIFEST` as the path to
     that run's own `.run.json`, written into the run's own directory before
     the agent ever starts. The directory holding that file -- not anything
@@ -2096,7 +2096,7 @@ def cmd_decide(args):
     wait the minutes it takes, which costs them nothing; a `running` row left
     behind by a run that died is not a permanent lock -- the engine's own
     preflight sweep closes those before it opens the next analysis of that
-    project (see `cmd_security_analyze` in `bin/claude-cron`), so this cannot
+    project (see `cmd_security_analyze` in `bin/agentloop`), so this cannot
     wedge a project's triage for ever.
     """
     # The SAME shape check `report-finding` enforces on a written
@@ -2146,7 +2146,7 @@ def cmd_rename_project(args):
     """Carry a project's security history onto its new name.
 
     An analysis, a decision and an SBOM are all keyed by the project NAME
-    they were recorded under -- there is no id -- so `claude-cron
+    they were recorded under -- there is no id -- so `agentloop
     project-rename` has to move them or the whole history stays behind under
     a name no project has any more.
 
@@ -2218,7 +2218,7 @@ def cmd_migrate_rules(args):
     so any live analysis anywhere is a live analysis this could pull the ground
     out from under. A `running` row left by a run that died is not a permanent
     lock: the engine's preflight sweep closes those before it opens the next
-    analysis of that project (see `cmd_security_analyze` in `bin/claude-cron`).
+    analysis of that project (see `cmd_security_analyze` in `bin/agentloop`).
 
     Deliberately absent from AGENT_FORBIDDEN: it takes no arguments. Unlike
     `decide` or `rename-project`, there is no target for a caller to choose --
@@ -2282,7 +2282,7 @@ def cmd_list(args):
     half of. The analysis screen reads it from `checklist`, which answers for
     ONE analysis -- the one actually on screen.
 
-    `coverage_note` itself stays: `bin/claude-cron`'s selftest and
+    `coverage_note` itself stays: `bin/agentloop`'s selftest and
     `test/e2e.test.sh` both read it from this verb.
     """
     rows = _conn(args).execute(
@@ -2425,7 +2425,7 @@ def cmd_project_data(args):
 
     `tabs.runs` is exactly `cmd_list`'s own query -- same table, same
     ordering, same LIMIT -- so the Runs tab can be checked against
-    `claude-cron security list --project <name>` directly. Each row's
+    `agentloop security list --project <name>` directly. Each row's
     `findings` count is a plain `COUNT(*)` from `finding_counts_by_analysis`
     -- ONE grouped query for the whole table, not `checklist()`'s diff/
     decision machinery run once per row. That used to cost one `checklist()`
@@ -2657,7 +2657,7 @@ def cmd_findings_page(args):
 
     `sort`/`direction` are validated twice over by the time a bad value could
     reach here -- the server's own route (`security_findings` in
-    bin/claude-cron-server) already refuses one before ever shelling out --
+    bin/agentloop-server) already refuses one before ever shelling out --
     but `queries.finding_rows` raises on an out-of-band value regardless of
     who calls this verb (a human at the command line has no such route in
     front of them), and that raise is caught here and turned into the same
@@ -2857,7 +2857,7 @@ def cmd_filters(args):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="claude-cron security")
+    p = argparse.ArgumentParser(prog="agentloop security")
     p.add_argument("--db")
     # bash puts --db BEFORE the subcommand (`security_py finish --analysis N`);
     # the agent and the tests put it after. argparse hands everything past the

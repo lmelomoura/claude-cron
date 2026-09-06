@@ -672,7 +672,7 @@ def test_findings_lists_what_the_deterministic_phase_left_for_the_agent(tmp_path
 
 def test_renaming_a_project_carries_its_history(tmp_path):
     """The ledger keys an analysis by the project NAME it was opened under.
-    `claude-cron project-rename` changes that name in the config, and without
+    `agentloop project-rename` changes that name in the config, and without
     this every past analysis, every accepted risk and the SBOM would stay
     behind under a name no project has any more."""
     db = tmp_path / "security.db"
@@ -1046,7 +1046,7 @@ def test_prepare_refuses_to_scan_the_whole_machine(tmp_path):
 # ---------------------------------- --root is anchored to the run's own worktree
 
 def _isolated_env(manifest_path):
-    """What `run_job` exports into an isolated run (see bin/claude-cron and
+    """What `run_job` exports into an isolated run (see bin/agentloop and
     bin/worktree-lib.sh:wt_setup) -- CC_SECURITY_AGENT marks the whole run as
     the agent under review, and CC_RUN_MANIFEST names that run's own
     `.run.json`, written into the run's own directory before the agent ever
@@ -2705,7 +2705,7 @@ def test_the_runs_list_does_not_ship_the_structured_coverage(tmp_path):
     aid = prepared_analysis(db, tmp_path)
     listed = run(db, "list", "--project", "web")[0]
     assert "coverage" not in listed
-    # And `coverage_note` is still there: bin/claude-cron's selftest and
+    # And `coverage_note` is still there: bin/agentloop's selftest and
     # test/e2e.test.sh both read it from this verb.
     assert "coverage_note" in listed
     assert json.loads(run(db, "analysis", "--id", str(aid))["coverage"])["phases"]
@@ -2739,7 +2739,7 @@ def test_every_phases_prose_is_a_substring_of_the_paragraph(tmp_path):
     is a choice, not an oversight: three fixtures pin the paragraph of such a
     close byte for byte (`test_a_note_given_explicitly_is_added_to_the_stored_one`,
     `test_the_same_note_twice_is_not_stored_twice`, and the stale-sweep check
-    in `bin/claude-cron`'s selftest, which compares the sweep's `--note` for
+    in `bin/agentloop`'s selftest, which compares the sweep's `--note` for
     equality), and on the closes that file it, what says the run was cut
     short or never happened is the VERDICT the row sits beside -- `capped` or
     `failed` -- not the paragraph: a direct `capped` close with no `--note` on
@@ -3306,7 +3306,7 @@ def test_an_older_running_analysis_still_blocks_a_decision(tmp_path):
     `test_the_agent_cannot_dismiss_its_finding_via_a_second_analysis` for the
     exact bypass reproduced end to end. A row left `running` by a run that
     genuinely died is not a permanent lock either: the engine's own preflight
-    sweep (`cmd_security_analyze` in bin/claude-cron) closes those before the
+    sweep (`cmd_security_analyze` in bin/agentloop) closes those before the
     project's next analysis opens."""
     db = tmp_path / "security.db"
     open_analysis(db)                       # older, still says running
@@ -3733,7 +3733,7 @@ def test_activity_data_refuses_an_unknown_kind_at_the_cli_edge(tmp_path):
 # fixed set), so before this it accepted anything at all: a mistyped value
 # silently matched zero rows instead of refusing with a sentence, the exact
 # failure this module's own docstring says every verb here exists to avoid.
-# The server's own route (`security_findings`, bin/claude-cron-server) already
+# The server's own route (`security_findings`, bin/agentloop-server) already
 # validates this shape at its edge -- these two tests are the CLI's own,
 # independent copy of that guard, the same relationship
 # test_activity_data_refuses_an_unknown_kind_at_the_cli_edge above has to
@@ -4528,7 +4528,7 @@ def test_project_data_overview_cards_follow_the_fallen_back_branch(tmp_path):
 def test_project_data_runs_tab_matches_the_list_verb(tmp_path):
     """The Runs tab is `cmd_list`'s own query -- same rows, same order --
     plus a `findings` count folded in, so it can be checked directly against
-    `claude-cron security list --project <name>`."""
+    `agentloop security list --project <name>`."""
     db = tmp_path / "security.db"
     finished_analysis(db, tmp_path, "web", "main", rule="a")
     open_analysis(db, project="web", repo="web", branch="develop", run_id="r2")

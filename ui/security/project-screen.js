@@ -3,7 +3,7 @@
    and how big it is, and the run history behind tabs (Overview, Runs)
    instead of one long column. One request, `GET /api/security/project`,
    answers with everything the header, both tabs and the sidebar draw -- see
-   bin/security/cli.py's `project-data` and bin/claude-cron-server's
+   bin/security/cli.py's `project-data` and bin/agentloop-server's
    `security_project`.
 
    This module owns the header (now including the name/badge/description row

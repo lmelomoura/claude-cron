@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""claude-cron control server — authenticated, localhost-only UI in front of
-the `claude-cron` CLI. It never reimplements job logic: every mutation shells
-out to `claude-cron` so the bash engine stays the single source of truth.
+"""agentloop control server — authenticated, localhost-only UI in front of
+the `agentloop` CLI. It never reimplements job logic: every mutation shells
+out to `agentloop` so the bash engine stays the single source of truth.
 
 Storage model:
   * files are the source of truth — the bash engine appends runs.ndjson and
@@ -51,8 +51,8 @@ STATE_FILE = DATA_DIR / "state.json"
 RUNS_FILE = DATA_DIR / "runs.ndjson"
 TOKEN_FILE = CONFIG_DIR / "control.token"
 DB_FILE = DATA_DIR / "index.db"
-CLAUDE_CRON = str(BIN_DIR / "claude-cron")
-# Built from ui/ by build/build-ui.sh and COMMITTED. Installing claude-cron
+AGENTLOOP = str(BIN_DIR / "agentloop")
+# Built from ui/ by build/build-ui.sh and COMMITTED. Installing agentloop
 # needs jq, python3 and curl; Node is a developer dependency and never a
 # runtime one, which only works if the output ships in git.
 STATIC_DIR = BIN_DIR / "static"
@@ -95,8 +95,8 @@ def static_asset(name):
         return None, None
 
 PORT = int(os.environ.get("CLAUDE_CRON_PORT", "8787"))
-PLIST_LABEL = "com.claude-cron.tick"
-SERVER_LABEL = "com.claude-cron.server"
+PLIST_LABEL = "com.agentloop.tick"
+SERVER_LABEL = "com.agentloop.server"
 # WORKTREE_SESSION_TTL, not SESSION_TTL: this module already has a SESSION_TTL,
 # and it is the HTTP sign-in idle timeout (12h). Two module-level assignments of
 # one name do not collide loudly — the later one silently wins at import, and
@@ -621,7 +621,7 @@ STREAM_CAP = 2_000_000
 def _log(msg):
     """One line to stderr — launchd captures it. Used where staying silent would
     hide the loss of something irreplaceable."""
-    sys.stderr.write(f"claude-cron-server: {msg}\n")
+    sys.stderr.write(f"agentloop-server: {msg}\n")
     sys.stderr.flush()
 
 
@@ -1485,7 +1485,7 @@ def _session_from_log(logp):
     a byte cap then cuts it mid-object, json.loads raises on the fragment, and
     this returns "" having found nothing. The transcript is append-only, so
     those first bytes never change: the miss is permanent, not a transient the
-    next poll recovers from. `session_from_stream` in bin/claude-cron was fixed
+    next poll recovers from. `session_from_stream` in bin/agentloop was fixed
     the same way and for the same reason, and the two sides must not disagree
     about what they are able to see.
     """
@@ -1592,7 +1592,7 @@ def _session_bound_to(run_dir):
     into one silent "" would let a value that only exists on some paths be
     read by something that treats its default as an answer.
 
-    - Absent is the ordinary case. bind_session (bin/claude-cron) writes this
+    - Absent is the ordinary case. bind_session (bin/agentloop) writes this
       file through mktemp + rename, and only once it already has a non-empty
       id -- so a run dir with no `.session` is one whose agent never got far
       enough to report one. There was never anything to resume; this is not a
@@ -1807,7 +1807,7 @@ def resume_port_block_held_by(jid, sid):
     A resume must have the EXACT block its services were bound to: a fresh one
     would point the resumed agent's config at ports nothing is listening on, so
     the engine refuses rather than substitute (see port_base_reclaim in
-    bin/claude-cron). That refusal happens after the run has detached, which is
+    bin/agentloop). That refusal happens after the run has detached, which is
     why it has to be asked here too — `cc(..., background=True)` returns before
     the engine has looked, so the dashboard said "Resuming…", disabled the
     button and left the operator watching nothing happen, with the reason
@@ -1958,7 +1958,7 @@ def load_data():
         # This except once hid a broken INSERT for a whole morning: the page
         # showed "No runs recorded yet" over 223 intact journal lines and
         # nothing anywhere named the exception.
-        print(f"claude-cron-server: run listing failed, showing none: {exc!r}",
+        print(f"agentloop-server: run listing failed, showing none: {exc!r}",
               flush=True)
         runs = []
     db_bytes = 0
@@ -2252,8 +2252,8 @@ def parse_conversation(text, limit=400):
 
 
 def cc(args, stdin=None, background=False):
-    """Invoke the claude-cron CLI. Returns (ok, output)."""
-    cmd = ["/bin/bash", CLAUDE_CRON] + args
+    """Invoke the agentloop CLI. Returns (ok, output)."""
+    cmd = ["/bin/bash", AGENTLOOP] + args
     if background:
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         return True, "started"
@@ -2379,7 +2379,7 @@ REPORT_FORMATS = {"json": "application/json", "md": "text/markdown",
 # `.cdx.json` is the conventional CycloneDX suffix, and the tools that consume
 # one recognise a file by it; `analysis-7.sbom` is a file nothing will open.
 REPORT_EXTENSIONS = {"sbom": "cdx.json"}
-# A branch name reaches git through `claude-cron security analyze` (bin/claude-cron).
+# A branch name reaches git through `agentloop security analyze` (bin/agentloop).
 # Anything outside this set is refused HERE, at the edge, rather than quoted
 # somewhere downstream and hoped about. The charset alone is not enough: '-'
 # and '.' are both in it, so a leading '-' (which sits in an option position
@@ -2954,7 +2954,7 @@ def security_decide(body):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "claude-cron/3"
+    server_version = "agentloop/3"
 
     def log_message(self, *a):  # silence stderr access log
         pass
@@ -3057,7 +3057,7 @@ class Handler(BaseHTTPRequestHandler):
         """
         if not code_is_stale() or not server_supervised():
             return
-        print("claude-cron-server: the server file changed on disk — exiting so "
+        print("agentloop-server: the server file changed on disk — exiting so "
               "launchd restarts it on the new code", flush=True)
         threading.Timer(0.4, lambda: os._exit(0)).start()
 
@@ -3545,7 +3545,7 @@ def render_page(boot: str = "boot-authed") -> str:
 
 def main():
     httpd = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    sys.stderr.write(f"claude-cron control server on http://127.0.0.1:{PORT}/\n")
+    sys.stderr.write(f"agentloop control server on http://127.0.0.1:{PORT}/\n")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

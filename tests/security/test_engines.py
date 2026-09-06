@@ -166,7 +166,7 @@ def test_purge_strips_the_dataflow_trace_from_semgrep():
 def test_purge_strips_the_file_content_semgrep_puts_in_an_error():
     # MEASURED on this repository, not anticipated: semgrep 1.175.0 reports a
     # file it cannot parse as an `errors[]` entry whose `message` QUOTES THE
-    # FILE -- ~2kB of `bin/claude-cron` in the capture this project's fixture
+    # FILE -- ~2kB of `bin/claude-cron` (taken before the rename) in the capture this project's fixture
     # was taken from. It is the very hazard `run_json` already refuses to
     # quote stderr for, arriving through the report instead.
     source = "PASSWORD = 'the-actual-value-in-the-file'"

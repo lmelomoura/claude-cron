@@ -2295,7 +2295,7 @@ def test_trivy_iac_scan_reports_empty_results_as_no_findings_not_none(
 # The SHAPE is untouched -- still an absolute path, still rooted in
 # `/Users/<somebody>`, still the only field in the document that is not
 # root-relative -- so the test below still fails the moment `syft_document`
-# stops dropping these entries. `bin/claude-cron selftest` is what keeps a
+# stops dropping these entries. `bin/agentloop selftest` is what keeps a
 # future re-capture from bringing a real home back in.
 
 def _syft_fixture():
@@ -2500,7 +2500,7 @@ def test_semgrep_results_become_sast_findings():
     assert f["category"] == "sast"
     assert f["severity"] in report.SEVERITIES
     assert len(f["fingerprint"]) == 64
-    assert f["occurrences"][0]["file"] == "bin/claude-cron-server"
+    assert f["occurrences"][0]["file"] == "bin/claude-cron-server"   # the capture's own path, taken before the rename
 
 
 def test_every_rule_this_adapter_mints_is_in_the_closed_vocabulary():
@@ -2594,7 +2594,7 @@ def test_every_cwe_in_the_vocabulary_names_exactly_one_rule():
 
 def test_the_capture_carries_this_repositorys_own_source():
     """MEASURED, not anticipated. Semgrep puts the FILE'S CONTENT into the
-    message of a parse error -- ~2kB of `bin/claude-cron` in this capture --
+    message of a parse error -- ~2kB of `bin/claude-cron` in this capture (taken before the rename) --
     and it interpolates a rule's metavariables into `extra.message`, which for
     a rule that fires ON a hardcoded credential IS the credential. Neither is
     `extra.lines`, and neither was in the purge table before this adapter
@@ -2653,7 +2653,7 @@ def test_three_hits_of_one_check_in_one_file_are_one_finding():
     """No snippet means no per-hit identity, so several matches of one check in
     one file are ONE finding with several occurrences -- the same grouping
     `gitleaks()` uses for the same reason. This repository's capture is
-    exactly that case: three md5 calls in `bin/claude-cron-server`."""
+    exactly that case: three md5 calls in `bin/claude-cron-server` (taken before the rename)."""
     out = adapters.semgrep_findings(_semgrep_fixture(), root=".")
     assert len(out) == 1, out
     assert [o["line"] for o in out[0]["occurrences"]] == [351, 656, 1845]
@@ -2838,7 +2838,7 @@ def test_a_language_this_tree_holds_no_file_of_is_not_shown_as_coverage():
 
 def test_an_unevidenced_row_is_labelled_rather_than_deleted():
     """Deleting the row is the obvious fix and it opens a worse hole: this
-    tree's own shell lives in `bin/claude-cron`, which has NO EXTENSION --
+    tree's own shell lived in `bin/claude-cron` (taken before the rename), which has NO EXTENSION --
     Semgrep reads its shebang and this table cannot -- so a repository whose
     shell is all extensionless would lose `bash 1` from the one note that
     exists to say shell got a single rule. Stated and labelled teaches both
@@ -3265,15 +3265,15 @@ def test_a_structured_error_type_cannot_put_a_path_into_the_note():
     "error"` in 1.175.0; closed by construction rather than by knowing that."""
     reason = adapters.semgrep_failure({"errors": [{
         "level": "error",
-        "type": ["PartialParsing", [{"path": "bin/claude-cron",
+        "type": ["PartialParsing", [{"path": "bin/claude-cron",   # taken before the rename
                                      "start": {"line": 1}}]]}]})
     assert "PartialParsing" in reason, reason
-    assert "bin/claude-cron" not in reason, reason
+    assert "bin/claude-cron" not in reason, reason   # taken before the rename
     assert "path" not in reason, reason
 
 
 @pytest.mark.parametrize("kind", [
-    "/etc/passwd", "bin/claude-cron", "a.py", {"path": "x"}, 7, None, "",
+    "/etc/passwd", "bin/claude-cron", "a.py", {"path": "x"}, 7, None, "",   # taken before the rename
     ["/etc/passwd"], [["nested"]], "x" * 200])
 def test_an_error_type_that_is_not_a_name_becomes_the_word_error(kind):
     """Whatever shape a future version invents, what reaches the note is

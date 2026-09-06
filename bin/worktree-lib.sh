@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # ---------------------------------------------------------------------------
 # worktree-lib.sh — generic, language-agnostic git-worktree isolation for
-# claude-cron runs. Sourced by `claude-cron`; defines functions only.
+# agentloop runs. Sourced by `agentloop`; defines functions only.
 #
 # WHY: every job of a project shares one checkout (projects.json .cwd). Two runs
 # there — a dev agent and a review agent, say — race on the working tree: one
@@ -563,7 +563,7 @@ wt_down_all() { # <id> <project> <run dir>
   # orphan sweep, an explicit worktree drop -- where it is long gone. The id is
   # the one thing that survives. `${...:-security-}` because this file declares
   # itself sourceable on its own and runs under `set -u`; the prefix's home is
-  # bin/claude-cron.
+  # bin/agentloop.
   case "$id" in
     "${SECURITY_JOB_PREFIX:-security-}"*)
       # `.down` is still written above: the marker means "teardown has decided

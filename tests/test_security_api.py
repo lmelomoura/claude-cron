@@ -440,7 +440,7 @@ def test_branches_is_an_empty_list_not_an_error_for_a_checkout_with_none(srv, mo
     """A checkout that exists but carries no branches yet (a fresh `git init`
     with no commits) is `cmd_security_branches` printing nothing — `cc()`
     still reports that as ok=True with empty output (see the fix in
-    bin/claude-cron, where the old `grep -v '^HEAD$'` on empty input used to
+    bin/agentloop, where the old `grep -v '^HEAD$'` on empty input used to
     make the whole pipeline exit 1 under `set -uo pipefail`). The route must
     answer an empty picker, not the 500 that empty output used to cause."""
     monkeypatch.setattr(srv, "cc", lambda args, stdin=None: (True, ""))

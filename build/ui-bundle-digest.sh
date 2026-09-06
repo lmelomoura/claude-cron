@@ -31,7 +31,7 @@
 #
 # THE BASENAME, not the full path handed in on argv. build/build-ui.sh calls
 # this script with a path relative to the repo root (`bin/static/app.js`,
-# after its own `cd`); check_ui_artifact in bin/claude-cron calls it with
+# after its own `cd`); check_ui_artifact in bin/agentloop calls it with
 # that same file under `$BASE_DIR`, which is wherever THIS install happens to
 # live and will not match the path the artifact was built under on whatever
 # machine ran build-ui.sh. Hashing the raw argument would make every

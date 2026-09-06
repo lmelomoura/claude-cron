@@ -84,7 +84,7 @@ export async function secDownloadReport(id, fmt, btn){
     const url = URL.createObjectURL(await r.blob());
     const link = document.createElement("a");
     link.href = url;
-    // Mirrors REPORT_EXTENSIONS in bin/claude-cron-server: a fetch never turns
+    // Mirrors REPORT_EXTENSIONS in bin/agentloop-server: a fetch never turns
     // the server's Content-Disposition into a download name on its own, so the
     // two have to agree by hand. `.cdx.json` is what SBOM tooling recognises.
     link.download = "security-analysis-" + id + "." + (fmt === "sbom" ? "cdx.json" : fmt);

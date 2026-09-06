@@ -68,7 +68,7 @@ export function projectIsolation(p){
 
    2. `DATA.runs` -- already fetched every poll for every other page, and it
       DOES carry the derived "security-<slug>" job's own run history: an
-      analysis is `run_job` under the hood (bin/claude-cron), and the
+      analysis is `run_job` under the hood (bin/agentloop), and the
       derived job element `security_derived_jobs` builds sets `project` to
       the real project name explicitly, so a run's own `project` field
       names this row correctly without reimplementing the engine's slugging

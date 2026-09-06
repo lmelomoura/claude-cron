@@ -1,8 +1,8 @@
 #!/bin/bash
-# claude-cron — durable local scheduler for headless Claude Code runs.
+# agentloop — durable local scheduler for headless Claude Code runs.
 #
 # Self-contained: config/ and data/ sit next to this script's bin/ directory.
-# A single launchd agent calls `claude-cron tick` once a minute; the tick
+# A single launchd agent calls `agentloop tick` once a minute; the tick
 # decides which jobs are due, runs an optional cheap precheck, and only then
 # spends a Claude session.
 #
@@ -46,11 +46,11 @@ RATE_LIMIT_FILE="$DATA_DIR/rate-limits.json"   # last usage window the API repor
 # ceiling with its work uncommitted.
 RL_STOP_AT="${CLAUDE_CRON_RATE_LIMIT_STOP_AT:-0.95}"
 
-PLIST_LABEL="com.claude-cron.tick"
+PLIST_LABEL="com.agentloop.tick"
 PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
-SERVER_LABEL="com.claude-cron.server"
+SERVER_LABEL="com.agentloop.server"
 SERVER_PLIST="$HOME/Library/LaunchAgents/$SERVER_LABEL.plist"
-SERVER_BIN="$BIN_DIR/claude-cron-server"
+SERVER_BIN="$BIN_DIR/agentloop-server"
 PORT="${CLAUDE_CRON_PORT:-8787}"
 
 CLAUDE_BIN="${CLAUDE_CRON_CLAUDE_BIN:-$HOME/.local/bin/claude}"
@@ -64,7 +64,7 @@ CLAUDE_BIN="${CLAUDE_CRON_CLAUDE_BIN:-$HOME/.local/bin/claude}"
 #
 # Taken ONLY from the explicit variable — an ambient CLAUDE_CONFIG_DIR is
 # deliberately not a fallback. cmd_install already refuses it, and the runtime
-# has to agree: `claude-cron run <job>` and `check <job>` are typed inside a
+# has to agree: `agentloop run <job>` and `check <job>` are typed inside a
 # Claude Code session as a matter of course, and that session exports its own
 # account. Honouring it would sign the run in as whoever happened to open the
 # terminal — different billing, different plugins, different MCP servers — with
@@ -493,21 +493,21 @@ analysis id : $5
 
 YOUR FIRST COMMAND, before anything else:
 
-  claude-cron security prepare --analysis $5 --root "\$PWD" --ignore '$6'
+  agentloop security prepare --analysis $5 --root "\$PWD" --ignore '$6'
 
 It runs the deterministic phases inside this worktree -- secrets, dependency
 CVEs, SBOM, hygiene and infrastructure-as-code misconfigurations -- in seconds
 and at no token cost, and prints a coverage note you must repeat in your final
 message if it is not empty.
 
-Then read what it found with \`claude-cron security checklist --analysis $5\` --
+Then read what it found with \`agentloop security checklist --analysis $5\` --
 NOT \`findings\`. \`findings\` returns only THIS analysis's own rows; \`checklist\`
 returns those AND the findings a previous analysis left open, each with the
 fingerprint you must copy back to re-report it. The whole skill works from
 \`checklist\`. Report yours with
-\`claude-cron security report-finding --analysis $5\`. Never write to the
+\`agentloop security report-finding --analysis $5\`. Never write to the
 database directly. When you are done, close the analysis with
-\`claude-cron security finish --analysis $5 --state done\`.
+\`agentloop security finish --analysis $5 --state done\`.
 
 That close is checked. It counts the findings a SCANNER produced at severity
 medium or above that you never re-reported, and records the analysis \`capped\`
@@ -601,7 +601,7 @@ cmd_security_branches() { # cmd_security_branches <project> <repo> -> every
 # otherwise leave the row `running` for ever.
 #
 # CC_SECURITY_AGENT marks the whole run as "this is the agent under review".
-# `claude-cron security` is one command with one door, and the agent types it
+# `agentloop security` is one command with one door, and the agent types it
 # from its own tool shell inside the worktree: without a marker, `security
 # decide --state false_positive` permanently suppresses a finding the agent
 # itself just reported, and `security rename-project` moves the ledger out from
@@ -647,7 +647,7 @@ cmd_security_analyze() { # [--detach] <project> <repo> <branch> [profile]
   local detach=0
   if [ "${1:-}" = "--detach" ]; then detach=1; shift; fi
   [ $# -ge 3 ] \
-    || die "usage: claude-cron security analyze [--detach] <project> <repo> <branch> [profile]"
+    || die "usage: agentloop security analyze [--detach] <project> <repo> <branch> [profile]"
   local project="$1" repo="$2" branch="$3" profile="${4:-standard}"
   security_enabled "$project" || die "security is not enabled for project '$project'"
   local jid; jid="$(security_job_id "$project")"
@@ -689,7 +689,7 @@ EOF
   # as success. Ask first: the refusal becomes a sentence on their terminal,
   # and no analysis row is opened for a run that is never going to happen.
   [ "$live" -gt 0 ] \
-    && die "an analysis of '$project' is already running (job $jid) — wait for it to finish, or stop it with: claude-cron stop $jid"
+    && die "an analysis of '$project' is already running (job $jid) — wait for it to finish, or stop it with: agentloop stop $jid"
   # A project with a single checkout has no `repos` rows, and the argument names
   # nothing: project_repo_path ignores it and hands back the project cwd either
   # way. The `repo` column is still what an analysis is filed under, so whatever
@@ -1116,7 +1116,7 @@ bind_session() { # bind_session <run_dir> <streamfile>
 # transcript is a `result` — i.e. the agent has answered and is now waiting for
 # input. Deliberately a positive assertion on the file's current state: the
 # earlier counter-based version mis-fired and killed working agents. Isolated
-# and side-effect free so `claude-cron selftest` can exercise it directly.
+# and side-effect free so `agentloop selftest` can exercise it directly.
 turn_is_over() { # turn_is_over <stream-file> ; 0 = the agent answered and is idle
   local f="${1:-}" last
   [ -s "$f" ] || return 1
@@ -1135,7 +1135,7 @@ turn_is_over() { # turn_is_over <stream-file> ; 0 = the agent answered and is id
 #
 # One `ps` sweep, closed transitively in awk, so a deep tool tree (shell -> make
 # -> pytest -> workers) counts in full. Isolated and side-effect free so
-# `claude-cron selftest` can exercise the parsing directly.
+# `agentloop selftest` can exercise the parsing directly.
 tree_cpu_seconds() { # tree_cpu_seconds <pid> -> integer CPU seconds (0 when gone)
   local root="${1:-}"
   case "$root" in ''|*[!0-9]*) echo 0; return ;; esac
@@ -1502,7 +1502,7 @@ run_record_stopped_early() { # <id> <slot-dir>
   # gated on its 30s cadence, but a stop landing in the first instant can
   # still beat it). Read $run_dir/.session directly rather than assume either
   # way — the exact file wt_find_by_session trusts for a real
-  # `claude-cron resume` — so a run that never started, or one still mid-
+  # `agentloop resume` — so a run that never started, or one still mid-
   # launch when the stop landed, correctly reports no session: there is
   # nothing here to hand the dashboard's Resume button that would actually
   # work, and guessing one would be exactly the button this task exists to
@@ -1785,7 +1785,7 @@ fleet_stall_reason() { # -> 0 with a reason on stdout, 1 when all is well
   if printf '%s\n' "$recent" | grep -q 'PRECHECK FAILED'; then
     printf 'no run has started in %sh and prechecks are failing — the fleet cannot SEE its work, which is not the same as having none\n' "$STALL_HOURS"
   elif printf '%s\n' "$recent" | grep -q 'usage limit reached'; then
-    printf 'no run has started in %sh — every scheduled run is being held back by a spent usage window (`claude-cron usage` says which)\n' "$STALL_HOURS"
+    printf 'no run has started in %sh — every scheduled run is being held back by a spent usage window (`agentloop usage` says which)\n' "$STALL_HOURS"
   elif printf '%s\n' "$recent" | grep -q 'daily cap reached'; then
     printf 'no run has started in %sh — the daily spend cap is holding every run back\n' "$STALL_HOURS"
   elif printf '%s\n' "$recent" | grep -q 'max_parallel'; then
@@ -1853,7 +1853,7 @@ cmd_usage() {
     if reason="$(rl_gate)" && [ -n "$reason" ]; then
       echo
       echo "SCHEDULED RUNS ARE BEING HELD BACK: $reason"
-      echo "  (\`claude-cron run <job>\` still overrides this, as it does the budget.)"
+      echo "  (\`agentloop run <job>\` still overrides this, as it does the budget.)"
     fi
   fi
 
@@ -2028,7 +2028,7 @@ cmd_say() { # cmd_say <id> — message on stdin, delivered to the live run
 SKILLS_DIR="$BASE_DIR/skills"
 USER_SKILLS="$HOME/.claude/skills"
 
-cmd_skills() { # claude-cron skills [install]
+cmd_skills() { # agentloop skills [install]
   local action="${1:-status}" name target link
   local _skills_pending=0
   [ -d "$SKILLS_DIR" ] || die "no skills/ directory in $BASE_DIR"
@@ -2049,8 +2049,8 @@ cmd_skills() { # claude-cron skills [install]
     # Never destroy an unversioned edit without keeping it: a skill someone tuned
     # in place is exactly the thing worth reading before it disappears.
     if [ -e "$link" ] && [ ! -L "$link" ]; then
-      mv "$link" "$link.before-claude-cron.$(date -u +%Y%m%dT%H%M%SZ)"
-      printf '  kept old %s (renamed .before-claude-cron.*)\n' "$name"
+      mv "$link" "$link.before-agentloop.$(date -u +%Y%m%dT%H%M%SZ)"
+      printf '  kept old %s (renamed .before-agentloop.*)\n' "$name"
     fi
     rm -f "$link"
     ln -s "${target%/}" "$link"
@@ -2059,7 +2059,7 @@ cmd_skills() { # claude-cron skills [install]
   # Only nag when something is actually out of place; a clean status that still
   # tells you to run install is noise that trains you to ignore the output.
   if [ "$action" != "install" ] && [ "${_skills_pending:-0}" -gt 0 ]; then
-    echo "  (run \`claude-cron skills install\` to link them)"
+    echo "  (run \`agentloop skills install\` to link them)"
   fi
 }
 
@@ -2069,7 +2069,7 @@ cmd_skills() { # claude-cron skills [install]
 # two of.
 #
 # bin/static/security.js, bin/static/app.js and bin/static/app.css are
-# COMMITTED: installing claude-cron needs jq, python3 and curl, never Node.
+# COMMITTED: installing agentloop needs jq, python3 and curl, never Node.
 # The price of that is a build output in git, which can be forgotten — and a
 # stale artifact is a dashboard silently running last week's code, with
 # nothing on screen to say so.
@@ -2147,7 +2147,7 @@ check_ui_artifacts() {
 
 cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   local pass=0 fail=0 tmp
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/ccselftest.XXXXXX")"
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/alselftest.XXXXXX")"
   ok()   { pass=$(( pass + 1 )); printf '  ok    %s\n' "$1"; }
   bad()  { fail=$(( fail + 1 )); printf '  FAIL  %s\n' "$1"; }
   want() { # want <label> <expected 0|1> <actual-rc>
@@ -2294,7 +2294,7 @@ EOF
   # fine. What breaks is only which runs reach it: the polling one alone loses
   # every run that dies inside the 30s window, and the post-wait one alone
   # loses every run killed with -9. Both, or the guarantee is gone.
-  got="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/claude-cron" | grep -c 'bind_session "\$run_dir"')"
+  got="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/agentloop" | grep -c 'bind_session "\$run_dir"')"
   [ "${got:-0}" -ge 2 ] \
     && ok "both bind_session call sites are still there ($got)" \
     || bad "run_job has $got bind_session call sites, expected 2 — see the plan for why each is load-bearing"
@@ -2313,7 +2313,7 @@ EOF
   # STOPPED record with a less informative one. Both are one-line edits that
   # look like harmless cleanup.
   local budget_at undelivered_at guard_line budget_n undelivered_n case_at
-  got="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/claude-cron")"
+  got="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/agentloop")"
   # -c (a count), not just -n | head -1: a SECOND "BUDGET LIMITED:" or a
   # duplicated call site would make head -1 silently anchor on whichever
   # comes first, and the ordering compare below would pass or fail on the
@@ -2367,7 +2367,7 @@ EOF
   # esac` -- a SMALLER, more innocent-looking diff than what replaced it, and
   # every behavioural test in this file would stay green: nothing here drives
   # run_job far enough to write a real .ended file.
-  ended_body="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/claude-cron")"
+  ended_body="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/agentloop")"
   got="$(printf '%s\n' "$ended_body" \
           | grep -c '\[ "\$declared_ending" = "true" \] && \[ -z "\${undelivered:-}" \]')"
   [ "${got:-0}" -eq 1 ] \
@@ -2875,7 +2875,7 @@ EOF
   # below, against the live lock_take/wt_is_claimed; this only guards against
   # run_job's own inline code silently reordering the three away from each
   # other, or the primary-name guard regressing to a bare directory check.
-  body="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/claude-cron")"
+  body="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/agentloop")"
   lt_line="$(printf '%s\n' "$body" | grep -n 'lock_take "\$rlock"'                  | head -1 | cut -d: -f1)"
   wc_line="$(printf '%s\n' "$body" | grep -n 'wt_is_claimed "\$id" "\$run_dir"'     | head -1 | cut -d: -f1)"
   wr_line="$(printf '%s\n' "$body" | grep -n 'echo "\$run_dir" > "\$slot/worktree"' | head -1 | cut -d: -f1)"
@@ -3052,7 +3052,7 @@ EOF
     "$rdMerge/.run.json" > "$rdMerge/.run.json.new" 2>/dev/null \
     && mv -f "$rdMerge/.run.json.new" "$rdMerge/.run.json"
   mergesnippet="$(sed -n '/^      if \[ -n "\$rdirt" \] && "\$JQ" -R -n --slurpfile mf "\$run_dir\/.run.json" .$/,/^      rm -f "\$rdirt"$/p' \
-                    "$BIN_DIR/claude-cron")"
+                    "$BIN_DIR/agentloop")"
   [ -n "$mergesnippet" ] || bad "could not extract the reattach dirt_sha merge block -- its anchors moved"
   # "one" has an empty fresh reading (exactly what a failed wt_dirt_sha now
   # writes); "two" has a real one, to prove a genuine refresh still wins and
@@ -3100,7 +3100,7 @@ EOF
   printf '{"result":"RUN COMPLETE: done, but a tool call was denied along the way"}' \
     > "$tmp/err.logfile.json"
   errsnippet="$(sed -n '/^  declared_ending=false$/,/^  # Consecutive failures drive the backoff/p' \
-                  "$BIN_DIR/claude-cron")"
+                  "$BIN_DIR/agentloop")"
   [ -n "$errsnippet" ] || bad "could not extract the .ended classifier block -- its anchors moved"
   (
     id="jErr"; status="error"; wdreason=""; cost=""
@@ -3586,7 +3586,7 @@ EOF
   # in production. Same shape as the reattached check above: a behavioural
   # test of the function proves the function works, not that anything still
   # calls it.
-  got="$(sed -n '/^cmd_tick()/,/^}/p' "$BIN_DIR/claude-cron" | grep -c 'wt_prune_canonicals')"
+  got="$(sed -n '/^cmd_tick()/,/^}/p' "$BIN_DIR/agentloop" | grep -c 'wt_prune_canonicals')"
   [ "${got:-0}" -eq 1 ] \
     && ok "cmd_tick calls wt_prune_canonicals ($got)" \
     || bad "cmd_tick calls wt_prune_canonicals $got times, expected 1 -- stale worktree registrations would accumulate for ever"
@@ -3614,7 +3614,7 @@ EOF
   # still reachable by a second, concurrent tick -- exactly the narrower
   # shape this task's own brief considered and rejected (see the comment on
   # the lock in cmd_tick itself).
-  tbody="$(sed -n '/^cmd_tick()/,/^}/p' "$BIN_DIR/claude-cron")"
+  tbody="$(sed -n '/^cmd_tick()/,/^}/p' "$BIN_DIR/agentloop")"
   tlt_line="$(printf '%s\n' "$tbody" | grep -n 'lock_take "\$LOCK_DIR/.tick"'  | head -1 | cut -d: -f1)"
   # Anchored to a bare call line, not a substring match: the comment on the
   # lock itself (right above it) names wt_prune_orphans in prose, and a loose
@@ -4075,7 +4075,7 @@ NASTY
       cause=""
       # The derivation itself, lifted verbatim from run_job by anchor so this
       # cannot drift into testing a copy that no longer matches the engine.
-      eval "$(sed -n '/^  cause=""$/,/^  fi$/p' "$BIN_DIR/claude-cron" | head -20)"
+      eval "$(sed -n '/^  cause=""$/,/^  fi$/p' "$BIN_DIR/agentloop" | head -20)"
       printf '%s' "$cause" )
   }
   [ "$(cause_of '{"api_error_status":529,"subtype":"success"}')" = "api_error" ] \
@@ -4102,7 +4102,7 @@ NASTY
 
   # The half that changes behaviour. Read the real rule out of the script: a
   # copy of it here would pass happily while the engine did something else.
-  rule="$(sed -n '/Nor is an outage/,/^  fi$/p' "$BIN_DIR/claude-cron")"
+  rule="$(sed -n '/Nor is an outage/,/^  fi$/p' "$BIN_DIR/agentloop")"
   case "$rule" in
     *"api_error|rate_limited)"*) ok "the backoff rule names both provider-side causes" ;;
     *) bad "the backoff no longer spares provider-side causes" ;;
@@ -4121,7 +4121,7 @@ NASTY
   esac
 
   # And the record has to carry it, or the dashboard has nothing to show.
-  case "$(sed -n '/^record_run()/,/^}/p' "$BIN_DIR/claude-cron")" in
+  case "$(sed -n '/^record_run()/,/^}/p' "$BIN_DIR/agentloop")" in
     *'cause:$cause'*) ok "the cause is written onto the run record" ;;
     *) bad "record_run does not persist the cause" ;;
   esac
@@ -4224,7 +4224,7 @@ NASTY
 
   # The phrases above are the server's, and a rename there would silently blind
   # this without breaking anything visible.
-  srv="$BIN_DIR/claude-cron-server"
+  srv="$BIN_DIR/agentloop-server"
   miss=""
   for phrase in "PRECHECK FAILED" "usage limit reached" "daily cap reached" "max_parallel"; do
     grep -qF "$phrase" "$srv" || miss="$miss '$phrase'"
@@ -4233,7 +4233,7 @@ NASTY
     && ok "every phrase this reads still exists in the server's classify_tick" \
     || bad "phrases have drifted from the server:$miss"
 
-  echo "claude-cron usage — the feature can say whether it is switched on"
+  echo "agentloop usage — the feature can say whether it is switched on"
   # A gate nobody can verify is a gate nobody trusts, and the honest answer used
   # to be a hand-written one-liner over the JSON. Each case below is a wiring
   # mistake an operator can actually make.
@@ -4288,31 +4288,31 @@ NASTY
 
   echo "the Claude account comes from the setting, never from the environment"
   # cmd_install refuses an ambient CLAUDE_CONFIG_DIR, and for a while the runtime
-  # did not: `claude-cron run <job>` typed inside a Claude Code session inherited
+  # did not: `agentloop run <job>` typed inside a Claude Code session inherited
   # THAT session's account, so the run billed elsewhere and loaded another
   # account's plugins with nothing in the record saying so. Probe the real script
   # rather than a copy of the rule — the rule was never wrong, the wiring was.
   # Sourcing it with `--help` runs every top-level assignment and then returns.
   # An empty value and an unset one are the same to `${VAR:-}`, so both can be
   # passed unconditionally — and stay quoted, which a conditional would not.
-  cc_account_probe() { # <ambient CLAUDE_CONFIG_DIR> <CLAUDE_CRON_CLAUDE_CONFIG_DIR>
+  al_account_probe() { # <ambient CLAUDE_CONFIG_DIR> <CLAUDE_CRON_CLAUDE_CONFIG_DIR>
     env CLAUDE_CONFIG_DIR="$1" CLAUDE_CRON_CLAUDE_CONFIG_DIR="$2" \
         CLAUDE_CRON_CONFIG="$tmp/acct/config" CLAUDE_CRON_DATA="$tmp/acct/data" \
         bash -c '. "$1" --help >/dev/null 2>&1; printf "%s" "${CLAUDE_CONFIG_DIR-<unset>}"' _ "$SELF"
   }
-  got="$(cc_account_probe /tmp/cc-someones-session "")"
+  got="$(al_account_probe /tmp/al-someones-session "")"
   [ "$got" = "<unset>" ] \
     && ok "an ambient CLAUDE_CONFIG_DIR is not inherited" \
     || bad "an ambient CLAUDE_CONFIG_DIR leaked in as '$got'"
-  got="$(cc_account_probe /tmp/cc-someones-session /tmp/cc-declared)"
-  [ "$got" = "/tmp/cc-declared" ] \
+  got="$(al_account_probe /tmp/al-someones-session /tmp/al-declared)"
+  [ "$got" = "/tmp/al-declared" ] \
     && ok "the declared account wins over the environment" \
     || bad "declared account -> '$got'"
-  got="$(cc_account_probe "" /tmp/cc-declared)"
-  [ "$got" = "/tmp/cc-declared" ] \
+  got="$(al_account_probe "" /tmp/al-declared)"
+  [ "$got" = "/tmp/al-declared" ] \
     && ok "and is honoured when nothing is ambient" \
     || bad "declared account alone -> '$got'"
-  got="$(cc_account_probe "" "")"
+  got="$(al_account_probe "" "")"
   [ "$got" = "<unset>" ] \
     && ok "no setting anywhere leaves the CLI's own default" \
     || bad "no setting -> '$got'"
@@ -4861,7 +4861,7 @@ NASTY
   # which drives real contention against this exact function -- kept passing.
   # Three exits share the lock now, not two: the block-held refusal, a write
   # that could not land, and the success path -- all three must drop it.
-  rbody="$(sed -n '/^port_base_reclaim()/,/^}/p' "$BIN_DIR/claude-cron")"
+  rbody="$(sed -n '/^port_base_reclaim()/,/^}/p' "$BIN_DIR/agentloop")"
   rlt_line="$(printf '%s\n' "$rbody" | grep -n 'lock_take "\$L"'                   | head -1 | cut -d: -f1)"
   rpf_line="$(printf '%s\n' "$rbody" | grep -n 'port_base_free "\$slot" "\$want"'  | head -1 | cut -d: -f1)"
   rwr_line="$(printf '%s\n' "$rbody" | grep -n 'echo "\$want" > "\$slot/portbase"' | head -1 | cut -d: -f1)"
@@ -4890,7 +4890,7 @@ NASTY
   # actually proves the mutex closes the race is the real two-process test
   # below; this only guards against run_job's own call silently reverting to
   # the unlocked port_base_free-then-echo shape the race exists to remove.
-  body="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/claude-cron")"
+  body="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/agentloop")"
   got="$(printf '%s\n' "$body" | grep -c 'port_base_reclaim "\$slot" "\$port_base"')"
   [ "${got:-0}" -eq 1 ] && ok "the resume claims its existing block through port_base_reclaim ($got)" \
     || bad "run_job calls port_base_reclaim $got times, expected 1"
@@ -5277,7 +5277,7 @@ JSON
     rm -f "$argvdir/out"
     CLAUDE_CRON_CONFIG="$argvdir/config" CLAUDE_CRON_DATA="$argvdir/data" \
       CLAUDE_CRON_CLAUDE_BIN="$argvdir/claude" CC_ARGV_OUT="$argvdir/out" \
-      "$BIN_DIR/claude-cron" run "$1" >/dev/null 2>&1
+      "$BIN_DIR/agentloop" run "$1" >/dev/null 2>&1
     cat "$argvdir/out" 2>/dev/null
   }
   st_argv_idx() { printf '%s\n' "$1" | awk -F'\t' -v w="$2" '$2==w {print $1; exit}'; }
@@ -5669,11 +5669,11 @@ JSON
   local guard_fn guard_body guard_var guard_sites=0 guard_missing=0 guard_bad_names=""
   while IFS= read -r guard_fn; do
     [ "$guard_fn" = "cmd_selftest" ] && continue
-    guard_body="$(sed -n "/^${guard_fn}(/,/^}/p" "$BIN_DIR/claude-cron")"
+    guard_body="$(sed -n "/^${guard_fn}(/,/^}/p" "$BIN_DIR/agentloop")"
     case "$guard_body" in *write_jobs*) ;; *) continue ;; esac
     for guard_var in $(printf '%s' "$guard_body" | grep -oE '\$[A-Z_]+_FILTER'); do
       guard_body="$guard_body
-$(grep "^${guard_var#\$}=" "$BIN_DIR/claude-cron")"
+$(grep "^${guard_var#\$}=" "$BIN_DIR/agentloop")"
     done
     case "$guard_body" in *'.id =='*|*'.id !='*|*'.id |'*) ;; *) continue ;; esac
     guard_sites=$(( guard_sites + 1 ))
@@ -5682,7 +5682,7 @@ $(grep "^${guard_var#\$}=" "$BIN_DIR/claude-cron")"
       *) guard_missing=$(( guard_missing + 1 )); guard_bad_names="$guard_bad_names $guard_fn" ;;
     esac
   done <<EOF
-$(grep -oE '^cmd_[a-zA-Z0-9_]*\(' "$BIN_DIR/claude-cron" | tr -d '(' | sort -u)
+$(grep -oE '^cmd_[a-zA-Z0-9_]*\(' "$BIN_DIR/agentloop" | tr -d '(' | sort -u)
 EOF
   [ "$guard_sites" -eq 8 ] && [ "$guard_missing" -eq 0 ] \
     && ok "every by-id job mutation ($guard_sites found) refuses a derived id before writing" \
@@ -5709,12 +5709,12 @@ EOF
   # contains the pattern it greps for, and without the exclusion `head`/`tail`
   # would be picking between this line and the real one by luck of ordering.
   local selftest_end reattach_line reattach_ctx
-  selftest_end="$(awk '/^cmd_selftest\(\)/{f=1} f && /^}/{print NR; exit}' "$BIN_DIR/claude-cron")"
-  reattach_line="$(grep -n 'wt_provision up .*\$rname.*\$rrepo.*\$rwt.*\$rbase' "$BIN_DIR/claude-cron" \
+  selftest_end="$(awk '/^cmd_selftest\(\)/{f=1} f && /^}/{print NR; exit}' "$BIN_DIR/agentloop")"
+  reattach_line="$(grep -n 'wt_provision up .*\$rname.*\$rrepo.*\$rwt.*\$rbase' "$BIN_DIR/agentloop" \
                      | awk -F: -v after="${selftest_end:-0}" '$1>after{print $1; exit}')"
   reattach_ctx=""
   [ -n "$reattach_line" ] && [ "$reattach_line" -gt 12 ] \
-    && reattach_ctx="$(sed -n "$((reattach_line-12)),${reattach_line}p" "$BIN_DIR/claude-cron")"
+    && reattach_ctx="$(sed -n "$((reattach_line-12)),${reattach_line}p" "$BIN_DIR/agentloop")"
   case "$reattach_ctx" in
     *'"$SECURITY_JOB_PREFIX"'*)
       ok "the reattach wt_provision up call site sits behind a SECURITY_JOB_PREFIX guard" ;;
@@ -6216,7 +6216,7 @@ JSON
     || bad "plain cfgdir -> '$( ( ccd_env; resolve ccd-plain claude_config_dir '' ) )' (want $ccd/proj-account)"
   # Structural, because the two assertions above exercise `resolve` and run_job
   # is what has to CALL it: reverting that one line would leave both green.
-  ccdbody="$(sed -n '/^run_job() { # run_job <id>/,/^}/p' "$BIN_DIR/claude-cron")"
+  ccdbody="$(sed -n '/^run_job() { # run_job <id>/,/^}/p' "$BIN_DIR/agentloop")"
   case "$ccdbody" in
     *'run_cfgdir="$(resolve "$id" claude_config_dir'*)
       ok "run_job reads the config dir through resolve, so the job's own value wins" ;;
@@ -6879,7 +6879,7 @@ ${prompt}"
       # session is open cannot change what that session is working on. Changing
       # the mount set means a new session, exactly as it does upstream.
       run_dir="$reattached"
-      # CLAIM IT UNDER A LOCK, BEFORE ANYTHING ELSE. Two `claude-cron resume`
+      # CLAIM IT UNDER A LOCK, BEFORE ANYTHING ELSE. Two `agentloop resume`
       # calls for the same session — a double click, a retried automation —
       # otherwise both reach here and both launch an agent into the same tree,
       # which is the exact race the whole worktree design exists to prevent.
@@ -7202,7 +7202,7 @@ If the work turns out to be already finished, or it can no longer be done at all
       '{type:"user",message:{role:"user",content:[{type:"text",text:$t}]}}' >&9
     state_set "$id" last_fifo "$("$JQ" -nc --arg p "$fifo" '$p')"
   fi
-  # Publish the agent's PID so `claude-cron stop` can end this run cleanly.
+  # Publish the agent's PID so `agentloop stop` can end this run cleanly.
   echo "$child" > "$slot/child" 2>/dev/null || true
 
   # An interactive run does not end on its own: stdin is held open, so after each
@@ -7854,7 +7854,7 @@ PLIST
   # same step, rather than leaving it as a documented step somebody skips.
   echo "Skills (linked into ~/.claude/skills):"
   cmd_skills install
-  echo "Open the dashboard with: claude-cron dashboard"
+  echo "Open the dashboard with: agentloop dashboard"
 }
 
 cmd_uninstall() {
@@ -7891,7 +7891,7 @@ cmd_status() {
           (($s.last_status // "—") | tostring),
           (($s.last_cost // 0) | tostring) ] | @tsv' "$JOBS_FILE" 2>/dev/null)
   echo
-  echo "Dashboard : http://127.0.0.1:$PORT/   (claude-cron dashboard)"
+  echo "Dashboard : http://127.0.0.1:$PORT/   (agentloop dashboard)"
 }
 
 cmd_dashboard() {
@@ -7902,11 +7902,11 @@ cmd_dashboard() {
 
 cmd_logs() {
   local id="${1:-}" n="${2:-1}"
-  [ -n "$id" ] || die "usage: claude-cron logs <job-id> [n]"
+  [ -n "$id" ] || die "usage: agentloop logs <job-id> [n]"
   local f
   f="$(ls -t "$LOG_DIR/$id"/*.json 2>/dev/null | head -"$n" | tail -1)"
   if [ -z "$f" ]; then
-    die "no log files on disk for $id — finished runs are absorbed into data/index.db; open the dashboard (claude-cron dashboard) and use the log button on the run row"
+    die "no log files on disk for $id — finished runs are absorbed into data/index.db; open the dashboard (agentloop dashboard) and use the log button on the run row"
   fi
   echo "── $f"
   "$JQ" -r '.result // .' "$f" 2>/dev/null || cat "$f"
@@ -8418,7 +8418,7 @@ cmd_project_rename() { # <old-name> <new-name> — the project and every job poi
   # derived id is only a shadow of the project name, the journal rows already
   # carry the new project name (rewritten above), and a blind move could land
   # on top of a real job that happens to own the new id. The cost is that
-  # `claude-cron logs security-<new>` does not show analyses from before the
+  # `agentloop logs security-<new>` does not show analyses from before the
   # rename — the analyses themselves, which is what the Security page reads,
   # did follow the name.
   echo "project '$old' renamed to '$new'"
@@ -8450,35 +8450,35 @@ cmd_serve() { CLAUDE_CRON_PORT="$PORT" exec "$PYTHON" "$SERVER_BIN"; }
 
 usage() {
   cat <<USAGE
-claude-cron — durable local scheduler for headless Claude Code runs
+agentloop — durable local scheduler for headless Claude Code runs
 
-  claude-cron install         install + load both agents (tick + control server)
-  claude-cron uninstall       unload + remove both agents (keeps jobs and logs)
-  claude-cron status          launchd state, every job, last run and cost
-  claude-cron list            same as status
-  claude-cron dashboard       open the interactive control dashboard in a browser
-  claude-cron serve           run the control server in the foreground (launchd uses this)
-  claude-cron run <id>        run one job now, ignoring schedule and precheck
-  claude-cron check <id>      run only the precheck and report what it found
-  claude-cron usage           how full the usage windows are, whether runs are
+  agentloop install         install + load both agents (tick + control server)
+  agentloop uninstall       unload + remove both agents (keeps jobs and logs)
+  agentloop status          launchd state, every job, last run and cost
+  agentloop list            same as status
+  agentloop dashboard       open the interactive control dashboard in a browser
+  agentloop serve           run the control server in the foreground (launchd uses this)
+  agentloop run <id>        run one job now, ignoring schedule and precheck
+  agentloop check <id>      run only the precheck and report what it found
+  agentloop usage           how full the usage windows are, whether runs are
                               being held back, and whether the statusline that
                               keeps that figure fresh is actually wired up
-  claude-cron logs <id> [n]   print the result of the n-th most recent run
-  claude-cron enable <id>     re-enable a job
-  claude-cron disable <id>    stop a job without deleting it
-  claude-cron toggle-many <true|false>   enable or disable a whole set of jobs;
+  agentloop logs <id> [n]   print the result of the n-th most recent run
+  agentloop enable <id>     re-enable a job
+  agentloop disable <id>    stop a job without deleting it
+  agentloop toggle-many <true|false>   enable or disable a whole set of jobs;
                               ids on stdin, as a JSON array or one per line
-  claude-cron delete <id>     remove a job from jobs.json (keeps its logs)
-  claude-cron create <id>     create a job from a partial JSON object on stdin
-  claude-cron set-prompt <id> replace a job's prompt, read from stdin
-  claude-cron set-field <id> <field>   set interval_seconds|active_hours|active_days|
+  agentloop delete <id>     remove a job from jobs.json (keeps its logs)
+  agentloop create <id>     create a job from a partial JSON object on stdin
+  agentloop set-prompt <id> replace a job's prompt, read from stdin
+  agentloop set-field <id> <field>   set interval_seconds|active_hours|active_days|
                               model|max_budget_usd|timeout_seconds|
                               stall_timeout_seconds, value from stdin
-  claude-cron set-precheck <id>   replace a job's precheck script, read from stdin
-  claude-cron provision-set <project> <up|down>   replace a worktree provisioning hook (stdin)
-  claude-cron provision-get <project> <up|down>   print one
-  claude-cron get-precheck <id>   print a job's precheck script
-  claude-cron security analyze [--detach] <project> <repo> <branch> [profile]
+  agentloop set-precheck <id>   replace a job's precheck script, read from stdin
+  agentloop provision-set <project> <up|down>   replace a worktree provisioning hook (stdin)
+  agentloop provision-get <project> <up|down>   print one
+  agentloop get-precheck <id>   print a job's precheck script
+  agentloop security analyze [--detach] <project> <repo> <branch> [profile]
                               analyse a branch: secrets, dependency CVEs, an
                               SBOM, hygiene and infrastructure-as-code
                               misconfigurations run first at no token cost,
@@ -8491,14 +8491,14 @@ claude-cron — durable local scheduler for headless Claude Code runs
                               background and prints {"analysis_id": n} at once
                               (what the dashboard's Analyse button uses);
                               without it the command stays until the run ends
-  claude-cron security render --analysis <n> --format <json|md|html|sbom>
+  agentloop security render --analysis <n> --format <json|md|html|sbom>
                               the report for one analysis, or (`sbom`) the
                               stored SBOM document itself (see `security` with
                               no arguments for the rest of the vocabulary)
-  claude-cron security-branches <project> <repo>
+  agentloop security-branches <project> <repo>
                               list the branches of a project's canonical
                               checkout, local and origin's, for a branch picker
-  claude-cron tick            internal — what launchd calls every minute
+  agentloop tick            internal — what launchd calls every minute
 
 Jobs are defined in $JOBS_FILE
 USAGE
@@ -8524,39 +8524,39 @@ case "${1:-}" in
   status|list) cmd_status ;;
   dashboard) cmd_dashboard ;;
   tick)      cmd_tick ;;
-  _exec)     [ $# -ge 2 ] || die "usage: claude-cron _exec <job-id>"; run_job "$2" ;;  # internal: detached runner
+  _exec)     [ $# -ge 2 ] || die "usage: agentloop _exec <job-id>"; run_job "$2" ;;  # internal: detached runner
   _resolve_models)   # internal: detached daily refresh, guarded by its own lock
     acquire_lock "_models" || exit 0
     trap 'release_lock "_models"' EXIT
     cmd_resolve_models
     ;;
-  run)       [ $# -ge 2 ] || die "usage: claude-cron run <job-id>"; run_job "$2" --force ;;
-  resume)    [ $# -ge 3 ] || die "usage: claude-cron resume <job-id> <session-id>"; run_job "$2" --force "$3" ;;
-  check)     [ $# -ge 2 ] || die "usage: claude-cron check <job-id>"; cmd_check "$2" ;;
+  run)       [ $# -ge 2 ] || die "usage: agentloop run <job-id>"; run_job "$2" --force ;;
+  resume)    [ $# -ge 3 ] || die "usage: agentloop resume <job-id> <session-id>"; run_job "$2" --force "$3" ;;
+  check)     [ $# -ge 2 ] || die "usage: agentloop check <job-id>"; cmd_check "$2" ;;
   usage)     cmd_usage ;;
   logs)      shift; cmd_logs "$@" ;;
-  enable)    [ $# -ge 2 ] || die "usage: claude-cron enable <job-id>"; cmd_toggle "$2" true ;;
-  disable)   [ $# -ge 2 ] || die "usage: claude-cron disable <job-id>"; cmd_toggle "$2" false ;;
-  delete)    [ $# -ge 2 ] || die "usage: claude-cron delete <job-id>"; cmd_delete "$2" ;;
-  rename)    [ $# -ge 3 ] || die "usage: claude-cron rename <job-id> <new-id>"; cmd_rename "$2" "$3" ;;
+  enable)    [ $# -ge 2 ] || die "usage: agentloop enable <job-id>"; cmd_toggle "$2" true ;;
+  disable)   [ $# -ge 2 ] || die "usage: agentloop disable <job-id>"; cmd_toggle "$2" false ;;
+  delete)    [ $# -ge 2 ] || die "usage: agentloop delete <job-id>"; cmd_delete "$2" ;;
+  rename)    [ $# -ge 3 ] || die "usage: agentloop rename <job-id> <new-id>"; cmd_rename "$2" "$3" ;;
   reorder)   cmd_reorder ;;   # new order of job ids on stdin
-  toggle-many) [ $# -ge 2 ] || die "usage: claude-cron toggle-many <true|false>  (job ids on stdin)"
+  toggle-many) [ $# -ge 2 ] || die "usage: agentloop toggle-many <true|false>  (job ids on stdin)"
                case "$2" in true|false) ;; *) die "toggle-many: expected true or false, got '$2'" ;; esac
                cmd_toggle_many "$2" ;;
   create)    cmd_create ;;
   project-set)    cmd_project_set ;;
-  project-delete) [ $# -ge 2 ] || die "usage: claude-cron project-delete <name>"; cmd_project_delete "$2" ;;
-  project-rename) [ $# -ge 3 ] || die "usage: claude-cron project-rename <name> <new-name>"; cmd_project_rename "$2" "$3" ;;
+  project-delete) [ $# -ge 2 ] || die "usage: agentloop project-delete <name>"; cmd_project_delete "$2" ;;
+  project-rename) [ $# -ge 3 ] || die "usage: agentloop project-rename <name> <new-name>"; cmd_project_rename "$2" "$3" ;;
   project-list)   cmd_project_list ;;
   # Internal, and deliberately undocumented in usage: the entry point the
   # detached analysis re-execs into. A real process, so its slot records a pid
   # that is actually alive for the run's duration.
   __run-analysis)
-             [ $# -ge 4 ] || die "usage: claude-cron __run-analysis <job-id> <analysis-id> <branch>"
+             [ $# -ge 4 ] || die "usage: agentloop __run-analysis <job-id> <analysis-id> <branch>"
              security_run_analysis "$2" "$3" "$4" ;;
   security)  shift
              case "${1:-}" in
-               analyze) shift; [ $# -ge 3 ] || die "usage: claude-cron security analyze [--detach] <project> <repo> <branch> [profile]"
+               analyze) shift; [ $# -ge 3 ] || die "usage: agentloop security analyze [--detach] <project> <repo> <branch> [profile]"
                         cmd_security_analyze "$@" ;;
                # Everything else is the ledger's own vocabulary: prepare,
                # findings, fingerprint, report-finding, finish, checklist,
@@ -8572,27 +8572,27 @@ case "${1:-}" in
                # through this same door, never typed by a human at all --
                # listed here anyway so this message names every verb the door
                # actually accepts, not just the subset any one caller uses.
-               "")      die "usage: claude-cron security <analyze|prepare|findings|fingerprint|report-finding|finish|checklist|render|decide|rename-project|migrate-rules|open-analysis|list|index-data|project-data|findings-page|activity-data|analysis|event|events|filters> …" ;;
+               "")      die "usage: agentloop security <analyze|prepare|findings|fingerprint|report-finding|finish|checklist|render|decide|rename-project|migrate-rules|open-analysis|list|index-data|project-data|findings-page|activity-data|analysis|event|events|filters> …" ;;
                *)       security_py "$@" ;;
              esac ;;
-  security-branches) [ $# -ge 3 ] || die "usage: claude-cron security-branches <project> <repo>"
+  security-branches) [ $# -ge 3 ] || die "usage: agentloop security-branches <project> <repo>"
                      cmd_security_branches "$2" "$3" ;;
   resolve-models) cmd_resolve_models ;;
   skills)    shift; cmd_skills "${1:-status}" ;;
   selftest)  cmd_selftest ;;
-  running)   [ $# -ge 2 ] || die "usage: claude-cron running <job-id>"; cmd_running "$2" ;;
-  runs)      [ $# -ge 2 ] || die "usage: claude-cron runs <job-id>"; cmd_runs "$2" ;;
-  precheck)  [ $# -ge 2 ] || die "usage: claude-cron precheck <job-id>"; cmd_precheck "$2" ;;
-  say)       [ $# -ge 2 ] || die "usage: claude-cron say <job-id> (message on stdin)"; cmd_say "$2" ;;
-  stop)      [ $# -ge 2 ] || die "usage: claude-cron stop <job-id> [run-pid]"; cmd_stop "$2" "${3:-}" ;;
-  set-prompt) [ $# -ge 2 ] || die "usage: claude-cron set-prompt <job-id> (prompt on stdin)"; cmd_set_prompt "$2" ;;
-  set-field) [ $# -ge 3 ] || die "usage: claude-cron set-field <job-id> <field> (value on stdin)"; cmd_set_field "$2" "$3" ;;
-  set-precheck) [ $# -ge 2 ] || die "usage: claude-cron set-precheck <job-id> (script on stdin)"; cmd_set_precheck "$2" ;;
-  get-precheck) [ $# -ge 2 ] || die "usage: claude-cron get-precheck <job-id>"; cmd_get_precheck "$2" ;;
-  provision-set) [ $# -ge 3 ] || die "usage: claude-cron provision-set <project> <up|down> (script on stdin)"; cmd_provision_set "$2" "$3" ;;
-  provision-get) [ $# -ge 3 ] || die "usage: claude-cron provision-get <project> <up|down>"; cmd_provision_get "$2" "$3" ;;
-  worktree-drop) [ $# -ge 3 ] || die "usage: claude-cron worktree-drop <job-id> <stamp>"; cmd_worktree_drop "$2" "$3" ;;
+  running)   [ $# -ge 2 ] || die "usage: agentloop running <job-id>"; cmd_running "$2" ;;
+  runs)      [ $# -ge 2 ] || die "usage: agentloop runs <job-id>"; cmd_runs "$2" ;;
+  precheck)  [ $# -ge 2 ] || die "usage: agentloop precheck <job-id>"; cmd_precheck "$2" ;;
+  say)       [ $# -ge 2 ] || die "usage: agentloop say <job-id> (message on stdin)"; cmd_say "$2" ;;
+  stop)      [ $# -ge 2 ] || die "usage: agentloop stop <job-id> [run-pid]"; cmd_stop "$2" "${3:-}" ;;
+  set-prompt) [ $# -ge 2 ] || die "usage: agentloop set-prompt <job-id> (prompt on stdin)"; cmd_set_prompt "$2" ;;
+  set-field) [ $# -ge 3 ] || die "usage: agentloop set-field <job-id> <field> (value on stdin)"; cmd_set_field "$2" "$3" ;;
+  set-precheck) [ $# -ge 2 ] || die "usage: agentloop set-precheck <job-id> (script on stdin)"; cmd_set_precheck "$2" ;;
+  get-precheck) [ $# -ge 2 ] || die "usage: agentloop get-precheck <job-id>"; cmd_get_precheck "$2" ;;
+  provision-set) [ $# -ge 3 ] || die "usage: agentloop provision-set <project> <up|down> (script on stdin)"; cmd_provision_set "$2" "$3" ;;
+  provision-get) [ $# -ge 3 ] || die "usage: agentloop provision-get <project> <up|down>"; cmd_provision_get "$2" "$3" ;;
+  worktree-drop) [ $# -ge 3 ] || die "usage: agentloop worktree-drop <job-id> <stamp>"; cmd_worktree_drop "$2" "$3" ;;
   serve)     cmd_serve ;;
   ""|-h|--help|help) usage ;;
-  *) die "unknown command: $1 (try: claude-cron help)" ;;
+  *) die "unknown command: $1 (try: agentloop help)" ;;
 esac

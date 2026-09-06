@@ -382,6 +382,6 @@ def sbom(components):
         "bomFormat": "CycloneDX",
         "specVersion": "1.5",
         "version": 1,
-        "metadata": {"tools": [{"vendor": "claude-cron", "name": "security"}]},
+        "metadata": {"tools": [{"vendor": "agentloop", "name": "security"}]},
         "components": components_out,
     }

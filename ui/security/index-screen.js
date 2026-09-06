@@ -4,7 +4,7 @@
    project table (one row per project, its default branch's current
    posture), the recent-analyses feed and the severity donut with the rules
    that produced it. See bin/security/cli.py's `index-data` and
-   bin/claude-cron-server's `security_index`/`_security_projects`.
+   bin/agentloop-server's `security_index`/`_security_projects`.
 
    The old per-project list (projects.js) cost one subprocess PER PROJECT on
    every load and every Refresh -- `security list`, and for whichever
@@ -512,7 +512,7 @@ function secIndexProjectRow(p){
   // two-line grey description. The badge is UNCONDITIONAL, not a second
   // read of the Status cell's own `p.enabled` below -- every row on this
   // screen is, by construction, a security-ENABLED project
-  // (_security_projects(), bin/claude-cron-server, never hands this screen
+  // (_security_projects(), bin/agentloop-server, never hands this screen
   // one that is not), so this badge and Status answer two independent
   // questions (security on; the PROJECT itself active) that happen to both
   // be true for most rows, not the same fact painted twice.

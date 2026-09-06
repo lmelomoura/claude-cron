@@ -24,7 +24,7 @@
 #
 # INSTALL — add to ~/.claude/settings.json (adjust the path to your checkout):
 #   "statusLine": { "type": "command",
-#                   "command": "/path/to/claude-cron/bin/statusline-rate-limits.sh" }
+#                   "command": "/path/to/agentloop/bin/statusline-rate-limits.sh" }
 #
 # It prints a compact `5h 62% · 7d 18%` so the line stays useful as a status
 # line, and stays silent when the account reports no windows (API-key users, or

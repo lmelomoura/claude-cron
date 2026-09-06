@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en" class="__BOOT__"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>claude-cron · Agent Loop Manager</title>
+<title>agentloop · Agent Loop Manager</title>
 <link rel="icon" type="image/svg+xml" href="__FAVICON__">
 <meta name="theme-color" content="#4f46e5">
 <!-- The theme, resolved before anything can paint. It lives in localStorage,
@@ -155,7 +155,7 @@ document.documentElement.dataset.theme =
            from view but not from the document outline or a screen reader. -->
       <svg class="brandlock" viewBox="0 0 172 44" aria-hidden="true" focusable="false"><use href="#cc-menu"/></svg>
       <div class="mark" id="brandmark"><svg viewBox="0 0 32 32" aria-hidden="true" focusable="false"><use href="#cc-logo"/></svg></div>
-      <div class="btext"><h1>claude-cron</h1><div class="tag">Agent Loop Manager</div></div>
+      <div class="btext"><h1>agentloop</h1><div class="tag">Agent Loop Manager</div></div>
     </div>
     <button class="burger" id="side-burger" aria-controls="sidebar" title="Collapse menu"></button>
   </div>
@@ -708,7 +708,7 @@ document.documentElement.dataset.theme =
   <form class="setup-card" id="setup-form" autocomplete="off">
     <div class="mark lockup" id="setup-mark"><svg viewBox="0 0 1040 300" aria-hidden="true" focusable="false"><use href="#cc-lockup"/></svg></div>
     <h2>Create your profile</h2>
-    <p class="lede">claude-cron runs unattended agents that spend real money on
+    <p class="lede">agentloop runs unattended agents that spend real money on
       your repositories. Before the dashboard opens, say who is running it.</p>
     <div class="setup-err" id="setup-err" hidden></div>
     <label for="su-name">Name<span class="req" aria-hidden="true">*</span></label>
@@ -2718,7 +2718,7 @@ function render(){
   CCSecurity.render();
   renderJobsArea();
   CCApp.renderRunsPage();
-  $("foot").textContent="claude-cron · control server on 127.0.0.1 · SQLite index.db ("
+  $("foot").textContent="agentloop · control server on 127.0.0.1 · SQLite index.db ("
     +fmtBytes(DATA.db_bytes)+") holds run history & search · runs.ndjson is the append journal";
 }
 

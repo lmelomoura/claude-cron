@@ -14,7 +14,7 @@ import subprocess
 import pytest
 
 REPO = __import__("pathlib").Path(__file__).resolve().parent.parent
-ENGINE = REPO / "bin" / "claude-cron"
+ENGINE = REPO / "bin" / "agentloop"
 
 
 def _page(srv):
@@ -999,7 +999,7 @@ def test_the_server_hands_the_page_what_the_api_did(srv):
     # A run the API never refused has nothing to report, so the page shows nothing.
     assert srv._api_retries('{"type":"assistant","message":{}}') is None
     assert srv._api_retries("") is None
-    server_src = (REPO / "bin" / "claude-cron-server").read_text()
+    server_src = (REPO / "bin" / "agentloop-server").read_text()
     assert '"api_error_status": data.get("api_error_status")' in server_src
 
 
@@ -1737,7 +1737,7 @@ def test_the_security_column_tells_three_states_apart(srv, tmp_path):
     subprocess-backed endpoint this page's 5-second poll has no business
     calling. `DATA.runs`, already fetched every poll for every other page,
     DOES carry the derived "security-<slug>" job's own runs, correctly
-    attributed to the real project name (`bin/claude-cron`'s
+    attributed to the real project name (`bin/agentloop`'s
     `security_derived_jobs` sets `project` on the derived job element
     itself) -- so "never analysed" and "analysed" are told apart from data
     the page already has in hand, without inventing a severity this column
@@ -2286,7 +2286,7 @@ def test_the_overview_and_runs_warning_cards_name_the_same_window(srv, tmp_path)
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_total_runs_says_1000_plus_at_the_servers_own_cap(srv, tmp_path):
-    """bin/claude-cron-server's own load_data() caps the runs query at 1000
+    """bin/agentloop-server's own load_data() caps the runs query at 1000
     rows (`ORDER BY start DESC, rowid DESC LIMIT 1000`) -- CC.DATA.runs can
     never carry more than that, no matter how much history actually exists.
     "Total runs" used to print that capped length as a plain number, which
@@ -2804,7 +2804,7 @@ def _run_digest(root):
 
 
 def test_the_freshness_digest_covers_the_build_toolchain_not_just_ui_sources(tmp_path):
-    """build/ui-digest.sh is the fingerprint `claude-cron selftest` recomputes
+    """build/ui-digest.sh is the fingerprint `agentloop selftest` recomputes
     to prove the committed bundle was built from the committed sources -- and
     it hashes build/build-ui.sh and package.json alongside ui/**/*.js on
     purpose, because a changed esbuild --target or a bumped esbuild pin
@@ -6519,7 +6519,7 @@ def test_every_deliberate_open_of_one_analysis_pins_it(srv):
 
 # ---- final whole-branch review, IMPORTANT 3 and MINORS 6/7: the freshness
 # guard over the COMMITTED bundle. `bin/static/security.js` is a build output
-# in git, which is the price of never needing Node to install claude-cron --
+# in git, which is the price of never needing Node to install agentloop --
 # and the selftest's own sentence claims this guard is what stops a stale or
 # mangled one shipping. It could not detect a modified bundle at all.
 

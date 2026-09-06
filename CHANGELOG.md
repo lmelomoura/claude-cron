@@ -17,6 +17,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **claude-cron is now agentloop.** The scheduler runs more than one agent from
+  here on (see `docs/superpowers/specs/2026-09-06-platforms-anthropic-openai-design.md`),
+  and a product named after one of them misnames the other. Everything that
+  spelled the old name moves with it: the two binaries (`bin/agentloop`,
+  `bin/agentloop-server`), the `~/.local/bin` symlinks, the launchd labels
+  (`com.agentloop.tick`, `com.agentloop.server`) and the documentation. What it
+  cost to not have it: a tool called claude-cron that launches the Codex is a
+  name that lies to whoever reads a job card.
+  - `tests/test_no_old_name_survives.py` is the definition of "renamed": it
+    fails on any old spelling that is not one of the transition lines it
+    lists, and emptying that list is how the transition ends.
+
 ### Fixed
 
 - **Every side-effecting button in the dashboard is held from the click until

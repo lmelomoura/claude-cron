@@ -1,7 +1,7 @@
 /* -------------------------------------------------------- the Activity screen
    What happened and when, filterable by kind, every project unless scoped to
    one -- `GET /api/security/activity` (bin/security/cli.py's `activity-data`,
-   bin/claude-cron-server's `security_activity`), which bundles the events
+   bin/agentloop-server's `security_activity`), which bundles the events
    (`ledger.events_for`, Task 3), their per-kind counts for the period
    (`queries.activity_summary`, Task 5) and the busiest projects in one
    round trip, the same "one call answers the whole screen" rule every

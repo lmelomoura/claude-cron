@@ -1,25 +1,25 @@
 ---
 name: security-analysis
-description: Use when running a claude-cron security analysis on a repository — the SAST pass, the triage of deterministic findings, and the re-verification of findings left open by the previous analysis. Invoked automatically by every `claude-cron security` run; the analysis prompt names it as mandatory.
+description: Use when running a agentloop security analysis on a repository — the SAST pass, the triage of deterministic findings, and the re-verification of findings left open by the previous analysis. Invoked automatically by every `agentloop security` run; the analysis prompt names it as mandatory.
 ---
 
 # Security Analysis
 
-You are the judgement half of a claude-cron security analysis. The deterministic half — secrets, dependency CVEs, SBOM, repository hygiene, infrastructure-as-code misconfigurations — runs by pattern and costs no tokens. You cost tokens because you bring what a pattern cannot: reading code and deciding what it means.
+You are the judgement half of a agentloop security analysis. The deterministic half — secrets, dependency CVEs, SBOM, repository hygiene, infrastructure-as-code misconfigurations — runs by pattern and costs no tokens. You cost tokens because you bring what a pattern cannot: reading code and deciding what it means.
 
 ## Before anything else
 
 Run the command the prompt gave you — it already has your analysis id, root and ignore globs filled in:
 
 ```bash
-claude-cron security prepare --analysis <id> --root "$PWD" --ignore '<globs>'
+agentloop security prepare --analysis <id> --root "$PWD" --ignore '<globs>'
 ```
 
 That is the deterministic phase, and it prints a `coverage_note`. **If that note is not empty, hold onto it — you must repeat it, word for word, in your final message.** It names something this analysis could not check (network disabled, so no CVE lookup, for example); a gap nobody reads is the same as a gap nobody declared.
 
 ## The three jobs, in this order
 
-**1. Re-verify what was left open.** Run `claude-cron security checklist --analysis <id>` right after `prepare` — not `findings`. `findings` returns only THIS analysis's own rows, and right after `prepare` that is just the fresh deterministic findings (secret/dependency/hygiene/iac); a previous analysis's SAST findings are never in it, so `findings` never shows them to you, you never re-report them, and a live vulnerability silently disappears from the report as `fixed`. `checklist` is the verb that surfaces the carried-over set: it diffs this analysis against the last finished baseline of the same branch. At this point in the run the carried-over set arrives with state `pending` (plus `partial`/`open` for what prepare already re-found) — the engine marks a baseline finding `fixed` only once its absence is PROVEN, and proof means **the producer that found it in the first place ran again in this analysis**: Trivy for a dependency CVE or an IaC misconfiguration, gitleaks or the built-in scanner for a secret, Semgrep for a pre-pass row, and you — the analysis closing `done` — for a `sast` finding you reported yourself. A phase whose engine is missing this run proves nothing, so its findings stay `pending` however cleanly the run ends. A `pending` row is a work item for you, never a fact about the code.
+**1. Re-verify what was left open.** Run `agentloop security checklist --analysis <id>` right after `prepare` — not `findings`. `findings` returns only THIS analysis's own rows, and right after `prepare` that is just the fresh deterministic findings (secret/dependency/hygiene/iac); a previous analysis's SAST findings are never in it, so `findings` never shows them to you, you never re-report them, and a live vulnerability silently disappears from the report as `fixed`. `checklist` is the verb that surfaces the carried-over set: it diffs this analysis against the last finished baseline of the same branch. At this point in the run the carried-over set arrives with state `pending` (plus `partial`/`open` for what prepare already re-found) — the engine marks a baseline finding `fixed` only once its absence is PROVEN, and proof means **the producer that found it in the first place ran again in this analysis**: Trivy for a dependency CVE or an IaC misconfiguration, gitleaks or the built-in scanner for a secret, Semgrep for a pre-pass row, and you — the analysis closing `done` — for a `sast` finding you reported yourself. A phase whose engine is missing this run proves nothing, so its findings stay `pending` however cleanly the run ends. A `pending` row is a work item for you, never a fact about the code.
 
 That is also why a `pending` row survives the close of the run in which nothing could re-check it, instead of flipping to `fixed` the moment you finish. On a machine without Semgrep, a pre-pass row stays `pending` rather than quietly reading `fixed` — the check id in its identity is one only Semgrep mints, so your run finishing proves nothing about it. Treat it exactly as the rule below says: open the code at its occurrences and decide. Findings **you** reported are unaffected — the analysis closing `done` is what proves those, and it always has been.
 
@@ -59,7 +59,7 @@ This is the cheapest of the three jobs and the most valuable. Do it first.
 
 Work through it in this order:
 
-1. **`claude-cron security checklist --analysis <id>` first.** It lists every row — this run's and the carried-over set — each with the fingerprint you must copy. (`findings --analysis <id>` shows only this analysis's own rows, and is not the list to work from.)
+1. **`agentloop security checklist --analysis <id>` first.** It lists every row — this run's and the carried-over set — each with the fingerprint you must copy. (`findings --analysis <id>` shows only this analysis's own rows, and is not the list to work from.)
 2. **Take every row whose producer is anything other than `agent` AND whose state in this analysis is `new`, `open`, `partial` or `regressed`** — `secret`, `dependency`, `hygiene`, `iac`, and the Semgrep pre-pass's `sast` rows — **at severity `medium`, `high` or `critical`.** Every row in those four states was recorded by a producer in THIS analysis, and those are the rows the close counts. Two kinds of producer-recorded row sit deliberately outside them. The first is a `pending` row: by definition no producer re-found it this run, so this analysis holds no row for it, it is not in the close's query and it can never block your `done`. **A `pending` row belongs to Job 1, not here.** Job 1 re-reports it verbatim precisely because nobody re-checked it; opening the code and writing what you read would put a verification in its rationale that did not happen, which is the one thing Job 1 tells you not to do. The second is a row the checklist shows as `accepted` or `false_positive`: that row carries a decision a human took on the page, wrote a reason for and signed, which is a stronger record that somebody read the finding than any re-report of yours could be. It is not yours to re-report, and the close does not count it against you.
 3. **Open the code at its occurrences and decide.** Not the finding's title: the file and line it names.
 4. **Re-report it under the fingerprint `checklist` printed, copied exactly**, with the severity you now believe and a rationale that says what you read and what it means. **Carry `title`, `remediation` and `occurrences` across from the row as `checklist` printed them, unless you are deliberately correcting one of them.** A re-report REPLACES the whole row, so a field you leave out is written back EMPTY: omit `remediation` and the scanner's fix instructions become an empty string, and `title` is refused at the door if it is missing — inventing one there loses the name every earlier analysis knew this finding by. Occurrences as the rule in Job 1 describes — a re-report replaces the stored list.
@@ -86,15 +86,15 @@ Fold in only what is genuinely the same weakness in the same place. Two differen
 
 ## Rules that are not negotiable
 
-**Report through the CLI, never by writing the database.** One finding at a time, as JSON on stdin. For a weakness nothing already lists, get the fingerprint from `claude-cron security fingerprint`, never invent one — that is the whole next rule. For a row that is already on the checklist, copy the fingerprint it printed (all three jobs above do this — Job 2 does it for every deterministic row it reads):
+**Report through the CLI, never by writing the database.** One finding at a time, as JSON on stdin. For a weakness nothing already lists, get the fingerprint from `agentloop security fingerprint`, never invent one — that is the whole next rule. For a row that is already on the checklist, copy the fingerprint it printed (all three jobs above do this — Job 2 does it for every deterministic row it reads):
 
 ```bash
-fp="$(claude-cron security fingerprint --category sast --rule sql-injection \
+fp="$(agentloop security fingerprint --category sast --rule sql-injection \
         --path app/db.py --snippet "cursor.execute(query)")"
 echo "{\"fingerprint\":\"$fp\",\"category\":\"sast\",\"rule\":\"sql-injection\",
        \"severity\":\"high\",\"title\":\"…\",\"rationale\":\"…\",\"remediation\":\"…\",
        \"occurrences\":[{\"file\":\"app/db.py\",\"line\":12,\"snippet_hash\":\"…\"}]}" \
-  | claude-cron security report-finding --analysis <id>
+  | agentloop security report-finding --analysis <id>
 ```
 
 Each text field — `title`, `rationale`, `remediation`, `partial_note` — is capped at 10,000 characters; longer is refused at the door, not truncated. A finding is a paragraph the report page renders, not a file to paste into the ledger.
@@ -104,10 +104,10 @@ Each text field — `title`, `rationale`, `remediation`, `partial_note` — is c
 For a secret finding, drop `--snippet`: its identity is the credential's type and the file it lives in, never what it says.
 
 ```bash
-fp="$(claude-cron security fingerprint --category secret --rule aws_access_key --path config/prod.env)"
+fp="$(agentloop security fingerprint --category secret --rule aws_access_key --path config/prod.env)"
 ```
 
-**Never hand-compute a fingerprint.** The door checks that it is 64 lowercase hex characters, not that it was computed the right way — a string you invent yourself passes that check and still breaks everything downstream of it: it is a fresh identity on every run, so the same hole is reported `new` for ever, never `open`, never `fixed`, and no decision anyone records against it ever matches again. There are exactly two sources of a real one: `claude-cron security fingerprint`, and the string `checklist` or `findings` printed for the row you are re-reporting. Never type one yourself, never guess, and never move one from a DIFFERENT finding onto this one — copying a row's own fingerprint back is what keeps its identity, copying another row's overwrites that row instead.
+**Never hand-compute a fingerprint.** The door checks that it is 64 lowercase hex characters, not that it was computed the right way — a string you invent yourself passes that check and still breaks everything downstream of it: it is a fresh identity on every run, so the same hole is reported `new` for ever, never `open`, never `fixed`, and no decision anyone records against it ever matches again. There are exactly two sources of a real one: `agentloop security fingerprint`, and the string `checklist` or `findings` printed for the row you are re-reporting. Never type one yourself, never guess, and never move one from a DIFFERENT finding onto this one — copying a row's own fingerprint back is what keeps its identity, copying another row's overwrites that row instead.
 
 **The SAST rule name comes from a closed vocabulary.** `report-finding` and
 `fingerprint` both refuse anything else, because the rule name is part of the
@@ -151,7 +151,7 @@ The door enforces this now, not only this sentence. `report-finding` runs `title
 Close the analysis first:
 
 ```bash
-claude-cron security finish --analysis <id> --state done
+agentloop security finish --analysis <id> --state done
 ```
 
 Use `--state done` only when you actually covered the profile's scope — every carried-over finding re-verified, every deterministic finding triaged, the SAST pass done to the depth `quick`/`standard`/`deep` calls for. The moment any of that is not true — you ran out of budget, ran out of time, or stopped short of the scope for any other reason — close with `--state capped` instead. `finish` is the only closing verb that is yours: `decide`, `rename-project`, `event`, `filters save` and `filters delete` are all refused for the whole run — you do not dismiss the finding you filed, rename the ledger out from under the project, write by hand into the audit trail that exists to say what you did, or edit a working set a human curated — and `open-analysis` already happened before you started. The read verbs beside them (`events`, `filters list`) are *not* refused; there is nothing there to protect.

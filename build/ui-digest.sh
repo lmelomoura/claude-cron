@@ -4,7 +4,7 @@
 # into bin/static/security.js and how that result is checked.
 #
 # One definition used from two sides: build/build-ui.sh stamps it into the
-# bundle it writes, and `claude-cron selftest` recomputes it to prove the
+# bundle it writes, and `agentloop selftest` recomputes it to prove the
 # committed bundle was built from the committed sources. Written twice these
 # would be two things to keep in step, and the day they drifted the check would
 # be reporting on nothing. Its sibling build/ui-bundle-digest.sh answers the

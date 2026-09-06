@@ -105,7 +105,7 @@ def test_a_partial_first_line_is_discarded(clean_data):
 def test_every_decision_the_engine_logs_is_classified(clean_data):
     """The band is only honest if it recognises the lines the engine writes.
 
-    These are verbatim shapes from bin/claude-cron; a reworded log line that
+    These are verbatim shapes from bin/agentloop; a reworded log line that
     stops matching would silently drop that outcome out of the band.
     """
     srv = clean_data

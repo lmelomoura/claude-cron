@@ -23,7 +23,7 @@ rm -rf "$ROOT"; mkdir -p "$ROOT"/{config,data,remote,work}
 export CLAUDE_CRON_CONFIG="$ROOT/config"
 export CLAUDE_CRON_DATA="$ROOT/data"
 export CLAUDE_CRON_CLAUDE_BIN="$E2E/fake-claude"
-CC="$REPO/bin/claude-cron"
+AL="$REPO/bin/agentloop"
 
 pass=0; fail=0
 ok()  { pass=$((pass+1)); printf '  ok    %s\n' "$1"; }
@@ -64,27 +64,27 @@ secid() { printf '%s' "$1" | grep -Eo '"analysis_id" *: *[0-9]+' | tail -1 | gre
 # secstate <project> <analysis-id> -- that one row's state, straight off the
 # ledger `security list` reads, never guessed from the run that carried it.
 secstate() {
-  "$CC" security list --project "$1" 2>/dev/null \
+  "$AL" security list --project "$1" 2>/dev/null \
     | jq -r --argjson a "$2" '.[] | select(.id == $a) | .state // empty'
 }
 # secnote <project> <analysis-id> -- that row's coverage note, the one line a
 # reader has to judge the report's blind spots by.
 secnote() {
-  "$CC" security list --project "$1" 2>/dev/null \
+  "$AL" security list --project "$1" 2>/dev/null \
     | jq -r --argjson a "$2" '.[] | select(.id == $a) | .coverage_note // empty'
 }
 
 echo
 echo "1. a run that declares a clean ending is torn down and removed"
 mkjob j1 complete
-FAKE_MODE=complete FAKE_SESSION=sess-clean "$CC" run j1 >/dev/null 2>&1
+FAKE_MODE=complete FAKE_SESSION=sess-clean "$AL" run j1 >/dev/null 2>&1
 sleep 2
 [ -z "$(dirs j1)" ] && ok "its run directory is gone" || bad "left $(dirs j1)"
 
 echo
 echo "2. a run that never declares an ending keeps its tree, marked open"
 mkjob j2 undeclared
-FAKE_MODE=undeclared FAKE_SESSION=sess-cut "$CC" run j2 >/dev/null 2>&1
+FAKE_MODE=undeclared FAKE_SESSION=sess-cut "$AL" run j2 >/dev/null 2>&1
 sleep 2
 d2="$(dirs j2 | head -1)"
 [ -n "$d2" ] && ok "its run directory survives ($d2)" || bad "the directory was removed"
@@ -94,7 +94,7 @@ d2="$(dirs j2 | head -1)"
 
 echo
 echo "3. a resume continues in that same directory, not a fresh one"
-FAKE_MODE=complete FAKE_SESSION=sess-cut "$CC" resume j2 sess-cut >/dev/null 2>&1
+FAKE_MODE=complete FAKE_SESSION=sess-cut "$AL" resume j2 sess-cut >/dev/null 2>&1
 sleep 2
 grep -q "resumed sess-cut in its own tree" "$ROOT/data/tick.log" 2>/dev/null \
   && ok "the tick log says it reattached" || bad "no reattach line in tick.log"
@@ -104,7 +104,7 @@ grep -q "resumed sess-cut in its own tree" "$ROOT/data/tick.log" 2>/dev/null \
 echo
 echo "4. work on no remote is reported, and the tree is still kept"
 mkjob j3 dirty
-FAKE_MODE=dirty FAKE_SESSION=sess-dirty "$CC" run j3 >/dev/null 2>&1
+FAKE_MODE=dirty FAKE_SESSION=sess-dirty "$AL" run j3 >/dev/null 2>&1
 sleep 2
 d3="$(dirs j3 | head -1)"
 [ -n "$d3" ] && ok "the directory survives" || bad "removed despite undelivered work"
@@ -113,7 +113,7 @@ grep -q 'UNDELIVERED' "$ROOT/data/runs.ndjson" 2>/dev/null \
 
 echo
 echo "5. an open session nobody resumes expires and is reclaimed"
-CLAUDE_CRON_SESSION_TTL=0 "$CC" tick >/dev/null 2>&1
+CLAUDE_CRON_SESSION_TTL=0 "$AL" tick >/dev/null 2>&1
 sleep 1
 [ -z "$(dirs j3)" ] && ok "the sweep reclaimed it once its ttl was up" \
   || bad "still there: $(dirs j3)"
@@ -126,7 +126,7 @@ mkdir -p "$ROOT/data/worktrees/j4/20200101T000000Z-1/app"
 git init -q "$ROOT/data/worktrees/j4/20200101T000000Z-1/app"
 echo "work nobody else has" > "$ROOT/data/worktrees/j4/20200101T000000Z-1/app/keep.txt"
 touch -t 202001010000 "$ROOT/data/worktrees/j4/20200101T000000Z-1"
-"$CC" tick >/dev/null 2>&1
+"$AL" tick >/dev/null 2>&1
 sleep 1
 [ -f "$ROOT/data/worktrees/j4/20200101T000000Z-1/app/keep.txt" ] \
   && ok "the pre-upgrade directory and its work survive the first tick" \
@@ -142,14 +142,14 @@ echo "0"   > "$ROOT/data/locks/j5/99999/boot"
 mkdir -p "$ROOT/data/worktrees/j5/stamp-stale"
 echo done > "$ROOT/data/worktrees/j5/stamp-stale/.ended"
 echo "$ROOT/data/worktrees/j5/stamp-stale" > "$ROOT/data/locks/j5/99999/worktree"
-"$CC" tick >/dev/null 2>&1
+"$AL" tick >/dev/null 2>&1
 sleep 1
 [ -z "$(dirs j5)" ] && ok "a live pid from an earlier boot does not protect it" \
   || bad "the stale claim kept it alive"
 
 # ------------------------------------------------------- security analysis
 # The `sandbox` project's own security block (see the fixture above). Unlike
-# 1-7, these drive `claude-cron security analyze` rather than `run` -- the
+# 1-7, these drive `agentloop security analyze` rather than `run` -- the
 # real path the dashboard's Analyse button takes, over the real run_job and a
 # real (fake) agent, not the stubbed run_job the bash-level selftest uses for
 # the same three shapes.
@@ -157,7 +157,7 @@ sleep 1
 echo
 echo "8. a detached security analysis returns fast, and the run closes it once it ends"
 t0=$(date +%s)
-out8="$(FAKE_MODE=complete FAKE_SESSION=sess-sec-done "$CC" security analyze --detach sandbox anything main quick)"
+out8="$(FAKE_MODE=complete FAKE_SESSION=sess-sec-done "$AL" security analyze --detach sandbox anything main quick)"
 t1=$(date +%s)
 [ "$((t1 - t0))" -lt 5 ] && ok "the command returns in $((t1 - t0))s -- not after the run it started" \
   || bad "--detach blocked for $((t1 - t0))s"
@@ -177,7 +177,7 @@ cat > "$ROOT/dead-claude" <<'SH'
 exit 3
 SH
 chmod +x "$ROOT/dead-claude"
-out9="$(CLAUDE_CRON_CLAUDE_BIN="$ROOT/dead-claude" "$CC" security analyze --detach sandbox anything main quick)"
+out9="$(CLAUDE_CRON_CLAUDE_BIN="$ROOT/dead-claude" "$AL" security analyze --detach sandbox anything main quick)"
 aid9="$(secid "$out9")"
 w=0
 while [ "$w" -lt 20 ] && [ "$(secstate sandbox "$aid9")" = "running" ]; do sleep 1; w=$((w + 1)); done
@@ -189,7 +189,7 @@ sleep 1
 echo
 echo "10. a row stuck 'running' with no live run cannot brick the button"
 sha="$(git -C "$ROOT/work/app" rev-parse HEAD)"
-stuck_out="$("$CC" security open-analysis --project sandbox --repo sandbox --branch main \
+stuck_out="$("$AL" security open-analysis --project sandbox --repo sandbox --branch main \
   --commit "$sha" --profile quick --run-id security-sandbox)"
 stuck_id="$(secid "$stuck_out")"
 [ "$(secstate sandbox "$stuck_id")" = "running" ] \
@@ -198,7 +198,7 @@ stuck_id="$(secid "$stuck_out")"
 # The default grace (120s) would leave a row this young alone -- it may still
 # be on its way to acquire_slot -- so the sweep is forced to fire immediately.
 CLAUDE_CRON_SECURITY_STALE_GRACE=0 FAKE_MODE=complete FAKE_SESSION=sess-sec-fresh \
-  "$CC" security analyze sandbox anything main quick >/dev/null 2>&1
+  "$AL" security analyze sandbox anything main quick >/dev/null 2>&1
 [ "$(secstate sandbox "$stuck_id")" = "failed" ] \
   && ok "the next analyse's own preflight sweeps it before opening a fresh one" \
   || bad "stuck row $stuck_id left '$(secstate sandbox "$stuck_id")'"
@@ -212,7 +212,7 @@ echo "11. an agent that never ran the deterministic phases cannot close done"
 # against. The whole path is exercised here, over the real run_job: only the
 # LEDGER can tell the two apart, and only after the run has ended.
 out11="$(FAKE_MODE=complete FAKE_SKIP_PREPARE=1 FAKE_SESSION=sess-sec-noprep \
-  "$CC" security analyze --detach sandbox anything main quick)"
+  "$AL" security analyze --detach sandbox anything main quick)"
 aid11="$(secid "$out11")"
 w=0
 while [ "$w" -lt 20 ] && [ "$(secstate sandbox "$aid11")" = "running" ]; do sleep 1; w=$((w + 1)); done
@@ -237,7 +237,7 @@ echo "12. the analysis is launched with the Agent tool closed and its prompt int
 argv="$ROOT/launch-argv"
 rm -f "$argv"
 FAKE_ARGV_OUT="$argv" FAKE_MODE=complete FAKE_SESSION=sess-sec-argv \
-  "$CC" security analyze sandbox anything main quick >/dev/null 2>&1
+  "$AL" security analyze sandbox anything main quick >/dev/null 2>&1
 # <index><TAB><argument>. `at <n>` is the n-th argument, `idx <word>` its index.
 at()  { awk -F'\t' -v i="$1" '$1==i {print $2; exit}' "$argv"; }
 idx() { awk -F'\t' -v w="$1" '$2==w {print $1; exit}' "$argv"; }

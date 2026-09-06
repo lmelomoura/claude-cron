@@ -130,7 +130,7 @@ function runsHeaderSubtitle(runs, liveCount){
    `door: false`.
 
    Warnings/Errors used to count ALL of `runs` (the server's own 1000-row
-   cap on CC.DATA.runs -- see bin/claude-cron-server's `LIMIT 1000`, far
+   cap on CC.DATA.runs -- see bin/agentloop-server's `LIMIT 1000`, far
    more than 7 days at any real job count) and said "N% of finished runs".
    The Overview's own cards of the same name count only the last 7 days and
    say so in their `sub` -- and one of them is a DOOR that lands a click

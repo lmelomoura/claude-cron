@@ -1,4 +1,4 @@
-# claude-cron · Agent Loop Manager
+# agentloop · Agent Loop Manager
 
 A small, durable platform for running **Claude Code agents on a loop** on your
 Mac. Each job wakes on a schedule, runs a cheap **precheck** to decide whether
@@ -24,7 +24,7 @@ is generic: a job is just *a schedule + a precheck + a prompt*.
 ## Install
 
 ```bash
-cd claude-cron
+cd agentloop
 bash install.sh
 ```
 
@@ -32,10 +32,10 @@ Use **`bash install.sh`**, not `./install.sh` — if the folder arrived by
 download, AirDrop or email, macOS flags it with a quarantine attribute and
 `./install.sh` fails with **`operation not permitted`**. Running it through
 `bash` sidesteps that, and the installer's first act is to clear the quarantine
-flag from the whole folder (so `bin/claude-cron` can run later). If you ever hit
-that error anyway, clear it by hand once: `xattr -cr claude-cron`.
+flag from the whole folder (so `bin/agentloop` can run later). If you ever hit
+that error anyway, clear it by hand once: `xattr -cr agentloop`.
 
-It checks dependencies, links `claude-cron` into `~/.local/bin`, seeds a
+It checks dependencies, links `agentloop` into `~/.local/bin`, seeds a
 `config/jobs.json` from the example, and loads two `launchd` agents (a scheduler
 that ticks every 60 s and a control server for the dashboard). Both start
 automatically on login. Re-run it any time — it is idempotent, and you must
@@ -44,7 +44,7 @@ re-run it after moving this folder.
 Then open the dashboard:
 
 ```bash
-claude-cron dashboard
+agentloop dashboard
 ```
 
 It lives at **http://127.0.0.1:8787/** (localhost only). The first load asks you
@@ -54,13 +54,13 @@ show anything else. There is no password reset, so pick one you keep; see
 
 ### What `install.sh` sets up under launchd
 
-The installer runs `claude-cron install`, which writes and loads two macOS
+The installer runs `agentloop install`, which writes and loads two macOS
 `launchd` agents into `~/Library/LaunchAgents/`:
 
 | Agent | File | Role |
 |---|---|---|
-| `com.claude-cron.tick` | `com.claude-cron.tick.plist` | runs the scheduler every 60 s (`RunAtLoad` + `StartInterval 60`, `AbandonProcessGroup` so detached runs survive) |
-| `com.claude-cron.server` | `com.claude-cron.server.plist` | keeps the dashboard alive on 127.0.0.1 (`KeepAlive`) |
+| `com.agentloop.tick` | `com.agentloop.tick.plist` | runs the scheduler every 60 s (`RunAtLoad` + `StartInterval 60`, `AbandonProcessGroup` so detached runs survive) |
+| `com.agentloop.server` | `com.agentloop.server.plist` | keeps the dashboard alive on 127.0.0.1 (`KeepAlive`) |
 
 Because they live in `~/Library/LaunchAgents/`, macOS loads both **automatically
 on every login** — you do not start anything by hand, and they survive reboots.
@@ -68,8 +68,8 @@ on every login** — you do not start anything by hand, and they survive reboots
 ### Verify it is running
 
 ```bash
-claude-cron status                     # shows "launchd: …loaded" and every job
-launchctl list | grep claude-cron      # both agents should be listed
+agentloop status                     # shows "launchd: …loaded" and every job
+launchctl list | grep agentloop      # both agents should be listed
 ```
 
 The dashboard header also shows a green **launchd** badge when the tick agent is
@@ -83,10 +83,10 @@ signed in. To stop everything, `./uninstall.sh`.
 ### Try it in one minute
 
 The shipped `example-hello` job is disabled. Enable it in the dashboard (or
-`claude-cron enable example-hello`), then:
+`agentloop enable example-hello`), then:
 
 ```bash
-touch /tmp/claude-cron-hello
+touch /tmp/agentloop-hello
 ```
 
 Within a tick the precheck sees the trigger file, the agent runs once (it clears
@@ -104,17 +104,17 @@ agent actually has them.
 
 Skills live in `~/.claude/skills`, which is not version controlled. So the ones
 this loop depends on and **we** maintain live in `skills/` here and are linked
-into `~/.claude/skills` — `claude-cron install` does it, and `install.sh` runs
+into `~/.claude/skills` — `agentloop install` does it, and `install.sh` runs
 that, so a fresh clone is ready without a documented step for someone to skip.
 
 ```bash
-claude-cron skills           # what is linked, diverged, or missing
-claude-cron skills install    # link them (idempotent)
+agentloop skills           # what is linked, diverged, or missing
+agentloop skills install    # link them (idempotent)
 ```
 
 Links, not copies: editing either path edits the versioned file, so there is
 never a stale second copy quietly disagreeing with the repository. An existing
-unversioned skill is never destroyed — it is renamed `*.before-claude-cron.<ts>`
+unversioned skill is never destroyed — it is renamed `*.before-agentloop.<ts>`
 so you can read what was there before adopting ours.
 
 | skill | why the loop needs it |
@@ -150,7 +150,7 @@ two only fire once a finding already exists.
 ## How it works
 
 ```
-launchd ──60s──▶ claude-cron tick
+launchd ──60s──▶ agentloop tick
                      │  for each job that is enabled, in its time window and due:
                      └─▶ launch a DETACHED runner  ─▶  precheck?  ─┬─ exit 1 → idle (no cost)
                                                                    └─ exit 0 → claude -p run
@@ -161,7 +161,7 @@ launchd ──60s──▶ claude-cron tick
 - **The precheck is the money-saver.** It is a shell script; exit 0 means "there
   is work, wake the agent", exit 1 means "nothing to do, stay idle". A quiet loop
   spends nothing.
-- **Run now** (dashboard / `claude-cron run <id>`) bypasses the precheck and the
+- **Run now** (dashboard / `agentloop run <id>`) bypasses the precheck and the
   daily cap — a deliberate manual override.
 
 Every run is classified **success** / **warning** / **error** (error = the
@@ -240,7 +240,7 @@ working the same one. Its output is handed to the agent, which is how the sessio
 learns what was claimed for it.
 
 That makes the precheck **not idempotent**, and the engine runs it in three
-places that only mean to *look*: `claude-cron check <id>`, the guard the
+places that only mean to *look*: `agentloop check <id>`, the guard the
 dashboard's **Run now** fires before starting a forced run, and a **resume** —
 where the session already has its work and the continuation prompt replaces the
 precheck's output entirely, so anything claimed there would be claimed for a run
@@ -369,7 +369,7 @@ not: an open session keeps its services running so a resume has something to
 continue in, and `down` waits until the session closes (by finishing,
 expiring, or being discarded by hand) before it ever runs.
 
-A `down` hook must never call `claude-cron worktree-drop` itself, directly or
+A `down` hook must never call `agentloop worktree-drop` itself, directly or
 indirectly: both the automatic sweep and `worktree-drop` hold an internal lock
 across their own call into `down`, and it is the same lock `worktree-drop`
 needs before it can run — so a `down` hook that reaches for it deadlocks
@@ -391,7 +391,7 @@ A session's worktrees are removed only once the session is **done**: the agent
 declared how its run ended (a `RUN COMPLETE:`, `NOTHING TO DO:` or `BLOCKED:`
 line in its final answer) *and* left nothing behind that exists on no remote.
 Anything short of that keeps the run dir, and keeps its provisioned services
-**up**, because `claude-cron resume <job> <session>` continues in that same
+**up**, because `agentloop resume <job> <session>` continues in that same
 directory: the agent's conversation remembers the files it edited, and a
 fresh checkout of the base would not have them. Two ways a session ends up
 open:
@@ -412,7 +412,7 @@ An open session that nobody resumes expires after **24 hours**
 (`CLAUDE_CRON_SESSION_TTL`, in seconds), at which point the sweep runs its `down`
 hooks and removes it like any other finished run. The dashboard lists every open
 session with its size, its age and the time it has left, and **Discard** ends one
-early (`claude-cron worktree-drop <job-id> <stamp>` from the CLI). A run dir a
+early (`agentloop worktree-drop <job-id> <stamp>` from the CLI). A run dir a
 live run is using is never offered, and never dropped.
 
 Anything with a global name must derive it from `$CC_RUN_DIR`, or two concurrent
@@ -501,7 +501,7 @@ not an error resets the count, so one good run puts the job straight back on its
 normal cadence. A broken precheck (see above) counts too. The card says so:
 *backing off 4× after 4 failed runs*.
 
-### Is the usage gate awake? `claude-cron usage`
+### Is the usage gate awake? `agentloop usage`
 
 The scheduler holds scheduled runs back when a usage window is spent. That gate
 reads a figure the CLI only volunteers once it has decided to warn (at 0.75), so
@@ -510,7 +510,7 @@ sessions. Both halves are invisible when they work and invisible when they do
 not, which is a bad way to run a fleet — so the command says which:
 
 ```
-$ claude-cron usage
+$ agentloop usage
 five_hour: 62% used, resets in 118 min
   read 3 min ago from the statusline
 seven_day: 97% used, resets in 2311 min
@@ -518,9 +518,9 @@ seven_day: 97% used, resets in 2311 min
 
 SCHEDULED RUNS ARE BEING HELD BACK: the seven_day window is 97% used and
 overage is off, so the ceiling is a dead stop -- it resets in 2311 min
-  (`claude-cron run <job>` still overrides this, as it does the budget.)
+  (`agentloop run <job>` still overrides this, as it does the budget.)
 
-statusline: wired to /path/to/claude-cron/bin/statusline-rate-limits.sh
+statusline: wired to /path/to/agentloop/bin/statusline-rate-limits.sh
   and it has fed the gate — readings above are live.
 ```
 
@@ -534,7 +534,7 @@ To wire it, in `~/.claude/settings.json`:
 
 ```json
 "statusLine": { "type": "command",
-                "command": "/path/to/claude-cron/bin/statusline-rate-limits.sh" }
+                "command": "/path/to/agentloop/bin/statusline-rate-limits.sh" }
 ```
 
 It prints `5h 62% · 7d 18%`, so it still earns its place as a status line.
@@ -560,7 +560,7 @@ The engine knows nothing about notifiers, so this is where they go:
 ```bash
 #!/usr/bin/env bash
 [ "$CC_STATUS" = error ] || exit 0
-terminal-notifier -title "claude-cron: $CC_JOB_ID failed" \
+terminal-notifier -title "agentloop: $CC_JOB_ID failed" \
                   -message "${CC_NOTE:-see the run log}" -open "$CC_DASHBOARD"
 ```
 
@@ -590,7 +590,7 @@ No dependencies needed — `osascript` ships with macOS:
 
 ```bash
 #!/usr/bin/env bash
-osascript -e "display notification \"$CC_REASON\" with title \"claude-cron: nothing is running\""
+osascript -e "display notification \"$CC_REASON\" with title \"agentloop: nothing is running\""
 ```
 
 **A quiet loop is not a stalled one.** `precheck found nothing to do` is
@@ -608,7 +608,7 @@ fleet that stays stuck does not notify every minute until you turn it off.
 Two suites, both offline and free:
 
 ```bash
-claude-cron selftest        # the engine (bash)
+agentloop selftest        # the engine (bash)
 python3 -m pytest tests/    # the control server (python)
 ```
 
@@ -658,7 +658,7 @@ Run both after touching either side.
 **On a pull request this no longer depends on who is typing.**
 `.github/workflows/ci.yml` installs `gitleaks`, `trivy`, `syft` and `semgrep` at
 pinned versions and runs `tests/security/` as two named jobs, one per
-configuration — plus `claude-cron selftest` and the server suite. It **refuses
+configuration — plus `agentloop selftest` and the server suite. It **refuses
 to be green over a skip**: every engine-gated test skips rather than fails when
 its binary is absent (measured: 45 skips in `test_adapters.py` alone, and the
 run still reports "passed"), so the workflow checks each engine's reported
@@ -683,7 +683,7 @@ explains itself.
 Pick an exact id (`claude-opus-5`) when a task does not deserve the top model, or
 a family (`opus`) to always run that family's newest model. Families are resolved
 by the engine, not by the CLI alias: an alias points at the newest model the
-*installed CLI* knows, which lags the API right after a release. `claude-cron
+*installed CLI* knows, which lags the API right after a release. `agentloop
 resolve-models` probes for the newest of each family and caches the answer in
 `config/models.json`; the tick refreshes it roughly once a day on its own.
 
@@ -734,7 +734,7 @@ CLAUDE_CONFIG_DIR=~/.claude-work     claude    # work account
 CLAUDE_CONFIG_DIR=~/.claude-personal claude    # personal account
 ```
 
-Shell aliases for that never reach claude-cron: `launchd` inherits nothing from
+Shell aliases for that never reach agentloop: `launchd` inherits nothing from
 your shell, so by default every run signs in as the CLI's own `~/.claude`. There
 are two levels:
 
@@ -949,7 +949,7 @@ re-verify the findings the previous analysis left open — the cheapest of the
 three and the most valuable, so it goes first — triage what the deterministic
 phase found (is that "secret" an example in the documentation? is that CVE on a
 path anything reaches?), then the SAST pass at the profile's depth. It never
-writes to the database: every finding goes through `claude-cron security
+writes to the database: every finding goes through `agentloop security
 report-finding`, which validates before it stores. The agent is
 non-deterministic, and the history that produces the checklist cannot be only as
 trustworthy as the last JSON it happened to type.
@@ -1234,7 +1234,7 @@ parallel history the dashboard never shows beside the first.
 ### From the terminal
 
 ```bash
-claude-cron security analyze [--detach] <project> <repo> <branch> [profile]
+agentloop security analyze [--detach] <project> <repo> <branch> [profile]
 ```
 
 `<repo>` is the project's own name when it declares a single checkout — anything
@@ -1272,7 +1272,7 @@ Each of the four screens has one read verb behind it — `index-data`,
 `project-data`, `findings-page`, `activity-data` — answering that whole screen in
 a single call, plus `analysis`, `events` and `filters list` for the smaller
 reads. `filters save` and `filters delete` are writes, not reads — they are in
-`AGENT_FORBIDDEN` for exactly that reason. `claude-cron security render
+`AGENT_FORBIDDEN` for exactly that reason. `agentloop security render
 --analysis <id> --format md|json|html|sbom` is what the four download buttons
 call.
 `sbom` is the odd one out: it is not a report over the checklist but the stored
@@ -1293,7 +1293,7 @@ for the flag to protect, only a query the agent may legitimately want.
 **That refusal is a guardrail against mistake, not a boundary against malice,
 and it is worth saying which.** It works off `CC_SECURITY_AGENT`, a variable in
 the agent's own environment, and the agent has a shell: `env -u
-CC_SECURITY_AGENT claude-cron security decide …` walks straight past it. What
+CC_SECURITY_AGENT agentloop security decide …` walks straight past it. What
 it stops is the failure that actually happens — a model deciding, in good
 faith, that retiring the finding it just filed is the helpful thing to do — and
 it stops that cold. Nothing here is load-bearing against an agent that is
@@ -1322,7 +1322,7 @@ first, since everything below reads them; components before pages, so a page
 rule wins a tie against the component it specialises.
 
 **All three built files are committed to the repository.** That is the whole
-trade: installing claude-cron still needs only **jq, python3 and curl** — Node
+trade: installing agentloop still needs only **jq, python3 and curl** — Node
 is a developer dependency, and the day it becomes an install dependency is the
 day this stops being worth it.
 
@@ -1336,7 +1336,7 @@ node --check bin/static/security.js
 node --check bin/static/app.js
 ```
 
-and `claude-cron selftest` refuses a tree where that did not happen, for each
+and `agentloop selftest` refuses a tree where that did not happen, for each
 of the three artifacts in turn. The assertion is **"the committed UI artifact
 matches the sources it was built from, and has not been touched since"**; the
 first half fails with `bin/static/app.css is stale — run build/build-ui.sh` (or
@@ -1422,33 +1422,33 @@ can already run commands as you can read `data/app.db` and mint their own sessio
 ## CLI
 
 ```bash
-claude-cron dashboard          # open the control UI
-claude-cron status             # jobs + last run + cost, in the terminal
-claude-cron run <id>           # force a run now (ignores precheck + daily cap)
-claude-cron check <id>         # run only the precheck, report what it saw
-claude-cron enable|disable <id>
-claude-cron toggle-many true|false   # ids on stdin (JSON array or one per line)
-claude-cron create <id>        # JSON object on stdin
-claude-cron set-prompt <id>    # prompt on stdin
-claude-cron set-precheck <id>  # script on stdin
-claude-cron set-field <id> <field>   # value on stdin (interval_seconds, active_hours,
+agentloop dashboard          # open the control UI
+agentloop status             # jobs + last run + cost, in the terminal
+agentloop run <id>           # force a run now (ignores precheck + daily cap)
+agentloop check <id>         # run only the precheck, report what it saw
+agentloop enable|disable <id>
+agentloop toggle-many true|false   # ids on stdin (JSON array or one per line)
+agentloop create <id>        # JSON object on stdin
+agentloop set-prompt <id>    # prompt on stdin
+agentloop set-precheck <id>  # script on stdin
+agentloop set-field <id> <field>   # value on stdin (interval_seconds, active_hours,
                                #   active_days, model, effort, max_budget_usd,
                                #   daily_budget_usd, stall_timeout_seconds,
                                #   timeout_seconds, permission_mode, description,
                                #   cwd, project)
-claude-cron delete <id>        # remove the job (its logs are kept)
-claude-cron project-set        # create/update a project (JSON on stdin)
-claude-cron project-list | project-delete <name>
-claude-cron provision-set <project> up|down   # worktree provisioning script (stdin)
-claude-cron provision-get <project> up|down
-claude-cron worktree-drop <id> <stamp>   # discard a preserved run dir for good
-claude-cron security analyze [--detach] <project> <repo> <branch> [profile]
+agentloop delete <id>        # remove the job (its logs are kept)
+agentloop project-set        # create/update a project (JSON on stdin)
+agentloop project-list | project-delete <name>
+agentloop provision-set <project> up|down   # worktree provisioning script (stdin)
+agentloop provision-get <project> up|down
+agentloop worktree-drop <id> <stamp>   # discard a preserved run dir for good
+agentloop security analyze [--detach] <project> <repo> <branch> [profile]
                                #   run an analysis (see Security analysis)
-claude-cron security-branches <project> <repo>   # branches that checkout has
-claude-cron resolve-models     # refresh which model each family points at
-claude-cron skills             # show / link the skills the agent prompts require
-claude-cron selftest           # offline checks of the logic that can kill a run
-claude-cron install | uninstall
+agentloop security-branches <project> <repo>   # branches that checkout has
+agentloop resolve-models     # refresh which model each family points at
+agentloop skills             # show / link the skills the agent prompts require
+agentloop selftest           # offline checks of the logic that can kill a run
+agentloop install | uninstall
 ```
 
 Environment overrides: `CLAUDE_CRON_PORT`, `CLAUDE_CRON_CONFIG`,
@@ -1501,7 +1501,7 @@ network. Every `/api/*` call requires a secret token (`config/control.token`,
 chmod 600) that is embedded only in the same-origin page; cross-origin requests
 are rejected and a custom header forces a CORS preflight the server refuses — so
 no web page open in your browser can drive your agents. Every mutation shells out
-to the `claude-cron` CLI, so the bash engine stays the single source of truth.
+to the `agentloop` CLI, so the bash engine stays the single source of truth.
 
 On top of that the page requires a **signed-in operator**: every `/api/*`
 endpoint but `/api/session` and `/api/login` refuses until there is one, and the
@@ -1521,7 +1521,7 @@ person.
 **Autonomous agents act with your Claude credentials.** A job with
 `permission_mode: bypassPermissions` runs tools without prompting. Give such jobs
 a `daily_budget_usd`, watch the run log, and use the kill switch
-(`claude-cron disable <id>`) freely.
+(`agentloop disable <id>`) freely.
 
 ---
 
@@ -1534,7 +1534,7 @@ that reaches `main`:
    batched at release time — written while the reason is still known. An entry
    says what behaviour changed and what it cost to not have it: *"a long tool call
    is no longer read as a hang — a 40-minute suite used to be killed at the stall
-   timeout"*, never *"fixed watchdog"*. `claude-cron selftest` fails when `bin/`,
+   timeout"*, never *"fixed watchdog"*. `agentloop selftest` fails when `bin/`,
    `skills/` or `test/` moved after the last changelog entry.
 
 2. **A rule the code enforces must travel with the code.** `config/` is
@@ -1551,13 +1551,13 @@ that reaches `main`:
    files — the Security bundle, the Overview bundle and the stylesheet — are
    build output that lives in git so that installing needs no Node — see
    [Changing the UI](#changing-the-ui-ui-is-the-source-and-the-built-files-are-committed).
-   `claude-cron selftest` names the enforcer out loud: *the committed UI
+   `agentloop selftest` names the enforcer out loud: *the committed UI
    artifact matches the sources it was built from*.
 
 Run the checks before pushing:
 
 ```bash
-claude-cron selftest        # includes test/round-cap.test.sh and the artifact check
+agentloop selftest        # includes test/round-cap.test.sh and the artifact check
 python3 -m pytest tests/
 bash build/build-ui.sh      # only if you touched ui/ — then commit bin/static/
 ```
@@ -1572,9 +1572,9 @@ pull request description is pre-filled from `.github/pull_request_template.md`.
 ## Layout
 
 ```
-claude-cron/
-├── bin/claude-cron            # the engine + CLI (bash)
-├── bin/claude-cron-server     # the dashboard control server (python, stdlib)
+agentloop/
+├── bin/agentloop            # the engine + CLI (bash)
+├── bin/agentloop-server     # the dashboard control server (python, stdlib)
 ├── bin/worktree-lib.sh        # worktree setup, teardown and provisioning
 ├── bin/provision-lib.sh       # helpers a provisioning hook sources (ports, dotenv, gitignored files)
 ├── bin/security/              # the security analysis engines (python, stdlib): secrets, deps +
@@ -1602,7 +1602,7 @@ claude-cron/
 │                              #   security.db (the analysis ledger), journal, logs
 ├── skills/                    # the skills the agent loop requires, linked into ~/.claude/skills
 │   └── security-analysis/     # the contract every security analysis run follows
-├── test/round-cap.test.sh     # behavioural suite, run by `claude-cron selftest`
+├── test/round-cap.test.sh     # behavioural suite, run by `agentloop selftest`
 ├── install.sh · uninstall.sh
 ├── CHANGELOG.md
 └── README.md
@@ -1612,7 +1612,7 @@ Everything generated or personal (`data/`, `dist/`, your jobs, projects, model
 cache and token) is git-ignored, so a clone starts clean.
 
 The two `launchd` agents are the only thing outside this folder — macOS loads
-them from `~/Library/LaunchAgents/com.claude-cron.*.plist`. The scripts resolve
+them from `~/Library/LaunchAgents/com.agentloop.*.plist`. The scripts resolve
 their own location, so you can move this folder anywhere and re-run `install.sh`.
 
 ---

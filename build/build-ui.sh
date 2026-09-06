@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds the Security and App areas into bin/static/. The OUTPUT IS COMMITTED:
-# whoever installs claude-cron needs jq, python3 and curl -- never Node. Run
+# whoever installs agentloop needs jq, python3 and curl -- never Node. Run
 # this in the same change as any edit under ui/, or the selftest refuses the
 # tree.
 set -euo pipefail
@@ -38,7 +38,7 @@ cat ui/css/tokens.css ui/css/components.css ui/css/pages.css > bin/static/app.cs
 # exactly one of each, which build/ui-bundle-digest.sh enforces on the way
 # back in. Both stamps go through that one script -- build/ui-bundle-
 # digest.sh itself, called identically here and by check_ui_artifact in
-# bin/claude-cron -- so there is exactly one place that decides what "the
+# bin/agentloop -- so there is exactly one place that decides what "the
 # artifact's own name" means (its basename; see that script's own comment)
 # rather than two call sites that could drift apart.
 for art in bin/static/security.js bin/static/app.js bin/static/app.css; do

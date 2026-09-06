@@ -42,7 +42,7 @@ mode="${FAKE_MODE:-complete}"
 # CC_SECURITY_ANALYSIS_ID is exported into the run by cmd_security_analyze and
 # is the one signal here that this is an analysis rather than an ordinary job.
 if [ -n "${CC_SECURITY_ANALYSIS_ID:-}" ] && [ -z "${FAKE_SKIP_PREPARE:-}" ]; then
-  "$(cd "$(dirname "$0")/../bin" && pwd)/claude-cron" security prepare \
+  "$(cd "$(dirname "$0")/../bin" && pwd)/agentloop" security prepare \
     --analysis "$CC_SECURITY_ANALYSIS_ID" --root "$PWD" --offline >/dev/null 2>&1 || true
 fi
 

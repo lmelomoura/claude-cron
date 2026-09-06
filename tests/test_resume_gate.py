@@ -1,7 +1,7 @@
 """The resume gate.
 
 A resume must reclaim the EXACT port block its services were bound to, so the
-engine refuses when a live run holds it (port_base_reclaim in bin/claude-cron)
+engine refuses when a live run holds it (port_base_reclaim in bin/agentloop)
 rather than substitute a fresh block and point the resumed agent at ports
 nothing is listening on.
 
