@@ -14,7 +14,7 @@ import subprocess
 import pytest
 
 REPO = __import__("pathlib").Path(__file__).resolve().parent.parent
-ENGINE = REPO / "bin" / "claude-cron"
+ENGINE = REPO / "bin" / "agentloop"
 
 
 def _page(srv):
@@ -177,7 +177,7 @@ def test_the_backoff_curve_matches_the_engine(srv, tmp_path):
     the card promising a check the tick will not make."""
     js = _js(srv)
     # backoffMultiplier is a hoisted `function` declaration, not the `const`
-    # arrow it used to be (see its own comment: CCApp.init reads it by name
+    # arrow it used to be (see its own comment: ALApp.init reads it by name
     # well above this line, the same temporal-dead-zone fix activeRunsOf
     # already needed) -- so its constants and its body are pulled separately
     # rather than as one `const BACKOFF_AFTER=...\n};` span.
@@ -202,8 +202,8 @@ def test_the_backoff_curve_matches_the_engine(srv, tmp_path):
 
 # ---- temporal-dead-zone guard for the two boot-time interface objects.
 #
-# bin/dashboard.html builds one object for CCApp.init(...) and one for
-# CCSecurity.init(...), each naming dozens of functions the moved-out modules
+# bin/dashboard.html builds one object for ALApp.init(...) and one for
+# ALSecurity.init(...), each naming dozens of functions the moved-out modules
 # call back into. Three times now, a name in one of these objects turned out
 # to be a `const NAME = (...) => {...}` declared BELOW the object that reads
 # it (activeRunsOf, backoffMultiplier, runKey) -- `const`/`let` are hoisted by
@@ -401,7 +401,7 @@ def _iface_value_names(entry):
     here rather than silently accepted as "no name to check".
 
     Honest limit: a value that is a bare identifier or a dotted chain of them
-    (`renderJobs: renderJobsArea`, `icon: CC.icon`) is resolved to its root
+    (`renderJobs: renderJobsArea`, `icon: AL.icon`) is resolved to its root
     name; a value built from a call, a ternary, or any other expression is
     left unchecked, because none of those read an outer binding the instant
     the object literal is built the way a bare identifier reference does."""
@@ -433,12 +433,12 @@ def _init_call_object(js, call_name):
     identifier (`X.init(NAME)`) resolved back to the nearest EARLIER
     top-level `const NAME = {` in the same script. The object literal's own
     position is what is returned -- not the call's -- because that is where
-    its properties' values are actually read; for CCSecurity.init(CC) that
+    its properties' values are actually read; for ALSecurity.init(AL) that
     position is earlier in the file than the call itself, which only makes
     this check stricter, never weaker.
 
     `call_name + "("` also matches this file's own prose (two comments say
-    "CCApp.init()" to explain what calls where); those are skipped by
+    "ALApp.init()" to explain what calls where); those are skipped by
     requiring the parenthesised argument be non-empty, which every real call
     here has and every comment mention does not."""
     call_idx = None
@@ -465,7 +465,7 @@ def _init_call_object(js, call_name):
 
 def test_every_name_ccapp_and_ccsecurity_init_pass_is_already_usable(srv):
     """Guards the temporal-dead-zone class described above the helpers: for
-    every bare-name property CCApp.init(...) and CCSecurity.init(...) pass,
+    every bare-name property ALApp.init(...) and ALSecurity.init(...) pass,
     if that name is declared with `const`/`let` AFTER the point where the
     interface object reads it, fail -- a `function` declaration anywhere in
     the file (hoisted, always callable) is not flagged, deliberately, since
@@ -483,7 +483,7 @@ def test_every_name_ccapp_and_ccsecurity_init_pass_is_already_usable(srv):
     assert re.search(r"^(?:const|let)\s", js, re.M), \
         "no top-level const/let found at all -- the column-0 convention this guard reads may have changed"
 
-    for call_name in ("CCApp.init", "CCSecurity.init"):
+    for call_name in ("ALApp.init", "ALSecurity.init"):
         eval_pos, end = _init_call_object(js, call_name)
         names = []
         for entry in _top_level_entries(js[eval_pos + 1:end - 1]):
@@ -585,16 +585,16 @@ def _run_save(srv, tmp_path, *, multi, name="save.js"):
     harness = """
     // The two vocabularies moved out with the Security area; the project editor
     // reads them back off its interface, so the stub is that interface.
-    const CCSecurity = { SEC_PROFILES: ["quick","standard","deep"],
+    const ALSecurity = { SEC_PROFILES: ["quick","standard","deep"],
                          SEV_ORDER: ["low","medium","high","critical"] };
     // saveProject reads the effort through effortGet -- the page's one
-    // route to the canonical CCApp.EFFORTS. The stub mirrors that route
+    // route to the canonical ALApp.EFFORTS. The stub mirrors that route
     // rather than declaring a copy of the list: a copy here was the THIRD
     // EFFORTS in the tree, and proof the production code read a bare
     // page-global instead of the canonical one.
-    const CCApp = { EFFORTS: ["","low","medium","high","xhigh","max"],
-                    effortFromIndex: (i) => CCApp.EFFORTS[+i||0] || "" };
-    const effortGet = (id) => CCApp.effortFromIndex($(id).value);
+    const ALApp = { EFFORTS: ["","low","medium","high","xhigh","max"],
+                    effortFromIndex: (i) => ALApp.EFFORTS[+i||0] || "" };
+    const effortGet = (id) => ALApp.effortFromIndex($(id).value);
     const sent = [];
     const vals = {"pj-name":"Web","pj-desc":"","pj-cwd":"%s","pj-ccd":"","pj-base":"develop",
                   "pj-wt":"auto","pj-up":"","pj-down":"already here",
@@ -676,18 +676,18 @@ def test_the_min_severity_dropdown_offers_info_as_the_lowest_option(srv, tmp_pat
 
     sec-min-severity used to be a bare <select> with its own literal <option>
     list; now it is the house combo and its options are built by mapping
-    titleOpt over CCSecurity.SEV_ORDER -- so this pins the combo's fidelity to
+    titleOpt over ALSecurity.SEV_ORDER -- so this pins the combo's fidelity to
     that source (structurally, and by actually running the map), not a
     hand-typed option list living a second time in the page. SEV_ORDER's own
     order -- info lowest -- is pinned separately by
     test_sev_order_ranks_info_as_the_lowest_severity against the real
     vocabulary source, which is what this test's own SEV_ORDER comes from."""
     js = _js(srv)
-    # Structural: the combo's options must come from CCSecurity.SEV_ORDER
+    # Structural: the combo's options must come from ALSecurity.SEV_ORDER
     # itself, not a second hardcoded list that could quietly drift from it.
-    assert "CCSecurity.SEV_ORDER.map(titleOpt)" in js, \
-        "sec-min-severity must build its options from CCSecurity.SEV_ORDER, not a copy of it"
-    assert 'secMinSevCombo.set("medium", CCSecurity.SEV_ORDER.map(titleOpt))' in js, \
+    assert "ALSecurity.SEV_ORDER.map(titleOpt)" in js, \
+        "sec-min-severity must build its options from ALSecurity.SEV_ORDER, not a copy of it"
+    assert 'secMinSevCombo.set("medium", ALSecurity.SEV_ORDER.map(titleOpt))' in js, \
         "medium is no longer offered as the selected default"
     sev_order_src = _const(_security_js(srv), "SEV_ORDER")
     script = tmp_path / "sevopts.js"
@@ -814,7 +814,7 @@ def test_a_job_card_shows_every_kept_session_honestly(srv, tmp_path):
     deps = _index_screen_deps(block, "el", "sessionNotices")
     script = tmp_path / "sess.js"
     script.write_text(_INDEX_DOM_HARNESS + """
-    const CC = { DATA: { retained_worktrees: [
+    const AL = { DATA: { retained_worktrees: [
       {job:"j1", stamp:"s1", session:"",           expires_in:3600},
       {job:"j1", stamp:"s2", session:"sess-live00", expires_in:7200},
       {job:"j1", stamp:"s3", session:"sess-busy00", expires_in:100},
@@ -999,7 +999,7 @@ def test_the_server_hands_the_page_what_the_api_did(srv):
     # A run the API never refused has nothing to report, so the page shows nothing.
     assert srv._api_retries('{"type":"assistant","message":{}}') is None
     assert srv._api_retries("") is None
-    server_src = (REPO / "bin" / "claude-cron-server").read_text()
+    server_src = (REPO / "bin" / "agentloop-server").read_text()
     assert '"api_error_status": data.get("api_error_status")' in server_src
 
 
@@ -1111,9 +1111,9 @@ def _app_js(srv):
 # rather than compute them itself: eff() (project-inherited fields),
 # backoffMultiplier() (mirrors the engine's own curve, already proven equal
 # to it by test_the_backoff_curve_matches_the_engine above) and
-# activeRunsOf() (live runs from CC.DATA). Extracting only jobFacts's own
+# activeRunsOf() (live runs from AL.DATA). Extracting only jobFacts's own
 # text would leave all three undefined and the very first line of the
-# function -- `CC.DATA.state[j.id]` -- throwing before a single case ran, so
+# function -- `AL.DATA.state[j.id]` -- throwing before a single case ran, so
 # they are stood up here the same way _harness_globals() above stands up
 # DATA and activeRunsOf for the job-card tests: small, honest stand-ins for
 # what the page would otherwise inject, not a rewrite of what jobFacts does.
@@ -1122,7 +1122,7 @@ _JOBS_DOMAIN_HARNESS = """
 const NOW = 1_800_000_000;
 Date.now = () => NOW * 1000;
 
-const CC = { DATA: { state: {}, checks: {}, runs: [] } };
+const AL = { DATA: { state: {}, checks: {}, runs: [] } };
 function eff(j, field, def){
   if(j[field] != null && j[field] !== "") return j[field];
   return def;
@@ -1307,7 +1307,7 @@ def test_the_three_filters_narrow_the_same_set_together(srv, tmp_path):
     fn = _plainfn(block, "visibleJobs")
     script = tmp_path / "filters.js"
     script.write_text("""
-    const CC = { DATA: { jobs: [
+    const AL = { DATA: { jobs: [
       {id:"a1", project:"Alpha", enabled:true,  description:"nightly backup"},
       {id:"a2", project:"Alpha", enabled:false, description:"weekly report"},
       {id:"b1", project:"Beta",  enabled:true,  description:"deploy"},
@@ -1344,7 +1344,7 @@ def test_the_tables_empty_state_tells_no_jobs_apart_from_none_matched(
     deps = _plainfn(block, "visibleJobs") + _plainfn(block, "jobsEmptyNote")
     script = tmp_path / "empty-table.js"
     script.write_text(
-        "const CC = { DATA: { jobs: " + json.dumps(jobs) + " } };\n"
+        "const AL = { DATA: { jobs: " + json.dumps(jobs) + " } };\n"
         "const jobFilters = { project: \"\", status: \"\", query: "
         + json.dumps(query) + " };\n"
         + deps + """
@@ -1358,7 +1358,7 @@ def test_the_tables_empty_state_tells_no_jobs_apart_from_none_matched(
     assert expect in out["note"], out["note"]
 
 
-# ---- the Jobs table's own page (Phase 2 Task 3): CCApp.renderJobsPage()
+# ---- the Jobs table's own page (Phase 2 Task 3): ALApp.renderJobsPage()
 # (ui/app/jobs-table.js) replaces renderJobTable/renderJobHead/
 # paintJobFilters and the fork inside the old renderJobs(). Unlike sortJobs/
 # jobFacts/jobsEmptyNote above, renderJobsPage is not one of the isolated,
@@ -1412,7 +1412,7 @@ def _jobs_page_harness(deps):
     helper existed, pulled out so its structural sibling below does not
     have to retype them."""
     return _INDEX_DOM_HARNESS + _JOBS_DOMAIN_HARNESS + """
-    CC.DATA.jobs = [
+    AL.DATA.jobs = [
       {id: "a", project: "Alpha", enabled: true},
       {id: "b", project: "Alpha", enabled: false},
       {id: "c", project: "Beta",  enabled: true},
@@ -1458,7 +1458,7 @@ function findById(n, id){
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_jobs_page_footer_says_how_many_it_is_showing(srv, tmp_path):
     """Runs already had a pager; Jobs had none at all -- renderJobTable drew
-    every visible row with nothing below the table. CCApp.renderJobsPage()
+    every visible row with nothing below the table. ALApp.renderJobsPage()
     (ui/app/jobs-table.js) is driven whole here -- header, KPIs, filter bar
     and table -- against a small fixed set of jobs, checking the one thing
     Task 3 actually added: a footer reading "Showing X to Y of N", present
@@ -1582,7 +1582,7 @@ def test_a_projects_job_count_is_the_jobs_that_actually_name_it(srv, tmp_path):
     fn = _plainfn(block, "visibleProjects")
     script = tmp_path / "proj-count.js"
     script.write_text("""
-    const CC = { DATA: { projects: [
+    const AL = { DATA: { projects: [
       {name: "Alpha"}, {name: "Beta"}, {name: "Empty"},
     ], jobs: [
       {id: "a1", project: "Alpha"}, {id: "a2", project: "Alpha"},
@@ -1654,7 +1654,7 @@ def test_starring_a_project_repaints_the_projects_page_too(srv, tmp_path):
     js = _js(srv)
     body = _plainfn(js, "toggleFav")
     assert "renderJobsArea()" in body, "toggleFav no longer repaints Jobs"
-    assert "CCApp.renderProjectsPage()" in body, (
+    assert "ALApp.renderProjectsPage()" in body, (
         "toggleFav does not repaint Projects -- a star clicked there stays "
         "stale until the next poll")
 
@@ -1699,7 +1699,7 @@ def test_the_project_search_reaches_the_directory_too(srv, tmp_path):
     fn = _plainfn(block, "visibleProjects")
     script = tmp_path / "proj-search.js"
     script.write_text("""
-    const CC = { DATA: { jobs: [], projects: [
+    const AL = { DATA: { jobs: [], projects: [
       {name: "Quality Gate", description: "the QG Jira board", cwd: "/repos/qg"},
       {name: "Minerva", description: "Revenue Platform", cwd: "/repos/rp-dev-knowledge"},
       {name: "Scratch", description: "throwaway", cwd: "/tmp/scratch"},
@@ -1737,7 +1737,7 @@ def test_the_security_column_tells_three_states_apart(srv, tmp_path):
     subprocess-backed endpoint this page's 5-second poll has no business
     calling. `DATA.runs`, already fetched every poll for every other page,
     DOES carry the derived "security-<slug>" job's own runs, correctly
-    attributed to the real project name (`bin/claude-cron`'s
+    attributed to the real project name (`bin/agentloop`'s
     `security_derived_jobs` sets `project` on the derived job element
     itself) -- so "never analysed" and "analysed" are told apart from data
     the page already has in hand, without inventing a severity this column
@@ -1752,7 +1752,7 @@ def test_the_security_column_tells_three_states_apart(srv, tmp_path):
     fn = _plainfn(block, "projectSecurity")
     script = tmp_path / "prj-security.js"
     script.write_text("""
-    const CC = { DATA: { runs: [
+    const AL = { DATA: { runs: [
       {id: "security-beta", project: "Beta", start: 100, status: "success"},
       {id: "security-beta", project: "Beta", start: 200, status: "error"},
     ] } };
@@ -1806,7 +1806,7 @@ def test_the_security_column_tells_three_states_apart(srv, tmp_path):
 
 def test_the_page_has_no_effort_vocabulary_of_its_own(srv):
     """The effort levels live in ONE place: EFFORTS in ui/app/editor-domain.js,
-    reached from the page only through CCApp. The page used to carry its own
+    reached from the page only through ALApp. The page used to carry its own
     literal copy, read by exactly one call site -- the one that SAVES
     proj.security.effort -- while the slider's label read the canonical list.
     The day the two diverged, the user would confirm one effort level on
@@ -1817,7 +1817,7 @@ def test_the_page_has_no_effort_vocabulary_of_its_own(srv):
     page = srv.render_page()
     assert "const EFFORTS" not in page, (
         "the page declares its own EFFORTS again -- the effort vocabulary "
-        "must only be reached through CCApp (see ui/app/editor-domain.js)"
+        "must only be reached through ALApp (see ui/app/editor-domain.js)"
     )
 
 
@@ -2117,7 +2117,7 @@ def test_a_shrunk_filtered_set_pulls_the_current_page_back_from_beyond_it(srv, t
     // The filter narrowed the set to nothing -- one page, and page 5 (where
     // the operator was looking at a larger, unfiltered set) is well past it.
     function filteredRuns(){ return []; }
-    const CC = { DATA: { runs: [1, 2, 3, 4, 5] } };
+    const AL = { DATA: { runs: [1, 2, 3, 4, 5] } };
     let page = 5, pageSize = 25;
     """ + deps + """
     renderRunsTable();
@@ -2135,7 +2135,7 @@ def test_a_shrunk_filtered_set_pulls_the_current_page_back_from_beyond_it(srv, t
 def test_the_footer_and_pager_count_the_filtered_set_not_the_total(srv, tmp_path):
     """"0 of 5 runs" and "5 of 5 runs" are two different sentences -- the
     footer (and the page count driving it) must read off the FILTERED set
-    filteredRuns() returns, never CC.DATA.runs.length, or a filter that
+    filteredRuns() returns, never AL.DATA.runs.length, or a filter that
     narrowed the table to nothing would still claim to be showing
     everything."""
     block = _app_js(srv)
@@ -2145,7 +2145,7 @@ def test_the_footer_and_pager_count_the_filtered_set_not_the_total(srv, tmp_path
     // Five runs on record; the active filter matches none of them -- the
     // footer has to say 0, not 5.
     function filteredRuns(){ return []; }
-    const CC = { DATA: { runs: [1, 2, 3, 4, 5] } };
+    const AL = { DATA: { runs: [1, 2, 3, 4, 5] } };
     let page = 1, pageSize = 25;
     """ + deps + """
     renderRunsTable();
@@ -2155,7 +2155,7 @@ def test_the_footer_and_pager_count_the_filtered_set_not_the_total(srv, tmp_path
                                     text=True, check=True).stdout)
     assert out["total"] == 0, (
         f"the footer did not read the filtered count (0): got {out['total']}, "
-        "which is CC.DATA.runs.length (the total, 5) if this regressed")
+        "which is AL.DATA.runs.length (the total, 5) if this regressed")
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -2171,7 +2171,7 @@ def test_a_run_matched_only_in_its_log_content_still_surfaces(srv, tmp_path):
     fn = _plainfn(block, "filteredRuns")
     script = tmp_path / "search-log-content.js"
     script.write_text("""
-    const CC = { DATA: { runs: [
+    const AL = { DATA: { runs: [
       {id: "nightly-backup", start: 1000, status: "success"},
       {id: "weekly-report",  start: 2000, status: "success"},
     ] } };
@@ -2225,12 +2225,12 @@ def test_duration_and_cost_sort_independently(srv, tmp_path):
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_overview_and_runs_warning_cards_name_the_same_window(srv, tmp_path):
     """The Overview's Warnings/Errors cards are a door into Runs
-    (initStatFilters, bin/dashboard.html): click one and CCApp.RF.status is
+    (initStatFilters, bin/dashboard.html): click one and ALApp.RF.status is
     set, landing on the Runs page's OWN Warnings/Errors cards -- same label,
     same icon, same box. This is the second time the two disagreed under
     that identical label: the Overview counts a 7-day window and says so
     (`sub: "in the last 7 days"`); the Runs page counted ALL of
-    CC.DATA.runs -- which the server caps at 1000 rows, far more than 7
+    AL.DATA.runs -- which the server caps at 1000 rows, far more than 7
     days at any real job count -- and said "N% of finished runs" instead,
     with no window named anywhere on the card. A reader who follows the
     door lands on a page whose own card reports a different number under
@@ -2286,8 +2286,8 @@ def test_the_overview_and_runs_warning_cards_name_the_same_window(srv, tmp_path)
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_total_runs_says_1000_plus_at_the_servers_own_cap(srv, tmp_path):
-    """bin/claude-cron-server's own load_data() caps the runs query at 1000
-    rows (`ORDER BY start DESC, rowid DESC LIMIT 1000`) -- CC.DATA.runs can
+    """bin/agentloop-server's own load_data() caps the runs query at 1000
+    rows (`ORDER BY start DESC, rowid DESC LIMIT 1000`) -- AL.DATA.runs can
     never carry more than that, no matter how much history actually exists.
     "Total runs" used to print that capped length as a plain number, which
     reads as a complete count at exactly the point it stops being one: the
@@ -2804,7 +2804,7 @@ def _run_digest(root):
 
 
 def test_the_freshness_digest_covers_the_build_toolchain_not_just_ui_sources(tmp_path):
-    """build/ui-digest.sh is the fingerprint `claude-cron selftest` recomputes
+    """build/ui-digest.sh is the fingerprint `agentloop selftest` recomputes
     to prove the committed bundle was built from the committed sources -- and
     it hashes build/build-ui.sh and package.json alongside ui/**/*.js on
     purpose, because a changed esbuild --target or a bumped esbuild pin
@@ -2909,14 +2909,14 @@ def test_the_pages_icon_helpers_only_ever_inject_an_icon(srv):
     """Where the innerHTML the Security area used to do actually went.
 
     The area draws icons, the icon table is the page's, and the injection stayed
-    with the table rather than travelling with the code — so `CC.icon()` and
-    `CC.iconLabel()` are now the only route from the Security area to the HTML
+    with the table rather than travelling with the code — so `AL.icon()` and
+    `AL.iconLabel()` are now the only route from the Security area to the HTML
     parser, and this is the guard the old block-scan was. Anything they are
     handed beyond an entry in `I` goes in as a TEXT NODE, which is what keeps a
     branch called `feature/<img src=x onerror=…>` inert.
     """
     js = _js(srv)
-    i = js.index("const CC = {")
+    i = js.index("const AL = {")
     block = js[i:js.index("\n};", i)]
     found = [r.strip() for r in re.findall(r"\.innerHTML\s*=\s*([^;\n]+)", block)]
     assert len(found) == 2, \
@@ -3191,15 +3191,15 @@ def test_the_analysis_poll_cannot_outlive_the_view(srv, tmp_path):
     // it live off the interface rather than through a copy taken at startup.
     // That is what the stub has to be, or this harness proves nothing about
     // the code that actually ships.
-    const CC = {currentView: "security"};
+    const AL = {currentView: "security"};
     const secState = {project:"web", analyses:[{state:"running"}]};
     """ + src + """
     const out = {};
     secSyncPoll();                       out.watching = live;
-    CC.currentView = "overview";
+    AL.currentView = "overview";
     secSyncPoll();                       out.left = live;
     secSyncPoll();                       out.lateReload = live;
-    CC.currentView = "security";
+    AL.currentView = "security";
     secSyncPoll();                       out.cameBack = live;
     secState.analyses = [{state:"done"}];
     secSyncPoll();                       out.finished = live;
@@ -3234,7 +3234,7 @@ def test_an_analysis_is_only_ever_started_through_its_own_op(srv):
 
 
 def test_a_report_download_carries_the_token(srv):
-    """Every GET on this API is behind the X-CC-Token header, which a plain
+    """Every GET on this API is behind the X-AL-Token header, which a plain
     `<a href="/api/security/report?…">` cannot attach — the browser would send
     the navigation without it and the operator would get a 401 as a file.
 
@@ -3248,7 +3248,7 @@ def test_a_report_download_carries_the_token(srv):
     block = _security_js(srv)
     dl = _plainfn(block, "secDownloadReport")
     assert "/api/security/report" in dl
-    assert '"X-CC-Token":TOKEN' in dl or '"X-CC-Token": TOKEN' in dl
+    assert '"X-AL-Token":TOKEN' in dl or '"X-AL-Token": TOKEN' in dl
 
 
 def test_every_download_the_server_offers_has_a_button(srv):
@@ -3875,7 +3875,7 @@ def _overview_tab_deps(block):
     """Everything the Overview tab's full render (overview-tab.js) reaches,
     extracted from the bundle, plus deliberately trivial stubs for the
     bridge and cross-module bindings the harness cannot extract (kpiCard is
-    a CCApp bridge binding; secRuleMeta/secSevKey/the three navigation
+    an ALApp bridge binding; secRuleMeta/secSevKey/the three navigation
     callees are other modules' own, not under test here)."""
     consts = "".join(_const(block, n) for n in
         ("SEV5", "SEV_LABEL", "SEV_KPI_ICON", "SEV_KPI_TONE", "SEC_OVFIND_COLS",
@@ -4282,7 +4282,7 @@ def test_the_project_poll_tick_skips_a_refresh_when_nothing_could_have_changed(s
     script = tmp_path / "pj-poll-narrow.js"
     script.write_text("""
     let secProjectPollWasRunning = null;
-    const CC = {currentView: "security"};
+    const AL = {currentView: "security"};
     const secState = {project: "web", repo: "web", branch: "main", analysis: null, analyses: []};
     let refreshCalls = 0;
     function secRefreshProject(){ refreshCalls++; }
@@ -6469,7 +6469,7 @@ def test_the_poll_does_not_replace_a_deliberately_opened_analysis(srv, tmp_path)
     script = tmp_path / "poll-pinned.js"
     script.write_text("""
     let secProjectPollWasRunning = null;
-    const CC = {currentView: "security"};
+    const AL = {currentView: "security"};
     const shown = [];
     const secState = {project: "web", repo: "web", branch: "main",
                       analysis: {id: 4, repo: "web", branch: "develop"},
@@ -6519,7 +6519,7 @@ def test_every_deliberate_open_of_one_analysis_pins_it(srv):
 
 # ---- final whole-branch review, IMPORTANT 3 and MINORS 6/7: the freshness
 # guard over the COMMITTED bundle. `bin/static/security.js` is a build output
-# in git, which is the price of never needing Node to install claude-cron --
+# in git, which is the price of never needing Node to install agentloop --
 # and the selftest's own sentence claims this guard is what stops a stale or
 # mangled one shipping. It could not detect a modified bundle at all.
 
@@ -7174,7 +7174,7 @@ FORM_DIALOGS = ("editor", "projmodal", "profmodal", "confirm", "secreason", "fsm
 # above first.
 
 # The functions render() reaches, at DIRECT-CALL depth only -- not the
-# transitive closure. renderJobsArea() also calls CCApp.renderJobsPage(),
+# transitive closure. renderJobsArea() also calls ALApp.renderJobsPage(),
 # which this test does not descend into; renderProjectsPage() calls
 # mountProjectsToolbar() and renderProjectsTable(), likewise unscanned. That
 # is a stated limit, not an oversight: this test catches render() (or one of
@@ -7272,7 +7272,7 @@ def test_the_poll_never_reaches_into_a_form_dialog(srv):
     (_dialog_static_ids), extract the source of render() and everything it
     calls directly -- brace-matched for the page's own functions
     (_DIALOG_POLL_PAGE_FNS), and via _app_js()/_security_js() for the two
-    bundles (_DIALOG_POLL_APP_FNS, plus CCSecurity.render, exported from
+    bundles (_DIALOG_POLL_APP_FNS, plus ALSecurity.render, exported from
     renderSecurity in ui/security/index.js) -- and assert that none of those
     bodies contains `$("<id>")`, single- or double-quoted, for any id that
     belongs to a form dialog.
@@ -7294,8 +7294,8 @@ def test_the_poll_never_reaches_into_a_form_dialog(srv):
     for name in _DIALOG_POLL_PAGE_FNS:
         scanned[f"{name}() (bin/dashboard.html)"] = _plainfn(js, name)
     for name in _DIALOG_POLL_APP_FNS:
-        scanned[f"CCApp.{name}() (ui/app/)"] = _plainfn(app_js, name)
-    scanned["CCSecurity.render() (renderSecurity, ui/security/index.js)"] = (
+        scanned[f"ALApp.{name}() (ui/app/)"] = _plainfn(app_js, name)
+    scanned["ALSecurity.render() (renderSecurity, ui/security/index.js)"] = (
         _plainfn(sec_js, "renderSecurity"))
 
     violations = []
@@ -7331,7 +7331,7 @@ def test_the_poll_never_reaches_into_a_form_dialog(srv):
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_dirty_tracking_compares_snapshots_by_value_not_by_reference(srv, tmp_path):
     """edIsDirty (bin/dashboard.html) is edWiz.dirty(), i.e. W.changed().length>0,
-    and W.changed() is now CCApp.changedKeys(now, clean) -- makeWizard's own
+    and W.changed() is now ALApp.changedKeys(now, clean) -- makeWizard's own
     inline filter, extracted whole. Pinned against the three shapes the
     wizard actually asks it for: an untouched form, one changed field, and a
     freshly taken snapshot compared right back against an equal one (what
@@ -7377,11 +7377,11 @@ def test_the_wizard_gates_advancing_on_validation_but_editing_reaches_any_tab(sr
     const esc = (s) => String(s);
     function paintPromptHighlight(){}
     // makeWizard's own W.changed() (dirtySteps' path, taken once editing
-    // paints its nav) now calls CCApp.changedKeys -- pinned on its own in
+    // paints its nav) now calls ALApp.changedKeys -- pinned on its own in
     // test_dirty_tracking_compares_snapshots_by_value_not_by_reference above,
     // so a small, honest stand-in here is enough; this test is about
     // forward()/onTabClick, not the comparison itself.
-    const CCApp = {changedKeys: (now, clean) => Object.keys(now).filter(k => now[k] !== clean[k])};
+    const ALApp = {changedKeys: (now, clean) => Object.keys(now).filter(k => now[k] !== clean[k])};
     // A tab strip minimal enough to drive paintTabs/paintNav: innerHTML is
     // parsed only for the one attribute paintTabs ever writes (data-ttab="key"),
     // in the order the real DOM would give querySelectorAll.
@@ -7454,7 +7454,7 @@ def test_the_wizard_gates_advancing_on_validation_but_editing_reaches_any_tab(sr
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_project_step_validation_refuses_an_empty_name_and_a_malformed_repo(srv, tmp_path):
     """validateProjectStep (bin/dashboard.html) gathers the step's own fields
-    and hands them to CCApp.projectStepError for the decision -- extracted
+    and hands them to ALApp.projectStepError for the decision -- extracted
     whole, same conditions, same messages, in the same order. Two ways a
     step can be incomplete, pinned against the two the brief calls out by
     name: an empty project name, and a repo row that never became one.
@@ -7569,7 +7569,7 @@ def test_paint_tabs_renders_flat_text_tabs_while_editing_and_the_numbered_steppe
     const I = {cleft:"<cleft>", cright:"<cright>", check2:"<check2>", alert:"<alert>"};
     const esc = (s) => String(s);
     function paintPromptHighlight(){}
-    const CCApp = {changedKeys: () => []};
+    const ALApp = {changedKeys: () => []};
     function makeNav(){
       const rec = {wiz: [], html: []};
       return {
@@ -8137,16 +8137,16 @@ def test_the_rendered_category_row_keeps_the_raw_rule_id_one_hover_away(srv, tmp
 def test_calling_the_bridged_chrome_builders_during_securitys_own_init_does_not_reach_a_dead_binding():
     """CRITICAL 2 (Phase 4 final review). ui/security/page.js's own comment
     explains the trap this guards: pageHeader/kpiCard/tableFooter are read
-    off CCApp at CCSecurity.init(CC) time (bin/dashboard.html) -- a plain
-    property READ, safe that early, since CCApp's own module script has
+    off ALApp at ALSecurity.init(AL) time (bin/dashboard.html) -- a plain
+    property READ, safe that early, since ALApp's own module script has
     already executed and defined them by then. But CALLING one of the three,
     synchronously, from inside ui/security/index.js's own init() (or a
     function it calls directly, at that same synchronous point) runs
     chrome.js's own function body immediately -- and that body calls
     `icon(...)`, which for THIS bridge resolves to ui/app/page.js's own
-    binding. That binding is not assigned until CCApp.init() runs, which
-    bin/dashboard.html calls AFTER CCSecurity.init(CC) (see that file's own
-    banner comment above the CC object) -- so at the instant init() would
+    binding. That binding is not assigned until ALApp.init() runs, which
+    bin/dashboard.html calls AFTER ALSecurity.init(AL) (see that file's own
+    banner comment above the AL object) -- so at the instant init() would
     call pageHeader(), `icon` there is still `undefined`, and `icon(...)`
     throws "icon is not a function". The whole page comes up blank, and
     every OTHER test in this suite still passes, because none of them boots
@@ -8195,7 +8195,7 @@ def test_calling_the_bridged_chrome_builders_during_securitys_own_init_does_not_
 
     assert problems == [], (
         "init() (or a function it calls directly and synchronously) reaches a "
-        "bridged chrome builder before CCApp.init() has bound ui/app/page.js's "
+        "bridged chrome builder before ALApp.init() has bound ui/app/page.js's "
         "own `icon` -- this throws and blanks the whole page on load: "
         + "; ".join(problems)
     )
@@ -8223,7 +8223,7 @@ def _norm(s):
 def test_push_nav_writes_the_given_state_to_history(srv, tmp_path):
     """pushNav is the one function in the whole router that touches `history`
     directly -- everything else (setView, and every Security navigation
-    point through the CC.pushNav bridge) goes through it. Pinned alone so the
+    point through the AL.pushNav bridge) goes through it. Pinned alone so the
     tests below can stub it as a plain recorder without re-proving this
     wiring every time."""
     js = _js(srv)
@@ -8244,11 +8244,11 @@ def test_push_nav_writes_the_given_state_to_history(srv, tmp_path):
 def test_set_view_pushes_a_real_navigation_and_a_restore_skips_both_the_push_and_securitys_enter(srv, tmp_path):
     """The two things setView must get right for the router to work: a real
     navigation (no second argument) pushes the composed state, entering
-    Security through CCSecurity.enter() first so the pushed `sec` reflects
+    Security through ALSecurity.enter() first so the pushed `sec` reflects
     whatever it resolved to; a restore (`fromHistory=true`) does neither --
-    CCSecurity.enter() is skipped too, not just the push, because a restore
+    ALSecurity.enter() is skipped too, not just the push, because a restore
     (restoreNav, tested below) already knows the exact screen and is about
-    to call CCSecurity.navigate() with it right after setView returns --
+    to call ALSecurity.navigate() with it right after setView returns --
     see setView's own comment for why calling enter() first would just be a
     second, wasted guess.
 
@@ -8269,7 +8269,7 @@ def test_set_view_pushes_a_real_navigation_and_a_restore_skips_both_the_push_and
     function closeDrawer(){}
     function render(){}
     let entered = 0, left = 0;
-    const CCSecurity = {
+    const ALSecurity = {
       enter(){ entered++; },
       leave(){ left++; },
       navState(){ return {screen: "index"}; },
@@ -8287,7 +8287,7 @@ def test_set_view_pushes_a_real_navigation_and_a_restore_skips_both_the_push_and
                                     capture_output=True, text=True, check=True).stdout)
     assert out["pushed"] == [{"view": "jobs"}, {"view": "security", "sec": {"screen": "index"}}], out["pushed"]
     assert out["entered"] == 1, (
-        "CCSecurity.enter() must run for the ONE real navigation into Security "
+        "ALSecurity.enter() must run for the ONE real navigation into Security "
         f"and be skipped for the restore back into it: {out}"
     )
     # leave() is unconditional on "the new view is not Security" -- it runs on
@@ -8326,7 +8326,7 @@ def test_restore_nav_applies_state_without_pushing_and_a_dropped_flag_would_loop
     const document = { querySelectorAll: () => [] };
     function closeDrawer(){}
     function render(){}
-    const CCSecurity = { enter(){}, leave(){}, navState(){ return {screen: "index"}; }, navigate(){} };
+    const ALSecurity = { enter(){}, leave(){}, navState(){ return {screen: "index"}; }, navigate(){} };
     let pushed = [];
     function pushNav(state){ pushed.push(state); }
     """ + deps + """
@@ -8354,11 +8354,11 @@ def test_boot_replaces_history_and_never_pushes_or_calls_securitys_enter(srv, tm
     """Boot (initViews) is a restore of its own kind -- the reader did not
     navigate to open the tab -- so it REPLACES the tab's very first entry and
     must never push. For a Security boot specifically it must also never call
-    CCSecurity.enter(): cold boot is deterministically the index screen
+    ALSecurity.enter(): cold boot is deterministically the index screen
     (ui/security/state.js's secState starts fresh on every load), and
-    initViews calls CCSecurity.navigate({screen:"index"}) directly instead --
+    initViews calls ALSecurity.navigate({screen:"index"}) directly instead --
     enter()'s own guess is not just unnecessary here but wrong the instant a
-    future change gives Security any cross-reload memory. CCSecurity.enter()
+    future change gives Security any cross-reload memory. ALSecurity.enter()
     is wired to THROW below specifically to make that regression loud rather
     than silently wrong."""
     js = _js(srv)
@@ -8378,8 +8378,8 @@ def test_boot_replaces_history_and_never_pushes_or_calls_securitys_enter(srv, tm
     function pushNav(state){ pushed.push(state); }
     const location = { href: "http://127.0.0.1:8787/" };
     const history = { replaceState(state){ replaced.push(state); } };
-    const CCSecurity = {
-      enter(){ throw new Error("CCSecurity.enter() must never run during boot"); },
+    const ALSecurity = {
+      enter(){ throw new Error("ALSecurity.enter() must never run during boot"); },
       leave(){},
       navState(){ return {screen: "index"}; },
       navigate(sec){ navigated.push(sec); },
@@ -8406,7 +8406,7 @@ def test_boot_replaces_history_and_never_pushes_or_calls_securitys_enter(srv, tm
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_sec_navigate_composes_the_right_screen_and_avoids_reopening_what_is_already_on_screen(srv, tmp_path):
-    """CCSecurity.navState()/navigate() (ui/security/index.js) are the bridge
+    """ALSecurity.navState()/navigate() (ui/security/index.js) are the bridge
     a restore actually calls. Real extracted logic, small honest stand-ins
     for every screen function it calls out to (secOpenProject and friends) --
     this is about the DECISION (open fresh vs. just switch tab, and the
@@ -8711,7 +8711,7 @@ console.log(JSON.stringify(out));
 def test_a_start_keeps_its_button_down_until_the_run_appears(srv, tmp_path):
     """A click has to stay committed until the run it started is visible.
 
-    The server answers a start as soon as `cc(..., background=True)` has
+    The server answers a start as soon as `al(..., background=True)` has
     forked; the slot, and therefore the row, appear on a later poll. Handing
     the button back in between is how one reviewer job ended up with two
     sessions cut short on the SAME port block — two runs from two clicks, the
@@ -8910,7 +8910,7 @@ def test_every_run_and_resume_button_asks_about_the_pending_start_as_it_is_built
 
     A keystroke in the jobs search box, a column sort, a page change, a project
     or status pick, a filter chip, a favourite toggle — fourteen paths in all —
-    call renderJobsArea() or CCApp.renderRunsPage() directly and never reach
+    call renderJobsArea() or ALApp.renderRunsPage() directly and never reach
     render(). The first cut of the pending-start guard was re-applied from the
     last line of render(), so every one of those paths minted a fresh, enabled
     Run now / Resume and handed the second click straight through: typing one

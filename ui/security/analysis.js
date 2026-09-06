@@ -1,5 +1,5 @@
 /* --------------------------------------------------------- one project */
-import { $, CC, api, toast, projById, fmtDur, fmtWhen, money, createCombo,
+import { $, AL, api, toast, projById, fmtDur, fmtWhen, money, createCombo,
          makePicker, pushNav, markPending, clearPending, isPending } from "./page.js";
 import { secIcon, secIconHTML, secEl, secFetch } from "./dom.js";
 import { SEC_POLL_MS, SEC_PROFILES, SEC_STATES, SEC_STATE_HELP, SEC_STATE_LABEL,
@@ -31,7 +31,7 @@ let secRepoCombo = null, secBranchCombo = null, secProfileCombo = null;
 // wires every other combo on the page. createCombo itself stays defined
 // there (see page.js's own comment on the chrome bridge, and makePicker's
 // twin one in secProjectsFilterBar below) -- bridged in through
-// CCSecurity.init(CC) because the WIDGET is the page's, but what populates
+// ALSecurity.init(AL) because the WIDGET is the page's, but what populates
 // it and what a pick does is this area's own.
 export function secInitLaunchCombos(){
   // onPick mirrors exactly what index.js's own sec-repo/sec-branch `change`
@@ -77,7 +77,7 @@ export function secSyncPoll(){
   // the air when the view was left re-armed the interval a moment after
   // secLeave() had cleared it: two subprocess-backed GETs every four seconds,
   // from the Overview or the Jobs page, for as long as the analysis ran.
-  const running = CC.currentView === "security" && secState.project
+  const running = AL.currentView === "security" && secState.project
                   && secState.analyses.some(a => a.state === "running");
   // The poll tick itself must not force a full header/tabs/sidebar refetch
   // (see secReload's own comment) -- every OTHER caller of secReload still
@@ -92,7 +92,7 @@ export function secEnter(){ if(secState.project) secReload(); else secLoadIndex(
 export function secLeave(){ secStopPoll(); }
 
 /* `fromHistory` (F4 history layer): true for exactly two kinds of caller,
-   neither of which is a reader pressing "All projects" -- CCSecurity.navigate
+   neither of which is a reader pressing "All projects" -- ALSecurity.navigate
    (bin/dashboard.html's popstate handler, restoring a state that already IS
    this one) and secOpenActivity (activity-screen.js), which reuses this
    function for its own teardown and pushes ITS OWN, later, resulting state.
@@ -276,7 +276,7 @@ let secProjectPollWasRunning = null;
    when the view is opened -- `forceProject` is true for all of those by
    default; only secSyncPoll's own recurring tick passes `false`. */
 export async function secReload(forceProject = true){
-  if(!secState.project || CC.currentView !== "security") return;
+  if(!secState.project || AL.currentView !== "security") return;
   try{
     secState.analyses = await secFetch("/api/security?project="
       + encodeURIComponent(secState.project));
@@ -284,7 +284,7 @@ export async function secReload(forceProject = true){
   // Left the project screen, or the view entirely, while the fetch was out. The
   // interval is cleared here as well as in secLeave(), because THIS is the call
   // that would otherwise re-arm it on the way out.
-  if(!secState.project || CC.currentView !== "security"){ secStopPoll(); return; }
+  if(!secState.project || AL.currentView !== "security"){ secStopPoll(); return; }
   const mine = secState.analyses.filter(a => a.repo === secState.repo
                                           && a.branch === secState.branch);
   // Follow the newest analysis of the branch on screen: one just started is the

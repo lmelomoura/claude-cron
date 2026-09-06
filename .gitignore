@@ -28,5 +28,5 @@ __pycache__/
 *.pyc
 
 # Node is a developer dependency: the UI bundle in bin/static/ is COMMITTED,
-# so installing claude-cron never needs npm. These are the build inputs only.
+# so installing agentloop never needs npm. These are the build inputs only.
 node_modules/

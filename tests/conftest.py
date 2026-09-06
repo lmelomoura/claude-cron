@@ -6,7 +6,7 @@ the environment has to point at a scratch tree before the module is ever
 imported — hence the session-scoped fixture below and the import inside it,
 rather than at the top of a test file.
 
-The server ships as `bin/claude-cron-server` with no .py extension (it is an
+The server ships as `bin/agentloop-server` with no .py extension (it is an
 executable, not a package), so it is loaded by path.
 """
 
@@ -19,21 +19,21 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-SERVER = REPO / "bin" / "claude-cron-server"
+SERVER = REPO / "bin" / "agentloop-server"
 
 
 @pytest.fixture(scope="session")
 def srv(tmp_path_factory):
     """The server module, bound to a throwaway config/data tree."""
-    root = tmp_path_factory.mktemp("cc")
+    root = tmp_path_factory.mktemp("al")
     (root / "config").mkdir()
     (root / "data").mkdir()
-    os.environ["CLAUDE_CRON_CONFIG"] = str(root / "config")
-    os.environ["CLAUDE_CRON_DATA"] = str(root / "data")
+    os.environ["AGENTLOOP_CONFIG"] = str(root / "config")
+    os.environ["AGENTLOOP_DATA"] = str(root / "data")
     spec = importlib.util.spec_from_loader(
-        "cc_server", importlib.machinery.SourceFileLoader("cc_server", str(SERVER)))
+        "al_server", importlib.machinery.SourceFileLoader("al_server", str(SERVER)))
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["cc_server"] = mod
+    sys.modules["al_server"] = mod
     spec.loader.exec_module(mod)
     return mod
 

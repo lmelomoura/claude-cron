@@ -133,13 +133,24 @@ TREE_GAP = ("The working-tree secret scan did not complete ({reason}) — a "
 # back to the built-in scanner that does not involve removing a binary the
 # rest of the machine shares. It is also what lets the test suite pin which
 # scanner runs, instead of depending on what happens to be on PATH.
-ENGINES_ENV = "CC_SECURITY_ENGINES"
+ENGINES_ENV = "AL_SECURITY_ENGINES"
+# The switch's spelling before 2026-09-06, read for one release. Delete after.
+LEGACY_ENGINES_ENV = "CC_SECURITY_ENGINES"
 _OFF = {"off", "0", "no", "false", "none"}
+
+
+def _engines_setting() -> str:
+    """The switch, lower-cased and stripped: ENGINES_ENV, else its pre-rename
+    spelling, else empty (which reads as ON, see engine_path)."""
+    v = os.environ.get(ENGINES_ENV)
+    if v is None:
+        v = os.environ.get(LEGACY_ENGINES_ENV, "")
+    return v.strip().lower()
 
 
 def engine_path(name: str):
     """The engine's binary, or None when it is absent OR switched off."""
-    if os.environ.get(ENGINES_ENV, "").strip().lower() in _OFF:
+    if _engines_setting() in _OFF:
         return None
     return engines.find(name)
 
@@ -248,7 +259,7 @@ def gitleaks_config(root=None, ignore_paths=(), skip_dirs=None) -> str:
     lines.append(f"path = '''{own}'''" if own is not None
                  else "useDefault = true")
     lines += ["", "[allowlist]",
-              'description = "the scope claude-cron analyses: SKIP_DIRS, the '
+              'description = "the scope agentloop analyses: SKIP_DIRS, the '
               'default noise filter and the project\'s ignore_paths"',
               "paths = ["]
     # An apostrophe would close the TOML literal string it sits in and break
@@ -1665,7 +1676,7 @@ def trivy_iac_scan(root, ignore_paths=()):
 # document -- the scan root's OWN ABSOLUTE PATH with the relative part
 # appended. Kept in this module's fixture, with the capturing machine's home
 # directory swapped for this repository's `/Users/me` placeholder and nothing
-# else touched: `<home>/code/claude-cron/tests/security/fixtures/composer.lock`,
+# else touched: `<home>/code/claude-cron/tests/security/fixtures/composer.lock` (a path taken before the rename),
 # not `/tests/security/fixtures/composer.lock` the way the library entry for
 # the SAME file names it, two entries later in the identical array. Stored
 # and handed out through the same download route as every other SBOM in this
@@ -2181,7 +2192,7 @@ def semgrep_findings(data, root=None, ignore_paths=()) -> list[dict]:
     opening comment -- so several matches of one check in one file are one
     finding with several occurrences, the same grouping `gitleaks()` uses for
     the same reason. Measured on this repository: three md5 calls in
-    `bin/claude-cron-server`, one finding, three occurrences.
+    `bin/claude-cron-server` (its name in this capture, taken before the rename), one finding, three occurrences.
 
     Every field is CONSTRUCTED, never copied. `engines.purge` has already
     dropped `lines`, the metavariable bindings, the autofix, the dataflow
@@ -2381,7 +2392,7 @@ def semgrep_breakdown(data):
 
     NOTHING IS DROPPED, and that is deliberate. The obvious fix for `java 3` on
     a repository with no Java is to delete the row, and it opens a worse hole
-    than it closes: this tree's own shell lives in `bin/claude-cron`, which has
+    than it closes: this tree's own shell lived in `bin/claude-cron` (taken before the rename), which has
     NO EXTENSION -- Semgrep reads its shebang and this table cannot -- so a
     repository whose shell is all extensionless would lose `bash 1` from a note
     whose entire purpose is to say that shell got one rule. A row that is
@@ -2444,7 +2455,7 @@ def _semgrep_error_type(entry) -> str:
     and `str(entry.get("type"))` did not keep that promise. THE FIELD IS NOT
     ALWAYS A STRING: real semgrep writes
 
-        "type": ["PartialParsing", [{"path": "bin/claude-cron", …}]]
+        "type": ["PartialParsing", [{"path": "bin/claude-cron", …}]]   # taken before the rename
 
     for a file it could only partly parse, and `str()` of that puts the
     repository's own file paths into the coverage note -- through the one field

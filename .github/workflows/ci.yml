@@ -73,9 +73,9 @@ jobs:
   # Seconds, and it fails first when something obvious is wrong.
   checks:
     name: selftest and server suite
-    # macOS, AND THAT IS NOT A PREFERENCE. `cmd_selftest` in bin/claude-cron
+    # macOS, AND THAT IS NOT A PREFERENCE. `cmd_selftest` in bin/agentloop
     # calls `date -v0H -v0M -v0S` and `date -u -v-"${m}"M` with no fallback
-    # (bin/claude-cron:3989 and :4173) — `-v` is BSD date, which GNU date on a
+    # (bin/agentloop:3989 and :4173) — `-v` is BSD date, which GNU date on a
     # Linux runner does not have. The product's own gate does not run on Linux,
     # so neither does this job. Running the rest of the suite on a platform the
     # product cannot selftest on would report on a configuration nobody ships.
@@ -83,7 +83,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # `claude-cron selftest` asserts CHANGELOG.md is at least as new as
+          # `agentloop selftest` asserts CHANGELOG.md is at least as new as
           # the newest commit touching bin/, skills/ or test/ — it compares two
           # `git log -1` timestamps. A shallow clone can hold neither commit,
           # and the check then passes by finding NOTHING rather than by finding
@@ -125,8 +125,8 @@ jobs:
           cp config/jobs.example.json config/jobs.json
           printf '  ok    seeded config/jobs.json from the example\n'
 
-      - name: claude-cron selftest
-        run: bin/claude-cron selftest
+      - name: agentloop selftest
+        run: bin/agentloop selftest
 
       - name: the server suite
         # `tests/security/` is deliberately absent here: it is the whole of the
@@ -249,17 +249,17 @@ jobs:
           set -eo pipefail
           if [ "$MODE" = "on" ]; then
             # What every real analysis runs in.
-            export CC_SECURITY_ENGINES=on
+            export AL_SECURITY_ENGINES=on
             deselect=""
           else
-            # UNSET, never `CC_SECURITY_ENGINES=`. `adapters._OFF` is
+            # UNSET, never `AL_SECURITY_ENGINES=`. `adapters._OFF` is
             # {off, 0, no, false, none} and the empty string is not in it, so
             # an empty value reads as ON — this leg would silently be a second
             # copy of the other one, and the two-configuration guarantee would
             # be back to resting on nothing. Unset is also exactly what a
             # developer's plain `pytest` gets: conftest.py's `setdefault` is
             # what supplies "off", and leaving it unset exercises that line.
-            unset CC_SECURITY_ENGINES
+            unset AL_SECURITY_ENGINES CC_SECURITY_ENGINES
             # See the comment on this job: the in-suite spawn of the other
             # configuration is what this workflow replaces, and running it here
             # would be a third execution of a ~250s suite.

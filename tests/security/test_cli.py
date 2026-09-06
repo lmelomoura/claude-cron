@@ -34,7 +34,7 @@ CLI = REPO / "bin" / "security" / "cli.py"
 
 # What `cmd_security_analyze` exports into the analysis run, and therefore what
 # every command the agent types from its own tool shell arrives with.
-AS_AGENT = {**os.environ, "CC_SECURITY_AGENT": "1"}
+AS_AGENT = {**os.environ, "AL_SECURITY_AGENT": "1"}
 
 
 def run(db, *args, stdin=None, env=None):
@@ -92,7 +92,7 @@ def test_prepare_then_report_then_finish(tmp_path):
     lifecycle in only one configuration. It used to plant AWS's own
     documentation key (AKIAIOSFODNN7EXAMPLE), which gitleaks deliberately
     allowlists: `findings >= 1` below was true on the built-in scanner and
-    false on the engine, so with `CC_SECURITY_ENGINES=on` -- what a real
+    false on the engine, so with `AL_SECURITY_ENGINES=on` -- what a real
     analysis runs with -- this test failed on its second line and proved
     nothing about the four verbs it names. The key here is shaped like a live
     one and assembled at runtime, the way test_adapters.py's is and for the
@@ -655,7 +655,7 @@ def test_findings_lists_what_the_deterministic_phase_left_for_the_agent(tmp_path
     too, so the two lines are a pair and neither may be dropped. The engine's
     half of this verb is exercised in test_adapters.py, whose engine-path
     tests read `findings` through this same CLI door."""
-    env = {**os.environ, "CC_SECURITY_ENGINES": "off"}
+    env = {**os.environ, "AL_SECURITY_ENGINES": "off"}
     root = tmp_path / "repo"
     root.mkdir()
     (root / "id_rsa").write_text("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7Yb3ZpQk9wVt2LmN4RsX8HcJ1FgD6KaE0uWq5TzP3nBvC2rM\n")
@@ -672,7 +672,7 @@ def test_findings_lists_what_the_deterministic_phase_left_for_the_agent(tmp_path
 
 def test_renaming_a_project_carries_its_history(tmp_path):
     """The ledger keys an analysis by the project NAME it was opened under.
-    `claude-cron project-rename` changes that name in the config, and without
+    `agentloop project-rename` changes that name in the config, and without
     this every past analysis, every accepted risk and the SBOM would stay
     behind under a name no project has any more."""
     db = tmp_path / "security.db"
@@ -735,7 +735,7 @@ def test_the_agent_cannot_dismiss_the_finding_it_just_reported(tmp_path):
                 "--state", "false_positive", "--reason", "I checked it myself",
                 "--by", "security team", env=AS_AGENT)
     assert out.returncode != 0
-    assert "CC_SECURITY_AGENT" in out.stderr
+    assert "AL_SECURITY_AGENT" in out.stderr
     conn = sqlite3.connect(str(db))
     assert conn.execute("SELECT count(*) FROM decision").fetchone()[0] == 0
 
@@ -1046,13 +1046,13 @@ def test_prepare_refuses_to_scan_the_whole_machine(tmp_path):
 # ---------------------------------- --root is anchored to the run's own worktree
 
 def _isolated_env(manifest_path):
-    """What `run_job` exports into an isolated run (see bin/claude-cron and
-    bin/worktree-lib.sh:wt_setup) -- CC_SECURITY_AGENT marks the whole run as
-    the agent under review, and CC_RUN_MANIFEST names that run's own
+    """What `run_job` exports into an isolated run (see bin/agentloop and
+    bin/worktree-lib.sh:wt_setup) -- AL_SECURITY_AGENT marks the whole run as
+    the agent under review, and AL_RUN_MANIFEST names that run's own
     `.run.json`, written into the run's own directory before the agent ever
     starts."""
-    return {**os.environ, "CC_SECURITY_AGENT": "1",
-            "CC_RUN_MANIFEST": str(manifest_path)}
+    return {**os.environ, "AL_SECURITY_AGENT": "1",
+            "AL_RUN_MANIFEST": str(manifest_path)}
 
 
 def test_prepare_root_outside_the_runs_worktree_is_refused_when_isolated(tmp_path):
@@ -1111,21 +1111,21 @@ def test_prepare_root_inside_the_runs_worktree_is_accepted(tmp_path):
 
 def test_prepare_root_check_is_unchanged_without_the_run_manifest(tmp_path):
     """A human running `prepare` by hand, outside any run, carries neither
-    CC_SECURITY_AGENT nor CC_RUN_MANIFEST -- the anchor must refuse nothing
+    AL_SECURITY_AGENT nor AL_RUN_MANIFEST -- the anchor must refuse nothing
     new for that case."""
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     anywhere = tmp_path / "any-checkout-at-all"
     anywhere.mkdir()
     env = {k: v for k, v in os.environ.items()
-           if k not in ("CC_SECURITY_AGENT", "CC_RUN_MANIFEST")}
+           if k not in ("AL_SECURITY_AGENT", "AL_RUN_MANIFEST")}
     out = run(db, "prepare", "--analysis", str(aid), "--root", str(anywhere),
               "--offline", env=env)
     assert out["findings"] == 0
 
 
 def test_prepare_root_check_is_unchanged_when_agent_flag_is_set_without_a_manifest(tmp_path):
-    """CC_SECURITY_AGENT alone (no CC_RUN_MANIFEST) is what
+    """AL_SECURITY_AGENT alone (no AL_RUN_MANIFEST) is what
     `test_the_work_the_agent_is_there_to_do_still_works_under_the_flag`
     already exercises for a normal analysis; this pins the same for an
     arbitrary root, so the new guard is provably keyed on BOTH variables, not
@@ -1134,8 +1134,8 @@ def test_prepare_root_check_is_unchanged_when_agent_flag_is_set_without_a_manife
     aid = open_analysis(db)
     anywhere = tmp_path / "any-checkout-at-all"
     anywhere.mkdir()
-    env = {k: v for k, v in os.environ.items() if k != "CC_RUN_MANIFEST"}
-    env["CC_SECURITY_AGENT"] = "1"
+    env = {k: v for k, v in os.environ.items() if k != "AL_RUN_MANIFEST"}
+    env["AL_SECURITY_AGENT"] = "1"
     out = run(db, "prepare", "--analysis", str(aid), "--root", str(anywhere),
               "--offline", env=env)
     assert out["findings"] == 0
@@ -1183,7 +1183,7 @@ def test_fingerprint_of_a_secret_ignores_a_snippet_if_one_is_given(tmp_path):
 
 
 def test_fingerprint_is_allowed_under_the_agent_environment(tmp_path):
-    """It never opens the database -- there is nothing for CC_SECURITY_AGENT
+    """It never opens the database -- there is nothing for AL_SECURITY_AGENT
     to protect here, only a computation the agent would otherwise have to
     reproduce by hand and get wrong."""
     db = tmp_path / "security.db"
@@ -1295,7 +1295,7 @@ AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
 #
 # The copies here were not a second opinion, they were the same opinion in a
 # vocabulary only one scanner speaks: they planted the documentation key above
-# and asserted `aws_access_key`, while inheriting a `CC_SECURITY_ENGINES=off`
+# and asserted `aws_access_key`, while inheriting a `AL_SECURITY_ENGINES=off`
 # default they never declared. Run the suite the way production runs -- engines
 # ON -- and all three went red on a fixture gitleaks is right to ignore, having
 # proved the built-in half twice and the engine half never. The parametrised
@@ -1330,7 +1330,7 @@ def test_ignore_paths_reach_the_tree_the_history_and_the_hygiene_pass(tmp_path):
     two phases are the same code on both paths, and -- since both paths mint
     one vocabulary for `secret` -- so are the rule names below.
     """
-    env = {**os.environ, "CC_SECURITY_ENGINES": "off"}
+    env = {**os.environ, "AL_SECURITY_ENGINES": "off"}
     root = git_repo(tmp_path / "repo", [
         ("fixtures", {"tests/planted/fake.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
                       "tests/planted/fake.pem": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7Yb3ZpQk9wVt2LmN4RsX8HcJ1FgD6KaE0uWq5TzP3nBvC2rM\n"}),
@@ -1464,7 +1464,7 @@ def test_the_default_noise_filter_reaches_every_deterministic_phase(tmp_path):
     configured`, which drives the real gitleaks binary -- a default only one
     of the two honoured is the per-machine divergence this whole block keeps
     having to fix."""
-    env = {**os.environ, "CC_SECURITY_ENGINES": "off"}
+    env = {**os.environ, "AL_SECURITY_ENGINES": "off"}
     root = git_repo(tmp_path / "repo", [
         ("fixtures", {
             "tests/fixtures/fake.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
@@ -2705,7 +2705,7 @@ def test_the_runs_list_does_not_ship_the_structured_coverage(tmp_path):
     aid = prepared_analysis(db, tmp_path)
     listed = run(db, "list", "--project", "web")[0]
     assert "coverage" not in listed
-    # And `coverage_note` is still there: bin/claude-cron's selftest and
+    # And `coverage_note` is still there: bin/agentloop's selftest and
     # test/e2e.test.sh both read it from this verb.
     assert "coverage_note" in listed
     assert json.loads(run(db, "analysis", "--id", str(aid))["coverage"])["phases"]
@@ -2739,7 +2739,7 @@ def test_every_phases_prose_is_a_substring_of_the_paragraph(tmp_path):
     is a choice, not an oversight: three fixtures pin the paragraph of such a
     close byte for byte (`test_a_note_given_explicitly_is_added_to_the_stored_one`,
     `test_the_same_note_twice_is_not_stored_twice`, and the stale-sweep check
-    in `bin/claude-cron`'s selftest, which compares the sweep's `--note` for
+    in `bin/agentloop`'s selftest, which compares the sweep's `--note` for
     equality), and on the closes that file it, what says the run was cut
     short or never happened is the VERDICT the row sits beside -- `capped` or
     `failed` -- not the paragraph: a direct `capped` close with no `--note` on
@@ -3254,9 +3254,9 @@ def test_the_fallback_sbom_names_the_inventory_that_built_it(tmp_path, monkeypat
 # ------------------------------- a decision is not taken while a run is live
 
 def test_decide_is_refused_while_the_projects_latest_analysis_is_running(tmp_path):
-    """The environment guard is a guardrail against MISTAKE: CC_SECURITY_AGENT
+    """The environment guard is a guardrail against MISTAKE: AL_SECURITY_AGENT
     lives in the agent's own environment and the agent has a shell, so
-    `env -u CC_SECURITY_AGENT ...` walks past it. This check does not depend on
+    `env -u AL_SECURITY_AGENT ...` walks past it. This check does not depend on
     the environment at all -- while an analysis of the project is `running`, an
     agent of that project is alive, and that is exactly the window in which a
     decision would be one."""
@@ -3272,7 +3272,7 @@ def test_decide_is_refused_while_the_projects_latest_analysis_is_running(tmp_pat
     # And it is the ANALYSIS, not the environment, that closed the door.
     out = fails(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
                 "--state", "accepted", "--reason", "I checked it", "--by", "luiz",
-                env={k: v for k, v in os.environ.items() if k != "CC_SECURITY_AGENT"})
+                env={k: v for k, v in os.environ.items() if k != "AL_SECURITY_AGENT"})
     assert out.returncode != 0
     assert "still running" in out.stderr
 
@@ -3306,7 +3306,7 @@ def test_an_older_running_analysis_still_blocks_a_decision(tmp_path):
     `test_the_agent_cannot_dismiss_its_finding_via_a_second_analysis` for the
     exact bypass reproduced end to end. A row left `running` by a run that
     genuinely died is not a permanent lock either: the engine's own preflight
-    sweep (`cmd_security_analyze` in bin/claude-cron) closes those before the
+    sweep (`cmd_security_analyze` in bin/agentloop) closes those before the
     project's next analysis opens."""
     db = tmp_path / "security.db"
     open_analysis(db)                       # older, still says running
@@ -3323,7 +3323,7 @@ def test_an_older_running_analysis_still_blocks_a_decision(tmp_path):
 def test_the_agent_cannot_dismiss_its_finding_via_a_second_analysis(tmp_path):
     """The merge-verification pass's exact bypass of the running-analysis
     refusal above. `decide`'s check used to look only at the project's LATEST
-    analysis: from its own shell (the CC_SECURITY_AGENT flag only ever guards
+    analysis: from its own shell (the AL_SECURITY_AGENT flag only ever guards
     `decide`, `rename-project` and `open-analysis`, never `finish` or a second
     `open-analysis` run once the flag is off -- see `_refuse_if_agent`), the
     agent could `open-analysis` a second analysis of the SAME project and
@@ -3561,14 +3561,14 @@ def test_prepare_stores_syfts_sbom_and_it_survives_the_download_round_trip(
     the SBOM, `ledger.store_sbom` has to accept it and `render --format sbom`
     has to hand it back unharmed. `test_render_sbom_hands_back_the_stored_
     cyclonedx` above already proves this for `deps.sbom` (the suite's own
-    `CC_SECURITY_ENGINES=off` default keeps Syft out of that one); this is
+    `AL_SECURITY_ENGINES=off` default keeps Syft out of that one); this is
     the same round trip for the real Syft binary."""
     root = tmp_path / "repo"
     root.mkdir()
     lockfile = REPO / "tests" / "security" / "fixtures" / "package-lock.json"
     (root / "package-lock.json").write_text(lockfile.read_text())
     db = tmp_path / "security.db"
-    env = {**os.environ, "CC_SECURITY_ENGINES": "on"}
+    env = {**os.environ, "AL_SECURITY_ENGINES": "on"}
     aid = open_analysis(db)
 
     prepared = run(db, "prepare", "--analysis", str(aid), "--root", str(root),
@@ -3733,7 +3733,7 @@ def test_activity_data_refuses_an_unknown_kind_at_the_cli_edge(tmp_path):
 # fixed set), so before this it accepted anything at all: a mistyped value
 # silently matched zero rows instead of refusing with a sentence, the exact
 # failure this module's own docstring says every verb here exists to avoid.
-# The server's own route (`security_findings`, bin/claude-cron-server) already
+# The server's own route (`security_findings`, bin/agentloop-server) already
 # validates this shape at its edge -- these two tests are the CLI's own,
 # independent copy of that guard, the same relationship
 # test_activity_data_refuses_an_unknown_kind_at_the_cli_edge above has to
@@ -3894,13 +3894,13 @@ def test_the_agent_cannot_write_an_event_by_hand(tmp_path):
     out = fails(db, "event", "--project", "web", "--kind", "settings_changed",
                 "--detail", "forged", env=AS_AGENT)
     assert out.returncode != 0
-    assert "CC_SECURITY_AGENT" in out.stderr
+    assert "AL_SECURITY_AGENT" in out.stderr
     assert conn.execute("SELECT count(*) FROM event").fetchone()[0] == before
 
 
 def test_the_agent_can_still_read_events(tmp_path):
     """`events` is read-only and stays allowed under the flag -- the control
-    for the refusal above: there is nothing here for CC_SECURITY_AGENT to
+    for the refusal above: there is nothing here for AL_SECURITY_AGENT to
     protect, only a query the agent may legitimately want to see."""
     db = tmp_path / "security.db"
     run(db, "decide", "--project", "web", "--fingerprint", "a" * 64,
@@ -3930,7 +3930,7 @@ def test_analysis_refuses_an_unknown_id(tmp_path):
 
 def test_analysis_is_allowed_under_the_agent_environment(tmp_path):
     """Read-only, like `findings`, `list` and `checklist`: nothing here for
-    CC_SECURITY_AGENT to protect."""
+    AL_SECURITY_AGENT to protect."""
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     row = run(db, "analysis", "--id", str(aid), env=AS_AGENT)
@@ -4039,7 +4039,7 @@ def test_the_agent_cannot_save_a_filter(tmp_path):
     out = fails(db, "filters", "save", "--project", "web", "--name", "mine",
                 stdin=json.dumps({"severity": "critical"}), env=AS_AGENT)
     assert out.returncode != 0
-    assert "CC_SECURITY_AGENT" in out.stderr
+    assert "AL_SECURITY_AGENT" in out.stderr
     assert run(db, "filters", "list", "--project", "web") == []
 
 
@@ -4050,14 +4050,14 @@ def test_the_agent_cannot_delete_a_filter(tmp_path):
     out = fails(db, "filters", "delete", "--project", "web", "--name", "mine",
                 env=AS_AGENT)
     assert out.returncode != 0
-    assert "CC_SECURITY_AGENT" in out.stderr
+    assert "AL_SECURITY_AGENT" in out.stderr
     assert len(run(db, "filters", "list", "--project", "web")) == 1
 
 
 def test_the_agent_can_still_list_filters(tmp_path):
     """`filters list` is read-only, the same reasoning that keeps `findings`,
     `events` and `analysis` open under the flag -- there is nothing here for
-    CC_SECURITY_AGENT to protect, only a view the agent may legitimately
+    AL_SECURITY_AGENT to protect, only a view the agent may legitimately
     want."""
     db = tmp_path / "security.db"
     run(db, "filters", "save", "--project", "web", "--name", "mine",
@@ -4321,7 +4321,7 @@ def test_index_data_refuses_projects_that_is_not_a_list_of_objects(tmp_path):
 def test_index_data_is_read_only_and_reachable_by_the_agent(tmp_path):
     """Not in AGENT_FORBIDDEN -- the same reasoning as `findings`, `list`,
     `analysis` and `checklist`: it opens the ledger read-only and writes
-    nothing, so there is nothing here for CC_SECURITY_AGENT to guard."""
+    nothing, so there is nothing here for AL_SECURITY_AGENT to guard."""
     db = tmp_path / "security.db"
     out = run(db, "index-data", "--projects", "[]", env=AS_AGENT)
     assert out["summary"]["projects"] == 0
@@ -4528,7 +4528,7 @@ def test_project_data_overview_cards_follow_the_fallen_back_branch(tmp_path):
 def test_project_data_runs_tab_matches_the_list_verb(tmp_path):
     """The Runs tab is `cmd_list`'s own query -- same rows, same order --
     plus a `findings` count folded in, so it can be checked directly against
-    `claude-cron security list --project <name>`."""
+    `agentloop security list --project <name>`."""
     db = tmp_path / "security.db"
     finished_analysis(db, tmp_path, "web", "main", rule="a")
     open_analysis(db, project="web", repo="web", branch="develop", run_id="r2")
@@ -5105,7 +5105,7 @@ def test_the_skill_does_not_claim_a_read_verb_is_refused(tmp_path):
 #
 # EVERY TEST THAT GETS PAST THE GUARDS NEEDS `gitleaks` VISIBLE. The verb
 # refuses a machine where `adapters.engine_path("gitleaks")` is falsy while
-# the map holds a `secret` entry, and this suite pins CC_SECURITY_ENGINES=off
+# the map holds a `secret` entry, and this suite pins AL_SECURITY_ENGINES=off
 # (see conftest.py) -- so without the two helpers below every one of these
 # would be testing the refusal instead of what it was written for.
 
@@ -5134,13 +5134,13 @@ def with_gitleaks(tmp_path, base=None):
     PATH. `migrate-rules` no longer has a gitleaks guard to get past; this
     stays so the migration tests run the same in both configurations."""
     base = os.environ if base is None else base
-    return {**base, "CC_SECURITY_ENGINES": "on",
+    return {**base, "AL_SECURITY_ENGINES": "on",
             "PATH": f"{_gitleaks_stub(tmp_path)}{os.pathsep}{base['PATH']}"}
 
 
 def pretend_gitleaks_is_installed(monkeypatch, tmp_path):
     """The same, for the tests that drive `main()` IN-PROCESS."""
-    monkeypatch.setenv("CC_SECURITY_ENGINES", "on")
+    monkeypatch.setenv("AL_SECURITY_ENGINES", "on")
     monkeypatch.setenv(
         "PATH", f"{_gitleaks_stub(tmp_path)}{os.pathsep}{os.environ['PATH']}")
 
@@ -5172,13 +5172,13 @@ def test_migrate_rules_runs_without_gitleaks_and_carries_the_decision_across(tmp
     to be REFUSED on exactly that machine, for a reason (the built-in
     re-minting its old names) that the one-vocabulary rule had made false.
 
-    So: no gitleaks (`CC_SECURITY_ENGINES=off`, stated rather than inherited
+    So: no gitleaks (`AL_SECURITY_ENGINES=off`, stated rather than inherited
     from conftest, because `engine_path` consults the switch before PATH and
     the engines-on run of this suite must exercise the same machine), the
     migration runs, the decision lands on the new identity, and the next
     fallback analysis reads the row `accepted` and closes `done`.
     """
-    env_off = {**os.environ, "CC_SECURITY_ENGINES": "off"}
+    env_off = {**os.environ, "AL_SECURITY_ENGINES": "off"}
     db = tmp_path / "security.db"
     root = git_repo(tmp_path / "repo", [("plant", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"})])
     path = "prod.env"
@@ -5221,13 +5221,13 @@ def test_migrate_rules_runs_without_gitleaks_and_carries_the_decision_across(tmp
 
 
 def test_migrate_rules_runs_with_the_engines_switched_off(tmp_path):
-    """`CC_SECURITY_ENGINES=off` used to be refused like an absent binary. It
+    """`AL_SECURITY_ENGINES=off` used to be refused like an absent binary. It
     is the same machine as far as the next analysis is concerned -- and that
     machine now mints the engine's names too, so the migration holds there."""
     db = tmp_path / "security.db"
     aid = open_analysis(db)
     run(db, "finish", "--analysis", str(aid), "--state", "done")
-    env = {**with_gitleaks(tmp_path), "CC_SECURITY_ENGINES": "off"}
+    env = {**with_gitleaks(tmp_path), "AL_SECURITY_ENGINES": "off"}
     assert run(db, "migrate-rules", env=env) == {"renamed": [], "findings": 0}
 
 

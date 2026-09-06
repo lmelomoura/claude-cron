@@ -6,7 +6,7 @@ cut it mid-object — json.loads raised on the fragment and the id was never
 found. The transcript is append-only, so those first bytes never change: the
 miss was permanent, not something the next poll recovered from.
 
-The bash side (`session_from_stream` in bin/claude-cron) was fixed by reading
+The bash side (`session_from_stream` in bin/agentloop) was fixed by reading
 lines instead. These tests pin the same property here, so the two cannot drift.
 """
 

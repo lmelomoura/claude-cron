@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en" class="__BOOT__"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>claude-cron · Agent Loop Manager</title>
+<title>agentloop · Agent Loop Manager</title>
 <link rel="icon" type="image/svg+xml" href="__FAVICON__">
 <meta name="theme-color" content="#4f46e5">
 <!-- The theme, resolved before anything can paint. It lives in localStorage,
@@ -25,15 +25,15 @@ document.documentElement.dataset.theme =
 <body>
 <!-- The brand mark, defined once. It appears in three places (the sidebar, the
      login card and the first-run profile card) and its gradients carry ids, so
-     inlining the SVG three times would put three `id="cc-g1"` in one document.
+     inlining the SVG three times would put three `id="al-g1"` in one document.
      A <symbol> + <use> keeps one definition and three references. -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
-  <symbol id="cc-logo" viewBox="0 0 32 32">
-    <linearGradient id="cc-g1" x1="5" y1="6" x2="27" y2="30" gradientUnits="userSpaceOnUse">
+  <symbol id="al-logo" viewBox="0 0 32 32">
+    <linearGradient id="al-g1" x1="5" y1="6" x2="27" y2="30" gradientUnits="userSpaceOnUse">
       <stop stop-color="#A855F7"/><stop offset=".48" stop-color="#7C3AED"/>
       <stop offset="1" stop-color="#4C1D95"/>
     </linearGradient>
-    <radialGradient id="cc-g2" cx=".35" cy=".3" r=".8">
+    <radialGradient id="al-g2" cx=".35" cy=".3" r=".8">
       <stop stop-color="#FFFFFF"/><stop offset=".45" stop-color="#CFFAFE"/>
       <stop offset="1" stop-color="#22D3EE"/>
     </radialGradient>
@@ -41,93 +41,83 @@ document.documentElement.dataset.theme =
     <circle cx="16" cy="3" r="2.3" fill="#93C5FD" stroke="#4C1D95" stroke-width=".7"/>
     <rect x="1.5" y="14" width="4" height="9" rx="2" fill="#5B21B6"/>
     <rect x="26.5" y="14" width="4" height="9" rx="2" fill="#5B21B6"/>
-    <rect x="4" y="6" width="24" height="24" rx="7.5" fill="url(#cc-g1)" stroke="#3B168A" stroke-width=".8"/>
+    <rect x="4" y="6" width="24" height="24" rx="7.5" fill="url(#al-g1)" stroke="#3B168A" stroke-width=".8"/>
     <rect x="6.5" y="10" width="19" height="13.5" rx="5" fill="#21104E" stroke="#C084FC" stroke-width="1"/>
     <circle cx="12" cy="16.75" r="2" fill="#2B1264" stroke="#4C1D95" stroke-width=".6"/>
-    <circle cx="20" cy="16.75" r="3.1" fill="url(#cc-g2)" stroke="#312E81" stroke-width=".6"/>
+    <circle cx="20" cy="16.75" r="3.1" fill="url(#al-g2)" stroke="#312E81" stroke-width=".6"/>
   </symbol>
   <!-- The full lockup: robot, wordmark and tagline. Used on the sign-in and
        first-run cards, which have the width for it. The sidebar cannot: it
        collapses to a 48px rail, where only a square mark survives. -->
-  <symbol id="cc-lockup" viewBox="0 0 1040 300">
+  <symbol id="al-lockup" viewBox="0 0 1040 300">
     <defs>
-    <linearGradient id="cc-l-shell" x1="42" y1="48" x2="204" y2="218" gradientUnits="userSpaceOnUse">
+    <linearGradient id="al-l-shell" x1="42" y1="48" x2="204" y2="218" gradientUnits="userSpaceOnUse">
     <stop stop-color="#A855F7"/>
     <stop offset=".28" stop-color="#7C3AED"/>
     <stop offset=".7" stop-color="#5B21B6"/>
     <stop offset="1" stop-color="#3B168A"/>
     </linearGradient>
-    <linearGradient id="cc-l-shellTop" x1="76" y1="61" x2="192" y2="151" gradientUnits="userSpaceOnUse">
+    <linearGradient id="al-l-shellTop" x1="76" y1="61" x2="192" y2="151" gradientUnits="userSpaceOnUse">
     <stop stop-color="#7C3AED"/>
     <stop offset=".72" stop-color="#A855F7"/>
     <stop offset="1" stop-color="#F0ABFC"/>
     </linearGradient>
-    <linearGradient id="cc-l-screen" x1="78" y1="91" x2="182" y2="170" gradientUnits="userSpaceOnUse">
+    <linearGradient id="al-l-screen" x1="78" y1="91" x2="182" y2="170" gradientUnits="userSpaceOnUse">
     <stop stop-color="#321079"/>
     <stop offset=".58" stop-color="#24105A"/>
     <stop offset="1" stop-color="#160B3F"/>
     </linearGradient>
-    <radialGradient id="cc-l-lamp" cx=".35" cy=".3" r=".8">
+    <radialGradient id="al-l-lamp" cx=".35" cy=".3" r=".8">
     <stop stop-color="#FFFFFF"/>
     <stop offset=".38" stop-color="#CFFAFE"/>
     <stop offset=".72" stop-color="#67E8F9"/>
     <stop offset="1" stop-color="#22D3EE"/>
     </radialGradient>
-    <radialGradient id="cc-l-antenna" cx=".35" cy=".25" r=".78">
+    <radialGradient id="al-l-antenna" cx=".35" cy=".25" r=".78">
     <stop stop-color="#E0F2FE"/>
     <stop offset=".38" stop-color="#93C5FD"/>
     <stop offset=".72" stop-color="#818CF8"/>
     <stop offset="1" stop-color="#5B21B6"/>
     </radialGradient>
-    <linearGradient id="cc-l-wordAccent" x1="624" y1="82" x2="915" y2="195" gradientUnits="userSpaceOnUse">
-    <stop stop-color="#7C3AED"/>
-    <stop offset=".55" stop-color="#6D28D9"/>
-    <stop offset="1" stop-color="#4C1D95"/>
-    </linearGradient>
     </defs>
     <!-- Robot mark -->
     <g transform="translate(24 20)">
     <path d="M128 51V34" fill="none" stroke="#3B168A" stroke-width="7" stroke-linecap="round"/>
     <path d="M102 56c2-10 9-14 26-14s24 4 26 14" fill="#4C1D95" stroke="#321079" stroke-width="2"/>
-    <circle cx="128" cy="24" r="16" fill="url(#cc-l-antenna)" stroke="#4C1D95" stroke-width="2"/>
+    <circle cx="128" cy="24" r="16" fill="url(#al-l-antenna)" stroke="#4C1D95" stroke-width="2"/>
     <rect x="22" y="106" width="33" height="71" rx="16.5" fill="#4C1D95" stroke="#321079" stroke-width="2"/>
     <rect x="201" y="106" width="33" height="71" rx="16.5" fill="#4C1D95" stroke="#321079" stroke-width="2"/>
     <path d="M30 121c7-6 12-7 20-5v49c-8 2-13 1-20-5z" fill="#6D28D9"/>
     <path d="M226 121c-7-6-12-7-20-5v49c8 2 13 1 20-5z" fill="#6D28D9"/>
-    <path d="M49 69c14-13 44-18 79-18s65 5 79 18c8 8 11 26 11 61v39c0 30-12 43-34 49-15 4-34 6-56 6s-41-2-56-6c-22-6-34-19-34-49v-39c0-35 3-53 11-61z" fill="url(#cc-l-shell)" stroke="#3B168A" stroke-width="2.5"/>
-    <path d="M55 71c18-11 43-15 73-15 35 0 62 5 77 17 5 4 8 12 10 24-27-15-55-21-87-21-31 0-60 6-88 20 2-12 7-20 15-25z" fill="url(#cc-l-shellTop)" opacity=".82"/>
+    <path d="M49 69c14-13 44-18 79-18s65 5 79 18c8 8 11 26 11 61v39c0 30-12 43-34 49-15 4-34 6-56 6s-41-2-56-6c-22-6-34-19-34-49v-39c0-35 3-53 11-61z" fill="url(#al-l-shell)" stroke="#3B168A" stroke-width="2.5"/>
+    <path d="M55 71c18-11 43-15 73-15 35 0 62 5 77 17 5 4 8 12 10 24-27-15-55-21-87-21-31 0-60 6-88 20 2-12 7-20 15-25z" fill="url(#al-l-shellTop)" opacity=".82"/>
     <path d="M61 204c32 9 102 9 134-1-5 8-12 12-23 15-13 3-27 4-44 4s-31-1-44-4c-10-3-18-7-23-14z" fill="#3B168A" opacity=".55"/>
-    <path d="M73 89c13-10 32-14 55-14s42 4 55 14c10 8 14 20 14 39v18c0 19-5 31-16 38-12 8-30 11-53 11s-41-3-53-11c-11-7-16-19-16-38v-18c0-19 4-31 14-39z" fill="url(#cc-l-screen)" stroke="#C084FC" stroke-width="4"/>
+    <path d="M73 89c13-10 32-14 55-14s42 4 55 14c10 8 14 20 14 39v18c0 19-5 31-16 38-12 8-30 11-53 11s-41-3-53-11c-11-7-16-19-16-38v-18c0-19 4-31 14-39z" fill="url(#al-l-screen)" stroke="#C084FC" stroke-width="4"/>
     <path d="M80 92c12-8 28-11 48-11 25 0 43 4 55 14" fill="none" stroke="#E9D5FF" stroke-width="4" stroke-linecap="round" opacity=".16"/>
     <circle cx="95" cy="137" r="14" fill="#2B1264" stroke="#4C1D95" stroke-width="2"/>
-    <circle cx="161" cy="137" r="21" fill="url(#cc-l-lamp)" stroke="#312E81" stroke-width="2.5"/>
+    <circle cx="161" cy="137" r="21" fill="url(#al-l-lamp)" stroke="#312E81" stroke-width="2.5"/>
     </g>
     <!-- Wordmark -->
-    <text x="300" y="158" fill="#17172A" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="102" font-weight="650" letter-spacing="-5">Claude-</text>
-    <text x="620" y="158" fill="url(#cc-l-wordAccent)" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="102" font-weight="650" letter-spacing="-5">cron</text>
+    <text x="300" y="158" fill="#17172A" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="102" font-weight="650" letter-spacing="-5">agentloop</text>
     <!-- Tagline -->
     <text x="305" y="214" fill="#6B6B80" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="31" font-weight="400" letter-spacing="2.5">Agent Loop Manager</text>
     <path d="M646 204H982" stroke="#C4B5FD" stroke-width="2" stroke-linecap="round"/>
   </symbol>
   <!-- The menu lockup: robot + wordmark, no tagline — at the 172px the sidebar
        header leaves, a tagline renders about 5px tall. Shown only while the
-       sidebar is expanded; the rail falls back to #cc-logo. -->
-  <symbol id="cc-menu" viewBox="0 0 172 44">
+       sidebar is expanded; the rail falls back to #al-logo. -->
+  <symbol id="al-menu" viewBox="0 0 172 44">
     <defs>
-    <linearGradient id="cc-m-shell" x1="5" y1="6" x2="27" y2="30" gradientUnits="userSpaceOnUse">
+    <linearGradient id="al-m-shell" x1="5" y1="6" x2="27" y2="30" gradientUnits="userSpaceOnUse">
     <stop stop-color="#A855F7"/>
     <stop offset=".48" stop-color="#7C3AED"/>
     <stop offset="1" stop-color="#4C1D95"/>
     </linearGradient>
-    <radialGradient id="cc-m-lamp" cx=".35" cy=".3" r=".8">
+    <radialGradient id="al-m-lamp" cx=".35" cy=".3" r=".8">
     <stop stop-color="#FFFFFF"/>
     <stop offset=".45" stop-color="#CFFAFE"/>
     <stop offset="1" stop-color="#22D3EE"/>
     </radialGradient>
-    <linearGradient id="cc-m-cron" x1="119" y1="11" x2="168" y2="34" gradientUnits="userSpaceOnUse">
-    <stop stop-color="#7C3AED"/>
-    <stop offset="1" stop-color="#5B21B6"/>
-    </linearGradient>
     </defs>
     <!-- Compact robot mark, tuned for the 44 px menu header. -->
     <g transform="translate(1 3) scale(1.1875)">
@@ -135,14 +125,13 @@ document.documentElement.dataset.theme =
     <circle cx="16" cy="3" r="2.3" fill="#93C5FD" stroke="#4C1D95" stroke-width=".7"/>
     <rect x="1.5" y="14" width="4" height="9" rx="2" fill="#5B21B6"/>
     <rect x="26.5" y="14" width="4" height="9" rx="2" fill="#5B21B6"/>
-    <rect x="4" y="6" width="24" height="24" rx="7.5" fill="url(#cc-m-shell)" stroke="#3B168A" stroke-width=".8"/>
+    <rect x="4" y="6" width="24" height="24" rx="7.5" fill="url(#al-m-shell)" stroke="#3B168A" stroke-width=".8"/>
     <rect x="6.5" y="10" width="19" height="13.5" rx="5" fill="#21104E" stroke="#C084FC" stroke-width="1"/>
     <circle cx="12" cy="16.75" r="2" fill="#2B1264" stroke="#4C1D95" stroke-width=".6"/>
-    <circle cx="20" cy="16.75" r="3.1" fill="url(#cc-m-lamp)" stroke="#312E81" stroke-width=".6"/>
+    <circle cx="20" cy="16.75" r="3.1" fill="url(#al-m-lamp)" stroke="#312E81" stroke-width=".6"/>
     </g>
     <!-- No tagline: the wordmark remains readable at the available 172 px. -->
-    <text x="42" y="29" fill="currentColor" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="19.5" font-weight="650" letter-spacing="-.8">Claude-</text>
-    <text x="110" y="29" fill="url(#cc-m-cron)" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="19.5" font-weight="650" letter-spacing="-.8">cron</text>
+    <text x="42" y="29" fill="currentColor" font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="19.5" font-weight="650" letter-spacing="-.8">agentloop</text>
   </symbol>
 </svg>
 <div class="shell">
@@ -153,9 +142,9 @@ document.documentElement.dataset.theme =
            wordmark. Collapsed: the robot alone — the rail is 48px wide and no
            lockup survives that. The heading stays in the DOM either way, hidden
            from view but not from the document outline or a screen reader. -->
-      <svg class="brandlock" viewBox="0 0 172 44" aria-hidden="true" focusable="false"><use href="#cc-menu"/></svg>
-      <div class="mark" id="brandmark"><svg viewBox="0 0 32 32" aria-hidden="true" focusable="false"><use href="#cc-logo"/></svg></div>
-      <div class="btext"><h1>claude-cron</h1><div class="tag">Agent Loop Manager</div></div>
+      <svg class="brandlock" viewBox="0 0 172 44" aria-hidden="true" focusable="false"><use href="#al-menu"/></svg>
+      <div class="mark" id="brandmark"><svg viewBox="0 0 32 32" aria-hidden="true" focusable="false"><use href="#al-logo"/></svg></div>
+      <div class="btext"><h1>agentloop</h1><div class="tag">Agent Loop Manager</div></div>
     </div>
     <button class="burger" id="side-burger" aria-controls="sidebar" title="Collapse menu"></button>
   </div>
@@ -184,7 +173,7 @@ document.documentElement.dataset.theme =
   <div class="view" id="view-overview">
   <!-- Icon, title and the one sentence written from the numbers the loop
        actually produced, with Refresh and New job trailing on the right.
-       Built whole by CCApp.renderOverviewHead() -- see ui/app/overview.js. -->
+       Built whole by ALApp.renderOverviewHead() -- see ui/app/overview.js. -->
   <div id="ov-head"></div>
   <!-- Checks, Woke a run, Warnings, Errors, Spent today. Warnings and Errors
        are doors into Runs -- see initStatFilters() below. -->
@@ -201,7 +190,7 @@ document.documentElement.dataset.theme =
 
   <!-- Run directories still on disk, kept because a session was cut short and
        might still be resumed. A card rather than a permanent fixture: an
-       install with nothing kept has no notice to show, and CCApp.worktreesCard
+       install with nothing kept has no notice to show, and ALApp.worktreesCard
        says so by returning null -- see ui/app/overview.js. -->
   <div id="ov-worktrees"></div>
   </div><!-- /view-overview -->
@@ -210,16 +199,16 @@ document.documentElement.dataset.theme =
        dashboard, where you are scanning a handful at a glance; a table is for
        when jobs are the thing you came for and you want to sort them.
 
-       jobs-head/jobs-kpis/jobs-table are built whole by CCApp.renderJobsPage()
+       jobs-head/jobs-kpis/jobs-table are built whole by ALApp.renderJobsPage()
        every poll, the same way ov-head/ov-kpis above are built by
-       CCApp.renderOverviewHead() -- icon, title, one sentence from the real
+       ALApp.renderOverviewHead() -- icon, title, one sentence from the real
        numbers, Refresh and New job trailing right, then four KPI cards, then
-       the table card itself (CCApp.tableCard()/tableFooter(), ui/app/chrome.js).
+       the table card itself (ALApp.tableCard()/tableFooter(), ui/app/chrome.js).
        #jobstoolbar's own children are NOT rebuilt the same way: the search
        box and the two pickers are static markup and stateful widgets that
        already existed before this page had a header of its own, and
-       CCApp.renderJobsPage() only lays them out once, into a `.toolbar` it
-       builds a single time (CCApp.filterBar(), moving these elements rather
+       ALApp.renderJobsPage() only lays them out once, into a `.toolbar` it
+       builds a single time (ALApp.filterBar(), moving these elements rather
        than rebuilding them -- a rebuilt search box would drop whatever an
        operator was mid-typing), then repaints their STATE every poll
        (labels, chips, the top bulk button) -- see jobs-table.js's own
@@ -250,16 +239,16 @@ document.documentElement.dataset.theme =
       <button class="btn ghost" id="bulk-all" hidden></button>
       <div class="activefilters" id="jactive" hidden></div>
     </div>
-    <!-- The table card itself, footer included -- see CCApp.tableCard()'s own
+    <!-- The table card itself, footer included -- see ALApp.tableCard()'s own
          comment (ui/app/chrome.js) on why the footer lives INSIDE the card
          this builds rather than as a separate element below it. -->
     <div id="jobs-table"></div>
   </div><!-- /view-jobs -->
 
   <!-- Runs as its own page, speaking the Overview's visual language --
-       runs-head/runs-kpis/runs-table are built whole by CCApp.renderRunsPage()
+       runs-head/runs-kpis/runs-table are built whole by ALApp.renderRunsPage()
        every poll; runstoolbar's search box and four pickers are static
-       markup CCApp.renderRunsPage() lays out ONCE (mountRunsToolbar, guarded
+       markup ALApp.renderRunsPage() lays out ONCE (mountRunsToolbar, guarded
        by data-mounted) and repaints in place every poll after that, the
        same split jobs-table.js's own mountJobsToolbar()/paintJobFilterBar()
        use for the Jobs toolbar above. -->
@@ -318,25 +307,25 @@ document.documentElement.dataset.theme =
       </div>
       <div class="activefilters" id="ractive" hidden></div>
     </div>
-    <!-- The table card itself, footer included -- see CCApp.tableCard()'s own
+    <!-- The table card itself, footer included -- see ALApp.tableCard()'s own
          comment (ui/app/chrome.js) on why the footer lives INSIDE the card
          this builds rather than as a separate element below it. -->
     <div id="runs-table"></div>
   </div><!-- /view-runs -->
 
   <!-- Projects as its own page, speaking the Overview's visual language --
-       prj-head/prj-kpis/prj-table are built whole by CCApp.renderProjectsPage()
+       prj-head/prj-kpis/prj-table are built whole by ALApp.renderProjectsPage()
        every poll, the same way jobs-head/jobs-kpis/jobs-table are built by
-       CCApp.renderJobsPage(): icon, title, one sentence from the real
+       ALApp.renderJobsPage(): icon, title, one sentence from the real
        numbers, New project trailing right, then four KPI cards, then the
        table card itself (columns: Project, Jobs, Working directory, Repos,
        Isolation, Security, actions).
 
        #prjtoolbar's own child is NOT rebuilt the same way: the search box is
        static markup and a stateful widget that already existed before this
-       page had a header of its own, and CCApp.renderProjectsPage() only lays
+       page had a header of its own, and ALApp.renderProjectsPage() only lays
        it out once, into a `.toolbar` it builds a single time
-       (CCApp.filterBar(), moving the element rather than rebuilding it) --
+       (ALApp.filterBar(), moving the element rather than rebuilding it) --
        see ui/app/projects.js's own mountProjectsToolbar(). -->
   <div class="view" id="view-projects" hidden>
     <div id="prj-head"></div>
@@ -347,7 +336,7 @@ document.documentElement.dataset.theme =
         <button class="clear" id="pq-clear" hidden></button>
       </div>
     </div>
-    <!-- The table card itself, footer included -- see CCApp.tableCard()'s own
+    <!-- The table card itself, footer included -- see ALApp.tableCard()'s own
          comment (ui/app/chrome.js) on why the footer lives INSIDE the card
          this builds rather than as a separate element below it. -->
     <div id="prj-table"></div>
@@ -706,9 +695,9 @@ document.documentElement.dataset.theme =
      readable next to the rest of the page. -->
 <div class="setup" id="setup" hidden>
   <form class="setup-card" id="setup-form" autocomplete="off">
-    <div class="mark lockup" id="setup-mark"><svg viewBox="0 0 1040 300" aria-hidden="true" focusable="false"><use href="#cc-lockup"/></svg></div>
+    <div class="mark lockup" id="setup-mark"><svg viewBox="0 0 1040 300" aria-hidden="true" focusable="false"><use href="#al-lockup"/></svg></div>
     <h2>Create your profile</h2>
-    <p class="lede">claude-cron runs unattended agents that spend real money on
+    <p class="lede">agentloop runs unattended agents that spend real money on
       your repositories. Before the dashboard opens, say who is running it.</p>
     <div class="setup-err" id="setup-err" hidden></div>
     <label for="su-name">Name<span class="req" aria-hidden="true">*</span></label>
@@ -730,7 +719,7 @@ document.documentElement.dataset.theme =
 <!-- Shown when there is a profile but no live session: the password screen. -->
 <div class="setup" id="login" hidden>
   <form class="setup-card" id="login-form">
-    <div class="mark lockup" id="login-mark"><svg viewBox="0 0 1040 300" aria-hidden="true" focusable="false"><use href="#cc-lockup"/></svg></div>
+    <div class="mark lockup" id="login-mark"><svg viewBox="0 0 1040 300" aria-hidden="true" focusable="false"><use href="#al-lockup"/></svg></div>
     <h2>Sign in</h2>
     <p class="lede">This dashboard starts agents that spend real money on your
       repositories.</p>
@@ -922,7 +911,7 @@ document.documentElement.dataset.theme =
 </dialog>
 
 <!-- The full list behind the Overview's own worktrees card (see
-     CCApp.worktreesCard, ui/app/overview.js) -- a dialog rather than a pane,
+     ALApp.worktreesCard, ui/app/overview.js) -- a dialog rather than a pane,
      since it no longer has to also be a whole tab of its own. renderRetained()
      still targets wt-blurb/wthead/wtrows directly, unchanged by where they sit. -->
 <dialog id="wtmodal">
@@ -1009,14 +998,14 @@ document.documentElement.dataset.theme =
     put them there.</p>
   <label><code>up</code> — run in every repo's fresh worktree</label>
   <textarea id="pj-up" spellcheck="false"
-            placeholder="#!/usr/bin/env bash&#10;cp -c &quot;$CC_REPO_PATH/.env&quot; .env"></textarea>
+            placeholder="#!/usr/bin/env bash&#10;cp -c &quot;$AL_REPO_PATH/.env&quot; .env"></textarea>
   <label><code>down</code> — run when the run ends</label>
   <textarea id="pj-down" spellcheck="false"></textarea>
-  <p class="fieldhelp">Run once per repo in that repo's worktree, with <code>CC_REPO_NAME</code>,
-    <code>CC_REPO_PATH</code>, <code>CC_WORKTREE</code>, <code>CC_BASE</code>, <code>CC_RUN_DIR</code>,
-    <code>CC_RUN_MANIFEST</code>, <code>CC_PROJECT</code> and <code>CC_JOB_ID</code> in the
+  <p class="fieldhelp">Run once per repo in that repo's worktree, with <code>AL_REPO_NAME</code>,
+    <code>AL_REPO_PATH</code>, <code>AL_WORKTREE</code>, <code>AL_BASE</code>, <code>AL_RUN_DIR</code>,
+    <code>AL_RUN_MANIFEST</code>, <code>AL_PROJECT</code> and <code>AL_JOB_ID</code> in the
     environment — a non-zero <code>up</code> aborts the run, so anything with a global name must
-    derive it from <code>$CC_RUN_DIR</code> or collide.</p>
+    derive it from <code>$AL_RUN_DIR</code> or collide.</p>
   </div><!-- /pane prov -->
 
   <div class="tabpane" data-pjpane="security">
@@ -1316,7 +1305,7 @@ document.documentElement.dataset.theme =
 <!-- The Security area, built from ui/security/ by build/build-ui.sh and served
      off bin/static/. BEFORE the page's own script, not after: this bundle only
      DEFINES things, and the script below calls into it while it runs (setView()
-     during boot reaches CCSecurity.render and .enter). `?v=` is the same build
+     during boot reaches ALSecurity.render and .enter). `?v=` is the same build
      id the page carries, and the id is derived from the bundle's own bytes too,
      so a rebuilt bundle is never served from an open tab's cache. -->
 <script src="/static/security.js?v=__BUILD__"></script>
@@ -1493,7 +1482,7 @@ const normStatus=(s)=>s==="ok"?"success":(s||"—");
 // if one side changes, the card starts promising checks the tick will not make.
 const BACKOFF_AFTER=3, BACKOFF_MAX=16;
 // A function declaration rather than a const arrow. Unlike activeRunsOf
-// below, CCApp.init's interface object sits well BELOW this declaration, so
+// below, ALApp.init's interface object sits well BELOW this declaration, so
 // a const arrow never actually threw here -- this one never had a live
 // temporal-dead-zone error. What it had instead: a const arrow only worked
 // because of where this happened to sit in the file, and moving this helper
@@ -1524,7 +1513,7 @@ function toast(msg,isErr,iconName){
 
 async function api(op, extra){
   const r = await fetch("/api/action", {method:"POST",
-    headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+    headers:{"Content-Type":"text/plain","X-AL-Token":TOKEN},
     body: JSON.stringify(Object.assign({op}, extra))});
   const j = await r.json().catch(()=>({}));
   if(!r.ok || j.ok===false){ toast((j.output||j.error||("HTTP "+r.status)), true); return false; }
@@ -1560,14 +1549,14 @@ $("confirm").addEventListener("cancel",()=>{ if(_cfResolve){_cfResolve(false);_c
    /api/data carries a signature; we re-fetch only when it moves. */
 let CFG={sig:null, jobs:[], projects:[]};
 async function loadConfig(){
-  const r = await fetch("/api/config", {headers:{"X-CC-Token":TOKEN}});
+  const r = await fetch("/api/config", {headers:{"X-AL-Token":TOKEN}});
   if(!r.ok) throw new Error("HTTP "+r.status);
   CFG = await r.json();
 }
 
 async function refresh(){
   try{
-    const r = await fetch("/api/data", {headers:{"X-CC-Token":TOKEN}});
+    const r = await fetch("/api/data", {headers:{"X-AL-Token":TOKEN}});
     // The session ran out, or was signed out from another tab. Not an error to
     // report — a state to go back to.
     if(r.status===401 || r.status===428){ sessionLost(); return; }
@@ -1587,7 +1576,7 @@ async function refresh(){
 
 // jobProjectFilter/jobStatusFilter/jobQuery moved to ui/app/jobs-domain.js's
 // exported jobFilters ({project, status, query}) along with visibleJobs(),
-// the only function that reads them -- see CCApp.jobFilters below.
+// the only function that reads them -- see ALApp.jobFilters below.
 let collapsedGroups=new Set(JSON.parse(localStorage.ccCollapsed||"[]"));
 
 function projById(name){ return (DATA.projects||[]).find(p=>p.name===name)||null; }
@@ -1602,9 +1591,9 @@ function eff(j, field, def){
 // inWindow, nextCheckAt and jobFacts moved to ui/app/jobs-domain.js -- the
 // card and the table both read jobFacts, and the Overview/Jobs split this
 // branch is building must not duplicate that arithmetic across the two. See
-// CCApp.init below for what the module reads back from this page.
+// ALApp.init below for what the module reads back from this page.
 
-// jobCard moved to ui/app/overview.js in Task 9 -- CCApp.jobCard(j) now
+// jobCard moved to ui/app/overview.js in Task 9 -- ALApp.jobCard(j) now
 // returns a real Element instead of an HTML string. See its own comment for
 // why (checkList rendered an arbitrary probe script's own stdout).
 
@@ -1612,14 +1601,14 @@ function eff(j, field, def){
 // ui/app/jobs-table.js in Phase 2 Task 3 -- it still drags CARDS on the
 // Overview (`$("jobs")`, not a table row), but it is job-domain code, not
 // page furniture, so it now lives with the rest of what that module owns.
-// Called once, below, as CCApp.initJobDrag() -- see jobs-table.js's own
+// Called once, below, as ALApp.initJobDrag() -- see jobs-table.js's own
 // banner comment for why.
 
 // The group's own chrome only -- header, chevron, collapse state -- built as
 // a string the same as before, since none of it comes from a job's own
 // fields (see renderJobs's own comment on why that split is safe). The
 // grid it leaves behind is EMPTY: renderJobs appends each group's real
-// CCApp.jobCard() Elements into it in a second pass, once this shell is on
+// ALApp.jobCard() Elements into it in a second pass, once this shell is on
 // the page and `.projgroup[data-group="…"] .grid` can be found.
 function collapsibleGroup(key, headerInner){
   const collapsed=collapsedGroups.has(key);
@@ -1737,7 +1726,7 @@ function toggleFav(name){
   // aria-pressed="false" for up to 5 seconds, until the next poll's render()
   // got to it. That gap invites a second click that silently undoes the
   // first.
-  CCApp.renderProjectsPage();
+  ALApp.renderProjectsPage();
 }
 // The last three projects you actually filtered by. Kept longer than three so
 // the list survives a project being renamed out from under it.
@@ -1749,20 +1738,20 @@ function noteRecentProject(name){
 
 /* ---- bulk enable/disable ---- */
 // visibleJobs, bulkOn and bulkLabel moved to ui/app/jobs-domain.js, reached
-// here as CCApp.visibleJobs/bulkOn/bulkLabel — see CCApp.init below.
+// here as ALApp.visibleJobs/bulkOn/bulkLabel — see ALApp.init below.
 // `kind` disambiguates the scope from the key: project NAMES are free-form
 // (the engine only requires non-empty), so a project literally named
 // "__standalone__" must never be mistaken for the standalone sentinel. kind
 // is a fixed enum ("project"/"standalone") set by the caller, never user text.
 function bulkBtn(cls, kind, key, js){
-  const on=CCApp.bulkOn(js);
+  const on=ALApp.bulkOn(js);
   return '<button class="'+cls+'" data-bulk-kind="'+kind+'" data-bulk="'+esc(key)+'" data-bulk-to="'+(on?"0":"1")+'"'
     // Asked as the button is composed, like every other action button: this
     // header is rebuilt on every poll, so a disable set by the click handler
     // is gone before the toggle it guards has finished.
     +pendingAttr("toggle_many", key, kind)
     +' title="'+(on?"Disable":"Enable")+' every job in this group">'
-    +I.power+CCApp.bulkLabel(on)+'</button>';
+    +I.power+ALApp.bulkLabel(on)+'</button>';
 }
 // Resolved at CLICK time, not render time: ids baked into the DOM go stale the
 // moment a refresh lands, and acting on a stale list is how a bulk switch hits
@@ -1771,7 +1760,7 @@ function bulkBtn(cls, kind, key, js){
 function bulkScope(kind, key){
   const jobs=DATA.jobs||[];
   if(kind==="standalone") return {label:"standalone jobs", js:jobs.filter(j=>!j.project)};
-  if(kind==="visible")    return {label:"", js:CCApp.visibleJobs()};
+  if(kind==="visible")    return {label:"", js:ALApp.visibleJobs()};
   return {label:key, js:jobs.filter(j=>j.project===key)};
 }
 async function bulkToggle(btn, kind, key, enable){
@@ -1794,7 +1783,7 @@ async function bulkToggle(btn, kind, key, enable){
   if(!yes) return;
   btn.disabled=true;
   const r=await fetch("/api/action",{method:"POST",
-    headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+    headers:{"Content-Type":"text/plain","X-AL-Token":TOKEN},
     body:JSON.stringify({op:"toggle_many", ids:js.map(j=>j.id), enabled:enable})});
   const j=await r.json().catch(()=>({}));
   if(!r.ok||j.ok===false){ toast(j.error||j.output||("HTTP "+r.status), true); btn.disabled=false; return; }
@@ -1807,16 +1796,16 @@ async function bulkToggle(btn, kind, key, enable){
 // The Overview's own card grid -- what used to be the second half of
 // renderJobs(), before the Jobs table (the branch that used to fork off the
 // front half, `if(currentView==="jobs"){ renderJobTable(vis); return; }`)
-// moved whole into ui/app/jobs-table.js as CCApp.renderJobsPage(). Renamed
+// moved whole into ui/app/jobs-table.js as ALApp.renderJobsPage(). Renamed
 // rather than left as renderJobs(): the old name described a function that
 // drew EITHER the cards or the table depending on the current view, and now
 // that the table has its own module and its own render call, keeping that
 // name on the half that only ever draws cards would say the fork still
 // existed. Not named renderJobCards() either -- that name already belongs,
-// below, to the historical HTML-string builder CCApp.jobCard(j) replaced in
+// below, to the historical HTML-string builder ALApp.jobCard(j) replaced in
 // Task 9, and reusing it here would read as this function still being that
 // one. See renderJobsArea() below for what replaces the fork -- both halves
-// are drawn every poll now, the same way CCApp.renderProjectsPage()/renderRuns()
+// are drawn every poll now, the same way ALApp.renderProjectsPage()/renderRuns()
 // already redraw their own tables regardless of which page is showing; the
 // old view check only ever saved building whichever of cards/table was
 // hidden, and the saving was never worth the special case.
@@ -1845,19 +1834,19 @@ function renderOverviewJobs(){
   if(menuOpen) return;
   const jobs=DATA.jobs||[];
   const allProjects=[...new Set(jobs.map(j=>j.project||"").filter(Boolean))].sort();
-  if(CCApp.jobFilters.project && CCApp.jobFilters.project!=="__none__"
-     && !allProjects.includes(CCApp.jobFilters.project)) CCApp.jobFilters.project="";
+  if(ALApp.jobFilters.project && ALApp.jobFilters.project!=="__none__"
+     && !allProjects.includes(ALApp.jobFilters.project)) ALApp.jobFilters.project="";
 
   // Everything below groups the FILTERED set, so search and status narrow the
   // groups themselves — a project whose only matching job was disabled should
   // not sit there as an empty card. The Jobs page's own toolbar is the only
   // place this filter is ever set, but the Overview's cards read the same
   // shared state -- pre-existing behaviour, unchanged by this move.
-  const vis=CCApp.visibleJobs();
+  const vis=ALApp.visibleJobs();
 
   // ---- the job cards. renderJobCards (a different, historical function --
   // see this function's own banner comment above) used to build this whole
-  // area, including every card, as one HTML string; now CCApp.jobCard(j)
+  // area, including every card, as one HTML string; now ALApp.jobCard(j)
   // returns a real Element (see its own file for why), so the cards go in
   // with appendChild rather than string concatenation. The group CHROME below
   // (the collapsible header, the star, the bulk button) stays built from
@@ -1866,9 +1855,9 @@ function renderOverviewJobs(){
   // a probe's stdout, so it carries none of the exposure that moved jobCard
   // out in the first place.
   const host=$("jobs");
-  const filtering = CCApp.jobFilters.project || CCApp.jobFilters.status || CCApp.jobFilters.query.trim();
+  const filtering = ALApp.jobFilters.project || ALApp.jobFilters.status || ALApp.jobFilters.query.trim();
   if(!vis.length){
-    host.innerHTML='<div class="card empty">'+I.inbox+CCApp.jobsEmptyNote(!!filtering)+'</div>';
+    host.innerHTML='<div class="card empty">'+I.inbox+ALApp.jobsEmptyNote(!!filtering)+'</div>';
     return;
   }
 
@@ -1876,12 +1865,12 @@ function renderOverviewJobs(){
   if(!allProjects.length){
     host.innerHTML='<div class="grid"></div>';
     const grid=host.querySelector(".grid");
-    vis.forEach(j=>grid.appendChild(CCApp.jobCard(j)));
+    vis.forEach(j=>grid.appendChild(ALApp.jobCard(j)));
     return;
   }
 
   // Starred projects first, then the rest alphabetically, standalone jobs in
-  // their own group last — CCApp.groupJobs's own doc comment has the "no
+  // their own group last — ALApp.groupJobs's own doc comment has the "no
   // group at all" case this can still fall through to below. `isFav` wrapped
   // in a `.has()` rather than a real Set: the favourites this reads are the
   // page's own persisted set, and groupJobs only ever asks whether one name
@@ -1890,7 +1879,7 @@ function renderOverviewJobs(){
   // project-less, on an install that has projects elsewhere -- still gets
   // its group header instead of reading like an install with no projects
   // anywhere.
-  const groups=CCApp.groupJobs(vis, {has:isFav}, allProjects);
+  const groups=ALApp.groupJobs(vis, {has:isFav}, allProjects);
   // groupJobs returns no groups at all when none of `vis` carries a project
   // (its own "flat grid" case, same shape as the `!allProjects.length` guard
   // above) -- fall back to the same ungrouped grid rather than the "no jobs"
@@ -1899,7 +1888,7 @@ function renderOverviewJobs(){
   if(!groups.length){
     host.innerHTML='<div class="grid"></div>';
     const grid=host.querySelector(".grid");
-    vis.forEach(j=>grid.appendChild(CCApp.jobCard(j)));
+    vis.forEach(j=>grid.appendChild(ALApp.jobCard(j)));
     return;
   }
   let html="";
@@ -1931,19 +1920,19 @@ function renderOverviewJobs(){
   // `data-group` is exactly this handoff's address.
   for(const g of groups){
     const grid=host.querySelector('.projgroup[data-group="'+CSS.escape(g.name)+'"] .grid');
-    if(grid) g.jobs.forEach(j=>grid.appendChild(CCApp.jobCard(j)));
+    if(grid) g.jobs.forEach(j=>grid.appendChild(ALApp.jobCard(j)));
   }
 }
 
 // renderJobHead/renderJobTable (the Jobs table's own head and rows, built as
 // HTML strings) moved whole into ui/app/jobs-table.js in Phase 2 Task 3, as
-// CCApp.renderJobsPage() -- built from real DOM elements now, not markup.
+// ALApp.renderJobsPage() -- built from real DOM elements now, not markup.
 // The sort state they used to keep as this page's own `jobSortKey`/
 // `jobSortDir` module-level lets moved with them, into that module's own
-// closure; the page's delegated click listener now calls CCApp.jobsSort(key)
-// for a header click and CCApp.jobsSetPage(delta) for the footer's pager
-// rather than touching that state directly. CCApp.JOB_COLS and
-// CCApp.sortJobs (ui/app/jobs-domain.js) are unchanged by this move -- they
+// closure; the page's delegated click listener now calls ALApp.jobsSort(key)
+// for a header click and ALApp.jobsSetPage(delta) for the footer's pager
+// rather than touching that state directly. ALApp.JOB_COLS and
+// ALApp.sortJobs (ui/app/jobs-domain.js) are unchanged by this move -- they
 // were already pure, DOM-free, and pinned by Task 2's own tests.
 
 // The Jobs table and the Overview's own cards are two renderings of the
@@ -1953,21 +1942,21 @@ function renderOverviewJobs(){
 // above for why that is not a regression. clearJobFilters()
 // (ui/app/jobs-domain.js) and the toolbar's own filter handlers below all
 // call this through the SAME `renderJobs` name the page hands the module
-// via CCApp.init() -- see that call's own comment for why the key stays
+// via ALApp.init() -- see that call's own comment for why the key stays
 // `renderJobs` even though the function behind it does not.
 function renderJobsArea(){
   renderOverviewJobs();
-  CCApp.renderJobsPage();
+  ALApp.renderJobsPage();
 }
 
 // The Projects table -- its columns, its sort state, its rows, and the new
 // Security column the mockup asked for and the old table did not have --
 // moved whole into ui/app/projects.js in Phase 2 Task 5, as
-// CCApp.renderProjectsPage(), the same move jobs-table.js already made for
+// ALApp.renderProjectsPage(), the same move jobs-table.js already made for
 // Jobs in Task 3. The page's delegated click listener now calls
-// CCApp.projectsSort(key) for a header click and CCApp.projectsSetPage(delta)
+// ALApp.projectsSort(key) for a header click and ALApp.projectsSetPage(delta)
 // for the footer's pager, rather than touching prjSortKey/prjSortDir/page
-// directly. CCApp.visibleProjects and CCApp.projectIsolation
+// directly. ALApp.visibleProjects and ALApp.projectIsolation
 // (ui/app/projects.js) are unchanged by this move -- they were already pure,
 // DOM-free, and pinned by Task 4's own tests.
 
@@ -1988,17 +1977,17 @@ function renderJobsArea(){
 
    pageHeader/kpiCard/tableFooter (Phase 4 Task 1) are the one exception to
    "everything here is this page's own": they are ui/app/chrome.js's builders,
-   read off CCApp rather than defined here, because ui/security/ cannot import
+   read off ALApp rather than defined here, because ui/security/ cannot import
    that file directly (see ui/security/page.js's own comment on the bundle
    split this avoids). This is a plain PROPERTY READ, not a call, so it is
-   safe this early even though CCApp.init() below has not run yet and
+   safe this early even though ALApp.init() below has not run yet and
    ui/app/page.js's own `icon` is still unbound at this line -- nothing in
    this object CALLS pageHeader/kpiCard yet, it only hands the reference
    over. ui/security/index-screen.js's own secRenderHead()/secIndexCards()
    are what call them, well after boot, off a poll tick or a resolved fetch
    -- see secRenderHead's own comment for why calling either one any earlier
    throws. */
-const CC = {
+const AL = {
   $, TOKEN, api, toast, openLog, projById, sessionLost, unjournaledLive,
   // The Security page repaints on its own 4-second cycle (secPaint), which
   // rebuilds its buttons exactly the way this page's poll rebuilds the cards --
@@ -2006,7 +1995,7 @@ const CC = {
   // that could disagree about what is in flight.
   markPending, clearPending, isPending, markIfPending,
   fmtAgo, fmtWhen, fmtDur, money,
-  pageHeader: CCApp.pageHeader, kpiCard: CCApp.kpiCard, tableFooter: CCApp.tableFooter,
+  pageHeader: ALApp.pageHeader, kpiCard: ALApp.kpiCard, tableFooter: ALApp.tableFooter,
   // The project screen's "Project settings" link opens the SAME editor the
   // Projects page already uses -- the form is not duplicated here, only
   // pointed at. Defined later in this file; safe to read now because
@@ -2021,7 +2010,7 @@ const CC = {
   // reading them earlier than their own textual position still finds them,
   // and test_every_name_ccapp_and_ccsecurity_init_pass_is_already_usable
   // exists specifically to keep that true. Unlike pageHeader/kpiCard/
-  // tableFooter above, neither one has a ui/app/ source to read off CCApp
+  // tableFooter above, neither one has a ui/app/ source to read off ALApp
   // for: both are page-native widgets whose markup can be built anywhere but
   // whose behaviour is the caller's, so ui/security/ builds its own three
   // filter pickers and three launcher combos and wires them through these
@@ -2080,7 +2069,7 @@ const CC = {
   // icon()/iconLabel() already read without ever spelling out how.
   iconHTML(name){ return I[name] || ""; },
 };
-CCSecurity.init(CC);
+ALSecurity.init(AL);
 /* ============================================================ end security */
 
 /* ==================================================================== app
@@ -2094,7 +2083,7 @@ CCSecurity.init(CC);
    those functions used to reach into ($("jactive"), $("bulk-all"), the two
    pickers) and the delegated click listener that answers what they build.
    jobCard moved into overview.js in Task 9 -- renderOverviewJobs above calls
-   CCApp.jobCard(j).
+   ALApp.jobCard(j).
 
    Everything in ui/app/page.js's export list has to appear in this object --
    a name missing from it is a bind-time failure with that name in the
@@ -2120,10 +2109,10 @@ CCSecurity.init(CC);
    own list, whose every name IS consumed there, and nobody trimmed the copy
    down to what this page's screens actually read. Every one still has
    exactly one definition, right here in this page's own script, for this
-   page's own use -- removing them from CCApp.init() does not remove them
+   page's own use -- removing them from ALApp.init() does not remove them
    from dashboard.html, only from a bridge nothing was crossing. */
-CCApp.init({ $, fmtAgo, fmtDur, money,
-             icon: CC.icon,
+ALApp.init({ $, fmtAgo, fmtDur, money,
+             icon: AL.icon,
              projById, eff,
              backoffMultiplier, activeRunsOf, renderJobs: renderJobsArea,
              effortLabel, fmtExpiresIn, resumeInFlight, markIfPending,
@@ -2137,13 +2126,13 @@ CCApp.init({ $, fmtAgo, fmtDur, money,
 
 // paintJobFilters (the toolbar's own repaint: the two pickers, the active-
 // filter chip row, the top bulk button) moved into ui/app/jobs-table.js in
-// Phase 2 Task 3, as paintJobFilterBar() -- called from CCApp.renderJobsPage()
+// Phase 2 Task 3, as paintJobFilterBar() -- called from ALApp.renderJobsPage()
 // rather than from here. It reaches $("jactive")/$("jf-clear")/$("bulk-all")
 // the same way it always did (static markup, not rebuilt), and the two
 // pickers through paintJobPickers() below, since the picker OBJECTS
 // themselves stay here -- initPickers() also builds the four Runs pickers,
 // which are not this task's to hand over.
-// clearJobFilters moved to ui/app/jobs-domain.js, reached as CCApp.clearJobFilters.
+// clearJobFilters moved to ui/app/jobs-domain.js, reached as ALApp.clearJobFilters.
 
 /* ------------------------------------------------------- the five pickers
    Rows for the project lists. Shared by Jobs (counting jobs per project) and
@@ -2172,8 +2161,8 @@ function projectFoot(known, q, P){
   if(!n) return "";
   return "Showing "+Math.min(P.limit,n)+" of "+n+" project"+(n===1?"":"s");
 }
-// jobProjectNames moved to ui/app/jobs-domain.js, reached as CCApp.jobProjectNames;
-// runProjectNames moved to ui/app/runs.js the same way, reached as CCApp.runProjectNames.
+// jobProjectNames moved to ui/app/jobs-domain.js, reached as ALApp.jobProjectNames;
+// runProjectNames moved to ui/app/runs.js the same way, reached as ALApp.runProjectNames.
 
 let projPicker, jobStatusPicker, runProjPicker, runJobPicker, runStatusPicker, runDatePicker, runSizePicker;
 // The two Jobs pickers' own paint step, reached by ui/app/jobs-table.js's
@@ -2193,62 +2182,62 @@ function runDateLabel(){ return runDatePicker.label(); }
 function initPickers(){
   projPicker=makePicker("projpick",{
     label:"Project", icon:I.folder, pageSize:PROJ_PAGE,
-    valueLabel:()=>CCApp.jobFilters.project==="" ? "All projects"
-      : CCApp.jobFilters.project==="__none__" ? "Standalone" : CCApp.jobFilters.project,
+    valueLabel:()=>ALApp.jobFilters.project==="" ? "All projects"
+      : ALApp.jobFilters.project==="__none__" ? "Standalone" : ALApp.jobFilters.project,
     rows:(q,P)=>{
-      const jobs=DATA.jobs||[], known=CCApp.jobProjectNames();
+      const jobs=DATA.jobs||[], known=ALApp.jobProjectNames();
       const rows=projectRowsFor(known, n=>jobs.filter(j=>j.project===n).length,
-                                jobs.length, CCApp.jobFilters.project, q, P);
+                                jobs.length, ALApp.jobFilters.project, q, P);
       const loose=jobs.filter(j=>!j.project).length;
       if(loose && (!q || "standalone".includes(q.toLowerCase())))
-        rows.push({v:"__none__",label:"Standalone",n:loose,sel:CCApp.jobFilters.project==="__none__",icon:I.inbox});
+        rows.push({v:"__none__",label:"Standalone",n:loose,sel:ALApp.jobFilters.project==="__none__",icon:I.inbox});
       return rows;
     },
-    hasMore:(q,P)=>CCApp.jobProjectNames().filter(n=>!q||n.toLowerCase().includes(q.toLowerCase())).length>P.limit,
-    foot:(q,P)=>projectFoot(CCApp.jobProjectNames(), q, P),
-    onPick:(v)=>{ CCApp.jobFilters.project=v; noteRecentProject(v); renderJobsArea(); },
+    hasMore:(q,P)=>ALApp.jobProjectNames().filter(n=>!q||n.toLowerCase().includes(q.toLowerCase())).length>P.limit,
+    foot:(q,P)=>projectFoot(ALApp.jobProjectNames(), q, P),
+    onPick:(v)=>{ ALApp.jobFilters.project=v; noteRecentProject(v); renderJobsArea(); },
   });
   jobStatusPicker=makePicker("statpick",{
     label:"Status", icon:I.power,
-    valueLabel:()=>CCApp.jobFilters.status==="enabled" ? "Enabled"
-      : CCApp.jobFilters.status==="disabled" ? "Disabled" : "All",
+    valueLabel:()=>ALApp.jobFilters.status==="enabled" ? "Enabled"
+      : ALApp.jobFilters.status==="disabled" ? "Disabled" : "All",
     rows:()=>{
       const jobs=DATA.jobs||[];
       const on=jobs.filter(j=>j.enabled!==false).length;
-      return [{v:"",label:"All",n:jobs.length,sel:CCApp.jobFilters.status==="",icon:I.layers},
-              {v:"enabled",label:"Enabled",n:on,sel:CCApp.jobFilters.status==="enabled",icon:I.play},
-              {v:"disabled",label:"Disabled",n:jobs.length-on,sel:CCApp.jobFilters.status==="disabled",icon:I.power}];
+      return [{v:"",label:"All",n:jobs.length,sel:ALApp.jobFilters.status==="",icon:I.layers},
+              {v:"enabled",label:"Enabled",n:on,sel:ALApp.jobFilters.status==="enabled",icon:I.play},
+              {v:"disabled",label:"Disabled",n:jobs.length-on,sel:ALApp.jobFilters.status==="disabled",icon:I.power}];
     },
-    onPick:(v)=>{ CCApp.jobFilters.status=v; renderJobsArea(); },
+    onPick:(v)=>{ ALApp.jobFilters.status=v; renderJobsArea(); },
   });
 
   runProjPicker=makePicker("rprojpick",{
     label:"Project", icon:I.folder, pageSize:PROJ_PAGE,
-    valueLabel:()=>CCApp.RF.project==="" ? "All projects"
-      : CCApp.RF.project==="__none__" ? "No project" : CCApp.RF.project,
+    valueLabel:()=>ALApp.RF.project==="" ? "All projects"
+      : ALApp.RF.project==="__none__" ? "No project" : ALApp.RF.project,
     rows:(q,P)=>{
-      const runs=DATA.runs||[], known=CCApp.runProjectNames();
+      const runs=DATA.runs||[], known=ALApp.runProjectNames();
       const rows=projectRowsFor(known, n=>runs.filter(r=>r.project===n).length,
-                                runs.length, CCApp.RF.project, q, P);
+                                runs.length, ALApp.RF.project, q, P);
       const loose=runs.filter(r=>!r.project).length;
       if(loose && (!q || "no project".includes(q.toLowerCase())))
-        rows.push({v:"__none__",label:"No project",n:loose,sel:CCApp.RF.project==="__none__",icon:I.inbox});
+        rows.push({v:"__none__",label:"No project",n:loose,sel:ALApp.RF.project==="__none__",icon:I.inbox});
       return rows;
     },
-    hasMore:(q,P)=>CCApp.runProjectNames().filter(n=>!q||n.toLowerCase().includes(q.toLowerCase())).length>P.limit,
-    foot:(q,P)=>projectFoot(CCApp.runProjectNames(), q, P),
-    onPick:(v)=>{ CCApp.RF.project=v; noteRecentProject(v); CCApp.runsFilterChanged(); },
+    hasMore:(q,P)=>ALApp.runProjectNames().filter(n=>!q||n.toLowerCase().includes(q.toLowerCase())).length>P.limit,
+    foot:(q,P)=>projectFoot(ALApp.runProjectNames(), q, P),
+    onPick:(v)=>{ ALApp.RF.project=v; noteRecentProject(v); ALApp.runsFilterChanged(); },
   });
   runJobPicker=makePicker("rjobpick",{
     label:"Job", icon:I.zap, pageSize:PROJ_PAGE,
-    valueLabel:()=>CCApp.RF.job||"All jobs",
+    valueLabel:()=>ALApp.RF.job||"All jobs",
     rows:(q,P)=>{
       const runs=DATA.runs||[];
       const ids=[...new Set(runs.map(r=>r.id))].sort()
         .filter(i=>!q||i.toLowerCase().includes(q.toLowerCase()));
-      const rows=[{v:"",label:"All jobs",n:runs.length,sel:CCApp.RF.job==="",icon:I.layers}];
+      const rows=[{v:"",label:"All jobs",n:runs.length,sel:ALApp.RF.job==="",icon:I.layers}];
       ids.slice(0,P.limit).forEach(i=>
-        rows.push({v:i,label:i,n:runs.filter(r=>r.id===i).length,sel:CCApp.RF.job===i,icon:I.zap}));
+        rows.push({v:i,label:i,n:runs.filter(r=>r.id===i).length,sel:ALApp.RF.job===i,icon:I.zap}));
       return rows;
     },
     hasMore:(q,P)=>[...new Set((DATA.runs||[]).map(r=>r.id))]
@@ -2258,43 +2247,43 @@ function initPickers(){
         .filter(i=>!q||i.toLowerCase().includes(q.toLowerCase())).length;
       return n ? "Showing "+Math.min(P.limit,n)+" of "+n+" job"+(n===1?"":"s") : "";
     },
-    onPick:(v)=>{ CCApp.RF.job=v; CCApp.runsFilterChanged(); },
+    onPick:(v)=>{ ALApp.RF.job=v; ALApp.runsFilterChanged(); },
   });
   runStatusPicker=makePicker("rstatpick",{
     label:"Status", icon:I.activity,
-    valueLabel:()=>CCApp.RF.status||"All",
+    valueLabel:()=>ALApp.RF.status||"All",
     rows:()=>{
       const runs=DATA.runs||[], n=(s)=>runs.filter(r=>normStatus(r.status)===s).length;
-      return [{v:"",label:"All",n:runs.length,sel:CCApp.RF.status==="",icon:I.layers},
-              {v:"success",label:"success",n:n("success"),sel:CCApp.RF.status==="success",icon:I.check},
-              {v:"warning",label:"warning",n:n("warning"),sel:CCApp.RF.status==="warning",icon:I.alert},
-              {v:"error",label:"error",n:n("error"),sel:CCApp.RF.status==="error",icon:I.xcircle},
-              {v:"stopped",label:"stopped",n:n("stopped"),sel:CCApp.RF.status==="stopped",icon:I.power}];
+      return [{v:"",label:"All",n:runs.length,sel:ALApp.RF.status==="",icon:I.layers},
+              {v:"success",label:"success",n:n("success"),sel:ALApp.RF.status==="success",icon:I.check},
+              {v:"warning",label:"warning",n:n("warning"),sel:ALApp.RF.status==="warning",icon:I.alert},
+              {v:"error",label:"error",n:n("error"),sel:ALApp.RF.status==="error",icon:I.xcircle},
+              {v:"stopped",label:"stopped",n:n("stopped"),sel:ALApp.RF.status==="stopped",icon:I.power}];
     },
-    onPick:(v)=>{ CCApp.RF.status=v; CCApp.runsFilterChanged(); },
+    onPick:(v)=>{ ALApp.RF.status=v; ALApp.runsFilterChanged(); },
   });
   runSizePicker=makePicker("rsizepick",{
     label:"Per page", icon:I.layers,
-    valueLabel:()=>String(CCApp.runsPageSize()),
+    valueLabel:()=>String(ALApp.runsPageSize()),
     rows:()=>[10,25,50,100].map(n=>({v:String(n), label:String(n),
-      sel:CCApp.runsPageSize()===n, icon:I.layers})),
-    onPick:(v)=>{ CCApp.runsSetPageSize(parseInt(v,10)||25); },
+      sel:ALApp.runsPageSize()===n, icon:I.layers})),
+    onPick:(v)=>{ ALApp.runsSetPageSize(parseInt(v,10)||25); },
   });
   runDatePicker=makePicker("rdatepick",{
     label:"Date", icon:I.calendar,
     valueLabel:()=>{
-      if(!CCApp.RF.from && !CCApp.RF.to) return "All time";
-      const p=DATE_PRESETS.find(d=>d.v && d.from()===CCApp.RF.from && !CCApp.RF.to);
+      if(!ALApp.RF.from && !ALApp.RF.to) return "All time";
+      const p=DATE_PRESETS.find(d=>d.v && d.from()===ALApp.RF.from && !ALApp.RF.to);
       return p ? p.label : "Custom";
     },
     rows:()=>DATE_PRESETS.map(d=>({v:d.v, label:d.label, icon:I.clock2,
-      sel:(d.v==="" ? (!CCApp.RF.from && !CCApp.RF.to) : (CCApp.RF.from===d.from() && !CCApp.RF.to))})),
+      sel:(d.v==="" ? (!ALApp.RF.from && !ALApp.RF.to) : (ALApp.RF.from===d.from() && !ALApp.RF.to))})),
     onPick:(v)=>{
       const d=DATE_PRESETS.find(x=>x.v===v);
-      CCApp.RF.from = (d && d.v) ? d.from() : "";
-      CCApp.RF.to="";
-      $("f-from").value=CCApp.RF.from; $("f-to").value="";
-      CCApp.runsFilterChanged();
+      ALApp.RF.from = (d && d.v) ? d.from() : "";
+      ALApp.RF.to="";
+      $("f-from").value=ALApp.RF.from; $("f-to").value="";
+      ALApp.runsFilterChanged();
     },
   });
 }
@@ -2396,7 +2385,7 @@ function collectRepos(){
     path: d.querySelector(".rp-path").value,
     base: d.querySelector(".rp-base").value
   }));
-  return CCApp.shapeRepoRows(rows);
+  return ALApp.shapeRepoRows(rows);
 }
 function openProjectEditor(name){
   editingProject=name||null;
@@ -2434,7 +2423,7 @@ function openProjectEditor(name){
       let src=null;
       try{
         const r=await fetch("/api/action",{method:"POST",
-          headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+          headers:{"Content-Type":"text/plain","X-AL-Token":TOKEN},
           body:JSON.stringify({op:"provision_get", name, phase:ph})});
         const j=await r.json().catch(()=>({}));
         if(r.ok && j.ok!==false) src=j.script||"";
@@ -2464,7 +2453,7 @@ function openProjectEditor(name){
   if(secPermCombo) secPermCombo.set(sec.permission_mode||"bypassPermissions", PERMS);
   else $("sec-perm").value = sec.permission_mode||"bypassPermissions";
   $("sec-cfgdir").value = sec.claude_config_dir||"";
-  $("sec-profile-default").value = CCSecurity.SEC_PROFILES.includes(sec.default_profile) ? sec.default_profile : "standard";
+  $("sec-profile-default").value = ALSecurity.SEC_PROFILES.includes(sec.default_profile) ? sec.default_profile : "standard";
   // The hidden input above is the value saveProject reads; the combo also
   // needs telling, or the trigger keeps showing whatever it last rendered
   // instead of this project's own stored profile.
@@ -2476,7 +2465,7 @@ function openProjectEditor(name){
   // its own keeps reading as secMinSeverity's own fallback ("low", show
   // everything), so opening this pane to change something else and saving
   // never silently hides findings that were showing a moment ago.
-  $("sec-min-severity").value = CCSecurity.SEV_ORDER.includes(sec.min_severity) ? sec.min_severity
+  $("sec-min-severity").value = ALSecurity.SEV_ORDER.includes(sec.min_severity) ? sec.min_severity
                                : (name ? "low" : "medium");
   // Same reason as the profile combo just above: keep the visible label in
   // step with the hidden input this just set.
@@ -2493,7 +2482,7 @@ function openProjectEditor(name){
   pjWiz.goto(0);
 }
 async function projApi(op, extra){
-  const r=await fetch("/api/action",{method:"POST",headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+  const r=await fetch("/api/action",{method:"POST",headers:{"Content-Type":"text/plain","X-AL-Token":TOKEN},
     body:JSON.stringify(Object.assign({op}, extra))});
   const j=await r.json().catch(()=>({}));
   if(!r.ok||j.ok===false){ toast(j.output||j.error||("HTTP "+r.status),true); return false; }
@@ -2512,7 +2501,7 @@ async function saveProject(){
     // jobs point at it by name, so both must move before anything else is saved.
     if(editingProject && name!==editingProject){
       const r=await fetch("/api/action",{method:"POST",
-        headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+        headers:{"Content-Type":"text/plain","X-AL-Token":TOKEN},
         body:JSON.stringify({op:"project_rename",name:editingProject,new_name:name})});
       if(!r.ok){ const e=await r.json().catch(()=>({})); toast("Rename failed — "+(e.error||("HTTP "+r.status)), true); return; }
       editingProject=name;
@@ -2553,7 +2542,7 @@ async function saveProject(){
     proj.security = {
       enabled: $("sec-enabled").checked,
       model: $("sec-model").value.trim(),
-      // Through the ONE canonical list (CCApp.EFFORTS, editor-domain.js).
+      // Through the ONE canonical list (ALApp.EFFORTS, editor-domain.js).
       // This read used to index a page-local copy: the label beside the
       // slider and the value saved to disk each resolved their own array,
       // and the day the two diverged the user would confirm one effort
@@ -2562,10 +2551,10 @@ async function saveProject(){
       effort: effortGet("sec-effort"),
       permission_mode: $("sec-perm").value||"bypassPermissions",
       claude_config_dir: $("sec-cfgdir").value.trim(),
-      default_profile: CCSecurity.SEC_PROFILES.includes(profDef) ? profDef : "standard",
+      default_profile: ALSecurity.SEC_PROFILES.includes(profDef) ? profDef : "standard",
       max_budget_usd: (mb===""||isNaN(mbNum)) ? "" : mbNum,
       daily_budget_usd: (db===""||isNaN(dbNum)) ? "" : dbNum,
-      min_severity: CCSecurity.SEV_ORDER.includes(minSev) ? minSev : "low",
+      min_severity: ALSecurity.SEV_ORDER.includes(minSev) ? minSev : "low",
       ignore_paths: $("sec-ignore").value,
     };
     if(!await projApi("project_set",{project:proj})) return;
@@ -2646,17 +2635,17 @@ function renderRetained(){
   }).join("");
 }
 
-// keptSessionsOf and sessionLines moved into CCApp.jobCard() (Task 9) as
-// its own sessionNotices() helper, reading CC.DATA.retained_worktrees the
+// keptSessionsOf and sessionLines moved into ALApp.jobCard() (Task 9) as
+// its own sessionNotices() helper, reading AL.DATA.retained_worktrees the
 // same way -- still the Sessions dialog's only source, no second fetch, no
 // second shape. fmtExpiresIn and resumeInFlight below stay here: the
 // Sessions dialog and resumeTarget's own live-slot branch still call them
-// directly, and the job card now reaches the same two through the CCApp
+// directly, and the job card now reaches the same two through the ALApp
 // interface (see page.js's own comment) rather than a second copy.
 
 /* --------------------------------------------------------------- loop band
    The page header, the five KPI cards and the 24-hour band itself are all
-   built as DOM now -- CCApp.renderOverviewHead(), in ui/app/overview.js.
+   built as DOM now -- ALApp.renderOverviewHead(), in ui/app/overview.js.
    TICK_KINDS, tickTotals, pickLine and the greeting's own wording moved
    there with it; nothing in this file still reads any of them. */
 
@@ -2690,13 +2679,13 @@ function render(){
 
   renderRetained();
   // The Overview's own summary of the same list renderRetained() just drew
-  // into the Sessions dialog -- CCApp.worktreesCard() returns null on an
+  // into the Sessions dialog -- ALApp.worktreesCard() returns null on an
   // empty install, so the host is simply left empty rather than shown with
   // nothing in it.
   const wtHost=$("ov-worktrees");
   if(wtHost){
     wtHost.textContent="";
-    const wtCard=CCApp.worktreesCard((DATA.retained_worktrees||[])
+    const wtCard=ALApp.worktreesCard((DATA.retained_worktrees||[])
       .map(w=>({job:w.job, size:fmtBytes(w.bytes||0)})));
     if(wtCard) wtHost.appendChild(wtCard);
   }
@@ -2710,22 +2699,22 @@ function render(){
   const kpis={runsToday:rt.length, spentToday:sum(rt,r=>r.cost),
               runsWeek:rw.length, spentWeek:sum(rw,r=>r.cost),
               warn:nWarn, err:nErr};
-  CCApp.renderOverviewHead(kpis, (CFG.user||{}).name||"");
+  ALApp.renderOverviewHead(kpis, (CFG.user||{}).name||"");
 
   paintNav();
   paintUser();
-  CCApp.renderProjectsPage();
-  CCSecurity.render();
+  ALApp.renderProjectsPage();
+  ALSecurity.render();
   renderJobsArea();
-  CCApp.renderRunsPage();
-  $("foot").textContent="claude-cron · control server on 127.0.0.1 · SQLite index.db ("
+  ALApp.renderRunsPage();
+  $("foot").textContent="agentloop · control server on 127.0.0.1 · SQLite index.db ("
     +fmtBytes(DATA.db_bytes)+") holds run history & search · runs.ndjson is the append journal";
 }
 
 /* ------------------------------------------- runs: search + filters + pages
    RF, pageSize/page, searchKeys/snippets/searchSeq and everything that used
    to read them directly (renderRunHead, renderRuns, paintRunFilters,
-   runSearch, clearRunFilters) moved to ui/app/runs.js (CCApp.*) in Phase 2
+   runSearch, clearRunFilters) moved to ui/app/runs.js (ALApp.*) in Phase 2
    Task 7, the same move jobs-table.js and projects.js already made for
    their own tables. What stays here is the live-run bookkeeping
    (liveRuns/unjournaledLive/stopping and friends) and the resume-tooltip
@@ -2853,7 +2842,7 @@ function isPending(op, id, extra){
   if(Math.floor(Date.now()/1000)-s.at > PENDING_GRACE_S){ pending.delete(k); return false; }
   return true;
 }
-// Handed to the builders through the CCApp interface and called as each
+// Handed to the builders through the ALApp interface and called as each
 // data-op button is made. NOT a pass over the finished DOM: render() is only
 // one of the fourteen paths that rebuild these, and a guard re-applied there is
 // thrown away by the other thirteen.
@@ -2880,7 +2869,7 @@ function markIfPending(btn){
 // Task 7) rather than left as a second call every caller had to remember to
 // make, now that ui/app/runs.js is a second caller: unjournaledLive() is the
 // one function both this page's own sidebar count (paintNav) and the moved
-// Runs table (CCApp.renderRunsPage, through the page.js interface) call on
+// Runs table (ALApp.renderRunsPage, through the page.js interface) call on
 // every render, so it is also the one place this bookkeeping is guaranteed
 // to run on every render, regardless of which of the two calls it.
 function unjournaledLive(){
@@ -2905,7 +2894,7 @@ function liveRuns(){
 }
 
 // The comparators, the filter+sort arithmetic, the sort/page state and the
-// table itself all moved to ui/app/runs.js (CCApp.renderRunsPage and
+// table itself all moved to ui/app/runs.js (ALApp.renderRunsPage and
 // friends) in Phase 2 Task 7 -- the same move jobs-table.js and projects.js
 // already made for their own tables. What is left here is the live-run
 // bookkeeping above and the resume-tooltip machinery below, both reached
@@ -2938,7 +2927,7 @@ function initTooltips(){
 
 /* ---- live runs: a job may now have SEVERAL at once (one slot each) ---- */
 // A function declaration rather than a const arrow, like openEditor/isFav
-// below -- CCApp.init's interface object references this by name at the
+// below -- ALApp.init's interface object references this by name at the
 // point the Security interface used to start, well above this line, and a
 // const would still be in its temporal dead zone there. Hoisting is the
 // point, not a style choice.
@@ -2948,7 +2937,7 @@ function activeRunsOf(id){ return (DATA.active_runs||{})[id] || []; }
 let resumedRuns={};
 try{ resumedRuns=JSON.parse(localStorage.ccResumed||"{}"); }catch(e){ resumedRuns={}; }
 // A hoisted function declaration rather than a const arrow, like
-// activeRunsOf above -- CCApp.init's interface object (well above this
+// activeRunsOf above -- ALApp.init's interface object (well above this
 // line) references this by name, and a const arrow would still be in its
 // temporal dead zone there.
 function runKey(id,start){ return id+"|"+start; }
@@ -3055,9 +3044,9 @@ function resumedBadgeTip(parent){
 // with el() instead of an HTML string, the column widths a declared
 // test_the_jobs_and_projects_tables_declare_a_width_for_every_column now
 // also guards, and the search debounce all live there now, reached from the
-// page as CCApp.renderRunsPage()/CCApp.runSearch(). The "view log" button
+// page as ALApp.renderRunsPage()/ALApp.runSearch(). The "view log" button
 // no longer carries a `data-log-id` attribute for this page's own click
-// dispatcher to read: it calls CCApp's own imported openLog directly
+// dispatcher to read: it calls ALApp's own imported openLog directly
 // instead (see page.js's own comment on why this one action moved with the
 // row rather than staying declarative).
 
@@ -3065,7 +3054,7 @@ function resumedBadgeTip(parent){
 const DEFAULT_PRECHECK="#!/bin/bash\n# Exit 0 to wake a Claude run; exit 1 to stay idle (a skipped tick costs nothing).\n# Put a cheap check here — curl an API, grep a log, test a file.\nexit 0\n";
 
 function getDays(){
-  return CCApp.dayNumbers([...document.querySelectorAll("#ed-days-pick .day-btn.on")].map(b=>b.dataset.day));
+  return ALApp.dayNumbers([...document.querySelectorAll("#ed-days-pick .day-btn.on")].map(b=>b.dataset.day));
 }
 function setDays(arr){
   const on=new Set((arr&&arr.length?arr:[]).map(Number));
@@ -3301,7 +3290,7 @@ function groupModels(ids){
 let MODELS=[];
 async function loadModels(){
   try{
-    const r=await fetch("/api/models",{headers:{"X-CC-Token":TOKEN}});
+    const r=await fetch("/api/models",{headers:{"X-AL-Token":TOKEN}});
     if(!r.ok) return;
     const d=await r.json();
     if(!d.models||!d.models.length) return;
@@ -3316,12 +3305,12 @@ async function loadModels(){
 // One slider, two homes: the job editor and the project editor's Security tab
 // share the exact control, so the same value reads the same everywhere.
 function effortSet(id,labelId,v){
-  const i=CCApp.effortIndex(v);
-  const level=CCApp.EFFORTS[i];
+  const i=ALApp.effortIndex(v);
+  const level=ALApp.EFFORTS[i];
   $(id).value=String(i);
   $(labelId).textContent=(level===""?"Default (CLI decides)":effortLabel(level));
 }
-function effortGet(id){ return CCApp.effortFromIndex($(id).value); }
+function effortGet(id){ return ALApp.effortFromIndex($(id).value); }
 function setEffort(v){ effortSet("ed-effort","ed-effort-label",v); }
 function getEffort(){ return effortGet("ed-effort"); }
 // The Enabled/Disabled segmented control is paint, not state -- #sec-enabled
@@ -3354,7 +3343,7 @@ let projectCombo=null, modelCombo=null, permCombo=null, wtCombo=null, secModelCo
     secProfileCombo=null, secMinSevCombo=null;
 // Quick/Standard/Deep and Info..Critical are both just Titlecase of the
 // value -- so the two fixed-enum security combos can map straight off
-// CCSecurity's own SEC_PROFILES/SEV_ORDER instead of carrying a second,
+// ALSecurity's own SEC_PROFILES/SEV_ORDER instead of carrying a second,
 // hand-typed copy of either vocabulary.
 function titleOpt(v){ return {v, label: v.charAt(0).toUpperCase()+v.slice(1)}; }
 function initCombos(){
@@ -3371,12 +3360,12 @@ function initCombos(){
   secPermCombo=createCombo({id:"sec-perm", allowNone:false, def:"bypassPermissions"});
   secPermCombo.set("bypassPermissions", PERMS);
   secProfileCombo=createCombo({id:"sec-profile-default", allowNone:false, def:"standard"});
-  secProfileCombo.set("standard", CCSecurity.SEC_PROFILES.map(titleOpt));
+  secProfileCombo.set("standard", ALSecurity.SEC_PROFILES.map(titleOpt));
   // "low" (not "medium") is the structural def -- it matches the save-time
   // fallback and the existing-project-with-nothing-saved-yet fallback below;
   // "medium" is only the new-project nudge that fallback already spells out.
   secMinSevCombo=createCombo({id:"sec-min-severity", allowNone:false, def:"low"});
-  secMinSevCombo.set("medium", CCSecurity.SEV_ORDER.map(titleOpt));
+  secMinSevCombo.set("medium", ALSecurity.SEV_ORDER.map(titleOpt));
   // The real list is fetched once there is a session — asking for it at boot
   // just 401s on a signed-out page and leaves the editor on the fallback list
   // for the rest of the visit.
@@ -3390,7 +3379,7 @@ function initCombos(){
 let _fsTarget=null, _fsPath="";
 async function fsLoad(path){
   try{
-    const r=await fetch("/api/fs"+(path?("?path="+encodeURIComponent(path)):""),{headers:{"X-CC-Token":TOKEN}});
+    const r=await fetch("/api/fs"+(path?("?path="+encodeURIComponent(path)):""),{headers:{"X-AL-Token":TOKEN}});
     if(!r.ok){ toast("Cannot read that folder"); return; }
     const d=await r.json();
     _fsPath=d.path; $("fs-path").textContent=d.path;
@@ -3455,7 +3444,7 @@ let editingPrecheck="";
 async function fetchPrecheck(id){
   try{
     const r=await fetch("/api/action",{method:"POST",
-      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+      headers:{"Content-Type":"text/plain","X-AL-Token":TOKEN},
       body:JSON.stringify({op:"precheck_get",id})});
     const j=await r.json().catch(()=>({}));
     return (r.ok && j.ok) ? (j.script||"") : "";
@@ -3600,7 +3589,7 @@ async function saveEditor(){
     if(wantId && wantId!==id){
       if(!/^[A-Za-z0-9_-]+$/.test(wantId)){ toast("id: only letters, digits, - and _",true); return; }
       const r=await fetch("/api/action",{method:"POST",
-        headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+        headers:{"Content-Type":"text/plain","X-AL-Token":TOKEN},
         body:JSON.stringify({op:"rename",id,new_id:wantId})});
       if(!r.ok){ const e=await r.json().catch(()=>({})); toast("Rename failed — "+(e.error||("HTTP "+r.status)), true); return; }
       id=wantId; editingId=wantId;
@@ -3659,12 +3648,12 @@ async function deleteJobFromModal(){
 // Links are limited to http(s)/mailto.
 function mdInline(s){
   const codes=[];
-  s=s.replace(/`([^`]+)`/g,(m,c)=>{ codes.push(c); return "@@CC"+(codes.length-1)+"@@"; });
+  s=s.replace(/`([^`]+)`/g,(m,c)=>{ codes.push(c); return "@@AL"+(codes.length-1)+"@@"; });
   s=s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,(m,t,u)=>
     /^(https?:\/\/|mailto:)/i.test(u) ? '<a href="'+u+'" target="_blank" rel="noopener noreferrer">'+t+'</a>' : m);
   s=s.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/__([^_]+)__/g,'<strong>$1</strong>');
   s=s.replace(/(^|[^*])\*(?!\s)([^*\n]+?)\*/g,'$1<em>$2</em>');
-  s=s.replace(/@@CC(\d+)@@/g,(m,i)=>'<code>'+codes[+i]+'</code>');
+  s=s.replace(/@@AL(\d+)@@/g,(m,i)=>'<code>'+codes[+i]+'</code>');
   return s;
 }
 function mdToHtml(src){
@@ -3938,7 +3927,7 @@ async function sendToRun(){
   markPending(...sk);
   try{
     const r=await fetch("/api/action",{method:"POST",
-      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+      headers:{"Content-Type":"text/plain","X-AL-Token":TOKEN},
       body:JSON.stringify({op:"say", id:logCtx.id, text})});
     if(!r.ok){
       const j=await r.json().catch(()=>({}));
@@ -4006,7 +3995,7 @@ function paintLog(d){
 }
 
 async function fetchLog(id, start){
-  const r=await fetch("/api/log?id="+encodeURIComponent(id)+"&start="+encodeURIComponent(start), {headers:{"X-CC-Token":TOKEN}});
+  const r=await fetch("/api/log?id="+encodeURIComponent(id)+"&start="+encodeURIComponent(start), {headers:{"X-AL-Token":TOKEN}});
   if(!r.ok) throw new Error("HTTP "+r.status);
   return r.json();
 }
@@ -4119,7 +4108,7 @@ function makeWizard(cfg){
     });
     return Object.assign(v, cfg.extraSnapshot ? cfg.extraSnapshot() : {});
   };
-  W.changed=()=>CCApp.changedKeys(W.snapshot(), W.clean);
+  W.changed=()=>ALApp.changedKeys(W.snapshot(), W.clean);
   W.dirty=()=>W.changed().length>0;
   // Which STEP each changed field belongs to — the pane it sits in.
   W.dirtySteps=()=>{
@@ -4268,10 +4257,10 @@ const PJ_STEPS=[
   {k:"security", label:"Security",          next:null},
 ];
 // Gathers the step's own fields (this pane's DOM, the project list, the repo
-// mode flag, the shaped repo rows) and hands them to CCApp.projectStepError
+// mode flag, the shaped repo rows) and hands them to ALApp.projectStepError
 // for the actual decision -- see that function's own comment for the rules.
 function validateProjectStep(k){
-  const v=CCApp.projectStepError(k, {
+  const v=ALApp.projectStepError(k, {
     name: $("pj-name").value.trim(),
     cwd: $("pj-cwd").value.trim(),
     editingProject,
@@ -4410,7 +4399,7 @@ let currentView = VIEWS.includes(localStorage.ccView) ? localStorage.ccView : "o
    navigation, only.
 
    Two directions:
-     pushNav(state)     Called by setView below, and — through the CC.pushNav
+     pushNav(state)     Called by setView below, and — through the AL.pushNav
                          bridge, see ui/security/page.js's own comment -- by
                          secBack, secOpenProject, secSwitchProjectTab,
                          secOpenActivity/secBackFromActivity and
@@ -4427,7 +4416,7 @@ let currentView = VIEWS.includes(localStorage.ccView) ? localStorage.ccView : "o
      restoreNav(state)  The `popstate` handler below. Applies a PREVIOUSLY
                          PUSHED state back onto the page without pushing it
                          again -- sidebar via setView(v, true), Security via
-                         CCSecurity.navigate(), `fromHistory` threaded
+                         ALSecurity.navigate(), `fromHistory` threaded
                          through both.
 
    Falsifiable the obvious way: drop either `true` in restoreNav and this
@@ -4445,7 +4434,7 @@ let currentView = VIEWS.includes(localStorage.ccView) ? localStorage.ccView : "o
    to rewrite. */
 function currentNavState(){
   return currentView === "security"
-    ? {view: "security", sec: CCSecurity.navState()}
+    ? {view: "security", sec: ALSecurity.navState()}
     : {view: currentView};
 }
 function pushNav(state){
@@ -4460,7 +4449,7 @@ function pushNav(state){
 function restoreNav(state){
   state = state || {view: "overview"};
   if(state.view !== currentView) setView(state.view, true);
-  if(state.view === "security") CCSecurity.navigate(state.sec || {screen: "index"});
+  if(state.view === "security") ALSecurity.navigate(state.sec || {screen: "index"});
 }
 window.addEventListener("popstate", (e) => restoreNav(e.state));
 
@@ -4481,14 +4470,14 @@ function setView(v, fromHistory){
   //
   // `fromHistory` (F4 history layer) skips enter() specifically: a restore
   // (restoreNav above) already knows the EXACT screen, project and tab to
-  // land on and calls CCSecurity.navigate() with them right after this
+  // land on and calls ALSecurity.navigate() with them right after this
   // returns -- enter() would ALSO guess a screen, from whatever secState
   // happened to be left at, and fire its own fetch for that guess an instant
   // before navigate() throws the result away. initViews's own boot call is
   // the other fromHistory caller, for the identical reason -- see its
   // comment.
-  if(currentView === "security"){ if(!fromHistory) CCSecurity.enter(); }
-  else CCSecurity.leave();
+  if(currentView === "security"){ if(!fromHistory) ALSecurity.enter(); }
+  else ALSecurity.leave();
   if(!fromHistory) pushNav(currentNavState());
 }
 function paintNav(){
@@ -4660,7 +4649,7 @@ async function saveProfile(){
     // there, so an untouched form cannot wipe it.
     if(pfAvatar !== null) body.avatar = pfAvatar;
     const r = await fetch("/api/action", {method:"POST",
-      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN}, body:JSON.stringify(body)});
+      headers:{"Content-Type":"text/plain","X-AL-Token":TOKEN}, body:JSON.stringify(body)});
     const j = await r.json().catch(()=>({}));
     if(!r.ok || j.ok === false){ pfError(j.error || ("HTTP " + r.status)); return; }
     CFG.user = j.user;
@@ -4683,7 +4672,7 @@ let SESSION = {configured:false, authenticated:false};
 let pollTimer = null;
 
 async function loadSession(){
-  const r = await fetch("/api/session", {headers:{"X-CC-Token":TOKEN}});
+  const r = await fetch("/api/session", {headers:{"X-AL-Token":TOKEN}});
   if(!r.ok) throw new Error("HTTP "+r.status);
   SESSION = await r.json();
   if(SESSION.user) CFG.user = SESSION.user;
@@ -4725,7 +4714,7 @@ async function doLogout(){
   if(!yes) return;
   try{
     await fetch("/api/logout", {method:"POST",
-      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN}});
+      headers:{"Content-Type":"text/plain","X-AL-Token":TOKEN}});
   }catch(ex){ /* the cookie is gone either way once the session row is */ }
   $("li-pw").value = "";
   sessionLost();
@@ -4740,7 +4729,7 @@ async function submitLogin(e){
   btn.disabled = true;
   try{
     const r = await fetch("/api/login", {method:"POST",
-      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+      headers:{"Content-Type":"text/plain","X-AL-Token":TOKEN},
       body: JSON.stringify({email, password:pw, keep:$("li-keep").checked})});
     const j = await r.json().catch(()=>({}));
     if(!r.ok) return fail(j.error || ("HTTP " + r.status));
@@ -4768,7 +4757,7 @@ async function submitSetup(e){
   btn.disabled = true;
   try{
     const r = await fetch("/api/action", {method:"POST",
-      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+      headers:{"Content-Type":"text/plain","X-AL-Token":TOKEN},
       body: JSON.stringify({op:"profile_create", name, email,
                             password:pw, password2:pw2, keep:$("su-keep").checked})});
     const j = await r.json().catch(()=>({}));
@@ -4798,12 +4787,12 @@ function initViews(){
     b.addEventListener("click", () => setView(b.dataset.view)));
   // `true`: this is the tab's FIRST paint, not a navigation -- setView's own
   // push is skipped, and for Security specifically so is its own enter()
-  // guess (see setView's own comment above). CCSecurity.navigate() below is
+  // guess (see setView's own comment above). ALSecurity.navigate() below is
   // what actually loads it, landing deterministically on the index screen:
   // ui/security/state.js's secState starts fresh on every load, so cold
   // boot never has a project or activity screen left over to resume.
   setView(currentView, true);
-  if(currentView === "security") CCSecurity.navigate({screen: "index"});
+  if(currentView === "security") ALSecurity.navigate({screen: "index"});
   // Boot REPLACES the tab's very first history entry with where it actually
   // landed, never pushes one -- see the router's own comment above setView
   // for the full contract every navigation from here on follows.
@@ -4821,8 +4810,8 @@ function initStatFilters(){
     const t=e.target.closest("[data-statfilter]"); if(!t) return;
     // Set, never toggle. Clicking a second time used to clear the filter, which
     // from Overview meant silently undoing a selection on a page you had left.
-    CCApp.RF.status = t.dataset.statfilter;
-    CCApp.runsGotoFirstPage();
+    ALApp.RF.status = t.dataset.statfilter;
+    ALApp.runsGotoFirstPage();
     setView("runs");
   });
 }
@@ -4895,7 +4884,7 @@ document.addEventListener("click", async (e)=>{
       if(!yes) return;
       del.disabled=true;
       const r=await fetch("/api/action",{method:"POST",
-        headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+        headers:{"Content-Type":"text/plain","X-AL-Token":TOKEN},
         body:JSON.stringify({op:"run_delete",id,start})});
       if(!r.ok){ const j=await r.json().catch(()=>({})); toast("Delete failed — "+(j.error||("HTTP "+r.status)), true); del.disabled=false; return; }
       const j=await r.json().catch(()=>({}));
@@ -4951,7 +4940,7 @@ document.addEventListener("click", async (e)=>{
     if(!yes) return;
     wtd.disabled=true;
     const r=await fetch("/api/action",{method:"POST",
-      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+      headers:{"Content-Type":"text/plain","X-AL-Token":TOKEN},
       body:JSON.stringify({op:"worktree_drop", id:job, stamp})});
     const j=await r.json().catch(()=>({}));
     if(!r.ok){ toast(j.error||"could not discard", true); wtd.disabled=false; return; }
@@ -4961,11 +4950,11 @@ document.addEventListener("click", async (e)=>{
   // sorting the runs table -- the sort state itself, and the fork on the key
   // that decides the opening direction, now live in ui/app/runs.js.
   const sh=e.target.closest("th[data-sort]");
-  if(sh){ CCApp.runsSort(sh.dataset.sort); return; }
+  if(sh){ ALApp.runsSort(sh.dataset.sort); return; }
   // sorting the Projects table -- the sort state itself, and the fork on the
   // key that decides the opening direction, now live in ui/app/projects.js.
   const ph=e.target.closest("th[data-prjsort]");
-  if(ph){ CCApp.projectsSort(ph.dataset.prjsort); return; }
+  if(ph){ ALApp.projectsSort(ph.dataset.prjsort); return; }
   const dp=e.target.closest("[data-delproj]");
   if(dp){
     const name=dp.dataset.delproj;
@@ -4988,11 +4977,11 @@ document.addEventListener("click", async (e)=>{
     }finally{ clearPending(...pk); }
   }
   // sorting the jobs table. The opening direction per column, and the sort
-  // state itself, now live in ui/app/jobs-table.js -- CCApp.jobsSort(key)
+  // state itself, now live in ui/app/jobs-table.js -- ALApp.jobsSort(key)
   // does what this handler used to do inline (toggle direction on a repeat
   // click, else pick the useful end to open on) and redraws the page.
   const jh=e.target.closest("th[data-jobsort]");
-  if(jh){ CCApp.jobsSort(jh.dataset.jobsort); return; }
+  if(jh){ ALApp.jobsSort(jh.dataset.jobsort); return; }
   // the card's overflow menu — one open at a time
   const mtrig=e.target.closest("[data-menu]");
   if(mtrig){
@@ -5009,8 +4998,8 @@ document.addEventListener("click", async (e)=>{
   const jr=e.target.closest("[data-jobruns]");
   if(jr){
     closeMenus();
-    CCApp.RF.job=jr.dataset.jobruns; CCApp.RF.status="";
-    CCApp.runsGotoFirstPage();
+    ALApp.RF.job=jr.dataset.jobruns; ALApp.RF.status="";
+    ALApp.runsGotoFirstPage();
     setView("runs");
     return;
   }
@@ -5021,47 +5010,47 @@ document.addEventListener("click", async (e)=>{
   // page exists.
   if(e.target.closest("#new-project")){ openProjectEditor(); return; }
   // The Jobs page's own "New job" -- built into its page header now by
-  // CCApp.renderJobsPage() (ui/app/jobs-table.js), not a static toolbar
+  // ALApp.renderJobsPage() (ui/app/jobs-table.js), not a static toolbar
   // button any more, but the same single id: there is exactly one of it in
   // the DOM at a time (the toolbar's own copy is gone), so nothing here
   // needed to change to keep answering it.
   if(e.target.closest("#new-job")){ openCreator(); return; }
   // The Overview's own page header actions -- built once by
-  // CCApp.renderOverviewHead() and living in a different DOM subtree than
+  // ALApp.renderOverviewHead() and living in a different DOM subtree than
   // the Jobs page's header, so the two cannot share an id the way "New job"
   // above does with itself.
   if(e.target.closest("#ov-refresh")){ refresh(); return; }
   if(e.target.closest("#ov-new-job")){ openCreator(); return; }
   // The Jobs page's own "Refresh", and its footer pager -- both built by
-  // CCApp.renderJobsPage(). jobsSetPage(delta) clamps and redraws; there is
+  // ALApp.renderJobsPage(). jobsSetPage(delta) clamps and redraws; there is
   // no explicit page=1 to reset elsewhere, because every filter/sort change
   // already goes through a full renderJobsPage() that clamps the current
   // page down to whatever the new row count actually has.
   if(e.target.closest("#jobs-refresh")){ refresh(); return; }
-  if(e.target.closest("#jobs-pg-prev")){ CCApp.jobsSetPage(-1); return; }
-  if(e.target.closest("#jobs-pg-next")){ CCApp.jobsSetPage(1); return; }
-  // The Projects page's own footer pager, built by CCApp.renderProjectsPage()
+  if(e.target.closest("#jobs-pg-prev")){ ALApp.jobsSetPage(-1); return; }
+  if(e.target.closest("#jobs-pg-next")){ ALApp.jobsSetPage(1); return; }
+  // The Projects page's own footer pager, built by ALApp.renderProjectsPage()
   // the same way the Jobs pager above is -- same clamp-and-redraw reasoning.
-  if(e.target.closest("#prj-pg-prev")){ CCApp.projectsSetPage(-1); return; }
-  if(e.target.closest("#prj-pg-next")){ CCApp.projectsSetPage(1); return; }
+  if(e.target.closest("#prj-pg-prev")){ ALApp.projectsSetPage(-1); return; }
+  if(e.target.closest("#prj-pg-next")){ ALApp.projectsSetPage(1); return; }
   // The Runs page's own "Refresh", and its footer pager -- both built by
-  // CCApp.renderRunsPage(), the same clamp-and-redraw reasoning as Jobs'
+  // ALApp.renderRunsPage(), the same clamp-and-redraw reasoning as Jobs'
   // own pager above. The static #pg-prev/#pg-next this used to answer are
   // gone with the rest of the static table markup Task 7 replaced.
   if(e.target.closest("#runs-refresh")){ refresh(); return; }
-  if(e.target.closest("#runs-pg-prev")){ CCApp.runsSetPage(-1); return; }
-  if(e.target.closest("#runs-pg-next")){ CCApp.runsSetPage(1); return; }
+  if(e.target.closest("#runs-pg-prev")){ ALApp.runsSetPage(-1); return; }
+  if(e.target.closest("#runs-pg-next")){ ALApp.runsSetPage(1); return; }
   // The Security index's own page header actions (Phase 4 Task 1) -- built
   // fresh on every repaint by ui/security/index-screen.js's own
   // secRenderHead(), the same "rebuild it, answer it by id" split every
   // pageHeader() action above already uses, and for the identical reason:
   // a listener attached directly to the button itself would be torn away
   // the moment the next repaint replaces it with a new element.
-  // CCSecurity.openActivity/reload are the two thin wrappers
+  // ALSecurity.openActivity/reload are the two thin wrappers
   // ui/security/index.js exports for exactly this call site.
-  if(e.target.closest("#sec-reload")){ CCSecurity.reload(); return; }
+  if(e.target.closest("#sec-reload")){ ALSecurity.reload(); return; }
   // The worktrees card's own footer button, built the same way by
-  // CCApp.worktreesCard() -- opens the full list the card only summarises.
+  // ALApp.worktreesCard() -- opens the full list the card only summarises.
   if(e.target.closest("#ov-wt-view")){ $("wt-halo").innerHTML=I.folder; $("wtmodal").showModal(); return; }
   const b=e.target.closest("button[data-op]"); if(!b) return;
   const op=b.dataset.op, id=b.dataset.id;
@@ -5097,7 +5086,7 @@ document.addEventListener("click", async (e)=>{
     toast("Checking precheck…", false, "radar");
     try{
       const r=await fetch("/api/action",{method:"POST",
-        headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+        headers:{"Content-Type":"text/plain","X-AL-Token":TOKEN},
         body:JSON.stringify({op:"precheck",id})});
       const j=await r.json().catch(()=>({}));
       if(r.ok && j.broken){
@@ -5119,7 +5108,7 @@ document.addEventListener("click", async (e)=>{
   // instead of the old blanket "Started".
   if(op==="run"){
     const r=await fetch("/api/action",{method:"POST",
-      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+      headers:{"Content-Type":"text/plain","X-AL-Token":TOKEN},
       body:JSON.stringify({op:"run",id})});
     if(r.status===409){
       // At the ceiling: say plainly that nothing started, and why, rather than
@@ -5146,7 +5135,7 @@ document.addEventListener("click", async (e)=>{
     const sid=b.dataset.session||"";
     b.disabled=true;   // stays down: one resume per session, and no double-click
     const r=await fetch("/api/action",{method:"POST",
-      headers:{"Content-Type":"text/plain","X-CC-Token":TOKEN},
+      headers:{"Content-Type":"text/plain","X-AL-Token":TOKEN},
       body:JSON.stringify({op:"resume",id,session:sid})});
     if(r.status===409){
       const j=await r.json().catch(()=>({}));
@@ -5225,7 +5214,7 @@ initFormTabs("projmodal","data-pjtab","data-pjpane");
 initCombos();
 initFolderPicker();
 initTooltips();
-CCApp.initJobDrag();
+ALApp.initJobDrag();
 initStatFilters();
 initModalScrollLock();
 initResizeFollow("editor");
@@ -5299,44 +5288,44 @@ $("themebtn").addEventListener("click", ()=>{
   localStorage.ccTheme=t; applyTheme(t);
 });
 // The two exact date fields inside the Date picker. They set the same
-// CCApp.RF.from/CCApp.RF.to the presets do, so a hand-typed range and "Last
+// ALApp.RF.from/ALApp.RF.to the presets do, so a hand-typed range and "Last
 // 7 days" are one filter with one chip, not two competing ones.
 ["f-from","f-to"].forEach(id=>$(id).addEventListener("change",()=>{
-  CCApp.RF.from=$("f-from").value; CCApp.RF.to=$("f-to").value;
-  CCApp.runsFilterChanged();
+  ALApp.RF.from=$("f-from").value; ALApp.RF.to=$("f-to").value;
+  ALApp.runsFilterChanged();
 }));
 
-$("f-clear").addEventListener("click", CCApp.clearRunFilters);
-$("jf-clear").addEventListener("click", CCApp.clearJobFilters);
+$("f-clear").addEventListener("click", ALApp.clearRunFilters);
+$("jf-clear").addEventListener("click", ALApp.clearJobFilters);
 // Removing one filter from the chip row. Named per axis rather than "clear the
 // last one" so the row keeps working whatever order they were applied in.
 $("jactive").addEventListener("click",(e)=>{
   const b=e.target.closest("[data-dropjf]"); if(!b) return;
   const k=b.dataset.dropjf;
-  if(k==="project") CCApp.jobFilters.project="";
-  if(k==="status") CCApp.jobFilters.status="";
-  if(k==="q"){ CCApp.jobFilters.query=""; $("jq").value=""; $("jq-clear").hidden=true; }
+  if(k==="project") ALApp.jobFilters.project="";
+  if(k==="status") ALApp.jobFilters.status="";
+  if(k==="q"){ ALApp.jobFilters.query=""; $("jq").value=""; $("jq-clear").hidden=true; }
   renderJobsArea();
 });
 $("ractive").addEventListener("click",(e)=>{
   const b=e.target.closest("[data-droprf]"); if(!b) return;
   const k=b.dataset.droprf;
-  if(k==="project") CCApp.RF.project="";
-  if(k==="job") CCApp.RF.job="";
-  if(k==="status") CCApp.RF.status="";
-  if(k==="date"){ CCApp.RF.from=CCApp.RF.to=""; $("f-from").value=""; $("f-to").value=""; }
-  if(k==="q"){ $("q").value=""; $("q-clear").hidden=true; CCApp.runSearch(""); return; }
-  CCApp.runsFilterChanged();
+  if(k==="project") ALApp.RF.project="";
+  if(k==="job") ALApp.RF.job="";
+  if(k==="status") ALApp.RF.status="";
+  if(k==="date"){ ALApp.RF.from=ALApp.RF.to=""; $("f-from").value=""; $("f-to").value=""; }
+  if(k==="q"){ $("q").value=""; $("q-clear").hidden=true; ALApp.runSearch(""); return; }
+  ALApp.runsFilterChanged();
 });
 // Jobs search. Local and instant — the whole set is already in memory, unlike
 // the runs search, which goes to the server for log content.
 $("jq").addEventListener("input",()=>{
-  CCApp.jobFilters.query=$("jq").value;
-  $("jq-clear").hidden=!CCApp.jobFilters.query;
+  ALApp.jobFilters.query=$("jq").value;
+  $("jq-clear").hidden=!ALApp.jobFilters.query;
   renderJobsArea();
 });
 $("jq-clear").addEventListener("click",()=>{
-  CCApp.jobFilters.query=""; $("jq").value=""; $("jq-clear").hidden=true; renderJobsArea();
+  ALApp.jobFilters.query=""; $("jq").value=""; $("jq-clear").hidden=true; renderJobsArea();
 });
 // Starring a project floats its card to the top of Jobs. Reachable from the
 // group header on the dashboard and from the Projects table, so it listens on
@@ -5347,17 +5336,17 @@ document.addEventListener("click",(e)=>{
   toggleFav(s.dataset.fav);
 });
 // #pg-prev/#pg-next no longer exist as static markup at boot -- the pager is
-// built fresh by CCApp.renderRunsPage() every poll, as #runs-pg-prev/
+// built fresh by ALApp.renderRunsPage() every poll, as #runs-pg-prev/
 // #runs-pg-next, answered by the central dispatcher above the same way
 // #jobs-pg-prev/#prj-pg-prev already are.
 let _qTimer=null;
 $("q").addEventListener("input",()=>{
   const v=$("q").value;
   $("q-clear").hidden=!v;
-  clearTimeout(_qTimer); _qTimer=setTimeout(()=>CCApp.runSearch(v), 350);
+  clearTimeout(_qTimer); _qTimer=setTimeout(()=>ALApp.runSearch(v), 350);
 });
 $("q-clear").addEventListener("click",()=>{
-  $("q").value=""; $("q-clear").hidden=true; CCApp.runSearch("");
+  $("q").value=""; $("q-clear").hidden=true; ALApp.runSearch("");
 });
 
 /* ---------------------------------------------------------------- boot */
@@ -5372,22 +5361,22 @@ const soon=(what)=>I.hammer+"<b>Not built yet</b><p>"+what+"</p>";
 $("soon-settings").innerHTML=soon("Your profile — photo, name, email and password — plus the "
   +"scheduler's own settings will live here. Nothing is editable yet.");
 // "New job" and "New project" are no longer static markup here -- each is
-// built into its own page's header by CCApp.renderJobsPage()/
-// CCApp.renderProjectsPage() (ui/app/jobs-table.js, ui/app/projects.js), the
+// built into its own page's header by ALApp.renderJobsPage()/
+// ALApp.renderProjectsPage() (ui/app/jobs-table.js, ui/app/projects.js), the
 // same id as before (#new-job, #new-project) but appended fresh on the
 // first render rather than labelled once at boot.
 $("pq-clear").innerHTML=I.x;
 $("projsearchbox").insertAdjacentHTML("afterbegin", I.search);
-$("pq").addEventListener("input",()=>{ CCApp.projFilters.query=$("pq").value; CCApp.renderProjectsPage(); });
-$("pq-clear").addEventListener("click",()=>{ CCApp.projFilters.query=""; $("pq").value=""; CCApp.renderProjectsPage(); });
+$("pq").addEventListener("input",()=>{ ALApp.projFilters.query=$("pq").value; ALApp.renderProjectsPage(); });
+$("pq-clear").addEventListener("click",()=>{ ALApp.projFilters.query=""; $("pq").value=""; ALApp.renderProjectsPage(); });
 $("f-clear").innerHTML=I.x+"Clear filters";
 $("jf-clear").innerHTML=I.x+"Clear filters";
 $("f-clear").hidden=$("jf-clear").hidden=true;
 // Neither table's own pager is labelled here any more -- #jobs-pg-prev/
 // #jobs-pg-next and #runs-pg-prev/#runs-pg-next no longer exist as static
-// markup at boot. CCApp.tableFooter() (ui/app/chrome.js) builds them fresh,
-// icon and label included, every time CCApp.renderJobsPage()/
-// CCApp.renderRunsPage() redraws the table card.
+// markup at boot. ALApp.tableFooter() (ui/app/chrome.js) builds them fresh,
+// icon and label included, every time ALApp.renderJobsPage()/
+// ALApp.renderRunsPage() redraws the table card.
 $("q-clear").innerHTML=I.x;
 $("jq-clear").innerHTML=I.x;
 $("searchbox").insertAdjacentHTML("afterbegin", I.search);

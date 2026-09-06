@@ -27,9 +27,9 @@
   var createCombo;
   var closeMenus;
   var pushNav;
-  var CC = null;
+  var AL = null;
   function bindPage(cc) {
-    CC = cc;
+    AL = cc;
     ({
       $,
       TOKEN,
@@ -280,7 +280,7 @@
     return n;
   }
   async function secFetch(path) {
-    const r = await fetch(path, { headers: { "X-CC-Token": TOKEN } });
+    const r = await fetch(path, { headers: { "X-AL-Token": TOKEN } });
     if (r.status === 401 || r.status === 428) {
       sessionLost();
       throw new Error("signed out");
@@ -294,7 +294,7 @@
   function secRunFor(a) {
     if (!a || !a.run_id) return null;
     const running = a.state === "running";
-    const pool = running ? unjournaledLive() : unjournaledLive().concat(CC.DATA.runs || []);
+    const pool = running ? unjournaledLive() : unjournaledLive().concat(AL.DATA.runs || []);
     let best = null, bestd = Infinity;
     pool.forEach((r) => {
       if (r.id !== a.run_id) return;
@@ -429,7 +429,7 @@
     }
   }
   function secSyncPoll() {
-    const running = CC.currentView === "security" && secState.project && secState.analyses.some((a) => a.state === "running");
+    const running = AL.currentView === "security" && secState.project && secState.analyses.some((a) => a.state === "running");
     if (running && !secTimer) secTimer = setInterval(() => secReload(false), SEC_POLL_MS);
     if (!running) secStopPoll();
   }
@@ -558,14 +558,14 @@
   }
   var secProjectPollWasRunning = null;
   async function secReload(forceProject = true) {
-    if (!secState.project || CC.currentView !== "security") return;
+    if (!secState.project || AL.currentView !== "security") return;
     try {
       secState.analyses = await secFetch("/api/security?project=" + encodeURIComponent(secState.project));
     } catch (e) {
       secStopPoll();
       return;
     }
-    if (!secState.project || CC.currentView !== "security") {
+    if (!secState.project || AL.currentView !== "security") {
       secStopPoll();
       return;
     }
@@ -988,7 +988,7 @@
     const dk = ["security_report", id, fmt];
     markPending(...dk);
     try {
-      const r = await fetch("/api/security/report?analysis=" + encodeURIComponent(id) + "&format=" + encodeURIComponent(fmt), { headers: { "X-CC-Token": TOKEN } });
+      const r = await fetch("/api/security/report?analysis=" + encodeURIComponent(id) + "&format=" + encodeURIComponent(fmt), { headers: { "X-AL-Token": TOKEN } });
       if (!r.ok) {
         const j = await r.json().catch(() => null);
         throw new Error(j && j.error || "HTTP " + r.status);
@@ -5084,7 +5084,7 @@
 
   // ui/security/index.js
   function renderSecurity() {
-    if (CC.currentView !== "security") return;
+    if (AL.currentView !== "security") return;
     if (secIsActivityOpen()) return;
     if (secState.project) return;
     secRenderIndex();
@@ -5163,7 +5163,7 @@
     if (secIsActivityOpen()) secBackFromActivity(true);
     else secBack(true);
   }
-  window.CCSecurity = {
+  window.ALSecurity = {
     init,
     render: renderSecurity,
     enter: secEnter,
@@ -5181,5 +5181,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 7bf6b454c1671155d2e899533c1006f6ac1f20113c3359f6bfc634a76aca7249 */
-/* ui-sources: 5ebcd983ca7706774ebf29a7a0259026d979c960871019f6db179ed551e06295 */
+/* ui-bundle: 06947c6a8dfa55bdaed23a711b4d842abb1512277c07ad2a3602cdbba132715b */
+/* ui-sources: 55b58d6008704a6a9af84c7b5c09f3ae37c5b7565c3bdee3cd039a3aa57bc4e0 */

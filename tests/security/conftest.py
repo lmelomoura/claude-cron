@@ -17,8 +17,8 @@ if bin_path not in sys.path:
 # the next. They are tests OF the built-in scanner reached through the CLI, so
 # they are pinned to it.
 #
-# `setdefault`, not an assignment: `CC_SECURITY_ENGINES=on pytest` runs the
+# `setdefault`, not an assignment: `AL_SECURITY_ENGINES=on pytest` runs the
 # same suite against the engines, which is how the difference between the two
 # is inspected rather than guessed at. The engine path has its own tests in
 # test_adapters.py, which switch it on explicitly.
-os.environ.setdefault("CC_SECURITY_ENGINES", "off")
+os.environ.setdefault("AL_SECURITY_ENGINES", "off")

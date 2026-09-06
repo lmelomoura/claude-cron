@@ -1,12 +1,13 @@
 # Changelog
 
-All notable changes to claude-cron.
+All notable changes to agentloop — called claude-cron until 2026-09-06; entries
+older than that use the old name, as they did on their day.
 
 **This file is filled in with every commit that is pushed to `main`.** Not
 afterwards, not in a batch at release time — in the same change as the code, so
 the entry is written while the reason is still known. Other people run this
 scheduler on their own projects; a fix they cannot see the shape of is a fix they
-cannot trust or adopt. `claude-cron selftest` fails when `main` has moved and this
+cannot trust or adopt. `agentloop selftest` fails when `main` has moved and this
 file has not.
 
 How to write an entry, in one line: **say what behaviour changed and what it cost
@@ -16,6 +17,48 @@ read as a hang — a 40-minute test suite used to be killed at the stall timeout
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+### Changed
+
+- **claude-cron is now agentloop.** The scheduler runs more than one agent from
+  here on (see `docs/superpowers/specs/2026-09-06-platforms-anthropic-openai-design.md`),
+  and a product named after one of them misnames the other. Everything that
+  spelled the old name moves with it: the two binaries (`bin/agentloop`,
+  `bin/agentloop-server`), the `~/.local/bin` symlinks, the launchd labels
+  (`com.agentloop.tick`, `com.agentloop.server`) and the documentation. What it
+  cost to not have it: a tool called claude-cron that launches the Codex is a
+  name that lies to whoever reads a job card.
+  - `tests/test_no_old_name_survives.py` is the definition of "renamed": it
+    fails on any old spelling that is not one of the transition lines it
+    lists, and emptying that list is how the transition ends.
+  - The engine's environment is `AGENTLOOP_*` (it was `CLAUDE_CRON_*`). **For
+    this release only** the old names are still read, and `install` and
+    `status` list every one they find so it can be renamed before the next
+    release drops the fallback.
+  - The run environment is `AL_*` (it was `CC_*`), and the provisioning helpers
+    are `al_port`, `al_env_set`, `al_env_ports` and `al_copy_ignored`. **For
+    this release only** every run variable is exported under both prefixes
+    and the old helper names still answer, and `install` and `status` name
+    each script under `config/` — and each inline precheck or prompt in
+    `jobs.json` — that still reads the old prefix.
+  - The dashboard's token header is `X-AL-Token` (it was `X-CC-Token`), and
+    the page's own globals are `ALApp`, `ALSecurity` and `AL`. **For this
+    release only** the server also accepts the old header, so a tab left open
+    across the upgrade keeps working until it reloads.
+  - `agentloop install` retires the two pre-rename launchd agents and the old
+    `~/.local/bin` symlinks on an existing machine, carrying the pinned Claude
+    account over to the new agents, and says so when `~/.claude/settings.json`
+    still runs the statusline from the folder's old name. Re-running
+    `install.sh` is the whole upgrade. A symlink that points anywhere but this
+    folder is left alone, on install and on uninstall alike.
+  - The dashboard's logo, the last `cc-` ids in the page and two articles in
+    shipped prose that the mechanical substitution had left as "a agentloop"
+    are the final vestiges; `README.md` now carries *Upgrading from
+    claude-cron*, the only place outside the changelog where the old name is
+    still written on purpose.
+  - Every shortcut above is deleted in the release after this one; the
+    `ALLOWED` list in `tests/test_no_old_name_survives.py` is the list of what
+    goes, and emptying it is how that release starts.
 
 ### Fixed
 

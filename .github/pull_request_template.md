@@ -14,7 +14,7 @@ fine, a ticked box that isn't true is not.
 <!-- What did you RUN? Paste the relevant output. A reviewer verifies findings by
 execution, and so should an author: "selftest 42 passed" beats "should be fine". -->
 
-- [ ] `claude-cron selftest` passes
+- [ ] `agentloop selftest` passes
 - [ ] `CHANGELOG.md` filled in **in the same commit as the code**
 
 ## Checks

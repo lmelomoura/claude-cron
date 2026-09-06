@@ -17,7 +17,7 @@ def test_the_bundle_is_served_as_javascript(srv):
 
 def test_a_traversing_path_is_refused(srv):
     """The one thing a static route must never do."""
-    for bad in ("../claude-cron-server", "..%2Fclaude-cron-server",
+    for bad in ("../agentloop-server", "..%2Fagentloop-server",
                 "sub/dir.js", "/etc/passwd"):
         assert srv.static_asset(bad) == (None, None)
 

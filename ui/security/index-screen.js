@@ -4,7 +4,7 @@
    project table (one row per project, its default branch's current
    posture), the recent-analyses feed and the severity donut with the rules
    that produced it. See bin/security/cli.py's `index-data` and
-   bin/claude-cron-server's `security_index`/`_security_projects`.
+   bin/agentloop-server's `security_index`/`_security_projects`.
 
    The old per-project list (projects.js) cost one subprocess PER PROJECT on
    every load and every Refresh -- `security list`, and for whichever
@@ -100,17 +100,17 @@ export async function secLoadIndex(force){
 
    Called from secRenderIndex() rather than ui/security/index.js's own
    init(), and this is not a style choice: init() runs inside
-   CCSecurity.init(CC), which bin/dashboard.html calls BEFORE CCApp.init() --
-   see that file's own banner comment above the CC object. pageHeader (like
+   ALSecurity.init(AL), which bin/dashboard.html calls BEFORE ALApp.init() --
+   see that file's own banner comment above the AL object. pageHeader (like
    kpiCard and tableFooter) calls straight into `icon()`, which for this
    bridge resolves to ui/app/page.js's own binding, and that binding is not
-   set until CCApp.init() runs. Calling pageHeader() from inside init() would
+   set until ALApp.init() runs. Calling pageHeader() from inside init() would
    read it in its temporal dead zone and throw on every load -- see
    tests/test_page_contract.py's own
    test_calling_the_bridged_chrome_builders_during_securitys_own_init_does_
    not_reach_a_dead_binding for the guard and the reproduction. secRenderIndex() only
    ever runs off a poll tick or a resolved fetch, both strictly after the
-   page's own script has finished running top to bottom -- CCApp.init()
+   page's own script has finished running top to bottom -- ALApp.init()
    included -- so this is the earliest point that is actually safe. */
 function secRenderHead(){
   const host = $("sec-head");
@@ -512,7 +512,7 @@ function secIndexProjectRow(p){
   // two-line grey description. The badge is UNCONDITIONAL, not a second
   // read of the Status cell's own `p.enabled` below -- every row on this
   // screen is, by construction, a security-ENABLED project
-  // (_security_projects(), bin/claude-cron-server, never hands this screen
+  // (_security_projects(), bin/agentloop-server, never hands this screen
   // one that is not), so this badge and Status answer two independent
   // questions (security on; the PROJECT itself active) that happen to both
   // be true for most rows, not the same fact painted twice.
@@ -772,7 +772,7 @@ function secIndexProjectsTable(projects, footer){
    the native indicator plus this screen's own decorative one -- which is
    what made the bar wrap under Refresh at the pane's own width in the first
    place. bin/dashboard.html's makePicker() is bridged in through
-   CCSecurity.init(CC) rather than ported a second time into this bundle
+   ALSecurity.init(AL) rather than ported a second time into this bundle
    (see ui/security/page.js's own comment on why that bridge runs in THIS
    direction, the opposite of pageHeader/kpiCard/tableFooter's) -- this
    screen still builds the markup, at runtime, the way it always has (unlike

@@ -1021,7 +1021,7 @@ def prepare(tmp_path, engines_on):
     """`prepare` over a planted tree, with the engines switched on or off."""
     root = plant(tmp_path / f"repo-{engines_on}")
     db = tmp_path / f"security-{engines_on}.db"
-    env = {**os.environ, "CC_SECURITY_ENGINES": "on" if engines_on else "off"}
+    env = {**os.environ, "AL_SECURITY_ENGINES": "on" if engines_on else "off"}
     aid = open_analysis(db)
     note = cli_json(db, "prepare", "--analysis", str(aid), "--root", str(root),
                     "--offline", env=env)["coverage_note"]
@@ -1064,7 +1064,7 @@ def test_the_engine_obeys_the_ignore_paths_prepare_was_given(tmp_path):
     """
     root = plant(tmp_path / "repo")
     db = tmp_path / "security.db"
-    env = {**os.environ, "CC_SECURITY_ENGINES": "on"}
+    env = {**os.environ, "AL_SECURITY_ENGINES": "on"}
 
     loud = open_analysis(db)
     cli_json(db, "prepare", "--analysis", str(loud), "--root", str(root),
@@ -1089,7 +1089,7 @@ def test_the_engine_obeys_the_ignore_paths_prepare_was_given(tmp_path):
 # Three properties this project already holds the built-in scanner to
 # (tests/security/test_cli.py, "the history sweep, every run") had no
 # engine-path equivalent, and tests/security/conftest.py pins the whole suite
-# to CC_SECURITY_ENGINES=off -- so on a machine with gitleaks installed, which
+# to AL_SECURITY_ENGINES=off -- so on a machine with gitleaks installed, which
 # is production going forward, the suite proved none of them.
 #
 # The third one is the reason this is not merely tidiness. "The tree reading
@@ -1107,7 +1107,7 @@ ENGINE_MATRIX = [False, pytest.param(True, marks=needs_gitleaks)]
 
 def analysis_with(db, root, engines_on, aid=None):
     """One `prepare` over `root` with the scanner switched explicitly."""
-    env = {**os.environ, "CC_SECURITY_ENGINES": "on" if engines_on else "off"}
+    env = {**os.environ, "AL_SECURITY_ENGINES": "on" if engines_on else "off"}
     aid = open_analysis(db) if aid is None else aid
     cli_json(db, "prepare", "--analysis", str(aid), "--root", str(root),
              "--offline", env=env)
@@ -1238,7 +1238,7 @@ def test_prepare_still_counts_the_lines_it_analysed(tmp_path):
     for engines_on in ((True, False) if HAVE_GITLEAKS else (False,)):
         root = plant(tmp_path / f"repo-loc-{engines_on}")
         db = tmp_path / f"loc-{engines_on}.db"
-        env = {**os.environ, "CC_SECURITY_ENGINES": "on" if engines_on else "off"}
+        env = {**os.environ, "AL_SECURITY_ENGINES": "on" if engines_on else "off"}
         aid = open_analysis(db)
         cli_json(db, "prepare", "--analysis", str(aid), "--root", str(root),
                  "--offline", env=env)
@@ -1258,13 +1258,13 @@ def test_the_engines_can_be_switched_off_without_uninstalling_them(monkeypatch):
     Checked for both engines this module knows about: the switch is a
     single environment variable read by `engine_path` itself, not something
     each caller has to wire up on its own."""
-    monkeypatch.setenv("CC_SECURITY_ENGINES", "off")
+    monkeypatch.setenv("AL_SECURITY_ENGINES", "off")
     assert adapters.engine_path("gitleaks") is None
     assert adapters.engine_path("trivy") is None
-    monkeypatch.setenv("CC_SECURITY_ENGINES", "on")
+    monkeypatch.setenv("AL_SECURITY_ENGINES", "on")
     assert (adapters.engine_path("gitleaks") is not None) == HAVE_GITLEAKS
     assert (adapters.engine_path("trivy") is not None) == HAVE_TRIVY
-    monkeypatch.delenv("CC_SECURITY_ENGINES")
+    monkeypatch.delenv("AL_SECURITY_ENGINES")
     assert (adapters.engine_path("gitleaks") is not None) == HAVE_GITLEAKS
     assert (adapters.engine_path("trivy") is not None) == HAVE_TRIVY
 
@@ -2295,7 +2295,7 @@ def test_trivy_iac_scan_reports_empty_results_as_no_findings_not_none(
 # The SHAPE is untouched -- still an absolute path, still rooted in
 # `/Users/<somebody>`, still the only field in the document that is not
 # root-relative -- so the test below still fails the moment `syft_document`
-# stops dropping these entries. `bin/claude-cron selftest` is what keeps a
+# stops dropping these entries. `bin/agentloop selftest` is what keeps a
 # future re-capture from bringing a real home back in.
 
 def _syft_fixture():
@@ -2500,7 +2500,7 @@ def test_semgrep_results_become_sast_findings():
     assert f["category"] == "sast"
     assert f["severity"] in report.SEVERITIES
     assert len(f["fingerprint"]) == 64
-    assert f["occurrences"][0]["file"] == "bin/claude-cron-server"
+    assert f["occurrences"][0]["file"] == "bin/claude-cron-server"   # the capture's own path, taken before the rename
 
 
 def test_every_rule_this_adapter_mints_is_in_the_closed_vocabulary():
@@ -2594,7 +2594,7 @@ def test_every_cwe_in_the_vocabulary_names_exactly_one_rule():
 
 def test_the_capture_carries_this_repositorys_own_source():
     """MEASURED, not anticipated. Semgrep puts the FILE'S CONTENT into the
-    message of a parse error -- ~2kB of `bin/claude-cron` in this capture --
+    message of a parse error -- ~2kB of `bin/claude-cron` in this capture (taken before the rename) --
     and it interpolates a rule's metavariables into `extra.message`, which for
     a rule that fires ON a hardcoded credential IS the credential. Neither is
     `extra.lines`, and neither was in the purge table before this adapter
@@ -2653,7 +2653,7 @@ def test_three_hits_of_one_check_in_one_file_are_one_finding():
     """No snippet means no per-hit identity, so several matches of one check in
     one file are ONE finding with several occurrences -- the same grouping
     `gitleaks()` uses for the same reason. This repository's capture is
-    exactly that case: three md5 calls in `bin/claude-cron-server`."""
+    exactly that case: three md5 calls in `bin/claude-cron-server` (taken before the rename)."""
     out = adapters.semgrep_findings(_semgrep_fixture(), root=".")
     assert len(out) == 1, out
     assert [o["line"] for o in out[0]["occurrences"]] == [351, 656, 1845]
@@ -2838,7 +2838,7 @@ def test_a_language_this_tree_holds_no_file_of_is_not_shown_as_coverage():
 
 def test_an_unevidenced_row_is_labelled_rather_than_deleted():
     """Deleting the row is the obvious fix and it opens a worse hole: this
-    tree's own shell lives in `bin/claude-cron`, which has NO EXTENSION --
+    tree's own shell lived in `bin/claude-cron` (taken before the rename), which has NO EXTENSION --
     Semgrep reads its shebang and this table cannot -- so a repository whose
     shell is all extensionless would lose `bash 1` from the one note that
     exists to say shell got a single rule. Stated and labelled teaches both
@@ -3038,7 +3038,7 @@ def test_prepare_records_the_pre_pass_as_sast_findings(tmp_path):
         "import hashlib\n\n\ndef etag(body):\n"
         "    return hashlib.md5(body).hexdigest()\n")
     db = tmp_path / "security.db"
-    env = {**os.environ, "CC_SECURITY_ENGINES": "on"}
+    env = {**os.environ, "AL_SECURITY_ENGINES": "on"}
     aid = open_analysis(db)
     note = cli_json(db, "prepare", "--analysis", str(aid), "--root", str(root),
                     env=env)["coverage_note"]
@@ -3055,7 +3055,7 @@ def test_prepare_declares_the_pre_pass_it_did_not_run(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     db = tmp_path / "security.db"
-    env = {**os.environ, "CC_SECURITY_ENGINES": "off"}
+    env = {**os.environ, "AL_SECURITY_ENGINES": "off"}
     aid = open_analysis(db)
     note = cli_json(db, "prepare", "--analysis", str(aid), "--root", str(root),
                     env=env)["coverage_note"]
@@ -3069,7 +3069,7 @@ def test_the_pre_pass_does_not_run_offline(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
     db = tmp_path / "security.db"
-    env = {**os.environ, "CC_SECURITY_ENGINES": "on"}
+    env = {**os.environ, "AL_SECURITY_ENGINES": "on"}
     aid = open_analysis(db)
     note = cli_json(db, "prepare", "--analysis", str(aid), "--root", str(root),
                     "--offline", env=env)["coverage_note"]
@@ -3265,15 +3265,15 @@ def test_a_structured_error_type_cannot_put_a_path_into_the_note():
     "error"` in 1.175.0; closed by construction rather than by knowing that."""
     reason = adapters.semgrep_failure({"errors": [{
         "level": "error",
-        "type": ["PartialParsing", [{"path": "bin/claude-cron",
+        "type": ["PartialParsing", [{"path": "bin/claude-cron",   # taken before the rename
                                      "start": {"line": 1}}]]}]})
     assert "PartialParsing" in reason, reason
-    assert "bin/claude-cron" not in reason, reason
+    assert "bin/claude-cron" not in reason, reason   # taken before the rename
     assert "path" not in reason, reason
 
 
 @pytest.mark.parametrize("kind", [
-    "/etc/passwd", "bin/claude-cron", "a.py", {"path": "x"}, 7, None, "",
+    "/etc/passwd", "bin/claude-cron", "a.py", {"path": "x"}, 7, None, "",   # taken before the rename
     ["/etc/passwd"], [["nested"]], "x" * 200])
 def test_an_error_type_that_is_not_a_name_becomes_the_word_error(kind):
     """Whatever shape a future version invents, what reaches the note is

@@ -76,7 +76,7 @@ export async function secDownloadReport(id, fmt, btn){
     // the server names the file in Content-Disposition, and a fetch never turns
     // that header into a download name on its own.
     const r = await fetch("/api/security/report?analysis=" + encodeURIComponent(id)
-                          + "&format=" + encodeURIComponent(fmt), {headers:{"X-CC-Token":TOKEN}});
+                          + "&format=" + encodeURIComponent(fmt), {headers:{"X-AL-Token":TOKEN}});
     if(!r.ok){
       const j = await r.json().catch(() => null);
       throw new Error((j && j.error) || ("HTTP " + r.status));
@@ -84,7 +84,7 @@ export async function secDownloadReport(id, fmt, btn){
     const url = URL.createObjectURL(await r.blob());
     const link = document.createElement("a");
     link.href = url;
-    // Mirrors REPORT_EXTENSIONS in bin/claude-cron-server: a fetch never turns
+    // Mirrors REPORT_EXTENSIONS in bin/agentloop-server: a fetch never turns
     // the server's Content-Disposition into a download name on its own, so the
     // two have to agree by hand. `.cdx.json` is what SBOM tooling recognises.
     link.download = "security-analysis-" + id + "." + (fmt === "sbom" ? "cdx.json" : fmt);

@@ -24,7 +24,7 @@
    so the next person knows there are two to update.
 
    renderPulse and renderOverviewHead are a different kind of thing: they
-   build the DOM the page mounts, so they need $, CC and icon from
+   build the DOM the page mounts, so they need $, AL and icon from
    ./page.js the way every other screen's renderer does (see
    ui/security/index-screen.js). Neither is pulled out and run standing
    alone by a test, so the isolation rule above does not bind them -- but
@@ -36,7 +36,7 @@
    every screen phase 2 and 3 touch needs both -- so they moved to
    ./chrome.js rather than have five pages import their own furniture from
    a file named for one of them. */
-import { $, CC, icon, eff, fmtAgo, fmtDur, money, effortLabel, fmtExpiresIn,
+import { $, AL, icon, eff, fmtAgo, fmtDur, money, effortLabel, fmtExpiresIn,
          resumeInFlight, markIfPending, projById } from "./page.js";
 import { jobFacts } from "./jobs-domain.js";
 import { el, pageHeader, kpiCard } from "./chrome.js";
@@ -376,12 +376,12 @@ function checkList(output){
 // Every retained run directory this job still owns, each as its own notice --
 // almost always zero or one, but nothing stops a job from cutting two runs
 // short before either is resumed or expires. Same source as worktreesCard
-// and the Sessions dialog (CC.DATA.retained_worktrees) -- no second fetch,
+// and the Sessions dialog (AL.DATA.retained_worktrees) -- no second fetch,
 // no second shape for one server-side list to drift against. fmtExpiresIn
 // and resumeInFlight are the page's own single implementations (see
 // page.js's own comment on why they are bound rather than duplicated here).
 function sessionNotices(jobId){
-  const kept = (CC.DATA.retained_worktrees || []).filter(w => w.job === jobId);
+  const kept = (AL.DATA.retained_worktrees || []).filter(w => w.job === jobId);
   return kept.map(w => {
     const left = fmtExpiresIn(w.expires_in);
     const until = left ? " — expires " + left : "";
@@ -904,8 +904,8 @@ export function renderPulse(ticks, jobs){
    bound). checks/per come from DATA.ticks, read here rather than passed in,
    since tickTotals needs them anyway for the band immediately below. */
 export function renderOverviewHead(kpis, firstName){
-  const jobs = CC.DATA.jobs || [];
-  const ticks = CC.DATA.ticks || {};
+  const jobs = AL.DATA.jobs || [];
+  const ticks = AL.DATA.ticks || {};
   const tt = tickTotals(ticks);
   const merged = Object.assign({}, kpis, {checks: tt.checks, per: tt.per});
   const cards = pulseKpis(merged);

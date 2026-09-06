@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""claude-cron control server — authenticated, localhost-only UI in front of
-the `claude-cron` CLI. It never reimplements job logic: every mutation shells
-out to `claude-cron` so the bash engine stays the single source of truth.
+"""agentloop control server — authenticated, localhost-only UI in front of
+the `agentloop` CLI. It never reimplements job logic: every mutation shells
+out to `agentloop` so the bash engine stays the single source of truth.
 
 Storage model:
   * files are the source of truth — the bash engine appends runs.ndjson and
@@ -13,7 +13,7 @@ Storage model:
 
 Security model (single-user machine):
   * binds 127.0.0.1 only — never reachable from the network;
-  * every /api/* call requires the shared token in the X-CC-Token header;
+  * every /api/* call requires the shared token in the X-AL-Token header;
   * cross-origin requests are rejected (Origin allowlist) and the custom
     header forces a CORS preflight we deliberately do not satisfy — so a
     malicious page in the browser cannot drive the agent (anti-CSRF);
@@ -43,16 +43,30 @@ HOME = Path.home()
 # (resolve() follows the ~/.local/bin symlink to the real project folder).
 BASE_DIR = Path(__file__).resolve().parent.parent
 BIN_DIR = Path(__file__).resolve().parent
-CONFIG_DIR = Path(os.environ.get("CLAUDE_CRON_CONFIG", BASE_DIR / "config"))
-DATA_DIR = Path(os.environ.get("CLAUDE_CRON_DATA", BASE_DIR / "data"))
+# The pre-rename prefix, read for one release: config, data and port still
+# arrive under it from a plist written before 2026-09-06. Delete
+# LEGACY_ENV_PREFIX and the fallback in _env in the release after the rename.
+LEGACY_ENV_PREFIX = "CLAUDE_CRON_"
+
+
+def _env(name, default=None):
+    """AGENTLOOP_<name>, else its pre-rename spelling, else default."""
+    v = os.environ.get("AGENTLOOP_" + name)
+    if v is None:
+        v = os.environ.get(LEGACY_ENV_PREFIX + name)
+    return default if v is None else v
+
+
+CONFIG_DIR = Path(_env("CONFIG", BASE_DIR / "config"))
+DATA_DIR = Path(_env("DATA", BASE_DIR / "data"))
 JOBS_FILE = CONFIG_DIR / "jobs.json"
 PROJECTS_FILE = CONFIG_DIR / "projects.json"
 STATE_FILE = DATA_DIR / "state.json"
 RUNS_FILE = DATA_DIR / "runs.ndjson"
 TOKEN_FILE = CONFIG_DIR / "control.token"
 DB_FILE = DATA_DIR / "index.db"
-CLAUDE_CRON = str(BIN_DIR / "claude-cron")
-# Built from ui/ by build/build-ui.sh and COMMITTED. Installing claude-cron
+AGENTLOOP = str(BIN_DIR / "agentloop")
+# Built from ui/ by build/build-ui.sh and COMMITTED. Installing agentloop
 # needs jq, python3 and curl; Node is a developer dependency and never a
 # runtime one, which only works if the output ships in git.
 STATIC_DIR = BIN_DIR / "static"
@@ -94,9 +108,9 @@ def static_asset(name):
     except (OSError, ValueError):
         return None, None
 
-PORT = int(os.environ.get("CLAUDE_CRON_PORT", "8787"))
-PLIST_LABEL = "com.claude-cron.tick"
-SERVER_LABEL = "com.claude-cron.server"
+PORT = int(_env("PORT", "8787"))
+PLIST_LABEL = "com.agentloop.tick"
+SERVER_LABEL = "com.agentloop.server"
 # WORKTREE_SESSION_TTL, not SESSION_TTL: this module already has a SESSION_TTL,
 # and it is the HTTP sign-in idle timeout (12h). Two module-level assignments of
 # one name do not collide loudly — the later one silently wins at import, and
@@ -104,7 +118,7 @@ SERVER_LABEL = "com.claude-cron.server"
 # constant that has nothing to do with the sweep. Kept in step with the engine's
 # own default (bin/worktree-lib.sh, wt_prune_orphans): the dashboard must never
 # promise a directory more time than the sweep will give it.
-WORKTREE_SESSION_TTL = int(os.environ.get("CLAUDE_CRON_SESSION_TTL") or 86400)
+WORKTREE_SESSION_TTL = int(_env("SESSION_TTL") or 86400)
 
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -621,7 +635,7 @@ STREAM_CAP = 2_000_000
 def _log(msg):
     """One line to stderr — launchd captures it. Used where staying silent would
     hide the loss of something irreplaceable."""
-    sys.stderr.write(f"claude-cron-server: {msg}\n")
+    sys.stderr.write(f"agentloop-server: {msg}\n")
     sys.stderr.flush()
 
 
@@ -1485,7 +1499,7 @@ def _session_from_log(logp):
     a byte cap then cuts it mid-object, json.loads raises on the fragment, and
     this returns "" having found nothing. The transcript is append-only, so
     those first bytes never change: the miss is permanent, not a transient the
-    next poll recovers from. `session_from_stream` in bin/claude-cron was fixed
+    next poll recovers from. `session_from_stream` in bin/agentloop was fixed
     the same way and for the same reason, and the two sides must not disagree
     about what they are able to see.
     """
@@ -1592,7 +1606,7 @@ def _session_bound_to(run_dir):
     into one silent "" would let a value that only exists on some paths be
     read by something that treats its default as an answer.
 
-    - Absent is the ordinary case. bind_session (bin/claude-cron) writes this
+    - Absent is the ordinary case. bind_session (bin/agentloop) writes this
       file through mktemp + rename, and only once it already has a non-empty
       id -- so a run dir with no `.session` is one whose agent never got far
       enough to report one. There was never anything to resume; this is not a
@@ -1807,8 +1821,8 @@ def resume_port_block_held_by(jid, sid):
     A resume must have the EXACT block its services were bound to: a fresh one
     would point the resumed agent's config at ports nothing is listening on, so
     the engine refuses rather than substitute (see port_base_reclaim in
-    bin/claude-cron). That refusal happens after the run has detached, which is
-    why it has to be asked here too — `cc(..., background=True)` returns before
+    bin/agentloop). That refusal happens after the run has detached, which is
+    why it has to be asked here too — `al(..., background=True)` returns before
     the engine has looked, so the dashboard said "Resuming…", disabled the
     button and left the operator watching nothing happen, with the reason
     written only to tick.log. Two sessions of one job cut short in a row share
@@ -1958,7 +1972,7 @@ def load_data():
         # This except once hid a broken INSERT for a whole morning: the page
         # showed "No runs recorded yet" over 223 intact journal lines and
         # nothing anywhere named the exception.
-        print(f"claude-cron-server: run listing failed, showing none: {exc!r}",
+        print(f"agentloop-server: run listing failed, showing none: {exc!r}",
               flush=True)
         runs = []
     db_bytes = 0
@@ -2251,9 +2265,9 @@ def parse_conversation(text, limit=400):
     return out
 
 
-def cc(args, stdin=None, background=False):
-    """Invoke the claude-cron CLI. Returns (ok, output)."""
-    cmd = ["/bin/bash", CLAUDE_CRON] + args
+def al(args, stdin=None, background=False):
+    """Invoke the agentloop CLI. Returns (ok, output)."""
+    cmd = ["/bin/bash", AGENTLOOP] + args
     if background:
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         return True, "started"
@@ -2298,7 +2312,7 @@ def list_models():
     # /usr/bin/strings belongs to the Xcode Command Line Tools, so on a machine
     # that never installed them it fails and the picker would come up empty.
     # python3 is already a hard dependency of this tool, so this always works.
-    claude = os.environ.get("CLAUDE_CRON_CLAUDE_BIN") or str(Path.home() / ".local/bin/claude")
+    claude = _env("CLAUDE_BIN") or str(Path.home() / ".local/bin/claude")
     try:
         with open(os.path.realpath(claude), "rb") as fh:
             blob = fh.read()
@@ -2379,7 +2393,7 @@ REPORT_FORMATS = {"json": "application/json", "md": "text/markdown",
 # `.cdx.json` is the conventional CycloneDX suffix, and the tools that consume
 # one recognise a file by it; `analysis-7.sbom` is a file nothing will open.
 REPORT_EXTENSIONS = {"sbom": "cdx.json"}
-# A branch name reaches git through `claude-cron security analyze` (bin/claude-cron).
+# A branch name reaches git through `agentloop security analyze` (bin/agentloop).
 # Anything outside this set is refused HERE, at the edge, rather than quoted
 # somewhere downstream and hoped about. The charset alone is not enough: '-'
 # and '.' are both in it, so a leading '-' (which sits in an option position
@@ -2425,7 +2439,7 @@ def security_report(analysis_id, fmt):
     is built from that validated int and that validated format alone; no
     string the caller typed reaches this header.
     """
-    ok, out = cc(["security", "render", "--analysis", str(int(analysis_id)),
+    ok, out = al(["security", "render", "--analysis", str(int(analysis_id)),
                   "--format", fmt])
     if not ok:
         raise RuntimeError(out)
@@ -2444,7 +2458,7 @@ def security_report(analysis_id, fmt):
     # row gone between the render above and this lookup) must not turn an
     # otherwise successful download into a 500 -- the file the caller asked
     # for has already been rendered by the time this runs.
-    ok2, meta = cc(["security", "analysis", "--id", str(int(analysis_id))])
+    ok2, meta = al(["security", "analysis", "--id", str(int(analysis_id))])
     project = None
     if ok2:
         try:
@@ -2452,7 +2466,7 @@ def security_report(analysis_id, fmt):
         except (ValueError, KeyError, TypeError):
             project = None
     if project:
-        cc(["security", "event", "--project", project,
+        al(["security", "event", "--project", project,
             "--kind", "report_exported",
             "--detail", f"{fmt} report for analysis {int(analysis_id)}",
             "--related", str(int(analysis_id))])
@@ -2463,7 +2477,7 @@ def security_report(analysis_id, fmt):
 def _json_or_500(ok, out, what):
     """`out` decoded as JSON, or a 500 that says which call and why.
 
-    `cc()` merges the CLI's stdout and stderr (see `cc`), so a warning printed
+    `al()` merges the CLI's stdout and stderr (see `al`), so a warning printed
     on an otherwise successful run (rc 0) lands in `out` right alongside the
     clean JSON the CLI intends as its actual payload. Left unguarded,
     `json.loads` on that turns into an uncaught `JSONDecodeError` -- a dropped
@@ -2488,7 +2502,7 @@ def security_list(project):
         # and comes back a silent `200 []` -- indistinguishable from "this
         # project genuinely has none" rather than "you forgot the parameter".
         return 400, {"error": "project required"}
-    ok, out = cc(["security", "list", "--project", project])
+    ok, out = al(["security", "list", "--project", project])
     return _json_or_500(ok, out, "security list")
 
 
@@ -2496,12 +2510,12 @@ def security_checklist(analysis_raw):
     aid = _analysis_id(analysis_raw)
     if aid is None:
         return 400, {"error": "analysis must be an integer"}
-    ok, out = cc(["security", "checklist", "--analysis", str(aid)])
+    ok, out = al(["security", "checklist", "--analysis", str(aid)])
     return _json_or_500(ok, out, "security checklist")
 
 
 def security_branches(project, repo):
-    ok, out = cc(["security-branches", str(project), str(repo)])
+    ok, out = al(["security-branches", str(project), str(repo)])
     if not ok:
         return 500, {"error": out}
     return 200, {"branches": [b for b in out.splitlines() if b.strip()]}
@@ -2551,7 +2565,7 @@ def security_project(project):
     if not project:
         return 400, {"error": "project required"}
     meta = _project_meta(project)
-    ok, out = cc(["security", "project-data", "--project", project,
+    ok, out = al(["security", "project-data", "--project", project,
                   "--base", meta["base"], "--default-profile", meta["default_profile"]])
     return _json_or_500(ok, out, "project data")
 
@@ -2571,7 +2585,7 @@ def security_index(params=None):
 
     `_json_or_500` is the same guard `security_list`/`security_checklist`
     already use for a non-zero exit AND for rc-0 chatter that is not valid
-    JSON (`cc()` merges stdout and stderr) -- this used to be a second copy
+    JSON (`al()` merges stdout and stderr) -- this used to be a second copy
     of that exact try/except.
 
     `params` is optional (`None` reads as no query string at all, exactly
@@ -2613,7 +2627,7 @@ def security_index(params=None):
         return 400, {"error": "recent_page must be an integer"}
     recent_page = max(1, recent_page)
 
-    ok, out = cc(["security", "index-data",
+    ok, out = al(["security", "index-data",
                  "--projects", json.dumps(_security_projects()),
                  "--days", str(days), "--recent-page", str(recent_page)])
     return _json_or_500(ok, out, "index data")
@@ -2630,8 +2644,8 @@ def security_analyze(body):
         return 400, {"error": "branch name has characters that are not allowed"}
     if profile not in PROFILES:
         return 400, {"error": f"profile must be one of {PROFILES}"}
-    # --detach, and NOT cc(..., background=True). An analysis is minutes of
-    # work and cc() gives a command 30 seconds before subprocess.run SIGKILLs
+    # --detach, and NOT al(..., background=True). An analysis is minutes of
+    # work and al() gives a command 30 seconds before subprocess.run SIGKILLs
     # it: run inline this route timed out, and the killed shell never reached
     # the close, so the analysis stayed `running` for ever, the page's Analyse
     # button stayed disabled for that project and the agent was orphaned.
@@ -2642,7 +2656,7 @@ def security_analyze(body):
     # synchronous half (the refusals, the analysis row, the request file) and
     # detaches only the run, so `output` carries the id of a row that really
     # exists.
-    ok, out = cc(["security", "analyze", "--detach", project, repo, branch, profile])
+    ok, out = al(["security", "analyze", "--detach", project, repo, branch, profile])
     return (200, {"ok": True, "output": out}) if ok else (500, {"error": out})
 
 
@@ -2723,7 +2737,7 @@ def security_findings(params):
     clamp anyway never reaches argv, where it is one more thing visible to
     anyone reading the process list. `severity`/`state`/`category` are
     checked against their closed vocabularies; `branch`/`path`/`q` are free
-    text and travel as a single argv element each, never as shell -- `cc()`
+    text and travel as a single argv element each, never as shell -- `al()`
     always calls `subprocess.run` with a list, never a shell string, so
     nothing about their CONTENT needs escaping, only their shape (a list of
     strings) needs to stay a list.
@@ -2805,7 +2819,7 @@ def security_findings(params):
     if fingerprint:
         args += ["--fingerprint", fingerprint]
 
-    ok, out = cc(args)
+    ok, out = al(args)
     return _json_or_500(ok, out, "findings page")
 
 
@@ -2885,7 +2899,7 @@ def security_activity(params):
     for k in kinds:
         args += ["--kind", k]
 
-    ok, out = cc(args)
+    ok, out = al(args)
     return _json_or_500(ok, out, "activity data")
 
 
@@ -2906,7 +2920,7 @@ def security_filter_save(body):
         # something that is not an object, saves an empty query rather than
         # failing the whole request over one field.
         query = {}
-    ok, out = cc(["security", "filters", "save", "--project", project, "--name", name],
+    ok, out = al(["security", "filters", "save", "--project", project, "--name", name],
                 stdin=json.dumps(query))
     return (200, {"ok": True}) if ok else (500, {"error": out})
 
@@ -2916,7 +2930,7 @@ def security_filter_delete(body):
     name = str(body.get("name", "")).strip()
     if not project or not name:
         return 400, {"error": "project and name are required"}
-    ok, out = cc(["security", "filters", "delete", "--project", project, "--name", name])
+    ok, out = al(["security", "filters", "delete", "--project", project, "--name", name])
     return _json_or_500(ok, out, "filters delete")
 
 
@@ -2943,7 +2957,7 @@ def security_decide(body):
         return 400, {"error": "a decision needs a reason"}
     if state not in ("accepted", "false_positive"):
         return 400, {"error": "state must be accepted or false_positive"}
-    ok, out = cc(["security", "decide",
+    ok, out = al(["security", "decide",
                   "--project", project, "--fingerprint", fingerprint,
                   "--state", str(state), "--reason", reason,
                   # Never taken from the request body: the agent under review
@@ -2954,7 +2968,7 @@ def security_decide(body):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "claude-cron/3"
+    server_version = "agentloop/3"
 
     def log_message(self, *a):  # silence stderr access log
         pass
@@ -2985,7 +2999,11 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if origin is not None and origin not in ALLOWED_ORIGINS:
             return False
-        return secrets.compare_digest(self.headers.get("X-CC-Token", ""), TOKEN)
+        # The header, and its spelling before 2026-09-06: a dashboard tab open
+        # across the upgrade keeps sending the old one until it reloads. The
+        # second read goes in the release after the rename.
+        sent = self.headers.get("X-AL-Token") or self.headers.get("X-CC-Token") or ""
+        return secrets.compare_digest(sent, TOKEN)
 
     def _raw_session(self) -> str:
         jar = SimpleCookie()
@@ -3057,7 +3075,7 @@ class Handler(BaseHTTPRequestHandler):
         """
         if not code_is_stale() or not server_supervised():
             return
-        print("claude-cron-server: the server file changed on disk — exiting so "
+        print("agentloop-server: the server file changed on disk — exiting so "
               "launchd restarts it on the new code", flush=True)
         threading.Timer(0.4, lambda: os._exit(0)).start()
 
@@ -3240,7 +3258,7 @@ class Handler(BaseHTTPRequestHandler):
             proj = body.get("project")
             if not isinstance(proj, dict) or not str(proj.get("name", "")).strip():
                 return self._send(400, {"error": "missing project name"})
-            ok, out = cc(["project-set"], stdin=json.dumps(proj))
+            ok, out = al(["project-set"], stdin=json.dumps(proj))
             return self._send(200 if ok else 500, {"ok": ok, "output": out})
         if op in ("provision_get", "provision_set"):
             name = str(body.get("name", "")).strip()
@@ -3248,7 +3266,7 @@ class Handler(BaseHTTPRequestHandler):
             if not name or phase not in ("up", "down"):
                 return self._send(400, {"error": "need a project name and phase up|down"})
             if op == "provision_get":
-                ok, out = cc(["provision-get", name, phase])
+                ok, out = al(["provision-get", name, phase])
                 return self._send(200 if ok else 500, {"ok": ok, "script": out})
             # An empty script is meaningful here, unlike a precheck: it clears
             # the hook, which is the only way to say "this project provisions
@@ -3256,7 +3274,7 @@ class Handler(BaseHTTPRequestHandler):
             script = body.get("script", "")
             if not isinstance(script, str):
                 return self._send(400, {"error": "script must be a string"})
-            ok, out = cc(["provision-set", name, phase], stdin=script)
+            ok, out = al(["provision-set", name, phase], stdin=script)
             return self._send(200 if ok else 500, {"ok": ok, "output": out})
         if op == "project_rename":
             # A project's name IS its identity — jobs reference it by name, so
@@ -3265,7 +3283,7 @@ class Handler(BaseHTTPRequestHandler):
             new = str(body.get("new_name", "")).strip()
             if not old or not new:
                 return self._send(400, {"error": "missing project name"})
-            ok, out = cc(["project-rename", old, new])
+            ok, out = al(["project-rename", old, new])
             return self._send(200 if ok else 409,
                               {"ok": True, "output": out} if ok else {"error": out or "rename refused"})
         if op == "run_delete":
@@ -3308,14 +3326,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "bad id"})
             if not stamp or not all(c.isalnum() or c in "-_." for c in stamp) or ".." in stamp:
                 return self._send(400, {"error": "bad stamp"})
-            ok, out = cc(["worktree-drop", wjid, stamp])
+            ok, out = al(["worktree-drop", wjid, stamp])
             return self._send(200 if ok else 409,
                               {"ok": True, "output": out} if ok else {"error": out or "refused"})
         if op == "project_delete":
             name = str(body.get("name", "")).strip()
             if not name:
                 return self._send(400, {"error": "missing project name"})
-            ok, out = cc(["project-delete", name])
+            ok, out = al(["project-delete", name])
             return self._send(200 if ok else 500, {"ok": ok, "output": out})
         # Keyed by project (+fingerprint for a decision), not by a job id —
         # handled here, alongside the other project-keyed ops, before the id
@@ -3338,7 +3356,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "no order given"})
             if not all(isinstance(x, str) and x and all(c.isalnum() or c in "-_" for c in x) for x in order):
                 return self._send(400, {"error": "bad id in order"})
-            ok, out = cc(["reorder"], stdin=json.dumps(order))
+            ok, out = al(["reorder"], stdin=json.dumps(order))
             return self._send(200 if ok else 409, {"ok": ok, "output": out} if ok
                               else {"error": out or "reorder refused"})
 
@@ -3356,7 +3374,7 @@ class Handler(BaseHTTPRequestHandler):
             # opposite. isinstance(True, int) is also true, so check bool first.
             if not isinstance(val, bool):
                 return self._send(400, {"error": "missing enabled flag"})
-            ok, out = cc(["toggle-many", "true" if val else "false"], stdin=json.dumps(ids))
+            ok, out = al(["toggle-many", "true" if val else "false"], stdin=json.dumps(ids))
             return self._send(200 if ok else 409, {"ok": ok, "output": out} if ok
                               else {"error": out or "refused"})
 
@@ -3368,29 +3386,29 @@ class Handler(BaseHTTPRequestHandler):
             job = body.get("job")
             if not isinstance(job, dict) or not job.get("id"):
                 return self._send(400, {"error": "missing job object"})
-            ok, out = cc(["create"], stdin=json.dumps(job))
+            ok, out = al(["create"], stdin=json.dumps(job))
             if ok:
                 pc = body.get("precheck")
                 if isinstance(pc, str) and pc.strip():
-                    cc(["set-precheck", str(job["id"])], stdin=pc)
+                    al(["set-precheck", str(job["id"])], stdin=pc)
             return self._send(200 if ok else 500, {"ok": ok, "output": out})
         if op == "precheck_get":
             # Fetched when the editor opens, instead of riding along on every
             # 5-second poll for all 21 jobs. Same shape as provision_get.
-            ok, out = cc(["get-precheck", jid])
+            ok, out = al(["get-precheck", jid])
             return self._send(200 if ok else 500, {"ok": ok, "script": out})
         if op == "set_precheck":
             script = body.get("script", "")
             if not isinstance(script, str) or not script.strip():
                 return self._send(400, {"error": "empty script"})
-            ok, out = cc(["set-precheck", jid], stdin=script)
+            ok, out = al(["set-precheck", jid], stdin=script)
             return self._send(200 if ok else 500, {"ok": ok, "output": out})
         if op == "precheck":
             # The Run now guard: does the precheck see work? It RECORDS what it
             # saw, so the card's "last check" reflects the probe the user just
             # triggered — reading a check and then showing an older one is how a
             # card ends up describing a board that has since moved on.
-            ok, out = cc(["precheck", jid])
+            ok, out = al(["precheck", jid])
             # Exit 0 is the engine's own "there is work" signal; a job with no
             # precheck at all runs on every due tick, so it always has work.
             work = ("no precheck configured" in out) or ("(exit 0)" in out)
@@ -3414,11 +3432,11 @@ class Handler(BaseHTTPRequestHandler):
                              f"is {ceiling} at a time, so nothing was started. Stop a run, wait for "
                              f"one to finish, or raise “Max simultaneous runs” on this job.",
                     "running": True, "at_capacity": True, "running_count": n, "max_parallel": ceiling})
-            ok, out = cc(["run", jid], background=True)
+            ok, out = al(["run", jid], background=True)
         elif op == "stop":
             # With concurrent runs, a stop targets ONE run by its pid; no pid = all.
             pid = body.get("pid")
-            ok, out = cc(["stop", jid, str(pid)] if pid else ["stop", jid])
+            ok, out = al(["stop", jid, str(pid)] if pid else ["stop", jid])
         elif op == "resume":
             # Resume THE SAME TASK: continue that run's own session
             # (`claude --resume <sid>`), not a fresh run of the job.
@@ -3437,7 +3455,7 @@ class Handler(BaseHTTPRequestHandler):
                              f"for one to finish, or raise “Max simultaneous runs” on this job.",
                     "running": True, "at_capacity": True, "running_count": n, "max_parallel": ceiling})
             # Asked BEFORE the launch for the same reason at_capacity is: the
-            # engine's own refusal lands after `cc` has detached, so without
+            # engine's own refusal lands after `al` has detached, so without
             # this the dashboard reports a resume that the engine then declines,
             # naming the reason only in tick.log.
             block, holder = resume_port_block_held_by(jid, sid)
@@ -3451,13 +3469,13 @@ class Handler(BaseHTTPRequestHandler):
                              f"and try again.",
                     "running": True, "port_block_held": True,
                     "port_block": block, "held_by": holder})
-            ok, out = cc(["resume", jid, sid], background=True)
+            ok, out = al(["resume", jid, sid], background=True)
         elif op == "say":
             # Deliver a human message into the run that is happening right now.
             text = body.get("text", "")
             if not isinstance(text, str) or not text.strip():
                 return self._send(400, {"error": "empty message"})
-            ok, out = cc(["say", jid], stdin=text)
+            ok, out = al(["say", jid], stdin=text)
             if not ok:
                 return self._send(409, {"error": out or "could not deliver"})
         elif op == "rename":
@@ -3466,20 +3484,20 @@ class Handler(BaseHTTPRequestHandler):
             new = (body.get("new_id") or "").strip()
             if not new:
                 return self._send(400, {"error": "no new id given"})
-            ok, out = cc(["rename", jid, new])
+            ok, out = al(["rename", jid, new])
             if not ok:
                 return self._send(409, {"error": out or "rename refused"})
         elif op == "enable":
-            ok, out = cc(["enable", jid])
+            ok, out = al(["enable", jid])
         elif op == "disable":
-            ok, out = cc(["disable", jid])
+            ok, out = al(["disable", jid])
         elif op == "delete":
-            ok, out = cc(["delete", jid])
+            ok, out = al(["delete", jid])
         elif op == "set_prompt":
             prompt = body.get("prompt", "")
             if not isinstance(prompt, str) or not prompt.strip():
                 return self._send(400, {"error": "empty prompt"})
-            ok, out = cc(["set-prompt", jid], stdin=prompt)
+            ok, out = al(["set-prompt", jid], stdin=prompt)
         elif op == "set_field":
             field = str(body.get("field", ""))
             value = str(body.get("value", ""))
@@ -3488,7 +3506,7 @@ class Handler(BaseHTTPRequestHandler):
                              "stall_timeout_seconds", "effort", "interactive", "max_parallel",
                              "description", "cwd", "permission_mode", "project"):
                 return self._send(400, {"error": "bad field"})
-            ok, out = cc(["set-field", jid, field], stdin=value)
+            ok, out = al(["set-field", jid, field], stdin=value)
         else:
             return self._send(400, {"error": "unknown op"})
         return self._send(200 if ok else 500, {"ok": ok, "output": out})
@@ -3545,7 +3563,7 @@ def render_page(boot: str = "boot-authed") -> str:
 
 def main():
     httpd = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    sys.stderr.write(f"claude-cron control server on http://127.0.0.1:{PORT}/\n")
+    sys.stderr.write(f"agentloop control server on http://127.0.0.1:{PORT}/\n")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

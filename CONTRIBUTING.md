@@ -1,4 +1,4 @@
-# Contributing to claude-cron
+# Contributing to agentloop
 
 This scheduler runs unattended agents that spend real money and write to real
 repositories and trackers. A change that is merely plausible is not good enough
@@ -23,8 +23,8 @@ approval to merge. **Working branches are unrestricted** — push `fix/…` and
    does: `fix/stall-watchdog-cpu`, `feat/skills-link`.
 
    ```bash
-   gh repo fork lmelomoura/claude-cron --clone
-   cd claude-cron && git switch -c fix/your-change
+   gh repo fork lmelomoura/agentloop --clone
+   cd agentloop && git switch -c fix/your-change
    ```
 
    (If you have write access, skip the fork and branch directly in the repository.)
@@ -33,20 +33,20 @@ approval to merge. **Working branches are unrestricted** — push `fix/…` and
 3. **Run the checks** — they are offline and take seconds:
 
    ```bash
-   claude-cron selftest
+   agentloop selftest
    ```
 
    This covers the logic that can kill a run or lose money, plus
    `test/round-cap.test.sh`. It must pass before you open the pull request, and it
    is the first thing a reviewer runs.
 4. **Fill in `CHANGELOG.md` in the same commit as the code.** Not afterwards, not
-   at release time. `claude-cron selftest` fails when `bin/`, `skills/` or `test/`
+   at release time. `agentloop selftest` fails when `bin/`, `skills/` or `test/`
    moved after the last changelog entry, so a forgotten entry is caught before the
    pull request exists.
 5. Open the pull request against `main`. The description is pre-filled from
    `.github/pull_request_template.md` — answer it rather than deleting it.
 
-**CI runs on every pull request** (`.github/workflows/ci.yml`): `claude-cron
+**CI runs on every pull request** (`.github/workflows/ci.yml`): `agentloop
 selftest`, the server suite, and `tests/security/` in **both** of its
 configurations against `gitleaks`, `trivy`, `syft` and `semgrep` at pinned
 versions. It does not replace step 3 — a red pull request is a slower way to
@@ -70,7 +70,7 @@ while the skills themselves lived only in an unversioned `~/.claude/skills`.
 
 If your change needs an agent to behave a certain way, it belongs in versioned
 code, in the prompt contract the scheduler injects (`run_ending_contract` in
-`bin/claude-cron`), or as a `selftest` assertion. Never as prose in a personal
+`bin/agentloop`), or as a `selftest` assertion. Never as prose in a personal
 config file.
 
 ### 2. Validate against reality, not against your own fixtures
@@ -109,7 +109,7 @@ you meant to include.
 One change, explainable in a sentence. If the description needs "and also", it is
 two pull requests.
 
-Behavioural changes need a test. `claude-cron selftest` is a plain bash suite —
+Behavioural changes need a test. `agentloop selftest` is a plain bash suite —
 add a case beside the ones already there, in the same style: a short comment
 saying *why the case exists* (what broke, or would break, without it), then the
 assertion.

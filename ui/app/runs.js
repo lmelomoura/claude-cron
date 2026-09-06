@@ -34,7 +34,7 @@
    the exact values/strings they always did; only where the row that reads
    them is built has changed. See page.js's own comment for the full list
    and why each one stays where it is. */
-import { $, CC, icon, money, fmtAgo, fmtDur, fmtWhen, normStatus,
+import { $, AL, icon, money, fmtAgo, fmtDur, fmtWhen, normStatus,
          openLog, resumeTarget, resumeTip, continuedRun, resumedBadgeTip,
          runKey, isStopping, unjournaledLive, paintRunPickers, runDateLabel,
          toast, TOKEN, markIfPending } from "./page.js";
@@ -80,7 +80,7 @@ export function filteredRuns(rf, liveRows, searchKeys, sortKey, sortDir){
   const fromT=rf.from?Date.parse(rf.from):null, toT=rf.to?Date.parse(rf.to):null;
   // live rows first -- a search narrows to indexed runs, so they drop out here
   const live=searchKeys?[]:liveRows;
-  const rows=live.concat(CC.DATA.runs).filter(r=>{
+  const rows=live.concat(AL.DATA.runs).filter(r=>{
     if(r.live){
       if(rf.project){ const rp=r.project||""; if(rf.project==="__none__" ? rp!=="" : rp!==rf.project) return false; }
       if(rf.job && r.id!==rf.job) return false;
@@ -130,7 +130,7 @@ function runsHeaderSubtitle(runs, liveCount){
    `door: false`.
 
    Warnings/Errors used to count ALL of `runs` (the server's own 1000-row
-   cap on CC.DATA.runs -- see bin/claude-cron-server's `LIMIT 1000`, far
+   cap on AL.DATA.runs -- see bin/agentloop-server's `LIMIT 1000`, far
    more than 7 days at any real job count) and said "N% of finished runs".
    The Overview's own cards of the same name count only the last 7 days and
    say so in their `sub` -- and one of them is a DOOR that lands a click
@@ -139,7 +139,7 @@ function runsHeaderSubtitle(runs, liveCount){
    waiting for someone to click through. `wk` is the Overview's own cutoff,
    copied rather than imported: render() (bin/dashboard.html) computes the
    identical `Math.floor(Date.now()/1000)-7*86400` against this exact same
-   CC.DATA.runs to feed CCApp.renderOverviewHead, so the two windows can
+   AL.DATA.runs to feed ALApp.renderOverviewHead, so the two windows can
    only ever agree if this is the same formula, not a second one that
    happens to produce the same answer today. See
    test_the_overview_and_runs_warning_cards_name_the_same_window
@@ -230,7 +230,7 @@ function paintRunFilters(shown){
       chip.appendChild(drop);
       box.appendChild(chip);
     });
-    box.appendChild(el("span", "aflabel", shown + " of " + (CC.DATA.runs||[]).length + " runs"));
+    box.appendChild(el("span", "aflabel", shown + " of " + (AL.DATA.runs||[]).length + " runs"));
   }
   $("f-clear").hidden = !chips.length;
 }
@@ -294,7 +294,7 @@ export async function runSearch(q){
   const seq=++searchSeq;
   if(!q || q.trim().length<2){ searchKeys=null; snippets={}; renderRunsPage(); return; }
   try{
-    const r=await fetch("/api/search?q="+encodeURIComponent(q.trim()), {headers:{"X-CC-Token":TOKEN}});
+    const r=await fetch("/api/search?q="+encodeURIComponent(q.trim()), {headers:{"X-AL-Token":TOKEN}});
     if(!r.ok) throw new Error("HTTP "+r.status);
     const j=await r.json();
     if(seq!==searchSeq) return;            // a newer query superseded this one
@@ -308,7 +308,7 @@ export async function runSearch(q){
 // jobProjectNames (jobs-domain.js) for the identical reason: known() has to
 // agree with what the picker itself is about to count rows out of.
 export function runProjectNames(){
-  return [...new Set((CC.DATA.runs||[]).map(r=>r.project||"").filter(Boolean))].sort();
+  return [...new Set((AL.DATA.runs||[]).map(r=>r.project||"").filter(Boolean))].sort();
 }
 
 // "Succeeded, but nothing actually ran" — the engine puts the agent's own
@@ -323,7 +323,7 @@ function nothingNote(r){
 // that run; with several, the row cannot tell them apart, so fall back to
 // the first and let the engine's per-pid stop do the precise work.
 function livePidFor(id){
-  const a=(CC.DATA.active_runs||{})[id]||[];
+  const a=(AL.DATA.active_runs||{})[id]||[];
   return a.length ? a[0].pid : "";
 }
 
@@ -610,7 +610,7 @@ function renderRunsTable(){
     td.colSpan = RUN_COLS.length;
     td.appendChild(icon("inbox"));
     td.appendChild(document.createTextNode(
-      (CC.DATA.runs||[]).length
+      (AL.DATA.runs||[]).length
         ? (searchKeys ? "No runs match this search." : "No runs match the filters.")
         : "No runs recorded yet."));
     tr.appendChild(td);
@@ -639,10 +639,10 @@ function renderRunsTable(){
 
 /* -------------------------------------------------------------- the mount
    Called once per poll from bin/dashboard.html's render(), the same way it
-   already calls CCApp.renderJobsPage()/CCApp.renderProjectsPage(). */
+   already calls ALApp.renderJobsPage()/ALApp.renderProjectsPage(). */
 export function renderRunsPage(){
   mountRunsToolbar();
-  const runs = CC.DATA.runs || [];
+  const runs = AL.DATA.runs || [];
   const liveCount = unjournaledLive().length;
 
   const headHost = $("runs-head");

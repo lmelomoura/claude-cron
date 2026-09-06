@@ -8,7 +8,7 @@
    the page's own <script>, so this bundle is evaluated first and only DEFINES
    things — no DOM is touched, nothing is read off the page. The page's script
    then runs exactly as it always did, and at the point where this area's code
-   used to begin it builds one interface object and calls CCSecurity.init(it).
+   used to begin it builds one interface object and calls ALSecurity.init(it).
    Every statement therefore still executes in the same order it did when this
    was one file.
 
@@ -19,7 +19,7 @@
 
    What the page hands in is listed in page.js. What it gets back is the object
    below: this is the whole surface between the two. */
-import { bindPage, $, iconLabel, CC, projById } from "./page.js";
+import { bindPage, $, iconLabel, AL, projById } from "./page.js";
 import { SEC_PROFILES, SEV_ORDER } from "./vocabulary.js";
 import { secState } from "./state.js";
 import { secRenderIndex, secLoadIndex } from "./index-screen.js";
@@ -33,7 +33,7 @@ import { secOpenActivity, secBackFromActivity, secActReload, secActSwitchTab,
          wireActivityFindingDialog } from "./activity-screen.js";
 
 function renderSecurity(){
-  if(CC.currentView !== "security") return;
+  if(AL.currentView !== "security") return;
   if(secIsActivityOpen()) return;   // the Activity screen paints from its own fetch
   if(secState.project) return;   // the project screen paints from its own fetches
   secRenderIndex();
@@ -83,9 +83,9 @@ function init(cc){
   // (pageHeader() draws its icon and label from the actions array, so a
   // separate iconLabel() call here would fight it), and answered by
   // bin/dashboard.html's central delegated click listener through
-  // CCSecurity.openActivity() below, the same "rebuilt every poll, answered
+  // ALSecurity.openActivity() below, the same "rebuilt every poll, answered
   // by id centrally" split every other page's pageHeader() action already
-  // uses. #sec-reload moved the same way, into CCSecurity.reload().
+  // uses. #sec-reload moved the same way, into ALSecurity.reload().
   iconLabel($("sec-act-back"), "cleft", "All projects");
   iconLabel($("sec-act-reload"), "radar", "Refresh");
   iconLabel($("secactt-all"), "activity", "All activity");
@@ -207,7 +207,7 @@ async function secNavigate(sec){
    site wants "open the all-projects activity feed" and "refresh the index",
    not a project-scoped open or a soft (cache-permitting) refresh -- the two
    things secOpenActivity("") and secLoadIndex(true) actually mean here. */
-window.CCSecurity = {
+window.ALSecurity = {
   init,
   render: renderSecurity,
   enter: secEnter,

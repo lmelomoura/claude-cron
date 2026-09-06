@@ -541,7 +541,7 @@ def test_every_rename_is_in_a_category_the_ledger_can_actually_rename():
 # THAT list would be accepted here as a legal rename target by the very test
 # built to catch typos in targets. Deliberate: verifying it would mean
 # requiring the gitleaks binary in CI, and the suite pins itself to
-# CC_SECURITY_ENGINES=off precisely so it does not. The choice is safe because
+# AL_SECURITY_ENGINES=off precisely so it does not. The choice is safe because
 # the two lists are written and reviewed together and the check runs in the
 # safe direction -- a subset of what the engine emits -- so what it actually
 # guarantees is "this target is a name a human here wrote down on purpose",

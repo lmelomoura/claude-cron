@@ -348,7 +348,7 @@ def test_both_secret_scanners_run_for_real_and_mint_one_identity(tmp_path, monke
     """The same, against the real binary: the engine's `aws-access-token` and
     the built-in's renamed `aws_access_key` are one row with two producers, and
     neither the credential nor the seed token reaches a finding or a note."""
-    monkeypatch.setenv("CC_SECURITY_ENGINES", "on")
+    monkeypatch.setenv("AL_SECURITY_ENGINES", "on")
     seed = SNAKE_CASE_TOKEN.split('"')[1]
     root = _git_repo(tmp_path / "repo", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n",
                                          "scripts/seed.py": SNAKE_CASE_TOKEN})
@@ -626,7 +626,7 @@ def test_the_cap_is_exact_on_the_tree_and_the_history_is_the_built_ins_alone(
     see it on the tree (the parity claim); just over the ceiling neither does
     on the tree; a committed file beyond what gitleaks' git mode reads is a
     history finding of the built-in alone -- the documented asymmetry."""
-    monkeypatch.setenv("CC_SECURITY_ENGINES", "on")
+    monkeypatch.setenv("AL_SECURITY_ENGINES", "on")
     root = _git_repo(tmp_path / "repo", {"README.md": "clean\n"})
     _plant_of_size(root, "beyond.txt", BEYOND_GIT_MODE)
     _commit_all(root)
@@ -693,7 +693,7 @@ def test_the_built_in_history_sweep_honours_skip_dirs(tmp_path, monkeypatch):
 @needs_gitleaks
 def test_the_built_in_history_sweep_honours_skip_dirs_beside_the_real_engine(
         tmp_path, monkeypatch):
-    monkeypatch.setenv("CC_SECURITY_ENGINES", "on")
+    monkeypatch.setenv("AL_SECURITY_ENGINES", "on")
     root = _committed_and_deleted(_git_repo(tmp_path / "repo", {"README.md": "clean\n"}),
                                   [*SWEPT_OUT, IN_SCOPE])
     findings, *_ = security_cli._scan_secrets(root, [])
@@ -805,7 +805,7 @@ def test_the_secret_phase_never_reaches_the_network_on_either_path(tmp_path, mon
 @needs_gitleaks
 def test_the_secret_phase_never_reaches_the_network_with_the_real_engine(
         tmp_path, monkeypatch):
-    monkeypatch.setenv("CC_SECURITY_ENGINES", "on")
+    monkeypatch.setenv("AL_SECURITY_ENGINES", "on")
     root = _git_repo(tmp_path / "repo", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"})
     _no_network(monkeypatch)
     findings, *_ = security_cli._scan_secrets(root, [])

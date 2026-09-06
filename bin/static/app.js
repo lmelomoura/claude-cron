@@ -32,9 +32,9 @@
   var unjournaledLive;
   var paintRunPickers;
   var runDateLabel;
-  var CC = null;
+  var AL = null;
   function bindPage(cc) {
-    CC = cc;
+    AL = cc;
     ({
       $,
       fmtAgo,
@@ -277,9 +277,9 @@
   }
   function jobFacts(j) {
     const t0 = Math.floor((/* @__PURE__ */ new Date()).setHours(0, 0, 0, 0) / 1e3);
-    const st = CC.DATA.state[j.id] || {}, disabled = j.enabled === false;
-    const chk = (CC.DATA.checks || {})[j.id] || { checks: 0, runs: 0 };
-    const spentToday = CC.DATA.runs.filter((r) => r.id === j.id && r.start >= t0).reduce((a, r) => a + (r.cost || 0), 0);
+    const st = AL.DATA.state[j.id] || {}, disabled = j.enabled === false;
+    const chk = (AL.DATA.checks || {})[j.id] || { checks: 0, runs: 0 };
+    const spentToday = AL.DATA.runs.filter((r) => r.id === j.id && r.start >= t0).reduce((a, r) => a + (r.cost || 0), 0);
     const capRaw = eff(j, "daily_budget_usd", null);
     const cap = capRaw != null && capRaw !== "" ? +capRaw : null;
     const capped = cap != null && spentToday >= cap;
@@ -309,7 +309,7 @@
     };
   }
   function visibleJobs() {
-    let jobs = CC.DATA.jobs || [];
+    let jobs = AL.DATA.jobs || [];
     if (jobFilters.project === "__none__") jobs = jobs.filter((j) => !j.project);
     else if (jobFilters.project) jobs = jobs.filter((j) => j.project === jobFilters.project);
     if (jobFilters.status === "enabled") jobs = jobs.filter((j) => j.enabled !== false);
@@ -331,7 +331,7 @@
     renderJobs();
   }
   function jobProjectNames() {
-    return [...new Set((CC.DATA.jobs || []).map((j) => j.project || "").filter(Boolean))].sort();
+    return [...new Set((AL.DATA.jobs || []).map((j) => j.project || "").filter(Boolean))].sort();
   }
   var JOB_COLS = [
     ["job", "Job"],
@@ -615,7 +615,7 @@
     return ul;
   }
   function sessionNotices(jobId) {
-    const kept = (CC.DATA.retained_worktrees || []).filter((w) => w.job === jobId);
+    const kept = (AL.DATA.retained_worktrees || []).filter((w) => w.job === jobId);
     return kept.map((w) => {
       const left = fmtExpiresIn(w.expires_in);
       const until = left ? " \u2014 expires " + left : "";
@@ -1000,8 +1000,8 @@
     return frag;
   }
   function renderOverviewHead(kpis, firstName) {
-    const jobs = CC.DATA.jobs || [];
-    const ticks = CC.DATA.ticks || {};
+    const jobs = AL.DATA.jobs || [];
+    const ticks = AL.DATA.ticks || {};
     const tt = tickTotals(ticks);
     const merged = Object.assign({}, kpis, { checks: tt.checks, per: tt.per });
     const cards = pulseKpis(merged);
@@ -1333,7 +1333,7 @@
   }
   function renderJobsPage() {
     mountJobsToolbar();
-    const jobs = CC.DATA.jobs || [];
+    const jobs = AL.DATA.jobs || [];
     const allProjects = [...new Set(jobs.map((j) => j.project || "").filter(Boolean))].sort();
     if (jobFilters.project && jobFilters.project !== "__none__" && !allProjects.includes(jobFilters.project)) jobFilters.project = "";
     const vis = visibleJobs();
@@ -1408,7 +1408,7 @@
       _dragId = null;
       const r = await fetch("/api/action", {
         method: "POST",
-        headers: { "Content-Type": "text/plain", "X-CC-Token": TOKEN },
+        headers: { "Content-Type": "text/plain", "X-AL-Token": TOKEN },
         body: JSON.stringify({ op: "reorder", order })
       });
       if (!r.ok) {
@@ -1422,9 +1422,9 @@
   // ui/app/projects.js
   var projFilters = { query: "" };
   function visibleProjects() {
-    const jobs = CC.DATA.jobs || [];
+    const jobs = AL.DATA.jobs || [];
     const q = projFilters.query.trim().toLowerCase();
-    return (CC.DATA.projects || []).map((p) => Object.assign({}, p, {
+    return (AL.DATA.projects || []).map((p) => Object.assign({}, p, {
       _jobs: jobs.filter((j) => j.project === p.name).length,
       _repos: (p.repos || []).length
     })).filter((p) => !q || (p.name + " " + (p.description || "") + " " + (p.cwd || "")).toLowerCase().includes(q));
@@ -1437,7 +1437,7 @@
     const sec = p.security;
     const enabled = !!(sec && typeof sec === "object" && (sec.enabled === true || sec.enabled === "true"));
     if (!enabled) return { state: "disabled", cls: "disabled", label: "Disabled" };
-    const runs = (CC.DATA.runs || []).filter((r) => r.project === p.name && String(r.id || "").startsWith("security-"));
+    const runs = (AL.DATA.runs || []).filter((r) => r.project === p.name && String(r.id || "").startsWith("security-"));
     if (!runs.length) return { state: "unanalysed", cls: "idle", label: "Never analysed" };
     const last = runs.reduce((a, b) => a.start > b.start ? a : b);
     return { state: "analysed", cls: "on", label: "Analysed", lastAt: last.start };
@@ -1715,7 +1715,7 @@
   function filteredRuns(rf, liveRows, searchKeys2, sortKey4, sortDir4) {
     const fromT = rf.from ? Date.parse(rf.from) : null, toT = rf.to ? Date.parse(rf.to) : null;
     const live = searchKeys2 ? [] : liveRows;
-    const rows = live.concat(CC.DATA.runs).filter((r) => {
+    const rows = live.concat(AL.DATA.runs).filter((r) => {
       if (r.live) {
         if (rf.project) {
           const rp = r.project || "";
@@ -1842,7 +1842,7 @@
         chip.appendChild(drop);
         box.appendChild(chip);
       });
-      box.appendChild(el("span", "aflabel", shown + " of " + (CC.DATA.runs || []).length + " runs"));
+      box.appendChild(el("span", "aflabel", shown + " of " + (AL.DATA.runs || []).length + " runs"));
     }
     $("f-clear").hidden = !chips.length;
   }
@@ -1900,7 +1900,7 @@
       return;
     }
     try {
-      const r = await fetch("/api/search?q=" + encodeURIComponent(q.trim()), { headers: { "X-CC-Token": TOKEN } });
+      const r = await fetch("/api/search?q=" + encodeURIComponent(q.trim()), { headers: { "X-AL-Token": TOKEN } });
       if (!r.ok) throw new Error("HTTP " + r.status);
       const j = await r.json();
       if (seq !== searchSeq) return;
@@ -1918,7 +1918,7 @@
     }
   }
   function runProjectNames() {
-    return [...new Set((CC.DATA.runs || []).map((r) => r.project || "").filter(Boolean))].sort();
+    return [...new Set((AL.DATA.runs || []).map((r) => r.project || "").filter(Boolean))].sort();
   }
   function nothingNote(r) {
     const n = r && r.note || "";
@@ -1926,7 +1926,7 @@
     return i < 0 ? "" : n.slice(i + "NOTHING TO DO:".length).trim();
   }
   function livePidFor(id) {
-    const a = (CC.DATA.active_runs || {})[id] || [];
+    const a = (AL.DATA.active_runs || {})[id] || [];
     return a.length ? a[0].pid : "";
   }
   var STATUS_ICON_NAME = {
@@ -2125,7 +2125,7 @@
       td.colSpan = RUN_COLS.length;
       td.appendChild(icon("inbox"));
       td.appendChild(document.createTextNode(
-        (CC.DATA.runs || []).length ? searchKeys ? "No runs match this search." : "No runs match the filters." : "No runs recorded yet."
+        (AL.DATA.runs || []).length ? searchKeys ? "No runs match this search." : "No runs match the filters." : "No runs recorded yet."
       ));
       tr.appendChild(td);
       rows = [tr];
@@ -2160,7 +2160,7 @@
   }
   function renderRunsPage() {
     mountRunsToolbar();
-    const runs = CC.DATA.runs || [];
+    const runs = AL.DATA.runs || [];
     const liveCount = unjournaledLive().length;
     const headHost = $("runs-head");
     if (headHost) {
@@ -2229,7 +2229,7 @@
   function init(cc) {
     bindPage(cc);
   }
-  window.CCApp = {
+  window.ALApp = {
     init,
     visibleJobs,
     jobFilters,
@@ -2238,8 +2238,8 @@
     clearJobFilters,
     jobProjectNames,
     // sortJobs and JOB_COLS are Task 2 (phase 2)'s: renderJobTable
-    // and renderJobHead in bin/dashboard.html call CCApp.sortJobs
-    // and read CCApp.JOB_COLS instead of keeping their own copies,
+    // and renderJobHead in bin/dashboard.html call ALApp.sortJobs
+    // and read ALApp.JOB_COLS instead of keeping their own copies,
     // the same "table is the second consumer" reach visibleJobs
     // already has above.
     sortJobs,
@@ -2252,10 +2252,10 @@
     // for a stated future that landed differently -- Jobs, Runs
     // and Projects all grew their own KPI row by calling
     // kpiCard() through a direct ES import inside their own
-    // module, never through window.CCApp, and pageHeader's one
+    // module, never through window.ALApp, and pageHeader's one
     // caller (bin/dashboard.html's initPageHeaders()) was
-    // removed outright. Grepped for CCApp.pageHeader,
-    // CCApp.kpiCard and CCApp.renderPulse across bin/ and
+    // removed outright. Grepped for ALApp.pageHeader,
+    // ALApp.kpiCard and ALApp.renderPulse across bin/ and
     // tests/ before removing all three -- zero readers.
     //
     // pageHeader and kpiCard are back (Phase 4 Task 1), for a
@@ -2263,12 +2263,12 @@
     // bundle that cannot import chrome.js directly (see
     // ui/security/page.js's own comment on why -- a second,
     // never-bound copy of this module's `icon` is the failure
-    // mode), so bin/dashboard.html's CC object reads
-    // CCApp.pageHeader/CCApp.kpiCard off this global instead and
-    // hands them into CCSecurity.init(CC) alongside every other
+    // mode), so bin/dashboard.html's AL object reads
+    // ALApp.pageHeader/ALApp.kpiCard off this global instead and
+    // hands them into ALSecurity.init(AL) alongside every other
     // name the area needs. tableFooter joins them for the first
     // time, not a comeback -- nothing has ever read
-    // CCApp.tableFooter -- because the same bridge is the one
+    // ALApp.tableFooter -- because the same bridge is the one
     // sane way for a later task's own project/recent-analyses
     // pager to reach it too, and adding it now means that task
     // does not have to touch this file again. renderPulse stays
@@ -2281,7 +2281,7 @@
     // jobCard is Task 9's: renderJobCards() in bin/dashboard.html
     // (the Overview's own cards, what used to be inside
     // renderJobs() before the Jobs table forked off it) calls
-    // CCApp.jobCard(j) per job instead of building the card as
+    // ALApp.jobCard(j) per job instead of building the card as
     // an HTML string. checkList and the kept-session notice are
     // internal to jobCard and have no other caller, so they
     // stay unexported, the same shape as el() above.
@@ -2292,10 +2292,10 @@
     // paintJobFilters and the table branch that used to live
     // inside renderJobs()) into ui/app/jobs-table.js.
     // renderJobsArea() (bin/dashboard.html) calls
-    // CCApp.renderJobsPage() once per poll, the same way it
+    // ALApp.renderJobsPage() once per poll, the same way it
     // calls renderJobCards() for the Overview's own cards; the
-    // page's delegated click listener calls CCApp.jobsSort(key)
-    // for a sortable header and CCApp.jobsSetPage(delta) for
+    // page's delegated click listener calls ALApp.jobsSort(key)
+    // for a sortable header and ALApp.jobsSetPage(delta) for
     // the footer's pager instead of keeping jobSortKey/
     // jobSortDir/page as its own module state.
     renderJobsPage,
@@ -2304,7 +2304,7 @@
     initJobDrag,
     // visibleProjects, projFilters and projectIsolation are
     // Phase 2 Task 4's: the search box's input/clear handlers
-    // read and write CCApp.projFilters.query instead of a
+    // read and write ALApp.projFilters.query instead of a
     // module-level prjQuery -- the same "table is the second
     // consumer" reach sortJobs/JOB_COLS already have above.
     visibleProjects,
@@ -2315,9 +2315,9 @@
     // out of bin/dashboard.html's renderProjects() into
     // ui/app/projects.js, the same move jobs-table.js already
     // made for Jobs. render() (bin/dashboard.html) calls
-    // CCApp.renderProjectsPage() once per poll; the page's
-    // delegated click listener calls CCApp.projectsSort(key)
-    // for a sortable header and CCApp.projectsSetPage(delta)
+    // ALApp.renderProjectsPage() once per poll; the page's
+    // delegated click listener calls ALApp.projectsSort(key)
+    // for a sortable header and ALApp.projectsSetPage(delta)
     // for the footer's pager, instead of keeping
     // prjSortKey/prjSortDir/page as its own module state.
     renderProjectsPage,
@@ -2327,12 +2327,12 @@
     // internal to ui/app/runs.js's own exports now that Task 7
     // gave the rest of the table a home beside it: nothing in
     // bin/dashboard.html or a test has ever called
-    // CCApp.filteredRuns() -- the characterisation tests that
+    // ALApp.filteredRuns() -- the characterisation tests that
     // pin its behaviour read the function's own source text
     // out of the built bundle (`_app_js` + `_plainfn` in
     // tests/test_page_contract.py), the same as pulseKpis and
     // its neighbours above, so it does not belong on
-    // window.CCApp either.
+    // window.ALApp either.
     // RF, renderRunsPage, runsSort, runsSetPage,
     // runsFilterChanged, runsGotoFirstPage, runsSetPageSize,
     // runsPageSize, clearRunFilters, runSearch and
@@ -2346,11 +2346,11 @@
     // `let`s for the same reason jobFilters/projFilters are:
     // the four Runs pickers' own onPick callbacks (still in
     // bin/dashboard.html, since they are page-owned stateful
-    // widgets) read and write CCApp.RF.project/job/status/
+    // widgets) read and write ALApp.RF.project/job/status/
     // from/to directly. render() (bin/dashboard.html) calls
-    // CCApp.renderRunsPage() once per poll; the page's
-    // delegated click listener calls CCApp.runsSort(key) for a
-    // sortable header and CCApp.runsSetPage(delta) for the
+    // ALApp.renderRunsPage() once per poll; the page's
+    // delegated click listener calls ALApp.runsSort(key) for a
+    // sortable header and ALApp.runsSetPage(delta) for the
     // footer's pager; runsFilterChanged/runsGotoFirstPage are
     // the two shapes every filter change needs (one that also
     // redraws, one that does not because a view switch is about
@@ -2378,7 +2378,7 @@
     // "unset" check; getDays calls dayNumbers; collectRepos
     // calls shapeRepoRows; validateProjectStep calls
     // projectStepError. Every one of them is plain values in,
-    // plain values out -- none reaches $, document or CC.DATA,
+    // plain values out -- none reaches $, document or AL.DATA,
     // so none needed a page.js entry the way jobs-domain.js's
     // exports do.
     changedKeys,
@@ -2390,5 +2390,5 @@
     projectStepError
   };
 })();
-/* ui-bundle: a7fb841b82f5aa3d939e61dd43c7403bc786c79234a2e1dfcc9bc031a50fa296 */
-/* ui-sources: 5ebcd983ca7706774ebf29a7a0259026d979c960871019f6db179ed551e06295 */
+/* ui-bundle: da8781c275af1a436776b37166d48894dcb8096a3ac563ddacf0b3d566fd3330 */
+/* ui-sources: 55b58d6008704a6a9af84c7b5c09f3ae37c5b7565c3bdee3cd039a3aa57bc4e0 */

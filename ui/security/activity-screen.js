@@ -1,7 +1,7 @@
 /* -------------------------------------------------------- the Activity screen
    What happened and when, filterable by kind, every project unless scoped to
    one -- `GET /api/security/activity` (bin/security/cli.py's `activity-data`,
-   bin/claude-cron-server's `security_activity`), which bundles the events
+   bin/agentloop-server's `security_activity`), which bundles the events
    (`ledger.events_for`, Task 3), their per-kind counts for the period
    (`queries.activity_summary`, Task 5) and the busiest projects in one
    round trip, the same "one call answers the whole screen" rule every
@@ -101,7 +101,7 @@ function _freshState(project){
 export function secIsActivityOpen(){ return secActOpen; }
 
 /* The current {project, tab} this screen is scoped to and showing, or the
-   empty pair when it is not open at all -- read by CCSecurity.navState()
+   empty pair when it is not open at all -- read by ALSecurity.navState()
    (ui/security/index.js) the same way project-screen.js's
    secCurrentProjectTab() is; secActState itself stays module-private. */
 export function secActNavState(){
@@ -115,7 +115,7 @@ export function secActNavState(){
    open -- reused here rather than half-duplicated, then immediately
    overridden to show #sec-activity instead of the index it just painted.
 
-   `fromHistory` (F4 history layer): set by CCSecurity.navigate (a popstate
+   `fromHistory` (F4 history layer): set by ALSecurity.navigate (a popstate
    restore) and by secActOpenAnalysis/secViewAllAnalysesButton below, which
    both chain this with a second call that does the real, later navigation
    and pushes for the two of them. secBack(true) just above is the identical
@@ -153,7 +153,7 @@ export async function secActReload(){
 }
 
 /* `fromHistory`: see secOpenActivity's comment above -- true only for
-   CCSecurity.navigate's own restore and for secViewAllAnalysesButton's
+   ALSecurity.navigate's own restore and for secViewAllAnalysesButton's
    second call (index-screen.js), which follows an already-pushing
    secOpenActivity("", true) with the tab that is the click's real
    destination. Every tab button in the page wires this with a bare key, so

@@ -1,5 +1,5 @@
 /* -------------------------------------------------------------- history */
-import { $, CC, openLog, unjournaledLive, fmtWhen, money } from "./page.js";
+import { $, AL, openLog, unjournaledLive, fmtWhen, money } from "./page.js";
 import { secEl } from "./dom.js";
 import { SEC_RUN_WINDOW } from "./vocabulary.js";
 import { secState } from "./state.js";
@@ -13,7 +13,7 @@ export function secRunFor(a){
   // usually journaled, but the journal lags the end of the run by a poll.
   const running = a.state === "running";
   const pool = running ? unjournaledLive()
-                       : unjournaledLive().concat(CC.DATA.runs || []);
+                       : unjournaledLive().concat(AL.DATA.runs || []);
   let best = null, bestd = Infinity;
   pool.forEach(r => {
     if(r.id !== a.run_id) return;

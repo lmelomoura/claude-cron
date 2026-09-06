@@ -11,7 +11,7 @@
    cards, the same search box repainted rather than rebuilt, and a table
    card with a real pager -- the same shape jobs-table.js already gave the
    Jobs page, reached through the same chrome.js builders. */
-import { CC, $, icon, isFav, fmtWhen, markIfPending } from "./page.js";
+import { AL, $, icon, isFav, fmtWhen, markIfPending } from "./page.js";
 import { el, pageHeader, kpiCard, filterBar, tableCard, tableFooter } from "./chrome.js";
 
 export const projFilters = { query: "" };
@@ -25,9 +25,9 @@ export const projFilters = { query: "" };
 // directory -- a project remembered by its folder, or by a phrase in its
 // own description, has to surface just as reliably as one matched by name.
 export function visibleProjects(){
-  const jobs = CC.DATA.jobs || [];
+  const jobs = AL.DATA.jobs || [];
   const q = projFilters.query.trim().toLowerCase();
-  return (CC.DATA.projects || [])
+  return (AL.DATA.projects || [])
     .map(p => Object.assign({}, p, {_jobs: jobs.filter(j => j.project === p.name).length,
                                      _repos: (p.repos || []).length}))
     .filter(p => !q || (p.name + " " + (p.description || "") + " " + (p.cwd || ""))
@@ -68,7 +68,7 @@ export function projectIsolation(p){
 
    2. `DATA.runs` -- already fetched every poll for every other page, and it
       DOES carry the derived "security-<slug>" job's own run history: an
-      analysis is `run_job` under the hood (bin/claude-cron), and the
+      analysis is `run_job` under the hood (bin/agentloop), and the
       derived job element `security_derived_jobs` builds sets `project` to
       the real project name explicitly, so a run's own `project` field
       names this row correctly without reimplementing the engine's slugging
@@ -92,7 +92,7 @@ export function projectSecurity(p){
   const sec = p.security;
   const enabled = !!(sec && typeof sec === "object" && (sec.enabled === true || sec.enabled === "true"));
   if(!enabled) return {state: "disabled", cls: "disabled", label: "Disabled"};
-  const runs = (CC.DATA.runs || []).filter(r =>
+  const runs = (AL.DATA.runs || []).filter(r =>
     r.project === p.name && String(r.id || "").startsWith("security-"));
   if(!runs.length) return {state: "unanalysed", cls: "idle", label: "Never analysed"};
   const last = runs.reduce((a, b) => (a.start > b.start ? a : b));
@@ -343,7 +343,7 @@ function renderProjectsTable(vis){
 
 /* -------------------------------------------------------------- the mount
    Called once per poll from bin/dashboard.html's render(), the same way it
-   already calls CCApp.renderJobsPage(). Unlike the old renderProjects(),
+   already calls ALApp.renderJobsPage(). Unlike the old renderProjects(),
    this carries no ".menu-pop" redraw guard: that guard belongs to the job
    CARD's own kebab menu (renderOverviewJobs), and the Jobs table's own
    restyle (Task 3) already dropped it for the identical reason -- a table

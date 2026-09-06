@@ -1,6 +1,6 @@
 /* ------------------------------------------------------- findings browser
    Every finding of one project, in one filterable, paginated table --
-   `GET /api/security/findings` (bin/claude-cron-server's `security_findings`,
+   `GET /api/security/findings` (bin/agentloop-server's `security_findings`,
    bin/security/cli.py's `findings-page`), which is `queries.finding_rows`
    (Task 6) itself: a checklist per branch -- the latest finished analysis of
    each -- unioned, so the state a row shows is the state that branch's own
@@ -97,11 +97,11 @@ import { secAskReason } from "./reason.js";
 import { secInvalidateProject, secSwitchProjectTab } from "./project-screen.js";
 import { secShowAnalysis, secBack } from "./analysis.js";
 
-// Mirrors bin/security/queries.py's SORTABLE, and bin/claude-cron-server's
+// Mirrors bin/security/queries.py's SORTABLE, and bin/agentloop-server's
 // FINDING_CATEGORIES -- duplicated here, not fetched, because the filter bar
 // has to draw its own options before any request has ever answered. Kept in
 // step by hand, the same duplication every edge in this area already carries
-// (see claude-cron-server's own comment on FINDING_SEVERITIES/FINDING_STATES/
+// (see agentloop-server's own comment on FINDING_SEVERITIES/FINDING_STATES/
 // FINDING_CATEGORIES for why a value the server already validates is still
 // named again here).
 // Phase 4 Task 6: State and First seen swapped from their original order --

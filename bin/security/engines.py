@@ -55,7 +55,7 @@ PURGE = {
     # actually writes, and it is the entry a reader is most likely to think is
     # over-stripping. It is not, on either of the two paths it arrives by.
     # `errors[].message` QUOTES THE FILE semgrep could not parse -- ~2kB of
-    # `bin/claude-cron` in this repository's own capture -- which is the hazard
+    # `bin/claude-cron` (its name in the capture, taken before the rename) -- which is the hazard
     # `run_json` already refuses to quote stderr for, arriving through the
     # report instead. And `results[].extra.message` is the rule's own sentence
     # only until the rule writes `$X` in it: semgrep substitutes the

@@ -1,11 +1,11 @@
 """The suite has to be green in the configuration that ships.
 
-`conftest.py` pins `CC_SECURITY_ENGINES=off` so that a test which plants a
+`conftest.py` pins `AL_SECURITY_ENGINES=off` so that a test which plants a
 credential exercises ONE scanner rather than whichever one a laptop happens to
 have installed. That pin is right. What it also did, silently, was buy the
 whole suite a configuration nobody checks: a real analysis runs with the
 engines ON, and for the entire life of the engine path
-`CC_SECURITY_ENGINES=on pytest tests/security/` was red -- seven tests
+`AL_SECURITY_ENGINES=on pytest tests/security/` was red -- seven tests
 asserting the built-in scanner's vocabulary, or planting material only the
 built-in scanner reports, while inheriting a default they never declared.
 Nothing ever ran the second configuration, so nothing ever said so. The
@@ -30,7 +30,7 @@ WHAT IT COSTS, stated rather than discovered: the engines-on run is the suite
 again, plus the engine invocations, so `pytest tests/security/` roughly
 triples on a machine with the engines installed. That is the price of the
 guarantee and it is the honest one. The cheaper candidate was a static check
--- every test naming a scanner rule must also name `CC_SECURITY_ENGINES` --
+-- every test naming a scanner rule must also name `AL_SECURITY_ENGINES` --
 and it was rejected because it would have caught six of the seven: the
 seventh, `test_migrate_rules_is_refused_without_gitleaks`, named no rule at
 all and asserted a refusal that only the ambient default produced. A guard
@@ -115,14 +115,15 @@ def _collected() -> int:
 def _engines_are_on() -> bool:
     """Whether THIS process is already the engines-on run.
 
-    Asks the question the product asks, rather than `== "on"`. `engine_path`
-    treats anything not in `adapters._OFF` as on, so `CC_SECURITY_ENGINES=ON`
-    -- or `1`, or `yes` -- was an engines-on run that did not recognise itself
-    and spawned a second one, paying 166 seconds to run the configuration it
-    was already running.
+    Goes through `adapters._engines_setting()` rather than reading the
+    environment itself, so this can never disagree with `engine_path` about
+    what the switch says -- under either its current spelling or its
+    pre-rename one. `engine_path` treats anything not in `adapters._OFF` as
+    on, so `AL_SECURITY_ENGINES=ON` -- or `1`, or `yes` -- was an engines-on
+    run that did not recognise itself and spawned a second one, paying 166
+    seconds to run the configuration it was already running.
     """
-    return (os.environ.get(adapters.ENGINES_ENV, "").strip().lower()
-            not in adapters._OFF)
+    return adapters._engines_setting() not in adapters._OFF
 
 
 @pytest.mark.skipif(
@@ -136,14 +137,14 @@ def test_the_security_suite_is_green_with_the_engines_on():
     """Run the whole security suite again with the engines switched on.
 
     The two skips are also the recursion guard: the child run has
-    `CC_SECURITY_ENGINES=on` in its environment, so its own copy of this test
+    `AL_SECURITY_ENGINES=on` in its environment, so its own copy of this test
     skips instead of forking a third.
     """
     out = subprocess.run(
         [sys.executable, "-m", "pytest", str(SUITE), "-q", "--tb=line", "-rf",
          "-p", "no:cacheprovider"],
         cwd=str(REPO), capture_output=True, text=True, check=False,
-        env={**os.environ, "CC_SECURITY_ENGINES": "on"})
+        env={**os.environ, "AL_SECURITY_ENGINES": "on"})
 
     lines = out.stdout.splitlines()
     failed = [ln for ln in lines if ln.startswith("FAILED") or ln.startswith("ERROR")]
@@ -173,7 +174,7 @@ def test_the_security_suite_is_green_with_the_engines_on():
         f"{report}\n{out.stderr[-2000:]}")
 
     assert out.returncode == 0, (
-        "tests/security/ is RED with CC_SECURITY_ENGINES=on -- the "
+        "tests/security/ is RED with AL_SECURITY_ENGINES=on -- the "
         "configuration every real analysis runs in. A test that depends on "
         "which scanner ran has to say so in its own env, the way "
         "test_the_default_noise_filter_reaches_every_deterministic_phase "
@@ -212,7 +213,7 @@ def test_the_guard_skips_only_when_NO_engine_is_installed(monkeypatch):
 
 def test_the_guard_reads_the_switch_the_way_the_PRODUCT_reads_it(monkeypatch):
     """`== "on"` was not the product's own test. `engine_path` treats anything
-    not in `adapters._OFF` as on, so `CC_SECURITY_ENGINES=ON` was an
+    not in `adapters._OFF` as on, so `AL_SECURITY_ENGINES=ON` was an
     engines-on run that did not recognise itself and spawned a second one --
     166 seconds to run the configuration it was already running."""
     for spelling in ("on", "ON", "1", "yes", "true"):
@@ -224,3 +225,9 @@ def test_the_guard_reads_the_switch_the_way_the_PRODUCT_reads_it(monkeypatch):
         monkeypatch.setenv(adapters.ENGINES_ENV, spelling)
         assert not _engines_are_on(), spelling
         assert adapters.engine_path("gitleaks") is None, spelling
+
+    # The pre-rename spelling too -- otherwise the guard can read the switch
+    # on while the product it is guarding has already read it off.
+    monkeypatch.delenv(adapters.ENGINES_ENV, raising=False)
+    monkeypatch.setenv(adapters.LEGACY_ENGINES_ENV, "off")
+    assert not _engines_are_on()

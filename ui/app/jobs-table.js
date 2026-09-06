@@ -50,7 +50,7 @@ import { jobFacts, visibleJobs, jobFilters, sortJobs, JOB_COLS,
          bulkOn, bulkLabel } from "./jobs-domain.js";
 import { jobsEmptyNote } from "./overview.js";
 import { el, pageHeader, kpiCard, filterBar, tableCard, tableFooter } from "./chrome.js";
-import { $, CC, icon, money, fmtAgo, fmtDur, fmtWhen, fmtIn, isFav,
+import { $, AL, icon, money, fmtAgo, fmtDur, fmtWhen, fmtIn, isFav,
          TOKEN, toast, refresh, paintJobPickers, markIfPending } from "./page.js";
 
 /* ------------------------------------------------------------ the header
@@ -400,7 +400,7 @@ function renderJobsTable(vis){
 
 /* -------------------------------------------------------------- the mount
    bin/dashboard.html's own renderJobsArea() calls this once per poll, the
-   same way render() already calls CCApp.renderOverviewHead() -- rebuilding
+   same way render() already calls ALApp.renderOverviewHead() -- rebuilding
    the header, the KPI row and the table card whole rather than patching
    them, since none of the three is more than a handful of elements and
    none holds anything an operator could be mid-typing into. The toolbar is
@@ -408,7 +408,7 @@ function renderJobsTable(vis){
    not every poll, for exactly that reason. */
 export function renderJobsPage(){
   mountJobsToolbar();
-  const jobs = (CC.DATA.jobs || []);
+  const jobs = (AL.DATA.jobs || []);
   // A stale project filter (the project was renamed or deleted out from
   // under it) must not silently hide every job -- mirrors the same guard
   // bin/dashboard.html's own renderJobCards() runs for the card view, so
@@ -486,7 +486,7 @@ export function initJobDrag(){
     const order = [...grid.querySelectorAll(".card[data-job-id]")].map(c => c.dataset.jobId);
     _dragId = null;
     const r = await fetch("/api/action", {method: "POST",
-      headers: {"Content-Type": "text/plain", "X-CC-Token": TOKEN},
+      headers: {"Content-Type": "text/plain", "X-AL-Token": TOKEN},
       body: JSON.stringify({op: "reorder", order})});
     if(!r.ok){ const j = await r.json().catch(() => ({})); toast("Could not save the order — " + (j.error || ("HTTP " + r.status)), true); }
     else toast("Order saved", false, "check");

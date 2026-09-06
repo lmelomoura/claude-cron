@@ -6,7 +6,7 @@
    only the Overview's screens would leave this domain duplicated until the
    table followed in a later phase -- so it moves whole, here, and the table
    becomes its second consumer later. */
-import { CC, $, eff, backoffMultiplier, activeRunsOf, renderJobs } from "./page.js";
+import { AL, $, eff, backoffMultiplier, activeRunsOf, renderJobs } from "./page.js";
 
 /* One object rather than three module-level `let`s. Three bindings can only
    be read across a module boundary by exporting three getters and three
@@ -61,9 +61,9 @@ export function nextCheckAt(j, fromEpoch){
    without opening both at once. */
 export function jobFacts(j){
   const t0=Math.floor(new Date().setHours(0,0,0,0)/1000);
-  const st=CC.DATA.state[j.id]||{}, disabled=j.enabled===false;
-  const chk=(CC.DATA.checks||{})[j.id]||{checks:0,runs:0};
-  const spentToday=CC.DATA.runs.filter(r=>r.id===j.id && r.start>=t0).reduce((a,r)=>a+(r.cost||0),0);
+  const st=AL.DATA.state[j.id]||{}, disabled=j.enabled===false;
+  const chk=(AL.DATA.checks||{})[j.id]||{checks:0,runs:0};
+  const spentToday=AL.DATA.runs.filter(r=>r.id===j.id && r.start>=t0).reduce((a,r)=>a+(r.cost||0),0);
   // Inherited from the project when the job does not set it, exactly as
   // daily_cap_for() does in the engine — reading it from the job alone made a
   // project-level cap invisible here as well as inert there.
@@ -92,7 +92,7 @@ export function jobFacts(j){
 // renderJobs (bin/dashboard.html) applies them, so the top button can never
 // reach a job that the current filter has taken off-screen.
 export function visibleJobs(){
-  let jobs=CC.DATA.jobs||[];
+  let jobs=AL.DATA.jobs||[];
   if(jobFilters.project==="__none__") jobs=jobs.filter(j=>!j.project);
   else if(jobFilters.project) jobs=jobs.filter(j=>j.project===jobFilters.project);
   if(jobFilters.status==="enabled") jobs=jobs.filter(j=>j.enabled!==false);
@@ -121,7 +121,7 @@ export function clearJobFilters(){
 }
 
 export function jobProjectNames(){
-  return [...new Set((CC.DATA.jobs||[]).map(j=>j.project||"").filter(Boolean))].sort();
+  return [...new Set((AL.DATA.jobs||[]).map(j=>j.project||"").filter(Boolean))].sort();
 }
 
 /* ------------------------------------------------------------- jobs as a table

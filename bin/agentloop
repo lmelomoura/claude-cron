@@ -1,8 +1,8 @@
 #!/bin/bash
-# claude-cron — durable local scheduler for headless Claude Code runs.
+# agentloop — durable local scheduler for headless Claude Code runs.
 #
 # Self-contained: config/ and data/ sit next to this script's bin/ directory.
-# A single launchd agent calls `claude-cron tick` once a minute; the tick
+# A single launchd agent calls `agentloop tick` once a minute; the tick
 # decides which jobs are due, runs an optional cheap precheck, and only then
 # spends a Claude session.
 #
@@ -23,8 +23,62 @@ SELF="$(cd -P "$(dirname "$_src")" && pwd)/$(basename "$_src")"
 BIN_DIR="$(dirname "$SELF")"
 BASE_DIR="$(cd "$BIN_DIR/.." && pwd)"
 
-CONFIG_DIR="${CLAUDE_CRON_CONFIG:-$BASE_DIR/config}"
-DATA_DIR="${CLAUDE_CRON_DATA:-$BASE_DIR/data}"
+# --- transition: the pre-rename environment names still work for one release --
+# Every AGENTLOOP_X read below had another prefix until 2026-09-06, and an
+# existing install carries that prefix in its launchd plists and shell
+# profiles. Map each old name onto the new one when the new one is unset,
+# remember what was mapped so `status` and `install` can say so, and delete
+# this whole block in the release after the rename.
+LEGACY_ENV_PREFIX="CLAUDE_CRON_"
+LEGACY_ENV_SEEN=""
+for _legacy in $(env | sed -n "s/^${LEGACY_ENV_PREFIX}\([A-Z_]*\)=.*/\1/p"); do
+  if eval "[ -z \"\${AGENTLOOP_${_legacy}+x}\" ]"; then
+    eval "export AGENTLOOP_${_legacy}=\"\$${LEGACY_ENV_PREFIX}${_legacy}\""
+  fi
+  LEGACY_ENV_SEEN="$LEGACY_ENV_SEEN ${LEGACY_ENV_PREFIX}${_legacy}"
+done
+unset _legacy
+
+legacy_env_warnings() { # one line per pre-rename variable still in the environment
+  local v
+  for v in $LEGACY_ENV_SEEN; do
+    printf 'WARNING: %s is set — it is read as AGENTLOOP_%s for now; the old name stops working in the next release.\n' \
+      "$v" "${v#"$LEGACY_ENV_PREFIX"}"
+  done
+}
+
+# The run-environment prefix before 2026-09-06. The engine exports every run
+# variable under both prefixes for one release; this names the operator's own
+# scripts that still read the old one, so they can be moved before the export
+# stops. Delete with the dual exports.
+LEGACY_RUN_PREFIX="CC_"
+
+legacy_scripts_warnings() { # one line per personal script under config/ still reading the old prefix
+  local f n
+  for f in "$CONFIG_DIR"/prechecks/*.sh "$CONFIG_DIR"/provision/*.sh "$CONFIG_DIR"/hooks/*; do
+    [ -f "$f" ] || continue
+    n="$(num "$(grep -cE "${LEGACY_RUN_PREFIX}[A-Z_]+" "$f" 2>/dev/null)")"
+    [ "$n" -gt 0 ] || continue
+    printf 'WARNING: %s reads %s* on %s line(s) — those names are exported alongside AL_* for now, and stop in the next release.\n' \
+      "$f" "$LEGACY_RUN_PREFIX" "$n"
+  done
+  # Inline prechecks and prompts carry the run prefix too. Read the file, not
+  # jobs_json: `status` must work on an install with no jobs file yet, and the
+  # derived security jobs are the engine's own text, never an operator's.
+  [ -f "$JOBS_FILE" ] || return 0
+  "$JQ" -r --arg p "$LEGACY_RUN_PREFIX" '
+      .jobs[]? | .id as $id
+      | (["precheck", (.precheck // "")], ["prompt", (.prompt // "")])
+      | select(.[1] | test($p + "[A-Z_]+")) | [$id, .[0]] | @tsv' "$JOBS_FILE" 2>/dev/null \
+  | while IFS="$(printf '\t')" read -r jid field; do
+      [ -n "$jid" ] || continue
+      printf 'WARNING: job %s: its %s reads %s* — those names are exported alongside AL_* for now, and stop in the next release.\n' \
+        "$jid" "$field" "$LEGACY_RUN_PREFIX"
+    done
+}
+
+CONFIG_DIR="${AGENTLOOP_CONFIG:-$BASE_DIR/config}"
+DATA_DIR="${AGENTLOOP_DATA:-$BASE_DIR/data}"
 JOBS_FILE="$CONFIG_DIR/jobs.json"
 PROJECTS_FILE="$CONFIG_DIR/projects.json"
 MODELS_FILE="$CONFIG_DIR/models.json"
@@ -44,16 +98,23 @@ RATE_LIMIT_FILE="$DATA_DIR/rate-limits.json"   # last usage window the API repor
 # anything quieter than that is invisible and this floor is the only figure that
 # can act. 0.95 leaves room for a short run to finish instead of dying at the
 # ceiling with its work uncommitted.
-RL_STOP_AT="${CLAUDE_CRON_RATE_LIMIT_STOP_AT:-0.95}"
+RL_STOP_AT="${AGENTLOOP_RATE_LIMIT_STOP_AT:-0.95}"
 
-PLIST_LABEL="com.claude-cron.tick"
+PLIST_LABEL="com.agentloop.tick"
 PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
-SERVER_LABEL="com.claude-cron.server"
+SERVER_LABEL="com.agentloop.server"
 SERVER_PLIST="$HOME/Library/LaunchAgents/$SERVER_LABEL.plist"
-SERVER_BIN="$BIN_DIR/claude-cron-server"
-PORT="${CLAUDE_CRON_PORT:-8787}"
+# The names this install had until 2026-09-06. A machine installed under them
+# still carries two launchd agents and two symlinks so named; `install`
+# retires them (install_migrate_legacy). These three lines are the only place
+# the old names are spelled — everything else reaches them through here.
+LEGACY_PLIST_LABEL="com.claude-cron.tick"
+LEGACY_SERVER_LABEL="com.claude-cron.server"
+LEGACY_CLI_NAME="claude-cron"
+SERVER_BIN="$BIN_DIR/agentloop-server"
+PORT="${AGENTLOOP_PORT:-8787}"
 
-CLAUDE_BIN="${CLAUDE_CRON_CLAUDE_BIN:-$HOME/.local/bin/claude}"
+CLAUDE_BIN="${AGENTLOOP_CLAUDE_BIN:-$HOME/.local/bin/claude}"
 # Which Claude account every run signs in as. Claude Code keeps credentials,
 # settings, plugins, MCP servers and past sessions per config directory — one
 # signed-in account each — so this variable is the only thing that chooses
@@ -64,21 +125,21 @@ CLAUDE_BIN="${CLAUDE_CRON_CLAUDE_BIN:-$HOME/.local/bin/claude}"
 #
 # Taken ONLY from the explicit variable — an ambient CLAUDE_CONFIG_DIR is
 # deliberately not a fallback. cmd_install already refuses it, and the runtime
-# has to agree: `claude-cron run <job>` and `check <job>` are typed inside a
+# has to agree: `agentloop run <job>` and `check <job>` are typed inside a
 # Claude Code session as a matter of course, and that session exports its own
 # account. Honouring it would sign the run in as whoever happened to open the
 # terminal — different billing, different plugins, different MCP servers — with
 # nothing in the run record saying which. Unsetting instead is the safe answer:
 # it lands on the CLI default, which is where a run with no setting belongs.
-CLAUDE_CONFIG_DIR="${CLAUDE_CRON_CLAUDE_CONFIG_DIR:-}"
+CLAUDE_CONFIG_DIR="${AGENTLOOP_CLAUDE_CONFIG_DIR:-}"
 if [ -n "$CLAUDE_CONFIG_DIR" ]; then export CLAUDE_CONFIG_DIR; else unset CLAUDE_CONFIG_DIR; fi
-PYTHON="${CLAUDE_CRON_PYTHON:-$(command -v python3 2>/dev/null || echo /usr/bin/python3)}"
+PYTHON="${AGENTLOOP_PYTHON:-$(command -v python3 2>/dev/null || echo /usr/bin/python3)}"
 # /usr/bin/jq is only guaranteed on macOS 15 and later; before that jq comes
 # from Homebrew, at a path that differs between Apple Silicon and Intel. The
 # installer checks `jq` on PATH, so hard-coding a different path here meant an
 # install could pass every check and then have every single run fail. Resolve
 # it the same way python3 is resolved, and let the environment override.
-JQ="${CLAUDE_CRON_JQ:-$(command -v jq 2>/dev/null || echo /usr/bin/jq)}"
+JQ="${AGENTLOOP_JQ:-$(command -v jq 2>/dev/null || echo /usr/bin/jq)}"
 
 mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR" "$LOCK_DIR" "$WORKTREES_DIR"
 [ -f "$STATE_FILE" ] || echo '{}' > "$STATE_FILE"
@@ -123,7 +184,7 @@ log_tick() { printf '%s %s\n' "$(iso_now)" "$*" >> "$TICK_LOG"; }
 # day's activity, so an old install pays for that growth on every poll. Keep one
 # previous generation and start fresh: history far enough back to be useless for
 # the 24h counters is not worth carrying for ever.
-LOG_MAX_BYTES="${CLAUDE_CRON_LOG_MAX:-4194304}"   # 4 MiB per file
+LOG_MAX_BYTES="${AGENTLOOP_LOG_MAX:-4194304}"   # 4 MiB per file
 log_rotate() { # log_rotate <file> [max-bytes]
   local f="${1:-}" max; max="$(num "${2:-$LOG_MAX_BYTES}" "$LOG_MAX_BYTES")"
   [ -f "$f" ] || return 0
@@ -233,7 +294,7 @@ security_derived_jobs() {
     # not run a single command (the first live analysis burnt $0.56 probing
     # the walls and ended BLOCKED). Containment does not come from the
     # permission mode: the worktree is disposable, the ledger only accepts
-    # writes through the CLI's validating door, and CC_SECURITY_AGENT keeps
+    # writes through the CLI's validating door, and AL_SECURITY_AGENT keeps
     # the human-authority verbs shut. A project that wants a tighter mode
     # sets security.permission_mode, and an unknown value falls back rather
     # than launching a run that dies at the first tool call.
@@ -394,7 +455,7 @@ SECURITY_DISALLOWED_TOOLS="Agent"
 # builds the prompt and resolves the model first -- and a row swept inside that
 # window would be the row of a run that is about to start, marked failed while it
 # goes on to produce a perfectly good report nothing will read.
-SECURITY_STALE_GRACE="${CLAUDE_CRON_SECURITY_STALE_GRACE:-120}"
+SECURITY_STALE_GRACE="${AGENTLOOP_SECURITY_STALE_GRACE:-120}"
 
 # ---- what a bad security block is allowed to cost -------------------------
 # Everything derivation refuses -- a name that slugs to nothing, two projects
@@ -493,21 +554,21 @@ analysis id : $5
 
 YOUR FIRST COMMAND, before anything else:
 
-  claude-cron security prepare --analysis $5 --root "\$PWD" --ignore '$6'
+  agentloop security prepare --analysis $5 --root "\$PWD" --ignore '$6'
 
 It runs the deterministic phases inside this worktree -- secrets, dependency
 CVEs, SBOM, hygiene and infrastructure-as-code misconfigurations -- in seconds
 and at no token cost, and prints a coverage note you must repeat in your final
 message if it is not empty.
 
-Then read what it found with \`claude-cron security checklist --analysis $5\` --
+Then read what it found with \`agentloop security checklist --analysis $5\` --
 NOT \`findings\`. \`findings\` returns only THIS analysis's own rows; \`checklist\`
 returns those AND the findings a previous analysis left open, each with the
 fingerprint you must copy back to re-report it. The whole skill works from
 \`checklist\`. Report yours with
-\`claude-cron security report-finding --analysis $5\`. Never write to the
+\`agentloop security report-finding --analysis $5\`. Never write to the
 database directly. When you are done, close the analysis with
-\`claude-cron security finish --analysis $5 --state done\`.
+\`agentloop security finish --analysis $5 --state done\`.
 
 That close is checked. It counts the findings a SCANNER produced at severity
 medium or above that you never re-reported, and records the analysis \`capped\`
@@ -541,7 +602,7 @@ EOF
 # data, and a path computed once at startup would defeat that and let the test
 # suite write analyses into the live database.
 security_db() { # security_db -> the path to this install's ledger
-  if [ -n "${CLAUDE_CRON_SECURITY_DB:-}" ]; then printf '%s\n' "$CLAUDE_CRON_SECURITY_DB"
+  if [ -n "${AGENTLOOP_SECURITY_DB:-}" ]; then printf '%s\n' "$AGENTLOOP_SECURITY_DB"
   else printf '%s/security.db\n' "$DATA_DIR"; fi
 }
 
@@ -600,8 +661,8 @@ cmd_security_branches() { # cmd_security_branches <project> <repo> -> every
 # gate, a cwd that has gone missing, an empty prompt), and each of them would
 # otherwise leave the row `running` for ever.
 #
-# CC_SECURITY_AGENT marks the whole run as "this is the agent under review".
-# `claude-cron security` is one command with one door, and the agent types it
+# AL_SECURITY_AGENT marks the whole run as "this is the agent under review".
+# `agentloop security` is one command with one door, and the agent types it
 # from its own tool shell inside the worktree: without a marker, `security
 # decide --state false_positive` permanently suppresses a finding the agent
 # itself just reported, and `security rename-project` moves the ledger out from
@@ -610,7 +671,7 @@ cmd_security_branches() { # cmd_security_branches <project> <repo> -> every
 # security_close_analysis runs inside run_job, still under this assignment, and
 # `finish` stays allowed precisely so that close keeps working.
 #
-# CC_SECURITY_ANALYSIS_ID is what the close-out reads the row id from. The
+# AL_SECURITY_ANALYSIS_ID is what the close-out reads the row id from. The
 # request file is shared and mutable -- the next analysis of this project
 # rewrites it -- so a close that reads it can land on another analysis's row.
 #
@@ -622,8 +683,9 @@ security_run_analysis() { # security_run_analysis <job-id> <analysis-id> <branch
   local jid="$1" aid="$2" branch="$3" rc=0
   # --force because a derived job is disabled: it exists to be run on demand,
   # never on a tick.
-  CC_BASE_OVERRIDE="$branch" CC_SKIP_PROVISION=1 \
-  CC_SECURITY_AGENT=1 CC_SECURITY_ANALYSIS_ID="$aid" \
+  AL_BASE_OVERRIDE="$branch" AL_SKIP_PROVISION=1 \
+  AL_SECURITY_AGENT=1 CC_SECURITY_AGENT=1 \
+  AL_SECURITY_ANALYSIS_ID="$aid" CC_SECURITY_ANALYSIS_ID="$aid" \
     run_job "$jid" --force || rc=$?
   # `--if-running` makes this a no-op for the ordinary case where the run really
   # happened and has already closed the row with its own verdict.
@@ -647,7 +709,7 @@ cmd_security_analyze() { # [--detach] <project> <repo> <branch> [profile]
   local detach=0
   if [ "${1:-}" = "--detach" ]; then detach=1; shift; fi
   [ $# -ge 3 ] \
-    || die "usage: claude-cron security analyze [--detach] <project> <repo> <branch> [profile]"
+    || die "usage: agentloop security analyze [--detach] <project> <repo> <branch> [profile]"
   local project="$1" repo="$2" branch="$3" profile="${4:-standard}"
   security_enabled "$project" || die "security is not enabled for project '$project'"
   local jid; jid="$(security_job_id "$project")"
@@ -689,7 +751,7 @@ EOF
   # as success. Ask first: the refusal becomes a sentence on their terminal,
   # and no analysis row is opened for a run that is never going to happen.
   [ "$live" -gt 0 ] \
-    && die "an analysis of '$project' is already running (job $jid) — wait for it to finish, or stop it with: claude-cron stop $jid"
+    && die "an analysis of '$project' is already running (job $jid) — wait for it to finish, or stop it with: agentloop stop $jid"
   # A project with a single checkout has no `repos` rows, and the argument names
   # nothing: project_repo_path ignores it and hands back the project cwd either
   # way. The `repo` column is still what an analysis is filed under, so whatever
@@ -706,7 +768,7 @@ EOF
   # Refused before it reaches git, for the same reason wt_base_ref refuses it:
   # a value starting with '-' sits in an argument position next to plumbing.
   case "$branch" in -*) die "security: a branch name cannot start with '-': $branch" ;; esac
-  # THE SAME ORDER wt_base_ref uses under CC_BASE_OVERRIDE, remote first. The
+  # THE SAME ORDER wt_base_ref uses under AL_BASE_OVERRIDE, remote first. The
   # sha recorded on the analysis has to be the commit the worktree is actually
   # cut from; resolving it here in a different order would file the report
   # under a local branch's sha while the agent read origin's.
@@ -805,7 +867,7 @@ security_close_analysis() { # <job-id> <status> <cost> <wdreason>
   # closing an analysis still in flight while leaving this one running for
   # ever. cmd_security_analyze exports the id into the run itself, and this
   # runs inside that run.
-  aid="${CC_SECURITY_ANALYSIS_ID:-}"
+  aid="${AL_SECURITY_ANALYSIS_ID:-}"
   if [ -z "$aid" ]; then
     req="$(security_request_path "$1")"
     aid="$("$JQ" -r '.analysis_id // empty' "$req" 2>/dev/null)"
@@ -872,7 +934,7 @@ state_get() { # state_get <id> <field> [default]
 # record a run had just appended could be lost to the very mechanism meant to
 # protect it. `acquire_lock` already knew the right answer (write your pid, and
 # only break the lock when that pid is gone); this generalises it to the rest.
-LOCK_GRACE_SECONDS="${CLAUDE_CRON_LOCK_GRACE:-30}"
+LOCK_GRACE_SECONDS="${AGENTLOOP_LOCK_GRACE:-30}"
 
 lock_take() { # lock_take <lockdir> — blocks until held; always succeeds
   local d="${1:-}" hold i=0
@@ -929,12 +991,12 @@ lock_drop() { rm -rf "${1:-}"; }   # rm -rf, not rmdir: the dir holds a pid file
 # tolerance would paper over it; the boot session UUID has no such behaviour to
 # tolerate. It is opaque, so there is also no field to parse and no greedy
 # pattern to get wrong.
-CC_BOOT_ID=""
+AL_BOOT_ID=""
 boot_id() {
-  if [ -z "$CC_BOOT_ID" ]; then
-    CC_BOOT_ID="$(sysctl -n kern.bootsessionuuid 2>/dev/null | tr -d '[:space:]')"
+  if [ -z "$AL_BOOT_ID" ]; then
+    AL_BOOT_ID="$(sysctl -n kern.bootsessionuuid 2>/dev/null | tr -d '[:space:]')"
   fi
-  printf '%s\n' "$CC_BOOT_ID"
+  printf '%s\n' "$AL_BOOT_ID"
 }
 
 # 0 = the process this slot names is still the process that took it.
@@ -1116,7 +1178,7 @@ bind_session() { # bind_session <run_dir> <streamfile>
 # transcript is a `result` — i.e. the agent has answered and is now waiting for
 # input. Deliberately a positive assertion on the file's current state: the
 # earlier counter-based version mis-fired and killed working agents. Isolated
-# and side-effect free so `claude-cron selftest` can exercise it directly.
+# and side-effect free so `agentloop selftest` can exercise it directly.
 turn_is_over() { # turn_is_over <stream-file> ; 0 = the agent answered and is idle
   local f="${1:-}" last
   [ -s "$f" ] || return 1
@@ -1135,7 +1197,7 @@ turn_is_over() { # turn_is_over <stream-file> ; 0 = the agent answered and is id
 #
 # One `ps` sweep, closed transitively in awk, so a deep tool tree (shell -> make
 # -> pytest -> workers) counts in full. Isolated and side-effect free so
-# `claude-cron selftest` can exercise the parsing directly.
+# `agentloop selftest` can exercise the parsing directly.
 tree_cpu_seconds() { # tree_cpu_seconds <pid> -> integer CPU seconds (0 when gone)
   local root="${1:-}"
   case "$root" in ''|*[!0-9]*) echo 0; return ;; esac
@@ -1359,13 +1421,13 @@ release_slot() { rm -rf "$1"; }          # <slot-dir>
 # the published ports are still whatever the compose file says.
 #
 # So every run also gets a block of ports nobody else is using. It is handed to
-# the run and to its provisioning hooks as CC_PORT_BASE, and provision-lib.sh
+# the run and to its provisioning hooks as AL_PORT_BASE, and provision-lib.sh
 # turns it into concrete numbers. Generic on purpose: this is not a Docker
 # feature or a Compose feature, it is "two copies of the same stack at once",
 # which every project that isolates will meet.
-CC_PORT_RANGE_START="${CLAUDE_CRON_PORT_RANGE_START:-21000}"
-CC_PORT_SPAN="${CLAUDE_CRON_PORT_SPAN:-100}"        # ports per run
-CC_PORT_BLOCKS="${CLAUDE_CRON_PORT_BLOCKS:-60}"     # how many runs can hold one at once
+AL_PORT_RANGE_START="${AGENTLOOP_PORT_RANGE_START:-21000}"
+AL_PORT_SPAN="${AGENTLOOP_PORT_SPAN:-100}"        # ports per run
+AL_PORT_BLOCKS="${AGENTLOOP_PORT_BLOCKS:-60}"     # how many runs can hold one at once
 
 # Lowest block no LIVE run holds. Recorded in the slot, so it is released exactly
 # when the slot is — no separate registry to leak. Allocated under a mutex:
@@ -1385,17 +1447,17 @@ alloc_port_base() { # <slot-dir> -> prints the base port
     [ -n "$b" ] && taken="$taken $b"
   done
   i=0
-  while [ "$i" -lt "$CC_PORT_BLOCKS" ]; do
-    b=$(( CC_PORT_RANGE_START + i * CC_PORT_SPAN ))
+  while [ "$i" -lt "$AL_PORT_BLOCKS" ]; do
+    b=$(( AL_PORT_RANGE_START + i * AL_PORT_SPAN ))
     case " $taken " in *" $b "*) ;; *) break ;; esac
     i=$(( i + 1 ))
   done
   # Every block held. Rather than refuse the run, hand back the first one and say
   # so: a port clash is a failure the operator can see and read, and a run that
   # never started because 60 others were live is one they cannot.
-  if [ "$i" -ge "$CC_PORT_BLOCKS" ]; then
-    b="$CC_PORT_RANGE_START"
-    log_tick "all $CC_PORT_BLOCKS port blocks are in use — reusing $b, services may collide"
+  if [ "$i" -ge "$AL_PORT_BLOCKS" ]; then
+    b="$AL_PORT_RANGE_START"
+    log_tick "all $AL_PORT_BLOCKS port blocks are in use — reusing $b, services may collide"
   fi
   # Same redirection trap as in provision-lib: the shell raises it before echo
   # runs, so the group is what has to swallow it.
@@ -1502,7 +1564,7 @@ run_record_stopped_early() { # <id> <slot-dir>
   # gated on its 30s cadence, but a stop landing in the first instant can
   # still beat it). Read $run_dir/.session directly rather than assume either
   # way — the exact file wt_find_by_session trusts for a real
-  # `claude-cron resume` — so a run that never started, or one still mid-
+  # `agentloop resume` — so a run that never started, or one still mid-
   # launch when the stop landed, correctly reports no session: there is
   # nothing here to hand the dashboard's Resume button that would actually
   # work, and guessing one would be exactly the button this task exists to
@@ -1634,7 +1696,7 @@ record_run() { # <id> <status> <start> <end> <cost> <turns> <session> <logfile> 
 # them made every single run launch O(all history ever). 4 MiB is thousands of
 # records: far more than any day, and bounded for ever. A partial first line is
 # dropped by `fromjson?`, which is why the offset can be a plain byte count.
-SPEND_SCAN_BYTES="${CLAUDE_CRON_SPEND_SCAN:-4194304}"
+SPEND_SCAN_BYTES="${AGENTLOOP_SPEND_SCAN:-4194304}"
 
 _spend_since_midnight() { # _spend_since_midnight [id] -> dollars (float)
   local id="${1:-}" midnight
@@ -1749,7 +1811,7 @@ rl_gate() { # rl_gate -> 0 = hold this run back (reason on stdout)
 # Deliberately NOT the run-end hook with an extra variable: a hook already on
 # disk was written against that contract, and quietly handing it events it never
 # expected would make it lie about what happened. A new event gets a new file.
-STALL_HOURS="${CLAUDE_CRON_STALL_HOURS:-4}"
+STALL_HOURS="${AGENTLOOP_STALL_HOURS:-4}"
 STALL_MARK_FILE="$DATA_DIR/.stalled"
 
 # Why is nothing running? Prints one sentence when the answer is a fault or a
@@ -1785,7 +1847,7 @@ fleet_stall_reason() { # -> 0 with a reason on stdout, 1 when all is well
   if printf '%s\n' "$recent" | grep -q 'PRECHECK FAILED'; then
     printf 'no run has started in %sh and prechecks are failing — the fleet cannot SEE its work, which is not the same as having none\n' "$STALL_HOURS"
   elif printf '%s\n' "$recent" | grep -q 'usage limit reached'; then
-    printf 'no run has started in %sh — every scheduled run is being held back by a spent usage window (`claude-cron usage` says which)\n' "$STALL_HOURS"
+    printf 'no run has started in %sh — every scheduled run is being held back by a spent usage window (`agentloop usage` says which)\n' "$STALL_HOURS"
   elif printf '%s\n' "$recent" | grep -q 'daily cap reached'; then
     printf 'no run has started in %sh — the daily spend cap is holding every run back\n' "$STALL_HOURS"
   elif printf '%s\n' "$recent" | grep -q 'max_parallel'; then
@@ -1815,7 +1877,8 @@ fleet_stall_check() {
   [ -f "$script" ] || return 0
   (
     _stall_hook() {
-      CC_REASON="$1" CC_STALL_HOURS="$STALL_HOURS" CC_DASHBOARD="http://127.0.0.1:$PORT/" \
+      AL_REASON="$1" CC_REASON="$1" AL_STALL_HOURS="$STALL_HOURS" CC_STALL_HOURS="$STALL_HOURS" \
+      AL_DASHBOARD="http://127.0.0.1:$PORT/" CC_DASHBOARD="http://127.0.0.1:$PORT/" \
         bash "$script" >>"$DATA_DIR/exec.log" 2>&1
     }
     wt_run_limited "$RUN_HOOK_TIMEOUT" _stall_hook "$reason" \
@@ -1853,7 +1916,7 @@ cmd_usage() {
     if reason="$(rl_gate)" && [ -n "$reason" ]; then
       echo
       echo "SCHEDULED RUNS ARE BEING HELD BACK: $reason"
-      echo "  (\`claude-cron run <job>\` still overrides this, as it does the budget.)"
+      echo "  (\`agentloop run <job>\` still overrides this, as it does the budget.)"
     fi
   fi
 
@@ -2028,7 +2091,7 @@ cmd_say() { # cmd_say <id> — message on stdin, delivered to the live run
 SKILLS_DIR="$BASE_DIR/skills"
 USER_SKILLS="$HOME/.claude/skills"
 
-cmd_skills() { # claude-cron skills [install]
+cmd_skills() { # agentloop skills [install]
   local action="${1:-status}" name target link
   local _skills_pending=0
   [ -d "$SKILLS_DIR" ] || die "no skills/ directory in $BASE_DIR"
@@ -2049,8 +2112,8 @@ cmd_skills() { # claude-cron skills [install]
     # Never destroy an unversioned edit without keeping it: a skill someone tuned
     # in place is exactly the thing worth reading before it disappears.
     if [ -e "$link" ] && [ ! -L "$link" ]; then
-      mv "$link" "$link.before-claude-cron.$(date -u +%Y%m%dT%H%M%SZ)"
-      printf '  kept old %s (renamed .before-claude-cron.*)\n' "$name"
+      mv "$link" "$link.before-agentloop.$(date -u +%Y%m%dT%H%M%SZ)"
+      printf '  kept old %s (renamed .before-agentloop.*)\n' "$name"
     fi
     rm -f "$link"
     ln -s "${target%/}" "$link"
@@ -2059,7 +2122,7 @@ cmd_skills() { # claude-cron skills [install]
   # Only nag when something is actually out of place; a clean status that still
   # tells you to run install is noise that trains you to ignore the output.
   if [ "$action" != "install" ] && [ "${_skills_pending:-0}" -gt 0 ]; then
-    echo "  (run \`claude-cron skills install\` to link them)"
+    echo "  (run \`agentloop skills install\` to link them)"
   fi
 }
 
@@ -2069,7 +2132,7 @@ cmd_skills() { # claude-cron skills [install]
 # two of.
 #
 # bin/static/security.js, bin/static/app.js and bin/static/app.css are
-# COMMITTED: installing claude-cron needs jq, python3 and curl, never Node.
+# COMMITTED: installing agentloop needs jq, python3 and curl, never Node.
 # The price of that is a build output in git, which can be forgotten — and a
 # stale artifact is a dashboard silently running last week's code, with
 # nothing on screen to say so.
@@ -2147,7 +2210,7 @@ check_ui_artifacts() {
 
 cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   local pass=0 fail=0 tmp
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/ccselftest.XXXXXX")"
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/alselftest.XXXXXX")"
   ok()   { pass=$(( pass + 1 )); printf '  ok    %s\n' "$1"; }
   bad()  { fail=$(( fail + 1 )); printf '  FAIL  %s\n' "$1"; }
   want() { # want <label> <expected 0|1> <actual-rc>
@@ -2294,7 +2357,7 @@ EOF
   # fine. What breaks is only which runs reach it: the polling one alone loses
   # every run that dies inside the 30s window, and the post-wait one alone
   # loses every run killed with -9. Both, or the guarantee is gone.
-  got="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/claude-cron" | grep -c 'bind_session "\$run_dir"')"
+  got="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/agentloop" | grep -c 'bind_session "\$run_dir"')"
   [ "${got:-0}" -ge 2 ] \
     && ok "both bind_session call sites are still there ($got)" \
     || bad "run_job has $got bind_session call sites, expected 2 — see the plan for why each is load-bearing"
@@ -2313,7 +2376,7 @@ EOF
   # STOPPED record with a less informative one. Both are one-line edits that
   # look like harmless cleanup.
   local budget_at undelivered_at guard_line budget_n undelivered_n case_at
-  got="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/claude-cron")"
+  got="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/agentloop")"
   # -c (a count), not just -n | head -1: a SECOND "BUDGET LIMITED:" or a
   # duplicated call site would make head -1 silently anchor on whichever
   # comes first, and the ordering compare below would pass or fail on the
@@ -2367,7 +2430,7 @@ EOF
   # esac` -- a SMALLER, more innocent-looking diff than what replaced it, and
   # every behavioural test in this file would stay green: nothing here drives
   # run_job far enough to write a real .ended file.
-  ended_body="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/claude-cron")"
+  ended_body="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/agentloop")"
   got="$(printf '%s\n' "$ended_body" \
           | grep -c '\[ "\$declared_ending" = "true" \] && \[ -z "\${undelivered:-}" \]')"
   [ "${got:-0}" -eq 1 ] \
@@ -2692,13 +2755,13 @@ EOF
   ( CONFIG_DIR="$tmp/cfg"; PROJECTS_FILE="$tmp/proj/projects.json"
     wt_provision up nohooks j1 "$tmp/run" repoA /x/a "$tmp/run/repoA" develop ) >/dev/null 2>&1
   want "no script at all is a no-op" 0 $?
-  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s %s\n" "$CC_REPO_NAME" "$CC_BASE" > "$CC_WORKTREE/seen"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s %s\n" "$AL_REPO_NAME" "$AL_BASE" > "$AL_WORKTREE/seen"' \
     > "$tmp/cfg/provision/hooked.up.sh"
   ( CONFIG_DIR="$tmp/cfg"; PROJECTS_FILE="$tmp/proj/projects.json"
     wt_provision up hooked j1 "$tmp/run" repoA /x/a "$tmp/run/repoA" develop ) >/dev/null 2>&1
   want "a passing hook returns 0" 0 $?
   got="$(cat "$tmp/run/repoA/seen" 2>/dev/null)"
-  [ "$got" = "repoA develop" ] && ok "the hook sees CC_REPO_NAME and CC_BASE" || bad "hook saw '$got'"
+  [ "$got" = "repoA develop" ] && ok "the hook sees AL_REPO_NAME and AL_BASE" || bad "hook saw '$got'"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 3' > "$tmp/cfg/provision/broken.up.sh"
   ( CONFIG_DIR="$tmp/cfg"; PROJECTS_FILE="$tmp/proj/projects.json"
     wt_provision up broken j1 "$tmp/run" repoA /x/a "$tmp/run/repoA" develop ) >/dev/null 2>&1
@@ -2754,7 +2817,7 @@ EOF
 
   echo "wt_setup() — a failing hook aborts, takes down what it built, leaves nothing"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$tmp/cfg/provision/two.up.sh"
-  printf '%s\n' '#!/usr/bin/env bash' 'echo "$CC_REPO_NAME" >> "$tmp_down_log"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "$AL_REPO_NAME" >> "$tmp_down_log"' \
     > "$tmp/cfg/provision/two.down.sh"
   export tmp_down_log="$tmp/abort-down.log"; : > "$tmp_down_log"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; WORKTREES_DIR="$tmp/wtroot"
@@ -2768,7 +2831,7 @@ EOF
   rm -f "$tmp/cfg/provision/two.up.sh" "$tmp/cfg/provision/two.down.sh"
 
   echo "wt_teardown() — a finished session's dir goes, whatever is in it"
-  printf '%s\n' '#!/usr/bin/env bash' 'echo down >> "$CC_RUN_DIR/../down.count"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'echo down >> "$AL_RUN_DIR/../down.count"' \
     > "$tmp/cfg/provision/two.down.sh"
   chmod +x "$tmp/cfg/provision/two.down.sh"
   rm -f "$tmp/wtroot/j2/down.count"
@@ -2875,7 +2938,7 @@ EOF
   # below, against the live lock_take/wt_is_claimed; this only guards against
   # run_job's own inline code silently reordering the three away from each
   # other, or the primary-name guard regressing to a bare directory check.
-  body="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/claude-cron")"
+  body="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/agentloop")"
   lt_line="$(printf '%s\n' "$body" | grep -n 'lock_take "\$rlock"'                  | head -1 | cut -d: -f1)"
   wc_line="$(printf '%s\n' "$body" | grep -n 'wt_is_claimed "\$id" "\$run_dir"'     | head -1 | cut -d: -f1)"
   wr_line="$(printf '%s\n' "$body" | grep -n 'echo "\$run_dir" > "\$slot/worktree"' | head -1 | cut -d: -f1)"
@@ -3001,7 +3064,7 @@ EOF
   # second pass leaves a DIFFERENT untracked path behind, standing in for
   # what a real hook can do (a compose lockfile or a temp dir named after its
   # own pid).
-  printf '%s\n' '#!/usr/bin/env bash' 'echo hi > "$CC_WORKTREE/build-$$.txt"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'echo hi > "$AL_WORKTREE/build-$$.txt"' \
     > "$tmp/cfg/provision/two.up.sh"
   chmod +x "$tmp/cfg/provision/two.up.sh"
   local rdDirt="$tmp/wtroot/jDirt/stampDirt" wtDirt
@@ -3052,7 +3115,7 @@ EOF
     "$rdMerge/.run.json" > "$rdMerge/.run.json.new" 2>/dev/null \
     && mv -f "$rdMerge/.run.json.new" "$rdMerge/.run.json"
   mergesnippet="$(sed -n '/^      if \[ -n "\$rdirt" \] && "\$JQ" -R -n --slurpfile mf "\$run_dir\/.run.json" .$/,/^      rm -f "\$rdirt"$/p' \
-                    "$BIN_DIR/claude-cron")"
+                    "$BIN_DIR/agentloop")"
   [ -n "$mergesnippet" ] || bad "could not extract the reattach dirt_sha merge block -- its anchors moved"
   # "one" has an empty fresh reading (exactly what a failed wt_dirt_sha now
   # writes); "two" has a real one, to prove a genuine refresh still wins and
@@ -3100,7 +3163,7 @@ EOF
   printf '{"result":"RUN COMPLETE: done, but a tool call was denied along the way"}' \
     > "$tmp/err.logfile.json"
   errsnippet="$(sed -n '/^  declared_ending=false$/,/^  # Consecutive failures drive the backoff/p' \
-                  "$BIN_DIR/claude-cron")"
+                  "$BIN_DIR/agentloop")"
   [ -n "$errsnippet" ] || bad "could not extract the .ended classifier block -- its anchors moved"
   (
     id="jErr"; status="error"; wdreason=""; cost=""
@@ -3392,8 +3455,8 @@ EOF
   # teardown time goes through this SAME wt_dirt_sha, so a failure still
   # there when it matters is still reported, not silently read as clean.
   printf '%s\n' '#!/usr/bin/env bash' \
-    'echo residue > "$CC_WORKTREE/leftover.txt"' \
-    'echo "gitdir: $CC_WORKTREE/nonexistent-gitdir" > "$CC_WORKTREE/.git"' \
+    'echo residue > "$AL_WORKTREE/leftover.txt"' \
+    'echo "gitdir: $AL_WORKTREE/nonexistent-gitdir" > "$AL_WORKTREE/.git"' \
     > "$tmp/cfg/provision/two.up.sh"
   chmod +x "$tmp/cfg/provision/two.up.sh"
   local rdSF="$tmp/wtroot/jSnapFail/stampSF"
@@ -3421,7 +3484,7 @@ EOF
     *-*-*-*-*) ok "it is a boot session uuid, not a timestamp that a clock step moves" ;;
     *) bad "boot_id printed '$got', which is not a uuid" ;;
   esac
-  [ "$got" = "$(CC_BOOT_ID=""; boot_id)" ] \
+  [ "$got" = "$(AL_BOOT_ID=""; boot_id)" ] \
     && ok "and two reads inside one boot agree" || bad "boot_id is not stable"
 
   echo "slot_alive() — a lease is pinned to the boot it was taken in"
@@ -3463,7 +3526,7 @@ EOF
 
   # No backticks in this string: inside double quotes the shell would run it.
   echo "wt_provision() — a down hook from the orphan sweep still knows its ports"
-  printf '%s\n' '#!/usr/bin/env bash' 'echo "down saw ${CC_PORT_BASE:-none}" >> "$CC_RUN_DIR/../down.log"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'echo "down saw ${AL_PORT_BASE:-none}" >> "$AL_RUN_DIR/../down.log"' \
     > "$tmp/cfg/provision/two.down.sh"
   chmod +x "$tmp/cfg/provision/two.down.sh"
   rm -f "$tmp/wtroot/j6/down.log"
@@ -3477,7 +3540,7 @@ EOF
   # actually tear down -- a crash that landed AFTER the run's own classifier
   # wrote `done`, not one caught before any classifier ran.
   echo done > "$tmp/wtroot/j6/stampP/.ended"
-  # No slot, no ambient CC_PORT_BASE: exactly the orphan sweep's situation.
+  # No slot, no ambient AL_PORT_BASE: exactly the orphan sweep's situation.
   # wt_prune_orphans resolves the project via job_get (JOBS_FILE), not by
   # reading the manifest's own .project — so the sweep needs a job "j6" ->
   # project "two" of its own, same as the real jobs.json a live job would
@@ -3485,7 +3548,7 @@ EOF
   printf '%s' '{"jobs":[{"id":"j6","project":"two"}]}' > "$tmp/proj/j6.jobs.json"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
     WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"; JOBS_FILE="$tmp/proj/j6.jobs.json"
-    unset CC_PORT_BASE
+    unset AL_PORT_BASE
     wt_prune_orphans ) >/dev/null 2>&1
   grep -q "down saw 27100" "$tmp/wtroot/j6/down.log" 2>/dev/null \
     && ok "a crashed run's down hook reads its ports from the manifest" \
@@ -3586,7 +3649,7 @@ EOF
   # in production. Same shape as the reattached check above: a behavioural
   # test of the function proves the function works, not that anything still
   # calls it.
-  got="$(sed -n '/^cmd_tick()/,/^}/p' "$BIN_DIR/claude-cron" | grep -c 'wt_prune_canonicals')"
+  got="$(sed -n '/^cmd_tick()/,/^}/p' "$BIN_DIR/agentloop" | grep -c 'wt_prune_canonicals')"
   [ "${got:-0}" -eq 1 ] \
     && ok "cmd_tick calls wt_prune_canonicals ($got)" \
     || bad "cmd_tick calls wt_prune_canonicals $got times, expected 1 -- stale worktree registrations would accumulate for ever"
@@ -3614,7 +3677,7 @@ EOF
   # still reachable by a second, concurrent tick -- exactly the narrower
   # shape this task's own brief considered and rejected (see the comment on
   # the lock in cmd_tick itself).
-  tbody="$(sed -n '/^cmd_tick()/,/^}/p' "$BIN_DIR/claude-cron")"
+  tbody="$(sed -n '/^cmd_tick()/,/^}/p' "$BIN_DIR/agentloop")"
   tlt_line="$(printf '%s\n' "$tbody" | grep -n 'lock_take "\$LOCK_DIR/.tick"'  | head -1 | cut -d: -f1)"
   # Anchored to a bare call line, not a substring match: the comment on the
   # lock itself (right above it) names wt_prune_orphans in prose, and a loose
@@ -3659,13 +3722,13 @@ EOF
     || bad "the sweep reaped a session that is still open"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
     WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
-    CLAUDE_CRON_SESSION_TTL=0
+    AGENTLOOP_SESSION_TTL=0
     wt_prune_orphans ) >/dev/null 2>&1
   [ ! -d "$tmp/wtroot/jT/stampT" ] && ok "and is reclaimed once its ttl is up" \
     || bad "an expired session was kept"
 
   echo "wt_prune_orphans() — a deleted job's run dir still takes its services down"
-  printf '%s\n' '#!/usr/bin/env bash' 'echo down >> "$CC_RUN_DIR/../orphan-down.log"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'echo down >> "$AL_RUN_DIR/../orphan-down.log"' \
     > "$tmp/cfg/provision/two.down.sh"
   chmod +x "$tmp/cfg/provision/two.down.sh"
   rm -f "$tmp/wtroot/jGone/orphan-down.log"
@@ -3685,7 +3748,7 @@ EOF
   # teardown at all, same as it would in the wild once the real TTL is up.
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"
     WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"
-    CLAUDE_CRON_SESSION_TTL=0
+    AGENTLOOP_SESSION_TTL=0
     wt_prune_orphans ) >/dev/null 2>&1
   [ -f "$tmp/wtroot/jGone/orphan-down.log" ] \
     && ok "the manifest's project is what teardown uses, so down still fires" \
@@ -3709,7 +3772,7 @@ EOF
           "$tmp/wtroot/jFallback/stampF2/.run.json"
   printf '%s' '{"jobs":[{"id":"jFallback","project":"two"}]}' > "$tmp/cfg/jobs.json"
   ( PROJECTS_FILE="$tmp/proj/two.json"; CONFIG_DIR="$tmp/cfg"; JOBS_FILE="$tmp/cfg/jobs.json"
-    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"; CLAUDE_CRON_SESSION_TTL=0
+    WORKTREES_DIR="$tmp/wtroot"; LOCK_DIR="$tmp/locks"; AGENTLOOP_SESSION_TTL=0
     wt_prune_orphans ) >/dev/null 2>&1
   [ -f "$tmp/wtroot/jFallback/orphan-down.log" ] \
     && ok "a manifest with no project falls back to the jobs file" \
@@ -4023,7 +4086,7 @@ NASTY
   sl="$BIN_DIR/statusline-rate-limits.sh"
   mkdir -p "$tmp/sl"
   sl_run() { # sl_run <payload-json> -> writes $tmp/sl/rate-limits.json
-    printf '%s' "$1" | CLAUDE_CRON_DATA="$tmp/sl" CLAUDE_CRON_STATUSLINE_MIN_SECONDS=0 sh "$sl" >/dev/null 2>&1
+    printf '%s' "$1" | AGENTLOOP_DATA="$tmp/sl" AGENTLOOP_STATUSLINE_MIN_SECONDS=0 sh "$sl" >/dev/null 2>&1
   }
   sl_get() { "$JQ" -r "$1" "$tmp/sl/rate-limits.json" 2>/dev/null; }
 
@@ -4075,7 +4138,7 @@ NASTY
       cause=""
       # The derivation itself, lifted verbatim from run_job by anchor so this
       # cannot drift into testing a copy that no longer matches the engine.
-      eval "$(sed -n '/^  cause=""$/,/^  fi$/p' "$BIN_DIR/claude-cron" | head -20)"
+      eval "$(sed -n '/^  cause=""$/,/^  fi$/p' "$BIN_DIR/agentloop" | head -20)"
       printf '%s' "$cause" )
   }
   [ "$(cause_of '{"api_error_status":529,"subtype":"success"}')" = "api_error" ] \
@@ -4102,7 +4165,7 @@ NASTY
 
   # The half that changes behaviour. Read the real rule out of the script: a
   # copy of it here would pass happily while the engine did something else.
-  rule="$(sed -n '/Nor is an outage/,/^  fi$/p' "$BIN_DIR/claude-cron")"
+  rule="$(sed -n '/Nor is an outage/,/^  fi$/p' "$BIN_DIR/agentloop")"
   case "$rule" in
     *"api_error|rate_limited)"*) ok "the backoff rule names both provider-side causes" ;;
     *) bad "the backoff no longer spares provider-side causes" ;;
@@ -4121,7 +4184,7 @@ NASTY
   esac
 
   # And the record has to carry it, or the dashboard has nothing to show.
-  case "$(sed -n '/^record_run()/,/^}/p' "$BIN_DIR/claude-cron")" in
+  case "$(sed -n '/^record_run()/,/^}/p' "$BIN_DIR/agentloop")" in
     *'cause:$cause'*) ok "the cause is written onto the run record" ;;
     *) bad "record_run does not persist the cause" ;;
   esac
@@ -4203,7 +4266,7 @@ NASTY
     LOCK_DIR="$tmp/stall/locks"; DATA_DIR="$tmp/stall"; CONFIG_DIR="$tmp/stall/cfg"
     STALL_MARK_FILE="$tmp/stall/.stalled"; STALL_HOURS=4
     mkdir -p "$tmp/stall/cfg/hooks"
-    printf '#!/usr/bin/env bash\necho "$CC_REASON" >> "%s/fired.txt"\n' "$tmp/stall" > "$tmp/stall/cfg/hooks/on-fleet-stalled.sh"
+    printf '#!/usr/bin/env bash\necho "$AL_REASON" >> "%s/fired.txt"\n' "$tmp/stall" > "$tmp/stall/cfg/hooks/on-fleet-stalled.sh"
     fleet_stall_check; fleet_stall_check; fleet_stall_check
     wait 2>/dev/null
     [ -f "$STALL_MARK_FILE" ] || exit 3
@@ -4224,7 +4287,7 @@ NASTY
 
   # The phrases above are the server's, and a rename there would silently blind
   # this without breaking anything visible.
-  srv="$BIN_DIR/claude-cron-server"
+  srv="$BIN_DIR/agentloop-server"
   miss=""
   for phrase in "PRECHECK FAILED" "usage limit reached" "daily cap reached" "max_parallel"; do
     grep -qF "$phrase" "$srv" || miss="$miss '$phrase'"
@@ -4233,7 +4296,7 @@ NASTY
     && ok "every phrase this reads still exists in the server's classify_tick" \
     || bad "phrases have drifted from the server:$miss"
 
-  echo "claude-cron usage — the feature can say whether it is switched on"
+  echo "agentloop usage — the feature can say whether it is switched on"
   # A gate nobody can verify is a gate nobody trusts, and the honest answer used
   # to be a hand-written one-liner over the JSON. Each case below is a wiring
   # mistake an operator can actually make.
@@ -4288,31 +4351,31 @@ NASTY
 
   echo "the Claude account comes from the setting, never from the environment"
   # cmd_install refuses an ambient CLAUDE_CONFIG_DIR, and for a while the runtime
-  # did not: `claude-cron run <job>` typed inside a Claude Code session inherited
+  # did not: `agentloop run <job>` typed inside a Claude Code session inherited
   # THAT session's account, so the run billed elsewhere and loaded another
   # account's plugins with nothing in the record saying so. Probe the real script
   # rather than a copy of the rule — the rule was never wrong, the wiring was.
   # Sourcing it with `--help` runs every top-level assignment and then returns.
   # An empty value and an unset one are the same to `${VAR:-}`, so both can be
   # passed unconditionally — and stay quoted, which a conditional would not.
-  cc_account_probe() { # <ambient CLAUDE_CONFIG_DIR> <CLAUDE_CRON_CLAUDE_CONFIG_DIR>
-    env CLAUDE_CONFIG_DIR="$1" CLAUDE_CRON_CLAUDE_CONFIG_DIR="$2" \
-        CLAUDE_CRON_CONFIG="$tmp/acct/config" CLAUDE_CRON_DATA="$tmp/acct/data" \
+  al_account_probe() { # <ambient CLAUDE_CONFIG_DIR> <AGENTLOOP_CLAUDE_CONFIG_DIR>
+    env CLAUDE_CONFIG_DIR="$1" AGENTLOOP_CLAUDE_CONFIG_DIR="$2" \
+        AGENTLOOP_CONFIG="$tmp/acct/config" AGENTLOOP_DATA="$tmp/acct/data" \
         bash -c '. "$1" --help >/dev/null 2>&1; printf "%s" "${CLAUDE_CONFIG_DIR-<unset>}"' _ "$SELF"
   }
-  got="$(cc_account_probe /tmp/cc-someones-session "")"
+  got="$(al_account_probe /tmp/al-someones-session "")"
   [ "$got" = "<unset>" ] \
     && ok "an ambient CLAUDE_CONFIG_DIR is not inherited" \
     || bad "an ambient CLAUDE_CONFIG_DIR leaked in as '$got'"
-  got="$(cc_account_probe /tmp/cc-someones-session /tmp/cc-declared)"
-  [ "$got" = "/tmp/cc-declared" ] \
+  got="$(al_account_probe /tmp/al-someones-session /tmp/al-declared)"
+  [ "$got" = "/tmp/al-declared" ] \
     && ok "the declared account wins over the environment" \
     || bad "declared account -> '$got'"
-  got="$(cc_account_probe "" /tmp/cc-declared)"
-  [ "$got" = "/tmp/cc-declared" ] \
+  got="$(al_account_probe "" /tmp/al-declared)"
+  [ "$got" = "/tmp/al-declared" ] \
     && ok "and is honoured when nothing is ambient" \
     || bad "declared account alone -> '$got'"
-  got="$(cc_account_probe "" "")"
+  got="$(al_account_probe "" "")"
   [ "$got" = "<unset>" ] \
     && ok "no setting anywhere leaves the CLI's own default" \
     || bad "no setting -> '$got'"
@@ -4361,7 +4424,7 @@ NASTY
   # actually fires on a drop, only that the directory goes. An open session
   # never reaches wt_teardown's own down block, so this explicit drop is the
   # ONLY place left that can still release it -- prove it does.
-  printf '%s\n' '#!/usr/bin/env bash' 'echo down >> "$CC_RUN_DIR/../down.count"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'echo down >> "$AL_RUN_DIR/../down.count"' \
     > "$tmp/cfg/provision/two.down.sh"
   chmod +x "$tmp/cfg/provision/two.down.sh"
   rm -f "$tmp/wtroot/j7/down.count"
@@ -4754,8 +4817,8 @@ NASTY
   b2="$( LOCK_DIR="$tmp/locks"; alloc_port_base "$tmp/locks/pj/102" )"
   [ -n "$b1" ] && [ "$b1" != "$b2" ] && ok "two live runs get different blocks ($b1 vs $b2)" \
     || bad "both got '$b1'"
-  [ "$(( b2 - b1 ))" = "$CC_PORT_SPAN" ] && ok "the blocks do not overlap" \
-    || bad "blocks are $(( b2 - b1 )) apart, span is $CC_PORT_SPAN"
+  [ "$(( b2 - b1 ))" = "$AL_PORT_SPAN" ] && ok "the blocks do not overlap" \
+    || bad "blocks are $(( b2 - b1 )) apart, span is $AL_PORT_SPAN"
   # A slot whose process is gone holds nothing — otherwise the pool shrinks by
   # one for every run that ever ended and never came back.
   echo 999999 > "$tmp/locks/pk/103/pid"
@@ -4861,7 +4924,7 @@ NASTY
   # which drives real contention against this exact function -- kept passing.
   # Three exits share the lock now, not two: the block-held refusal, a write
   # that could not land, and the success path -- all three must drop it.
-  rbody="$(sed -n '/^port_base_reclaim()/,/^}/p' "$BIN_DIR/claude-cron")"
+  rbody="$(sed -n '/^port_base_reclaim()/,/^}/p' "$BIN_DIR/agentloop")"
   rlt_line="$(printf '%s\n' "$rbody" | grep -n 'lock_take "\$L"'                   | head -1 | cut -d: -f1)"
   rpf_line="$(printf '%s\n' "$rbody" | grep -n 'port_base_free "\$slot" "\$want"'  | head -1 | cut -d: -f1)"
   rwr_line="$(printf '%s\n' "$rbody" | grep -n 'echo "\$want" > "\$slot/portbase"' | head -1 | cut -d: -f1)"
@@ -4890,7 +4953,7 @@ NASTY
   # actually proves the mutex closes the race is the real two-process test
   # below; this only guards against run_job's own call silently reverting to
   # the unlocked port_base_free-then-echo shape the race exists to remove.
-  body="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/claude-cron")"
+  body="$(sed -n '/^run_job()/,/^}/p' "$BIN_DIR/agentloop")"
   got="$(printf '%s\n' "$body" | grep -c 'port_base_reclaim "\$slot" "\$port_base"')"
   [ "${got:-0}" -eq 1 ] && ok "the resume claims its existing block through port_base_reclaim ($got)" \
     || bad "run_job calls port_base_reclaim $got times, expected 1"
@@ -4961,15 +5024,15 @@ NASTY
 
   echo "provision-lib.sh — a run's ports come from its own block"
   local plib="$BIN_DIR/provision-lib.sh"
-  got="$( CC_PORT_BASE=21000 CC_PORT_SPAN=100 TMPDIR="$tmp" bash -c \
-    'source "$1"; echo "$(cc_port POSTGRES_PORT) $(cc_port REDIS_PORT) $(cc_port POSTGRES_PORT)"' _ "$plib" )"
+  got="$( AL_PORT_BASE=21000 AL_PORT_SPAN=100 TMPDIR="$tmp" bash -c \
+    'source "$1"; echo "$(al_port POSTGRES_PORT) $(al_port REDIS_PORT) $(al_port POSTGRES_PORT)"' _ "$plib" )"
   [ "$got" = "21000 21001 21000" ] && ok "each name gets its own port, and keeps it" \
     || bad "got '$got'"
   # The whole point: rewrite the ports a checked-in .env carries, and touch
   # nothing else in it.
   printf '%s\n' 'POSTGRES_PORT=5432' 'REDIS_PORT=6379' 'SECRET=keepme' > "$tmp/dotenv"
-  ( CC_PORT_BASE=21200 CC_PORT_SPAN=100 TMPDIR="$tmp" bash -c \
-    'source "$1"; cc_env_ports "$2"' _ "$plib" "$tmp/dotenv" ) >/dev/null 2>&1
+  ( AL_PORT_BASE=21200 AL_PORT_SPAN=100 TMPDIR="$tmp" bash -c \
+    'source "$1"; al_env_ports "$2"' _ "$plib" "$tmp/dotenv" ) >/dev/null 2>&1
   got="$(grep -c -E '^(POSTGRES|REDIS)_PORT=212[0-9][0-9]$' "$tmp/dotenv")"
   [ "$got" = "2" ] && ok "every *_PORT in the file moves into the block" || bad "$got of 2 rewritten"
   grep -q '^SECRET=keepme$' "$tmp/dotenv" && ok "and nothing else in the file is touched" \
@@ -4984,13 +5047,13 @@ NASTY
   ( CONFIG_DIR="$tmp/hookcfg"; run_end_hook j1 error 1.5 "boom" P sess /tmp/l.json 1 2 ) >/dev/null 2>&1
   want "no hook installed is a no-op" 0 $?
   printf '%s\n' '#!/usr/bin/env bash' \
-    'printf "%s|%s|%s|%s|%s\n" "$CC_JOB_ID" "$CC_STATUS" "$CC_COST" "$CC_NOTE" "$CC_PROJECT" > "$CC_HOOK_OUT"' \
+    'printf "%s|%s|%s|%s|%s\n" "$AL_JOB_ID" "$AL_STATUS" "$AL_COST" "$AL_NOTE" "$AL_PROJECT" > "$AL_HOOK_OUT"' \
     > "$tmp/hookcfg/hooks/on-run-end.sh"
-  export CC_HOOK_OUT="$tmp/hook.seen"; rm -f "$CC_HOOK_OUT"
+  export AL_HOOK_OUT="$tmp/hook.seen"; rm -f "$AL_HOOK_OUT"
   ( CONFIG_DIR="$tmp/hookcfg"; run_end_hook j1 error 1.5 "boom" P sess /tmp/l.json 1 2 ) >/dev/null 2>&1
   local waited=0
-  while [ ! -f "$CC_HOOK_OUT" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited+1)); done
-  got="$(cat "$CC_HOOK_OUT" 2>/dev/null)"
+  while [ ! -f "$AL_HOOK_OUT" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited+1)); done
+  got="$(cat "$AL_HOOK_OUT" 2>/dev/null)"
   [ "$got" = "j1|error|1.5|boom|P" ] && ok "the hook is told which run ended and how" \
     || bad "the hook saw '$got'"
   # It must never delay the run's cleanup, however slow or wedged it is.
@@ -5000,7 +5063,7 @@ NASTY
   elapsed=$(( $(now_epoch) - t0 ))
   [ "$elapsed" -lt 3 ] && ok "a slow hook does not hold the run open (${elapsed}s)" \
     || bad "run_end_hook blocked for ${elapsed}s"
-  unset CC_HOOK_OUT
+  unset AL_HOOK_OUT
   rm -f "$tmp/hookcfg/hooks/on-run-end.sh"
 
   echo "the round cap itself — counting, parking, failing open"
@@ -5048,7 +5111,7 @@ NASTY
   # request reaches. Rounds only ended when the budget did. Three properties keep
   # that closed, and each has been silently undone before by an edit elsewhere —
   # so they are asserted here rather than trusted to prose.
-  local jf="${CC_JOBS_FILE:-$CONFIG_DIR/jobs.json}"
+  local jf="${AL_JOBS_FILE:-$CONFIG_DIR/jobs.json}"
   if [ ! -f "$jf" ]; then
     ok "no jobs.json — loop invariants not applicable"
   else
@@ -5241,7 +5304,7 @@ JSON
   # analysis ended error / killed / 0 turns, before its first turn, with both
   # assertions green. Source text is not behaviour. Observe the launch.
   #
-  # CLAUDE_CRON_CLAUDE_BIN is honoured by run_job, so the whole apparatus is a
+  # AGENTLOOP_CLAUDE_BIN is honoured by run_job, so the whole apparatus is a
   # stand-in that records its own argv and exits. Offline and free -- no model
   # is reached, and CONFIG/DATA are redirected into this test's own $tmp.
   local argvdir="$tmp/argv"
@@ -5252,7 +5315,7 @@ JSON
 # line per ARGUMENT, "<n><TAB><that argument's first line>". Only the first
 # line, because the prompt is a paragraph -- but one line here is still exactly
 # one argument there, which is the entire point of recording it.
-exec > "$CC_ARGV_OUT"
+exec > "$AL_ARGV_OUT"
 printf 'ARGC\t%s\n' "$#"
 n=0
 for a in "$@"; do n=$((n + 1)); printf '%s\t%s\n' "$n" "${a%%$'\n'*}"; done
@@ -5275,9 +5338,9 @@ SH
 JSON
   st_argv_run() { # st_argv_run <job-id> -- the recorded argv of one real launch
     rm -f "$argvdir/out"
-    CLAUDE_CRON_CONFIG="$argvdir/config" CLAUDE_CRON_DATA="$argvdir/data" \
-      CLAUDE_CRON_CLAUDE_BIN="$argvdir/claude" CC_ARGV_OUT="$argvdir/out" \
-      "$BIN_DIR/claude-cron" run "$1" >/dev/null 2>&1
+    AGENTLOOP_CONFIG="$argvdir/config" AGENTLOOP_DATA="$argvdir/data" \
+      AGENTLOOP_CLAUDE_BIN="$argvdir/claude" AL_ARGV_OUT="$argvdir/out" \
+      "$BIN_DIR/agentloop" run "$1" >/dev/null 2>&1
     cat "$argvdir/out" 2>/dev/null
   }
   st_argv_idx() { printf '%s\n' "$1" | awk -F'\t' -v w="$2" '$2==w {print $1; exit}'; }
@@ -5669,11 +5732,11 @@ JSON
   local guard_fn guard_body guard_var guard_sites=0 guard_missing=0 guard_bad_names=""
   while IFS= read -r guard_fn; do
     [ "$guard_fn" = "cmd_selftest" ] && continue
-    guard_body="$(sed -n "/^${guard_fn}(/,/^}/p" "$BIN_DIR/claude-cron")"
+    guard_body="$(sed -n "/^${guard_fn}(/,/^}/p" "$BIN_DIR/agentloop")"
     case "$guard_body" in *write_jobs*) ;; *) continue ;; esac
     for guard_var in $(printf '%s' "$guard_body" | grep -oE '\$[A-Z_]+_FILTER'); do
       guard_body="$guard_body
-$(grep "^${guard_var#\$}=" "$BIN_DIR/claude-cron")"
+$(grep "^${guard_var#\$}=" "$BIN_DIR/agentloop")"
     done
     case "$guard_body" in *'.id =='*|*'.id !='*|*'.id |'*) ;; *) continue ;; esac
     guard_sites=$(( guard_sites + 1 ))
@@ -5682,7 +5745,7 @@ $(grep "^${guard_var#\$}=" "$BIN_DIR/claude-cron")"
       *) guard_missing=$(( guard_missing + 1 )); guard_bad_names="$guard_bad_names $guard_fn" ;;
     esac
   done <<EOF
-$(grep -oE '^cmd_[a-zA-Z0-9_]*\(' "$BIN_DIR/claude-cron" | tr -d '(' | sort -u)
+$(grep -oE '^cmd_[a-zA-Z0-9_]*\(' "$BIN_DIR/agentloop" | tr -d '(' | sort -u)
 EOF
   [ "$guard_sites" -eq 8 ] && [ "$guard_missing" -eq 0 ] \
     && ok "every by-id job mutation ($guard_sites found) refuses a derived id before writing" \
@@ -5692,7 +5755,7 @@ EOF
   # A structural assertion, deliberately: exercising the real reattach path
   # end-to-end needs a live slot, a killed agent and an actual resume, which
   # this suite has no harness for. What CAN be checked is the SHAPE of the
-  # fix. CC_SKIP_PROVISION is an env var on the ORIGINAL invocation, so by the
+  # fix. AL_SKIP_PROVISION is an env var on the ORIGINAL invocation, so by the
   # time a SIGKILL/OOM/reboot casualty is resumed it is unset again -- the
   # only thing that still tells a derived security job apart at reattach time
   # is its ID. Find the reattach path's own wt_provision call, identified by
@@ -5709,12 +5772,12 @@ EOF
   # contains the pattern it greps for, and without the exclusion `head`/`tail`
   # would be picking between this line and the real one by luck of ordering.
   local selftest_end reattach_line reattach_ctx
-  selftest_end="$(awk '/^cmd_selftest\(\)/{f=1} f && /^}/{print NR; exit}' "$BIN_DIR/claude-cron")"
-  reattach_line="$(grep -n 'wt_provision up .*\$rname.*\$rrepo.*\$rwt.*\$rbase' "$BIN_DIR/claude-cron" \
+  selftest_end="$(awk '/^cmd_selftest\(\)/{f=1} f && /^}/{print NR; exit}' "$BIN_DIR/agentloop")"
+  reattach_line="$(grep -n 'wt_provision up .*\$rname.*\$rrepo.*\$rwt.*\$rbase' "$BIN_DIR/agentloop" \
                      | awk -F: -v after="${selftest_end:-0}" '$1>after{print $1; exit}')"
   reattach_ctx=""
   [ -n "$reattach_line" ] && [ "$reattach_line" -gt 12 ] \
-    && reattach_ctx="$(sed -n "$((reattach_line-12)),${reattach_line}p" "$BIN_DIR/claude-cron")"
+    && reattach_ctx="$(sed -n "$((reattach_line-12)),${reattach_line}p" "$BIN_DIR/agentloop")"
   case "$reattach_ctx" in
     *'"$SECURITY_JOB_PREFIX"'*)
       ok "the reattach wt_provision up call site sits behind a SECURITY_JOB_PREFIX guard" ;;
@@ -5746,9 +5809,9 @@ EOF
     echo three > a.txt && git commit -qam three
     git checkout -q - ) >/dev/null 2>&1
 
-  got="$( CC_BASE_OVERRIDE="feature/x" wt_base_ref "$tmp/brov/repo" "main" 5 )"
-  case "$got" in *feature/x*) ok "CC_BASE_OVERRIDE wins over the declared base" ;;
-                 *) bad "CC_BASE_OVERRIDE wins over the declared base" ;; esac
+  got="$( AL_BASE_OVERRIDE="feature/x" wt_base_ref "$tmp/brov/repo" "main" 5 )"
+  case "$got" in *feature/x*) ok "AL_BASE_OVERRIDE wins over the declared base" ;;
+                 *) bad "AL_BASE_OVERRIDE wins over the declared base" ;; esac
 
   # The candidate order matters: refs/remotes/origin/<name> is tried BEFORE
   # refs/heads/<name>. Assert the EXACT ref and its resolved sha, not a
@@ -5762,11 +5825,11 @@ EOF
   if [ "$origin_sha" = "$diverged_local_sha" ]; then
     bad "fixture setup: local feature/x never diverged from origin/feature/x"
   fi
-  got="$( CC_BASE_OVERRIDE="feature/x" wt_base_ref "$tmp/brov/repo" "main" 5 )"
+  got="$( AL_BASE_OVERRIDE="feature/x" wt_base_ref "$tmp/brov/repo" "main" 5 )"
   got_sha="$(git -C "$tmp/brov/repo" rev-parse --verify --quiet "$got" 2>/dev/null)"
   [ "$got" = "refs/remotes/origin/feature/x" ] && [ "$got_sha" = "$origin_sha" ] \
-    && ok "CC_BASE_OVERRIDE prefers the remote branch over a diverged local one" \
-    || bad "CC_BASE_OVERRIDE resolved '$got' ($got_sha), want refs/remotes/origin/feature/x ($origin_sha)"
+    && ok "AL_BASE_OVERRIDE prefers the remote branch over a diverged local one" \
+    || bad "AL_BASE_OVERRIDE resolved '$got' ($got_sha), want refs/remotes/origin/feature/x ($origin_sha)"
 
   # Independently confirm neither candidate resolves for "main" in this repo,
   # so HEAD is the only correct fallback -- not just the ABSENCE of
@@ -5780,13 +5843,13 @@ EOF
     && ok "an unset override falls back to the declared base's own resolution (HEAD, since 'main' does not exist here)" \
     || bad "an unset override resolved to '$got', want 'HEAD' (the declared base's actual resolution)"
 
-  ( CC_BASE_OVERRIDE="no/such/branch" wt_base_ref "$tmp/brov/repo" "main" 5 >/dev/null 2>&1 ) \
+  ( AL_BASE_OVERRIDE="no/such/branch" wt_base_ref "$tmp/brov/repo" "main" 5 >/dev/null 2>&1 ) \
     && bad "a branch that does not exist is refused, not silently replaced" \
     || ok "a branch that does not exist is refused, not silently replaced"
 
-  ( CC_BASE_OVERRIDE="-x" wt_base_ref "$tmp/brov/repo" "main" 5 >/dev/null 2>&1 ) \
-    && bad "CC_BASE_OVERRIDE starting with '-' was accepted" \
-    || ok "CC_BASE_OVERRIDE starting with '-' is refused before it reaches rev-parse"
+  ( AL_BASE_OVERRIDE="-x" wt_base_ref "$tmp/brov/repo" "main" 5 >/dev/null 2>&1 ) \
+    && bad "AL_BASE_OVERRIDE starting with '-' was accepted" \
+    || ok "AL_BASE_OVERRIDE starting with '-' is refused before it reaches rev-parse"
 
   # The probe above passes today whether or not the guard exists, because
   # real git already refuses to create a branch named "-x" in the first
@@ -5805,14 +5868,14 @@ EOF
     'exec /usr/bin/git "$@"' > "$tmp/brov/fakebin/git"
   chmod +x "$tmp/brov/fakebin/git"
   local rc
-  got="$( PATH="$tmp/brov/fakebin:$PATH"; CC_BASE_OVERRIDE="-x"
+  got="$( PATH="$tmp/brov/fakebin:$PATH"; AL_BASE_OVERRIDE="-x"
           wt_base_ref "$tmp/brov/repo" "main" 5 2>/dev/null )"
   rc=$?
   [ -z "$got" ] && [ "$rc" -ne 0 ] \
     && ok "even a git that WOULD accept '-x' is never asked -- the guard refuses first" \
-    || bad "CC_BASE_OVERRIDE starting with '-' resolved to '$got' (rc=$rc) once git said yes to it"
+    || bad "AL_BASE_OVERRIDE starting with '-' resolved to '$got' (rc=$rc) once git said yes to it"
 
-  # ---- CC_SKIP_PROVISION really skips wt_provision up (not just by shape) --
+  # ---- AL_SKIP_PROVISION really skips wt_provision up (not just by shape) --
   # A security analysis reads code; it must neither pay for nor be blocked by
   # a project's provisioning (.env, containers, migrations). The fixture's up
   # hook writes a marker file precisely so its ABSENCE is what proves the
@@ -5823,20 +5886,20 @@ EOF
       && git config user.name t && echo hi > f && git add -A && git commit -qm init ) >/dev/null 2>&1
   printf '%s' '{"projects":[{"name":"secskip","cwd":"'"$tmp"'/brov/skip-repo"}]}' \
     > "$tmp/brov/proj/secskip.json"
-  printf '%s\n' '#!/usr/bin/env bash' 'touch "$CC_WORKTREE/PROVISIONED"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'touch "$AL_WORKTREE/PROVISIONED"' \
     > "$tmp/brov/cfg/provision/secskip.up.sh"
   chmod +x "$tmp/brov/cfg/provision/secskip.up.sh"
 
   ( PROJECTS_FILE="$tmp/brov/proj/secskip.json"; CONFIG_DIR="$tmp/brov/cfg"; WORKTREES_DIR="$tmp/brov/wtroot"
-    CC_SKIP_PROVISION=1 wt_setup jsec secskip "$tmp/brov/skip-repo" stampSkip ) >/dev/null 2>&1
+    AL_SKIP_PROVISION=1 wt_setup jsec secskip "$tmp/brov/skip-repo" stampSkip ) >/dev/null 2>&1
   [ ! -f "$tmp/brov/wtroot/jsec/stampSkip/skip-repo/PROVISIONED" ] \
-    && ok "CC_SKIP_PROVISION=1 leaves the project's up hook unrun" \
-    || bad "CC_SKIP_PROVISION=1 still ran the up hook"
+    && ok "AL_SKIP_PROVISION=1 leaves the project's up hook unrun" \
+    || bad "AL_SKIP_PROVISION=1 still ran the up hook"
 
   ( PROJECTS_FILE="$tmp/brov/proj/secskip.json"; CONFIG_DIR="$tmp/brov/cfg"; WORKTREES_DIR="$tmp/brov/wtroot"
     wt_setup jsec secskip "$tmp/brov/skip-repo" stampNoSkip ) >/dev/null 2>&1
   [ -f "$tmp/brov/wtroot/jsec/stampNoSkip/skip-repo/PROVISIONED" ] \
-    && ok "and an ordinary run still provisions, so the skip above was CC_SKIP_PROVISION's doing" \
+    && ok "and an ordinary run still provisions, so the skip above was AL_SKIP_PROVISION's doing" \
     || bad "an ordinary run did not provision at all — the fixture proves nothing"
 
   # ---- ...and teardown must not run `down` over a stack it never brought up -
@@ -5845,11 +5908,11 @@ EOF
   # at teardown: containers stopped, ports released and services unlinked for
   # whatever IS up on that project -- the developer's own environment, torn
   # down by a read-only code review. The guard is by IDENTITY, not by
-  # environment: CC_SKIP_PROVISION was a variable on the original invocation
+  # environment: AL_SKIP_PROVISION was a variable on the original invocation
   # and teardown can happen from a later process entirely (the orphan sweep, an
   # explicit drop) where it is long gone.
   mkdir -p "$tmp/brov/data"
-  printf '%s\n' '#!/usr/bin/env bash' 'touch "$CC_RUN_DIR/WENT-DOWN"' \
+  printf '%s\n' '#!/usr/bin/env bash' 'touch "$AL_RUN_DIR/WENT-DOWN"' \
     > "$tmp/brov/cfg/provision/secskip.down.sh"
   chmod +x "$tmp/brov/cfg/provision/secskip.down.sh"
   ( PROJECTS_FILE="$tmp/brov/proj/secskip.json"; CONFIG_DIR="$tmp/brov/cfg"
@@ -5897,7 +5960,7 @@ JSON
     PROJECTS_FILE="$sec/cfg/projects.json"; JOBS_FILE="$sec/cfg/jobs.json"
     CONFIG_DIR="$sec/cfg"; DATA_DIR="$sec/data"; LOCK_DIR="$sec/data/locks"
     TICK_LOG="$sec/data/tick.log"; RUNS_FILE="$sec/data/runs.ndjson"
-    CLAUDE_CRON_SECURITY_DB="$secdb"
+    AGENTLOOP_SECURITY_DB="$secdb"
   }
   # An analysis row that is allowed to close `done`. `finish` downgrades a
   # `done` close to `capped` for a row whose deterministic phases never ran
@@ -5923,17 +5986,17 @@ JSON
   ( sec_env
     run_job() {
       printf '%s\n' "$*" > "$sec/runjob.args"
-      printf '%s|%s\n' "${CC_BASE_OVERRIDE:-}" "${CC_SKIP_PROVISION:-}" > "$sec/runjob.env"
+      printf '%s|%s\n' "${AL_BASE_OVERRIDE:-}" "${AL_SKIP_PROVISION:-}" > "$sec/runjob.env"
       # A CHILD PROCESS, not this shell: what matters is that the two markers
       # are EXPORTED all the way down to the agent's own tool shell, not that
       # run_job can see them as shell variables.
-      sh -c 'printf "%s|%s\n" "${CC_SECURITY_AGENT:-}" "${CC_SECURITY_ANALYSIS_ID:-}"' \
+      sh -c 'printf "%s|%s\n" "${AL_SECURITY_AGENT:-}" "${AL_SECURITY_ANALYSIS_ID:-}"' \
         > "$sec/runjob.childenv"
       security_py list --project "Sec App" | "$JQ" -r '.[0].state' > "$sec/state-during"
       return 0
     }
     cmd_security_analyze "Sec App" repo main quick
-    printf '%s|%s\n' "${CC_SECURITY_AGENT:-unset}" "${CC_SECURITY_ANALYSIS_ID:-unset}" \
+    printf '%s|%s\n' "${AL_SECURITY_AGENT:-unset}" "${AL_SECURITY_ANALYSIS_ID:-unset}" \
       > "$sec/after-analyze.env" ) > "$sec/analyze.out" 2>&1
   [ "$("$JQ" -r '.analysis_id' "$secreq" 2>/dev/null)" = "1" ] \
     && ok "the request file carries the analysis id the run has to report against" \
@@ -5955,14 +6018,14 @@ JSON
     && ok "the derived job is run forced, never waiting for a tick it can never have" \
     || bad "run_job got '$(cat "$sec/runjob.args" 2>/dev/null)'"
   [ "$(cat "$sec/runjob.env" 2>/dev/null)" = "main|1" ] \
-    && ok "with the branch as CC_BASE_OVERRIDE and provisioning skipped" \
+    && ok "with the branch as AL_BASE_OVERRIDE and provisioning skipped" \
     || bad "run_job saw '$(cat "$sec/runjob.env" 2>/dev/null)'"
   # The agent reaches `security decide` and `security rename-project` through
   # the very same command the operator does; the marker is what tells the door
   # who is knocking, and it is worth nothing unless it reaches the agent's own
   # process rather than only run_job's shell.
   [ "$(cat "$sec/runjob.childenv" 2>/dev/null)" = "1|1" ] \
-    && ok "and CC_SECURITY_AGENT=1 plus the analysis id exported into every process the run starts" \
+    && ok "and AL_SECURITY_AGENT=1 plus the analysis id exported into every process the run starts" \
     || bad "a child of run_job saw '$(cat "$sec/runjob.childenv" 2>/dev/null)'"
   [ "$(cat "$sec/after-analyze.env" 2>/dev/null)" = "unset|unset" ] \
     && ok "and gone again the moment run_job returns, so the sweep after it is not marked as the agent" \
@@ -6045,7 +6108,7 @@ FAKESELF
     # It prepares before it closes, exactly as a real run does: the agent runs
     # the deterministic phases first and `finish` refuses `done` without them.
     run_job() {
-      security_py prepare --analysis "$CC_SECURITY_ANALYSIS_ID" --root "$sec/tree" \
+      security_py prepare --analysis "$AL_SECURITY_ANALYSIS_ID" --root "$sec/tree" \
         --offline >/dev/null 2>&1
       security_close_analysis "$1" success "1.25" "" >/dev/null 2>&1; return 0; }
     aid="$(security_py open-analysis --project "Sec App" --repo repo --branch sc \
@@ -6179,7 +6242,7 @@ JSON
   secnoprep="$( ( sec_env
     a="$(security_py open-analysis --project "Sec App" --repo repo --branch main \
            --commit noprep --profile quick --run-id "$secjid" | "$JQ" -r '.analysis_id')"
-    CC_SECURITY_ANALYSIS_ID="$a" security_close_analysis "$secjid" success "0.75" "" \
+    AL_SECURITY_ANALYSIS_ID="$a" security_close_analysis "$secjid" success "0.75" "" \
       >/dev/null 2>&1
     security_py list --project "Sec App" | "$JQ" -r --argjson a "$a" \
       '.[] | select(.id==$a) | [.state, (.coverage_note | test("deterministic phases never ran") | tostring)] | join(",")' ) )"
@@ -6216,7 +6279,7 @@ JSON
     || bad "plain cfgdir -> '$( ( ccd_env; resolve ccd-plain claude_config_dir '' ) )' (want $ccd/proj-account)"
   # Structural, because the two assertions above exercise `resolve` and run_job
   # is what has to CALL it: reverting that one line would leave both green.
-  ccdbody="$(sed -n '/^run_job() { # run_job <id>/,/^}/p' "$BIN_DIR/claude-cron")"
+  ccdbody="$(sed -n '/^run_job() { # run_job <id>/,/^}/p' "$BIN_DIR/agentloop")"
   case "$ccdbody" in
     *'run_cfgdir="$(resolve "$id" claude_config_dir'*)
       ok "run_job reads the config dir through resolve, so the job's own value wins" ;;
@@ -6233,7 +6296,7 @@ JSON
            --commit abc --profile quick --run-id "$secjid" | "$JQ" -r '.analysis_id')"
     security_py finish --analysis "$a" --state capped \
       --note "I stopped before the SAST phase" >/dev/null 2>&1
-    CC_SECURITY_ANALYSIS_ID="$a" security_close_analysis "$secjid" success "2.5" "" >/dev/null 2>&1
+    AL_SECURITY_ANALYSIS_ID="$a" security_close_analysis "$secjid" success "2.5" "" >/dev/null 2>&1
     security_py list --project "Sec App" \
       | "$JQ" -r --argjson a "$a" '.[] | select(.id==$a) | [.state, (.spend_usd|tostring)] | join(",")' ) )"
   [ "$secupg" = "capped,2.5" ] \
@@ -6250,7 +6313,7 @@ JSON
     # exactly what a second `security analyze` does to the shared file while
     # the first run is still going
     "$JQ" --argjson a "$other" '.analysis_id = $a' "$secreq" > "$secreq.t" && mv "$secreq.t" "$secreq"
-    CC_SECURITY_ANALYSIS_ID="$mine" security_close_analysis "$secjid" success "0.5" "" >/dev/null 2>&1
+    AL_SECURITY_ANALYSIS_ID="$mine" security_close_analysis "$secjid" success "0.5" "" >/dev/null 2>&1
     security_py list --project "Sec App" | "$JQ" -r --argjson m "$mine" --argjson o "$other" \
       '[(.[] | select(.id==$m) | .state), (.[] | select(.id==$o) | .state)] | join(",")' ) )"
   [ "$seccross" = "done,running" ] \
@@ -6258,19 +6321,19 @@ JSON
     || bad "close with a rewritten request file -> $seccross (mine,other)"
 
   echo "the agent cannot vote on its own findings"
-  # The marker the run carries (CC_SECURITY_AGENT) reaching the same door the
+  # The marker the run carries (AL_SECURITY_AGENT) reaching the same door the
   # operator uses. `finish` must stay allowed: security_close_analysis runs
   # inside run_job, after the agent, under this very variable.
   local secfp="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   local secrc=0
-  ( sec_env; CC_SECURITY_AGENT=1 security_py decide --project "Sec App" \
+  ( sec_env; AL_SECURITY_AGENT=1 security_py decide --project "Sec App" \
       --fingerprint "$secfp" --state false_positive \
       --reason "I looked at it myself" --by "security team" ) > "$sec/agent-decide.out" 2>&1 || secrc=$?
-  [ "$secrc" -ne 0 ] && grep -q "CC_SECURITY_AGENT" "$sec/agent-decide.out" \
+  [ "$secrc" -ne 0 ] && grep -q "AL_SECURITY_AGENT" "$sec/agent-decide.out" \
     && ok "'decide' is refused inside an analysis, with a sentence saying why" \
     || bad "agent decide: rc=$secrc $(cat "$sec/agent-decide.out" 2>/dev/null)"
   secrc=0
-  ( sec_env; CC_SECURITY_AGENT=1 security_py rename-project --from "Sec App" --to "Mine" ) \
+  ( sec_env; AL_SECURITY_AGENT=1 security_py rename-project --from "Sec App" --to "Mine" ) \
     > "$sec/agent-rename.out" 2>&1 || secrc=$?
   [ "$secrc" -ne 0 ] && [ "$( ( sec_env; security_py list --project "Mine" | "$JQ" -r 'length' ) )" = "0" ] \
     && ok "and so is moving the ledger out from under the project being analysed" \
@@ -6278,13 +6341,13 @@ JSON
   local secfin
   secfin="$( ( sec_env
     a="$(sec_open)"
-    CC_SECURITY_AGENT=1 CC_SECURITY_ANALYSIS_ID="$a" \
+    AL_SECURITY_AGENT=1 AL_SECURITY_ANALYSIS_ID="$a" \
       security_close_analysis "$secjid" success "0.25" "" >/dev/null 2>&1
     security_py list --project "Sec App" \
       | "$JQ" -r --argjson a "$a" '.[] | select(.id==$a) | .state' ) )"
   [ "$secfin" = "done" ] \
     && ok "while the engine's own close still works under the same flag, which is why finish is not refused" \
-    || bad "close under CC_SECURITY_AGENT -> $secfin"
+    || bad "close under AL_SECURITY_AGENT -> $secfin"
 
   echo "cmd_project_set() — a settings save files settings_changed only when security is on"
   # No test asserted this event's kind or gate anywhere: a wrong kind string
@@ -6438,6 +6501,112 @@ JSON
     && ok "app.js's bytes copied onto app.css's name are caught by name, not read as a clean app.css" \
     || bad "the swap was not caught the way it should: $(cat "$tmp/uiswap-after.out")"
 
+  echo "the rename — install retires the pre-rename agents and symlinks, and keeps the pinned account"
+  mkdir -p "$tmp/mig/home/Library/LaunchAgents" "$tmp/mig/home/.local/bin" "$tmp/mig/fakebin"
+  printf '%s\n' '#!/bin/sh' 'echo "launchctl $*" >> "$MIG_LOG"' > "$tmp/mig/fakebin/launchctl"
+  chmod +x "$tmp/mig/fakebin/launchctl"
+  cat > "$tmp/mig/home/Library/LaunchAgents/$LEGACY_PLIST_LABEL.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>x</string>
+  <key>EnvironmentVariables</key><dict><key>CLAUDE_CONFIG_DIR</key><string>/tmp/pinned-account</string></dict>
+</dict></plist>
+PLIST
+  : > "$tmp/mig/home/Library/LaunchAgents/$LEGACY_SERVER_LABEL.plist"
+  ln -s "$BASE_DIR/bin/$LEGACY_CLI_NAME" "$tmp/mig/home/.local/bin/$LEGACY_CLI_NAME"
+  ln -s "/somewhere/else/$LEGACY_CLI_NAME-server" "$tmp/mig/home/.local/bin/$LEGACY_CLI_NAME-server"
+  got="$( HOME="$tmp/mig/home" MIG_LOG="$tmp/mig/log" PATH="$tmp/mig/fakebin:$PATH" install_migrate_legacy 2>/dev/null )"
+  [ "$got" = "/tmp/pinned-account" ] && ok "the account pinned in the old agent is handed on" || bad "install_migrate_legacy printed '$got'"
+  [ ! -e "$tmp/mig/home/Library/LaunchAgents/$LEGACY_PLIST_LABEL.plist" ] \
+    && [ ! -e "$tmp/mig/home/Library/LaunchAgents/$LEGACY_SERVER_LABEL.plist" ] \
+    && ok "both old plists are gone" || bad "an old plist survived"
+  grep -q "launchctl unload .*$LEGACY_PLIST_LABEL" "$tmp/mig/log" 2>/dev/null \
+    && grep -q "launchctl unload .*$LEGACY_SERVER_LABEL" "$tmp/mig/log" 2>/dev/null \
+    && ok "and both were unloaded" || bad "unload was not called: $(cat "$tmp/mig/log" 2>/dev/null)"
+  [ ! -L "$tmp/mig/home/.local/bin/$LEGACY_CLI_NAME" ] && ok "the old symlink into this folder is removed" || bad "the old symlink was kept"
+  [ -L "$tmp/mig/home/.local/bin/$LEGACY_CLI_NAME-server" ] && ok "a symlink pointing elsewhere is left alone" || bad "somebody else's symlink was removed"
+  loglines_before="$(num "$(wc -l < "$tmp/mig/log" 2>/dev/null)")"
+  got="$( HOME="$tmp/mig/home" MIG_LOG="$tmp/mig/log" PATH="$tmp/mig/fakebin:$PATH" install_migrate_legacy 2>/dev/null )"
+  loglines_after="$(num "$(wc -l < "$tmp/mig/log" 2>/dev/null)")"
+  [ -z "$got" ] && [ "$loglines_after" -eq "$loglines_before" ] \
+    && ok "a second run finds nothing to migrate" \
+    || bad "second run printed '$got', log went from $loglines_before to $loglines_after lines"
+
+  echo "the rename — the statusline that still points at the old folder is named"
+  mkdir -p "$tmp/mig/home2/.claude"
+  printf '{"statusLine":{"type":"command","command":"/Users/me/%s/bin/statusline-rate-limits.sh"}}\n' "$LEGACY_CLI_NAME" \
+    > "$tmp/mig/home2/.claude/settings.json"
+  got="$( HOME="$tmp/mig/home2" statusline_path_warning )"
+  case "$got" in *"statusline-rate-limits.sh"*"$BIN_DIR/statusline-rate-limits.sh"*) ok "the warning names the old path and the new one" ;;
+                 *) bad "the warning was: '$got'" ;; esac
+  printf '{"statusLine":{"type":"command","command":"%s/statusline-rate-limits.sh"}}\n' "$BIN_DIR" \
+    > "$tmp/mig/home2/.claude/settings.json"
+  got="$( HOME="$tmp/mig/home2" statusline_path_warning )"
+  [ -z "$got" ] && ok "a statusline already on the new path gets no warning" || bad "warned anyway: '$got'"
+
+  echo "the rename — a run, its hooks and its prechecks see AL_* and CC_* alike for one release"
+  mkdir -p "$tmp/hookcfg/hooks"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'printf "%s|%s|%s|%s\n" "$AL_JOB_ID" "$CC_JOB_ID" "$AL_STATUS" "$CC_STATUS" > "$AL_HOOK_OUT"' \
+    > "$tmp/hookcfg/hooks/on-run-end.sh"
+  export AL_HOOK_OUT="$tmp/hook-twins.seen"; rm -f "$AL_HOOK_OUT"
+  ( CONFIG_DIR="$tmp/hookcfg"; run_end_hook j7 warning 0.2 "n" P sess /tmp/l.json 1 2 ) >/dev/null 2>&1
+  waited=0
+  while [ ! -f "$AL_HOOK_OUT" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited+1)); done
+  got="$(cat "$AL_HOOK_OUT" 2>/dev/null)"
+  [ "$got" = "j7|j7|warning|warning" ] && ok "on-run-end sees AL_JOB_ID and CC_JOB_ID with one value" \
+    || bad "the hook saw '$got'"
+  unset AL_HOOK_OUT
+  rm -f "$tmp/hookcfg/hooks/on-run-end.sh"
+
+  mkdir -p "$tmp/twins/cfg/provision" "$tmp/twins/run/repoA"
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s|%s\n" "$AL_REPO_NAME" "$CC_REPO_NAME" > "$AL_WORKTREE/twins"' \
+    > "$tmp/twins/cfg/provision/twins.up.sh"
+  ( CONFIG_DIR="$tmp/twins/cfg"; PROJECTS_FILE="$tmp/proj/projects.json"
+    wt_provision up twins j1 "$tmp/twins/run" repoA /x/a "$tmp/twins/run/repoA" develop ) >/dev/null 2>&1
+  got="$(cat "$tmp/twins/run/repoA/twins" 2>/dev/null)"
+  [ "$got" = "repoA|repoA" ] && ok "a provisioning hook sees AL_REPO_NAME and CC_REPO_NAME with one value" \
+    || bad "the provisioning hook saw '$got'"
+
+  # Structural, like the bind_session call-site count above: the three places
+  # a precheck is run dry all export the marker under both names, and a
+  # fourth caller added later has to as well.
+  got="$(sed -n '/^cmd_selftest()/,/^}/!p' "$SELF" | grep -c 'export AL_PRECHECK_DRY_RUN=1 CC_PRECHECK_DRY_RUN=1')"
+  [ "$got" = "3" ] && ok "every dry precheck exports the marker under both names ($got sites)" \
+    || bad "$got sites export both spellings of the dry-run marker, expected 3"
+
+  echo "the rename — install and status name the personal scripts still reading CC_*"
+  mkdir -p "$tmp/legacy/prechecks" "$tmp/legacy/provision" "$tmp/legacy/hooks"
+  printf '%s\n' '#!/bin/bash' "echo \"\$${LEGACY_RUN_PREFIX}JOB_ID\"" > "$tmp/legacy/prechecks/old.sh"
+  printf '%s\n' '#!/bin/bash' 'echo "$AL_JOB_ID"' > "$tmp/legacy/provision/new.up.sh"
+  got="$( CONFIG_DIR="$tmp/legacy" legacy_scripts_warnings )"
+  case "$got" in *"prechecks/old.sh reads ${LEGACY_RUN_PREFIX}"*) ok "a script still on the old prefix is named" ;;
+                 *) bad "the warning was: '$got'" ;; esac
+  case "$got" in *"new.up.sh"*) bad "a script already on AL_ was named" ;; *) ok "a script already on AL_ is not" ;; esac
+
+  printf '{"jobs":[{"id":"jinline","prompt":"read $%sRUN_MANIFEST then stop","precheck":"test -f /tmp/x"},{"id":"jclean","prompt":"read $AL_RUN_MANIFEST","precheck":"test -f /tmp/y"}]}\n' \
+    "$LEGACY_RUN_PREFIX" > "$tmp/legacy/jobs.json"
+  got="$( CONFIG_DIR="$tmp/legacy" JOBS_FILE="$tmp/legacy/jobs.json" legacy_scripts_warnings )"
+  case "$got" in *"job jinline: its prompt reads ${LEGACY_RUN_PREFIX}"*) ok "an inline prompt still on the old prefix is named, with its job" ;;
+                 *) bad "the inline warning was: '$got'" ;; esac
+  case "$got" in *"jclean"*) bad "a job already on AL_ was named" ;; *) ok "a job already on AL_ is not" ;; esac
+
+  echo "the rename — the pre-rename environment names still work for one release"
+  mkdir -p "$tmp/legacy/config" "$tmp/legacy/data"
+  got="$( env -i HOME="$HOME" PATH="$PATH" "${LEGACY_ENV_PREFIX}PORT=9876" \
+            AGENTLOOP_CONFIG="$tmp/legacy/config" AGENTLOOP_DATA="$tmp/legacy/data" \
+            bash "$SELF" status 2>/dev/null )"
+  case "$got" in *"http://127.0.0.1:9876/"*) ok "a port set only under the old name is honoured" ;;
+                 *) bad "status said: $got" ;; esac
+  case "$got" in *"${LEGACY_ENV_PREFIX}PORT is set"*) ok "and status says which old name it found" ;;
+                 *) bad "no warning about the old name in: $got" ;; esac
+  got="$( env -i HOME="$HOME" PATH="$PATH" "${LEGACY_ENV_PREFIX}PORT=9876" AGENTLOOP_PORT=1111 \
+            AGENTLOOP_CONFIG="$tmp/legacy/config" AGENTLOOP_DATA="$tmp/legacy/data" \
+            bash "$SELF" status 2>/dev/null )"
+  case "$got" in *"http://127.0.0.1:1111/"*) ok "the new name wins when both are set" ;;
+                 *) bad "status said: $got" ;; esac
+
   echo "the committed UI artifacts — built from the sources sitting next to them"
   check_ui_artifacts
 
@@ -6553,10 +6722,10 @@ cmd_precheck() { # <id> — run the job's precheck once and RECORD it, without t
   precheck="$(jobs_json | "$JQ" -r --arg id "$id" '.jobs[] | select(.id==$id) | .precheck // ""')"
   [ -n "$precheck" ] || { echo "no precheck configured for $id"; return 0; }
   cwd="$(resolve "$id" cwd "$HOME")"
-  # A probe reports; it must not claim. See CC_PRECHECK_DRY_RUN in the
+  # A probe reports; it must not claim. See AL_PRECHECK_DRY_RUN in the
   # prechecks: a claim is a write, and spending it here leaves a ticket
   # claimed with no session behind it.
-  pc_out="$( cd "$cwd" && export CC_PRECHECK_DRY_RUN=1 && eval "$precheck" 2>&1 )"; pc_rc=$?
+  pc_out="$( cd "$cwd" && export AL_PRECHECK_DRY_RUN=1 CC_PRECHECK_DRY_RUN=1 && eval "$precheck" 2>&1 )"; pc_rc=$?
   state_set "$id" last_precheck "$("$JQ" -nc --arg o "${pc_out:-(no output)}" --argjson rc "$pc_rc" '{output:$o, exit:$rc}')"
   printf '%s\n(exit %s)\n' "$pc_out" "$pc_rc"
 }
@@ -6791,7 +6960,7 @@ $(run_ending_contract)" ;;
     # run that is never going to look at it. Same contract as the standalone
     # probes: report, touch nothing.
     pc_out="$( cd "$cwd" && { [ -n "$run_cfgdir" ] && export CLAUDE_CONFIG_DIR="$run_cfgdir"
-                              [ -n "$resume_sid" ] && export CC_PRECHECK_DRY_RUN=1
+                              [ -n "$resume_sid" ] && export AL_PRECHECK_DRY_RUN=1 CC_PRECHECK_DRY_RUN=1
                               eval "$precheck" 2>&1; } )"; pc_rc=$?
     state_set "$id" last_precheck "$("$JQ" -nc --arg o "${pc_out:-(no output)}" --argjson rc "$pc_rc" '{output:$o, exit:$rc}')"
     local pc_verdict; pc_verdict="$(precheck_verdict "$pc_rc")"
@@ -6879,7 +7048,7 @@ ${prompt}"
       # session is open cannot change what that session is working on. Changing
       # the mount set means a new session, exactly as it does upstream.
       run_dir="$reattached"
-      # CLAIM IT UNDER A LOCK, BEFORE ANYTHING ELSE. Two `claude-cron resume`
+      # CLAIM IT UNDER A LOCK, BEFORE ANYTHING ELSE. Two `agentloop resume`
       # calls for the same session — a double click, a retried automation —
       # otherwise both reach here and both launch an agent into the same tree,
       # which is the exact race the whole worktree design exists to prevent.
@@ -6920,7 +7089,7 @@ ${prompt}"
         port_base="$(alloc_port_base "$slot")"
         # Record it. The manifest is what teardown reads — wt_provision says so
         # explicitly, because the orphan sweep runs `down` with no ambient
-        # CC_PORT_BASE. A block bound here and left out of the manifest means
+        # AL_PORT_BASE. A block bound here and left out of the manifest means
         # the eventual `down` releases ports this run never took.
         if "$JQ" --arg pb "$port_base" '.port_base = $pb' "$run_dir/.run.json" \
              > "$run_dir/.run.json.new" 2>/dev/null; then
@@ -6938,7 +7107,7 @@ ${prompt}"
         run_cleanup "$id" "$slot"; trap - EXIT
         return 1
       fi
-      export CC_PORT_BASE="$port_base" CC_PORT_SPAN CC_PROVISION_LIB="$BIN_DIR/provision-lib.sh"
+      export AL_PORT_BASE="$port_base" AL_PORT_SPAN AL_PROVISION_LIB="$BIN_DIR/provision-lib.sh"
       local primary_name
       primary_name="$("$JQ" -r '.primary // ""' "$run_dir/.run.json" 2>/dev/null)"
       case "$primary_name" in null) primary_name="" ;; esac
@@ -6956,7 +7125,7 @@ ${prompt}"
         return 1
       fi
       # `up` runs again, with the SAME port block. The hooks are written to be
-      # re-runnable (cc_copy_ignored, cc_env_ports, `herd link`, `compose up -d`
+      # re-runnable (al_copy_ignored, al_env_ports, `herd link`, `compose up -d`
       # all are), and this is what puts a stack back that a reboot took down
       # while the session sat open.
       #
@@ -6972,7 +7141,7 @@ ${prompt}"
       : > "$rdirt" 2>/dev/null || rdirt=""
       while IFS="$(printf '\t')" read -r rname rrepo rwt rbase; do
         [ -n "$rname" ] || continue
-        # A derived security job never provisioned on the way in -- CC_SKIP_PROVISION
+        # A derived security job never provisioned on the way in -- AL_SKIP_PROVISION
         # was set on the ORIGINAL invocation, but that is an env var, not a fact
         # recorded anywhere a resume can see: by the time a SIGKILL/OOM/reboot
         # casualty gets reattached, the var is unset again, and without this guard
@@ -7055,7 +7224,7 @@ ${prompt}"
       # Before wt_setup, because the provisioning hooks it calls are what need the
       # block: they are what write the run's ports into its config.
       port_base="$(alloc_port_base "$slot")"
-      export CC_PORT_BASE="$port_base" CC_PORT_SPAN CC_PROVISION_LIB="$BIN_DIR/provision-lib.sh"
+      export AL_PORT_BASE="$port_base" AL_PORT_SPAN AL_PROVISION_LIB="$BIN_DIR/provision-lib.sh"
       if ! worktree="$(wt_setup "$id" "$project" "$cwd" "$stamp" "$port_base")"; then
         state_set "$id" last_start "$start"
         state_set "$id" last_status '"error"'
@@ -7068,11 +7237,16 @@ ${prompt}"
     run_cwd="$worktree"
     # What the agent needs to find the OTHER repos of this run, and the canonical
     # checkout of each: the manifest. Everything else it could only guess at.
-    run_env+=("CC_RUN_DIR=$run_dir" "CC_RUN_MANIFEST=$run_dir/.run.json" \
-              "CC_PROJECT=$project" "CC_JOB_ID=$id" \
-              "CC_PRIMARY_REPO=$(basename "$run_cwd")" \
-              "CC_PORT_BASE=$port_base" "CC_PORT_SPAN=$CC_PORT_SPAN" \
-              "CC_PROVISION_LIB=$BIN_DIR/provision-lib.sh")
+    # Both spellings of every run variable, for one release: the prompts,
+    # prechecks and hooks of an existing install still read the old one.
+    local primary_repo; primary_repo="$(basename "$run_cwd")"
+    run_env+=("AL_RUN_DIR=$run_dir" "CC_RUN_DIR=$run_dir" \
+              "AL_RUN_MANIFEST=$run_dir/.run.json" "CC_RUN_MANIFEST=$run_dir/.run.json" \
+              "AL_PROJECT=$project" "CC_PROJECT=$project" "AL_JOB_ID=$id" "CC_JOB_ID=$id" \
+              "AL_PRIMARY_REPO=$primary_repo" "CC_PRIMARY_REPO=$primary_repo" \
+              "AL_PORT_BASE=$port_base" "CC_PORT_BASE=$port_base" \
+              "AL_PORT_SPAN=$AL_PORT_SPAN" "CC_PORT_SPAN=$AL_PORT_SPAN" \
+              "AL_PROVISION_LIB=$BIN_DIR/provision-lib.sh" "CC_PROVISION_LIB=$BIN_DIR/provision-lib.sh")
     while IFS= read -r _envln; do
       [ -n "$_envln" ] && run_env+=("$_envln")
     done < <(wt_env_line "$project" "$cwd" "$run_cwd")
@@ -7202,7 +7376,7 @@ If the work turns out to be already finished, or it can no longer be done at all
       '{type:"user",message:{role:"user",content:[{type:"text",text:$t}]}}' >&9
     state_set "$id" last_fifo "$("$JQ" -nc --arg p "$fifo" '$p')"
   fi
-  # Publish the agent's PID so `claude-cron stop` can end this run cleanly.
+  # Publish the agent's PID so `agentloop stop` can end this run cleanly.
   echo "$child" > "$slot/child" 2>/dev/null || true
 
   # An interactive run does not end on its own: stdin is held open, so after each
@@ -7621,15 +7795,18 @@ If the work turns out to be already finished, or it can no longer be done at all
 #
 # Detached AND time-limited: a notifier that hangs must not hold the run's slot,
 # and a run must never be kept alive by something that only reports on it.
-RUN_HOOK_TIMEOUT="${CLAUDE_CRON_HOOK_TIMEOUT:-60}"
+RUN_HOOK_TIMEOUT="${AGENTLOOP_HOOK_TIMEOUT:-60}"
 run_end_hook() { # <id> <status> <cost> <note> <project> <session> <log> <start> <end>
   local script="$CONFIG_DIR/hooks/on-run-end.sh"
   [ -f "$script" ] || return 0
   (
     _hook() {
-      CC_JOB_ID="$1" CC_STATUS="$2" CC_COST="$3" CC_NOTE="$4" CC_PROJECT="$5" \
-      CC_SESSION="$6" CC_LOG="$7" CC_START="$8" CC_END="$9" \
-      CC_DURATION="$(( ${9:-0} - ${8:-0} ))" CC_DASHBOARD="http://127.0.0.1:$PORT/" \
+      AL_JOB_ID="$1" CC_JOB_ID="$1" AL_STATUS="$2" CC_STATUS="$2" AL_COST="$3" CC_COST="$3" \
+      AL_NOTE="$4" CC_NOTE="$4" AL_PROJECT="$5" CC_PROJECT="$5" \
+      AL_SESSION="$6" CC_SESSION="$6" AL_LOG="$7" CC_LOG="$7" \
+      AL_START="$8" CC_START="$8" AL_END="$9" CC_END="$9" \
+      AL_DURATION="$(( ${9:-0} - ${8:-0} ))" CC_DURATION="$(( ${9:-0} - ${8:-0} ))" \
+      AL_DASHBOARD="http://127.0.0.1:$PORT/" CC_DASHBOARD="http://127.0.0.1:$PORT/" \
         bash "$script" >>"$DATA_DIR/exec.log" 2>&1
     }
     wt_run_limited "$RUN_HOOK_TIMEOUT" _hook "$@" \
@@ -7749,16 +7926,71 @@ cmd_tick() {
 
 PLIST_PATH_ENV="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+install_migrate_legacy() { # retire the pre-rename agents and symlinks; prints the account they had pinned, if any
+  local old_tick="$HOME/Library/LaunchAgents/$LEGACY_PLIST_LABEL.plist"
+  local old_server="$HOME/Library/LaunchAgents/$LEGACY_SERVER_LABEL.plist"
+  local link
+  if [ -f "$old_tick" ]; then
+    # The account pinned into the old agent has to reach the new one: dropping
+    # it would sign every run in as the CLI default from the next tick on.
+    local pinned
+    pinned="$("$PYTHON" - "$old_tick" <<'PY'
+import plistlib, sys
+try:
+    v = plistlib.load(open(sys.argv[1], "rb")).get("EnvironmentVariables", {}).get("CLAUDE_CONFIG_DIR")
+except Exception:
+    v = None
+if v:
+    print(v)
+PY
+)"
+    [ -n "$pinned" ] && printf '%s\n' "$pinned"
+    [ -n "$pinned" ] && echo "carrying the account pinned in $LEGACY_PLIST_LABEL: $pinned" >&2
+    launchctl unload "$old_tick" 2>/dev/null
+    rm -f "$old_tick"
+    echo "retired $LEGACY_PLIST_LABEL" >&2
+  fi
+  if [ -f "$old_server" ]; then
+    launchctl unload "$old_server" 2>/dev/null
+    rm -f "$old_server"
+    echo "retired $LEGACY_SERVER_LABEL" >&2
+  fi
+  for link in "$HOME/.local/bin/$LEGACY_CLI_NAME" "$HOME/.local/bin/$LEGACY_CLI_NAME-server"; do
+    # Only a link into THIS folder is ours to remove.
+    [ -L "$link" ] || continue
+    case "$(readlink "$link")" in
+      "$BASE_DIR"/*) rm -f "$link"; echo "removed $link" >&2 ;;
+      *) echo "left $link alone: it points outside this folder" >&2 ;;
+    esac
+  done
+}
+
+statusline_path_warning() { # ~/.claude/settings.json may still run the statusline from the folder's old name
+  local settings="$HOME/.claude/settings.json" cmd
+  [ -f "$settings" ] || return 0
+  cmd="$("$JQ" -r '.statusLine.command // ""' "$settings" 2>/dev/null)"
+  # This install's own script is never wrong, whatever the folder is called.
+  [ "$cmd" = "$BIN_DIR/statusline-rate-limits.sh" ] && return 0
+  case "$cmd" in
+    *"/$LEGACY_CLI_NAME/"*)
+      echo "WARNING: the statusLine in $settings runs $cmd — that folder was renamed; point it at $BIN_DIR/statusline-rate-limits.sh" ;;
+  esac
+}
+
 cmd_install() {
   # A global default account, carried into launchd — which inherits nothing from
   # the shell, so without this every run signs in as ~/.claude however the
   # scheduler was installed. Taken ONLY from the explicit variable, never from an
   # ambient CLAUDE_CONFIG_DIR: installing from inside a Claude session would
   # otherwise silently pin that session's account for every job, forever.
+  # An install that predates the rename is retired first, and the account it
+  # had pinned is read out of it before it goes.
+  local legacy_cfgdir
+  legacy_cfgdir="$(install_migrate_legacy)"
   local plist_cfgdir=""
-  if [ -n "${CLAUDE_CRON_CLAUDE_CONFIG_DIR:-}" ]; then
+  if [ -n "${AGENTLOOP_CLAUDE_CONFIG_DIR:-}" ]; then
     plist_cfgdir="
-    <key>CLAUDE_CONFIG_DIR</key><string>$(expand_home "$CLAUDE_CRON_CLAUDE_CONFIG_DIR")</string>"
+    <key>CLAUDE_CONFIG_DIR</key><string>$(expand_home "$AGENTLOOP_CLAUDE_CONFIG_DIR")</string>"
   elif [ -f "$PLIST_PATH" ]; then
     # Re-running the installer must not quietly drop an account pinned earlier.
     plist_cfgdir="$("$PYTHON" - "$PLIST_PATH" <<'PY'
@@ -7771,6 +8003,12 @@ if v:
     print("\n    <key>CLAUDE_CONFIG_DIR</key><string>%s</string>" % v, end="")
 PY
 )"
+  fi
+  # The old agent's pinned account is the last resort: only when neither the
+  # variable nor the new plist named one.
+  if [ -z "$plist_cfgdir" ] && [ -n "$legacy_cfgdir" ]; then
+    plist_cfgdir="
+    <key>CLAUDE_CONFIG_DIR</key><string>$legacy_cfgdir</string>"
   fi
 
   # 1) the tick agent — fires the scheduler once a minute
@@ -7827,7 +8065,7 @@ PLIST
   <dict>
     <key>PATH</key><string>$PLIST_PATH_ENV</string>
     <key>HOME</key><string>$HOME</string>
-    <key>CLAUDE_CRON_PORT</key><string>$PORT</string>$plist_cfgdir
+    <key>AGENTLOOP_PORT</key><string>$PORT</string>$plist_cfgdir
   </dict>
   <key>StandardOutPath</key><string>$DATA_DIR/server.log</string>
   <key>StandardErrorPath</key><string>$DATA_DIR/server.log</string>
@@ -7845,7 +8083,7 @@ PLIST
   if [ -n "$plist_cfgdir" ]; then
     echo "Claude account : ${plist_cfgdir##*<string>}" | sed 's|</string>||'
   else
-    echo "Claude account : the CLI default (~/.claude) — set CLAUDE_CRON_CLAUDE_CONFIG_DIR and re-run to change it"
+    echo "Claude account : the CLI default (~/.claude) — set AGENTLOOP_CLAUDE_CONFIG_DIR and re-run to change it"
   fi
   # The agent prompts make these skills mandatory by name. A fresh clone whose
   # ~/.claude/skills lacks them runs agents that cite standards they cannot read,
@@ -7854,10 +8092,14 @@ PLIST
   # same step, rather than leaving it as a documented step somebody skips.
   echo "Skills (linked into ~/.claude/skills):"
   cmd_skills install
-  echo "Open the dashboard with: claude-cron dashboard"
+  echo "Open the dashboard with: agentloop dashboard"
+  legacy_env_warnings
+  legacy_scripts_warnings
+  statusline_path_warning
 }
 
 cmd_uninstall() {
+  install_migrate_legacy >/dev/null     # an install that was never re-run since the rename still has the old agents
   launchctl unload "$PLIST_PATH" 2>/dev/null
   launchctl unload "$SERVER_PLIST" 2>/dev/null
   rm -f "$PLIST_PATH" "$SERVER_PLIST"
@@ -7891,7 +8133,10 @@ cmd_status() {
           (($s.last_status // "—") | tostring),
           (($s.last_cost // 0) | tostring) ] | @tsv' "$JOBS_FILE" 2>/dev/null)
   echo
-  echo "Dashboard : http://127.0.0.1:$PORT/   (claude-cron dashboard)"
+  echo "Dashboard : http://127.0.0.1:$PORT/   (agentloop dashboard)"
+  legacy_env_warnings
+  legacy_scripts_warnings
+  statusline_path_warning
 }
 
 cmd_dashboard() {
@@ -7902,11 +8147,11 @@ cmd_dashboard() {
 
 cmd_logs() {
   local id="${1:-}" n="${2:-1}"
-  [ -n "$id" ] || die "usage: claude-cron logs <job-id> [n]"
+  [ -n "$id" ] || die "usage: agentloop logs <job-id> [n]"
   local f
   f="$(ls -t "$LOG_DIR/$id"/*.json 2>/dev/null | head -"$n" | tail -1)"
   if [ -z "$f" ]; then
-    die "no log files on disk for $id — finished runs are absorbed into data/index.db; open the dashboard (claude-cron dashboard) and use the log button on the run row"
+    die "no log files on disk for $id — finished runs are absorbed into data/index.db; open the dashboard (agentloop dashboard) and use the log button on the run row"
   fi
   echo "── $f"
   "$JQ" -r '.result // .' "$f" 2>/dev/null || cat "$f"
@@ -8418,7 +8663,7 @@ cmd_project_rename() { # <old-name> <new-name> — the project and every job poi
   # derived id is only a shadow of the project name, the journal rows already
   # carry the new project name (rewritten above), and a blind move could land
   # on top of a real job that happens to own the new id. The cost is that
-  # `claude-cron logs security-<new>` does not show analyses from before the
+  # `agentloop logs security-<new>` does not show analyses from before the
   # rename — the analyses themselves, which is what the Security page reads,
   # did follow the name.
   echo "project '$old' renamed to '$new'"
@@ -8437,7 +8682,7 @@ cmd_project_list() {
 # Ensure the control server is up; start it detached if nothing answers /health.
 ensure_server() {
   curl -s -o /dev/null "http://127.0.0.1:$PORT/health" 2>/dev/null && return 0
-  CLAUDE_CRON_PORT="$PORT" nohup "$PYTHON" "$SERVER_BIN" >> "$DATA_DIR/server.log" 2>&1 &
+  AGENTLOOP_PORT="$PORT" nohup "$PYTHON" "$SERVER_BIN" >> "$DATA_DIR/server.log" 2>&1 &
   local i=0
   while [ "$i" -lt 20 ]; do
     curl -s -o /dev/null "http://127.0.0.1:$PORT/health" 2>/dev/null && return 0
@@ -8446,39 +8691,39 @@ ensure_server() {
   return 1
 }
 
-cmd_serve() { CLAUDE_CRON_PORT="$PORT" exec "$PYTHON" "$SERVER_BIN"; }
+cmd_serve() { AGENTLOOP_PORT="$PORT" exec "$PYTHON" "$SERVER_BIN"; }
 
 usage() {
   cat <<USAGE
-claude-cron — durable local scheduler for headless Claude Code runs
+agentloop — durable local scheduler for headless Claude Code runs
 
-  claude-cron install         install + load both agents (tick + control server)
-  claude-cron uninstall       unload + remove both agents (keeps jobs and logs)
-  claude-cron status          launchd state, every job, last run and cost
-  claude-cron list            same as status
-  claude-cron dashboard       open the interactive control dashboard in a browser
-  claude-cron serve           run the control server in the foreground (launchd uses this)
-  claude-cron run <id>        run one job now, ignoring schedule and precheck
-  claude-cron check <id>      run only the precheck and report what it found
-  claude-cron usage           how full the usage windows are, whether runs are
+  agentloop install         install + load both agents (tick + control server)
+  agentloop uninstall       unload + remove both agents (keeps jobs and logs)
+  agentloop status          launchd state, every job, last run and cost
+  agentloop list            same as status
+  agentloop dashboard       open the interactive control dashboard in a browser
+  agentloop serve           run the control server in the foreground (launchd uses this)
+  agentloop run <id>        run one job now, ignoring schedule and precheck
+  agentloop check <id>      run only the precheck and report what it found
+  agentloop usage           how full the usage windows are, whether runs are
                               being held back, and whether the statusline that
                               keeps that figure fresh is actually wired up
-  claude-cron logs <id> [n]   print the result of the n-th most recent run
-  claude-cron enable <id>     re-enable a job
-  claude-cron disable <id>    stop a job without deleting it
-  claude-cron toggle-many <true|false>   enable or disable a whole set of jobs;
+  agentloop logs <id> [n]   print the result of the n-th most recent run
+  agentloop enable <id>     re-enable a job
+  agentloop disable <id>    stop a job without deleting it
+  agentloop toggle-many <true|false>   enable or disable a whole set of jobs;
                               ids on stdin, as a JSON array or one per line
-  claude-cron delete <id>     remove a job from jobs.json (keeps its logs)
-  claude-cron create <id>     create a job from a partial JSON object on stdin
-  claude-cron set-prompt <id> replace a job's prompt, read from stdin
-  claude-cron set-field <id> <field>   set interval_seconds|active_hours|active_days|
+  agentloop delete <id>     remove a job from jobs.json (keeps its logs)
+  agentloop create <id>     create a job from a partial JSON object on stdin
+  agentloop set-prompt <id> replace a job's prompt, read from stdin
+  agentloop set-field <id> <field>   set interval_seconds|active_hours|active_days|
                               model|max_budget_usd|timeout_seconds|
                               stall_timeout_seconds, value from stdin
-  claude-cron set-precheck <id>   replace a job's precheck script, read from stdin
-  claude-cron provision-set <project> <up|down>   replace a worktree provisioning hook (stdin)
-  claude-cron provision-get <project> <up|down>   print one
-  claude-cron get-precheck <id>   print a job's precheck script
-  claude-cron security analyze [--detach] <project> <repo> <branch> [profile]
+  agentloop set-precheck <id>   replace a job's precheck script, read from stdin
+  agentloop provision-set <project> <up|down>   replace a worktree provisioning hook (stdin)
+  agentloop provision-get <project> <up|down>   print one
+  agentloop get-precheck <id>   print a job's precheck script
+  agentloop security analyze [--detach] <project> <repo> <branch> [profile]
                               analyse a branch: secrets, dependency CVEs, an
                               SBOM, hygiene and infrastructure-as-code
                               misconfigurations run first at no token cost,
@@ -8491,14 +8736,14 @@ claude-cron — durable local scheduler for headless Claude Code runs
                               background and prints {"analysis_id": n} at once
                               (what the dashboard's Analyse button uses);
                               without it the command stays until the run ends
-  claude-cron security render --analysis <n> --format <json|md|html|sbom>
+  agentloop security render --analysis <n> --format <json|md|html|sbom>
                               the report for one analysis, or (`sbom`) the
                               stored SBOM document itself (see `security` with
                               no arguments for the rest of the vocabulary)
-  claude-cron security-branches <project> <repo>
+  agentloop security-branches <project> <repo>
                               list the branches of a project's canonical
                               checkout, local and origin's, for a branch picker
-  claude-cron tick            internal — what launchd calls every minute
+  agentloop tick            internal — what launchd calls every minute
 
 Jobs are defined in $JOBS_FILE
 USAGE
@@ -8509,8 +8754,8 @@ cmd_check() {
   precheck="$(jobs_json | "$JQ" -r --arg id "$id" '.jobs[] | select(.id==$id) | .precheck // ""')"
   cwd="$(resolve "$id" cwd "$HOME")"   # inherit the project's cwd, like run_job
   [ -n "$precheck" ] || { echo "$id has no precheck — every due tick spends a session."; return 0; }
-  # Read-only, like every standalone probe (see CC_PRECHECK_DRY_RUN).
-  ( cd "$cwd" && export CC_PRECHECK_DRY_RUN=1 && eval "$precheck" ); local rc=$?
+  # Read-only, like every standalone probe (see AL_PRECHECK_DRY_RUN).
+  ( cd "$cwd" && export AL_PRECHECK_DRY_RUN=1 CC_PRECHECK_DRY_RUN=1 && eval "$precheck" ); local rc=$?
   case "$(precheck_verdict "$rc")" in
     work)  echo "precheck: WORK FOUND — a due tick would start a Claude run" ;;
     idle)  echo "precheck: nothing to do — a due tick would cost nothing" ;;
@@ -8524,39 +8769,39 @@ case "${1:-}" in
   status|list) cmd_status ;;
   dashboard) cmd_dashboard ;;
   tick)      cmd_tick ;;
-  _exec)     [ $# -ge 2 ] || die "usage: claude-cron _exec <job-id>"; run_job "$2" ;;  # internal: detached runner
+  _exec)     [ $# -ge 2 ] || die "usage: agentloop _exec <job-id>"; run_job "$2" ;;  # internal: detached runner
   _resolve_models)   # internal: detached daily refresh, guarded by its own lock
     acquire_lock "_models" || exit 0
     trap 'release_lock "_models"' EXIT
     cmd_resolve_models
     ;;
-  run)       [ $# -ge 2 ] || die "usage: claude-cron run <job-id>"; run_job "$2" --force ;;
-  resume)    [ $# -ge 3 ] || die "usage: claude-cron resume <job-id> <session-id>"; run_job "$2" --force "$3" ;;
-  check)     [ $# -ge 2 ] || die "usage: claude-cron check <job-id>"; cmd_check "$2" ;;
+  run)       [ $# -ge 2 ] || die "usage: agentloop run <job-id>"; run_job "$2" --force ;;
+  resume)    [ $# -ge 3 ] || die "usage: agentloop resume <job-id> <session-id>"; run_job "$2" --force "$3" ;;
+  check)     [ $# -ge 2 ] || die "usage: agentloop check <job-id>"; cmd_check "$2" ;;
   usage)     cmd_usage ;;
   logs)      shift; cmd_logs "$@" ;;
-  enable)    [ $# -ge 2 ] || die "usage: claude-cron enable <job-id>"; cmd_toggle "$2" true ;;
-  disable)   [ $# -ge 2 ] || die "usage: claude-cron disable <job-id>"; cmd_toggle "$2" false ;;
-  delete)    [ $# -ge 2 ] || die "usage: claude-cron delete <job-id>"; cmd_delete "$2" ;;
-  rename)    [ $# -ge 3 ] || die "usage: claude-cron rename <job-id> <new-id>"; cmd_rename "$2" "$3" ;;
+  enable)    [ $# -ge 2 ] || die "usage: agentloop enable <job-id>"; cmd_toggle "$2" true ;;
+  disable)   [ $# -ge 2 ] || die "usage: agentloop disable <job-id>"; cmd_toggle "$2" false ;;
+  delete)    [ $# -ge 2 ] || die "usage: agentloop delete <job-id>"; cmd_delete "$2" ;;
+  rename)    [ $# -ge 3 ] || die "usage: agentloop rename <job-id> <new-id>"; cmd_rename "$2" "$3" ;;
   reorder)   cmd_reorder ;;   # new order of job ids on stdin
-  toggle-many) [ $# -ge 2 ] || die "usage: claude-cron toggle-many <true|false>  (job ids on stdin)"
+  toggle-many) [ $# -ge 2 ] || die "usage: agentloop toggle-many <true|false>  (job ids on stdin)"
                case "$2" in true|false) ;; *) die "toggle-many: expected true or false, got '$2'" ;; esac
                cmd_toggle_many "$2" ;;
   create)    cmd_create ;;
   project-set)    cmd_project_set ;;
-  project-delete) [ $# -ge 2 ] || die "usage: claude-cron project-delete <name>"; cmd_project_delete "$2" ;;
-  project-rename) [ $# -ge 3 ] || die "usage: claude-cron project-rename <name> <new-name>"; cmd_project_rename "$2" "$3" ;;
+  project-delete) [ $# -ge 2 ] || die "usage: agentloop project-delete <name>"; cmd_project_delete "$2" ;;
+  project-rename) [ $# -ge 3 ] || die "usage: agentloop project-rename <name> <new-name>"; cmd_project_rename "$2" "$3" ;;
   project-list)   cmd_project_list ;;
   # Internal, and deliberately undocumented in usage: the entry point the
   # detached analysis re-execs into. A real process, so its slot records a pid
   # that is actually alive for the run's duration.
   __run-analysis)
-             [ $# -ge 4 ] || die "usage: claude-cron __run-analysis <job-id> <analysis-id> <branch>"
+             [ $# -ge 4 ] || die "usage: agentloop __run-analysis <job-id> <analysis-id> <branch>"
              security_run_analysis "$2" "$3" "$4" ;;
   security)  shift
              case "${1:-}" in
-               analyze) shift; [ $# -ge 3 ] || die "usage: claude-cron security analyze [--detach] <project> <repo> <branch> [profile]"
+               analyze) shift; [ $# -ge 3 ] || die "usage: agentloop security analyze [--detach] <project> <repo> <branch> [profile]"
                         cmd_security_analyze "$@" ;;
                # Everything else is the ledger's own vocabulary: prepare,
                # findings, fingerprint, report-finding, finish, checklist,
@@ -8572,27 +8817,27 @@ case "${1:-}" in
                # through this same door, never typed by a human at all --
                # listed here anyway so this message names every verb the door
                # actually accepts, not just the subset any one caller uses.
-               "")      die "usage: claude-cron security <analyze|prepare|findings|fingerprint|report-finding|finish|checklist|render|decide|rename-project|migrate-rules|open-analysis|list|index-data|project-data|findings-page|activity-data|analysis|event|events|filters> …" ;;
+               "")      die "usage: agentloop security <analyze|prepare|findings|fingerprint|report-finding|finish|checklist|render|decide|rename-project|migrate-rules|open-analysis|list|index-data|project-data|findings-page|activity-data|analysis|event|events|filters> …" ;;
                *)       security_py "$@" ;;
              esac ;;
-  security-branches) [ $# -ge 3 ] || die "usage: claude-cron security-branches <project> <repo>"
+  security-branches) [ $# -ge 3 ] || die "usage: agentloop security-branches <project> <repo>"
                      cmd_security_branches "$2" "$3" ;;
   resolve-models) cmd_resolve_models ;;
   skills)    shift; cmd_skills "${1:-status}" ;;
   selftest)  cmd_selftest ;;
-  running)   [ $# -ge 2 ] || die "usage: claude-cron running <job-id>"; cmd_running "$2" ;;
-  runs)      [ $# -ge 2 ] || die "usage: claude-cron runs <job-id>"; cmd_runs "$2" ;;
-  precheck)  [ $# -ge 2 ] || die "usage: claude-cron precheck <job-id>"; cmd_precheck "$2" ;;
-  say)       [ $# -ge 2 ] || die "usage: claude-cron say <job-id> (message on stdin)"; cmd_say "$2" ;;
-  stop)      [ $# -ge 2 ] || die "usage: claude-cron stop <job-id> [run-pid]"; cmd_stop "$2" "${3:-}" ;;
-  set-prompt) [ $# -ge 2 ] || die "usage: claude-cron set-prompt <job-id> (prompt on stdin)"; cmd_set_prompt "$2" ;;
-  set-field) [ $# -ge 3 ] || die "usage: claude-cron set-field <job-id> <field> (value on stdin)"; cmd_set_field "$2" "$3" ;;
-  set-precheck) [ $# -ge 2 ] || die "usage: claude-cron set-precheck <job-id> (script on stdin)"; cmd_set_precheck "$2" ;;
-  get-precheck) [ $# -ge 2 ] || die "usage: claude-cron get-precheck <job-id>"; cmd_get_precheck "$2" ;;
-  provision-set) [ $# -ge 3 ] || die "usage: claude-cron provision-set <project> <up|down> (script on stdin)"; cmd_provision_set "$2" "$3" ;;
-  provision-get) [ $# -ge 3 ] || die "usage: claude-cron provision-get <project> <up|down>"; cmd_provision_get "$2" "$3" ;;
-  worktree-drop) [ $# -ge 3 ] || die "usage: claude-cron worktree-drop <job-id> <stamp>"; cmd_worktree_drop "$2" "$3" ;;
+  running)   [ $# -ge 2 ] || die "usage: agentloop running <job-id>"; cmd_running "$2" ;;
+  runs)      [ $# -ge 2 ] || die "usage: agentloop runs <job-id>"; cmd_runs "$2" ;;
+  precheck)  [ $# -ge 2 ] || die "usage: agentloop precheck <job-id>"; cmd_precheck "$2" ;;
+  say)       [ $# -ge 2 ] || die "usage: agentloop say <job-id> (message on stdin)"; cmd_say "$2" ;;
+  stop)      [ $# -ge 2 ] || die "usage: agentloop stop <job-id> [run-pid]"; cmd_stop "$2" "${3:-}" ;;
+  set-prompt) [ $# -ge 2 ] || die "usage: agentloop set-prompt <job-id> (prompt on stdin)"; cmd_set_prompt "$2" ;;
+  set-field) [ $# -ge 3 ] || die "usage: agentloop set-field <job-id> <field> (value on stdin)"; cmd_set_field "$2" "$3" ;;
+  set-precheck) [ $# -ge 2 ] || die "usage: agentloop set-precheck <job-id> (script on stdin)"; cmd_set_precheck "$2" ;;
+  get-precheck) [ $# -ge 2 ] || die "usage: agentloop get-precheck <job-id>"; cmd_get_precheck "$2" ;;
+  provision-set) [ $# -ge 3 ] || die "usage: agentloop provision-set <project> <up|down> (script on stdin)"; cmd_provision_set "$2" "$3" ;;
+  provision-get) [ $# -ge 3 ] || die "usage: agentloop provision-get <project> <up|down>"; cmd_provision_get "$2" "$3" ;;
+  worktree-drop) [ $# -ge 3 ] || die "usage: agentloop worktree-drop <job-id> <stamp>"; cmd_worktree_drop "$2" "$3" ;;
   serve)     cmd_serve ;;
   ""|-h|--help|help) usage ;;
-  *) die "unknown command: $1 (try: claude-cron help)" ;;
+  *) die "unknown command: $1 (try: agentloop help)" ;;
 esac

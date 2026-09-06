@@ -1,12 +1,12 @@
 #!/bin/bash
-# claude-cron installer (macOS). Idempotent — safe to re-run after moving the
+# agentloop installer (macOS). Idempotent — safe to re-run after moving the
 # folder or pulling an update.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 say() { printf '  %s\n' "$*"; }
 
-echo "claude-cron · installer"
+echo "agentloop · installer"
 echo
 
 # 1) platform ------------------------------------------------------------
@@ -20,7 +20,7 @@ fi
 # com.apple.quarantine, which makes the scripts and binaries fail with
 # "operation not permitted". Running this file as `bash install.sh` still
 # works (bash reads it, no exec), so clear the flag from the whole folder now
-# — otherwise launchd could not start bin/claude-cron later.
+# — otherwise launchd could not start bin/agentloop later.
 if xattr -rd com.apple.quarantine "$HERE" 2>/dev/null; then
   say "Cleared macOS quarantine from the folder."
 fi
@@ -48,10 +48,10 @@ echo
 # 3) symlinks on PATH ----------------------------------------------------
 echo "Linking commands into ~/.local/bin…"
 mkdir -p "$HOME/.local/bin"
-chmod +x "$HERE/bin/claude-cron" "$HERE/bin/claude-cron-server"
-ln -sf "$HERE/bin/claude-cron"        "$HOME/.local/bin/claude-cron"
-ln -sf "$HERE/bin/claude-cron-server" "$HOME/.local/bin/claude-cron-server"
-say "✓ claude-cron -> $HERE/bin/claude-cron"
+chmod +x "$HERE/bin/agentloop" "$HERE/bin/agentloop-server"
+ln -sf "$HERE/bin/agentloop"        "$HOME/.local/bin/agentloop"
+ln -sf "$HERE/bin/agentloop-server" "$HOME/.local/bin/agentloop-server"
+say "✓ agentloop -> $HERE/bin/agentloop"
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) : ;;
   *) say "⚠ ~/.local/bin is not on your PATH — add this to your shell profile:";
@@ -69,10 +69,10 @@ echo
 
 # 5) launchd agents ------------------------------------------------------
 echo "Installing the launchd agents (tick + control server)…"
-"$HERE/bin/claude-cron" install
+"$HERE/bin/agentloop" install
 echo
 echo "Done. Open the dashboard with:"
-echo "    claude-cron dashboard"
+echo "    agentloop dashboard"
 echo "It runs at http://127.0.0.1:8787/ and starts automatically on login."
 echo
 echo "The first thing it asks for is your operator profile — name, email and a"
