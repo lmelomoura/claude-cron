@@ -50,7 +50,6 @@ ALLOWED = [
     ("bin/agentloop", 'LEGACY_CLI_NAME="claude-cron"'),
     ("bin/agentloop", 'LEGACY_ENV_PREFIX="CLAUDE_CRON_"'),
     ("bin/agentloop", 'LEGACY_RUN_PREFIX="CC_"'),
-    ("uninstall.sh", 'LEGACY_CLI_NAME="claude-cron"'),
     # the server binds its config dirs at import time, before any shim could run
     ("bin/agentloop-server", 'LEGACY_ENV_PREFIX = "CLAUDE_CRON_"'),
     # the security package reads its switch and its marker straight from the environment

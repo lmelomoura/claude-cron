@@ -259,7 +259,7 @@ jobs:
             # be back to resting on nothing. Unset is also exactly what a
             # developer's plain `pytest` gets: conftest.py's `setdefault` is
             # what supplies "off", and leaving it unset exercises that line.
-            unset AL_SECURITY_ENGINES
+            unset AL_SECURITY_ENGINES CC_SECURITY_ENGINES
             # See the comment on this job: the in-suite spawn of the other
             # configuration is what this workflow replaces, and running it here
             # would be a third execution of a ~250s suite.

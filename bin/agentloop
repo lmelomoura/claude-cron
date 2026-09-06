@@ -62,6 +62,19 @@ legacy_scripts_warnings() { # one line per personal script under config/ still r
     printf 'WARNING: %s reads %s* on %s line(s) — those names are exported alongside AL_* for now, and stop in the next release.\n' \
       "$f" "$LEGACY_RUN_PREFIX" "$n"
   done
+  # Inline prechecks and prompts carry the run prefix too. Read the file, not
+  # jobs_json: `status` must work on an install with no jobs file yet, and the
+  # derived security jobs are the engine's own text, never an operator's.
+  [ -f "$JOBS_FILE" ] || return 0
+  "$JQ" -r --arg p "$LEGACY_RUN_PREFIX" '
+      .jobs[]? | .id as $id
+      | (["precheck", (.precheck // "")], ["prompt", (.prompt // "")])
+      | select(.[1] | test($p + "[A-Z_]+")) | [$id, .[0]] | @tsv' "$JOBS_FILE" 2>/dev/null \
+  | while IFS="$(printf '\t')" read -r jid field; do
+      [ -n "$jid" ] || continue
+      printf 'WARNING: job %s: its %s reads %s* — those names are exported alongside AL_* for now, and stop in the next release.\n' \
+        "$jid" "$field" "$LEGACY_RUN_PREFIX"
+    done
 }
 
 CONFIG_DIR="${AGENTLOOP_CONFIG:-$BASE_DIR/config}"
@@ -6571,6 +6584,13 @@ PLIST
   case "$got" in *"prechecks/old.sh reads ${LEGACY_RUN_PREFIX}"*) ok "a script still on the old prefix is named" ;;
                  *) bad "the warning was: '$got'" ;; esac
   case "$got" in *"new.up.sh"*) bad "a script already on AL_ was named" ;; *) ok "a script already on AL_ is not" ;; esac
+
+  printf '{"jobs":[{"id":"jinline","prompt":"read $%sRUN_MANIFEST then stop","precheck":"test -f /tmp/x"},{"id":"jclean","prompt":"read $AL_RUN_MANIFEST","precheck":"test -f /tmp/y"}]}\n' \
+    "$LEGACY_RUN_PREFIX" > "$tmp/legacy/jobs.json"
+  got="$( CONFIG_DIR="$tmp/legacy" JOBS_FILE="$tmp/legacy/jobs.json" legacy_scripts_warnings )"
+  case "$got" in *"job jinline: its prompt reads ${LEGACY_RUN_PREFIX}"*) ok "an inline prompt still on the old prefix is named, with its job" ;;
+                 *) bad "the inline warning was: '$got'" ;; esac
+  case "$got" in *"jclean"*) bad "a job already on AL_ was named" ;; *) ok "a job already on AL_ is not" ;; esac
 
   echo "the rename — the pre-rename environment names still work for one release"
   mkdir -p "$tmp/legacy/config" "$tmp/legacy/data"

@@ -39,7 +39,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     are `al_port`, `al_env_set`, `al_env_ports` and `al_copy_ignored`. **For
     this release only** every run variable is exported under both prefixes
     and the old helper names still answer, and `install` and `status` name
-    each script under `config/` that still reads the old prefix.
+    each script under `config/` — and each inline precheck or prompt in
+    `jobs.json` — that still reads the old prefix.
   - The dashboard's token header is `X-AL-Token` (it was `X-CC-Token`), and
     the page's own globals are `ALApp`, `ALSecurity` and `AL`. **For this
     release only** the server also accepts the old header, so a tab left open
@@ -55,6 +56,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     are the final vestiges; `README.md` now carries *Upgrading from
     claude-cron*, the only place outside the changelog where the old name is
     still written on purpose.
+  - Every shortcut above is deleted in the release after this one; the
+    `ALLOWED` list in `tests/test_no_old_name_survives.py` is the list of what
+    goes, and emptying it is how that release starts.
 
 ### Fixed
 

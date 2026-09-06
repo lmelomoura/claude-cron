@@ -68,32 +68,42 @@ on every login** — you do not start anything by hand, and they survive reboots
 ### Upgrading from claude-cron
 
 This scheduler was called **claude-cron** until 2026-09-06. An install made
-under that name upgrades by pulling and running the installer again:
+under that name upgrades by pulling and running the installer again — **right
+after the pull, and before renaming the folder**:
 
 ```bash
 bash install.sh
 ```
+
+Between the pull and the install the old agents point at a binary that no
+longer exists, and the old server keeps serving the new page with the old code,
+so the dashboard shows a login screen until the installer has run. Rename the
+folder afterwards if you want to, and run `install.sh` once more from inside it
+so the symlinks and the agents follow.
 
 `agentloop install` retires the two old agents (`com.claude-cron.tick` and
 `com.claude-cron.server`), carrying the Claude account pinned in them over to
 the new ones, and replaces the `claude-cron` and `claude-cron-server` symlinks
 in `~/.local/bin`. Your jobs, projects, run history and prechecks are untouched.
 
-Three things still answer to their old names **for this release only**, and the
-installer and `agentloop status` list every one they find on your machine:
+Three things still answer to their old names **for this release only**:
 
 - the environment: every `CLAUDE_CRON_*` is read as `AGENTLOOP_*`;
-- the run environment: every `CC_*` your prechecks, provisioning hooks and
-  `on-run-end.sh` read is exported alongside its `AL_*` twin, and `cc_port`,
-  `cc_env_set`, `cc_env_ports` and `cc_copy_ignored` still answer for
-  `al_port` and its siblings;
-- the dashboard's `X-CC-Token` header, now `X-AL-Token`.
+- the run environment: every `CC_*` your prechecks, provisioning hooks,
+  prompts and `on-run-end.sh` read is exported alongside its `AL_*` twin, and
+  `cc_port`, `cc_env_set`, `cc_env_ports` and `cc_copy_ignored` still answer
+  for `al_port` and its siblings;
+- the dashboard's `X-CC-Token` header, now `X-AL-Token`, so a tab left open
+  across the upgrade keeps working until it reloads — nothing to rename on
+  your side.
 
-Rename them at your leisure before the next release, where the old spellings
-stop working. If the folder itself was renamed, point the `statusLine` in
-`~/.claude/settings.json` at the new path — the installer says so when it
-notices. The repository moved to `lmelomoura/agentloop`; GitHub redirects the
-old address.
+The installer and `agentloop status` list every old name they find on your
+machine — in the environment, in the scripts under `config/`, and in the
+prechecks and prompts of `jobs.json`. Rename them at your leisure before the
+next release, where the old spellings stop working. If the folder itself was
+renamed, point the `statusLine` in `~/.claude/settings.json` at the new path —
+the installer says so when it notices. The repository moved to
+`lmelomoura/agentloop`; GitHub redirects the old address.
 
 ### Verify it is running
 
