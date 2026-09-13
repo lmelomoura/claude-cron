@@ -881,13 +881,14 @@ aid42="$(secid "$out42")"
 [ "$(secstate sandbox-oc "$aid42")" = "done" ] \
   && ok "and closed done: the engine ran security prepare before the agent, and the close found nothing untriaged" \
   || bad "state '$(secstate sandbox-oc "$aid42")'"
-grep -q 'deterministic phase ran before the agent (prepare' "$ROOT/data/tick.log" \
+grep -q 'security-sandbox-oc: deterministic phase ran before the agent (prepare' "$ROOT/data/tick.log" \
   && ok "the engine ran prepare before launching opencode (prepare_inline is off)" || bad "no engine-side prepare line"
 [ "$(at_in "$argv42" 1)" = "run" ] && ok "it went down the OpenCode launch line" || bad "argv: $(tr '\n' ' ' < "$argv42" 2>/dev/null)"
 mi="$(idx_in "$argv42" -m)"; [ -n "${mi:-}" ] && [ "$(at_in "$argv42" $((mi + 1)))" = "pdm_ai/glm-5.3-flash" ] \
   && ok "-m carries the block's model" || bad "-m '$(at_in "$argv42" $((${mi:-0} + 1)))'"
 [ "$(jq -r '.permission.task' "$cfg42")" = "deny" ] && ok "task is closed BY RULE in the permission block (Agent -> task: deny)" || bad "permission: $(jq -c .permission "$cfg42")"
-[ -n "$(idx_in "$argv42" --auto)" ] && ok "--auto: full-access, the security default on opencode" || bad "no --auto"
+[ -n "$(idx_in "$argv42" --auto)" ] && [ "$(jq -r '.permission.bash // "open"' "$cfg42")" != "deny" ] \
+  && ok "--auto with bash open: full-access, the security default on opencode" || bad "auto/bash: $(idx_in "$argv42" --auto) / $(jq -c .permission "$cfg42")"
 grep -q 'The `task` tool is closed for this run' "$prompt42" && ok "the prompt says the task tool is closed, by rule" || bad "no task paragraph in the prompt"
 grep -q 'security-analysis/SKILL.md' "$prompt42" && grep -q 'Invoke the `security-analysis` skill' "$prompt42" \
   && ok "and names the skill by name AND by path (the CLI reads ~/.claude/skills: measured)" || bad "the prompt lacks the skill by name or by path"

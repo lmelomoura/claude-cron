@@ -2454,6 +2454,11 @@ def parse_conversation(text, limit=400):
     return out
 
 
+# Twice this (20s, for `models --verbose`) must still end inside al()'s 30s
+# subprocess.run timeout, so a hung CLI leaves the engine's "timed out" stub.
+OPENCODE_RESOLVE_DEADLINE = "10"
+
+
 def al(args, stdin=None, background=False, env=None):
     """Invoke the agentloop CLI. Returns (ok, output).
 
@@ -2618,7 +2623,7 @@ def _opencode_platform():
             # behind instead of al() being killed first -- which left no
             # stub at all and made every subsequent /api/models repeat the
             # same 30s wait. The daily pass keeps the full 60s deadline.
-            al(["resolve-models", "opencode"], env={"AGENTLOOP_OPENCODE_DEADLINE": "10"})
+            al(["resolve-models", "opencode"], env={"AGENTLOOP_OPENCODE_DEADLINE": OPENCODE_RESOLVE_DEADLINE})
             b = block()
     empty = {"models": [], "efforts": [], "permissions": PLATFORM_PERMISSIONS["opencode"],
              "default_model": "", "unpriced": []}

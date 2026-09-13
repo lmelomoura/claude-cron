@@ -104,8 +104,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     OpenCode's way: the catalog's age, the enabled models still unpriced,
     and that there are no usage windows to wait for; the first `/api/models`
     on an install whose catalog is not resolved yet resolves it through the
-    detected binary, with a short deadline so a hung CLI leaves its timeout
-    stub instead of a 30-second hang on every request.
+    detected binary, with a short deadline (`OPENCODE_RESOLVE_DEADLINE`, 10 s)
+    so a hung CLI leaves its timeout stub instead of a 30-second hang on
+    every request.
   - Security analyses run on OpenCode: the derived job's `Agent` in
     `disallowed_tools` closes the `task` tool by rule, `prepare` runs
     engine-side before the agent (the tool's own timeout was not measured

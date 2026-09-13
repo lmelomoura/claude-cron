@@ -546,9 +546,12 @@ def test_a_hung_opencode_cli_gets_the_engines_short_deadline_not_als(srv, monkey
     al() first -- before run_bounded's own deadline could fire and write a
     stub -- leaving config/models.json's opencode block untouched and making
     every following /api/models repeat the same 30s wait. The in-request
-    resolve now passes AGENTLOOP_OPENCODE_DEADLINE=10 (20s once doubled for
-    --verbose), which always finishes inside al()'s window and lets the
-    engine write its own timeout stub instead."""
+    resolve passes AGENTLOOP_OPENCODE_DEADLINE from the server's own
+    OPENCODE_RESOLVE_DEADLINE constant (10s in production, 20s once doubled
+    for --verbose), which always finishes inside al()'s window and lets the
+    engine write its own timeout stub instead. This test shrinks that
+    constant to 2s (4s doubled) so the stub -- and the test -- land in
+    seconds rather than paying the production deadline in full."""
     _write_models(srv)   # no "opencode" key: the probe below must run resolve-models
     stub = tmp_path / "opencode-hang"
     stub.write_text(
@@ -560,10 +563,11 @@ def test_a_hung_opencode_cli_gets_the_engines_short_deadline_not_als(srv, monkey
     )
     stub.chmod(0o755)
     monkeypatch.setenv("AGENTLOOP_OPENCODE_BIN", str(stub))
+    monkeypatch.setattr(srv, "OPENCODE_RESOLVE_DEADLINE", "2")
     start = time.monotonic()
     c = srv.list_models()["platforms"]["opencode"]
     elapsed = time.monotonic() - start
-    assert elapsed < 28, f"took {elapsed:.1f}s -- al()'s 30s timeout, not the engine's stub, must have fired"
+    assert elapsed < 12, f"took {elapsed:.1f}s -- al()'s 30s timeout, not the engine's short stub, must have fired"
     assert c["available"] is False
     assert "timed out" in c["reason"]
     # run_bounded ends the WHOLE process group on its own deadline -- the
