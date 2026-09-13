@@ -2113,11 +2113,21 @@ platform_normalizer() { # platform_normalizer <platform> -> a script path, or no
 # run_bounded's own rc is passed back on failure (124 past the deadline, so
 # the close can say timed out rather than the more general gave no model).
 opencode_export_model() { # opencode_export_model <run_cwd> <session-id> -> provider/model on stdout; rc is run_bounded's (124 = timed out)
-  local cwd="$1" sid="$2" doc got rc=0
+  local cwd="$1" sid="$2" tmp got rc=0
   [ -n "$sid" ] && [ -d "$cwd" ] || return 0
-  doc="$(cd "$cwd" && run_bounded "$OPENCODE_DEADLINE" "$(platform_bin opencode)" export "$sid" 2>/dev/null)"; rc=$?
-  [ "$rc" -eq 0 ] || return "$rc"
-  got="$(printf '%s' "$doc" | "$JQ" -r '.info.model | select(type == "object") | select((.providerID // "") != "" and (.id // "") != "") | .providerID + "/" + .id' 2>/dev/null)"
+  # measurement 36: through a pipe the CLI's stdout stops at 64 KiB (a 35-turn
+  # session's export is 264,607 bytes to a file, 65,536 through a pipe, cut
+  # mid-document, not JSON) -- macOS writes a pipe asynchronously and drops
+  # whatever is past the buffer at the CLI's exit, while a file is written
+  # synchronously and complete, so this capture goes through one, never `$( )`.
+  tmp="$(mktemp "$DATA_DIR/.opencode-export.XXXXXX")" || return 1
+  ( cd "$cwd" && run_bounded "$OPENCODE_DEADLINE" "$(platform_bin opencode)" export "$sid" > "$tmp" 2>/dev/null ); rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$tmp"
+    return "$rc"
+  fi
+  got="$("$JQ" -r '.info.model | select(type == "object") | select((.providerID // "") != "" and (.id // "") != "") | .providerID + "/" + .id' "$tmp" 2>/dev/null)"
+  rm -f "$tmp"
   [ -n "$got" ] && printf '%s' "$got"
   return 0
 }
@@ -2348,7 +2358,7 @@ opencode_catalog_tools() { # opencode_catalog_tools <id> -> 0 unless the catalog
 }
 
 resolve_models_opencode() { # refresh config/models.json's `opencode` block from `opencode models --verbose`
-  local raw block tmp kept version rc
+  local block tmp kept version rc raw_tmp
   tmp="$(mktemp "$CONFIG_DIR/.models.XXXXXX")" || return 1
   if [ ! -f "$MODELS_FILE" ]; then
     echo '{"resolved":{}}' > "$MODELS_FILE"
@@ -2372,7 +2382,12 @@ resolve_models_opencode() { # refresh config/models.json's `opencode` block from
     # (`opencode models --refresh` by hand), not something the daily pass
     # should do on the operator's behalf.
     version="$(run_bounded "$OPENCODE_DEADLINE" "$(platform_bin opencode)" --version 2>/dev/null | head -1)"
-    raw="$(run_bounded "$((OPENCODE_DEADLINE * 2))" "$(platform_bin opencode)" models --verbose --pure 2>/dev/null)"; rc=$?
+    # measurement 36: through a pipe the CLI's stdout stops at 64 KiB (15,435
+    # bytes for 13 models is safe, but a catalog of 55+ models crosses it), so
+    # this capture goes through a file too, the same fix as
+    # opencode_export_model above, never `$( )`.
+    raw_tmp="$(mktemp "$CONFIG_DIR/.models-verbose.XXXXXX")" || { rm -f "$tmp"; return 1; }
+    run_bounded "$((OPENCODE_DEADLINE * 2))" "$(platform_bin opencode)" models --verbose --pure > "$raw_tmp" 2>/dev/null; rc=$?
     if [ "$rc" -eq 124 ]; then
       # Past its deadline, the CLI hung (measured 34b): report a timeout, not
       # the "no provider" wording -- a hung process answered nothing, it did
@@ -2382,12 +2397,9 @@ resolve_models_opencode() { # refresh config/models.json's `opencode` block from
     else
       # The format is a header line `provider/model` followed by one pretty
       # JSON document per model; jq cannot read the two interleaved, python can.
-      # raw rides in through a process substitution, not a pipe: this
-      # invocation's stdin is already the heredoc below (python's own program
-      # text, read via `-`), so piping into the same fd would hand the parser's
-      # later sys.stdin.read() nothing -- stdin was already drained to EOF
-      # getting the program itself.
-      block="$("$PYTHON" - "$(now_epoch)" "$version" <(printf '%s\n' "$raw") <<'PY'
+      # raw_tmp rides in as argv[3], not stdin: stdin is already the heredoc
+      # below (python's own program text, read via `-`).
+      block="$("$PYTHON" - "$(now_epoch)" "$version" "$raw_tmp" <<'PY'
 import json, re, sys
 at, version, rawfile = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 with open(rawfile) as f:
@@ -2425,6 +2437,7 @@ else:
 PY
 )"
     fi
+    rm -f "$raw_tmp"
   fi
   # A refresh that failed -- no opencode, an empty list -- must not replace a
   # catalog that still resolves real jobs: keep the block it had, stamped
@@ -4293,6 +4306,20 @@ JSON
     opencode_catalog_tools pdm_ai/glm-5.3-flash || exit 7
     opencode_catalog_all_efforts | grep -qx 'non-think' || exit 8
     exit 0 ); want "the readers: ids, visible, efforts per model, priced, tools, the union of efforts" 0 $?
+  # measurement 36: `opencode models --verbose` crosses the 64 KiB pipe wall
+  # the same way `export` does, once a catalog is large enough (55+ models).
+  # FAKE_MODELS_PAD=80 pushes the stand-in's output well past 64 KiB, in an
+  # isolated config dir so it cannot touch the 13-model catalog above.
+  local _ocpad; _ocpad="$tmp/oc-pad"; mkdir -p "$_ocpad/config"
+  ( CONFIG_DIR="$_ocpad/config"; MODELS_FILE="$_ocpad/config/models.json"; AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"
+    FAKE_MODELS_PAD=80; export FAKE_MODELS_PAD
+    resolve_models_opencode >/dev/null 2>&1 ); want "resolve-models opencode exits 0 over a catalog past 64 KiB" 0 $?
+  "$JQ" -e '.opencode.models | length == 93' "$_ocpad/config/models.json" >/dev/null 2>&1 \
+    && ok "a catalog of 93 models (past the 64 KiB pipe wall) resolves in full, none cut" \
+    || bad "padded opencode block: $("$JQ" -c '.opencode | {n: (.models | length)}' "$_ocpad/config/models.json")"
+  "$JQ" -e '[.opencode.models[] | select(.id | startswith("pad/"))] | length == 80' "$_ocpad/config/models.json" >/dev/null 2>&1 \
+    && ok "all 80 padded ids made it through, 13 + 80" \
+    || bad "padded ids: $("$JQ" -c '[.opencode.models[].id | select(startswith("pad/"))] | length' "$_ocpad/config/models.json")"
   ( CONFIG_DIR="$_oc/config"; MODELS_FILE="$_oc/config/models.json"; AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"; FAKE_OPENCODE_NO_MODELS=1; export FAKE_OPENCODE_NO_MODELS
     resolve_models_opencode >/dev/null 2>&1 )
   "$JQ" -e '(.opencode.models | length) == 13 and (.opencode.stale_reason | length) > 0' "$_oc/config/models.json" >/dev/null 2>&1 \
@@ -4412,6 +4439,14 @@ JSON
     && ok "provider/model out of info.model" || bad "export model: $( AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"; opencode_export_model "$tmp/ocx" ses_x1 )"
   [ -z "$( AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"; opencode_export_model "$tmp/does-not-exist" ses_x1 )" ] \
     && ok "no directory, no answer (never a hang: the CLI needs the session's directory)" || bad "export answered without a directory"
+  # measurement 36: a real 35-turn session's export is 264,607 bytes, and a
+  # pipe loses everything past 65,536; FAKE_EXPORT_PAD proves the helper
+  # reads it from a file instead, and that the file is gone once it is done.
+  ( AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"; FAKE_RAN_MODEL=opencode/big-pickle-real; FAKE_EXPORT_PAD=300000
+    export FAKE_RAN_MODEL FAKE_EXPORT_PAD
+    [ "$(opencode_export_model "$tmp/ocx" ses_x1)" = "opencode/big-pickle-real" ] || exit 1
+    [ -z "$(find "$DATA_DIR" -maxdepth 1 -name '.opencode-export.*' 2>/dev/null)" ] || exit 2
+    exit 0 ); want "an export past 64 KiB (padded to 300000 bytes) still resolves the model, and its temp file is gone after" 0 $?
   ( AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"; FAKE_RAN_MODEL=opencode/big-pickle-real; export FAKE_RAN_MODEL
     platform_finish opencode "$tmp/ocx/none.ndjson" ses_x2 j1 "$tmp/ocx"; [ "$PF_MODEL_ID" = "opencode/big-pickle-real" ] ); want "platform_finish opencode sets PF_MODEL_ID from the export" 0 $?
   # opencode-hang (above: --version answers, anything else hangs) times the

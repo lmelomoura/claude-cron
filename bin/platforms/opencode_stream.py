@@ -229,7 +229,9 @@ class Normalizer:
         if not self.steps:
             return None, "none"
         if self.priced and self.costed_steps:
-            return self.cost, "reported"        # the CLI's number, as it came: never rounded
+            # the sum of the CLI's per-step numbers at their own precision,
+            # twelve decimals (the estimate below stays at six)
+            return round(self.cost, 12), "reported"
         est = estimate(self.tokens, self.price)
         return (est, "estimated") if est is not None else (None, "none")
 

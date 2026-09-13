@@ -68,8 +68,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     block the run is launched with (`Agent` closes `task`, `Bash(git push
     *)` is a bash rule, deny wins), the launch line measured flag by flag
     (`--pure --auto --print-logs --log-level ERROR --dir --title`), and
-    `platform_finish` reading the model that ran from `opencode export`.
-    `platform_normalizer` is what the launch now asks for, and
+    `platform_finish` reading the model that ran from `opencode export`,
+    read from a file, never a pipe: through a pipe the CLI's output stops at
+    64 KiB (measured 36), and so is the catalog. `platform_normalizer` is
+    what the launch now asks for, and
     `prepare_inline` the capability that says which platform lets the
     security agent run `prepare` itself.
   - The launch: `run_job` asks `platform_normalizer` whether a platform's
@@ -100,9 +102,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     exactly as it treats the other two, rather than always seeding it
     disabled.
   - Cost, and what the server and the terminal say: a run on a model the
-    CLI's catalog prices records `reported` with the CLI's own figure; one
-    the catalog prices at zero -- unknown, never free: a provider with no
-    price configured lists the same zeros as a free model -- is estimated
+    CLI's catalog prices records `reported` with the CLI's own figure (a
+    reported cost is the sum of the CLI's per-step numbers at their own
+    twelve decimals); one the catalog prices at zero -- unknown, never
+    free: a provider with no price configured lists the same zeros as a
+    free model -- is estimated
     from the operator's row in `config/pricing.json`'s new `opencode` block
     (a row of zeros declares a free model; `resolve-pricing` never touches
     the block) and records `none` otherwise. `/api/models` carries the

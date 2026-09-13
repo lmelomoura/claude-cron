@@ -290,6 +290,28 @@ def test_the_reported_cost_is_the_sum_of_every_step():
     assert last["cost_basis"] == "reported" and last["total_cost_usd"] == 0.0004
 
 
+def test_the_reported_cost_rounds_the_sum_to_the_clis_own_twelve_decimals():
+    # measured Task 12 acceptance run: four step_finish costs at the CLI's
+    # own precision (12 decimals) sum in python to 0.0018640076180000001 --
+    # noise past the eighteenth digit the CLI never reported. Rounding the
+    # sum to 12 decimals loses nothing of the CLI's own numbers.
+    costs = [0.000461385212, 0.000465814535, 0.000466379568, 0.000470428303]
+    evs = []
+    for i, cost in enumerate(costs):
+        reason = "stop" if i == len(costs) - 1 else "tool-calls"
+        evs.append({"type": "step_finish", "timestamp": 1789226678042 + i,
+                    "sessionID": "ses_synthetic_cost_sum",
+                    "part": {"id": "prt_synthetic_%d" % i, "reason": reason,
+                             "messageID": "msg_synthetic", "sessionID": "ses_synthetic_cost_sum",
+                             "type": "step-finish",
+                             "tokens": {"total": 0, "input": 0, "output": 0, "reasoning": 0,
+                                        "cache": {"write": 0, "read": 0}},
+                             "cost": cost}})
+    last = normalize(events=evs, priced=True)[-1]
+    assert last["cost_basis"] == "reported"
+    assert last["total_cost_usd"] == 0.001864007618
+
+
 def test_an_error_result_after_priced_steps_carries_the_reported_cost():
     # An error result must not discard a cost the CLI already reported: it
     # carries the same total_cost_usd/cost_basis a success would, computed

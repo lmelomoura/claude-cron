@@ -16,6 +16,10 @@
 #   FAKE_RAN_MODEL          what `export` reports as the model that ran (default opencode/big-pickle-real)
 #   FAKE_OPENCODE_NO_MODELS set to make `models` print nothing: a machine with no usable provider
 #   FAKE_SKIP_PREPARE       set to skip `security prepare` inside a security run (see the hook below)
+#   FAKE_EXPORT_PAD         pad `export`'s document with a filler `messages` array to at least this
+#                           many bytes (measurement 36: a real 35-turn session is 264,607 bytes)
+#   FAKE_MODELS_PAD         append this many synthetic priced models (pad/model-<i>) to `models
+#                           --verbose`'s output, in the same header+JSON shape as the real ones
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 FIX="$HERE/fixtures/opencode"
@@ -25,7 +29,20 @@ case "${1:-}" in
   models)
     [ -z "${FAKE_OPENCODE_NO_MODELS:-}" ] || exit 0
     case " $* " in
-      *" --verbose "*) cat "$FIX/models-verbose.txt" ;;
+      *" --verbose "*)
+        cat "$FIX/models-verbose.txt"
+        # measurement 36: a catalog of 55+ models crosses the 64 KiB pipe wall
+        # the same way a big export does; FAKE_MODELS_PAD proves the reader
+        # copes with more than the 13 models the fixture carries.
+        if [ -n "${FAKE_MODELS_PAD:-}" ]; then
+          i=1
+          while [ "$i" -le "$FAKE_MODELS_PAD" ]; do
+            printf 'pad/model-%s\n{\n  "id": "model-%s",\n  "api": {\n    "id": "model-%s",\n    "url": "https://pad.local/v1",\n    "npm": "@ai-sdk/openai-compatible"\n  },\n  "status": "active",\n  "name": "Pad Model %s",\n  "family": "pad",\n  "release_date": "2026-01-01",\n  "providerID": "pad",\n  "headers": {},\n  "options": {},\n  "cost": {\n    "input": 1.5,\n    "output": 3.5,\n    "cache": {\n      "read": 0.1,\n      "write": 0.2\n    }\n  },\n  "limit": {\n    "context": 128000,\n    "output": 8000\n  },\n  "capabilities": {\n    "temperature": true,\n    "reasoning": false,\n    "attachment": false,\n    "toolcall": true,\n    "input": {\n      "text": true,\n      "audio": false,\n      "image": false,\n      "video": false,\n      "pdf": false\n    },\n    "output": {\n      "text": true,\n      "audio": false,\n      "image": false,\n      "video": false,\n      "pdf": false\n    },\n    "interleaved": false\n  },\n  "variants": {\n    "low": {\n      "reasoningEffort": "low"\n    },\n    "high": {\n      "reasoningEffort": "high"\n    }\n  }\n}\n' \
+              "$i" "$i" "$i" "$i"
+            i=$((i + 1))
+          done
+        fi
+        ;;
       *) grep -E '^[A-Za-z0-9_-]+/' "$FIX/models-verbose.txt" ;;   # the header lines only: provider/model
     esac
     exit 0 ;;
@@ -34,8 +51,26 @@ case "${1:-}" in
     sid="${2:-}"
     ran="${FAKE_RAN_MODEL:-opencode/big-pickle-real}"
     echo "Exporting session: $sid" >&2
-    printf '{"info":{"id":"%s","slug":"fake","projectID":"global","directory":"%s","title":"fake","agent":"build","model":{"id":"%s","providerID":"%s","variant":"default"},"version":"1.18.30","cost":0,"tokens":{"input":11974,"output":49,"reasoning":0,"cache":{"read":15488,"write":0}},"permission":[],"time":{"created":1789223554730,"updated":1789223564719}},"messages":[]}\n' \
-      "$sid" "$PWD" "${ran#*/}" "${ran%%/*}"
+    # measurement 36: a real 35-turn session's export is 264,607 bytes;
+    # FAKE_EXPORT_PAD proves a caller reads this from a file, not a pipe,
+    # past the 64 KiB a pipe loses on macOS.
+    messages="[]"
+    if [ -n "${FAKE_EXPORT_PAD:-}" ]; then
+      chunk="$(printf '%*s' 1000 '' | tr ' ' 'x')"
+      parts=""
+      total=0
+      while [ "$total" -lt "$FAKE_EXPORT_PAD" ]; do
+        if [ -z "$parts" ]; then
+          parts="\"$chunk\""
+        else
+          parts="$parts,\"$chunk\""
+        fi
+        total=$((total + 1000))
+      done
+      messages="[$parts]"
+    fi
+    printf '{"info":{"id":"%s","slug":"fake","projectID":"global","directory":"%s","title":"fake","agent":"build","model":{"id":"%s","providerID":"%s","variant":"default"},"version":"1.18.30","cost":0,"tokens":{"input":11974,"output":49,"reasoning":0,"cache":{"read":15488,"write":0}},"permission":[],"time":{"created":1789223554730,"updated":1789223564719}},"messages":%s}\n' \
+      "$sid" "$PWD" "${ran#*/}" "${ran%%/*}" "$messages"
     exit 0 ;;
   run) ;;
   *) echo "fake-opencode: unexpected invocation: $*" >&2; exit 2 ;;
