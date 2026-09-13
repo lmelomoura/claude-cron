@@ -9,11 +9,12 @@ secret scanner becomes something people turn off.
 import math
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
 
-from .engines import SCAN_TIMEOUT
+from .engines import HISTORY_TIMEOUT
 from .fingerprint import secret_fingerprint
 from .ignores import ignored, sample_suppressed
 
@@ -333,21 +334,47 @@ def _finding(rule, severity, path, lines, historical, commit_count=None):
     own name for the type or -- when the caller passed a `rename` map, see
     `scan_tree` -- the engine's name for it. Either spelling reads as words in
     the title.
+
+    A history finding also CARRIES its `commit_count`, as a key beside the
+    sentence built from it, because the count has to survive a round trip
+    through the ledger's sweep cache: `cli._carry_history` adds the commits
+    one analysis's sweep saw to the ones earlier analyses had already seen for
+    the same (rule, path), and a number that lived only inside a sentence
+    could not be added to. A working-tree finding carries no such key -- the
+    count is a fact about the history alone.
     """
-    where = "in the git history" if historical else "in the working tree"
-    rationale = (f"A credential of type {rule} was found {where}. Its value is "
-                 "deliberately not recorded anywhere in this report.")
-    if commit_count is not None and commit_count > 1:
-        rationale += f" Seen in {commit_count} commits in the history."
-    return {
+    finding = {
         "fingerprint": secret_fingerprint(rule, path),
         "category": "secret", "rule": rule, "severity": severity,
         "title": f"{rule.replace('_', ' ').replace('-', ' ')} committed to the repository",
-        "rationale": rationale,
+        "rationale": rationale_for(rule, historical, commit_count or 0),
         "remediation": REMEDIATION,
         "occurrences": [{"file": path, "line": line, "snippet_hash": ""} for line in lines],
         "historical": historical,
     }
+    if historical:
+        finding["commit_count"] = int(commit_count or 0)
+    return finding
+
+
+def rationale_for(rule, historical, commit_count=0) -> str:
+    """The one sentence a secret finding carries, whichever scanner built it.
+
+    PUBLIC, and read by `adapters._finding` too, because it used to be two
+    copies of the same wording -- one here, one in the adapter -- and a third
+    reader arrived that has to REBUILD it: `cli._carry_history` sums the commit
+    counts of one finding across analyses and has to say the new total in the
+    same words. Three copies of a sentence drift; one function does not.
+
+    Names the credential's TYPE and where it was found, never the value: the
+    property every function in this module guarantees.
+    """
+    where = "in the git history" if historical else "in the working tree"
+    rationale = (f"A credential of type {rule} was found {where}. Its value is "
+                 "deliberately not recorded anywhere in this report.")
+    if historical and commit_count > 1:
+        rationale += f" Seen in {commit_count} commits in the history."
+    return rationale
 
 
 def _skip_note(too_big, unreadable):
@@ -545,9 +572,90 @@ HISTORY_EMPTY_NOTE = ("The git history is empty: this checkout has no commits "
                       "yet, so there was nothing for the history sweep to read.")
 
 
-def scan_history(root, since_sha, ignore=(), rename=None):
-    """(findings, note, swept): every secret ever committed, even if the file
-    no longer has it.
+# The budget for git PLUMBING this module asks a question of -- `rev-parse`,
+# `merge-base`, `rev-list --count` -- as opposed to the sweep itself, which
+# runs on the caller's budget. Each answers in milliseconds on any repository;
+# 30 s is the same allowance `adapters._git` gives the same kind of call.
+_PLUMBING_TIMEOUT = 30
+
+_SHA = re.compile(r"[0-9a-f]{7,64}")
+
+
+def head_sha(root):
+    """The commit HEAD resolves to, or None: an unborn branch, a directory
+    that is not a repository, a git that will not run. Never raises -- every
+    caller treats None as "no cursor to record", which is the honest reading
+    of all three."""
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--verify", "HEAD^{commit}"],
+            capture_output=True, text=True, errors="replace",
+            timeout=_PLUMBING_TIMEOUT, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    sha = (done.stdout or "").strip()
+    return sha if done.returncode == 0 and _SHA.fullmatch(sha) else None
+
+
+def is_ancestor(root, sha) -> bool:
+    """Whether `sha` lies in HEAD's history: `git merge-base --is-ancestor`,
+    exit 0. THE QUESTION A CURSOR IS ASKED before a sweep continues from it
+    (`cli._scan_secrets`): a cursor from a rewritten history, or from another
+    repository that was analysed under the same name, is not a place this
+    checkout's history passes through, and `git log <sha>..HEAD` from it would
+    read as "everything" or as an error rather than as a continuation. False
+    on any doubt -- a sha of the wrong shape, git failing, git absent -- because
+    the cost of a wrong False is one full sweep and the cost of a wrong True
+    is a history never read."""
+    if not isinstance(sha, str) or not _SHA.fullmatch(sha):
+        return False
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(root), "merge-base", "--is-ancestor", sha, "HEAD"],
+            capture_output=True, text=True, errors="replace",
+            timeout=_PLUMBING_TIMEOUT, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
+# How often the sweep says where it is, in commits. On the repository that
+# motivated the cursor (21,607 commits) that is about ten lines over the whole
+# sweep -- enough to see it move, not enough to fill the run's `.prepare` file.
+PROGRESS_EVERY = 2000
+
+
+def _history_total(root, rev):
+    """How many commits `rev` names, for the progress line -- or None when git
+    will not say. Asked ONCE, and only when the first progress line is due, so
+    a small repository never pays for it. The number counts every commit in
+    the range where the sweep's own counter sees only the commits `git log`
+    prints (a merge, or a commit that only deletes, prints nothing under
+    `--no-merges --diff-filter=AM`), so the line reads `n/total` with `n`
+    ending short of `total` on most repositories: a gauge, not an audit."""
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(root), "rev-list", "--count", rev],
+            capture_output=True, text=True, errors="replace",
+            timeout=_PLUMBING_TIMEOUT, check=False)
+        return int(done.stdout.strip()) if done.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def _stopped_reason(budget, commits, reached):
+    """The words for a sweep cut by its budget, filled from where it got to."""
+    if reached is None:
+        return (f"it stopped at its {budget}s budget before the end of the "
+                f"first commit; the next analysis starts over")
+    return (f"it stopped at its {budget}s budget after {commits} "
+            f"commit{'' if commits == 1 else 's'}, at {reached[:7]}; the next "
+            f"analysis continues from there")
+
+
+def scan_history(root, since_sha, ignore=(), rename=None, budget=None):
+    """(findings, note, swept, reached): every secret ever committed, even if
+    the file no longer has it.
 
     A key deleted in a later commit is still readable by anyone with a clone,
     so it is still compromised. This is git plumbing and plain Python: it costs
@@ -571,6 +679,36 @@ def scan_history(root, since_sha, ignore=(), rename=None):
     broken repository, and the row read `warning` beside the engine's own
     claim to have scanned the full history.
 
+    `reached` IS THE CURSOR: the last commit whose patch this sweep read in
+    full, or None when it read none. The history is walked OLDEST FIRST
+    (`--reverse`), so a sweep cut by its budget leaves behind a commit every
+    later commit descends from, and the next analysis can pass it back as
+    `since_sha` and read only `reached..HEAD` -- which is how a repository too
+    old to sweep in one budget gets covered over several analyses instead of
+    starting over in each. On a sweep that reads to the end, `reached` is HEAD
+    itself: a commit that prints nothing under `--no-merges --diff-filter=AM`
+    (a merge, a deletion) is still a commit the sweep has been past. On a
+    sweep cut mid-commit, the partly read commit's contributions are dropped
+    -- its sha is removed from every group and its pending lines discarded --
+    so what is returned is exactly the findings of the commits up to and
+    including `reached`, and the next analysis reads that commit whole. That
+    exactness is what lets `cli._carry_history` ADD the commit counts of two
+    sweeps: they never read the same commit twice. The findings of a cut sweep
+    are RETURNED, not discarded as they used to be, because a cursor that
+    advanced past findings that were then thrown away would be a history
+    read once and reported never.
+
+    `budget` is the sweep's time budget in seconds -- `engines.HISTORY_TIMEOUT`
+    by default, the history passes' own, above the engines' `SCAN_TIMEOUT`
+    because a history grows with the age of a repository rather than with its
+    size. Past it the process is killed and the note says where the sweep got
+    to, in words that say the next analysis continues from there.
+
+    Progress goes to stderr, every `PROGRESS_EVERY` commits, with `flush` so a
+    reader tailing the run's `.prepare` file sees it move: `prepare` runs
+    unattended for minutes on a large repository, and a line that says
+    `2000/21607` is the difference between a sweep and a hang.
+
     NO FILE-SIZE CAP, BY CONSTRUCTION -- an asymmetry with the tree sweep and
     with gitleaks, stated here rather than claimed away. `git log -p` streams
     every added line of every commit; there is no file to `stat` and no size
@@ -579,12 +717,6 @@ def scan_history(root, since_sha, ignore=(), rename=None):
     rule to the flag it is handed (`GITLEAKS_MAX_TARGET_MEGABYTES`), so such a
     finding is this sweep's alone -- `seen_by == ["secrets"]` -- and correctly
     so.
-
-    The time budget is `engines.SCAN_TIMEOUT`, the one the engines get. This
-    used to run with 300 s against their 600 s, so on a large repository
-    gitleaks' history pass could finish while this one timed out, and the
-    secret row -- which needs both -- read `warning` for a limit two lines
-    apart.
 
     THE HISTORY IS STREAMED, LINE BY LINE, AS BYTES. This used to collect
     `git log -p` whole with `text=True`: on a real repository (21,607
@@ -595,13 +727,16 @@ def scan_history(root, since_sha, ignore=(), rename=None):
     leniently on its own (a byte that is not UTF-8 cannot be part of a
     credential the rules know), and what is held is never more than one
     file's additions in one commit. The deadline is kept by hand, since
-    `Popen` has no timeout of its own: past it the process group is killed
-    and the gap is stated, as before.
+    `Popen` has no timeout of its own: it is read at every commit header --
+    the one place a cut leaves nothing half-read -- and every 65,536 lines
+    inside a commit, for the commit whose patch is itself the size of a
+    history.
 
     `rename` is `scan_tree`'s: the names to mint under, applied after the
     template rule and before the finding is built, None for this scanner's
     own.
     """
+    budget = HISTORY_TIMEOUT if budget is None else budget
     rev = f"{since_sha}..HEAD" if since_sha else "HEAD"
     try:
         # Is there anything to walk? `rev-list -n1 --all` is the question
@@ -612,9 +747,9 @@ def scan_history(root, since_sha, ignore=(), rename=None):
         # `git log` below, which says so in the words it always has.
         walked = subprocess.run(
             ["git", "-C", str(root), "rev-list", "-n1", "--all"],
-            capture_output=True, text=True, timeout=SCAN_TIMEOUT, check=False)
+            capture_output=True, text=True, timeout=budget, check=False)
         if walked.returncode == 0 and not walked.stdout.strip():
-            return [], HISTORY_EMPTY_NOTE, True
+            return [], HISTORY_EMPTY_NOTE, True, None
         # stderr to a file of its own, never a pipe nobody drains while stdout
         # is being read: git's advice on a bad revision is a few lines, but a
         # pipe that fills would stall the very stream this loop reads.
@@ -624,15 +759,19 @@ def scan_history(root, since_sha, ignore=(), rename=None):
         # that timed this out (21,607 commits) the full patches were 7.4 GB.
         # A PEM header and its body are still adjacent when both were added
         # together, which is the only case `_pem_body_follows` ever saw here.
+        # `--reverse`: oldest first, so that a cut leaves a usable cursor (see
+        # `reached` above). git walks the range before printing the first
+        # patch, which on the measured repository is a second of the 55 the
+        # log itself takes.
         proc = subprocess.Popen(
             ["git", "-C", str(root), "log", "-p", "-U0", "--no-color", "--no-merges",
-             "--diff-filter=AM", rev],
+             "--diff-filter=AM", "--reverse", rev],
             stdout=subprocess.PIPE, stderr=errf, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         return [], HISTORY_GAP.format(
-            reason=f"it timed out after {SCAN_TIMEOUT}s"), False
+            reason=f"it timed out after {budget}s"), False, None
     except OSError as exc:
-        return [], HISTORY_GAP.format(reason=f"git could not be run: {exc}"), False
+        return [], HISTORY_GAP.format(reason=f"git could not be run: {exc}"), False, None
 
     # (rule, path) -> {"severity": ..., "commits": set-of-sha}. Keyed the
     # same way as the finding itself, with the set of commits the pair was
@@ -676,8 +815,14 @@ def scan_history(root, since_sha, ignore=(), rename=None):
                 group["commits"].add(commit_sha)
         added.clear()
 
-    deadline = time.monotonic() + SCAN_TIMEOUT
+    deadline = time.monotonic() + budget
     timed_out = False
+    # The commit whose patch was last read whole, and how many there were:
+    # `reached` moves when the NEXT header arrives, never when a header is
+    # seen, so it never names a commit the cut fell inside.
+    reached = None
+    commits = 0
+    total = None
     # The prefixes are told apart on the bytes, and only the lines this sweep
     # keeps are decoded: a hundred million lines of patch go through this
     # loop on a large repository, and decoding and regex-matching every one
@@ -685,16 +830,30 @@ def scan_history(root, since_sha, ignore=(), rename=None):
     n = 0
     for raw in proc.stdout:
         n += 1
-        if (n & 0xFFFF) == 0 and time.monotonic() > deadline:
-            timed_out = True
-            break
         if raw.startswith(b"commit "):
             commit_match = _COMMIT_HEADER.match(raw.decode("utf-8", errors="replace"))
             if commit_match is None:
                 continue
             sweep()
+            if commit_sha is not None:
+                reached = commit_sha
+                commits += 1
+                if commits % PROGRESS_EVERY == 0:
+                    if total is None:
+                        total = _history_total(root, rev)
+                    print(f"prepare: history {commits}/{total if total is not None else '?'}"
+                          f" commits", file=sys.stderr, flush=True)
+            # The deadline, read where a cut costs nothing: the previous
+            # commit is whole and the next has not started.
+            if time.monotonic() > deadline:
+                timed_out = True
+                commit_sha = None
+                break
             commit_sha = commit_match.group(1)
             continue
+        if (n & 0xFFFF) == 0 and time.monotonic() > deadline:
+            timed_out = True
+            break
         if raw.startswith(_DIFF_HEADER_BYTES):
             header_path = _path_from_diff_header(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
             if header_path is None:
@@ -736,8 +895,20 @@ def scan_history(root, since_sha, ignore=(), rename=None):
             pass
         proc.wait()
         errf.close()
-        return [], HISTORY_GAP.format(
-            reason=f"it timed out after {SCAN_TIMEOUT}s"), False
+        # A cut inside a commit: that commit is not `reached`, so nothing of
+        # it may be reported either, or the next analysis -- which reads it
+        # whole -- would count its commits twice. Its pending lines go, and
+        # its sha leaves every group it joined; a group it was alone in goes
+        # with it.
+        if commit_sha is not None:
+            added.clear()
+            for key in [k for k, g in groups.items() if commit_sha in g["commits"]]:
+                groups[key]["commits"].discard(commit_sha)
+                if not groups[key]["commits"]:
+                    del groups[key]
+        return (_findings_of(groups),
+                HISTORY_GAP.format(reason=_stopped_reason(budget, commits, reached)),
+                False, reached)
     proc.stdout.close()
     proc.wait()
     errf.seek(0)
@@ -753,11 +924,17 @@ def scan_history(root, since_sha, ignore=(), rename=None):
         # advice addressed to a human at a terminal.
         reason = stderr.strip().splitlines()
         return [], HISTORY_GAP.format(
-            reason=reason[0] if reason else f"git exited {proc.returncode}"), False
+            reason=reason[0] if reason else f"git exited {proc.returncode}"), False, None
     sweep()
+    # Read to the end: the cursor is HEAD, whatever the last commit that
+    # printed a patch was (see the docstring). The last one seen is the
+    # fallback for a HEAD git will not resolve, which cannot happen on a log
+    # that just read cleanly and is guarded anyway.
+    return _findings_of(groups), "", True, head_sha(root) or commit_sha
 
-    out = []
-    for (rule, path), group in groups.items():
-        out.append(_finding(rule, group["severity"], path, [0], True,
-                             commit_count=len(group["commits"])))
-    return out, "", True
+
+def _findings_of(groups):
+    """The (rule, path) groups `scan_history` collected, as findings."""
+    return [_finding(rule, group["severity"], path, [0], True,
+                     commit_count=len(group["commits"]))
+            for (rule, path), group in groups.items()]

@@ -292,26 +292,30 @@ def _relative(path: str, root) -> str:
 
 
 def _finding(rule, path, lines, historical, commits):
-    where = "in the git history" if historical else "in the working tree"
-    rationale = (f"A credential of type {rule} was found {where}. Its value is "
-                 "deliberately not recorded anywhere in this report.")
-    if historical and commits > 1:
-        rationale += f" Seen in {commits} commits in the history."
-    return {
+    finding = {
         "fingerprint": secret_fingerprint(rule, path),
         "category": "secret",
         "rule": rule,
         "severity": SEVERITY_BY_RULE.get(rule, DEFAULT_SEVERITY),
         "title": f"{rule.replace('-', ' ')} committed to the repository",
-        "rationale": rationale,
-        # secrets.py's sentence, not a second copy of it: a credential found
-        # by the engine and one found by the built-in scanner are the same
-        # emergency, and two wordings for it would drift.
+        # secrets.py's sentences, not a second copy of them: a credential
+        # found by the engine and one found by the built-in scanner are the
+        # same emergency, and two wordings for it would drift. The rationale
+        # joined the remediation there when a third reader arrived that has
+        # to REBUILD it -- `cli._carry_history`, summing one finding's commit
+        # count across analyses.
+        "rationale": secrets.rationale_for(rule, historical, commits),
         "remediation": secrets.REMEDIATION,
         "occurrences": [{"file": path, "line": line, "snippet_hash": ""}
                         for line in lines],
         "historical": historical,
     }
+    if historical:
+        # Carried as a number beside the sentence, for the same reason
+        # `secrets._finding` carries it: the ledger's sweep cache hands this
+        # finding back to a later analysis, which adds its own commits to it.
+        finding["commit_count"] = int(commits)
+    return finding
 
 
 def _out_of_scope(path: str, ignore_paths) -> bool:
@@ -551,7 +555,7 @@ def _is_shallow(root) -> bool:
     return (marker / "shallow").exists()
 
 
-def gitleaks_scan(root, ignore_paths=()):
+def gitleaks_scan(root, ignore_paths=(), since=None):
     """Every secret gitleaks can find in `root`, tree and history.
 
     Returns `(findings, notes, history, tree)`. `findings` is None when
@@ -563,6 +567,22 @@ def gitleaks_scan(root, ignore_paths=()):
     credential both saw is one identity, not two entries whose remediations
     contradict each other. That merge is the caller's; this function reports
     what the engine saw and nothing about the other scanner.
+
+    `since` IS THE HISTORY CURSOR, a commit the previous analysis's history
+    pass had already read up to (`cli._scan_secrets` keeps it in the ledger,
+    per branch and per scanner). With one, the `git` pass is handed
+    `--log-opts <since>..HEAD` and reads only the commits since; without one
+    it reads the whole history, as it always did. The engine does not say
+    where it got to, so the caller advances the cursor to HEAD only when this
+    pass wrote a report (`history` is `HISTORY_OK`), and carries the history
+    findings of earlier analyses itself -- this function reports what THIS
+    pass saw. Measured on gitleaks 8.30.1: a range that names no commit
+    (`HEAD..HEAD`) exits 0 with `[]`, so an analysis with nothing new costs the
+    engine a walk and no findings. The `git` pass runs on
+    `engines.HISTORY_TIMEOUT`, the history passes' own budget, and the `dir`
+    pass on the engines' `SCAN_TIMEOUT` as before: the history grows with the
+    age of a repository, the tree with its size, and one number for both hit
+    the same ceiling twice in series on the repository that measured it.
 
     `history` IS WHAT THE HISTORY SWEEP ACTUALLY COVERED, one of the three
     `HISTORY_*` states above, and `tree` IS WHETHER THE TREE PASS WROTE A
@@ -664,10 +684,16 @@ def gitleaks_scan(root, ignore_paths=()):
                   # why that asymmetry is stated and not hidden.
                   "--max-target-megabytes",
                   str(secrets.GITLEAKS_MAX_TARGET_MEGABYTES)]
+        # The cursor rides in `--log-opts`, which gitleaks passes to its own
+        # `git log`; `<since>..HEAD` is the range the built-in sweep reads
+        # for the same cursor, so the two passes of one analysis cover the
+        # same commits.
+        log_opts = ["--log-opts", f"{since}..HEAD"] if since else []
         history, history_note = (
             (None, HISTORY_UNREADABLE.format(reason=why))
             if state == HISTORY_GONE
-            else engines.run_json("gitleaks", ["git", ".", *common], root))
+            else engines.run_json("gitleaks", ["git", ".", *log_opts, *common], root,
+                                  timeout=engines.HISTORY_TIMEOUT))
         tree, tree_note = engines.run_json("gitleaks", ["dir", ".", *common], root)
 
     if history is None and tree is None:

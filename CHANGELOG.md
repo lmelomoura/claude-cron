@@ -455,6 +455,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The history sweeps of the deterministic phase have a budget of their
+  own and a cursor.** `AGENTLOOP_SECURITY_HISTORY_TIMEOUT` (1800 s) bounds
+  the git history passes of both secret scanners, apart from the engines'
+  600 s; the built-in sweep walks the history oldest first and each
+  analysis sweeps only the commits since the last one it reached, carries
+  the history findings already found (under today's `ignore_paths`, not
+  yesterday's), and a sweep cut by its budget continues in the next
+  analysis instead of starting over; gitleaks' history pass takes the same
+  cursor through `--log-opts` once it has completed a full pass. Measured:
+  21,607 commits spent two 600 s budgets in series on every analysis and
+  covered nothing.
 - **The built-in history sweep reads the patches it needs and skips the
   lines it does not.** `git log -p` now runs with `-U0` (the sweep reads
   added lines only, and the context lines were most of the 7.4 GB the

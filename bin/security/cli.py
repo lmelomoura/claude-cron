@@ -565,10 +565,150 @@ def _merge_secret_readings(engine, builtin):
     return list(merged.values())
 
 
-def _scan_secrets(root, ignore):
+# Said when a history cursor from the ledger is not a commit this checkout's
+# HEAD descends from. Two ways that happens and both are named: the history
+# was rewritten (a rebase, a filter-branch) or another repository was analysed
+# under the same project name. Either way the sweep cannot continue from it,
+# so it starts over, and the findings carried from earlier analyses are set
+# aside with it -- they may describe commits this history no longer has.
+HISTORY_RESTART_NOTE = (
+    "The history sweep of {scanner} started over from the first commit: the "
+    "commit the previous analysis had reached ({sha7}) is not in this "
+    "checkout's history (rewritten, or a different repository analysed under "
+    "the same name), so the history findings carried from earlier analyses "
+    "were set aside.")
+
+# How each scanner is named in that sentence, by its producer atom.
+_SCANNER_NAMES = {PRODUCER_SECRETS: "the built-in pattern scanner",
+                  PRODUCER_GITLEAKS: "gitleaks"}
+
+
+def _resume_sweep(root, sweeps, scanner):
+    """(since, cached, restarted): where `scanner`'s history sweep continues
+    from, and what it carries.
+
+    `sweeps` is `cmd_prepare`'s dict of what the ledger holds per scanner
+    (`{"since": sha or None, "cached": [findings]}`), or None when the caller
+    keeps no cursor at all -- the direct callers in the tests -- which reads
+    as a first sweep. A cursor is honoured only when HEAD descends from it
+    (`secrets.is_ancestor`); otherwise the sweep starts over and the cache is
+    dropped, and `restarted` says so, so the caller can file
+    `HISTORY_RESTART_NOTE` for the sweep that actually ran.
+    """
+    entry = (sweeps or {}).get(scanner) or {}
+    since, cached = entry.get("since"), list(entry.get("cached") or [])
+    if not since:
+        return None, cached, False
+    if secrets.is_ancestor(root, since):
+        return since, cached, False
+    return None, [], True
+
+
+# What a cached history finding must NOT carry: the stamps this phase puts on
+# a finding after the merge. A cached reading re-enters the merge as one
+# scanner's own and is stamped afresh there; a stale `producer` on it would
+# survive `_produced_by`, which stamps only what carries no producer, and
+# record a built-in reading as the engine's.
+_NOT_CACHED = ("producer", "seen_by")
+
+
+def _record_sweep(sweeps, scanner, reached, findings):
+    """Hand back to `cmd_prepare` what to store for `scanner`: the cursor the
+    sweep got to (None when it made no progress, and then nothing is stored)
+    and the history findings it stands for -- carried and new together. A
+    COPY of each finding, taken now, so that whatever the phase stamps on the
+    dicts it returns later never reaches the cache."""
+    if sweeps is None:
+        return
+    sweeps.setdefault(scanner, {}).update(
+        reached=reached,
+        findings=[{k: v for k, v in f.items() if k not in _NOT_CACHED} for f in findings])
+
+
+def _carry_history(cached, fresh, ignore=()):
+    """One scanner's history findings across analyses: what earlier sweeps
+    found up to the cursor (`cached`, from the ledger) and what this
+    analysis's sweep of `cursor..HEAD` found (`fresh`), joined by identity.
+
+    THE COMMIT COUNTS ADD. The two sweeps read disjoint commits by
+    construction -- the cursor is the last commit the earlier one read in
+    full, and the later one starts after it (`secrets.scan_history`) -- so a
+    credential at one (rule, path) seen in two commits then and one commit
+    now was seen in three, and the rationale is rebuilt to say so through the
+    one sentence both scanners use (`secrets.rationale_for`). The graver
+    severity survives, as it does in `_merge_secret_readings`, and the
+    occurrences pool the way two readings' do there. The cached reading is
+    kept first so the order of the list is stable across analyses.
+
+    NOTHING HERE STAMPS A PRODUCER. These are one scanner's own readings, and
+    they enter `_merge_secret_readings` on that scanner's side exactly as the
+    fresh ones do: a cached built-in finding is a built-in reading, and is
+    `seen_by` the built-in and nothing else.
+    """
+    # THE CACHE OBEYS TODAY'S SCOPE, NOT THE SCOPE OF THE ANALYSIS THAT FILLED
+    # IT. A sweep applies `ignore_paths`, the default noise filter and
+    # `SKIP_DIRS` to every path it reads, so a cached reading is one that
+    # passed the filters of an EARLIER analysis; an operator who has since
+    # added the fixtures directory to the project's ignore_paths would get
+    # the noise back from the cache alone, one report later -- the exact
+    # hole the sweep's own filter closes. The same three predicates, on the
+    # same repo-relative path (a history finding has one: its fingerprint is
+    # the rule and the path).
+    def in_scope(reading):
+        path = next((o.get("file", "") for o in reading.get("occurrences", [])), "")
+        return not (secrets.skipped(path) or ignores.ignored(path, ignore)
+                    or ignores.sample_suppressed(path, reading.get("rule", ""), ignore))
+    merged = {}
+    for reading in [*[c for c in cached if in_scope(c)], *fresh]:
+        kept = merged.get(reading["fingerprint"])
+        if kept is None:
+            merged[reading["fingerprint"]] = {
+                **reading, "occurrences": list(reading.get("occurrences", []))}
+            continue
+        count = int(kept.get("commit_count", 0)) + int(reading.get("commit_count", 0))
+        kept["commit_count"] = count
+        kept["rationale"] = secrets.rationale_for(kept["rule"], True, count)
+        kept["severity"] = _graver(kept["severity"], reading["severity"])
+        kept["occurrences"] = _pooled(kept["occurrences"], reading.get("occurrences", []))
+    return list(merged.values())
+
+
+def _scan_secrets(root, ignore, sweeps=None):
     """(findings, notes, lines, producer, status) for the secret phase -- BOTH
     scanners when gitleaks is here, the built-in pattern scanner alone when it
     is not.
+
+    THE HISTORY IS SWEPT FROM WHERE THE LAST ANALYSIS STOPPED. `sweeps` is
+    what `cmd_prepare` read from the ledger for this branch, one entry per
+    history scanner (`{"since": sha or None, "cached": [findings]}`, see
+    `ledger.history_sweep`), and this function writes each entry's `reached`
+    and `findings` back into the same dict for `cmd_prepare` to store. Per
+    scanner: the cursor is honoured only when HEAD descends from it
+    (`_resume_sweep`; otherwise the sweep starts over and says so), the sweep
+    reads `since..HEAD` -- the built-in's `scan_history` and gitleaks'
+    `--log-opts` alike -- and its findings are joined to the carried ones by
+    identity (`_carry_history`), which is what this analysis reports as that
+    scanner's history findings. The cursor then moves to where the built-in
+    sweep says it got to, and to HEAD for gitleaks when its pass wrote a
+    report; a sweep that made no progress leaves its row alone. Measured on
+    the repository that made this necessary (21,607 commits): each history
+    pass ran into its 600 s ceiling, in series, on EVERY analysis, and covered
+    nothing -- with a cursor, a sweep cut by its budget continues in the next
+    analysis, and an analysis with nothing new reads no patch at all.
+
+    WHY THE CACHE IS RE-RECORDED RATHER THAN MERELY REMEMBERED: `diff.classify`
+    reads a finding present in the previous analysis and absent from this one
+    as `fixed` once its producer has run again -- and a history finding is not
+    something an analysis can stop finding, so the carried ones enter this
+    analysis's findings as if the sweep had read their commits again. On the
+    fallback path only the built-in's cache is carried: a cached gitleaks
+    finding is a gitleaks reading, and gitleaks did not run.
+
+    `swept` -- the third condition for `ran` on the union path -- is whether
+    THIS analysis's built-in sweep of `since..HEAD` completed; the cache
+    covers the rest by construction. `None` for `sweeps` means no cursor and
+    nothing to store, which is a first sweep: the shape the direct callers in
+    the tests use.
 
     WHY IT USED TO BE ONE, AND WHY THAT REASON IS GONE. Two scanners in one
     category find the same hole and report it under two fingerprints when
@@ -658,11 +798,39 @@ def _scan_secrets(root, ignore):
     already carry for the same gap (`adapters.SHALLOW_GAP`,
     `secrets.HISTORY_GAP`, `adapters.TREE_GAP`).
     """
+    since, cached, restarted = _resume_sweep(root, sweeps, PRODUCER_SECRETS)
+    restart_notes = ([HISTORY_RESTART_NOTE.format(
+        scanner=_SCANNER_NAMES[PRODUCER_SECRETS], sha7=sweeps[PRODUCER_SECRETS]["since"][:7])]
+        if restarted else [])
     if adapters.engine_path("gitleaks"):
-        engine, notes, history, tree = adapters.gitleaks_scan(root, ignore)
+        engine_since, engine_cached, engine_restarted = _resume_sweep(
+            root, sweeps, PRODUCER_GITLEAKS)
+        engine, notes, history, tree = adapters.gitleaks_scan(
+            root, ignore, since=engine_since)
         if engine is not None:
-            history_findings, history_note, swept = secrets.scan_history(
-                root, None, ignore, rename=_SECRET_RENAMES)
+            # The engine's list is its history readings then its tree
+            # readings (see `gitleaks_scan` on why that order); the carried
+            # history readings join the first half, and the whole keeps that
+            # order for the merge below.
+            engine_history = _carry_history(
+                engine_cached, [f for f in engine if f.get("historical")], ignore)
+            engine = engine_history + [f for f in engine if not f.get("historical")]
+            if history == adapters.HISTORY_OK:
+                # The engine does not say where it got to, so the cursor is
+                # HEAD -- and only when its pass wrote a report over a full
+                # clone: a shallow clone's sweep saw nothing before the
+                # cut-off, and a cursor at its HEAD would keep the commits a
+                # later `fetch --unshallow` brings from ever being read.
+                _record_sweep(sweeps, PRODUCER_GITLEAKS, secrets.head_sha(root),
+                              engine_history)
+            if engine_restarted:
+                restart_notes.append(HISTORY_RESTART_NOTE.format(
+                    scanner=_SCANNER_NAMES[PRODUCER_GITLEAKS],
+                    sha7=sweeps[PRODUCER_GITLEAKS]["since"][:7]))
+            history_findings, history_note, swept, reached = secrets.scan_history(
+                root, since, ignore, rename=_SECRET_RENAMES)
+            history_findings = _carry_history(cached, history_findings, ignore)
+            _record_sweep(sweeps, PRODUCER_SECRETS, reached, history_findings)
             tree_findings, tree_note, lines = secrets.scan_tree(
                 root, ignore, rename=_SECRET_RENAMES)
             findings = _merge_secret_readings(engine, history_findings + tree_findings)
@@ -676,8 +844,9 @@ def _scan_secrets(root, ignore):
                 union_notes.append(UNMAPPED_TYPES_NOTE)
             whole = (history == adapters.HISTORY_OK and tree == adapters.TREE_OK
                      and swept)
-            return (findings, [*notes, history_note, tree_note, *union_notes], lines,
-                    PRODUCER_BOTH_SECRET_SCANNERS,
+            return (findings,
+                    [*notes, *restart_notes, history_note, tree_note, *union_notes],
+                    lines, PRODUCER_BOTH_SECRET_SCANNERS,
                     coverage.RAN if whole else coverage.WARNING)
         # The engine is here and could not answer. Say so, and let the
         # built-in scanner do the work rather than reporting no secrets.
@@ -687,11 +856,13 @@ def _scan_secrets(root, ignore):
     # The same names as the union path mints, for the reason the docstring
     # gives: an identity that changed with the scanner on the machine read
     # `fixed` beside `new` for one credential.
-    history_findings, history_note, _swept = secrets.scan_history(
-        root, None, ignore, rename=_SECRET_RENAMES)
+    history_findings, history_note, _swept, reached = secrets.scan_history(
+        root, since, ignore, rename=_SECRET_RENAMES)
+    history_findings = _carry_history(cached, history_findings, ignore)
+    _record_sweep(sweeps, PRODUCER_SECRETS, reached, history_findings)
     tree_findings, tree_note, lines = secrets.scan_tree(root, ignore, rename=_SECRET_RENAMES)
     return (history_findings + tree_findings,
-            [history_note, tree_note, *notes], lines, PRODUCER_SECRETS,
+            [*restart_notes, history_note, tree_note, *notes], lines, PRODUCER_SECRETS,
             coverage.WARNING)
 
 
@@ -1075,18 +1246,25 @@ def cmd_prepare(args):
     row = _running(conn, aid)
     project, repo, branch = row["project"], row["repo"], row["branch"]
 
-    # THE WHOLE HISTORY, ON EVERY ANALYSIS. This used to run only on the
-    # baseline, on the reasoning that re-reading commits already read costs
-    # wall-clock for findings already recorded. The wall-clock was right and
-    # the product cost was not: nothing re-emits a history finding on a later
-    # run, so `classify` saw it in the previous analysis and not in this one
-    # and called it `fixed` -- for the exact act (deleting the file) this
-    # module's own remediation says is NOT enough -- and by the third analysis
-    # it was gone from the report altogether. A history finding is not
-    # something an analysis can stop finding: git history does not shrink. It
-    # stays OPEN, run after run, until the credential is rotated and a human
-    # closes it with `decide --state accepted`. That is the honest lifecycle,
-    # and it costs seconds of git plumbing and no tokens.
+    # THE WHOLE HISTORY, ON EVERY ANALYSIS -- REPORTED, not re-read. This used
+    # to run only on the baseline, on the reasoning that re-reading commits
+    # already read costs wall-clock for findings already recorded. The
+    # wall-clock was right and the product cost was not: nothing re-emitted a
+    # history finding on a later run, so `classify` saw it in the previous
+    # analysis and not in this one and called it `fixed` -- for the exact act
+    # (deleting the file) this module's own remediation says is NOT enough --
+    # and by the third analysis it was gone from the report altogether. A
+    # history finding is not something an analysis can stop finding: git
+    # history does not shrink. It stays OPEN, run after run, until the
+    # credential is rotated and a human closes it with `decide --state
+    # accepted`. That is the honest lifecycle. Then the wall-clock came back
+    # on a repository of 21,607 commits, where re-reading the whole history
+    # ran every history pass into its ceiling on every analysis, so the two
+    # are now separated: each analysis READS only the commits since the last
+    # one it reached (the cursor in `ledger.history_sweep`) and REPORTS the
+    # history findings of every analysis before it from the cache beside that
+    # cursor (`_scan_secrets`, `_carry_history`). Same lifecycle, and the
+    # git plumbing it costs is proportional to what changed.
     #
     # Recorded FIRST, before the working tree. A secret that is both in the
     # tree and in the history shares one fingerprint (rule + path, see
@@ -1123,8 +1301,20 @@ def cmd_prepare(args):
     # findings' own `producer` column from ever disagreeing.
     produced = set()
 
+    # WHERE THE HISTORY SWEEPS LEFT OFF, per scanner, read before the phase
+    # and written back after it (see `_scan_secrets`): the row moves only for
+    # a sweep that got somewhere, so a sweep that failed outright leaves the
+    # last good cursor and its findings in place for the next analysis.
+    sweeps = {
+        scanner: dict(zip(("since", "cached"),
+                          ledger.history_sweep(conn, project, repo, branch, scanner)))
+        for scanner in (PRODUCER_SECRETS, PRODUCER_GITLEAKS)}
     secret_findings, secret_notes, tree_lines, secret_producer, secret_status = (
-        _scan_secrets(root, ignore))
+        _scan_secrets(root, ignore, sweeps))
+    for scanner, sweep in sweeps.items():
+        if sweep.get("reached"):
+            ledger.save_history_sweep(conn, project, repo, branch, scanner,
+                                      sweep["reached"], sweep["findings"])
     findings = _produced_by(secret_findings, secret_producer, produced)
     # Hygiene has no engine and no fallback -- it is our own walk over the
     # tree, so it runs in every configuration and is always its own producer.

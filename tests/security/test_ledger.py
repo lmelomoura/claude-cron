@@ -1363,3 +1363,94 @@ def test_the_triaged_column_is_added_to_a_finding_table_that_predates_it(tmp_pat
     assert "triaged" in columns
     old = c.execute("SELECT triaged FROM finding WHERE fingerprint='old'").fetchone()
     assert old["triaged"] == 0
+
+
+# ------------------------------------- where each history sweep got to
+
+def _history_finding(path, commits=1):
+    return {"fingerprint": fp_mod.secret_fingerprint("aws-access-token", path),
+            "category": "secret", "rule": "aws-access-token", "severity": "critical",
+            "title": "aws access token committed to the repository",
+            "rationale": "A credential of type aws-access-token was found in the git history.",
+            "remediation": "rotate", "historical": True, "commit_count": commits,
+            "occurrences": [{"file": path, "line": 0, "snippet_hash": ""}]}
+
+
+def test_a_history_sweep_round_trips_and_starts_empty(conn):
+    assert ledger.history_sweep(conn, "web", "web", "main", "secrets") == (None, [])
+    findings = [_history_finding("prod.env"), _history_finding("old.env", commits=3)]
+    ledger.save_history_sweep(conn, "web", "web", "main", "secrets", "a" * 40, findings)
+    sha, got = ledger.history_sweep(conn, "web", "web", "main", "secrets")
+    assert sha == "a" * 40
+    assert got == findings
+    assert got[1]["commit_count"] == 3
+
+
+def test_saving_a_history_sweep_again_replaces_the_row(conn):
+    """A cursor, not a log: one row per (project, repo, branch, scanner), and
+    the newest save is the whole of it."""
+    ledger.save_history_sweep(conn, "web", "web", "main", "secrets", "a" * 40,
+                              [_history_finding("prod.env")])
+    ledger.save_history_sweep(conn, "web", "web", "main", "secrets", "b" * 40,
+                              [_history_finding("prod.env", commits=2),
+                               _history_finding("new.env")])
+    sha, got = ledger.history_sweep(conn, "web", "web", "main", "secrets")
+    assert sha == "b" * 40
+    assert [(f["occurrences"][0]["file"], f["commit_count"]) for f in got] == [
+        ("prod.env", 2), ("new.env", 1)]
+    assert conn.execute("SELECT count(*) FROM history_sweep").fetchone()[0] == 1
+
+
+def test_one_scanners_sweep_does_not_touch_the_others(conn):
+    ledger.save_history_sweep(conn, "web", "web", "main", "secrets", "a" * 40,
+                              [_history_finding("prod.env")])
+    ledger.save_history_sweep(conn, "web", "web", "main", "gitleaks", "b" * 40, [])
+    assert ledger.history_sweep(conn, "web", "web", "main", "secrets")[0] == "a" * 40
+    assert ledger.history_sweep(conn, "web", "web", "main", "gitleaks") == ("b" * 40, [])
+    ledger.save_history_sweep(conn, "web", "web", "main", "gitleaks", "c" * 40,
+                              [_history_finding("theirs.env")])
+    sha, got = ledger.history_sweep(conn, "web", "web", "main", "secrets")
+    assert sha == "a" * 40 and [f["occurrences"][0]["file"] for f in got] == ["prod.env"]
+
+
+def test_a_history_sweep_is_kept_per_branch_and_per_repo(conn):
+    """`main`'s cursor is not a place `develop`'s history passes through, and
+    a row keyed by repository alone would be discarded on every change of
+    branch -- so each branch keeps its own, as the SBOM does."""
+    ledger.save_history_sweep(conn, "web", "web", "main", "secrets", "a" * 40, [])
+    assert ledger.history_sweep(conn, "web", "web", "develop", "secrets") == (None, [])
+    assert ledger.history_sweep(conn, "web", "api", "main", "secrets") == (None, [])
+    assert ledger.history_sweep(conn, "other", "web", "main", "secrets") == (None, [])
+    ledger.save_history_sweep(conn, "web", "web", "develop", "secrets", "d" * 40, [])
+    assert ledger.history_sweep(conn, "web", "web", "main", "secrets")[0] == "a" * 40
+    assert ledger.history_sweep(conn, "web", "web", "develop", "secrets")[0] == "d" * 40
+
+
+def test_a_cache_that_cannot_be_read_is_an_empty_cache_not_a_crash(conn):
+    conn.execute("INSERT INTO history_sweep (project, repo, branch, scanner, sha,"
+                 " findings, at) VALUES ('web','web','main','secrets','e'||'e',"
+                 " 'not json', 1)")
+    conn.execute("INSERT INTO history_sweep (project, repo, branch, scanner, sha,"
+                 " findings, at) VALUES ('web','web','main','gitleaks','f',"
+                 " '{\"a\": 1}', 1)")
+    conn.commit()
+    assert ledger.history_sweep(conn, "web", "web", "main", "secrets") == ("ee", [])
+    assert ledger.history_sweep(conn, "web", "web", "main", "gitleaks") == ("f", [])
+
+
+def test_the_history_sweep_table_is_created_in_a_database_that_predates_it(tmp_path):
+    """A new TABLE, so `IF NOT EXISTS` in `_SCHEMA` reaches an existing
+    database on its own -- unlike a new column, which needs an ALTER."""
+    path = tmp_path / "old.db"
+    raw = sqlite3.connect(str(path))
+    raw.executescript(
+        "CREATE TABLE analysis (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " project TEXT NOT NULL, repo TEXT NOT NULL, branch TEXT NOT NULL,"
+        " commit_sha TEXT NOT NULL, profile TEXT NOT NULL, started INTEGER NOT NULL,"
+        " ended INTEGER, state TEXT NOT NULL, spend_usd REAL NOT NULL DEFAULT 0,"
+        " run_id TEXT NOT NULL DEFAULT '', coverage_note TEXT NOT NULL DEFAULT '');")
+    raw.commit()
+    raw.close()
+    c = ledger.connect(path)
+    assert c.execute("SELECT name FROM sqlite_master WHERE name='history_sweep'").fetchone()
+    assert ledger.history_sweep(c, "web", "web", "main", "secrets") == (None, [])

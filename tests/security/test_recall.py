@@ -272,7 +272,7 @@ def _pretend_gitleaks_saw(monkeypatch, findings, notes=(), history=None, tree=No
     monkeypatch.setattr(adapters, "engine_path",
                         lambda name: "/usr/bin/gitleaks" if name == "gitleaks" else None)
     monkeypatch.setattr(adapters, "gitleaks_scan",
-                        lambda root, ignore_paths=(): (list(findings), list(notes),
+                        lambda root, ignore_paths=(), since=None: (list(findings), list(notes),
                                                        history, tree))
 
 
@@ -511,7 +511,7 @@ def test_the_secret_row_is_a_warning_when_the_built_in_history_sweep_did_not_com
     root = _git_repo(tmp_path / "repo", {"README.md": "clean\n"})
     _pretend_gitleaks_saw(monkeypatch, [])
     gap = secrets.HISTORY_GAP.format(reason=f"it timed out after {engines.SCAN_TIMEOUT}s")
-    monkeypatch.setattr(secrets, "scan_history", lambda *a, **k: ([], gap, False))
+    monkeypatch.setattr(secrets, "scan_history", lambda *a, **k: ([], gap, False, None))
     _findings, notes, _lines, producer, status = security_cli._scan_secrets(root, [])
     assert status == coverage.WARNING
     assert producer == COMPOSITE
@@ -676,7 +676,7 @@ def test_the_built_in_history_sweep_honours_skip_dirs(tmp_path, monkeypatch):
     root = _committed_and_deleted(_git_repo(tmp_path / "repo", {"README.md": "clean\n"}),
                                   [*SWEPT_OUT, IN_SCOPE])
     assert all(secrets.skipped(p) for p in SWEPT_OUT) and not secrets.skipped(IN_SCOPE)
-    found, note, swept = secrets.scan_history(root, None)
+    found, note, swept, _ = secrets.scan_history(root, None)
     assert swept and note == ""
     assert [f["occurrences"][0]["file"] for f in found] == [IN_SCOPE], found
     # And through the union, with the engine's own history reading of the

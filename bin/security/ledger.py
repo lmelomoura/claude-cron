@@ -164,6 +164,22 @@ CREATE TABLE IF NOT EXISTS saved_filter (
   project TEXT NOT NULL, name TEXT NOT NULL,
   query TEXT NOT NULL, saved_at INTEGER NOT NULL,
   PRIMARY KEY (project, name));
+
+-- WHERE EACH HISTORY SWEEP GOT TO, and what it has found so far. One row per
+-- (project, repo, branch, scanner): `sha` is the last commit that scanner's
+-- history pass read in full, `findings` the JSON list of every history finding
+-- it has reported up to there. The next analysis of the branch sweeps
+-- `sha..HEAD` only, re-records the cached findings beside the new ones (a
+-- history finding that is not re-recorded reads as `fixed` to the checklist,
+-- see cmd_prepare), and moves the row on. See `history_sweep` below for why
+-- the BRANCH is in the key, and cli._scan_secrets for the cursor's use.
+-- A NEW table, so IF NOT EXISTS is enough -- unlike a column, which needs the
+-- ALTER TABLE lists below to reach a database that already exists.
+CREATE TABLE IF NOT EXISTS history_sweep (
+  project TEXT NOT NULL, repo TEXT NOT NULL, branch TEXT NOT NULL,
+  scanner TEXT NOT NULL, sha TEXT NOT NULL,
+  findings TEXT NOT NULL DEFAULT '[]', at INTEGER NOT NULL,
+  PRIMARY KEY (project, repo, branch, scanner));
 """
 
 DECISION_STATES = ("accepted", "false_positive")
@@ -879,6 +895,59 @@ def latest_analysis(conn, project, repo, branch, before=None):
     sql += " ORDER BY id DESC LIMIT 1"
     row = conn.execute(sql, args).fetchone()
     return dict(row) if row else None
+
+
+def history_sweep(conn, project, repo, branch, scanner):
+    """(sha, findings) of this branch's last history sweep by `scanner`, or
+    (None, []) when there has been none.
+
+    KEYED BY BRANCH, not only by repository. A cursor is a commit the sweep
+    read up to, and it is only a continuation for a checkout whose HEAD
+    descends from it; `cli._scan_secrets` checks that (`secrets.is_ancestor`)
+    and starts over when it does not hold. Two branches of one repository
+    routinely fail that check for each other -- `main` carries a fix `develop`
+    does not, so `main`'s cursor is not in `develop`'s history -- and a row
+    keyed by repository alone would be discarded on every change of branch: an
+    analysis of `develop` would throw away `main`'s cursor, and the next
+    analysis of `main` would pay for the whole history again, which is the
+    exact cost this table exists to stop paying. One row per branch keeps each
+    branch's progress. The price is one JSON list per branch, which is small.
+
+    `findings` are the finding dicts as the scanner built them, and they carry
+    what every finding carries: a type, a path, a count -- never the value of
+    a credential, which no scanner in this package puts into a finding. A row
+    whose JSON cannot be read is an empty cache, not a crash: the sweep then
+    starts from the sha with nothing to carry, which under-reports one
+    analysis rather than ending it.
+    """
+    row = conn.execute(
+        "SELECT sha, findings FROM history_sweep"
+        " WHERE project=? AND repo=? AND branch=? AND scanner=?",
+        (project, repo, branch, scanner)).fetchone()
+    if row is None:
+        return None, []
+    try:
+        findings = json.loads(row["findings"])
+    except ValueError:
+        findings = []
+    if not isinstance(findings, list):
+        findings = []
+    return row["sha"], [f for f in findings if isinstance(f, dict)]
+
+
+def save_history_sweep(conn, project, repo, branch, scanner, sha, findings) -> None:
+    """Record where `scanner`'s history sweep of this branch got to, replacing
+    what was recorded before: the row is a cursor, not a log, and the findings
+    stored with it are the whole of what the sweep has found up to `sha` --
+    the caller carries the earlier ones forward before saving (see
+    `cli._carry_history`)."""
+    with conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO history_sweep"
+            " (project, repo, branch, scanner, sha, findings, at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (project, repo, branch, scanner, sha, json.dumps(list(findings)),
+             int(time.time())))
 
 
 def store_sbom(conn, project, repo, branch, analysis_id, document: dict) -> None:

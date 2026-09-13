@@ -959,6 +959,89 @@ def test_a_history_pass_that_wrote_no_report_is_gone_whatever_git_said(
     assert not notes_claim_full_history(notes), notes
 
 
+# ------------------------------------------- the history cursor, in the argv
+#
+# `gitleaks_scan(since=...)` is how `cli._scan_secrets` continues the engine's
+# history pass from where the previous analysis reached: the cursor rides in
+# `--log-opts <since>..HEAD`, which the engine hands to its own `git log`, and
+# the pass runs on the history passes' own budget. Driven through
+# `engines.run_json`, the one door to the binary, so the argv is proved on every
+# machine; the range itself was measured on 8.30.1 (`HEAD..HEAD` exits 0 with
+# `[]`, a real range reports the commits in it and no others).
+
+def _record_passes(monkeypatch):
+    seen = []
+
+    def run_json(name, args, cwd, **kw):
+        seen.append((list(args), kw.get("timeout")))
+        return [], ""
+    monkeypatch.setattr(engines, "run_json", run_json)
+    return seen
+
+
+def _git_pass(seen):
+    return next((args, timeout) for args, timeout in seen if args[0] == "git")
+
+
+def _dir_pass(seen):
+    return next((args, timeout) for args, timeout in seen if args[0] == "dir")
+
+
+def test_the_history_pass_reads_the_whole_history_without_a_cursor(monkeypatch, tmp_path):
+    root = history_repo(tmp_path / "repo")
+    seen = _record_passes(monkeypatch)
+    adapters.gitleaks_scan(root)
+    args, timeout = _git_pass(seen)
+    assert "--log-opts" not in args, args
+    assert timeout == engines.HISTORY_TIMEOUT, "the history passes' own budget"
+    _dir_args, dir_timeout = _dir_pass(seen)
+    assert "--log-opts" not in _dir_args
+    assert dir_timeout in (None, engines.SCAN_TIMEOUT), "the tree pass keeps the engines' budget"
+
+
+def test_the_history_pass_reads_only_the_commits_since_the_cursor(monkeypatch, tmp_path):
+    root = history_repo(tmp_path / "repo")
+    seen = _record_passes(monkeypatch)
+    findings, _notes, history, tree = adapters.gitleaks_scan(root, since="a" * 40)
+    args, timeout = _git_pass(seen)
+    at = args.index("--log-opts")
+    assert args[at + 1] == "a" * 40 + "..HEAD"
+    assert timeout == engines.HISTORY_TIMEOUT
+    assert "--log-opts" not in _dir_pass(seen)[0], "the tree has no cursor"
+    assert findings == [] and history == adapters.HISTORY_OK and tree == adapters.TREE_OK
+
+
+@needs_gitleaks
+def test_the_real_engine_reports_only_what_lies_past_the_cursor(tmp_path):
+    """Against the binary. `history_repo` adds the key in its first commit
+    and deletes the file in its second, so the whole history reports it, a
+    cursor AT the first commit does not (`--log-opts` is a real `git log`
+    range, exclusive of its left end: only the deleting commit is in it), and
+    a cursor at HEAD reads nothing and still counts as a pass that ran."""
+    root = history_repo(tmp_path / "repo")
+    first, head = subprocess.run(
+        ["git", "rev-list", "--reverse", "HEAD"], cwd=root, check=True,
+        capture_output=True, text=True).stdout.split()
+    whole, _notes, history, _tree = adapters.gitleaks_scan(root)
+    assert history == adapters.HISTORY_OK
+    assert [f["occurrences"][0]["file"] for f in whole if f["historical"]] == ["prod.env"]
+    since_first, _notes, history, _tree = adapters.gitleaks_scan(root, since=first)
+    assert history == adapters.HISTORY_OK
+    assert [f for f in since_first if f["historical"]] == [], since_first
+    nothing, _notes, history, _tree = adapters.gitleaks_scan(root, since=head)
+    assert history == adapters.HISTORY_OK and [f for f in nothing if f["historical"]] == []
+
+
+def test_a_history_finding_carries_its_commit_count_as_a_number():
+    """Beside the sentence, so `cli._carry_history` can add a later sweep's
+    commits to it; a tree finding carries no count."""
+    historical = adapters._finding("aws-access-token", "prod.env", [3], True, 2)
+    assert historical["commit_count"] == 2
+    assert "Seen in 2 commits" in historical["rationale"]
+    tree = adapters._finding("aws-access-token", "prod.env", [3], False, 0)
+    assert "commit_count" not in tree and "Seen in" not in tree["rationale"]
+
+
 # ------------------------------------- the analysed repository's own config
 
 @needs_gitleaks
