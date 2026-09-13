@@ -783,14 +783,14 @@ def test_the_security_pane_follows_its_effective_platform(srv, tmp_path):
     app = _app_js(srv)
     deps = "\n".join(_plainfn(page, n) for n in
                      ("applyPlatformToSecurity", "secEffectivePlatform", "effortSet", "effortGet",
-                      "ladderOf", "modelOptions"))
+                      "ladderOf", "modelOptions", "paintEffortEnds"))
     # modelEnabled and DISABLED_SUFFIX: modelOptionsFor reads both for the
     # `current` value the pane now hands it on a re-apply (Task 9), so a model
     # Settings switched off is shown flagged instead of silently dropped.
     vocab = "\n".join(_plainfn(app, n) for n in
-                      ("effortsFor", "effortIndex", "effortFromIndex", "permissionsFor",
+                      ("platformKey", "effortsFor", "effortIndex", "effortFromIndex", "permissionsFor",
                        "defaultPermissionFor", "defaultModelFor", "modelEnabled", "modelOptionsFor")) \
-        + "\n" + _const(app, "FALLBACK_EFFORTS") + _const(app, "FALLBACK_PERMISSIONS") \
+        + "\n" + _const(app, "KNOWN_PLATFORMS") + _const(app, "FALLBACK_EFFORTS") + _const(app, "FALLBACK_PERMISSIONS") \
         + _const(app, "DISABLED_SUFFIX")
     script = tmp_path / "sec-platform.js"
     script.write_text(vocab + """
@@ -1497,10 +1497,10 @@ def _jobs_table_deps(block):
     # so this test (and its structural sibling below) CAN pull in the real
     # ones instead of stubbing a second load-bearing piece.
     consts = (_const(block, "STATE_RANK") + _const(block, "JOB_SORTERS")
-              + _const(block, "JOB_COLS") + _const(block, "KPI_ICONS"))
+              + _const(block, "JOB_COLS") + _const(block, "KPI_ICONS") + _const(block, "KNOWN_PLATFORMS"))
     fns = ("el", "kpiCard", "filterBar", "tableCard", "tableFooter",
            "inWindow", "nextCheckAt", "jobFacts", "visibleJobs", "sortJobs",
-           "bulkOn", "bulkLabel", "jobsEmptyNote", "platformOf", "modelEnabled", "platformState", "platformChip",
+           "bulkOn", "bulkLabel", "jobsEmptyNote", "platformKey", "platformOf", "modelEnabled", "platformState", "platformChip",
            "jobsHeaderSubtitle", "jobsKpis", "mountJobsToolbar",
            "paintJobFilterBar", "jobRow", "renderJobsTable", "renderJobsPage")
     return consts + "\n".join(_plainfn(block, n) for n in fns)
@@ -1966,7 +1966,7 @@ def test_the_job_editor_makes_the_platform_explicit_when_a_project_would_move_it
 
     def run(new_project):
         script = tmp_path / f"save-editor-{new_project}.js"
-        script.write_text(_plainfn(app, "platformOf") + """
+        script.write_text(_const(app, "KNOWN_PLATFORMS") + _plainfn(app, "platformKey") + _plainfn(app, "platformOf") + """
         const ALApp = {platformOf};
         const sent = [];
         const vals = {"ed-id": "j", "ed-prompt": "", "ed-precheck": "", "ed-project": %s,
@@ -2017,7 +2017,7 @@ def test_the_job_editor_re_sends_what_a_platform_change_governs(srv, tmp_path):
 
     def run(form):
         script = tmp_path / f"save-editor-governed-{form['platform']}.js"
-        script.write_text(_plainfn(app, "platformOf") + """
+        script.write_text(_const(app, "KNOWN_PLATFORMS") + _plainfn(app, "platformKey") + _plainfn(app, "platformOf") + """
         const ALApp = {platformOf};
         const sent = [];
         const vals = {"ed-id": "j", "ed-prompt": "", "ed-precheck": "", "ed-project": "",
@@ -2071,7 +2071,7 @@ def test_the_job_editors_model_default_is_the_platforms(srv):
         assert part in cfg, f"the job editor's model combo lost {part}"
     assert "modelCombo=createCombo(edModelCfg)" in js
     fn = _plainfn(js, "applyPlatformToJobEditor")
-    assert 'edModelCfg.def=ALApp.defaultModelFor(p,PLATFORMS)||(p==="openai"?"":"opus");' in fn
+    assert 'edModelCfg.def=ALApp.defaultModelFor(p,PLATFORMS)||(p==="anthropic"?"opus":"");' in fn
     assert fn.index("edModelCfg.def=") < fn.index("modelCombo.set("), "the default is set before the combo is"
 
 
@@ -2842,7 +2842,7 @@ def test_the_runs_table_the_log_and_the_security_meta_name_the_platform(srv):
     # EVERY row carries it, both platforms: an unbadged row would mean either
     # "Anthropic" or "not known yet", and those are different answers to the
     # question the operator is asking. Anthropic takes the quiet variant.
-    assert 'el("span", "platbadge" + (plat === "openai" ? "" : " alt"), platformLabel(plat))' in app, \
+    assert 'el("span", "platbadge plat-" + plat, platformLabel(plat))' in app, \
         "the Runs table must badge every run, not only the OpenAI ones"
     assert 'if(r.platform === "openai"){' not in app, "the OpenAI-only guard is gone"
     assert 'const plat = r.platform || "anthropic";' in app, "a run with no platform recorded reads as Anthropic"
@@ -2861,7 +2861,9 @@ def test_a_run_still_going_already_knows_which_cli_is_spending(srv, tmp_path):
     journal had it. The job knows from the moment it launches, and it is the
     same resolution the editor uses (own, else the project's, else anthropic)."""
     page = _js(srv)
-    deps = _plainfn(page, "liveRuns") + "\n" + _plainfn(_app_js(srv), "platformOf")
+    app = _app_js(srv)
+    deps = (_plainfn(page, "liveRuns") + "\n" + _const(app, "KNOWN_PLATFORMS")
+            + _plainfn(app, "platformKey") + _plainfn(app, "platformOf"))
     script = tmp_path / "live-platform.js"
     script.write_text("""
     const ALApp = {platformOf};
@@ -2895,6 +2897,7 @@ def test_the_reopen_line_names_the_cli_the_run_actually_ran_on(srv, tmp_path):
       reopenCommand({platform: "anthropic", session: "sess-1"}, {}),
       reopenCommand({session: "sess-2"}, {}),
       reopenCommand({platform: "openai", session: "ignored"}, {session: "01a0-live"}),
+      reopenCommand({platform: "opencode", session: "run-42"}, {}),
     ]));
     """)
     out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
@@ -2903,6 +2906,7 @@ def test_the_reopen_line_names_the_cli_the_run_actually_ran_on(srv, tmp_path):
     assert out[1] == "claude --resume sess-1"
     assert out[2] == "claude --resume sess-2", "a record from before platforms is a Claude run"
     assert out[3] == "codex exec resume 01a0-live", "the agent's own session id wins, as it does today"
+    assert out[4] == "opencode run --dir <run dir> -s run-42"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -3148,12 +3152,12 @@ _JOB_CARD_PAGE_STUBS = """
 
 def _job_card_deps(block):
     """jobCard and everything it reaches in the bundle, plus the DOW table."""
-    return (_const(block, "DOW")
+    return (_const(block, "DOW") + _const(block, "KNOWN_PLATFORMS") + _const(block, "PLATFORM_LABELS")
             + _index_screen_deps(block, "fmtDays", "el", "jobFacts",
                                  "nextCheckAt", "inWindow", "probeVerdict",
                                  "nextRunNote", "spendTone", "checkList",
-                                 "sessionNotices", "platformOf", "modelEnabled", "platformState",
-                                 "platformChip", "jobCard"))
+                                 "sessionNotices", "platformKey", "platformOf", "platformLabel", "modelEnabled",
+                                 "platformState", "platformChip", "jobCard"))
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -3173,6 +3177,8 @@ def test_the_job_card_names_the_platform_only_when_it_is_openai(srv, tmp_path):
                      interval_minutes: 15, platform: "openai", model: "gpt-5.6-sol"}),
       anthropic: cfgOf({id: "claude-agent", project: "Quality Gate", enabled: true,
                         interval_minutes: 15, platform: "anthropic", model: "opus"}),
+      opencode: cfgOf({id: "oc-agent", project: "Quality Gate", enabled: true,
+                       interval_minutes: 15, platform: "opencode", model: "pdm_ai/glm-5.3-flash"}),
     }));
     """)
     got = json.loads(subprocess.run(["node", str(script)], capture_output=True,
@@ -3182,43 +3188,58 @@ def test_the_job_card_names_the_platform_only_when_it_is_openai(srv, tmp_path):
     assert len(got["anthropic"]) == 1, f"one settings line per card, got {got['anthropic']}"
     assert "Anthropic ·" not in got["anthropic"][0], got["anthropic"]
     assert "opus" in got["anthropic"][0], "the Anthropic card still names its model, bare"
+    assert len(got["opencode"]) == 1, f"one settings line per card, got {got['opencode']}"
+    assert "OpenCode · pdm_ai/glm-5.3-flash" in got["opencode"][0], got["opencode"]
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_platform_options_offer_only_what_settings_switched_on(srv, tmp_path):
-    """Until /api/models answers with the registry, both platforms (the page as
-    it was); once it does, only the usable ones -- and the job's current one
-    flagged rather than silently swapped."""
+    """Until /api/models answers with the registry, every known platform (the
+    page as it was); once it does, only the usable ones -- and the job's
+    current one flagged rather than silently swapped. OpenCode reads the
+    identical way the other two do: usable, it joins the list bare; switched
+    off, it gets the same DISABLED_SUFFIX flag as any other platform -- no
+    special "not supported yet" case survives now that entry.supported can
+    be false for whichever platform is planned NEXT, never for OpenCode."""
     js = _app_js(srv)
-    deps = _const(js, "DISABLED_SUFFIX") + "\n".join(_plainfn(js, n) for n in ("registryKnown", "platformOptions"))
+    deps = (_const(js, "DISABLED_SUFFIX") + _const(js, "KNOWN_PLATFORMS") + _const(js, "PLATFORM_LABELS")
+            + "\n".join(_plainfn(js, n) for n in ("registryKnown", "platformOptions")))
     script = tmp_path / "platform-options.js"
-    script.write_text("""
-    const PLATFORM_LABELS = {anthropic: "Anthropic", openai: "OpenAI", opencode: "OpenCode"};
-    """ + deps + """
+    script.write_text(deps + """
     const before = platformOptions({}, "anthropic");
-    const p = {anthropic: {enabled: true, usable: true}, openai: {enabled: true, usable: false}};
+    const p = {anthropic: {enabled: true, usable: true}, openai: {enabled: true, usable: false},
+               opencode: {enabled: true, usable: true}};
     const after = platformOptions(p, "anthropic");
     const flagged = platformOptions(p, "openai");
-    // A planned platform (never wired up yet) is not something Settings
-    // switched off -- it must read that way, not as a stray disabled toggle.
-    const planned = platformOptions(p, "opencode");
-    console.log(JSON.stringify({before, after, flagged, planned}));
+    const usable = platformOptions(p, "opencode");
+    const off = {anthropic: {enabled: true, usable: true}, openai: {enabled: true, usable: false},
+                 opencode: {enabled: true, usable: false}};
+    const disabled = platformOptions(off, "opencode");
+    console.log(JSON.stringify({before, after, flagged, usable, disabled}));
     """)
     out = json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout)
-    assert [o["v"] for o in out["before"]] == ["anthropic", "openai"]
-    assert [o["v"] for o in out["after"]] == ["anthropic"]
+    assert [o["v"] for o in out["before"]] == ["anthropic", "openai", "opencode"], \
+        "before the registry answers every KNOWN platform is offered, OpenCode included"
+    assert [o["v"] for o in out["after"]] == ["anthropic", "opencode"], \
+        "once the registry answers, only the usable platforms -- OpenCode included when it is one"
     assert out["flagged"][-1] == {"v": "openai", "label": "OpenAI (disabled in Settings)", "flagged": True}
-    assert out["planned"][-1] == {"v": "opencode", "label": "OpenCode (not supported yet)", "flagged": True}
+    assert {"v": "opencode", "label": "OpenCode"} in out["usable"], \
+        "a usable OpenCode joins the list bare, like any other switched-on platform"
+    assert out["disabled"][-1] == {"v": "opencode", "label": "OpenCode (disabled in Settings)", "flagged": True}
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_model_options_are_filtered_by_the_enabled_list_and_flag_the_current(srv, tmp_path):
     js = _app_js(srv)
-    deps = _const(js, "DISABLED_SUFFIX") + "\n".join(_plainfn(js, n) for n in ("modelEnabled", "modelOptionsFor"))
+    deps = (_const(js, "DISABLED_SUFFIX") + _const(js, "KNOWN_PLATFORMS")
+            + "\n".join(_plainfn(js, n) for n in ("platformKey", "modelEnabled", "modelOptionsFor")))
     script = tmp_path / "model-options.js"
     script.write_text(deps + """
     const P = {anthropic: {models: ["claude-opus-5", "claude-sonnet-5"], models_enabled: ["claude-opus-5"]},
-               openai: {models: [{v: "gpt-a", label: "A", desc: "da"}, {v: "gpt-b", label: "B"}], models_enabled: ["gpt-b"]}};
+               openai: {models: [{v: "gpt-a", label: "A", desc: "da"}, {v: "gpt-b", label: "B"}], models_enabled: ["gpt-b"]},
+               opencode: {models: [{v: "pdm_ai/glm-5.3-flash", label: "glm-5.3-flash", provider: "pdm_ai", priced: true},
+                                    {v: "opencode/no-tools", label: "No Tools", provider: "opencode", priced: false, tools: false}],
+                          models_enabled: ["pdm_ai/glm-5.3-flash", "opencode/no-tools"]}};
     const a = modelOptionsFor("anthropic", P, null, "claude-sonnet-5");
     const o = modelOptionsFor("openai", P, null, "gpt-b");
     const legacy = modelOptionsFor("anthropic", {anthropic: {models: ["claude-opus-5", "claude-sonnet-5"]}}, null, "");
@@ -3228,7 +3249,10 @@ def test_model_options_are_filtered_by_the_enabled_list_and_flag_the_current(srv
     // No models_enabled at all (the registry has not answered yet): the
     // job's own current model gets no verdict either, same as platformState.
     const noRegistry = modelOptionsFor("anthropic", {anthropic: {models: ["claude-opus-5", "claude-sonnet-5"]}}, null, "claude-opus-5");
-    console.log(JSON.stringify({a, o, legacy, fam, noRegistry}));
+    // OpenCode: provider named, no-price and no-tools both flagged -- the same
+    // two flags OpenAI's own branch uses, plus the third this platform alone has.
+    const oc = modelOptionsFor("opencode", P, null, "");
+    console.log(JSON.stringify({a, o, legacy, fam, noRegistry, oc}));
     """)
     out = json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout)
     assert out["a"] == [{"v": "claude-opus-5", "label": "claude-opus-5"},
@@ -3240,6 +3264,8 @@ def test_model_options_are_filtered_by_the_enabled_list_and_flag_the_current(srv
     assert out["noRegistry"] == [{"v": "claude-opus-5", "label": "claude-opus-5"},
                                  {"v": "claude-sonnet-5", "label": "claude-sonnet-5"}], \
         "no models_enabled: the job's own current model is not flagged either"
+    assert out["oc"] == [{"v": "pdm_ai/glm-5.3-flash", "label": "glm-5.3-flash (pdm_ai)"},
+                         {"v": "opencode/no-tools", "label": "No Tools (opencode) · no price · no tools"}]
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -3262,7 +3288,7 @@ def test_model_enabled_is_one_rule_for_the_combo_the_chip_and_the_editor(srv, tm
     id; any OTHER id of that family still stays off."""
     js = _app_js(srv)
     script = tmp_path / "model-enabled.js"
-    script.write_text(_plainfn(js, "modelEnabled") + """
+    script.write_text(_const(js, "KNOWN_PLATFORMS") + _plainfn(js, "platformKey") + _plainfn(js, "modelEnabled") + """
     const P = {anthropic: {models_enabled: ["claude-opus-5"]}, openai: {models_enabled: ["gpt-a"]}};
     // The registry with the cache's own resolutions: opus -> claude-opus-5.
     const R = {anthropic: {models_enabled: ["claude-opus-5"], families: {opus: "claude-opus-5", sonnet: "claude-sonnet-5"}}};
@@ -3311,24 +3337,38 @@ def test_model_enabled_is_one_rule_for_the_combo_the_chip_and_the_editor(srv, tm
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_platform_state_names_a_platform_or_model_switched_off(srv, tmp_path):
+    """planned is no longer opencode's own hardcoded state: it is entry.supported
+    being false, so it now takes an /api/models payload to say so -- OpenCode
+    itself reads platform_disabled/ok exactly like the other two once the
+    registry carries its entry, because Task 8 made it entry.supported: true."""
     js = _app_js(srv)
     script = tmp_path / "platform-state.js"
-    script.write_text("\n".join(_plainfn(js, n) for n in ("platformOf", "modelEnabled", "platformState")) + """
+    script.write_text("\n".join(_plainfn(js, n) for n in ("platformOf", "platformKey", "modelEnabled", "platformState"))
+                       + _const(js, "KNOWN_PLATFORMS") + """
     function eff(j, f, d){ return (j && j[f] != null && j[f] !== "") ? j[f] : d; }
-    const P = {anthropic: {enabled: true, usable: true, models_enabled: ["claude-opus-5"], default_model: "claude-opus-5"},
-               openai: {enabled: false, usable: false, models_enabled: []}};
+    const base = {anthropic: {enabled: true, usable: true, models_enabled: ["claude-opus-5"], default_model: "claude-opus-5"},
+                  openai: {enabled: false, usable: false, models_enabled: []}};
+    const P = Object.assign({}, base, {opencode: {enabled: true, usable: false, models_enabled: []}});
+    const P2 = Object.assign({}, base, {opencode: {enabled: true, usable: true, models_enabled: []}});
+    // "planned" is now driven by entry.supported alone, not by the platform's
+    // name -- proven here by putting it on a DIFFERENT known platform, since
+    // OpenCode itself is entry.supported: true from here on. Whichever
+    // platform lands next is the one this branch is actually for.
+    const P3 = Object.assign({}, base, {openai: {enabled: true, usable: true, supported: false, models_enabled: []}});
     console.log(JSON.stringify({
       ok: platformState({model: "claude-opus-5"}, null, P),
       fam: platformState({model: "opus"}, null, P),
       model: platformState({model: "claude-sonnet-5"}, null, P),
       plat: platformState({platform: "openai", model: "gpt-a"}, null, P),
-      planned: platformState({platform: "opencode"}, null, P),
+      ocDisabled: platformState({platform: "opencode"}, null, P),
+      ocOk: platformState({platform: "opencode"}, null, P2),
+      genericPlanned: platformState({platform: "openai"}, null, P3),
       blind: platformState({model: "claude-sonnet-5"}, null, {}),
     }));
     """)
     out = json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout)
     assert out == {"ok": "ok", "fam": "ok", "model": "model_disabled", "plat": "platform_disabled",
-                   "planned": "planned", "blind": "ok"}
+                   "ocDisabled": "platform_disabled", "ocOk": "ok", "genericPlanned": "planned", "blind": "ok"}
 
 
 def test_the_card_and_the_row_show_the_platform_chip(srv):
@@ -3336,7 +3376,7 @@ def test_the_card_and_the_row_show_the_platform_chip(srv):
     assert "platformChip(platformState(j, projById(j.project || \"\"), AL.PLATFORMS))" in _plainfn(js, "jobCard")
     assert "platformChip(platformState(j, projById(j.project || \"\"), AL.PLATFORMS))" in _plainfn(js, "jobRow")
     for name in ("platformOptions", "registryKnown", "hiddenModelCount", "platformState", "platformChip",
-                 "PLATFORM_LABELS", "modelEnabled", "DISABLED_SUFFIX"):
+                 "PLATFORM_LABELS", "modelEnabled", "DISABLED_SUFFIX", "KNOWN_PLATFORMS", "platformKey"):
         assert name in js.split("window.ALApp = {", 1)[1], f"{name} is not on window.ALApp"
     assert "get PLATFORMS(){ return PLATFORMS; }" in _js(srv)
 
@@ -3471,6 +3511,9 @@ def test_the_settings_summary_and_the_status_chip(srv, tmp_path):
     console.log(JSON.stringify({
       summary: settingsSummary(P),
       one: settingsSummary({anthropic: {enabled: true, models_enabled: ["a"]}}),
+      allOn: settingsSummary({anthropic: {enabled: true, models_enabled: ["a"]},
+                               openai: {enabled: true, models_enabled: ["b"]},
+                               opencode: {enabled: true, models_enabled: ["c"]}}),
       on: platformStatus({supported: true, enabled: true}, {ready: true, bin_found: true}),
       off: platformStatus({supported: true, enabled: false}, {ready: true, bin_found: true}),
       nobin: platformStatus({supported: true, enabled: false}, {ready: false, bin_found: false}),
@@ -3482,6 +3525,7 @@ def test_the_settings_summary_and_the_status_chip(srv, tmp_path):
     out = json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout)
     assert out["summary"] == "2 of 3 platforms enabled · 3 models available to jobs"
     assert out["one"] == "1 of 3 platforms enabled · 1 model available to jobs"
+    assert out["allOn"] == "3 of 3 platforms enabled · 3 models available to jobs"
     assert [out[k]["label"] for k in ("on", "off", "nobin", "nosession", "planned", "unchecked")] == \
         ["Enabled", "Disabled", "Not installed", "Not signed in", "Coming soon", "Enabled"]
     assert out["nobin"]["cls"] == "off" and out["nosession"]["cls"] == "idle" and out["planned"]["cls"] == "disabled"
@@ -3516,19 +3560,23 @@ def test_the_card_line_counts_every_job_not_only_the_enabled_ones(srv, tmp_path)
     js = _app_js(srv)
     script = tmp_path / "settings-jobs-line.js"
     script.write_text("\n".join(_plainfn(js, n) for n in ("platformJobsLine", "modelJobsTitle")) + """
+    const R = {name: "Test"};
     console.log(JSON.stringify({
-      allOn:   platformJobsLine({enabled: true,  jobs_on_platform: 3, jobs_on_platform_enabled: 3}),
-      one:     platformJobsLine({enabled: true,  jobs_on_platform: 1, jobs_on_platform_enabled: 1}),
-      parked:  platformJobsLine({enabled: false, jobs_on_platform: 8, jobs_on_platform_enabled: 0}),
-      some:    platformJobsLine({enabled: true,  jobs_on_platform: 5, jobs_on_platform_enabled: 2}),
-      none:    platformJobsLine({enabled: true,  jobs_on_platform: 0, jobs_on_platform_enabled: 0}),
-      noneOff: platformJobsLine({enabled: false, jobs_on_platform: 0, jobs_on_platform_enabled: 0}),
-      planned: platformJobsLine({supported: false, jobs_on_platform: 0}),
+      allOn:   platformJobsLine({enabled: true,  jobs_on_platform: 3, jobs_on_platform_enabled: 3}, R),
+      one:     platformJobsLine({enabled: true,  jobs_on_platform: 1, jobs_on_platform_enabled: 1}, R),
+      parked:  platformJobsLine({enabled: false, jobs_on_platform: 8, jobs_on_platform_enabled: 0}, R),
+      some:    platformJobsLine({enabled: true,  jobs_on_platform: 5, jobs_on_platform_enabled: 2}, R),
+      none:    platformJobsLine({enabled: true,  jobs_on_platform: 0, jobs_on_platform_enabled: 0}, R),
+      noneOff: platformJobsLine({enabled: false, jobs_on_platform: 0, jobs_on_platform_enabled: 0}, R),
+      // entry.supported: false is not OpenCode's any more -- it is whichever
+      // platform is planned NEXT, and the sentence has to name THAT one,
+      // read off the REGISTRY row now passed in alongside the entry.
+      nextPlanned: platformJobsLine({supported: false, jobs_on_platform: 0}, {name: "FuturePlatform"}),
       title:     modelJobsTitle(2, 0),
       titleOne:  modelJobsTitle(1, 1),
       titleNone: modelJobsTitle(0, 0),
       titleUnknown: modelJobsTitle(2, undefined),
-      lineUnknown:  platformJobsLine({enabled: true, jobs_on_platform: 2}),
+      lineUnknown:  platformJobsLine({enabled: true, jobs_on_platform: 2}, R),
     }));
     """)
     out = json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout)
@@ -3536,7 +3584,7 @@ def test_the_card_line_counts_every_job_not_only_the_enabled_ones(srv, tmp_path)
     assert out["parked"] == "8 jobs run here (0 enabled)", out
     assert out["some"] == "5 jobs run here (2 enabled)", out
     assert out["none"] == "jobs may pick this platform" and out["noneOff"] == "unlocks when the session test passes"
-    assert out["planned"] == "runs on OpenCode are not supported yet"
+    assert out["nextPlanned"] == "runs on FuturePlatform are not supported yet"
     assert out["title"] == "2 jobs use this model (0 switched on)", out
     assert out["titleOne"] == "1 job uses this model (1 switched on)" and out["titleNone"] == ""
     # A payload without the enabled halves (an older server, a cached response)
@@ -3547,6 +3595,8 @@ def test_the_card_line_counts_every_job_not_only_the_enabled_ones(srv, tmp_path)
     assert out["lineUnknown"] == "2 jobs run here", out
     assert "enabled job" not in _plainfn(js, "platformJobsLine"), \
         "the card line must stop calling every configured job an enabled one"
+    assert "OpenCode" not in _plainfn(js, "platformJobsLine"), \
+        "the not-supported sentence must name whichever platform is actually unsupported, never OpenCode by name"
 
 
 def test_the_settings_module_speaks_the_six_actions(srv):
@@ -3637,6 +3687,48 @@ def test_note_from_output_keeps_only_the_lines_after_the_first(srv, tmp_path):
     assert out["plain"] == ""
 
 
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_session_line_only_prefixes_an_anthropic_account(srv, tmp_path):
+    """The engine already phrases Codex's ("Logged in using ChatGPT") and
+    OpenCode's ("N credentials -- providers: ...") own checks; only
+    Anthropic's answers a bare email-and-plan that needs "Signed in as " in
+    front of it. sessionBlock used to guess this by sniffing the string
+    (startsWith("Logged in")) -- the rule is the platform now, so OpenCode's
+    very different wording is not mistaken for Codex's."""
+    js = _app_js(srv)
+    deps = "\n".join(_plainfn(js, n) for n in ("el", "sessionBlock"))
+    script = tmp_path / "session-block.js"
+    script.write_text("""
+    class FakeNode {
+      constructor(){ this.childNodes = []; }
+      appendChild(c){ this.childNodes.push(c); return c; }
+      get textContent(){ return this.childNodes.map(c => c.textContent || "").join(""); }
+      set textContent(v){ this.childNodes = [{textContent: String(v)}]; }
+    }
+    class FakeElement extends FakeNode {
+      constructor(tag){ super(); this.tagName = tag; this.className = ""; }
+    }
+    const document = {
+      createElement: (tag) => new FakeElement(tag),
+      createTextNode: (t) => ({textContent: String(t)}),
+    };
+    function icon(_name){ return document.createElement("span"); }
+    function button(){ return document.createElement("span"); }
+    function ago(_t){ return "just now"; }
+    const live = {busy: {}, checkedAt: {}};
+    """ + deps + """
+    const oc = sessionBlock({id: "opencode"}, {ready: true},
+      {ready: true, account: "2 credentials · providers: anthropic, pdm_ai"});
+    const an = sessionBlock({id: "anthropic"}, {ready: true},
+      {ready: true, account: "jd@example.com (Max plan)"});
+    console.log(JSON.stringify({oc: oc.textContent, an: an.textContent}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout)
+    assert "Signed in as" not in out["oc"], f"OpenCode's own wording must not be reworded: {out['oc']}"
+    assert "2 credentials · providers: anthropic, pdm_ai" in out["oc"]
+    assert "Signed in as jd@example.com (Max plan)" in out["an"], f"Anthropic still gets the prefix: {out['an']}"
+
+
 # Settings › Platforms (Task 9): the editors offer only what Settings switched
 # on, the strip Overview and Jobs carry while nothing is configured, New job
 # diverted to Settings, the sidebar dot, and the landing after the profile.
@@ -3676,7 +3768,7 @@ def test_the_agent_step_refuses_what_settings_switched_off(srv, tmp_path):
     # The real rule, not a hand copy: modelOptionsFor and the Agent step both
     # call ALApp.modelEnabled, and a hand-copied stub can silently drift from
     # what the page actually ships.
-    deps = _plainfn(app, "modelEnabled")
+    deps = _const(app, "KNOWN_PLATFORMS") + _plainfn(app, "platformKey") + _plainfn(app, "modelEnabled")
     script = tmp_path / "validate-agent.js"
     script.write_text(deps + """
     const vals = {"ed-id": "j", "ed-cwd": "/x", "ed-prompt": "p", "ed-hours-start": "", "ed-hours-end": "",
@@ -8808,8 +8900,8 @@ def test_the_effort_ladder_follows_the_platform_and_the_model(srv, tmp_path):
     the unset stop. Pinned against literal payloads, as the days/effort test
     above pins the old constant."""
     block = _app_js(srv)
-    deps = "\n".join(_plainfn(block, n) for n in ("effortsFor", "effortIndex", "effortFromIndex")) \
-        + "\n" + _const(block, "FALLBACK_EFFORTS")
+    deps = "\n".join(_plainfn(block, n) for n in ("platformKey", "effortsFor", "effortIndex", "effortFromIndex")) \
+        + "\n" + _const(block, "KNOWN_PLATFORMS") + "\n" + _const(block, "FALLBACK_EFFORTS")
     script = tmp_path / "efforts-for.js"
     script.write_text(deps + "\nconst P = " + json.dumps(_PLATFORMS_PAYLOAD) + ";\n" + """
     const sol = effortsFor("openai", "gpt-5.6-sol", P);
@@ -8837,8 +8929,10 @@ def test_the_effort_ladder_follows_the_platform_and_the_model(srv, tmp_path):
 def test_permissions_models_and_platform_come_from_the_payload(srv, tmp_path):
     block = _app_js(srv)
     deps = "\n".join(_plainfn(block, n) for n in
-                     ("permissionsFor", "defaultPermissionFor", "defaultModelFor", "modelOptionsFor",
-                      "platformOf", "platformLabel")) + "\n" + _const(block, "FALLBACK_PERMISSIONS")
+                     ("platformKey", "permissionsFor", "defaultPermissionFor", "defaultModelFor", "modelOptionsFor",
+                      "platformOf", "platformLabel")) \
+        + "\n" + _const(block, "KNOWN_PLATFORMS") + "\n" + _const(block, "PLATFORM_LABELS") \
+        + "\n" + _const(block, "FALLBACK_PERMISSIONS")
     script = tmp_path / "vocab-for.js"
     script.write_text(deps + "\nconst P = " + json.dumps(_PLATFORMS_PAYLOAD) + ";\n" + """
     const groupFn = (ids) => [{sec: "G"}].concat(ids.map(v => ({v, label: v})));
@@ -8876,12 +8970,98 @@ def test_permissions_models_and_platform_come_from_the_payload(srv, tmp_path):
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_effortsFor_reads_the_opencode_models_variants(srv, tmp_path):
+    """OpenCode's own effort ladder is a model's `variants` -- read the same
+    way OpenAI's per-model efforts already are: effortsFor no longer singles
+    out "openai" by name, so any platform that is not anthropic reads its
+    model's own list first, falling back to the platform's union, then to
+    the unset-only stop."""
+    block = _app_js(srv)
+    deps = "\n".join(_plainfn(block, n) for n in ("platformKey", "effortsFor")) \
+        + "\n" + _const(block, "KNOWN_PLATFORMS") + "\n" + _const(block, "FALLBACK_EFFORTS")
+    script = tmp_path / "efforts-for-opencode.js"
+    script.write_text(deps + """
+    const P = {opencode: {efforts: ["max","high","non-think","low"], models: [
+      {v: "pdm_ai/glm-5.3-flash", efforts: ["max","high","non-think"]}, {v: "opencode/big-pickle", efforts: []}]},
+      openai: {efforts: ["low","medium","high","xhigh","max"], models: [
+      {v: "gpt-5.5", efforts: []}]}};
+    console.log(JSON.stringify({
+      glm: effortsFor("opencode", "pdm_ai/glm-5.3-flash", P),
+      pickle: effortsFor("opencode", "opencode/big-pickle", P),
+      none: effortsFor("opencode", "", P),
+      oaEmpty: effortsFor("openai", "gpt-5.5", P),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout)
+    assert out["glm"] == ["", "max", "high", "non-think"]
+    assert out["pickle"] == [""], "a model without variants offers only the unset stop"
+    assert out["none"] == ["", "max", "high", "non-think", "low"]
+    assert out["oaEmpty"] == ["", "low", "medium", "high", "xhigh", "max"], \
+        "unlike OpenCode, an OpenAI model with an empty reasoning list falls back to the platform union"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_opencode_permission_and_model_defaults_mirror_the_engine(srv, tmp_path):
+    """OpenCode reads through the same five functions the other two platforms
+    do -- no third copy of the vocabulary, only platformKey choosing which
+    /api/models entry each one reads."""
+    block = _app_js(srv)
+    deps = "\n".join(_plainfn(block, n) for n in
+                     ("platformKey", "permissionsFor", "defaultPermissionFor", "defaultModelFor",
+                      "modelEnabled", "modelOptionsFor", "hiddenModelCount", "platformLabel")) \
+        + "\n" + _const(block, "KNOWN_PLATFORMS") + "\n" + _const(block, "PLATFORM_LABELS") \
+        + "\n" + _const(block, "FALLBACK_PERMISSIONS") + "\n" + _const(block, "DISABLED_SUFFIX")
+    script = tmp_path / "opencode-vocab.js"
+    script.write_text(deps + """
+    const P = {opencode: {permissions: [{v: "full-access", label: "fa"}, {v: "read-only", label: "ro"}],
+                          default_model: "pdm_ai/glm-5.3-flash", models_enabled: ["pdm_ai/glm-5.3-flash"],
+                          models: [{v: "pdm_ai/glm-5.3-flash", label: "glm-5.3-flash", provider: "pdm_ai", priced: true},
+                                   {v: "opencode/big-pickle", label: "Big Pickle", provider: "opencode", priced: false}]}};
+    console.log(JSON.stringify({
+      perms: permissionsFor("opencode", P).map(o => o.v),
+      job: defaultPermissionFor("opencode", "job"), sec: defaultPermissionFor("opencode", "security"),
+      model: defaultModelFor("opencode", P), fallback: defaultModelFor("opencode", {}),
+      opts: modelOptionsFor("opencode", P, null, "").map(o => o.label),
+      hidden: hiddenModelCount("opencode", P), label: platformLabel("opencode"),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout)
+    assert out["perms"] == ["full-access", "read-only"]
+    assert out["job"] == "full-access" and out["sec"] == "full-access"
+    assert out["model"] == "pdm_ai/glm-5.3-flash" and out["fallback"] == ""
+    assert out["opts"] == ["glm-5.3-flash (pdm_ai)"], \
+        "flat, provider named, the switched-off one hidden"
+    assert out["hidden"] == 1 and out["label"] == "OpenCode"
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_platformOf_and_platformOptions_know_three_platforms(srv, tmp_path):
+    """Neither function special-cases OpenCode by name any more -- both read
+    KNOWN_PLATFORMS, the one list all three platforms are registered on."""
+    block = _app_js(srv)
+    deps = "\n".join(_plainfn(block, n) for n in ("platformKey", "platformOf", "registryKnown", "platformOptions")) \
+        + "\n" + _const(block, "KNOWN_PLATFORMS") + "\n" + _const(block, "PLATFORM_LABELS") \
+        + "\n" + _const(block, "DISABLED_SUFFIX")
+    script = tmp_path / "platform-of-three.js"
+    script.write_text(deps + """
+    const P = {anthropic: {enabled: true, usable: true}, openai: {enabled: true, usable: false}, opencode: {enabled: true, usable: true}};
+    console.log(JSON.stringify({
+      own: platformOf({platform: "opencode"}, null), inherited: platformOf({}, {platform: "opencode"}),
+      options: platformOptions(P, "").map(o => o.v),
+    }));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout)
+    assert out["own"] == "opencode" and out["inherited"] == "opencode"
+    assert out["options"] == ["anthropic", "opencode"]
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_anthropic_fallback_permissions_say_what_the_server_says(srv, tmp_path):
     """The page opens on the fallback and swaps to the server's list on the
     first fetch; if the two differed, the labels would flip on screen. So
     FALLBACK_PERMISSIONS is PLATFORM_PERMISSIONS (bin/agentloop-server)
-    verbatim -- v AND label, in the server's order -- for both platforms, not
-    only the Anthropic one that drifted. The JS object is read by node,
+    verbatim -- v AND label, in the server's order -- for all three
+    platforms, not only the Anthropic one that drifted. The JS object is read by node,
     exactly as the page reads it (turning its source into JSON by string
     replacement would trip on the trailing commas); the server's is the
     literal in its source."""
@@ -8892,8 +9072,8 @@ def test_the_anthropic_fallback_permissions_say_what_the_server_says(srv, tmp_pa
     server = (REPO / "bin" / "agentloop-server").read_text()
     brace = server.index("{", server.index("\nPLATFORM_PERMISSIONS = "))
     table = ast.literal_eval(server[brace:_scan_balanced(server, brace)])
-    assert set(fallback) == set(table) == {"anthropic", "openai"}
-    for platform in ("anthropic", "openai"):
+    assert set(fallback) == set(table) == {"anthropic", "openai", "opencode"}
+    for platform in ("anthropic", "openai", "opencode"):
         assert [(o["v"], o["label"]) for o in fallback[platform]] \
             == [(o["v"], o["label"]) for o in table[platform]], platform
 

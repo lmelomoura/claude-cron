@@ -1,0 +1,28 @@
+timestamp=2026-09-12T14:55:50.822Z level=INFO run=dd4694ba message="creating instance" directory=/tmp/probe/p
+timestamp=2026-09-12T14:55:50.823Z level=INFO run=dd4694ba message=fromDirectory directory=/tmp/probe/p
+timestamp=2026-09-12T14:55:50.845Z level=INFO run=dd4694ba message=bootstrapping directory=/tmp/probe/p
+timestamp=2026-09-12T14:55:50.848Z level=INFO run=dd4694ba message=loading path=/Users/me/.config/opencode/config.json
+timestamp=2026-09-12T14:55:50.848Z level=INFO run=dd4694ba message=loading path=/Users/me/.config/opencode/opencode.json
+timestamp=2026-09-12T14:55:50.848Z level=INFO run=dd4694ba message=loading path=/Users/me/.config/opencode/opencode.jsonc
+timestamp=2026-09-12T14:55:50.862Z level=INFO run=dd4694ba message=loading path=/tmp/probe/p/.opencode/opencode.json
+timestamp=2026-09-12T14:55:50.862Z level=INFO run=dd4694ba message=loading path=/tmp/probe/p/.opencode/opencode.jsonc
+timestamp=2026-09-12T14:55:50.864Z level=INFO run=dd4694ba message=loading path=/Users/me/.opencode/opencode.json
+timestamp=2026-09-12T14:55:50.864Z level=INFO run=dd4694ba message=loading path=/Users/me/.opencode/opencode.jsonc
+timestamp=2026-09-12T14:55:50.889Z level=INFO run=dd4694ba message="all LSPs are disabled"
+timestamp=2026-09-12T14:55:50.889Z level=INFO run=dd4694ba message="all formatters are disabled"
+timestamp=2026-09-12T14:55:50.889Z level=INFO run=dd4694ba message=init
+timestamp=2026-09-12T14:55:50.942Z level=INFO run=dd4694ba message=created id=ses_f69e1e361ffeBmqy3LzTOXFP3q slug=mighty-planet version=1.18.30 projectID=global directory=/tmp/probe/p path=tmp/probe/p workspaceID=undefined parentID=undefined title="agentloop probe 30" agent=undefined model=undefined metadata=undefined permission="[{\"permission\":\"question\",\"pattern\":\"*\",\"action\":\"deny\"},{\"permission\":\"plan_enter\",\"pattern\":\"*\",\"action\":\"deny\"},{\"permission\":\"plan_exit\",\"pattern\":\"*\",\"action\":\"deny\"}]" cost=0 tokens.input=0 tokens.output=0 tokens.reasoning=0 tokens.cache.read=0 tokens.cache.write=0 time.created=1789224950942 time.updated=1789224950942
+timestamp=2026-09-12T14:55:50.948Z level=INFO run=dd4694ba message="event connected"
+timestamp=2026-09-12T14:55:51.119Z level=INFO run=dd4694ba message=loop session.id=ses_f69e1e361ffeBmqy3LzTOXFP3q step=0
+timestamp=2026-09-12T14:55:51.124Z level=INFO run=dd4694ba message="shell tool using shell" shell=/bin/zsh
+timestamp=2026-09-12T14:55:51.134Z level=INFO run=dd4694ba message=init count=36
+timestamp=2026-09-12T14:55:51.934Z level=INFO run=dd4694ba message="watcher backend" directory=/tmp/probe/p platform=darwin backend=fs-events
+timestamp=2026-09-12T14:55:51.945Z level=INFO run=dd4694ba message="project copy refresh started" projectID=global
+timestamp=2026-09-12T14:55:51.946Z level=INFO run=dd4694ba message="project copy refresh done" projectID=global updated=[] removed=[]
+timestamp=2026-09-12T14:55:51.955Z level=INFO run=dd4694ba message="booting location services" directory=/tmp/probe/p workspaceID=undefined
+timestamp=2026-09-12T14:55:52.081Z level=INFO run=dd4694ba message=process session.id=ses_f69e1e361ffeBmqy3LzTOXFP3q messageID=msg_0961e1d51001UxGvxP2fV3jEIy
+timestamp=2026-09-12T14:55:52.087Z level=INFO run=dd4694ba message=stream providerID=opencode modelID=big-pickle session.id=ses_f69e1e361ffeBmqy3LzTOXFP3q small=false agent=build mode=primary
+timestamp=2026-09-12T14:55:52.090Z level=INFO run=dd4694ba message="llm runtime selected" llm.runtime=ai-sdk llm.provider=opencode llm.model=big-pickle
+timestamp=2026-09-12T14:55:56.880Z level=INFO run=dd4694ba message=loop session.id=ses_f69e1e361ffeBmqy3LzTOXFP3q step=1
+timestamp=2026-09-12T14:55:56.881Z level=INFO run=dd4694ba message="exiting loop" session.id=ses_f69e1e361ffeBmqy3LzTOXFP3q
+timestamp=2026-09-12T14:55:56.883Z level=INFO run=dd4694ba message="disposing instance" directory=/tmp/probe/p

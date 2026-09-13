@@ -1,0 +1,30 @@
+timestamp=2026-09-12T14:53:33.761Z level=INFO run=8602dc5c message="creating instance" directory=/tmp/probe/p
+timestamp=2026-09-12T14:53:33.762Z level=INFO run=8602dc5c message=fromDirectory directory=/tmp/probe/p
+timestamp=2026-09-12T14:53:33.769Z level=INFO run=8602dc5c message=bootstrapping directory=/tmp/probe/p
+timestamp=2026-09-12T14:53:33.772Z level=INFO run=8602dc5c message=loading path=/Users/me/.config/opencode/config.json
+timestamp=2026-09-12T14:53:33.772Z level=INFO run=8602dc5c message=loading path=/Users/me/.config/opencode/opencode.json
+timestamp=2026-09-12T14:53:33.772Z level=INFO run=8602dc5c message=loading path=/Users/me/.config/opencode/opencode.jsonc
+timestamp=2026-09-12T14:53:33.784Z level=DEBUG run=8602dc5c message="loading config from /Users/me/.opencode/opencode.json"
+timestamp=2026-09-12T14:53:33.784Z level=INFO run=8602dc5c message=loading path=/Users/me/.opencode/opencode.json
+timestamp=2026-09-12T14:53:33.785Z level=DEBUG run=8602dc5c message="loading config from /Users/me/.opencode/opencode.jsonc"
+timestamp=2026-09-12T14:53:33.785Z level=INFO run=8602dc5c message=loading path=/Users/me/.opencode/opencode.jsonc
+timestamp=2026-09-12T14:53:33.810Z level=INFO run=8602dc5c message="all LSPs are disabled"
+timestamp=2026-09-12T14:53:33.810Z level=INFO run=8602dc5c message="all formatters are disabled"
+timestamp=2026-09-12T14:53:33.810Z level=INFO run=8602dc5c message=init
+timestamp=2026-09-12T14:53:33.866Z level=INFO run=8602dc5c message=created id=ses_f69e3fad5ffesEpragS1VwECBT slug=clever-circuit version=1.18.30 projectID=global directory=/tmp/probe/p path=tmp/probe/p workspaceID=undefined parentID=undefined title="New session - 2026-09-12T14:53:33.866Z" agent=undefined model=undefined metadata=undefined permission="[{\"permission\":\"question\",\"pattern\":\"*\",\"action\":\"deny\"},{\"permission\":\"plan_enter\",\"pattern\":\"*\",\"action\":\"deny\"},{\"permission\":\"plan_exit\",\"pattern\":\"*\",\"action\":\"deny\"}]" cost=0 tokens.input=0 tokens.output=0 tokens.reasoning=0 tokens.cache.read=0 tokens.cache.write=0 time.created=1789224813866 time.updated=1789224813866
+timestamp=2026-09-12T14:53:33.872Z level=INFO run=8602dc5c message="event connected"
+timestamp=2026-09-12T14:53:34.042Z level=INFO run=8602dc5c message=loop session.id=ses_f69e3fad5ffesEpragS1VwECBT step=0
+timestamp=2026-09-12T14:53:34.047Z level=INFO run=8602dc5c message="shell tool using shell" shell=/bin/zsh
+timestamp=2026-09-12T14:53:34.056Z level=INFO run=8602dc5c message=init count=35
+timestamp=2026-09-12T14:53:34.064Z level=INFO run=8602dc5c message=stream providerID=opencode modelID=big-pickle session.id=ses_f69e3fad5ffesEpragS1VwECBT small=true agent=title mode=primary
+timestamp=2026-09-12T14:53:34.067Z level=INFO run=8602dc5c message="llm runtime selected" llm.runtime=ai-sdk llm.provider=opencode llm.model=big-pickle
+timestamp=2026-09-12T14:53:34.592Z level=INFO run=8602dc5c message="watcher backend" directory=/tmp/probe/p platform=darwin backend=fs-events
+timestamp=2026-09-12T14:53:34.601Z level=INFO run=8602dc5c message="project copy refresh started" projectID=global
+timestamp=2026-09-12T14:53:34.603Z level=INFO run=8602dc5c message="project copy refresh done" projectID=global updated=[] removed=[]
+timestamp=2026-09-12T14:53:34.621Z level=INFO run=8602dc5c message="booting location services" directory=/tmp/probe/p workspaceID=undefined
+timestamp=2026-09-12T14:53:34.739Z level=INFO run=8602dc5c message=process session.id=ses_f69e3fad5ffesEpragS1VwECBT messageID=msg_0961c05db001G5pgilf3RzXwGn
+timestamp=2026-09-12T14:53:34.739Z level=INFO run=8602dc5c message=stream providerID=opencode modelID=big-pickle session.id=ses_f69e3fad5ffesEpragS1VwECBT small=false agent=build mode=primary
+timestamp=2026-09-12T14:53:34.745Z level=INFO run=8602dc5c message="llm runtime selected" llm.runtime=ai-sdk llm.provider=opencode llm.model=big-pickle
+timestamp=2026-09-12T14:54:12.858Z level=INFO run=8602dc5c message=loop session.id=ses_f69e3fad5ffesEpragS1VwECBT step=1
+timestamp=2026-09-12T14:54:12.859Z level=INFO run=8602dc5c message="exiting loop" session.id=ses_f69e3fad5ffesEpragS1VwECBT
+timestamp=2026-09-12T14:54:12.862Z level=INFO run=8602dc5c message="disposing instance" directory=/tmp/probe/p

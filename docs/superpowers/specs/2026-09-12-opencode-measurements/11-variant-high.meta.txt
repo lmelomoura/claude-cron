@@ -1,0 +1,5 @@
+command: perl -e alarm 120; exec @ARGV opencode run --pure --auto --format json --print-logs --log-level ERROR -m opencode/ling-3.0-flash-fin-free --variant high What is 17 multiplied by 23? Reply with only the number.
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 4

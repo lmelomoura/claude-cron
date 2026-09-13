@@ -1,0 +1,6 @@
+command: opencode run --pure --auto --format json -m opencode/big-pickle Reply with exactly: ok
+stdin: pipe-open
+cwd: /tmp/probe/p
+still running after 45s: yes
+exit: 143
+seconds: 46

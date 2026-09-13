@@ -1,0 +1,5 @@
+command: perl -e alarm 60; exec @ARGV opencode run --pure --auto --format json -m opencode/big-pickle --dir /tmp/probe/q -s ses_f69f560b7ffeFHPdsoCwqsTMnF Run the shell command `pwd` again and reply with exactly: resumed in <the output>
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 11

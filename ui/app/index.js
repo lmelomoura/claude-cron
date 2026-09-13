@@ -41,7 +41,8 @@ import { RF, renderRunsPage, runsSort, runsSetPage,
          clearRunFilters, runSearch, runProjectNames } from "./runs.js";
 import { changedKeys, EFFORTS, FALLBACK_EFFORTS, effortIndex, effortFromIndex, effortsFor,
          FALLBACK_PERMISSIONS, permissionsFor, defaultPermissionFor, defaultModelFor,
-         modelOptionsFor, platformOf, platformLabel, PLATFORM_LABELS, registryKnown,
+         modelOptionsFor, platformOf, platformLabel, PLATFORM_LABELS, KNOWN_PLATFORMS,
+         platformKey, registryKnown,
          platformOptions, hiddenModelCount, modelEnabled, DISABLED_SUFFIX,
          costParts, tokensText,
          dayNumbers, shapeRepoRows, projectStepError } from "./editor-domain.js";
@@ -213,7 +214,12 @@ window.ALApp = { init, visibleJobs, jobFilters, bulkOn,
                  // platformState and platformChip are jobs-domain.js's own
                  // half of the same task -- the verdict jobCard and jobRow
                  // both put on screen as a chip next to the status pill.
-                 PLATFORM_LABELS, registryKnown, platformOptions, hiddenModelCount,
+                 // KNOWN_PLATFORMS and platformKey are Task 10's: the one list
+                 // of platforms the page runs jobs on and the one rule that
+                 // reads a job's raw platform value against it, instead of
+                 // bin/dashboard.html spelling out its own "openai ? openai :
+                 // anthropic" ternary at every read.
+                 PLATFORM_LABELS, KNOWN_PLATFORMS, platformKey, registryKnown, platformOptions, hiddenModelCount,
                  platformState, platformChip,
                  // modelEnabled and DISABLED_SUFFIX are Task 7's fix wave 1:
                  // the one rule modelOptionsFor and platformState both read

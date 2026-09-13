@@ -1,0 +1,1 @@
+{"type":"error","timestamp":1789224300390,"sessionID":"ses_synthetic429aaaaaaaaaaaaaaaa","error":{"name":"APIError","data":{"message":"Rate limit reached for this model. Please retry after 20 seconds.","statusCode":429,"isRetryable":true,"responseHeaders":{"content-type":"application/json","retry-after":"20"}}}}

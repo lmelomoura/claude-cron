@@ -1,0 +1,5 @@
+command: opencode run --format json -m opencode/big-pickle Reply with exactly: ok
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 3

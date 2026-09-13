@@ -50,6 +50,14 @@ if command -v codex >/dev/null 2>&1; then
 else
   say "· codex — not on your PATH. Optional: only jobs with \"platform\": \"openai\" need it (npm i -g @openai/codex, then codex login)."
 fi
+# Optional in the same way: only a job that says "platform": "opencode" needs
+# it. A CLI of providers, not of one account -- it is ready when `opencode
+# models` lists a model, which the free opencode/*-free models do without any.
+if command -v opencode >/dev/null 2>&1; then
+  say "✓ opencode ($(opencode --version 2>/dev/null | head -1)) — optional, for jobs on the OpenCode platform"
+else
+  say "· opencode — not on your PATH. Optional: only jobs with \"platform\": \"opencode\" need it (brew install opencode, or npm i -g opencode-ai; then configure a provider or use the free models)."
+fi
 if [ "$missing" -ne 0 ]; then
   echo; echo "Install the missing tools and run ./install.sh again." >&2
   exit 1
@@ -73,11 +81,15 @@ echo
 # 4) seed a jobs file the first time ------------------------------------
 if [ ! -f "$HERE/config/jobs.json" ]; then
   cp "$HERE/config/jobs.example.json" "$HERE/config/jobs.json"
-  say "Created config/jobs.json from the example (two disabled demo jobs, one per platform)."
+  say "Created config/jobs.json from the example (two disabled demo jobs: one on Claude Code, one on Codex)."
 fi
+# Only when the file is missing: an existing table is the operator's. That is
+# also why an existing install adds the `opencode` rows by hand (the README's
+# Platforms section shows the line) -- nothing here, and nothing in
+# resolve-pricing, ever writes that block.
 if [ ! -f "$HERE/config/pricing.json" ]; then
   cp "$HERE/config/pricing.example.json" "$HERE/config/pricing.json"
-  say "Created config/pricing.json from the example — OpenAI runs are priced from it, and agentloop refreshes it daily from the price source (agentloop resolve-pricing)."
+  say "Created config/pricing.json from the example — OpenAI runs, and OpenCode models the CLI's catalog does not price, are priced from it; agentloop refreshes the openai rows daily from the price source (agentloop resolve-pricing)."
 fi
 mkdir -p "$HERE/config/prechecks" "$HERE/data/logs" "$HERE/data/locks"
 echo

@@ -1,0 +1,36 @@
+timestamp=2026-09-12T14:38:30.515Z level=INFO run=48afeb1f message="creating instance" directory=/tmp/probe/p
+timestamp=2026-09-12T14:38:30.516Z level=INFO run=48afeb1f message=fromDirectory directory=/tmp/probe/p
+timestamp=2026-09-12T14:38:30.526Z level=INFO run=48afeb1f message=bootstrapping directory=/tmp/probe/p
+timestamp=2026-09-12T14:38:30.529Z level=INFO run=48afeb1f message=loading path=/Users/me/.config/opencode/config.json
+timestamp=2026-09-12T14:38:30.530Z level=INFO run=48afeb1f message=loading path=/Users/me/.config/opencode/opencode.json
+timestamp=2026-09-12T14:38:30.530Z level=INFO run=48afeb1f message=loading path=/Users/me/.config/opencode/opencode.jsonc
+timestamp=2026-09-12T14:38:30.545Z level=DEBUG run=48afeb1f message="loading config from /Users/me/.opencode/opencode.json"
+timestamp=2026-09-12T14:38:30.545Z level=INFO run=48afeb1f message=loading path=/Users/me/.opencode/opencode.json
+timestamp=2026-09-12T14:38:30.545Z level=DEBUG run=48afeb1f message="loading config from /Users/me/.opencode/opencode.jsonc"
+timestamp=2026-09-12T14:38:30.546Z level=INFO run=48afeb1f message=loading path=/Users/me/.opencode/opencode.jsonc
+timestamp=2026-09-12T14:38:30.572Z level=INFO run=48afeb1f message="all LSPs are disabled"
+timestamp=2026-09-12T14:38:30.572Z level=INFO run=48afeb1f message="all formatters are disabled"
+timestamp=2026-09-12T14:38:30.572Z level=INFO run=48afeb1f message=init
+timestamp=2026-09-12T14:38:30.626Z level=INFO run=48afeb1f message="creating instance" directory=/tmp/probe/q
+timestamp=2026-09-12T14:38:30.626Z level=INFO run=48afeb1f message=fromDirectory directory=/tmp/probe/q
+timestamp=2026-09-12T14:38:30.633Z level=INFO run=48afeb1f message=bootstrapping directory=/tmp/probe/q
+timestamp=2026-09-12T14:38:30.636Z level=DEBUG run=48afeb1f message="loading config from /Users/me/.opencode/opencode.json"
+timestamp=2026-09-12T14:38:30.636Z level=INFO run=48afeb1f message=loading path=/Users/me/.opencode/opencode.json
+timestamp=2026-09-12T14:38:30.636Z level=DEBUG run=48afeb1f message="loading config from /Users/me/.opencode/opencode.jsonc"
+timestamp=2026-09-12T14:38:30.636Z level=INFO run=48afeb1f message=loading path=/Users/me/.opencode/opencode.jsonc
+timestamp=2026-09-12T14:38:30.638Z level=INFO run=48afeb1f message="all LSPs are disabled"
+timestamp=2026-09-12T14:38:30.638Z level=INFO run=48afeb1f message="all formatters are disabled"
+timestamp=2026-09-12T14:38:30.638Z level=INFO run=48afeb1f message=init
+timestamp=2026-09-12T14:38:30.642Z level=INFO run=48afeb1f message="event connected"
+timestamp=2026-09-12T14:38:30.810Z level=INFO run=48afeb1f message=loop session.id=ses_f69f560b7ffeFHPdsoCwqsTMnF step=0
+timestamp=2026-09-12T14:38:30.815Z level=INFO run=48afeb1f message="shell tool using shell" shell=/bin/zsh
+timestamp=2026-09-12T14:38:30.825Z level=INFO run=48afeb1f message=init count=35
+timestamp=2026-09-12T14:38:31.503Z level=INFO run=48afeb1f message="watcher backend" directory=/tmp/probe/q platform=darwin backend=fs-events
+timestamp=2026-09-12T14:38:31.514Z level=INFO run=48afeb1f message="project copy refresh started" projectID=global
+timestamp=2026-09-12T14:38:31.515Z level=INFO run=48afeb1f message="project copy refresh done" projectID=global updated=[] removed=[]
+timestamp=2026-09-12T14:38:31.524Z level=INFO run=48afeb1f message="booting location services" directory=/tmp/probe/q workspaceID=undefined
+timestamp=2026-09-12T14:38:31.653Z level=INFO run=48afeb1f message=process session.id=ses_f69f560b7ffeFHPdsoCwqsTMnF messageID=msg_0960e3d9c001cnrks0rHYv63TU
+timestamp=2026-09-12T14:38:31.654Z level=INFO run=48afeb1f message=stream providerID=opencode modelID=big-pickle session.id=ses_f69f560b7ffeFHPdsoCwqsTMnF small=false agent=build mode=primary
+timestamp=2026-09-12T14:38:31.657Z level=INFO run=48afeb1f message="llm runtime selected" llm.runtime=ai-sdk llm.provider=opencode llm.model=big-pickle
+timestamp=2026-09-12T14:38:34.279Z level=INFO run=48afeb1f message=loop session.id=ses_f69f560b7ffeFHPdsoCwqsTMnF step=1
+timestamp=2026-09-12T14:38:34.280Z level=INFO run=48afeb1f message="exiting loop" session.id=ses_f69f560b7ffeFHPdsoCwqsTMnF

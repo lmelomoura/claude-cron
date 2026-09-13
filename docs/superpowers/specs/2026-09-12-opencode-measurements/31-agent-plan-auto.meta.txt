@@ -1,0 +1,5 @@
+command: perl -e alarm 150; exec @ARGV opencode run --pure --auto --format json --title agentloop probe 31 --agent plan -m opencode/big-pickle Do three things in order. One: use your bash tool to list the current directory. Two: use your write tool to create planned.txt containing the word hi. Three: use your bash tool to append the word written to planned2.txt. Whatever happens, finish by replying with exactly: done
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 14

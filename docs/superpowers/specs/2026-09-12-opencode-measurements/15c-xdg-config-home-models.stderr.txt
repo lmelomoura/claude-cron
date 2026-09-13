@@ -1,0 +1,14 @@
+timestamp=2026-09-12T14:44:37.293Z level=INFO run=90c3088d message="creating instance" directory=/tmp/probe/p
+timestamp=2026-09-12T14:44:37.294Z level=INFO run=90c3088d message=fromDirectory directory=/tmp/probe/p
+timestamp=2026-09-12T14:44:37.301Z level=INFO run=90c3088d message=bootstrapping directory=/tmp/probe/p
+timestamp=2026-09-12T14:44:37.306Z level=INFO run=90c3088d message=loading path=/tmp/probe/xdgcfg/opencode/config.json
+timestamp=2026-09-12T14:44:37.307Z level=INFO run=90c3088d message=loading path=/tmp/probe/xdgcfg/opencode/opencode.json
+timestamp=2026-09-12T14:44:37.307Z level=INFO run=90c3088d message=loading path=/tmp/probe/xdgcfg/opencode/opencode.jsonc
+timestamp=2026-09-12T14:44:37.387Z level=DEBUG run=90c3088d message="loading config from /Users/me/.opencode/opencode.json"
+timestamp=2026-09-12T14:44:37.387Z level=INFO run=90c3088d message=loading path=/Users/me/.opencode/opencode.json
+timestamp=2026-09-12T14:44:37.387Z level=DEBUG run=90c3088d message="loading config from /Users/me/.opencode/opencode.jsonc"
+timestamp=2026-09-12T14:44:37.387Z level=INFO run=90c3088d message=loading path=/Users/me/.opencode/opencode.jsonc
+timestamp=2026-09-12T14:44:37.417Z level=INFO run=90c3088d message="all LSPs are disabled"
+timestamp=2026-09-12T14:44:37.418Z level=INFO run=90c3088d message="all formatters are disabled"
+timestamp=2026-09-12T14:44:37.418Z level=INFO run=90c3088d message=init
+timestamp=2026-09-12T14:44:37.566Z level=INFO run=90c3088d message="disposing instance" directory=/tmp/probe/p

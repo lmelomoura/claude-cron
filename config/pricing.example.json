@@ -9,5 +9,7 @@
     "gpt-5.6-luna":  {"input": 0.2,  "cached_input": 0.02,  "output": 1.2,  "cache_write": 0.25, "source": "litellm", "at": 1788800000},
     "gpt-5.5":       {"input": 5.0,  "cached_input": 0.5,   "output": 30.0, "cache_write": 0,    "source": "litellm", "at": 1788800000},
     "gpt-5.4-mini":  {"input": 0.75, "cached_input": 0.075, "output": 4.5,  "cache_write": 0,    "source": "litellm", "at": 1788800000}
-  }
+  },
+  "_opencode_note": "OpenCode prices a run itself from its own catalog (models.dev) when the model has a price there. Rows here price the models it does not: a custom provider's, keyed by provider/model. A row of zeros declares a model free; a model with no row and no catalog price records cost_basis none and the dollar caps do not see its spend.",
+  "opencode": {}
 }

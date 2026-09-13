@@ -1,0 +1,20 @@
+command: opencode run --pure --auto --format json -m opencode/big-pickle --dir /tmp/probe/p -s ses_f69f560b7ffeFHPdsoCwqsTMnF Reply with exactly: ok
+pid 46010; samples every 15 s: elapsed, tree CPU seconds, stdout bytes, processes in tree
+  15s  cpu=2  stdout=0  procs=1
+  30s  cpu=2  stdout=0  procs=1
+  45s  cpu=2  stdout=0  procs=1
+  60s  cpu=2  stdout=0  procs=1
+  75s  cpu=2  stdout=0  procs=1
+  90s  cpu=3  stdout=0  procs=1
+ 105s  cpu=3  stdout=0  procs=1
+ 120s  cpu=3  stdout=0  procs=1
+ 135s  cpu=3  stdout=0  procs=1
+ 150s  cpu=3  stdout=0  procs=1
+ 165s  cpu=4  stdout=0  procs=1
+ 180s  cpu=4  stdout=0  procs=1
+ 196s  cpu=4  stdout=0  procs=1
+ 211s  cpu=4  stdout=0  procs=1
+ 226s  cpu=4  stdout=0  procs=1
+ 241s  cpu=4  stdout=0  procs=1
+still running after 240s: killed with SIGTERM
+exit: 127

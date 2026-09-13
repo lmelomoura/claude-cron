@@ -1,0 +1,5 @@
+command: perl -e alarm 60; exec @ARGV opencode run --pure --auto --format json -m nosuchprovider/model Reply with exactly: ok
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 1
+seconds: 1

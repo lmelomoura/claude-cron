@@ -15,7 +15,7 @@
 #
 # Behaviour is steered by env vars the harness sets:
 #   FAKE_SESSION  the session id to report in the init event
-#   FAKE_MODE     complete | undeclared | dirty | hang
+#   FAKE_MODE     complete | undeclared | dirty | hang | silent
 #   FAKE_SKIP_PREPARE  set to skip `security prepare` inside a security run,
 #                      i.e. to play the agent that ignored its first command
 #   FAKE_ARGV_OUT      a path to record the launch argv in, one line per
@@ -66,6 +66,11 @@ if [ -n "${AL_SECURITY_ANALYSIS_ID:-}" ] && [ -z "${FAKE_SKIP_PREPARE:-}" ]; the
   "$(cd "$(dirname "$0")/../bin" && pwd)/agentloop" security prepare \
     --analysis "$AL_SECURITY_ANALYSIS_ID" --root "$PWD" --offline >/dev/null 2>&1 || true
 fi
+
+# `silent`: never write a byte, then sleep -- the shape of a CLI whose
+# provider never answered, or of a resume that a CLI took to another
+# directory (both measured on OpenCode). `exec` so the engine's TERM ends it.
+[ "$mode" != "silent" ] || exec sleep 600
 
 # The init event, deliberately fat: a real one carries the whole tool roster,
 # which is what used to overflow an 8 KB read on both sides.

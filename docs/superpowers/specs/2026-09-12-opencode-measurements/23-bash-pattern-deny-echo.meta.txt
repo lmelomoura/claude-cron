@@ -1,0 +1,5 @@
+command: perl -e alarm 150; exec @ARGV opencode run --pure --auto --format json -m opencode/big-pickle Using your bash tool run exactly: echo hello-from-bash ; whatever happens, then reply with exactly: attempted
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 21

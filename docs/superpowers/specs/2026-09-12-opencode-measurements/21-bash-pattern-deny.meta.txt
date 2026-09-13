@@ -1,0 +1,5 @@
+command: perl -e alarm 120; exec @ARGV opencode run --pure --auto --format json -m opencode/big-pickle --dir /tmp/probe/wt Using your bash tool run exactly: git push origin probe-branch ; whatever happens, then reply with exactly: attempted
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 142
+seconds: 120

@@ -1,0 +1,4 @@
+┌  Credentials [90m/tmp/probe/xdgdata/opencode/auth.json
+│
+└  0 credentials
+

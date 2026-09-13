@@ -1,0 +1,5 @@
+command: perl -e alarm 120; exec @ARGV opencode run --pure --format json -m opencode/big-pickle Using your bash tool run exactly this command: echo hi > /tmp/probe/q/outside2.txt && echo done ; then reply with exactly: finished
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 11

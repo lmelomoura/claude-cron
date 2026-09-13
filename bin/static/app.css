@@ -487,10 +487,14 @@ code{font:11.5px ui-monospace,"SF Mono",Menlo,monospace;
 /* the platform a run went through -- drawn only when it is not the default */
 .platbadge{font-size:10px;color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 40%,var(--line));
   border-radius:5px;padding:1px 6px;margin-left:7px;vertical-align:1px;cursor:help}
-/* The platform every run has always had. Both are named, so an unbadged row
-   never has to be read as either "Anthropic" or "not known yet"; this one is
-   muted so the eye still lands on the row that changed CLI. */
-.platbadge.alt{color:var(--muted);border-color:var(--line)}
+/* Every run names its platform now, three of them, so an unbadged row never
+   has to be read as "Anthropic" or "not known yet". OpenAI keeps the base
+   rule's own colour (the first CLI to earn a badge distinct from Anthropic's);
+   Anthropic and OpenCode share the quieter tint below -- OpenCode is a third
+   colour nothing has invented yet, so it reads with the same muted ink
+   Anthropic already had rather than a new one. */
+.platbadge.plat-openai{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,var(--line))}
+.platbadge.plat-anthropic,.platbadge.plat-opencode{color:var(--muted);border-color:var(--line)}
 /* a cost we computed ourselves (~), and a run that has no figure at all */
 .cost-est{cursor:help}
 .cost-none{color:var(--muted);cursor:help}
@@ -1590,6 +1594,10 @@ textarea:focus,.dlg-b input:focus,.dlg-b select:focus{outline:none;border-color:
 .effslider:focus{outline:none}
 .effslider:focus::-webkit-slider-thumb{box-shadow:0 0 0 4px var(--accent-soft)}
 .effends{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:-2px}
+/* The author `display:flex` above outranks the UA sheet's [hidden], so the
+   captions an OpenCode ladder hides (paintEffortEnds: its variants are named,
+   not ranked) need their own rule, the way .navitem[hidden] does. */
+.effends[hidden]{display:none}
 .cwd-ro{cursor:pointer}
 .cwd-ro:hover:not(:disabled){border-color:var(--muted)}
 /* inherited from a project: shown, but plainly not yours to edit here */
@@ -2893,5 +2901,5 @@ details.secphase > summary.secphase-head::-webkit-details-marker{display:none}
 /* cover, not fill: a photo that is not square is cropped rather than stretched */
 .pf-face img{width:100%;height:100%;object-fit:cover;display:block}
 .pf-photo-a{display:flex;gap:8px;flex-wrap:wrap}
-/* ui-bundle: 61d14a25947b2ced12b012f22117a501a6d40ad6294c1c1e68f992edbf0fbb3c */
-/* ui-sources: 1fbf00b37828a6f34eb9c63bfcead7502f451a7a7e38e98725d2b92711b75dad */
+/* ui-bundle: 22b727c6be4d878c4152735279a8799fa3822869ef85d04cb86ac631a50471f0 */
+/* ui-sources: e54583add2bde199dc85a2f71982aa0f089515e2a0e8f3d0d2ac1bb2253a8005 */

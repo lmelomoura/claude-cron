@@ -1,0 +1,5 @@
+command: perl -e alarm 120; exec @ARGV opencode run --format json -m opencode/big-pickle Run the shell command `ls` in the current directory, then read the file a.txt with your read tool, then reply with exactly: done
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 5

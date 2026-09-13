@@ -1,0 +1,5 @@
+command: perl -e alarm 120; exec @ARGV opencode run --pure --format json --title measurement 17 -m opencode/big-pickle Create a file named new.txt containing exactly the word hello, using your write tool. Then reply with exactly: written
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 24

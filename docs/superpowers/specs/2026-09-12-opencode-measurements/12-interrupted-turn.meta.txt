@@ -1,0 +1,7 @@
+command: opencode run --pure --auto --format json -m opencode/big-pickle Run the shell command `sleep 40 && echo slept` with bash, then reply with exactly: done
+stdin: devnull
+cwd: /tmp/probe/p
+SIGTERM sent after: 8s (process alive then: yes)
+exited within 20s of TERM: yes
+exit: 143
+seconds: 9

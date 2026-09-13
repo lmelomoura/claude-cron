@@ -140,11 +140,20 @@ CLAUDE_BIN="${AGENTLOOP_CLAUDE_BIN:-$_claude_default}"
 # there after every run.
 CODEX_BIN="${AGENTLOOP_CODEX_BIN:-$(command -v codex 2>/dev/null || echo /opt/homebrew/bin/codex)}"
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
-# OpenCode: listed and detected, never launched in this release (PLATFORMS_PLANNED).
+# OpenCode: the third platform's own binary, detected the same way as
+# Claude's and Codex's above.
 if command -v opencode >/dev/null 2>&1; then _opencode_default="$(command -v opencode)"
 elif [ -x "$HOME/.opencode/bin/opencode" ]; then _opencode_default="$HOME/.opencode/bin/opencode"
 else _opencode_default="/opt/homebrew/bin/opencode"; fi
 OPENCODE_BIN="${AGENTLOOP_OPENCODE_BIN:-$_opencode_default}"
+# How long a `opencode` call may run before it counts as hung (measured 34b: a
+# provider that never answers hangs the CLI for ever, silently). `models
+# --verbose` gets double this; the selftest shortens it to keep the two hang
+# cases fast.
+OPENCODE_DEADLINE="${AGENTLOOP_OPENCODE_DEADLINE:-30}"
+# A non-numeric OPENCODE_DEADLINE, or 0, must fall back to the default instead
+# of reaching python as a bad float() or a deadline that always fires.
+case "$OPENCODE_DEADLINE" in ''|*[!0-9]*|0) OPENCODE_DEADLINE=30 ;; esac
 # Which Claude account every run signs in as. Claude Code keeps credentials,
 # settings, plugins, MCP servers and past sessions per config directory — one
 # signed-in account each — so this variable is the only thing that chooses
@@ -335,7 +344,7 @@ security_derived_jobs() {
     splat="$(security_get "$project" '.platform' '')"
     [ -n "$splat" ] || splat="$(project_get "$project" '.platform' 'anthropic')"
     case "$splat" in
-      anthropic|openai) : ;;
+      anthropic|openai|opencode) : ;;
       *) security_warn "security: project '$project' names a platform the engine does not know ('$splat') -- using anthropic"
          splat="anthropic" ;;
     esac
@@ -356,6 +365,8 @@ security_derived_jobs() {
       if [ -z "$sdefault" ]; then
         if [ "$splat" = openai ] && ! openai_catalog_available; then
           security_warn "security: project '$project' runs on openai but no OpenAI catalog is resolved yet (run: agentloop resolve-models openai) -- the analysis will be refused at launch"
+        elif [ "$splat" = opencode ] && ! opencode_catalog_available; then
+          security_warn "security: project '$project' runs on opencode but no OpenCode catalog is resolved yet (run: agentloop resolve-models opencode) -- the analysis will be refused at launch"
         else
           security_warn "$nomodel_warn"
         fi
@@ -375,6 +386,15 @@ security_derived_jobs() {
       else
         security_warn "$nomodel_warn"
       fi
+    fi
+    # An analysis needs tools: prepare's output is read with `checklist`,
+    # findings are re-reported with the CLI. A model the OpenCode catalog
+    # marks `tools: false` cannot do any of that; fall back to the first
+    # enabled one, with the warning the other fallbacks give.
+    if [ "$splat" = opencode ] && [ -n "$smodel" ] && ! opencode_catalog_tools "$smodel"; then
+      local stools; stools="$(platform_models_enabled opencode | while IFS= read -r mid; do opencode_catalog_tools "$mid" && printf '%s\n' "$mid"; done | head -1)"
+      security_warn "security: project '$project' names a model that makes no tool calls ('$smodel') -- an analysis needs tools; using ${stools:-nothing, the analysis will be refused at launch}"
+      smodel="$stools"
     fi
     seffort="$(security_get "$project" '.effort' '')"
     if ! platform_effort_ok "$splat" "$smodel" "$seffort"; then
@@ -637,8 +657,12 @@ security_prompt() { # security_prompt <project> <repo> <branch> <profile> <analy
   # the ENGINE has already run prepare in the worktree before the launch
   # (run_job), so the prompt says the phase ran instead of asking for it --
   # measured on two real analyses: the model skipped the command once, and
-  # the Codex shell tool cut it once before it finished. A missing seventh
-  # argument is anthropic: every caller before platforms passed six.
+  # the Codex shell tool cut it once before it finished. On OpenCode the
+  # skill is named BOTH ways -- by name and by path -- prepare has already
+  # run engine-side same as Codex, and the `task` tool (Agent's name on this
+  # CLI) is closed by the permission block itself, so the prompt only has to
+  # state that closure, not ask for it. A missing seventh argument is
+  # anthropic: every caller before platforms passed six.
   local skill_para agents_para prepare_para
   if [ "${7:-anthropic}" = "openai" ]; then
     skill_para="The deterministic phases -- secrets, dependency CVEs, SBOM, hygiene and
@@ -656,6 +680,29 @@ door -- do the whole analysis yourself, in this one thread. Two earlier analyses
 spent their whole budget fanning the SAST pass out to six subagents and triaged
 none of the deterministic findings -- which is the part that matters most. Spend
 the budget on triage first."
+  elif [ "${7:-anthropic}" = "opencode" ]; then
+    # The skill by NAME (the CLI lists ~/.claude/skills to the model and
+    # loads one by name through its `skill` tool: measured 26, 27) AND by
+    # path, so a machine where the link is missing still finds it. The
+    # deterministic phase already ran engine-side (prepare_inline is off);
+    # the `task` tool is closed by the permission block the derived job's
+    # `disallowed_tools: Agent` translates to (measured 22), so the prompt
+    # states a fact rather than pleading.
+    skill_para="The deterministic phases -- secrets, dependency CVEs, SBOM, hygiene and
+infrastructure-as-code misconfigurations -- ALREADY RAN for this analysis,
+before you started: the engine ran \`agentloop security prepare\` in this
+worktree. Do not run it again; the skill file's first step is done.
+Invoke the \`security-analysis\` skill (your \`skill\` tool lists it; the file
+is \`$SKILLS_DIR/security-analysis/SKILL.md\`) and follow the rest of it exactly.
+It is mandatory."
+    prepare_para="The coverage note of that deterministic phase is on the analysis
+(\`agentloop security checklist --analysis $5\` prints it as coverage_note); if
+it is not empty you must repeat it in your final message."
+    agents_para="The \`task\` tool is closed for this run, by rule: there are no subagents.
+Two earlier analyses spent their whole budget fanning the SAST pass out to six
+subagents and triaged none of the deterministic findings -- which is the part
+that matters most. Do the work yourself, in this one session, and spend the
+budget on triage first."
   else
     skill_para="Invoke the \`security-analysis\` skill and follow it exactly. It is mandatory."
     prepare_para="YOUR FIRST COMMAND, before anything else:
@@ -1257,11 +1304,11 @@ is_due_vals() { # is_due_vals <interval> <last-start> <fail-streak> ; 0 = due
 # docs/superpowers/specs/2026-09-06-codex-measurements/README.md -- and where
 # the measurement contradicted the design, the measurement won (its
 # "Correcções por medição" section).
-PLATFORMS="anthropic openai"          # the platforms that run
-PLATFORMS_PLANNED="opencode"          # listed and checked for a binary, never run: the engine for it is a later release
+PLATFORMS="anthropic openai opencode"   # the platforms that run
+PLATFORMS_PLANNED=""                    # listed and checked for a binary, never run: none today; the mechanism stays for the next one
 
-platform_known() { case "${1:-}" in anthropic|openai) return 0 ;; *) return 1 ;; esac; }
-platform_planned() { case "${1:-}" in opencode) return 0 ;; *) return 1 ;; esac; }
+platform_known() { case "${1:-}" in anthropic|openai|opencode) return 0 ;; *) return 1 ;; esac; }
+platform_planned() { case "${1:-}" in "") return 1 ;; *) return 1 ;; esac; }
 platform_listed() { platform_known "${1:-}" || platform_planned "${1:-}"; }
 
 # job_platform <id> -> the job's effective platform: resolve(), then
@@ -1292,16 +1339,16 @@ job_platform() { # job_platform <id>
 # platform, still runs -- on that platform's default -- so the seed has to
 # credit the default to it, not an empty string. platform_default_model is
 # the function that knows the default, but platforms_jq never calls it (nor
-# any openai_catalog_* reader -- openai_catalog_visible already sits on the
-# seed's own path, feeding $odef) directly: platform_default_model reads the
-# enabled models back out of THIS file, and calling it, or a catalog reader
-# it comes to depend on, from in here would be that same loop one layer
-# down. So platforms_jq takes both platforms'
-# defaults as arguments, and each caller works out its own (see platforms_seed vs.
+# any catalog reader -- openai_catalog_visible and opencode_catalog_visible
+# already sit on the seed's own path, feeding $odef and $ocdef) directly:
+# platform_default_model reads the enabled models back out of THIS file, and
+# calling it, or a catalog reader it comes to depend on, from in here would
+# be that same loop one layer down. So platforms_jq takes all three
+# platforms' defaults as arguments, and each caller works out its own (see platforms_seed vs.
 # platform_jobs_on below: the seed can only use what it can compute without
 # this file; a live read uses the real thing).
 PLATFORMS_JQ='
-  def known: if . == "openai" then "openai" else "anthropic" end;
+  def known: if . == "openai" then "openai" elif . == "opencode" then "opencode" else "anthropic" end;
   def project($name): ([ ($projects.projects // [])[] | select(.name == $name) ] | first // {});
   def sec($p): (($p.security | objects) // {});
   def job_platform($j): (if (($j.platform // "") != "") then $j.platform
@@ -1313,8 +1360,9 @@ PLATFORMS_JQ='
   def sec_on($p): ((sec($p).enabled == true) or (sec($p).enabled == "true"));
   def resolved($m): (if ($m != "") and ((($resolved[$m] // {}) | .id // "") != "") then $resolved[$m].id else $m end);
   def valid($p; $m): if $p == "openai" then (($ocat | length) == 0) or (($ocat | index($m)) != null)
+                      elif $p == "opencode" then (($occat | length) == 0) or (($occat | index($m)) != null)
                       else ($m == "opus" or $m == "sonnet" or $m == "haiku" or $m == "fable" or ($m | startswith("claude-"))) end;
-  def effective($p; $m): if $m != "" and valid($p; $m) then $m else (if $p == "openai" then $odef else $adef end) end;
+  def effective($p; $m): if $m != "" and valid($p; $m) then $m else (if $p == "openai" then $odef elif $p == "opencode" then $ocdef else $adef end) end;
   # `uses` is CONFIGURATION, not the run queue: every job and every security
   # block a project carries, whether or not it is switched on, each with `on`
   # saying which. Filtering the switched-off ones out in here was one rule
@@ -1330,17 +1378,18 @@ PLATFORMS_JQ='
              | {who: ("security:" + .name), on: sec_on(.), p: $p, m: resolved(effective($p; (sec(.).model // "")))} ]);
 '
 
-platforms_jq() { # platforms_jq <anthropic-default> <openai-default> <jq-filter> [jq options…] -- runs the filter with $jobs, $projects, $resolved, $adef, $odef, $ocat bound and PLATFORMS_JQ's defs in scope
-  local adef="$1" odef="$2" filter="$3"; shift 3
-  local jobs='{"jobs":[]}' projects='{"projects":[]}' resolved='{}' ocat='[]'
+platforms_jq() { # platforms_jq <anthropic-default> <openai-default> <opencode-default> <jq-filter> [jq options…] -- runs the filter with $jobs, $projects, $resolved, $adef, $odef, $ocdef, $ocat, $occat bound and PLATFORMS_JQ's defs in scope
+  local adef="$1" odef="$2" ocdef="$3" filter="$4"; shift 4
+  local jobs='{"jobs":[]}' projects='{"projects":[]}' resolved='{}' ocat='[]' occat='[]'
   if [ -f "$JOBS_FILE" ] && "$JQ" -e . "$JOBS_FILE" >/dev/null 2>&1; then jobs="$(cat "$JOBS_FILE")"; fi
   if [ -f "$PROJECTS_FILE" ] && "$JQ" -e . "$PROJECTS_FILE" >/dev/null 2>&1; then projects="$(cat "$PROJECTS_FILE")"; fi
   if [ -f "$MODELS_FILE" ]; then
     resolved="$("$JQ" -ec '.resolved // {}' "$MODELS_FILE" 2>/dev/null)" || resolved='{}'
     ocat="$("$JQ" -ec '[.openai.models[]?.slug]' "$MODELS_FILE" 2>/dev/null)" || ocat='[]'
+    occat="$("$JQ" -ec '[.opencode.models[]?.id]' "$MODELS_FILE" 2>/dev/null)" || occat='[]'
   fi
   "$JQ" -n "$@" --argjson jobs "$jobs" --argjson projects "$projects" --argjson resolved "$resolved" \
-    --arg adef "$adef" --arg odef "$odef" --argjson ocat "$ocat" "${PLATFORMS_JQ}${filter}"
+    --arg adef "$adef" --arg odef "$odef" --arg ocdef "$ocdef" --argjson ocat "$ocat" --argjson occat "$occat" "${PLATFORMS_JQ}${filter}"
 }
 
 # `enabled` and `models` ask different questions of the same list, so they
@@ -1352,10 +1401,10 @@ platforms_jq() { # platforms_jq <anthropic-default> <openai-default> <jq-filter>
 # on a refusal ("model not enabled in Settings") for a model that was in use
 # before the upgrade.
 platforms_seed() { # the file's first contents: a platform is enabled when an enabled job or an enabled security block runs on it, with the models every job configured for it uses
-  platforms_jq opus "$(openai_catalog_visible | head -1)" '
+  platforms_jq opus "$(openai_catalog_visible | head -1)" "$(opencode_catalog_visible | head -1)" '
     def entry($p): {enabled: ([uses[] | select(.p == $p) | select(.on)] | length > 0), bin: "",
                     models: ([uses[] | select(.p == $p) | .m | select(. != "")] | reduce .[] as $m ([]; if index($m) then . else . + [$m] end))};
-    {platforms: {anthropic: entry("anthropic"), openai: entry("openai"), opencode: {enabled: false, bin: "", models: []}}}' -c
+    {platforms: {anthropic: entry("anthropic"), openai: entry("openai"), opencode: entry("opencode")}}' -c
 }
 
 platforms_ensure() { # write the seed when the file does not exist; an existing file, valid or not, is left alone
@@ -1442,7 +1491,7 @@ platform_usable() { # enabled AND at least one model enabled: what the editors a
 platform_jobs_on() { # platform_jobs_on <platform> [model] [only-enabled] -> one line per job (its id) or security block ("security:<project>") counted as using it, switched on or not; a model may be a family; the literal `on` as the third argument narrows it to the ones switched on
   local only=false
   [ "${3:-}" = "on" ] && only=true
-  platforms_jq "$(platform_default_model anthropic)" "$(platform_default_model openai)" \
+  platforms_jq "$(platform_default_model anthropic)" "$(platform_default_model openai)" "$(platform_default_model opencode)" \
     'uses[] | select(.p == $p) | select($m == "" or .m == $m or .m == resolved($m)) | select(($only | not) or .on) | .who' \
     -r --arg p "$1" --arg m "${2:-}" --argjson only "$only"
 }
@@ -1452,7 +1501,7 @@ platform_install_hint() {
   case "$1" in
     anthropic) printf 'npm i -g @anthropic-ai/claude-code' ;;
     openai)    printf 'npm i -g @openai/codex, then codex login' ;;
-    opencode)  printf 'brew install opencode' ;;
+    opencode)  printf 'brew install opencode (or: npm i -g opencode-ai)' ;;
   esac
 }
 platform_bin_env() { # the AGENTLOOP_*_BIN override for a platform, or nothing
@@ -1481,18 +1530,27 @@ platform_bin() { # platform_bin <platform> -> the CLI's path: the environment ov
 # (`codex login status`, `claude auth status --json`, `--version`), so the
 # Settings page, `status` and every launch simply ask again.
 platform_check() { # platform_check <platform> -> one JSON object; always exits 0
-  local p="$1" bin src found=false ver="" acct="" reason="" ready=false supported=true
+  local p="$1" bin src found=false ver="" vrc=0 acct="" reason="" ready=false supported=true
   if ! platform_listed "$p"; then
     "$JQ" -nc --arg p "$p" '{platform:$p, supported:false, ready:false, bin:"", bin_found:false, bin_source:"", version:"", account:"", reason:("unknown platform " + $p)}'
     return 0
   fi
   platform_planned "$p" && supported=false
   bin="$(platform_bin "$p")"; src="$(platform_bin_source "$p")"
-  if [ -f "$bin" ] && [ -x "$bin" ]; then found=true; ver="$("$bin" --version 2>/dev/null | head -1)"; fi
+  if [ -f "$bin" ] && [ -x "$bin" ]; then
+    found=true
+    # Bounded like every other CLI call here: a `--version` that never
+    # answers (measured 34b: an OpenCode process can wait for ever) must not
+    # hang the Settings page or a launch. The rc is read before `head`, which
+    # would otherwise hide it behind its own.
+    ver="$(run_bounded "$OPENCODE_DEADLINE" "$bin" --version 2>/dev/null)"; vrc=$?
+    ver="$(printf '%s\n' "$ver" | head -1)"
+  fi
   if [ "$found" = false ]; then
     reason="$(platform_cli_name "$p") not found at $bin — set the path in Settings (or AGENTLOOP_$(platform_cli_name "$p" | tr '[:lower:]' '[:upper:]')_BIN); install: $(platform_install_hint "$p")"
-  elif [ "$supported" = false ]; then
-    reason="runs on OpenCode arrive with the OpenCode engine"
+  elif [ "$vrc" -eq 124 ]; then
+    ver=""
+    reason="$(platform_cli_name "$p") --version timed out after ${OPENCODE_DEADLINE} s (the CLI hung)"
   else
     case "$p" in
       anthropic)
@@ -1516,6 +1574,41 @@ platform_check() { # platform_check <platform> -> one JSON object; always exits 
         local line
         if line="$("$bin" login status 2>&1)"; then ready=true; acct="$(printf '%s\n' "$line" | head -1)"
         else reason="codex is not signed in (run: codex login)"; fi ;;
+      opencode)
+        # A CLI of providers, not of one account: ready when it lists a model
+        # to run (the providers with a key, plus the free Zen models that need
+        # none -- measured, 01), and the account line says how many
+        # credentials auth.json holds and which providers the catalog shows.
+        local list nmod ncred provs esc raw rc authraw arc
+        raw="$(run_bounded "$OPENCODE_DEADLINE" "$bin" models --pure 2>/dev/null)"; rc=$?
+        list="$(printf '%s\n' "$raw" | grep -E '^[A-Za-z0-9_.-]+/' || true)"
+        nmod="$(num "$(printf '%s\n' "$list" | grep -c . 2>/dev/null)")"
+        if [ "$rc" -eq 124 ]; then
+          # A deadline that hits is not the same fact as "no usable provider"
+          # -- it must never read as one (measured 34b: a hung CLI answers
+          # nothing at all, for ever).
+          reason="opencode models timed out after ${OPENCODE_DEADLINE} s (the CLI hung; measured: a provider that never answers hangs it for ever)"
+        elif [ "$rc" -ne 0 ]; then
+          # An outright failure (a bad flag, a crash, a broken install) is a
+          # different fact again from "ran fine and found nothing" -- say so,
+          # and name the command that failed.
+          reason="opencode models failed (rc $rc) — see: $bin models --pure"
+        elif [ "$nmod" -gt 0 ]; then
+          ready=true
+          esc="$(printf '\033')"
+          # `auth list` draws a box with ANSI colours even off a TTY (measured); strip them before reading the count
+          authraw="$(run_bounded "$OPENCODE_DEADLINE" "$bin" auth list 2>/dev/null)"; arc=$?
+          ncred="$(printf '%s\n' "$authraw" | sed "s/${esc}\[[0-9;]*m//g" | grep -oE '[0-9]+ credentials?' | head -1)"
+          # "0 credentials" is the CLI's own line, only when the command
+          # answered and its box said so. A deadline that hits (124), a
+          # failure, or a box with no count in it is "unknown": a hung CLI
+          # does not have no credentials.
+          if [ "$arc" -ne 0 ] || [ -z "$ncred" ]; then ncred="credentials unknown"; fi
+          provs="$(printf '%s\n' "$list" | cut -d/ -f1 | sort -u | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
+          acct="$ncred · providers: $provs"
+        else
+          reason="no usable provider: run opencode auth login, or configure one in ~/.config/opencode/opencode.json"
+        fi ;;
     esac
   fi
   "$JQ" -nc --arg p "$p" --argjson supported "$supported" --argjson ready "$ready" --arg bin "$bin" \
@@ -1551,7 +1644,7 @@ anthropic_catalog_ids() { # every claude-* id this install can name, most capabl
     unique | sort_by(fam as $f | [((["opus","sonnet","haiku","fable"] | index($f)) // 9), nums]) | .[]' 2>/dev/null
 }
 platform_catalog_ids() { # platform_catalog_ids <platform> -> what set-models may enable, one id per line: the VISIBLE catalog, what the Settings page lists
-  case "$1" in anthropic) anthropic_catalog_ids ;; openai) openai_catalog_visible ;; *) : ;; esac
+  case "$1" in anthropic) anthropic_catalog_ids ;; openai) openai_catalog_visible ;; opencode) opencode_catalog_visible ;; *) : ;; esac
 }
 
 platform_models_json() { # platform_models_json <platform> <stale true|false> <reason> -> the catalog with `enabled` per model
@@ -1575,8 +1668,22 @@ platform_models_json() { # platform_models_json <platform> <stale true|false> <r
           models: map({v:.slug, label:(.display_name // .slug), desc:(.description // ""), efforts:(.efforts // []), deprecated_by:(.deprecated_by // ""),
                        price: (($pricing[.slug] // null) | if . != null and (.input | type) == "number" and (.output | type) == "number" then {input:.input, output:.output} else null end),
                        enabled: (.slug as $x | ($enabled | index($x)) != null)})}' ;;
+    opencode)
+      cat_at="$(num "$("$JQ" -r '.opencode.at // 0' "$MODELS_FILE" 2>/dev/null)")"
+      [ -f "$PRICING_FILE" ] && pricing="$("$JQ" -c '.opencode // {}' "$PRICING_FILE" 2>/dev/null || echo '{}')"
+      arr=""; opencode_catalog_available && arr="$("$JQ" -c '[.opencode.models[] | select(.status == "active")]' "$MODELS_FILE" 2>/dev/null)"
+      [ -n "$arr" ] || arr='[]'
+      # `price` is what the page shows per million: the catalog's own when it
+      # prices the model, else the operator's row, else null ("no price").
+      printf '%s' "$arr" | "$JQ" -c --arg p "$p" --argjson stale "$stale" --arg reason "$reason" --argjson enabled "$enabled" --argjson at "$cat_at" --argjson pricing "$pricing" \
+        '{platform:$p, stale:$stale, reason:$reason, catalog_at:$at,
+          models: map({v:.id, label:(.name // .id), provider:.provider, desc:"", efforts:(.variants // []), deprecated_by:"",
+                       tools:(.tools != false), context:(.context // 0),
+                       price: (if .priced == true then {input:.cost.input, output:.cost.output}
+                               else (($pricing[.id] // null) | if . != null and (.input | type) == "number" and (.output | type) == "number" then {input:.input, output:.output} else null end) end),
+                       enabled: (.id as $x | ($enabled | index($x)) != null)})}' ;;
     *)
-      "$JQ" -nc --arg p "$p" '{platform:$p, stale:false, reason:"the model list arrives with the OpenCode engine", catalog_at:0, models:[]}' ;;
+      "$JQ" -nc --arg p "$p" '{platform:$p, stale:false, reason:"unknown platform", catalog_at:0, models:[]}' ;;
   esac
 }
 
@@ -1651,6 +1758,14 @@ cmd_platform() { # agentloop platform <check|enable|disable|set-bin|models|set-m
         elif [ "$rc" -ne 0 ] || ! openai_catalog_available; then
           stale=true; reason="refresh failed: $(printf '%s' "$out" | tail -1)"
         fi
+      elif [ "$p" = "opencode" ]; then
+        out="$(resolve_models_opencode 2>&1)"; rc=$?
+        reason="$("$JQ" -r '.opencode.stale_reason // empty' "$MODELS_FILE" 2>/dev/null)"
+        if [ -n "$reason" ]; then
+          stale=true; reason="refresh failed: $reason"
+        elif [ "$rc" -ne 0 ] || ! opencode_catalog_available; then
+          stale=true; reason="refresh failed: $(printf '%s' "$out" | tail -1)"
+        fi
       fi
       platform_models_json "$p" "$stale" "$reason" ;;
     set-models)
@@ -1676,20 +1791,27 @@ cmd_platform() { # agentloop platform <check|enable|disable|set-bin|models|set-m
 
 platform_caps() { # platform_caps <platform> <capability> -> 0 when the platform HAS it
   #   interactive        a stdin protocol for a human to talk to the live run
-  #   tool_lists         --allowedTools/--disallowedTools (Codex cannot close a
-  #                      tool by flag: --disable multi_agent leaves spawn_agent
-  #                      in the roster and a spawn under it runs -- measured)
-  #   denials            permission_denials on the final event (a Codex sandbox
-  #                      refusal produces no event at all)
-  #   budget_flag        --max-budget-usd (on openai the cap is read at the end)
-  #   cost_reported      dollars on the final event (openai: estimated from tokens)
-  #   stream_rate_limits rate_limit_event on the stream (openai: the rollout)
-  #   families           opus/sonnet aliases resolved to an id (openai: exact slugs)
+  #                      (opencode reads stdin as part of the PROMPT: 13b)
+  #   tool_lists         allowed_tools/disallowed_tools reach the CLI (opencode:
+  #                      the permission block, per tool and per bash pattern;
+  #                      Codex cannot close a tool by flag -- measured)
+  #   denials            permission_denials on the final event (opencode: the two
+  #                      measured denial phrases; a Codex sandbox refusal produces
+  #                      no event at all)
+  #   budget_flag        --max-budget-usd (elsewhere the cap is read at the end)
+  #   cost_reported      dollars on the final event (opencode: the CLI's own number
+  #                      when its catalog prices the model; openai: estimated)
+  #   stream_rate_limits rate_limit_event on the stream (openai: the rollout; opencode: none)
+  #   families           opus/sonnet aliases resolved to an id (the others: exact ids)
+  #   prepare_inline     the security analysis's `prepare` is the AGENT's first
+  #                      command (its Bash tool waits for it); elsewhere the engine
+  #                      runs it before the launch
   case "$1" in
     anthropic) case "$2" in
-      interactive|tool_lists|denials|budget_flag|cost_reported|stream_rate_limits|families) return 0 ;;
+      interactive|tool_lists|denials|budget_flag|cost_reported|stream_rate_limits|families|prepare_inline) return 0 ;;
     esac ;;
     openai) : ;;
+    opencode) case "$2" in tool_lists|denials|cost_reported) return 0 ;; esac ;;
   esac
   return 1
 }
@@ -1698,6 +1820,12 @@ platform_permissions() { # platform_permissions <platform> -> one mode per line
   case "$1" in
     anthropic) printf '%s\n' acceptEdits auto bypassPermissions manual dontAsk plan ;;
     openai)    printf '%s\n' read-only workspace-write full-access ;;
+    # Two modes that say what the CLI enforces. There is no OS sandbox
+    # (measured 19, 20: bash writes anywhere and commits from a worktree),
+    # so a "workspace" mode would promise what it cannot keep; full-access
+    # is the truth of the default, read-only is the file tools, the shell
+    # and the subagents denied by rule.
+    opencode)  printf '%s\n' full-access read-only ;;
   esac
 }
 
@@ -1718,6 +1846,7 @@ platform_default_permission() { # platform_default_permission <platform> <job|se
   case "$1" in
     anthropic) printf 'bypassPermissions' ;;
     openai)    case "$2" in security) printf 'full-access' ;; *) printf 'workspace-write' ;; esac ;;
+    opencode)  printf 'full-access' ;;
   esac
 }
 
@@ -1737,6 +1866,7 @@ platform_efforts() { # platform_efforts <platform> [model] -> one level per line
   case "$1" in
     anthropic) printf '%s\n' low medium high xhigh max ;;
     openai)    openai_catalog_efforts "${2:-}" ;;
+    opencode)  opencode_catalog_efforts "${2:-}" ;;   # the model's variants; none for a model without any
   esac
 }
 
@@ -1749,6 +1879,7 @@ platform_model_ok() { # platform_model_ok <platform> <model>
   case "$1" in
     anthropic) case "$2" in opus|sonnet|haiku|fable|claude-*) return 0 ;; *) return 1 ;; esac ;;
     openai)    openai_catalog_slugs | grep -qxF -- "$2" ;;
+    opencode)  opencode_catalog_ids | grep -qxF -- "$2" ;;
     *) return 1 ;;
   esac
 }
@@ -1862,16 +1993,225 @@ platform_argv_openai() { # platform_argv_openai <resume-sid> <run_cwd> <model> <
   PLATFORM_ARGV+=(-- "$prompt")
 }
 
+# The permission block an OpenCode run is launched with, as the JSON of
+# OPENCODE_CONFIG_CONTENT (measured: the CLI reads it, 04-06, 23, 33). Line
+# 1 is the JSON; every line after it is a note for tick.log (a tool name the
+# table does not know, a pattern that had to be widened or dropped).
+#
+#   full-access  nothing beyond share:disabled -- --auto approves what the
+#                CLI asks by default (external directories, .env reads, doom
+#                loops), and there is no sandbox to configure (19, 20).
+#   read-only    edit, write, bash and task denied: the agent reads,
+#                searches, fetches, and changes nothing. A `Bash(...)` allow
+#                entry is DROPPED here, with a note: by pattern it would
+#                reopen a shell with no OS sandbox behind it (`Bash(*)`
+#                overwrote the deny outright), and the mode's word is that
+#                bash stays closed.
+#
+# The job's tool lists ride along, translated by a fixed table. A denylist
+# closes tools (`Agent` -> task, the security analysis's own case: 22) and
+# bash patterns (`Bash(git push *)` -> a bash rule: 23); an allowlist denies
+# everything and opens what it names (measured 37a: `*: deny` with named
+# allows works under --auto like the deny rules do, and 37b: the block in
+# the environment wins over a repository's own opencode.json). A pattern on
+# any tool but bash widens to the whole tool in a denylist (closing more
+# than asked is the safe side) and is DROPPED from an allowlist (opening
+# more than asked is not). Deny wins over allow, as it does on Claude Code.
+# A bash pattern is a glob on the whole command line to OpenCode, so Claude
+# Code's prefix form `cmd:*` -- which would only ever match a literal colon
+# -- becomes the glob `cmd*`, the same set the prefix matches.
+opencode_config_content() { # opencode_config_content <permission> <allowed_tools> <disallowed_tools>
+  "$PYTHON" - "$1" "${2:-}" "${3:-}" <<'PY'
+import json, re, sys
+mode, allowed, disallowed = sys.argv[1], sys.argv[2], sys.argv[3]
+TABLE = {"bash": "bash", "edit": "edit", "multiedit": "edit", "write": "write", "read": "read",
+         "glob": "glob", "grep": "grep", "ls": "list", "webfetch": "webfetch", "websearch": "websearch",
+         "agent": "task", "task": "task", "todowrite": "todowrite", "skill": "skill"}
+notes = []
+
+def items(spec):
+    """Comma-separated specifiers, commas inside parentheses kept."""
+    out, depth, cur = [], 0, ""
+    for ch in spec or "":
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            out.append(cur.strip()); cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        out.append(cur.strip())
+    return [i for i in out if i and i != "null"]
+
+def parse(item):
+    m = re.match(r"^([A-Za-z_]+)(?:\((.*)\))?$", item)
+    if not m:
+        return None, None
+    return m.group(1), (m.group(2) or "")
+
+def bash_glob(which, item, pattern):
+    """The pattern as OpenCode reads it: a glob on the command line (23,
+    37a). Claude Code's prefix form `cmd:*` is not one -- to OpenCode the
+    `:*` matches a literal colon and nothing else -- so it becomes `cmd*`,
+    which matches what the prefix matches (`git push`, `git push origin
+    main`, `git pushX`), and the note says so."""
+    if pattern.endswith(":*"):
+        glob = pattern[:-2] + "*"
+        notes.append(which + ": " + item + " is the bash pattern " + json.dumps(glob)
+                     + " (translated from Claude Code's prefix form)")
+        return glob
+    return pattern
+
+perm = {}
+if mode == "read-only":
+    perm.update({"edit": "deny", "write": "deny", "bash": "deny", "task": "deny"})
+
+def bash_rules(default):
+    cur = perm.get("bash")
+    if not isinstance(cur, dict):
+        cur = {"*": cur if isinstance(cur, str) else default}
+    perm["bash"] = cur
+    return cur
+
+allow_items = items(allowed)
+if allow_items:
+    perm["*"] = "deny"
+    for item in allow_items:
+        name, pattern = parse(item)
+        tool = TABLE.get((name or "").lower())
+        if tool is None:
+            notes.append("allowed_tools: " + item + " is not a tool OpenCode has; ignored")
+            continue
+        if tool == "bash" and pattern:
+            if mode == "read-only":
+                # Measured 19, 20: by pattern this reopened a whole shell
+                # with no sandbox behind it, and `Bash(*)` replaced the deny.
+                notes.append("allowed_tools: " + item + " ignored (read-only keeps bash closed)")
+                continue
+            bash_rules("deny")[bash_glob("allowed_tools", item, pattern)] = "allow"
+        elif pattern:
+            notes.append("allowed_tools: " + item + " ignored (OpenCode takes patterns on bash only; the tool stays closed)")
+        elif perm.get(tool) != "deny":
+            perm[tool] = "allow"
+for item in items(disallowed):
+    name, pattern = parse(item)
+    tool = TABLE.get((name or "").lower())
+    if tool is None:
+        notes.append("disallowed_tools: " + item + " is not a tool OpenCode has; ignored")
+        continue
+    if tool == "bash" and pattern:
+        bash_rules("allow")[bash_glob("disallowed_tools", item, pattern)] = "deny"
+    else:
+        if pattern:
+            notes.append("disallowed_tools: " + item + " widened to the whole tool (OpenCode takes patterns on bash only)")
+        perm[tool] = "deny"
+print(json.dumps({"share": "disabled", "permission": perm}))
+for n in notes:
+    print(n)
+PY
+}
+
+# The launch line of an OpenCode run, into PLATFORM_ARGV. Every flag was
+# measured; the comments say where. The permission block does not travel
+# here: it is OPENCODE_CONFIG_CONTENT in the run's environment.
+platform_argv_opencode() { # platform_argv_opencode <resume-sid> <run_cwd> <model> <effort> <prompt> <title>
+  local resume_sid="$1" run_cwd="$2" model="$3" effort="$4" prompt="$5" title="${6:-}"
+  # --format json: the events (01). --pure: the operator's plugins out (one
+  # rewrote `ls` to `rtk ls`: 02/03); the skills stay (26, 27). --auto: an
+  # `ask` auto-rejected would END the turn (04, 18). --print-logs at ERROR:
+  # silent on a healthy run, and the only place the reason of an
+  # UnknownError appears (09b, 30).
+  PLATFORM_ARGV=(run --format json --pure --auto --print-logs --log-level ERROR -m "$model")
+  # The effort is the model's variant (11); validated by the caller, because
+  # the CLI accepts anything in silence (11b).
+  [ -n "$effort" ] && PLATFORM_ARGV+=(--variant "$effort")
+  # --dir on every launch: the run's cwd (07), and on a resume the ONLY
+  # directory the session can be resumed from (08b vs 08c).
+  PLATFORM_ARGV+=(--dir "$run_cwd")
+  if [ -n "$resume_sid" ]; then
+    PLATFORM_ARGV+=(-s "$resume_sid")
+  else
+    # A title of our own saves the CLI a model call per session (30).
+    [ -n "$title" ] && PLATFORM_ARGV+=(--title "$title")
+  fi
+  # `--` before the prompt, as the other two launches do (33).
+  PLATFORM_ARGV+=(-- "$prompt")
+}
+
+# The normalizer a platform's stream goes through, or nothing: what run_job
+# asks to choose the FIFO launch, instead of naming a platform.
+platform_normalizer() { # platform_normalizer <platform> -> a script path, or nothing
+  case "$1" in
+    openai)   printf '%s' "$BIN_DIR/platforms/openai_stream.py" ;;
+    opencode) printf '%s' "$BIN_DIR/platforms/opencode_stream.py" ;;
+    *) : ;;
+  esac
+}
+
+# The model an OpenCode session actually ran on, out of `opencode export`
+# (measured 14: info.model.providerID + "/" + info.model.id). The export
+# needs the session's own directory (the run's cwd, still there at the end
+# of the run) and a deadline: a CLI that hangs must not hang the close.
+# run_bounded's own rc is passed back on failure (124 past the deadline, so
+# the close can say timed out rather than the more general gave no model).
+# The export lands in a file next to the run's own log (`<tmp-base>.export`,
+# removed after the read) when a caller names one, so a kill mid-export
+# leaves a whole transcript beside the run's `.raw`, never at the root of
+# data/; without a base it is a mktemp under $DATA_DIR.
+opencode_export_model() { # opencode_export_model <run_cwd> <session-id> [tmp-base] -> provider/model on stdout; rc is run_bounded's (124 = timed out)
+  local cwd="$1" sid="$2" base="${3:-}" tmp got rc=0
+  [ -n "$sid" ] && [ -d "$cwd" ] || return 0
+  # measurement 36: through a pipe the CLI's stdout stops at 64 KiB (a 35-turn
+  # session's export is 264,607 bytes to a file, 65,536 through a pipe, cut
+  # mid-document, not JSON) -- macOS writes a pipe asynchronously and drops
+  # whatever is past the buffer at the CLI's exit, while a file is written
+  # synchronously and complete, so this capture goes through one, never `$( )`.
+  if [ -n "$base" ]; then
+    tmp="$base.export"
+    : > "$tmp" || return 1
+  else
+    tmp="$(mktemp "$DATA_DIR/.opencode-export.XXXXXX")" || return 1
+  fi
+  ( cd "$cwd" && run_bounded "$OPENCODE_DEADLINE" "$(platform_bin opencode)" export "$sid" > "$tmp" 2>/dev/null ); rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$tmp"
+    return "$rc"
+  fi
+  got="$("$JQ" -r '.info.model | select(type == "object") | select((.providerID // "") != "" and (.id // "") != "") | .providerID + "/" + .id' "$tmp" 2>/dev/null)"
+  rm -f "$tmp"
+  [ -n "$got" ] && printf '%s' "$got"
+  return 0
+}
+
 # What the stream cannot say. The Codex stream carries neither the model that
 # ran nor the usage windows; both sit in the rollout the CLI writes under
 # $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<thread_id>.jsonl (a resume
 # appends to the same file). Sets PF_MODEL_ID and PF_ROLLOUT; both empty when
 # the rollout is not found, with one line in tick.log saying so.
 PF_MODEL_ID=""; PF_ROLLOUT=""
-platform_finish() { # platform_finish <platform> <streamfile> <session-id> [job-id]
+platform_finish() { # platform_finish <platform> <streamfile> <session-id> [job-id] [run_cwd]
   PF_MODEL_ID=""; PF_ROLLOUT=""
-  case "$1" in openai) ;; *) return 0 ;; esac
   local tid="${3:-}" id="${4:-run}"
+  case "$1" in
+    openai) ;;
+    opencode)
+      [ -n "$tid" ] || return 0
+      local _oc_rc=0
+      # The export's temp file sits next to the run's stream (`<stream>.export`,
+      # beside the `.raw`), never at the root of data/.
+      PF_MODEL_ID="$(opencode_export_model "${5:-}" "$tid" "$2")"; _oc_rc=$?
+      if [ -z "$PF_MODEL_ID" ]; then
+        if [ "$_oc_rc" -eq 124 ]; then
+          log_tick "$id: opencode export timed out after ${OPENCODE_DEADLINE} s — model_id stays the requested id"
+        else
+          log_tick "$id: opencode export gave no model for session $tid — model_id stays the requested id"
+        fi
+      fi
+      return 0 ;;
+    *) return 0 ;;
+  esac
   [ -n "$tid" ] || return 0
   PF_ROLLOUT="$(openai_rollout_for "$tid")"
   if [ -z "$PF_ROLLOUT" ]; then
@@ -2021,6 +2361,176 @@ openai_catalog_ensure() { # resolve once, synchronously, when the block is missi
   openai_catalog_available
 }
 
+# --- the OpenCode catalog ---------------------------------------------------
+# config/models.json carries an `opencode` block, written by `resolve-models
+# opencode` from `opencode models --verbose`. Every model is `provider/model`,
+# the CLI's own name for it, split at the FIRST slash: a model id can carry a
+# slash of its own (measured: pdm_ai/openai/gpt-oss-120b). `priced` is true
+# when any of the four catalog prices is above zero -- zero in every field is
+# UNKNOWN, not free: a custom provider with no `cost` configured lists the
+# same zeros as a free Zen model (measured 24b). Without the block every
+# reader answers nothing, which is what makes an unresolved catalog REFUSE a
+# launch rather than guess an id.
+opencode_catalog_available() { # 0 when config/models.json carries an opencode catalog
+  [ -f "$MODELS_FILE" ] && "$JQ" -e '.opencode.models | type == "array"' "$MODELS_FILE" >/dev/null 2>&1
+}
+
+opencode_catalog_ids() { # every id, active or not, one per line, in the CLI's own order
+  opencode_catalog_available || return 0
+  "$JQ" -r '.opencode.models[].id' "$MODELS_FILE" 2>/dev/null
+}
+
+opencode_catalog_visible() { # the active ids: what the Settings page lists
+  opencode_catalog_available || return 0
+  "$JQ" -r '.opencode.models[] | select(.status == "active") | .id' "$MODELS_FILE" 2>/dev/null
+}
+
+opencode_catalog_efforts() { # opencode_catalog_efforts <id> -> the model's variants, one per line; nothing for a model without any
+  opencode_catalog_available || return 0
+  [ -n "${1:-}" ] || return 0
+  "$JQ" -r --arg m "$1" '.opencode.models[] | select(.id == $m) | .variants[]?' "$MODELS_FILE" 2>/dev/null
+}
+
+opencode_catalog_all_efforts() { # the union of every active model's variants, first-seen order
+  opencode_catalog_available || return 0
+  "$JQ" -r '
+    [.opencode.models[] | select(.status == "active") | .variants[]?]
+    | reduce .[] as $e ([]; if index($e) then . else . + [$e] end)
+    | .[]' "$MODELS_FILE" 2>/dev/null
+}
+
+opencode_catalog_priced() { # opencode_catalog_priced <id> -> 0 when the catalog prices the model
+  opencode_catalog_available || return 1
+  "$JQ" -e --arg m "$1" '.opencode.models[] | select(.id == $m) | .priced == true' "$MODELS_FILE" >/dev/null 2>&1
+}
+
+opencode_catalog_tools() { # opencode_catalog_tools <id> -> 0 unless the catalog says the model makes no tool calls
+  opencode_catalog_available || return 0
+  if "$JQ" -e --arg m "$1" '.opencode.models[] | select(.id == $m) | .tools == false' "$MODELS_FILE" >/dev/null 2>&1; then
+    return 1
+  fi
+  return 0
+}
+
+resolve_models_opencode() { # refresh config/models.json's `opencode` block from `opencode models --verbose`
+  local block tmp kept version rc raw_tmp
+  tmp="$(mktemp "$CONFIG_DIR/.models.XXXXXX")" || return 1
+  if [ ! -f "$MODELS_FILE" ]; then
+    echo '{"resolved":{}}' > "$MODELS_FILE"
+  elif ! "$JQ" -e . "$MODELS_FILE" >/dev/null 2>&1; then
+    echo "models.json was not valid JSON — reseeded"
+    echo '{"resolved":{}}' > "$MODELS_FILE"
+  fi
+  if [ ! -x "$(platform_bin opencode)" ]; then
+    block="$("$JQ" -nc --argjson at "$(now_epoch)" '{at:$at, available:false, reason:"opencode not installed"}')"
+  else
+    # --pure: the operator's plugins have no business in a catalog read, and
+    # one of them rewrote a command in a run (measured 02). Bounded: a CLI
+    # that hangs must not hang the daily pass.
+    #
+    # No --refresh: the catalog mirrors what a run can actually use, which is
+    # what the CLI itself resolves at launch (its own models.dev cache plus
+    # the providers in its config). A provider added to the OpenCode config
+    # appears without --refresh (measured 2026-09-12: the new pdm_ai models
+    # were listed right after the config changed). Refreshing the models.dev
+    # metadata of the built-in providers is the CLI's own business
+    # (`opencode models --refresh` by hand), not something the daily pass
+    # should do on the operator's behalf.
+    version="$(run_bounded "$OPENCODE_DEADLINE" "$(platform_bin opencode)" --version 2>/dev/null | head -1)"
+    # measurement 36: through a pipe the CLI's stdout stops at 64 KiB (15,435
+    # bytes for 13 models is safe, but a catalog of 55+ models crosses it), so
+    # this capture goes through a file too, the same fix as
+    # opencode_export_model above, never `$( )`.
+    raw_tmp="$(mktemp "$CONFIG_DIR/.models-verbose.XXXXXX")" || { rm -f "$tmp"; return 1; }
+    run_bounded "$((OPENCODE_DEADLINE * 2))" "$(platform_bin opencode)" models --verbose --pure > "$raw_tmp" 2>/dev/null; rc=$?
+    if [ "$rc" -eq 124 ]; then
+      # Past its deadline, the CLI hung (measured 34b): report a timeout, not
+      # the "no provider" wording -- a hung process answered nothing, it did
+      # not answer with an empty catalog.
+      block="$("$JQ" -nc --argjson at "$(now_epoch)" --arg reason "opencode models --verbose timed out after $((OPENCODE_DEADLINE * 2)) s" \
+        '{at:$at, available:false, reason:$reason}')"
+    else
+      # The format is a header line `provider/model` followed by one pretty
+      # JSON document per model; jq cannot read the two interleaved, python can.
+      # raw_tmp rides in as argv[3], not stdin: stdin is already the heredoc
+      # below (python's own program text, read via `-`).
+      block="$("$PYTHON" - "$(now_epoch)" "$version" "$raw_tmp" <<'PY'
+import json, re, sys
+at, version, rawfile = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+with open(rawfile) as f:
+    text = f.read()
+models = []
+for chunk in re.split(r"^(?=[A-Za-z0-9_.-]+/[^\n{]+\n\{)", text, flags=re.M):
+    chunk = chunk.strip()
+    if not chunk:
+        continue
+    head, _, body = chunk.partition("\n")
+    try:
+        d = json.loads(body)
+    except Exception:
+        continue
+    provider, _, name = head.partition("/")
+    def num(v):
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0.0
+    cost = d.get("cost") if isinstance(d.get("cost"), dict) else {}
+    cache = cost.get("cache") if isinstance(cost.get("cache"), dict) else {}
+    prices = {"input": num(cost.get("input")), "output": num(cost.get("output")),
+              "cache_read": num(cache.get("read")), "cache_write": num(cache.get("write"))}
+    caps = d.get("capabilities") if isinstance(d.get("capabilities"), dict) else {}
+    limit = d.get("limit") if isinstance(d.get("limit"), dict) else {}
+    variants = d.get("variants") if isinstance(d.get("variants"), dict) else {}
+    models.append({"id": head, "provider": provider, "name": d.get("name") or name, "cost": prices,
+                   "priced": any(v > 0 for v in prices.values()),
+                   "context": limit.get("context") or 0, "output_limit": limit.get("output") or 0,
+                   "variants": list(variants.keys()), "tools": caps.get("toolcall") is not False,
+                   "reasoning": caps.get("reasoning") is True, "status": d.get("status") or "active"})
+if models:
+    print(json.dumps({"at": at, "source": "opencode models --verbose", "version": version, "models": models}))
+else:
+    print(json.dumps({"at": at, "available": False,
+                      "reason": "opencode models listed no model: no provider is usable"}))
+PY
+)"
+    fi
+    rm -f "$raw_tmp"
+  fi
+  # A refresh that failed -- no opencode, an empty list -- must not replace a
+  # catalog that still resolves real jobs: keep the block it had, stamped
+  # with when and why, exactly as resolve_models_openai does; `platform
+  # models` reads the stamp back as `stale`, and models_stale ages the block
+  # from it. The {available:false} stub is written only when there is
+  # nothing to keep.
+  if opencode_catalog_available && printf '%s' "$block" | "$JQ" -e '.available == false' >/dev/null 2>&1; then
+    kept="$(printf '%s' "$block" | "$JQ" -r .reason)"
+    if ! { "$JQ" --argjson at "$(now_epoch)" --arg r "$kept" '.opencode.stale_at = $at | .opencode.stale_reason = $r' "$MODELS_FILE" > "$tmp" && mv "$tmp" "$MODELS_FILE"; }; then
+      rm -f "$tmp"
+      echo "opencode -> could not write $MODELS_FILE"
+      return 1
+    fi
+    rm -f "$tmp"
+    echo "opencode -> kept the previous catalog ($kept)"
+    return 0
+  fi
+  if ! { "$JQ" --argjson b "$block" '.opencode = $b' "$MODELS_FILE" > "$tmp" && mv "$tmp" "$MODELS_FILE"; }; then
+    rm -f "$tmp"
+    echo "opencode -> could not write $MODELS_FILE"
+    return 1
+  fi
+  rm -f "$tmp"
+  if opencode_catalog_available; then
+    echo "opencode -> $(opencode_catalog_visible | tr '\n' ' ')(opencode models --verbose)"
+  else
+    echo "opencode -> unavailable: $(printf '%s' "$block" | "$JQ" -r .reason)"
+  fi
+}
+
+opencode_catalog_ensure() { # resolve once, synchronously, when the block is missing and opencode exists
+  opencode_catalog_available && return 0
+  [ -x "$(platform_bin opencode)" ] || return 1
+  resolve_models_opencode >/dev/null 2>&1
+  opencode_catalog_available
+}
+
 # --- the price table -----------------------------------------------------------
 # config/pricing.json prices OpenAI runs: the Codex stream carries tokens and
 # no dollars, so the estimate is tokens × this table. The official page
@@ -2047,6 +2557,16 @@ pricing_unpriced() { # the visible catalog slugs with no numeric price, one per 
   for s in $(openai_catalog_visible); do
     "$JQ" -e --arg s "$s" '.openai[$s] | (.input|type) == "number" and (.cached_input|type) == "number" and (.output|type) == "number"' \
       "$PRICING_FILE" >/dev/null 2>&1 || printf '%s\n' "$s"
+  done
+}
+
+opencode_unpriced() { # the enabled opencode ids with no price in the catalog nor in the table, one per line
+  local m
+  for m in $(platform_models_enabled opencode); do
+    opencode_catalog_priced "$m" && continue
+    [ -s "$PRICING_FILE" ] && "$JQ" -e --arg m "$m" '.opencode[$m] | (.input|type) == "number" and (.cached_input|type) == "number" and (.output|type) == "number"' \
+      "$PRICING_FILE" >/dev/null 2>&1 && continue
+    printf '%s\n' "$m"
   done
 }
 
@@ -2265,6 +2785,46 @@ turn_is_over() { # turn_is_over <stream-file> ; 0 = the agent answered and is id
 # One `ps` sweep, closed transitively in awk, so a deep tool tree (shell -> make
 # -> pytest -> workers) counts in full. Isolated and side-effect free so
 # `agentloop selftest` can exercise the parsing directly.
+# A command with a deadline. macOS ships no `timeout`, and the two places that
+# need one -- `opencode models` behind platform_check, `opencode export` at
+# the end of a run -- must never hang the Settings page or a run's close on a
+# CLI that has stopped answering (measured 08c/34b: an OpenCode process can
+# wait for ever, silently, and can leave children of its own running). python3
+# is a hard dependency; it runs the child in its own session and, past the
+# deadline, ends the WHOLE process group (SIGTERM, then SIGKILL after a 2 s
+# grace, sent whether or not the direct child went on the TERM: a grandchild
+# that ignores it would otherwise outlive the deadline holding the pipe)
+# rather than just the one pid, and this answers 124, the convention of
+# `timeout`.
+run_bounded() { # run_bounded <seconds> <cmd...> -> the command's stdout and rc; 124 past the deadline
+  local secs="$1"; shift
+  "$PYTHON" - "$secs" "$@" <<'PY'
+import os, signal, subprocess, sys
+try:
+    p = subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL, start_new_session=True)
+except OSError as e:
+    print(str(e), file=sys.stderr)
+    sys.exit(127)
+try:
+    p.wait(timeout=float(sys.argv[1]))
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGTERM)
+    try:
+        p.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        pass
+    # The whole group, unconditionally: the child going on the TERM says
+    # nothing about a grandchild that ignores it. The group is already gone
+    # (ESRCH) when every member left on the TERM.
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    sys.exit(124)
+sys.exit(p.returncode)
+PY
+}
+
 tree_cpu_seconds() { # tree_cpu_seconds <pid> -> integer CPU seconds (0 when gone)
   local root="${1:-}"
   case "$root" in ''|*[!0-9]*) echo 0; return ;; esac
@@ -2966,6 +3526,11 @@ rl_gate() { # rl_gate [platform] -> 0 = hold this run back (reason on stdout); a
 STALL_HOURS="${AGENTLOOP_STALL_HOURS:-4}"
 STALL_MARK_FILE="$DATA_DIR/.stalled"
 
+# How often the run watchdog looks at a run (seconds). Overridable for the
+# tests only: the e2e drives a 4-second stall with a 2-second poll.
+WATCHDOG_POLL="${AGENTLOOP_WATCHDOG_POLL:-30}"
+case "$WATCHDOG_POLL" in ''|*[!0-9]*|0) WATCHDOG_POLL=30 ;; esac
+
 # Why is nothing running? Prints one sentence when the answer is a fault or a
 # ceiling; stays silent when the fleet is merely idle, asleep, or busy.
 #
@@ -3054,6 +3619,10 @@ cmd_usage() {
   else
     local p reason
     for p in $PLATFORMS; do
+      if [ "$p" = "opencode" ]; then
+        echo "opencode: no usage windows — each provider has its own API, and nothing on the stream or in the export reports one"
+        continue
+      fi
       "$JQ" -r --arg p "$p" --argjson now "$now" '
         (.[$p] // {}) | to_entries[]
         | .value as $v
@@ -3214,6 +3783,10 @@ models_stale() { # 0 = either cache is missing or older than MODELS_TTL
   oa="$("$JQ" -r '[.openai.at // 0, .openai.stale_at // 0] | max' "$MODELS_FILE" 2>/dev/null)"
   case "$oa" in ''|null|*[!0-9]*) oa=0 ;; esac
   [ "$oa" -lt "$oldest" ] && oldest="$oa"
+  local oc
+  oc="$("$JQ" -r '[.opencode.at // 0, .opencode.stale_at // 0] | max' "$MODELS_FILE" 2>/dev/null)"
+  case "$oc" in ''|null|*[!0-9]*) oc=0 ;; esac
+  [ "$oc" -lt "$oldest" ] && oldest="$oc"
   [ "$(( $(now_epoch) - oldest ))" -ge "$MODELS_TTL" ]
 }
 
@@ -3296,6 +3869,7 @@ cmd_skills() { # agentloop skills [install]
   [ -d "$SKILLS_DIR" ] || die "no skills/ directory in $BASE_DIR"
   printf '  %s\n' "$USER_SKILLS"
   skills_link_into "$USER_SKILLS" "$action" || _skills_pending=$?
+  echo "  OpenCode reads ~/.claude/skills too (measured), so the same link serves both CLIs"
   # Codex only when its home exists: creating ~/.codex on a machine that never
   # installed that CLI would be this tool inventing another tool's directory.
   if [ -d "$CODEX_HOME_DIR" ]; then
@@ -3503,6 +4077,21 @@ cmd_selftest() { # offline checks of the logic that can kill a run or lose money
   platform_known openai;      want "openai is a known platform"        0 $?
   platform_known anthropic;   want "anthropic is a known platform"     0 $?
   platform_known gemini;      want "an unknown platform is refused"    1 $?
+  platform_known opencode;    want "opencode is a known platform now"   0 $?
+  platform_planned opencode;  want "and no longer a planned one"         1 $?
+  [ "$PLATFORMS" = "anthropic openai opencode" ] && [ -z "$PLATFORMS_PLANNED" ] && ok "the registry runs three platforms and plans none" || bad "PLATFORMS='$PLATFORMS' PLANNED='$PLATFORMS_PLANNED'"
+  local _oc_caps="" _cap
+  for _cap in interactive tool_lists denials budget_flag cost_reported stream_rate_limits families prepare_inline; do
+    platform_caps opencode "$_cap" && _oc_caps="$_oc_caps $_cap"
+  done
+  [ "$_oc_caps" = " tool_lists denials cost_reported" ] && ok "opencode has tool_lists, denials and cost_reported, and nothing else" || bad "opencode caps:$_oc_caps"
+  platform_caps anthropic prepare_inline; want "anthropic runs security prepare inside the agent" 0 $?
+  platform_caps openai prepare_inline;    want "openai does not (the engine runs it first)"  1 $?
+  [ "$(platform_permissions opencode | tr '\n' ' ')" = "full-access read-only " ] && ok "the two opencode modes" || bad "opencode modes: $(platform_permissions opencode | tr '\n' ' ')"
+  platform_permission_ok opencode read-only;       want "read-only is an opencode mode"        0 $?
+  platform_permission_ok opencode workspace-write; want "workspace-write is not (no sandbox)"  1 $?
+  [ "$(platform_default_permission opencode job)" = "full-access" ] && [ "$(platform_default_permission opencode security)" = "full-access" ] \
+    && ok "full-access is the opencode default for a job and for security" || bad "opencode defaults: $(platform_default_permission opencode job) / $(platform_default_permission opencode security)"
   platform_caps anthropic interactive; want "anthropic has interactive" 0 $?
   local _cap; local _openai_caps=0
   for _cap in interactive tool_lists denials budget_flag cost_reported stream_rate_limits families; do
@@ -3551,7 +4140,17 @@ JSON
   [ -f "$pf/platforms.json" ] && ok "a missing platforms file is written on first use" || bad "platforms_ensure wrote nothing"
   ( pf_env; platform_enabled anthropic ); want "anthropic is enabled: enabled jobs run on it" 0 $?
   ( pf_env; platform_enabled openai );    want "openai is enabled: an enabled job and a project's jobs run on it" 0 $?
-  ( pf_env; platform_enabled opencode );  want "opencode is never enabled by the seed" 1 $?
+  # opencode is seeded exactly like the other two now: `enabled` asks only
+  # whether something switched-on runs there. A fresh fixture, not $pf --
+  # $pf/platforms.json was already written above by platforms_ensure, and
+  # that call is a no-op once the file exists.
+  local pfoc="$tmp/pfoc"; mkdir -p "$pfoc"
+  printf '{"jobs":[{"id":"oc","platform":"opencode","model":"opencode/big-pickle","enabled":true,"prompt":"x"}]}\n' > "$pfoc/jobs.json"
+  pfoc_env() { PLATFORMS_FILE="$pfoc/platforms.json"; JOBS_FILE="$pfoc/jobs.json"; PROJECTS_FILE="$pfoc/projects.json"; MODELS_FILE="$pfoc/models.json"; }
+  ( pfoc_env; platforms_ensure )
+  ( pfoc_env; platform_enabled opencode ); want "opencode is seeded enabled when an enabled job runs on it" 0 $?
+  [ "$( pfoc_env; platform_models_enabled opencode | tr '\n' ' ' )" = "opencode/big-pickle " ] \
+    && ok "and the seed carries the model that job names" || bad "opencode models seeded: '$( pfoc_env; platform_models_enabled opencode | tr '\n' ' ' )'"
   got="$( pf_env; platform_models_enabled anthropic | tr '\n' ' ' )"
   [ "$got" = "claude-opus-5 claude-sonnet-5 claude-fable-5-1 " ] \
     && ok "anthropic's models: the ids in use, a family resolved through the cache, a switched-off job's model too, no repeats" \
@@ -3726,13 +4325,282 @@ JSON
   [ "$(printf '%s' "$_pc" | "$JQ" -r '.ready, .account' | tr '\n' '|')" = "true|unknown — claude auth status needs Claude Code 2.1+|" ] \
     && ok "a CLI without \`auth status\` counts as ready, and says the account is unknown" || bad "old cli: $_pc"
   _pc="$( PLATFORMS_FILE="$pb/none.json"; AGENTLOOP_OPENCODE_BIN=""; OPENCODE_BIN=/nonexistent; platform_check opencode )"
-  [ "$(printf '%s' "$_pc" | "$JQ" -r '.supported, .ready, .bin_found, .reason' | tr '\n' '|')" = "false|false|false|opencode not found at /nonexistent — set the path in Settings (or AGENTLOOP_OPENCODE_BIN); install: brew install opencode|" ] \
-    && ok "platform_check opencode: planned, and not found says how to install it" || bad "opencode missing: $_pc"
-  printf '#!/bin/sh\necho "1.18.30"\n' > "$pb/bin/opencode"; chmod +x "$pb/bin/opencode"
+  [ "$(printf '%s' "$_pc" | "$JQ" -r '.supported, .ready, .bin_found, .reason' | tr '\n' '|')" = "true|false|false|opencode not found at /nonexistent — set the path in Settings (or AGENTLOOP_OPENCODE_BIN); install: brew install opencode (or: npm i -g opencode-ai)|" ] \
+    && ok "platform_check opencode: supported now, and not found says how to install it" || bad "opencode missing: $_pc"
+  printf '#!/bin/sh\ncase "$1" in --version) echo "1.18.30";; esac\nexit 0\n' > "$pb/bin/opencode"; chmod +x "$pb/bin/opencode"
   _pc="$( PLATFORMS_FILE="$pb/none.json"; AGENTLOOP_OPENCODE_BIN=""; OPENCODE_BIN="$pb/bin/opencode"; platform_check opencode )"
-  [ "$(printf '%s' "$_pc" | "$JQ" -r '.ready, .bin_found, .version, .reason' | tr '\n' '|')" = "false|true|1.18.30|runs on OpenCode arrive with the OpenCode engine|" ] \
-    && ok "platform_check opencode: found and versioned, still not ready, with the reason" || bad "opencode found: $_pc"
+  [ "$(printf '%s' "$_pc" | "$JQ" -r '.ready, .bin_found, .version, .reason' | tr '\n' '|')" = "false|true|1.18.30|no usable provider: run opencode auth login, or configure one in ~/.config/opencode/opencode.json|" ] \
+    && ok "platform_check opencode: found and versioned, not ready while no model is listed, with the reason" || bad "opencode found: $_pc"
+  # A CLI that never answers (--version is quick; anything else hangs for ever,
+  # the shape of the measured 34b hang) must read as a timeout, never as "no
+  # usable provider" -- OPENCODE_DEADLINE=1 keeps this assertion fast.
+  printf '#!/bin/sh\ncase "$1" in --version) echo 1.18.30;; *) exec sleep 600;; esac\n' > "$pb/bin/opencode-hang"; chmod +x "$pb/bin/opencode-hang"
+  _pc="$( PLATFORMS_FILE="$pb/none.json"; AGENTLOOP_OPENCODE_BIN="$pb/bin/opencode-hang"; OPENCODE_DEADLINE=1; platform_check opencode )"
+  [ "$(printf '%s' "$_pc" | "$JQ" -r '.ready, .reason' | tr '\n' '|')" = "false|opencode models timed out after 1 s (the CLI hung; measured: a provider that never answers hangs it for ever)|" ] \
+    && ok "platform_check opencode: a CLI past its deadline reads as a timeout, never as no usable provider" || bad "opencode hang: $_pc"
+  # An outright failure (rc 3, no output) is a third fact, distinct from both
+  # a timeout and an empty catalog -- it must name the rc and the command.
+  printf '#!/bin/sh\ncase "$1" in --version) echo 1.18.30;; *) exit 3;; esac\n' > "$pb/bin/opencode-broken"; chmod +x "$pb/bin/opencode-broken"
+  _pc="$( PLATFORMS_FILE="$pb/none.json"; AGENTLOOP_OPENCODE_BIN="$pb/bin/opencode-broken"; platform_check opencode )"
+  [ "$(printf '%s' "$_pc" | "$JQ" -r '.ready, .reason' | tr '\n' '|')" = "false|opencode models failed (rc 3) — see: $pb/bin/opencode-broken models --pure|" ] \
+    && ok "platform_check opencode: a CLI that fails outright is not read as no usable provider" || bad "opencode broken: $_pc"
+  # `--version` is bounded too: a CLI that never answers its first question
+  # reads as a timeout with no version, and nothing else is asked of it.
+  printf '#!/bin/sh\nexec sleep 600\n' > "$pb/bin/opencode-hang-version"; chmod +x "$pb/bin/opencode-hang-version"
+  _pc="$( PLATFORMS_FILE="$pb/none.json"; AGENTLOOP_OPENCODE_BIN="$pb/bin/opencode-hang-version"; OPENCODE_DEADLINE=1; platform_check opencode )"
+  [ "$(printf '%s' "$_pc" | "$JQ" -r '.ready, .bin_found, .version, .reason' | tr '\n' '|')" = "false|true||opencode --version timed out after 1 s (the CLI hung)|" ] \
+    && ok "platform_check: a --version past its deadline reads as a timeout, with no version" || bad "version hang: $_pc"
+  # `auth list` past its deadline: the account says the credentials are
+  # unknown -- "0 credentials" is the CLI's own line, kept only when the
+  # command answered with it (a hung CLI does not have no credentials).
+  printf '#!/bin/sh\ncase "$1" in --version) echo 1.18.30;; models) exec "%s" models --pure;; *) exec sleep 600;; esac\n' "$BASE_DIR/test/fake-opencode" > "$pb/bin/opencode-auth-hang"; chmod +x "$pb/bin/opencode-auth-hang"
+  _pc="$( PLATFORMS_FILE="$pb/none.json"; AGENTLOOP_OPENCODE_BIN="$pb/bin/opencode-auth-hang"; OPENCODE_DEADLINE=1; platform_check opencode )"
+  [ "$(printf '%s' "$_pc" | "$JQ" -r '.ready, .account' | tr '\n' '|')" = "true|credentials unknown · providers: opencode, pdm_ai|" ] \
+    && ok "platform_check opencode: an auth list past its deadline says credentials unknown, and the platform is still ready" || bad "auth hang: $_pc"
   [ "$(platform_check martian | "$JQ" -r .reason)" = "unknown platform martian" ] && ok "an unlisted platform is answered, never a crash" || bad "unlisted"
+
+  echo "the OpenCode catalog — resolve_models_opencode over the stand-in, and the readers"
+  local _oc; _oc="$tmp/oc"; mkdir -p "$_oc/config" "$_oc/data"
+  ( CONFIG_DIR="$_oc/config"; MODELS_FILE="$_oc/config/models.json"; AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"
+    resolve_models_opencode >/dev/null 2>&1 ) ; want "resolve-models opencode exits 0 over the stand-in" 0 $?
+  "$JQ" -e '.opencode.models | length == 13' "$_oc/config/models.json" >/dev/null 2>&1 \
+    && ok "the block carries the 13 models the stand-in lists" || bad "opencode block: $("$JQ" -c '.opencode | {at, source, n: (.models | length)}' "$_oc/config/models.json")"
+  "$JQ" -e '.opencode.models[] | select(.id == "pdm_ai/openai/gpt-oss-120b") | .provider == "pdm_ai" and .name == "openai/gpt-oss-120b"' \
+    "$_oc/config/models.json" >/dev/null 2>&1 && ok "a slash inside the model id splits at the FIRST slash" || bad "gpt-oss row: $("$JQ" -c '.opencode.models[] | select(.id | test("gpt-oss"))' "$_oc/config/models.json")"
+  "$JQ" -e '.opencode.models[] | select(.id == "pdm_ai/glm-5.3-flash") | .priced == true and .cost.input == 0.033011 and .cost.output == 0.139816 and .tools == true and .reasoning == true and (.variants == ["max","high","non-think"]) and .context == 197144' \
+    "$_oc/config/models.json" >/dev/null 2>&1 && ok "a priced model carries its price, its variants, its tools and its context" || bad "glm row: $("$JQ" -c '.opencode.models[] | select(.id == "pdm_ai/glm-5.3-flash")' "$_oc/config/models.json")"
+  "$JQ" -e '.opencode.models[] | select(.id == "opencode/big-pickle") | .priced == false and .variants == [] and .status == "active"' \
+    "$_oc/config/models.json" >/dev/null 2>&1 && ok "a zero-cost model is UNPRICED, not free, and a model without variants offers no effort" || bad "big-pickle row: $("$JQ" -c '.opencode.models[] | select(.id == "opencode/big-pickle")' "$_oc/config/models.json")"
+  [ "$("$JQ" -r '.opencode.source, .opencode.version' "$_oc/config/models.json" | tr '\n' '|')" = "opencode models --verbose|1.18.30|" ] \
+    && ok "the block says where it came from and which CLI answered" || bad "source/version: $("$JQ" -c '.opencode | {source, version}' "$_oc/config/models.json")"
+  ( MODELS_FILE="$_oc/config/models.json"
+    [ "$(opencode_catalog_ids | grep -c .)" = "13" ] || exit 1
+    [ "$(opencode_catalog_visible | head -1)" = "opencode/big-pickle" ] || exit 2
+    [ "$(opencode_catalog_efforts pdm_ai/glm-5.3-flash | tr '\n' ' ')" = "max high non-think " ] || exit 3
+    [ -z "$(opencode_catalog_efforts opencode/big-pickle)" ] || exit 4
+    opencode_catalog_priced pdm_ai/glm-5.3-flash || exit 5
+    opencode_catalog_priced opencode/big-pickle && exit 6
+    opencode_catalog_tools pdm_ai/glm-5.3-flash || exit 7
+    opencode_catalog_all_efforts | grep -qx 'non-think' || exit 8
+    exit 0 ); want "the readers: ids, visible, efforts per model, priced, tools, the union of efforts" 0 $?
+  # measurement 36: `opencode models --verbose` crosses the 64 KiB pipe wall
+  # the same way `export` does, once a catalog is large enough (55+ models).
+  # FAKE_MODELS_PAD=80 pushes the stand-in's output well past 64 KiB, in an
+  # isolated config dir so it cannot touch the 13-model catalog above.
+  local _ocpad; _ocpad="$tmp/oc-pad"; mkdir -p "$_ocpad/config"
+  ( CONFIG_DIR="$_ocpad/config"; MODELS_FILE="$_ocpad/config/models.json"; AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"
+    FAKE_MODELS_PAD=80; export FAKE_MODELS_PAD
+    resolve_models_opencode >/dev/null 2>&1 ); want "resolve-models opencode exits 0 over a catalog past 64 KiB" 0 $?
+  "$JQ" -e '.opencode.models | length == 93' "$_ocpad/config/models.json" >/dev/null 2>&1 \
+    && ok "a catalog of 93 models (past the 64 KiB pipe wall) resolves in full, none cut" \
+    || bad "padded opencode block: $("$JQ" -c '.opencode | {n: (.models | length)}' "$_ocpad/config/models.json")"
+  "$JQ" -e '[.opencode.models[] | select(.id | startswith("pad/"))] | length == 80' "$_ocpad/config/models.json" >/dev/null 2>&1 \
+    && ok "all 80 padded ids made it through, 13 + 80" \
+    || bad "padded ids: $("$JQ" -c '[.opencode.models[].id | select(startswith("pad/"))] | length' "$_ocpad/config/models.json")"
+  ( CONFIG_DIR="$_oc/config"; MODELS_FILE="$_oc/config/models.json"; AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"; FAKE_OPENCODE_NO_MODELS=1; export FAKE_OPENCODE_NO_MODELS
+    resolve_models_opencode >/dev/null 2>&1 )
+  "$JQ" -e '(.opencode.models | length) == 13 and (.opencode.stale_reason | length) > 0' "$_oc/config/models.json" >/dev/null 2>&1 \
+    && ok "a refresh that lists nothing keeps the catalog it had, stamped stale" || bad "after an empty refresh: $("$JQ" -c '.opencode | {n: (.models | length), stale_reason}' "$_oc/config/models.json")"
+  ( CONFIG_DIR="$_oc/config"; MODELS_FILE="$_oc/config/models.json"; AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"
+    resolve_models_opencode >/dev/null 2>&1 )
+  "$JQ" -e '.opencode | has("stale_reason") | not' "$_oc/config/models.json" >/dev/null 2>&1 \
+    && ok "and the next good refresh clears the stamp" || bad "stamp survived a good refresh"
+  # Same hang stand-in as platform_check above: a CLI that never answers
+  # "models --verbose --pure" must keep the catalog it had, stamped as a
+  # timeout rather than as an empty list -- OPENCODE_DEADLINE=1 doubles to 2 s.
+  ( CONFIG_DIR="$_oc/config"; MODELS_FILE="$_oc/config/models.json"; AGENTLOOP_OPENCODE_BIN="$pb/bin/opencode-hang"; OPENCODE_DEADLINE=1
+    resolve_models_opencode >/dev/null 2>&1 )
+  "$JQ" -e '(.opencode.models | length) == 13 and .opencode.stale_reason == "opencode models --verbose timed out after 2 s"' "$_oc/config/models.json" >/dev/null 2>&1 \
+    && ok "resolve_models_opencode: a CLI past its deadline keeps the catalog, stamped as a timeout" \
+    || bad "after a hung refresh: $("$JQ" -c '.opencode | {n: (.models | length), stale_reason}' "$_oc/config/models.json")"
+  ( CONFIG_DIR="$_oc/config"; MODELS_FILE="$_oc/config/none.json"; AGENTLOOP_OPENCODE_BIN=""; OPENCODE_BIN=/nonexistent
+    resolve_models_opencode >/dev/null 2>&1 )
+  [ "$("$JQ" -r '.opencode.available, .opencode.reason' "$_oc/config/none.json" | tr '\n' '|')" = "false|opencode not installed|" ] \
+    && ok "without the binary the block says so" || bad "no-binary block: $("$JQ" -c .opencode "$_oc/config/none.json")"
+
+  echo "opencode effort and model — validated against the catalog, because the CLI validates nothing"
+  ( MODELS_FILE="$_oc/config/models.json"
+    [ "$(platform_efforts opencode pdm_ai/glm-5.3-flash | tr '\n' ' ')" = "max high non-think " ] || exit 1
+    [ -z "$(platform_efforts opencode opencode/big-pickle)" ] || exit 2
+    platform_effort_ok opencode pdm_ai/glm-5.3-flash high || exit 3
+    platform_effort_ok opencode pdm_ai/glm-5.3-flash "" || exit 4
+    platform_effort_ok opencode pdm_ai/glm-5.3-flash ultra && exit 5
+    platform_effort_ok opencode opencode/big-pickle low && exit 6
+    platform_model_ok opencode pdm_ai/glm-5.3-flash || exit 7
+    platform_model_ok opencode pdm_ai/openai/gpt-oss-120b || exit 8
+    platform_model_ok opencode opencode/does-not-exist && exit 9
+    [ "$(platform_catalog_ids opencode | grep -c .)" = "13" ] || exit 10
+    exit 0 ); want "efforts are the model's variants, empty is fine, a model without variants takes none, the id must be in the catalog" 0 $?
+
+  echo "opencode_config_content() — the permission block a run is launched with"
+  local _cc
+  _cc="$(opencode_config_content full-access "" "" | head -1)"
+  [ "$(printf '%s' "$_cc" | "$JQ" -c .)" = '{"share":"disabled","permission":{}}' ] \
+    && ok "full-access with no lists: share disabled and an empty block (--auto approves the rest)" || bad "full-access block: $_cc"
+  _cc="$(opencode_config_content read-only "" "" | head -1)"
+  [ "$(printf '%s' "$_cc" | "$JQ" -c .permission)" = '{"edit":"deny","write":"deny","bash":"deny","task":"deny"}' ] \
+    && ok "read-only denies edit, write, bash and task" || bad "read-only block: $_cc"
+  _cc="$(opencode_config_content full-access "" "Agent,Bash(git push *),WebFetch" | head -1)"
+  [ "$(printf '%s' "$_cc" | "$JQ" -c .permission)" = '{"task":"deny","bash":{"*":"allow","git push *":"deny"},"webfetch":"deny"}' ] \
+    && ok "a denylist: Agent closes task, Bash(pattern) is a bash pattern, a plain name closes the tool" || bad "denylist block: $_cc"
+  _cc="$(opencode_config_content full-access "Read,Grep,Bash(git *)" "" | head -1)"
+  [ "$(printf '%s' "$_cc" | "$JQ" -c .permission)" = '{"*":"deny","read":"allow","grep":"allow","bash":{"*":"deny","git *":"allow"}}' ] \
+    && ok "an allowlist: everything else denied, the named tools and the bash pattern allowed" || bad "allowlist block: $_cc"
+  _cc="$(opencode_config_content full-access "Read,Edit(*.md)" "Read,Edit(*.py)")"
+  [ "$(printf '%s\n' "$_cc" | head -1 | "$JQ" -c .permission)" = '{"*":"deny","read":"deny","edit":"deny"}' ] \
+    && ok "deny wins over allow; a pattern on a non-bash tool widens a deny and is dropped from an allow" || bad "both lists: $(printf '%s\n' "$_cc" | head -1)"
+  printf '%s\n' "$_cc" | tail -n +2 | grep -q 'Edit(\*.md) ignored' && ok "and the dropped allow pattern is named in a note" || bad "no note for the dropped pattern: $(printf '%s\n' "$_cc" | tail -n +2)"
+  _cc="$(opencode_config_content read-only "" "Nonesuch")"
+  printf '%s\n' "$_cc" | tail -n +2 | grep -q "Nonesuch" && ok "an unknown tool name is named in a note, not translated" || bad "no note for Nonesuch"
+  printf '%s\n' "$_cc" | head -1 | "$JQ" -e '.permission | has("nonesuch") | not' >/dev/null 2>&1 && ok "and never reaches the block" || bad "Nonesuch reached the block"
+  # Read-only keeps bash closed whatever the allowlist says. A bash pattern
+  # allowed by rule used to reopen a whole shell with no OS sandbox behind
+  # it (measured 19, 20), and `Bash(*)` overwrote the deny outright.
+  _cc="$(opencode_config_content read-only "Bash(*)" "")"
+  [ "$(printf '%s\n' "$_cc" | head -1 | "$JQ" -r '.permission.bash')" = "deny" ] \
+    && ok "read-only with Bash(*) allowed keeps bash: deny" || bad "read-only Bash(*): $(printf '%s\n' "$_cc" | head -1)"
+  printf '%s\n' "$_cc" | tail -n +2 | grep -qx 'allowed_tools: Bash(\*) ignored (read-only keeps bash closed)' \
+    && ok "and the dropped entry is named in a note" || bad "no note for Bash(*): $(printf '%s\n' "$_cc" | tail -n +2)"
+  _cc="$(opencode_config_content read-only "Bash(git log *)" "")"
+  [ "$(printf '%s\n' "$_cc" | head -1 | "$JQ" -r '.permission.bash')" = "deny" ] \
+    && printf '%s\n' "$_cc" | tail -n +2 | grep -qx 'allowed_tools: Bash(git log \*) ignored (read-only keeps bash closed)' \
+    && ok "read-only with Bash(git log *) allowed: bash stays deny, with the note" || bad "read-only Bash(git log *): $_cc"
+  _cc="$(opencode_config_content full-access "Bash(git log *)" "" | head -1)"
+  [ "$(printf '%s' "$_cc" | "$JQ" -c .permission.bash)" = '{"*":"deny","git log *":"allow"}' ] \
+    && ok "full-access with the same allow: the allowlist shape measured in 37a" || bad "full-access Bash(git log *): $_cc"
+  # Claude Code's prefix form `cmd:*` is not a glob: to OpenCode the `:*`
+  # matches a literal colon and nothing else, so a denylist carried over
+  # from an Anthropic job was inert in silence. It becomes the glob `cmd*`.
+  _cc="$(opencode_config_content full-access "" "Bash(git push:*)")"
+  [ "$(printf '%s\n' "$_cc" | head -1 | "$JQ" -c .permission.bash)" = '{"*":"allow","git push*":"deny"}' ] \
+    && ok "a denied Bash(git push:*) is the bash glob git push*" || bad "prefix deny: $(printf '%s\n' "$_cc" | head -1)"
+  printf '%s\n' "$_cc" | tail -n +2 | grep -q 'disallowed_tools: Bash(git push:\*) is the bash pattern "git push\*" (translated from Claude Code' \
+    && ok "and the note says it was translated from the prefix form" || bad "no translation note: $(printf '%s\n' "$_cc" | tail -n +2)"
+  _cc="$(opencode_config_content full-access "Bash(git log:*)" "" | head -1)"
+  [ "$(printf '%s' "$_cc" | "$JQ" -c .permission.bash)" = '{"*":"deny","git log*":"allow"}' ] \
+    && ok "an allowed Bash(git log:*) is the bash glob git log*" || bad "prefix allow: $_cc"
+
+  # The opencode refusal block's own guard (in run_job, before acquire_slot)
+  # refuses the launch when this comes back with an empty first line, rather
+  # than set OPENCODE_CONFIG_CONTENT to nothing and let the CLI fall back to
+  # its own defaults (sharing ON, nothing read-only). The heredoc above
+  # always prints a JSON first line for any permission/allowed/disallowed
+  # input -- the only way it comes back empty is the interpreter itself
+  # failing -- so that is exercised here directly. Not through run_job with a
+  # GLOBALLY broken interpreter: platform_ready's own probe (run_bounded,
+  # same $PYTHON) runs first and would fail there instead, on the unrelated
+  # reason "not ready", never reaching this guard at all -- the e2e suite
+  # drives the guard itself with a $PYTHON that only fails the one call
+  # shape opencode_config_content uses (see test/e2e.test.sh, scenario 37).
+  local _ccbroken
+  _ccbroken="$(PYTHON=/no/such/python-interpreter opencode_config_content full-access "" "" 2>/dev/null)"
+  [ -z "$_ccbroken" ] \
+    && ok "a broken interpreter leaves opencode_config_content answering nothing — what run_job's opencode refusal block refuses the launch on" \
+    || bad "opencode_config_content still answered over a broken PYTHON: $_ccbroken"
+
+  echo "platform_argv_opencode() — the measured launch line, for a fresh run and a resume"
+  local _av _flag
+  platform_argv_opencode "" /tmp/w pdm_ai/glm-5.3-flash high "PROMPT" "agentloop j1 20260912-120000"
+  _av="$(printf '%s\n' "${PLATFORM_ARGV[@]}")"
+  [ "${PLATFORM_ARGV[0]}" = "run" ] && [ "${PLATFORM_ARGV[1]}" = "--format" ] && [ "${PLATFORM_ARGV[2]}" = "json" ] && ok "run --format json first" || bad "argv starts ${PLATFORM_ARGV[*]}"
+  for _flag in --pure --auto --print-logs; do
+    printf '%s\n' "$_av" | grep -qx -- "$_flag" && ok "$_flag on every launch" || bad "no $_flag"
+  done
+  printf '%s\n' "$_av" | grep -A1 -x -- '--log-level' | grep -qx 'ERROR' && ok "--log-level ERROR: the reason of an UnknownError lands in .err, nothing else does" || bad "log level"
+  printf '%s\n' "$_av" | grep -A1 -x -- '-m' | grep -qx 'pdm_ai/glm-5.3-flash' && ok "-m carries the id verbatim" || bad "-m"
+  printf '%s\n' "$_av" | grep -A1 -x -- '--variant' | grep -qx 'high' && ok "--variant carries the effort" || bad "--variant"
+  printf '%s\n' "$_av" | grep -A1 -x -- '--dir' | grep -qx '/tmp/w' && ok "--dir is the run's cwd" || bad "--dir"
+  printf '%s\n' "$_av" | grep -A1 -x -- '--title' | grep -qx 'agentloop j1 20260912-120000' && ok "--title on a fresh run (one model call saved per session)" || bad "--title"
+  printf '%s\n' "$_av" | grep -qx -- '-s' && bad "-s on a fresh run" || ok "no -s on a fresh run"
+  [ "${PLATFORM_ARGV[$((${#PLATFORM_ARGV[@]} - 2))]}" = "--" ] && [ "${PLATFORM_ARGV[$((${#PLATFORM_ARGV[@]} - 1))]}" = "PROMPT" ] \
+    && ok "-- then the prompt, last" || bad "the prompt is not the lone argument after --"
+  platform_argv_opencode "" /tmp/w opencode/big-pickle "" "P" "t"
+  printf '%s\n' "${PLATFORM_ARGV[@]}" | grep -qx -- '--variant' && bad "an empty effort still emitted --variant" || ok "an empty effort emits no --variant"
+  platform_argv_opencode ses_abc /tmp/kept opencode/big-pickle "" "P" "t"
+  printf '%s\n' "${PLATFORM_ARGV[@]}" | grep -A1 -x -- '-s' | grep -qx 'ses_abc' && ok "a resume carries -s with the session id" || bad "no -s on the resume"
+  printf '%s\n' "${PLATFORM_ARGV[@]}" | grep -A1 -x -- '--dir' | grep -qx '/tmp/kept' && ok "and --dir with the session's own directory (measured: any other directory hangs for ever)" || bad "no --dir on the resume"
+  printf '%s\n' "${PLATFORM_ARGV[@]}" | grep -qx -- '--title' && bad "--title on a resume (the session has one)" || ok "no --title on a resume"
+
+  echo "platform_normalizer() — the launch asks for one instead of naming a platform"
+  [ "$(platform_normalizer openai)" = "$BIN_DIR/platforms/openai_stream.py" ] && ok "openai has its normalizer" || bad "openai normalizer: $(platform_normalizer openai)"
+  [ "$(platform_normalizer opencode)" = "$BIN_DIR/platforms/opencode_stream.py" ] && ok "opencode has its normalizer" || bad "opencode normalizer: $(platform_normalizer opencode)"
+  [ -z "$(platform_normalizer anthropic)" ] && ok "anthropic has none: the CLI speaks stream-json itself" || bad "anthropic got a normalizer"
+
+  echo "turn_is_over() — over a normalized OpenCode stream"
+  "$PYTHON" -u "$BIN_DIR/platforms/opencode_stream.py" --model opencode/big-pickle --permission full-access --cwd /tmp \
+    < "$BASE_DIR/test/fixtures/opencode/03-tool-use.jsonl" > "$tmp/oc-a.ndjson" 2>/dev/null
+  turn_is_over "$tmp/oc-a.ndjson"; want "a finished OpenCode turn is over" 0 $?
+  grep -v '"reason":"stop"' "$BASE_DIR/test/fixtures/opencode/03-tool-use.jsonl" \
+    | "$PYTHON" -u "$BIN_DIR/platforms/opencode_stream.py" --model opencode/big-pickle --permission full-access --cwd /tmp > "$tmp/oc-b.ndjson" 2>/dev/null
+  turn_is_over "$tmp/oc-b.ndjson"; want "an OpenCode turn cut before its last step is not" 1 $?
+  [ "$(session_from_stream "$tmp/oc-a.ndjson")" = "ses_f69f73155ffeAHgrtVv1sVFbr7" ] \
+    && ok "session_from_stream reads the sessionID off the first line" || bad "session $(session_from_stream "$tmp/oc-a.ndjson")"
+
+  echo "opencode_export_model() — the model that ran, read from opencode export"
+  mkdir -p "$tmp/ocx"
+  [ "$( AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"; FAKE_RAN_MODEL=pdm_ai/glm-5.3-flash-real; export FAKE_RAN_MODEL; opencode_export_model "$tmp/ocx" ses_x1 )" = "pdm_ai/glm-5.3-flash-real" ] \
+    && ok "provider/model out of info.model" || bad "export model: $( AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"; opencode_export_model "$tmp/ocx" ses_x1 )"
+  [ -z "$( AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"; opencode_export_model "$tmp/does-not-exist" ses_x1 )" ] \
+    && ok "no directory, no answer (never a hang: the CLI needs the session's directory)" || bad "export answered without a directory"
+  # measurement 36: a real 35-turn session's export is 264,607 bytes, and a
+  # pipe loses everything past 65,536; FAKE_EXPORT_PAD proves the helper
+  # reads it from a file instead, and that the file is gone once it is done.
+  ( AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"; FAKE_RAN_MODEL=opencode/big-pickle-real; FAKE_EXPORT_PAD=300000
+    export FAKE_RAN_MODEL FAKE_EXPORT_PAD
+    [ "$(opencode_export_model "$tmp/ocx" ses_x1)" = "opencode/big-pickle-real" ] || exit 1
+    [ -z "$(find "$DATA_DIR" -maxdepth 1 -name '.opencode-export.*' 2>/dev/null)" ] || exit 2
+    exit 0 ); want "an export past 64 KiB (padded to 300000 bytes) still resolves the model, and its temp file is gone after" 0 $?
+  # With a base (the run's stream file, from platform_finish) the export
+  # goes to <base>.export beside the run's own log, not to data/, and is
+  # gone after the read: a kill mid-export leaves the transcript next to
+  # the run it belongs to.
+  # DATA_DIR points nowhere here on purpose: the mktemp fallback cannot
+  # answer, so only the <base>.export path can produce the model.
+  ( AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"; FAKE_RAN_MODEL=pdm_ai/based; export FAKE_RAN_MODEL
+    DATA_DIR="$tmp/ocx/nowhere"
+    [ "$(opencode_export_model "$tmp/ocx" ses_x1 "$tmp/ocx/r1.stream.ndjson")" = "pdm_ai/based" ] || exit 1
+    [ ! -e "$tmp/ocx/r1.stream.ndjson.export" ] || exit 2
+    [ -z "$(find "$DATA_DIR" -maxdepth 1 -name '.opencode-export.*' 2>/dev/null)" ] || exit 3
+    exit 0 ); want "with a base the export is read from <base>.export, removed after, and nothing lands under data/" 0 $?
+  ( AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"; FAKE_RAN_MODEL=opencode/big-pickle-real; export FAKE_RAN_MODEL
+    platform_finish opencode "$tmp/ocx/none.ndjson" ses_x2 j1 "$tmp/ocx"; [ "$PF_MODEL_ID" = "opencode/big-pickle-real" ] ); want "platform_finish opencode sets PF_MODEL_ID from the export" 0 $?
+  # opencode-hang (above: --version answers, anything else hangs) times the
+  # export out through the same run_bounded a genuinely wedged CLI would hit;
+  # the close has to say WHICH kind of nothing this is, not the same "gave no
+  # model" a malformed export or a missing rollout would print.
+  ( AGENTLOOP_OPENCODE_BIN="$pb/bin/opencode-hang"; OPENCODE_DEADLINE=1
+    platform_finish opencode "$tmp/ocx/none.ndjson" ses_hang j1 "$tmp/ocx"
+    [ -z "$PF_MODEL_ID" ] && grep -q 'j1: opencode export timed out after 1 s' "$TICK_LOG" ); \
+    want "an export past its deadline says timed out, not gave no model" 0 $?
+
+  echo "platform_check opencode — ready when the CLI lists a model, and who the account is"
+  _pc="$( PLATFORMS_FILE="$pb/none.json"; AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"; platform_check opencode )"
+  [ "$(printf '%s' "$_pc" | "$JQ" -r '.ready, .version, .account' | tr '\n' '|')" = "true|1.18.30|0 credentials · providers: opencode, pdm_ai|" ] \
+    && ok "ready, versioned, and the account names the credentials and the providers" || bad "opencode check: $_pc"
+  _pc="$( PLATFORMS_FILE="$pb/none.json"; AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"; FAKE_OPENCODE_NO_MODELS=1; export FAKE_OPENCODE_NO_MODELS; platform_check opencode )"
+  [ "$(printf '%s' "$_pc" | "$JQ" -r '.ready, .reason' | tr '\n' '|')" = "false|no usable provider: run opencode auth login, or configure one in ~/.config/opencode/opencode.json|" ] \
+    && ok "with no model listed it is not ready, and says what to do" || bad "no-provider check: $_pc"
+
+  echo "run_bounded() — a command past its deadline is killed and reads as 124"
+  run_bounded 1 sleep 5; want "a 5 s sleep under a 1 s deadline exits 124" 124 $?
+  [ "$(run_bounded 5 echo bounded-ok)" = "bounded-ok" ] && ok "a command inside the deadline passes its stdout through" || bad "run_bounded ate the output"
+  # A grandchild that inherits stdout (the shape of a bun-spawned opencode
+  # helper process) must die too, not only the direct child -- 601, not 600,
+  # keeps this assertion from matching a sleep some other case left behind.
+  run_bounded 1 sh -c 'sleep 601 & sleep 601'; want "a hung process group under a 1 s deadline exits 124" 124 $?
+  [ "$(ps -ax -o command= | grep -c '^sleep 601$')" = "0" ] \
+    && ok "and no sleep 601 process is left running in its group" || bad "leaked sleep 601 count: $(ps -ax -o command= | grep -c '^sleep 601$')"
+  # A grandchild that IGNORES the TERM while the direct child goes on it
+  # used to outlive the deadline: the KILL was only ever sent when the
+  # direct child itself sat out the grace. Checked by pid (the grandchild
+  # writes its own) rather than through `ps -ax`, which a sandboxed shell
+  # does not see every process through.
+  local _gcpid="$tmp/grandchild.pid" _gcw=0
+  rm -f "$_gcpid"
+  run_bounded 1 sh -c "sh -c 'echo \$\$ > $_gcpid; trap \"\" TERM; exec sleep 602' & sleep 602"; want "a TERM-proof grandchild under a 1 s deadline still exits 124" 124 $?
+  while [ "$_gcw" -lt 20 ] && [ -s "$_gcpid" ] && kill -0 "$(cat "$_gcpid")" 2>/dev/null; do sleep 0.1; _gcw=$((_gcw + 1)); done
+  if [ -s "$_gcpid" ] && ! kill -0 "$(cat "$_gcpid")" 2>/dev/null; then ok "and the grandchild that ignored the TERM went with its group on the KILL"
+  else bad "the TERM-proof grandchild (pid $(cat "$_gcpid" 2>/dev/null)) outlived the deadline"; kill -9 "$(cat "$_gcpid" 2>/dev/null)" 2>/dev/null; fi
 
   echo "agentloop platform … — the commands the Settings page is made of"
   local pc="$tmp/pc" out rc _pm _pl; mkdir -p "$pc/config" "$pc/data"
@@ -3750,8 +4618,12 @@ JSON
   # shape as test/fixtures/codex/models-catalog.stripped.json.
   printf '{"models":[{"slug":"gpt-a","display_name":"A","description":"da","default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}],"visibility":"list","priority":6},{"slug":"gpt-b","display_name":"B","description":"db","default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low"}],"visibility":"list","priority":7}]}' \
     > "$pc/catalog.json"
+  # opencode is not under test here, and platform_check/platform models now
+  # actually run its binary (Task 3) -- pointed at nothing, same as the two
+  # above, so an operator's real opencode install is never reached.
   pc_al() { AGENTLOOP_CONFIG="$pc/config" AGENTLOOP_DATA="$pc/data" AGENTLOOP_CLAUDE_BIN="$BASE_DIR/test/fake-claude" \
             AGENTLOOP_CODEX_BIN="$BASE_DIR/test/fake-codex" AGENTLOOP_CLAUDE_CONFIG_DIR="" CODEX_HOME="$pc/codex-home" \
+            AGENTLOOP_OPENCODE_BIN=/nonexistent/opencode \
             FAKE_CODEX_MODELS_JSON="$pc/catalog.json" "$BIN_DIR/agentloop" "$@"; }
   # pc_al's own twin, pointed at a codex that is not there, for the "a failed
   # refresh must not clobber the catalog" assertion below.
@@ -3773,7 +4645,7 @@ JSON
   case "$out" in *"cannot enable openai: codex is not signed in (run: codex login)"*) ok "and says why" ;; *) bad "enable refusal: $out" ;; esac
   pc_al platform enable openai >/dev/null 2>&1; want "platform enable writes once the check passes" 0 $?
   "$JQ" -e '.platforms.openai.enabled == true' "$pc/config/platforms.json" >/dev/null 2>&1 && ok "and the file says so" || bad "enable not written"
-  pc_al platform enable opencode >/dev/null 2>&1; want "platform enable refuses a planned platform" 1 $?
+  pc_al platform enable opencode >/dev/null 2>&1; want "platform enable refuses a platform whose binary is missing" 1 $?
   pc_al platform set-bin openai /nonexistent/codex >/dev/null 2>&1; want "set-bin refuses a path that is not executable" 1 $?
   pc_al platform set-bin openai "$BASE_DIR/test/fake-codex" >/dev/null 2>&1; want "set-bin accepts an executable" 0 $?
   [ "$("$JQ" -r '.platforms.openai.bin' "$pc/config/platforms.json")" = "$BASE_DIR/test/fake-codex" ] && ok "and writes it" || bad "bin not written"
@@ -3806,7 +4678,7 @@ JSON
   _pm="$(pc_al platform models anthropic 2>/dev/null)"
   printf '%s' "$_pm" | "$JQ" -e '.platform == "anthropic" and (.models | map(.v) | index("claude-opus-5")) != null and (.models[] | select(.v == "claude-opus-5") | .enabled) == true' >/dev/null 2>&1 \
     && ok "platform models anthropic: the ids in use are listed and flagged" || bad "models anthropic: $_pm"
-  pc_al platform models opencode | "$JQ" -e '.models == [] and (.reason | length) > 0' >/dev/null 2>&1; want "platform models opencode: an empty list with the reason" 0 $?
+  pc_al platform models opencode | "$JQ" -e '.models == [] and .stale == true and (.reason | length) > 0' >/dev/null 2>&1; want "platform models opencode without the binary: an empty, stale list with the reason" 0 $?
   printf '["gpt-zzz"]' | pc_al platform set-models openai >/dev/null 2>&1; want "set-models refuses an id outside the catalog" 1 $?
   printf 'not json' | pc_al platform set-models openai >/dev/null 2>&1; want "set-models refuses anything but a JSON list" 1 $?
   printf '' | pc_al platform set-models openai >/dev/null 2>&1; want "set-models refuses empty stdin" 1 $?
@@ -3823,12 +4695,13 @@ JSON
   "$JQ" '.platforms.openai.models = ["gpt-gone","gpt-b"]' "$pc/config/platforms.json" > "$pc/pf.next"; mv "$pc/pf.next" "$pc/config/platforms.json"
   printf '["gpt-gone","gpt-a"]' | pc_al platform set-models openai >/dev/null 2>&1; want "set-models keeps an already-enabled id the catalog dropped" 0 $?
   _pl="$(pc_al platforms 2>/dev/null)"
-  printf '%s' "$_pl" | "$JQ" -e '(keys | sort) == ["anthropic","openai","opencode"] and .opencode.supported == false and .openai.supported == true
+  printf '%s' "$_pl" | "$JQ" -e '(keys | sort) == ["anthropic","openai","opencode"] and .opencode.supported == true and .openai.supported == true
       and .openai.enabled == true and .openai.usable == true and .openai.models_enabled == ["gpt-gone","gpt-a"] and .openai.bin_source == "env"
       and .openai.jobs_on_platform == 1 and .openai.jobs_using == {"gpt-a": 1} and .anthropic.jobs_using == {"claude-opus-5": 1}
       and .openai.jobs_on_platform_enabled == 1 and .openai.jobs_using_enabled == {"gpt-a": 1}
       and .anthropic.jobs_on_platform_enabled == 1 and .anthropic.jobs_using_enabled == {"claude-opus-5": 1}
-      and .opencode.usable == false and (.opencode.models_enabled == [])' >/dev/null 2>&1 \
+      and .opencode.usable == false and (.opencode.models_enabled == [])
+      and .opencode.supported == true and (.opencode | has("unpriced"))' >/dev/null 2>&1 \
     && ok "platforms: the three platforms, each with enabled, usable, bin_source, models_enabled and both counts of the jobs using them" || bad "platforms: $_pl"
   # Every job in the fixture above is switched on, so the two maps come out
   # identical there and a filter that had lost its `select(.on)` would read
@@ -3979,7 +4852,7 @@ JSON
     MODELS_FILE="$tmp/rm/stale.json"
     "$JQ" -n --argjson now "$(now_epoch)" '{resolved:{opus:{id:"x", at:$now}}, openai:{at:1, models:[]}}' > "$MODELS_FILE"
     models_stale; want "models_stale: an openai block older than MODELS_TTL is stale" 0 $?
-    "$JQ" -n --argjson now "$(now_epoch)" '{resolved:{opus:{id:"x", at:$now}}, openai:{at:1, models:[], stale_at:$now, stale_reason:"codex not installed"}}' > "$MODELS_FILE"
+    "$JQ" -n --argjson now "$(now_epoch)" '{resolved:{opus:{id:"x", at:$now}}, openai:{at:1, models:[], stale_at:$now, stale_reason:"codex not installed"}, opencode:{at:$now, models:[]}}' > "$MODELS_FILE"
     models_stale; want "models_stale: a kept catalog with a fresh stale_at is not" 1 $?
 
     echo "RESULT ok=$_upass bad=$_ufail"
@@ -3994,6 +4867,9 @@ JSON
   _prout="$(
     mkdir -p "$tmp/pr"
     CODEX_BIN="$BASE_DIR/test/fake-codex"
+    # opencode pinned off: cmd_platforms below walks every platform, opencode
+    # included, and must never reach the real CLI on this machine.
+    AGENTLOOP_OPENCODE_BIN=""; OPENCODE_BIN=/nonexistent
     CONFIG_DIR="$tmp/pr"
     MODELS_FILE="$tmp/pr/models.json"
     PRICING_FILE="$tmp/pr/pricing.json"
@@ -4116,11 +4992,15 @@ JSON
       && ok "cmd_platforms: openai.pricing_at is the table's refresh time" || bad "pricing_at '$(printf '%s' "$_pl" | "$JQ" -c '.openai.pricing_at')'"
     [ "$(printf '%s' "$_pl" | "$JQ" -c '.openai.unpriced')" = '["gpt-5.4-mini"]' ] \
       && ok "cmd_platforms: openai.unpriced names the visible slug without a price" || bad "unpriced '$(printf '%s' "$_pl" | "$JQ" -c '.openai.unpriced')'"
+    # opencode pinned off above: prove it held, so the leak this guards
+    # against cannot come back silently.
+    [ "$(printf '%s' "$_pl" | "$JQ" -r '.opencode.bin_found')" = "false" ] \
+      && ok "cmd_platforms: opencode.bin_found is false, the pin held" || bad "opencode.bin_found '$(printf '%s' "$_pl" | "$JQ" -c '.opencode.bin_found')'"
     printf 'RESULT ok=%s bad=%s\n' "$_upass" "$_ufail"
   )"
   printf '%s\n' "$_prout" | grep -v '^RESULT '
-  printf '%s\n' "$_prout" | grep -qx 'RESULT ok=27 bad=0' \
-    && ok "resolve_pricing_openai: all 27 refresh assertions passed" \
+  printf '%s\n' "$_prout" | grep -qx 'RESULT ok=28 bad=0' \
+    && ok "resolve_pricing_openai: all 28 refresh assertions passed" \
     || bad "resolve_pricing_openai over the sample source did not: $(printf '%s\n' "$_prout" | tail -1)"
 
   echo "cmd_skills() — links into the Claude skills root, and into the Codex home only when that home exists"
@@ -4147,6 +5027,8 @@ JSON
       && ok "cmd_skills status: with a Codex home, its root reports the skill missing" || bad "status: $_st"
     printf '%s\n' "$_st" | grep -qF 'run `agentloop skills install`' \
       && ok "cmd_skills status: and says how to fix it" || bad "no nag line in: $_st"
+    printf '%s\n' "$_st" | grep -qF 'OpenCode reads ~/.claude/skills too' \
+      && ok "cmd_skills status: says OpenCode reads the same link" || bad "no OpenCode line in: $_st"
     cmd_skills install >/dev/null
     [ "$(readlink "$tmp/skl/codexhome/skills/security-analysis")" = "$SKILLS_DIR/security-analysis" ] \
       && ok "cmd_skills install: security-analysis is linked under the Codex root too" \
@@ -4158,8 +5040,8 @@ JSON
     echo "RESULT ok=$_upass bad=$_ufail"
   )"
   printf '%s\n' "$_skout" | grep -v '^RESULT '
-  printf '%s\n' "$_skout" | grep -qx 'RESULT ok=6 bad=0' \
-    && ok "cmd_skills over two scratch roots: all 6 assertions reach the gate" \
+  printf '%s\n' "$_skout" | grep -qx 'RESULT ok=7 bad=0' \
+    && ok "cmd_skills over two scratch roots: all 7 assertions reach the gate" \
     || bad "cmd_skills over two scratch roots did not: $(printf '%s\n' "$_skout" | tail -1)"
 
   echo "status_platforms_block() — one line per platform, with the Codex facts a refused run needs"
@@ -4172,8 +5054,7 @@ JSON
     PLIST_PATH=/nonexistent                       # installed_config_dir answers nothing, the CLI default
     CODEX_BIN="$BASE_DIR/test/fake-codex"
     # An AGENTLOOP_*_BIN exported by the invoking shell must never win over the stand-ins above.
-    AGENTLOOP_CLAUDE_BIN=""; AGENTLOOP_CODEX_BIN=""; AGENTLOOP_OPENCODE_BIN=""
-    OPENCODE_BIN=/nonexistent
+    AGENTLOOP_CLAUDE_BIN=""; AGENTLOOP_CODEX_BIN=""; AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"
     CONFIG_DIR="$tmp/sp"
     MODELS_FILE="$tmp/sp/models.json"
     PRICING_FILE="$tmp/sp/pricing.json"
@@ -4184,11 +5065,12 @@ JSON
     cp "$BASE_DIR/config/pricing.example.json" "$PRICING_FILE"
     printf '{"jobs":[]}\n' > "$tmp/sp/jobs.json"
     printf '{"projects":[]}\n' > "$tmp/sp/projects.json"
-    printf '{"platforms":{"anthropic":{"enabled":true,"bin":"","models":["claude-opus-5"]},"openai":{"enabled":true,"bin":"","models":["gpt-5.6-sol"]},"opencode":{"enabled":false,"bin":"","models":[]}}}\n' > "$tmp/sp/platforms.json"
+    printf '{"platforms":{"anthropic":{"enabled":true,"bin":"","models":["claude-opus-5"]},"openai":{"enabled":true,"bin":"","models":["gpt-5.6-sol"]},"opencode":{"enabled":true,"bin":"","models":[]}}}\n' > "$tmp/sp/platforms.json"
     _upass=0; _ufail=0
     ok()  { _upass=$(( _upass + 1 )); printf '  ok    %s\n' "$1"; }
     bad() { _ufail=$(( _ufail + 1 )); printf '  FAIL  %s\n' "$1"; }
     resolve_models_openai >/dev/null
+    resolve_models_opencode >/dev/null
     _b="$(status_platforms_block)"
     printf '%s\n' "$_b" | grep -q '^anthropic : enabled — 2.1.0 (Claude Code), unknown — claude auth status needs Claude Code 2.1+; 1 of 1 models enabled$' \
       && ok "status_platforms_block: the Claude line carries enabled, version, account and the model count" \
@@ -4196,8 +5078,8 @@ JSON
     printf '%s\n' "$_b" | grep -q '^openai    : enabled — codex-cli 0.148.0, Logged in using ChatGPT; 1 of 5 models enabled; catalog [0-9]*m ago (5 models); prices [0-9]*[mhd] ago; unpriced: none$' \
       && ok "status_platforms_block: the Codex line adds catalog age and size, price age, unpriced" \
       || bad "openai line: $(printf '%s\n' "$_b" | sed -n 2p)"
-    printf '%s\n' "$_b" | grep -q '^opencode  : planned — opencode not found at /nonexistent — set the path in Settings (or AGENTLOOP_OPENCODE_BIN); install: brew install opencode$' \
-      && ok "status_platforms_block: the planned platform says it is planned, and how to install it" \
+    printf '%s\n' "$_b" | grep -q '^opencode  : enabled — 1.18.30, 0 credentials · providers: opencode, pdm_ai; 0 of 13 models enabled; catalog [0-9]*m ago (13 models); unpriced: none$' \
+      && ok "the opencode line adds the account's providers, the catalog age and size, and the enabled models still unpriced" \
       || bad "opencode line: $(printf '%s\n' "$_b" | sed -n 3p)"
     # The pin the install carries, by either route (the variable; the plist a
     # previous install wrote), never the CLAUDE_CONFIG_DIR of this process.
@@ -4410,7 +5292,11 @@ JSON
   printf '{"projects":[{"name":"oa","cwd":"/tmp","platform":"openai"}]}\n' > "$tmp/cfg/config/projects.json"
   "$JQ" -n '{resolved:{}, openai:{at:1, source:"fixture", models:[
       {slug:"gpt-a", display_name:"A", description:"", visibility:"list", priority:6, efforts:["low","high","ultra"], default_effort:"low", deprecated_by:"", retires_at:""},
-      {slug:"gpt-b", display_name:"B", description:"", visibility:"list", priority:7, efforts:["low","high"], default_effort:"low", deprecated_by:"", retires_at:""}]}}' \
+      {slug:"gpt-b", display_name:"B", description:"", visibility:"list", priority:7, efforts:["low","high"], default_effort:"low", deprecated_by:"", retires_at:""}]},
+    opencode:{at:1, source:"fixture", version:"1.18.30", models:[
+      {id:"opencode/big-pickle", provider:"opencode", name:"Big Pickle", cost:{input:0,output:0,cache_read:0,cache_write:0}, priced:false, context:200000, output_limit:32000, variants:[], tools:true, reasoning:true, status:"active"},
+      {id:"pdm_ai/glm-5.3-flash", provider:"pdm_ai", name:"glm-5.3-flash", cost:{input:0.033011,output:0.139816,cache_read:0,cache_write:0}, priced:true, context:197144, output_limit:65000, variants:["max","high","non-think"], tools:true, reasoning:true, status:"active"},
+      {id:"pdm_ai/vision", provider:"pdm_ai", name:"vision", cost:{input:0,output:0,cache_read:0,cache_write:0}, priced:false, context:262000, output_limit:65000, variants:[], tools:false, reasoning:false, status:"active"}]}}' \
     > "$tmp/cfg/config/models.json"
   printf '{"jobs":[{"id":"cj","enabled":false,"cwd":"/tmp","prompt":"p","model":"opus","effort":"max","permission_mode":"dontAsk"}]}\n' \
     > "$tmp/cfg/config/jobs.json"
@@ -4473,7 +5359,7 @@ JSON
   "$JQ" '.platforms.openai.enabled = false' "$tmp/cfg/config/platforms.json" > "$tmp/cfg/pf.next"; mv "$tmp/cfg/pf.next" "$tmp/cfg/config/platforms.json"
   out="$(printf 'openai' | cfg_al set-field cj platform 2>&1)"; rc=$?
   [ "$rc" -ne 0 ] && case "$out" in *"openai is not enabled in Settings — enable it there, or: agentloop platform enable openai"*) ok "set-field platform refuses a platform disabled in Settings" ;; *) bad "refusal: $out" ;; esac
-  printf 'opencode' | cfg_al set-field cj platform >/dev/null 2>&1; want "set-field platform refuses the planned platform" 1 $?
+  printf 'opencode' | cfg_al set-field cj platform >/dev/null 2>&1; want "set-field platform refuses a platform not enabled in Settings" 1 $?
   printf '{"id":"dj","platform":"openai","prompt":"p"}' | cfg_al create >/dev/null 2>&1; want "create refuses a disabled platform" 1 $?
   "$JQ" '.platforms.openai.enabled = true' "$tmp/cfg/config/platforms.json" > "$tmp/cfg/pf.next"; mv "$tmp/cfg/pf.next" "$tmp/cfg/config/platforms.json"
   printf '{"id":"dj","platform":"openai","model":"gpt-b","prompt":"p"}' | cfg_al create >/dev/null 2>&1; want "create accepts an enabled model on an enabled platform" 0 $?
@@ -4528,6 +5414,14 @@ JSON
     && ok "project-set refuses an unknown platform, and writes nothing" \
     || bad "project-set gemini: rc=$rc out=$out"
 
+  # opencode is still disabled in this fixture's platforms.json at this point
+  # (turned on below, for the "configuration -- opencode" cases) -- project-set
+  # is the only door a project's platform is set through, so it has to gate
+  # opencode's usability exactly like it gates openai's.
+  out="$(printf '{"name":"pj-oc-off","cwd":"/tmp","platform":"opencode"}' | cfg_al project-set 2>&1)"; rc=$?
+  [ "$rc" -ne 0 ] && case "$out" in *"is not enabled in Settings"*) ok "project-set refuses platform opencode while it is disabled in Settings" ;; *) bad "refusal text: $out" ;; esac
+  [ "$rc" -eq 0 ] && bad "project-set accepted platform opencode while disabled in Settings"
+
   # A project this corrupt can now only exist by a hand-edit (project-set
   # itself refuses it, just above) -- standing in for a projects.json older
   # than that guard, or edited by hand. A job that inherits from it must not
@@ -4549,10 +5443,88 @@ JSON
     || bad "gj after clearing platform: $(cfg_job gj '{model,permission_mode}')"
   case "$out" in *anthropic*) ok "and the rewrites name anthropic, not the unknown platform" ;; *) bad "rewrites: $out" ;; esac
 
+  # The registry-against-jq invariant: every platform PLATFORMS actually runs
+  # has to be known to PLATFORMS_JQ too, with its own model -- this is how the
+  # job counter miscredited an opencode job to anthropic/opus in an earlier
+  # delivery (known() had no opencode branch, so it fell through to the
+  # anthropic default). The loop walks $PLATFORMS itself, not a literal list,
+  # so a FOURTH platform with no branch in the jq fails HERE, by name.
+  echo "PLATFORMS_JQ — every platform the registry runs is known to the jq, with its own model"
+  local _pj _pjm
+  for _pj in $PLATFORMS; do
+    case "$_pj" in anthropic) _pjm="claude-opus-5" ;; openai) _pjm="gpt-a" ;; opencode) _pjm="pdm_ai/glm-5.3-flash" ;; *) _pjm="" ;; esac
+    [ "$( JOBS_FILE="$tmp/cfg/config/jobs.json"; PROJECTS_FILE="$tmp/cfg/config/projects.json"; MODELS_FILE="$tmp/cfg/config/models.json"
+          platforms_jq opus gpt-a pdm_ai/glm-5.3-flash '($p | known), (valid($p; $m) | tostring), effective($p; $m)' -r --arg p "$_pj" --arg m "$_pjm" | tr '\n' '|' )" = "$_pj|true|$_pjm|" ] \
+      && ok "$_pj: known keeps it, valid accepts its model, effective keeps its model" \
+      || bad "$_pj through PLATFORMS_JQ: $( JOBS_FILE="$tmp/cfg/config/jobs.json"; PROJECTS_FILE="$tmp/cfg/config/projects.json"; MODELS_FILE="$tmp/cfg/config/models.json"; platforms_jq opus gpt-a pdm_ai/glm-5.3-flash '($p | known), (valid($p; $m) | tostring), effective($p; $m)' -r --arg p "$_pj" --arg m "$_pjm" | tr '\n' '|' )"
+  done
+
+  echo "configuration — opencode is a value of platform, validated like the other two"
+  # Switched on here, for these cases only -- the existing "refuses a platform
+  # not enabled in Settings" case above ran against opencode disabled (the
+  # fixture's base state) and must keep failing for that reason, so the base
+  # fixture is left untouched; opencode is turned on right before its own cases.
+  "$JQ" '.platforms.opencode = {enabled:true, bin:"", models:["pdm_ai/glm-5.3-flash","opencode/big-pickle"]}' \
+      "$tmp/cfg/config/platforms.json" > "$tmp/cfg/pf.next"; mv "$tmp/cfg/pf.next" "$tmp/cfg/config/platforms.json"
+  printf 'opencode' | cfg_al set-field cj platform >/dev/null 2>&1; want "set-field platform opencode is accepted when Settings switched it on" 0 $?
+  [ "$(cfg_job cj '.platform, .model, .permission_mode' | tr '\n' '|')" = "opencode|pdm_ai/glm-5.3-flash|full-access|" ] \
+    && ok "and the model and the mode were rewritten to the platform's defaults (the first enabled model, full-access)" || bad "after the move: $(cfg_job cj '{platform,model,effort,permission_mode}')"
+  printf 'opencode/big-pickle' | cfg_al set-field cj model >/dev/null 2>&1; want "set-field model takes an enabled catalog id" 0 $?
+  # Captured first, never piped straight into grep -q: under `set -uo
+  # pipefail` (top of file) a pipeline's status is its last NONZERO exit, so
+  # `cfg_al | grep -q ...` reads as failure on cfg_al's die exit(1) even when
+  # grep matches (its own 0 does not win).
+  out="$(printf 'opencode/nope' | cfg_al set-field cj model 2>&1)"
+  printf '%s' "$out" | grep -q "unknown OpenCode model 'opencode/nope' — the catalog lists: opencode/big-pickle pdm_ai/glm-5.3-flash pdm_ai/vision" \
+    && ok "an id outside the catalog is refused, naming the catalog" || bad "no catalog refusal: $out"
+  printf 'high' | cfg_al set-field cj effort >/dev/null 2>&1; want "an effort a model without variants does not offer is refused" 1 $?
+  out="$(printf 'high' | cfg_al set-field cj effort 2>&1)"
+  printf '%s' "$out" | grep -qF "this model offers no effort levels (leave it empty)" \
+    && ok "and says the model offers no effort levels at all, not an empty list with nothing in it" || bad "no-effort refusal: $out"
+  printf 'pdm_ai/glm-5.3-flash' | cfg_al set-field cj model >/dev/null 2>&1
+  printf 'high' | cfg_al set-field cj effort >/dev/null 2>&1; want "and accepted on a model that lists it" 0 $?
+  printf 'read-only' | cfg_al set-field cj permission_mode >/dev/null 2>&1; want "read-only is an opencode mode" 0 $?
+  printf 'workspace-write' | cfg_al set-field cj permission_mode >/dev/null 2>&1; want "workspace-write is not" 1 $?
+  printf 'anthropic' | cfg_al set-field cj platform >/dev/null 2>&1
+  [ "$(cfg_job cj .permission_mode)" = "bypassPermissions" ] && ok "moving back rewrites read-only to the anthropic default" || bad "mode after the move back: $(cfg_job cj .permission_mode)"
+  printf '{"id":"oc-new","platform":"opencode","prompt":"x","interval_seconds":60}' | cfg_al create >/dev/null 2>&1; want "create with platform opencode" 0 $?
+  [ "$(cfg_job oc-new '.model, .permission_mode' | tr '\n' '|')" = "pdm_ai/glm-5.3-flash|full-access|" ] \
+    && ok "a created opencode job takes the platform's defaults" || bad "created: $(cfg_job oc-new '{model,permission_mode}')"
+  # project-set is the door cmd_set_field and cmd_create above do not open --
+  # a project's OWN platform, and its security block's, on opencode now that
+  # Settings has it usable.
+  out="$(printf '{"name":"pj-oc","cwd":"/tmp","platform":"opencode"}' | cfg_al project-set 2>&1)"; rc=$?
+  [ "$rc" -eq 0 ] && [ "$("$JQ" -r --arg n "pj-oc" '.projects[] | select(.name==$n) | .platform' "$tmp/cfg/config/projects.json")" = "opencode" ] \
+    && ok "project-set accepts platform opencode on a project once Settings has it usable" \
+    || bad "project-set pj-oc: rc=$rc out=$out"
+  out="$(printf '{"name":"pj-oc2","cwd":"/tmp","security":{"enabled":true,"platform":"opencode","model":"pdm_ai/glm-5.3-flash"}}' | cfg_al project-set 2>&1)"; rc=$?
+  [ "$rc" -eq 0 ] && ok "project-set accepts platform opencode on a security block, with an enabled catalog model" \
+    || bad "project-set pj-oc2: rc=$rc out=$out"
+
+  echo "upgrade path — a platforms.json without the opencode key, the file every install has today"
+  mkdir -p "$tmp/up/config" "$tmp/up/data"
+  printf '{"platforms":{"anthropic":{"enabled":true,"bin":"","models":["claude-opus-5"]},"openai":{"enabled":false,"bin":"","models":[]}}}\n' > "$tmp/up/config/platforms.json"
+  up_al() { AGENTLOOP_CONFIG="$tmp/up/config" AGENTLOOP_DATA="$tmp/up/data" AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode" "$BIN_DIR/agentloop" "$@"; }
+  ( PLATFORMS_FILE="$tmp/up/config/platforms.json"; platforms_valid ); want "the two-key file is still a valid platforms file" 0 $?
+  ( PLATFORMS_FILE="$tmp/up/config/platforms.json"; platform_enabled opencode ); want "opencode reads as DISABLED, not as an error and not as enabled by default" 1 $?
+  ( PLATFORMS_FILE="$tmp/up/config/platforms.json"; platform_enabled anthropic ); want "and anthropic keeps its state" 0 $?
+  [ "$(up_al platforms | "$JQ" -r '.opencode.supported, .opencode.enabled, .opencode.usable' | tr '\n' '|')" = "true|false|false|" ] \
+    && ok "platforms lists the card from the registry, disabled, with no key in the file" || bad "platforms over the two-key file: $(up_al platforms | "$JQ" -c .opencode)"
+  up_al platform enable opencode >/dev/null 2>&1; want "platform enable opencode writes the key that was not there (the stand-in is ready)" 0 $?
+  "$JQ" -e '.platforms.opencode.enabled == true and .platforms.opencode.models == [] and .platforms.anthropic.enabled == true' "$tmp/up/config/platforms.json" >/dev/null 2>&1 \
+    && ok "the file now carries the key, enabled, and the other two are untouched" || bad "after enable: $(cat "$tmp/up/config/platforms.json")"
+  # set-models validates against platform_catalog_ids, which resolves nothing
+  # by itself -- the fresh config has no models.json yet, so the catalog is
+  # empty until a real resolve runs, same as a fresh install's first refresh.
+  up_al resolve-models opencode >/dev/null 2>&1
+  printf '["opencode/big-pickle"]' | up_al platform set-models opencode >/dev/null 2>&1; want "set-models writes into the new key" 0 $?
+  [ "$("$JQ" -r '.platforms.opencode.models[0]' "$tmp/up/config/platforms.json")" = "opencode/big-pickle" ] && ok "and the model is on the list" || bad "models: $("$JQ" -c .platforms.opencode "$tmp/up/config/platforms.json")"
+
   echo "security_prompt() — the platform decides how the skill is named and how subagents are forbidden"
-  local _pa _po
+  local _pa _po _pc
   _pa="$(security_prompt P R B quick 7 'x/**' anthropic)"
   _po="$(security_prompt P R B quick 7 'x/**' openai)"
+  _pc="$(security_prompt P R B quick 7 'x/**' opencode)"
   [ "$(security_prompt P R B quick 7 'x/**')" = "$_pa" ] \
     && ok "security_prompt: no platform argument reads as anthropic" || bad "the six-argument call differs from anthropic"
   printf '%s\n' "$_pa" | grep -qF 'Invoke the `security-analysis` skill' \
@@ -4571,6 +5543,20 @@ JSON
     && bad "openai prompt still speaks of the Agent tool" || ok "security_prompt openai: never speaks of the Agent tool"
   printf '%s\n' "$_pa" | grep -qF 'security prepare --analysis 7' && printf '%s\n' "$_pa" | grep -qF 'YOUR FIRST COMMAND' \
     && ok "security_prompt anthropic: prepare is still the agent's first command, with the analysis id filled in" || bad "the anthropic prompt lost its prepare line"
+  printf '%s\n' "$_pc" | grep -qF 'Invoke the `security-analysis` skill' \
+    && ok "security_prompt opencode: invokes the skill by name" || bad "opencode head: $(printf '%s\n' "$_pc" | head -1)"
+  printf '%s\n' "$_pc" | grep -qF "is \`$SKILLS_DIR/security-analysis/SKILL.md\`" \
+    && ok "security_prompt opencode: and by path too, for a machine where the link is missing" || bad "opencode lacks the skill by path: $(printf '%s\n' "$_pc" | sed -n '5,6p')"
+  printf '%s\n' "$_pc" | grep -qF 'ALREADY RAN for this analysis' \
+    && ok "security_prompt opencode: says the deterministic phase already ran, engine-side" || bad "opencode head: $(printf '%s\n' "$_pc" | head -1)"
+  printf '%s\n' "$_pc" | grep -qF 'YOUR FIRST COMMAND' \
+    && bad "opencode prompt still asks the agent to run prepare" || ok "security_prompt opencode: never asks the agent to run prepare"
+  printf '%s\n' "$_pc" | grep -qF 'The `task` tool is closed for this run' \
+    && ok "security_prompt opencode: the task tool is closed for this run, by rule" || bad "opencode prompt lacks the by-rule paragraph"
+  printf '%s\n' "$_pc" | grep -qF 'Do not spawn subagents' \
+    && bad "the Codex-only wording leaked into the opencode prompt" || ok "security_prompt opencode: never says the Codex-only 'do not spawn subagents'"
+  printf '%s\n' "$_pc" | grep -q 'Agent. tool' \
+    && bad "opencode prompt still speaks of the Agent tool" || ok "security_prompt opencode: never speaks of the Agent tool"
 
   echo "security_derived_jobs() — the block's platform, with the same fallback-and-warn as its permission mode"
   mkdir -p "$tmp/dplat/data"
@@ -4579,12 +5565,19 @@ JSON
  {"name":"Oa","cwd":"/tmp/oa","security":{"enabled":true,"platform":"openai","model":"gpt-zzz","effort":"max","permission_mode":"dontAsk"}},
  {"name":"Ob","cwd":"/tmp/ob","platform":"openai","security":{"enabled":true,"model":"gpt-b","effort":"high"}},
  {"name":"Oc","cwd":"/tmp/oc","security":{"enabled":true,"platform":"martian"}},
- {"name":"Oe","cwd":"/tmp/oe","security":{"enabled":true,"model":"claude-sonnet-5"}}]}
+ {"name":"Oe","cwd":"/tmp/oe","security":{"enabled":true,"model":"claude-sonnet-5"}},
+ {"name":"Of","cwd":"/tmp/of","security":{"enabled":true,"platform":"opencode","model":"pdm_ai/glm-5.3-flash","effort":"high"}},
+ {"name":"Og","cwd":"/tmp/og","security":{"enabled":true,"platform":"opencode","model":"pdm_ai/vision"}}]}
 JSON
   printf '{"jobs":[]}\n' > "$tmp/dplat/jobs.json"
+  # pdm_ai/vision has to be ENABLED too, not just a valid catalog id: Og's
+  # point is the tools fallback, which only runs once the model has already
+  # cleared the catalog-validity and enabled-in-Settings gates above it --
+  # an enabled-but-toolless model is the only way to reach it, rather than
+  # tripping the "not enabled in Settings" gate first with different wording.
   "$JQ" -n '{platforms:{anthropic:{enabled:true,bin:"",models:["opus"]},
                         openai:{enabled:true,bin:"",models:["gpt-a","gpt-b"]},
-                        opencode:{enabled:false,bin:"",models:[]}}}' > "$tmp/dplat/platforms.json"
+                        opencode:{enabled:true,bin:"",models:["pdm_ai/glm-5.3-flash","opencode/big-pickle","pdm_ai/vision"]}}}' > "$tmp/dplat/platforms.json"
   dplat() { ( JOBS_FILE="$tmp/dplat/jobs.json"; PROJECTS_FILE="$tmp/dplat/projects.json"; DATA_DIR="$tmp/dplat/data"
               PLATFORMS_FILE="$tmp/dplat/platforms.json"
               MODELS_FILE="$tmp/cfg/config/models.json"; job_get "$1" "$2" '' ); }
@@ -4605,6 +5598,15 @@ JSON
   [ "$(dplat security-oe .model)" = "opus" ] && ok "a model switched off in Settings falls back to the first one switched on" || bad "Oe model $(dplat security-oe .model)"
   grep -q "not enabled in Settings ('claude-sonnet-5' on anthropic) -- using opus" "$tmp/dplat/data/security/derivation-warnings.txt" 2>/dev/null \
     && ok "and the derivation warning says so" || bad "no warning for Oe: $(cat "$tmp/dplat/data/security/derivation-warnings.txt" 2>/dev/null)"
+  dplat security-of .prompt | grep -qF 'The `task` tool is closed for this run' \
+    && ok "the derived job on opencode carries the by-rule paragraph" || bad "Of prompt lacks the task paragraph"
+  [ "$(dplat security-of .platform)" = "opencode" ] && [ "$(dplat security-of .model)" = "pdm_ai/glm-5.3-flash" ] && [ "$(dplat security-of .effort)" = "high" ] \
+    && [ "$(dplat security-of .permission_mode)" = "full-access" ] && [ "$(dplat security-of .disallowed_tools)" = "Agent" ] \
+    && ok "an opencode block: platform, model, a variant the model lists, full-access, and Agent closed (task: deny)" || bad "Of: $(dplat security-of '{platform,model,effort,permission_mode,disallowed_tools}')"
+  [ "$(dplat security-og .model)" = "pdm_ai/glm-5.3-flash" ] \
+    && ok "a model that makes no tool calls falls back to the first enabled model that does" || bad "Og model $(dplat security-og .model)"
+  grep -q "names a model that makes no tool calls ('pdm_ai/vision') -- an analysis needs tools; using pdm_ai/glm-5.3-flash" "$tmp/dplat/data/security/derivation-warnings.txt" 2>/dev/null \
+    && ok "and the derivation warning says why" || bad "no tools warning: $(cat "$tmp/dplat/data/security/derivation-warnings.txt" 2>/dev/null | tail -2)"
 
   # openai with no catalog resolved yet: platform_default_model answers
   # nothing for it, so the model must come out empty rather than some other
@@ -6700,6 +7702,16 @@ NASTY
   got="$(rl_at openai five_hour 0.97 "$gone" openai)"
   [ -z "$got" ] && ok "an openai window past its reset says nothing" || bad "expired openai window gated: $got"
 
+  # opencode has no window at all -- nothing captures one for it -- so the
+  # gate must never hold a run back on it, even when the SAME file holds a
+  # real, spent window for another platform (rl_at, not an empty/missing
+  # file -- a missing file would let anything through trivially and prove
+  # nothing about opencode specifically).
+  got="$(rl_at openai five_hour 0.97 "$soon" opencode)"
+  [ -z "$got" ] && ok "rl_gate opencode never holds a run back: there are no windows for it" || bad "rl_gate opencode: $got"
+  got="$(rl_at openai five_hour 0.97 "$soon" openai)"
+  case "$got" in *"the openai five_hour window is 97% used"*) ok "...while rl_gate openai on that same file still holds" ;; *) bad "openai gate on the same file: $got" ;; esac
+
   echo "statusline-rate-limits.sh — the figure the run stream never carries"
   # The stream only reports utilisation once the CLI has decided to warn (0.75),
   # so below that the gate is armed and blind. The statusLine payload has the
@@ -6985,7 +7997,7 @@ NASTY
     *) bad "the command did not report an active hold" ;;
   esac
   case "$(usg '{}' '{"anthropic":{"five_hour":{"status":"allowed","utilization":0.3,"resets_at":'"$soon2"',"seen_at":0,"source":"statusline"}},"openai":{"five_hour":{"status":"allowed","utilization":0.05,"resets_at":'"$soon2"',"seen_at":0,"source":"rollout","plan_type":"plus"}}}')" in
-    *"anthropic five_hour: 30% used"*"openai five_hour: 5% used"*"rollout"*) ok "usage lists both platforms, each window named by its platform" ;;
+    *"anthropic five_hour: 30% used"*"openai five_hour: 5% used"*"rollout"*"opencode: no usage windows"*) ok "usage lists both platforms, each window named by its platform" ;;
     *) bad "usage output did not list both platforms" ;;
   esac
 
@@ -9466,7 +10478,7 @@ cmd_precheck() { # <id> — run the job's precheck once and RECORD it, without t
   printf '%s\n(exit %s)\n' "$pc_out" "$pc_rc"
 }
 
-cmd_resolve_models() { # cmd_resolve_models [anthropic|openai] -- no argument does both
+cmd_resolve_models() { # cmd_resolve_models [anthropic|openai|opencode] -- no argument does all three
   # `rc` carries resolve_models_openai's status past the validation case below,
   # whose own 0 used to be the function's answer -- so a catalog that could not
   # be written exited 0 and the failure was invisible to the operator and to
@@ -9485,7 +10497,10 @@ cmd_resolve_models() { # cmd_resolve_models [anthropic|openai] -- no argument do
   case "$which" in
     ""|openai) resolve_models_openai || rc=$? ;;
   esac
-  case "$which" in ""|anthropic|openai) ;; *) die "resolve-models: unknown platform '$which'" ;; esac
+  case "$which" in
+    ""|opencode) resolve_models_opencode || rc=$? ;;
+  esac
+  case "$which" in ""|anthropic|openai|opencode) ;; *) die "resolve-models: unknown platform '$which'" ;; esac
   return "$rc"
 }
 
@@ -9499,7 +10514,9 @@ cmd_platforms() { # one JSON object: what each listed platform offers, whether i
     [ "$ready" = "true" ] && reason=""
     if platform_known "$p"; then
       perms="$(platform_permissions "$p" | "$JQ" -R . | "$JQ" -sc .)"
-      if [ "$p" = "openai" ]; then efforts="$(openai_catalog_all_efforts | "$JQ" -R . | "$JQ" -sc .)"; else efforts="$(platform_efforts "$p" | "$JQ" -R . | "$JQ" -sc .)"; fi
+      if [ "$p" = "openai" ]; then efforts="$(openai_catalog_all_efforts | "$JQ" -R . | "$JQ" -sc .)"
+      elif [ "$p" = "opencode" ]; then efforts="$(opencode_catalog_all_efforts | "$JQ" -R . | "$JQ" -sc .)"
+      else efforts="$(platform_efforts "$p" | "$JQ" -R . | "$JQ" -sc .)"; fi
       dm="$(platform_default_model "$p")"; dp="$(platform_default_permission "$p" job)"
     else
       perms='[]'; efforts='[]'; dm=""; dp=""
@@ -9513,9 +10530,9 @@ cmd_platforms() { # one JSON object: what each listed platform offers, whether i
     # One number under both names is the defect this pair replaces.
     jon="$(num "$(platform_jobs_on "$p" | grep -c . 2>/dev/null)")"
     jone="$(num "$(platform_jobs_on "$p" "" on | grep -c . 2>/dev/null)")"
-    jus="$(platforms_jq "$(platform_default_model anthropic)" "$(platform_default_model openai)" \
+    jus="$(platforms_jq "$(platform_default_model anthropic)" "$(platform_default_model openai)" "$(platform_default_model opencode)" \
              '[uses[] | select(.p == $p) | select(.m != "")] | group_by(.m) | map({key: .[0].m, value: length}) | from_entries' -c --arg p "$p")"
-    juse="$(platforms_jq "$(platform_default_model anthropic)" "$(platform_default_model openai)" \
+    juse="$(platforms_jq "$(platform_default_model anthropic)" "$(platform_default_model openai)" "$(platform_default_model opencode)" \
              '[uses[] | select(.p == $p) | select(.on) | select(.m != "")] | group_by(.m) | map({key: .[0].m, value: length}) | from_entries' -c --arg p "$p")"
     cat_at=0; cat_ok=false; pr_at=0; pr_ck=0; pr_src=""; unpriced="[]"
     if [ "$p" = "openai" ]; then
@@ -9528,6 +10545,10 @@ cmd_platforms() { # one JSON object: what each listed platform offers, whether i
       pr_ck="$(num "$("$JQ" -r '._checked_at // 0' "$PRICING_FILE" 2>/dev/null)")"
       pr_src="$("$JQ" -r '._source_url | if type == "string" then . else "" end' "$PRICING_FILE" 2>/dev/null)"
       unpriced="$(pricing_unpriced | "$JQ" -R . | "$JQ" -sc .)"
+    elif [ "$p" = "opencode" ]; then
+      cat_at="$(num "$("$JQ" -r '.opencode.at // 0' "$MODELS_FILE" 2>/dev/null)")"
+      opencode_catalog_available && cat_ok=true
+      unpriced="$(opencode_unpriced | "$JQ" -R . | "$JQ" -sc .)"
     fi
     "$JQ" -nc --arg p "$p" --argjson ready "$ready" --arg reason "$reason" \
       --argjson perms "$perms" --argjson efforts "$efforts" --arg dm "$dm" --arg dp "$dp" \
@@ -9543,7 +10564,9 @@ cmd_platforms() { # one JSON object: what each listed platform offers, whether i
                 jobs_using:$jus, jobs_using_enabled:$juse}
                + (if $p == "openai" then {catalog_at:$cat_at, catalog_available:$cat_ok,
                                           pricing_at:$pr_at, pricing_checked_at:$pr_ck,
-                                          pricing_source:$pr_src, unpriced:$unpriced} else {} end))}'
+                                          pricing_source:$pr_src, unpriced:$unpriced}
+                  elif $p == "opencode" then {catalog_at:$cat_at, catalog_available:$cat_ok, unpriced:$unpriced}
+                  else {} end))}'
   done | "$JQ" -sc 'add' | {
     err="$(platforms_error)"
     if [ -n "$err" ]; then "$JQ" -c --arg e "$err" '. + {_error: $e}'; else cat; fi
@@ -9668,7 +10691,7 @@ run_job() { # run_job <id> [--force] [resume-session-id]
   # platform switched off in Settings, nothing switched on to run it with.
   # Each is one line before a slot is spent, the treatment `cwd missing` gets.
   if platform_planned "$platform"; then
-    log_tick "$id: $platform is not supported yet — it arrives with the OpenCode engine, skipped"; return 1
+    log_tick "$id: $platform is listed but does not run yet (planned), skipped"; return 1
   fi
   platform_known "$platform" || { log_tick "$id: unknown platform '$platform', skipped"; return 1; }
   platform_enabled "$platform" || { log_tick "$id: $platform is disabled in Settings (agentloop platform enable $platform), skipped"; return 1; }
@@ -9703,6 +10726,44 @@ run_job() { # run_job <id> [--force] [resume-session-id]
       || log_tick "$id: allowed_tools is ignored on openai (codex has no tool allowlist)"
     [ -z "$disallowed" ] || [ "$disallowed" = "null" ] \
       || log_tick "$id: disallowed_tools is ignored on openai (codex cannot close a tool by flag)"
+  fi
+  if [ "$platform" = "opencode" ]; then
+    # The CLI reads stdin as part of the PROMPT (measured 13b): there is no
+    # protocol for a human to talk to a live run.
+    [ "$interactive" != "true" ] \
+      || { log_tick "$id: interactive is not available on opencode (opencode run has no stdin protocol: it reads stdin as part of the prompt), skipped"; return 1; }
+    platform_model_ok opencode "$model" \
+      || { log_tick "$id: model '$model' is not in the OpenCode catalog (run: agentloop resolve-models opencode), skipped"; return 1; }
+    platform_permission_ok opencode "$permission" \
+      || { log_tick "$id: permission_mode '$permission' is not an OpenCode mode (full-access, read-only), skipped"; return 1; }
+    # The CLI accepts any --variant in silence (measured 11b): an effort the
+    # catalog does not list for this model is dropped here, and said to be,
+    # rather than passed to change nothing.
+    if [ -n "$effort" ] && ! platform_effort_ok opencode "$model" "$effort"; then
+      log_tick "$id: effort '$effort' is not a variant of $model — launched without an effort"
+      effort=""
+    fi
+    # A model that makes no tool calls (the catalog says so) still runs -- a
+    # prompt that needs no tool is legitimate -- but the operator is told.
+    opencode_catalog_tools "$model" \
+      || log_tick "$id: model '$model' makes no tool calls (catalog) — the agent can only answer in text"
+    # The permission block this run launches with, built and validated HERE --
+    # before a slot, a precheck or a log dir is spent -- so the one way this
+    # ever fails (a broken $PYTHON: opencode_config_content always prints a
+    # JSON first line otherwise) costs the run nothing to refuse. `_occ1`
+    # (its first line, the JSON) is kept in a `local` that outlives this
+    # block, for the run_env section further down to read; every note on the
+    # later lines goes to tick.log now.
+    local _occ _oc_rc _occ1 _ocnote
+    _occ="$(opencode_config_content "$permission" "$allowed" "$disallowed")"; _oc_rc=$?
+    _occ1="$(printf '%s\n' "$_occ" | head -1)"
+    if [ "$_oc_rc" -ne 0 ] || [ -z "$_occ1" ]; then
+      log_tick "$id: could not build the OpenCode permission block, skipped"
+      return 1
+    fi
+    printf '%s\n' "$_occ" | tail -n +2 | while IFS= read -r _ocnote; do
+      [ -n "$_ocnote" ] && log_tick "$id: $_ocnote"
+    done
   fi
   # After the catalog: a model the CLI knows, but not the one Settings
   # enabled (the enabled list is never empty here -- the gate above already
@@ -9899,6 +10960,17 @@ ${prompt}"
   # before run_env existed) and not a provisioning hook (those run before this
   # array is finished and read exported AL_* variables).
   run_env+=("AL_PLATFORM=$platform")
+  # OpenCode takes its permission block from the environment (measured
+  # 04-06, 23, 33): the job's mode and its tool lists, translated by
+  # opencode_config_content. Every note the translation makes -- a tool
+  # name the table does not know, a pattern widened or dropped -- goes to
+  # tick.log now, before the launch, so a job that asked for something the
+  # CLI cannot do learns it here rather than at its first tool call. Built
+  # and validated in the opencode refusal block above, before a slot was
+  # ever spent; here it is just read into the run's environment.
+  if [ "$platform" = "opencode" ]; then
+    run_env+=("OPENCODE_CONFIG_CONTENT=$_occ1")
+  fi
   if wt_isolation_enabled "$project" "$cwd"; then
     local reattached=""
     [ -n "$resume_sid" ] && reattached="$(wt_find_by_session "$id" "$resume_sid")"
@@ -10203,7 +11275,8 @@ ${prompt}"
 If the work turns out to be already finished, or it can no longer be done at all (the ticket is gone, the card moved on, another run took it), then do NOT invent new work: stop and answer with one line starting exactly with 'NOTHING TO DO: ' followed by the reason."
   fi
 
-  # THE DETERMINISTIC PHASE, ENGINE-SIDE, ON CODEX ONLY. `security prepare`
+  # THE DETERMINISTIC PHASE, ENGINE-SIDE, ON THE PLATFORMS WITHOUT prepare_inline
+  # (Codex, OpenCode). `security prepare`
   # (secrets, dependency CVEs, SBOM, hygiene, IaC) is the analysis prompt's
   # first command on Claude Code, and there the agent's Bash tool waits for
   # it however long it takes -- that flow works and is not touched here. On
@@ -10217,13 +11290,16 @@ If the work turns out to be already finished, or it can no longer be done at all
   # own worktree, before the CLI is launched, and security_prompt tells the
   # agent the phase already ran. Never on a resume: that session already had
   # its prepare, and a second one only rewrites the coverage record.
+  # OpenCode also runs it here: its bash tool waits for a command (measured
+  # 19), but that tool's own timeout was not measured and `prepare` can take
+  # minutes.
   #
   # A failure does not abort the run. The close is what tells the truth --
   # `finish` lowers `done` to `capped` while `prepared` is 0 -- and tick.log
   # says what happened and how long it took. The output goes to its own
   # sidecar, never to $logfile.err: a byte on that file turns a clean run
   # into `warning` (errbytes, below), and this is not the agent's stderr.
-  if [ "$platform" = "openai" ] && [ -n "${AL_SECURITY_ANALYSIS_ID:-}" ] && [ -z "$resume_sid" ]; then
+  if ! platform_caps "$platform" prepare_inline && [ -n "${AL_SECURITY_ANALYSIS_ID:-}" ] && [ -z "$resume_sid" ]; then
     local _prep_ignore _prep_t0 _prep_t1 _prep_secs _prep_rc=0
     _prep_ignore="$("$JQ" -r '.ignore // ""' "$(security_request_path "$id")" 2>/dev/null)"
     _prep_t0="$(now_epoch)"
@@ -10233,7 +11309,7 @@ If the work turns out to be already finished, or it can no longer be done at all
     _prep_t1="$(now_epoch)"
     _prep_secs=$((_prep_t1 - _prep_t0))
     if [ "$_prep_rc" -eq 0 ]; then
-      log_tick "$id: deterministic phase ran before the agent (prepare, ${_prep_secs}s) — the Codex shell tool cannot be trusted to wait for it"
+      log_tick "$id: deterministic phase ran before the agent (prepare, ${_prep_secs}s) — $platform does not run it inside the agent (prepare_inline)"
     else
       log_tick "$id: prepare failed before the agent (rc $_prep_rc, ${_prep_secs}s) — the close will cap the analysis — output in ${logfile##*/}.prepare"
     fi
@@ -10241,27 +11317,47 @@ If the work turns out to be already finished, or it can no longer be done at all
 
   fifo=""
   local cli_pid="" normalizer="" rawfifo="" nrc=0
-  if [ "$platform" = "openai" ]; then
-    # The Codex CLI writes its own JSONL; every reader here wants stream-json.
-    # The CLI's stdout goes down a FIFO into the normalizer, which writes the
-    # canonical stream to $streamfile and a verbatim copy to $streamfile.raw.
-    # `exec` makes the subshell BECOME the CLI, so $child below is the CLI's
-    # own pid: stop (TERM), the watchdog's tree_cpu_seconds and wait all keep
-    # working unchanged. `< /dev/null` is what keeps `codex exec` from waiting
-    # on stdin for ever (measured).
+  local normalizer_py; normalizer_py="$(platform_normalizer "$platform")"
+  if [ -n "$normalizer_py" ]; then
+    # A platform with a normalizer: the CLI writes its own dialect; every
+    # reader here wants stream-json. The CLI's stdout goes down a FIFO into
+    # the normalizer, which writes the canonical stream to $streamfile and a
+    # verbatim copy to $streamfile.raw. `exec` makes the subshell BECOME the
+    # CLI, so $child below is the CLI's own pid: stop (TERM), the watchdog's
+    # tree_cpu_seconds and wait all keep working unchanged. `< /dev/null` is
+    # what keeps both CLIs from waiting on stdin for ever (measured on each).
+    #
+    # The launch line first, the FIFO after it: the `*)` arm is unreachable
+    # by construction (platform_normalizer names exactly these two), and the
+    # day a platform gains a normalizer without a launch line, the refusal
+    # must come before anything of the run exists on disk, with the state
+    # saying error rather than the `running` set above.
+    local -a normargs=()
+    case "$platform" in
+      openai)
+        platform_argv_openai "$resume_sid" "$run_cwd" "$model" "$effort" "$permission" "$prompt" \
+          "$(openai_writable_roots "$run_cwd" "$run_dir")"
+        normargs=(--model "$model" --permission "$permission" --cwd "$run_cwd" \
+                  --pricing "$PRICING_FILE" --raw-out "$streamfile.raw") ;;
+      opencode)
+        platform_argv_opencode "$resume_sid" "$run_cwd" "$model" "$effort" "$prompt" "agentloop $id $stamp"
+        normargs=(--model "$model" --permission "$permission" --cwd "$run_cwd" \
+                  --catalog "$MODELS_FILE" --pricing "$PRICING_FILE" --raw-out "$streamfile.raw") ;;
+      *)
+        log_tick "$id: no launch line for platform $platform"
+        state_set "$id" last_status '"error"'
+        run_cleanup "$id" "$slot"; trap - EXIT
+        return 1 ;;
+    esac
     rawfifo="$logfile.raw.fifo"
     rm -f "$rawfifo"; mkfifo "$rawfifo" 2>/dev/null
-    platform_argv_openai "$resume_sid" "$run_cwd" "$model" "$effort" "$permission" "$prompt" \
-      "$(openai_writable_roots "$run_cwd" "$run_dir")"
     (
       cd "$run_cwd" || exit 1
       exec env ${run_env[@]+"${run_env[@]}"} "$cli_bin" ${PLATFORM_ARGV[@]+"${PLATFORM_ARGV[@]}"} \
         > "$rawfifo" 2> "$logfile.err" < /dev/null
     ) &
     cli_pid=$!
-    "$PYTHON" -u "$BIN_DIR/platforms/openai_stream.py" --model "$model" --permission "$permission" \
-      --cwd "$run_cwd" --pricing "$PRICING_FILE" --raw-out "$streamfile.raw" \
-      < "$rawfifo" > "$streamfile" 2>> "$logfile.err" &
+    "$PYTHON" -u "$normalizer_py" ${normargs[@]+"${normargs[@]}"} < "$rawfifo" > "$streamfile" 2>> "$logfile.err" &
     normalizer=$!
   elif [ "$interactive" = "true" ]; then
     # `--input-format stream-json` accepts further user messages on stdin while
@@ -10294,7 +11390,7 @@ If the work turns out to be already finished, or it can no longer be done at all
     ) &
   fi
   local child=$!
-  [ -z "$normalizer" ] || child="$cli_pid"   # openai: $! was the normalizer
+  [ -z "$normalizer" ] || child="$cli_pid"   # a platform with a normalizer: $! was the normalizer
 
   if [ "$interactive" = "true" ]; then
     exec 9> "$fifo"                       # hold it open: EOF would end the turn loop
@@ -10355,7 +11451,7 @@ If the work turns out to be already finished, or it can no longer be done at all
   local wdfile="$logfile.watchdog"
   : > "$wdfile"
   (
-    local last_size=-1 last_cpu=-1 last_change now size cpu began poll=30
+    local last_size=-1 last_cpu=-1 last_change now size cpu began poll="$WATCHDOG_POLL"
     began="$(now_epoch)"; last_change="$began"
     while kill -0 "$child" 2>/dev/null; do
       # Bind this run dir to its session the moment the transcript names one,
@@ -10368,6 +11464,23 @@ If the work turns out to be already finished, or it can no longer be done at all
       cpu="$(num "$(tree_cpu_seconds "$child")")"
       if [ "$size" != "$last_size" ] || [ "$cpu" != "$last_cpu" ]; then
         last_size="$size"; last_cpu="$cpu"; last_change="$now"
+      fi
+      # A stream still EMPTY this long after the launch is a dead run,
+      # whatever the CPU says. Measured on OpenCode (evidence 35): a CLI
+      # whose provider never answers, or a resume the CLI took to another
+      # directory, hangs with no output for ever and still gains a CPU
+      # second every minute or so of idling -- which the test below reads as
+      # life, so the stall never fired and timeout_seconds has no default.
+      # Every healthy run of every platform writes its first event within
+      # seconds (Claude's init, Codex's thread.started, OpenCode's
+      # step_start when the model starts answering), so this rule changes
+      # the fate of no run that ever wrote a byte. A CPU floor was weighed
+      # and rejected: the slowest legitimate work here (docker builds, trivy
+      # pulling its policies, a clone on a bad link) burns its CPU outside
+      # the run's process tree and survives today by the same tick.
+      if [ "$stall" -gt 0 ] && [ "${size:-0}" -eq 0 ] && [ "$((now - began))" -ge "$stall" ]; then
+        printf 'stalled: no output at all for %ss (the CLI never started answering; killed by watchdog)\n' "$stall" > "$wdfile"
+        kill -TERM "$child" 2>/dev/null; break
       fi
       if [ "$stall" -gt 0 ] && [ "$((now - last_change))" -ge "$stall" ]; then
         printf 'stalled: no output and no CPU for %ss (killed by watchdog)\n' "$stall" > "$wdfile"
@@ -10468,9 +11581,10 @@ If the work turns out to be already finished, or it can no longer be done at all
   # says it cannot (`none`); a run that died without a final event knows
   # neither, and records null tokens rather than a zero that reads as free.
   local cost_basis tokens_json
+  local _no_result=false
   cost_basis="$("$JQ" -r '.cost_basis // empty' "$logfile" 2>/dev/null)"
   if [ -z "$cost_basis" ]; then
-    if [ "$("$JQ" -r '.subtype // ""' "$logfile" 2>/dev/null)" = "no_result_event" ]; then cost_basis="none"
+    if [ "$("$JQ" -r '.subtype // ""' "$logfile" 2>/dev/null)" = "no_result_event" ]; then cost_basis="none"; _no_result=true
     elif [ "$platform" = "anthropic" ]; then cost_basis="reported"
     else cost_basis="none"; fi
   fi
@@ -10495,9 +11609,10 @@ If the work turns out to be already finished, or it can no longer be done at all
   local model_id
   model_id="$("$JQ" -r 'select(.type=="system" and .subtype=="init") | .model' "$streamfile" 2>/dev/null | head -1)"
   [ -n "$model_id" ] && [ "$model_id" != "null" ] || model_id=""
-  # On openai the init event carries the slug that was ASKED for; the model
-  # that ran is in the rollout. platform_finish also feeds the usage gate.
-  platform_finish "$platform" "$streamfile" "$session" "$id"
+  # On openai and opencode the init event carries the slug that was ASKED
+  # for; the model that ran is in the rollout (openai) or the export
+  # (opencode). platform_finish also feeds the usage gate on openai.
+  platform_finish "$platform" "$streamfile" "$session" "$id" "$run_cwd"
   [ -z "$PF_MODEL_ID" ] || model_id="$PF_MODEL_ID"
 
   # Classify the run: error / warning / success.
@@ -10622,7 +11737,25 @@ If the work turns out to be already finished, or it can no longer be done at all
   local cap
   cap="$(job_get "$id" '.max_budget_usd' '')"
   case "$cap" in ''|null|0) cap="" ;; esac
-  if [ -n "$cap" ] && [ "$status" = "success" ] \
+  if [ -n "$cap" ] && [ "$cost_basis" = "none" ] && [ "$_no_result" = false ]; then
+    # Unknown is not zero. The comparison below reads ${cost:-0}, so a run
+    # whose cost nobody knows (no price for its model, on any platform)
+    # would never reach 90% of anything and the cap would stay silent -- the
+    # worst shape a cap can take. Say it, on the run and in tick.log, and
+    # leave the status alone: the run itself did nothing wrong.
+    # `_no_result` guards this: a run that ended without a final event
+    # (killed, stopped, crashed at launch) also has cost_basis "none", but
+    # its cost is unknown because it died, not because the model has no
+    # price -- telling it "not applied" there is false on every platform,
+    # anthropic included, where the cap IS applied via --max-budget-usd.
+    # And WHY it is unknown: a priced model whose run died before its first
+    # step (a 401, an UnknownError) has null tokens and no price to blame;
+    # "no price for" is kept for the model the catalog does not price.
+    local _capwhy
+    if [ "$tokens_json" = "null" ]; then _capwhy="no step reported a cost"; else _capwhy="no price for ${model_id:-$model}"; fi
+    log_tick "$id: max_budget_usd $cap not applied: the cost of this run is unknown ($_capwhy)"
+    wdreason="${wdreason:+$wdreason; }max_budget_usd \$$cap not applied: the cost of this run is unknown ($_capwhy)"
+  elif [ -n "$cap" ] && [ "$status" = "success" ] \
      && awk "BEGIN{exit !(${cost:-0} >= $cap * 0.9)}" 2>/dev/null; then
     wdreason="BUDGET LIMITED: spent \$${cost:-0} of a \$$cap cap — the agent wrapped up early, so the task may be unfinished. Check the ticket and the branch before assuming it is done; resume this run to continue with its context."
     status="warning"
@@ -11179,6 +12312,13 @@ status_platforms_block() { # one line per listed platform: enabled or not, versi
         "$(age_label "$("$JQ" -r '._checked_at // ._refreshed_at // 0' "$PRICING_FILE" 2>/dev/null)" 'never refreshed')" \
         "${u:-none}"
     fi
+    if [ "$p" = "opencode" ]; then
+      local nu
+      nu="$(opencode_unpriced | tr '\n' ' ' | sed 's/ *$//')"
+      printf '; catalog %s (%s models); unpriced: %s' \
+        "$(age_label "$("$JQ" -r '.opencode.at // 0' "$MODELS_FILE" 2>/dev/null)")" \
+        "$(opencode_catalog_visible 2>/dev/null | grep -c . || true)" "${nu:-none}"
+    fi
     printf '\n'
   done
 }
@@ -11443,7 +12583,12 @@ cmd_set_field() { # cmd_set_field <id> <field> ; value on stdin
         write_jobs --arg id "$id" --arg v "$value" \
           '.jobs = [.jobs[] | if .id == $id then .effort = $v else . end]'
       else
-        die "effort must be one of: $(platform_efforts "$p" "$pm" | tr '\n' ',' | sed 's/,$//; s/,/, /g') (or empty)"
+        local levels; levels="$(platform_efforts "$p" "$pm" | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
+        if [ -n "$levels" ]; then
+          die "effort must be one of: $levels (or empty)"
+        else
+          die "this model offers no effort levels (leave it empty)"
+        fi
       fi ;;
     timeout_seconds|stall_timeout_seconds)
       # Both are optional: empty clears them (no absolute cap / no stall guard).
@@ -11482,6 +12627,10 @@ cmd_set_field() { # cmd_set_field <id> <field> ; value on stdin
           openai_catalog_ensure >/dev/null 2>&1 || true      # a stale miss: refresh once, then decide
           platform_model_ok openai "$value" \
             || die "unknown OpenAI model '$value' — the catalog lists: $(openai_catalog_visible | tr '\n' ' ')(refresh with: agentloop resolve-models openai)"
+        elif [ "$p" = "opencode" ]; then
+          opencode_catalog_ensure >/dev/null 2>&1 || true    # a stale miss: refresh once, then decide
+          platform_model_ok opencode "$value" \
+            || die "unknown OpenCode model '$value' — the catalog lists: $(opencode_catalog_visible | tr '\n' ' ')(refresh with: agentloop resolve-models opencode)"
         else
           die "model must be a family (opus, sonnet, haiku, fable) or a claude-* id"
         fi
@@ -11499,10 +12648,9 @@ cmd_set_field() { # cmd_set_field <id> <field> ; value on stdin
       # project's platform, and the rewrites are checked against THAT.
       local eff cur dm proj
       case "$value" in
-        anthropic|openai)
+        anthropic|openai|opencode)
           eff="$value"
           platform_usable "$value" || die "$value is not enabled in Settings — enable it there, or: agentloop platform enable $value" ;;
-        opencode) die "opencode is not supported yet — it arrives with the OpenCode engine" ;;
         "") proj="$(job_get "$id" '.project' '')"; eff="anthropic"
             if [ -n "$proj" ] && [ "$proj" != "null" ]; then eff="$(project_get "$proj" '.platform' 'anthropic')"; fi
             # A hand-edited project can carry a platform this engine does not
@@ -11510,16 +12658,20 @@ cmd_set_field() { # cmd_set_field <id> <field> ; value on stdin
             # (see job_platform's comment -- the three rewrites below would
             # otherwise write EMPTY model/permission_mode).
             platform_known "$eff" || eff="anthropic" ;;
-        *) die "platform must be anthropic or openai (or empty, to inherit the project's)" ;;
+        *) die "platform must be anthropic, openai or opencode (or empty, to inherit the project's)" ;;
       esac
       if [ "$eff" = "openai" ] && ! openai_catalog_ensure; then
         die "no OpenAI catalog yet: install codex, sign in, and run: agentloop resolve-models openai"
       fi
+      if [ "$eff" = "opencode" ] && ! opencode_catalog_ensure; then
+        die "no OpenCode catalog yet: install opencode, configure a provider, and run: agentloop resolve-models opencode"
+      fi
       # The model rewrite is decided BEFORE the platform is written, so a
       # refusal leaves the job exactly as it was. Only the inherit case can
-      # find no default: anthropic/openai went through platform_usable above,
-      # and a project's platform may have nothing switched on -- writing the
-      # empty string as the model would be a job no launch could resolve.
+      # find no default: anthropic/openai/opencode went through
+      # platform_usable above, and a project's platform may have nothing
+      # switched on -- writing the empty string as the model would be a job
+      # no launch could resolve.
       cur="$(job_get "$id" '.model' '')"; dm=""
       if [ -n "$cur" ] && [ "$cur" != "null" ] && ! platform_model_ok "$eff" "$cur"; then
         dm="$(platform_default_model "$eff")"
@@ -11714,9 +12866,8 @@ cmd_create() { # reads a partial job object (JSON) from stdin
       cplat="anthropic"
       if [ -n "$cproj" ] && [ "$cproj" != "null" ]; then cplat="$(project_get "$cproj" '.platform' 'anthropic')"; fi
       platform_known "$cplat" || cplat="anthropic" ;;
-    anthropic|openai) : ;;
-    opencode) die "create: opencode is not supported yet — it arrives with the OpenCode engine" ;;
-    *) die "create: platform must be anthropic or openai" ;;
+    anthropic|openai|opencode) : ;;
+    *) die "create: platform must be anthropic, openai or opencode" ;;
   esac
   # The operator's own gate, before the CLI's: refuse a platform Settings has
   # not switched on before spending a `codex debug models` round trip on it,
@@ -11724,6 +12875,9 @@ cmd_create() { # reads a partial job object (JSON) from stdin
   platform_usable "$cplat" || die "create: $cplat is not enabled in Settings — enable it there, or: agentloop platform enable $cplat"
   if [ "$cplat" = "openai" ] && ! openai_catalog_ensure; then
     die "create: no OpenAI catalog yet: install codex, sign in, and run: agentloop resolve-models openai"
+  fi
+  if [ "$cplat" = "opencode" ] && ! opencode_catalog_ensure; then
+    die "create: no OpenCode catalog yet: install opencode, configure a provider, and run: agentloop resolve-models opencode"
   fi
   defaults="$("$JQ" -n --arg id "$id" --arg pc "bash $path" \
       --arg model "$(platform_default_model "$cplat")" --arg perm "$(platform_default_permission "$cplat" job)" '{
@@ -11765,11 +12919,11 @@ cmd_project_set() { # reads a partial project object (JSON) from stdin; merges b
   # projects.json can still produce.
   plat="$(echo "$partial" | "$JQ" -r '.platform // ""')"
   case "$plat" in
-    ''|null|anthropic|openai) : ;;
-    *) die "project-set: platform must be anthropic or openai (or empty, to inherit nothing)" ;;
+    ''|null|anthropic|openai|opencode) : ;;
+    *) die "project-set: platform must be anthropic, openai or opencode (or empty, to inherit nothing)" ;;
   esac
   case "$plat" in
-    anthropic|openai) platform_usable "$plat" || die "project-set: $plat is not enabled in Settings — enable it there, or: agentloop platform enable $plat" ;;
+    anthropic|openai|opencode) platform_usable "$plat" || die "project-set: $plat is not enabled in Settings — enable it there, or: agentloop platform enable $plat" ;;
   esac
   # The security block's own platform and model, under the same rules. The
   # platform its model is judged against: the block's, else the project's as
@@ -11778,8 +12932,8 @@ cmd_project_set() { # reads a partial project object (JSON) from stdin; merges b
   sp="$(echo "$partial" | "$JQ" -r '((.security | objects) // {}).platform // ""')"
   sm="$(echo "$partial" | "$JQ" -r '((.security | objects) // {}).model // ""')"
   case "$sp" in
-    ''|null|anthropic|openai) : ;;
-    *) die "project-set: security.platform must be anthropic or openai (or empty, to inherit the project's)" ;;
+    ''|null|anthropic|openai|opencode) : ;;
+    *) die "project-set: security.platform must be anthropic, openai or opencode (or empty, to inherit the project's)" ;;
   esac
   if [ -n "$sp" ] && [ "$sp" != "null" ]; then
     platform_usable "$sp" || die "project-set: security.platform $sp is not enabled in Settings — enable it there, or: agentloop platform enable $sp"

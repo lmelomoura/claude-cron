@@ -1,0 +1,5 @@
+command: perl -e alarm 150; exec @ARGV opencode run --pure --auto --format json -m opencode/big-pickle Is a skill named probe-skill available to you through your skill tool? If yes, invoke it with the skill tool and reply with exactly what it tells you. If no, reply with exactly: no
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 23

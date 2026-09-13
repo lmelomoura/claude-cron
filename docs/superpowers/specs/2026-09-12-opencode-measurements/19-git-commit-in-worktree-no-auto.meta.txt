@@ -1,0 +1,5 @@
+command: perl -e alarm 120; exec @ARGV opencode run --pure --format json -m opencode/big-pickle --dir /tmp/probe/wt Using your bash tool run exactly this command: git commit --allow-empty -m probe && git log --oneline -1 ; then reply with exactly the output of that command, nothing else
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 8

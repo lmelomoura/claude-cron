@@ -920,7 +920,7 @@ document.documentElement.dataset.theme =
       <p class="fieldhelp" id="ed-model-help">The model the agent uses to execute this job.</p></div>
     <div><label>Effort <span class="efflabel" id="ed-effort-label">—</span></label>
       <input type="range" id="ed-effort" class="effslider" min="0" max="5" step="1" value="0">
-      <div class="effends"><span>Faster</span><span>Smarter</span></div>
+      <div class="effends" id="ed-effort-ends"><span>Faster</span><span>Smarter</span></div>
     </div>
   </div>
   <label>Permission mode</label>
@@ -1038,7 +1038,8 @@ document.documentElement.dataset.theme =
     </div>
     <input type="hidden" id="pj-platform">
   </div>
-  <p class="fieldhelp">Anthropic is Claude Code, OpenAI is the Codex CLI. A job with a platform of its own keeps
+  <p class="fieldhelp">Anthropic is Claude Code, OpenAI is the Codex CLI, OpenCode is the OpenCode CLI (providers you
+    configured there). A job with a platform of its own keeps
     it; one that inherits this runs on it from its next start — and, while it still names a model the
     new platform does not know, fails there (towards OpenAI, refused in <code>tick.log</code> before a
     slot is taken).</p>
@@ -1129,9 +1130,11 @@ document.documentElement.dataset.theme =
     </div>
     <input type="hidden" id="sec-platform">
   </div>
-  <p class="fieldhelp">Which CLI runs the analysis — the project's platform unless set here. On OpenAI
+  <p class="fieldhelp">Anthropic is Claude Code, OpenAI is the Codex CLI, OpenCode is the OpenCode CLI (providers you
+    configured there). Which CLI runs the analysis — the project's platform unless set here. On OpenAI
     nothing can close the agent's subagents by flag, so the prompt forbids them; the run is priced
-    from tokens like any Codex run.</p>
+    from tokens like any Codex run. On OpenCode the derived job closes the <code>task</code> tool by
+    rule, so there are no subagents, and the cost is what the CLI reports from its catalog.</p>
   <div class="row2">
     <div><label>Model</label>
       <div class="combo" id="sec-model-combo">
@@ -1148,7 +1151,7 @@ document.documentElement.dataset.theme =
       <p class="fieldhelp" id="sec-model-help">The model the analysis runs as — defaults to the opus family.</p></div>
     <div><label>Effort <span class="efflabel" id="sec-effort-label">—</span></label>
       <input type="range" id="sec-effort" class="effslider" min="0" max="5" step="1" value="0">
-      <div class="effends"><span>Faster</span><span>Smarter</span></div>
+      <div class="effends" id="sec-effort-ends"><span>Faster</span><span>Smarter</span></div>
     </div>
   </div>
   <label>Permission mode</label>
@@ -2552,16 +2555,16 @@ function openProjectEditor(name){
   // Platform first, on both combos -- the project's own (anthropic when it has
   // none), then the block's override (empty = inherit) -- because everything
   // below is read against the platform that results.
-  const pjp=(p&&p.platform==="openai")?"openai":"anthropic";
+  const pjp=ALApp.platformKey(p&&p.platform);
   pjPlatformCombo.set(pjp, ALApp.platformOptions(PLATFORMS, pjp));
-  const sp=(sec.platform==="openai"||sec.platform==="anthropic")?sec.platform:"";
+  const sp=ALApp.KNOWN_PLATFORMS.includes(sec.platform)?sec.platform:"";
   secPlatformCombo.set(sp, ALApp.platformOptions(PLATFORMS, sp));
   const splat=secEffectivePlatform();
   applyPlatformToSecurity(splat, false);
   // Same reason as fill()'s modelCombo.set just above: the option list, so a
   // switched-off model shows flagged the moment the project opens.
   secModelCombo.set(sec.model||"", modelOptions(splat, sec.model||""));
-  if(splat==="openai") secEfforts=ALApp.effortsFor("openai", $("sec-model").value, PLATFORMS);
+  if(splat!=="anthropic") secEfforts=ALApp.effortsFor(splat, $("sec-model").value, PLATFORMS);
   effortSet("sec-effort","sec-effort-label", sec.effort||"");
   secPermCombo.set(sec.permission_mode||ALApp.defaultPermissionFor(splat,"security"));
   $("sec-profile-default").value = ALSecurity.SEC_PROFILES.includes(sec.default_profile) ? sec.default_profile : "standard";
@@ -3577,6 +3580,13 @@ function effortSet(id,labelId,v,list){
 function effortGet(id,list){ return ALApp.effortFromIndex($(id).value, list||ladderOf(id)); }
 function setEffort(v){ effortSet("ed-effort","ed-effort-label",v); }
 function getEffort(){ return effortGet("ed-effort"); }
+// The effort slider's "Faster"/"Smarter" captions assume a ranked ladder --
+// true on Anthropic and OpenAI, where the built-in and the per-model lists
+// both run low to high. On OpenCode the stops are the model's own NAMED
+// variants, in the order the CLI lists them (max, high, non-think, ...): no
+// end is more or less capable, so the captions would lie there. Called from
+// every place that (re)builds an effort ladder for a platform.
+function paintEffortEnds(id, platform){ $(id).hidden = platform==="opencode"; }
 // What a platform governs in the job editor: the model list and default,
 // the effort ladder (the model's, on OpenAI), the permission modes and
 // default, Interactive (Codex exec has no stdin protocol) and the Limits
@@ -3586,7 +3596,7 @@ function applyPlatformToJobEditor(p, keep){
   // The combo's fallback for an empty model is the platform's own default --
   // "" on OpenAI with no catalog is honest (the engine refuses and says why),
   // where "opus" would be a Codex slug that does not exist.
-  edModelCfg.def=ALApp.defaultModelFor(p,PLATFORMS)||(p==="openai"?"":"opus");
+  edModelCfg.def=ALApp.defaultModelFor(p,PLATFORMS)||(p==="anthropic"?"opus":"");
   const opts=modelOptions(p, keep ? $("ed-model").value : "");
   const curModel=$("ed-model").value;
   // A value the shared rule (ALApp.modelEnabled) says is ON but the grouped
@@ -3598,14 +3608,16 @@ function applyPlatformToJobEditor(p, keep){
   const effVal=keep?effortGet("ed-effort"):"";                  // read against the OLD ladder
   edEfforts=ALApp.effortsFor(p, $("ed-model").value, PLATFORMS);
   setEffort(edEfforts.includes(effVal)?effVal:"");
+  paintEffortEnds("ed-effort-ends", p);
   const perms=ALApp.permissionsFor(p,PLATFORMS), curPerm=$("ed-perm").value;
   permCombo.set((keep&&perms.some(o=>o.v===curPerm))?curPerm:ALApp.defaultPermissionFor(p,"job"), perms);
-  const oa=(p==="openai"), ic=$("ed-interactive");
-  if(oa) ic.checked=false;
-  ic.disabled=oa;
-  $("ed-interactive-help").textContent = oa
-    ? "Codex exec has no stdin protocol; runs on OpenAI end by themselves"
-    : "You can interact with the agent while the job is running.";
+  const noStdin=(p!=="anthropic"), ic=$("ed-interactive");
+  if(noStdin) ic.checked=false;
+  ic.disabled=noStdin;
+  $("ed-interactive-help").textContent = ({
+    openai: "Codex exec has no stdin protocol; runs on OpenAI end by themselves",
+    opencode: "opencode run has no stdin protocol (it reads stdin as part of the prompt); runs on OpenCode end by themselves",
+  })[p] || "You can interact with the agent while the job is running.";
   paintLimitsNote(p, $("ed-model").value);
   // The help line says where the list comes from, and how much of the catalog
   // Settings keeps off it -- so a model the operator remembers but cannot find
@@ -3617,19 +3629,23 @@ function applyPlatformToJobEditor(p, keep){
 }
 // On OpenAI the effort ladder is the MODEL's; a new model means a new ladder.
 function onJobModelPicked(v){
-  if($("ed-platform").value==="openai"){
+  if($("ed-platform").value!=="anthropic"){
     const effVal=getEffort();
-    edEfforts=ALApp.effortsFor("openai", v, PLATFORMS);
+    edEfforts=ALApp.effortsFor($("ed-platform").value, v, PLATFORMS);
     setEffort(edEfforts.includes(effVal)?effVal:"");
   }
   paintLimitsNote($("ed-platform").value||"anthropic", v);
 }
 function paintLimitsNote(p, model){
   const n=$("ed-limits-note");
-  if(p!=="openai"){ n.hidden=true; n.textContent=""; return; }
-  const m=((PLATFORMS.openai||{}).models||[]).find(x=>x.v===model);
-  let t="Cost is estimated from tokens with config/pricing.json; the per-run cap is advisory on OpenAI (checked when the run ends).";
-  if(m && m.priced===false) t+=" No price configured for "+model+" — dollar caps will not see this job's spend.";
+  if(p==="anthropic"){ n.hidden=true; n.textContent=""; return; }
+  const m=((PLATFORMS[p]||{}).models||[]).find(x=>x.v===model);
+  let t = p==="opencode"
+    ? "Cost is what the OpenCode CLI reports from its catalog; a model without a price shows no cost and does not count towards dollar caps unless priced in config/pricing.json; the per-run cap is advisory on OpenCode (checked when the run ends)."
+    : "Cost is estimated from tokens with config/pricing.json; the per-run cap is advisory on OpenAI (checked when the run ends).";
+  if(m && m.priced===false) t += p==="opencode"
+    ? " No price for "+model+" — dollar caps will not see this job's spend, and a max_budget_usd is not applied."
+    : " No price configured for "+model+" — dollar caps will not see this job's spend.";
   n.textContent=t; n.hidden=false;
 }
 // The security block's effective platform: its own, else the project's AS THE
@@ -3658,21 +3674,25 @@ function applyPlatformToSecurity(p, keep){
   const effVal=keep?effortGet("sec-effort"):"";                 // read against the OLD ladder
   secEfforts=ALApp.effortsFor(p, $("sec-model").value, PLATFORMS);
   effortSet("sec-effort","sec-effort-label", secEfforts.includes(effVal)?effVal:"");
+  paintEffortEnds("sec-effort-ends", p);
   const perms=ALApp.permissionsFor(p,PLATFORMS), curPerm=$("sec-perm").value;
   secPermCombo.set((keep&&perms.some(o=>o.v===curPerm))?curPerm:ALApp.defaultPermissionFor(p,"security"), perms);
-  $("sec-model-help").textContent = p==="openai"
-    ? "The Codex model the analysis runs as — empty takes the catalog's first ("+(dm||"none resolved yet")+"); a slug outside the catalog falls back to the platform's default, with a warning in tick.log."
-    : "The model the analysis runs as — defaults to the opus family.";
-  $("sec-perm-help").textContent = p==="openai"
-    ? "full-access is the headless default here: the sandbox modes cannot write the ledger, which lives outside the worktree."
-    : "How the analysis agent may use tools — dontAsk without an allowlist denies everything headless, but the ledger stays protected by the CLI's validating door either way.";
+  $("sec-model-help").textContent = ({
+    openai: "The Codex model the analysis runs as — empty takes the catalog's first ("+(dm||"none resolved yet")+"); a slug outside the catalog falls back to the platform's default, with a warning in tick.log.",
+    opencode: "One of the models switched on in Settings for OpenCode (provider/model).",
+  })[p] || "The model the analysis runs as — defaults to the opus family.";
+  $("sec-perm-help").textContent = ({
+    openai: "full-access is the headless default here: the sandbox modes cannot write the ledger, which lives outside the worktree.",
+    opencode: "full-access is the default: the analysis writes the ledger through the CLI and needs bash; there is no sandbox on OpenCode.",
+  })[p] || "How the analysis agent may use tools — dontAsk without an allowlist denies everything headless, but the ledger stays protected by the CLI's validating door either way.";
   secPlatApplied=p;
 }
 // On OpenAI the ladder is the model's: a new model, a new ladder.
 function onSecModelPicked(v){
-  if(secEffectivePlatform()!=="openai") return;
+  const splat=secEffectivePlatform();
+  if(splat==="anthropic") return;
   const effVal=effortGet("sec-effort");
-  secEfforts=ALApp.effortsFor("openai", v, PLATFORMS);
+  secEfforts=ALApp.effortsFor(splat, v, PLATFORMS);
   effortSet("sec-effort","sec-effort-label", secEfforts.includes(effVal)?effVal:"");
 }
 // The Enabled/Disabled segmented control is paint, not state -- #sec-enabled
@@ -3821,9 +3841,10 @@ function fill(j){
   // switched-off model flagged right away, not only after the next
   // /api/models re-apply (applyPlatformToJobEditor's own `keep` path, below).
   modelCombo.set(j.model||ALApp.defaultModelFor(plat,PLATFORMS), modelOptions(plat, j.model||""));
-  if(plat==="openai") edEfforts=ALApp.effortsFor("openai", $("ed-model").value, PLATFORMS);
+  if(plat!=="anthropic") edEfforts=ALApp.effortsFor(plat, $("ed-model").value, PLATFORMS);
+  paintEffortEnds("ed-effort-ends", plat);
   setEffort(j.effort||"");
-  $("ed-interactive").checked = (plat!=="openai") && j.interactive===true;
+  $("ed-interactive").checked = (plat==="anthropic") && j.interactive===true;
   paintLimitsNote(plat, $("ed-model").value);
   const hp=String(j.active_hours||"").split("-");
   $("ed-hours-start").value=hp[0]||""; $("ed-hours-end").value=hp[1]||"";
@@ -4145,7 +4166,7 @@ function modelCell(rec, live){
    the same thing on the run's own platform (see `cmd_resume`). */
 function reopenCommand(rec, a){
   const sid=(a&&a.session)||rec.session||"";
-  return ((rec&&rec.platform)==="openai" ? "codex exec resume " : "claude --resume ") + sid;
+  return (({openai: "codex exec resume ", opencode: "opencode run --dir <run dir> -s "})[(rec&&rec.platform)] || "claude --resume ") + sid;
 }
 
 /* How a run ended, in words. Every ending gets the same shape — a short label

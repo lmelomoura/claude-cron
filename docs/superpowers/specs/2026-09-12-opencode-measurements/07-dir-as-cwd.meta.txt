@@ -1,0 +1,5 @@
+command: perl -e alarm 120; exec @ARGV opencode run --pure --auto --format json -m opencode/big-pickle --dir /tmp/probe/q Run the shell command `pwd && ls` and reply with exactly the output, nothing else
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 5

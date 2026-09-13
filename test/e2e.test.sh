@@ -30,6 +30,9 @@ export AGENTLOOP_CLAUDE_BIN="$E2E/fake-claude"
 # against their real ~/.codex. Every `$AL` in this file must see the stand-in.
 export AGENTLOOP_CODEX_BIN="$E2E/fake-codex"
 export CODEX_HOME="$ROOT/codex-home"        # the stand-in's rollouts; never ~/.codex
+# The same for OpenCode: the daily catalog pass would otherwise run the
+# operator's real `opencode models --verbose` against their real config.
+export AGENTLOOP_OPENCODE_BIN="$E2E/fake-opencode"
 # the price source is a fixture: no test reaches the network
 export AGENTLOOP_PRICING_URL="file://$REPO/test/fixtures/pricing/litellm-sample.json"
 mkdir -p "$CODEX_HOME"
@@ -60,7 +63,7 @@ JSON
 cat > "$ROOT/config/platforms.json" <<'JSON'
 {"platforms":{"anthropic":{"enabled":true,"bin":"","models":["claude-opus-5"]},
               "openai":{"enabled":true,"bin":"","models":["gpt-5.6-sol"]},
-              "opencode":{"enabled":false,"bin":"","models":[]}}}
+              "opencode":{"enabled":true,"bin":"","models":["opencode/big-pickle","pdm_ai/glm-5.3-flash"]}}}
 JSON
 
 mkjob() { # mkjob <id> <mode>
@@ -607,6 +610,300 @@ jq -e '.platforms.openai.enabled == false' "$ROOT/config/platforms.json" >/dev/n
   && ok "and openai came out disabled — this is the seed, not the fixture surviving the rm" \
   || bad "openai after reseed: $(cat "$ROOT/config/platforms.json" 2>/dev/null)"
 [ "$(lastrun | jq -r .session)" = "sess-28" ] && ok "and the job ran as before" || bad "no run: $(lastrun)"
+
+# Scenario 28 just deleted config/platforms.json to drive the fresh-seed path,
+# and platforms_seed hardcodes opencode (and, with no openai job or security
+# block left enabled at that moment, openai too) disabled -- job-level
+# enablement is this task's own run_job, not that seed. Left as scenario 28's
+# reseed wrote it, every job below would be refused before it ever reached
+# run_job's own gates. Restore the fixture from the top of this file.
+cat > "$ROOT/config/platforms.json" <<'JSON'
+{"platforms":{"anthropic":{"enabled":true,"bin":"","models":["claude-opus-5"]},
+              "openai":{"enabled":true,"bin":"","models":["gpt-5.6-sol"]},
+              "opencode":{"enabled":true,"bin":"","models":["opencode/big-pickle","pdm_ai/glm-5.3-flash"]}}}
+JSON
+
+# ------------------------------------------------------- the OpenCode platform
+# The same lifecycle over the OpenCode stand-in: the run goes down a FIFO
+# into opencode_stream.py, the classifier reads the normalized stream, the
+# stand-in's `export` supplies the model that ran, and the permission block
+# travels in OPENCODE_CONFIG_CONTENT (read back through FAKE_CONFIG_OUT).
+"$AL" resolve-models opencode >/dev/null 2>&1
+jq -e '.opencode.models | length == 13' "$ROOT/config/models.json" >/dev/null \
+  && ok "resolve-models opencode wrote the catalog from the stand-in's models --verbose" \
+  || bad "no opencode catalog after resolve-models"
+mkjob_opencode() { # mkjob_opencode <id> [permission] [model] [extra-json-fields]
+  printf '{"jobs":[{"id":"%s","project":"sandbox","enabled":false,"platform":"opencode","model":"%s","effort":"high","prompt":"do the thing",
+    "interval_seconds":3600,"permission_mode":"%s","max_parallel":1%s}]}\n' "$1" "${3:-pdm_ai/glm-5.3-flash}" "${2:-full-access}" "${4:-}" \
+    > "$ROOT/config/jobs.json"
+  mkdir -p "$ROOT/config/prechecks"
+  printf '#!/bin/bash\nexit 0\n' > "$ROOT/config/prechecks/$1.sh"
+  chmod +x "$ROOT/config/prechecks/$1.sh"
+}
+
+echo
+echo "29. an OpenCode run goes through the stand-in and reads as a clean success"
+mkjob_opencode j29 full-access opencode/big-pickle
+FAKE_MODE=complete FAKE_SESSION=ses_clean "$AL" run j29 >/dev/null 2>&1
+sleep 2
+[ -z "$(dirs j29)" ] && ok "its run directory is gone (declared ending, nothing undelivered)" || bad "left $(dirs j29)"
+[ "$(lastrun | jq -r .status)" = "success" ] && ok "status success: nothing on stderr, a result on the stream" || bad "status $(lastrun | jq -r .status): $(lastrun | jq -r .note)"
+[ "$(lastrun | jq -r .session)" = "ses_clean" ] && ok "the session recorded is the sessionID" || bad "session $(lastrun | jq -r .session)"
+[ "$(lastrun | jq -r .model_id)" = "opencode/big-pickle-real" ] \
+  && ok "model_id is the model the export says ran, not the id asked for" || bad "model_id $(lastrun | jq -r .model_id)"
+[ "$(lastrun | jq -r .platform)" = "opencode" ] && ok "the journal names the platform" || bad "platform $(lastrun | jq -r .platform)"
+[ "$(lastrun | jq -r .cost_basis)" = "none" ] && [ "$(lastrun | jq -r .cost)" = "0" ] \
+  && ok "a model the catalog prices at zero records an UNKNOWN cost, never a free one" || bad "cost $(lastrun | jq -c '{cost,cost_basis}')"
+[ "$(lastrun | jq -r '.tokens.input')" = "11974" ] && [ "$(lastrun | jq -r '.tokens.cached')" = "15488" ] \
+  && ok "the token counts are the sum of the steps" || bad "tokens $(lastrun | jq -c .tokens)"
+s29="$(ls "$ROOT"/data/logs/j29/*.stream.ndjson 2>/dev/null | head -1)"
+[ -f "$s29.raw" ] && grep -q '"step_start"' "$s29.raw" && ok "the raw OpenCode stream is kept beside the normalized one" || bad "no .raw copy"
+head -1 "$s29" | jq -e '.subtype=="init" and .platform=="opencode"' >/dev/null 2>&1 \
+  && ok "the normalized stream opens with the init event" || bad "first line: $(head -1 "$s29")"
+[ ! -e "$ROOT"/data/logs/j29/*.raw.fifo ] && ok "the FIFO was removed" || bad "FIFO left behind"
+jq -e 'has("opencode") | not' "$ROOT/data/rate-limits.json" >/dev/null 2>&1 \
+  && ok "no usage window was invented for opencode" || bad "rate-limits.json grew an opencode block"
+
+echo
+echo "30. an OpenCode run that never declares an ending keeps its tree, bound to the session"
+mkjob_opencode j30
+FAKE_MODE=undeclared FAKE_SESSION=ses_cut "$AL" run j30 >/dev/null 2>&1
+sleep 2
+d30="$(dirs j30 | head -1)"
+[ -n "$d30" ] && [ "$(ended j30 "$d30")" = "open" ] && ok "kept, marked open" || bad "dir '$d30' ended '$(ended j30 "$d30")'"
+[ "$(cat "$ROOT/data/worktrees/j30/$d30/.session" 2>/dev/null)" = "ses_cut" ] && ok ".session holds the sessionID" || bad ".session not bound"
+
+echo
+echo "31. a resume reattaches, and launches with -s AND --dir on the session's own directory"
+argv31="$ROOT/argv-31"; dir31="$ROOT/dir-31"; rm -f "$argv31" "$dir31"
+FAKE_ARGV_OUT="$argv31" FAKE_DIR_OUT="$dir31" FAKE_MODE=complete FAKE_SESSION=ses_cut "$AL" resume j30 ses_cut >/dev/null 2>&1
+sleep 2
+grep -q "resumed ses_cut in its own tree" "$ROOT/data/tick.log" && ok "the tick log says it reattached" || bad "no reattach line"
+[ -z "$(dirs j30)" ] && ok "and the finished session took its directory with it" || bad "left $(dirs j30)"
+si="$(idx_in "$argv31" -s)"; [ -n "$si" ] && [ "$(at_in "$argv31" $((si + 1)))" = "ses_cut" ] && ok "-s carries the session id" || bad "no -s: $(tr '\n' ' ' < "$argv31")"
+case "$(cat "$dir31" 2>/dev/null)" in
+  "$ROOT/data/worktrees/j30/$d30/"*) ok "--dir is the kept worktree the session was born in (any other directory hangs for ever: measured)" ;;
+  *) bad "--dir on the resume was '$(cat "$dir31" 2>/dev/null)'" ;;
+esac
+[ -z "$(idx_in "$argv31" --title)" ] && ok "no --title on a resume (the session has one)" || bad "--title passed on a resume"
+[ "$(lastrun | jq -r .session)" = "ses_cut" ] && [ "$(lastrun | jq -r .resumed_from)" = "ses_cut" ] && ok "the journal has the same session, resumed" || bad "$(lastrun | jq -c '{session,resumed_from}')"
+
+echo
+echo "32. work on no remote is reported for an OpenCode run too"
+mkjob_opencode j32
+FAKE_MODE=dirty FAKE_SESSION=ses_dirty "$AL" run j32 >/dev/null 2>&1
+sleep 2
+lastrun | grep -q 'UNDELIVERED' && [ -n "$(dirs j32)" ] && ok "UNDELIVERED, and the tree is kept" || bad "no UNDELIVERED note, or tree gone"
+
+echo
+echo "33. the launch line and the permission block of a fresh OpenCode run, read back off the stand-in"
+argv33="$ROOT/argv-33"; cfg33="$ROOT/cfg-33"; dir33="$ROOT/dir-33"; rm -f "$argv33" "$cfg33" "$dir33"
+mkjob_opencode j33 full-access pdm_ai/glm-5.3-flash ',"disallowed_tools":"Agent,Bash(git push *)"'
+FAKE_ARGV_OUT="$argv33" FAKE_CONFIG_OUT="$cfg33" FAKE_DIR_OUT="$dir33" FAKE_MODE=complete FAKE_SESSION=ses_argv "$AL" run j33 >/dev/null 2>&1
+sleep 1
+argc33="$(awk -F'\t' '$1=="ARGC" {print $2; exit}' "$argv33")"
+[ "$(at_in "$argv33" 1)" = "run" ] && [ "$(at_in "$argv33" 2)" = "--format" ] && [ "$(at_in "$argv33" 3)" = "json" ] && ok "run --format json" || bad "argv: $(tr '\n' ' ' < "$argv33")"
+for f in --pure --auto --print-logs; do [ -n "$(idx_in "$argv33" "$f")" ] && ok "$f" || bad "no $f"; done
+li="$(idx_in "$argv33" --log-level)"; [ "$(at_in "$argv33" $((li + 1)))" = "ERROR" ] && ok "--log-level ERROR" || bad "log level"
+mi="$(idx_in "$argv33" -m)"; [ "$(at_in "$argv33" $((mi + 1)))" = "pdm_ai/glm-5.3-flash" ] && ok "-m carries the id verbatim" || bad "-m $(at_in "$argv33" $((mi + 1)))"
+vi="$(idx_in "$argv33" --variant)"; [ "$(at_in "$argv33" $((vi + 1)))" = "high" ] && ok "--variant high (a variant the catalog lists for this model)" || bad "--variant"
+case "$(cat "$dir33" 2>/dev/null)" in
+  "$ROOT/data/worktrees/j33/"*) ok "--dir names the run's working directory" ;;
+  *) bad "--dir was '$(cat "$dir33" 2>/dev/null)'" ;;
+esac
+ti="$(idx_in "$argv33" --title)"; case "$(at_in "$argv33" $((ti + 1)))" in "agentloop j33 "*) ok "--title names the job and the stamp" ;; *) bad "title '$(at_in "$argv33" $((ti + 1)))'" ;; esac
+[ -z "$(idx_in "$argv33" -s)" ] && ok "no -s on a fresh run" || bad "-s on a fresh run"
+dd="$(idx_in "$argv33" --)"; [ -n "$dd" ] && [ "$((dd + 1))" = "$argc33" ] && ok "the prompt is the one argument after --" || bad "-- at '$dd', argc $argc33"
+[ "$(jq -r .share "$cfg33")" = "disabled" ] && ok "OPENCODE_CONFIG_CONTENT disables sharing" || bad "config: $(cat "$cfg33")"
+[ "$(jq -c .permission "$cfg33")" = '{"task":"deny","bash":{"*":"allow","git push *":"deny"}}' ] \
+  && ok "and carries the job's denylist: Agent closed task, Bash(git push *) became a bash rule" || bad "permission: $(jq -c .permission "$cfg33")"
+grep -q "j33: disallowed_tools is ignored" "$ROOT/data/tick.log" && bad "the lists were called ignored on opencode" || ok "nothing calls the tool lists ignored: they are translated"
+[ "$(lastrun | jq -r .status)" = "success" ] && ok "and the run went on to finish" || bad "status $(lastrun | jq -r .status)"
+
+echo
+echo "33b. read-only launches with the four denies, and a tool the table does not know is named"
+cfg33b="$ROOT/cfg-33b"; rm -f "$cfg33b"
+mkjob_opencode j33b read-only pdm_ai/glm-5.3-flash ',"allowed_tools":"Read,Nonesuch"'
+FAKE_CONFIG_OUT="$cfg33b" FAKE_MODE=complete FAKE_SESSION=ses_ro "$AL" run j33b >/dev/null 2>&1
+sleep 1
+[ "$(jq -c '.permission | {edit, write, bash, task, "*": .["*"], read}' "$cfg33b")" = '{"edit":"deny","write":"deny","bash":"deny","task":"deny","*":"deny","read":"allow"}' ] \
+  && ok "read-only denies edit, write, bash and task; the allowlist closes the rest and opens read" || bad "permission: $(jq -c .permission "$cfg33b")"
+grep -q "j33b: allowed_tools: Nonesuch is not a tool OpenCode has; ignored" "$ROOT/data/tick.log" && ok "the unknown tool name is one line in tick.log" || bad "no note for Nonesuch"
+
+echo
+echo "34. a tool denied by rule during the run is tools_denied, like a --disallowedTools hit on Claude"
+mkjob_opencode j34
+FAKE_MODE=deny FAKE_SESSION=ses_deny "$AL" run j34 >/dev/null 2>&1
+sleep 2
+[ "$(lastrun | jq -r .status)" = "error" ] && [ "$(lastrun | jq -r .cause)" = "tools_denied" ] \
+  && ok "error / tools_denied (the stream carried the denial: opencode has that capability, Codex never did)" || bad "$(lastrun | jq -c '{status,cause}')"
+
+echo
+echo "35. a rate limit is rate_limited, outside the backoff, with no window to mark"
+mkjob_opencode j35
+echo '{"j35":{"fail_streak":2}}' > "$ROOT/data/state.json"
+FAKE_MODE=quota FAKE_SESSION=ses_quota "$AL" run j35 >/dev/null 2>&1
+sleep 2
+[ "$(lastrun | jq -r .status)" = "error" ] && [ "$(lastrun | jq -r .cause)" = "rate_limited" ] \
+  && ok "error / rate_limited (APIError with statusCode 429)" || bad "$(lastrun | jq -c '{status,cause}')"
+[ "$(jq -r '.j35.fail_streak' "$ROOT/data/state.json")" = "2" ] && ok "fail_streak untouched" || bad "streak $(jq -r '.j35.fail_streak' "$ROOT/data/state.json")"
+jq -e 'has("opencode") | not' "$ROOT/data/rate-limits.json" >/dev/null 2>&1 && ok "and still no opencode window: the next run comes at the job's own interval" || bad "an opencode window appeared"
+
+echo
+echo "35b. an unknown model at run time is an error whose reason is in .err, not on the stream"
+mkjob_opencode j35b full-access pdm_ai/glm-5.3-flash ',"max_budget_usd":1'
+FAKE_MODE=error FAKE_SESSION=ses_err "$AL" run j35b >/dev/null 2>&1
+sleep 2
+[ "$(lastrun | jq -r .status)" = "error" ] && [ "$(lastrun | jq -r .cause)" = "agent_error" ] \
+  && ok "error / agent_error: an UnknownError carries no status" || bad "$(lastrun | jq -c '{status,cause}')"
+# A priced model whose run died before its first step has null tokens: the
+# cap note blames no price on the model (it has one), it says no step
+# reported a cost.
+[ "$(lastrun | jq -c .tokens)" = "null" ] && ok "no step_finish, so the tokens are null, not zero" || bad "tokens $(lastrun | jq -c .tokens)"
+grep -q 'j35b: max_budget_usd 1 not applied: the cost of this run is unknown (no step reported a cost)' "$ROOT/data/tick.log" \
+  && ok "the cap note says no step reported a cost, not no price for a priced model" || bad "cap note: $(grep 'j35b: max_budget' "$ROOT/data/tick.log" | tail -1)"
+
+echo
+echo "36. a stop ends an OpenCode run that will not end by itself"
+mkjob_opencode j36 full-access pdm_ai/glm-5.3-flash ',"max_budget_usd":1'
+FAKE_MODE=hang FAKE_SESSION=ses_hang "$AL" run j36 >/dev/null 2>&1 &
+w=0; while [ "$w" -lt 20 ] && ! ls "$ROOT"/data/locks/j36/*/child >/dev/null 2>&1; do sleep 1; w=$((w + 1)); done
+sleep 1
+"$AL" stop j36 >/dev/null 2>&1
+wait
+[ "$(lastrun | jq -r .status)" = "stopped" ] && ok "status stopped (waited ${w}s for the slot)" || bad "status $(lastrun | jq -r .status)"
+[ ! -e "$ROOT"/data/logs/j36/*.raw.fifo ] && ok "the FIFO was removed" || bad "FIFO left behind"
+lastrun | jq -r .note | grep -q 'not applied' && bad "a stopped run got the cap note" || ok "a stopped run gets no cap note: its cost is unknown because it died, not because the model has no price"
+
+echo
+echo "37. a run that cannot start is refused in tick.log before it costs a slot"
+mkjob_opencode j37
+FAKE_OPENCODE_NO_MODELS=1 "$AL" run j37 >/dev/null 2>&1
+grep -q 'j37: opencode is not ready (no usable provider' "$ROOT/data/tick.log" && ok "no provider → refused" || bad "no provider refusal line"
+[ ! -d "$ROOT/data/logs/j37" ] && ok "and no log was written" || bad "a run started without a provider"
+mkjob_opencode j37 full-access opencode/does-not-exist
+"$AL" run j37 >/dev/null 2>&1
+grep -q "j37: model 'opencode/does-not-exist' is not in the OpenCode catalog" "$ROOT/data/tick.log" && ok "unknown id → refused" || bad "no catalog refusal"
+mkjob_opencode j37 full-access pdm_ai/glm-5.3-flash ',"interactive":true'
+"$AL" run j37 >/dev/null 2>&1
+grep -q "j37: interactive is not available on opencode" "$ROOT/data/tick.log" && ok "interactive → refused" || bad "no interactive refusal"
+mkjob_opencode j37 workspace-write
+"$AL" run j37 >/dev/null 2>&1
+grep -q "j37: permission_mode 'workspace-write' is not an OpenCode mode" "$ROOT/data/tick.log" && ok "a Codex mode → refused (there is no sandbox to promise)" || bad "no permission refusal"
+argv37x="$ROOT/argv-37x"; rm -f "$argv37x"
+printf '#!/bin/bash\nif [ "$1" = "-" ] && { [ "$2" = "full-access" ] || [ "$2" = "read-only" ]; }; then exit 1; fi\nexec python3 "$@"\n' > "$ROOT/pybroken"
+chmod +x "$ROOT/pybroken"
+mkjob_opencode j37
+AGENTLOOP_PYTHON="$ROOT/pybroken" FAKE_ARGV_OUT="$argv37x" "$AL" run j37 >/dev/null 2>&1
+grep -q "j37: could not build the OpenCode permission block, skipped" "$ROOT/data/tick.log" && ok "a broken permission block is refused before a slot is spent" || bad "no permission-block refusal line"
+[ ! -e "$argv37x" ] && ok "and no argv was ever written" || bad "the CLI launched anyway"
+[ ! -d "$ROOT/data/locks/j37" ] && ok "and no lock directory was left" || bad "a lock directory was left"
+argv37="$ROOT/argv-37"; rm -f "$argv37"
+mkjob_opencode j37
+sed -i '' 's/"effort":"high"/"effort":"ultra"/' "$ROOT/config/jobs.json"
+FAKE_ARGV_OUT="$argv37" FAKE_MODE=complete FAKE_SESSION=ses_eff "$AL" run j37 >/dev/null 2>&1
+sleep 2
+grep -q "j37: effort 'ultra' is not a variant of pdm_ai/glm-5.3-flash — launched without an effort" "$ROOT/data/tick.log" \
+  && [ -z "$(idx_in "$argv37" --variant)" ] && ok "an effort the model does not list is dropped, said, and the run goes on" || bad "bad effort: $(grep 'j37: effort' "$ROOT/data/tick.log" | tail -1)"
+[ "$(lastrun | jq -r .status)" = "success" ] && ok "and finished" || bad "status $(lastrun | jq -r .status)"
+
+echo
+echo "38. the run-end hook learns the platform, the cost basis and the tokens"
+mkdir -p "$ROOT/config/hooks"
+printf '#!/bin/bash\nprintf "%%s %%s %%s\\n" "$AL_PLATFORM" "$AL_COST_BASIS" "$AL_TOKENS" > "%s/hook-38.out"\n' "$ROOT" > "$ROOT/config/hooks/on-run-end.sh"
+chmod +x "$ROOT/config/hooks/on-run-end.sh"
+mkjob_opencode j38
+FAKE_MODE=complete FAKE_SESSION=ses_hook FAKE_COST=0.0002 "$AL" run j38 >/dev/null 2>&1
+sleep 3
+case "$(cat "$ROOT/hook-38.out" 2>/dev/null)" in
+  "opencode reported {"*'"input":11974'*) ok "AL_PLATFORM, AL_COST_BASIS and AL_TOKENS reach the hook" ;;
+  *) bad "hook saw: $(cat "$ROOT/hook-38.out" 2>/dev/null)" ;;
+esac
+rm -f "$ROOT/config/hooks/on-run-end.sh"
+
+echo
+echo "39. a model the catalog prices records the CLI's own cost, reported"
+mkjob_opencode j39
+FAKE_MODE=complete FAKE_SESSION=ses_paid FAKE_COST=0.0002 "$AL" run j39 >/dev/null 2>&1
+sleep 2
+[ "$(lastrun | jq -r .cost_basis)" = "reported" ] && [ "$(lastrun | jq -r .cost)" = "0.0004" ] \
+  && ok "cost 0.0004 reported: two steps at 0.0002, the CLI's number, not an estimate" || bad "cost $(lastrun | jq -c '{cost,cost_basis}')"
+
+echo
+echo "40. a per-run cap over an unknown cost says so instead of never firing"
+mkjob_opencode j40 full-access opencode/big-pickle ',"max_budget_usd":1'
+FAKE_MODE=complete FAKE_SESSION=ses_cap "$AL" run j40 >/dev/null 2>&1
+sleep 2
+grep -q 'j40: max_budget_usd 1 not applied: the cost of this run is unknown (no price for opencode/big-pickle-real)' "$ROOT/data/tick.log" \
+  && ok "tick.log says the cap could not be applied, and why" || bad "no cap note: $(grep 'j40' "$ROOT/data/tick.log" | tail -2)"
+lastrun | jq -r .note | grep -q 'max_budget_usd \$1 not applied' && ok "and so does the run's own note" || bad "note: $(lastrun | jq -r .note)"
+[ "$(lastrun | jq -r .status)" = "success" ] && ok "without changing the status" || bad "status $(lastrun | jq -r .status)"
+
+echo
+echo "41. a run that never writes a byte is killed at the stall timeout, whatever its CPU does"
+# Measured on OpenCode (evidence 35): a hung CLI process burns ~1 CPU second
+# every 75 s of idling, which the watchdog's "CPU changed" test reads as
+# life for ever. A stream still EMPTY after stall_timeout_seconds is the one
+# shape both measured hangs share, and no healthy run of any platform has:
+# the first event is written in seconds.
+mkjob j41
+sed -i '' 's/"max_parallel":1/"max_parallel":1,"stall_timeout_seconds":4/' "$ROOT/config/jobs.json"
+AGENTLOOP_WATCHDOG_POLL=2 FAKE_MODE=silent FAKE_SESSION=sess-silent "$AL" run j41 >/dev/null 2>&1
+sleep 1
+[ "$(lastrun | jq -r .status)" = "error" ] && [ "$(lastrun | jq -r .cause)" = "killed" ] \
+  && ok "error / killed" || bad "$(lastrun | jq -c '{status,cause}')"
+lastrun | jq -r .note | grep -q 'no output at all for 4s' && ok "the note names the rule: no output at all" || bad "note: $(lastrun | jq -r .note)"
+
+echo
+echo "41b. a run that wrote its first event and then went quiet is still judged by the old rule"
+mkjob j41b
+sed -i '' 's/"max_parallel":1/"max_parallel":1,"stall_timeout_seconds":4/' "$ROOT/config/jobs.json"
+AGENTLOOP_WATCHDOG_POLL=2 FAKE_MODE=hang FAKE_SESSION=sess-quiet "$AL" run j41b >/dev/null 2>&1
+sleep 1
+lastrun | jq -r .note | grep -q 'no output and no CPU for 4s' && ok "killed by the CPU-and-output rule, not the empty-stream one" || bad "note: $(lastrun | jq -r .note)"
+lastrun | jq -r .note | grep -q 'no output at all' && bad "the empty-stream rule fired on a run that had written" || ok "the empty-stream rule never touches a run that wrote a byte"
+
+echo
+echo "41c. the case that motivated the rule: an OpenCode run whose provider never answers"
+mkjob_opencode j41c
+sed -i '' 's/"max_parallel":1/"max_parallel":1,"stall_timeout_seconds":4/' "$ROOT/config/jobs.json"
+AGENTLOOP_WATCHDOG_POLL=2 FAKE_MODE=silent FAKE_SESSION=ses_silent "$AL" run j41c >/dev/null 2>&1
+sleep 1
+[ "$(lastrun | jq -r .status)" = "error" ] && [ "$(lastrun | jq -r .cause)" = "killed" ] && ok "error / killed" || bad "$(lastrun | jq -c '{status,cause}')"
+lastrun | jq -r .note | grep -q 'no output at all for 4s' && ok "the empty-stream rule ended it (measured 34b: the CLI itself never would)" || bad "note: $(lastrun | jq -r .note)"
+[ ! -e "$ROOT"/data/logs/j41c/*.raw.fifo ] && ok "and the FIFO was removed" || bad "FIFO left behind"
+
+echo
+echo "42. a security analysis on OpenCode goes through the stand-in, closes task by rule, and closes done"
+jq --arg cwd "$ROOT/work/app" '.projects += [{"name":"sandbox-oc","cwd":$cwd,"base":"main","worktree":{"enabled":true},
+   "security":{"enabled":true,"platform":"opencode","model":"pdm_ai/glm-5.3-flash","max_budget_usd":5}}]' \
+   "$ROOT/config/projects.json" > "$ROOT/projects.next" && mv "$ROOT/projects.next" "$ROOT/config/projects.json"
+argv42="$ROOT/argv-42"; prompt42="$ROOT/prompt-42"; cfg42="$ROOT/cfg-42"; rm -f "$argv42" "$prompt42" "$cfg42"
+out42="$(AL_SECURITY_ENGINES=off FAKE_SKIP_PREPARE=1 FAKE_ARGV_OUT="$argv42" FAKE_PROMPT_OUT="$prompt42" FAKE_CONFIG_OUT="$cfg42" \
+  FAKE_MODE=complete FAKE_SESSION=ses_sec FAKE_COST=0.0002 \
+  "$AL" security analyze sandbox-oc anything main quick 2>&1)"
+aid42="$(secid "$out42")"
+[ -n "$aid42" ] && ok "the analysis opened: $aid42" || bad "no analysis id in: $out42"
+[ "$(secstate sandbox-oc "$aid42")" = "done" ] \
+  && ok "and closed done: the engine ran security prepare before the agent, and the close found nothing untriaged" \
+  || bad "state '$(secstate sandbox-oc "$aid42")'"
+grep -q 'security-sandbox-oc: deterministic phase ran before the agent (prepare' "$ROOT/data/tick.log" \
+  && ok "the engine ran prepare before launching opencode (prepare_inline is off)" || bad "no engine-side prepare line"
+[ "$(at_in "$argv42" 1)" = "run" ] && ok "it went down the OpenCode launch line" || bad "argv: $(tr '\n' ' ' < "$argv42" 2>/dev/null)"
+mi="$(idx_in "$argv42" -m)"; [ -n "${mi:-}" ] && [ "$(at_in "$argv42" $((mi + 1)))" = "pdm_ai/glm-5.3-flash" ] \
+  && ok "-m carries the block's model" || bad "-m '$(at_in "$argv42" $((${mi:-0} + 1)))'"
+[ "$(jq -r '.permission.task' "$cfg42")" = "deny" ] && ok "task is closed BY RULE in the permission block (Agent -> task: deny)" || bad "permission: $(jq -c .permission "$cfg42")"
+[ -n "$(idx_in "$argv42" --auto)" ] && [ "$(jq -r '.permission.bash // "open"' "$cfg42")" != "deny" ] \
+  && ok "--auto with bash open: full-access, the security default on opencode" || bad "auto/bash: $(idx_in "$argv42" --auto) / $(jq -c .permission "$cfg42")"
+grep -q 'The `task` tool is closed for this run' "$prompt42" && ok "the prompt says the task tool is closed, by rule" || bad "no task paragraph in the prompt"
+grep -q 'security-analysis/SKILL.md' "$prompt42" && grep -q 'Invoke the `security-analysis` skill' "$prompt42" \
+  && ok "and names the skill by name AND by path (the CLI reads ~/.claude/skills: measured)" || bad "the prompt lacks the skill by name or by path"
+grep -q 'ALREADY RAN for this analysis' "$prompt42" && ! grep -q 'YOUR FIRST COMMAND' "$prompt42" \
+  && ok "the prompt says the deterministic phase already ran" || bad "the prompt still asks the agent to run prepare"
+grep -q 'Do not spawn subagents' "$prompt42" && bad "the Codex-only wording leaked into the opencode prompt" || ok "no Codex wording"
+[ "$(lastrun | jq -r .id)" = "security-sandbox-oc" ] && [ "$(lastrun | jq -r .platform)" = "opencode" ] && [ "$(lastrun | jq -r .cost_basis)" = "reported" ] \
+  && ok "the journal has the derived job's run on opencode, with the CLI's own cost" || bad "$(lastrun | jq -c '{id,platform,cost_basis}')"
+sleep 1
 
 echo
 printf '\n  %s passed, %s failed\n' "$pass" "$fail"

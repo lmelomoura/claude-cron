@@ -1,0 +1,15 @@
+opencode/big-pickle
+opencode/ling-3.0-flash-fin-free
+opencode/mimo-v2.5-free
+opencode/muse-spark-1.2-contributor-free
+opencode/muse-spark-1.3-contributor-free
+opencode/nemotron-3-ultra-free
+opencode/nemotron-3.5-lightning-free
+pdm_ai/deepseek-v4-flash
+pdm_ai/glm5.2
+pdm_ai/glm5.2-metababy
+pdm_ai/glm5.3
+pdm_ai/glm5.3-flash
+pdm_ai/glm5.3-nvfp4
+pdm_ai/qwen3.5-vision
+pdm_ai/qwen3.6

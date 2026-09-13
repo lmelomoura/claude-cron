@@ -167,7 +167,7 @@ export const secDefaultProfile = (name) => { const v = secCfg(name).default_prof
 // Mirrors editor-domain.js's platformLabel. The two bundles do not import
 // each other (page.js is the only bridge), so this one line is duplicated
 // by design -- the same way overview.js carries its own money().
-export const secPlatformLabel = (p) => p === "openai" ? "OpenAI" : "Anthropic";
+export const secPlatformLabel = (p) => ({anthropic: "Anthropic", openai: "OpenAI", opencode: "OpenCode"})[p] || "Anthropic";
 /* A severity the vocabulary does not know is ranked ABOVE critical rather
    than below low: an unrecognised value is not a reason to hide a finding,
    and the display filter is the one place that could silently do it. This

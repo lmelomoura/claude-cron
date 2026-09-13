@@ -63,12 +63,14 @@ DATA_DIR = Path(_env("DATA", BASE_DIR / "data"))
 JOBS_FILE = CONFIG_DIR / "jobs.json"
 PROJECTS_FILE = CONFIG_DIR / "projects.json"
 PLATFORMS_FILE = CONFIG_DIR / "platforms.json"
-# The registry the page draws: the two platforms that run, and the one that is
-# listed and detected but not launched yet. Mirrors PLATFORMS/PLATFORMS_PLANNED
-# in the engine; tests/test_platforms_api.py pins the two together through
+# The registry the page draws: the platforms that run, and (via
+# PLATFORMS_PLANNED) any that are listed and detected but not launched yet --
+# none today; the tuple stays for the next platform that is planned but not
+# shipped. Mirrors PLATFORMS/PLATFORMS_PLANNED in the engine;
+# tests/test_platforms_api.py pins the two together through
 # `agentloop platforms`.
 PLATFORM_REGISTRY = ("anthropic", "openai", "opencode")
-PLATFORMS_PLANNED = ("opencode",)
+PLATFORMS_PLANNED = ()
 PLATFORM_BIN_ENV = {"anthropic": "CLAUDE_BIN", "openai": "CODEX_BIN", "opencode": "OPENCODE_BIN"}
 STATE_FILE = DATA_DIR / "state.json"
 RUNS_FILE = DATA_DIR / "runs.ndjson"
@@ -1490,6 +1492,7 @@ def delete_run(jid, start):
         logp = Path(target.get("log", ""))
         if str(logp.resolve()).startswith(str(_logs_root())):
             extra = [logp.with_name(logp.stem + ".stream.ndjson.raw"),
+                     logp.with_name(logp.stem + ".stream.ndjson.export"),
                      Path(str(logp) + ".prepare"),
                      Path(str(logp) + ".watchdog"), Path(str(logp) + ".stdin"),
                      Path(str(logp) + ".turnend")]
@@ -1547,6 +1550,7 @@ def _forget_stranded_row(jid, start, removed):
             if str(logp) and str(logp.resolve()).startswith(str(_logs_root())):
                 for p in (logp, logp.with_name(logp.stem + ".stream.ndjson"),
                           logp.with_name(logp.stem + ".stream.ndjson.raw"),
+                          logp.with_name(logp.stem + ".stream.ndjson.export"),
                           logp.with_name(logp.stem + ".precheck.txt"),
                           Path(str(logp) + ".err"), Path(str(logp) + ".prepare"),
                           Path(str(logp) + ".watchdog")):
@@ -2452,14 +2456,28 @@ def parse_conversation(text, limit=400):
     return out
 
 
-def al(args, stdin=None, background=False):
-    """Invoke the agentloop CLI. Returns (ok, output)."""
+# The engine's in-request resolve spends this once on `--version` and twice
+# on `models --verbose`: 8 + 16 = 24s, inside al()'s 30s subprocess.run
+# timeout with room to spare, so a hung CLI leaves the engine's "timed out"
+# stub rather than al() killing the engine first (which left no stub, and
+# made every /api/models after it wait the full 30s again).
+OPENCODE_RESOLVE_DEADLINE = "8"
+
+
+def al(args, stdin=None, background=False, env=None):
+    """Invoke the agentloop CLI. Returns (ok, output).
+
+    `env`, when given, is merged OVER this process's own environment for this
+    one call only (never a replacement) -- used by _opencode_platform() to
+    shorten the engine's deadline for its in-request resolve so that call
+    always finishes inside this function's own 30s timeout below."""
     cmd = ["/bin/bash", AGENTLOOP] + args
+    full_env = {**os.environ, **env} if env else None
     if background:
-        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, env=full_env)
         return True, "started"
     try:
-        p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=30)
+        p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=30, env=full_env)
         return p.returncode == 0, (p.stdout + p.stderr).strip()
     except Exception as e:  # noqa: BLE001
         return False, str(e)
@@ -2482,6 +2500,10 @@ PLATFORM_PERMISSIONS = {
         {"v": "read-only", "label": "read-only — sandbox: no writes, no network"},
         {"v": "workspace-write", "label": "workspace-write — sandbox: writes inside the workspace"},
         {"v": "full-access", "label": "full-access — no sandbox, no approvals"},
+    ],
+    "opencode": [
+        {"v": "full-access", "label": "full-access — every tool, no approvals (the worktree is the isolation)"},
+        {"v": "read-only", "label": "read-only — no edit, write, bash or subagents"},
     ],
 }
 ANTHROPIC_EFFORTS = ["low", "medium", "high", "xhigh", "max"]
@@ -2570,6 +2592,87 @@ def _openai_platform():
             "default_model": models[0]["v"] if models else "",
             "pricing_at": table.get("_refreshed_at") if _num(table.get("_refreshed_at")) else 0,
             "pricing_source": source_url if isinstance(source_url, str) else "",
+            "unpriced": [m["v"] for m in models if not m["priced"]]}
+
+
+def _opencode_platform():
+    """The opencode entry of /api/models, from config/models.json's `opencode`
+    block (written by `resolve-models opencode`). Missing altogether, it is
+    resolved ONCE, synchronously, when the CLI exists (about a second:
+    `opencode models --verbose` reads the CLI's own cache); without the CLI
+    the answer is `available: false` and the reason. A model is `priced`
+    when the CLI's catalog prices it OR the operator's table carries a row
+    for it -- a manual row of zeros is a price (a declared free model); a
+    catalog of zeros is not (measured: a provider with no cost configured
+    lists the same zeros as a free one)."""
+    path = CONFIG_DIR / "models.json"
+
+    def block():
+        try:
+            return (json.loads(path.read_text()) or {}).get("opencode")
+        except Exception:  # noqa: BLE001
+            return None
+
+    b = block()
+    if b is None:
+        # _bin_detect (not a local PATH/Homebrew-only guess) is the same
+        # detection platform_entry uses, so a CLI the official installer put
+        # under ~/.opencode/bin resolves here too on the very first request --
+        # launchd's PATH carries neither that nor Homebrew's -- rather than
+        # reading "opencode not installed" until the next daily pass.
+        exe = _env("OPENCODE_BIN") or _bin_detect("opencode")
+        if exe and os.access(exe, os.X_OK):
+            # A short engine deadline (8s for `--version`, 16s for `models
+            # --verbose`: 24s in all) keeps this in-request resolve inside
+            # al()'s own 30s timeout, so a hung CLI leaves its "timed out"
+            # stub behind instead of al() being killed first -- which left
+            # no stub at all and made every subsequent /api/models repeat
+            # the same 30s wait. The daily pass keeps the full 60s deadline.
+            al(["resolve-models", "opencode"], env={"AGENTLOOP_OPENCODE_DEADLINE": OPENCODE_RESOLVE_DEADLINE})
+            b = block()
+    empty = {"models": [], "efforts": [], "permissions": PLATFORM_PERMISSIONS["opencode"],
+             "default_model": "", "unpriced": []}
+    if not isinstance(b, dict) or not isinstance(b.get("models"), list):
+        reason = (b or {}).get("reason") if isinstance(b, dict) else None
+        return {"available": False, "reason": reason or "opencode not installed: install it, configure a provider, then agentloop resolve-models opencode",
+                "catalog_at": (b or {}).get("at", 0) if isinstance(b, dict) else 0, **empty}
+    try:
+        table = json.loads((CONFIG_DIR / "pricing.json").read_text()) or {}
+    except Exception:  # noqa: BLE001
+        table = {}
+    rows = table.get("opencode") if isinstance(table, dict) else None
+    rows = rows if isinstance(rows, dict) else {}
+
+    def _num(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+    def price_of(m):
+        cost = m.get("cost") if isinstance(m.get("cost"), dict) else {}
+        if m.get("priced") is True:
+            return {"input": cost.get("input", 0), "cached_input": cost.get("cache_read", 0),
+                    "output": cost.get("output", 0), "cache_write": cost.get("cache_write", 0)}
+        row = rows.get(m.get("id"))
+        if not isinstance(row, dict) or not all(_num(row.get(k)) for k in ("input", "cached_input", "output")):
+            return None
+        return {"input": row["input"], "cached_input": row["cached_input"], "output": row["output"],
+                "cache_write": row.get("cache_write") if _num(row.get("cache_write")) else 0}
+
+    def _model(m):
+        price = price_of(m)
+        return {"v": m["id"], "label": m.get("name") or m["id"], "provider": m.get("provider") or "",
+                "desc": "", "efforts": list(m.get("variants") or []), "default_effort": "",
+                "deprecated_by": "", "retires_at": "", "priced": price is not None, "price": price,
+                "tools": m.get("tools") is not False, "context": m.get("context") or 0}
+
+    models = [_model(m) for m in b["models"] if isinstance(m, dict) and m.get("id") and m.get("status", "active") == "active"]
+    efforts, seen = [], set()
+    for m in models:
+        for e in m["efforts"]:
+            if e not in seen:
+                seen.add(e); efforts.append(e)
+    return {"available": True, "reason": "", "catalog_at": b.get("at", 0),
+            "models": models, "efforts": efforts, "permissions": PLATFORM_PERMISSIONS["opencode"],
+            "default_model": models[0]["v"] if models else "",
             "unpriced": [m["v"] for m in models if not m["priced"]]}
 
 
@@ -2679,6 +2782,8 @@ def jobs_using(p, jobs, projects, resolved, default, catalog_slugs):
     def valid(m):
         if p == "openai":
             return not catalog_slugs or m in catalog_slugs   # an empty catalog validates nothing
+        if p == "opencode":
+            return not catalog_slugs or m in catalog_slugs   # same rule, the opencode catalog's ids
         return m in ("opus", "sonnet", "haiku", "fable") or m.startswith("claude-")
 
     def effective(m):
@@ -2752,7 +2857,7 @@ def list_models():
     500. `platforms.openai.models` is where those slugs belong.
     """
     cfg, err = platforms_config()
-    resolved, catalog_slugs = {}, set()
+    resolved, catalog_slugs, opencode_ids = {}, set(), set()
     try:
         data = json.loads((CONFIG_DIR / "models.json").read_text())
         resolved = data.get("resolved") or {}
@@ -2760,6 +2865,10 @@ def list_models():
         if isinstance(odata, dict):
             catalog_slugs = {m["slug"] for m in (odata.get("models") or [])
                               if isinstance(m, dict) and isinstance(m.get("slug"), str)}
+        odata_oc = data.get("opencode")
+        if isinstance(odata_oc, dict):
+            opencode_ids = {m["id"] for m in (odata_oc.get("models") or [])
+                             if isinstance(m, dict) and m.get("id")}
     except Exception:  # noqa: BLE001
         resolved = {}
     if not isinstance(resolved, dict):
@@ -2839,9 +2948,9 @@ def list_models():
     openai = _openai_platform()
     openai.update(platform_entry("openai", cfg, jobs, projects, resolved, catalog_slugs))
     openai["default_model"] = (openai["models_enabled"] or [""])[0]
-    opencode = {"available": False, "reason": "runs on OpenCode arrive with the OpenCode engine",
-                "models": [], "efforts": [], "permissions": [], "default_model": "", "catalog_at": 0}
-    opencode.update(platform_entry("opencode", cfg, jobs, projects, resolved, catalog_slugs))
+    opencode = _opencode_platform()
+    opencode.update(platform_entry("opencode", cfg, jobs, projects, resolved, opencode_ids))
+    opencode["default_model"] = (opencode["models_enabled"] or [""])[0]
     platforms = {"anthropic": anthropic, "openai": openai, "opencode": opencode}
     return {"models": models, "efforts": list(ANTHROPIC_EFFORTS), "platforms": platforms,
             "configured": any(v["usable"] for v in platforms.values()), "error": err}

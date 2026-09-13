@@ -20,6 +20,145 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The OpenCode engine: a job, a project and a project's `security` block
+  can run on the `opencode` platform.** The third platform arrives the way
+  the second one did: measured first (`docs/superpowers/specs/2026-09-12-opencode-measurements/`,
+  35 runs of opencode-ai 1.18.30), then translated at the boundary
+  (`bin/platforms/opencode_stream.py`) so that no reader in the scheduler
+  learns a third dialect. What it cost to not have it: a job that named
+  `opencode` was refused at launch, and the models an operator had already
+  configured in that CLI (providers with their own keys, the free Zen
+  models) were out of reach of every job.
+  - The stand-in and the fixtures: `test/fake-opencode` emits the measured
+    shapes (a complete run, an undeclared ending, a dirty tree, a hang, a
+    CLI that never writes a byte, an auto-rejected permission, a rule
+    denial, an unknown model, a rate limit) and answers `--version`,
+    `models`, `auth list` and `export`, recording the argv and the `--dir` it
+    was launched with; `test/fixtures/opencode/` holds the measurements the
+    tests read.
+  - The normalizer, `bin/platforms/opencode_stream.py`: the OpenCode events
+    become the stream-json every reader here already speaks -- `text` an
+    assistant message, a completed `tool_use` a tool_use and its result at
+    once (Claude's tool names, so the Timeline draws `Bash` with the
+    command), `step_finish` summed into one `result` with the tokens
+    (reasoning apart from output, and inside `usage.output_tokens`), the
+    two measured denial phrases into `permission_denials`, an `error` into
+    an error result with its `statusCode`; an EOF after a rule denial is
+    left to the salvage path, only an auto-rejected ask ends the run as an
+    error. The first line is out the moment the CLI's first event arrives,
+    flushed, because the watchdog now reads an empty file as a dead run
+    (the flush is pinned by a test that runs the normalizer without `-u`).
+    A `step_finish.reason` or an `error.name` that is not a string is
+    stringified rather than raising, and an event the normalizer cannot
+    translate is skipped (its raw line is already copied) instead of
+    ending the normalizer mid-run.
+  - The catalog and the readiness check: `agentloop resolve-models opencode`
+    reads `opencode models --verbose` into `config/models.json` (id,
+    provider, name, price, whether it is priced at all, context, variants,
+    tool calls), refreshed daily with the other two and kept, stamped stale,
+    when a refresh lists nothing; `platform check opencode` is ready when the
+    CLI lists a model, and names the credentials and the providers.
+    `run_bounded` puts a deadline (`AGENTLOOP_OPENCODE_DEADLINE`, 30 s;
+    double for `models --verbose`) under every CLI call a hung OpenCode could
+    otherwise turn into a hung Settings page, `--version` included; a CLI
+    that hangs past it is reported as a timeout, not as a missing provider
+    (an `auth list` past it says "credentials unknown", never "0
+    credentials"), and the deadline ends the CLI's whole process group --
+    KILL after the TERM grace whether or not the direct child went on the
+    TERM, so a grandchild that ignores it dies too. The export the close
+    reads the model from lands beside the run's own log, never at the root
+    of `data/`.
+  - The platform table: `opencode` is a running platform (`platform_known`),
+    with two permission modes that say what the CLI enforces (`full-access`,
+    the default, and `read-only`: there is no sandbox, so no "workspace" mode
+    that would promise one), the model's own `variants` as its effort
+    vocabulary (validated here: the CLI accepts anything in silence), the
+    job's `allowed_tools`/`disallowed_tools` translated into the permission
+    block the run is launched with (`Agent` closes `task`, `Bash(git push
+    *)` is a bash rule, deny wins; in read-only, `Bash(...)` allow entries
+    are dropped with a note (the mode keeps bash closed), and Claude Code's
+    `Bash(cmd:*)` prefix form is translated to the glob `cmd*` (measured
+    37: an allowlist block works under `--auto`, and the environment's
+    block wins over a repository's `opencode.json`)), the launch line measured flag by flag
+    (`--pure --auto --print-logs --log-level ERROR --dir --title`), and
+    `platform_finish` reading the model that ran from `opencode export`,
+    read from a file, never a pipe: through a pipe the CLI's output stops at
+    64 KiB (measured 36), and so is the catalog; the file sits beside the
+    run's `.raw` and the dashboard's delete removes it with the other
+    sidecars. `platform_normalizer` is
+    what the launch now asks for, and
+    `prepare_inline` the capability that says which platform lets the
+    security agent run `prepare` itself.
+  - The launch: `run_job` asks `platform_normalizer` whether a platform's
+    stream is translated and goes down the FIFO for either, refuses an
+    OpenCode run that cannot start (no usable provider, an id outside the
+    catalog, a Codex mode, `interactive`) before a slot is spent, drops an
+    effort the model's catalog entry does not list, and hands the
+    permission block to the CLI in its environment
+    (`OPENCODE_CONFIG_CONTENT`), with every note the translation makes -- a
+    tool the table does not know, a pattern widened or dropped -- in
+    `tick.log` before the launch.
+  - A per-run cap over an unknown cost now says so. `max_budget_usd`
+    compared `${cost:-0}` with 90% of the cap, so a run whose cost nobody
+    knows (an unpriced model, on any platform) never fired the BUDGET
+    LIMITED warning and never said why; the run's note and `tick.log` now
+    carry "max_budget_usd $X not applied: the cost of this run is unknown",
+    and why: "no price for <model>" when the catalog does not price it,
+    "no step reported a cost" when a priced model's run died before its
+    first step (a 401, an UnknownError) and has no tokens to price.
+    A run that ended without a final event (stopped, killed) is not told
+    its cap was not applied: its cost is unknown because it died, not
+    because the model has no price.
+  - Configuration: `platform: opencode` is now a value `set-field`, `create`
+    and `project-set` (on a project and on its security block) accept,
+    validated like the other two -- moving a job onto it rewrites a model, an
+    effort or a permission mode the platform does not know to its defaults
+    and says so, and `set-field model` validates the value against the
+    OpenCode catalog. The derived security job refuses a model the catalog
+    marks as making no tool calls, falling back the way a model switched off
+    in Settings already does. `config/platforms.json`'s seed treats OpenCode
+    exactly as it treats the other two, rather than always seeding it
+    disabled.
+  - Cost, and what the server and the terminal say: a run on a model the
+    CLI's catalog prices records `reported` with the CLI's own figure (a
+    reported cost is the sum of the CLI's per-step numbers at their own
+    twelve decimals); one the catalog prices at zero -- unknown, never
+    free: a provider with no price configured lists the same zeros as a
+    free model -- is estimated
+    from the operator's row in `config/pricing.json`'s new `opencode` block
+    (a row of zeros declares a free model; `resolve-pricing` never touches
+    the block) and records `none` otherwise. `/api/models` carries the
+    catalog per model (the provider, the price per million from either
+    source or none, the variants as the effort ladder, whether the model
+    makes tool calls); `agentloop platforms`, `status` and `usage` say what
+    they say for the other two, OpenCode's way: the catalog's age, the
+    enabled models still unpriced, and that there are no usage windows to
+    wait for. The first `/api/models` on an install whose catalog is not
+    resolved yet resolves it through the detected binary, with a short
+    deadline (`OPENCODE_RESOLVE_DEADLINE`, 8 s: once for `--version`, twice
+    for `models --verbose`, inside the request's own 30 s) so a hung CLI
+    leaves its timeout stub instead of a 30-second hang on every request.
+  - Security analyses run on OpenCode: the derived job's `Agent` in
+    `disallowed_tools` closes the `task` tool by rule, `prepare` runs
+    engine-side before the agent (the tool's own timeout was not measured
+    and `prepare` can take minutes), and the prompt names the skill by name
+    and by path. Nothing new to link: OpenCode reads `~/.claude/skills`.
+  - The dashboard: OpenCode in the Platform combo of the three editors
+    (flat model list naming the provider, the model's variants as the
+    effort ladder, the two modes, Interactive off, the cost note per
+    platform), the badge on cards, tables and the run modal, the reopen
+    hint on a finished run (`opencode run --dir <run dir> -s <session>`),
+    and the Settings card doing what the other two do (Test, the catalog
+    with provider, price, variants and "no tools", the switch) instead of
+    "Coming soon"; the Settings session line, the effort captions (hidden
+    by a rule of their own: the author `display` outranks `[hidden]`) and
+    the security help read right for a platform whose variants are named
+    rather than ranked.
+  - `install.sh` names the CLI when it finds it; the README's *Platforms*
+    table has its third column, and *Settings*, *Jobs*, *Models*, *Effort*,
+    *Budgets*, the *Security block* and *Tests* say what OpenCode does
+    differently.
+
 - **Settings › Platforms, and `config/platforms.json`: a job may only pick a
   platform and a model somebody switched on.** The Settings item comes out of
   hiding with one card per platform — find the binary (or point at it), test
@@ -30,7 +169,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   spent — a run on a platform or a model that is off; `set-field`, `create`
   and `project-set` refuse the same at write time. Overview and Jobs carry a
   strip while nothing is configured, and *New job* opens Settings. OpenCode
-  is listed and detected; its engine is a later release. What it cost to
+  is listed and detected; its engine is the entry above. What it cost to
   not have it: the model picker offered the whole catalog, so a job on the
   most expensive OpenAI model was one click away, and a job on a CLI nobody
   had signed in to found out at its first launch, hours later.
@@ -44,7 +183,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     nothing enabled, is named by `status`, the tick and the dashboard's strip,
     and is never written over.
   - The launch refusals, in this order and one line each: a planned platform
-    (`opencode is not supported yet`), one switched off in Settings, a
+    (`opencode is not supported yet` on that day; none today, the mechanism
+    stays for the next one), one switched off in Settings, a
     platform with no model switched on, the CLI's own readiness, and — after
     the catalog check — a model the CLI knows but Settings did not enable,
     naming the ones it did. A security analysis passes the same gates; a
@@ -310,6 +450,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the price table and the visible slugs still unpriced. What it cost to not
   have it: an OpenAI job refused in `tick.log` for a signed-out Codex had no
   place in the terminal that said so.
+
+### Fixed
+
+- **A run that never wrote a byte is killed at the stall timeout, whatever
+  its CPU does.** The watchdog read any change of the run's CPU seconds as
+  life, and a hung CLI is not still: measured on OpenCode, a process whose
+  provider never answered gains about one CPU second every 75 seconds of
+  idling, so the stall never fired and, with no default `timeout_seconds`,
+  the run held its slot for ever. A stream still empty after
+  `stall_timeout_seconds` is now a dead run, with its own note ("no output
+  at all"); every healthy run of every platform writes its first event
+  within seconds, so no run that ever wrote a byte is judged differently.
+  A hang AFTER the first byte still rides on the CPU signal, and
+  `timeout_seconds` remains the tool for it; `AGENTLOOP_WATCHDOG_POLL`
+  lets the tests drive the rule in seconds.
 
 ### Changed
 

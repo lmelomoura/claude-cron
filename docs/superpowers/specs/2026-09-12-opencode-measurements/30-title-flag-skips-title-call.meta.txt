@@ -1,0 +1,5 @@
+command: perl -e alarm 150; exec @ARGV opencode run --pure --auto --format json --print-logs --log-level INFO --title agentloop probe 30 -m opencode/big-pickle Reply with exactly: ok
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 6

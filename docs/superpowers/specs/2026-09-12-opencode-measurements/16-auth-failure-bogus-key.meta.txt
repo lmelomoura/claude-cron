@@ -1,0 +1,5 @@
+command: perl -e alarm 90; exec @ARGV opencode run --pure --auto --format json --print-logs --log-level ERROR -m openai/gpt-4o-mini Reply with exactly: ok
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 1
+seconds: 2

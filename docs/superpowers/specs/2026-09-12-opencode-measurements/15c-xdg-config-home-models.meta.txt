@@ -1,0 +1,5 @@
+command: XDG_CONFIG_HOME=/tmp/probe/xdgcfg opencode models --print-logs --log-level DEBUG
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 1

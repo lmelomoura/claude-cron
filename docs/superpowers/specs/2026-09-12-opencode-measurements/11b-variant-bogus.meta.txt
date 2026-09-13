@@ -1,0 +1,5 @@
+command: perl -e alarm 120; exec @ARGV opencode run --pure --auto --format json --print-logs --log-level ERROR -m opencode/ling-3.0-flash-fin-free --variant bogus Reply with exactly: ok
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 3

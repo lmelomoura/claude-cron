@@ -1,0 +1,42 @@
+measurement 37 -- an allowlist-shaped permission block under --auto, and the
+precedence between OPENCODE_CONFIG_CONTENT and a repository's opencode.json
+opencode-ai 1.18.30, macOS, 2026-09-13, after the acceptance run (the final
+review asked for both; the spec had listed the second as not measured)
+
+Common prompt: "Do these three things in order and report each result in
+one line: 1) run the shell command `ls` ; 2) run the shell command `echo hi
+> x.txt` ; 3) read README.md with your read tool. If a tool call is refused,
+say REFUSED and which one." Model pdm_ai/glm-5.3-flash, `--pure --auto
+--print-logs --log-level ERROR`, stdin /dev/null, a scratch directory with
+one README.md. Both runs: rc 0, stderr 0 bytes.
+
+37a  OPENCODE_CONFIG_CONTENT = {"share":"disabled","permission":
+     {"*":"deny","read":"allow","bash":{"*":"deny","ls *":"allow"}}}
+     (the shape the engine emits for a job with an allowlist)
+
+  tool_use bash `ls`                -> completed (README.md)
+  tool_use bash `echo hi > x.txt`   -> error "The user has specified a rule
+                                       which prevents you from using this
+                                       specific tool call…"; the turn went on
+  tool_use read README.md           -> completed
+  text: "2) REFUSED: `echo hi > x.txt` (bash write commands denied; only
+        `ls` is permitted)"; step_finish reason stop; x.txt not created
+  Reading: `*: deny` with named allows works under --auto exactly like the
+  measured deny rules (23): the pattern that is allowed runs, the one that
+  is not fails the call by rule, the turn continues and ends normally.
+  Nothing from `external_directory`/`doom_loop` (the build agent's `ask`
+  rules) surfaced.
+
+37b  repository opencode.json = {"permission":{"bash":"allow","edit":"allow",
+     "write":"allow"}}, and OPENCODE_CONFIG_CONTENT = {"share":"disabled",
+     "permission":{"edit":"deny","write":"deny","bash":"deny","task":"deny"}}
+     (the engine's read-only block)
+
+  text: "1) REFUSED (no shell/bash tool available to run `ls`) 2) REFUSED
+        (no shell/bash tool available to run `echo hi > x.txt`)"
+  tool_use read README.md           -> completed
+  step_finish reason stop; nothing written
+  Reading: the environment's block wins over the repository's config: a
+  tool the block denies outright is not in the roster at all (the model
+  says there is no shell tool), whatever the repository's opencode.json
+  allows. A repository cannot reopen what the engine closed.

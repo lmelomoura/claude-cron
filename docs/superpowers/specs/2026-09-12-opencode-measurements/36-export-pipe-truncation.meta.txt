@@ -1,0 +1,49 @@
+measurement 36 -- `opencode export` through a pipe stops at 64 KiB
+opencode-ai 1.18.30, macOS, 2026-09-13, during the acceptance run (Task 12)
+
+session: the derived security job's session (35 turns, `security analyze` on
+a two-file repository), and the first acceptance job's (4 turns).
+
+  opencode export <35-turn session>  | to a pipe (python Popen + communicate,
+                                     |  and bash $( ), from three cwds):
+                                     |  rc 0, stdout 65536 bytes, cut mid-document,
+                                     |  not JSON  -> the engine logged
+                                     |  "opencode export gave no model for session"
+  opencode export <35-turn session>  | > file: 264607 bytes, valid JSON,
+                                     |  info.model = {id: glm-5.3-flash,
+                                     |  providerID: pdm_ai, variant: default}
+  opencode export <4-turn session>   | pipe and file alike: 19395 bytes, valid,
+                                     |  info.model.variant = high (the job's effort)
+
+  opencode models --verbose          | 15435 bytes for 13 models, pipe and file
+                                     |  alike (~1.2 KB per model: a catalog of
+                                     |  55+ models would cross 64 KiB)
+
+Reading: the CLI exits as soon as it has queued its stdout; on macOS a pipe
+is written asynchronously and whatever is past the 64 KiB pipe buffer at
+exit is lost, while a file is written synchronously and completes. The cwd
+does not matter (a session is global: the same document from the run's
+directory, another repository and /tmp). Consequence for the engine: every
+capture of the CLI's stdout that can exceed 64 KiB (`export`, `models
+--verbose`) has to go through a file, never `$( )`.
+
+Follow-up, the run's own stream (the peer reviewer's question: is the FIFO
+the engine reads `opencode run` through subject to the same cut?):
+
+  security-acc-sec run, same day  | stdout of `opencode run --format json`
+  (35 turns, the raw stream copied  |  through the engine's FIFO, drained
+  from the FIFO by the normalizer)  |  continuously by the normalizer:
+                                    |  173232 bytes, 85 events, every line
+                                    |  parseable, the last one
+                                    |  step_finish{reason: stop}; the run
+                                    |  closed with a result (status success)
+
+Reading: the cut is a race between one large write and the process exit,
+not a ceiling on a pipe. A reader that drains as the CLI writes (the
+normalizer, `-u`, line by line) never lets the 64 KiB buffer fill, so the
+run's stream is complete at 173 KiB and would be at any size. `export`
+loses data because the CLI queues one document and exits at once; nothing
+reads that pipe fast enough. Residual condition for a run: a single write
+larger than 64 KiB immediately followed by exit (a final text event of
+that size) could still lose its tail; no measured run came near it (the
+largest final text here was under 1 KiB).

@@ -1,0 +1,5 @@
+command: perl -e alarm 150; exec @ARGV opencode run --pure --auto --format json --print-logs --log-level DEBUG -m opencode/big-pickle Do not call any tool. List the names of every skill available to you through your skill tool, comma-separated on one line, nothing else. If none, reply: none
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 39

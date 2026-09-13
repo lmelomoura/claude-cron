@@ -1,0 +1,29 @@
+timestamp=2026-09-12T15:22:56.535Z level=INFO run=383c4368 message="creating instance" directory=/tmp/probe/p
+timestamp=2026-09-12T15:22:56.536Z level=INFO run=383c4368 message=fromDirectory directory=/tmp/probe/p
+timestamp=2026-09-12T15:22:56.544Z level=INFO run=383c4368 message=bootstrapping directory=/tmp/probe/p
+timestamp=2026-09-12T15:22:56.547Z level=INFO run=383c4368 message=loading path=/Users/me/.config/opencode/config.json
+timestamp=2026-09-12T15:22:56.548Z level=INFO run=383c4368 message=loading path=/Users/me/.config/opencode/opencode.json
+timestamp=2026-09-12T15:22:56.548Z level=INFO run=383c4368 message=loading path=/Users/me/.config/opencode/opencode.jsonc
+timestamp=2026-09-12T15:22:56.565Z level=DEBUG run=383c4368 message="loading config from /tmp/probe/p/.opencode/opencode.json"
+timestamp=2026-09-12T15:22:56.565Z level=INFO run=383c4368 message=loading path=/tmp/probe/p/.opencode/opencode.json
+timestamp=2026-09-12T15:22:56.565Z level=DEBUG run=383c4368 message="loading config from /tmp/probe/p/.opencode/opencode.jsonc"
+timestamp=2026-09-12T15:22:56.565Z level=INFO run=383c4368 message=loading path=/tmp/probe/p/.opencode/opencode.jsonc
+timestamp=2026-09-12T15:22:56.567Z level=DEBUG run=383c4368 message="loading config from /Users/me/.opencode/opencode.json"
+timestamp=2026-09-12T15:22:56.567Z level=INFO run=383c4368 message=loading path=/Users/me/.opencode/opencode.json
+timestamp=2026-09-12T15:22:56.567Z level=DEBUG run=383c4368 message="loading config from /Users/me/.opencode/opencode.jsonc"
+timestamp=2026-09-12T15:22:56.567Z level=INFO run=383c4368 message=loading path=/Users/me/.opencode/opencode.jsonc
+timestamp=2026-09-12T15:22:56.595Z level=INFO run=383c4368 message="all LSPs are disabled"
+timestamp=2026-09-12T15:22:56.595Z level=INFO run=383c4368 message="all formatters are disabled"
+timestamp=2026-09-12T15:22:56.595Z level=INFO run=383c4368 message=init
+timestamp=2026-09-12T15:22:56.653Z level=INFO run=383c4368 message=created id=ses_f69c914f2ffeL0rI8OZVu2y8S0 slug=hidden-pixel version=1.18.30 projectID=global directory=/tmp/probe/p path=tmp/probe/p workspaceID=undefined parentID=undefined title="agentloop probe 34b" agent=undefined model=undefined metadata=undefined permission="[{\"permission\":\"question\",\"pattern\":\"*\",\"action\":\"deny\"},{\"permission\":\"plan_enter\",\"pattern\":\"*\",\"action\":\"deny\"},{\"permission\":\"plan_exit\",\"pattern\":\"*\",\"action\":\"deny\"}]" cost=0 tokens.input=0 tokens.output=0 tokens.reasoning=0 tokens.cache.read=0 tokens.cache.write=0 time.created=1789226576653 time.updated=1789226576653
+timestamp=2026-09-12T15:22:56.661Z level=INFO run=383c4368 message="event connected"
+timestamp=2026-09-12T15:22:56.859Z level=INFO run=383c4368 message=loop session.id=ses_f69c914f2ffeL0rI8OZVu2y8S0 step=0
+timestamp=2026-09-12T15:22:56.865Z level=INFO run=383c4368 message="shell tool using shell" shell=/bin/zsh
+timestamp=2026-09-12T15:22:56.880Z level=INFO run=383c4368 message=init count=36
+timestamp=2026-09-12T15:22:57.494Z level=INFO run=383c4368 message="watcher backend" directory=/tmp/probe/p platform=darwin backend=fs-events
+timestamp=2026-09-12T15:22:57.506Z level=INFO run=383c4368 message="project copy refresh started" projectID=global
+timestamp=2026-09-12T15:22:57.507Z level=INFO run=383c4368 message="project copy refresh done" projectID=global updated=[] removed=[]
+timestamp=2026-09-12T15:22:57.514Z level=INFO run=383c4368 message="booting location services" directory=/tmp/probe/p workspaceID=undefined
+timestamp=2026-09-12T15:22:57.663Z level=INFO run=383c4368 message=process session.id=ses_f69c914f2ffeL0rI8OZVu2y8S0 messageID=msg_09636ebdc001E5TD0me3fsQH11
+timestamp=2026-09-12T15:22:57.664Z level=INFO run=383c4368 message=stream providerID=pdm_ai modelID=Nemotron-3.5-Lightning session.id=ses_f69c914f2ffeL0rI8OZVu2y8S0 small=false agent=build mode=primary
+timestamp=2026-09-12T15:22:57.667Z level=INFO run=383c4368 message="llm runtime selected" llm.runtime=ai-sdk llm.provider=pdm_ai llm.model=Nemotron-3.5-Lightning

@@ -1,0 +1,33 @@
+timestamp=2026-09-12T14:50:09.319Z level=INFO run=9c3ebd35 message="creating instance" directory=/tmp/probe/wt
+timestamp=2026-09-12T14:50:09.332Z level=INFO run=9c3ebd35 message=fromDirectory directory=/tmp/probe/wt
+timestamp=2026-09-12T14:50:09.384Z level=INFO run=9c3ebd35 message=bootstrapping directory=/tmp/probe/wt
+timestamp=2026-09-12T14:50:09.387Z level=INFO run=9c3ebd35 message=loading path=/Users/me/.config/opencode/config.json
+timestamp=2026-09-12T14:50:09.387Z level=INFO run=9c3ebd35 message=loading path=/Users/me/.config/opencode/opencode.json
+timestamp=2026-09-12T14:50:09.387Z level=INFO run=9c3ebd35 message=loading path=/Users/me/.config/opencode/opencode.jsonc
+timestamp=2026-09-12T14:50:09.399Z level=DEBUG run=9c3ebd35 message="loading config from /Users/me/.opencode/opencode.json"
+timestamp=2026-09-12T14:50:09.399Z level=INFO run=9c3ebd35 message=loading path=/Users/me/.opencode/opencode.json
+timestamp=2026-09-12T14:50:09.399Z level=DEBUG run=9c3ebd35 message="loading config from /Users/me/.opencode/opencode.jsonc"
+timestamp=2026-09-12T14:50:09.399Z level=INFO run=9c3ebd35 message=loading path=/Users/me/.opencode/opencode.jsonc
+timestamp=2026-09-12T14:50:09.403Z level=DEBUG run=9c3ebd35 message="loaded custom config from OPENCODE_CONFIG_CONTENT"
+timestamp=2026-09-12T14:50:09.427Z level=INFO run=9c3ebd35 message="all LSPs are disabled"
+timestamp=2026-09-12T14:50:09.428Z level=INFO run=9c3ebd35 message="all formatters are disabled"
+timestamp=2026-09-12T14:50:09.428Z level=INFO run=9c3ebd35 message=init
+timestamp=2026-09-12T14:50:09.484Z level=INFO run=9c3ebd35 message=created id=ses_f69e71933ffeU4mLPot9TTTSB1 slug=quick-canyon version=1.18.30 projectID=82f2c4f0051f105c987af578f1dcf037eb93bd3c directory=/tmp/probe/wt path="" workspaceID=undefined parentID=undefined title="New session - 2026-09-12T14:50:09.484Z" agent=undefined model=undefined metadata=undefined permission="[{\"permission\":\"question\",\"pattern\":\"*\",\"action\":\"deny\"},{\"permission\":\"plan_enter\",\"pattern\":\"*\",\"action\":\"deny\"},{\"permission\":\"plan_exit\",\"pattern\":\"*\",\"action\":\"deny\"}]" cost=0 tokens.input=0 tokens.output=0 tokens.reasoning=0 tokens.cache.read=0 tokens.cache.write=0 time.created=1789224609484 time.updated=1789224609484
+timestamp=2026-09-12T14:50:09.490Z level=INFO run=9c3ebd35 message="event connected"
+timestamp=2026-09-12T14:50:09.663Z level=INFO run=9c3ebd35 message=loop session.id=ses_f69e71933ffeU4mLPot9TTTSB1 step=0
+timestamp=2026-09-12T14:50:09.667Z level=INFO run=9c3ebd35 message=stream providerID=opencode modelID=big-pickle session.id=ses_f69e71933ffeU4mLPot9TTTSB1 small=true agent=title mode=primary
+timestamp=2026-09-12T14:50:09.670Z level=INFO run=9c3ebd35 message="llm runtime selected" llm.runtime=ai-sdk llm.provider=opencode llm.model=big-pickle
+timestamp=2026-09-12T14:50:09.712Z level=INFO run=9c3ebd35 message=tracking hash=7385b9ca65269b27de63aea3ddff716dd768c253 cwd=/tmp/probe/wt git=/Users/me/.local/share/opencode/snapshot/82f2c4f0051f105c987af578f1dcf037eb93bd3c/9d370607b07f502ef87d80c0f536efa7ffa8cc9e
+timestamp=2026-09-12T14:50:09.715Z level=INFO run=9c3ebd35 message="shell tool using shell" shell=/bin/zsh
+timestamp=2026-09-12T14:50:09.721Z level=INFO run=9c3ebd35 message=init count=35
+timestamp=2026-09-12T14:50:10.299Z level=INFO run=9c3ebd35 message="watcher backend" directory=/tmp/probe/wt platform=darwin backend=fs-events
+timestamp=2026-09-12T14:50:10.308Z level=INFO run=9c3ebd35 message="project copy refresh started" projectID=82f2c4f0051f105c987af578f1dcf037eb93bd3c
+timestamp=2026-09-12T14:50:10.470Z level=INFO run=9c3ebd35 message="project copy refresh done" projectID=82f2c4f0051f105c987af578f1dcf037eb93bd3c updated=[] removed=[]
+timestamp=2026-09-12T14:50:10.492Z level=INFO run=9c3ebd35 message="booting location services" directory=/tmp/probe/wt workspaceID=undefined
+timestamp=2026-09-12T14:50:10.493Z level=INFO run=9c3ebd35 message=process session.id=ses_f69e71933ffeU4mLPot9TTTSB1 messageID=msg_09618e780001hvjrL7DvFnsywq
+timestamp=2026-09-12T14:50:10.493Z level=INFO run=9c3ebd35 message=stream providerID=opencode modelID=big-pickle session.id=ses_f69e71933ffeU4mLPot9TTTSB1 small=false agent=build mode=primary
+timestamp=2026-09-12T14:50:10.494Z level=INFO run=9c3ebd35 message="llm runtime selected" llm.runtime=ai-sdk llm.provider=opencode llm.model=big-pickle
+timestamp=2026-09-12T14:50:38.510Z level=INFO run=9c3ebd35 message=tracking hash=7385b9ca65269b27de63aea3ddff716dd768c253 cwd=/tmp/probe/wt git=/Users/me/.local/share/opencode/snapshot/82f2c4f0051f105c987af578f1dcf037eb93bd3c/9d370607b07f502ef87d80c0f536efa7ffa8cc9e
+timestamp=2026-09-12T14:50:38.551Z level=INFO run=9c3ebd35 message=loop session.id=ses_f69e71933ffeU4mLPot9TTTSB1 step=1
+timestamp=2026-09-12T14:50:38.551Z level=INFO run=9c3ebd35 message="exiting loop" session.id=ses_f69e71933ffeU4mLPot9TTTSB1
+timestamp=2026-09-12T14:50:38.555Z level=INFO run=9c3ebd35 message="disposing instance" directory=/tmp/probe/wt

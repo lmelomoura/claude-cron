@@ -1,0 +1,5 @@
+command: perl -e alarm 60; exec @ARGV opencode session list
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 1

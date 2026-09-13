@@ -1,0 +1,5 @@
+command: perl -e alarm 60; exec @ARGV opencode run --pure --auto --format json --print-logs --log-level ERROR -m opencode/big-pickle --dir /tmp/probe/does-not-exist Reply with exactly: ok
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 1
+seconds: 0

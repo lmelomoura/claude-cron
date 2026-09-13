@@ -1,0 +1,5 @@
+command: perl -e alarm 20; exec @ARGV opencode run --pure --auto --format json --print-logs --log-level DEBUG -m opencode/big-pickle --dir /tmp/probe/p -s ses_f69f560b7ffeFHPdsoCwqsTMnF Reply with exactly: ok
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 142
+seconds: 20

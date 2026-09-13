@@ -440,9 +440,9 @@ function runRow(r){
   // the operator is asking — which CLI is spending this money. Anthropic gets
   // the quieter variant, so the eye still catches the one that changed.
   const plat = r.platform || "anthropic";
-  const b = el("span", "platbadge" + (plat === "openai" ? "" : " alt"), platformLabel(plat));
+  const b = el("span", "platbadge plat-" + plat, platformLabel(plat));
   b.title = (r.live ? "Runs on " : "Ran on ")
-    + (plat === "openai" ? "the Codex CLI" : "Claude Code")
+    + ({anthropic: "Claude Code", openai: "the Codex CLI", opencode: "the OpenCode CLI"}[plat] || plat)
     + (r.model_id ? " · " + r.model_id : (r.model ? " · " + r.model : ""));
   tdJob.appendChild(b);
   tr.appendChild(tdJob);

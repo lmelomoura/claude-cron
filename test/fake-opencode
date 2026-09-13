@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# A stand-in for the OpenCode CLI (`opencode`), emitting the JSON shapes
+# measured on opencode-ai 1.18.30 -- test/fixtures/opencode/ is the evidence
+# -- so an OpenCode run can be driven end to end offline. Same caveat as
+# test/fake-claude and test/fake-codex: unless FAKE_ARGV_OUT is set this never
+# reads "$@" past the subcommand, so a green run proves nothing about the
+# launch line; the e2e scenarios that read one back are the evidence.
+#
+#   FAKE_SESSION            the sessionID on every event (a resume keeps it)
+#   FAKE_MODE               complete | undeclared | dirty | hang | silent | reject | deny | error | quota
+#   FAKE_ARGV_OUT           record the argv, one line per argument, "<n><TAB><first line>", plus "ARGC<TAB><n>"
+#   FAKE_PROMPT_OUT         record the last argument (the prompt) WHOLE
+#   FAKE_CONFIG_OUT         record the OPENCODE_CONFIG_CONTENT the launch carried (the permission block)
+#   FAKE_DIR_OUT            record the value of --dir (the run's cwd; a resume MUST carry the session's)
+#   FAKE_COST               the `cost` of every step_finish (default 0: the Zen free models, measured)
+#   FAKE_RAN_MODEL          what `export` reports as the model that ran (default opencode/big-pickle-real)
+#   FAKE_OPENCODE_NO_MODELS set to make `models` print nothing: a machine with no usable provider
+#   FAKE_SKIP_PREPARE       set to skip `security prepare` inside a security run (see the hook below)
+#   FAKE_EXPORT_PAD         pad `export`'s document with a filler `messages` array to at least this
+#                           many bytes (measurement 36: a real 35-turn session is 264,607 bytes)
+#   FAKE_MODELS_PAD         append this many synthetic priced models (pad/model-<i>) to `models
+#                           --verbose`'s output, in the same header+JSON shape as the real ones
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+FIX="$HERE/fixtures/opencode"
+
+case "${1:-}" in
+  --version) echo "1.18.30"; exit 0 ;;
+  models)
+    [ -z "${FAKE_OPENCODE_NO_MODELS:-}" ] || exit 0
+    case " $* " in
+      *" --verbose "*)
+        cat "$FIX/models-verbose.txt"
+        # measurement 36: a catalog of 55+ models crosses the 64 KiB pipe wall
+        # the same way a big export does; FAKE_MODELS_PAD proves the reader
+        # copes with more than the 13 models the fixture carries.
+        if [ -n "${FAKE_MODELS_PAD:-}" ]; then
+          i=1
+          while [ "$i" -le "$FAKE_MODELS_PAD" ]; do
+            printf 'pad/model-%s\n{\n  "id": "model-%s",\n  "api": {\n    "id": "model-%s",\n    "url": "https://pad.local/v1",\n    "npm": "@ai-sdk/openai-compatible"\n  },\n  "status": "active",\n  "name": "Pad Model %s",\n  "family": "pad",\n  "release_date": "2026-01-01",\n  "providerID": "pad",\n  "headers": {},\n  "options": {},\n  "cost": {\n    "input": 1.5,\n    "output": 3.5,\n    "cache": {\n      "read": 0.1,\n      "write": 0.2\n    }\n  },\n  "limit": {\n    "context": 128000,\n    "output": 8000\n  },\n  "capabilities": {\n    "temperature": true,\n    "reasoning": false,\n    "attachment": false,\n    "toolcall": true,\n    "input": {\n      "text": true,\n      "audio": false,\n      "image": false,\n      "video": false,\n      "pdf": false\n    },\n    "output": {\n      "text": true,\n      "audio": false,\n      "image": false,\n      "video": false,\n      "pdf": false\n    },\n    "interleaved": false\n  },\n  "variants": {\n    "low": {\n      "reasoningEffort": "low"\n    },\n    "high": {\n      "reasoningEffort": "high"\n    }\n  }\n}\n' \
+              "$i" "$i" "$i" "$i"
+            i=$((i + 1))
+          done
+        fi
+        ;;
+      *) grep -E '^[A-Za-z0-9_-]+/' "$FIX/models-verbose.txt" ;;   # the header lines only: provider/model
+    esac
+    exit 0 ;;
+  auth) cat "$FIX/auth-list.txt"; exit 0 ;;                        # auth list: the box, ANSI colours and all
+  export)
+    sid="${2:-}"
+    ran="${FAKE_RAN_MODEL:-opencode/big-pickle-real}"
+    echo "Exporting session: $sid" >&2
+    # measurement 36: a real 35-turn session's export is 264,607 bytes;
+    # FAKE_EXPORT_PAD proves a caller reads this from a file, not a pipe,
+    # past the 64 KiB a pipe loses on macOS.
+    messages="[]"
+    if [ -n "${FAKE_EXPORT_PAD:-}" ]; then
+      chunk="$(printf '%*s' 1000 '' | tr ' ' 'x')"
+      parts=""
+      total=0
+      while [ "$total" -lt "$FAKE_EXPORT_PAD" ]; do
+        if [ -z "$parts" ]; then
+          parts="\"$chunk\""
+        else
+          parts="$parts,\"$chunk\""
+        fi
+        total=$((total + 1000))
+      done
+      messages="[$parts]"
+    fi
+    printf '{"info":{"id":"%s","slug":"fake","projectID":"global","directory":"%s","title":"fake","agent":"build","model":{"id":"%s","providerID":"%s","variant":"default"},"version":"1.18.30","cost":0,"tokens":{"input":11974,"output":49,"reasoning":0,"cache":{"read":15488,"write":0}},"permission":[],"time":{"created":1789223554730,"updated":1789223564719}},"messages":%s}\n' \
+      "$sid" "$PWD" "${ran#*/}" "${ran%%/*}" "$messages"
+    exit 0 ;;
+  run) ;;
+  *) echo "fake-opencode: unexpected invocation: $*" >&2; exit 2 ;;
+esac
+
+if [ -n "${FAKE_ARGV_OUT:-}" ]; then
+  { printf 'ARGC\t%s\n' "$#"
+    n=0
+    for a in "$@"; do n=$((n + 1)); printf '%s\t%s\n' "$n" "${a%%$'\n'*}"; done
+  } > "$FAKE_ARGV_OUT"
+fi
+if [ -n "${FAKE_PROMPT_OUT:-}" ]; then
+  last=""; for a in "$@"; do last="$a"; done
+  printf '%s' "$last" > "$FAKE_PROMPT_OUT"
+fi
+[ -z "${FAKE_CONFIG_OUT:-}" ] || printf '%s\n' "${OPENCODE_CONFIG_CONTENT:-}" > "$FAKE_CONFIG_OUT"
+# --dir is the run's cwd (measured 07); the real CLI chdirs there and dies
+# when it does not exist (29). The stand-in does the same, so a dirty run's
+# file lands where the engine will look for it.
+dir=""; prev=""
+for a in "$@"; do [ "$prev" = "--dir" ] && dir="$a"; prev="$a"; done
+[ -z "${FAKE_DIR_OUT:-}" ] || printf '%s\n' "$dir" > "$FAKE_DIR_OUT"
+if [ -n "$dir" ]; then
+  cd "$dir" 2>/dev/null || { printf '\033[91m\033[1mError: \033[0mFailed to change directory to %s\n' "$dir" >&2; exit 1; }
+fi
+
+sid="${FAKE_SESSION:-ses_fake000000000000000000000}"
+mode="${FAKE_MODE:-complete}"
+cost="${FAKE_COST:-0}"
+# A SECURITY RUN'S FIRST COMMAND, as test/fake-claude does it -- for a launch
+# WITHOUT the opencode platform marker only. On opencode the engine runs
+# `security prepare` itself before it launches the CLI (prepare_inline is an
+# anthropic-only capability), and every launch it makes carries
+# AL_PLATFORM=opencode, so the hook is skipped there.
+if [ -n "${AL_SECURITY_ANALYSIS_ID:-}" ] && [ -z "${FAKE_SKIP_PREPARE:-}" ] \
+   && [ "${AL_PLATFORM:-}" != "opencode" ]; then
+  "$HERE/../bin/agentloop" security prepare \
+    --analysis "$AL_SECURITY_ANALYSIS_ID" --root "$PWD" --offline >/dev/null 2>&1 || true
+fi
+
+ev() { # ev <type> <part-json> -- one event line, the measured envelope
+  printf '{"type":"%s","timestamp":1789223561615,"sessionID":"%s","part":%s}\n' "$1" "$sid" "$2"
+}
+step_start()  { ev step_start '{"id":"prt_fake_start","messageID":"msg_fake","sessionID":"'"$sid"'","type":"step-start"}'; }
+step_finish() { # step_finish <reason> <input> <output> <reasoning> <cache-read>
+  ev step_finish '{"id":"prt_fake_finish","reason":"'"$1"'","messageID":"msg_fake","sessionID":"'"$sid"'","type":"step-finish","tokens":{"total":'"$(( $2 + $3 + $4 + $5 ))"',"input":'"$2"',"output":'"$3"',"reasoning":'"$4"',"cache":{"write":0,"read":'"$5"'}},"cost":'"$cost"'}'
+}
+text() { ev text '{"id":"prt_fake_text","messageID":"msg_fake","sessionID":"'"$sid"'","type":"text","text":"'"$1"'","time":{"start":1789223564692,"end":1789223564706}}'; }
+
+case "$mode" in
+  error)   # measured 09: an unknown model or provider; the reason is only in the logs
+    printf '{"type":"error","timestamp":1789223950570,"sessionID":"%s","error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"err_fake0001"}}}\n' "$sid"
+    exit 1 ;;
+  quota)   # the shape of measurement 16 with the status of a rate limit (synthetic)
+    printf '{"type":"error","timestamp":1789224300390,"sessionID":"%s","error":{"name":"APIError","data":{"message":"Rate limit reached for this model. Please retry after 20 seconds.","statusCode":429,"isRetryable":true,"responseHeaders":{"retry-after":"20"}}}}\n' "$sid"
+    exit 1 ;;
+  reject)  # measured 04/18: an `ask` auto-rejected without --auto ends the turn
+    printf '\033[93m\033[1m! \033[0mpermission requested: bash (ls); auto-rejecting\n' >&2
+    step_start
+    ev tool_use '{"type":"tool","tool":"bash","callID":"call_fake_reject","state":{"status":"error","input":{"command":"ls"},"error":"The user rejected permission to use this specific tool call.","time":{"start":1789223581861,"end":1789223581881}},"id":"prt_fake_tool","sessionID":"'"$sid"'","messageID":"msg_fake"}'
+    step_finish tool-calls 5 44 0 13696
+    exit 0 ;;
+  silent) exec sleep 600 ;;   # like `hang`, but before the first event -- the provider itself never answered
+esac
+
+step_start
+if [ "$mode" = deny ]; then   # measured 23: a rule denies the call and the turn goes on
+  ev tool_use '{"type":"tool","tool":"bash","callID":"call_fake_deny","state":{"status":"error","input":{"command":"echo hello"},"error":"The user has specified a rule which prevents you from using this specific tool call. Here are some of the relevant rules [{\"permission\":\"*\",\"action\":\"allow\",\"pattern\":\"*\"},{\"permission\":\"bash\",\"pattern\":\"echo *\",\"action\":\"deny\"}]","time":{"start":1789224696156,"end":1789224696182}},"id":"prt_fake_tool","sessionID":"'"$sid"'","messageID":"msg_fake"}'
+else                          # measured 03: bash ran and answered
+  ev tool_use '{"type":"tool","tool":"bash","callID":"call_fake_ls","state":{"status":"completed","input":{"command":"ls"},"output":"README\n","metadata":{"output":"README\n","exit":0,"truncated":false},"title":"ls","time":{"start":1789223562190,"end":1789223562227}},"id":"prt_fake_tool","sessionID":"'"$sid"'","messageID":"msg_fake"}'
+fi
+step_finish tool-calls 11909 43 0 1792
+step_start
+case "$mode" in
+  dirty)
+    echo "the agent was here" > agent-left-this.txt
+    result="RUN COMPLETE: made a change and did not push it." ;;
+  undeclared) result="I did some work." ;;
+  hang)
+    # BECOME the sleep, as fake-codex does: the engine's TERM reaches the process
+    # that holds the FIFO's write end, so the normalizer sees EOF at once.
+    exec sleep 600 ;;
+  deny) result="attempted" ;;
+  *) result="RUN COMPLETE: nothing needed doing." ;;
+esac
+text "$result"
+step_finish stop 65 6 0 13696
+exit 0

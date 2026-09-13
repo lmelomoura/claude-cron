@@ -1,0 +1,5 @@
+command: perl -e alarm 40; exec @ARGV opencode run --pure --auto --format json --print-logs --log-level DEBUG --title agentloop probe 34b -m pdm_ai/Nemotron-3.5-Lightning -- Reply with exactly: ok
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 142
+seconds: 40

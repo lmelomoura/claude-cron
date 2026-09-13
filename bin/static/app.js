@@ -241,18 +241,24 @@
   function changedKeys(now, clean) {
     return Object.keys(now).filter((k) => now[k] !== clean[k]);
   }
+  var KNOWN_PLATFORMS = ["anthropic", "openai", "opencode"];
+  var PLATFORM_LABELS = { anthropic: "Anthropic", openai: "OpenAI", opencode: "OpenCode" };
+  function platformKey(p) {
+    return KNOWN_PLATFORMS.includes(p) ? p : "anthropic";
+  }
   var FALLBACK_EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
   var EFFORTS = FALLBACK_EFFORTS;
   function effortsFor(platform, model, platforms) {
-    const p = (platforms || {})[platform || "anthropic"];
+    const key = platformKey(platform);
+    const p = (platforms || {})[key];
     if (!p) return FALLBACK_EFFORTS.slice();
     let levels = null;
-    if ((platform || "anthropic") === "openai" && model) {
+    if (key !== "anthropic" && model) {
       const m = (p.models || []).find((x) => x && x.v === model);
-      if (m && Array.isArray(m.efforts) && m.efforts.length) levels = m.efforts;
+      if (m && Array.isArray(m.efforts) && (key === "opencode" || m.efforts.length)) levels = m.efforts;
     }
     if (!levels && Array.isArray(p.efforts) && p.efforts.length) levels = p.efforts;
-    if (!levels) return [""];
+    if (!levels || !levels.length) return [""];
     return [""].concat(levels.filter((l) => typeof l === "string" && l));
   }
   function effortIndex(v, list) {
@@ -274,27 +280,32 @@
       { v: "read-only", label: "read-only \u2014 sandbox: no writes, no network" },
       { v: "workspace-write", label: "workspace-write \u2014 sandbox: writes inside the workspace" },
       { v: "full-access", label: "full-access \u2014 no sandbox, no approvals" }
+    ],
+    opencode: [
+      { v: "full-access", label: "full-access \u2014 every tool, no approvals (the worktree is the isolation)" },
+      { v: "read-only", label: "read-only \u2014 no edit, write, bash or subagents" }
     ]
   };
   function permissionsFor(platform, platforms) {
-    const key = platform === "openai" ? "openai" : "anthropic";
+    const key = platformKey(platform);
     const p = (platforms || {})[key];
     const list = p && Array.isArray(p.permissions) && p.permissions.length ? p.permissions : FALLBACK_PERMISSIONS[key];
     return list.map((o) => ({ v: o.v, label: o.label || o.v }));
   }
   function defaultPermissionFor(platform, kind) {
+    if (platform === "opencode") return "full-access";
     if (platform === "openai") return kind === "security" ? "full-access" : "workspace-write";
     return "bypassPermissions";
   }
   function defaultModelFor(platform, platforms) {
-    const key = platform === "openai" ? "openai" : "anthropic";
+    const key = platformKey(platform);
     const p = (platforms || {})[key];
     if (p && p.default_model) return p.default_model;
     return key === "anthropic" ? "opus" : "";
   }
   var DISABLED_SUFFIX = " (disabled in Settings)";
   function modelEnabled(platform, model, platforms) {
-    const key = platform === "openai" ? "openai" : "anthropic";
+    const key = platformKey(platform);
     const p = (platforms || {})[key];
     if (!p || !Array.isArray(p.models_enabled)) return true;
     if (!model) return true;
@@ -309,7 +320,7 @@
     return p.models_enabled.some((id) => id.startsWith("claude-" + model + "-"));
   }
   function modelOptionsFor(platform, platforms, groupFn, current) {
-    const key = platform === "openai" ? "openai" : "anthropic";
+    const key = platformKey(platform);
     const p = (platforms || {})[key];
     const enabledList = p && Array.isArray(p.models_enabled) ? p.models_enabled : null;
     const keep = (v) => !enabledList || enabledList.includes(v);
@@ -317,6 +328,9 @@
     if (key === "anthropic") {
       const ids = (p && Array.isArray(p.models) ? p.models : []).filter(keep);
       opts = groupFn ? groupFn(ids) : ids.map((v) => ({ v, label: v }));
+    } else if (key === "opencode") {
+      const list = (p && Array.isArray(p.models) ? p.models : []).filter((m) => keep(m.v));
+      opts = list.map((m) => ({ v: m.v, label: (m.label || m.v) + (m.provider ? " (" + m.provider + ")" : "") + (m.priced === false ? " \xB7 no price" : "") + (m.tools === false ? " \xB7 no tools" : "") }));
     } else {
       const list = (p && Array.isArray(p.models) ? p.models : []).filter((m) => keep(m.v));
       const noPrice = (m) => m.priced === false ? " \xB7 no price" : "";
@@ -337,31 +351,30 @@
   }
   function platformOf(job, project) {
     const own = job && job.platform;
-    if (own) return own === "openai" ? "openai" : "anthropic";
+    if (own) return platformKey(own);
     const pp = project && project.platform;
-    if (pp === "anthropic" || pp === "openai") return pp;
+    if (KNOWN_PLATFORMS.includes(pp)) return pp;
     return "anthropic";
   }
   function platformLabel(p) {
-    return p === "openai" ? "OpenAI" : "Anthropic";
+    return PLATFORM_LABELS[p] || "Anthropic";
   }
-  var PLATFORM_LABELS = { anthropic: "Anthropic", openai: "OpenAI", opencode: "OpenCode" };
   function registryKnown(platforms) {
     const a = platforms && platforms.anthropic;
     return !!(a && a.enabled !== void 0);
   }
   function platformOptions(platforms, current) {
-    const known = ["anthropic", "openai"];
+    const known = KNOWN_PLATFORMS;
     const have = registryKnown(platforms);
     const out = known.filter((p) => !have || (platforms[p] || {}).usable === true).map((p) => ({ v: p, label: PLATFORM_LABELS[p] }));
     if (current && !out.some((o) => o.v === current)) {
-      const label = current === "opencode" ? PLATFORM_LABELS.opencode + " (not supported yet)" : (PLATFORM_LABELS[current] || current) + DISABLED_SUFFIX;
+      const label = (PLATFORM_LABELS[current] || current) + DISABLED_SUFFIX;
       out.push({ v: current, label, flagged: true });
     }
     return out;
   }
   function hiddenModelCount(platform, platforms) {
-    const key = platform === "openai" ? "openai" : "anthropic";
+    const key = platformKey(platform);
     const p = (platforms || {})[key];
     if (!p || !Array.isArray(p.models_enabled) || !Array.isArray(p.models)) return 0;
     const ids = p.models.map((m) => typeof m === "string" ? m : m.v);
@@ -556,10 +569,10 @@
     return have.concat(none);
   }
   function platformState(j, project, platforms) {
-    if (j && j.platform === "opencode") return "planned";
     const p = platformOf(j, project);
     const entry = (platforms || {})[p];
     if (!entry || entry.enabled === void 0) return "ok";
+    if (entry.supported === false) return "planned";
     if (!entry.usable) return "platform_disabled";
     const model = eff(j, "model", "") || entry.default_model || "";
     if (model && !modelEnabled(p, model, platforms)) return "model_disabled";
@@ -999,7 +1012,7 @@
     cfg.appendChild(marked("timer", bit("every " + fmtDur(j.interval_seconds || 300), own("interval_seconds"))));
     cfg.appendChild(marked("clock", bit((j.active_hours || "24h") + " " + fmtDays(j.active_days || [1, 2, 3, 4, 5, 6, 7]), own("active_hours") || own("active_days"))));
     const plat = platformOf(j, p);
-    cfg.appendChild(bit(plat === "openai" ? "OpenAI \xB7 " + model : model, own("model") || own("platform")));
+    cfg.appendChild(bit(plat === "anthropic" ? model : platformLabel(plat) + " \xB7 " + model, own("model") || own("platform")));
     if (effortLabel(eff(j, "effort", "")) !== "default") {
       cfg.appendChild(bit(effortLabel(eff(j, "effort", "")), own("effort")));
     }
@@ -2199,8 +2212,8 @@
     const tdJob = el("td");
     tdJob.appendChild(el("code", null, r.id));
     const plat = r.platform || "anthropic";
-    const b = el("span", "platbadge" + (plat === "openai" ? "" : " alt"), platformLabel(plat));
-    b.title = (r.live ? "Runs on " : "Ran on ") + (plat === "openai" ? "the Codex CLI" : "Claude Code") + (r.model_id ? " \xB7 " + r.model_id : r.model ? " \xB7 " + r.model : "");
+    const b = el("span", "platbadge plat-" + plat, platformLabel(plat));
+    b.title = (r.live ? "Runs on " : "Ran on ") + ({ anthropic: "Claude Code", openai: "the Codex CLI", opencode: "the OpenCode CLI" }[plat] || plat) + (r.model_id ? " \xB7 " + r.model_id : r.model ? " \xB7 " + r.model : "");
     tdJob.appendChild(b);
     tr.appendChild(tdJob);
     const tdProject = el("td");
@@ -2422,7 +2435,7 @@
   var REGISTRY = [
     { id: "anthropic", name: "Anthropic", cli: "claude", sub: "Claude Code \u2014 claude -p", mark: "A" },
     { id: "openai", name: "OpenAI", cli: "codex", sub: "Codex CLI \u2014 codex exec --json", mark: "O" },
-    { id: "opencode", name: "OpenCode", cli: "opencode", sub: "opencode run \u2014 arrives with the next release", mark: "OC" }
+    { id: "opencode", name: "OpenCode", cli: "opencode", sub: "OpenCode \u2014 opencode run --format json", mark: "OC" }
   ];
   var live = { checks: {}, checkedAt: {}, catalogs: {}, busy: {}, notes: {}, typedBin: {} };
   var ctx = null;
@@ -2614,7 +2627,7 @@
     } else if (check.ready) {
       val.appendChild(icon("check"));
       const account = check.account || "unknown";
-      val.appendChild(document.createTextNode(account.startsWith("Logged in") ? account : "Signed in as " + account));
+      val.appendChild(document.createTextNode(r.id === "anthropic" ? "Signed in as " + account : account));
     } else if (!check.bin_found) {
       val.textContent = "\u2014 waiting for a binary";
     } else {
@@ -2623,7 +2636,7 @@
     }
     box.appendChild(val);
     const sub = el("div", "sub");
-    sub.textContent = entry.supported === false ? "the session test and the model list arrive with the OpenCode engine" : check ? ago(live.checkedAt[r.id]) + " with " + (r.id === "anthropic" ? "claude auth status" : "codex login status") : "";
+    sub.textContent = entry.supported === false ? "the session test and the model list arrive when the platform is supported" : check ? ago(live.checkedAt[r.id]) + " with " + { anthropic: "claude auth status", openai: "codex login status", opencode: "opencode models" }[r.id] : "";
     box.appendChild(sub);
     const ctrl = el("div", "ctrl");
     ctrl.appendChild(button("Test", "refresh", () => runCheck(r.id), live.busy[r.id] || entry.supported === false || check && !check.bin_found));
@@ -2631,8 +2644,8 @@
     box.appendChild(ctrl);
     return box;
   }
-  function platformJobsLine(entry) {
-    if (entry.supported === false) return "runs on OpenCode are not supported yet";
+  function platformJobsLine(entry, r) {
+    if (entry.supported === false) return "runs on " + r.name + " are not supported yet";
     const n = entry.jobs_on_platform || 0;
     if (!n) return entry.enabled ? "jobs may pick this platform" : "unlocks when the session test passes";
     const on = entry.jobs_on_platform_enabled;
@@ -2651,8 +2664,10 @@
     name.appendChild(el("span", null, m.v + (m.desc ? " \u2014 " + m.desc : "") + (gone ? " \u2014 no longer in the catalog \u2014 switch it off before changing the others" : "") + (m.deprecated_by ? " \u2014 deprecated, \u2192 " + m.deprecated_by : "")));
     row.appendChild(name);
     const meta = el("div", "mmeta");
+    if (m.provider) meta.appendChild(el("span", null, m.provider));
     if (m.price) meta.appendChild(el("span", "price", "$" + m.price.input + " / $" + m.price.output));
-    else if (r.id === "openai" && !gone) meta.appendChild(el("span", null, "no price"));
+    else if (r.id !== "anthropic" && !gone) meta.appendChild(el("span", null, "no price"));
+    if (m.tools === false) meta.appendChild(el("span", null, "no tools"));
     if (m.efforts && m.efforts.length) meta.appendChild(el("span", null, m.efforts[0] + " \u2192 " + m.efforts[m.efforts.length - 1]));
     const n = using[m.v] || 0;
     if (n) meta.appendChild(el("span", "jobs", n + " job" + (n === 1 ? "" : "s")));
@@ -2671,10 +2686,10 @@
     head.appendChild(el("h3", null, "Models"));
     const age = el("span", "age");
     if (catalog) {
-      const from = r.id === "openai" ? "from codex debug models" : "from the installed CLI";
+      const from = { anthropic: "from the installed CLI", openai: "from codex debug models", opencode: "from opencode models --verbose" }[r.id];
       age.textContent = from + (catalog.stale ? " \u2014 " + catalog.reason : "") + (r.id === "anthropic" ? " \xB7 every Claude model takes effort low \u2192 max" : "");
     } else if (entry.supported === false) {
-      age.textContent = "the providers you sign in to, listed by opencode models";
+      age.textContent = "the providers you sign in to, listed by " + r.cli + " models";
     }
     head.appendChild(age);
     head.appendChild(el("span", "sp"));
@@ -2682,7 +2697,7 @@
     head.appendChild(button(catalog ? "Refresh" : "Load models", "refresh", () => loadCatalog(r.id), !ready || live.busy[r.id]));
     frag.appendChild(head);
     if (entry.supported === false) {
-      frag.appendChild(el("div", "mempty", "Nothing to switch on yet \u2014 OpenCode jobs, and this list, come with the next release. The card is here so the binary is found and named before that day."));
+      frag.appendChild(el("div", "mempty", "Nothing to switch on yet \u2014 " + r.name + " jobs, and this list, come with the next release. The card is here so the binary is found and named before that day."));
       return frag;
     }
     if (!catalog) {
@@ -2719,14 +2734,14 @@
     row.appendChild(switchEl(
       !!entry.enabled,
       !canToggle,
-      entry.supported === false ? "runs on OpenCode arrive with the next release" : canToggle ? "" : "unlocks when the session test passes",
+      entry.supported === false ? "runs on " + r.name + " arrive with the next release" : canToggle ? "" : "unlocks when the session test passes",
       "Enable " + r.name,
       async (on) => {
         await change(on ? "platform_enable" : "platform_disable", { platform: r.id });
       }
     ));
     sw.appendChild(row);
-    sw.appendChild(el("span", null, platformJobsLine(entry)));
+    sw.appendChild(el("span", null, platformJobsLine(entry, r)));
     right.appendChild(sw);
     h.appendChild(right);
     card.appendChild(h);
@@ -2981,7 +2996,14 @@
     // platformState and platformChip are jobs-domain.js's own
     // half of the same task -- the verdict jobCard and jobRow
     // both put on screen as a chip next to the status pill.
+    // KNOWN_PLATFORMS and platformKey are Task 10's: the one list
+    // of platforms the page runs jobs on and the one rule that
+    // reads a job's raw platform value against it, instead of
+    // bin/dashboard.html spelling out its own "openai ? openai :
+    // anthropic" ternary at every read.
     PLATFORM_LABELS,
+    KNOWN_PLATFORMS,
+    platformKey,
     registryKnown,
     platformOptions,
     hiddenModelCount,
@@ -3022,5 +3044,5 @@
     setupBanner
   };
 })();
-/* ui-bundle: 4f8b73dbc5f355fa23ffc3297e72a86f303b73f97b3db6682333f0ee957fddb8 */
-/* ui-sources: 1fbf00b37828a6f34eb9c63bfcead7502f451a7a7e38e98725d2b92711b75dad */
+/* ui-bundle: ae5b0568aac08eb1f614141e30cf2a910d780d5b9b4754945fb2fb0c7c2cded6 */
+/* ui-sources: e54583add2bde199dc85a2f71982aa0f089515e2a0e8f3d0d2ac1bb2253a8005 */

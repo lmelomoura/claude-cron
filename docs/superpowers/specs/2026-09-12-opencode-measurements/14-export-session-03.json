@@ -1,0 +1,256 @@
+{
+  "info": {
+    "id": "ses_f69f73155ffeAHgrtVv1sVFbr7",
+    "slug": "neon-falcon",
+    "projectID": "global",
+    "directory": "/tmp/probe/p",
+    "path": "tmp/probe/p",
+    "title": "New session - 2026-09-12T14:32:34.730Z",
+    "agent": "build",
+    "model": {
+      "id": "big-pickle",
+      "providerID": "opencode",
+      "variant": "default"
+    },
+    "version": "1.18.30",
+    "summary": {
+      "additions": 0,
+      "deletions": 0,
+      "files": 0
+    },
+    "cost": 0,
+    "tokens": {
+      "input": 11974,
+      "output": 49,
+      "reasoning": 0,
+      "cache": {
+        "read": 15488,
+        "write": 0
+      }
+    },
+    "permission": [
+      {
+        "permission": "question",
+        "pattern": "*",
+        "action": "deny"
+      },
+      {
+        "permission": "plan_enter",
+        "pattern": "*",
+        "action": "deny"
+      },
+      {
+        "permission": "plan_exit",
+        "pattern": "*",
+        "action": "deny"
+      }
+    ],
+    "time": {
+      "created": 1789223554730,
+      "updated": 1789223564719
+    }
+  },
+  "messages": [
+    {
+      "info": {
+        "role": "user",
+        "time": {
+          "created": 1789223554753
+        },
+        "agent": "build",
+        "model": {
+          "providerID": "opencode",
+          "modelID": "big-pickle"
+        },
+        "summary": {
+          "diffs": []
+        },
+        "id": "msg_09608cec1001AkqyxgvbmaFC6P",
+        "sessionID": "ses_f69f73155ffeAHgrtVv1sVFbr7"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "\"Run the shell command `ls` in the current directory, then reply with exactly: done\"",
+          "id": "prt_09608cec4001XO7V3vRfi5IGPH",
+          "sessionID": "ses_f69f73155ffeAHgrtVv1sVFbr7",
+          "messageID": "msg_09608cec1001AkqyxgvbmaFC6P"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_09608cec1001AkqyxgvbmaFC6P",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "path": {
+          "cwd": "/tmp/probe/p",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 13744,
+          "input": 11909,
+          "output": 43,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 1792
+          }
+        },
+        "modelID": "big-pickle",
+        "providerID": "opencode",
+        "time": {
+          "created": 1789223554912,
+          "completed": 1789223562233
+        },
+        "finish": "tool-calls",
+        "id": "msg_09608cf6000158aFagj6ZP9Egl",
+        "sessionID": "ses_f69f73155ffeAHgrtVv1sVFbr7"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_09608e98c0019kyHxEaDMpFjN0",
+          "sessionID": "ses_f69f73155ffeAHgrtVv1sVFbr7",
+          "messageID": "msg_09608cf6000158aFagj6ZP9Egl"
+        },
+        {
+          "type": "reasoning",
+          "text": "The user wants me to run `ls` in the current directory and then reply with \"done\".",
+          "time": {
+            "start": 1789223561702,
+            "end": 1789223561985
+          },
+          "id": "prt_09608e9e60012UUrBGp2PySPYM",
+          "sessionID": "ses_f69f73155ffeAHgrtVv1sVFbr7",
+          "messageID": "msg_09608cf6000158aFagj6ZP9Egl"
+        },
+        {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "call_99041d057e2b48ccb4af895f",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "ls"
+            },
+            "output": "a.txt\nb.txt\n",
+            "metadata": {
+              "output": "a.txt\nb.txt\n",
+              "exit": 0,
+              "truncated": false
+            },
+            "title": "ls",
+            "time": {
+              "start": 1789223562190,
+              "end": 1789223562227
+            }
+          },
+          "id": "prt_09608eb03001ylfToVhiOLE1Gr",
+          "sessionID": "ses_f69f73155ffeAHgrtVv1sVFbr7",
+          "messageID": "msg_09608cf6000158aFagj6ZP9Egl"
+        },
+        {
+          "reason": "tool-calls",
+          "type": "step-finish",
+          "tokens": {
+            "total": 13744,
+            "input": 11909,
+            "output": 43,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 1792
+            }
+          },
+          "cost": 0,
+          "id": "prt_09608ebf6001RoPDLGjybafyzU",
+          "sessionID": "ses_f69f73155ffeAHgrtVv1sVFbr7",
+          "messageID": "msg_09608cf6000158aFagj6ZP9Egl"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_09608cec1001AkqyxgvbmaFC6P",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "path": {
+          "cwd": "/tmp/probe/p",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "total": 13767,
+          "input": 65,
+          "output": 6,
+          "reasoning": 0,
+          "cache": {
+            "write": 0,
+            "read": 13696
+          }
+        },
+        "modelID": "big-pickle",
+        "providerID": "opencode",
+        "time": {
+          "created": 1789223562245,
+          "completed": 1789223564709
+        },
+        "finish": "stop",
+        "id": "msg_09608ec05001Jv5dAuEmUHx1yB",
+        "sessionID": "ses_f69f73155ffeAHgrtVv1sVFbr7"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_09608f44e0012EwG9EpRp4Zauv",
+          "sessionID": "ses_f69f73155ffeAHgrtVv1sVFbr7",
+          "messageID": "msg_09608ec05001Jv5dAuEmUHx1yB"
+        },
+        {
+          "type": "reasoning",
+          "text": "Done.",
+          "time": {
+            "start": 1789223564540,
+            "end": 1789223564689
+          },
+          "id": "prt_09608f4fc001nRQfh50TyzGGmu",
+          "sessionID": "ses_f69f73155ffeAHgrtVv1sVFbr7",
+          "messageID": "msg_09608ec05001Jv5dAuEmUHx1yB"
+        },
+        {
+          "type": "text",
+          "text": "done",
+          "time": {
+            "start": 1789223564692,
+            "end": 1789223564706
+          },
+          "id": "prt_09608f59400122MuTpGpb2Pfnh",
+          "sessionID": "ses_f69f73155ffeAHgrtVv1sVFbr7",
+          "messageID": "msg_09608ec05001Jv5dAuEmUHx1yB"
+        },
+        {
+          "reason": "stop",
+          "type": "step-finish",
+          "tokens": {
+            "total": 13767,
+            "input": 65,
+            "output": 6,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 13696
+            }
+          },
+          "cost": 0,
+          "id": "prt_09608f5a300128SnyViCXJOcN1",
+          "sessionID": "ses_f69f73155ffeAHgrtVv1sVFbr7",
+          "messageID": "msg_09608ec05001Jv5dAuEmUHx1yB"
+        }
+      ]
+    }
+  ]
+}

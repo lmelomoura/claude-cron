@@ -1,0 +1,2824 @@
+build (primary)
+  [
+  {
+    "permission": "*",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "doom_loop",
+    "action": "ask",
+    "pattern": "*"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "*",
+    "action": "ask"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/tool-output/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/var/folders/hj/c43svy9946zbxk2_019m627c25hhg7/T/opencode/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-swarm-coordination/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-platform/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/pair-programming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-vector-search/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-multi-repo/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-project-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-neural/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-release-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/dev-browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-orchestration/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-memory-unification/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-core-implementation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-ddd-architecture/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-swarm/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/skill-builder/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-memory-patterns/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/hooks-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-cli-modernization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-agentdb/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-workflow-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-performance-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/sparc-methodology/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-intelligence/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/verification-quality/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/stream-chain/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-integration-deep/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-security-overhaul/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-learning/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-mcp-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/subagent-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/receiving-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-skills/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/finishing-a-development-branch/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/executing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/verification-before-completion/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/dispatching-parallel-agents/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/requesting-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/brainstorming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-git-worktrees/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/systematic-debugging/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/test-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-superpowers/*",
+    "action": "allow"
+  },
+  {
+    "permission": "question",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_enter",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_exit",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "read",
+    "pattern": "*",
+    "action": "allow"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env",
+    "action": "ask"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env.*",
+    "action": "ask"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env.example",
+    "action": "allow"
+  },
+  {
+    "permission": "question",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_enter",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/tool-output/*",
+    "action": "allow"
+  }
+]
+compaction (primary)
+  [
+  {
+    "permission": "*",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "doom_loop",
+    "action": "ask",
+    "pattern": "*"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "*",
+    "action": "ask"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/tool-output/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/var/folders/hj/c43svy9946zbxk2_019m627c25hhg7/T/opencode/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-swarm-coordination/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-platform/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/pair-programming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-vector-search/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-multi-repo/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-project-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-neural/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-release-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/dev-browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-orchestration/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-memory-unification/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-core-implementation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-ddd-architecture/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-swarm/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/skill-builder/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-memory-patterns/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/hooks-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-cli-modernization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-agentdb/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-workflow-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-performance-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/sparc-methodology/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-intelligence/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/verification-quality/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/stream-chain/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-integration-deep/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-security-overhaul/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-learning/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-mcp-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/subagent-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/receiving-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-skills/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/finishing-a-development-branch/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/executing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/verification-before-completion/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/dispatching-parallel-agents/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/requesting-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/brainstorming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-git-worktrees/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/systematic-debugging/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/test-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-superpowers/*",
+    "action": "allow"
+  },
+  {
+    "permission": "question",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_enter",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_exit",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "read",
+    "pattern": "*",
+    "action": "allow"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env",
+    "action": "ask"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env.*",
+    "action": "ask"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env.example",
+    "action": "allow"
+  },
+  {
+    "permission": "*",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/tool-output/*",
+    "action": "allow"
+  }
+]
+explore (subagent)
+  [
+  {
+    "permission": "*",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "doom_loop",
+    "action": "ask",
+    "pattern": "*"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "*",
+    "action": "ask"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/tool-output/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/var/folders/hj/c43svy9946zbxk2_019m627c25hhg7/T/opencode/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-swarm-coordination/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-platform/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/pair-programming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-vector-search/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-multi-repo/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-project-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-neural/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-release-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/dev-browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-orchestration/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-memory-unification/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-core-implementation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-ddd-architecture/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-swarm/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/skill-builder/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-memory-patterns/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/hooks-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-cli-modernization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-agentdb/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-workflow-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-performance-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/sparc-methodology/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-intelligence/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/verification-quality/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/stream-chain/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-integration-deep/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-security-overhaul/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-learning/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-mcp-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/subagent-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/receiving-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-skills/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/finishing-a-development-branch/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/executing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/verification-before-completion/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/dispatching-parallel-agents/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/requesting-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/brainstorming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-git-worktrees/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/systematic-debugging/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/test-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-superpowers/*",
+    "action": "allow"
+  },
+  {
+    "permission": "question",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_enter",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_exit",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "read",
+    "pattern": "*",
+    "action": "allow"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env",
+    "action": "ask"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env.*",
+    "action": "ask"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env.example",
+    "action": "allow"
+  },
+  {
+    "permission": "*",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "grep",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "glob",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "list",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "bash",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "webfetch",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "websearch",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "read",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "*",
+    "action": "ask"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/tool-output/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/var/folders/hj/c43svy9946zbxk2_019m627c25hhg7/T/opencode/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-swarm-coordination/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-platform/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/pair-programming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-vector-search/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-multi-repo/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-project-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-neural/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-release-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/dev-browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-orchestration/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-memory-unification/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-core-implementation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-ddd-architecture/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-swarm/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/skill-builder/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-memory-patterns/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/hooks-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-cli-modernization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-agentdb/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-workflow-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-performance-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/sparc-methodology/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-intelligence/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/verification-quality/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/stream-chain/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-integration-deep/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-security-overhaul/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-learning/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-mcp-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/subagent-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/receiving-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-skills/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/finishing-a-development-branch/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/executing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/verification-before-completion/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/dispatching-parallel-agents/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/requesting-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/brainstorming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-git-worktrees/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/systematic-debugging/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/test-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-superpowers/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/tool-output/*",
+    "action": "allow"
+  }
+]
+general (subagent)
+  [
+  {
+    "permission": "*",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "doom_loop",
+    "action": "ask",
+    "pattern": "*"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "*",
+    "action": "ask"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/tool-output/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/var/folders/hj/c43svy9946zbxk2_019m627c25hhg7/T/opencode/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-swarm-coordination/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-platform/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/pair-programming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-vector-search/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-multi-repo/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-project-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-neural/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-release-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/dev-browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-orchestration/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-memory-unification/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-core-implementation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-ddd-architecture/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-swarm/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/skill-builder/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-memory-patterns/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/hooks-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-cli-modernization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-agentdb/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-workflow-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-performance-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/sparc-methodology/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-intelligence/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/verification-quality/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/stream-chain/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-integration-deep/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-security-overhaul/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-learning/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-mcp-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/subagent-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/receiving-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-skills/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/finishing-a-development-branch/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/executing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/verification-before-completion/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/dispatching-parallel-agents/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/requesting-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/brainstorming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-git-worktrees/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/systematic-debugging/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/test-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-superpowers/*",
+    "action": "allow"
+  },
+  {
+    "permission": "question",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_enter",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_exit",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "read",
+    "pattern": "*",
+    "action": "allow"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env",
+    "action": "ask"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env.*",
+    "action": "ask"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env.example",
+    "action": "allow"
+  },
+  {
+    "permission": "todowrite",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/tool-output/*",
+    "action": "allow"
+  }
+]
+plan (primary)
+  [
+  {
+    "permission": "*",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "doom_loop",
+    "action": "ask",
+    "pattern": "*"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "*",
+    "action": "ask"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/tool-output/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/var/folders/hj/c43svy9946zbxk2_019m627c25hhg7/T/opencode/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-swarm-coordination/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-platform/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/pair-programming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-vector-search/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-multi-repo/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-project-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-neural/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-release-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/dev-browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-orchestration/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-memory-unification/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-core-implementation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-ddd-architecture/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-swarm/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/skill-builder/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-memory-patterns/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/hooks-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-cli-modernization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-agentdb/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-workflow-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-performance-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/sparc-methodology/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-intelligence/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/verification-quality/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/stream-chain/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-integration-deep/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-security-overhaul/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-learning/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-mcp-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/subagent-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/receiving-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-skills/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/finishing-a-development-branch/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/executing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/verification-before-completion/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/dispatching-parallel-agents/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/requesting-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/brainstorming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-git-worktrees/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/systematic-debugging/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/test-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-superpowers/*",
+    "action": "allow"
+  },
+  {
+    "permission": "question",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_enter",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_exit",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "read",
+    "pattern": "*",
+    "action": "allow"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env",
+    "action": "ask"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env.*",
+    "action": "ask"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env.example",
+    "action": "allow"
+  },
+  {
+    "permission": "question",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_exit",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "task",
+    "pattern": "general",
+    "action": "deny"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "edit",
+    "pattern": "*",
+    "action": "deny"
+  },
+  {
+    "permission": "edit",
+    "pattern": ".opencode/plans/*.md",
+    "action": "allow"
+  },
+  {
+    "permission": "edit",
+    "pattern": "../../../../../.local/share/opencode/plans/*.md",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/tool-output/*",
+    "action": "allow"
+  }
+]
+summary (primary)
+  [
+  {
+    "permission": "*",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "doom_loop",
+    "action": "ask",
+    "pattern": "*"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "*",
+    "action": "ask"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/tool-output/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/var/folders/hj/c43svy9946zbxk2_019m627c25hhg7/T/opencode/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-swarm-coordination/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-platform/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/pair-programming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-vector-search/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-multi-repo/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-project-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-neural/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-release-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/dev-browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-orchestration/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-memory-unification/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-core-implementation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-ddd-architecture/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-swarm/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/skill-builder/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-memory-patterns/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/hooks-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-cli-modernization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-agentdb/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-workflow-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-performance-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/sparc-methodology/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-intelligence/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/verification-quality/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/stream-chain/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-integration-deep/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-security-overhaul/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-learning/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-mcp-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/subagent-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/receiving-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-skills/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/finishing-a-development-branch/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/executing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/verification-before-completion/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/dispatching-parallel-agents/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/requesting-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/brainstorming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-git-worktrees/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/systematic-debugging/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/test-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-superpowers/*",
+    "action": "allow"
+  },
+  {
+    "permission": "question",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_enter",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_exit",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "read",
+    "pattern": "*",
+    "action": "allow"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env",
+    "action": "ask"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env.*",
+    "action": "ask"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env.example",
+    "action": "allow"
+  },
+  {
+    "permission": "*",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/tool-output/*",
+    "action": "allow"
+  }
+]
+title (primary)
+  [
+  {
+    "permission": "*",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "doom_loop",
+    "action": "ask",
+    "pattern": "*"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "*",
+    "action": "ask"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/tool-output/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/var/folders/hj/c43svy9946zbxk2_019m627c25hhg7/T/opencode/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-swarm-coordination/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-platform/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/pair-programming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-vector-search/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-multi-repo/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-project-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-neural/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-release-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/dev-browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-orchestration/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-memory-unification/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-core-implementation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-ddd-architecture/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-swarm/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/skill-builder/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-memory-patterns/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/hooks-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-cli-modernization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-agentdb/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-workflow-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-performance-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/sparc-methodology/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-intelligence/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/verification-quality/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/stream-chain/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-integration-deep/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-security-overhaul/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-learning/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-mcp-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/subagent-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/receiving-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-skills/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/finishing-a-development-branch/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/executing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/verification-before-completion/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/dispatching-parallel-agents/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/requesting-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/brainstorming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-git-worktrees/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/systematic-debugging/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/test-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-superpowers/*",
+    "action": "allow"
+  },
+  {
+    "permission": "question",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_enter",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_exit",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "read",
+    "pattern": "*",
+    "action": "allow"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env",
+    "action": "ask"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env.*",
+    "action": "ask"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env.example",
+    "action": "allow"
+  },
+  {
+    "permission": "*",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/tool-output/*",
+    "action": "allow"
+  }
+]
+image-analyzer (subagent)
+  [
+  {
+    "permission": "*",
+    "action": "allow",
+    "pattern": "*"
+  },
+  {
+    "permission": "doom_loop",
+    "action": "ask",
+    "pattern": "*"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "*",
+    "action": "ask"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/tool-output/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/var/folders/hj/c43svy9946zbxk2_019m627c25hhg7/T/opencode/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-swarm-coordination/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-platform/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/pair-programming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-vector-search/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-multi-repo/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-project-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-neural/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-release-management/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/dev-browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-orchestration/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/swarm-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-memory-unification/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-core-implementation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-advanced/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/browser/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-ddd-architecture/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/flow-nexus-swarm/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/skill-builder/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-memory-patterns/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/hooks-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-cli-modernization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-agentdb/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/github-workflow-automation/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-performance-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/sparc-methodology/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/reasoningbank-intelligence/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/verification-quality/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/stream-chain/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-integration-deep/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-security-overhaul/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/agentdb-learning/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.claude/skills/v3-mcp-optimization/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/subagent-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/receiving-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/writing-skills/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/finishing-a-development-branch/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/executing-plans/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/verification-before-completion/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/dispatching-parallel-agents/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/requesting-code-review/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/brainstorming/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-git-worktrees/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/systematic-debugging/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/test-driven-development/*",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.cache/opencode/packages/superpowers@git+https:/github.com/obra/superpowers.git/node_modules/superpowers/skills/using-superpowers/*",
+    "action": "allow"
+  },
+  {
+    "permission": "question",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_enter",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "plan_exit",
+    "action": "deny",
+    "pattern": "*"
+  },
+  {
+    "permission": "read",
+    "pattern": "*",
+    "action": "allow"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env",
+    "action": "ask"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env.*",
+    "action": "ask"
+  },
+  {
+    "permission": "read",
+    "pattern": "*.env.example",
+    "action": "allow"
+  },
+  {
+    "permission": "external_directory",
+    "pattern": "/Users/me/.local/share/opencode/tool-output/*",
+    "action": "allow"
+  }
+]

@@ -1,0 +1,1 @@
+timestamp=2026-09-12T14:52:50.396Z level=ERROR run=84a3a3fc message="stream error" providerID=zenprobe modelID=ling-3.0-flash-fin-free session.id=ses_f69e4ab05ffeToG1r4KCGXkUfh small=false agent=build mode=primary error.error="AI_APICallError: Error from provider (Console): Upstream request failed: Endpoint is unavailable."

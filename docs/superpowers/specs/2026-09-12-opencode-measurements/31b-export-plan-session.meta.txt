@@ -1,0 +1,5 @@
+command: perl -e alarm 60; exec @ARGV opencode export ses_f69db1caaffewlUdYzafxudrp6
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 0

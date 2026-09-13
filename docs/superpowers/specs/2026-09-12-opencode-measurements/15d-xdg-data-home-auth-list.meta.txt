@@ -1,0 +1,5 @@
+command: XDG_DATA_HOME=/tmp/probe/xdgdata opencode auth list
+stdin: devnull
+cwd: /tmp/probe/p
+exit: 0
+seconds: 0
