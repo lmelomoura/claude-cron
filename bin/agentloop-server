@@ -2454,9 +2454,12 @@ def parse_conversation(text, limit=400):
     return out
 
 
-# Twice this (20s, for `models --verbose`) must still end inside al()'s 30s
-# subprocess.run timeout, so a hung CLI leaves the engine's "timed out" stub.
-OPENCODE_RESOLVE_DEADLINE = "10"
+# The engine's in-request resolve spends this once on `--version` and twice
+# on `models --verbose`: 8 + 16 = 24s, inside al()'s 30s subprocess.run
+# timeout with room to spare, so a hung CLI leaves the engine's "timed out"
+# stub rather than al() killing the engine first (which left no stub, and
+# made every /api/models after it wait the full 30s again).
+OPENCODE_RESOLVE_DEADLINE = "8"
 
 
 def al(args, stdin=None, background=False, env=None):
@@ -2617,12 +2620,12 @@ def _opencode_platform():
         # reading "opencode not installed" until the next daily pass.
         exe = _env("OPENCODE_BIN") or _bin_detect("opencode")
         if exe and os.access(exe, os.X_OK):
-            # A short engine deadline (10s for `models`/`auth list`, so 20s
-            # for `--verbose`) keeps this in-request resolve inside al()'s
-            # own 30s timeout, so a hung CLI leaves its "timed out" stub
-            # behind instead of al() being killed first -- which left no
-            # stub at all and made every subsequent /api/models repeat the
-            # same 30s wait. The daily pass keeps the full 60s deadline.
+            # A short engine deadline (8s for `--version`, 16s for `models
+            # --verbose`: 24s in all) keeps this in-request resolve inside
+            # al()'s own 30s timeout, so a hung CLI leaves its "timed out"
+            # stub behind instead of al() being killed first -- which left
+            # no stub at all and made every subsequent /api/models repeat
+            # the same 30s wait. The daily pass keeps the full 60s deadline.
             al(["resolve-models", "opencode"], env={"AGENTLOOP_OPENCODE_DEADLINE": OPENCODE_RESOLVE_DEADLINE})
             b = block()
     empty = {"models": [], "efforts": [], "permissions": PLATFORM_PERMISSIONS["opencode"],

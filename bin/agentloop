@@ -1530,16 +1530,27 @@ platform_bin() { # platform_bin <platform> -> the CLI's path: the environment ov
 # (`codex login status`, `claude auth status --json`, `--version`), so the
 # Settings page, `status` and every launch simply ask again.
 platform_check() { # platform_check <platform> -> one JSON object; always exits 0
-  local p="$1" bin src found=false ver="" acct="" reason="" ready=false supported=true
+  local p="$1" bin src found=false ver="" vrc=0 acct="" reason="" ready=false supported=true
   if ! platform_listed "$p"; then
     "$JQ" -nc --arg p "$p" '{platform:$p, supported:false, ready:false, bin:"", bin_found:false, bin_source:"", version:"", account:"", reason:("unknown platform " + $p)}'
     return 0
   fi
   platform_planned "$p" && supported=false
   bin="$(platform_bin "$p")"; src="$(platform_bin_source "$p")"
-  if [ -f "$bin" ] && [ -x "$bin" ]; then found=true; ver="$("$bin" --version 2>/dev/null | head -1)"; fi
+  if [ -f "$bin" ] && [ -x "$bin" ]; then
+    found=true
+    # Bounded like every other CLI call here: a `--version` that never
+    # answers (measured 34b: an OpenCode process can wait for ever) must not
+    # hang the Settings page or a launch. The rc is read before `head`, which
+    # would otherwise hide it behind its own.
+    ver="$(run_bounded "$OPENCODE_DEADLINE" "$bin" --version 2>/dev/null)"; vrc=$?
+    ver="$(printf '%s\n' "$ver" | head -1)"
+  fi
   if [ "$found" = false ]; then
     reason="$(platform_cli_name "$p") not found at $bin — set the path in Settings (or AGENTLOOP_$(platform_cli_name "$p" | tr '[:lower:]' '[:upper:]')_BIN); install: $(platform_install_hint "$p")"
+  elif [ "$vrc" -eq 124 ]; then
+    ver=""
+    reason="$(platform_cli_name "$p") --version timed out after ${OPENCODE_DEADLINE} s (the CLI hung)"
   else
     case "$p" in
       anthropic)
@@ -1568,7 +1579,7 @@ platform_check() { # platform_check <platform> -> one JSON object; always exits 
         # to run (the providers with a key, plus the free Zen models that need
         # none -- measured, 01), and the account line says how many
         # credentials auth.json holds and which providers the catalog shows.
-        local list nmod ncred provs esc raw rc
+        local list nmod ncred provs esc raw rc authraw arc
         raw="$(run_bounded "$OPENCODE_DEADLINE" "$bin" models --pure 2>/dev/null)"; rc=$?
         list="$(printf '%s\n' "$raw" | grep -E '^[A-Za-z0-9_.-]+/' || true)"
         nmod="$(num "$(printf '%s\n' "$list" | grep -c . 2>/dev/null)")"
@@ -1586,9 +1597,15 @@ platform_check() { # platform_check <platform> -> one JSON object; always exits 
           ready=true
           esc="$(printf '\033')"
           # `auth list` draws a box with ANSI colours even off a TTY (measured); strip them before reading the count
-          ncred="$(run_bounded "$OPENCODE_DEADLINE" "$bin" auth list 2>/dev/null | sed "s/${esc}\[[0-9;]*m//g" | grep -oE '[0-9]+ credentials?' | head -1)"
+          authraw="$(run_bounded "$OPENCODE_DEADLINE" "$bin" auth list 2>/dev/null)"; arc=$?
+          ncred="$(printf '%s\n' "$authraw" | sed "s/${esc}\[[0-9;]*m//g" | grep -oE '[0-9]+ credentials?' | head -1)"
+          # "0 credentials" is the CLI's own line, only when the command
+          # answered and its box said so. A deadline that hits (124), a
+          # failure, or a box with no count in it is "unknown": a hung CLI
+          # does not have no credentials.
+          if [ "$arc" -ne 0 ] || [ -z "$ncred" ]; then ncred="credentials unknown"; fi
           provs="$(printf '%s\n' "$list" | cut -d/ -f1 | sort -u | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
-          acct="${ncred:-0 credentials} · providers: $provs"
+          acct="$ncred · providers: $provs"
         else
           reason="no usable provider: run opencode auth login, or configure one in ~/.config/opencode/opencode.json"
         fi ;;
@@ -1985,15 +2002,24 @@ platform_argv_openai() { # platform_argv_openai <resume-sid> <run_cwd> <model> <
 #                CLI asks by default (external directories, .env reads, doom
 #                loops), and there is no sandbox to configure (19, 20).
 #   read-only    edit, write, bash and task denied: the agent reads,
-#                searches, fetches, and changes nothing.
+#                searches, fetches, and changes nothing. A `Bash(...)` allow
+#                entry is DROPPED here, with a note: by pattern it would
+#                reopen a shell with no OS sandbox behind it (`Bash(*)`
+#                overwrote the deny outright), and the mode's word is that
+#                bash stays closed.
 #
 # The job's tool lists ride along, translated by a fixed table. A denylist
 # closes tools (`Agent` -> task, the security analysis's own case: 22) and
 # bash patterns (`Bash(git push *)` -> a bash rule: 23); an allowlist denies
-# everything and opens what it names. A pattern on any tool but bash widens
-# to the whole tool in a denylist (closing more than asked is the safe side)
-# and is DROPPED from an allowlist (opening more than asked is not). Deny
-# wins over allow, as it does on Claude Code.
+# everything and opens what it names (measured 37a: `*: deny` with named
+# allows works under --auto like the deny rules do, and 37b: the block in
+# the environment wins over a repository's own opencode.json). A pattern on
+# any tool but bash widens to the whole tool in a denylist (closing more
+# than asked is the safe side) and is DROPPED from an allowlist (opening
+# more than asked is not). Deny wins over allow, as it does on Claude Code.
+# A bash pattern is a glob on the whole command line to OpenCode, so Claude
+# Code's prefix form `cmd:*` -- which would only ever match a literal colon
+# -- becomes the glob `cmd*`, the same set the prefix matches.
 opencode_config_content() { # opencode_config_content <permission> <allowed_tools> <disallowed_tools>
   "$PYTHON" - "$1" "${2:-}" "${3:-}" <<'PY'
 import json, re, sys
@@ -2025,6 +2051,19 @@ def parse(item):
         return None, None
     return m.group(1), (m.group(2) or "")
 
+def bash_glob(which, item, pattern):
+    """The pattern as OpenCode reads it: a glob on the command line (23,
+    37a). Claude Code's prefix form `cmd:*` is not one -- to OpenCode the
+    `:*` matches a literal colon and nothing else -- so it becomes `cmd*`,
+    which matches what the prefix matches (`git push`, `git push origin
+    main`, `git pushX`), and the note says so."""
+    if pattern.endswith(":*"):
+        glob = pattern[:-2] + "*"
+        notes.append(which + ": " + item + " is the bash pattern " + json.dumps(glob)
+                     + " (translated from Claude Code's prefix form)")
+        return glob
+    return pattern
+
 perm = {}
 if mode == "read-only":
     perm.update({"edit": "deny", "write": "deny", "bash": "deny", "task": "deny"})
@@ -2046,7 +2085,12 @@ if allow_items:
             notes.append("allowed_tools: " + item + " is not a tool OpenCode has; ignored")
             continue
         if tool == "bash" and pattern:
-            bash_rules("deny")[pattern] = "allow"
+            if mode == "read-only":
+                # Measured 19, 20: by pattern this reopened a whole shell
+                # with no sandbox behind it, and `Bash(*)` replaced the deny.
+                notes.append("allowed_tools: " + item + " ignored (read-only keeps bash closed)")
+                continue
+            bash_rules("deny")[bash_glob("allowed_tools", item, pattern)] = "allow"
         elif pattern:
             notes.append("allowed_tools: " + item + " ignored (OpenCode takes patterns on bash only; the tool stays closed)")
         elif perm.get(tool) != "deny":
@@ -2058,7 +2102,7 @@ for item in items(disallowed):
         notes.append("disallowed_tools: " + item + " is not a tool OpenCode has; ignored")
         continue
     if tool == "bash" and pattern:
-        bash_rules("allow")[pattern] = "deny"
+        bash_rules("allow")[bash_glob("disallowed_tools", item, pattern)] = "deny"
     else:
         if pattern:
             notes.append("disallowed_tools: " + item + " widened to the whole tool (OpenCode takes patterns on bash only)")
@@ -2112,15 +2156,24 @@ platform_normalizer() { # platform_normalizer <platform> -> a script path, or no
 # of the run) and a deadline: a CLI that hangs must not hang the close.
 # run_bounded's own rc is passed back on failure (124 past the deadline, so
 # the close can say timed out rather than the more general gave no model).
-opencode_export_model() { # opencode_export_model <run_cwd> <session-id> -> provider/model on stdout; rc is run_bounded's (124 = timed out)
-  local cwd="$1" sid="$2" tmp got rc=0
+# The export lands in a file next to the run's own log (`<tmp-base>.export`,
+# removed after the read) when a caller names one, so a kill mid-export
+# leaves a whole transcript beside the run's `.raw`, never at the root of
+# data/; without a base it is a mktemp under $DATA_DIR.
+opencode_export_model() { # opencode_export_model <run_cwd> <session-id> [tmp-base] -> provider/model on stdout; rc is run_bounded's (124 = timed out)
+  local cwd="$1" sid="$2" base="${3:-}" tmp got rc=0
   [ -n "$sid" ] && [ -d "$cwd" ] || return 0
   # measurement 36: through a pipe the CLI's stdout stops at 64 KiB (a 35-turn
   # session's export is 264,607 bytes to a file, 65,536 through a pipe, cut
   # mid-document, not JSON) -- macOS writes a pipe asynchronously and drops
   # whatever is past the buffer at the CLI's exit, while a file is written
   # synchronously and complete, so this capture goes through one, never `$( )`.
-  tmp="$(mktemp "$DATA_DIR/.opencode-export.XXXXXX")" || return 1
+  if [ -n "$base" ]; then
+    tmp="$base.export"
+    : > "$tmp" || return 1
+  else
+    tmp="$(mktemp "$DATA_DIR/.opencode-export.XXXXXX")" || return 1
+  fi
   ( cd "$cwd" && run_bounded "$OPENCODE_DEADLINE" "$(platform_bin opencode)" export "$sid" > "$tmp" 2>/dev/null ); rc=$?
   if [ "$rc" -ne 0 ]; then
     rm -f "$tmp"
@@ -2146,7 +2199,9 @@ platform_finish() { # platform_finish <platform> <streamfile> <session-id> [job-
     opencode)
       [ -n "$tid" ] || return 0
       local _oc_rc=0
-      PF_MODEL_ID="$(opencode_export_model "${5:-}" "$tid")"; _oc_rc=$?
+      # The export's temp file sits next to the run's stream (`<stream>.export`,
+      # beside the `.raw`), never at the root of data/.
+      PF_MODEL_ID="$(opencode_export_model "${5:-}" "$tid" "$2")"; _oc_rc=$?
       if [ -z "$PF_MODEL_ID" ]; then
         if [ "$_oc_rc" -eq 124 ]; then
           log_tick "$id: opencode export timed out after ${OPENCODE_DEADLINE} s — model_id stays the requested id"
@@ -2737,8 +2792,10 @@ turn_is_over() { # turn_is_over <stream-file> ; 0 = the agent answered and is id
 # wait for ever, silently, and can leave children of its own running). python3
 # is a hard dependency; it runs the child in its own session and, past the
 # deadline, ends the WHOLE process group (SIGTERM, then SIGKILL after a 2 s
-# grace) rather than just the one pid, and this answers 124, the convention
-# of `timeout`.
+# grace, sent whether or not the direct child went on the TERM: a grandchild
+# that ignores it would otherwise outlive the deadline holding the pipe)
+# rather than just the one pid, and this answers 124, the convention of
+# `timeout`.
 run_bounded() { # run_bounded <seconds> <cmd...> -> the command's stdout and rc; 124 past the deadline
   local secs="$1"; shift
   "$PYTHON" - "$secs" "$@" <<'PY'
@@ -2755,7 +2812,14 @@ except subprocess.TimeoutExpired:
     try:
         p.wait(timeout=2)
     except subprocess.TimeoutExpired:
+        pass
+    # The whole group, unconditionally: the child going on the TERM says
+    # nothing about a grandchild that ignores it. The group is already gone
+    # (ESRCH) when every member left on the TERM.
+    try:
         os.killpg(p.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
     sys.exit(124)
 sys.exit(p.returncode)
 PY
@@ -4280,6 +4344,19 @@ JSON
   _pc="$( PLATFORMS_FILE="$pb/none.json"; AGENTLOOP_OPENCODE_BIN="$pb/bin/opencode-broken"; platform_check opencode )"
   [ "$(printf '%s' "$_pc" | "$JQ" -r '.ready, .reason' | tr '\n' '|')" = "false|opencode models failed (rc 3) — see: $pb/bin/opencode-broken models --pure|" ] \
     && ok "platform_check opencode: a CLI that fails outright is not read as no usable provider" || bad "opencode broken: $_pc"
+  # `--version` is bounded too: a CLI that never answers its first question
+  # reads as a timeout with no version, and nothing else is asked of it.
+  printf '#!/bin/sh\nexec sleep 600\n' > "$pb/bin/opencode-hang-version"; chmod +x "$pb/bin/opencode-hang-version"
+  _pc="$( PLATFORMS_FILE="$pb/none.json"; AGENTLOOP_OPENCODE_BIN="$pb/bin/opencode-hang-version"; OPENCODE_DEADLINE=1; platform_check opencode )"
+  [ "$(printf '%s' "$_pc" | "$JQ" -r '.ready, .bin_found, .version, .reason' | tr '\n' '|')" = "false|true||opencode --version timed out after 1 s (the CLI hung)|" ] \
+    && ok "platform_check: a --version past its deadline reads as a timeout, with no version" || bad "version hang: $_pc"
+  # `auth list` past its deadline: the account says the credentials are
+  # unknown -- "0 credentials" is the CLI's own line, kept only when the
+  # command answered with it (a hung CLI does not have no credentials).
+  printf '#!/bin/sh\ncase "$1" in --version) echo 1.18.30;; models) exec "%s" models --pure;; *) exec sleep 600;; esac\n' "$BASE_DIR/test/fake-opencode" > "$pb/bin/opencode-auth-hang"; chmod +x "$pb/bin/opencode-auth-hang"
+  _pc="$( PLATFORMS_FILE="$pb/none.json"; AGENTLOOP_OPENCODE_BIN="$pb/bin/opencode-auth-hang"; OPENCODE_DEADLINE=1; platform_check opencode )"
+  [ "$(printf '%s' "$_pc" | "$JQ" -r '.ready, .account' | tr '\n' '|')" = "true|credentials unknown · providers: opencode, pdm_ai|" ] \
+    && ok "platform_check opencode: an auth list past its deadline says credentials unknown, and the platform is still ready" || bad "auth hang: $_pc"
   [ "$(platform_check martian | "$JQ" -r .reason)" = "unknown platform martian" ] && ok "an unlisted platform is answered, never a crash" || bad "unlisted"
 
   echo "the OpenCode catalog — resolve_models_opencode over the stand-in, and the readers"
@@ -4376,6 +4453,32 @@ JSON
   _cc="$(opencode_config_content read-only "" "Nonesuch")"
   printf '%s\n' "$_cc" | tail -n +2 | grep -q "Nonesuch" && ok "an unknown tool name is named in a note, not translated" || bad "no note for Nonesuch"
   printf '%s\n' "$_cc" | head -1 | "$JQ" -e '.permission | has("nonesuch") | not' >/dev/null 2>&1 && ok "and never reaches the block" || bad "Nonesuch reached the block"
+  # Read-only keeps bash closed whatever the allowlist says. A bash pattern
+  # allowed by rule used to reopen a whole shell with no OS sandbox behind
+  # it (measured 19, 20), and `Bash(*)` overwrote the deny outright.
+  _cc="$(opencode_config_content read-only "Bash(*)" "")"
+  [ "$(printf '%s\n' "$_cc" | head -1 | "$JQ" -r '.permission.bash')" = "deny" ] \
+    && ok "read-only with Bash(*) allowed keeps bash: deny" || bad "read-only Bash(*): $(printf '%s\n' "$_cc" | head -1)"
+  printf '%s\n' "$_cc" | tail -n +2 | grep -qx 'allowed_tools: Bash(\*) ignored (read-only keeps bash closed)' \
+    && ok "and the dropped entry is named in a note" || bad "no note for Bash(*): $(printf '%s\n' "$_cc" | tail -n +2)"
+  _cc="$(opencode_config_content read-only "Bash(git log *)" "")"
+  [ "$(printf '%s\n' "$_cc" | head -1 | "$JQ" -r '.permission.bash')" = "deny" ] \
+    && printf '%s\n' "$_cc" | tail -n +2 | grep -qx 'allowed_tools: Bash(git log \*) ignored (read-only keeps bash closed)' \
+    && ok "read-only with Bash(git log *) allowed: bash stays deny, with the note" || bad "read-only Bash(git log *): $_cc"
+  _cc="$(opencode_config_content full-access "Bash(git log *)" "" | head -1)"
+  [ "$(printf '%s' "$_cc" | "$JQ" -c .permission.bash)" = '{"*":"deny","git log *":"allow"}' ] \
+    && ok "full-access with the same allow: the allowlist shape measured in 37a" || bad "full-access Bash(git log *): $_cc"
+  # Claude Code's prefix form `cmd:*` is not a glob: to OpenCode the `:*`
+  # matches a literal colon and nothing else, so a denylist carried over
+  # from an Anthropic job was inert in silence. It becomes the glob `cmd*`.
+  _cc="$(opencode_config_content full-access "" "Bash(git push:*)")"
+  [ "$(printf '%s\n' "$_cc" | head -1 | "$JQ" -c .permission.bash)" = '{"*":"allow","git push*":"deny"}' ] \
+    && ok "a denied Bash(git push:*) is the bash glob git push*" || bad "prefix deny: $(printf '%s\n' "$_cc" | head -1)"
+  printf '%s\n' "$_cc" | tail -n +2 | grep -q 'disallowed_tools: Bash(git push:\*) is the bash pattern "git push\*" (translated from Claude Code' \
+    && ok "and the note says it was translated from the prefix form" || bad "no translation note: $(printf '%s\n' "$_cc" | tail -n +2)"
+  _cc="$(opencode_config_content full-access "Bash(git log:*)" "" | head -1)"
+  [ "$(printf '%s' "$_cc" | "$JQ" -c .permission.bash)" = '{"*":"deny","git log*":"allow"}' ] \
+    && ok "an allowed Bash(git log:*) is the bash glob git log*" || bad "prefix allow: $_cc"
 
   # The opencode refusal block's own guard (in run_job, before acquire_slot)
   # refuses the launch when this comes back with an empty first line, rather
@@ -4392,7 +4495,7 @@ JSON
   local _ccbroken
   _ccbroken="$(PYTHON=/no/such/python-interpreter opencode_config_content full-access "" "" 2>/dev/null)"
   [ -z "$_ccbroken" ] \
-    && ok "a broken interpreter leaves opencode_config_content answering nothing — what run_env's guard refuses the launch on" \
+    && ok "a broken interpreter leaves opencode_config_content answering nothing — what run_job's opencode refusal block refuses the launch on" \
     || bad "opencode_config_content still answered over a broken PYTHON: $_ccbroken"
 
   echo "platform_argv_opencode() — the measured launch line, for a fresh run and a resume"
@@ -4447,6 +4550,15 @@ JSON
     [ "$(opencode_export_model "$tmp/ocx" ses_x1)" = "opencode/big-pickle-real" ] || exit 1
     [ -z "$(find "$DATA_DIR" -maxdepth 1 -name '.opencode-export.*' 2>/dev/null)" ] || exit 2
     exit 0 ); want "an export past 64 KiB (padded to 300000 bytes) still resolves the model, and its temp file is gone after" 0 $?
+  # With a base (the run's stream file, from platform_finish) the export
+  # goes to <base>.export beside the run's own log, not to data/, and is
+  # gone after the read: a kill mid-export leaves the transcript next to
+  # the run it belongs to.
+  ( AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"; FAKE_RAN_MODEL=pdm_ai/based; export FAKE_RAN_MODEL
+    [ "$(opencode_export_model "$tmp/ocx" ses_x1 "$tmp/ocx/r1.stream.ndjson")" = "pdm_ai/based" ] || exit 1
+    [ ! -e "$tmp/ocx/r1.stream.ndjson.export" ] || exit 2
+    [ -z "$(find "$DATA_DIR" -maxdepth 1 -name '.opencode-export.*' 2>/dev/null)" ] || exit 3
+    exit 0 ); want "with a base the export is read from <base>.export, removed after, and nothing lands under data/" 0 $?
   ( AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"; FAKE_RAN_MODEL=opencode/big-pickle-real; export FAKE_RAN_MODEL
     platform_finish opencode "$tmp/ocx/none.ndjson" ses_x2 j1 "$tmp/ocx"; [ "$PF_MODEL_ID" = "opencode/big-pickle-real" ] ); want "platform_finish opencode sets PF_MODEL_ID from the export" 0 $?
   # opencode-hang (above: --version answers, anything else hangs) times the
@@ -4475,6 +4587,17 @@ JSON
   run_bounded 1 sh -c 'sleep 601 & sleep 601'; want "a hung process group under a 1 s deadline exits 124" 124 $?
   [ "$(ps -ax -o command= | grep -c '^sleep 601$')" = "0" ] \
     && ok "and no sleep 601 process is left running in its group" || bad "leaked sleep 601 count: $(ps -ax -o command= | grep -c '^sleep 601$')"
+  # A grandchild that IGNORES the TERM while the direct child goes on it
+  # used to outlive the deadline: the KILL was only ever sent when the
+  # direct child itself sat out the grace. Checked by pid (the grandchild
+  # writes its own) rather than through `ps -ax`, which a sandboxed shell
+  # does not see every process through.
+  local _gcpid="$tmp/grandchild.pid" _gcw=0
+  rm -f "$_gcpid"
+  run_bounded 1 sh -c "sh -c 'echo \$\$ > $_gcpid; trap \"\" TERM; exec sleep 602' & sleep 602"; want "a TERM-proof grandchild under a 1 s deadline still exits 124" 124 $?
+  while [ "$_gcw" -lt 20 ] && [ -s "$_gcpid" ] && kill -0 "$(cat "$_gcpid")" 2>/dev/null; do sleep 0.1; _gcw=$((_gcw + 1)); done
+  if [ -s "$_gcpid" ] && ! kill -0 "$(cat "$_gcpid")" 2>/dev/null; then ok "and the grandchild that ignored the TERM went with its group on the KILL"
+  else bad "the TERM-proof grandchild (pid $(cat "$_gcpid" 2>/dev/null)) outlived the deadline"; kill -9 "$(cat "$_gcpid" 2>/dev/null)" 2>/dev/null; fi
 
   echo "agentloop platform … — the commands the Settings page is made of"
   local pc="$tmp/pc" out rc _pm _pl; mkdir -p "$pc/config" "$pc/data"
@@ -11200,8 +11323,12 @@ If the work turns out to be already finished, or it can no longer be done at all
     # CLI, so $child below is the CLI's own pid: stop (TERM), the watchdog's
     # tree_cpu_seconds and wait all keep working unchanged. `< /dev/null` is
     # what keeps both CLIs from waiting on stdin for ever (measured on each).
-    rawfifo="$logfile.raw.fifo"
-    rm -f "$rawfifo"; mkfifo "$rawfifo" 2>/dev/null
+    #
+    # The launch line first, the FIFO after it: the `*)` arm is unreachable
+    # by construction (platform_normalizer names exactly these two), and the
+    # day a platform gains a normalizer without a launch line, the refusal
+    # must come before anything of the run exists on disk, with the state
+    # saying error rather than the `running` set above.
     local -a normargs=()
     case "$platform" in
       openai)
@@ -11215,9 +11342,12 @@ If the work turns out to be already finished, or it can no longer be done at all
                   --catalog "$MODELS_FILE" --pricing "$PRICING_FILE" --raw-out "$streamfile.raw") ;;
       *)
         log_tick "$id: no launch line for platform $platform"
+        state_set "$id" last_status '"error"'
         run_cleanup "$id" "$slot"; trap - EXIT
         return 1 ;;
     esac
+    rawfifo="$logfile.raw.fifo"
+    rm -f "$rawfifo"; mkfifo "$rawfifo" 2>/dev/null
     (
       cd "$run_cwd" || exit 1
       exec env ${run_env[@]+"${run_env[@]}"} "$cli_bin" ${PLATFORM_ARGV[@]+"${PLATFORM_ARGV[@]}"} \
@@ -11615,8 +11745,13 @@ If the work turns out to be already finished, or it can no longer be done at all
     # its cost is unknown because it died, not because the model has no
     # price -- telling it "not applied" there is false on every platform,
     # anthropic included, where the cap IS applied via --max-budget-usd.
-    log_tick "$id: max_budget_usd $cap not applied: the cost of this run is unknown (no price for ${model_id:-$model})"
-    wdreason="${wdreason:+$wdreason; }max_budget_usd \$$cap not applied: the cost of this run is unknown (no price for ${model_id:-$model})"
+    # And WHY it is unknown: a priced model whose run died before its first
+    # step (a 401, an UnknownError) has null tokens and no price to blame;
+    # "no price for" is kept for the model the catalog does not price.
+    local _capwhy
+    if [ "$tokens_json" = "null" ]; then _capwhy="no step reported a cost"; else _capwhy="no price for ${model_id:-$model}"; fi
+    log_tick "$id: max_budget_usd $cap not applied: the cost of this run is unknown ($_capwhy)"
+    wdreason="${wdreason:+$wdreason; }max_budget_usd \$$cap not applied: the cost of this run is unknown ($_capwhy)"
   elif [ -n "$cap" ] && [ "$status" = "success" ] \
      && awk "BEGIN{exit !(${cost:-0} >= $cap * 0.9)}" 2>/dev/null; then
     wdreason="BUDGET LIMITED: spent \$${cost:-0} of a \$$cap cap — the agent wrapped up early, so the task may be unfinished. Check the ticket and the branch before assuming it is done; resume this run to continue with its context."

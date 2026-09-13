@@ -9,6 +9,7 @@ only ever sees that -- and because the watchdog's empty-stream rule now makes
 "the first line is out at once" a matter of life and death for a run.
 """
 import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -175,6 +176,57 @@ def test_a_missing_finish_reason_is_treated_like_tool_calls():
     del evs[-1]["part"]["reason"]
     out = normalize(events=evs)
     assert all(e["type"] != "result" for e in out)
+
+
+def test_a_finish_reason_that_is_not_a_string_still_ends_the_run_as_an_error():
+    # `reason: 7` used to raise TypeError on `"the model stopped: " + reason`
+    # and kill the normalizer mid-run. The CLI's word is not a schema.
+    evs = events_of("01-trivial-turn.jsonl")
+    evs[-1]["part"]["reason"] = 7
+    last = normalize(events=evs)[-1]
+    assert last["type"] == "result" and last["is_error"] is True
+    assert last["subtype"] == "error_during_execution"
+    assert last["result"] == "the model stopped: 7"
+
+
+def test_an_error_whose_name_is_not_a_string_still_becomes_an_error_result():
+    # `name: null` with a `ref` and no message, and `name: 7` -- which used
+    # to raise on `msg += " (ref …)"` -- both still end the run as an error
+    # result carrying the ref.
+    for name in (None, 7):
+        ev = {"type": "error", "timestamp": 1789223497515, "sessionID": "ses_bad_name",
+              "error": {"name": name, "data": {"ref": "err_bad_name"}}}
+        out = normalize(events=[ev])
+        assert out[0]["subtype"] == "init"
+        last = out[-1]
+        assert last["type"] == "result" and last["is_error"] is True
+        assert last["subtype"] == "error_during_execution"
+        assert "err_bad_name" in last["result"] and last["api_error_status"] is None
+
+
+def test_an_event_the_normalizer_cannot_translate_is_skipped_not_fatal(tmp_path, monkeypatch, capsys):
+    # feed() raising on one event costs that event, never the run: the raw
+    # line is already copied, the events after it are translated, and the
+    # result still comes out at the end. Driven through main() in-process,
+    # with feed() made to raise on every `text` event.
+    real_feed = ocs.Normalizer.feed
+
+    def feed(self, ev):
+        if ev.get("type") == "text":
+            raise RuntimeError("a shape the measurements never showed")
+        return real_feed(self, ev)
+
+    monkeypatch.setattr(ocs.Normalizer, "feed", feed)
+    raw_in = (FIX / "01-trivial-turn.jsonl").read_text()
+    raw_out = tmp_path / "copy.raw"
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(raw_in.encode("utf-8"))))
+    rc = ocs.main(["--model", "m", "--permission", "full-access", "--cwd", "/", "--raw-out", str(raw_out)])
+    assert rc == 0
+    lines = [json.loads(ln) for ln in capsys.readouterr().out.splitlines()]
+    assert lines[0]["subtype"] == "init" and lines[-1]["type"] == "result"
+    assert lines[-1]["subtype"] == "success" and lines[-1]["result"] == ""   # the text never made it
+    assert blocks(lines, "text", "assistant") == []
+    assert raw_out.read_text() == raw_in                                    # copied before feed() ran
 
 
 # ------------------------------------------------------------ denials

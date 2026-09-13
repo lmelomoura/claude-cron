@@ -266,7 +266,9 @@ class Normalizer:
             # A missing/empty reason (malformed) is treated like "tool-calls":
             # more of the turn may still be coming, so accumulate and emit
             # nothing, rather than ending the run as "the model stopped: unknown".
-            reason = part.get("reason") or "tool-calls"
+            # str(): a reason that is not a string (never measured, but the
+            # CLI's word is not a schema) must not raise on the concatenation.
+            reason = str(part.get("reason") or "tool-calls")
             self.last_reason = reason
             if reason == "stop" and not self.done:
                 out.append(self._result())
@@ -277,7 +279,9 @@ class Normalizer:
         elif kind == "error" and not self.done:
             err = ev.get("error") if isinstance(ev.get("error"), dict) else {}
             data = err.get("data") if isinstance(err.get("data"), dict) else {}
-            msg = data.get("message") if isinstance(data.get("message"), str) else (err.get("name") or "error")
+            # str() on the name for the same reason as the reason above: a
+            # `name` that is not a string must not raise when `ref` is appended.
+            msg = data.get("message") if isinstance(data.get("message"), str) else str(err.get("name") or "error")
             ref = data.get("ref")
             if isinstance(ref, str) and ref:
                 msg += " (ref " + ref + ")"
@@ -340,8 +344,21 @@ def main(argv=None):
             except Exception:  # noqa: BLE001 -- copied above, skipped here
                 continue
             if isinstance(ev, dict):
-                emit(norm.feed(ev))
-        emit(norm.finish())
+                # An event this filter cannot translate (a shape the CLI never
+                # showed in the measurements) is skipped, not fatal: the raw
+                # line is already in --raw-out, and a normalizer that died
+                # mid-run would leave the stream without its result and the
+                # CLI writing into a closed pipe.
+                try:
+                    events = norm.feed(ev)
+                except Exception:  # noqa: BLE001 -- copied above, skipped here
+                    continue
+                emit(events)
+        try:
+            events = norm.finish()
+        except Exception:  # noqa: BLE001 -- an EOF verdict that cannot be made is no verdict
+            events = []
+        emit(events)
     finally:
         if raw is not None:
             raw.close()

@@ -7,7 +7,7 @@
 # launch line; the e2e scenarios that read one back are the evidence.
 #
 #   FAKE_SESSION            the sessionID on every event (a resume keeps it)
-#   FAKE_MODE               complete | undeclared | dirty | hang | reject | deny | error | quota
+#   FAKE_MODE               complete | undeclared | dirty | hang | silent | reject | deny | error | quota
 #   FAKE_ARGV_OUT           record the argv, one line per argument, "<n><TAB><first line>", plus "ARGC<TAB><n>"
 #   FAKE_PROMPT_OUT         record the last argument (the prompt) WHOLE
 #   FAKE_CONFIG_OUT         record the OPENCODE_CONFIG_CONTENT the launch carried (the permission block)

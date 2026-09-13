@@ -59,7 +59,7 @@ não há janelas de utilização, sandbox do SO nem protocolo de stdin.
 | `OPENCODE_CONFIG_DIR` é uma camada a mais sobre `~/.config/opencode` e `~/.opencode`, não uma substituição; `XDG_CONFIG_HOME` e `XDG_DATA_HOME` isolam configuração e conta de facto (15a–15d) | isolamento por job fica fora desta versão, e quando entrar entra para as três plataformas |
 | `share: "disabled"` em `OPENCODE_CONFIG_CONTENT` é aceite (33) | vai sempre no bloco: nenhuma sessão vai parar a um link público por configuração do operador |
 | `--dir` inexistente: exit 1 em 0 s, `Error: Failed to change directory to …`, sem chamada ao modelo (29) | a recusa de `cwd missing` continua a ser do motor, antes do lançamento |
-| não medido: quota/429 (a forma do 16 diz que chegaria como `APIError` com `statusCode: 429`); outros valores de `step_finish.reason`; `doom_loop`; a precedência entre `OPENCODE_CONFIG_CONTENT` e um `opencode.json` do próprio repositório | o desenho trata cada um como inferência da forma, com o comportamento mais conservador |
+| não medido: quota/429 (a forma do 16 diz que chegaria como `APIError` com `statusCode: 429`); outros valores de `step_finish.reason`; `doom_loop` | o desenho trata cada um como inferência da forma, com o comportamento mais conservador. (A precedência entre `OPENCODE_CONFIG_CONTENT` e um `opencode.json` do repositório, listada aqui como não medida na primeira versão, foi medida depois da aceitação: 37b, o bloco do ambiente ganha; e 37a mediu o bloco em forma de allowlist sob `--auto`.) |
 
 ## Objectivo e âmbito
 
@@ -176,11 +176,20 @@ traduzidos por uma tabela fixa; um nome fora dela é ignorado com uma linha no
 
 - `disallowed_tools`: cada nome vira `<tool>: "deny"`. `Bash(<padrão>)` vira
   um padrão em `bash` (`{"*": "allow", "<padrão>": "deny"}`), com o `*` do
-  Claude mantido (o OpenCode usa a mesma sintaxe de glob nos padrões: 23). Um
+  Claude mantido (o OpenCode usa a mesma sintaxe de glob nos padrões: 23). A
+  forma de prefixo do Claude Code, `Bash(cmd:*)`, não é um glob (para o
+  OpenCode o `:*` só casaria com dois pontos literais): traduz-se para o glob
+  `cmd*`, que casa o mesmo conjunto que o prefixo, com uma linha no
+  `tick.log` a dizê-lo. Um
   padrão noutra ferramenta (`Edit(*.md)`) **alarga-se à ferramenta inteira**:
   numa denylist, fechar mais do que foi pedido é o lado seguro.
 - `allowed_tools`: `"*": "deny"` e depois `<tool>: "allow"` por nome;
-  `Bash(<padrão>)` vira `bash: {"*": "deny", "<padrão>": "allow"}`; um padrão
+  `Bash(<padrão>)` vira `bash: {"*": "deny", "<padrão>": "allow"}` (37a: a
+  allowlist funciona sob `--auto` como as regras de deny medidas em 23; a
+  mesma tradução do prefixo `cmd:*`); em `read-only` uma entrada `Bash(...)`
+  é **descartada**, com a linha no `tick.log`: por padrão reabriria uma shell
+  inteira sem sandbox por trás (19, 20; `Bash(*)` substituía o próprio deny),
+  e a palavra do modo é que o bash fica fechado; um padrão
   noutra ferramenta é **ignorado** (a ferramenta fica fechada), porque numa
   allowlist alargar seria abrir mais do que foi pedido. A linha no `tick.log`
   diz qual.
@@ -217,7 +226,7 @@ preço) e a tabela de preços (para estimar quando não tem).
 | `tool_use` com `state.status: "error"` e `state.error` a começar por `The user rejected permission` ou `The user has specified a rule which prevents` (04, 23) | além dos dois eventos, uma entrada em `permission_denials`: `{"tool_name":<nome>,"tool_use_id":<callID>,"tool_input":<input>}` |
 | `step_finish{tokens, cost, reason}` | soma `tokens.input`, `.output`, `.reasoning`, `.cache.read`, `.cache.write` e `cost`; `reason: "tool-calls"` → continua; `reason: "stop"` → o `result` de sucesso; qualquer outro `reason` (não medido: `length`, `error`, …) → `result` de erro com `"the model stopped: <reason>"` |
 | `error{error{name, data}}` | `result` de erro: `result` = `data.message` (com `ref` quando existe), `api_error_status` = `data.statusCode` quando é inteiro (16: 401; um 429 chegaria assim), senão `null`. A taxonomia de causas existente lê-o sem mudar: 429 → `rate_limited`, outro → `api_error`, nenhum → `agent_error` (o `.err` tem a razão: `--print-logs`) |
-| EOF sem `result` mas com `permission_denials` e o último `step_finish` em `tool-calls` (04, 18: o turno morreu numa auto-rejeição) | `result` de erro: `"the turn ended on a rejected permission: <tool> …"`, com as negações → causa `tools_denied` |
+| EOF sem `result`, com o ÚLTIMO `tool_use` a ser um `ask` auto-rejeitado (`The user rejected permission`) e o último `step_finish` em `tool-calls` (04, 18: o turno morreu numa auto-rejeição). Uma negação por regra (`The user has specified a rule…`, 23) não conta: o turno continua depois dela, e um EOF a seguir a uma é um run morto como outro qualquer | `result` de erro: `"the turn ended on a rejected permission: <tool> …"`, com as negações → causa `tools_denied` |
 | EOF sem `result` e sem nada disto | nada: o run morto cai no salvamento existente (`no_result_event`) |
 
 O `result` de sucesso:

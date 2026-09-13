@@ -751,11 +751,17 @@ jq -e 'has("opencode") | not' "$ROOT/data/rate-limits.json" >/dev/null 2>&1 && o
 
 echo
 echo "35b. an unknown model at run time is an error whose reason is in .err, not on the stream"
-mkjob_opencode j35b
+mkjob_opencode j35b full-access pdm_ai/glm-5.3-flash ',"max_budget_usd":1'
 FAKE_MODE=error FAKE_SESSION=ses_err "$AL" run j35b >/dev/null 2>&1
 sleep 2
 [ "$(lastrun | jq -r .status)" = "error" ] && [ "$(lastrun | jq -r .cause)" = "agent_error" ] \
   && ok "error / agent_error: an UnknownError carries no status" || bad "$(lastrun | jq -c '{status,cause}')"
+# A priced model whose run died before its first step has null tokens: the
+# cap note blames no price on the model (it has one), it says no step
+# reported a cost.
+[ "$(lastrun | jq -c .tokens)" = "null" ] && ok "no step_finish, so the tokens are null, not zero" || bad "tokens $(lastrun | jq -c .tokens)"
+grep -q 'j35b: max_budget_usd 1 not applied: the cost of this run is unknown (no step reported a cost)' "$ROOT/data/tick.log" \
+  && ok "the cap note says no step reported a cost, not no price for a priced model" || bad "cap note: $(grep 'j35b: max_budget' "$ROOT/data/tick.log" | tail -1)"
 
 echo
 echo "36. a stop ends an OpenCode run that will not end by itself"

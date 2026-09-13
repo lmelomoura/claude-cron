@@ -48,6 +48,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     error. The first line is out the moment the CLI's first event arrives,
     flushed, because the watchdog now reads an empty file as a dead run
     (the flush is pinned by a test that runs the normalizer without `-u`).
+    A `step_finish.reason` or an `error.name` that is not a string is
+    stringified rather than raising, and an event the normalizer cannot
+    translate is skipped (its raw line is already copied) instead of
+    ending the normalizer mid-run.
   - The catalog and the readiness check: `agentloop resolve-models opencode`
     reads `opencode models --verbose` into `config/models.json` (id,
     provider, name, price, whether it is priced at all, context, variants,
@@ -56,9 +60,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     CLI lists a model, and names the credentials and the providers.
     `run_bounded` puts a deadline (`AGENTLOOP_OPENCODE_DEADLINE`, 30 s;
     double for `models --verbose`) under every CLI call a hung OpenCode could
-    otherwise turn into a hung Settings page; a CLI that hangs past it is
-    reported as a timeout, not as a missing provider, and the deadline ends
-    the CLI's whole process group.
+    otherwise turn into a hung Settings page, `--version` included; a CLI
+    that hangs past it is reported as a timeout, not as a missing provider
+    (an `auth list` past it says "credentials unknown", never "0
+    credentials"), and the deadline ends the CLI's whole process group --
+    KILL after the TERM grace whether or not the direct child went on the
+    TERM, so a grandchild that ignores it dies too. The export the close
+    reads the model from lands beside the run's own log, never at the root
+    of `data/`.
   - The platform table: `opencode` is a running platform (`platform_known`),
     with two permission modes that say what the CLI enforces (`full-access`,
     the default, and `read-only`: there is no sandbox, so no "workspace" mode
@@ -66,7 +75,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     vocabulary (validated here: the CLI accepts anything in silence), the
     job's `allowed_tools`/`disallowed_tools` translated into the permission
     block the run is launched with (`Agent` closes `task`, `Bash(git push
-    *)` is a bash rule, deny wins), the launch line measured flag by flag
+    *)` is a bash rule, deny wins; in read-only, `Bash(...)` allow entries
+    are dropped with a note (the mode keeps bash closed), and Claude Code's
+    `Bash(cmd:*)` prefix form is translated to the glob `cmd*` (measured
+    37: an allowlist block works under `--auto`, and the environment's
+    block wins over a repository's `opencode.json`)), the launch line measured flag by flag
     (`--pure --auto --print-logs --log-level ERROR --dir --title`), and
     `platform_finish` reading the model that ran from `opencode export`,
     read from a file, never a pipe: through a pipe the CLI's output stops at
@@ -87,7 +100,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     compared `${cost:-0}` with 90% of the cap, so a run whose cost nobody
     knows (an unpriced model, on any platform) never fired the BUDGET
     LIMITED warning and never said why; the run's note and `tick.log` now
-    carry "max_budget_usd $X not applied: the cost of this run is unknown".
+    carry "max_budget_usd $X not applied: the cost of this run is unknown",
+    and why: "no price for <model>" when the catalog does not price it,
+    "no step reported a cost" when a priced model's run died before its
+    first step (a 401, an UnknownError) and has no tokens to price.
     A run that ended without a final event (stopped, killed) is not told
     its cap was not applied: its cost is unknown because it died, not
     because the model has no price.
@@ -117,8 +133,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     enabled models still unpriced, and that there are no usage windows to
     wait for. The first `/api/models` on an install whose catalog is not
     resolved yet resolves it through the detected binary, with a short
-    deadline (`OPENCODE_RESOLVE_DEADLINE`, 10 s) so a hung CLI leaves its
-    timeout stub instead of a 30-second hang on every request.
+    deadline (`OPENCODE_RESOLVE_DEADLINE`, 8 s: once for `--version`, twice
+    for `models --verbose`, inside the request's own 30 s) so a hung CLI
+    leaves its timeout stub instead of a 30-second hang on every request.
   - Security analyses run on OpenCode: the derived job's `Agent` in
     `disallowed_tools` closes the `task` tool by rule, `prepare` runs
     engine-side before the agent (the tool's own timeout was not measured

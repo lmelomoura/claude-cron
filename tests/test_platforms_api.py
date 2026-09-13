@@ -232,6 +232,42 @@ def test_the_server_permission_lists_match_the_engine_for_opencode(srv):
     assert [p["v"] for p in srv.PLATFORM_PERMISSIONS["opencode"]] == engine["opencode"]["permissions"]
 
 
+def test_the_engines_opencode_prices_match_the_servers_over_the_same_catalog(srv):
+    # Two readers of the same two files -- config/models.json's opencode
+    # block and config/pricing.json's opencode rows: the engine's `platform
+    # models opencode` (platform_models_json, what `agentloop platforms` and
+    # `status` print) and the server's /api/models entry (_opencode_platform,
+    # what the Settings page shows). Resolved once through the stand-in into
+    # the fixture's own config dir, so both read the same catalog: every id
+    # the server lists is on the engine's list, and the price per million
+    # agrees on each -- the catalog's own for a priced model, the operator's
+    # row for an unpriced one, none when neither prices it.
+    cfg = Path(srv.CONFIG_DIR)
+    (cfg / "pricing.json").write_text(json.dumps({"opencode": {
+        "opencode/big-pickle": {"input": 0.5, "cached_input": 0.05, "output": 1.5, "cache_write": 0, "source": "manual"}}}))
+    env = {**os.environ, "AGENTLOOP_CONFIG": str(srv.CONFIG_DIR), "AGENTLOOP_DATA": str(srv.DATA_DIR),
+           "AGENTLOOP_OPENCODE_BIN": str(FAKE_OPENCODE)}
+    out = subprocess.run([str(REPO / "bin" / "agentloop"), "platform", "models", "opencode"],
+                         capture_output=True, text=True, env=env, timeout=120)
+    assert out.returncode == 0, out.stderr
+    engine = json.loads(out.stdout)
+    assert engine["stale"] is False and len(engine["models"]) == 13
+    server = srv.list_models()["platforms"]["opencode"]
+    assert server["available"] is True and len(server["models"]) == 13
+    engine_by_id = {m["v"]: m for m in engine["models"]}
+    assert {m["v"] for m in server["models"]} <= set(engine_by_id)
+    for m in server["models"]:
+        e = engine_by_id[m["v"]]
+        if m["price"] is None:
+            assert e["price"] is None, m["v"]
+        else:
+            assert e["price"] == {"input": m["price"]["input"], "output": m["price"]["output"]}, m["v"]
+    # both sources were exercised: the catalog's own price, and the operator's row
+    assert engine_by_id["pdm_ai/glm-5.3-flash"]["price"] == {"input": 0.033011, "output": 0.139816}
+    assert engine_by_id["opencode/big-pickle"]["price"] == {"input": 0.5, "output": 1.5}
+    assert any(m["price"] is None for m in server["models"])            # and a model neither prices
+
+
 def test_a_parked_jobs_model_still_counts_as_using_the_platform(srv, tmp_path, monkeypatch):
     """The reported defect: an operator whose jobs are all switched off saw
     "no jobs" on every model those jobs name, so switching the model off read
@@ -547,11 +583,12 @@ def test_a_hung_opencode_cli_gets_the_engines_short_deadline_not_als(srv, monkey
     stub -- leaving config/models.json's opencode block untouched and making
     every following /api/models repeat the same 30s wait. The in-request
     resolve passes AGENTLOOP_OPENCODE_DEADLINE from the server's own
-    OPENCODE_RESOLVE_DEADLINE constant (10s in production, 20s once doubled
-    for --verbose), which always finishes inside al()'s window and lets the
-    engine write its own timeout stub instead. This test shrinks that
-    constant to 2s (4s doubled) so the stub -- and the test -- land in
-    seconds rather than paying the production deadline in full."""
+    OPENCODE_RESOLVE_DEADLINE constant (8s in production: spent once on
+    `--version`, now bounded too, and twice on `models --verbose`, 24s in
+    all), which always finishes inside al()'s window and lets the engine
+    write its own timeout stub instead. This test shrinks that constant to
+    2s (2 + 4 = 6s at most) so the stub -- and the test -- land in seconds
+    rather than paying the production deadline in full."""
     _write_models(srv)   # no "opencode" key: the probe below must run resolve-models
     stub = tmp_path / "opencode-hang"
     stub.write_text(

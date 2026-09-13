@@ -901,7 +901,7 @@ that platform's vocabulary.
 | the network | open in every mode | `workspace-write` sandboxes the filesystem and **keeps the network** (the CLI seals it by default; the engine passes `sandbox_workspace_write.network_access=true`, because every job here talks to a tracker or a forge). `read-only` is sealed to both. `full-access` has no sandbox | open in both modes |
 | writing git history | anywhere the account can | a run's checkout is a `git worktree`, so its commits write into the canonical repo's `.git` — outside the sandbox, and refused there. The engine declares that directory (only it, never the canonical checkout) in `sandbox_workspace_write.writable_roots`, one entry per repo of the run | anywhere the account can: there is no sandbox (measured: `bash` writes outside the directory and commits from a worktree) |
 | `interactive` | yes | no — `codex exec` has no stdin protocol; the run is refused | no — `opencode run` reads stdin as part of the prompt; the run is refused |
-| `allowed_tools`, `disallowed_tools` | yes | ignored, with a line in `tick.log`: Codex cannot close a tool by flag (measured: `--disable multi_agent` leaves `spawn_agent` in the roster) | yes, translated into the permission block the run is launched with (`Agent` closes `task`; `Bash(git push *)` is a bash rule; deny wins) |
+| `allowed_tools`, `disallowed_tools` | yes | ignored, with a line in `tick.log`: Codex cannot close a tool by flag (measured: `--disable multi_agent` leaves `spawn_agent` in the roster) | yes, translated into the permission block the run is launched with (`Agent` closes `task`; `Bash(git push *)` is a bash rule, and the prefix form `Bash(git push:*)` becomes the glob `git push*`; deny wins; in read-only a `Bash(...)` allow entry is dropped, with a line in `tick.log`) |
 | `max_budget_usd` | `--max-budget-usd`, stops the run | no flag: the cap is read at the end and produces the BUDGET LIMITED warning | no flag: read at the end, BUDGET LIMITED; over an unknown cost the run says the cap was not applied |
 | cost | reported by the CLI | **estimated** from tokens with `config/pricing.json` | **reported** by the CLI when its catalog prices the model; estimated from `config/pricing.json`'s `opencode` rows otherwise; unknown (never zero) when neither |
 | usage windows | the statusline (see `agentloop usage`) | every run's own rollout — nothing to wire | none: each provider has its own API |
@@ -988,10 +988,15 @@ what the CLI would otherwise ask about (a file outside the run directory, a
 `.env`, a loop), and there is no sandbox to configure; `read-only` denies `edit`,
 `write`, `bash` and `task`, so the agent reads, searches and fetches and
 changes nothing; and the lists add their rules — `Agent` becomes `task:
-deny`, `Bash(git push *)` a bash pattern; a pattern on any other tool widens
+deny`, `Bash(git push *)` a bash pattern, and Claude Code's prefix form
+`Bash(git push:*)` the glob `git push*` (a bash pattern is a glob on the
+command line to OpenCode, so the `:*` would only ever match a literal
+colon); a pattern on any other tool widens
 to the whole tool in a denylist (closing more than asked is the safe side)
 and is dropped from an allowlist (opening more than asked is not), with a
-line in `tick.log` either way; `share: disabled` always, so no session ends
+line in `tick.log` either way. In read-only, `Bash(...)` entries of
+`allowed_tools` are dropped with a line in `tick.log`: the mode keeps bash
+closed. `share: disabled` always, so no session ends
 up on a public link by an operator's configuration. Every run launches with
 `--pure`, which switches the operator's OpenCode plugins off and keeps the
 skills (measured: without it one plugin rewrote `ls` to `rtk ls` and another
